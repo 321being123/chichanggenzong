@@ -339,6 +339,12 @@ holders=importlib.import_module('extractConvertibleBondFundHoldings')
 unranked='前十名转债持有人情况如下：\n期末持债数量（元）\n持有比例(%)\n'+''.join(f'某证券投资基金{i}\n100000\n1.00\n' for i in range(10))+'(三)报告期转债变动情况\n'
 parsed=holders.parse_holders(unranked)
 assert len(parsed)==10 and holders.aggregate(parsed)['holding_quantity']==1
+short_header=holders.parse_holders(unranked.replace('期末持债数量','期末持债数'))
+assert len(short_header)==10 and short_header[0]['quantity']==1000 and short_header[0]['amount']==100000
+assert holders.parse_holders(unranked.replace('期末持债数量（元）','期末持债数（张）'))==[]
+joined_numbers='前十名转债持有人情况如下：\n序号\n报告期末持有可转债数量（张）\n报告期末持有可转债金额（元）\n'+''.join(f'{i}\n某基金{i}\n其他\n1,833,202 183,320,200.00\n9.17%\n' for i in range(1,11))
+joined_holders=holders.parse_holders(joined_numbers)
+assert len(joined_holders)==10 and joined_holders[0]['quantity']==1833202 and joined_holders[0]['amount']==183320200
 assert sum(r['amount'] for r in parsed)==1000000 and sum(r['quantity'] for r in parsed)==10000
 # BOND-ANALYSIS-WRAPPED-003: 元金额跨行只按完整千分位组拼接，比例独立。
 wrapped=unranked.replace('期末持债数量','期末持债数\n量').replace('持有比例','持有比\n例').replace('100000','3,130,210,00\n0')
@@ -380,6 +386,13 @@ assert holders.extract('url',bond_name='乙转债')['holding_quantity']==2
 try: holders.extract('url',bond_name='丙转债'); assert False
 except ValueError: pass
 prospectus=importlib.import_module('extractConvertibleBondProspectus')
+purpose_table='序号\n项目名称\n总投资额（万元）\n拟投入募集资金\n金额（万元）\n1\n特种无机膜组件及装置生产线项目\n23,712.65\n21,000.00\n2\n补充流动资金\n9,000.00\n9,000.00\n合计\n32,712.65\n30,000.00'
+for title in ['本次募集资金的运用','本次募集资金使用计划','本次募集资金使用概况']:
+    assert prospectus.fundraising_purpose([title+'\n'+purpose_table])=='1.特种无机膜组件及装置生产线项目\n2.补充流动资金'
+assert prospectus.fundraising_purpose(['前次募集资金使用计划\n'+purpose_table]) is None
+assert prospectus.fundraising_purpose(['公司决定变更前次募集资金用途，说明本次募集资金用途的调整。\n'+purpose_table]) is None
+assert prospectus.fundraising_purpose(['本次募集资金的运用”之“二、本次募投项目的具体情况”。\n三、会计师对于公司前次募集资金使用情况的意见\n四、超过五年的前次募集资金用途变更的情形']) is None
+assert prospectus.fundraising_purpose(['第七节 本次募集资金的运用\n一、本次募集资金使用计划\n'+purpose_table+'\n注：\n1\n不属于募投项目的审批说明\n100.00\n100.00'])=='1.特种无机膜组件及装置生产线项目\n2.补充流动资金'
 # BOND-PROSPECTUS-CAPITAL-030：银行资本用途按完整原句，不要求虚构项目表。
 capital='本行本次发行可转债募集的资金，扣除发行费用后将全部用于支持本行未来各项业务健康发展，在可转债转股后按照相关监管要求用于补充本行核心一级资本。'
 assert prospectus.fundraising_purpose(['16、本次募集资金用途\n'+capital+'\n17、担保事项\n未提供担保。'])==capital

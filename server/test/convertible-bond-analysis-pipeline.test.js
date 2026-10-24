@@ -284,5 +284,17 @@ const {pool}=require('../db/connection');
   assert.equal(role.status,'not_applicable');assert.equal(role.previousFailure,'定期报告未披露持有人表');
   assert.equal(role.classificationEvidence.reason,'not_full_periodic_report');
   assert.equal(roleBond.raw_payload.analysis_inputs.documents['holders:full-report'].status,'complete');
+  // BOND-INPUT-DOCUMENT-RECOVERY-058：原文结案只跳过同字段同URL，新文档失败仍保留。
+  const terminalBond={...bond,raw_payload:{analysis_inputs:{coveredThrough:'2026-10-13',documents:{},terminal_gaps:{
+    holders:{status:'not_disclosed',reason:'报告期末尚未完成登记',evidence:{url:'full-report',report_date:'2026-06-30'}}}}}};
+  const terminalDeps={...roleDeps,loadUniverse:async()=>[terminalBond],project:async(kind)=>{
+    assert.notEqual(kind,'holders','同一份已核验不适用原文不得重复解析制造失败');return {document_hash:'f'.repeat(64)};}};
+  assert.equal((await syncConvertibleBondAnalysisInputs({businessDate:'2026-10-13'},terminalDeps)).ok,true);
+  assert.equal(terminalBond.raw_payload.analysis_inputs.documents['holders:full-report'],undefined,'结案不伪造文档解析成功');
+  const changedReport=await syncConvertibleBondAnalysisInputs({businessDate:'2026-10-13'},{...terminalDeps,
+    readDocuments:async()=>roleEvents.map(e=>e.url==='full-report'?{...e,url:'new-full-report'}:e),
+    project:async(kind)=>{if(kind==='holders')throw Error('新报告真实解析失败');return {document_hash:'f'.repeat(64)};}});
+  assert.equal(changedReport.ok,false,'旧文档结案不得豁免新报告失败');
+  assert.deepEqual(changedReport.missingFields[bond.ts_code],['holders']);
   console.log('BOND-ANALYSIS-001/002 passed: 全量覆盖、目标日期、失败保留、定向作用域与资料续跑');
 })().catch(e=>{console.error(e);process.exitCode=1;}).finally(()=>pool.end());

@@ -43,7 +43,7 @@ def parse_holders(text):
     rank_matches = list(re.finditer(r"(?m)^(10|[1-9])$", table))
     # SSE reports also use an unnumbered table: holder -> CNY face amount -> percent.
     # Its explicit header is mandatory; a lone amount must never be guessed as bond quantity.
-    if re.search(r"期末(?:持债数|持有数)\s*量\s*[（(]元[）)]", table) and not re.search(r"序号", table[:table.find('期末')]):
+    if re.search(r"期末(?:持债数|持有数)\s*量?\s*[（(]元[）)]", table) and not re.search(r"序号", table[:table.find('期末')]):
         header = re.search(r"(?:持\s*有\s*)?比\s*例(?:\s*[（(]%[）)])?", table)
         if not header:
             return []
@@ -93,6 +93,10 @@ def parse_holders(text):
         for i, line in enumerate(lines[:ratio_index]):
             if re.fullmatch(r"\d[\d,]*(?:\.\d+)?", line):
                 numeric.append((i, float(line.replace(",", ""))))
+            else:
+                pair = re.fullmatch(r"(\d[\d,]*(?:\.\d+)?)\s+(\d[\d,]*(?:\.\d+)?)", line)
+                if pair:
+                    numeric.extend((i, float(value.replace(",", ""))) for value in pair.groups())
         if len(numeric) < 2:
             continue
         quantity_index, quantity = numeric[-2]

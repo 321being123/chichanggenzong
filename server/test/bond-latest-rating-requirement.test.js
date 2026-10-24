@@ -22,7 +22,10 @@ for(const change of [{rating_outlook:''},{rating_company:''},
   assert.deepStrictEqual(result.required_document_urls,['latest-report']);
 }
 assert.strictEqual(check([latest,{...latest,rating:'AA'}]).latest_complete,false);
-assert.strictEqual(check([latest],[{kind:'rating',event:{...current.event,url:'newer',event_date:'2026-07-01'}},old]).latest_complete,false);
+assert.strictEqual(check([latest],[{kind:'rating',event:{...current.event,url:'newer',event_date:'2026-07-01'}},old]).latest_complete,true,'后发报告不能阻塞已有完整评级');
+const newerNotice={kind:'rating',event:{url:'newer-notice',title:'公司评级结果公告',event_date:'2026-07-01'}};
+assert.strictEqual(check([latest],[newerNotice,current]).latest_complete,false,'更新结果公告必须重新核验');
+assert.deepStrictEqual(check([], [old,current]).required_document_urls,['latest-report'],'没有结果公告时仍须解析最新评级报告');
 assert.strictEqual(check([latest],[], '2026-06-22').history_available,false,'不能使用未来公布的评级');
 assert.strictEqual(check([latest],[], '2026-06-23').latest_complete,true);
 const wrongNotice={...latest,raw_payload:{...latest.raw_payload,document_hash:'a'.repeat(64),bond_name:bond.bond_short_name,

@@ -377,6 +377,7 @@ function ratingRequirement(bond,records,documents,targetDate,suspectUrls=new Set
   // 只有“评级结果公告”才可能携带比既有事实更新的评级；后面发布的评级报告只是复盘同一结论，
   // 不能因为它日期更晚就把接口/既有的最新评级判成不完整。
   const newestDocumentDate=documents.filter(item=>isRatingResultNotice(item.event||{})).map(item=>isoDate(item.event.event_date)).filter(Boolean).sort().at(-1);
+  const requiredDocumentDate=newestDocumentDate||documents.map(item=>isoDate(item.event.event_date)).filter(Boolean).sort().at(-1);
   const documentIdentity=/^[a-f0-9]{64}$/i.test(raw.document_hash||'')&&
     (raw.rating_result_notice?raw.rating_result_notice.bond_code===bond.ts_code&&
       raw.rating_result_notice.bond_name===bond.bond_short_name&&raw.rating_result_notice.rating_company===latest.rating_company:
@@ -398,7 +399,7 @@ function ratingRequirement(bond,records,documents,targetDate,suspectUrls=new Set
     latest_complete:complete,latest_rating_date:date||null,latest_announced_at:announced||null,
     latest_rating:latest?.rating||null,latest_agency:latest?.rating_company||null,
     latest_outlook:complete?latest.rating_outlook:null,outlook_status:outlookApiMissing?'api_unavailable':'original',
-    required_document_urls:complete?[]:documents.filter(item=>isoDate(item.event.event_date)===newestDocumentDate).map(item=>item.event.url)};
+    required_document_urls:complete?[]:documents.filter(item=>isoDate(item.event.event_date)===requiredDocumentDate).map(item=>item.event.url)};
 }
 
 async function syncConvertibleBondAnalysisInputs({businessDate,targetCodes=[],maxRuntimeMs=10*60000}={},deps={}) {
@@ -478,6 +479,8 @@ async function syncConvertibleBondAnalysisInputs({businessDate,targetCodes=[],ma
       if(!selected.some(d=>d.kind==='holders')&&!reportNotDue&&!terminalGap(state,'holders'))missing.push('latest_report');
       if(selected.some(d=>d.kind==='holders'&&tools.reportPeriod(d.event.title)<expectedPeriod)&&!terminalGap(state,'holders'))missing.push('latest_report_stale');
       for(const {kind,event} of selected) {
+        // 有原文结案证据时只跳过这份同字段文档；新报告仍须重新解析核验。
+        if(kind!=='rating'&&terminalGap(state,kind)?.evidence?.url===event.url)continue;
         if(kind==='rating'&&(ratingState.latest_complete||!ratingState.required_document_urls.includes(event.url)))continue;
         if(kind==='issuance_terms'&&!Object.entries(state.documents).some(([key,value])=>key.startsWith('prospectus:')&&value.couponStatus==='not_disclosed'))continue;
         const key=`${kind}:${event.url}`,prior=state.documents[key];

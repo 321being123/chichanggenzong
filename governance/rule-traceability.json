@@ -3,6 +3,26 @@
   "lastReviewed": "2026-10-24",
   "rules": [
     {
+      "id": "BOND-INPUT-DOCUMENT-RECOVERY-058",
+      "title": "原文结案仅跳过同字段同证据URL，新报告失败不得豁免；缺评级无结果公告时仍解析最新评级报告",
+      "implementation": {
+        "file": "server/services/convertibleBondAnalysisInputs.js",
+        "symbol": "syncConvertibleBondAnalysisInputs"
+      },
+      "tests": [
+        {
+          "file": "server/test/convertible-bond-analysis-pipeline.test.js",
+          "pattern": "BOND-INPUT-DOCUMENT-RECOVERY-058"
+        },
+        {
+          "file": "server/test/bond-latest-rating-requirement.test.js",
+          "pattern": "没有结果公告时仍须解析最新评级报告"
+        }
+      ],
+      "owner": "Codex",
+      "status": "implemented"
+    },
+    {
       "id": "STOCK-ANALYSIS-REFRESH-001",
       "title": "单股刷新须独立核验历史财报覆盖并采集分红公告，近期游标不能替代完整历史",
       "implementation": {

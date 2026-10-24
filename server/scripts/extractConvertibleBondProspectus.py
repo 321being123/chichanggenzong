@@ -36,6 +36,11 @@ def coupon_rates(text):
 
 
 def concise_projects(section):
+    # 项目表只消费合计行之前的内容，不能把后续注释、审批表和前次募资写进本次用途。
+    if "项目名称" in section:
+        total = re.search(r"(?m)^\s*合计\s*$", section)
+        if total:
+            section = section[:total.start()]
     lines = [line.strip() for line in section.splitlines() if line.strip()]
     headings = []
     for line in lines:
@@ -88,9 +93,14 @@ def concise_projects(section):
 
 
 def fundraising_purpose(pages):
+    purpose_titles = ("本次募集资金用途", "本次募集资金投资项目概况", "本次募集资金运用",
+                      "本次募集资金的运用", "本次募集资金使用计划", "本次募集资金使用概况",
+                      "募集资金投资项目的计划")
     candidates = []
     for index, page in enumerate(pages):
-        keys = [key for key in ("本次募集资金用途", "本次募集资金投资项目概况", "本次募集资金运用", "募集资金投资项目的计划") if key in page]
+        heading_prefix = r"(?m)^\s*(?:(?:第[一二三四五六七八九十\d]+[章节])|(?:[（(]?[一二三四五六七八九十\d]+[）)、.．]))?\s*"
+        heading_suffix = r"[ \t]*(?:[.．…·]+[ \t]*\d+)?[ \t]*$"
+        keys = [key for key in purpose_titles if re.search(heading_prefix + re.escape(key) + heading_suffix, page)]
         if not keys:
             continue
         combined = "\n".join(pages[index:index + 3])
@@ -101,8 +111,8 @@ def fundraising_purpose(pages):
         candidates.append((score, combined, keys))
     for _, combined, keys in sorted(candidates, key=lambda item: item[0], reverse=True):
         key = next((value for value in ("本次募集资金投资项目概况", "本次募集资金用途", "本次募集资金运用") if value in keys), keys[0])
-        start = combined.find(key)
-        section = combined[start + len(key):]
+        heading = re.search(heading_prefix + re.escape(key) + heading_suffix, combined)
+        section = combined[heading.end():]
         project_stop = re.search(r"(?m)^\s*[二三四五六七八九十]+[、.．]\s*本次募集资金投资项目(?:基本|具体)情况", section)
         if project_stop:
             section = section[:project_stop.start()]

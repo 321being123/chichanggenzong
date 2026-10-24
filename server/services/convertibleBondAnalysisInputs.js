@@ -216,6 +216,30 @@ async function persistBondInputs(bond,state) {
     WHERE instrument_id=$1`,[bond.instrument_id,JSON.stringify(state)]);
 }
 
+// 资料终态：来源确实未覆盖、原文明确未披露、或存在无法消解的证据冲突。
+// 终态只用于停止每日重试并保留证据，不改变“已完整”事实；无证据不得写入。
+const TERMINAL_GAP_STATUSES=Object.freeze(['source_unavailable','not_disclosed','conflict']);
+
+function terminalGap(state,field) {
+  const item=state&&state.terminal_gaps&&state.terminal_gaps[field];
+  return item&&TERMINAL_GAP_STATUSES.includes(String(item.status||''))?item:null;
+}
+
+async function markTerminalGap(tsCode,field,{status,reason,evidence,checkedAt}={}) {
+  if(!TERMINAL_GAP_STATUSES.includes(String(status||'')))throw new Error('不支持的资料终态：'+status);
+  if(!field)throw new Error('资料终态必须指定字段');
+  if(!reason)throw new Error('资料终态必须写明原因');
+  if(!evidence||typeof evidence!=='object'||!Object.keys(evidence).length)throw new Error('资料终态必须附带证据');
+  const {rows}=await pool.query(`SELECT p.instrument_id,p.raw_payload FROM fundamental.convertible_bond_profiles p
+    JOIN core.instruments i ON i.instrument_id=p.instrument_id WHERE i.canonical_code=$1`,[tsCode]);
+  if(!rows.length)throw new Error('未建档的可转债：'+tsCode);
+  const payload=rows[0].raw_payload||{};
+  const state={...(payload.analysis_inputs||{}),terminal_gaps:{...(payload.analysis_inputs?.terminal_gaps||{}),
+    [field]:{status,reason,evidence,checkedAt:checkedAt||new Date().toISOString()}}};
+  await persistBondInputs({instrument_id:rows[0].instrument_id},state);
+  return state.terminal_gaps[field];
+}
+
 function isRatingPublicationDelay(event) {
   const title=String(event.title||'').trim();
   return /(?:延迟|延期)披露.*评级报告(?:的)?公告$/.test(title)&&!/评级调整|信用等级.*调整|调整.*信用等级/.test(title);
@@ -417,9 +441,9 @@ async function syncConvertibleBondAnalysisInputs({businessDate,targetCodes=[],ma
       const expectedPeriod=requiredReportPeriod(targetDate);
       const reportNotDue=isoDate(bond.value_date)>expectedPeriod&&!selected.some(d=>d.kind==='holders');
       state.not_due=reportNotDue?{report_period:expectedPeriod,value_date:isoDate(bond.value_date),fields:['holders','price_history'],basis:'annual_4_months_halfyear_2_months'}:null;
-      if(!selected.some(d=>d.kind==='prospectus'))missing.push('prospectus');
-      if(!selected.some(d=>d.kind==='holders')&&!reportNotDue)missing.push('latest_report');
-      if(selected.some(d=>d.kind==='holders'&&tools.reportPeriod(d.event.title)<expectedPeriod))missing.push('latest_report_stale');
+      if(!selected.some(d=>d.kind==='prospectus')&&!terminalGap(state,'prospectus'))missing.push('prospectus');
+      if(!selected.some(d=>d.kind==='holders')&&!reportNotDue&&!terminalGap(state,'holders'))missing.push('latest_report');
+      if(selected.some(d=>d.kind==='holders'&&tools.reportPeriod(d.event.title)<expectedPeriod)&&!terminalGap(state,'holders'))missing.push('latest_report_stale');
       for(const {kind,event} of selected) {
         if(kind==='rating'&&(ratingState.latest_complete||!ratingState.required_document_urls.includes(event.url)))continue;
         if(kind==='issuance_terms'&&!Object.entries(state.documents).some(([key,value])=>key.startsWith('prospectus:')&&value.couponStatus==='not_disclosed'))continue;
@@ -432,8 +456,8 @@ async function syncConvertibleBondAnalysisInputs({businessDate,targetCodes=[],ma
         }
         const revalidateRating=kind==='rating'&&suspectUrls.has(event.url);
         if(kind!=='rating'&&!revalidateRating&&prior?.status==='complete'&&(prior.parserVersion===INPUT_VERSION||prior.parserVersion==='analysis-input-v3'&&/^[a-f0-9]{64}$/i.test(prior.documentHash||'')&&prior.documentHash===event.content_hash))continue;
-        if(prior?.status==='blocked'&&prior.parserVersion===INPUT_VERSION){if(kind!=='rating'&&!optionalNotice)missing.push(kind);continue;}
-        if(Date.now()-started>=maxRuntimeMs){if(kind!=='rating'&&!optionalNotice)missing.push(kind);stoppedForTime=true;continue;}
+        if(prior?.status==='blocked'&&prior.parserVersion===INPUT_VERSION){if(kind!=='rating'&&!optionalNotice&&!terminalGap(state,kind))missing.push(kind);continue;}
+        if(Date.now()-started>=maxRuntimeMs){if(kind!=='rating'&&!optionalNotice&&!terminalGap(state,kind))missing.push(kind);stoppedForTime=true;continue;}
         try {
           const result=await (deps.project||projectDocument)(kind,event,bond);
           if(kind==='rating'){result.rating_requirement_version=RATING_REQUIREMENT_VERSION;validateRatingGrade(result);validateTrackingRatingYear(event,result);validateRatingResultNotice(event,result,bond);}
@@ -458,8 +482,8 @@ async function syncConvertibleBondAnalysisInputs({businessDate,targetCodes=[],ma
         const coverage=ratingCoverageForReport(event,notices,state.documents,bond,ratingReports);
         if(coverage)state.rating_coverage[event.url]=coverage;
       }
-      if(!ratingState.history_available)missing.push('rating_history');
-      if(!ratingState.latest_complete)missing.push('rating');
+      if(!ratingState.history_available&&!terminalGap(state,'rating_history'))missing.push('rating_history');
+      if(!ratingState.latest_complete&&!terminalGap(state,'rating')&&!terminalGap(state,'rating_history'))missing.push('rating');
       const exemptHolder=selected.filter(d=>d.kind==='holders').map(d=>state.documents[`holders:${d.event.url}`]?.holderExemption).find(e=>e?.report_date===expectedPeriod);
       if(exemptHolder) {
         validateHolderExemption({parse_status:'not_applicable',holder_exemption:exemptHolder,holder_table_bond:bond.bond_short_name,report_date:exemptHolder.report_date},bond);
@@ -486,4 +510,4 @@ async function syncConvertibleBondAnalysisInputs({businessDate,targetCodes=[],ma
     nextRunAt:ok?null:nextRunAt,error:ok?null:'可转债详细分析资料尚未全部完成',errorType:ok?null:'data_quality',
     ...(sourceFailure?{errorCode:sourceFailure.errorCode,errorType:sourceFailure.errorType,source:sourceFailure.source,apiName:sourceFailure.apiName,recoverAt:sourceFailure.recoverAt}:{}),};
 }
-module.exports={syncConvertibleBondAnalysisInputs,inputDocuments,projectDocument,requiredReportPeriod,initialRatingBindingArguments,isRatingPublicationDelay,isRatingResultNotice,validateRatingResultNotice,ratingCoverageForReport,suspectRatingUrls,validateTrackingRatingYear,validateRatingGrade,validateHolderExemption,ratingRequirement,INPUT_VERSION,RATING_REQUIREMENT_VERSION};
+module.exports={syncConvertibleBondAnalysisInputs,inputDocuments,projectDocument,requiredReportPeriod,initialRatingBindingArguments,isRatingPublicationDelay,isRatingResultNotice,validateRatingResultNotice,ratingCoverageForReport,suspectRatingUrls,validateTrackingRatingYear,validateRatingGrade,validateHolderExemption,ratingRequirement,markTerminalGap,terminalGap,TERMINAL_GAP_STATUSES,INPUT_VERSION,RATING_REQUIREMENT_VERSION};

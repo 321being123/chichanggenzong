@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "lastReviewed": "2026-10-23",
+  "lastReviewed": "2026-10-24",
   "rules": [
     {
       "id": "STOCK-ANALYSIS-REFRESH-001",
@@ -3511,6 +3511,22 @@
         {
           "file": "server/test/convertible-bond-analysis-documents.test.js",
           "pattern": "outlook_text"
+        }
+      ],
+      "owner": "运维治理",
+      "status": "implemented"
+    },
+    {
+      "id": "BOND-ANALYSIS-TERMINAL-GAP-047",
+      "title": "可转债资料缺口终态（来源未覆盖/原文未披露/证据冲突）必须带原因与证据，已登记终态不再计入每日缺口",
+      "implementation": {
+        "file": "server/services/convertibleBondAnalysisInputs.js",
+        "symbol": "markTerminalGap"
+      },
+      "tests": [
+        {
+          "file": "server/test/bond-analysis-terminal-gap.test.js",
+          "pattern": "资料终态"
         }
       ],
       "owner": "运维治理",

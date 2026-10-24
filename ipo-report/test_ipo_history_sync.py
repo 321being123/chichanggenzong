@@ -688,6 +688,17 @@ try:
         "document_url": "https://static.cninfo.com.cn/official.pdf", "content_hash": "verified-test-hash",
         "disclosure_due": "2026-10-08", "retry_after": "2026-10-08",
     }
+    # IPO-DISCLOSURE-SCHEDULE-062：新解析证据须完整且尚未到期，公开日不得晚于目标日。
+    planned_proof={'status':'not_disclosed','verified':True,'source':'sse','as_of':'2026-10-21',
+        'document_url':'https://www.sse.com.cn/688827.pdf','content_hash':'a'*64,
+        'disclosure_due':'2026-10-28','evidence':{'snippet':'本次发行上市的重要日期 刊登发行公告日期2026年10月28日'}}
+    planned_state=sync._industry_pe_state('688827',None,planned_proof,{},date(2026,10,24))
+    check('未来发行公告行业PE有证据等待而非伪造数值', planned_state['status']=='not_disclosed'
+          and planned_state['retry_after']=='2026-10-28')
+    check('发行公告日到期必须复查不能永久豁免', sync._industry_pe_state('688827',None,planned_proof,{},date(2026,10,28))['status']=='retryable')
+    for change in [{'verified':False},{'content_hash':''},{'evidence':{}},{'as_of':'2026-10-25'},{'disclosure_due':'2026-02-30'},
+                   {'document_url':'https://evil.example.test/official.pdf'},{'disclosure_due':'2026-10-29'}]:
+        check('不完整或未来证据不豁免PE'+str(change), sync._industry_pe_state('688827',None,{**planned_proof,**change},{},date(2026,10,24))['status']!='not_disclosed')
     check("北交所行业PE仅记录不告警",
           sync._industry_pe_non_alerting("920186", {"status": "parse_miss"}, date(2026, 10, 1)))
     check("有官方证据的尚未披露行业PE不告警",
@@ -907,6 +918,17 @@ try:
         check('产业链定向阶段不运行申万且请求字段完成即可验收',
               chain_result['industry_taxonomy']['status'] == 'not_run'
               and sync._targeted_stage_complete(chain_result, [chain_code], ['business_exposure']))
+        cur.execute('UPDATE ipo_history SET industry_pe=NULL WHERE security_code=%s',(chain_code,))
+        ipo_lib_fetch.fetch_stock_historical_detail=lambda *args,**kwargs: {
+            'industry':'不应覆盖的行业','industry_pe':None,'main_business':'不应覆盖的主营',
+            'industry_pe_diagnostic':planned_proof,'online_lottery_rate':0.9,'oversubscribe_multiple':999}
+        pe_result=sync.enrich_stock_missing_details(cur,date(2026,10,24),only_codes=[chain_code],
+            priority_codes=[chain_code],force_fields=['industry_pe'],include_result_fields=False,retry_same_day=True)
+        cur.execute('SELECT industry,industry_pe,main_business,online_lottery_rate,oversubscribe_multiple FROM ipo_history WHERE security_code=%s',(chain_code,))
+        pe_after=cur.fetchone()
+        check('行业PE字段真实PG不扩大其他金融字段且数值保持NULL', pe_after==(chain_before[0],None,*chain_before[2:]))
+        check('行业PE字段待披露证据通过且申万不运行', pe_result['industry_taxonomy']['status']=='not_run'
+              and sync._targeted_stage_complete(pe_result,[chain_code],['industry_pe']))
     finally:
         ipo_lib_fetch.fetch_stock_historical_detail = prior_fetch
         sync.sync_sw_industry_taxonomies = prior_taxonomy

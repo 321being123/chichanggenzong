@@ -293,6 +293,17 @@ try:
     check("巨潮识别初步询价及推介公告",
           fetch._ipo_document_role("广州通则康威科技股份有限公司首次公开发行股票并在创业板上市初步询价及推介公告")
           == "issuance_announcement")
+    # IPO-DISCLOSURE-SCHEDULE-062：发行安排来自本次原文，不猜市盈率或引用其他发行人日期。
+    scheduled_text = '钶锐锶688827 行业分类 C34 通用设备制造业 在其他交易场所（申请）挂牌 无。本次发行上市的重要日期 刊登初询公告日期2026年10月21日 初步询价日期2026年10月26日 刊登发行公告日期2026年10月28日 申购日期2026年10月29日'
+    scheduled = fetch._parse_ipo_issuance_detail(scheduled_text, '钶锐锶', '688827')
+    check('本次招股意向书发行公告日保留原文证据且行业不串下一单元格',
+          scheduled.get('industry') == '通用设备制造业'
+          and scheduled.get('industry_pe') is None
+          and scheduled.get('industry_pe_disclosure', {}).get('disclosure_due') == '2026-10-28'
+          and '刊登发行公告日期' in scheduled['industry_pe_disclosure']['evidence']['snippet'])
+    check('其他发行人和没有本次发行日程标题不作为待披露证据',
+          not fetch._parse_ipo_issuance_detail(scheduled_text, '其他公司', '000001').get('industry_pe_disclosure')
+          and not fetch._parse_ipo_issuance_detail('钶锐锶688827 刊登发行公告日期2026年10月28日', '钶锐锶', '688827').get('industry_pe_disclosure'))
     issuance = fetch._parse_ipo_issuance_detail(
         "发行人所属行业为塑料制品业（C292），发行人所属行业最近一个月平均静态市盈率为38.2倍"
     )

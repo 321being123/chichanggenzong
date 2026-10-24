@@ -35,3 +35,9 @@
 业务提交0f66475已推送master并经标准脚本发布0.8.3.22。备份portfolio_20261008_185937.sql.gz.gpg，Result=success/ExecMainStatus=0；Web/Worker/健康定时器active/enabled，health版本一致、ready数据库/Redis正常。
 
 生产npm ci及随后npm audit --omit=dev均0漏洞、审计退出0；安装实测DOMPurify3.4.16、Nodemailer10.0.16、Undici8.11.2、proxy-addr2.0.8、argparse2.0.1。以portfolio-app运行dependency-security.test.js通过，代理拒绝伪造、实际DOCX CLI、离线MIME及资源一致性再次验证；未发真实邮件。首页/分享/IPO报告页均200且引用新版净化器，线上资源哈希与仓库一致、changelog0.8.3.22。可转债安全性API现役309条、三指标空值0，原修复维持。未进行数据库业务同步或任务补跑，未做浏览器/真机验收。
+
+## 2026-10-24 新一轮4项依赖整改（0.8.4.33，待发布）
+
+本轮独立于10-08已关闭的8项。npm审计确认body-parser压缩请求体尾部字节DoS、Multer异步fileFilter请求结束DoS、Undici解析/校验与内容编码DoS、Nodemailer收件人语法歧义；按官方npm升级body-parser1.20.9、Multer2.5.0、Undici8.12.3、Nodemailer10.2.1，不做强制跨主版本升级。
+
+本地审计0；真实本机HTTP验证压缩JSON/异常尾部400和multipart文件上传，新Undici请求可用；离线MIME及三类收件人语法隔离、原DOCX CLI与vendor兼容通过，未发送真实邮件。完整测试与生产npm ci/审计、服务/接口验收待最终记录。

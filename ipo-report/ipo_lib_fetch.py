@@ -222,7 +222,7 @@ _EXCHANGE_IPO_DOCUMENT_CACHE = {}
 _EXCHANGE_IPO_DOCUMENT_SCAN_STATUS = {}
 _IPO_ISSUANCE_DETAIL_CACHE = {}
 _IPO_ISSUANCE_DETAIL_DIAGNOSTIC = {}
-_IPO_ISSUANCE_PARSER_VERSION = "ipo-issuance-facts-v10"
+_IPO_ISSUANCE_PARSER_VERSION = "ipo-issuance-facts-v11"
 _IPO_TEXT_EXTRACTION_VERSION = "pymupdf-page-text-join-v1"
 _IPO_ISSUANCE_DOCUMENT_PARSE_CACHE = {}
 _CNINFO_IPO_ISSUANCE_CACHE = {}
@@ -2345,7 +2345,7 @@ def _industry_from_label(value):
         name = before_name if len(before_name) >= 2 and valid_ipo_industry_name(before_name) else after_name
     else:
         name = value
-    name = re.split(r'(?:所属行业|行业代码|行业名称|分类标准|公司名称|证券代码|行业分类)', name, maxsplit=1)[0]
+    name = re.split(r'(?:所属行业|行业代码|行业名称|分类标准|公司名称|证券代码|行业分类|在其他交易场所)', name, maxsplit=1)[0]
     name = name.strip('：:，,。；;“”"‘’\'（）() ')
     if len(name) < 2 or not valid_ipo_industry_name(name):
         return None, None
@@ -2485,6 +2485,15 @@ def _parse_ipo_issuance_detail(text, security_name='', stock_code=''):
         result['industry_pe_evidence'] = evidence
     if '尚未盈利' in compact:
         result['issuer_unprofitable'] = True
+    schedule = re.search(r'本次发行(?:上市)?的?重要日期.{0,240}?刊登发行公告日期(20\d{2})年(\d{1,2})月(\d{1,2})日', compact)
+    if identity_matches and schedule:
+        from datetime import date as calendar_date
+        try:
+            due = calendar_date(*(int(part) for part in schedule.groups())).isoformat()
+            result['industry_pe_disclosure'] = {'disclosure_due': due,
+                'evidence': _issuance_evidence_span(raw, offsets, schedule.start(), schedule.end())}
+        except ValueError:
+            pass
     result['ipo_announcement_parser_version'] = _IPO_ISSUANCE_PARSER_VERSION
     result['text_extraction_version'] = _IPO_TEXT_EXTRACTION_VERSION
     return result
@@ -2759,6 +2768,18 @@ def _fetch_exchange_ipo_issuance_detail(stock_code, security_name='', required_f
                 'reason': f'no_{field}_value_parsed_from_downloaded_documents',
                 'candidate_scan_status': 'complete',
             }
+            plans = [item for item in parsed_documents if item['document']['role'] == 'prospectus'
+                     and item['document']['source'] in ('sse', 'szse', 'cninfo')
+                     and item['detail'].get('industry_pe_disclosure')]
+            if field == 'industry_pe' and plans and not any(item['document']['role'] in
+                    ('issuance_announcement', 'issuance_risk_announcement') for item in parsed_documents):
+                planned = min(plans, key=lambda item: item['detail']['industry_pe_disclosure']['disclosure_due'])
+                plan, document = planned['detail']['industry_pe_disclosure'], planned['document']
+                field_diagnostics[field] = {**field_diagnostics[field], 'status': 'not_disclosed',
+                    'reason': 'official_issuance_announcement_scheduled', 'verified': True,
+                    'disclosure_due': plan['disclosure_due'], 'evidence': plan['evidence'],
+                    'source': document['source'], 'as_of': document['date'], 'document_url': document['url'],
+                    'content_hash': document['content_hash'], 'parser_version': _IPO_ISSUANCE_PARSER_VERSION}
         else:
             field_diagnostics[field] = {
                 'status': 'document_unavailable',

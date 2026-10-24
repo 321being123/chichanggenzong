@@ -47,7 +47,7 @@ def concise_projects(section):
         match = re.match(r"^[一二三四五六七八九十]+[、.．]\s*(.+)$", line)
         if match:
             name = re.sub(r"\s+\d+(?:\.\d+)?$", "", match.group(1)).strip()
-            if name and not name.startswith("募集资金"):
+            if name and not re.match(r"^(?:本次)?募集资金", name):
                 headings.append(name)
     if len(headings) >= 2 and '项目名称' not in section:
         names = headings
@@ -129,8 +129,12 @@ def fundraising_purpose(pages):
     return None
 
 
-def extract(url, security_code=None, bond_name=None, issuer_name=None):
+def extract(url, security_code=None, bond_name=None, issuer_name=None, require_bond_prospectus=False):
     pages, evidence = read_document(url, security_code, bond_name, issuer_name)
+    if require_bond_prospectus:
+        cover = re.sub(r'\s+', '', ''.join(pages[:3]))
+        if not re.search(r'(?:可转换公司债(?:券)?|可转债)(?:证券)?募集说明书', cover) or re.search(r'募集说明书提示(?:性)?公告', cover):
+            raise ValueError('募集说明书封面未确认可转债文种，不能用股票或提示公告替代')
     pages = [clean_page(page) for page in pages]
     rates = []
     for page in pages:
@@ -150,8 +154,9 @@ def main():
     parser.add_argument("--security-code", default=None)
     parser.add_argument("--bond-name", default=None)
     parser.add_argument("--issuer-name", default=None)
+    parser.add_argument("--require-bond-prospectus", action="store_true")
     args = parser.parse_args()
-    print(json.dumps(extract(args.url, args.security_code, args.bond_name, args.issuer_name), ensure_ascii=False))
+    print(json.dumps(extract(args.url, args.security_code, args.bond_name, args.issuer_name, args.require_bond_prospectus), ensure_ascii=False))
 
 
 if __name__ == "__main__":

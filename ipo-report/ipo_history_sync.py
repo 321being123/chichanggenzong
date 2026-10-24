@@ -8,6 +8,7 @@
 import argparse
 import hashlib
 import json
+import re
 import os
 import random
 import sys
@@ -191,13 +192,41 @@ def _industry_pe_state(code, value, diagnostic, prior_state, today):
     if _market_fields(code)[0] == "北交所":
         return {"status": "not_required", "reason": "bse_industry_pe_record_only"}
     prior = prior_state if isinstance(prior_state, dict) else {}
+    proof = diagnostic if isinstance(diagnostic, dict) else {}
+    from datetime import date as disclosure_date
+    from urllib.parse import urlparse
+    try:
+        due = disclosure_date.fromisoformat(str(proof.get('disclosure_due') or ''))
+    except ValueError:
+        due = None
+    cited = re.search(r'刊登发行公告日期(20\d{2})年(\d{1,2})月(\d{1,2})日',
+                      re.sub(r'\s+', '', str((proof.get('evidence') or {}).get('snippet') or '')))
+    try:
+        cited_due = disclosure_date(*(int(value) for value in cited.groups())) if cited else None
+    except ValueError:
+        cited_due = None
+    official_hosts={'sse':{'www.sse.com.cn','big5.sse.com.cn','static.sse.com.cn'},
+                    'szse':{'disc.static.szse.cn','www.szse.cn'},'cninfo':{'static.cninfo.com.cn','www.cninfo.com.cn'}}
+    if (proof.get('status') == 'not_disclosed' and proof.get('verified') is True
+            and proof.get('source') in ('sse', 'szse', 'cninfo')
+            and re.fullmatch(r'[a-f0-9]{64}', str(proof.get('content_hash') or ''))
+            and str(proof.get('document_url') or '').startswith('https://')
+            and urlparse(proof['document_url']).hostname in official_hosts.get(proof.get('source'),set())
+            and (proof.get('evidence') or {}).get('snippet')
+            and re.fullmatch(r'\d{4}-\d{2}-\d{2}', str(proof.get('as_of') or ''))
+            and proof['as_of'] <= today.isoformat()
+            and due is not None and due == cited_due and due > today):
+        return {**proof, 'retry_after': proof['disclosure_due']}
+    if proof.get('status') == 'not_disclosed':
+        proof = {**proof, 'status': 'retryable', 'reason': 'disclosure_due_recheck'}
     if (prior.get("status") == "not_disclosed" and prior.get("verified") is True
             and prior.get("document_url") and prior.get("content_hash")
+            and (not prior.get('as_of') or str(prior['as_of']) <= today.isoformat())
             and str(prior.get("disclosure_due") or "") > today.isoformat()):
         return dict(prior)
     if prior.get("status") in ("not_disclosed", "not_required"):
         prior = {**prior, "status": "retryable", "reason": "disclosure_due_recheck"}
-    return _detail_field_state(None, diagnostic or prior, "retryable", today)
+    return _detail_field_state(None, proof or prior, "retryable", today)
 
 
 def _industry_pe_non_alerting(code, state, today):
@@ -745,7 +774,7 @@ def enrich_stock_missing_details(cur, today, target_date=None, retry_same_day=Fa
     priority_codes = sorted({str(code or '').split('.')[0] for code in (priority_codes or []) if code})
     only_codes = sorted({str(code or '').split('.')[0] for code in (only_codes or []) if code})
     skip_codes = sorted({str(code or '').split('.')[0] for code in (skip_codes or []) if code})
-    force_fields = set(force_fields or []) & {"business_exposure", "industry"}
+    force_fields = set(force_fields or []) & {"business_exposure", "industry", "industry_pe"}
     mandatory_gap = f"""({INDUSTRY_MISSING_SQL} OR NULLIF(main_business,'') IS NULL
               OR {BUSINESS_EXPOSURE_MISSING_SQL})"""
     cur.execute("""
@@ -956,12 +985,17 @@ def enrich_stock_missing_details(cur, today, target_date=None, retry_same_day=Fa
             resolved_exposure = business_exposure if _has_business_exposures(business_exposure) else existing_exposure
             if force_fields:
                 if 'industry' not in force_fields:
-                    industry_upgrade = industry_parser_reparse = replace_pe = False
+                    industry_upgrade = industry_parser_reparse = False
                     resolved_industry = str(existing_industry or '').strip()
-                    resolved_industry_pe = existing_industry_pe
                     detail['industry'] = existing_industry
-                    detail['industry_pe'] = existing_industry_pe
                     detail.pop('issue_pe_status', None)
+                    if 'industry_pe' not in force_fields:
+                        replace_pe = False
+                        resolved_industry_pe = existing_industry_pe
+                        detail['industry_pe'] = existing_industry_pe
+                if force_fields == {'industry_pe'}:
+                    stored_detail = {key: value for key, value in stored_detail.items()
+                                     if key.startswith(('industry_pe', 'ipo_announcement', 'ipo_issuance'))}
                 resolved_business = str(existing_business or '').strip()
                 resolved_lottery_rate = existing_lottery_rate
                 resolved_oversubscribe = existing_oversubscribe
@@ -1671,14 +1705,14 @@ def main():
     parser.add_argument("--today", help="测试用业务日期 YYYY-MM-DD")
     parser.add_argument("--mode", choices=("core", "prediction_ready", "enrichment"), default="core")
     parser.add_argument("--target-codes", default="", help="仅预览指定代码的资料缺口，逗号分隔")
-    parser.add_argument("--target-fields", default="", help="定向字段，支持 business_exposure、industry、ld_close_change（首日涨幅独立阶段）")
+    parser.add_argument("--target-fields", default="", help="定向字段，支持 business_exposure、industry、industry_pe、ld_close_change（首日涨幅独立阶段）")
     parser.add_argument("--apply-targeted", action="store_true", help="对 --target-codes 执行定向补齐；生产使用前必须备份并取得授权")
     parser.add_argument("--confirm-production", action="store_true", help="生产定向补齐确认；必须同时取得用户授权")
     args = parser.parse_args()
     target_codes = [item.strip().split('.')[0] for item in args.target_codes.split(',') if item.strip()]
     target_fields = [item.strip() for item in args.target_fields.split(',') if item.strip()]
-    if set(target_fields) - {"business_exposure", "industry", "ld_close_change"}:
-        parser.error("--target-fields 仅支持 business_exposure、industry、ld_close_change")
+    if set(target_fields) - {"business_exposure", "industry", "industry_pe", "ld_close_change"}:
+        parser.error("--target-fields 仅支持 business_exposure、industry、industry_pe、ld_close_change")
     if "ld_close_change" in target_fields and target_fields != ["ld_close_change"]:
         parser.error("ld_close_change 是独立首日表现阶段，不可混合资料字段")
     if target_fields and not target_codes:

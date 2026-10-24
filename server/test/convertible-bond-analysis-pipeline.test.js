@@ -32,6 +32,18 @@ const {pool}=require('../db/connection');
     {url:'rating',title:'公司2026年评级报告',event_date:'2026-06-25'},
   ];
   assert.equal(inputDocuments(events,bond).find(d=>d.kind==='prospectus').event.url,'old');
+  // BOND-PROSPECTUS-SELECTION-059：通用正式标题只在原发行窗口进入正文身份核验，提示/股票不替代。
+  for(const title of ['公司募集说明书','证券募集说明书','公司可转换公司债募集说明书']) {
+    assert.equal(inputDocuments([{url:'generic',title,event_date:'2021-07-03'}],bond).find(d=>d.kind==='prospectus').event.url,'generic');
+  }
+  for(const title of ['可转换公司债券募集说明书提示公告','公司向特定对象发行股票募集说明书','证券募集说明书摘要']) {
+    assert.equal(inputDocuments([{url:'bad',title,event_date:'2021-07-03'}],bond).some(d=>d.kind==='prospectus'),false);
+  }
+  const {missingReportRepairStart}=require('../services/convertibleBondAnalysisInputs');
+  assert.equal(missingReportRepairStart(bond,{},'2026-10-24',[]),'2026-07-01');
+  assert.equal(missingReportRepairStart({...bond,value_date:'2026-07-01'},{},'2026-10-24',[]),null);
+  assert.equal(missingReportRepairStart(bond,{reportRepair:{version:'bond-doc-selection-2026-10-24-v2',reportPeriod:'2026-06-30',checkedThrough:'2026-10-24'}},'2026-10-24',[]),null);
+  assert.equal(missingReportRepairStart(bond,{reportRepair:{version:'bond-doc-selection-2026-10-24-v2',reportPeriod:'2026-06-30',checkedThrough:'2026-10-23'}},'2026-10-24',[]),'2026-10-24');
   // BOND-REPORT-FULL-TEXT-035：提示/审议/更正公告不代正文；同报告期优先正式更新全文。
   const {latestFullReport}=require('../services/convertibleBondAnalysis').analysisInputTools;
   const fullReport={url:'full-report',title:'长海股份：2026年半年度报告',event_date:'2026-08-22'};
@@ -296,5 +308,23 @@ const {pool}=require('../db/connection');
     project:async(kind)=>{if(kind==='holders')throw Error('新报告真实解析失败');return {document_hash:'f'.repeat(64)};}});
   assert.equal(changedReport.ok,false,'旧文档结案不得豁免新报告失败');
   assert.deepEqual(changedReport.missingFields[bond.ts_code],['holders']);
+  // BOND-COUPON-SPLIT-EVIDENCE-061：用途与票息各保留原文，缺发行条款不能报完整。
+  const couponBond={...bond,raw_payload:{analysis_inputs:{coveredThrough:'2026-10-13',documents:{}}}};
+  const couponDeps={...roleDeps,loadUniverse:async()=>[couponBond],project:async kind=>({document_hash:'f'.repeat(64),...(kind==='prospectus'?{coupon_status:'missing'}:{})})};
+  const missingCoupon=await syncConvertibleBondAnalysisInputs({businessDate:'2026-10-13'},couponDeps);
+  assert.equal(missingCoupon.ok,false);assert.deepEqual(missingCoupon.missingFields[bond.ts_code],['coupon_terms']);
+  const recoveredCoupon=await syncConvertibleBondAnalysisInputs({businessDate:'2026-10-13'},{...couponDeps,
+    readDocuments:async()=>[...roleEvents,{url:'issuance',title:'国泰转债发行公告',event_date:'2021-07-06'}]});
+  assert.equal(recoveredCoupon.ok,true);
+  assert.equal(couponBond.raw_payload.analysis_inputs.documents['prospectus:old'].couponStatus,'missing');
+  assert.equal(couponBond.raw_payload.analysis_inputs.documents['issuance_terms:issuance'].status,'complete');
+  const repairBond={...bond,raw_payload:{analysis_inputs:{coveredThrough:'2026-10-13',documents:{}}}};
+  let repairCalls=0,availableReports=roleEvents.map(e=>e.url==='full-report'?{...e,title:'公司2025年年度报告',event_date:'2026-03-20'}:e);
+  const repairDeps={...roleDeps,loadUniverse:async()=>[repairBond],readDocuments:async()=>availableReports,
+    repairReport:async(b,date,state,opts)=>{repairCalls++;assert.equal(date,'2026-10-13');assert.equal(opts.repairStart,'2026-07-01');availableReports=roleEvents;}};
+  assert.equal((await syncConvertibleBondAnalysisInputs({businessDate:'2026-10-13'},repairDeps)).ok,true);
+  assert.equal(repairCalls,1,'已覆盖公告水位仍须修复真实缺失的当前报告');
+  assert.equal((await syncConvertibleBondAnalysisInputs({businessDate:'2026-10-13'},repairDeps)).ok,true);
+  assert.equal(repairCalls,1,'完整当前报告复用本地，不重复采集');
   console.log('BOND-ANALYSIS-001/002 passed: 全量覆盖、目标日期、失败保留、定向作用域与资料续跑');
 })().catch(e=>{console.error(e);process.exitCode=1;}).finally(()=>pool.end());

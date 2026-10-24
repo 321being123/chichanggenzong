@@ -10,6 +10,7 @@ const {isoDate,normalizeBondCode,announcementDateWindows,analysisInputTools:tool
 const {loadAnalysisUniverse,persistAnalysisProgress,latestAnalysisDate}=require('./convertibleBondAnalysisSnapshots');
 
 const INPUT_VERSION='analysis-input-v4';
+const DOCUMENT_SELECTION_VERSION='bond-doc-selection-2026-10-24-v2';
 const RATING_REQUIREMENT_VERSION='latest-complete-history-present-v1';
 // 评级解析能力版本：只用于让历史 failed 文档在解析器/执行环境改进后重试一次，
 // 不影响 complete 文档（它们仍按 INPUT_VERSION 跳过），避免全量重算。
@@ -68,6 +69,7 @@ async function projectDocument(kind,event,bond) {
   const scripts={prospectus:'Prospectus',issuance_terms:'Prospectus',holders:'FundHoldings',rating:'Rating',price_history:'PriceHistory'};
   const script=path.join(__dirname,'..','scripts',`extractConvertibleBond${scripts[kind]}.py`);
   const args=[script,event.url,'--security-code',bond.stock_code];
+  if(kind==='prospectus')args.push('--require-bond-prospectus');
   if(kind!=='prospectus')args.push('--bond-name',bond.bond_short_name);
   const issuer=issuerNameOf(bond.bond_full_name);
   if(issuer)args.push('--issuer-name',issuer);
@@ -100,17 +102,17 @@ async function readDocuments(bond,targetDate) {
   return rows;
 }
 
-async function discoverDocuments(bond,targetDate,state) {
+async function discoverDocuments(bond,targetDate,state,{repairStart}={}) {
   const scopeKey=`bond_analysis_documents:${bond.stock_code}`;
   const {rows:coverage}=await pool.query(`SELECT last_success_date::text FROM ops.sync_cursors WHERE scope_key=$1 AND dataset_code='official_documents'`,[scopeKey]);
   const cursor=coverage[0]?.last_success_date||state.coveredThrough;
-  if(cursor&&cursor>=targetDate)return [];
+  if(cursor&&cursor>=targetDate&&!repairStart)return [];
   const {rows:dates}=await pool.query(`SELECT MIN(p.value_date)::text AS date FROM fundamental.convertible_bond_profiles p
     JOIN core.instruments s ON s.instrument_id=p.stock_instrument_id WHERE s.canonical_code=$1`,[bond.stock_code]);
   const firstDate=dates[0]?.date||isoDate(bond.value_date);
   if(!firstDate)throw new Error('发行生效日期缺失，无法确定首次公告范围');
-  const from=cursor?new Date(`${cursor}T00:00:00+08:00`):new Date(`${firstDate}T00:00:00+08:00`);
-  from.setUTCDate(from.getUTCDate()-(cursor?3:365));
+  const from=new Date(`${repairStart||cursor||firstDate}T00:00:00+08:00`);
+  if(!repairStart)from.setUTCDate(from.getUTCDate()-(cursor?3:365));
   const fetcher=bond.stock_code.endsWith('.SH')?fetchSseEvents:bond.stock_code.endsWith('.SZ')?fetchSzseEvents:null;
   if(!fetcher)throw new Error('未登记目标公司的官方交易所');
   const events=[];
@@ -179,7 +181,7 @@ async function saveProjection(kind,event,result,bond) {
     WHERE document_id=$1`,[event.document_id,result.document_hash,record.raw_record_id,JSON.stringify({[kind]:{...result,parser_version:INPUT_VERSION}})]);
     if(kind==='prospectus'||kind==='issuance_terms') {
       if(kind==='prospectus'&&!result.fundraising_purpose)throw new Error('募集用途解析缺失');
-      if(!result.coupon_rates?.length && !(kind==='prospectus'&&result.coupon_status==='not_disclosed'))throw new Error('完整票息解析缺失');
+      if(!result.coupon_rates?.length && !(kind==='prospectus'&&['not_disclosed','missing'].includes(result.coupon_status)))throw new Error('完整票息解析缺失');
       const years=Number(isoDate(bond.maturity_date)?.slice(0,4))-Number(isoDate(bond.value_date)?.slice(0,4));
       if(result.coupon_rates?.length&&years>0&&(result.coupon_rates.length!==years||result.coupon_rates.some((rate,index)=>rate.interest_year!==index+1)))throw new Error('票息年限未完整覆盖目标债券，保留原事实');
       await tools.saveProspectusDetails(client,bond.instrument_id,bond,result,sourceId);
@@ -338,7 +340,7 @@ function isBondRatingDocument(event) {
 function inputDocuments(events,bond={}) {
   const selected=[];
   const issueDate=isoDate(bond.value_date);
-  const prospectus=tools.latestProspectus(events.filter(e=>!issueDate||isoDate(e.event_date)<=issueDate&&isoDate(e.event_date)>=`${Number(issueDate.slice(0,4))-1}${issueDate.slice(4)}`)),
+  const prospectus=tools.latestProspectus(events.filter(e=>!issueDate||isoDate(e.event_date)<=issueDate&&isoDate(e.event_date)>=`${Number(issueDate.slice(0,4))-1}${issueDate.slice(4)}`),{allowGeneric:true}),
     report=tools.latestFullReport(events.filter(e=>!issueDate||tools.reportPeriod(e.title)>=issueDate));
   if(prospectus)selected.push({kind:'prospectus',event:prospectus});
   if(issueDate) {
@@ -358,6 +360,17 @@ function inputDocuments(events,bond={}) {
 function requiredReportPeriod(targetDate) {
   const year=Number(targetDate.slice(0,4)),month=Number(targetDate.slice(5,7));
   return month>=9?`${year}-06-30`:month>=5?`${year-1}-12-31`:`${year-1}-06-30`;
+}
+
+function missingReportRepairStart(bond,state,targetDate,selected) {
+  const period=requiredReportPeriod(targetDate);
+  if(!isoDate(bond.value_date)||isoDate(bond.value_date)>period||selected.some(d=>d.kind==='holders'&&tools.reportPeriod(d.event.title)>=period))return null;
+  const prior=state.reportRepair;
+  const covered=prior?.version===DOCUMENT_SELECTION_VERSION&&prior.reportPeriod===period?isoDate(prior.checkedThrough):null;
+  if(covered&&covered>=targetDate)return null;
+  const start=new Date(`${covered||period}T00:00:00+08:00`);
+  start.setUTCDate(start.getUTCDate()+1);
+  return isoDate(start);
 }
 
 async function readRatingHistory(bond,targetDate) {
@@ -443,7 +456,19 @@ async function syncConvertibleBondAnalysisInputs({businessDate,targetCodes=[],ma
         }
         await (deps.persistBond||persistBondInputs)(bond,state);
       }
-      const events=await (deps.readDocuments||readDocuments)(bond,targetDate);
+      let events=await (deps.readDocuments||readDocuments)(bond,targetDate);
+      let selected=inputDocuments(events,bond);
+      const repairStart=missingReportRepairStart(bond,state,targetDate,selected);
+      const repair=deps.repairReport||(!deps.loadUniverse&&discoverDocuments);
+      if(repairStart&&repair) {
+        try {
+          await repair(bond,targetDate,state,{repairStart});
+          state.reportRepair={version:DOCUMENT_SELECTION_VERSION,reportPeriod:requiredReportPeriod(targetDate),checkedThrough:targetDate};
+          events=await (deps.readDocuments||readDocuments)(bond,targetDate);
+          selected=inputDocuments(events,bond);
+        } catch(error) {state.reportRepair={...state.reportRepair,lastError:error.message};}
+        await (deps.persistBond||persistBondInputs)(bond,state);
+      }
       for(const event of events.filter(e=>tools.reportPeriod(e.title)&&!tools.isFullReport(e))) {
         for(const kind of ['holders','price_history']) {
           const key=`${kind}:${event.url}`,prior=state.documents[key];
@@ -459,7 +484,6 @@ async function syncConvertibleBondAnalysisInputs({businessDate,targetCodes=[],ma
         state.documents[key]={...prior,status:'not_applicable',parserVersion:INPUT_VERSION,
           classificationEvidence:notice,previousFailure:prior?.previousFailure||prior?.error||null};
       }
-      const selected=inputDocuments(events,bond);
       const ratingRecords=await (deps.readRatings||readRatingHistory)(bond,targetDate);
       const ratingDocuments=selected.filter(item=>item.kind==='rating');
       const suspectUrls=await (deps.suspectRatingUrls||suspectRatingUrls)(bond);
@@ -482,8 +506,9 @@ async function syncConvertibleBondAnalysisInputs({businessDate,targetCodes=[],ma
         // 有原文结案证据时只跳过这份同字段文档；新报告仍须重新解析核验。
         if(kind!=='rating'&&terminalGap(state,kind)?.evidence?.url===event.url)continue;
         if(kind==='rating'&&(ratingState.latest_complete||!ratingState.required_document_urls.includes(event.url)))continue;
-        if(kind==='issuance_terms'&&!Object.entries(state.documents).some(([key,value])=>key.startsWith('prospectus:')&&value.couponStatus==='not_disclosed'))continue;
+        if(kind==='issuance_terms'&&!Object.entries(state.documents).some(([key,value])=>key.startsWith('prospectus:')&&['not_disclosed','missing'].includes(value.couponStatus)))continue;
         const key=`${kind}:${event.url}`,prior=state.documents[key];
+        const revalidateReport=['holders','price_history'].includes(kind)&&prior?.status==='blocked'&&prior?.documentCapability!==DOCUMENT_SELECTION_VERSION;
         const optionalNotice=kind==='rating'&&isRatingResultNotice(event);
         if(optionalNotice&&!needNotices)continue;
         if(kind==='rating'&&!optionalNotice&&prior?.ratingCapability===RATING_RETRY_CAPABILITY) {
@@ -493,7 +518,7 @@ async function syncConvertibleBondAnalysisInputs({businessDate,targetCodes=[],ma
         }
         const revalidateRating=kind==='rating'&&suspectUrls.has(event.url);
         if(kind!=='rating'&&!revalidateRating&&prior?.status==='complete'&&(prior.parserVersion===INPUT_VERSION||prior.parserVersion==='analysis-input-v3'&&/^[a-f0-9]{64}$/i.test(prior.documentHash||'')&&prior.documentHash===event.content_hash))continue;
-        if(!shouldRetryRatingFailure(kind,prior)&&prior?.status==='blocked'&&prior.parserVersion===INPUT_VERSION){if(kind!=='rating'&&!optionalNotice&&!terminalGap(state,kind))missing.push(kind);continue;}
+        if(!revalidateReport&&!shouldRetryRatingFailure(kind,prior)&&prior?.status==='blocked'&&prior.parserVersion===INPUT_VERSION){if(kind!=='rating'&&!optionalNotice&&!terminalGap(state,kind))missing.push(kind);continue;}
         if(Date.now()-started>=maxRuntimeMs){if(kind!=='rating'&&!optionalNotice&&!terminalGap(state,kind))missing.push(kind);stoppedForTime=true;continue;}
         try {
           const result=await (deps.project||projectDocument)(kind,event,bond);
@@ -509,10 +534,10 @@ async function syncConvertibleBondAnalysisInputs({businessDate,targetCodes=[],ma
             ratingState=ratingRequirement(bond,ratingRecords,ratingDocuments,targetDate,suspectUrls);
             keepRatingEvidence();
           }
-          state.documents[key]={status:'complete',parserVersion:INPUT_VERSION,ratingCapability:RATING_RETRY_CAPABILITY,documentHash:result.document_hash,couponStatus:result.coupon_status,announcedAt:isoDate(event.event_date)};
+          state.documents[key]={status:'complete',parserVersion:INPUT_VERSION,ratingCapability:RATING_RETRY_CAPABILITY,documentCapability:DOCUMENT_SELECTION_VERSION,documentHash:result.document_hash,couponStatus:result.coupon_status,announcedAt:isoDate(event.event_date)};
           if(kind==='holders'&&result.parse_status==='not_applicable')state.documents[key].holderExemption={...result.holder_exemption,report_date:result.report_date};
           if(optionalNotice)state.documents[key].ratingResult=result;
-        } catch(error) {if(kind!=='rating'&&!optionalNotice)missing.push(kind);const message=String(error.stderr||error.message).trim().split(/\r?\n/).filter(Boolean).at(-1).slice(-600);state.documents[key]={...prior,previousStatus:prior?.previousStatus||prior?.status,status:message.includes('需要OCR')?'blocked':'failed',parserVersion:INPUT_VERSION,ratingCapability:RATING_RETRY_CAPABILITY,error:message,attemptedAt:new Date().toISOString()};}
+        } catch(error) {if(kind!=='rating'&&!optionalNotice)missing.push(kind);const message=String(error.stderr||error.message).trim().split(/\r?\n/).filter(Boolean).at(-1).slice(-600);state.documents[key]={...prior,previousStatus:prior?.previousStatus||prior?.status,status:message.includes('需要OCR')?'blocked':'failed',parserVersion:INPUT_VERSION,ratingCapability:RATING_RETRY_CAPABILITY,documentCapability:DOCUMENT_SELECTION_VERSION,error:message,attemptedAt:new Date().toISOString()};}
         await (deps.persistBond||persistBondInputs)(bond,state);
       }
       for(const {event} of ratingReports) {
@@ -526,7 +551,7 @@ async function syncConvertibleBondAnalysisInputs({businessDate,targetCodes=[],ma
         validateHolderExemption({parse_status:'not_applicable',holder_exemption:exemptHolder,holder_table_bond:bond.bond_short_name,report_date:exemptHolder.report_date},bond);
         state.not_due={report_period:expectedPeriod,fields:['holders'],basis:'official_not_listed_by_report_period',evidence:exemptHolder};
       }
-      if(Object.entries(state.documents).some(([key,value])=>key.startsWith('prospectus:')&&value.couponStatus==='not_disclosed')&&!Object.entries(state.documents).some(([key,value])=>key.startsWith('issuance_terms:')&&value.status==='complete'))missing.push('coupon_terms');
+      if(selected.some(({kind,event})=>kind==='prospectus'&&['not_disclosed','missing'].includes(state.documents[`prospectus:${event.url}`]?.couponStatus))&&!selected.some(({kind,event})=>kind==='issuance_terms'&&state.documents[`issuance_terms:${event.url}`]?.status==='complete'))missing.push('coupon_terms');
       state.missing=[...new Set(missing)];state.status=missing.length?'partial':'complete';state.targetDate=targetDate;
       await (deps.persistBond||persistBondInputs)(bond,state);
       if(missing.length){remaining.push(bond.ts_code);missingFields[bond.ts_code]=state.missing;}else count++;
@@ -547,4 +572,4 @@ async function syncConvertibleBondAnalysisInputs({businessDate,targetCodes=[],ma
     nextRunAt:ok?null:nextRunAt,error:ok?null:'可转债详细分析资料尚未全部完成',errorType:ok?null:'data_quality',
     ...(sourceFailure?{errorCode:sourceFailure.errorCode,errorType:sourceFailure.errorType,source:sourceFailure.source,apiName:sourceFailure.apiName,recoverAt:sourceFailure.recoverAt}:{}),};
 }
-module.exports={syncConvertibleBondAnalysisInputs,inputDocuments,projectDocument,requiredReportPeriod,initialRatingBindingArguments,isRatingPublicationDelay,isRatingResultNotice,validateRatingResultNotice,ratingCoverageForReport,suspectRatingUrls,validateTrackingRatingYear,validateRatingGrade,validateHolderExemption,issuerNameOf,isBondRatingDocument,ratingRequirement,markTerminalGap,terminalGap,TERMINAL_GAP_STATUSES,shouldRetryRatingFailure,needRatingResultNotices,RATING_RETRY_CAPABILITY,INPUT_VERSION,RATING_REQUIREMENT_VERSION};
+module.exports={syncConvertibleBondAnalysisInputs,inputDocuments,projectDocument,requiredReportPeriod,missingReportRepairStart,initialRatingBindingArguments,isRatingPublicationDelay,isRatingResultNotice,validateRatingResultNotice,ratingCoverageForReport,suspectRatingUrls,validateTrackingRatingYear,validateRatingGrade,validateHolderExemption,issuerNameOf,isBondRatingDocument,ratingRequirement,markTerminalGap,terminalGap,TERMINAL_GAP_STATUSES,shouldRetryRatingFailure,needRatingResultNotices,RATING_RETRY_CAPABILITY,INPUT_VERSION,RATING_REQUIREMENT_VERSION};

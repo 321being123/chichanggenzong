@@ -336,6 +336,33 @@ with tempfile.TemporaryDirectory() as directory:
     except RuntimeError: pass
     sys.modules['rapidocr_onnxruntime'].RapidOCR=FakeOCR
 holders=importlib.import_module('extractConvertibleBondFundHoldings')
+# BOND-REPORT-SCANNED-060：目录页码唯一且实际章节匹配，OCR只消费目录与债券章节。
+assert reader.bond_section_range(['第七节债券相关情况\n.57\n第八节财务报告.61'])==(57,61)
+assert reader.bond_section_range(['第七节债券相关情况 .61 第八节财务报告 .57']) is None
+assert reader.bond_section_range(['第七节债券相关情况 .57 第八节财务报告 .61 第七节债券相关情况 .58 第八节财务报告 .62']) is None
+history_before=history.read_document
+history.read_document=lambda *a: (['欧通转债 转股价格历次调整、修正情况\n有表格但OCR没读齐行列'],{'document_hash':'a'*64,'text_method':'rapidocr-onnx-v1'})
+try: history.extract_history('url',bond_name='欧通转债'); assert False
+except ValueError: pass
+finally: history.read_document=history_before
+original_read,original_cache=reader.read_document,reader.get_cached_pdf
+with tempfile.TemporaryDirectory() as folder:
+    report_path=os.path.join(folder,'scanned.pdf')
+    doc=fitz.open()
+    for _ in range(5): doc.new_page()
+    doc.save(report_path); doc.close()
+    calls=[]
+    def scoped_read(url,security_code=None,bond_name=None,issuer_name=None,**opts):
+        calls.append((bond_name,opts))
+        if not opts.get('ocr'): raise ValueError('PDF 无文本层，需要OCR，不能作为解析完成')
+        if opts.get('stop_when'): return ['第七节债券相关情况 .2 第八节财务报告 .4'],{}
+        return ['封面','第七节债券相关情况 测试转债','本章正文','',''],{'document_hash':'a'*64}
+    reader.read_document=scoped_read;reader.get_cached_pdf=lambda url:report_path
+    try:
+        _,e=reader.read_report_document('url','001001.SZ','测试转债','测试公司')
+        assert e['ocr_section_pages']==[2,3] and calls[1][0] is None and calls[2][0]=='测试转债'
+        assert calls[2][1]['ocr_page_numbers']=={1,2,3}
+    finally: reader.read_document=original_read;reader.get_cached_pdf=original_cache
 unranked='前十名转债持有人情况如下：\n期末持债数量（元）\n持有比例(%)\n'+''.join(f'某证券投资基金{i}\n100000\n1.00\n' for i in range(10))+'(三)报告期转债变动情况\n'
 parsed=holders.parse_holders(unranked)
 assert len(parsed)==10 and holders.aggregate(parsed)['holding_quantity']==1
@@ -386,6 +413,13 @@ assert holders.extract('url',bond_name='乙转债')['holding_quantity']==2
 try: holders.extract('url',bond_name='丙转债'); assert False
 except ValueError: pass
 prospectus=importlib.import_module('extractConvertibleBondProspectus')
+# BOND-PROSPECTUS-SELECTION-059：标题省略债种时仍须在封面核实可转债文种。
+old_read=prospectus.read_document
+for bad_cover in ['公司向特定对象发行股票募集说明书','公司可转换公司债券募集说明书提示公告']:
+    prospectus.read_document=lambda *a: ([bad_cover],{'document_hash':'a'*64})
+    try: prospectus.extract('url',require_bond_prospectus=True); assert False
+    except ValueError: pass
+prospectus.read_document=old_read
 purpose_table='序号\n项目名称\n总投资额（万元）\n拟投入募集资金\n金额（万元）\n1\n特种无机膜组件及装置生产线项目\n23,712.65\n21,000.00\n2\n补充流动资金\n9,000.00\n9,000.00\n合计\n32,712.65\n30,000.00'
 for title in ['本次募集资金的运用','本次募集资金使用计划','本次募集资金使用概况']:
     assert prospectus.fundraising_purpose([title+'\n'+purpose_table])=='1.特种无机膜组件及装置生产线项目\n2.补充流动资金'
@@ -393,6 +427,7 @@ assert prospectus.fundraising_purpose(['前次募集资金使用计划\n'+purpos
 assert prospectus.fundraising_purpose(['公司决定变更前次募集资金用途，说明本次募集资金用途的调整。\n'+purpose_table]) is None
 assert prospectus.fundraising_purpose(['本次募集资金的运用”之“二、本次募投项目的具体情况”。\n三、会计师对于公司前次募集资金使用情况的意见\n四、超过五年的前次募集资金用途变更的情形']) is None
 assert prospectus.fundraising_purpose(['第七节 本次募集资金的运用\n一、本次募集资金使用计划\n'+purpose_table+'\n注：\n1\n不属于募投项目的审批说明\n100.00\n100.00'])=='1.特种无机膜组件及装置生产线项目\n2.补充流动资金'
+assert prospectus.concise_projects('一、本次募集资金投资项目计划\n二、年产35万吨新能源材料项目（一期）')=='1.年产35万吨新能源材料项目（一期）'
 # BOND-PROSPECTUS-CAPITAL-030：银行资本用途按完整原句，不要求虚构项目表。
 capital='本行本次发行可转债募集的资金，扣除发行费用后将全部用于支持本行未来各项业务健康发展，在可转债转股后按照相关监管要求用于补充本行核心一级资本。'
 assert prospectus.fundraising_purpose(['16、本次募集资金用途\n'+capital+'\n17、担保事项\n未提供担保。'])==capital
@@ -436,5 +471,5 @@ assert rating.issuer_forms('海天水务集团股份公司')=={'海天水务集�
 print('BOND-ANALYSIS-004: official identity, PDF cache, corruption, complete holder table and rating date passed')
 `;
 if(path.isAbsolute(py))assert.ok(fs.existsSync(py),'venv python 不存在: '+py);
-const result=spawnSync(py,['-c',code],{cwd:root,encoding:'utf8',env:{...process.env,PYTHONUTF8:'1'},timeout:30000});
+const result=spawnSync(py,['-'],{input:code,cwd:root,encoding:'utf8',env:{...process.env,PYTHONUTF8:'1'},timeout:30000});
 assert.equal(result.status,0,result.stderr);console.log(result.stdout.trim());

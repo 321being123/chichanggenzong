@@ -16,7 +16,7 @@ from external_call_guard import guarded_urlopen
 import fitz
 
 
-def read_document(url, security_code=None, bond_name=None, issuer_name=None, ocr=False, stop_when=None):
+def read_document(url, security_code=None, bond_name=None, issuer_name=None, ocr=False, stop_when=None, ocr_page_numbers=None):
     parsed = urlparse(url)
     if parsed.scheme != 'https' or parsed.hostname not in {
         'static.cninfo.com.cn', 'www.sse.com.cn', 'big5.sse.com.cn',
@@ -62,6 +62,9 @@ def read_document(url, security_code=None, bond_name=None, issuer_name=None, ocr
             engine = None
             recognized = []
             for index, page in enumerate(document):
+                if ocr_page_numbers is not None and index + 1 not in ocr_page_numbers:
+                    recognized.append(pages[index])
+                    continue
                 key = str(index + 1)
                 text = progress['pages'].get(key)
                 if not isinstance(text, str):
@@ -102,3 +105,36 @@ def read_document(url, security_code=None, bond_name=None, issuer_name=None, ocr
                    'security_code': security_code, 'bond_name': bond_name, 'issuer_name': issuer_name,
                    'text_method': 'rapidocr-onnx-v1' if ocr else 'pdf_text', 'ocr_pages': ocr_pages,
                    'ocr_min_confidence': 0.85 if ocr else None}
+
+
+def bond_section_range(pages):
+    compact = re.sub(r'\s+', '', ''.join(pages))
+    matches = set(re.findall(r'第七节债券相关情况\D*(\d{1,4})\D*第八节财务报告\D*(\d{1,4})', compact))
+    if len(matches) != 1:
+        return None
+    start, end = map(int, next(iter(matches)))
+    return (start, end) if 0 < start < end else None
+
+
+def read_report_document(url, security_code=None, bond_name=None, issuer_name=None):
+    try:
+        return read_document(url, security_code, bond_name, issuer_name)
+    except ValueError as error:
+        if '无文本层' not in str(error):
+            raise
+    # 先由本文件已有OCR与持久化检查点读取目录，不把试读当债项身份验证。
+    preview, _ = read_document(url, security_code, None, issuer_name, ocr=True,
+                               stop_when=lambda pages: bond_section_range(pages) is not None)
+    section = bond_section_range(preview)
+    if not section:
+        raise ValueError('扫描报告缺少可唯一核验的债券章节目录页码')
+    start, end = section
+    with fitz.open(get_cached_pdf(url)) as document:
+        if end > len(document) + 1:
+            raise ValueError('扫描报告目录页码超出原文范围')
+    selected = set(range(1, len(preview) + 1)) | set(range(start, end))
+    pages, evidence = read_document(url, security_code, bond_name, issuer_name, ocr=True,
+                                    ocr_page_numbers=selected)
+    if '债券相关情况' not in re.sub(r'\s+', '', ''.join(pages[start-1:end-1])):
+        raise ValueError('扫描报告实际页与目录债券章节不匹配')
+    return pages, {**evidence, 'ocr_scope': 'toc_bond_section', 'ocr_section_pages': [start, end-1]}

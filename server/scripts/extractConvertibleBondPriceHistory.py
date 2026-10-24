@@ -9,7 +9,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(
 from external_call_guard import guarded_urlopen
 
 import fitz
-from convertibleBondDocument import read_document
+from convertibleBondDocument import read_report_document as read_document
 
 
 DATE_PATTERN = r"(20\d{2})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日"
@@ -82,6 +82,8 @@ def extract_history(url, initial_price=None, bond_name=None, security_code=None,
                 "source_url": url,
             })
             previous = after
+    if evidence.get('text_method') == 'rapidocr-onnx-v1' and not rows:
+        raise ValueError('扫描转股价表未完整解析，不能以空结果标记历史完成')
     return {**evidence, "price_changes": rows, "rating_outlook": rating_outlook}
 
 

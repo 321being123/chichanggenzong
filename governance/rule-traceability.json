@@ -3,6 +3,78 @@
   "lastReviewed": "2026-10-24",
   "rules": [
     {
+      "id": "BOND-PROSPECTUS-SELECTION-059",
+      "title": "正式通用招股书标题只在原发行窗口选择，正文封面须确认债种与发行人；提示公告和股票不替代",
+      "implementation": {
+        "file": "server/services/convertibleBondAnalysisStore.js",
+        "symbol": "latestProspectus"
+      },
+      "tests": [
+        {
+          "file": "server/test/convertible-bond-analysis-documents.test.js",
+          "pattern": "BOND-PROSPECTUS-SELECTION-059"
+        },
+        {
+          "file": "server/test/convertible-bond-analysis-pipeline.test.js",
+          "pattern": "BOND-PROSPECTUS-SELECTION-059"
+        }
+      ],
+      "owner": "Codex",
+      "status": "implemented"
+    },
+    {
+      "id": "BOND-REPORT-SCANNED-060",
+      "title": "扫描报告仅按唯一目录与实际章节复用OCR缓存；行列不完整不当空表完成",
+      "implementation": {
+        "file": "server/scripts/convertibleBondDocument.py",
+        "symbol": "read_report_document"
+      },
+      "tests": [
+        {
+          "file": "server/test/convertible-bond-analysis-documents.test.js",
+          "pattern": "BOND-REPORT-SCANNED-060"
+        }
+      ],
+      "owner": "Codex",
+      "status": "implemented"
+    },
+    {
+      "id": "BOND-COUPON-SPLIT-EVIDENCE-061",
+      "title": "用途与票息可分别由原招股书与同次发行条款投影，缺完整票息不得完成",
+      "implementation": {
+        "file": "server/services/convertibleBondAnalysisInputs.js",
+        "symbol": "syncConvertibleBondAnalysisInputs"
+      },
+      "tests": [
+        {
+          "file": "server/test/convertible-bond-analysis-pipeline.test.js",
+          "pattern": "BOND-COUPON-SPLIT-EVIDENCE-061"
+        }
+      ],
+      "owner": "Codex",
+      "status": "implemented"
+    },
+    {
+      "id": "IPO-DISCLOSURE-SCHEDULE-062",
+      "title": "行业PE仅凭本次官方日程及原文哈希引文等待未来发行公告，到期或未来证据不豁免，字段定向不扩写",
+      "implementation": {
+        "file": "ipo-report/ipo_history_sync.py",
+        "symbol": "_industry_pe_state"
+      },
+      "tests": [
+        {
+          "file": "ipo-report/test_ipo_history_sync.py",
+          "pattern": "IPO-DISCLOSURE-SCHEDULE-062"
+        },
+        {
+          "file": "ipo-report/test_ipo_unit.py",
+          "pattern": "IPO-DISCLOSURE-SCHEDULE-062"
+        }
+      ],
+      "owner": "Codex",
+      "status": "implemented"
+    },
+    {
       "id": "BOND-INPUT-DOCUMENT-RECOVERY-058",
       "title": "原文结案仅跳过同字段同证据URL，新报告失败不得豁免；缺评级无结果公告时仍解析最新评级报告",
       "implementation": {

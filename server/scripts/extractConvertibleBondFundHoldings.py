@@ -11,7 +11,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(
 from external_call_guard import guarded_urlopen
 
 import fitz
-from convertibleBondDocument import read_document
+from convertibleBondDocument import read_report_document as read_document
 
 
 FUND_WORDS = re.compile(r"基金|养老金|年金|社保|资产管理计划|集合资产管理")

@@ -589,10 +589,11 @@ async function saveReportFundHolding(client, instrumentId, holding, sourceId) {
   );
 }
 
-function latestProspectus(events) {
+function latestProspectus(events, { allowGeneric = false } = {}) {
   return (events || [])
-    .filter(event => /(?:可转换公司债券|可转债).{0,20}募集说明书/.test(String(event.title || '')) && event.url
-      && !/摘要|申报稿|上会稿|反馈|补充法律意见|更正公告|提示性公告/.test(event.title))
+    .filter(event => (/(?:可转换公司债(?:券)?|可转债).{0,20}募集说明书/.test(String(event.title || ''))
+      || allowGeneric && /募集说明书/.test(String(event.title || '')) && !/发行.*股票|公司债券(?!.*可转换)/.test(event.title)) && event.url
+      && !/摘要|申报稿|上会稿|反馈|补充法律意见|更正公告|提示(?:性)?公告/.test(event.title))
     .sort((a, b) => String(b.event_date).localeCompare(String(a.event_date)))[0] || null;
 }
 

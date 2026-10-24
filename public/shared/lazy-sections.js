@@ -5,19 +5,45 @@
 window.LazySections = (function () {
   var injected = {};
   var sections = {};
+  // 发版瞬间静态文件短暂不可用、或旧页面停在旧版本号时，单次失败不应让栏目永久卡住：
+  // 失败按退避重试两次，且重试带 retry 参数绕开浏览器对旧 ?v= 地址的强缓存。
+  var RETRY_DELAYS = [400, 1500];
+
+  function load(src, attempt) {
+    return new Promise(function (resolve, reject) {
+      var s = document.createElement('script');
+      s.src = attempt === 0 ? src : src + (src.indexOf('?') >= 0 ? '&' : '?') + 'retry=' + attempt;
+      s.async = false; // 动态脚本默认乱序，置 false 恢复文档顺序执行
+      s.onload = function () { resolve(); };
+      s.onerror = function () {
+        if (s.parentNode) s.parentNode.removeChild(s);
+        if (attempt < RETRY_DELAYS.length) {
+          setTimeout(function () {
+            load(src, attempt + 1).then(resolve, reject);
+          }, RETRY_DELAYS[attempt]);
+          return;
+        }
+        reject(new Error('脚本加载失败: ' + src));
+      };
+      document.head.appendChild(s);
+    });
+  }
+
+  function absolute(src) {
+    // 深链接页面（如 /s/security/... ）下相对路径会解析到错误目录，统一按文档基址转绝对地址。
+    try { return new URL(src, document.baseURI).href; } catch (error) { return src; }
+  }
 
   function inject(tag) {
-    var src = tag.getAttribute('src');
-    if (!src) return Promise.resolve();
+    var declared = tag.getAttribute('src');
+    if (!declared) return Promise.resolve();
+    var src = absolute(declared);
     if (injected[src]) return injected[src];
-    var s = document.createElement('script');
-    s.src = src;
-    s.async = false; // 动态脚本默认乱序，置 false 恢复文档顺序执行
-    injected[src] = new Promise(function (resolve, reject) {
-      s.onload = function () { resolve(); };
-      s.onerror = function () { reject(new Error('脚本加载失败: ' + src)); };
+    injected[src] = load(src, 0).catch(function (error) {
+      // 不缓存失败结果，下次进入该栏目仍会重新尝试，而不是一直复用一个失败的 Promise。
+      delete injected[src];
+      throw error;
     });
-    document.head.appendChild(s);
     return injected[src];
   }
 
@@ -37,6 +63,7 @@ window.LazySections = (function () {
     var jobs = [];
     tags.forEach(function (tag) { jobs.push(inject(tag)); });
     sections[name] = Promise.all(jobs);
+    sections[name].catch(function () { delete sections[name]; });
     return sections[name];
   }
 

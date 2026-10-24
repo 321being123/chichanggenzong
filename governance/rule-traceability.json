@@ -3579,6 +3579,22 @@
       ],
       "owner": "运维治理",
       "status": "implemented"
+    },
+    {
+      "id": "LAZY-SECTION-RETRY-052",
+      "title": "栏目脚本懒加载失败必须退避重试且不缓存失败结果；页面响应必须 no-cache 回源校验，避免旧页面的版本参数长期失效",
+      "implementation": {
+        "file": "public/shared/lazy-sections.js",
+        "symbol": "ensureSection"
+      },
+      "tests": [
+        {
+          "file": "server/test/lazy-sections-retry.test.js",
+          "pattern": "失败重试"
+        }
+      ],
+      "owner": "运维治理",
+      "status": "implemented"
     }
   ]
 }

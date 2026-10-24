@@ -107,12 +107,18 @@ async function start() {
   app.use(redirectUnauthenticated);
   // 安全响应头（必须在静态资源之前注册，确保 HTML/JS/CSS 均携带 CSP / X-Frame-Options 等头）
   app.use(securityHeaders);
-  // 开发期静态资源不缓存；生产由 Nginx 按版本参数管理 7 天缓存，避免 Node 与 Nginx 返回冲突的 Cache-Control。
+  // 页面必须每次回源校验（走 ETag），否则旧页面里的 ?v= 会长期停在旧版本，
+  // 一旦静态文件在发版窗口内短暂缺失，旧页面就只能靠手工刷新恢复。
+  // 开发期静态资源仍全量不缓存；生产 JS/CSS 由 Nginx 按版本参数管理缓存。
   app.use(function noCacheStatic(req, res, next) {
-    if (process.env.NODE_ENV === 'production') return next();
     if (req.path.startsWith('/api')) return next();
     const ext = path.extname(req.path).toLowerCase();
-    if (ext === '' || ['.html', '.js', '.css'].includes(ext)) {
+    if (ext === '' || ext === '.html') {
+      res.setHeader('Cache-Control', 'no-cache, must-revalidate');
+      return next();
+    }
+    if (process.env.NODE_ENV === 'production') return next();
+    if (['.js', '.css'].includes(ext)) {
       res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
       res.setHeader('Pragma', 'no-cache');
       res.setHeader('Expires', '0');

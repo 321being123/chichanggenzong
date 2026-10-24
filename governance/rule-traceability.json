@@ -3675,6 +3675,22 @@
       ],
       "owner": "运维治理",
       "status": "implemented"
+    },
+    {
+      "id": "RATING-NEWEST-NOTICE-057",
+      "title": "评级完整性的文档更新判断只比较评级结果公告，后续发布的评级报告不构成阻塞",
+      "implementation": {
+        "file": "server/services/convertibleBondAnalysisInputs.js",
+        "symbol": "ratingRequirement"
+      },
+      "tests": [
+        {
+          "file": "server/test/rating-outlook-api-missing.test.js",
+          "pattern": "接口缺展望"
+        }
+      ],
+      "owner": "运维治理",
+      "status": "implemented"
     }
   ]
 }

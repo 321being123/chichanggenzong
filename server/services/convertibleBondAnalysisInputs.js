@@ -374,7 +374,9 @@ function ratingRequirement(bond,records,documents,targetDate,suspectUrls=new Set
   available.sort((a,b)=>String(isoDate(b.rating_date)).localeCompare(String(isoDate(a.rating_date)))||
     String(isoDate(b.announced_at)||'').localeCompare(String(isoDate(a.announced_at)||'')));
   const latest=available[0],raw=latest?.raw_payload||{},date=isoDate(latest?.rating_date),announced=isoDate(latest?.announced_at);
-  const newestDocumentDate=documents.map(item=>isoDate(item.event.event_date)).filter(Boolean).sort().at(-1);
+  // 只有“评级结果公告”才可能携带比既有事实更新的评级；后面发布的评级报告只是复盘同一结论，
+  // 不能因为它日期更晚就把接口/既有的最新评级判成不完整。
+  const newestDocumentDate=documents.filter(item=>isRatingResultNotice(item.event||{})).map(item=>isoDate(item.event.event_date)).filter(Boolean).sort().at(-1);
   const documentIdentity=/^[a-f0-9]{64}$/i.test(raw.document_hash||'')&&
     (raw.rating_result_notice?raw.rating_result_notice.bond_code===bond.ts_code&&
       raw.rating_result_notice.bond_name===bond.bond_short_name&&raw.rating_result_notice.rating_company===latest.rating_company:

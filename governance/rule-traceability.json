@@ -3531,6 +3531,22 @@
       ],
       "owner": "运维治理",
       "status": "implemented"
+    },
+    {
+      "id": "RATING-RETRY-CAPABILITY-048",
+      "title": "评级文档仅 failed 且能力版本变化时重试一次，blocked/complete 与其他文种不重试",
+      "implementation": {
+        "file": "server/services/convertibleBondAnalysisInputs.js",
+        "symbol": "shouldRetryRatingFailure"
+      },
+      "tests": [
+        {
+          "file": "server/test/rating-retry-capability.test.js",
+          "pattern": "评级失败重试"
+        }
+      ],
+      "owner": "运维治理",
+      "status": "implemented"
     }
   ]
 }

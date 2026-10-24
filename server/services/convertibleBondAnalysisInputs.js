@@ -11,6 +11,12 @@ const {loadAnalysisUniverse,persistAnalysisProgress,latestAnalysisDate}=require(
 
 const INPUT_VERSION='analysis-input-v4';
 const RATING_REQUIREMENT_VERSION='latest-complete-history-present-v1';
+// 评级解析能力版本：只用于让历史 failed 文档在解析器/执行环境改进后重试一次，
+// 不影响 complete 文档（它们仍按 INPUT_VERSION 跳过），避免全量重算。
+const RATING_RETRY_CAPABILITY='rating-retry-2026-10-24';
+function shouldRetryRatingFailure(kind,prior) {
+  return kind==='rating'&&prior?.status==='failed'&&prior?.ratingCapability!==RATING_RETRY_CAPABILITY;
+}
 function sha(value){return crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex');}
 function validateRatingGrade(result) {
   if(result.rating_conflicts?.length)throw new Error(`目标债项本次评级结论冲突，保留原事实：${JSON.stringify(result.rating_conflicts)}`);
@@ -456,7 +462,7 @@ async function syncConvertibleBondAnalysisInputs({businessDate,targetCodes=[],ma
         }
         const revalidateRating=kind==='rating'&&suspectUrls.has(event.url);
         if(kind!=='rating'&&!revalidateRating&&prior?.status==='complete'&&(prior.parserVersion===INPUT_VERSION||prior.parserVersion==='analysis-input-v3'&&/^[a-f0-9]{64}$/i.test(prior.documentHash||'')&&prior.documentHash===event.content_hash))continue;
-        if(prior?.status==='blocked'&&prior.parserVersion===INPUT_VERSION){if(kind!=='rating'&&!optionalNotice&&!terminalGap(state,kind))missing.push(kind);continue;}
+        if(!shouldRetryRatingFailure(kind,prior)&&prior?.status==='blocked'&&prior.parserVersion===INPUT_VERSION){if(kind!=='rating'&&!optionalNotice&&!terminalGap(state,kind))missing.push(kind);continue;}
         if(Date.now()-started>=maxRuntimeMs){if(kind!=='rating'&&!optionalNotice&&!terminalGap(state,kind))missing.push(kind);stoppedForTime=true;continue;}
         try {
           const result=await (deps.project||projectDocument)(kind,event,bond);
@@ -472,10 +478,10 @@ async function syncConvertibleBondAnalysisInputs({businessDate,targetCodes=[],ma
             ratingState=ratingRequirement(bond,ratingRecords,ratingDocuments,targetDate,suspectUrls);
             keepRatingEvidence();
           }
-          state.documents[key]={status:'complete',parserVersion:INPUT_VERSION,documentHash:result.document_hash,couponStatus:result.coupon_status,announcedAt:isoDate(event.event_date)};
+          state.documents[key]={status:'complete',parserVersion:INPUT_VERSION,ratingCapability:RATING_RETRY_CAPABILITY,documentHash:result.document_hash,couponStatus:result.coupon_status,announcedAt:isoDate(event.event_date)};
           if(kind==='holders'&&result.parse_status==='not_applicable')state.documents[key].holderExemption={...result.holder_exemption,report_date:result.report_date};
           if(optionalNotice)state.documents[key].ratingResult=result;
-        } catch(error) {if(kind!=='rating'&&!optionalNotice)missing.push(kind);const message=String(error.stderr||error.message).trim().split(/\r?\n/).filter(Boolean).at(-1).slice(-600);state.documents[key]={...prior,previousStatus:prior?.previousStatus||prior?.status,status:message.includes('需要OCR')?'blocked':'failed',parserVersion:INPUT_VERSION,error:message,attemptedAt:new Date().toISOString()};}
+        } catch(error) {if(kind!=='rating'&&!optionalNotice)missing.push(kind);const message=String(error.stderr||error.message).trim().split(/\r?\n/).filter(Boolean).at(-1).slice(-600);state.documents[key]={...prior,previousStatus:prior?.previousStatus||prior?.status,status:message.includes('需要OCR')?'blocked':'failed',parserVersion:INPUT_VERSION,ratingCapability:RATING_RETRY_CAPABILITY,error:message,attemptedAt:new Date().toISOString()};}
         await (deps.persistBond||persistBondInputs)(bond,state);
       }
       for(const {event} of ratingReports) {
@@ -510,4 +516,4 @@ async function syncConvertibleBondAnalysisInputs({businessDate,targetCodes=[],ma
     nextRunAt:ok?null:nextRunAt,error:ok?null:'可转债详细分析资料尚未全部完成',errorType:ok?null:'data_quality',
     ...(sourceFailure?{errorCode:sourceFailure.errorCode,errorType:sourceFailure.errorType,source:sourceFailure.source,apiName:sourceFailure.apiName,recoverAt:sourceFailure.recoverAt}:{}),};
 }
-module.exports={syncConvertibleBondAnalysisInputs,inputDocuments,projectDocument,requiredReportPeriod,initialRatingBindingArguments,isRatingPublicationDelay,isRatingResultNotice,validateRatingResultNotice,ratingCoverageForReport,suspectRatingUrls,validateTrackingRatingYear,validateRatingGrade,validateHolderExemption,ratingRequirement,markTerminalGap,terminalGap,TERMINAL_GAP_STATUSES,INPUT_VERSION,RATING_REQUIREMENT_VERSION};
+module.exports={syncConvertibleBondAnalysisInputs,inputDocuments,projectDocument,requiredReportPeriod,initialRatingBindingArguments,isRatingPublicationDelay,isRatingResultNotice,validateRatingResultNotice,ratingCoverageForReport,suspectRatingUrls,validateTrackingRatingYear,validateRatingGrade,validateHolderExemption,ratingRequirement,markTerminalGap,terminalGap,TERMINAL_GAP_STATUSES,shouldRetryRatingFailure,RATING_RETRY_CAPABILITY,INPUT_VERSION,RATING_REQUIREMENT_VERSION};

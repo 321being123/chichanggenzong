@@ -3611,6 +3611,22 @@
       ],
       "owner": "运维治理",
       "status": "implemented"
+    },
+    {
+      "id": "RATING-NOTICE-TITLE-053",
+      "title": "评级结果公告的出具文书标题必须包含发行人，但不要求以发行人开头：评级机构发布的评级调整公告同样有效",
+      "implementation": {
+        "file": "server/services/convertibleBondAnalysisInputs.js",
+        "symbol": "validateRatingResultNotice"
+      },
+      "tests": [
+        {
+          "file": "server/test/rating-notice-validator.test.js",
+          "pattern": "机构开头标题"
+        }
+      ],
+      "owner": "运维治理",
+      "status": "implemented"
     }
   ]
 }

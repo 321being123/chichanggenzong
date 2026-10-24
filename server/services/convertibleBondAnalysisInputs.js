@@ -13,7 +13,7 @@ const INPUT_VERSION='analysis-input-v4';
 const RATING_REQUIREMENT_VERSION='latest-complete-history-present-v1';
 // 评级解析能力版本：只用于让历史 failed 文档在解析器/执行环境改进后重试一次，
 // 不影响 complete 文档（它们仍按 INPUT_VERSION 跳过），避免全量重算。
-const RATING_RETRY_CAPABILITY='rating-retry-2026-10-24b';
+const RATING_RETRY_CAPABILITY='rating-retry-2026-10-24c';
 function shouldRetryRatingFailure(kind,prior) {
   return kind==='rating'&&prior?.status==='failed'&&prior?.ratingCapability!==RATING_RETRY_CAPABILITY;
 }
@@ -269,7 +269,7 @@ function validateRatingResultNotice(event,result,bond) {
     !result.rating_com_name||notice.rating_company!==result.rating_com_name||
     result.source_url!==event.url||!/^[a-f0-9]{64}$/i.test(result.document_hash||'')||!result.rating||!result.rating_outlook||result.rating_conflicts?.length||
     result.rating_date_source!=='official_document'||!result.rating_date||result.rating_date>isoDate(event.event_date)||
-    notice.report_reference?.issued_at!==result.rating_date||!notice.report_reference.title.startsWith(notice.issuer_name)) {
+    notice.report_reference?.issued_at!==result.rating_date||!String(notice.report_reference.title||'').includes(notice.issuer_name)) {
     throw new Error('评级结果公告缺目标代码、发行人或本次原文证据，禁止替代报告');
   }
   for(const prior of result.rating_requirement_version===RATING_REQUIREMENT_VERSION?[]:notice.previous_ratings||[])if(!prior.rating||!prior.rating_outlook||!prior.date_evidence||!prior.rating_evidence||

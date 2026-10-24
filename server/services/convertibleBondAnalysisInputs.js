@@ -17,6 +17,12 @@ const RATING_RETRY_CAPABILITY='rating-retry-2026-10-24';
 function shouldRetryRatingFailure(kind,prior) {
   return kind==='rating'&&prior?.status==='failed'&&prior?.ratingCapability!==RATING_RETRY_CAPABILITY;
 }
+// 评级结果公告是否需要处理：报告缺失、报告解析不完整，或最新评级本身仍不完整（缺展望/实际日等）。
+function needRatingResultNotices({reportCount,latestComplete,hasIncompleteReport}) {
+  if(!reportCount)return true;
+  if(hasIncompleteReport)return true;
+  return latestComplete===false;
+}
 function sha(value){return crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex');}
 function validateRatingGrade(result) {
   if(result.rating_conflicts?.length)throw new Error(`目标债项本次评级结论冲突，保留原事实：${JSON.stringify(result.rating_conflicts)}`);
@@ -442,7 +448,9 @@ async function syncConvertibleBondAnalysisInputs({businessDate,targetCodes=[],ma
       keepRatingEvidence();
       const notices=selected.filter(d=>d.kind==='rating'&&isRatingResultNotice(d.event)).map(d=>d.event);
       const ratingReports=selected.filter(d=>d.kind==='rating'&&!isRatingResultNotice(d.event));
-      const needNotices=!ratingReports.length||ratingReports.some(d=>state.documents[`rating:${d.event.url}`]?.status!=='complete'||suspectUrls.has(d.event.url));
+      // 最新评级仍不完整时也必须处理评级结果公告：结果公告本身可能才是本期评级/展望/实际日的唯一原文证据。
+      const hasIncompleteReport=ratingReports.some(d=>state.documents[`rating:${d.event.url}`]?.status!=='complete'||suspectUrls.has(d.event.url));
+      const needNotices=needRatingResultNotices({reportCount:ratingReports.length,latestComplete:ratingState.latest_complete,hasIncompleteReport});
       state.rating_coverage={};
       const expectedPeriod=requiredReportPeriod(targetDate);
       const reportNotDue=isoDate(bond.value_date)>expectedPeriod&&!selected.some(d=>d.kind==='holders');
@@ -516,4 +524,4 @@ async function syncConvertibleBondAnalysisInputs({businessDate,targetCodes=[],ma
     nextRunAt:ok?null:nextRunAt,error:ok?null:'可转债详细分析资料尚未全部完成',errorType:ok?null:'data_quality',
     ...(sourceFailure?{errorCode:sourceFailure.errorCode,errorType:sourceFailure.errorType,source:sourceFailure.source,apiName:sourceFailure.apiName,recoverAt:sourceFailure.recoverAt}:{}),};
 }
-module.exports={syncConvertibleBondAnalysisInputs,inputDocuments,projectDocument,requiredReportPeriod,initialRatingBindingArguments,isRatingPublicationDelay,isRatingResultNotice,validateRatingResultNotice,ratingCoverageForReport,suspectRatingUrls,validateTrackingRatingYear,validateRatingGrade,validateHolderExemption,ratingRequirement,markTerminalGap,terminalGap,TERMINAL_GAP_STATUSES,shouldRetryRatingFailure,RATING_RETRY_CAPABILITY,INPUT_VERSION,RATING_REQUIREMENT_VERSION};
+module.exports={syncConvertibleBondAnalysisInputs,inputDocuments,projectDocument,requiredReportPeriod,initialRatingBindingArguments,isRatingPublicationDelay,isRatingResultNotice,validateRatingResultNotice,ratingCoverageForReport,suspectRatingUrls,validateTrackingRatingYear,validateRatingGrade,validateHolderExemption,ratingRequirement,markTerminalGap,terminalGap,TERMINAL_GAP_STATUSES,shouldRetryRatingFailure,needRatingResultNotices,RATING_RETRY_CAPABILITY,INPUT_VERSION,RATING_REQUIREMENT_VERSION};

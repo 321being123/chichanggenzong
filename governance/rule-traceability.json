@@ -3547,6 +3547,22 @@
       ],
       "owner": "运维治理",
       "status": "implemented"
+    },
+    {
+      "id": "RATING-NOTICE-REQUIREMENT-049",
+      "title": "最新评级不完整时不得跳过评级结果公告；报告缺失、报告不完整或最新评级不完整任一成立都要处理",
+      "implementation": {
+        "file": "server/services/convertibleBondAnalysisInputs.js",
+        "symbol": "needRatingResultNotices"
+      },
+      "tests": [
+        {
+          "file": "server/test/rating-notice-requirement.test.js",
+          "pattern": "评级结果公告处理条件"
+        }
+      ],
+      "owner": "运维治理",
+      "status": "implemented"
     }
   ]
 }

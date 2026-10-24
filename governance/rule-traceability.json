@@ -3659,6 +3659,22 @@
       ],
       "owner": "运维治理",
       "status": "implemented"
+    },
+    {
+      "id": "RATING-OUTLOOK-API-056",
+      "title": "接口来源（cb_rating）缺展望且标注 api_unavailable 时不算缺项；原文来源缺展望仍判不完整，空展望不得默认稳定",
+      "implementation": {
+        "file": "server/services/convertibleBondAnalysisInputs.js",
+        "symbol": "ratingRequirement"
+      },
+      "tests": [
+        {
+          "file": "server/test/rating-outlook-api-missing.test.js",
+          "pattern": "接口缺展望"
+        }
+      ],
+      "owner": "运维治理",
+      "status": "implemented"
     }
   ]
 }

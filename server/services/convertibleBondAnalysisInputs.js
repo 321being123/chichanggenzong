@@ -385,14 +385,17 @@ function ratingRequirement(bond,records,documents,targetDate,suspectUrls=new Set
     !raw.rating_date_source&&raw.ts_code===bond.ts_code;
   const sameLatest=available.filter(row=>isoDate(row.rating_date)===date&&isoDate(row.announced_at)===announced);
   const conflict=new Set(sameLatest.map(row=>row.rating)).size>1||raw.rating_conflicts?.length>0;
-  const complete=Boolean(latest&&identity&&actualDate&&!conflict&&!suspectUrls.has(raw.source_url)&&latest.rating_company&&latest.rating_outlook&&
-    raw.rating===latest.rating&&raw.rating_com_name===latest.rating_company&&raw.rating_outlook===latest.rating_outlook&&
+  // 接口来源（cb_rating）多数不提供展望：展望留空但已标注 api_unavailable 时，不得当作缺项否决，
+  // 也不得默认成“稳定”；原文来源仍必须给出展望。
+  const outlookApiMissing=raw.outlook_status==='api_unavailable';
+  const complete=Boolean(latest&&identity&&actualDate&&!conflict&&!suspectUrls.has(raw.source_url)&&latest.rating_company&&(latest.rating_outlook||outlookApiMissing)&&
+    raw.rating===latest.rating&&raw.rating_com_name===latest.rating_company&&(outlookApiMissing||raw.rating_outlook===latest.rating_outlook)&&
     isoDate(raw.rating_date)===date&&announced&&date<=announced&&
     !/主体|发行人/.test(String(raw.rating_type||''))&&(!newestDocumentDate||announced>=newestDocumentDate));
   return {version:RATING_REQUIREMENT_VERSION,target_date:targetDate,history_available:available.length>0,history_count:available.length,
     latest_complete:complete,latest_rating_date:date||null,latest_announced_at:announced||null,
     latest_rating:latest?.rating||null,latest_agency:latest?.rating_company||null,
-    latest_outlook:complete?latest.rating_outlook:null,
+    latest_outlook:complete?latest.rating_outlook:null,outlook_status:outlookApiMissing?'api_unavailable':'original',
     required_document_urls:complete?[]:documents.filter(item=>isoDate(item.event.event_date)===newestDocumentDate).map(item=>item.event.url)};
 }
 

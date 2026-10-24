@@ -133,7 +133,7 @@ def extract(url, security_code=None, bond_name=None, issuer_name=None, require_b
     pages, evidence = read_document(url, security_code, bond_name, issuer_name)
     if require_bond_prospectus:
         cover = re.sub(r'\s+', '', ''.join(pages[:3]))
-        if not re.search(r'(?:可转换公司债(?:券)?|可转债)(?:证券)?募集说明书', cover) or re.search(r'募集说明书提示(?:性)?公告', cover):
+        if not re.search(r'(?:可转换公司债(?:券)?|可转债)(?:并在[^，。；;]{1,20}上市)?(?:证券)?募集说明书', cover) or re.search(r'募集说明书提示(?:性)?公告', cover):
             raise ValueError('募集说明书封面未确认可转债文种，不能用股票或提示公告替代')
     pages = [clean_page(page) for page in pages]
     rates = []

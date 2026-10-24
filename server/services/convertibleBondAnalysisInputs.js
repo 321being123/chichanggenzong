@@ -337,15 +337,32 @@ function isBondRatingDocument(event) {
   return !/主体|发行人|公司信用评级报告|年度.{0,12}信用评级报告/.test(title);
 }
 
-function inputDocuments(events,bond={}) {
+function inputDocuments(events,bond={},state=null) {
   const selected=[];
   const issueDate=isoDate(bond.value_date);
-  const prospectus=tools.latestProspectus(events.filter(e=>!issueDate||isoDate(e.event_date)<=issueDate&&isoDate(e.event_date)>=`${Number(issueDate.slice(0,4))-1}${issueDate.slice(4)}`),{allowGeneric:true}),
+  // 已解析完成的文件优先锁定：同一发行的旧版/更正版同名文件不得在重跑中被无声换绑。
+  const boundUrl=kind=>{
+    const rows=Object.entries(state?.documents||{})
+      .filter(([key,value])=>key.startsWith(`${kind}:`)&&value?.status==='complete')
+      .map(([key,value])=>({url:key.slice(kind.length+1),announcedAt:String(value?.announcedAt||'')}))
+      .sort((a,b)=>b.announcedAt.localeCompare(a.announcedAt)||a.url.localeCompare(b.url));
+    return rows.length?rows[0].url:null;
+  };
+  const prospectus=tools.latestProspectus(events.filter(e=>!issueDate||isoDate(e.event_date)<=issueDate&&isoDate(e.event_date)>=`${Number(issueDate.slice(0,4))-1}${issueDate.slice(4)}`),{allowGeneric:true,preferUrl:boundUrl('prospectus')}),
     report=tools.latestFullReport(events.filter(e=>!issueDate||tools.reportPeriod(e.title)>=issueDate));
   if(prospectus)selected.push({kind:'prospectus',event:prospectus});
   if(issueDate) {
-    const issuance=events.filter(e=>/发行公告|上市公告书/.test(e.title)&&isoDate(e.event_date)>=`${Number(issueDate.slice(0,4))-1}${issueDate.slice(4)}`)
-      .sort((a,b)=>Math.abs(new Date(isoDate(a.event_date))-new Date(issueDate))-Math.abs(new Date(isoDate(b.event_date))-new Date(issueDate)))[0];
+    // 更正公告/提示公告只是"通知"，不含条款正文，不能与真正的发行公告/上市公告书并列择优。
+    const issuanceCandidates=events.filter(e=>/发行公告|上市公告书/.test(e.title)
+        &&!/更正公告|提示(?:性)?公告|摘要|申报稿|上会稿|反馈|补充法律意见/.test(e.title)
+        &&isoDate(e.event_date)>=`${Number(issueDate.slice(0,4))-1}${issueDate.slice(4)}`);
+    const boundIssuance=boundUrl('issuance_terms');
+    const issuance=(boundIssuance&&issuanceCandidates.find(e=>e.url===boundIssuance))||issuanceCandidates
+      .sort((a,b)=>{
+        const dist=e=>Math.abs(new Date(isoDate(e.event_date))-new Date(issueDate));
+        const correction=e=>/更正版|修订版|更新版|更正后/.test(e.title)?0:1;
+        return dist(a)-dist(b)||correction(a)-correction(b)||String(a.url).localeCompare(String(b.url));
+      })[0];
     if(issuance)selected.push({kind:'issuance_terms',event:issuance});
   }
   if(report)selected.push({kind:'holders',event:report},{kind:'price_history',event:report});
@@ -457,7 +474,7 @@ async function syncConvertibleBondAnalysisInputs({businessDate,targetCodes=[],ma
         await (deps.persistBond||persistBondInputs)(bond,state);
       }
       let events=await (deps.readDocuments||readDocuments)(bond,targetDate);
-      let selected=inputDocuments(events,bond);
+      let selected=inputDocuments(events,bond,state);
       const repairStart=missingReportRepairStart(bond,state,targetDate,selected);
       const repair=deps.repairReport||(!deps.loadUniverse&&discoverDocuments);
       if(repairStart&&repair) {
@@ -465,7 +482,7 @@ async function syncConvertibleBondAnalysisInputs({businessDate,targetCodes=[],ma
           await repair(bond,targetDate,state,{repairStart});
           state.reportRepair={version:DOCUMENT_SELECTION_VERSION,reportPeriod:requiredReportPeriod(targetDate),checkedThrough:targetDate};
           events=await (deps.readDocuments||readDocuments)(bond,targetDate);
-          selected=inputDocuments(events,bond);
+          selected=inputDocuments(events,bond,state);
         } catch(error) {state.reportRepair={...state.reportRepair,lastError:error.message};}
         await (deps.persistBond||persistBondInputs)(bond,state);
       }
@@ -537,7 +554,17 @@ async function syncConvertibleBondAnalysisInputs({businessDate,targetCodes=[],ma
           state.documents[key]={status:'complete',parserVersion:INPUT_VERSION,ratingCapability:RATING_RETRY_CAPABILITY,documentCapability:DOCUMENT_SELECTION_VERSION,documentHash:result.document_hash,couponStatus:result.coupon_status,announcedAt:isoDate(event.event_date)};
           if(kind==='holders'&&result.parse_status==='not_applicable')state.documents[key].holderExemption={...result.holder_exemption,report_date:result.report_date};
           if(optionalNotice)state.documents[key].ratingResult=result;
-        } catch(error) {if(kind!=='rating'&&!optionalNotice)missing.push(kind);const message=String(error.stderr||error.message).trim().split(/\r?\n/).filter(Boolean).at(-1).slice(-600);state.documents[key]={...prior,previousStatus:prior?.previousStatus||prior?.status,status:message.includes('需要OCR')?'blocked':'failed',parserVersion:INPUT_VERSION,ratingCapability:RATING_RETRY_CAPABILITY,documentCapability:DOCUMENT_SELECTION_VERSION,error:message,attemptedAt:new Date().toISOString()};}
+        } catch(error) {
+          const message=String(error.stderr||error.message).trim().split(/\r?\n/).filter(Boolean).at(-1).slice(-600);
+          if(prior?.status==='complete'&&!revalidateRating) {
+            // 已解析正确的记录不被重试失败覆盖：只留失败痕迹供审计，也不计缺失，避免重跑破坏既有事实。
+            // 明确的可疑评级重验除外——那类记录本就不该继续按完整结案。
+            state.documents[key]={...prior,lastError:message,attemptedAt:new Date().toISOString()};
+          } else {
+            if(kind!=='rating'&&!optionalNotice)missing.push(kind);
+            state.documents[key]={...prior,previousStatus:prior?.previousStatus||prior?.status,status:message.includes('需要OCR')?'blocked':'failed',parserVersion:INPUT_VERSION,ratingCapability:RATING_RETRY_CAPABILITY,documentCapability:DOCUMENT_SELECTION_VERSION,error:message,attemptedAt:new Date().toISOString()};
+          }
+        }
         await (deps.persistBond||persistBondInputs)(bond,state);
       }
       for(const {event} of ratingReports) {

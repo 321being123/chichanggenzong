@@ -420,6 +420,11 @@ for bad_cover in ['公司向特定对象发行股票募集说明书','公司可�
     try: prospectus.extract('url',require_bond_prospectus=True); assert False
     except ValueError: pass
 prospectus.read_document=old_read
+prospectus.read_document=lambda *a: (['中国广核电力股份有限公司 向不特定对象发行A股可转换公司债券并在主板上市 募集说明书'],{'document_hash':'a'*64})
+assert prospectus.extract('url',require_bond_prospectus=True)['document_hash']=='a'*64
+prospectus.read_document=lambda *a: (['北京华峰测控技术股份有限公司 向不特定对象发行可转换公司债券并在科创板上市 募集说明书'],{'document_hash':'a'*64})
+assert prospectus.extract('url',require_bond_prospectus=True)['document_hash']=='a'*64
+prospectus.read_document=old_read
 purpose_table='序号\n项目名称\n总投资额（万元）\n拟投入募集资金\n金额（万元）\n1\n特种无机膜组件及装置生产线项目\n23,712.65\n21,000.00\n2\n补充流动资金\n9,000.00\n9,000.00\n合计\n32,712.65\n30,000.00'
 for title in ['本次募集资金的运用','本次募集资金使用计划','本次募集资金使用概况']:
     assert prospectus.fundraising_purpose([title+'\n'+purpose_table])=='1.特种无机膜组件及装置生产线项目\n2.补充流动资金'

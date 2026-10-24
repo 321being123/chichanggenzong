@@ -304,6 +304,53 @@ try:
     check('其他发行人和没有本次发行日程标题不作为待披露证据',
           not fetch._parse_ipo_issuance_detail(scheduled_text, '其他公司', '000001').get('industry_pe_disclosure')
           and not fetch._parse_ipo_issuance_detail('钶锐锶688827 刊登发行公告日期2026年10月28日', '钶锐锶', '688827').get('industry_pe_disclosure'))
+    saved_candidates,saved_cninfo,saved_download=fetch._exchange_ipo_document_candidates,fetch._cninfo_ipo_issuance_candidates,fetch._download_exchange_pdf_text
+    saved_registered,saved_cached_text=fetch._registered_ipo_document,fetch._cached_pdf_text
+    saved_detail_cache=dict(fetch._IPO_ISSUANCE_DETAIL_CACHE)
+    fetch._MAIN_BUSINESS_DOCUMENT.pop('688827',None)
+    fetch._registered_ipo_document=lambda code: {}
+    inquiry_title='钶锐锶首次公开发行股票初步询价及推介公告'
+    fetch._exchange_ipo_document_candidates=lambda *a: [
+        ('sse','https://www.sse.com.cn/scheduled-prospectus.pdf','钶锐锶招股意向书','prospectus','2026-10-21'),
+        ('sse','https://www.sse.com.cn/inquiry.pdf',inquiry_title,'issuance_announcement','2026-10-21')]
+    fetch._cninfo_ipo_issuance_candidates=lambda *a: []
+    fetch._download_exchange_pdf_text=lambda session,url,source: scheduled_text if 'prospectus' in url else '钶锐锶688827 所属行业为通用设备制造业（C34）。'
+    try:
+        pe_only=fetch._fetch_exchange_ipo_issuance_detail('688827','钶锐锶',required_fields={'industry_pe'})
+        check('PE单字段读取招股书且初询公告不冒充正式发行公告',
+              pe_only['ipo_issuance_diagnostics']['industry_pe']['status']=='not_disclosed'
+              and pe_only['ipo_issuance_candidate_scan']['downloaded_count']==2)
+        inquiry_title='钶锐锶首次公开发行股票发行公告'
+        actual_notice=fetch._fetch_exchange_ipo_issuance_detail('688827','钶锐锶',required_fields={'industry_pe'})
+        check('已有正式发行公告却无PE仍属解析缺口不得等待豁免',actual_notice['ipo_issuance_diagnostics']['industry_pe']['status']=='parse_miss')
+    finally:
+        fetch._exchange_ipo_document_candidates,fetch._cninfo_ipo_issuance_candidates,fetch._download_exchange_pdf_text=saved_candidates,saved_cninfo,saved_download
+        fetch._registered_ipo_document,fetch._cached_pdf_text=saved_registered,saved_cached_text
+        fetch._IPO_ISSUANCE_DETAIL_CACHE.clear();fetch._IPO_ISSUANCE_DETAIL_CACHE.update(saved_detail_cache)
+    # IPO-DOC-REUSE-063：PE单字段同样复用已登记招股书；候选下载失败先回退缓存原文再判缺失。
+    fetch._MAIN_BUSINESS_DOCUMENT.pop('688827',None)
+    try:
+        fetch._exchange_ipo_document_candidates=lambda *a: [
+            ('sse','https://www.sse.com.cn/inquiry.pdf','钶锐锶首次公开发行股票初步询价及推介公告','issuance_announcement','2026-10-21')]
+        fetch._cninfo_ipo_issuance_candidates=lambda *a: []
+        fetch._registered_ipo_document=lambda code: {'url':'https://www.sse.com.cn/registered-prospectus.pdf','title':'钶锐锶招股意向书','source':'sse','date':'2026-10-21'}
+        fetch._download_exchange_pdf_text=lambda session,url,source: scheduled_text if 'registered-prospectus' in url else '钶锐锶688827 所属行业为通用设备制造业（C34）。'
+        fetch._IPO_ISSUANCE_DETAIL_CACHE.clear()
+        reused=fetch._fetch_exchange_ipo_issuance_detail('688827','钶锐锶',required_fields={'industry_pe'})
+        check('PE单字段也复用已登记招股书原文',
+              reused['ipo_issuance_diagnostics']['industry_pe']['status']=='not_disclosed'
+              and reused['ipo_issuance_candidate_scan']['downloaded_count']==2)
+        fetch._download_exchange_pdf_text=lambda session,url,source: None
+        fetch._cached_pdf_text=lambda url: scheduled_text if 'registered-prospectus' in url else None
+        fetch._IPO_ISSUANCE_DETAIL_CACHE.clear()
+        fallback=fetch._fetch_exchange_ipo_issuance_detail('688827','钶锐锶',required_fields={'industry_pe'})
+        check('候选下载失败先回退已登记缓存原文再判缺失',
+              fallback['ipo_issuance_diagnostics']['industry_pe']['status']=='not_disclosed'
+              and fallback['ipo_issuance_candidate_scan']['downloaded_count']==1)
+    finally:
+        fetch._exchange_ipo_document_candidates,fetch._cninfo_ipo_issuance_candidates,fetch._download_exchange_pdf_text=saved_candidates,saved_cninfo,saved_download
+        fetch._registered_ipo_document,fetch._cached_pdf_text=saved_registered,saved_cached_text
+        fetch._IPO_ISSUANCE_DETAIL_CACHE.clear();fetch._IPO_ISSUANCE_DETAIL_CACHE.update(saved_detail_cache)
     issuance = fetch._parse_ipo_issuance_detail(
         "发行人所属行业为塑料制品业（C292），发行人所属行业最近一个月平均静态市盈率为38.2倍"
     )

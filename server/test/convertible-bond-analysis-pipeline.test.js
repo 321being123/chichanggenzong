@@ -39,6 +39,27 @@ const {pool}=require('../db/connection');
   for(const title of ['可转换公司债券募集说明书提示公告','公司向特定对象发行股票募集说明书','证券募集说明书摘要']) {
     assert.equal(inputDocuments([{url:'bad',title,event_date:'2021-07-03'}],bond).some(d=>d.kind==='prospectus'),false);
   }
+  // BOND-DOC-BINDING-064：同名旧版/更正版并列时确定性择优，已核验绑定不得被重跑换绑。
+  const duplicated=[
+    {url:'prospectus-old',title:'公司公开发行可转换公司债券募集说明书',event_date:'2021-07-03'},
+    {url:'prospectus-revised',title:'公司公开发行可转换公司债券募集说明书（更正版）',event_date:'2021-07-03'},
+    {url:'prospectus-later',title:'公司公开发行可转换公司债券募集说明书',event_date:'2021-07-04'},
+  ];
+  assert.equal(inputDocuments(duplicated,bond).find(d=>d.kind==='prospectus').event.url,'prospectus-later');
+  assert.equal(inputDocuments(duplicated.filter(e=>e.url!=='prospectus-later'),bond).find(d=>d.kind==='prospectus').event.url,'prospectus-revised',
+    '同日并列时优先更正版');
+  assert.equal(inputDocuments(duplicated,bond,{documents:{'prospectus:prospectus-old':{status:'complete',announcedAt:'2021-07-03'}}})
+    .find(d=>d.kind==='prospectus').event.url,'prospectus-old','已核验文件不因排序规则变化被换绑');
+  const issuanceDocs=[
+    {url:'correction-notice',title:'公司向不特定对象发行可转换公司债券发行公告更正公告',event_date:'2021-07-05'},
+    {url:'issued',title:'公司向不特定对象发行可转换公司债券发行公告',event_date:'2021-07-05'},
+    {url:'issued-revised',title:'北京某公司向不特定对象发行可转换公司债券发行公告（更正版）',event_date:'2021-07-05'},
+    {url:'listing',title:'公司向不特定对象发行可转换公司债券上市公告书',event_date:'2021-07-20'},
+  ];
+  assert.equal(inputDocuments(issuanceDocs,bond).find(d=>d.kind==='issuance_terms').event.url,'issued-revised',
+    '更正公告只是通知不进择优，同距发行日打平时更正版优先');
+  assert.equal(inputDocuments(issuanceDocs,bond,{documents:{'issuance_terms:issued':{status:'complete',announcedAt:'2021-07-05'}}})
+    .find(d=>d.kind==='issuance_terms').event.url,'issued','已核验发行条款文件不换绑');
   const {missingReportRepairStart}=require('../services/convertibleBondAnalysisInputs');
   assert.equal(missingReportRepairStart(bond,{},'2026-10-24',[]),'2026-07-01');
   assert.equal(missingReportRepairStart({...bond,value_date:'2026-07-01'},{},'2026-10-24',[]),null);
@@ -88,6 +109,20 @@ const {pool}=require('../db/connection');
   for(const event of events)event.content_hash='a'.repeat(64);
   const legacy=await syncConvertibleBondAnalysisInputs({businessDate:'2026-10-12',targetCodes:['127040']},deps);
   assert.equal(legacy.ok,true);assert.equal(projected,5,'版本升级仍复用已完成且同原文SHA的有效投影');
+  // BOND-DOC-PROTECT-065：重解析失败不得把已核验记录降级为失败，也不计缺失，避免重跑破坏既有事实。
+  let protectState;
+  await syncConvertibleBondAnalysisInputs({businessDate:'2026-10-12',targetCodes:['127040']},{...deps,
+    loadUniverse:async()=>[{...bond,raw_payload:{analysis_inputs:{coveredThrough:'2026-10-12',documents:{
+      'prospectus:old':{status:'complete',parserVersion:'analysis-input-v2',documentHash:'a'.repeat(64),announcedAt:'2021-07-03'},
+      'holders:report':{status:'complete',parserVersion:'analysis-input-v4',documentHash:'hash',announcedAt:'2026-08-22'},
+      'price_history:report':{status:'complete',parserVersion:'analysis-input-v4',documentHash:'hash',announcedAt:'2026-08-22'}}}}}],
+    readRatings:async()=>[],
+    readDocuments:async()=>[{...events[0],content_hash:'b'.repeat(64)},...events.slice(1)],
+    project:async(kind)=>{if(kind==='prospectus')throw new Error('解析失败');return {document_hash:'hash'};},
+    save:async()=>{},persistBond:async(b,state)=>{protectState=state;},persist:async()=>{}});
+  assert.equal(protectState.documents['prospectus:old'].status,'complete','已核验记录不被重试失败降级');
+  assert.ok(protectState.documents['prospectus:old'].lastError,'失败痕迹保留供审计');
+  assert.equal(protectState.missing.includes('prospectus'),false,'已有正确事实不计缺失');
   bond.raw_payload.analysis_inputs.coveredThrough='2026-10-13';
   const oldDay=await syncConvertibleBondAnalysisInputs({businessDate:'2026-10-12',targetCodes:['127040']},{...deps,latestDate:async date=>{assert.equal(date,'2026-10-12');return '2026-09-30';}});
   assert.equal(oldDay.ok,true);assert.equal(bond.raw_payload.analysis_inputs.coveredThrough,'2026-10-13','旧日复验不得回退覆盖水位');

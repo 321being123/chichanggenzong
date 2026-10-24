@@ -589,12 +589,16 @@ async function saveReportFundHolding(client, instrumentId, holding, sourceId) {
   );
 }
 
-function latestProspectus(events, { allowGeneric = false } = {}) {
-  return (events || [])
+function latestProspectus(events, { allowGeneric = false, preferUrl = null } = {}) {
+  const correctionRank = event => (/更正版|修订版|更新版|更正后/.test(String(event.title || '')) ? 0 : 1);
+  const candidates = (events || [])
     .filter(event => (/(?:可转换公司债(?:券)?|可转债).{0,20}募集说明书/.test(String(event.title || ''))
       || allowGeneric && /募集说明书/.test(String(event.title || '')) && !/发行.*股票|公司债券(?!.*可转换)/.test(event.title)) && event.url
-      && !/摘要|申报稿|上会稿|反馈|补充法律意见|更正公告|提示(?:性)?公告/.test(event.title))
-    .sort((a, b) => String(b.event_date).localeCompare(String(a.event_date)))[0] || null;
+      && !/摘要|申报稿|上会稿|反馈|补充法律意见|更正公告|提示(?:性)?公告/.test(event.title));
+  // 同一发行常有旧版/更正版同名文件：已核验文件优先保留，未绑定时按 日期新→更正版→网址 确定性择优，禁止随机换绑。
+  const preferred = preferUrl ? candidates.find(event => event.url === preferUrl) : null;
+  return preferred || candidates.sort((a, b) => String(b.event_date).localeCompare(String(a.event_date))
+    || correctionRank(a) - correctionRank(b) || String(a.url).localeCompare(String(b.url)))[0] || null;
 }
 
 function runProspectusExtractor(executable, url) {

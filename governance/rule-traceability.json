@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "lastReviewed": "2026-10-24",
+  "lastReviewed": "2026-10-25",
   "rules": [
     {
       "id": "BOND-PROSPECTUS-SELECTION-059",
@@ -3779,6 +3779,54 @@
         {
           "file": "server/test/rating-outlook-api-missing.test.js",
           "pattern": "接口缺展望"
+        }
+      ],
+      "owner": "运维治理",
+      "status": "implemented"
+    },
+    {
+      "id": "IPO-DOC-REUSE-063",
+      "title": "IPO行业与行业PE补全必须复用已登记招股书原文和本地PDF缓存文本，候选下载失败先回退缓存再判文档缺失",
+      "implementation": {
+        "file": "ipo-report/ipo_lib_fetch.py",
+        "symbol": "_fetch_exchange_ipo_issuance_detail"
+      },
+      "tests": [
+        {
+          "file": "ipo-report/test_ipo_unit.py",
+          "pattern": "IPO-DOC-REUSE-063"
+        }
+      ],
+      "owner": "运维治理",
+      "status": "implemented"
+    },
+    {
+      "id": "BOND-DOC-BINDING-064",
+      "title": "同名旧版/更正版候选按日期新、更正版、网址确定性择优；已核验绑定不得被重跑无声换绑",
+      "implementation": {
+        "file": "server/services/convertibleBondAnalysisInputs.js",
+        "symbol": "inputDocuments"
+      },
+      "tests": [
+        {
+          "file": "server/test/convertible-bond-analysis-pipeline.test.js",
+          "pattern": "BOND-DOC-BINDING-064"
+        }
+      ],
+      "owner": "运维治理",
+      "status": "implemented"
+    },
+    {
+      "id": "BOND-DOC-PROTECT-065",
+      "title": "已核验文档重解析失败不得降级为失败、不计缺失，只留失败痕迹；明确的可疑评级重验除外",
+      "implementation": {
+        "file": "server/services/convertibleBondAnalysisInputs.js",
+        "symbol": "syncConvertibleBondAnalysisInputs"
+      },
+      "tests": [
+        {
+          "file": "server/test/convertible-bond-analysis-pipeline.test.js",
+          "pattern": "BOND-DOC-PROTECT-065"
         }
       ],
       "owner": "运维治理",

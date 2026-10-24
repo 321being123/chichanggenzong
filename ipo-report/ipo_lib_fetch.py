@@ -2499,6 +2499,26 @@ def _parse_ipo_issuance_detail(text, security_name='', stock_code=''):
     return result
 
 
+def _registered_ipo_document(code):
+    """读取目标行已登记的官方原文位置，供候选扫描直接复用；不联网、不写库。"""
+    try:
+        conn = _init_ipo_db()
+        try:
+            row = conn.execute(
+                "SELECT source_payload FROM ipo_history WHERE market_code='CN' AND security_code=?",
+                (code,)
+            ).fetchone()
+        finally:
+            conn.close()
+        payload = row[0] if row else None
+        if isinstance(payload, str):
+            payload = json.loads(payload)
+        document = (payload or {}).get("historical_enrichment", {}).get("main_business_document")
+        return dict(document) if isinstance(document, dict) and document.get("url") else {}
+    except Exception:
+        return {}
+
+
 def _fetch_exchange_ipo_issuance_detail(stock_code, security_name='', required_fields=None):
     """按字段读取 IPO 官方公告，并保留每个事实自己的来源证据。"""
     code = str(stock_code or '').split('.')[0]
@@ -2509,7 +2529,7 @@ def _fetch_exchange_ipo_issuance_detail(stock_code, security_name='', required_f
     if not required_fields:
         required_fields = ('industry', 'industry_pe')
 
-    # 交易所招股书和发行公告来自同一份已登记的官方候选列表；招股书只用于行业。
+    # 交易所招股书和发行公告共用官方候选；PE单字段也须读取本次未来发行日程证据。
     candidates = []
     discovery_complete = True
     discovery_error = None
@@ -2525,15 +2545,16 @@ def _fetch_exchange_ipo_issuance_detail(stock_code, security_name='', required_f
         if candidate_scan_status and candidate_scan_status.get('status') != 'complete':
             discovery_complete = False
             discovery_error = RuntimeError(candidate_scan_status.get('reason') or 'exchange_candidate_scan_incomplete')
-        if 'industry' in required_fields:
-            cached_prospectus = _MAIN_BUSINESS_DOCUMENT.get(code) or {}
-            cached_url = cached_prospectus.get('url')
-            if cached_url and not any(item[1] == cached_url for item in candidates):
-                candidates.append((
-                    cached_prospectus.get('source') or 'exchange', cached_url,
-                    cached_prospectus.get('title') or '招股说明书', 'prospectus',
-                    cached_prospectus.get('date') or '',
-                ))
+        # 已登记/已缓存的招股书原文对行业与行业PE请求都要复用：
+        # PE 单字段也依赖本次发行日程证据，不能因换字段就丢掉已核验原文。
+        cached_prospectus = _MAIN_BUSINESS_DOCUMENT.get(code) or _registered_ipo_document(code)
+        cached_url = cached_prospectus.get('url')
+        if cached_url and not any(item[1] == cached_url for item in candidates):
+            candidates.append((
+                cached_prospectus.get('source') or 'exchange', cached_url,
+                cached_prospectus.get('title') or '招股说明书', 'prospectus',
+                cached_prospectus.get('date') or '',
+            ))
     except ExternalCallGuardError as exc:
         discovery_complete = False
         discovery_error = exc
@@ -2614,12 +2635,49 @@ def _fetch_exchange_ipo_issuance_detail(stock_code, security_name='', required_f
     session = requests.Session()
     session.headers.update({'User-Agent': HEADERS['User-Agent']})
     interrupted = isinstance(discovery_error, ExternalCallGuardError)
+    def record_candidate_text(candidate, text):
+        nonlocal downloaded
+        source, url, title, role, announced_at = candidate
+        downloaded += 1
+        content_hash = hashlib.sha256(text.encode('utf-8')).hexdigest()
+        if content_hash in seen_content_hashes:
+            return
+        seen_content_hashes.add(content_hash)
+        parse_cache_key = (
+            code, content_hash, _IPO_TEXT_EXTRACTION_VERSION,
+            _IPO_ISSUANCE_PARSER_VERSION,
+        )
+        extracted = _IPO_ISSUANCE_DOCUMENT_PARSE_CACHE.get(parse_cache_key)
+        if extracted is None:
+            extracted = _parse_ipo_issuance_detail(text, security_name, code)
+            _IPO_ISSUANCE_DOCUMENT_PARSE_CACHE[parse_cache_key] = copy.deepcopy(extracted)
+        extracted = copy.deepcopy(extracted)
+        document = {
+            'source': source,
+            'url': url,
+            'title': title,
+            'role': role,
+            'date': announced_at or None,
+            'content_hash': content_hash,
+            'text_extraction_version': _IPO_TEXT_EXTRACTION_VERSION,
+            'parser_version': _IPO_ISSUANCE_PARSER_VERSION,
+        }
+        for field in ('industry', 'industry_pe'):
+            evidence_key = f'{field}_evidence'
+            if evidence_key in extracted:
+                extracted[evidence_key].update(document)
+        if 'industry' in extracted:
+            extracted['industry_classification'].update(document)
+        parsed_documents.append({
+            'candidate': candidate,
+            'document': document,
+            'detail': extracted,
+        })
+
     def scan_candidates(candidate_batch):
-        nonlocal downloaded, discovery_error, interrupted
+        nonlocal discovery_error, interrupted
         for candidate in candidate_batch:
             source, url, title, role, announced_at = candidate
-            if role == 'prospectus' and 'industry' not in required_fields:
-                continue
             try:
                 text = _download_exchange_pdf_text(session, url, source)
             except ExternalCallGuardError as exc:
@@ -2628,41 +2686,7 @@ def _fetch_exchange_ipo_issuance_detail(stock_code, security_name='', required_f
                 break
             if not text:
                 continue
-            downloaded += 1
-            content_hash = hashlib.sha256(text.encode('utf-8')).hexdigest()
-            if content_hash in seen_content_hashes:
-                continue
-            seen_content_hashes.add(content_hash)
-            parse_cache_key = (
-                code, content_hash, _IPO_TEXT_EXTRACTION_VERSION,
-                _IPO_ISSUANCE_PARSER_VERSION,
-            )
-            extracted = _IPO_ISSUANCE_DOCUMENT_PARSE_CACHE.get(parse_cache_key)
-            if extracted is None:
-                extracted = _parse_ipo_issuance_detail(text, security_name, code)
-                _IPO_ISSUANCE_DOCUMENT_PARSE_CACHE[parse_cache_key] = copy.deepcopy(extracted)
-            extracted = copy.deepcopy(extracted)
-            document = {
-                'source': source,
-                'url': url,
-                'title': title,
-                'role': role,
-                'date': announced_at or None,
-                'content_hash': content_hash,
-                'text_extraction_version': _IPO_TEXT_EXTRACTION_VERSION,
-                'parser_version': _IPO_ISSUANCE_PARSER_VERSION,
-            }
-            for field in ('industry', 'industry_pe'):
-                evidence_key = f'{field}_evidence'
-                if evidence_key in extracted:
-                    extracted[evidence_key].update(document)
-            if 'industry' in extracted:
-                extracted['industry_classification'].update(document)
-            parsed_documents.append({
-                'candidate': candidate,
-                'document': document,
-                'detail': extracted,
-            })
+            record_candidate_text(candidate, text)
 
     try:
         if interrupted:
@@ -2696,6 +2720,19 @@ def _fetch_exchange_ipo_issuance_detail(stock_code, security_name='', required_f
                 interrupted = True
     finally:
         session.close()
+
+    # 候选都没读到正文时，先回退已登记原文的本地缓存文本再判缺失：
+    # 已核验过的官方原文必须复用，不能因重复下载失败就当"无文档"。
+    if not parsed_documents:
+        registered = _MAIN_BUSINESS_DOCUMENT.get(code) or _registered_ipo_document(code)
+        registered_url = (registered or {}).get('url') or ''
+        registered_text = _cached_pdf_text(registered_url) if registered_url else None
+        if registered_text:
+            record_candidate_text((
+                registered.get('source') or 'exchange', registered_url,
+                registered.get('title') or '招股意向书', 'prospectus',
+                registered.get('date') or '',
+            ), registered_text)
 
     discovered_count = len(candidates)
 
@@ -2772,7 +2809,8 @@ def _fetch_exchange_ipo_issuance_detail(stock_code, security_name='', required_f
                      and item['document']['source'] in ('sse', 'szse', 'cninfo')
                      and item['detail'].get('industry_pe_disclosure')]
             if field == 'industry_pe' and plans and not any(item['document']['role'] in
-                    ('issuance_announcement', 'issuance_risk_announcement') for item in parsed_documents):
+                    ('issuance_announcement', 'issuance_risk_announcement') and '初步询价' not in item['document']['title']
+                    for item in parsed_documents):
                 planned = min(plans, key=lambda item: item['detail']['industry_pe_disclosure']['disclosure_due'])
                 plan, document = planned['detail']['industry_pe_disclosure'], planned['document']
                 field_diagnostics[field] = {**field_diagnostics[field], 'status': 'not_disclosed',

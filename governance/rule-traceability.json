@@ -3798,7 +3798,7 @@
         }
       ],
       "owner": "运维治理",
-      "status": "implemented"
+      "status": "production_verified"
     },
     {
       "id": "BOND-DOC-BINDING-064",
@@ -3814,7 +3814,7 @@
         }
       ],
       "owner": "运维治理",
-      "status": "implemented"
+      "status": "production_verified"
     },
     {
       "id": "BOND-DOC-PROTECT-065",
@@ -3830,7 +3830,7 @@
         }
       ],
       "owner": "运维治理",
-      "status": "implemented"
+      "status": "production_verified"
     }
   ]
 }

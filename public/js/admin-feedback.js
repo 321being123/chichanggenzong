@@ -74,20 +74,22 @@
         + '<th>编号</th><th>类型</th><th>标题</th><th>状态</th><th>提交人</th><th>范围</th><th>回复</th><th>提交时间</th><th>实施版本</th><th>操作</th>'
         + '</tr></thead><tbody>';
       data.items.forEach(function (it) {
-        var scope = it.visibility === 'private' ? '私密' : '公开';
-        if (it.moderation === 'hidden') scope += '·隐藏';
-        if (it.withdrawnAt) scope += '·已撤回';
+        // 类型/状态/范围与前台反馈列表同一 badge 视觉（fb-badge），短列 nowrap 对齐后台其他表格
+        var scope = '<span class="fb-badge fb-badge--accepted">公开</span>';
+        if (it.visibility === 'private') scope = '<span class="fb-badge fb-badge--private">私密</span>';
+        if (it.moderation === 'hidden') scope += '<span class="fb-badge fb-badge--withdrawn">已隐藏</span>';
+        if (it.withdrawnAt) scope += '<span class="fb-badge fb-badge--withdrawn">已撤回</span>';
         html += '<tr>'
-          + '<td>' + esc(it.id) + '</td>'
-          + '<td>' + esc(TYPE_LABELS[it.type] || it.type) + '</td>'
+          + '<td class="biz-table-nowrap">' + esc(it.id) + '</td>'
+          + '<td class="biz-table-nowrap"><span class="fb-badge fb-badge--' + esc(it.type) + '">' + esc(TYPE_LABELS[it.type] || it.type) + '</span></td>'
           + '<td>' + esc(it.title) + '</td>'
-          + '<td>' + esc(STATUS_LABELS[it.status] || it.status) + '</td>'
-          + '<td>' + esc(it.nickname) + '</td>'
-          + '<td>' + esc(scope) + '</td>'
-          + '<td>' + (it.commentCount || 0) + '</td>'
-          + '<td>' + esc(fmtTime(it.createdAt)) + '</td>'
-          + '<td>' + esc(it.implementedVersion || '-') + '</td>'
-          + '<td><button type="button" class="btn btn-outline btn-xs" data-fbadmin-act="detail" data-id="' + esc(it.id) + '">处理</button></td>'
+          + '<td class="biz-table-nowrap"><span class="fb-badge fb-badge--' + esc(it.status) + '">' + esc(STATUS_LABELS[it.status] || it.status) + '</span></td>'
+          + '<td class="biz-table-nowrap">' + esc(it.nickname) + '</td>'
+          + '<td class="biz-table-nowrap">' + scope + '</td>'
+          + '<td class="biz-table-nowrap">' + (it.commentCount || 0) + '</td>'
+          + '<td class="biz-table-nowrap">' + esc(fmtTime(it.createdAt)) + '</td>'
+          + '<td class="biz-table-nowrap">' + esc(it.implementedVersion || '-') + '</td>'
+          + '<td class="biz-table-nowrap"><button type="button" class="btn btn-outline btn-xs" data-fbadmin-act="detail" data-id="' + esc(it.id) + '">处理</button></td>'
           + '</tr>';
       });
       html += '</tbody></table></div>';

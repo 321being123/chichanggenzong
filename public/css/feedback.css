@@ -150,6 +150,76 @@
   }
 }
 
+/* ===== 全局悬浮「提交反馈」入口：页面最左侧中央竖排标签，任何页面常驻 ===== */
+.fb-fab {
+  position: fixed; left: 0; top: 50%; transform: translateY(-50%);
+  z-index: 990; writing-mode: vertical-rl;
+  padding: 14px 6px; border: 1px solid #1a237e; border-left: none;
+  border-radius: 0 8px 8px 0; background: #fff; color: #1a237e;
+  font-size: 13px; font-weight: 600; letter-spacing: .18em; cursor: pointer;
+  box-shadow: 2px 2px 8px rgba(26,35,126,.18);
+}
+.fb-fab:hover { background: #eef1fb; }
+.fb-fab:focus-visible { outline: 2px solid #1a237e; outline-offset: 2px; }
+
+/* ===== 悬浮提交面板：无遮罩浮层，靠左垂直居中；点击面板外收起 ===== */
+.fb-float { position: fixed; inset: 0; z-index: 1100; pointer-events: none; }
+.fb-float-panel {
+  pointer-events: auto;
+  position: absolute; left: 16px; top: 50%; transform: translateY(-50%);
+  width: min(680px, calc(100vw - 32px)); max-height: calc(100vh - 48px); overflow-y: auto;
+  background: #fff; border-radius: 12px; padding: 18px 22px;
+  box-shadow: 0 12px 40px rgba(0,0,0,.18);
+}
+.fb-float-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+.fb-float-head h2 { font-size: 16px; font-weight: 700; color: #1a1a2e; margin: 0; padding: 0; }
+.fb-float-close {
+  border: none; background: none; font-size: 22px; line-height: 1; color: #8a8fa3;
+  cursor: pointer; padding: 4px 8px; border-radius: 6px;
+}
+.fb-float-close:hover { background: #f3f5fb; color: #1a1a2e; }
+
+/* 横排 label 布局（种类/标题/地址/描述/图片/可见范围） */
+.fb-field--row { flex-direction: row; align-items: flex-start; gap: 12px; }
+.fb-field--row .fb-label {
+  width: 68px; flex: none; padding-top: 10px; font-size: 13px; font-weight: 600; color: #1a1a2e;
+}
+.fb-field--row .fb-label i { color: #c0392b; font-style: normal; margin-left: 2px; }
+.fb-field--row input[type="text"], .fb-field--row textarea { flex: 1; min-width: 0; }
+.fb-field--row textarea { min-height: 96px; }
+
+/* 种类三按钮（错误/改进/需求） */
+.fb-type-group { display: flex; border: 1px solid #c9cdd8; border-radius: 6px; overflow: hidden; }
+.fb-type-btn {
+  padding: 8px 18px; border: none; border-right: 1px solid #c9cdd8;
+  background: #fff; color: #333; font-size: 13px; cursor: pointer;
+}
+.fb-type-btn:last-child { border-right: none; }
+.fb-type-btn.active { background: #e4e4e4; font-weight: 700; color: #1a1a2e; }
+.fb-type-btn:focus-visible { outline: 2px solid #1a237e; outline-offset: -2px; }
+
+/* 图片：直接上传 / 聚焦粘贴 */
+.fb-img-actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.fb-img-btn {
+  padding: 9px 14px; min-height: 40px; border: 1px solid #c9cdd8; border-radius: 6px;
+  background: #fff; color: #333; font-size: 13px; cursor: pointer;
+}
+.fb-img-btn:hover { border-color: #1a237e; color: #1a237e; }
+.fb-img-limit { color: #c0392b; font-size: 13px; }
+
+@media (max-width: 760px) {
+  .fb-fab { padding: 12px 5px; font-size: 12px; }
+  .fb-float-panel {
+    left: 0; top: 0; transform: none;
+    width: 100vw; height: 100vh; height: 100dvh; max-height: none;
+    border-radius: 0; padding: 16px 14px calc(20px + env(safe-area-inset-bottom, 0px));
+  }
+  .fb-field--row { flex-direction: column; gap: 6px; }
+  .fb-field--row .fb-label { width: auto; padding-top: 0; }
+  .fb-type-btn { flex: 1; min-height: 44px; padding: 10px 8px; }
+  .fb-img-btn { flex: 1 1 100%; min-height: 44px; font-size: 14px; }
+}
+
 @media (max-width: 760px) {
   .fb-hero { flex-direction: column; align-items: stretch; }
   .fb-hero .btn { min-height: 44px; }

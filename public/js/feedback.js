@@ -500,12 +500,14 @@
     state.form = null;
   }
 
-  function openForm(mode, data) {
+  function openForm(mode, data, opts) {
+    bindEvents();
     closeForm();
     var editing = mode === 'edit';
     var fb = (data && data.feedback) || null;
     state.form = {
       mode: mode,
+      source: (opts && opts.source) || 'page',
       id: fb ? fb.id : null,
       revision: fb ? fb.revision : null,
       files: [],
@@ -514,33 +516,36 @@
       submitting: false,
     };
     var type = fb ? fb.type : 'bug';
-    var html = '<div class="modal-overlay show fb-modal" id="fb-form-overlay">'
-      + '<div class="modal" role="dialog" aria-modal="true" aria-labelledby="fb-form-title">'
+    var typeBtns = [{ v: 'bug', t: '错误' }, { v: 'improvement', t: '改进' }, { v: 'feature', t: '需求' }].map(function (o) {
+      return '<button type="button" class="fb-type-btn' + (type === o.v ? ' active' : '') + '" data-fb-act="pick-type" data-type="' + o.v + '">' + o.t + '</button>';
+    }).join('');
+    var html = '<div class="fb-float" id="fb-form-overlay">'
+      + '<div class="fb-float-panel" role="dialog" aria-modal="true" aria-labelledby="fb-form-title">'
+      + '<div class="fb-float-head">'
       + '<h2 id="fb-form-title">' + (editing ? '编辑反馈' : '提交反馈') + '</h2>'
-      + '<button type="button" class="modal-close" data-fb-act="close-form" aria-label="关闭">&times;</button>'
+      + '<button type="button" class="fb-float-close" data-fb-act="close-form" aria-label="关闭">&times;</button>'
+      + '</div>'
       + '<div class="fb-form">'
-      + '<label class="fb-field"><span>类型</span><select id="fb-form-type">'
-      + Object.keys(TYPE_LABELS).map(function (k) {
-        return '<option value="' + esc(k) + '"' + (type === k ? ' selected' : '') + '>' + esc(TYPE_LABELS[k]) + '</option>';
-      }).join('') + '</select></label>'
-      + '<label class="fb-field"><span>标题</span>'
-      + '<input type="text" id="fb-form-title-input" maxlength="100" value="' + esc(fb ? fb.title : '') + '" placeholder="一句话说明问题或需求"></label>'
-      + '<label class="fb-field"><span>描述</span>'
-      + '<textarea id="fb-form-desc" maxlength="5000" placeholder="错误类请写清操作步骤、实际结果和期望结果">' + esc(fb ? fb.description : '') + '</textarea>'
-      + '<small>1—5000 字。截图中请先遮挡账户名等个人信息。</small></label>'
-      + '<label class="fb-field"><span>问题页面</span>'
-      + '<input type="text" id="fb-form-page" maxlength="1000" value="' + esc(fb ? fb.pagePath : currentPagePath()) + '"></label>'
+      + '<div class="fb-field fb-field--row"><span class="fb-label">种类<i>*</i></span>'
+      + '<div class="fb-type-group" id="fb-form-type-group" role="group" aria-label="种类">' + typeBtns + '</div>'
+      + '<input type="hidden" id="fb-form-type" value="' + esc(type) + '"></div>'
+      + '<div class="fb-field fb-field--row"><span class="fb-label">标题<i>*</i></span>'
+      + '<input type="text" id="fb-form-title-input" maxlength="100" value="' + esc(fb ? fb.title : '') + '" placeholder="例如：xxx数据有问题"></div>'
+      + '<div class="fb-field fb-field--row"><span class="fb-label">地址</span>'
+      + '<input type="text" id="fb-form-page" maxlength="1000" value="' + esc(fb ? fb.pagePath : currentPagePath()) + '"></div>'
+      + '<div class="fb-field fb-field--row"><span class="fb-label">描述<i>*</i></span>'
+      + '<textarea id="fb-form-desc" maxlength="5000" placeholder="请您提供详细的问题描述或需求，这对我们的理解会有很大帮助。">' + esc(fb ? fb.description : '') + '</textarea></div>'
       + (!editing
-        ? '<div class="fb-field"><span>可见范围</span><div class="fb-radio-row">'
+        ? '<div class="fb-field fb-field--row"><span class="fb-label">图片</span><div class="fb-img-actions">'
+        + '<button type="button" class="fb-img-btn" data-fb-act="pick-images">点击这里直接上传图片</button>'
+        + '<button type="button" class="fb-img-btn" data-fb-act="paste-hint">点击这里聚焦，然后粘贴上传图片</button>'
+        + '<span class="fb-img-limit">（最多3张图片）</span></div>'
+        + '<input type="file" id="fb-form-files" accept="image/png,image/jpeg,image/webp" multiple hidden>'
+        + '<div class="fb-thumbs" id="fb-form-thumbs"></div></div>'
+        + '<div class="fb-field fb-field--row"><span class="fb-label">可见范围</span><div class="fb-radio-row">'
         + '<label><input type="radio" name="fb-visibility" value="public" checked>公开</label>'
         + '<label><input type="radio" name="fb-visibility" value="private">仅本人和管理员</label></div></div>'
         : '')
-      + (!editing
-        ? '<div class="fb-field"><span>截图（可选，最多 3 张）</span>'
-        + '<input type="file" id="fb-form-files" accept="image/png,image/jpeg,image/webp" multiple>'
-        + '<small class="fb-upload-tip">选择后会自动压缩为 WebP（长边≤2048、每张≤1MB），原图不会上传。</small>'
-        + '<div class="fb-thumbs" id="fb-form-thumbs"></div></div>'
-        : '<small class="fb-upload-tip">截图请在详情页单独增删。</small>')
       + '<div class="fb-form-actions">'
       + '<button type="button" class="btn btn-outline" data-fb-act="close-form">取消</button>'
       + '<button type="button" class="btn btn-primary" id="fb-form-submit" data-fb-act="submit-form">' + (editing ? '保存' : '提交') + '</button>'
@@ -573,11 +578,8 @@
     }).join('');
   }
 
-  async function onPickFiles(e) {
-    if (!state.form) return;
-    var picked = Array.prototype.slice.call(e.target.files || []);
-    e.target.value = '';
-    if (!picked.length) return;
+  async function addFiles(picked) {
+    if (!state.form || !picked.length) return;
     var remain = MAX_IMAGES - state.form.files.length;
     if (remain <= 0) { toast('最多 3 张截图'); return; }
     if (picked.length > remain) { toast('最多 3 张截图，已只处理前 ' + remain + ' 张'); picked = picked.slice(0, remain); }
@@ -591,6 +593,13 @@
       }
     }
     renderThumbs();
+  }
+
+  async function onPickFiles(e) {
+    if (!state.form) return;
+    var picked = Array.prototype.slice.call(e.target.files || []);
+    e.target.value = '';
+    await addFiles(picked);
   }
 
   async function submitForm() {
@@ -628,9 +637,12 @@
       body.append('clientRequestId', form.requestId);
       form.files.forEach(function (f) { body.append('images', f); });
       var created = await requestJson('/api/feedback', { method: 'POST', body: body });
+      var fromFab = form.source === 'fab';
       closeForm();
       toast('已提交，感谢反馈');
-      // 直接落到「全部反馈」并打开新记录，不走 switchFeedbackSub（那里会清空 detailId）
+      // 全局悬浮入口提交后停留当前页；反馈栏目内提交则落到「全部反馈」并打开新记录
+      if (fromFab) return;
+      // 不走 switchFeedbackSub（那里会清空 detailId）
       state.sub = 'all';
       state.detailId = String(created.id);
       renderSubTabs();
@@ -769,6 +781,10 @@
 
     document.addEventListener('click', function (e) {
       var el = e.target.closest('[data-fb-act]');
+      // 悬浮面板打开时点击面板外空白处收起（FAB 按钮带 data-fb-act，不误关）
+      if (!el && byId('fb-form-overlay') && !e.target.closest('#fb-form-overlay') && !e.target.closest('#fb-fab')) {
+        closeForm();
+      }
       if (!el) return;
       // 卡片内的版本链接不触发卡片本身的打开动作
       var act = el.getAttribute('data-fb-act');
@@ -806,6 +822,27 @@
       }
       if (act === 'open-form') { openForm('create'); return; }
       if (act === 'close-form') { e.preventDefault(); closeForm(); return; }
+      if (act === 'pick-type') {
+        var group = el.parentNode;
+        if (group && group.querySelectorAll) {
+          Array.prototype.forEach.call(group.querySelectorAll('.fb-type-btn'), function (b) {
+            b.classList.toggle('active', b === el);
+          });
+        }
+        var typeInput = byId('fb-form-type');
+        if (typeInput) typeInput.value = el.getAttribute('data-type') || 'bug';
+        return;
+      }
+      if (act === 'pick-images') {
+        var fileInput = byId('fb-form-files');
+        if (fileInput) fileInput.click();
+        return;
+      }
+      if (act === 'paste-hint') {
+        el.focus();
+        toast('已聚焦，请按 Ctrl+V 粘贴图片');
+        return;
+      }
       if (act === 'remove-image') {
         var idx = parseInt(el.getAttribute('data-index'), 10) || 0;
         if (state.form) {
@@ -825,6 +862,19 @@
       if (['withdraw', 'visibility', 'complete-info', 'edit', 'reply', 'del-comment', 'del-shot', 'add-shots'].indexOf(act) >= 0) {
         detailAction(act, el).catch(function (err) { toast(err.message || '操作失败'); });
       }
+    });
+
+    // 粘贴上传：表单打开时 Ctrl+V 的图片进同一压缩链路
+    document.addEventListener('paste', function (e) {
+      if (!state.form || state.form.mode === 'edit') return;
+      var files = e.clipboardData && e.clipboardData.files;
+      if (!files || !files.length) return;
+      var imgs = Array.prototype.slice.call(files).filter(function (f) {
+        return /^image\//.test(f.type);
+      });
+      if (!imgs.length) return;
+      e.preventDefault();
+      addFiles(imgs);
     });
 
     // 列表筛选：回车搜索 / 下拉即筛选
@@ -871,6 +921,6 @@
   window.loadFeedbackPage = loadFeedbackPage;
   window.initFeedbackSub = initFeedbackSub;
   window.switchFeedbackSub = switchFeedbackSub;
-  window.openFeedbackForm = function () { openForm('create'); };
+  window.openFeedbackForm = function (opts) { openForm('create', null, opts); };
   window.FeedbackPage = { reload: refreshCurrent, sub: function () { return state.sub; } };
 })();

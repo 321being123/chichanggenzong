@@ -767,6 +767,7 @@
       "paths": [
         "docs/意见反馈与版本发布闭环研发方案_*.md",
         "public/js/feedback.js",
+        "public/js/feedback-fab.js",
         "public/js/admin-feedback.js",
         "public/css/feedback.css",
         "server/routes/feedback.js",

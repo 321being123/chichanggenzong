@@ -1,7 +1,7 @@
 // convertibleBondAnalysis.js —— R-10 拆分后主入口（2026-10-21）：函数体按域放在 ./convertibleBondAnalysis*.js，
 // 本文件只做编排与再导出；module.exports 与拆分前完全一致，调用方零改动。
 const { pool, tryClaimJob, releaseJob, startJobRun, finishJobRun } = require('../db');
-const {coversDocument}=require('./convertibleBondAnalysisFallback');
+const {coversDocument,terminalApplies}=require('./convertibleBondAnalysisFallback');
 const { tushareQuery, tsRows, tsDateStr } = require('./market');
 const path = require('path');
 const { evaluateConvertibleBondFreshness, CONV_PRICE_EPS } = require('./analysisFreshness');
@@ -168,6 +168,10 @@ async function assembleConvertibleBondAnalysis({ tsCode, stockCode, profile, ids
     holding_ratio: remainSizeYuan > 0 && finite(extras.fund_holding.holding_quantity) != null
       ? finite(extras.fund_holding.holding_quantity) * 1000000 / remainSizeYuan : null,
   }) : null;
+  const holderTerminal=profile.analysis_inputs?.terminal_gaps?.holders;
+  const holderNotDisclosed=!fundHolding&&holderTerminal?.status==='not_disclosed'&&
+    terminalApplies(holderTerminal,profile.analysis_inputs?.current_report_url,profile.analysis_inputs?.required_report_period)&&
+    /^[a-f0-9]{64}$/i.test(holderTerminal.evidence?.document_hash||'');
   const analysis = {
     type: 'convertible_bond', ts_code: tsCode, code, name: profile.bond_short_name, stock_code: stockCode,
     stock_name: profile.stk_short_name, as_of: isoDate(latestBond.trade_date), refreshed_at: new Date().toISOString(),
@@ -243,7 +247,8 @@ async function assembleConvertibleBondAnalysis({ tsCode, stockCode, profile, ids
       cb_price_chg: priceChangeDetails.length || (reportPriceHistory && reportPriceHistory.price_changes.length) || priceChangeCache.some(row => row.parser_version === '3')
         ? 'announcement_parsed' : 'unavailable',
       coupon_schedule: extras.coupons.some(r=>r.source==='rate_clause')?'parsed_from_clause':extras.coupons.length?'ok':'pending_source_document',
-      fund_holding: extras.fund_holding ? 'ok' : profile.analysis_inputs?.not_due ? 'not_due' : 'pending_official_report',
+      fund_holding: extras.fund_holding ? 'ok' : holderNotDisclosed?'not_disclosed':profile.analysis_inputs?.not_due ? 'not_due' : 'pending_official_report',
+      fund_holding_report_date:holderNotDisclosed?holderTerminal.evidence.report_date:null,
       no_revision_history: extras.no_revision_history.length ? 'ok' : 'no_matching_announcement',
       theoretical_value: theoreticalValue == null ? 'calculation_inputs_incomplete' : 'calculated',
       put_yield: putStartDate ? (putPreTax == null ? 'not_yet_calculable' : 'calculated') : 'put_period_not_found'
@@ -266,16 +271,16 @@ async function assembleConvertibleBondAnalysis({ tsCode, stockCode, profile, ids
   const ratingRequirement=profile.analysis_inputs?.rating_requirement;
   if(ratingRequirement?.version==='latest-complete-history-present-v1'&&!ratingRequirement.latest_complete)missing.push('rating');
   const pendingDocuments=Object.entries(profile.analysis_inputs?.documents||{}).filter(([key,state])=>
-    !['complete','not_applicable'].includes(state.status)&&!coversDocument(profile.analysis_inputs?.api_fallbacks?.[key.split(':')[0]],key.split(':')[0],key.slice(key.indexOf(':')+1),profile.analysis_inputs?.targetDate,
+    !['complete','not_applicable'].includes(state.status)&&!(holderNotDisclosed&&key===`holders:${holderTerminal.evidence.url}`)&&!coversDocument(profile.analysis_inputs?.api_fallbacks?.[key.split(':')[0]],key.split(':')[0],key.slice(key.indexOf(':')+1),profile.analysis_inputs?.targetDate,
       profile.analysis_inputs?.required_report_period,tsCode)&&(!key.startsWith('rating:')||
       ratingRequirement?.version!=='latest-complete-history-present-v1'||(ratingRequirement.required_document_urls||[]).includes(key.slice(7)))).map(([key,state])=>({
     key,status:state.status,reason:state.error?String(state.error).trim().split(/\r?\n/).filter(Boolean).slice(-1)[0].slice(0,250):null,
   }));
   if(pendingDocuments.length)missing.push('historical_documents');
-  analysis.completeness = {status:missing.length?'partial':'complete',missing,
+  analysis.completeness = {status:missing.length?'partial':'complete',missing,not_disclosed_fields:holderNotDisclosed?['fund_holding']:[],
     inputs:profile.analysis_inputs?{status:profile.analysis_inputs.status,parser_version:profile.analysis_inputs.parserVersion,
       covered_through:profile.analysis_inputs.coveredThrough,target_date:profile.analysis_inputs.targetDate,missing:profile.analysis_inputs.missing,not_due:profile.analysis_inputs.not_due,
-      api_fallbacks:profile.analysis_inputs.api_fallbacks||{}}:null,
+      api_fallbacks:profile.analysis_inputs.api_fallbacks||{},terminal_gaps:profile.analysis_inputs.terminal_gaps||{}}:null,
     pending_documents:pendingDocuments};
   const watermark = {
     analysis_type: 'convertible_bond',

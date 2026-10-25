@@ -369,7 +369,12 @@ function bondAnalysisRender(d, ctx) {
   bondAnalysisSet('bond-analysis-summary','<strong>'+escapeHtml(d.name||d.ts_code||'可转债')+'</strong>'+delistedTag+'<span>'+escapeHtml(d.ts_code||'')+'</span><span>现价：'+bondAnalysisNumber(q.bond_price,3,' 元')+'</span><span class="'+changeClass+'">涨跌：'+(change==null?'暂无数据':bondAnalysisNumber(change,2,'%'))+'</span><span>正股：'+escapeHtml(d.stock_name||d.stock_code||'暂无数据')+'</span>');
   var updated=document.getElementById((ctx==='bond'?'bond-analysis-':'stock-analysis-')+'updated'); if(updated){
     var utxt='数据日期：'+(d.as_of||'--')+' · '+(q.source==='tencent'?'实时行情':'收盘数据');
-    if(d.completeness&&d.completeness.status==='partial')utxt+=' · 尚有 '+d.completeness.missing.length+' 项资料待补全';
+    if(d.completeness&&d.completeness.status==='partial'){
+      var undisclosed=d.completeness.not_disclosed_fields||[];
+      var pending=d.completeness.missing.filter(function(field){return undisclosed.indexOf(field)<0;});
+      if(pending.length)utxt+=' · 尚有 '+pending.length+' 项资料待补全';
+      if(undisclosed.length)utxt+=' · 持有人名单未披露';
+    }
     if(d.needs_refresh && d.freshness && d.freshness.reasons && d.freshness.reasons.length){
       utxt+=' · 数据待更新：'+d.freshness.reasons.map(function(r){return r.message;}).join('；');
     }
@@ -383,7 +388,7 @@ function bondAnalysisRender(d, ctx) {
     ['正股价',bondAnalysisNumber(q.stock_price,3,' 元')],['正股PB',bondAnalysisNumber(stockData.pb,2,' 倍')],
     ['转股价',bondAnalysisNumber(b.convert_price,3,' 元')],['转股价值',bondAnalysisNumber(b.convert_value,3,' 元')],
     ['转股溢价率',bondAnalysisPercent(b.convert_premium)],['到期时间',bondAnalysisDate(b.maturity_date)],
-    ['基金持仓',b.fund_holding?bondAnalysisNumber(b.fund_holding.fund_count,0,'只 / ')+bondAnalysisNumber(b.fund_holding.holding_quantity,2,'万张')+'（报告期 '+bondAnalysisDate(b.fund_holding.report_date)+'）<br><small>占剩余规模：'+bondAnalysisPercent(b.fund_holding.holding_ratio)+'</small>':(d.data_status&&d.data_status.fund_holding==='not_due'?'尚未到发行后定期报告披露期':'暂无数据')],['剩余年限',bondAnalysisNumber(b.remaining_years,2,' 年')],
+    ['基金持仓',b.fund_holding?bondAnalysisNumber(b.fund_holding.fund_count,0,'只 / ')+bondAnalysisNumber(b.fund_holding.holding_quantity,2,'万张')+'（报告期 '+bondAnalysisDate(b.fund_holding.report_date)+'）<br><small>占剩余规模：'+bondAnalysisPercent(b.fund_holding.holding_ratio)+'</small>':(d.data_status&&d.data_status.fund_holding==='not_disclosed'?'报告未披露（'+bondAnalysisDate(d.data_status.fund_holding_report_date)+'）':d.data_status&&d.data_status.fund_holding==='not_due'?'尚未到发行后定期报告披露期':'暂无数据')],['剩余年限',bondAnalysisNumber(b.remaining_years,2,' 年')],
     ['剩余规模',bondAnalysisNumber(b.remain_size,2,' 亿元')],    ['预估回售触发日',bondAnalysisDate(b.estimated_put_trigger_date)],
     ['预估回售剩余年限',bondAnalysisNumber(b.estimated_put_remaining_years,2,' 年')],['预期回售到账日',b.expected_put_payment_date?bondAnalysisDate(b.expected_put_payment_date):(b.expected_put_status==='opportunity_used'?'本计息年度回售机会已使用':(b.expected_put_status==='current_price_not_below_trigger'?'当前价未低于回售触发价，暂不估算':'暂无数据'))],
     ['回售到账税前收益率',bondAnalysisPercent(b.put_yield_pre_tax)],['回售到账税后收益率',bondAnalysisPercent(b.put_yield_after_tax)],

@@ -343,6 +343,12 @@ const {pool}=require('../db/connection');
     project:async(kind)=>{if(kind==='holders')throw Error('新报告真实解析失败');return {document_hash:'f'.repeat(64)};}});
   assert.equal(changedReport.ok,false,'旧文档结案不得豁免新报告失败');
   assert.deepEqual(changedReport.missingFields[bond.ts_code],['holders']);
+  terminalBond.raw_payload.analysis_inputs.documents['holders:new-full-report']={status:'blocked',parserVersion:'analysis-input-v4',documentCapability:'bond-doc-selection-2026-10-24-v2'};
+  const stillBlocked=await syncConvertibleBondAnalysisInputs({businessDate:'2026-10-13'},{...terminalDeps,
+    readDocuments:async()=>roleEvents.map(e=>e.url==='full-report'?{...e,url:'new-full-report'}:e),
+    project:async(kind)=>{assert.notEqual(kind,'holders');return {document_hash:'f'.repeat(64)};}});
+  assert.equal(stillBlocked.ok,false,'旧未披露结案不得掩盖新报告的OCR阻塞');
+  assert.deepEqual(stillBlocked.missingFields[bond.ts_code],['holders']);
   // BOND-COUPON-SPLIT-EVIDENCE-061：用途与票息各保留原文，缺发行条款不能报完整。
   const couponBond={...bond,raw_payload:{analysis_inputs:{coveredThrough:'2026-10-13',documents:{}}}};
   const couponDeps={...roleDeps,loadUniverse:async()=>[couponBond],project:async kind=>({document_hash:'f'.repeat(64),...(kind==='prospectus'?{coupon_status:'missing'}:{})})};

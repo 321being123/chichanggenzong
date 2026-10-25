@@ -64,6 +64,28 @@ const noticeUrl='https://disc.static.szse.cn/test-rating-result-025.pdf';
   assert.equal(apiCovered.completeness.inputs.api_fallbacks.holders.api_source,'top10_cb_holders');
   await pool.query(`UPDATE fundamental.convertible_bond_profiles SET raw_payload=jsonb_set(raw_payload,'{analysis_inputs,api_fallbacks,holders,document_urls}','["other-report"]') WHERE instrument_id=$1`,[bond]);
   assert.equal((await buildConvertibleBondAnalysisFromDatabase('127991.SZ','2026-09-30',{persist:false})).completeness.pending_documents.length,1,'异URL不能覆盖失败原文');
+  // 旧接口记录没有outlook_status时应按本次接口响应补标记，不借后来的评级替代历史目标日。
+  const oldApiRating={ts_code:'127991.SZ',ann_date:'20260814',rating_date:'20251205',rating_com_name:'旧API测试机构',rating:'AA-',rating_outlook:null,rating_type:'长期'};
+  await pool.query(`INSERT INTO fundamental.convertible_bond_ratings(instrument_id,rating_date,announced_at,rating_company,rating,source_id,raw_payload)
+    VALUES($1,'2025-12-05','2026-08-14','旧API测试机构','AA-',$2,$3::jsonb)`,[bond,source,JSON.stringify(oldApiRating)]);
+  const apiRepair=await tryAnalysisApiFallback({kind:'rating',bond:apiBond,targetDate:'2026-09-30',period:'2026-06-30',documentUrls:[]},{
+    fetch:async()=>({fields:Object.keys(oldApiRating),items:[Object.values(oldApiRating)]})});
+  assert.equal(apiRepair.status,'complete');
+  const repaired=(await pool.query(`SELECT rating,raw_payload FROM fundamental.convertible_bond_ratings WHERE instrument_id=$1 AND rating_company='旧API测试机构'`,[bond])).rows[0];
+  assert.equal(repaired.rating,'AA-');assert.equal(repaired.raw_payload.outlook_status,'api_unavailable');
+  await pool.query(`UPDATE fundamental.convertible_bond_ratings SET raw_payload=(raw_payload-'outlook_status')||$2::jsonb WHERE instrument_id=$1 AND rating_company='旧API测试机构'`,[bond,JSON.stringify({document_hash:'c'.repeat(64)})]);
+  await tryAnalysisApiFallback({kind:'rating',bond:apiBond,targetDate:'2026-09-30',period:'2026-06-30',documentUrls:[]});
+  assert.equal((await pool.query(`SELECT raw_payload->>'outlook_status' status FROM fundamental.convertible_bond_ratings WHERE instrument_id=$1 AND rating_company='旧API测试机构'`,[bond])).rows[0].status,null,'原文证据不能被接口空展望改标记');
+  await pool.query(`DELETE FROM fundamental.convertible_bond_ratings WHERE instrument_id=$1 AND rating_company='旧API测试机构'`,[bond]);
+  await pool.query('DELETE FROM fundamental.convertible_bond_fund_holdings WHERE instrument_id=$1',[bond]);
+  await pool.query(`UPDATE fundamental.convertible_bond_profiles SET raw_payload=raw_payload||$2::jsonb WHERE instrument_id=$1`,[bond,JSON.stringify({analysis_inputs:{
+    targetDate:'2026-09-30',current_report_url:'undisclosed-report',required_report_period:'2026-06-30',
+    terminal_gaps:{holders:{status:'not_disclosed',reason:'原文该节确为空白',evidence:{url:'undisclosed-report',document_hash:'b'.repeat(64),report_date:'2026-06-30'}}},
+    documents:{'holders:undisclosed-report':{status:'failed',error:'未披露名单'}}}})]);
+  const undisclosed=await buildConvertibleBondAnalysisFromDatabase('127991.SZ','2026-09-30',{persist:false});
+  assert.equal(undisclosed.data_status.fund_holding,'not_disclosed');assert.equal(undisclosed.basic.fund_holding,null);
+  assert.deepEqual(undisclosed.completeness.not_disclosed_fields,['fund_holding']);assert.deepEqual(undisclosed.completeness.pending_documents,[]);
+  assert.equal(undisclosed.completeness.status,'partial','未披露不得伪称财务资料全齐');
   // BOND-RATING-LATEST-045：历史失败只留证据，当前要求仍须展示真实缺口。
   await pool.query(`UPDATE fundamental.convertible_bond_profiles SET raw_payload=raw_payload||$2::jsonb WHERE instrument_id=$1`,
     [bond,JSON.stringify({analysis_inputs:{rating_requirement:{version:'latest-complete-history-present-v1',latest_complete:true,required_document_urls:[]},

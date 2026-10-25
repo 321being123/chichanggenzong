@@ -104,8 +104,13 @@ async function saveFallback(kind,bond,value,evidence) {
       await store.saveReportFundHolding(client,bond.instrument_id,{...value,...evidence},source);
     } else if(kind==='rating') {
       for(const row of value) {
-        const existing=await client.query('SELECT 1 FROM fundamental.convertible_bond_ratings WHERE instrument_id=$1 AND rating_date=$2::date AND rating_company=$3',[bond.instrument_id,isoDate(row.rating_date),row.rating_com_name]);
-        if(!existing.rows.length)await store.saveRatingHistory(client,bond.instrument_id,[{...row,...evidence}],source);
+        const existing=await client.query('SELECT source_id,rating,rating_outlook,announced_at::text,raw_payload FROM fundamental.convertible_bond_ratings WHERE instrument_id=$1 AND rating_date=$2::date AND rating_company=$3 FOR UPDATE',[bond.instrument_id,isoDate(row.rating_date),row.rating_com_name]);
+        const prior=existing.rows[0];
+        // 同一Tushare事实的旧空展望需补来源标记；不得借备源重写原文、改等级/公告日或抹掉已有展望。
+        const repairApiMetadata=prior&&Number(prior.source_id)===Number(source)&&prior.rating===row.rating&&!prior.rating_outlook&&
+          prior.raw_payload?.ts_code===bond.ts_code&&!prior.raw_payload.document_hash&&!prior.raw_payload.outlook_source_url&&
+          isoDate(prior.announced_at)===isoDate(row.ann_date);
+        if(!prior||repairApiMetadata)await store.saveRatingHistory(client,bond.instrument_id,[{...row,...evidence}],source);
       }
     } else if(kind==='price_history') {
       const existing=await client.query('SELECT change_date::text,price_before,price_after FROM fundamental.convertible_bond_price_changes WHERE instrument_id=$1',[bond.instrument_id]);
@@ -146,4 +151,8 @@ function coversDocument(fallback,kind,url,targetDate,period,tsCode) {
   return fallback?.version===VERSION&&fallback.status==='complete'&&fallback.api_source===APIS[kind]?.name&&
     fallback.source==='tushare'&&fallback.ts_code===tsCode&&fallback.target_date===targetDate&&fallback.report_period===period&&fallback.document_urls?.includes(url);
 }
-module.exports={tryAnalysisApiFallback,validateRows,readApiRows,coversDocument,APIS,VERSION};
+function terminalApplies(entry,url,period) {
+  return Boolean(entry&&['source_unavailable','not_disclosed','conflict'].includes(entry.status)&&url&&entry.evidence?.url===url&&
+    (!entry.evidence.report_date||entry.evidence.report_date===period));
+}
+module.exports={tryAnalysisApiFallback,validateRows,readApiRows,coversDocument,terminalApplies,APIS,VERSION};

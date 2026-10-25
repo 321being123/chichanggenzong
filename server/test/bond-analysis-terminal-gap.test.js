@@ -1,6 +1,6 @@
 const assert=require('assert');
 const {pool}=require('../db/connection');
-const {markTerminalGap,terminalGap,TERMINAL_GAP_STATUSES}=require('../services/convertibleBondAnalysisInputs');
+const {markTerminalGap,terminalGap,TERMINAL_GAP_STATUSES,syncConvertibleBondAnalysisInputs}=require('../services/convertibleBondAnalysisInputs');
 (async()=>{
   // 状态白名单只接受三种终态，其他状态不得当终态放行
   assert.deepStrictEqual([...TERMINAL_GAP_STATUSES],['source_unavailable','not_disclosed','conflict']);
@@ -35,6 +35,11 @@ const {markTerminalGap,terminalGap,TERMINAL_GAP_STATUSES}=require('../services/c
     assert.strictEqual(gap.checkedAt,'2026-10-24T00:00:00+08:00');
     assert.deepStrictEqual(gap.evidence.checked_sources,['sse','szse','tushare']);
     assert.strictEqual(after.raw_payload.analysis_inputs.parserVersion,savedParserVersion,'写入终态不得改动解析版本');
+    // BOND-INPUT-DOCUMENT-RECOVERY-058：已启动Runner持有旧快照时，不得把新登记的人工证据覆盖掉。
+    const staleBond={instrument_id:before.instrument_id,ts_code:code,value_date:'2021-01-01',raw_payload:{analysis_inputs:{coveredThrough:'2026-10-24',documents:{}}}};
+    await syncConvertibleBondAnalysisInputs({businessDate:'2026-10-24'},{loadUniverse:async()=>[staleBond],latestDate:async()=> '2026-10-24',
+      readDocuments:async()=>[],readRatings:async()=>[],suspectRatingUrls:async()=>new Set(),persist:async()=>{}});
+    assert.equal((await pick()).raw_payload.analysis_inputs.terminal_gaps.prospectus.reason,written.reason,'旧Runner不能抹掉新结案证据');
     console.log('资料终态：白名单、拒绝无证据、真实库写入与证据保全通过');
   } finally {
     await pool.query(`UPDATE fundamental.convertible_bond_profiles SET raw_payload=$2::jsonb WHERE instrument_id=$1`,[before.instrument_id,savedRaw]);

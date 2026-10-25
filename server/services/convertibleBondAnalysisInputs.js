@@ -8,7 +8,7 @@ const {saveCollectedEvents}=require('./financialDataArchitecture');
 const {childProcessEnv,mergeExternalCallStatsFromStderr}=require('./externalCallGuard');
 const {isoDate,normalizeBondCode,announcementDateWindows,analysisInputTools:tools}=require('./convertibleBondAnalysis');
 const {loadAnalysisUniverse,persistAnalysisProgress,latestAnalysisDate}=require('./convertibleBondAnalysisSnapshots');
-const {tryAnalysisApiFallback,APIS:FALLBACK_APIS}=require('./convertibleBondAnalysisFallback');
+const {tryAnalysisApiFallback,terminalApplies,APIS:FALLBACK_APIS}=require('./convertibleBondAnalysisFallback');
 
 const INPUT_VERSION='analysis-input-v4';
 const DOCUMENT_SELECTION_VERSION='bond-doc-selection-2026-10-24-v2';
@@ -232,7 +232,10 @@ async function saveProjection(kind,event,result,bond) {
 }
 
 async function persistBondInputs(bond,state) {
-  await pool.query(`UPDATE fundamental.convertible_bond_profiles SET raw_payload=raw_payload||jsonb_build_object('analysis_inputs',$2::jsonb),updated_at=now()
+  // 人工留证的终态优先于已启动Runner的旧快照，避免续批将刚登记的证据覆盖掉。
+  await pool.query(`UPDATE fundamental.convertible_bond_profiles SET raw_payload=raw_payload||jsonb_build_object('analysis_inputs',
+    $2::jsonb || CASE WHEN (raw_payload->'analysis_inputs') ? 'terminal_gaps' THEN jsonb_build_object('terminal_gaps',
+      COALESCE($2::jsonb->'terminal_gaps','{}'::jsonb)||(raw_payload->'analysis_inputs'->'terminal_gaps')) ELSE '{}'::jsonb END),updated_at=now()
     WHERE instrument_id=$1`,[bond.instrument_id,JSON.stringify(state)]);
 }
 
@@ -256,7 +259,10 @@ async function markTerminalGap(tsCode,field,{status,reason,evidence,checkedAt}={
   const payload=rows[0].raw_payload||{};
   const state={...(payload.analysis_inputs||{}),terminal_gaps:{...(payload.analysis_inputs?.terminal_gaps||{}),
     [field]:{status,reason,evidence,checkedAt:checkedAt||new Date().toISOString()}}};
-  await persistBondInputs({instrument_id:rows[0].instrument_id},state);
+  await pool.query(`UPDATE fundamental.convertible_bond_profiles SET raw_payload=jsonb_set(raw_payload,'{analysis_inputs}',
+    COALESCE(raw_payload->'analysis_inputs','{}'::jsonb)||jsonb_build_object('terminal_gaps',
+      COALESCE(raw_payload->'analysis_inputs'->'terminal_gaps','{}'::jsonb)||jsonb_build_object($2::text,$3::jsonb)),true),updated_at=now()
+    WHERE instrument_id=$1`,[rows[0].instrument_id,field,JSON.stringify(state.terminal_gaps[field])]);
   return state.terminal_gaps[field];
 }
 
@@ -516,14 +522,16 @@ async function syncConvertibleBondAnalysisInputs({businessDate,targetCodes=[],ma
       state.rating_coverage={};
       const expectedPeriod=requiredReportPeriod(targetDate);
       state.required_report_period=expectedPeriod;
+      state.current_report_url=selected.find(d=>d.kind==='holders')?.event.url||null;
       const reportNotDue=isoDate(bond.value_date)>expectedPeriod&&!selected.some(d=>d.kind==='holders');
       state.not_due=reportNotDue?{report_period:expectedPeriod,value_date:isoDate(bond.value_date),fields:['holders','price_history'],basis:'annual_4_months_halfyear_2_months'}:null;
       if(!selected.some(d=>d.kind==='prospectus')&&!terminalGap(state,'prospectus'))missing.push('prospectus');
-      if(!selected.some(d=>d.kind==='holders')&&!reportNotDue&&!terminalGap(state,'holders'))missing.push('latest_report');
-      if(selected.some(d=>d.kind==='holders'&&tools.reportPeriod(d.event.title)<expectedPeriod)&&!terminalGap(state,'holders'))missing.push('latest_report_stale');
+      if(!selected.some(d=>d.kind==='holders')&&!reportNotDue&&!terminalApplies(terminalGap(state,'holders'),state.current_report_url,expectedPeriod))missing.push('latest_report');
+      if(selected.some(d=>d.kind==='holders'&&tools.reportPeriod(d.event.title)<expectedPeriod)&&!terminalApplies(terminalGap(state,'holders'),state.current_report_url,expectedPeriod))missing.push('latest_report_stale');
       for(const {kind,event} of selected) {
         // 有原文结案证据时只跳过这份同字段文档；新报告仍须重新解析核验。
-        if(kind!=='rating'&&terminalGap(state,kind)?.evidence?.url===event.url)continue;
+        const coveredTerminal=terminalApplies(terminalGap(state,kind),event.url,expectedPeriod);
+        if(kind!=='rating'&&coveredTerminal)continue;
         if(kind==='rating'&&(ratingState.latest_complete||!ratingState.required_document_urls.includes(event.url)))continue;
         if(kind==='issuance_terms'&&!Object.entries(state.documents).some(([key,value])=>key.startsWith('prospectus:')&&['not_disclosed','missing'].includes(value.couponStatus)))continue;
         const key=`${kind}:${event.url}`,prior=state.documents[key];
@@ -537,8 +545,8 @@ async function syncConvertibleBondAnalysisInputs({businessDate,targetCodes=[],ma
         }
         const revalidateRating=kind==='rating'&&suspectUrls.has(event.url);
         if(kind!=='rating'&&!revalidateRating&&prior?.status==='complete'&&(prior.parserVersion===INPUT_VERSION||prior.parserVersion==='analysis-input-v3'&&/^[a-f0-9]{64}$/i.test(prior.documentHash||'')&&prior.documentHash===event.content_hash))continue;
-        if(!revalidateReport&&!shouldRetryRatingFailure(kind,prior)&&prior?.status==='blocked'&&prior.parserVersion===INPUT_VERSION){if(kind!=='rating'&&!optionalNotice&&!terminalGap(state,kind))missing.push(kind);continue;}
-        if(Date.now()-started>=maxRuntimeMs){if(kind!=='rating'&&!optionalNotice&&!terminalGap(state,kind))missing.push(kind);stoppedForTime=true;continue;}
+        if(!revalidateReport&&!shouldRetryRatingFailure(kind,prior)&&prior?.status==='blocked'&&prior.parserVersion===INPUT_VERSION){if(kind!=='rating'&&!optionalNotice&&!coveredTerminal)missing.push(kind);continue;}
+        if(Date.now()-started>=maxRuntimeMs){if(kind!=='rating'&&!optionalNotice&&!coveredTerminal)missing.push(kind);stoppedForTime=true;continue;}
         try {
           const result=await (deps.project||projectDocument)(kind,event,bond);
           if(kind==='rating'){result.rating_requirement_version=RATING_REQUIREMENT_VERSION;validateRatingGrade(result);validateTrackingRatingYear(event,result);validateRatingResultNotice(event,result,bond);}

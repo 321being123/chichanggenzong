@@ -76,7 +76,7 @@
     },
     {
       "id": "BOND-INPUT-DOCUMENT-RECOVERY-058",
-      "title": "原文结案仅跳过同字段同证据URL，新报告失败不得豁免；缺评级无结果公告时仍解析最新评级报告",
+      "title": "未披露等结案只覆盖同字段同URL及报告期；新报告失败/OCR阻塞不豁免，已启动Runner不得覆盖新留证",
       "implementation": {
         "file": "server/services/convertibleBondAnalysisInputs.js",
         "symbol": "syncConvertibleBondAnalysisInputs"
@@ -89,6 +89,10 @@
         {
           "file": "server/test/bond-latest-rating-requirement.test.js",
           "pattern": "没有结果公告时仍须解析最新评级报告"
+        },
+        {
+          "file": "server/test/bond-analysis-terminal-gap.test.js",
+          "pattern": "BOND-INPUT-DOCUMENT-RECOVERY-058"
         }
       ],
       "owner": "Codex",
@@ -3834,7 +3838,7 @@
     },
     {
       "id": "BOND-API-FALLBACK-066",
-      "title": "资料主源失败后才使用Tushare末级备源；先入库、按证券目标日报告期URL覆盖，空结果/权限/冲突不恢复、不改原文失败事实",
+      "title": "资料主源失败后才用Tushare备源；先入库、按证券目标日报告期URL覆盖，同源同要素旧空展望补标记，空结果/权限/冲突不恢复、原文不覆盖",
       "implementation": {
         "file": "server/services/convertibleBondAnalysisFallback.js",
         "symbol": "tryAnalysisApiFallback"

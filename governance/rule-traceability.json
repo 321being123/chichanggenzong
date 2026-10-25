@@ -24,10 +24,10 @@
     },
     {
       "id": "BOND-REPORT-SCANNED-060",
-      "title": "扫描报告仅按唯一目录与实际章节复用OCR缓存；行列不完整不当空表完成",
+      "title": "扫描报告按唯一目录与实际章节复用OCR缓存；按真实网格恢复跨页单元格，十名/金额与完整价格链不齐不得完成",
       "implementation": {
         "file": "server/scripts/convertibleBondDocument.py",
-        "symbol": "read_report_document"
+        "symbol": "report_table_rows"
       },
       "tests": [
         {

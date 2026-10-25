@@ -138,3 +138,67 @@ def read_report_document(url, security_code=None, bond_name=None, issuer_name=No
     if '债券相关情况' not in re.sub(r'\s+', '', ''.join(pages[start-1:end-1])):
         raise ValueError('扫描报告实际页与目录债券章节不匹配')
     return pages, {**evidence, 'ocr_scope': 'toc_bond_section', 'ocr_section_pages': [start, end-1]}
+
+
+def report_table_rows(url, evidence):
+    """仅为已核验扫描报告恢复有完整网格的单元格，保留原文与独立缓存。"""
+    if evidence.get('text_method') != 'rapidocr-onnx-v1':
+        return []
+    cached = get_cached_pdf(url)
+    if not cached or hashlib.sha256(cached.read_bytes()).hexdigest() != evidence.get('document_hash'):
+        raise ValueError('扫描表格原文与已核验哈希不一致')
+    checkpoint = cached.with_suffix('.ocr-v1.json')
+    identity = {'hash': evidence['document_hash'], 'rapidocr': version('rapidocr-onnxruntime'),
+                'onnxruntime': version('onnxruntime'), 'version': 1}
+    try:
+        saved = json.loads(checkpoint.read_text(encoding='utf-8'))
+        if saved.get('table_identity') == identity:
+            return saved['table_rows']
+    except (OSError, ValueError, KeyError):
+        pass
+    import cv2
+    import numpy as np
+    from rapidocr_onnxruntime import RapidOCR
+    engine = RapidOCR(intra_op_num_threads=1, inter_op_num_threads=1)
+    start, end = evidence['ocr_section_pages']
+    output = []
+    with fitz.open(cached) as document:
+        for number in range(start, end + 1):
+            pix = document[number-1].get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
+            array = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width, pix.n)
+            binary = cv2.threshold(cv2.cvtColor(array, cv2.COLOR_RGB2GRAY), 180, 255, cv2.THRESH_BINARY_INV)[1]
+            def lines(kernel):
+                mask = cv2.morphologyEx(binary, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, kernel))
+                contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                return [cv2.boundingRect(contour) for contour in contours]
+            horizontal = sorted((box for box in lines((100, 1)) if box[2] > pix.width * .65), key=lambda box: box[1])
+            vertical = lines((1, 20))
+            recognized, _ = engine(array)
+            tokens = [(sum(p[0] for p in box)/4, sum(p[1] for p in box)/4, text)
+                      for box, text, confidence in (recognized or []) if float(confidence) >= .85]
+            for upper, lower in zip(horizontal, horizontal[1:]):
+                top, bottom = upper[1], lower[1]
+                if bottom-top < 20 or abs(upper[0]-lower[0]) > 3 or abs(upper[2]-lower[2]) > 3:
+                    continue
+                xs = sorted(set(x for x, y, w, h in vertical if y <= top+3 and y+h >= bottom-3
+                                and upper[0]-3 <= x <= upper[0]+upper[2]+3))
+                if len(xs) != 7 or abs(xs[0]-upper[0]) > 3 or abs(xs[-1]-(upper[0]+upper[2])) > 3:
+                    continue
+                cells = [''.join(text for x, y, text in sorted(tokens, key=lambda row: (row[1], row[0]))
+                                 if left < x < right and top < y < bottom)
+                         for left, right in zip(xs, xs[1:])]
+                output.append({'page': number, 'top': top, 'cells': cells})
+    fd, temporary = tempfile.mkstemp(prefix='table-ocr-', suffix='.part', dir=str(cached.parent))
+    try:
+        try:
+            progress = json.loads(checkpoint.read_text(encoding='utf-8'))
+        except (OSError, ValueError):
+            progress = {}
+        progress.update(table_identity=identity, table_rows=output)
+        with os.fdopen(fd, 'w', encoding='utf-8') as handle:
+            json.dump(progress, handle, ensure_ascii=False)
+        os.replace(temporary, checkpoint)
+    finally:
+        if os.path.exists(temporary):
+            os.remove(temporary)
+    return output

@@ -11,7 +11,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(
 from external_call_guard import guarded_urlopen
 
 import fitz
-from convertibleBondDocument import read_report_document as read_document
+from convertibleBondDocument import read_report_document as read_document, report_table_rows
 
 
 FUND_WORDS = re.compile(r"基金|养老金|年金|社保|资产管理计划|集合资产管理")
@@ -148,10 +148,44 @@ def unlisted_holder_exemption(text, bond_name):
     return None
 
 
+def parse_scanned_holders(rows):
+    holders, active = [], False
+    for row in rows:
+        cells = [re.sub(r'\s+', '', value) for value in row['cells']]
+        if cells[0] == '序号' and '张' in cells[3] and '元' in cells[4]:
+            active = True
+            continue
+        if not active:
+            continue
+        rank, name, nature, quantity, amount, ratio = cells
+        if holders and name and not any((rank, nature, quantity, amount, ratio)) and row['page'] == holders[-1]['page']+1:
+            holders[-1]['name'] += name
+            continue
+        if len(holders) == 10:
+            break
+        if not any((quantity, amount, ratio)):
+            continue
+        expected = len(holders)+1
+        # 序号OCR可能漏字；完整网格的实际行序与其他明确序号必须一致。
+        if rank and rank != str(expected):
+            raise ValueError('扫描持有人表序号与实际行序冲突')
+        if not name or not re.fullmatch(r'\d[\d,]*(?:\.\d+)?', quantity) or not re.fullmatch(r'\d[\d,]*(?:\.\d+)?', amount) or not re.fullmatch(r'\d+(?:\.\d+)?%', ratio):
+            raise ValueError('扫描持有人表单元格不完整')
+        quantity, amount, ratio = float(quantity.replace(',', '')), float(amount.replace(',', '')), float(ratio[:-1])/100
+        if quantity <= 0 or abs(quantity*100-amount) > .01 or not 0 < ratio <= 1:
+            raise ValueError('扫描持有人表张数、面值金额或比例不一致')
+        holders.append({'rank': expected, 'rank_source': 'printed' if rank else 'table_row_order',
+                        'name': name, 'quantity': quantity, 'amount': amount, 'ratio': ratio, 'page': row['page']})
+    if len(holders) == 10:
+        return holders
+    raise ValueError('扫描持有人表未完整覆盖十名持有人')
+
+
 def extract(url, security_code=None, bond_name=None, issuer_name=None):
     pages, evidence = read_document(url, security_code, bond_name, issuer_name)
     combined = '\n'.join(clean_page(page) for page in pages)
     candidates = list(re.finditer(HOLDER_TITLE, combined))
+    table_count = len(candidates)
     scope = None
     if len(candidates) > 1:
         bindings = list(re.finditer(r'可转换公司债券名称\s*([^\n]+)', combined))
@@ -175,6 +209,10 @@ def extract(url, security_code=None, bond_name=None, issuer_name=None):
                     'holder_table_bond': bond_name, 'holder_exemption': exemption}
         combined = ''
     holders = parse_holders(combined)
+    if candidates and len(holders) != 10 and evidence.get('text_method') == 'rapidocr-onnx-v1':
+        if table_count != 1:
+            raise ValueError('扫描报告多只转债持有人表不能按首表替代目标表')
+        holders = parse_scanned_holders(report_table_rows(url, evidence))
     if candidates and len(holders) != 10:
         raise ValueError('前十名持有人表解析不完整，不能当作零基金持仓')
     return {**evidence, **aggregate(holders), 'all_holders': holders, 'holder_table_bond': bond_name, 'holder_table_offset': scope,

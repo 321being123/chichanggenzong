@@ -336,6 +336,52 @@ with tempfile.TemporaryDirectory() as directory:
     except RuntimeError: pass
     sys.modules['rapidocr_onnxruntime'].RapidOCR=FakeOCR
 holders=importlib.import_module('extractConvertibleBondFundHoldings')
+# 扫描表格必须按网格还原跨页姓名，且十行、金额与原文序号均一致。
+grid=[{'page':1,'cells':['序号','名称','性质','数量（张）','金额（元）','占比']}]
+for n in range(1,11):
+    grid.append({'page':1 if n==1 else 2,'cells':[str(n) if n!=2 else '', '测试基金'+str(n), '其他', '1, 000', '100, 000.00', '1. 00%']})
+    if n==1: grid.append({'page':2,'cells':['','跨页续名','','','','']})
+scanned=holders.parse_scanned_holders(grid)
+assert len(scanned)==10 and scanned[0]['name']=='测试基金1跨页续名'
+assert scanned[1]['rank_source']=='table_row_order' and scanned[1]['amount']==100000
+for broken in [grid[:-1], [dict(r,cells=(['9']+r['cells'][1:] if i==3 else r['cells'])) for i,r in enumerate(grid)],
+               [dict(r,cells=(r['cells'][:4]+['100']+r['cells'][5:] if i==1 else r['cells'])) for i,r in enumerate(grid)]]:
+    try: holders.parse_scanned_holders(broken); assert False
+    except ValueError: pass
+price_grid=[{'cells':['名称','转股价格调整日','价格','披露时间','说明','最新价']}]
+price_grid += [{'cells':['测试转债','2026年02月03日','43.35','2026年01月30日','由43.55元/股调整至43.35元/股。','43.43']},
+               {'cells':['测试转债','2026年03月09日','43.43','2026年03月07日','由43.35元/股','43.43']},
+               {'cells':['','','','','调整至43.43元/股。','']}]
+scanned_prices=history.parse_scanned_history(price_grid,'url','测试转债',43.55)
+assert len(scanned_prices)==2 and scanned_prices[1]['convertprice_bef']==43.35
+assert scanned_prices[0]['change_date']=='2026-02-03' and scanned_prices[0]['publish_date']=='2026-01-30'
+for broken in [price_grid[:-1], [dict(r,cells=(r['cells'][:2]+['43.99']+r['cells'][3:] if i==1 else r['cells'])) for i,r in enumerate(price_grid)]]:
+    try: history.parse_scanned_history(broken,'url','测试转债',43.55); assert False
+    except ValueError: pass
+with tempfile.TemporaryDirectory() as folder:
+    import hashlib
+    os.environ['DOCUMENT_PDF_CACHE_DIR']=folder
+    grid_doc=fitz.open();page=grid_doc.new_page()
+    for x in [50+i*500/6 for i in range(7)]: page.draw_line((x,100),(x,150),width=.5)
+    for y in [100,150]: page.draw_line((50,y),(550,y),width=.5)
+    grid_url='https://disc.static.szse.cn/grid.pdf';grid_pdf=grid_doc.tobytes();put_cached_pdf(grid_url,grid_pdf)
+    grid_evidence={'text_method':'rapidocr-onnx-v1','document_hash':hashlib.sha256(grid_pdf).hexdigest(),'ocr_section_pages':[1,1]}
+    class GridOCR:
+        def __init__(self,**kwargs): pass
+        def __call__(self,image):
+            return [[[[120+i*500/3,220],[140+i*500/3,220],[140+i*500/3,240],[120+i*500/3,240]],str(i),.99] for i in range(6)],None
+    sys.modules['rapidocr_onnxruntime'].RapidOCR=GridOCR
+    restored_grid=reader.report_table_rows(grid_url,grid_evidence)
+    assert len(restored_grid)==1 and restored_grid[0]['cells']==list('012345')
+    sys.modules['rapidocr_onnxruntime'].RapidOCR=InterruptedOCR
+    assert reader.report_table_rows(grid_url,grid_evidence)==restored_grid, '表格缓存命中不得重做OCR'
+    try: reader.report_table_rows(grid_url,dict(grid_evidence,document_hash='b'*64)); assert False
+    except ValueError: pass
+    original_version=reader.version
+    reader.version=lambda name:'changed-table-version'
+    try: reader.report_table_rows(grid_url,grid_evidence); assert False
+    except RuntimeError: pass
+    finally: reader.version=original_version
 # BOND-REPORT-SCANNED-060：目录页码唯一且实际章节匹配，OCR只消费目录与债券章节。
 assert reader.bond_section_range(['第七节债券相关情况\n.57\n第八节财务报告.61'])==(57,61)
 assert reader.bond_section_range(['第七节债券相关情况 .61 第八节财务报告 .57']) is None

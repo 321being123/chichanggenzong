@@ -9,7 +9,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(
 from external_call_guard import guarded_urlopen
 
 import fitz
-from convertibleBondDocument import read_report_document as read_document
+from convertibleBondDocument import read_report_document as read_document, report_table_rows
 
 
 DATE_PATTERN = r"(20\d{2})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日"
@@ -17,6 +17,38 @@ DATE_PATTERN = r"(20\d{2})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日"
 
 def format_date(groups):
     return f"{int(groups[0]):04d}-{int(groups[1]):02d}-{int(groups[2]):02d}"
+
+
+def parse_scanned_history(table, url, bond_name, initial_price):
+    selected, active = [], False
+    for row in table:
+        cells = [re.sub(r'\s+', '', value) for value in row['cells']]
+        if '转股价格调整日' in cells[1] and '披露时间' in cells[3]:
+            active = True
+            continue
+        if not active:
+            continue
+        if cells[0] == bond_name:
+            selected.append(cells)
+        elif selected and cells[4] and not any(cells[:4]+cells[5:]):
+            selected[-1][4] += cells[4]
+    output, previous = [], initial_price
+    latest_prices = set()
+    for name, changed, price, published, reason, latest in selected:
+        change_date, publish_date = re.fullmatch(DATE_PATTERN, changed), re.fullmatch(DATE_PATTERN, published)
+        pair = re.search(r'由(\d+(?:\.\d+)?)元/股调整至(\d+(?:\.\d+)?)元/股', reason)
+        if not change_date or not publish_date or not re.fullmatch(r'\d+(?:\.\d+)?', price) or not re.fullmatch(r'\d+(?:\.\d+)?', latest) or not pair:
+            raise ValueError('扫描转股价表日期、价格或调整前后原文不完整')
+        before, after = map(float, pair.groups())
+        if after <= 0 or abs(after-float(price)) > .000001 or previous is not None and abs(float(previous)-before) > .000001:
+            raise ValueError('扫描转股价表与原文调整价格或前后链不一致')
+        output.append({'change_date': format_date(change_date.groups()), 'publish_date': format_date(publish_date.groups()),
+                       'convertprice_bef': before, 'convertprice_aft': after, 'reason': reason, 'source_url': url})
+        previous = after
+        latest_prices.add(float(latest))
+    if output and (latest_prices != {output[-1]['convertprice_aft']} or any(a['change_date'] >= b['change_date'] for a, b in zip(output, output[1:]))):
+        raise ValueError('扫描转股价表未覆盖截至报告期末最新价格或日期顺序冲突')
+    return output
 
 
 def extract_history(url, initial_price=None, bond_name=None, security_code=None, issuer_name=None):
@@ -83,7 +115,9 @@ def extract_history(url, initial_price=None, bond_name=None, security_code=None,
             })
             previous = after
     if evidence.get('text_method') == 'rapidocr-onnx-v1' and not rows:
-        raise ValueError('扫描转股价表未完整解析，不能以空结果标记历史完成')
+        rows = parse_scanned_history(report_table_rows(url, evidence), url, bond_name, initial_price)
+        if not rows:
+            raise ValueError('扫描转股价表未完整解析，不能以空结果标记历史完成')
     return {**evidence, "price_changes": rows, "rating_outlook": rating_outlook}
 
 

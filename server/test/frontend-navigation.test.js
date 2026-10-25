@@ -147,4 +147,26 @@ ok(html.includes('data-act="securityAnalysisSubmit"') && html.includes('data-act
 // 旧转债分析深链（main=stock-analysis&code=转债）自动映射到可转债分析
 ok(html.includes("securityAnalysisKind(maybeCode) === 'bond'"), '旧转债深链未做自动映射');
 
+// ===== 反馈页子栏目使用全站二级标题导航（2026-10-25：去掉独立 FEEDBACK hero 卡片） =====
+ok(html.includes('class="bond-sub-nav fb-sub-nav"'), '反馈子栏目应复用全站二级标题导航 bond-sub-nav');
+ok(/class="bond-sub-tab active"[^>]*data-fb-sub="all"/.test(html), '「全部反馈」应为默认激活的二级标题');
+ok(!html.includes('fb-hero'), '反馈页不应再有独立 FEEDBACK hero 卡片');
+// 页面内不再放「提交反馈」按钮：统一由左侧全局悬浮入口（feedback-fab）承担
+ok(!html.includes('data-fb-act="open-form"'), '反馈页不应再有页面内「提交反馈」按钮');
+ok(!fs.readFileSync(path.join(root, 'public/js/feedback.js'), 'utf8').includes('data-fb-act="open-form"'),
+  '反馈列表工具栏不应再有「提交反馈」按钮');
+// 子栏目必须保持 .bond-sub-nav 的默认对齐，否则激活下划线不贴导航条底边（2026-10-25 样式回归）
+ok(!/\.fb-sub-nav\s*\{[^}]*align-items/.test(fs.readFileSync(path.join(root, 'public/css/feedback.css'), 'utf8')),
+  'feedback.css 不得覆盖 .bond-sub-nav 的 align-items');
+
+// ===== 日期输入框：点击整框唤起原生选择器（2026-10-25 全站统一交互） =====
+const uiActions = fs.readFileSync(path.join(root, 'public', 'shared', 'ui-actions.js'), 'utf8');
+ok(uiActions.includes('showPicker'), 'shared/ui-actions.js 应统一处理日期框点击唤起选择器');
+ok(/input\[type="date"\], input\[type="month"\], input\[type="datetime-local"\]/.test(uiActions),
+  '日期框统一交互应覆盖 date / month / datetime-local 三类输入');
+['public/index.html', 'public/admin.html'].forEach(function (rel) {
+  ok(fs.readFileSync(path.join(root, rel), 'utf8').includes('shared/ui-actions.js'),
+    rel + ' 必须加载 shared/ui-actions.js，否则日期框统一交互不生效');
+});
+
 console.log('frontend-navigation: ' + checks + ' 项断言通过');

@@ -90,5 +90,22 @@ window.UiActions = (function () {
     document.addEventListener(ev, handleAction, true);
   });
 
+  // ---- 日期输入框：点击整框唤起选择器（2026-10-25 全站统一交互） ----
+  // 原生 input[type=date/month/datetime-local] 只有点日历图标才展开选择器，点文字区域只进分段编辑；
+  // 这里统一为点框内任意位置都唤起原生选择器（键盘输入不受影响）。不支持 showPicker 的浏览器保持原生行为。
+  var DATE_PICKER_SELECTOR = 'input[type="date"], input[type="month"], input[type="datetime-local"]';
+  document.addEventListener('click', function (e) {
+    var t = e.target;
+    if (!t || !t.closest || typeof HTMLInputElement === 'undefined') return;
+    if (typeof HTMLInputElement.prototype.showPicker !== 'function') return;
+    var input = t.closest(DATE_PICKER_SELECTOR);
+    if (!input || input.disabled || input.readOnly || input.hidden) return;
+    try {
+      input.showPicker();
+    } catch (err) {
+      // 选择器已在显示、或浏览器拒绝重复唤起时忽略，保持原生表现
+    }
+  });
+
   return { applyStyleAttr: applyStyleAttr, processNode: processNode };
 })();

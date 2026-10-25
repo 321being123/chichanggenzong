@@ -129,11 +129,9 @@
         + '<label>到 <input type="date" id="fb-to" value="' + esc(st.to) + '"></label>'
         + '<select id="fb-sort"><option value="created"' + (st.sort === 'created' ? ' selected' : '') + '>最新提交</option>'
         + '<option value="updated"' + (st.sort === 'updated' ? ' selected' : '') + '>最近更新</option></select>'
-        + '<button type="button" class="btn btn-primary" data-fb-act="open-form">提交反馈</button>'
         + '</div>';
     } else {
-      html += '<div class="fb-toolbar"><span class="fb-upload-tip">这里显示你提交的全部反馈，包括私密、被隐藏和已撤回的记录。</span>'
-        + '<button type="button" class="btn btn-primary" data-fb-act="open-form">提交反馈</button></div>';
+      html += '<div class="fb-toolbar"><span class="fb-upload-tip">这里显示你提交的全部反馈，包括私密、被隐藏和已撤回的记录。</span></div>';
     }
     html += '<div class="fb-chips" id="fb-chips"></div><div id="fb-list"><p class="fb-empty">加载中…</p></div>';
     host.innerHTML = html;
@@ -669,7 +667,7 @@
   }
 
   function renderSubTabs() {
-    document.querySelectorAll('#main-feedback .fb-tab').forEach(function (tab) {
+    document.querySelectorAll('#main-feedback [data-fb-sub]').forEach(function (tab) {
       tab.classList.toggle('active', tab.getAttribute('data-fb-sub') === state.sub);
     });
   }
@@ -823,7 +821,6 @@
         loadRanking();
         return;
       }
-      if (act === 'open-form') { openForm('create'); return; }
       if (act === 'close-form') { e.preventDefault(); closeForm(); return; }
       if (act === 'pick-type') {
         var group = el.parentNode;

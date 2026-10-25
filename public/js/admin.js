@@ -51,9 +51,12 @@ function showToast(msg) {
 }
 
 // ====== 通用弹窗 ======
-function openAdminModal(title, bodyHtml, actionsHtml) {
+// options.wide：内容密集的弹窗（如反馈处理）用更宽的容器，其余弹窗保持默认宽度
+function openAdminModal(title, bodyHtml, actionsHtml, options) {
   const m = document.getElementById('admin-modal');
   if (!m) return;
+  const box = document.getElementById('admin-modal-box');
+  if (box) box.classList.toggle('admin-modal--wide', !!(options && options.wide));
   document.getElementById('admin-modal-title').textContent = title;
   document.getElementById('admin-modal-body').innerHTML = bodyHtml;
   document.getElementById('admin-modal-actions').innerHTML = actionsHtml || '';

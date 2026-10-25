@@ -183,7 +183,8 @@
 
     openAdminModal('反馈 #' + fb.id + '　' + fb.title, html,
       '<button type="button" class="btn btn-outline" data-act="closeAdminModal">关闭</button>'
-      + '<button type="button" class="btn btn-primary" data-fbadmin-act="save" data-id="' + esc(fb.id) + '">保存处理</button>');
+      + '<button type="button" class="btn btn-primary" data-fbadmin-act="save" data-id="' + esc(fb.id) + '">保存处理</button>',
+      { wide: true });
   }
 
   async function saveDetail(id) {

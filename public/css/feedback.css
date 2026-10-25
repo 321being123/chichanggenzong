@@ -4,21 +4,9 @@
 
 .fb-page { display: flex; flex-direction: column; gap: 14px; }
 
-.fb-hero {
-  display: flex; align-items: flex-end; justify-content: space-between; gap: 16px;
-  background: #fff; border-radius: 10px; padding: 18px; box-shadow: 0 1px 3px rgba(0,0,0,.05);
-}
-.fb-eyebrow { display: block; font-size: 11px; letter-spacing: .12em; color: #8a8fa3; font-weight: 600; }
-.fb-hero h2 { font-size: 20px; color: #1a1a2e; margin: 4px 0 6px; }
-.fb-hero p { font-size: 13px; color: #6e6e6e; line-height: 1.6; max-width: 640px; }
-
-.fb-tabs { display: flex; gap: 6px; flex-wrap: wrap; }
-.fb-tab {
-  padding: 8px 16px; border: 1px solid #e3e6f0; background: #fff; color: #4a4f63;
-  border-radius: 8px; cursor: pointer; font-size: 13px; transition: .15s;
-}
-.fb-tab:hover { background: #f3f5fb; }
-.fb-tab.active { background: #1a237e; border-color: #1a237e; color: #fff; }
+/* 子栏目沿用全站二级标题导航（bond-header / bond-sub-nav / bond-sub-tab），不再另写尺寸与对齐，
+   否则会覆盖 .bond-sub-nav 的 align-items:stretch，导致激活下划线不贴导航条底边。
+   提交入口统一由左侧全局悬浮反馈入口承担，页面内不再放「提交反馈」按钮。 */
 
 .fb-panel { background: #fff; border-radius: 10px; padding: 16px 18px; box-shadow: 0 1px 3px rgba(0,0,0,.05); }
 
@@ -143,6 +131,12 @@
 .fb-modal .fb-form { margin-top: 4px; }
 .fb-modal input[type="file"] { font-size: 13px; }
 
+/* 后台「处理反馈」弹窗：描述、截图、回复、处理表单与历史一屏放不下，默认 520px 过窄 */
+.modal.admin-modal--wide { width: 900px; }
+@media (max-width: 760px) {
+  .modal.admin-modal--wide { width: 100%; max-width: 100%; }
+}
+
 @media (max-width: 760px) {
   .fb-modal { align-items: stretch; }
   .fb-modal .modal {
@@ -231,9 +225,6 @@
 }
 
 @media (max-width: 760px) {
-  .fb-hero { flex-direction: column; align-items: stretch; }
-  .fb-hero .btn { min-height: 44px; }
-  .fb-tab { min-height: 44px; padding: 10px 14px; }
   .fb-toolbar { flex-direction: column; align-items: stretch; }
   .fb-toolbar input[type="text"], .fb-toolbar input[type="date"], .fb-toolbar select { font-size: 16px; min-height: 44px; width: 100%; max-width: none; }
   .fb-field input[type="text"], .fb-field textarea, .fb-field select { font-size: 16px; }

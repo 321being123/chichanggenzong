@@ -315,21 +315,15 @@
 
 <!-- 反馈（一级页：全部反馈 / 我的反馈 / 反馈排名 / 版本更新） -->
 <div class="main-page" id="main-feedback">
-  <div class="fb-page">
-    <header class="fb-hero">
-      <div>
-        <span class="fb-eyebrow">FEEDBACK</span>
-        <h2>反馈</h2>
-        <p>提交错误、改进建议和需求，随时查看处理进度；已解决的问题会关联到发布版本。</p>
-      </div>
-      <button type="button" class="btn btn-primary" data-fb-act="open-form">提交反馈</button>
-    </header>
-    <nav class="fb-tabs" aria-label="反馈子栏目">
-      <button type="button" class="fb-tab active" data-fb-sub="all" data-fb-act="sub" data-sub="all">全部反馈</button>
-      <button type="button" class="fb-tab" data-fb-sub="mine" data-fb-act="sub" data-sub="mine">我的反馈</button>
-      <button type="button" class="fb-tab" data-fb-sub="ranking" data-fb-act="sub" data-sub="ranking">反馈排名</button>
-      <button type="button" class="fb-tab" data-fb-sub="versions" data-fb-act="sub" data-sub="versions">版本更新</button>
+  <div class="bond-header">
+    <nav class="bond-sub-nav fb-sub-nav" aria-label="反馈子栏目">
+      <button type="button" class="bond-sub-tab" data-fb-sub="versions" data-fb-act="sub" data-sub="versions">版本更新</button>
+      <button type="button" class="bond-sub-tab active" data-fb-sub="all" data-fb-act="sub" data-sub="all">全部反馈</button>
+      <button type="button" class="bond-sub-tab" data-fb-sub="mine" data-fb-act="sub" data-sub="mine">我的反馈</button>
+      <button type="button" class="bond-sub-tab" data-fb-sub="ranking" data-fb-act="sub" data-sub="ranking">反馈排名</button>
     </nav>
+  </div>
+  <div class="fb-page feature-page-shell">
     <div class="fb-body" id="fb-body">
       <div class="fb-panel"><p class="fb-empty">加载中…</p></div>
     </div>

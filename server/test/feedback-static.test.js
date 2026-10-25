@@ -146,6 +146,22 @@ test('反馈样式覆盖 760px 手机分界', function () {
   assert.ok(read('public/css/feedback.css').indexOf('@media (max-width: 760px)') >= 0, '缺少 760px 媒体查询');
 });
 
+// 2026-10-25 线上反馈 5 号：脚本 click() 唤起选择器在部分浏览器不生效，改回 label 关联
+test('反馈表单图片入口用 label 关联文件域', function () {
+  const js = read('public/js/feedback.js');
+  assert.ok(/<label class="fb-img-btn" for="fb-form-files">/.test(js), '图片上传入口必须是 label[for="fb-form-files"]');
+  assert.ok(!/id="fb-form-files"[^>]*\shidden/.test(js), '文件域不能用 hidden 属性，需靠 .fb-file-input 视觉隐藏');
+  assert.ok(read('public/css/feedback.css').indexOf('.fb-file-input') >= 0, '缺少 .fb-file-input 视觉隐藏样式');
+});
+
+// 2026-10-25 线上反馈 5 号：缩略图走 URL.createObjectURL，CSP 不含 blob: 会被拦截成空白
+test('CSP img-src 允许 blob:，否则反馈缩略图被拦截', function () {
+  const src = read('server/middleware/security.js');
+  const directive = src.match(/img-src[^"]*"/);
+  assert.ok(directive, '缺少 img-src 指令');
+  assert.ok(/\bblob:/.test(directive[0]), 'img-src 必须包含 blob:，实际为 ' + directive[0]);
+});
+
 console.log('\n--- 汇总 ---');
 console.log('通过 ' + pass + ' / 失败 ' + fail);
 process.exit(fail ? 1 : 0);

@@ -537,10 +537,11 @@
       + '<textarea id="fb-form-desc" maxlength="5000" placeholder="请您提供详细的问题描述或需求，这对我们的理解会有很大帮助。">' + esc(fb ? fb.description : '') + '</textarea></div>'
       + (!editing
         ? '<div class="fb-field fb-field--row"><span class="fb-label">图片</span><div class="fb-img-actions">'
-        + '<button type="button" class="fb-img-btn" data-fb-act="pick-images">点击这里直接上传图片</button>'
+        // 用 label 关联文件域：不依赖脚本 click()，手机与内嵌浏览器同样能唤起选择器
+        + '<label class="fb-img-btn" for="fb-form-files">选择本地图片</label>'
         + '<button type="button" class="fb-img-btn" data-fb-act="paste-hint">点击这里聚焦，然后粘贴上传图片</button>'
         + '<span class="fb-img-limit">（最多3张图片）</span></div>'
-        + '<input type="file" id="fb-form-files" accept="image/png,image/jpeg,image/webp" multiple hidden>'
+        + '<input type="file" id="fb-form-files" class="fb-file-input" accept="image/png,image/jpeg,image/webp" multiple>'
         + '<div class="fb-thumbs" id="fb-form-thumbs"></div></div>'
         + '<div class="fb-field fb-field--row"><span class="fb-label">可见范围</span><div class="fb-radio-row">'
         + '<label><input type="radio" name="fb-visibility" value="public" checked>公开</label>'
@@ -593,6 +594,8 @@
       }
     }
     renderThumbs();
+    var armed = document.querySelector('[data-fb-act="paste-hint"].is-armed');
+    if (armed) armed.classList.remove('is-armed');
   }
 
   async function onPickFiles(e) {
@@ -833,13 +836,12 @@
         if (typeInput) typeInput.value = el.getAttribute('data-type') || 'bug';
         return;
       }
-      if (act === 'pick-images') {
-        var fileInput = byId('fb-form-files');
-        if (fileInput) fileInput.click();
-        return;
-      }
       if (act === 'paste-hint') {
+        // 按钮自身无输入框，靠可见聚焦态让用户确认“已就绪”
+        var armedList = document.querySelectorAll('[data-fb-act="paste-hint"].is-armed');
+        Array.prototype.forEach.call(armedList, function (b) { b.classList.remove('is-armed'); });
         el.focus();
+        el.classList.add('is-armed');
         toast('已聚焦，请按 Ctrl+V 粘贴图片');
         return;
       }

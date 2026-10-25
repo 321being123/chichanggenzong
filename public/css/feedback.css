@@ -26,7 +26,7 @@
 .fb-toolbar input[type="text"], .fb-toolbar input[type="date"], .fb-toolbar select {
   padding: 8px 10px; border: 1px solid #e0e3ee; border-radius: 8px; font-size: 13px; color: #333; background: #fff;
 }
-.fb-toolbar input[type="text"] { min-width: 200px; flex: 1 1 200px; }
+.fb-toolbar input[type="text"] { min-width: 160px; flex: 0 1 260px; max-width: 300px; }
 .fb-toolbar label { font-size: 12px; color: #6e6e6e; }
 
 .fb-chips { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
@@ -201,10 +201,20 @@
 /* 图片：直接上传 / 聚焦粘贴 */
 .fb-img-actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
 .fb-img-btn {
+  display: inline-flex; align-items: center; justify-content: center;
   padding: 9px 14px; min-height: 40px; border: 1px solid #c9cdd8; border-radius: 6px;
   background: #fff; color: #333; font-size: 13px; cursor: pointer;
 }
 .fb-img-btn:hover { border-color: #1a237e; color: #1a237e; }
+.fb-img-btn:focus-visible, .fb-img-btn.is-armed {
+  outline: none; border-color: #1a237e; color: #1a237e;
+  box-shadow: 0 0 0 3px rgba(26,35,126,.14);
+}
+/* 文件域视觉隐藏但仍可被 label 触发；不用 hidden，避免部分内嵌浏览器拒绝唤起选择器 */
+.fb-file-input {
+  position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0;
+  border: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap;
+}
 .fb-img-limit { color: #c0392b; font-size: 13px; }
 
 @media (max-width: 760px) {
@@ -225,7 +235,7 @@
   .fb-hero .btn { min-height: 44px; }
   .fb-tab { min-height: 44px; padding: 10px 14px; }
   .fb-toolbar { flex-direction: column; align-items: stretch; }
-  .fb-toolbar input[type="text"], .fb-toolbar input[type="date"], .fb-toolbar select { font-size: 16px; min-height: 44px; width: 100%; }
+  .fb-toolbar input[type="text"], .fb-toolbar input[type="date"], .fb-toolbar select { font-size: 16px; min-height: 44px; width: 100%; max-width: none; }
   .fb-field input[type="text"], .fb-field textarea, .fb-field select { font-size: 16px; }
   .fb-chip { min-height: 38px; }
   .fb-card { padding: 12px; }

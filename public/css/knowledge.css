@@ -701,7 +701,6 @@
 
 .ks-card {
   position: relative;
-  aspect-ratio: 1;
   min-width: 0;
   padding: 18px;
   display: flex;

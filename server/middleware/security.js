@@ -84,7 +84,8 @@ function securityHeaders(req, res, next) {
     "script-src-attr 'none'",
     `style-src ${styleSources}`,
     "style-src-attr 'none'",
-    "img-src 'self' data: https:",
+    // blob: 供反馈表单本地预览（URL.createObjectURL）使用，不放开外部来源
+    "img-src 'self' data: blob: https:",
     "connect-src 'self'",
     "form-action 'self'",
     "frame-ancestors 'none'"

@@ -96,7 +96,7 @@
         }
       ],
       "owner": "Codex",
-      "status": "implemented"
+      "status": "production_verified"
     },
     {
       "id": "STOCK-ANALYSIS-REFRESH-001",
@@ -3854,7 +3854,7 @@
         }
       ],
       "owner": "Codex",
-      "status": "implemented"
+      "status": "production_verified"
     }
   ]
 }

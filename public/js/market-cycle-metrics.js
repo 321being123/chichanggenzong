@@ -91,6 +91,8 @@ function switchMarketCycleMetric(metric) {
 async function mvcLoad() {
   if(mvcState.loading)return; mvcState.loading=true; var status=document.getElementById('mvc-status');status.textContent='正在读取数据...';
   try{
+    // 同 loadMarketVolatility：等账户列表就绪后再取 mvcAccount()，避免占位账户「默认账户」触发 403
+    if(window.accountDataReady){try{await window.accountDataReady;}catch(err){}}
     var qs='metric='+encodeURIComponent(mvcState.metric)+'&market='+encodeURIComponent(mvcState.market)+'&benchmark='+encodeURIComponent(mvcState.benchmark);
     var responses=await Promise.all([
       fetch(api('/api/market-volatility/overview?'+qs+'&account='+encodeURIComponent(mvcAccount()))),

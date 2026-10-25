@@ -26,6 +26,10 @@ async function loadMarketVolatility() {
   var account = mvAccount(), status = document.getElementById('mv-status');
   mvState.loading = true; status.textContent = '正在读取数据...';
   try {
+    // 账户列表后台异步加载；未就绪时 currentAccount 仍是占位值「默认账户」，
+    // 直接发请求会被账户归属校验拒为 403（深链/登录回跳进入本页时必现），须等就绪后重取。
+    if (window.accountDataReady) { try { await window.accountDataReady; } catch (err) {} }
+    account = mvAccount();
     var qs = 'market=' + encodeURIComponent(mvState.market) + '&benchmark=' + encodeURIComponent(mvState.benchmark);
     var both = await Promise.all([fetch(api('/api/market-volatility/overview?' + qs + '&account=' + encodeURIComponent(account))), fetch(api('/api/market-volatility/history?' + qs + '&range=' + encodeURIComponent(mvState.range)))]);
     if (!both[0].ok || !both[1].ok) throw new Error('接口返回 ' + (!both[0].ok ? both[0].status : both[1].status));

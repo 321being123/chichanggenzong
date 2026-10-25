@@ -1,6 +1,7 @@
 // convertibleBondAnalysis.js —— R-10 拆分后主入口（2026-10-21）：函数体按域放在 ./convertibleBondAnalysis*.js，
 // 本文件只做编排与再导出；module.exports 与拆分前完全一致，调用方零改动。
 const { pool, tryClaimJob, releaseJob, startJobRun, finishJobRun } = require('../db');
+const {coversDocument}=require('./convertibleBondAnalysisFallback');
 const { tushareQuery, tsRows, tsDateStr } = require('./market');
 const path = require('path');
 const { evaluateConvertibleBondFreshness, CONV_PRICE_EPS } = require('./analysisFreshness');
@@ -265,14 +266,16 @@ async function assembleConvertibleBondAnalysis({ tsCode, stockCode, profile, ids
   const ratingRequirement=profile.analysis_inputs?.rating_requirement;
   if(ratingRequirement?.version==='latest-complete-history-present-v1'&&!ratingRequirement.latest_complete)missing.push('rating');
   const pendingDocuments=Object.entries(profile.analysis_inputs?.documents||{}).filter(([key,state])=>
-    !['complete','not_applicable'].includes(state.status)&&(!key.startsWith('rating:')||
+    !['complete','not_applicable'].includes(state.status)&&!coversDocument(profile.analysis_inputs?.api_fallbacks?.[key.split(':')[0]],key.split(':')[0],key.slice(key.indexOf(':')+1),profile.analysis_inputs?.targetDate,
+      profile.analysis_inputs?.required_report_period,tsCode)&&(!key.startsWith('rating:')||
       ratingRequirement?.version!=='latest-complete-history-present-v1'||(ratingRequirement.required_document_urls||[]).includes(key.slice(7)))).map(([key,state])=>({
     key,status:state.status,reason:state.error?String(state.error).trim().split(/\r?\n/).filter(Boolean).slice(-1)[0].slice(0,250):null,
   }));
   if(pendingDocuments.length)missing.push('historical_documents');
   analysis.completeness = {status:missing.length?'partial':'complete',missing,
     inputs:profile.analysis_inputs?{status:profile.analysis_inputs.status,parser_version:profile.analysis_inputs.parserVersion,
-      covered_through:profile.analysis_inputs.coveredThrough,target_date:profile.analysis_inputs.targetDate,missing:profile.analysis_inputs.missing,not_due:profile.analysis_inputs.not_due}:null,
+      covered_through:profile.analysis_inputs.coveredThrough,target_date:profile.analysis_inputs.targetDate,missing:profile.analysis_inputs.missing,not_due:profile.analysis_inputs.not_due,
+      api_fallbacks:profile.analysis_inputs.api_fallbacks||{}}:null,
     pending_documents:pendingDocuments};
   const watermark = {
     analysis_type: 'convertible_bond',

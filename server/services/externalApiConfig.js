@@ -78,7 +78,7 @@ const TUSHARE_TEST_PROBES = {
   cb_basic: { params: { ts_code: '110000.SH' }, fields: 'ts_code,bond_short_name,stk_code' },
   cb_daily: { params: { ts_code: '110000.SH', start_date: '20200102', end_date: '20200102' }, fields: 'ts_code,trade_date,close' },
   cb_issue: { params: { ts_code: '110000.SH' }, fields: 'ts_code,ann_date,issue_size' },
-  cb_price_chg: { params: { ts_code: '110000.SH' }, fields: 'ts_code,change_date,convert_price_before,convert_price_after' },
+  cb_price_chg: { params: { ts_code: '110000.SH' }, fields: 'ts_code,publish_date,change_date,convert_price_initial,convertprice_bef,convertprice_aft' },
   index_daily: { params: { ts_code: '000300.SH', start_date: '20200102', end_date: '20200102' }, fields: 'ts_code,trade_date,close' },
   index_member_all: { params: { ts_code: '000001.SZ', is_new: 'Y' }, fields: 'ts_code,l1_code,l1_name,l2_code,l2_name,l3_code,l3_name,is_new' },
   top10_cb_holders: { params: { ts_code: '110000.SH', end_date: '20200102' }, fields: 'ts_code,end_date,holder_rank,holder_name,hold_amount,hold_ratio' },

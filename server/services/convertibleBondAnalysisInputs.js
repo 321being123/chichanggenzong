@@ -8,6 +8,7 @@ const {saveCollectedEvents}=require('./financialDataArchitecture');
 const {childProcessEnv,mergeExternalCallStatsFromStderr}=require('./externalCallGuard');
 const {isoDate,normalizeBondCode,announcementDateWindows,analysisInputTools:tools}=require('./convertibleBondAnalysis');
 const {loadAnalysisUniverse,persistAnalysisProgress,latestAnalysisDate}=require('./convertibleBondAnalysisSnapshots');
+const {tryAnalysisApiFallback,APIS:FALLBACK_APIS}=require('./convertibleBondAnalysisFallback');
 
 const INPUT_VERSION='analysis-input-v4';
 const DOCUMENT_SELECTION_VERSION='bond-doc-selection-2026-10-24-v2';
@@ -514,6 +515,7 @@ async function syncConvertibleBondAnalysisInputs({businessDate,targetCodes=[],ma
       const needNotices=needRatingResultNotices({reportCount:ratingReports.length,latestComplete:ratingState.latest_complete,hasIncompleteReport});
       state.rating_coverage={};
       const expectedPeriod=requiredReportPeriod(targetDate);
+      state.required_report_period=expectedPeriod;
       const reportNotDue=isoDate(bond.value_date)>expectedPeriod&&!selected.some(d=>d.kind==='holders');
       state.not_due=reportNotDue?{report_period:expectedPeriod,value_date:isoDate(bond.value_date),fields:['holders','price_history'],basis:'annual_4_months_halfyear_2_months'}:null;
       if(!selected.some(d=>d.kind==='prospectus')&&!terminalGap(state,'prospectus'))missing.push('prospectus');
@@ -552,6 +554,7 @@ async function syncConvertibleBondAnalysisInputs({businessDate,targetCodes=[],ma
             keepRatingEvidence();
           }
           state.documents[key]={status:'complete',parserVersion:INPUT_VERSION,ratingCapability:RATING_RETRY_CAPABILITY,documentCapability:DOCUMENT_SELECTION_VERSION,documentHash:result.document_hash,couponStatus:result.coupon_status,announcedAt:isoDate(event.event_date)};
+          if(state.api_fallbacks?.[kind]){state.api_fallbacks={...state.api_fallbacks};delete state.api_fallbacks[kind];}
           if(kind==='holders'&&result.parse_status==='not_applicable')state.documents[key].holderExemption={...result.holder_exemption,report_date:result.report_date};
           if(optionalNotice)state.documents[key].ratingResult=result;
         } catch(error) {
@@ -562,7 +565,7 @@ async function syncConvertibleBondAnalysisInputs({businessDate,targetCodes=[],ma
             state.documents[key]={...prior,lastError:message,attemptedAt:new Date().toISOString()};
           } else {
             if(kind!=='rating'&&!optionalNotice)missing.push(kind);
-            state.documents[key]={...prior,previousStatus:prior?.previousStatus||prior?.status,status:message.includes('需要OCR')?'blocked':'failed',parserVersion:INPUT_VERSION,ratingCapability:RATING_RETRY_CAPABILITY,documentCapability:DOCUMENT_SELECTION_VERSION,error:message,attemptedAt:new Date().toISOString()};
+            state.documents[key]={...prior,previousStatus:prior?.previousStatus||prior?.status,status:message.includes('需要OCR')?'blocked':'failed',parserVersion:INPUT_VERSION,ratingCapability:RATING_RETRY_CAPABILITY,documentCapability:DOCUMENT_SELECTION_VERSION,error:message,announcedAt:isoDate(event.event_date),attemptedAt:new Date().toISOString()};
           }
         }
         await (deps.persistBond||persistBondInputs)(bond,state);
@@ -579,6 +582,25 @@ async function syncConvertibleBondAnalysisInputs({businessDate,targetCodes=[],ma
         state.not_due={report_period:expectedPeriod,fields:['holders'],basis:'official_not_listed_by_report_period',evidence:exemptHolder};
       }
       if(selected.some(({kind,event})=>kind==='prospectus'&&['not_disclosed','missing'].includes(state.documents[`prospectus:${event.url}`]?.couponStatus))&&!selected.some(({kind,event})=>kind==='issuance_terms'&&state.documents[`issuance_terms:${event.url}`]?.status==='complete'))missing.push('coupon_terms');
+      // 主源已失败/仍有缺项后才启用已授权的Tushare末级备源；原文失败证据保持原样。
+      const fallback=deps.apiFallback||(!deps.loadUniverse&&tryAnalysisApiFallback);
+      if(fallback&&Date.now()-started<maxRuntimeMs)for(const kind of new Set(missing.map(field=>field==='rating_history'?'rating':field).filter(field=>FALLBACK_APIS[field]))) {
+        const period=expectedPeriod;
+        const documentUrls=selected.filter(d=>d.kind===kind).map(d=>d.event.url);
+        const result=await fallback({kind,bond,targetDate,period,documentUrls});
+        state.api_fallbacks={...(state.api_fallbacks||{}),[kind]:result};
+        if(result.status!=='complete') {
+          if(result.errorCode)failures.push({code:bond.ts_code,error:result.reason,errorCode:result.errorCode,errorType:result.errorType,source:result.source,apiName:result.apiName,recoverAt:result.recoverAt});
+          continue;
+        }
+        if(kind==='rating') {
+          const refreshed=await (deps.readRatings||readRatingHistory)(bond,targetDate);
+          ratingRecords.splice(0,ratingRecords.length,...refreshed);
+          ratingState=ratingRequirement(bond,ratingRecords,ratingDocuments,targetDate,suspectUrls);keepRatingEvidence();
+          if(!ratingState.latest_complete){state.api_fallbacks.rating={...result,status:'incomplete',reason:'备用评级未满足目标日最新评级要求'};continue;}
+        }
+        for(let index=missing.length-1;index>=0;index--)if(missing[index]===kind||kind==='rating'&&missing[index]==='rating_history')missing.splice(index,1);
+      }
       state.missing=[...new Set(missing)];state.status=missing.length?'partial':'complete';state.targetDate=targetDate;
       await (deps.persistBond||persistBondInputs)(bond,state);
       if(missing.length){remaining.push(bond.ts_code);missingFields[bond.ts_code]=state.missing;}else count++;

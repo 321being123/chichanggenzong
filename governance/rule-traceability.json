@@ -3831,6 +3831,26 @@
       ],
       "owner": "运维治理",
       "status": "production_verified"
+    },
+    {
+      "id": "BOND-API-FALLBACK-066",
+      "title": "资料主源失败后才使用Tushare末级备源；先入库、按证券目标日报告期URL覆盖，空结果/权限/冲突不恢复、不改原文失败事实",
+      "implementation": {
+        "file": "server/services/convertibleBondAnalysisFallback.js",
+        "symbol": "tryAnalysisApiFallback"
+      },
+      "tests": [
+        {
+          "file": "server/test/bond-analysis-api-fallback.test.js",
+          "pattern": "BOND-API-FALLBACK-066"
+        },
+        {
+          "file": "server/test/convertible-bond-analysis-database.test.js",
+          "pattern": "BOND-API-FALLBACK-066"
+        }
+      ],
+      "owner": "Codex",
+      "status": "implemented"
     }
   ]
 }

@@ -38,6 +38,7 @@ const ENDPOINT_MIN_POINTS = Object.freeze({
   cb_issue: 2000,
   cb_daily: 2000,
   cb_rating: 2000,
+  cb_rate: 5000,
   pledge_stat: 2000,
   new_share: 120,
   index_member_all: 2000,

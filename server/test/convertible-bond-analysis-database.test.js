@@ -48,6 +48,22 @@ const noticeUrl='https://disc.static.szse.cn/test-rating-result-025.pdf';
   const withoutFailure=await buildConvertibleBondAnalysisFromDatabase('127991.SZ','2026-09-30',{persist:false});
   assert.equal(withoutFailure.completeness.pending_documents.length,0);
   assert(!withoutFailure.completeness.missing.includes('historical_documents'));
+  // BOND-API-FALLBACK-066：真实PG先存响应与标准事实，失败原文保留，API覆盖按证券/报告期/URL隔离。
+  const {tryAnalysisApiFallback}=require('../services/convertibleBondAnalysisFallback');
+  const apiBond={instrument_id:bond,ts_code:'127991.SZ',value_date:'2024-01-01',maturity_date:'2030-01-01'};
+  const fallbackResult=await tryAnalysisApiFallback({kind:'holders',bond:apiBond,targetDate:'2026-09-30',period:'2026-06-30',documentUrls:['failed-report']},{
+    fetch:async()=>({fields:['ts_code','end_date','holder_rank','holder_name','hold_amount','hold_ratio'],
+      items:Array.from({length:10},(_,i)=>['127991.SZ','20260630',i+1,i===0?'真实PG测试基金':'测试自然人'+i,1,1])})});
+  assert.equal(fallbackResult.status,'complete');assert.ok(fallbackResult.raw_record_id);
+  const holding=(await pool.query('SELECT fund_count,holding_quantity,holding_market_value FROM fundamental.convertible_bond_fund_holdings WHERE instrument_id=$1',[bond])).rows[0];
+  assert.equal(holding.fund_count,1);assert.equal(Number(holding.holding_quantity),1);assert.equal(Number(holding.holding_market_value),100);
+  await pool.query(`UPDATE fundamental.convertible_bond_profiles SET raw_payload=raw_payload||$2::jsonb WHERE instrument_id=$1`,[bond,JSON.stringify({analysis_inputs:{
+    targetDate:'2026-09-30',required_report_period:'2026-06-30',documents:{'holders:failed-report':{status:'failed',error:'原文解析失败'}},api_fallbacks:{holders:fallbackResult}}})]);
+  const apiCovered=await buildConvertibleBondAnalysisFromDatabase('127991.SZ','2026-09-30',{persist:false});
+  assert.equal(apiCovered.basic.fund_holding.fund_count,1);assert.deepEqual(apiCovered.completeness.pending_documents,[]);
+  assert.equal(apiCovered.completeness.inputs.api_fallbacks.holders.api_source,'top10_cb_holders');
+  await pool.query(`UPDATE fundamental.convertible_bond_profiles SET raw_payload=jsonb_set(raw_payload,'{analysis_inputs,api_fallbacks,holders,document_urls}','["other-report"]') WHERE instrument_id=$1`,[bond]);
+  assert.equal((await buildConvertibleBondAnalysisFromDatabase('127991.SZ','2026-09-30',{persist:false})).completeness.pending_documents.length,1,'异URL不能覆盖失败原文');
   // BOND-RATING-LATEST-045：历史失败只留证据，当前要求仍须展示真实缺口。
   await pool.query(`UPDATE fundamental.convertible_bond_profiles SET raw_payload=raw_payload||$2::jsonb WHERE instrument_id=$1`,
     [bond,JSON.stringify({analysis_inputs:{rating_requirement:{version:'latest-complete-history-present-v1',latest_complete:true,required_document_urls:[]},
@@ -130,7 +146,9 @@ const noticeUrl='https://disc.static.szse.cn/test-rating-result-025.pdf';
   if(server)await new Promise(resolve=>server.close(resolve));
   if(noticeDocument)await pool.query('DELETE FROM event.documents WHERE document_id=$1',[noticeDocument]);
   await pool.query("DELETE FROM ops.raw_records WHERE dataset_code='bond_analysis_inputs' AND source_key LIKE $1",[noticeUrl+':%']);
-  if(ids.length){await pool.query('DELETE FROM market.daily_valuations WHERE instrument_id=ANY($1::bigint[])',[ids]);
+  await pool.query("DELETE FROM ops.raw_records WHERE source_key LIKE 'analysis-backup:127991.SZ:%'");
+  if(ids.length){await pool.query('DELETE FROM fundamental.convertible_bond_fund_holdings WHERE instrument_id=ANY($1::bigint[])',[ids]);
+    await pool.query('DELETE FROM market.daily_valuations WHERE instrument_id=ANY($1::bigint[])',[ids]);
     await pool.query('DELETE FROM analytics.analysis_snapshots WHERE instrument_id=ANY($1::bigint[])',[ids]);
     await pool.query('DELETE FROM fundamental.convertible_bond_ratings WHERE instrument_id=ANY($1::bigint[])',[ids]);
     await pool.query('DELETE FROM market.daily_bars WHERE instrument_id=ANY($1::bigint[])',[ids]);

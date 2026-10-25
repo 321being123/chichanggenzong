@@ -20,7 +20,7 @@
   var TARGET_BYTES = 1024 * 1024;
 
   var state = {
-    sub: 'all',
+    sub: 'versions',
     detailId: null,
     seq: 0,
     list: { page: 1, pageSize: 20, q: '', type: '', status: '', from: '', to: '', sort: 'created' },
@@ -75,7 +75,8 @@
   function readUrl() {
     var params = new URLSearchParams(window.location.search);
     var sub = params.get('sub');
-    state.sub = SUBS.indexOf(sub) >= 0 ? sub : 'all';
+    // 默认落在「版本更新」：只看看版本改了什么，不默认把人丢进反馈列表（2026-10-25 反馈）
+    state.sub = SUBS.indexOf(sub) >= 0 ? sub : 'versions';
     state.detailId = params.get('feedback') || null;
   }
 
@@ -659,7 +660,7 @@
   // ---------- 子页切换 ----------
   async function switchFeedbackSub(sub, noPush) {
     closeForm();
-    state.sub = SUBS.indexOf(sub) >= 0 ? sub : 'all';
+    state.sub = SUBS.indexOf(sub) >= 0 ? sub : 'versions';
     state.detailId = null;
     if (!noPush) syncUrl(true);
     renderSubTabs();

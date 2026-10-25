@@ -149,7 +149,11 @@ ok(html.includes("securityAnalysisKind(maybeCode) === 'bond'"), '旧转债深链
 
 // ===== 反馈页子栏目使用全站二级标题导航（2026-10-25：去掉独立 FEEDBACK hero 卡片） =====
 ok(html.includes('class="bond-sub-nav fb-sub-nav"'), '反馈子栏目应复用全站二级标题导航 bond-sub-nav');
-ok(/class="bond-sub-tab active"[^>]*data-fb-sub="all"/.test(html), '「全部反馈」应为默认激活的二级标题');
+ok(/class="bond-sub-tab active"[^>]*data-fb-sub="versions"/.test(html), '「版本更新」应为默认激活的二级标题');
+// 默认子页＝版本更新（2026-10-25 反馈：点击「反馈」直接看版本改了什么）
+const feedbackJs = fs.readFileSync(path.join(root, 'public/js/feedback.js'), 'utf8');
+ok(/sub:\s*'versions'/.test(feedbackJs), '反馈页初始子页应为版本更新');
+ok(/SUBS\.indexOf\(sub\) >= 0 \? sub : 'versions'/.test(feedbackJs), '无 sub 参数或非法 sub 时应回落到版本更新');
 ok(!html.includes('fb-hero'), '反馈页不应再有独立 FEEDBACK hero 卡片');
 // 页面内不再放「提交反馈」按钮：统一由左侧全局悬浮入口（feedback-fab）承担
 ok(!html.includes('data-fb-act="open-form"'), '反馈页不应再有页面内「提交反馈」按钮');
@@ -164,9 +168,21 @@ const uiActions = fs.readFileSync(path.join(root, 'public', 'shared', 'ui-action
 ok(uiActions.includes('showPicker'), 'shared/ui-actions.js 应统一处理日期框点击唤起选择器');
 ok(/input\[type="date"\], input\[type="month"\], input\[type="datetime-local"\]/.test(uiActions),
   '日期框统一交互应覆盖 date / month / datetime-local 三类输入');
+// 鼠标按下即阻止原生聚焦，否则框内会出现「年」被选中的分段高亮（2026-10-25 反馈）
+ok(/addEventListener\('mousedown'[\s\S]{0,300}?preventDefault/.test(uiActions),
+  '日期框应阻止原生分段选中，避免出现年/月/日选中态');
 ['public/index.html', 'public/admin.html'].forEach(function (rel) {
   ok(fs.readFileSync(path.join(root, rel), 'utf8').includes('shared/ui-actions.js'),
     rel + ' 必须加载 shared/ui-actions.js，否则日期框统一交互不生效');
 });
+
+// ===== 筛选栏控件统一外观（2026-10-25 反馈：后台输入框/日期框走原生样式） =====
+const styleCss = fs.readFileSync(path.join(root, 'public', 'shared', 'style.css'), 'utf8');
+ok(/\.filter-bar input:not\(\[type=checkbox\]\):not\(\[type=radio\]\)[\s\S]{0,500}?border-radius:\s*7px/.test(styleCss),
+  '后台筛选栏输入控件应统一为 7px 圆角规范');
+ok(/\.filter-bar select\s*\{[\s\S]{0,300}?height:\s*36px/.test(styleCss),
+  '后台筛选栏下拉框应与输入框同高（36px）');
+ok(/\.filter-bar[\s\S]{0,600}?input\[type="date"\][\s\S]{0,120}?width:\s*150px/.test(styleCss),
+  '后台筛选栏日期框应统一宽度');
 
 console.log('frontend-navigation: ' + checks + ' 项断言通过');

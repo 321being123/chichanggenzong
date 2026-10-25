@@ -11,8 +11,15 @@
 .fb-panel { background: #fff; border-radius: 10px; padding: 16px 18px; box-shadow: 0 1px 3px rgba(0,0,0,.05); }
 
 .fb-toolbar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 12px; }
+/* 控件外观与站内统一规范一致（同 .filter-bar / .bond-list-toolbar）：
+   36px 高、7px 圆角、#d8dee8 边框、主题色聚焦环；不再出现原生日期框的黑色聚焦描边。 */
 .fb-toolbar input[type="text"], .fb-toolbar input[type="date"], .fb-toolbar select {
-  padding: 8px 10px; border: 1px solid #e0e3ee; border-radius: 8px; font-size: 13px; color: #333; background: #fff;
+  height: 36px; padding: 0 10px; border: 1px solid #d8dee8; border-radius: 7px;
+  font-size: 13px; color: #273142; background: #fff; font-family: inherit; outline: none;
+}
+.fb-toolbar input[type="date"] { width: 150px; }
+.fb-toolbar input[type="text"]:focus, .fb-toolbar input[type="date"]:focus, .fb-toolbar select:focus {
+  border-color: #1a237e; box-shadow: 0 0 0 2px rgba(26,35,126,.08);
 }
 .fb-toolbar input[type="text"] { min-width: 160px; flex: 0 1 260px; max-width: 300px; }
 .fb-toolbar label { font-size: 12px; color: #6e6e6e; }

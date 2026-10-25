@@ -93,13 +93,31 @@ window.UiActions = (function () {
   // ---- 日期输入框：点击整框唤起选择器（2026-10-25 全站统一交互） ----
   // 原生 input[type=date/month/datetime-local] 只有点日历图标才展开选择器，点文字区域只进分段编辑；
   // 这里统一为点框内任意位置都唤起原生选择器（键盘输入不受影响）。不支持 showPicker 的浏览器保持原生行为。
+  // 鼠标按下时一并阻止原生聚焦，否则框内会出现“年”字被选中的蓝色分段高亮（2026-10-25 反馈）；
+  // 触屏设备交回原生：移动浏览器点击日期框本就直开选择器，不拦截可避免影响原生滚轮/日历。
   var DATE_PICKER_SELECTOR = 'input[type="date"], input[type="month"], input[type="datetime-local"]';
+  var lastPointerType = null;
+
+  function dateInputFrom(target) {
+    if (!target || !target.closest || typeof HTMLInputElement === 'undefined') return null;
+    if (typeof HTMLInputElement.prototype.showPicker !== 'function') return null;
+    var input = target.closest(DATE_PICKER_SELECTOR);
+    if (!input || input.disabled || input.readOnly || input.hidden) return null;
+    return input;
+  }
+
+  document.addEventListener('pointerdown', function (e) {
+    lastPointerType = e.pointerType || null;
+  }, true);
+
+  document.addEventListener('mousedown', function (e) {
+    if (lastPointerType !== 'mouse') return; // 触屏或无法判定指针类型时交给原生
+    if (dateInputFrom(e.target)) e.preventDefault();
+  }, true);
+
   document.addEventListener('click', function (e) {
-    var t = e.target;
-    if (!t || !t.closest || typeof HTMLInputElement === 'undefined') return;
-    if (typeof HTMLInputElement.prototype.showPicker !== 'function') return;
-    var input = t.closest(DATE_PICKER_SELECTOR);
-    if (!input || input.disabled || input.readOnly || input.hidden) return;
+    var input = dateInputFrom(e.target);
+    if (!input) return;
     try {
       input.showPicker();
     } catch (err) {

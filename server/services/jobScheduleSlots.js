@@ -4,7 +4,7 @@ const { JOB_DEFINITIONS, getJobDefinition, getRegisteredJobDefinition, PARTITION
 const { getMarketState, isCnTradingDate, prefetchMarketFacts, parseClock } = require('./marketState');
 const { sanitizeJobError, sanitizeJobResult } = require('./jobErrorSanitizer');
 const { ACTIVE_ALERT_WHERE } = require('./jobAlertMailer');
-const { sameTargetScope, businessDateText } = require('./jobRecoveryEvidence');
+const { sameSlotRecoveryScope, slotWaitingState, businessDateText, slotVersionText } = require('./jobRecoveryEvidence');
 const classifyCode = require('../../public/js/code-classify');
 const { appVersion } = require('../../package.json');
 
@@ -152,7 +152,7 @@ async function ensureSlot(jobCode, scheduledFor, businessDate, triggerType = 'sc
          ELSE EXCLUDED.request_payload
        END,
        updated_at=now()
-     RETURNING *`,
+     RETURNING *, updated_at::text AS updated_at_exact`,
     [jobCode, scheduledFor, businessDate, triggerType, JSON.stringify(requestPayload || {})]
   );
   return rows[0] || null;
@@ -258,49 +258,160 @@ async function enqueueManualJob(jobCode, requestPayload = {}, transactionClient 
   }
 }
 
+// 接管旧槽只接受“同一件事的后续完整成功”：同任务、同业务日、同阶段，且账户/市场、
+// 日期区间、证券和字段范围一致的候选，逐个核验运行、阶段完整性和分区发布质量。
+const TAKEOVER_STATUSES = ['pending', 'failed', 'waiting_external', 'blocked', 'degraded'];
+const TAKEOVER_PAGE_SIZE = 20;
+
+// pending 只有在已到期、没有有效等待、也不是人工刚重置时，才可能是漏跑的旧槽。
+function pendingNeedsTakeoverCheck(slot, now) {
+  if (slot.trigger_type === 'manual_retry') return false;
+  if (slot.result_summary && slot.result_summary.dependencyRecovery) return false;
+  if (slotWaitingState(slot, now).waiting) return false;
+  const nextAttemptAt = slot.next_attempt_at ? new Date(slot.next_attempt_at) : null;
+  return !(nextAttemptAt && nextAttemptAt.getTime() > new Date(now).getTime());
+}
+
+async function findStrictRecoverySlot(slot) {
+  const { verifySlotRecoveryEvidence, recoveryScopeFilter, sameSlotRecoveryScope } = require('./jobRecoveryEvidence');
+  // 完整范围条件全部进 WHERE：候选集合在 SQL 就已经是同任务/同日/同阶段/同账户区间证券字段，
+  // 分页只用来跳过“范围匹配但证据还不满足”的候选，因此不再有固定页数上限。
+  const scope = recoveryScopeFilter(slot, 5);
+  const limitIndex = scope.nextIndex;
+  const offsetIndex = limitIndex + 1;
+  for (let offset = 0; ; offset += TAKEOVER_PAGE_SIZE) {
+    const { rows } = await pool.query(
+      `SELECT slot_id,job_code,business_date,status,scheduled_for,request_payload,result_summary,data_as_of
+         FROM ops.job_schedule_slots
+        WHERE job_code=$1 AND business_date=$2::date AND status IN ('succeeded','degraded')
+          AND slot_id<>$3 AND scheduled_for>$4::timestamptz
+          AND ${scope.sql}
+        ORDER BY scheduled_for ASC, slot_id ASC LIMIT $${limitIndex} OFFSET $${offsetIndex}`,
+      [slot.job_code, slot.business_date, slot.slot_id, slot.scheduled_for, ...scope.params, TAKEOVER_PAGE_SIZE, offset]
+    );
+    for (const candidate of rows) {
+      // SQL 用双向包含表达集合相等，这里再按同一规则复核一次，防止表达差异放宽范围。
+      if (!sameSlotRecoveryScope(slot, candidate)) continue;
+      const evidence = await verifySlotRecoveryEvidence(candidate, undefined, { candidateStatus: candidate.status })
+        .catch(error => ({ recovered: false, reason: `recovery_evidence_query_failed`, error: error && error.message }));
+      if (evidence.recovered) return { candidate, evidence };
+    }
+    if (rows.length < TAKEOVER_PAGE_SIZE) break;
+  }
+  return null;
+}
+
+// 接管写入必须在一条语句里同时核对状态、版本和触发方式：先 SELECT 再 UPDATE 会留出
+// “人工刚重置（仍为 pending）”被扫描覆盖的窗口。
+async function supersedeStaleSlot(slot, recovery, reason) {
+  const version = slotVersionText(slot);
+  // 版本只接受数据库精确时间（微秒级）：JS Date 只剩毫秒，用 ±1 毫秒容差会把 0.5 毫秒后
+  // 写入的新一次续批当成同一版本，从而覆盖新的执行意图。拿不到精确版本就不写。
+  if (!version) {
+    console.warn(`[job-slot] 接管跳过 slot=${slot.slot_id}：缺少数据库精确版本，无法安全核对`);
+    return null;
+  }
+  const { rows } = await pool.query(
+    `UPDATE ops.job_schedule_slots
+        SET status='skipped', next_attempt_at=NULL, last_error=$2,
+            lease_owner=NULL, lease_until=NULL, updated_at=now()
+      WHERE slot_id=$1 AND status=$3
+        AND updated_at=$4::timestamptz
+        AND ($5::text IS NULL OR trigger_type=$5)
+        AND status <> 'skipped'
+      RETURNING *`,
+    [slot.slot_id, reason, slot.status, version, slot.trigger_type || null]
+  );
+  const superseded = rows[0] || null;
+  if (!superseded) return null;
+  superseded.superseded_by = recovery && recovery.candidate ? recovery.candidate.slot_id : null;
+  const { resolveJobSlotAlerts } = require('./jobAlertMailer');
+  await resolveJobSlotAlerts(superseded).catch(error => console.warn('[job-alert] 后续成功实例收敛旧告警失败:', error.message));
+  return superseded;
+}
+
+// 续批止损：只有“原因已登记 + 有未来复查时间 + 证据字段齐备 + 未超过最长等待”的有效等待才豁免；
+// 任意未登记原因、过期或无证据的等待都必须按续批上限止损，不能靠未来的 next_attempt_at 永久 pending。
+async function expireContinuationSlot(slot, definition, now) {
+  const summary = slot.result_summary || {};
+  const waiting = slotWaitingState(slot, now);
+  if (waiting.exempt) return null;
+  const startedAt = Date.parse(summary.continuationStartedAt || '');
+  if (!Number.isFinite(startedAt)) return null;
+  const maxAgeHours = Math.max(Number(summary.continuationMaxAgeHours || definition.continuationMaxAgeHours || 24), 1);
+  // 已登记原因但超过该原因的最长等待时限时，按原因时限判定，不再无限延长。
+  const policy = require('./jobRecoveryEvidence').waitReasonPolicy(summary.waitReason, slot.job_code);
+  const reasonExpired = Boolean(policy) && Number(policy.maxWaitHours || 0) > 0
+    && new Date(now).getTime() - startedAt >= Number(policy.maxWaitHours) * 3600000;
+  if (!reasonExpired && new Date(now).getTime() - startedAt < maxAgeHours * 3600000) return null;
+  const cause = reasonExpired
+    ? `等待原因 ${policy.key} 已超过 ${policy.maxWaitHours} 小时有效期限`
+    : `续批已超过 ${maxAgeHours} 小时仍未清空剩余工作`;
+  const message = `${cause}，已停止自动续批并等待人工处理`;
+  const version = slotVersionText(slot);
+  if (!version) {
+    console.warn(`[job-slot] 续批止损跳过 slot=${slot.slot_id}：缺少数据库精确版本，无法安全核对`);
+    return null;
+  }
+  const { rows } = await pool.query(
+    `UPDATE ops.job_schedule_slots
+        SET status='blocked', next_attempt_at=NULL, last_error=$2, updated_at=now()
+      WHERE slot_id=$1 AND status='pending'
+        AND updated_at=$3::timestamptz
+      RETURNING *`,
+    [slot.slot_id, message, version]
+  );
+  if (!rows[0]) return null;
+  const { notifyJobFailure } = require('./jobAlertMailer');
+  await notifyJobFailure({
+    jobCode: slot.job_code,
+    slotId: slot.slot_id,
+    alertKey: `slot:${slot.slot_id}:continuation-expired`,
+    alertType: 'failure',
+    subject: `后台任务续批止损：${definition.label}`,
+    summary: `${message}。等待原因：${summary.waitReason || '未登记'}，剩余阶段：${(summary.pendingStages || []).join('/') || '-'}，剩余数量：${summary.remaining ?? '-'}`,
+  }).catch(error => console.warn('[job-alert] 续批止损告警失败:', error.message));
+  return rows[0];
+}
+
 async function reconcileSlot(slot) {
   if (!slot || new Date(slot.scheduled_for) > new Date()) return slot;
   const definition = getJobDefinition(slot.job_code);
   if (definition.disabled) return slot;
-  // succeeded 是执行终态。后续只允许展示/告警，不得再次根据水位重放业务任务。
-  if (slot.status === 'succeeded') return slot;
+  // succeeded 和 skipped 都是终态：succeeded 是执行终态，skipped 是归档终态。
+  // 二者都不能再被旧 job_runs 反推成 failed，否则已接管/已归档的槽会反复收敛、反复失败。
+  if (slot.status === 'succeeded' || slot.status === 'skipped') return slot;
   // 人工补跑刚重置为 pending 时，旧的失败 job_runs 仍然存在；此时不能被旧记录立即回滚为 failed，
   // 必须先让统一执行器领取并生成新的 manual_retry 运行记录。
   if (slot.status === 'pending' && slot.trigger_type === 'manual_retry') return slot;
   if (slot.status === 'pending' && slot.result_summary?.dependencyRecovery) return slot;
+  const now = new Date();
+  const waiting = slotWaitingState(slot, now);
+  // 同一业务日、同一阶段、同一范围如果已有更晚实例完成并通过严格证据，旧实例已被接管。
+  // 等待外部来源的槽也参与这里的纯证据核对；但未到复查时间、人工刚重置、部分完成和无证据
+  // 的槽都不满足接管条件，不会被误跳过。
+  if (TAKEOVER_STATUSES.includes(slot.status)
+      && (slot.status !== 'pending' || pendingNeedsTakeoverCheck(slot, now))) {
+    const recovery = await findStrictRecoverySlot(slot)
+      .catch(error => { console.warn('[job-slot] 接管证据核对失败:', error.message); return null; });
+    if (recovery) {
+      const superseded = await supersedeStaleSlot(slot, recovery,
+        '同业务日同范围的后续实例已完成并通过运行、阶段和分区证据核验，本实例不再执行');
+      if (superseded) return superseded;
+    }
+  }
   // 外部来源等待期间保留等待状态，不能被旧的失败运行记录在调度扫描时覆盖；
   // 到达 next_attempt_at 后由统一执行器重新领取并继续执行。
   if (slot.status === 'waiting_external') return slot;
-  // 同一业务日、同一阶段如果已有更晚的实例成功，旧失败/阻断实例已经被后续执行接管。
-  // 关闭旧实例告警，避免一次恢复在后台长期留下“待处理”假象；不重放旧实例。
-  if (['failed', 'waiting_external', 'blocked', 'degraded'].includes(slot.status)) {
-    const mode = String(slot.request_payload && slot.request_payload.mode || 'core');
-    const { rows: laterSuccess } = await pool.query(
-      `SELECT slot_id,request_payload
-         FROM ops.job_schedule_slots
-        WHERE job_code=$1 AND business_date=$2::date AND status='succeeded'
-          AND slot_id<>$3 AND scheduled_for>$4::timestamptz
-          AND COALESCE(request_payload->>'mode','core')=$5
-        ORDER BY scheduled_for DESC, slot_id DESC LIMIT 1`,
-      [slot.job_code, slot.business_date, slot.slot_id, slot.scheduled_for, mode]
-    );
-    if (laterSuccess[0] && sameTargetScope(slot, laterSuccess[0])) {
-      const { rows: superseded } = await pool.query(
-        `UPDATE ops.job_schedule_slots
-            SET status='skipped', next_attempt_at=NULL,
-                last_error='同业务日后续实例已成功完成，本实例不再执行',
-                lease_owner=NULL, lease_until=NULL, updated_at=now()
-          WHERE slot_id=$1 AND status IN ('failed','waiting_external','blocked','degraded')
-          RETURNING *`, [slot.slot_id]
-      );
-      if (superseded[0]) {
-        const { resolveJobSlotAlerts } = require('./jobAlertMailer');
-        await resolveJobSlotAlerts(superseded[0]).catch(error => console.warn('[job-alert] 后续成功实例收敛旧告警失败:', error.message));
-        return superseded[0];
-      }
-    }
+  // 续批止损：有效等待（原因已登记且未超时限）在 expireContinuationSlot 内部豁免，
+  // 这里不再用“有没有 waitReason 字符串”做开关，避免任意原因长期免于止损。
+  if (slot.status === 'pending' && waiting.continuationRequired) {
+    const expired = await expireContinuationSlot(slot, definition, now).catch(error => {
+      console.warn('[job-slot] 续批止损判定失败:', error.message); return null;
+    });
+    if (expired) return expired;
   }
-  // 外部来源限流/额度恢复前不消耗业务重试次数；恢复后由统一执行器继续执行。
+  // degraded 只做数据库水位重验，绝不重新调用业务 Runner 或外部接口。
   if (['failed', 'waiting_external'].includes(slot.status)
       && definition.reconcileByWatermark === true) {
     const actualDataAsOf = await queryDataAsOf(slot.job_code, slot.business_date).catch(() => null);
@@ -402,16 +513,22 @@ async function reconcileSlot(slot) {
     );
     if (!evidence.recovered) return slot;
   }
+  const version = slotVersionText(slot);
+  if (!version) {
+    console.warn(`[job-slot] 恢复写入跳过 slot=${slot.slot_id}：缺少数据库精确版本，无法安全核对`);
+    return slot;
+  }
   const updated = await pool.query(
     `UPDATE ops.job_schedule_slots
         SET status=$2, last_run_id=$3,
             data_as_of=CASE WHEN $2='succeeded' THEN COALESCE($4, data_as_of) ELSE data_as_of END,
             last_error=$5, result_summary=$6::jsonb, updated_at=now()
-      WHERE slot_id=$1 AND status NOT IN ('running','succeeded')
+      WHERE slot_id=$1 AND status NOT IN ('running','succeeded','skipped')
+        AND updated_at=$7::timestamptz
       RETURNING *`,
     [slot.slot_id, nextStatus, run.id, dataAsOf,
       nextStatus === 'failed' ? sanitizeJobError(run.detail || '') : nextStatus === 'degraded' ? '运行记录成功但未形成可确认的数据日期' : null,
-      JSON.stringify(resultSummary)]
+      JSON.stringify(resultSummary), version]
   );
   if (updated.rows[0] && nextStatus === 'degraded') {
     const { notifyJobFailure } = require('./jobAlertMailer');
@@ -464,7 +581,11 @@ async function syncScheduleSlots(now = new Date()) {
         if (Object.prototype.hasOwnProperty.call(resolvedSchedule, 'freshnessGate')) requestPayload.freshnessGate = Boolean(resolvedSchedule.freshnessGate);
         const slot = await ensureSlot(definition.jobCode, scheduledFor, businessDate, 'scheduled', requestPayload);
         const current = await reconcileSlot(slot);
-        if (current.status === 'pending' && now.getTime() > scheduledFor.getTime() + definition.deadlineMinutes * 60000) {
+        // 漏跑只看“已过计划期限且没有有效等待”。官方待披露、字段复查冷却和正常续批
+        // 都有 next_attempt_at 和阶段证据，属于等待而不是故障，不能按计划时间误报。
+        const waitingState = slotWaitingState(current, now);
+        if (current.status === 'pending' && !waitingState.waiting
+            && now.getTime() > scheduledFor.getTime() + definition.deadlineMinutes * 60000) {
           const { notifyJobFailure } = require('./jobAlertMailer');
           await notifyJobFailure({
             jobCode: definition.jobCode,
@@ -617,6 +738,43 @@ async function recoverNavDependencies(query=(sql,params)=>pool.query(sql,params)
       WHERE slot_id=$1 AND status='blocked' AND acknowledged_at IS NULL AND NOT(result_summary ? 'dependencyRecovery')`,
       [slot.slot_id,JSON.stringify({evidence,businessDate:date,previousAttempts:slot.attempt_count})]);
   }
+}
+
+// 存量旧槽核对入口：syncScheduleSlots 只覆盖本次候选日期和补偿窗口，过期记录会永远
+// 留在 pending/failed/waiting_external 里。这里在 Worker 周期内按 slot_id 轮转分页，
+// 保证超过一页也能最终遍历，且只做数据库证据核对，不触发外部采集或重跑任务。
+const SWEEP_MIN_AGE_MINUTES = 60;
+const SWEEP_PAGE_SIZE_MAX = 50;
+let sweepCursor = 0;
+
+async function sweepStaleSlots(limit = 20) {
+  const safeLimit = Math.min(Math.max(Number(limit) || 20, 1), SWEEP_PAGE_SIZE_MAX);
+  const { rows } = await pool.query(
+    `SELECT *, business_date::text AS business_date, updated_at::text AS updated_at_exact
+       FROM ops.job_schedule_slots
+      WHERE status IN ('pending','failed','waiting_external','blocked','degraded')
+        AND scheduled_for < now() - ($2::integer * interval '1 minute')
+        AND slot_id > $1
+      ORDER BY slot_id ASC LIMIT $3`,
+    [sweepCursor, SWEEP_MIN_AGE_MINUTES, safeLimit]
+  );
+  if (!rows.length) {
+    const wrapped = sweepCursor > 0;
+    sweepCursor = 0;
+    return { ok: true, scanned: 0, changed: 0, changes: [], cursorReset: wrapped };
+  }
+  const changes = [];
+  for (const slot of rows) {
+    sweepCursor = Number(slot.slot_id);
+    const after = await reconcileSlot(slot).catch(error => {
+      console.warn(`[job-slot] 旧槽核对失败 slot=${slot.slot_id}:`, error.message);
+      return slot;
+    });
+    if (after && after.status !== slot.status) {
+      changes.push({ slotId: Number(slot.slot_id), jobCode: slot.job_code, from: slot.status, to: after.status });
+    }
+  }
+  return { ok: true, scanned: rows.length, changed: changes.length, changes, cursor: sweepCursor };
 }
 
 async function listDueSlots(limit = 20) {
@@ -1037,6 +1195,7 @@ async function listJobSlots(options = {}) {
   return rows.map(row => {
     const definition = getJobDefinition(row.job_code);
     const lateAt = new Date(row.scheduled_for).getTime() + Number(definition.deadlineMinutes || 180) * 60000;
+    const waitingState = slotWaitingState(row);
     return { ...row,
       last_error: row.last_error ? sanitizeJobError(row.last_error) : null,
       result_summary: sanitizeJobResult(row.result_summary || {}),
@@ -1045,7 +1204,9 @@ async function listJobSlots(options = {}) {
       category: definition.category, importance: definition.importance,
       dependency_codes: definition.dependencyCodes || [],
       deadline_at: new Date(lateAt).toISOString(), max_attempts: definition.maxAttempts,
-      is_late: ['pending', 'running', 'failed', 'degraded'].includes(row.status) && lateAt < Date.now() };
+      waiting_state: waitingState,
+      is_late: ['pending', 'running', 'failed', 'degraded'].includes(row.status) && lateAt < Date.now()
+        && !waitingState.waiting };
   });
 }
 
@@ -1072,6 +1233,7 @@ async function getJobSlot(slotId) {
     result_summary: sanitizeJobResult(rows[0].result_summary || {}),
     request_payload: sanitizeJobResult(rows[0].request_payload || {}),
     definition,
+    waiting_state: slotWaitingState(rows[0]),
     runs: runs.rows.map(run => ({ ...run, detail: sanitizeJobError(run.detail || '', 4000) })),
     business_execution: sanitizeJobResult(rows[0].result_summary || {}),
     freshness_validation: {
@@ -1213,5 +1375,6 @@ module.exports = {
   claimSlot, completeSlot, deferSlot, waitForExternalSlot, continueSlot, mergeSlotExternalCallSummary, touchSlot, recoverExpiredSlots, listDueSlots, retryJobSlot, acknowledgeSlot,
   listJobSlots, getJobSlot, validateJobSlot, heartbeat, getJobOverview, queryDataAsOf, isDataAsOfFresh, resolveDataAsOf, expectedDataDate,
   isSlotDayAllowed, isWeekday, previousDate, resolveScheduleForDate,
-  resolveDatasetPartitionDate, datasetDependencyState, recoverNavDependencies, attemptLimit,
+  resolveDatasetPartitionDate, datasetDependencyState, recoverNavDependencies, attemptLimit, sweepStaleSlots,
+  reconcileSlot, pendingNeedsTakeoverCheck,
 };

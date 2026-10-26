@@ -52,6 +52,32 @@ global.Date = class extends RealDate {
   const noLive = await buildNavPerformance({ ...data, navAttribution: null }, { ...totals, '2026-10-15': null });
   assert.strictEqual(noLive[1].nav, null);
   assert.strictEqual(noLive[2].nav, null, '缺基准后不得隐式恢复旧NAV');
+  const weeklyData = { positions: [], cashFlows: [], navHistory: [
+    { date: '2026-08-02', nav: 2, totalAsset: 200, snapshotSource: 'imported' },
+    { date: '2026-08-03', nav: 9, totalAsset: 900, snapshotSource: 'legacy' },
+    { date: '2026-08-04', nav: 2, totalAsset: 200, snapshotSource: 'manual_carry_forward' },
+    { date: '2026-08-09', nav: 2.1, totalAsset: 210, snapshotSource: 'imported' },
+    { date: '2026-08-15', nav: 9, totalAsset: 900, snapshotSource: 'legacy' },
+    { date: '2026-08-16', nav: 2.2, totalAsset: 220, snapshotSource: 'imported' },
+    { date: '2026-08-17', nav: 9, totalAsset: 900, snapshotSource: 'legacy' },
+    { date: '2026-08-18', nav: 9, totalAsset: 900, snapshotSource: 'legacy' }
+  ] };
+  const weeklyBefore = JSON.stringify(weeklyData);
+  const weeklyTotals = { '2026-08-02': 200, '2026-08-09': 210, '2026-08-16': 220,
+    '2026-08-17': 230, '2026-08-18': null };
+  const weekly = await buildNavPerformance(weeklyData, weeklyTotals);
+  assert.deepStrictEqual(weekly.map(n => n.date), ['2026-08-02', '2026-08-09', '2026-08-16', '2026-08-17', '2026-08-18'],
+    '导入之前只按真实历史频率展示，导入之后保留日记录及真实缺口');
+  assert.deepStrictEqual(weekly.slice(0, 3).map(n => n.totalAsset), [200, 210, 220]);
+  assert.deepStrictEqual(weekly.slice(0, 3).map(n => n.nav), [2, 2.1, 2.2]);
+  assert(Math.abs(weekly[3].nav - 2.3) < 1e-12, '导入边界后仍按统一资产基准续算');
+  assert.strictEqual(weekly[4].nav, null, '导入之后的缺口不能被过滤掩盖');
+  assert.strictEqual(JSON.stringify(weeklyData), weeklyBefore, '展示筛选不得删除原记录');
+  const weeklyContext = { ...context, data: { ...weeklyData, performanceHistory: weekly, navReturnTotals: weeklyTotals } };
+  vm.createContext(weeklyContext);
+  vm.runInContext(fs.readFileSync(path.resolve(__dirname, '../../public/shared/core-earnings.js'), 'utf8'), weeklyContext);
+  assert.deepStrictEqual(Array.from(weeklyContext.buildRealReturnsSeries().slice(0, 3), r => r.totalMarketValue), [200, 210, 220],
+    '资产图与收益表使用相同的周记录');
   const withFlow = await buildNavPerformance({ ...data, cashFlows: [{ date: '2026-10-16', amount: 1000 }] }, totals);
   assert(Math.abs(withFlow[2].nav - withFlow[1].nav * data.totalAsset / (2018008.345147 + 1000)) < 1e-12);
   const afterSnapshot = await buildNavPerformance({ ...data,

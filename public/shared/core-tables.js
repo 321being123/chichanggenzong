@@ -683,6 +683,8 @@ function getCashFlowDisplayNote(flow) {
     : '一天期逆回购手续费；单独扣除';
 }
 
+const TRADES_PAGE_SIZE = 20;
+
 function renderTrades() {
   const el = document.getElementById('trades-table');
   // 合并股票交易与现金流转出，按日期倒序展示
@@ -695,12 +697,17 @@ function renderTrades() {
     el.innerHTML = '<div class="empty-state"><div class="icon">📄</div><p>暂无交易记录</p></div>';
     return;
   }
+  // 统一分页控件：每页 20 条，与收益明细一致
+  const pg = window.UnifiedPager
+    ? UnifiedPager.pageOf('trades', items.length, TRADES_PAGE_SIZE)
+    : { page: 1, totalPages: 1 };
+  const pageItems = items.slice((pg.page - 1) * TRADES_PAGE_SIZE, pg.page * TRADES_PAGE_SIZE);
   var html = '<div class="biz-table-scroll"><table class="biz-table"><thead><tr>' +
     '<th>时间</th><th>代码</th><th>名称</th><th>方向</th>' +
     '<th class="text-right">价格</th><th class="text-right">数量</th><th class="text-right">成交额</th><th class="text-right">费用</th>' +
     '<th>类型</th><th>备注</th><th class="text-center">操作</th>' +
     '</tr></thead><tbody>';
-  items.forEach(item => {
+  pageItems.forEach(item => {
     if (item.kind === 'trade') {
       const t = item.raw;
       const currency = getTradeRowCurrency(t);
@@ -754,6 +761,10 @@ function renderTrades() {
     }
   });
   html += '</tbody></table></div>';
+  if (window.UnifiedPager) {
+    html += UnifiedPager.buildHtml('trades', { total: items.length, pageSize: TRADES_PAGE_SIZE });
+    UnifiedPager.register('trades', renderTrades);
+  }
   el.innerHTML = html;
   if (window.BusinessTable) window.BusinessTable.attach(el, { page: '#page-trades', top: '#main-holdings > .holdings-header' });
 }

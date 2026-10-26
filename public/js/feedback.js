@@ -376,6 +376,42 @@
   }
 
   // ---------- 版本更新 ----------
+  var VERSIONS_PAGE_SIZE = 10;
+  var versionsCache = { list: null, linkMap: {}, linkNote: '' };
+
+  function renderVersions() {
+    var host = ensureShell();
+    if (!host || !versionsCache.list) return;
+    var merged = versionsCache.list;
+    // 统一分页控件：每页 10 个日期组
+    var pg = window.UnifiedPager
+      ? UnifiedPager.pageOf('versions', merged.length, VERSIONS_PAGE_SIZE)
+      : { page: 1, totalPages: 1 };
+    var pageDays = merged.slice((pg.page - 1) * VERSIONS_PAGE_SIZE, pg.page * VERSIONS_PAGE_SIZE);
+    var html = '<div class="fb-panel">' + versionsCache.linkNote;
+    if (!merged.length) html += '<p class="fb-empty">暂无记录</p>';
+    pageDays.forEach(function (day) {
+      var title = (day.date || '') + (day.version ? '（' + day.version + '）' : '');
+      html += '<div class="fb-version-item"><div class="fb-version-head"><span class="fb-version-title">' + esc(title) + '</span></div>';
+      html += '<ul class="fb-timeline">' + (day.items || []).map(function (it) {
+        return '<li>' + esc(it) + '</li>';
+      }).join('') + '</ul>';
+      var links = day.version && versionsCache.linkMap[day.version];
+      if (links && links.length) {
+        html += '<div class="fb-version-links">' + links.map(function (l) {
+          return '<span class="fb-version-link" data-fb-act="open" data-id="' + esc(l.id) + '">#' + esc(l.id) + ' ' + esc(l.title) + '</span>';
+        }).join('') + '</div>';
+      }
+      html += '</div>';
+    });
+    if (window.UnifiedPager) {
+      html += UnifiedPager.buildHtml('versions', { total: merged.length, pageSize: VERSIONS_PAGE_SIZE });
+      UnifiedPager.register('versions', renderVersions);
+    }
+    html += '</div>';
+    host.innerHTML = html;
+  }
+
   async function loadVersions() {
     var host = ensureShell();
     if (!host) return;
@@ -402,24 +438,8 @@
     }
     if (seq !== state.seq) return;
     if (loadError) { renderError(host, loadError); return; }
-    var html = '<div class="fb-panel">' + linkNote;
-    if (!merged.length) html += '<p class="fb-empty">暂无记录</p>';
-    merged.forEach(function (day) {
-      var title = (day.date || '') + (day.version ? '（' + day.version + '）' : '');
-      html += '<div class="fb-version-item"><div class="fb-version-head"><span class="fb-version-title">' + esc(title) + '</span></div>';
-      html += '<ul class="fb-timeline">' + (day.items || []).map(function (it) {
-        return '<li>' + esc(it) + '</li>';
-      }).join('') + '</ul>';
-      var links = day.version && linkMap[day.version];
-      if (links && links.length) {
-        html += '<div class="fb-version-links">' + links.map(function (l) {
-          return '<span class="fb-version-link" data-fb-act="open" data-id="' + esc(l.id) + '">#' + esc(l.id) + ' ' + esc(l.title) + '</span>';
-        }).join('') + '</div>';
-      }
-      html += '</div>';
-    });
-    html += '</div>';
-    host.innerHTML = html;
+    versionsCache = { list: merged, linkMap: linkMap, linkNote: linkNote };
+    renderVersions();
   }
 
   // ---------- 图片压缩 ----------

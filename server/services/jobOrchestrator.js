@@ -4,7 +4,7 @@ const path = require('path');
 const { sanitizeJobError, sanitizeJobResult } = require('./jobErrorSanitizer');
 const { JOB_DEFINITIONS, getJobDefinition, getRegisteredJobDefinition } = require('./jobDefinitions');
 const {
-  WORKER_ID, syncScheduleSlots, recoverExpiredSlots, listDueSlots,
+  WORKER_ID, syncScheduleSlots, recoverExpiredSlots, listDueSlots, sweepStaleSlots,
   claimSlot, completeSlot, deferSlot, waitForExternalSlot, continueSlot, mergeSlotExternalCallSummary, touchSlot, queryDataAsOf, isDataAsOfFresh, expectedDataDate,
 } = require('./jobScheduleSlots');
 
@@ -833,6 +833,8 @@ async function runDueSlots() {
     await sendDueAlerts(20).catch(error => console.warn('[job-alert] 到期告警投递失败:', error.message));
     await recoverExpiredSlots();
     await syncScheduleSlots();
+    // 存量旧槽核对必须在领取之前：它只做证据收敛，不会领取或重跑任务。
+    await sweepStaleSlots(20).catch(error => console.warn('[job-slot] 存量旧槽核对失败:', error.message));
     const due = await listDueSlots(20);
     const results = [];
     for (const slot of due) {

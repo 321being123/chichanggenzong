@@ -27,6 +27,145 @@ function sameTargetScope(left, right) {
   return ![left, right].some(row => String(payload(row).mode || '').includes('targeted') && !list(row, 'targetCodes')?.length);
 }
 
+// 接管旧槽必须比目标范围更严格：同一任务、同一业务日、同一阶段，且账户/市场、
+// 日期区间、证券和字段范围全部一致，才算同一件事的后续执行。
+function sameSlotRecoveryScope(left, right) {
+  if (!left || !right) return false;
+  if (String(left.job_code || '') !== String(right.job_code || '')) return false;
+  if (businessDateText(left.business_date) !== businessDateText(right.business_date)) return false;
+  const payload = row => row.request_payload || {};
+  if (String(payload(left).mode || 'core') !== String(payload(right).mode || 'core')) return false;
+  for (const key of ['username', 'accountName', 'market', 'scopeKey']) {
+    if (String(payload(left)[key] ?? '') !== String(payload(right)[key] ?? '')) return false;
+  }
+  for (const key of ['fromDate', 'throughDate']) {
+    if (String(payload(left)[key] ?? '') !== String(payload(right)[key] ?? '')) return false;
+  }
+  return sameTargetScope(left, right);
+}
+
+// 接管候选的完整范围条件必须先进 SQL 的 WHERE，再谈分页：只在 JS 里过滤会让
+// “前 N 条都是别的目标”变成固定上限，后面的同范围成功永远找不到。
+// targetCodes/targetFields 用 jsonb 双向包含表达集合相等（顺序无关、忽略重复），
+// 与 sameTargetScope 的去重集合语义一致；SQL 之后仍由 sameSlotRecoveryScope 复核。
+const SCOPE_PAYLOAD_KEYS = ['username', 'accountName', 'market', 'scopeKey', 'fromDate', 'throughDate'];
+
+function recoveryScopeFilter(slot, startIndex) {
+  const payload = (slot && slot.request_payload) || {};
+  const first = Number(startIndex) || 5;
+  const clauses = [`COALESCE(request_payload->>'mode','core')=$${first}`];
+  const params = [String(payload.mode || 'core')];
+  SCOPE_PAYLOAD_KEYS.forEach((key, index) => {
+    clauses.push(`COALESCE(request_payload->>'${key}','')=$${first + index + 1}`);
+    params.push(String(payload[key] ?? ''));
+  });
+  const codesIndex = first + SCOPE_PAYLOAD_KEYS.length + 1;
+  const fieldsIndex = codesIndex + 1;
+  clauses.push(`COALESCE(request_payload->'targetCodes','[]'::jsonb) @> $${codesIndex}::jsonb`);
+  clauses.push(`$${codesIndex}::jsonb @> COALESCE(request_payload->'targetCodes','[]'::jsonb)`);
+  clauses.push(`COALESCE(request_payload->'targetFields','[]'::jsonb) @> $${fieldsIndex}::jsonb`);
+  clauses.push(`$${fieldsIndex}::jsonb @> COALESCE(request_payload->'targetFields','[]'::jsonb)`);
+  params.push(JSON.stringify([...((payload.targetCodes || []))].map(String)));
+  params.push(JSON.stringify([...((payload.targetFields || []))].map(String)));
+  return { sql: clauses.join('\n          AND '), params, nextIndex: fieldsIndex + 1 };
+}
+
+// 槽位版本必须是数据库精确值（微秒级）。JS Date 只保留毫秒，用 ±1 毫秒容差做“同版本”
+// 判断会把 0.5 毫秒后写入的新一次续批误当成同一版本，从而覆盖新的执行意图。
+// 因此只接受数据库返回的 updated_at::text（updated_at_exact）或带微秒的字符串；
+// 拿不到精确版本时宁可不写入，也不退回容差比较。
+function slotVersionText(slot) {
+  const exact = slot && slot.updated_at_exact;
+  if (typeof exact === 'string' && exact.trim()) return exact.trim();
+  const raw = slot && slot.updated_at;
+  if (typeof raw === 'string' && /\.\d{4,6}(?:[+-]\d{2}(?::\d{2})?|Z)$/.test(raw.trim())) return raw.trim();
+  return null;
+}
+
+const WAITING_KIND_LABELS = { external: '等待外部来源', evidence_wait: '等待复查', continuation: '续批等待' };
+
+// 等待原因必须绑定可核验的来源、适用任务和最长有效时间：任意字符串不能长期豁免止损。
+// 只有这里登记的原因才按“证据等待”保留；未知原因保留在摘要里供排查，但不享受豁免。
+const WAIT_REASON_POLICIES = Object.freeze({
+  field_recheck_cooldown: {
+    jobs: ['ipo_history_sync'],
+    maxWaitHours: 720,
+    evidenceFields: ['nextAttemptAt'],
+    description: '资料字段待官方后续披露，按 Runner 返回的冷却时间复查',
+  },
+});
+
+function waitReasonPolicy(reason, jobCode) {
+  const key = String(reason || '').trim();
+  const policy = WAIT_REASON_POLICIES[key];
+  if (!key || !policy) return null;
+  if (Array.isArray(policy.jobs) && policy.jobs.length && !policy.jobs.includes(String(jobCode || ''))) return null;
+  return { key, ...policy };
+}
+
+// “有效等待”只由明确证据和未到期的复查时间构成：done 只表示本批结束，
+// attempt_count 只表示当前重试计数，二者都不能单独证明工作完成或任务漏跑。
+// 复查日期展示统一走上海业务日（businessDateText），不能用 toISOString().slice(0,10)。
+function slotWaitingState(slot, now = new Date()) {
+  const summary = slot && slot.result_summary && typeof slot.result_summary === 'object' ? slot.result_summary : {};
+  const rawUntil = (slot && slot.next_attempt_at) || summary.nextAttemptAt || summary.recoverAt || null;
+  const parsed = rawUntil ? new Date(rawUntil) : null;
+  const until = parsed && !Number.isNaN(parsed.getTime()) ? parsed : null;
+  const current = new Date(now).getTime();
+  const due = Boolean(until && until.getTime() > current);
+  const pendingStages = Array.isArray(summary.pendingStages) ? summary.pendingStages.filter(Boolean) : [];
+  const remainingValue = Number(summary.remaining ?? summary.remainingCount);
+  const remaining = Number.isFinite(remainingValue) ? remainingValue : null;
+  const waitReason = String(summary.waitReason || '').trim();
+  const waitingExternal = (slot && slot.status === 'waiting_external') || summary.waitingExternal === true;
+  const continuationRequired = summary.continuationRequired === true;
+  const hasOutstanding = continuationRequired || pendingStages.length > 0 || (remaining || 0) > 0;
+  const policy = waitReasonPolicy(waitReason, slot && slot.job_code);
+  // 证据等待必须同时满足：原因已登记、有未来复查时间、证据字段齐备、未超过最长等待时限。
+  // 复查时间的权威来源是调度列 next_attempt_at；摘要缺失时以列为准，不因字段位置差异失效。
+  const evidenceSource = { ...summary };
+  if (evidenceSource.nextAttemptAt == null && slot && slot.next_attempt_at) {
+    evidenceSource.nextAttemptAt = slot.next_attempt_at;
+  }
+  const startedAt = Date.parse(summary.continuationStartedAt || '');
+  const policyHours = policy ? Math.max(Number(policy.maxWaitHours || 0), 1) : 0;
+  const policyExpired = Boolean(policy) && Number.isFinite(startedAt) && policyHours > 0
+    && current - startedAt >= policyHours * 3600000;
+  const evidenceComplete = Boolean(policy) && (policy.evidenceFields || [])
+    .every(field => evidenceSource[field] != null && String(evidenceSource[field]).trim() !== '');
+  const evidenceWait = Boolean(policy) && due && evidenceComplete && !policyExpired;
+  const kind = !due ? null
+    : waitingExternal ? 'external'
+      : hasOutstanding ? (evidenceWait ? 'evidence_wait' : 'continuation')
+        : null;
+  const state = {
+    waiting: Boolean(kind),
+    // exempt 才是“可以免于续批止损”的等待：外部来源等待和有证据的复查等待。
+    // 普通续批（kind=continuation）仍属正常调度，不算漏跑，但必须受续批上限约束。
+    exempt: kind === 'external' || kind === 'evidence_wait',
+    kind: kind || null,
+    until: until ? until.toISOString() : null,
+    untilDate: until ? businessDateText(until) : null,
+    pendingStages,
+    remaining,
+    waitReason: waitReason || null,
+    waitReasonAccepted: evidenceWait,
+    waitReasonPolicy: policy ? policy.key : null,
+    waitReasonExpired: policyExpired,
+    continuationRequired,
+    waitingExternal,
+    label: null,
+  };
+  if (state.waiting) {
+    const parts = [WAITING_KIND_LABELS[state.kind] || '等待'];
+    if (state.untilDate) parts.push(`至 ${state.untilDate}`);
+    if (state.pendingStages.length) parts.push(`阶段 ${state.pendingStages.join('/')}`);
+    if (state.remaining != null && state.remaining > 0) parts.push(`剩余 ${state.remaining} 项`);
+    state.label = parts.join('，');
+  }
+  return state;
+}
+
 async function verifySlotRecoveryEvidence(slot, query = (sql, params) => pool.query(sql, params), options = {}) {
   if (!slot || !slot.job_code || !['succeeded', 'degraded'].includes(options.candidateStatus || slot.status)) {
     return { recovered: false, reason: 'slot_not_successful', evidence: slot || null };
@@ -81,7 +220,7 @@ async function verifySlotRecoveryEvidence(slot, query = (sql, params) => pool.qu
   let datasetEvidence = [];
   if ((definition.strictDatasetPublication||phase?.requireStageComplete||legacyHkPostclose) && datasets.length && partitionKey) {
     const { rows } = await query(
-      `SELECT dataset_code,scope_key,status,is_stale,diagnostics
+      `SELECT dataset_code,scope_key,partition_key,status,is_stale,diagnostics
          FROM ops.dataset_partitions
         WHERE dataset_code=ANY($1::text[]) AND partition_key=$2::date`, [datasets, partitionKey]
     );
@@ -89,7 +228,7 @@ async function verifySlotRecoveryEvidence(slot, query = (sql, params) => pool.qu
     datasetEvidence = datasets.map(code => {
       const expectedScopeKey = resolveDatasetScope(code,slot.request_payload||{});
       return byCodeAndScope.get(`${code}:${expectedScopeKey}`)
-        || { dataset_code: code, scope_key: expectedScopeKey, status: 'missing' };
+        || { dataset_code: code, scope_key: expectedScopeKey, partition_key: partitionKey, status: 'missing' };
     });
     const allPublished = datasetEvidence.every(row => {
       const diagnostics = row.diagnostics && typeof row.diagnostics === 'object' ? row.diagnostics : {};
@@ -101,7 +240,10 @@ async function verifySlotRecoveryEvidence(slot, query = (sql, params) => pool.qu
     if (!allPublished) return { recovered: false, reason: 'strict_dataset_evidence_missing', evidence: { slot, datasets: datasetEvidence } };
   }
   if (definition.requiresDataWatermark !== false && !stageVerified) {
-    const actual = String(slot.data_as_of || summary.dataAsOf || summary.data_as_of || summary.trade_date || '').slice(0, 10);
+    // data_as_of 从 PG 读出来是 Date；直接 String(...).slice(0,10) 会得到 “Fri Oct 2”，
+    // 导致带水位的成功槽被误判为证据缺失。统一按上海时区业务日期规范化。
+    const rawActual = slot.data_as_of || summary.dataAsOf || summary.data_as_of || summary.trade_date || '';
+    const actual = rawActual ? businessDateText(rawActual) : '';
     if (!/^\d{4}-\d{2}-\d{2}$/.test(actual) || !/^\d{4}-\d{2}-\d{2}$/.test(partitionKey) || actual < partitionKey) {
       return { recovered: false, reason: 'watermark_evidence_missing', evidence: { slot, run, expectedDataAsOf: partitionKey, actualDataAsOf: actual || null } };
     }
@@ -113,4 +255,7 @@ async function verifySlotRecoveryEvidence(slot, query = (sql, params) => pool.qu
   return { recovered: true, evidence: { mode: 'slot_success_and_dataset_evidence', slot, run, datasets: datasetEvidence, partitionKey } };
 }
 
-module.exports = { businessDateText, sameTargetScope, verifySlotRecoveryEvidence };
+module.exports = {
+  businessDateText, sameTargetScope, sameSlotRecoveryScope, recoveryScopeFilter, slotWaitingState,
+  waitReasonPolicy, WAIT_REASON_POLICIES, verifySlotRecoveryEvidence, slotVersionText,
+};

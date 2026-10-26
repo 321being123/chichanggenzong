@@ -2,7 +2,8 @@ const { pool } = require('../db/connection');
 const { auditEvent } = require('../db');
 const { mailer } = require('../config');
 const { sanitizeJobError } = require('./jobErrorSanitizer');
-const { verifySlotRecoveryEvidence, businessDateText, sameTargetScope } = require('./jobRecoveryEvidence');
+const { getRegisteredJobDefinition } = require('./jobDefinitions');
+const { verifySlotRecoveryEvidence, sameSlotRecoveryScope, slotWaitingState, recoveryScopeFilter } = require('./jobRecoveryEvidence');
 
 const DELIVERY_RETRY_MINUTES = [1, 5, 15];
 const MAX_DELIVERY_ATTEMPTS = DELIVERY_RETRY_MINUTES.length + 1;
@@ -86,17 +87,74 @@ function allCircuitsClosed(rows) {
   return Array.isArray(rows) && rows.length > 0 && rows.every(row => row.state === 'closed');
 }
 
-function slotMode(row) {
-  return String(row && row.request_payload && row.request_payload.mode || 'core');
-}
-
-function sameNavRange(left, right) {
-  const range=row=>[row.request_payload?.fromDate||businessDateText(row.business_date),row.request_payload?.throughDate||businessDateText(row.business_date)];
-  return JSON.stringify(range(left))===JSON.stringify(range(right));
-}
-
 function laterSlotLimit(historical) {
   return historical ? 3 : 1;
+}
+
+// 恢复证据只看已经产生结果的后续实例：pending/running/blocked/waiting_external 还没有结论，
+// skipped 只是“被接管”的归档标记，二者都不能参与最近恢复序列。
+const RECOVERY_SEQUENCE_STATUSES = Object.freeze(['succeeded', 'degraded', 'failed']);
+
+// 最近恢复序列：同任务、同业务日、同阶段、同范围的后续实例，按计划时间从新到旧取 N 条
+// （自动 1 条、历史 3 条），每一条都必须通过严格证据。
+// 不能取最早的 N 条——最早那条旧失败会永久占据查询前缀，之后的连续成功永远收敛不了告警；
+// 也不能把失败过滤掉只留成功——那会把“最新一次又失败”伪造成已恢复。
+async function loadRecentRecoverySequence(row, limit, query) {
+  const recoveryScope = recoveryScopeFilter(row, 4);
+  const statusIndex = recoveryScope.nextIndex;
+  const limitIndex = statusIndex + 1;
+  const { rows } = await query(
+    `SELECT slot_id,job_code,status,business_date,scheduled_for,request_payload,result_summary,data_as_of
+       FROM ops.job_schedule_slots
+      WHERE job_code=$1 AND business_date=$2::date AND scheduled_for>$3::timestamptz
+        AND status = ANY($${statusIndex}::text[])
+        AND ${recoveryScope.sql}
+      ORDER BY scheduled_for DESC,slot_id DESC LIMIT $${limitIndex}`,
+    [row.job_code, row.business_date, row.scheduled_for, ...recoveryScope.params,
+      RECOVERY_SEQUENCE_STATUSES, limit]
+  );
+  return rows;
+}
+
+// 审计与历史对账需要记录“用哪一版证据策略关的告警”，版本号与验证器都来自注册表。
+function alertEvidencePolicy(alertType) {
+  const policy = ALERT_EVIDENCE_POLICIES[String(alertType || '')];
+  if (!policy) return null;
+  return {
+    verifier: policy.verifier || null,
+    evidenceVersion: policy.evidenceVersion == null ? null : policy.evidenceVersion,
+    autoResolve: policy.autoResolve !== false,
+    notificationOnly: policy.notificationOnly === true,
+  };
+}
+
+// 历史告警处置分类：恢复、正常等待、任务下线、人工处置和证据不足必须分开记录，
+// 不能把“不满足自动恢复门槛”一律当成当前故障，也不能把“已确认”直接写成“已恢复”。
+const ALERT_DISPOSITION_LABELS = Object.freeze({
+  true_recovery: '真实恢复',
+  normal_waiting: '正常等待',
+  task_retired: '任务下线',
+  manual_disposition: '历史人工处置',
+  insufficient_evidence: '证据不足',
+  not_a_fault: '通知型记录',
+});
+
+function classifyAlertDisposition(alert = {}, verification = {}) {
+  const alertType = String(alert.alert_type || '');
+  const policy = ALERT_EVIDENCE_POLICIES[alertType];
+  if (policy && policy.notificationOnly) return { disposition: 'not_a_fault', reason: 'notification_only_alert' };
+  if (!policy) return { disposition: 'manual_disposition', reason: 'unknown_alert_type_requires_manual_review' };
+  if (policy.autoResolve === false) return { disposition: 'manual_disposition', reason: verification.reason || 'alert_type_not_auto_resolvable' };
+  if (verification.recovered) return { disposition: 'true_recovery', reason: null };
+  const reason = String(verification.reason || '');
+  if (reason === 'waiting_evidence_not_due') return { disposition: 'normal_waiting', reason };
+  const jobCode = String(alert.job_code || verification?.evidence?.slot?.job_code || '');
+  const definition = jobCode ? getRegisteredJobDefinition(jobCode) : null;
+  if (jobCode && (!definition || definition.disabled)) return { disposition: 'task_retired', reason: reason || 'job_not_registered_or_disabled' };
+  if (['unknown_alert_type_requires_manual_review', 'alert_type_not_auto_resolvable'].includes(reason)) {
+    return { disposition: 'manual_disposition', reason };
+  }
+  return { disposition: 'insufficient_evidence', reason: reason || 'evidence_insufficient' };
 }
 
 // 运行时自动收敛和历史告警调和共用这一个证据入口；historical 只表示历史槽位额外需要连续三次成功。
@@ -113,7 +171,8 @@ async function verifyAlertScope(alert, query = (sql, params) => pool.query(sql, 
   }
   if (scope.type === 'slot') {
     const { rows } = await query(
-      `SELECT slot_id,job_code,business_date,status,scheduled_for,updated_at,request_payload,result_summary
+      `SELECT slot_id,job_code,business_date,status,scheduled_for,updated_at,updated_at::text AS updated_at_exact,
+              request_payload,result_summary,data_as_of
          FROM ops.job_schedule_slots WHERE slot_id=$1`, [scope.key]
     );
     const row = rows[0];
@@ -126,21 +185,15 @@ async function verifyAlertScope(alert, query = (sql, params) => pool.query(sql, 
       const original = await verifySlotRecoveryEvidence(row, query, { alertType });
       if (original.recovered || row.job_code !== 'nav_snapshot' || original.reason !== 'watermark_evidence_missing') return original;
       // 旧成功记录缺日期时保留原审计，只接受同日同账户范围的后续完整复验。
+      // 走同一条“最近恢复序列”：完整范围条件在 SQL 里筛完，按最新计划时间取数。
       const required = laterSlotLimit(historical);
-      const { rows: later } = await query(
-        `SELECT slot_id,job_code,status,business_date,scheduled_for,request_payload,result_summary
-           FROM ops.job_schedule_slots
-          WHERE job_code=$1 AND business_date=$2::date AND scheduled_for>$3::timestamptz
-            AND COALESCE(request_payload->>'mode','core')=$4
-            AND COALESCE(request_payload->>'username','')=$5
-            AND COALESCE(request_payload->>'accountName','')=$6
-          ORDER BY scheduled_for DESC,slot_id DESC LIMIT $7`,
-        [row.job_code, row.business_date, row.scheduled_for, slotMode(row), row.request_payload?.username || '', row.request_payload?.accountName || '', required]
-      );
+      const later = await loadRecentRecoverySequence(row, required, query);
       if (later.length !== required) return original;
       const verifications = [];
       for (const candidate of later) {
-        if(!sameNavRange(row,candidate)) return {recovered:false,reason:'nav_requested_range_mismatch',evidence:{original:row,candidate}};
+        if (!sameSlotRecoveryScope(row, candidate)) {
+          return { recovered: false, reason: 'nav_requested_range_mismatch', evidence: { original: row, candidate } };
+        }
         const verified = await verifySlotRecoveryEvidence(candidate, query, { alertType });
         if (!verified.recovered) return verified;
         verifications.push(verified.evidence);
@@ -150,24 +203,35 @@ async function verifyAlertScope(alert, query = (sql, params) => pool.query(sql, 
     if (!row || !row.job_code || !row.scheduled_for) {
       return { recovered: false, evidence: row || null, reason: row ? 'original_slot_not_recovered' : 'slot_not_found' };
     }
+    // 有效等待不是故障：官方尚未披露、字段复查冷却和正常续批按 next_attempt_at 保留，
+    // 到期后仍未执行或出现新错误才重新成为可处理异常。
+    const waitingState = slotWaitingState(row);
+    if (waitingState.waiting) {
+      return { recovered: false, evidence: { slot: row, waiting: waitingState }, reason: 'waiting_evidence_not_due' };
+    }
     const limit = laterSlotLimit(historical);
-    const { rows: later } = await query(
-      `SELECT slot_id,status,business_date,scheduled_for,request_payload,result_summary
-         FROM ops.job_schedule_slots
-        WHERE job_code=$1 AND business_date=$2::date AND scheduled_for>$3::timestamptz
-          AND COALESCE(request_payload->>'mode','core')=$4
-        ORDER BY scheduled_for ASC,slot_id ASC LIMIT $5`,
-      [row.job_code, row.business_date, row.scheduled_for, slotMode(row), limit]
-    );
-    let recovered = later.length === limit && later.every(item => item.status === 'succeeded' && sameTargetScope(row, item));
-    if(recovered&&row.job_code==='nav_snapshot') {
-      for(const candidate of later) {
-        if(!sameNavRange(row,candidate)||!(await verifySlotRecoveryEvidence({...candidate,job_code:row.job_code},query,{alertType})).recovered) {recovered=false;break;}
-      }
+    const later = await loadRecentRecoverySequence(row, limit, query);
+    // 后续成功必须与原告警同任务、同业务日、同阶段，且账户/市场、区间、证券和字段范围一致，
+    // 并通过运行、阶段完整性和分区发布质量证据。不同任务或不同阶段不能互相抵消。
+    // 序列按最新计划时间取，最后一条失败就说明最新状态仍是故障，不能被更早的成功掩盖。
+    let recovered = later.length === limit;
+    const verifications = [];
+    for (const candidate of later) {
+      if (!recovered) break;
+      if (!sameSlotRecoveryScope(row, candidate)) { recovered = false; break; }
+      const verified = await verifySlotRecoveryEvidence(
+        { ...candidate, job_code: row.job_code, business_date: row.business_date }, query, { alertType }
+      );
+      if (!verified.recovered) { recovered = false; break; }
+      verifications.push(verified.evidence);
     }
     return {
       recovered,
-      evidence: { mode: historical ? 'three_later_job_successes' : 'later_comparable_slot_success', original: row, later },
+      evidence: {
+        mode: historical ? 'three_later_job_successes' : 'later_comparable_slot_success',
+        sequenceOrder: 'scheduled_for_desc', requiredCount: limit,
+        original: row, later, verifications,
+      },
       ...(recovered ? {} : { reason: 'insufficient_later_successes' }),
     };
   }
@@ -889,4 +953,5 @@ module.exports = {
   resolveDatasetAlerts, resolveSourceEndpointAlerts,
   reconcileRecoveredSourceAlerts, reconcileHistoricalAlerts, reconcilePartialDataAlerts, resolveWorkerOfflineAlert, notifyJobFailure, sendTestEmail, listAlerts, resendAlert, acknowledgeAlert,
   ACTIVE_ALERT_WHERE, parseAlertScope, allCircuitsClosed, verifyAlertScope, ALERT_EVIDENCE_POLICIES,
+  classifyAlertDisposition, ALERT_DISPOSITION_LABELS, alertEvidencePolicy, RECOVERY_SEQUENCE_STATUSES,
 };

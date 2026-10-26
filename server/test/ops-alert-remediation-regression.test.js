@@ -67,6 +67,11 @@ assert(mailer.includes("status === 'history'"));
 assert(mailer.includes("scope_type=\'dataset\'"));
 assert(mailer.includes("scope_type=\'source_endpoint\'"));
 assert(mailer.includes("scope_type=\'slot\' AND scope_key=$1::text"));
+// 告警恢复必须按“最近恢复序列”取证：先失败后连续成功要能收敛，最新再次失败不得收敛。
+assert(mailer.includes('RECOVERY_SEQUENCE_STATUSES') && mailer.includes('ORDER BY scheduled_for DESC,slot_id DESC'),
+  '告警恢复必须按最近计划时间取候选，不能取最早的失败记录');
+assert(!/ORDER BY scheduled_for ASC,slot_id ASC/.test(mailer), '告警恢复不得再按最早候选取数');
+assert(/status = ANY\(\$\$\{statusIndex\}::text\[\]\)/.test(mailer), '只有已产生结果的后续实例才能进入恢复序列');
 assert.deepStrictEqual(closedCircuitApiNames([{ api_name: '*' }, { api_name: 'topSearch' }, { api_name: '*' }]), ['*', 'topSearch']);
 {
   const definition = getJobDefinition('hk_rate');
@@ -168,47 +173,219 @@ async function verifyReconciliationEvidence() {
   assert.strictEqual(unknownAlert.recovered, false);
   assert.strictEqual(unknownAlert.reason, 'unknown_alert_type_requires_manual_review');
 
+  // 严格接管证据：只有同日同阶段同范围、运行 done、阶段完整且水位/分区通过才算恢复。
+  // 只比较状态字符串会把“本批结束”当成“工作完成”，也会让不同阶段互相抵消。
+  const JOB_CODE = 'market_close:A股';
+  const BUSINESS_DATE = '2026-09-06';
+  function successSlot({ slotId, scheduledFor, jobCode = JOB_CODE, businessDate = BUSINESS_DATE,
+    payload = { mode: 'core' }, summary = {} }) {
+    return {
+      slot_id: slotId, job_code: jobCode, business_date: businessDate, status: 'succeeded',
+      scheduled_for: scheduledFor, request_payload: payload,
+      result_summary: { ok: true, mode: payload.mode || 'core', dataAsOf: businessDate, ...summary },
+      data_as_of: `${businessDate}T00:00:00.000Z`,
+    };
+  }
+  function evidenceQuery(original, later, options = {}) {
+    return async (sql, params) => {
+      if (sql.includes('FROM job_runs')) {
+        const slotId = params && params[0];
+        const candidate = (options.runs || later).find(row => String(row.slot_id) === String(slotId));
+        return { rows: candidate ? [{
+          id: Number(slotId) + 1000, slot_id: candidate.slot_id, status: options.runStatus || 'done',
+          attempt_no: 1, trigger_type: 'scheduled', result_json: options.runResult || { ...candidate.result_summary },
+        }] : [] };
+      }
+      if (sql.includes('FROM ops.dataset_partitions')) return { rows: options.partitions || [] };
+      if (sql.includes('FROM ops.job_schedule_slots WHERE slot_id=$1')) return { rows: [original] };
+      return { rows: later };
+    };
+  }
   const original = {
-    slot_id: 10, job_code: 'convertible_bond_refresh', status: 'failed',
+    slot_id: 10, job_code: JOB_CODE, business_date: BUSINESS_DATE, status: 'failed',
     scheduled_for: '2026-09-06T08:00:00.000Z', updated_at: '2026-09-06T08:30:00.000Z',
+    request_payload: { mode: 'core' },
   };
   const laterSuccesses = [
-    { slot_id: 13, status: 'succeeded', scheduled_for: '2026-09-09T08:00:00.000Z' },
-    { slot_id: 12, status: 'succeeded', scheduled_for: '2026-09-08T08:00:00.000Z' },
-    { slot_id: 11, status: 'succeeded', scheduled_for: '2026-09-07T08:00:00.000Z' },
+    successSlot({ slotId: 13, scheduledFor: '2026-09-09T08:00:00.000Z' }),
+    successSlot({ slotId: 12, scheduledFor: '2026-09-08T08:00:00.000Z' }),
+    successSlot({ slotId: 11, scheduledFor: '2026-09-07T08:00:00.000Z' }),
   ];
-  const query = async sql => ({ rows: sql.includes('WHERE slot_id=$1') ? [original] : laterSuccesses });
+  const query = evidenceQuery(original, laterSuccesses);
   const recoveredSlot = await verifyScope(
-    { alert_type: 'failure', scope_type: 'slot', scope_key: '10' }, query
+    { alert_type: 'failure', scope_type: 'slot', scope_key: '10', job_code: JOB_CODE }, query
   );
-  assert.strictEqual(recoveredSlot.recovered, true, '历史运行失败应能用连续三次后续成功作为人工对账证据');
+  assert.strictEqual(recoveredSlot.recovered, true, '历史运行失败应能用连续三次后续完整成功作为人工对账证据');
   assert.strictEqual(recoveredSlot.evidence.mode, 'three_later_job_successes');
+  assert.strictEqual(recoveredSlot.evidence.verifications.length, 3, '每条后续成功都必须逐条通过严格证据');
+
+  // 部分完成（done 但 continuationRequired）不能算成功，也不能用来关闭旧告警。
+  const partialRecovered = await verifyScope(
+    { alert_type: 'failure', scope_type: 'slot', scope_key: '10', job_code: JOB_CODE },
+    evidenceQuery(original, [successSlot({ slotId: 11, scheduledFor: '2026-09-07T08:00:00.000Z' })], {
+      runResult: { ok: false, mode: 'core', stageComplete: false, continuationRequired: true, pendingStages: ['enrichment'] },
+    })
+  );
+  assert.strictEqual(partialRecovered.recovered, false, '本批结束但仍有未完成阶段时不得自动恢复');
+
+  // 正常等待（官方未披露/字段复查冷却）不是故障：不自动关闭，并归入“正常等待”处置分类。
+  const { classifyAlertDisposition } = require('../services/jobAlertMailer');
+  const waitingSlot = {
+    slot_id: 30, job_code: 'ipo_history_sync', business_date: '2026-10-23', status: 'pending',
+    scheduled_for: '2026-10-23T11:35:00.000Z', request_payload: { mode: 'enrichment' },
+    result_summary: {
+      continuationRequired: true, waitReason: 'field_recheck_cooldown', pendingStages: ['enrichment'], remaining: 1,
+      nextAttemptAt: '2026-10-30T02:00:00.000Z',
+    },
+    next_attempt_at: '2026-10-30T02:00:00.000Z',
+  };
+  const waitingVerification = await verifyScope(
+    { alert_type: 'failure', scope_type: 'slot', scope_key: '30', job_code: 'ipo_history_sync', alert_type: 'failure' },
+    evidenceQuery(waitingSlot, [], {})
+  );
+  assert.strictEqual(waitingVerification.recovered, false, '未到复查时间的等待不得自动关闭告警');
+  assert.strictEqual(waitingVerification.reason, 'waiting_evidence_not_due');
+  assert.strictEqual(waitingVerification.evidence.waiting.remaining, 1);
+  assert.deepStrictEqual(classifyAlertDisposition(
+    { alert_type: 'failure', job_code: 'ipo_history_sync' }, waitingVerification
+  ).disposition, 'normal_waiting', '正常等待必须与故障分开记录');
+
+  // F4/F7：等待原因必须绑定登记来源、证据字段和最长时限；复查日期按上海业务日显示。
+  {
+    const { slotWaitingState, waitReasonPolicy } = require('../services/jobRecoveryEvidence');
+    const now = new Date('2026-10-26T04:00:00.000Z'); // 上海 12:00
+    const future = '2026-10-30T02:00:00.000Z';
+    const waitingSlotFixture = (summary, overrides = {}) => ({
+      job_code: 'ipo_history_sync', status: 'pending', next_attempt_at: future,
+      result_summary: {
+        continuationRequired: true, pendingStages: ['enrichment'], remaining: 1, nextAttemptAt: future, ...summary,
+      },
+      ...overrides,
+    });
+    const unverified = slotWaitingState(waitingSlotFixture({ waitReason: 'unverified_custom_reason' }), now);
+    assert.strictEqual(unverified.exempt, false, '未登记原因不得豁免续批止损');
+    assert.strictEqual(unverified.waitReasonAccepted, false);
+    assert.strictEqual(unverified.kind, 'continuation', '未登记原因只能算普通续批');
+
+    const expired = slotWaitingState(waitingSlotFixture({
+      waitReason: 'field_recheck_cooldown',
+      continuationStartedAt: new Date(now.getTime() - 800 * 3600000).toISOString(),
+    }), now);
+    assert.strictEqual(expired.exempt, false, '已登记原因超过最长等待时限必须失效');
+    assert.strictEqual(expired.waitReasonExpired, true);
+
+    const accepted = slotWaitingState(waitingSlotFixture({
+      waitReason: 'field_recheck_cooldown',
+      continuationStartedAt: new Date(now.getTime() - 30 * 3600000).toISOString(),
+    }), now);
+    assert.strictEqual(accepted.exempt, true, '已登记原因未到期且未超时限必须保留');
+
+    const wrongJob = slotWaitingState(waitingSlotFixture({ waitReason: 'field_recheck_cooldown' }, { job_code: 'nav_snapshot' }), now);
+    assert.strictEqual(wrongJob.exempt, false, '等待原因必须匹配适用任务');
+    assert.strictEqual(waitReasonPolicy('field_recheck_cooldown', 'nav_snapshot'), null);
+    assert(waitReasonPolicy('field_recheck_cooldown', 'ipo_history_sync'));
+
+    // 上海零点（UTC 前一日 16:00）曾被显示成前一天，必须按共享业务日期转换。
+    const midnightSlot = {
+      job_code: 'ipo_history_sync', status: 'pending', next_attempt_at: null,
+      result_summary: {
+        continuationRequired: true, waitReason: 'field_recheck_cooldown', pendingStages: ['enrichment'], remaining: 1,
+        nextAttemptAt: '2026-10-29T16:00:00.000Z',
+      },
+    };
+    const midnight = slotWaitingState(midnightSlot, now);
+    assert.strictEqual(midnight.untilDate, '2026-10-30', '上海零点必须显示当天，不能少一天');
+    assert(midnight.label.includes('至 2026-10-30'), midnight.label);
+    assert.strictEqual(slotWaitingState(waitingSlotFixture({ waitReason: 'field_recheck_cooldown' }), now).untilDate, '2026-10-30',
+      '上海上午时间必须显示当天');
+    const crossDay = slotWaitingState({
+      job_code: 'ipo_history_sync', status: 'pending', next_attempt_at: null,
+      result_summary: {
+        continuationRequired: true, waitReason: 'field_recheck_cooldown', pendingStages: ['enrichment'], remaining: 1,
+        nextAttemptAt: '2026-10-30T15:59:00.000Z',
+      },
+    }, now);
+    assert.strictEqual(crossDay.untilDate, '2026-10-30', '上海 23:59 仍属当天');
+  }
+  assert.strictEqual(classifyAlertDisposition(
+    { alert_type: 'failure', job_code: 'hk_ipo_preopen' }, { recovered: false, reason: 'successful_run_evidence_missing' }
+  ).disposition, 'task_retired', '已下线任务归入任务下线，不是当前故障');
+  assert.strictEqual(classifyAlertDisposition(
+    { alert_type: 'recovery', job_code: JOB_CODE }, { recovered: false, reason: 'notification_only_alert' }
+  ).disposition, 'not_a_fault');
+  assert.strictEqual(classifyAlertDisposition(
+    { alert_type: 'failure', job_code: JOB_CODE }, { recovered: true }
+  ).disposition, 'true_recovery');
+  assert.strictEqual(classifyAlertDisposition(
+    { alert_type: 'duplicate_success', job_code: JOB_CODE }, { recovered: true }
+  ).disposition, 'manual_disposition', '人工处置类型不得自动归类为恢复');
 
   // JOB-RECOVERY-TARGET-SCOPE-001：另一证券或另一字段成功，不能收敛原定向失败。
-  const { sameTargetScope } = require('../services/jobRecoveryEvidence');
-  const targeted = { ...original, job_code:'convertible_bond_announcement_history_sync', business_date:'2026-10-12',
-    request_payload:{mode:'analysis_inputs_targeted',targetCodes:['127040.SZ']},result_summary:{timed_out:true} };
-  const other = {slot_id:14,status:'succeeded',request_payload:{mode:'analysis_inputs_targeted',targetCodes:['110076.SH']}};
-  const scopeAlert={alert_type:'failure',scope_type:'slot',scope_key:'10'};
-  for(const historical of [false,true]) {
-    const checked=await verifyAlertScope(scopeAlert,async sql=>({rows:sql.includes('WHERE slot_id=$1')?[targeted]:Array(historical?3:1).fill(other)}),{historical});
-    assert.strictEqual(checked.recovered,false,'不能用另一转债的后续成功关闭原告警');
+  const { sameTargetScope, sameSlotRecoveryScope } = require('../services/jobRecoveryEvidence');
+  const targeted = {
+    slot_id: 20, job_code: 'convertible_bond_announcement_history_sync', business_date: '2026-10-12',
+    status: 'failed', scheduled_for: '2026-10-12T08:00:00.000Z', updated_at: '2026-10-12T08:30:00.000Z',
+    request_payload: { mode: 'analysis_inputs_targeted', targetCodes: ['127040.SZ'] },
+    result_summary: { timed_out: true },
+  };
+  const targetedPayload = { mode: 'analysis_inputs_targeted', targetCodes: ['127040.SZ'] };
+  const targetedSummary = { stageComplete: true, codes: ['127040.SZ'], targetFields: [] };
+  const other = successSlot({
+    slotId: 14, scheduledFor: '2026-10-12T09:00:00.000Z', jobCode: targeted.job_code,
+    businessDate: '2026-10-12', payload: { mode: 'analysis_inputs_targeted', targetCodes: ['110076.SH'] },
+  });
+  const scopeAlert = { alert_type: 'failure', scope_type: 'slot', scope_key: '20', job_code: targeted.job_code };
+  for (const historical of [false, true]) {
+    const checked = await verifyAlertScope(scopeAlert,
+      evidenceQuery(targeted, Array(historical ? 3 : 1).fill(other)), { historical });
+    assert.strictEqual(checked.recovered, false, '不能用另一转债的后续成功关闭原告警');
   }
-  const matching={...other,request_payload:targeted.request_payload};
-  assert.strictEqual((await verifyAlertScope(scopeAlert,async sql=>({rows:sql.includes('WHERE slot_id=$1')?[targeted]:[matching]}))).recovered,true);
-  assert.strictEqual(sameTargetScope(targeted,other),false);
-  assert.strictEqual(sameTargetScope({request_payload:{targetCodes:['A','B','A']}},{request_payload:{targetCodes:['B','A']}}),true);
-  assert.strictEqual(sameTargetScope({request_payload:{targetCodes:['A'],targetFields:['industry']}},{request_payload:{targetCodes:['A'],targetFields:['business_exposure']}}),false);
-  assert.strictEqual(sameTargetScope(targeted,{request_payload:{}}),false,'全局与定向不混用');
-  assert.strictEqual(sameTargetScope({request_payload:{mode:'targeted'}},{request_payload:{mode:'targeted'}}),false,'空目标不能作为恢复证据');
-  const vm=require('vm'),file=path.join(ROOT,'server/services/jobScheduleSlots.js');
-  const scopedRequire=require('module').createRequire(file);
-  const schedulerContext=vm.createContext({require:name=>name==='../db/connection'?{pool:{query:async sql=>{
-    assert(sql.includes('SELECT slot_id,request_payload'),'不匹配作用域时禁止写skipped或关闭告警');return {rows:[other]};
-  }}}:scopedRequire(name),module:{exports:{}},process,console,Buffer,setTimeout,clearTimeout});
-  vm.runInContext(fs.readFileSync(file,'utf8'),schedulerContext);
-  const unchanged=await vm.runInContext('reconcileSlot',schedulerContext)(targeted);
-  assert.strictEqual(unchanged.status,'failed','调度器同样不能借其他目标成功跳过原失败');
+  const matching = successSlot({
+    slotId: 15, scheduledFor: '2026-10-12T09:30:00.000Z', jobCode: targeted.job_code,
+    businessDate: '2026-10-12', payload: targetedPayload, summary: targetedSummary,
+  });
+  assert.strictEqual((await verifyAlertScope(scopeAlert, evidenceQuery(targeted, [matching]))).recovered, true,
+    '同证券同字段的完整成功可以接管原定向失败');
+  // 不同阶段不能互相抵消：候选查询必须带同阶段条件。
+  const enrichmentSlot = { ...waitingSlot, result_summary: { ok: false, mode: 'enrichment' }, next_attempt_at: null, status: 'failed' };
+  let scopeParams = null;
+  await verifyAlertScope(
+    { alert_type: 'failure', scope_type: 'slot', scope_key: '30', job_code: 'ipo_history_sync' },
+    async (sql, params) => {
+      if (sql.includes('FROM job_runs')) return { rows: [] };
+      if (sql.includes('FROM ops.job_schedule_slots WHERE slot_id=$1')) return { rows: [enrichmentSlot] };
+      scopeParams = params;
+      return { rows: [] };
+    }
+  );
+  assert.strictEqual(scopeParams[3], 'enrichment', '候选查询必须按同阶段过滤，core 不能收敛 enrichment');
+  assert.strictEqual(sameTargetScope(targeted, other), false);
+  assert.strictEqual(sameTargetScope({ request_payload: { targetCodes: ['A', 'B', 'A'] } }, { request_payload: { targetCodes: ['B', 'A'] } }), true);
+  assert.strictEqual(sameTargetScope({ request_payload: { targetCodes: ['A'], targetFields: ['industry'] } }, { request_payload: { targetCodes: ['A'], targetFields: ['business_exposure'] } }), false);
+  assert.strictEqual(sameTargetScope(targeted, { request_payload: {} }), false, '全局与定向不混用');
+  assert.strictEqual(sameTargetScope({ request_payload: { mode: 'targeted' } }, { request_payload: { mode: 'targeted' } }), false, '空目标不能作为恢复证据');
+  assert.strictEqual(sameSlotRecoveryScope(
+    { job_code: JOB_CODE, business_date: BUSINESS_DATE, request_payload: { mode: 'core' } },
+    { job_code: JOB_CODE, business_date: '2026-09-07', request_payload: { mode: 'core' } }
+  ), false, '不同业务日不能互相接管');
+
+  const vm = require('vm'), file = path.join(ROOT, 'server/services/jobScheduleSlots.js');
+  const scopedRequire = require('module').createRequire(file);
+  const schedulerContext = vm.createContext({
+    require: name => name === '../db/connection' ? {
+      pool: {
+        query: async (sql) => {
+          if (sql.includes('FROM job_runs')) return { rows: [other] };
+          assert(sql.includes('FROM ops.job_schedule_slots'), '不匹配作用域时禁止写skipped或关闭告警');
+          return { rows: [other] };
+        },
+      },
+    } : scopedRequire(name),
+    module: { exports: {} }, process, console, Buffer, setTimeout, clearTimeout,
+  });
+  vm.runInContext(fs.readFileSync(file, 'utf8'), schedulerContext);
+  const unchanged = await vm.runInContext('reconcileSlot', schedulerContext)(targeted);
+  assert.strictEqual(unchanged.status, 'failed', '调度器同样不能借其他目标成功跳过原失败');
 
   const dataAlert = await verifyScope(
     { alert_type: 'data_quality', scope_type: 'slot', scope_key: '10' }, query
@@ -253,11 +430,67 @@ assert.strictEqual(validateJobDefinitionSources({
   contracts: { sample: { datasetPublicationByMode: { core: { publish: ['unknown'], requirePublished: [] } } } },
   datasetRegistry: { known: {} }, strict: true,
 }).ok, false, '阶段发布契约不得引用任务未声明的数据集');
-const unknownRecovery = await verifySlotRecoveryEvidence({ slot_id: 99, job_code: 'unknown-job', status: 'succeeded' }, async () => {
+  const unknownRecovery = await verifySlotRecoveryEvidence({ slot_id: 99, job_code: 'unknown-job', status: 'succeeded' }, async () => {
     throw new Error('未知任务不应查询运行记录');
   });
   assert.strictEqual(unknownRecovery.recovered, false);
   assert.strictEqual(unknownRecovery.reason, 'unknown_job_definition');
+
+  // 全任务定义不变量：无证据的 pending 不得判成等待，空结果不得算阶段完成，
+  // 退役任务只允许是已下线的三个港股任务（接管核对必须对它们保持原样）。
+  {
+    const { JOB_DEFINITIONS: definitionList, stageCompletionEvidence } = require('../services/jobDefinitions');
+    const { slotWaitingState } = require('../services/jobRecoveryEvidence');
+    const failureSlot = { job_code: 'sample', status: 'pending', result_summary: {} };
+    assert.strictEqual(slotWaitingState(failureSlot).waiting, false, '无证据的 pending 不是等待');
+    for (const definition of definitionList) {
+      assert.strictEqual(
+        slotWaitingState({ ...failureSlot, job_code: definition.jobCode }).waiting, false,
+        `${definition.jobCode} 无证据时不得判为等待`
+      );
+      for (const mode of Object.keys(definition.datasetPublicationByMode || {})) {
+        assert.strictEqual(
+          stageCompletionEvidence(definition, { mode }, { mode }), false,
+          `${definition.jobCode}/${mode} 空结果不得算阶段完成`
+        );
+      }
+    }
+    assert.deepStrictEqual(
+      definitionList.filter(item => item.disabled).map(item => item.jobCode).sort(),
+      ['hk_ipo_enrichment', 'hk_ipo_postclose', 'hk_ipo_preopen'],
+      '退役任务只有三个已下线港股任务'
+    );
+  }
+
+  // R2：槽位版本只接受数据库精确文本；JS Date 的毫秒值不能冒充同一版本。
+  const { slotVersionText } = require('../services/jobRecoveryEvidence');
+  assert.strictEqual(slotVersionText({ updated_at: new Date('2026-10-26T12:00:00.100Z') }), null,
+    'JS Date 只有毫秒，不能作为并发核对版本');
+  assert.strictEqual(slotVersionText({ updated_at_exact: '2026-10-26 20:00:00.1005+08' }), '2026-10-26 20:00:00.1005+08',
+    '数据库精确文本必须原样用于核对');
+  assert.strictEqual(slotVersionText({ updated_at: '2026-10-26T12:00:00.100500Z' }), '2026-10-26T12:00:00.100500Z',
+    '带微秒的字符串版本可用');
+  assert.strictEqual(slotVersionText({ updated_at: '2026-10-26T12:00:00.100Z' }), null, '毫秒级字符串版本不可用');
+  assert.strictEqual(slotVersionText({}), null);
+
+  // R3：审计摘要只放开受限结构，逐层过滤凭据键，并限制深度与数量。
+  const { sanitizeAuditMeta } = require('../db/config');
+  const auditMeta = sanitizeAuditMeta({
+    alertId: 1,
+    scope: { type: 'slot', key: '10' },
+    runIds: [11, 12],
+    partitions: [{ code: 'ipo_history', scope: 'GLOBAL', partitionKey: '2026-10-07', status: 'published' }],
+    token: 'must-not-persist',
+    nested: { deeper: { deepest: 'x' } },
+    huge: new Array(40).fill('a'),
+  });
+  assert.deepStrictEqual(auditMeta.scope, { type: 'slot', key: '10' }, '作用域对象必须落库');
+  assert.deepStrictEqual(auditMeta.runIds, [11, 12], '运行 ID 数组必须落库');
+  assert.strictEqual(auditMeta.partitions[0].partitionKey, '2026-10-07', '分区日期必须落库');
+  assert.strictEqual(auditMeta.token, undefined, '凭据键在任何层级都不落库');
+  assert.strictEqual(auditMeta.huge.length, 20, '结构数量必须受限');
+  assert.strictEqual(auditMeta.nested, undefined, '超过两层深度的结构不落库');
+
   assert.strictEqual(validateJobDefinitionSources({
     source: [{ jobCode: 'sample' }], contracts: {}, strict: true,
   }).ok, false, '严格契约门禁必须拒绝依赖默认 dataDatePolicy 的原始定义');

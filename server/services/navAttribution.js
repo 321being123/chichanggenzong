@@ -311,7 +311,12 @@ async function intervalHasGap(data, previous, current) {
 // 首页资产基准→同一净值续链。只读投影与自动写入均调用此入口；原导入事实不改写。
 async function buildNavPerformance(data, totals, options = {}) {
   const today = dateKey(new Date());
-  const navs = (data.navHistory || []).filter(n => dateKey(n.date) <= today).sort((a, b) => dateKey(a.date).localeCompare(dateKey(b.date)));
+  const history = (data.navHistory || []).filter(n => dateKey(n.date) <= today);
+  const importedThrough = history.filter(n => n.snapshotSource === 'imported')
+    .reduce((latest, n) => dateKey(n.date) > latest ? dateKey(n.date) : latest, '');
+  // 导入覆盖的历史按原记录频率展示；旧系统日记录留作审计，不插入周记录之间制造断点。
+  const navs = history.filter(n => !importedThrough || dateKey(n.date) >= importedThrough || isAuthoritativeSnapshot(n))
+    .sort((a, b) => dateKey(a.date).localeCompare(dateKey(b.date)));
   const live = data.navAttribution;
   if (navs.length && dateKey(navs.at(-1).date) < today && Number.isFinite(Number(data.totalAsset))) {
     navs.push({ date: today, nav: null, totalAsset: data.totalAsset, snapshotSource: 'live',

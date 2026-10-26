@@ -47,7 +47,7 @@ assert.match(evidence, /FROM job_runs/);
 assert.match(evidence, /runResult\.ok === false/);
 assert.match(evidence, /failedDatasets/);
 assert.match(evidence, /expectedDataDate/);
-assert.match(evidence, /SELECT dataset_code,scope_key,status/);
+assert.match(evidence, /SELECT dataset_code,scope_key,partition_key,status/);
 assert.match(evidence, /byCodeAndScope/);
 assert.doesNotMatch(hkex, /statusMessage \? statusMessage\.slice\(0, 2000\) : null/);
 assert.strictEqual(datasetPartitionKeyForSlot(

@@ -37,7 +37,7 @@ assert(/reasonForSlot\(slot\)/.test(orchestrator) && /slot\.trigger_type === 'ma
 assert(/slot\.status === 'pending' && slot\.trigger_type === 'manual_retry'/.test(slots), '人工补跑不得被旧的失败运行记录立即回滚');
 assert(/trigger_type='auto_retry'/.test(slots), '失败退避后必须标记为自动重试');
 assert(/dependencyCodes/.test(slots) && /claimSlot/.test(slots), '领取任务前必须检查依赖');
-assert(/同业务日后续实例已成功完成/.test(slots) && /status='skipped'/.test(slots), '后续成功实例必须收敛旧失败/阻断槽位及告警');
+assert(/同业务日同范围的后续实例已完成并通过运行、阶段和分区证据核验/.test(slots) && /status='skipped'/.test(slots), '后续完整成功实例必须收敛旧失败/阻断槽位及告警');
 assert(/normalizeBusinessDate\(slot\.business_date\)/.test(slots), '数据分区依赖校验必须兼容 PostgreSQL date 返回的 Date 对象');
 assert(/benchmark_code='CSI300'/.test(slots) && /benchmark_code='CSIALL'/.test(slots) && /source_code='chinabond'/.test(slots) && /source_code='tushare_us_tycr'/.test(slots), '市场波动水位必须逐项检查必要来源');
 assert(/重新校验发现业务数据水位落后/.test(slots), '重新校验发现水位落后时必须落库为降级');

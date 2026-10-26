@@ -69,7 +69,8 @@ function readSrc(rel) { return fs.readFileSync(path.join(ROOT, rel), 'utf8'); }
     assert.ok(/sanitizeJobError\(e\.detail/.test(auditDbSrc), '审计 detail 写入前未脱敏');
     assert.ok(/detail: sanitizeJobError\(row\.detail/.test(auditDbSrc), '历史审计 detail 返回前未脱敏');
     assert.ok(/metadata: sanitizeJobResult\(row\.metadata/.test(auditDbSrc), '历史审计 metadata 返回前未递归脱敏');
-    assert.ok(/out\[k\] = sanitizeJobError\(v, 200\)/.test(auditDbSrc), '审计 metadata 字符串值落库前未脱敏');
+    assert.ok(/typeof value === 'string'\) return sanitizeJobError\(value, 200\)/.test(auditDbSrc),
+      '审计 metadata 字符串值落库前未脱敏');
   });
   await check('后台审计页提供模块/操作者/结果筛选', () => {
     assert.ok(/audit-filter-module|auditFilter/.test(adminJsSrc + adminHtmlSrc), '审计页缺少筛选控件');

@@ -119,8 +119,12 @@ const { runNavSnapshotJob } = require('../jobs/navSnapshot');
   const recoveryQuery = async (sql,params) => {
     if(sql.includes('FROM job_runs')) return {rows:[{id:params[0],slot_id:params[0],status:'done',result_json:params[0]===original.slot_id?original.result_summary:laterResult}]};
     if(sql.includes('scheduled_for>')) {
-      assert.deepStrictEqual(params,[original.job_code,original.business_date,original.scheduled_for,'core','','',params[6]]);
-      assert.strictEqual(params[6]===1||params[6]===3,true);
+      // 完整范围条件已前置到 SQL：前三个参数固定为任务/业务日/计划时间，阶段紧随其后，
+      // 末尾是本次取数上限（自动 1 次、历史 3 次）。
+      assert.deepStrictEqual(params.slice(0,3),[original.job_code,original.business_date,original.scheduled_for]);
+      assert.strictEqual(params[3],'core','候选查询必须按同阶段过滤，不同阶段不能互相抵消');
+      const limit=params[params.length-1];
+      assert.strictEqual(limit===1||limit===3,true);
       return {rows:[later]};
     }
     if(sql.includes('FROM ops.job_schedule_slots')) return {rows:[original]};

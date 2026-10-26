@@ -743,7 +743,8 @@ async function loadJobsDataLegacy() {
   }
 }
 
-function jobSlotStatusTag(status, late) {
+function jobSlotStatusTag(status, late, waiting) {
+  if (waiting && status === 'pending') return '<span class="tag tag-a">等待复查</span>';
   if (late && status === 'pending') return '<span class="tag tag-over">超时待处理</span>';
   if (status === 'succeeded' || status === 'done') return '<span class="tag tag-ok">成功</span>';
   if (status === 'running') return '<span class="tag tag-a">运行中</span>';
@@ -955,7 +956,12 @@ function renderJobSlotRow(slot) {
   const retry = (slot.status === 'failed' || slot.status === 'degraded' || slot.status === 'blocked')
     ? ' <button class="btn btn-outline btn-xs" data-act="retryJobSlotFromUi" data-arg1="' + Number(slot.slot_id) + '">立即补跑</button> <button class="btn btn-outline btn-xs" data-act="acknowledgeJobSlot" data-arg1="' + Number(slot.slot_id) + '">确认</button>' : '';
   const watermark = slot.data_as_of ? String(slot.data_as_of).slice(0, 10) : '-';
-  return '<tr><td>' + escapeHtml(jobLabel(slot.job_code)) + '</td><td>' + fmtTime(slot.scheduled_for) + '</td><td>' + jobSlotStatusTag(slot.status, slot.is_late) + '</td><td>' + Number(slot.attempt_count || 0) + '/' + Number(slot.max_attempts || 4) + '</td><td>' + escapeHtml(watermark) + '</td><td class="biz-table-note-cell biz-table-note-cell--260 biz-table-break-word">' + escapeHtml(jobDisplayText(slot.last_error || (slot.result_summary && JSON.stringify(slot.result_summary)) || '', 300)) + '</td><td>' + detail + validate + retry + '</td></tr>';
+  // 正常等待（官方待披露/字段复查冷却/续批）必须显式说明复查时间和剩余项，
+  // 不能只用“待运行”表示，也不能把它标成超时待处理。
+  const waitingState = slot.waiting_state && slot.waiting_state.waiting ? slot.waiting_state : null;
+  const waitingNote = waitingState && waitingState.label ? waitingState.label + '；' : '';
+  const resultText = waitingNote + (slot.last_error || (slot.result_summary && JSON.stringify(slot.result_summary)) || '');
+  return '<tr><td>' + escapeHtml(jobLabel(slot.job_code)) + '</td><td>' + fmtTime(slot.scheduled_for) + '</td><td>' + jobSlotStatusTag(slot.status, slot.is_late, Boolean(waitingState)) + '</td><td>' + Number(slot.attempt_count || 0) + '/' + Number(slot.max_attempts || 4) + '</td><td>' + escapeHtml(watermark) + '</td><td class="biz-table-note-cell biz-table-note-cell--260 biz-table-break-word">' + escapeHtml(jobDisplayText(resultText, 300)) + '</td><td>' + detail + validate + retry + '</td></tr>';
 }
 
 async function resendJobAlert(alertId) {
@@ -1007,7 +1013,8 @@ async function openJobSlotDetail(slotId) {
       '；无进展 ' + Number(summary.noProgressCount || 0) +
       '；槽位调用 ' + Number(summary.slotExternalCallsTotal || 0) + '/' + Number(summary.slotExternalCallsLimit || 0) +
       '；待处理阶段 ' + ((summary.pendingStages || []).join('、') || '无');
-    const html = '<div class="job-detail"><p><b>任务：</b>' + escapeHtml(jobLabel(d.job_code)) + '</p><p><b>计划时间：</b>' + fmtTime(d.scheduled_for) + '</p><p><b>业务执行结果：</b><br>' + escapeHtml(jobDisplayText(d.business_execution || d.result_summary || {}, 4000)) + '</p><p><b>续批与止损：</b>' + escapeHtml(continuation) + '</p><p><b>数据新鲜度校验：</b>' + escapeHtml(freshness.status === 'passed' ? '通过' : freshness.status === 'not_required' ? '不需要水位校验' : freshness.status === 'degraded' ? '未达到目标日期' : '待校验') + '；数据日期 ' + escapeHtml(freshness.dataAsOf ? String(freshness.dataAsOf).slice(0, 10) : '-') + '；业务日期 ' + escapeHtml(freshness.businessDate || '-') + '</p><p><b>计划状态：</b>' + jobSlotStatusTag(d.status) + '</p><p><b>最近错误：</b>' + escapeHtml(jobDisplayText(d.last_error || '无', 1000)) + '</p><p><b>执行尝试：</b></p><ul>' + runs + '</ul><p><b>依赖：</b></p><ul>' + deps + '</ul><p><b>邮件告警：</b></p><ul>' + alerts + '</ul><p><b>人工审计：</b></p><ul>' + audits + '</ul></div>';
+    const waitingState = d.waiting_state && d.waiting_state.waiting ? d.waiting_state : null;
+    const html = '<div class="job-detail"><p><b>任务：</b>' + escapeHtml(jobLabel(d.job_code)) + '</p><p><b>计划时间：</b>' + fmtTime(d.scheduled_for) + '</p><p><b>业务执行结果：</b><br>' + escapeHtml(jobDisplayText(d.business_execution || d.result_summary || {}, 4000)) + '</p><p><b>续批与止损：</b>' + escapeHtml(continuation) + '</p><p><b>等待复查：</b>' + escapeHtml(waitingState ? (waitingState.label || '等待中') + (waitingState.waitReason ? '（原因 ' + waitingState.waitReason + '）' : '') : '当前不是等待状态') + '</p><p><b>数据新鲜度校验：</b>' + escapeHtml(freshness.status === 'passed' ? '通过' : freshness.status === 'not_required' ? '不需要水位校验' : freshness.status === 'degraded' ? '未达到目标日期' : '待校验') + '；数据日期 ' + escapeHtml(freshness.dataAsOf ? String(freshness.dataAsOf).slice(0, 10) : '-') + '；业务日期 ' + escapeHtml(freshness.businessDate || '-') + '</p><p><b>计划状态：</b>' + jobSlotStatusTag(d.status, false, Boolean(waitingState)) + '</p><p><b>最近错误：</b>' + escapeHtml(jobDisplayText(d.last_error || '无', 1000)) + '</p><p><b>执行尝试：</b></p><ul>' + runs + '</ul><p><b>依赖：</b></p><ul>' + deps + '</ul><p><b>邮件告警：</b></p><ul>' + alerts + '</ul><p><b>人工审计：</b></p><ul>' + audits + '</ul></div>';
     openAdminModal('任务详情', html, '<button class="btn btn-outline" data-act="closeAdminModal">关闭</button>');
   } catch (e) { showToast('网络错误'); }
 }

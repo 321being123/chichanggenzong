@@ -3939,6 +3939,258 @@
       ],
       "owner": "WorkBuddy",
       "status": "local_verified"
+    },
+    {
+      "id": "TASK-SLOT-004",
+      "title": "旧槽接管必须同任务同业务日同阶段且账户/区间/证券/字段范围一致，并通过运行、阶段和分区证据",
+      "implementation": {
+        "file": "server/services/jobScheduleSlots.js",
+        "symbol": "findStrictRecoverySlot"
+      },
+      "tests": [
+        {
+          "file": "server/test/job-slot-takeover-db.test.js",
+          "pattern": "同日同阶段同范围的完整成功必须能接管旧 pending"
+        },
+        {
+          "file": "server/test/ops-alert-remediation-regression.test.js",
+          "pattern": "候选查询必须按同阶段过滤，core 不能收敛 enrichment"
+        },
+        {
+          "file": "server/test/job-slot-takeover-db.test.js",
+          "pattern": "106 条不匹配前缀之后仍必须找到同范围成功"
+        },
+        {
+          "file": "server/test/job-slot-takeover-db.test.js",
+          "pattern": "接续成功必须能按真实查询结果自动收敛告警"
+        }
+      ],
+      "owner": "任务治理",
+      "status": "local_verified"
+    },
+    {
+      "id": "TASK-SLOT-005",
+      "title": "存量旧槽在 Worker 周期内分页轮转核对，不局限于排程补偿窗口",
+      "implementation": {
+        "file": "server/services/jobScheduleSlots.js",
+        "symbol": "sweepStaleSlots"
+      },
+      "tests": [
+        {
+          "file": "server/test/job-slot-takeover-db.test.js",
+          "pattern": "每轮只核对一页"
+        }
+      ],
+      "owner": "任务治理",
+      "status": "local_verified"
+    },
+    {
+      "id": "TASK-SLOT-006",
+      "title": "无官方等待证据的续批超过上限必须止损为 blocked，有等待原因且未到期按复查日保留",
+      "implementation": {
+        "file": "server/services/jobScheduleSlots.js",
+        "symbol": "expireContinuationSlot"
+      },
+      "tests": [
+        {
+          "file": "server/test/job-slot-takeover-db.test.js",
+          "pattern": "无等待原因的续批超期必须止损"
+        },
+        {
+          "file": "server/test/job-slot-takeover-db.test.js",
+          "pattern": "未登记的等待原因不得豁免续批止损"
+        }
+      ],
+      "owner": "任务治理",
+      "status": "local_verified"
+    },
+    {
+      "id": "ALERT-EVIDENCE-006",
+      "title": "有效等待不是故障：官方待披露和字段复查冷却按 next_attempt_at 判断，done 与本批次数不证明完成",
+      "implementation": {
+        "file": "server/services/jobRecoveryEvidence.js",
+        "symbol": "slotWaitingState"
+      },
+      "tests": [
+        {
+          "file": "server/test/ops-alert-remediation-regression.test.js",
+          "pattern": "未到复查时间的等待不得自动关闭告警"
+        },
+        {
+          "file": "server/test/job-slot-takeover-db.test.js",
+          "pattern": "等待中不得被扫描跳过"
+        },
+        {
+          "file": "server/test/ops-alert-remediation-regression.test.js",
+          "pattern": "已登记原因超过最长等待时限必须失效"
+        },
+        {
+          "file": "server/test/ops-alert-remediation-regression.test.js",
+          "pattern": "上海零点必须显示当天，不能少一天"
+        }
+      ],
+      "owner": "运维治理",
+      "status": "local_verified"
+    },
+    {
+      "id": "ALERT-EVIDENCE-007",
+      "title": "历史告警处置必须区分真实恢复、正常等待、任务下线、人工处置与证据不足",
+      "implementation": {
+        "file": "server/services/jobAlertMailer.js",
+        "symbol": "classifyAlertDisposition"
+      },
+      "tests": [
+        {
+          "file": "server/test/ops-alert-remediation-regression.test.js",
+          "pattern": "正常等待必须与故障分开记录"
+        }
+      ],
+      "owner": "运维治理",
+      "status": "local_verified"
+    },
+    {
+      "id": "TASK-SLOT-007",
+      "title": "接管写入必须原子核对状态、更新时间版本和触发方式，人工刚重置不得被扫描覆盖",
+      "implementation": {
+        "file": "server/services/jobScheduleSlots.js",
+        "symbol": "supersedeStaleSlot"
+      },
+      "tests": [
+        {
+          "file": "server/test/job-slot-takeover-db.test.js",
+          "pattern": "读写之间的人工重置不得被扫描覆盖为 skipped"
+        }
+      ],
+      "owner": "任务治理",
+      "status": "local_verified"
+    },
+    {
+      "id": "TASK-SLOT-008",
+      "title": "skipped 是归档终态，入口和所有恢复写入都不得被旧失败运行记录改回 failed",
+      "implementation": {
+        "file": "server/services/jobScheduleSlots.js",
+        "symbol": "reconcileSlot"
+      },
+      "tests": [
+        {
+          "file": "server/test/job-slot-takeover-db.test.js",
+          "pattern": "归档终态不得被旧失败记录改写"
+        }
+      ],
+      "owner": "任务治理",
+      "status": "local_verified"
+    },
+    {
+      "id": "ALERT-EVIDENCE-008",
+      "title": "历史告警关闭必须在事务内逐 ID 行锁并重新取证，预览后证据失效要拒绝关闭",
+      "implementation": {
+        "file": "server/scripts/reconcileAlertHistory.js",
+        "symbol": "applyReconciliation"
+      },
+      "tests": [
+        {
+          "file": "server/test/job-slot-takeover-db.test.js",
+          "pattern": "证据失效后不得关闭告警"
+        }
+      ],
+      "owner": "运维治理",
+      "status": "local_verified"
+    },
+    {
+      "id": "TASK-SLOT-009",
+      "title": "接管与止损写入必须用数据库精确版本原子核对，调度建槽入口也要带回精确版本",
+      "implementation": {
+        "file": "server/services/jobScheduleSlots.js",
+        "symbol": "supersedeStaleSlot"
+      },
+      "tests": [
+        {
+          "file": "server/test/job-slot-takeover-db.test.js",
+          "pattern": "毫秒内变化的新版本不得被覆盖为 skipped"
+        },
+        {
+          "file": "server/test/ops-alert-remediation-regression.test.js",
+          "pattern": "JS Date 只有毫秒，不能作为并发核对版本"
+        },
+        {
+          "file": "server/test/job-slot-takeover-db.test.js",
+          "pattern": "ensureSlot 必须返回数据库精确版本"
+        }
+      ],
+      "owner": "任务治理",
+      "status": "local_verified"
+    },
+    {
+      "id": "TASK-SLOT-010",
+      "title": "续批止损与运行恢复写入同样按数据库精确版本核对，拿不到精确版本不写入",
+      "implementation": {
+        "file": "server/services/jobScheduleSlots.js",
+        "symbol": "expireContinuationSlot"
+      },
+      "tests": [
+        {
+          "file": "server/test/job-slot-takeover-db.test.js",
+          "pattern": "无等待原因的续批超期必须止损"
+        },
+        {
+          "file": "server/test/job-slot-takeover-db.test.js",
+          "pattern": "未登记的等待原因不得豁免续批止损"
+        },
+        {
+          "file": "server/test/job-slot-takeover-db.test.js",
+          "pattern": "复查时间已到期不得继续豁免止损"
+        }
+      ],
+      "owner": "任务治理",
+      "status": "local_verified"
+    },
+    {
+      "id": "ALERT-EVIDENCE-009",
+      "title": "告警恢复必须按最近恢复序列取证：失败后连续成功可收敛，最新再次失败不得收敛",
+      "implementation": {
+        "file": "server/services/jobAlertMailer.js",
+        "symbol": "loadRecentRecoverySequence"
+      },
+      "tests": [
+        {
+          "file": "server/test/job-slot-takeover-db.test.js",
+          "pattern": "失败前缀之后的最近一次成功必须能自动收敛告警"
+        },
+        {
+          "file": "server/test/job-slot-takeover-db.test.js",
+          "pattern": "最新再次失败时不得自动收敛"
+        },
+        {
+          "file": "server/test/ops-alert-remediation-regression.test.js",
+          "pattern": "告警恢复必须按最近计划时间取候选"
+        }
+      ],
+      "owner": "运维治理",
+      "status": "local_verified"
+    },
+    {
+      "id": "ALERT-EVIDENCE-010",
+      "title": "历史告警关闭审计必须落库运行ID、分区日期/范围与证据策略版本",
+      "implementation": {
+        "file": "server/scripts/reconcileAlertHistory.js",
+        "symbol": "evidenceTrace"
+      },
+      "tests": [
+        {
+          "file": "server/test/job-slot-takeover-db.test.js",
+          "pattern": "审计必须保存后续运行 ID"
+        },
+        {
+          "file": "server/test/job-slot-takeover-db.test.js",
+          "pattern": "审计必须保存分区日期"
+        },
+        {
+          "file": "server/test/ops-alert-remediation-regression.test.js",
+          "pattern": "作用域对象必须落库"
+        }
+      ],
+      "owner": "运维治理",
+      "status": "local_verified"
     }
   ]
 }

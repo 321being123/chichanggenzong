@@ -1,6 +1,7 @@
 // 本文件由 server/db.js 物理拆分而来，函数体未改动，仅调整文件归属。
 const { pool, crypto, fs, path, DATA_DIR, DEFAULT_FEE_SETTINGS } = require('./connection');
 const { uid, round, bulkInsert, hashPwd, safeEqual, verifyPwd, hashString } = require('./util');
+const { listAccountScopedTables } = require('./accountScopedTables');
 
 // 券商字典种子（A股主流券商；code 与 inferBroker 保持一致：华泰=huatai、招商=cms）。
 // 幂等：ON CONFLICT DO UPDATE 使名称/排序随代码更新为准，不会重复插入。
@@ -164,9 +165,11 @@ async function syncUserAccounts(username, names) {
       'SELECT account_name FROM accounts WHERE username=$1 AND account_name <> ALL($2::text[])',
       [username, names]
     );
+    // 账户级业务表动态发现（新增表自动覆盖），删除账户不应因手写清单漏项留下孤儿数据。
+    const scopedTables = (gone.length ? await listAccountScopedTables(client) : []);
     for (const g of gone) {
-      for (const t of ['positions', 'trades', 'nav_history', 'cash_flows', 'daily_prices', 'index_history', 'account_data']) {
-        await client.query(`DELETE FROM ${t} WHERE username=$1 AND account_name=$2`, [username, g.account_name]);
+      for (const { table } of scopedTables) {
+        await client.query(`DELETE FROM ${table} WHERE username=$1 AND account_name=$2`, [username, g.account_name]);
       }
     }
     await client.query('DELETE FROM accounts WHERE username=$1 AND account_name <> ALL($2::text[])', [username, names]);

@@ -183,8 +183,7 @@ function renderTopUser(p) {
   const menu = document.createElement('div');
   menu.className = 'nav-user-menu';
   const items = [
-    { label: '个人中心', fn: function () { switchMain('profile'); } },
-    { label: '反馈与版本', fn: function () { switchMain('feedback'); } }
+    { label: '个人中心', fn: function () { switchMain('profile'); } }
   ];
   if (canStaff) items.push({ label: '管理后台', href: '/admin.html' });
   items.push({ label: '退出登录', fn: function () { logout(); } });

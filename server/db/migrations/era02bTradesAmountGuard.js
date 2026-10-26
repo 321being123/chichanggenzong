@@ -28,4 +28,23 @@ async function migration174TradesAmountGuard(pool) {
     FOR EACH ROW EXECUTE FUNCTION trades_amount_rel_guard()`);
 }
 
-module.exports = { migration174TradesAmountGuard };
+// ========== 175：零/负成本期初与调整事件的符号约束豁免 ==========
+// 方案《智能导入识别质量与批量录入整改方案_20261026》4.1 第 4 条（用户 2026-10-26 裁决）：
+// 持仓成本价允许零与负（做T摊薄为负属正常），零/负成本 open 与负成本 adjust 需要能入账。
+// 仅对 open/adjust 豁免价格/金额符号约束（chk_trades_price、chk_trades_amount、chk_trades_amount_cny
+// 同族一起排查）；buy/sell 约束不动（成交价仍必须为正、金额仍非负）；chk_trades_qty 不动（数量仍为正）。
+// 金额一致性由 174 触发器承担，本已豁免 open/adjust。
+async function migration175TradesOpenCostSign(pool) {
+  await pool.query('ALTER TABLE trades DROP CONSTRAINT IF EXISTS chk_trades_price');
+  await pool.query(`ALTER TABLE trades ADD CONSTRAINT chk_trades_price
+    CHECK (direction IN ('open','adjust') OR price >= 0)`);
+  await pool.query('ALTER TABLE trades DROP CONSTRAINT IF EXISTS chk_trades_amount');
+  await pool.query(`ALTER TABLE trades ADD CONSTRAINT chk_trades_amount
+    CHECK (direction IN ('open','adjust') OR amount IS NULL OR amount >= 0)`);
+  // 同族：迁移 073 的人民币金额非负约束（负成本 open 的 amount_cny 为负属期初快照语义）
+  await pool.query('ALTER TABLE trades DROP CONSTRAINT IF EXISTS chk_trades_amount_cny');
+  await pool.query(`ALTER TABLE trades ADD CONSTRAINT chk_trades_amount_cny
+    CHECK (direction IN ('open','adjust') OR amount_cny IS NULL OR amount_cny >= 0)`);
+}
+
+module.exports = { migration174TradesAmountGuard, migration175TradesOpenCostSign };

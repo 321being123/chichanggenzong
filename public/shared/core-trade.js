@@ -479,76 +479,294 @@ function switchTradeMode(mode) {
   if (mode === 'smart') { initVisionQr(); } else { stopVisionQr(); }
 }
 
+// ===================== 智能导入：多图队列 / 合并 / 预览 / 确认 =====================
+// 方案 4.3/4.4：多图逐张识别（复用单图接口、并发固定 1）、持仓有条件合并、稳定 rowId、
+// 提交结果语义（已保存/已存在/失败/待确认）、幂等 id 复用。
+var _visionQueue = [];        // [{ imageId, name, preview, base64, status, items, error, parse }]
+var _smartParsed = [];        // 合并后的预览行（每行带 _rowId/_eventId/_imageTags/_v）
+var _smartBatchId = null;
+var _smartSubmitting = false;
+var _smartRowSeq = 0;
+var VISION_MAX_IMAGES = 6;            // 每批最多 6 张（与服务端一致）
+var VISION_MAX_IMAGE_BYTES = 6 * 1024 * 1024; // 单张原始文件 ≤ 6MiB（与服务端一致）
+
+function newSmartRowId() {
+  _smartRowSeq += 1;
+  return 'row' + _smartRowSeq + Math.random().toString(36).slice(2, 6);
+}
+
+function smartRowById(rowId) {
+  for (var i = 0; i < (_smartParsed || []).length; i++) {
+    if (_smartParsed[i]._rowId === rowId) return { item: _smartParsed[i], index: i };
+  }
+  return null;
+}
+
 async function handleVisionFile(event) {
-  var file = event.target.files[0];
-  if (!file) return;
-  await doSmartParse(file, 'vision');
+  var files = Array.prototype.slice.call(event.target.files || []);
+  event.target.value = '';
+  if (!files.length) return;
+  enqueueVisionFiles(files);
 }
 
 async function handleExcelFile(event) {
   var file = event.target.files[0];
+  event.target.value = '';
   if (!file) return;
   await doSmartParse(file, 'excel');
 }
 
-// 粘贴支持
-(function initVisionPaste() {
-  document.addEventListener('paste', function(e) {
-    if (tradeMode !== 'smart') return;
-    var tradesPage = document.getElementById('page-trades');
-    if (!tradesPage || !tradesPage.classList.contains('active')) return;
-    var items = e.clipboardData && e.clipboardData.items;
-    if (!items) return;
-    for (var i = 0; i < items.length; i++) {
-      if (items[i].type.indexOf('image') !== -1) {
-        e.preventDefault();
-        var blob = items[i].getAsFile();
-        if (blob) { doSmartParse(blob, 'vision'); break; }
+// 图片入队（选择/拖拽/粘贴/扫码统一入口）：读取文件前校验，不让新结果直接覆盖已有预览
+function enqueueVisionFiles(files) {
+  // 队列与预览绑定账户：切换账户后旧队列/预览作废（方案 4.3 第 6 条）
+  if (window._smartAccount !== currentAccount) {
+    if (_visionQueue.length || (_smartParsed || []).length) {
+      _visionQueue = [];
+      _smartParsed = [];
+      window._smartBatchId = null;
+      renderVisionQueue();
+      renderSmartItems();
+    }
+    window._smartAccount = currentAccount;
+  }
+  var added = 0;
+  var pending = [];
+  for (var i = 0; i < files.length; i++) {
+    var file = files[i];
+    if (!file || (file.type && file.type.indexOf('image') !== 0)) continue;
+    if (_visionQueue.length + added >= VISION_MAX_IMAGES) {
+      showToast('每批最多 ' + VISION_MAX_IMAGES + ' 张图片，多余的未加入');
+      break;
+    }
+    if (file.size > VISION_MAX_IMAGE_BYTES) {
+      showToast('「' + (file.name || '图片') + '」超过 6MB，请重新截图');
+      continue;
+    }
+    added++;
+    pending.push(file);
+  }
+  if (!pending.length) return;
+  Promise.all(pending.map(function(file) {
+    return fileToBase64(file).then(function(base64) {
+      _visionQueue.push({
+        imageId: 'img_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8),
+        name: file.name || '截图',
+        preview: base64,
+        base64: base64,
+        status: 'queued',
+        items: null,
+        error: null
+      });
+    });
+  })).then(function() {
+    renderVisionQueue();
+    processVisionQueue();
+  });
+}
+
+// 并发固定 1，逐图独立识别；成功结果本次会话复用，不重新调用模型；只重试失败图
+var _visionProcessing = false;
+var _visionPaused = false;
+async function processVisionQueue() {
+  if (_visionProcessing) return;
+  _visionProcessing = true;
+  try {
+    for (var i = 0; i < _visionQueue.length; i++) {
+      if (_visionPaused) break;
+      var job = _visionQueue[i];
+      if (job.status !== 'queued') continue;
+      job.status = 'parsing';
+      renderVisionQueue();
+      try {
+        var r = await fetch(api('/api/vision-parse'), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ image: job.base64 })
+        });
+        var d = await r.json().catch(function() { return {}; });
+        // 账户已切换：旧响应作废，不恢复旧预览
+        if (window._smartAccount !== currentAccount) {
+          job.status = 'failed';
+          job.error = '账户已切换，该结果已丢弃';
+          _visionQueue = [];
+          _smartParsed = [];
+          window._smartBatchId = null;
+          break;
+        }
+        if (r.status === 429) {
+          // 遇限流按服务端提示暂停，保留队列
+          job.status = 'queued';
+          _visionPaused = true;
+          showToast(d.error || 'AI 识别请求过于频繁，稍后可点“继续识别”');
+          break;
+        }
+        if (d.error) {
+          job.status = 'failed';
+          job.error = d.error;
+        } else if (d.parse && d.parse.status && d.parse.status !== 'ok') {
+          job.status = 'failed';
+          job.error = d.parse.message || '识别不出内容';
+          job.parse = d.parse;
+        } else {
+          job.status = 'done';
+          job.items = d.items || [];
+          job.parse = d.parse || null;
+          mergeSmartItems(job.items, job.name);
+        }
+      } catch (e) {
+        job.status = 'failed';
+        job.error = (e && e.message) || '网络错误';
+      }
+      renderVisionQueue();
+      renderSmartItems();
+    }
+  } finally {
+    _visionProcessing = false;
+    renderVisionQueue();
+    renderSmartItems();
+  }
+}
+
+function resumeVisionQueue() {
+  _visionPaused = false;
+  processVisionQueue();
+}
+
+function retryVisionImage(imageId) {
+  for (var i = 0; i < _visionQueue.length; i++) {
+    if (_visionQueue[i].imageId === imageId) {
+      _visionQueue[i].status = 'queued';
+      _visionQueue[i].error = null;
+      // 失败图重新识别后，先移除该图上次贡献的行，避免重复
+      removeSmartItemsByImage(imageId);
+      break;
+    }
+  }
+  renderVisionQueue();
+  renderSmartItems();
+  _visionPaused = false;
+  processVisionQueue();
+}
+
+function removeVisionImage(imageId) {
+  _visionQueue = _visionQueue.filter(function(j) { return j.imageId !== imageId; });
+  removeSmartItemsByImage(imageId);
+  renderVisionQueue();
+  renderSmartItems();
+}
+
+function removeSmartItemsByImage(imageId) {
+  _smartParsed = (_smartParsed || []).filter(function(item) {
+    item._imageTags = (item._imageTags || []).filter(function(t) { return t !== imageId; });
+    return item._imageTags.length > 0;
+  });
+}
+
+function renderVisionQueue() {
+  var box = document.getElementById('vision-queue');
+  if (!box) return;
+  if (!_visionQueue.length) { box.innerHTML = ''; return; }
+  var html = '<div data-style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:10px;">';
+  _visionQueue.forEach(function(job) {
+    var label = job.status === 'queued' ? '待识别' : job.status === 'parsing' ? '识别中…' : job.status === 'done' ? '已完成' : '失败';
+    var color = job.status === 'failed' ? '#d93025' : job.status === 'done' ? '#137333' : '#6e6e6e';
+    html += '<div data-style="width:96px;text-align:center;">' +
+      '<img src="' + job.preview + '" data-style="width:96px;height:72px;object-fit:cover;border-radius:6px;border:1px solid #e0e0e0;" alt="">' +
+      '<div data-style="font-size:11px;color:' + color + ';">' + label + '</div>' +
+      '<div data-style="display:flex;gap:4px;justify-content:center;">' +
+      (job.status === 'failed' ? '<button class="btn btn-outline btn-sm" data-act="retryVisionImage" data-arg1="' + job.imageId + '">重试</button>' : '') +
+      '<button class="btn btn-outline btn-sm" data-act="removeVisionImage" data-arg1="' + job.imageId + '">删除</button>' +
+      '</div></div>';
+  });
+  html += '</div>';
+  if (_visionPaused) {
+    html += '<div data-style="margin-bottom:8px;"><button class="btn btn-primary btn-sm" data-act="resumeVisionQueue">继续识别剩余图片</button></div>';
+  }
+  box.innerHTML = html;
+}
+
+// 持仓合并条件（方案 4.3 第 4 条）：同一证券身份、币种、数量单位、快照日期，
+// 且数量/已知成本等共同字段一致 → 合并（补齐空字段、来源合并、数量不相加）；
+// 字段冲突/缺日期证据 → 保留为待核对候选，不按上传先后覆盖。
+function smartMergeKey(item) {
+  return [item.kind, item.code, item.name || '', item.date || '',
+    item.quote_currency || item.currency || '', item.quantity_unit || '',
+    item.quantity == null ? '' : String(item.quantity),
+    item.cost == null ? '' : String(item.cost),
+    item.avg_buy_price == null ? '' : String(item.avg_buy_price)].join('|');
+}
+
+function mergeSmartItems(items, imageTag) {
+  if (!window._smartParsed) window._smartParsed = [];
+  (items || []).forEach(function(item) {
+    item.code = classifyCode.normalizeCode(item.code || '', item.name || '');
+    item._rowId = newSmartRowId();
+    item._eventId = item._eventId || uid();          // 幂等键：重试复用同一 id
+    item._imageTags = [imageTag || 'image'];
+    item._mergedFrom = [imageTag || 'image'];
+    if (item.kind === 'position' && item.date) {
+      // 只有身份/来源日期证据齐全才尝试合并
+      var dup = null;
+      for (var i = 0; i < _smartParsed.length; i++) {
+        var ex = _smartParsed[i];
+        if (ex.kind === 'position' && smartMergeKey(ex) === smartMergeKey(item)) { dup = ex; break; }
+      }
+      if (dup) {
+        // 补齐空字段，保留来源；数量不相加
+        ['cost', 'avg_buy_price', 'market_price', 'market_value', 'currency', 'quote_currency', 'quantity_unit'].forEach(function(f) {
+          if ((dup[f] === null || dup[f] === undefined || dup[f] === '') && item[f] !== null && item[f] !== undefined && item[f] !== '') dup[f] = item[f];
+        });
+        dup._imageTags = (dup._imageTags || []).concat(item._imageTags);
+        dup._mergedFrom = (dup._mergedFrom || []).concat(item._mergedFrom);
+        return;
       }
     }
+    _smartParsed.push(item);
   });
-})();
+}
 
-// 拖拽支持
-(function initVisionDrag() {
-  var zone = document.getElementById('vision-zone');
-  if (!zone) return;
-  zone.addEventListener('dragover', function(e) { e.preventDefault(); zone.classList.add('dragover'); });
-  zone.addEventListener('dragleave', function() { zone.classList.remove('dragover'); });
-  zone.addEventListener('drop', function(e) {
-    e.preventDefault();
-    zone.classList.remove('dragover');
-    var file = e.dataTransfer.files[0];
-    if (file && file.type.startsWith('image/')) doSmartParse(file, 'vision');
+// 手机扫码传来的图片批量入队（与本地选图同一队列）
+function enqueueBase64Images(images, namePrefix) {
+  (images || []).forEach(function(base64, i) {
+    if (_visionQueue.length >= VISION_MAX_IMAGES) return;
+    _visionQueue.push({
+      imageId: 'img_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8),
+      name: (namePrefix || '手机上传') + (i + 1),
+      preview: base64,
+      base64: base64,
+      status: 'queued',
+      items: null,
+      error: null
+    });
   });
-})();
+  renderVisionQueue();
+  processVisionQueue();
+}
+
+function parseResultHint(d) {
+  if (d && d.parse && d.parse.message) return d.parse.message;
+  return null;
+}
 
 async function doSmartParse(file, source) {
   var loading = document.getElementById('smart-loading');
+  if (source === 'vision') {
+    // 图片统一进队列逐张识别（不直接覆盖预览）
+    enqueueVisionFiles([file]);
+    return;
+  }
   var result = document.getElementById('smart-result');
   if (loading) loading.style.display = 'block';
-  if (result) result.innerHTML = '';
 
   try {
     var base64 = await fileToBase64(file);
     if (loading) loading.innerHTML = '<span class="spinner"></span>AI识别中...';
-
-    var d;
-    if (source === 'vision') {
-      var r = await fetch(api('/api/vision-parse'), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ image: base64 })
-      });
-      d = await r.json();
-    } else {
-      var r2 = await fetch(api('/api/excel-parse'), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ file: base64 })
-      });
-      d = await r2.json();
-    }
+    var r2 = await fetch(api('/api/excel-parse'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ file: base64 })
+    });
+    var d = await r2.json();
 
     if (loading) loading.style.display = 'none';
 
@@ -558,19 +776,29 @@ async function doSmartParse(file, source) {
     }
 
     if (!d.items || d.items.length === 0) {
-      if (result) result.innerHTML = '<div data-style="color:#6e6e6e;padding:12px;">未能识别出交易或持仓信息，请检查内容后重试</div>';
+      if (result) result.innerHTML = renderSmartEmptyHint(parseResultHint(d));
       return;
     }
 
-    window._smartParsed = d.items.map(function(item) {
-      item.code = classifyCode.normalizeCode(item.code || '', item.name || '');
-      return item;
-    });
+    // Excel 结果整表替换预览（非多图队列场景）
+    _smartParsed = [];
+    mergeSmartItems(d.items, file.name || 'Excel');
+    renderVisionQueue();
     renderSmartItems();
   } catch(e) {
     if (loading) loading.style.display = 'none';
     if (result) result.innerHTML = '<div class="u-c-danger u-pad-8-10">识别失败: ' + escapeHtml(e.message) + '</div>';
   }
+}
+
+// 识别为空/失败时的可操作指引（方案 4.5 第 2 条，替换原“未能识别出交易或持仓信息”单句）
+function renderSmartEmptyHint(message) {
+  return '<div data-style="padding:12px;border:1px dashed #d0d7e2;border-radius:8px;color:#5f6b7a;font-size:13px;line-height:1.8;">' +
+    '<b>' + escapeHtml(message || '未能识别出交易或持仓信息') + '</b><br>' +
+    '请改截「持仓明细」或「交割单」这类逐行列表，避免只截首页行情总览：<br>' +
+    '· 持仓截图需包含：代码、名称、成本价/买入均价、持仓数量、单位、日期<br>' +
+    '· 交易截图需包含：代码、名称、成交价、数量、买卖方向、日期及可见税费<br>' +
+    '账号可以遮住，表头和证券字段请保留完整。</div>';
 }
 
 function renderSmartItems() {
@@ -580,34 +808,77 @@ function renderSmartItems() {
   if (items.length === 0) { result.innerHTML = ''; return; }
 
   window._smartFeeRates = buildSmartFeeRates(items);
-  var html = renderSmartFeeRates(window._smartFeeRates) +
-    '<div class="u-mb-8"><button class="btn btn-success btn-sm" data-act="confirmAllSmartItems">✅ 全部录入</button></div>' +
+  var rawCount = 0;
+  (_visionQueue || []).forEach(function(j) { if (j.items) rawCount += j.items.length; });
+  if (!_visionQueue.length) rawCount = items.length;
+  var reviewCount = items.filter(function(it) { return it._v && it._v.status === 'review'; }).length;
+  var blockedCount = items.filter(function(it) { return it._v && it._v.status === 'blocked'; }).length;
+  var mergedCount = items.filter(function(it) { return (it._mergedFrom || []).length > 1; }).length;
+  var okCount = items.length - reviewCount - blockedCount;
+  var failedImages = (_visionQueue || []).filter(function(j) { return j.status === 'failed'; }).length;
+
+  var html = '';
+  if (_visionQueue.length) {
+    html += '<div data-style="margin-bottom:8px;padding:8px 10px;background:#f4f7fd;border-radius:8px;font-size:12px;color:#4a5568;">' +
+      '图片：成功 ' + (_visionQueue.length - failedImages) + ' / 失败 ' + failedImages +
+      '；识别原始行 ' + rawCount + '，合并 ' + mergedCount + '，可录入 ' + okCount +
+      '，待核对 ' + reviewCount + '，需处理 ' + blockedCount +
+      '（合并后条数不代表识别完整，请对照原图核对）</div>';
+  }
+  html += renderSmartFeeRates(window._smartFeeRates) +
+    '<div class="u-mb-8"><button class="btn btn-success btn-sm" id="smart-confirm-all-btn" data-act="confirmAllSmartItems">✅ 全部录入</button></div>' +
     '<div class="biz-table-scroll"><table class="biz-table biz-table--preview"><thead><tr>' +
-    '<th>类型</th><th>日期</th><th>代码</th><th>名称</th><th class="text-right">价格</th><th class="text-right">数量</th>' +
-    '<th>方向</th><th>品种</th><th>确认</th>' +
+    '<th>类型</th><th>日期</th><th>代码</th><th>名称</th><th class="text-right">价格(成本/成交价)</th><th>成本来源</th><th class="text-right">市价</th>' +
+    '<th class="text-right">数量</th><th>单位</th><th>币种</th><th>方向</th><th>品种</th><th>状态</th><th>确认</th>' +
     '</tr></thead><tbody>';
-  items.forEach(function(item, i) {
+  items.forEach(function(item) {
+    var rid = item._rowId;
     var code = item.code || '';
     var rec = recognizeCode(code, item.name) || { type: '股权', subtype: '深市' };
     var isTrade = item.kind === 'trade';
-    html += '<tr>' +
+    var v = item._v || { status: 'ok', issues: [] };
+    var unit = item.quantity_unit || '';
+    var cur = item.currency || item.quote_currency || '';
+    html += '<tr data-row-id="' + rid + '">' +
       '<td>' + (isTrade ? '<span class="tag tag-equity">交易</span>' : '<span class="tag tag-cash">持仓</span>') + '</td>' +
-      '<td>' + (isTrade ? '<input type="date" id="s-date-' + i + '" value="' + escapeHtml(item.date || '') + '" data-style="width:110px;padding:6px 8px;border:1px solid #e0e0e0;border-radius:6px;font-size:12px;">' : '-') + '</td>' +
-      '<td><input type="text" id="s-code-' + i + '" value="' + escapeHtml(code) + '" data-style="width:70px;padding:6px 8px;border:1px solid #e0e0e0;border-radius:6px;font-size:12px;" data-act="onSmartCodeChange" data-arg1="' + i + '"></td>' +
-      '<td><input type="text" id="s-name-' + i + '" value="' + escapeHtml(item.name || '') + '" class="u-input-xs"></td>' +
-      '<td><input type="number" id="s-price-' + i + '" value="' + escapeHtml(item.price || '') + '" step="0.001" class="u-input-xs"></td>' +
-      '<td><input type="number" id="s-qty-' + i + '" value="' + escapeHtml(item.quantity || '') + '" step="1" class="u-input-xs"></td>' +
-      '<td>' + (isTrade ? '<select id="s-dir-' + i + '" data-style="padding:6px 8px;border:1px solid #e0e0e0;border-radius:6px;font-size:12px;">' +
+      '<td><input type="date" id="s-date-' + rid + '" value="' + escapeHtml(item.date || '') + '" data-style="width:118px;padding:6px 8px;border:1px solid #e0e0e0;border-radius:6px;font-size:12px;"></td>' +
+      '<td><input type="text" id="s-code-' + rid + '" value="' + escapeHtml(code) + '" data-style="width:76px;padding:6px 8px;border:1px solid #e0e0e0;border-radius:6px;font-size:12px;"></td>' +
+      '<td><input type="text" id="s-name-' + rid + '" value="' + escapeHtml(item.name || '') + '" class="u-input-xs"></td>' +
+      '<td><input type="number" id="s-price-' + rid + '" value="' + (item.price === null || item.price === undefined ? '' : escapeHtml(String(item.price))) + '" step="0.001" class="u-input-xs" placeholder="' + (isTrade ? '成交价' : '成本价') + '"></td>' +
+      '<td data-style="font-size:11px;color:#6e6e6e;">' + (isTrade ? '-' : escapeHtml(item._v && item._v.costSource === 'avg_buy_price' ? '买入均价' : item._v && item._v.costSource === 'cost' ? '成本价' : '缺失')) + '</td>' +
+      '<td class="text-right" data-style="font-size:12px;color:#6e6e6e;">' + (isTrade ? '-' : (item.market_price === null || item.market_price === undefined ? '-' : escapeHtml(String(item.market_price)))) + '</td>' +
+      '<td><input type="number" id="s-qty-' + rid + '" value="' + (item.quantity === null || item.quantity === undefined ? '' : escapeHtml(String(item.quantity))) + '" step="0.0001" class="u-input-xs"></td>' +
+      '<td><select id="s-unit-' + rid + '" data-style="padding:6px 4px;border:1px solid #e0e0e0;border-radius:6px;font-size:12px;">' +
+        ['', '股', '张', '手', '份'].map(function(u) {
+          return '<option value="' + u + '"' + (unit === u ? ' selected' : '') + '>' + (u === '' ? '未知' : u) + '</option>';
+        }).join('') + '</select></td>' +
+      '<td><select id="s-cur-' + rid + '" data-act="revalidateSmartRow" data-arg1="' + rid + '" data-style="padding:6px 4px;border:1px solid #e0e0e0;border-radius:6px;font-size:12px;">' +
+        ['', 'CNY', 'HKD'].map(function(u) {
+          return '<option value="' + u + '"' + (cur === u ? ' selected' : '') + '>' + (u === '' ? '自动' : u) + '</option>';
+        }).join('') + '</select></td>' +
+      '<td>' + (isTrade ? '<select id="s-dir-' + rid + '" data-style="padding:6px 8px;border:1px solid #e0e0e0;border-radius:6px;font-size:12px;">' +
         '<option value="buy"' + (item.direction === 'buy' ? ' selected' : '') + '>买入</option>' +
         '<option value="sell"' + (item.direction === 'sell' ? ' selected' : '') + '>卖出</option>' +
         '</select>' : '-') + '</td>' +
       '<td>' + getTypeTag(rec.type) + ' ' + escapeHtml(rec.subtype || '') + '</td>' +
-      '<td><button class="btn btn-success btn-sm" data-act="confirmSmartItem" data-arg1="' + i + '">确认' + (isTrade ? '录入' : '导入') + '</button></td>' +
+      '<td id="s-status-' + rid + '" data-style="font-size:11px;max-width:150px;">' + renderSmartRowStatus(item) + '</td>' +
+      '<td><button class="btn btn-success btn-sm smart-row-btn" data-act="confirmSmartItem" data-arg1="' + rid + '">确认' + (isTrade ? '录入' : '导入') + '</button>' +
+      '<button class="btn btn-outline btn-sm" data-act="excludeSmartRow" data-arg1="' + rid + '">移除</button></td>' +
       '</tr>';
   });
   html += '</tbody></table></div>';
   result.innerHTML = html;
   if (window.BusinessTable) window.BusinessTable.attach(result, { page: '#page-trades', top: '#main-holdings > .holdings-header', sticky: false });
+}
+
+function renderSmartRowStatus(item) {
+  var v = item._v || { status: 'ok', issues: [] };
+  if (!v.issues || v.issues.length === 0) return '<span data-style="color:#137333;">✅ 可录入</span>';
+  var tip = v.issues.map(function(i) { return i.message; }).join('；');
+  var mark = v.status === 'blocked' ? '⛔' : '⚠';
+  var color = v.status === 'blocked' ? '#d93025' : '#b26a00';
+  var first = v.issues[0] ? v.issues[0].message : '';
+  return '<span data-style="color:' + color + ';" title="' + escapeHtml(tip) + '">' + mark + ' ' + escapeHtml(first) + '</span>';
 }
 
 function buildSmartFeeRates(items) {
@@ -713,10 +984,11 @@ async function saveSmartFeeRates() {
   showToast('税费费率已保存并更新到税费设置');
 }
 
-function getSmartItemFees(item, code, name) {
+function getSmartItemFees(item, code, name, row) {
   var fields = ['commission', 'stamp_tax', 'transfer_fee', 'other_fee'];
   var hasRecognizedFee = fields.some(function(key) { return item[key] !== undefined && item[key] !== null && item[key] !== ''; });
   if (hasRecognizedFee) {
+    // 保留截图税费（与税费设置区分）
     return {
       commission: Math.max(0, Number(item.commission) || 0),
       stamp_tax: Math.max(0, Number(item.stamp_tax) || 0),
@@ -724,26 +996,12 @@ function getSmartItemFees(item, code, name) {
       other_fee: Math.max(0, Number(item.other_fee) || 0)
     };
   }
+  // 无识别费用 → 按当前编辑后的代码/方向/价格/标准数量/原币估算（方案 4.4 第 6 条，不引用旧 item）
   var rec = recognizeCode(code, name || item.name) || { subtype: '深市' };
-  var quantity = normalizeQuantity(Number(item.quantity) || 0, code);
-  var amount = (Number(item.price) || 0) * quantity;
-  return calcTradeFees(item.direction || 'buy', amount, rec.subtype);
-}
-
-function onSmartCodeChange(index) {
-  var code = document.getElementById('s-code-' + index).value.trim();
-  if (code.length >= 4) {
-    fetchQuote(code).then(function(q) {
-      if (q && q.price) {
-        var priceEl = document.getElementById('s-price-' + index);
-        if (priceEl && !priceEl.value) priceEl.value = q.price;
-        if (q.name) {
-          var nameEl = document.getElementById('s-name-' + index);
-          if (nameEl && !nameEl.value) nameEl.value = q.name;
-        }
-      }
-    });
-  }
+  var quantity = row && row.quantity != null ? row.quantity : normalizeQuantity(Number(item.quantity) || 0, code);
+  var price = row && row.price != null ? row.price : (Number(item.price) || 0);
+  var amount = price * quantity;
+  return calcTradeFees((row && row.direction) || item.direction || 'buy', amount, rec.subtype);
 }
 
 async function ensureName(code, currentName) {
@@ -757,76 +1015,364 @@ async function ensureName(code, currentName) {
   return currentName || code;
 }
 
-async function confirmSmartItem(index) {
-  var item = window._smartParsed[index];
-  if (!item) return;
+// ---------- 预览行编辑值读取 / 本地重校验 ----------
+function smartField(rowId, name) {
+  var el = document.getElementById('s-' + name + '-' + rowId);
+  return el ? el.value : '';
+}
 
-  var rawCode = document.getElementById('s-code-' + index).value.trim();
-  var inputName = document.getElementById('s-name-' + index).value.trim();
-  var code = classifyCode.normalizeCode(rawCode, inputName);
-  var name = await ensureName(code, inputName);
-  code = classifyCode.normalizeCode(rawCode, name);
-  var price = parseFloat(document.getElementById('s-price-' + index).value) || 0;
-  var quantity = parseInt(document.getElementById('s-qty-' + index).value) || 0;
-  if (!code || !price || !quantity) { showToast('请填写代码、价格和数量'); return; }
+// 提交/校验一律以 DOM 现值为准，不再引用旧 item 的价格/数量
+function readSmartRow(rowId) {
+  var found = smartRowById(rowId);
+  if (!found) return null;
+  var item = found.item;
+  var priceRaw = smartField(rowId, 'price');
+  var qtyRaw = smartField(rowId, 'qty');
+  return {
+    rowId: rowId,
+    kind: item.kind,
+    code: classifyCode.normalizeCode(smartField(rowId, 'code').trim(), smartField(rowId, 'name').trim()),
+    name: smartField(rowId, 'name').trim(),
+    date: smartField(rowId, 'date'),
+    price: priceRaw === '' ? null : Number(priceRaw),
+    quantity: qtyRaw === '' ? null : Number(qtyRaw),
+    quantity_unit: smartField(rowId, 'unit') || null,
+    currency: smartField(rowId, 'cur') || item.currency || null,
+    direction: item.kind === 'trade' ? smartField(rowId, 'dir') : null,
+    _item: item
+  };
+}
 
-  if (item.kind === 'trade') {
-    var direction = document.getElementById('s-dir-' + index).value;
-    var date = document.getElementById('s-date-' + index).value;
-    var fees = getSmartItemFees(item, code, name);
-    await addTradeInternal(code, name, direction, price, quantity, date, fees, window._smartBatchId || null);
-  } else {
-    // P0-2 验收修复：持仓导入转成「期初建仓事件」走服务端账本（不再直接改 data.positions + 全量保存）
-    var rec = recognizeCode(code) || { type: '股权', subtype: '深市' };
-    var isAdjust = (data.positions || []).some(function(p) { return p.code === code; });
-    try {
-      var r = await fetch(api('/api/accounts/' + encodeURIComponent(currentAccount) + '/ledger/position-events?version=' + (dataVersion != null ? dataVersion : '')), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          event: {
-            id: uid(), // 幂等键：重复确认/网络重试不会重复建仓（2026-08-04 修复）
-            code: code, name: name || code,
-            direction: isAdjust ? 'adjust' : 'open',
-            price: price, quantity: quantity,
-            type: rec.type, subtype: rec.subtype,
-            date: (document.getElementById('s-date-' + index) && document.getElementById('s-date-' + index).value) || todayCN(),
-            import_batch_id: window._smartBatchId || null
-          }
-        })
-      });
-      var j = await r.json().catch(function() { return {}; });
-      if (!r.ok) { showToast(j.error || '导入持仓失败'); return; }
-      if (j.data) {
-        data = j.data;
-        dataVersion = j.data.version || dataVersion;
-        if (typeof j.data.posVersion === 'number') dataPosVersion = j.data.posVersion;
-        if (typeof j.data.tradeVersion === 'number') dataTradeVersion = j.data.tradeVersion;
-        if (typeof j.data.navVersion === 'number') dataNavVersion = j.data.navVersion;
-        if (typeof j.data.cashflowVersion === 'number') dataCashVersion = j.data.cashflowVersion;
-        restorePriceChangeMap();
-      }
-      renderAll();
-      showToast('已导入持仓 ' + (name || code));
-    } catch (e) {
-      showToast('导入失败：' + (e.message || e));
+// 把所有行的编辑值同步回状态（删行重渲染前保存，方案 4.4 第 4 条）
+function syncAllSmartRowsFromDom() {
+  (window._smartParsed || []).forEach(function(item) {
+    var row = readSmartRow(item._rowId);
+    if (!row) return;
+    item.code = row.code;
+    item.name = row.name;
+    item.date = row.date;
+    item.price = row.price;
+    item.quantity = row.quantity;
+    item.quantity_unit = row.quantity_unit;
+    item.currency = row.currency;
+    if (row.direction) item.direction = row.direction;
+  });
+}
+
+// 单位只转换一次（方案 4.2 第 2 条）：明确“手”且上交所债券 → ×10 转“张”；其他原样
+function convertRowUnit(row) {
+  if (row.quantity_unit === '手' && row.quantity != null && isFinite(row.quantity)) {
+    var info = classifyCode(row.code);
+    if (info && info.market === 'sh' && info.type === '债权') {
+      row.quantity = Math.round(row.quantity * 10 * 10000) / 10000;
+      row.quantity_unit = '张';
     }
   }
+  return row;
+}
 
-  var row = document.getElementById('s-code-' + index);
-  if (row && row.closest('tr')) row.closest('tr').remove();
-  window._smartParsed.splice(index, 1);
+// 本地轻量重校验（用户编辑后重新校验，旧问题状态不直接沿用；服务端仍是最终校验方）
+function revalidateSmartRow(rowId) {
+  var found = smartRowById(rowId);
+  if (!found) return null;
+  var item = found.item;
+  var row = readSmartRow(rowId);
+  if (!row) return null;
+  var issues = [];
+  if (!row.code) issues.push({ level: 'error', field: 'code', message: '缺少证券代码' });
+  if (row.quantity === null || !isFinite(row.quantity)) {
+    issues.push({ level: 'error', field: 'quantity', message: '数量无效' });
+  } else if (row.kind === 'trade' && row.quantity <= 0) {
+    issues.push({ level: 'error', field: 'quantity', message: '成交数量必须为正数' });
+  } else if (row.quantity < 0) {
+    issues.push({ level: 'warn', field: 'quantity', message: '数量带负号，请核对' });
+  }
+  if (row.kind === 'trade') {
+    if (row.price === null || !isFinite(row.price) || row.price <= 0) {
+      issues.push({ level: 'error', field: 'price', message: '成交价必须为正数' });
+    }
+    if (!row.date) issues.push({ level: 'error', field: 'date', message: '请补全交易日期' });
+    if (row.direction !== 'buy' && row.direction !== 'sell') {
+      issues.push({ level: 'error', field: 'direction', message: '请选择买卖方向' });
+    }
+  } else {
+    // 成本允许零与负（做T摊薄）；空值阻止提交，要求补填（不用市价估算）
+    if (row.price === null || !isFinite(row.price)) {
+      issues.push({ level: 'error', field: 'cost', message: '请补填成本价（可为 0 或负数）' });
+    }
+    if (!row.date) issues.push({ level: 'error', field: 'date', message: '请选择快照日期（不默认今天）' });
+    if (row.quantity === 0) issues.push({ level: 'warn', field: 'quantity', message: '数量为 0 将生成清仓调整' });
+    // 防叠加守卫：行日期不得早于该证券已有 open/adjust 事件，
+    // 否则按日期重放时较晚的期初事件会叠加到目标数量上（2026-10-26 验收 E2E 实证）
+    if (row.date) {
+      var maxEventDate = '';
+      (data.trades || []).forEach(function(t) {
+        if (t.code !== row.code || (t.direction !== 'open' && t.direction !== 'adjust')) return;
+        var d = String(t.trade_date || (t.date || '')).slice(0, 10);
+        if (d && d > maxEventDate) maxEventDate = d;
+      });
+      if (maxEventDate && row.date < maxEventDate) {
+        issues.push({ level: 'error', field: 'date', message: '日期早于该证券已有持仓事件（' + maxEventDate + '），请从早到晚录入或删除后重录，避免数量叠加' });
+      }
+    }
+  }
+  var info = row.code ? classifyCode(row.code, row.name) : null;
+  var isHk = !!(info && info.isHK);
+  if (row.currency === 'HKD' && !isHk) issues.push({ level: 'error', field: 'currency', message: '币种为港币但代码不是港股' });
+  if (row.currency === 'CNY' && isHk) issues.push({ level: 'error', field: 'currency', message: '币种为人民币但代码是港股' });
+  item._v = {
+    status: issues.some(function(i) { return i.level === 'error'; }) ? 'blocked' : (issues.length ? 'review' : 'ok'),
+    issues: issues,
+    costSource: item._v ? item._v.costSource : null
+  };
+  var cell = document.getElementById('s-status-' + rowId);
+  if (cell) cell.innerHTML = renderSmartRowStatus(item);
+  return item._v;
+}
+
+function setSmartButtonsDisabled(disabled) {
+  var all = document.getElementById('smart-confirm-all-btn');
+  if (all) all.disabled = disabled;
+  document.querySelectorAll('.smart-row-btn').forEach(function(b) { b.disabled = disabled; });
+}
+
+function applyLedgerData(jdata) {
+  if (!jdata) return;
+  data = jdata;
+  dataVersion = jdata.version || dataVersion;
+  if (typeof jdata.posVersion === 'number') dataPosVersion = jdata.posVersion;
+  if (typeof jdata.tradeVersion === 'number') dataTradeVersion = jdata.tradeVersion;
+  if (typeof jdata.navVersion === 'number') dataNavVersion = jdata.navVersion;
+  if (typeof jdata.cashflowVersion === 'number') dataCashVersion = jdata.cashflowVersion;
+  restorePriceChangeMap();
+}
+
+// 结果未知（网络异常/响应丢失）时按原 id 核对是否已落库（方案 4.4 第 5 条）
+async function verifySmartEventsSaved(ids) {
+  try {
+    var r = await fetch(api('/api/data/' + encodeURIComponent(currentAccount)));
+    if (!r.ok) return { all: false, any: false };
+    var j = await r.json().catch(function() { return {}; });
+    if (j.data) applyLedgerData(j.data);
+    var trades = (data && data.trades) || [];
+    var saved = (ids || []).filter(function(id) {
+      return trades.some(function(t) { return t.id === id; });
+    });
+    return { all: (ids || []).length > 0 && saved.length === ids.length, any: saved.length > 0, saved: saved };
+  } catch (e) {
+    return { all: false, any: false };
+  }
+}
+
+// 交易单行提交：结果语义 saved/exists/duplicate/failed/conflict/unknown
+async function submitTradeRow(row) {
+  convertRowUnit(row);
+  var item = row._item;
+  var fees = getSmartItemFees(item, row.code, row.name, row);
+  return await addTradeInternal(row.code, row.name, row.direction, row.price, row.quantity, row.date,
+    fees, window._smartBatchId || null, { eventId: item._eventId, quoteCurrency: row.currency, skipUnitConversion: true });
+}
+
+// 持仓批量提交（方案 4.4 第 2 条）：复用完整账户批量接口，单事务；
+// 已有证券 adjust（目标数量）/新证券 open；失败持仓全留。
+async function submitPositionRows(rows) {
+  if (!rows.length) return { status: 'saved', message: '' };
+  // 同代码多行必须由【最早日期】那行做 open（其余 adjust）：账本按日期升序重放，
+  // 若 open 落在较晚日期，重放会把期初事件叠加到目标数量上（2026-10-26 验收 E2E 实证）。
+  var firstRowByCode = {};
+  rows.forEach(function(row) {
+    var cur = firstRowByCode[row.code];
+    if (!cur || String(row.date || '') < String(cur.date || '')) firstRowByCode[row.code] = row;
+  });
+  var events = rows.map(function(row) {
+    convertRowUnit(row);
+    var item = row._item;
+    var rec = recognizeCode(row.code, row.name) || { type: '股权', subtype: '深市' };
+    var alreadyHeld = (data.positions || []).some(function(p) { return p.code === row.code; });
+    var isAdjust = alreadyHeld || firstRowByCode[row.code] !== row;
+    return {
+      id: item._eventId, // 幂等键：重试复用同一 id
+      code: row.code, name: row.name || row.code,
+      direction: isAdjust ? 'adjust' : 'open',
+      price: row.price, quantity: row.quantity,
+      type: rec.type, subtype: rec.subtype,
+      quote_currency: row.currency || undefined,
+      date: row.date, // 快照日期必须显式确认（缺失行已被重校验阻止，不默认今天）
+      import_batch_id: window._smartBatchId || null
+    };
+  });
+  var ids = events.map(function(e) { return e.id; });
+  try {
+    var r = await fetch(api('/api/accounts/' + encodeURIComponent(currentAccount) + '/ledger/position-events/batch?version=' + (dataVersion != null ? dataVersion : '')), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ events: events })
+    });
+    var j = await r.json().catch(function() { return {}; });
+    if (!r.ok) {
+      if (r.status === 409) {
+        // 409 可能是"整批已成功但响应丢失后带旧版本重试"：先按原 id 核对整组，全部存在才标已保存
+        // （方案 4.4 第 5 条），不能只让刷新重试
+        var verify409 = await verifySmartEventsSaved(ids);
+        if (verify409.all) return { status: 'saved', message: '已保存（核对确认，响应丢失后重试遇版本冲突）' };
+        return { status: 'conflict', message: j.error || '数据已在其他窗口被修改，请刷新页面后重试' };
+      }
+      // 响应丢失/失败：按原 id 核对整组事件是否已落库，全部存在才标已保存
+      var verify = await verifySmartEventsSaved(ids);
+      if (verify.all) return { status: 'saved', message: '已保存（核对确认，响应丢失）' };
+      return { status: 'failed', message: j.error || '持仓导入失败' };
+    }
+    applyLedgerData(j.data);
+    renderAll();
+    return { status: 'saved', message: '已导入持仓' };
+  } catch (e) {
+    var verify2 = await verifySmartEventsSaved(ids);
+    if (verify2.all) return { status: 'saved', message: '已保存（网络异常后核对确认）' };
+    return { status: 'unknown', message: '网络异常，结果待确认，请稍后重试（不会重复录入）：' + (e.message || e) };
+  }
+}
+
+function removeSmartRows(rowIds) {
+  var removing = {};
+  (rowIds || []).forEach(function(id) { removing[id] = true; });
+  _smartParsed = (_smartParsed || []).filter(function(it) { return !removing[it._rowId]; });
+  if (!_smartParsed.length) window._smartBatchId = null; // 批次在预览清空后重建
+  renderSmartItems();
+}
+
+// 用户主动排除行（无效/冲突行先修正或明确排除）
+function excludeSmartRow(rowId) {
+  syncAllSmartRowsFromDom();
+  removeSmartRows([rowId]);
+}
+
+async function confirmSmartItem(rowId) {
+  if (_smartSubmitting) return;
+  var found = smartRowById(rowId);
+  if (!found) return;
+  var v = revalidateSmartRow(rowId);
+  if (v && v.status === 'blocked') {
+    showToast('该行还有问题：' + (v.issues[0] ? v.issues[0].message : '请检查'));
+    return;
+  }
+  var row = readSmartRow(rowId);
+  if (!row) return;
+  if (!window._smartBatchId) window._smartBatchId = 'imp_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+  _smartSubmitting = true;
+  setSmartButtonsDisabled(true);
+  try {
+    var r = row.kind === 'trade' ? await submitTradeRow(row) : await submitPositionRows([row]);
+    if (r.status === 'saved' || r.status === 'duplicate') {
+      removeSmartRows([rowId]);
+      showToast(r.message || '已保存');
+    } else {
+      showToast(r.message || '提交失败，行已保留');
+      revalidateSmartRow(rowId);
+    }
+  } finally {
+    _smartSubmitting = false;
+    setSmartButtonsDisabled(false);
+  }
+}
+
+function collectSmartConflicts() {
+  var posCodes = {}, tradeCodes = {};
+  (window._smartParsed || []).forEach(function(it) {
+    if (!it.code) return;
+    if (it.kind === 'trade') tradeCodes[it.code] = true; else posCodes[it.code] = true;
+  });
+  return Object.keys(posCodes).filter(function(c) { return tradeCodes[c]; });
 }
 
 async function confirmAllSmartItems() {
-  if (!window._smartParsed || window._smartParsed.length === 0) return;
-  // 同一批导入共享批次号（业务去重/追溯，方案阶段五第 6 条）
-  window._smartBatchId = 'imp_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
-  for (var i = window._smartParsed.length - 1; i >= 0; i--) {
-    await confirmSmartItem(i);
+  if (_smartSubmitting) return;
+  var items = window._smartParsed || [];
+  if (items.length === 0) return;
+  syncAllSmartRowsFromDom();
+  // 同一轮确认中同证券同时含持仓快照及交易 → 先阻止并列出冲突（方案 4.4 第 3 条）
+  var conflicts = collectSmartConflicts();
+  if (conflicts.length) {
+    showToast('以下证券同时含持仓与交易：' + conflicts.join('、') + '。请分别单独确认，明确录入范围/日期，避免快照与其中已包含的成交重复计算');
+    return;
   }
-  window._smartBatchId = null;
+  if (!window._smartBatchId) window._smartBatchId = 'imp_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+  _smartSubmitting = true;
+  setSmartButtonsDisabled(true);
+  var savedRows = [];
+  var blockedCount = 0;
+  var sameDateConflict = 0;
+  var posSaved = 0, posFailed = 0;
+  var tradeSaved = 0, tradeExists = 0, tradeFailed = 0;
+  var stopped = false;
+  try {
+    var posRows = [], tradeRows = [];
+    items.forEach(function(it) {
+      var v = revalidateSmartRow(it._rowId);
+      var row = readSmartRow(it._rowId);
+      if (!row) return;
+      if (v && v.status === 'blocked') { blockedCount++; return; }
+      if (row.kind === 'trade') tradeRows.push(row); else posRows.push(row);
+    });
+    // 同证券同日快照的数量/成本对不上 → 整组行保留待用户选择，不参与批量
+    // （方案 4.3 第 4 条"由用户选择，不按上传先后覆盖"；其余持仓照常提交）
+    var posGroups = {};
+    posRows.forEach(function(row) {
+      var k = row.code + '|' + (row.date || '');
+      (posGroups[k] = posGroups[k] || []).push(row);
+    });
+    posRows = posRows.filter(function(row) {
+      var g = posGroups[row.code + '|' + (row.date || '')];
+      if (g.length <= 1) return true;
+      var identical = g.every(function(r2) { return r2.quantity === row.quantity && r2.price === row.price; });
+      if (!identical) { sameDateConflict++; return false; }
+      return true;
+    });
+    // 持仓批量（单事务）：失败全留
+    if (posRows.length) {
+      var pr = await submitPositionRows(posRows);
+      if (pr.status === 'saved' || pr.status === 'duplicate') {
+        posSaved = posRows.length;
+        posRows.forEach(function(row) { savedRows.push(row.rowId); });
+      } else {
+        posFailed = posRows.length;
+        showToast('持仓批量提交失败：' + pr.message);
+        if (pr.status === 'conflict') stopped = true;
+      }
+    }
+    // 交易逐笔：逐行失败继续；会话/版本类问题暂停队列
+    for (var i = 0; i < tradeRows.length; i++) {
+      if (stopped) break;
+      var row = tradeRows[i];
+      var r = await submitTradeRow(row);
+      if (r.status === 'saved' || r.status === 'duplicate') {
+        tradeSaved++;
+        savedRows.push(row.rowId);
+      } else if (r.status === 'exists') {
+        tradeExists++;
+      } else if (r.status === 'conflict') {
+        tradeFailed += (tradeRows.length - i);
+        showToast(r.message + '，已停止提交剩余交易行');
+        stopped = true;
+      } else {
+        tradeFailed++;
+      }
+    }
+  } finally {
+    _smartSubmitting = false;
+    setSmartButtonsDisabled(false);
+    if (savedRows.length) removeSmartRows(savedRows);
+  }
+  var parts = [];
+  if (posRowsCountable(posSaved, posFailed)) parts.push('持仓 ' + posSaved + ' 条已保存' + (posFailed ? '、' + posFailed + ' 条失败保留' : ''));
+  parts.push('交易 ' + tradeSaved + ' 条已保存');
+  if (tradeExists) parts.push(tradeExists + ' 条已存在（保留待处理）');
+  if (tradeFailed) parts.push(tradeFailed + ' 条失败保留');
+  if (blockedCount) parts.push(blockedCount + ' 条需先处理（见状态列）');
+  if (sameDateConflict) parts.push(sameDateConflict + ' 行同证券同日快照对不上，已保留待你选择（逐行确认或移除）');
+  showToast('完成：' + parts.join('，'));
 }
+
+function posRowsCountable(saved, failed) { return saved > 0 || failed > 0; }
 
 function fileToBase64(file) {
   return new Promise(function(resolve, reject) {
@@ -852,6 +1398,12 @@ function base64ToFile(base64, filename) {
 var _qrPollTimer = null;
 var _qrToken = null;
 
+// 二维码下方状态文案（过期提示 + 重新生成入口，方案 4.6 第 4 条）
+function setQrStatus(html) {
+  var el = document.getElementById('qr-status');
+  if (el) el.innerHTML = html;
+}
+
 function initVisionQr() {
   fetch(api('/api/vision-token'), { method: 'POST' })
     .then(function(r) { return r.json(); })
@@ -859,22 +1411,32 @@ function initVisionQr() {
       _qrToken = d.token;
       var img = document.getElementById('qr-image');
       if (img) img.src = d.qr || '';
+      setQrStatus('手机扫码上传图片');
 
       if (_qrPollTimer) clearInterval(_qrPollTimer);
       _qrPollTimer = setInterval(function() {
         fetch(api('/api/vision-check/' + d.token))
           .then(function(r) { return r.json(); })
           .then(function(result) {
-            if (result.expired) {
+            // 切换账户后旧轮询结果作废，不恢复旧预览
+            if (window._smartAccount && window._smartAccount !== currentAccount) {
               clearInterval(_qrPollTimer);
               _qrPollTimer = null;
               return;
             }
-            if (result.image) {
+            if (result.expired) {
               clearInterval(_qrPollTimer);
               _qrPollTimer = null;
-              var file = base64ToFile(result.image, 'phone_upload.png');
-              doSmartParse(file, 'vision');
+              // 过期即时提示并给重新生成入口（断网/响应丢失后的恢复边界如实提示）
+              setQrStatus('二维码已过期 <button class="btn btn-outline btn-sm" data-act="initVisionQr">重新生成二维码</button>');
+              return;
+            }
+            var images = result.images && result.images.length ? result.images : (result.image ? [result.image] : []);
+            if (images.length) {
+              clearInterval(_qrPollTimer);
+              _qrPollTimer = null;
+              // 整批进入识别队列（与本地选图同一队列）
+              enqueueBase64Images(images, '手机上传');
             }
           });
       }, 2000);
@@ -908,16 +1470,21 @@ function updateQtyHint(code) {
   el.classList.remove('js-hidden'); el.style.display = (info && info.market === 'sh' && info.type === '债权') ? '' : 'none';
 }
 
-async function addTradeInternal(code, name, direction, price, quantity, date, importedFees, importBatchId) {
+// 智能导入交易提交：返回明确结果语义（方案 4.4 第 1 条），
+// status: saved（已保存）| duplicate（同批次已保存）| exists（本地已存在，留行待处理）
+//       | failed（明确失败）| conflict（版本/会话问题，暂停）| unknown（结果待确认）
+async function addTradeInternal(code, name, direction, price, quantity, date, importedFees, importBatchId, opts) {
+  opts = opts || {};
   code = classifyCode.normalizeCode(code, name);
-  // 华泰/招商证券上交所债券：手→张自动转换
-  quantity = normalizeQuantity(quantity, code);
-  if (!code || !price || !quantity) { showToast('请填写代码、价格和数量'); return; }
+  // 单位只转换一次：导入路径（skipUnitConversion）已在预览换算过，不重复按券商配置换算
+  if (!opts.skipUnitConversion) quantity = normalizeQuantity(quantity, code);
+  if (!code || !price || !quantity) return { status: 'blocked', message: '请填写代码、价格和数量' };
 
   var rec = recognizeCode(code, name) || { type: '股权', subtype: '深市' };
   var f = importedFees || calcTradeFees(direction, Math.round(price * quantity * 100) / 100, rec.subtype);
+  var tradeId = opts.eventId || uid(); // 幂等键：重试复用同一 id
 
-  // 业务去重（方案阶段一第 6 条）：同 code+date+direction+price+quantity 视为重复导入，跳过
+  // 业务去重（方案阶段一第 6 条）：同 code+date+direction+price+quantity 视为已存在，留行待用户处理
   var dup = (data.trades || []).some(function (t) {
     return t.code === code &&
       (t.trade_date || (t.date || '').slice(0, 10)) === String(date || '').slice(0, 10) &&
@@ -925,7 +1492,7 @@ async function addTradeInternal(code, name, direction, price, quantity, date, im
       Math.abs((Number(t.price) || 0) - price) < 0.001 &&
       Math.abs((Number(t.quantity) || 0) - quantity) < 0.001;
   });
-  if (dup) { showToast('该笔交易已存在（同代码/日期/方向/价格/数量），已跳过重复导入'); return; }
+  if (dup) return { status: 'exists', message: '该笔交易已存在（同代码/日期/方向/价格/数量），未重复录入，行保留待你处理' };
 
   // 服务端统一账本事务：持仓/现金由服务端重算并返回
   try {
@@ -934,36 +1501,39 @@ async function addTradeInternal(code, name, direction, price, quantity, date, im
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         trade: {
-          id: uid(), // 幂等键：重复确认/网络重试不会重复建仓（2026-08-04 修复）
+          id: tradeId,
           code: code, name: name || code, direction: direction,
           price: price, quantity: quantity,
           commission: f.commission, stamp_tax: f.stamp_tax, transfer_fee: f.transfer_fee, other_fee: f.other_fee,
           type: rec.type, subtype: rec.subtype,
-          date: date || todayCN(), import_batch_id: importBatchId || null
+          quote_currency: opts.quoteCurrency || undefined,
+          date: date, // 日期必须显式给定（重校验已阻止缺失，不默认今天；方案 4.1 第 6 条）
+          import_batch_id: importBatchId || null
         }
       })
     });
     const j = await r.json().catch(function () { return {}; });
-    if (!r.ok) { showToast(j.error || '保存交易失败'); return; }
+    if (!r.ok) {
+      if (r.status === 409) {
+        // 409 可能是"已保存但响应丢失后带旧版本重试"：先按原 id 核对，已落库才标已保存（方案 4.4 第 5 条）
+        var verify409 = await verifySmartEventsSaved([tradeId]);
+        if (verify409.all) return { status: 'saved', message: '已保存（核对确认，响应丢失后重试遇版本冲突）' };
+        return { status: 'conflict', message: j.error || '数据已在其他窗口被修改，请刷新页面后重试' };
+      }
+      if (r.status === 401 || r.status === 403) return { status: 'conflict', message: j.error || '登录状态失效，请重新登录后继续' };
+      // 失败后按原 id 核对：可能是响应丢失
+      var verifyFailed = await verifySmartEventsSaved([tradeId]);
+      if (verifyFailed.all) return { status: 'saved', message: '已保存（核对确认，响应丢失）' };
+      return { status: 'failed', message: j.error || '保存交易失败' };
+    }
     if (j.skipped === 'duplicate') {
-      // P1-4 服务端幂等命中：同批次重复导入，不重复提示。
-      // 2026-08-04 第三轮修复：用返回的最新数据+版本刷新页面——首次保存成功但响应丢失时，
-      // 重试命中后不能停留在旧数据/旧版本，否则后续操作误报"其他窗口已修改"。
-      if (j.data) refreshDataFromServer(j.data);
+      // P1-4 服务端幂等命中：同批次重复导入 = 已保存；刷新数据与版本
+      if (j.data) applyLedgerData(j.data);
       renderAll();
-      showToast('该笔交易已存在（同批次重复导入），已跳过');
-      return;
+      return { status: 'duplicate', message: '该笔交易已存在（同批次重复导入），已跳过' };
     }
-    if (j.data) {
-      data = j.data;
-      dataVersion = j.data.version || dataVersion;
-      if (typeof j.data.posVersion === 'number') dataPosVersion = j.data.posVersion;
-      if (typeof j.data.tradeVersion === 'number') dataTradeVersion = j.data.tradeVersion;
-      if (typeof j.data.navVersion === 'number') dataNavVersion = j.data.navVersion;
-      if (typeof j.data.cashflowVersion === 'number') dataCashVersion = j.data.cashflowVersion;
-      restorePriceChangeMap();
-    }
-    // 过去日期的交易：触发历史净值精确回填（Tushare 历史回补，不近似）
+    if (j.data) applyLedgerData(j.data);
+    // 过去日期的交易：触发历史净值精确回填（Tushare 历史回补，不近似）；失败与交易已保存分开提示
     if (date && date < todayCN()) {
       try {
         const rr = await fetch(api('/api/data/' + encodeURIComponent(currentAccount) + '/recompute-nav'), {
@@ -971,12 +1541,18 @@ async function addTradeInternal(code, name, direction, price, quantity, date, im
         });
         const jj = await rr.json().catch(function () { return {}; });
         if (jj && jj.ok) data = await loadData(currentAccount); // 刷新 navHistory
-      } catch (e) {}
+      } catch (e) {
+        renderAll();
+        return { status: 'saved', message: '已记录 ' + (direction === 'buy' ? '买入' : '卖出') + ' ' + (name || code) + '（历史净值重算失败，可稍后在净值页重试）' };
+      }
     }
     renderAll();
-    showToast('已记录 ' + (direction === 'buy' ? '买入' : '卖出') + ' ' + (name || code));
+    return { status: 'saved', message: '已记录 ' + (direction === 'buy' ? '买入' : '卖出') + ' ' + (name || code) };
   } catch (e) {
-    showToast('保存失败：' + (e.message || e));
+    // 网络异常：结果未知，先按原 id 核对是否已落库
+    var verify = await verifySmartEventsSaved([tradeId]);
+    if (verify.all) return { status: 'saved', message: '已保存（网络异常后核对确认）' };
+    return { status: 'unknown', message: '网络异常，结果待确认（重试不会重复录入）：' + (e.message || e) };
   }
 }
 

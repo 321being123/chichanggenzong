@@ -193,20 +193,21 @@ const next = () => {}; // 占位，实际测试用闭包捕获
   await test('未上传图片时轮询不删除 token，上传后被所属用户消费即删除', () => {
     visionUploadTokens.clear();
     const tk = 'tok-not-ready';
-    visionUploadTokens.set(tk, { image: null, timestamp: Date.now(), username: 'u1' });
+    visionUploadTokens.set(tk, { images: [], createdAt: Date.now(), username: 'u1' });
     const r1 = consumeVisionToken(tk, 'u1');
     assert.strictEqual(r1.image, null);
     assert.strictEqual(r1.expired, false);
     assert.ok(visionUploadTokens.has(tk), '图片未上传时 token 不应被删除');
-    visionUploadTokens.get(tk).image = 'data:image/png;base64,xxx';
+    visionUploadTokens.get(tk).images = ['data:image/png;base64,xxx'];
     const r2 = consumeVisionToken(tk, 'u1');
     assert.strictEqual(r2.image, 'data:image/png;base64,xxx');
+    assert.deepStrictEqual(r2.images, ['data:image/png;base64,xxx']);
     assert.ok(!visionUploadTokens.has(tk), '图片被所属用户拉取后 token 应删除');
   });
   await test('非所属用户访问返回 forbidden 且不删除', () => {
     visionUploadTokens.clear();
     const tk = 'tok-owner';
-    visionUploadTokens.set(tk, { image: 'data:image/png;base64,zzz', timestamp: Date.now(), username: 'u1' });
+    visionUploadTokens.set(tk, { images: ['data:image/png;base64,zzz'], createdAt: Date.now(), username: 'u1' });
     const r = consumeVisionToken(tk, 'u2');
     assert.strictEqual(r.forbidden, true);
     assert.ok(visionUploadTokens.has(tk), '不应删除他人 token');
@@ -214,7 +215,7 @@ const next = () => {}; // 占位，实际测试用闭包捕获
   await test('过期 token 返回 expired 并清理', () => {
     visionUploadTokens.clear();
     const tk = 'tok-exp';
-    visionUploadTokens.set(tk, { image: 'x', timestamp: Date.now() - TOKEN_TTL - 1, username: 'u1' });
+    visionUploadTokens.set(tk, { images: ['x'], createdAt: Date.now() - TOKEN_TTL - 1, username: 'u1' });
     const r = consumeVisionToken(tk, 'u1');
     assert.strictEqual(r.expired, true);
     assert.ok(!visionUploadTokens.has(tk), '过期 token 应被清理');
@@ -272,9 +273,9 @@ const next = () => {}; // 占位，实际测试用闭包捕获
   await test('拒绝非图片 MIME（防直接调用绕过上传校验）', () => {
     assert.strictEqual(validateImage('data:text/plain;base64,YWJj'), '仅支持图片文件');
   });
-  await test('拒绝超过 10MB 的图片', () => {
-    const big = 'data:image/png;base64,' + 'A'.repeat(15 * 1024 * 1024);
-    assert.strictEqual(validateImage(big), '图片过大（上限 10MB）');
+  await test('拒绝超过 6MB 的图片（与前端/手机端同一容量边界）', () => {
+    const big = 'data:image/png;base64,' + 'A'.repeat(9 * 1024 * 1024);
+    assert.strictEqual(validateImage(big), '图片过大（上限 6MB），请重新截图或分批上传');
   });
   await test('放行正常图片 dataURL', () => {
     assert.strictEqual(validateImage('data:image/png;base64,iVBORw0KGgo='), null);

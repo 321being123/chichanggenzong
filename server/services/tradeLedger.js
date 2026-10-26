@@ -46,7 +46,14 @@ function validateTrade(t) {
   if (t.direction === 'adjust') {
     // 持仓调整：数量 = 调整后目标数量（绝对设置，可为 0=清仓；负数非法）
     if (!isFinite(quantity) || quantity < 0) throw bizError('调整数量不能为负数');
+    // 成本价允许零与负（做T摊薄为负属正常，用户 2026-10-26 裁决）；缺失/非法不静默按 0 处理
+    if (!isFinite(price)) throw bizError('请填写调整成本价（可为 0 或负数）');
+  } else if (t.direction === 'open') {
+    // 期初建仓成本价允许零与负；数量仍为正
+    if (!isFinite(price)) throw bizError('请填写成本价（可为 0 或负数）');
+    if (!isFinite(quantity) || quantity <= 0) throw bizError('交易数量必须为正数');
   } else {
+    // buy/sell 真实成交：价格必须为正（负价成交仍被拒）
     if (!isFinite(price) || price <= 0) throw bizError('交易价格必须为正数');
     if (!isFinite(quantity) || quantity <= 0) throw bizError('交易数量必须为正数');
   }
@@ -100,8 +107,11 @@ async function recomputeSecurity(client, username, accountName, code, strict = f
       qty += q;
       cost = qty > 0 ? newTotal / qty : 0;
     } else if (t.direction === 'adjust') {
-      // 持仓调整：quantity = 调整后目标数量（绝对设置）；成本保持单位成本（若给了新成本则按新成本）
-      const unitCost = p > 0 ? p : (qty > 0 ? cost : 0);
+      // 持仓调整：quantity = 调整后目标数量（绝对设置）；
+      // 成本更新：price 为有限数值即生效（含零与负，做T摊薄；2026-10-26 整改：不再静默忽略零/负成本）；
+      // price 缺失（非数值）时保持原单位成本。
+      const rawP = Number(t.price);
+      const unitCost = Number.isFinite(rawP) ? rawP : (qty > 0 ? cost : 0);
       qty = Math.max(0, q);
       cost = qty > 0 ? unitCost : 0;
     } else {

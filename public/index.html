@@ -262,9 +262,10 @@
         <div class="vision-row">
           <div class="vision-zone" id="vision-zone" data-act="__click" data-target="vision-input">
             <div class="icon">📷</div>
-            <p>点击上传或拖拽图片</p>
+            <p>点击上传或拖拽图片（可多选，最多 6 张）</p>
             <p class="u-hint">支持 PNG / JPG，AI 自动识别</p>
-            <input type="file" id="vision-input" class="hidden-input" accept="image/png,image/jpeg,image/jpg" data-act="handleVisionFile" data-use-event>
+            <p class="u-hint">建议截「持仓明细」或「交割单」，避免只截首页行情总览<br>持仓截图含：代码、名称、成本价/买入均价、数量、单位、日期<br>交易截图含：代码、名称、成交价、数量、买卖方向、日期及税费<br>账号可遮住，表头和证券字段请保留</p>
+            <input type="file" id="vision-input" class="hidden-input" accept="image/png,image/jpeg,image/jpg" multiple data-act="handleVisionFile" data-use-event>
           </div>
           <div class="vision-zone" id="excel-zone" data-act="__click" data-target="excel-input">
             <div class="icon">📊</div>
@@ -274,9 +275,10 @@
           </div>
           <div class="vision-qr">
             <img id="qr-image" src="" alt="二维码">
-            <p class="u-hint-8">手机扫码上传图片</p>
+            <p class="u-hint-8" id="qr-status">手机扫码上传图片</p>
           </div>
         </div>
+        <div id="vision-queue" class="u-mt-16"></div>
         <div id="smart-loading" class="u-smart-loading"><span class="spinner"></span>AI识别中...</div>
         <div id="smart-result" class="u-mt-16"></div>
       </div>

@@ -9,6 +9,12 @@ const { childProcessEnv, mergeExternalCallStatsFromStderr } = require('./externa
 const SOURCE_CODE = 'convertible_bond_redemption_announcements';
 const DATASET_CODE = 'bond_redemption_events';
 const PARSER_VERSION = 'call-event-v4';
+// 行为等价的旧版本：解析逻辑未变、结果可直接沿用，不计入"待回放"。
+// 放进这里的前提是「解析规则与判定逻辑确实没改」，否则历史事实会沿用错误口径。
+// 依据：0.8.4.42 只把 PARSER_VERSION 从 call-event-v3 改成 call-event-v4，
+// Python 解析器、判定规则、字段口径全部未改动（该次提交对解析链路无其他改动）。
+// 真正改了判定的升级不得登记为兼容，必须走 replayRequired 回放（入口见 /api/admin/jobs/convertible-bond-reparse）。
+const PARSER_COMPATIBLE_VERSIONS = ['call-event-v3'];
 const PROJECTION_SCOPE = 'convertible_bond_call_projection:call-event-v4';
 
 function isoDate(value) {
@@ -580,11 +586,16 @@ async function syncConvertibleBondCallAnnouncements({ fromDate, toDate, exchange
        WHERE e.instrument_id=v.instrument_id AND e.announced_at=v.announced_at
          AND e.event_type='waive' AND e.no_call_until IS DISTINCT FROM v.max_no_call_until`);
     const pendingOld = await client.query(
-      `SELECT COUNT(*) FILTER (WHERE parser_version IS DISTINCT FROM $1)::int AS old_count,
+      `SELECT COUNT(*) FILTER (WHERE COALESCE(parser_version,'') <> $1
+                                AND COALESCE(parser_version,'') <> ALL($2::text[]))::int AS old_count,
+              COUNT(*) FILTER (WHERE COALESCE(parser_version,'') = ANY($2::text[]))::int AS compatible_count,
               COUNT(*) FILTER (WHERE parser_version=$1 AND parse_status <> 'complete')::int AS partial_count
-         FROM event.convertible_bond_call_events`, [PARSER_VERSION]
+         FROM event.convertible_bond_call_events`, [PARSER_VERSION, PARSER_COMPATIBLE_VERSIONS]
     );
+    // pending_old_parser 只统计"必须回放"的旧版本；行为等价的兼容版本单独计数，不阻断当日任务。
+    // 这样一次空版本号变更不会再让全库历史变成假缺口，而真正改了判定规则的升级仍然会被拦下。
     stats.pending_old_parser = pendingOld.rows[0].old_count;
+    stats.compatible_parser_events = pendingOld.rows[0].compatible_count;
     stats.parse_partial = Math.max(stats.parse_partial, pendingOld.rows[0].partial_count);
     await reconcileCallQuality(client);
     const openQuality = await client.query(
@@ -622,6 +633,9 @@ async function syncConvertibleBondCallAnnouncements({ fromDate, toDate, exchange
     await client.query('COMMIT');
     return { ok: projectionComplete, status: runStatus, fromDate: start, toDate: end, runId, ...stats,
       diagnostics: { quality_status: qualityStatus, parser_version: PARSER_VERSION, projection_scope: PROJECTION_SCOPE,
+        parser_compatible_versions: PARSER_COMPATIBLE_VERSIONS,
+        replay_pending: Number(stats.pending_old_parser || 0),
+        compatible_parser_events: Number(stats.compatible_parser_events || 0),
         projection_advanced: projectionComplete, projection_last_success_date: projectionComplete ? end : null } };
   } catch (error) {
     await client.query('ROLLBACK');
@@ -630,5 +644,5 @@ async function syncConvertibleBondCallAnnouncements({ fromDate, toDate, exchange
   } finally { client.release(); }
 }
 
-module.exports = { PARSER_VERSION, PROJECTION_SCOPE, classifyCallEvent, classifyCallKind, eventDates, eventParseComplete, pickInstrument,
+module.exports = { PARSER_VERSION, PARSER_COMPATIBLE_VERSIONS, PROJECTION_SCOPE, classifyCallEvent, classifyCallKind, eventDates, eventParseComplete, pickInstrument,
   callItemsFromOfficialEvents, parseOfficialDocuments, syncConvertibleBondCallAnnouncements };

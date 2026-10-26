@@ -3887,6 +3887,58 @@
       ],
       "owner": "WorkBuddy",
       "status": "local_verified"
+    },
+    {
+      "id": "IMPORT-CLEANSE-NUMBER-001",
+      "title": "导入数值清洗只认明确格式（货币符号/千分位/单位可剥），空白、单独“-”、多段数字、NaN/Infinity 不得变 0；数量不取绝对值、小数不截尾",
+      "implementation": {
+        "file": "server/services/importCleanse.js",
+        "symbol": "parseLooseNumber"
+      },
+      "tests": [
+        {
+          "file": "server/test/import-cleanse.test.js",
+          "pattern": "数字清洗：空白/单独“-”/多段/NaN/Infinity 不得变 0"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "local_verified"
+    },
+    {
+      "id": "IMPORT-COST-MAPPING-002",
+      "title": "持仓成本映射 cost 优先、其次 avg_buy_price（零/负合法），均缺保持空值并阻止提交，禁止用市价冒充成本",
+      "implementation": {
+        "file": "server/services/importCleanse.js",
+        "symbol": "finalizeImportedItems"
+      },
+      "tests": [
+        {
+          "file": "server/test/import-cleanse.test.js",
+          "pattern": "cost 优先于 avg_buy_price，两者均缺 → 空值阻止提交"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "local_verified"
+    },
+    {
+      "id": "TRADES-OPEN-COST-SIGN-003",
+      "title": "open/adjust 成本允许零与负并如实入账（含 amount/amount_cny 符号豁免），buy/sell 成交价仍必须为正；adjust 缺失成本不静默按 0",
+      "implementation": {
+        "file": "server/services/tradeLedger.js",
+        "symbol": "validateTrade"
+      },
+      "tests": [
+        {
+          "file": "server/test/trade-ledger.test.js",
+          "pattern": "零/负成本 open 入账生效且不动现金"
+        },
+        {
+          "file": "server/test/import-cleanse.test.js",
+          "pattern": "open 允许零与负成本"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "local_verified"
     }
   ]
 }

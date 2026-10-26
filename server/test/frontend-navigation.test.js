@@ -90,10 +90,11 @@ ok(!/function clearTrades\(/.test(coreTrade), 'core-trade.js 不应再保留无�
 // 头像改为下拉菜单，固定含 个人中心 / 版本记录 / 退出登录
 // 注：FRONT-01 拆分后头像菜单由 js/session.js 的 renderTopUser 渲染，断言跟随代码位置
 ok(html.includes('个人中心') || sess.includes('个人中心'), '头像菜单缺少“个人中心”');
-ok(html.includes('反馈与版本') || sess.includes('反馈与版本'), '头像菜单缺少“反馈与版本”');
+// 2026-10-26：反馈与版本已并回一级导航「反馈」tab，头像菜单不再重复提供，且不应再出现
+ok(!/label:\s*['"]反馈与版本['"]/.test(sess), '头像菜单不应再保留“反馈与版本”');
 ok(html.includes('退出登录') || sess.includes('退出登录'), '头像菜单缺少“退出登录”');
 ok(html.includes("switchMain('profile')") || sess.includes("switchMain('profile')"), '个人中心菜单项未接入个人中心页');
-ok(html.includes("switchMain('feedback')") || sess.includes("switchMain('feedback')"), '反馈菜单项未接入反馈页');
+ok(!sess.includes("switchMain('feedback')"), '头像菜单不应再挂反馈页入口');
 ok(html.includes('logout()') || sess.includes('logout()'), '退出登录菜单项未接入退出逻辑');
 // 管理后台入口仅管理员可见（role === 'admin' 时挂 /admin.html）
 ok((html.includes('isAdmin') || sess.includes('isAdmin')) && (html.includes("'/admin.html'") || sess.includes("'/admin.html'")),

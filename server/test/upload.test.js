@@ -41,9 +41,9 @@ async function main() {
   await check('空图片被拒', () => {
     assert.strictEqual(router.validateImage(''), '缺少图片');
   });
-  await check('超过 10MB 被拒', () => {
-    const big = 'data:image/png;base64,' + Buffer.alloc(10 * 1024 * 1024 + 100).toString('base64');
-    assert.ok(router.validateImage(big), '超大额图片应被拒绝');
+  await check('超过 6MB 被拒（与前端/手机端同一容量边界）', () => {
+    const big = 'data:image/png;base64,' + Buffer.alloc(6 * 1024 * 1024 + 100).toString('base64');
+    assert.strictEqual(router.validateImage(big), '图片过大（上限 6MB），请重新截图或分批上传', '应按体积拒绝（而非格式错误）');
   });
 
   await check('白名单内模型放行', () => {

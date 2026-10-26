@@ -257,6 +257,70 @@ const T = (over) => Object.assign({
     assert.strictEqual(pos.cost, 10, '卖出不改变期初成本');
   });
 
+  // ---- 零/负成本入账（整改方案 4.1 第 4 条，用户 2026-10-26 裁决）----
+  await checkAsync('零/负成本 open 入账生效且不动现金（不转正、不取绝对值）', async () => {
+    const cashBefore = (await loadAccountData(U2, A2)).cash;
+    const r = await ledger.applyTrade(U2, A2, {
+      code: '000002', name: '万科A', direction: 'open', price: -5, quantity: 100,
+      type: '股权', subtype: '深市', date: '2026-01-01 09:30'
+    });
+    assert.strictEqual(r.ok, true);
+    const d = await loadAccountData(U2, A2);
+    const pos = d.positions.find(p => p.code === '000002');
+    assert.ok(pos, '负成本 open 应能入账');
+    assert.strictEqual(pos.cost, -5, '成本应保留负值');
+    assert.strictEqual(pos.quantity, 100);
+    assert.strictEqual(d.cash, cashBefore, 'open 不产生现金变动');
+  });
+
+  await checkAsync('负成本 adjust 生效（不再静默忽略）', async () => {
+    await ledger.applyTrade(U2, A2, {
+      code: '000002', name: '万科A', direction: 'adjust', price: -3, quantity: 100,
+      type: '股权', subtype: '深市', date: '2026-01-02 09:30'
+    });
+    const d = await loadAccountData(U2, A2);
+    const pos = d.positions.find(p => p.code === '000002');
+    assert.strictEqual(pos.cost, -3, '负成本 adjust 应把成本改为 -3');
+    assert.strictEqual(pos.quantity, 100);
+  });
+
+  await checkAsync('零成本 adjust 生效（目标数量+零成本）', async () => {
+    await ledger.applyTrade(U2, A2, {
+      code: '000002', name: '万科A', direction: 'adjust', price: 0, quantity: 50,
+      type: '股权', subtype: '深市', date: '2026-01-03 09:30'
+    });
+    const d = await loadAccountData(U2, A2);
+    const pos = d.positions.find(p => p.code === '000002');
+    assert.strictEqual(pos.cost, 0, '零成本 adjust 应把成本改为 0');
+    assert.strictEqual(pos.quantity, 50, 'adjust 为目标数量');
+  });
+
+  await checkAsync('零/负成本在数据库约束下可入账（chk_trades_price/amount open 豁免）', async () => {
+    const { rows } = await pool.query(
+      `SELECT price, quantity, amount FROM trades
+        WHERE username=$1 AND account_name=$2 AND code='000002' AND direction='open'`, [U2, A2]);
+    assert.strictEqual(rows.length, 1, '应有 1 条负成本 open 事件');
+    assert.strictEqual(Number(rows[0].price), -5);
+    assert.strictEqual(Number(rows[0].amount), -500, '负成本 open 的 amount 为负属期初快照语义，如实入库');
+  });
+
+  // ---- 2026-10-26 验收 P1：同批次同代码 open+adjust 组合（快照语义，数量不叠加） ----
+  await checkAsync('同批次同代码 open+adjust 不叠加数量（按日期取最新快照目标）', async () => {
+    const cashBefore = (await loadAccountData(U2, A2)).cash;
+    // 前端批量路径契约：同代码首笔 open、后续 adjust（目标数量）；账本重放按日期取最新目标
+    const r = await ledger.applyTradesBatch(U2, A2, [
+      { id: 'batch_chain_1', code: '000003', name: '测试A', direction: 'open', price: 10, quantity: 100, type: '股权', subtype: '深市', date: '2026-01-10' },
+      { id: 'batch_chain_2', code: '000003', name: '测试A', direction: 'adjust', price: 11, quantity: 150, type: '股权', subtype: '深市', date: '2026-01-20' }
+    ], null);
+    assert.strictEqual(r.ok, true);
+    const d = await loadAccountData(U2, A2);
+    const pos = d.positions.find(p => p.code === '000003');
+    assert.ok(pos);
+    assert.strictEqual(pos.quantity, 150, '应为最新快照目标数量 150，不得叠加成 250');
+    assert.strictEqual(pos.cost, 11, '成本取最新日期 adjust 的目标成本');
+    assert.strictEqual(d.cash, cashBefore, 'open/adjust 不产生现金变动');
+  });
+
   // ---- P0-4：并发卖出锁（两笔并发卖出总量超可卖，只能一笔成功） ----
   await checkAsync('P0-4 并发卖出：两笔并发超卖只有一笔成功', async () => {
     // 当前持仓 800。两笔并发各卖 500 → 总量 1000 > 800，只能一笔成功

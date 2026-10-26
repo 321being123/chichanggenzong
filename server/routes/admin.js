@@ -274,6 +274,21 @@ router.post('/jobs/hkex-calendar-correction', requireCapability('ops_manage'), a
     return res.status(400).json({ error: error.message || '港交所人工修正参数无效' });
   }
 }));
+// 可转债旧公告重新解析：manualOnly 任务的人工入口（2026-10-26 补）。
+// 事故背景：该任务标了 manualOnly 却没有任何触发入口，解析器版本变更后历史积压无法消化，
+// calendar 阶段每天判失败并把下游打新日历一起堵住。任何"必须回放"的升级都要能从这里排队，
+// 且必须走统一执行器与任务审计，不另建脚本或第二套调度。
+router.post('/jobs/convertible-bond-reparse', requireCapability('ops_manage'), asyncHandler(async (req, res) => {
+  const rawLimit = Number(req.body && req.body.limit);
+  const limit = Number.isInteger(rawLimit) && rawLimit > 0 ? rawLimit : null;
+  const slot = await enqueueManualJob('convertible_bond_announcement_reparse', limit ? { limit } : {});
+  if (!slot) return res.status(400).json({ error: '可转债重解析任务不可用' });
+  await audit(req, 'convertible_bond_reparse_queue', 'reparse', {
+    detail: '手动排队重解析已入库公告',
+    metadata: { slotId: slot.slot_id, limit },
+  });
+  return res.status(202).json({ ok: true, queued: true, slotId: slot.slot_id, limit });
+}));
 router.post('/jobs/slots/:slotId/validate', asyncHandler(async (req, res) => {
   const slotId = parseInt(req.params.slotId, 10);
   const result = await validateJobSlot(slotId);

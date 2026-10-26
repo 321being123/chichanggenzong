@@ -192,6 +192,8 @@ const MIGRATIONS = [
   { version: '172_notification_center', up: M.migration172NotificationCenter },
   { version: '173_notification_recipient_identity', up: M.migration173NotificationRecipientIdentity },
   { version: '174_trades_amount_guard_trigger', up: () => require('./migrations/era02bTradesAmountGuard').migration174TradesAmountGuard(pool) },
+  { version: '175_trades_open_cost_sign', up: () => require('./migrations/era02bTradesAmountGuard').migration175TradesOpenCostSign(pool) },
+  { version: '176_account_id_completion', up: () => require('./migrations/era09AccountIdentity').migration176AccountIdCompletion(pool) },
 ];
 
 async function ensureMigrationsTable() {

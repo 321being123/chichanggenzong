@@ -11,19 +11,20 @@ const rateLimit = require('../middleware/rateLimit');
 const { assertSafeUrl, fetchSafeAi } = require('../services/ai');
 const { isVisionModelAllowed, getConfiguredVisionModel } = require('../config');
 const { getActiveSorted, recordStatus } = require('../services/aiModels');
-const { visionUploadTokens, TOKEN_TTL, setVisionToken, mobileUploadHtml, consumeVisionToken } = require('../services/vision');
+const { visionUploadTokens, TOKEN_TTL, setVisionToken, mobileUploadHtml, consumeVisionToken, saveVisionBatch, isExpired } = require('../services/vision');
 const { upsertIndexPoints } = require('../db');
 const normalizeCode = require('../../public/js/code-classify.js').normalizeCode;
 const { normalizeImportedItems } = require('../services/securityIdentity');
+const { cleanseImportedItems, finalizeImportedItems } = require('../services/importCleanse');
 
-// 图片校验：仅接受图片 MIME + 文件魔数，解码后不超过 10MB；返回错误信息字符串或 null
+// 图片校验：仅接受图片 MIME + 文件魔数，解码后不超过 6MiB（与前端/手机端同一容量边界，方案 4.3 第 3 条）；返回错误信息字符串或 null
 function validateImage(image) {
   if (!image) return '缺少图片';
   const m = /^data:(image\/[a-zA-Z0-9.+-]+);base64,(.*)$/.exec(image);
   if (!m) return '仅支持图片文件';
   let buf;
   try { buf = Buffer.from(m[2], 'base64'); } catch (e) { return '图片数据损坏'; }
-  if (buf.length > 10 * 1024 * 1024) return '图片过大（上限 10MB）';
+  if (buf.length > 6 * 1024 * 1024) return '图片过大（上限 6MB），请重新截图或分批上传';
   // 魔数校验：仅放行 PNG / JPEG / GIF，拒绝伪造 MIME 的非图片内容（P1-7）
   const ok = (buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47) // PNG
     || (buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) // JPEG
@@ -59,7 +60,9 @@ async function fetchAiWithRetry(endpoint, options, fetchImpl = fetch, delays = [
 // ========== 多模型兜底调用 ==========
 // 按后台配置（platform_config.ai_models）的顺序依次尝试，失败自动换下一个，全部失败才抛错；
 // 后台无配置时回退 .env 的 VISION_*（保持旧行为）。clientModel 仅在 .env 回退时经白名单生效。
-async function callAiFallback(messages, maxTokens, clientModel) {
+// opts.wantMeta=true 时返回 { content, finishReason, usage }（供识别路由判断输出截断）；
+// 默认仍返回文本，保持旧调用方兼容。
+async function callAiFallback(messages, maxTokens, clientModel, opts) {
   const envEndpoint = process.env.VISION_API_URL || 'https://apihub.agnes-ai.com/v1/chat/completions';
   let models = [];
   try { models = await getActiveSorted(); } catch (e) { /* DB 异常时走 .env 回退 */ }
@@ -91,9 +94,13 @@ async function callAiFallback(messages, maxTokens, clientModel) {
       }
       const result = await response.json();
       // agnès 推理模型可能把答案放在 reasoning_content 而 content 为空（图片识别场景），双字段兜底
-      const msg = result.choices?.[0]?.message || {};
+      const choice = result.choices?.[0] || {};
+      const msg = choice.message || {};
       const content = msg.content || msg.reasoning_content || '[]';
       if (m.id) recordStatus(m.id, true, '', Date.now() - t0);
+      if (opts && opts.wantMeta) {
+        return { content: content, finishReason: choice.finish_reason || null, usage: result.usage || null };
+      }
       return content;
     } catch (e) {
       lastErr = e;
@@ -119,7 +126,7 @@ function trimSheetRows(rows, maxRows, maxCols, maxCell) {
 router.post('/api/vision-token', requireLogin, rateLimit({ prefix: 'vtoken', windowMs: 60000, max: 10, message: '生成二维码过于频繁，请稍后再试' }), async (req, res) => {
   try {
     const token = crypto.randomBytes(16).toString('hex');
-    setVisionToken(token, { image: null, timestamp: Date.now(), username: req.session.user });
+    setVisionToken(token, { images: [], createdAt: Date.now(), username: req.session.user });
     const url = `${req.protocol}://${req.get('host')}/m/upload/${token}`;
     const qr = await QRCode.toDataURL(url, { width: 160, margin: 1 });
     res.json({ token, qr });
@@ -128,36 +135,86 @@ router.post('/api/vision-token', requireLogin, rateLimit({ prefix: 'vtoken', win
   }
 });
 
-// 手机上传页面
+// 手机上传页面（即时检查过期，不只依赖每分钟清扫）
 router.get('/m/upload/:token', (req, res) => {
   const { token } = req.params;
-  if (!visionUploadTokens.has(token)) {
+  const entry = visionUploadTokens.get(token);
+  if (!entry || isExpired(entry)) {
     return res.status(404).send('<h2 style="text-align:center;padding:40px;color:#d93025;">二维码已过期，请刷新电脑端页面重新生成</h2>');
   }
   res.set('Content-Type', 'text/html; charset=utf-8').send(mobileUploadHtml(token));
 });
 
 // 手机端上传图片（限流：按 token/IP，防止重复刷传）
+// 兼容旧 { image } 单图（转单元素数组）；新 { images } 整批原子写入，同批次重传可复用，内容不同报冲突。
 router.post('/api/vision-upload/:token', rateLimit({ prefix: 'vupload', windowMs: 60000, max: 30, getKey: (r) => r.params.token || r.ip, message: '上传过于频繁，请稍后再试' }), (req, res) => {
   const { token } = req.params;
-  const { image } = req.body;
-  const entry = visionUploadTokens.get(token);
-  if (!entry) return res.status(404).json({ ok: false, error: 'token已过期' });
-  const imgErr = validateImage(image);
-  if (imgErr) return res.status(400).json({ ok: false, error: imgErr });
-  entry.image = image;
-  entry.timestamp = Date.now();
-  res.json({ ok: true });
+  const body = req.body || {};
+  const images = Array.isArray(body.images) ? body.images : (body.image ? [body.image] : []);
+  if (images.length === 0) return res.status(400).json({ ok: false, error: '缺少图片' });
+  for (const img of images) {
+    const imgErr = validateImage(img);
+    if (imgErr) return res.status(400).json({ ok: false, error: imgErr });
+  }
+  const result = saveVisionBatch(token, images);
+  if (!result.ok) {
+    const status = result.code === 'expired' ? 404
+      : result.code === 'forbidden' ? 403
+      : result.code === 'conflict' ? 409 : 400;
+    return res.status(status).json({ ok: false, error: result.error, code: result.code });
+  }
+  res.json({ ok: true, count: images.length, reused: !!result.reused });
 });
 
-// 电脑端轮询检测
+// 电脑端轮询检测（返回整批 images；旧 image 仅在一张时提供）
 router.get('/api/vision-check/:token', requireLogin, (req, res) => {
   const r = consumeVisionToken(req.params.token, req.session.user);
   if (r.forbidden) return res.status(403).json({ error: '无权访问该上传', expired: false });
-  res.json({ image: r.image, expired: r.expired });
+  res.json({ images: r.images, image: r.images.length === 1 ? r.images[0] : null, count: r.images.length, expired: r.expired });
 });
 
-// ========== AI视觉识别截图（交易/持仓自动识别） ==========
+// ========== 识别输出完整性判定 ==========
+// 区分：明确空数组 / 输出截断 / JSON 错误 / 结构错误。错误不当作零条成功，不提交可疑半截数组。
+function parseModelItems(content, finishReason) {
+  const text = String(content == null ? '' : content);
+  const truncated = finishReason === 'length';
+  const jsonMatch = text.match(/\[[\s\S]*\]/);
+  if (!jsonMatch) {
+    return {
+      status: truncated ? 'truncated' : (text.trim() ? 'bad_json' : 'empty_output'),
+      message: truncated ? '识别输出被截断，建议分段截图后重试'
+        : text.trim() ? '识别结果不是可解析的 JSON 数组，请重试' : '模型没有返回内容，请重试'
+    };
+  }
+  let parsed;
+  try { parsed = JSON.parse(jsonMatch[0]); }
+  catch (e) {
+    return {
+      status: truncated ? 'truncated' : 'bad_json',
+      message: truncated ? '识别输出被截断（JSON 不完整），建议分段截图后重试' : '识别结果 JSON 解析失败，请重试'
+    };
+  }
+  if (!Array.isArray(parsed)) {
+    return { status: 'bad_shape', message: '识别结果结构异常（不是数组），请重试' };
+  }
+  if (parsed.length === 0) {
+    return { status: 'empty', message: '未识别出交易或持仓记录' };
+  }
+  return { status: 'ok', items: parsed, finishReason: finishReason || null };
+}
+
+// 图片识别指令（方案 4.1）：字段扩充（成本/币种/市值/单位/市场提示）、数值格式硬约束、
+// 代码原样提取、成本与市价分开、零/负成本合法、缺失成本填 null 不拿市价冒充。
+const VISION_PARSE_PROMPT = '请分析这张图片。如果是交易截图，提取所有交易记录及每笔交易对应的税费明细；如果是持仓截图，提取所有持仓记录。请判断每一行是交易还是持仓，返回统一JSON数组。每个元素必须包含 kind 字段：交易为 "trade"，持仓为 "position"。\n' +
+  '数值硬约束：所有数值字段只输出 JSON number 或 null，不带货币符号、千分位逗号或单位文字；成本价允许 0 和负数（做T摊薄为负是正常的）；数量原样提取为数字，不取整、不取绝对值、不擅自换单位，数量单位单独放 quantity_unit 字段（只填 股/张/手/份 之一，看不出填 null）。\n' +
+  '证券代码原样提取为字符串：保留前导零、H 等字母前缀和交易所后缀，不补位、不改市场；另输出 market_hint（只填 HK/SH/SZ/BJ 之一，看不出填 null）。\n' +
+  '币种 currency 只填 "CNY"、"HKD" 或 null：按明确币种文字或符号判断（HK$/HKD/港币 为 HKD，人民币/RMB 为 CNY）；单独"¥"不足以确认，其他币种或判断不了填 null，禁止猜。\n' +
+  '交易字段：code、name、price(成交价格)、quantity、quantity_unit、amount(成交金额，没有则用 price 乘 quantity)、direction(buy 或 sell)、date(交易日期YYYY-MM-DD，没有则留空)、currency、commission(佣金，未显示为null)、stamp_tax(印花税，未显示为null)、transfer_fee(过户费，未显示为null)、other_fee(其他费用；截图只有合计费用且无法拆分时填这里，未显示为null)。截图直接显示费率时还要返回 commission_rate、stamp_tax_rate、transfer_fee_rate、other_fee_rate（百分比显示值，例如万1.3返回0.013），未显示为 null；截图显示最低佣金时返回 commission_min，否则为 null。\n' +
+  '持仓字段：code、name、cost(成本价，缺失填 null)、avg_buy_price(买入均价，缺失填 null)、market_price(当前市价，缺失填 null)、market_value(市值，缺失填 null)、quantity、quantity_unit、currency、date(截图日期YYYY-MM-DD，没有则留空)。成本与市价是两个不同的数：成本允许 0 和负数；没有成本价就填 null，禁止用市价冒充成本。\n' +
+  '格式示例：[{"kind":"position","code":"H02688","name":"新奥能源","cost":41.2,"avg_buy_price":null,"market_price":45.6,"market_value":45600,"quantity":1000,"quantity_unit":"股","currency":"HKD","date":"2026-10-25","market_hint":"HK"},{"kind":"trade","code":"000001","name":"平安银行","price":12.34,"quantity":100,"quantity_unit":"股","amount":1234,"direction":"buy","date":"2026-07-09","currency":"CNY","commission":5,"stamp_tax":0,"transfer_fee":0.01,"other_fee":0,"commission_rate":null,"stamp_tax_rate":null,"transfer_fee_rate":null,"other_fee_rate":null,"commission_min":null,"market_hint":"SZ"}]\n' +
+  '如果无法识别返回空数组[]。只返回JSON数组，不要任何其他文字。';
+
+// ========== AI视觉识别截图（交易/持仓自动识别，支持单图；多图由前端逐图调用本接口） ==========
 router.post('/api/vision-parse', requireLogin, rateLimit({ prefix: 'ai', windowMs: 60000, max: 10, message: 'AI 识别请求过于频繁，请稍后再试' }), asyncHandler(async (req, res) => {
   try {
     const { image, model } = req.body;
@@ -165,19 +222,25 @@ router.post('/api/vision-parse', requireLogin, rateLimit({ prefix: 'ai', windowM
     const imgErr = validateImage(image);
     if (imgErr) return res.status(400).json({ error: imgErr });
 
-    const content = await callAiFallback([{
+    // max_tokens 仅调整本路由输出预算（方案 4.1 第 5 条），不动模型/供应商/密钥配置。
+    const aiResult = await callAiFallback([{
           role: 'user',
           content: [
-            { type: 'text', text: '请分析这张图片。如果是交易截图，提取所有交易记录及每笔交易对应的税费明细；如果是持仓截图，提取所有持仓记录。请判断每一行是交易还是持仓，返回统一JSON数组。每个元素必须包含 kind 字段：交易为 "trade"，持仓为 "position"。交易字段：code(证券代码，字符串保留前导零)、name(证券名称)、price(成交价格数字)、quantity(成交数量整数)、amount(成交金额数字，没有则用price乘quantity)、direction(buy或sell)、date(交易日期YYYY-MM-DD，没有则留空)、commission(手续费或佣金金额，截图未显示则为null)、stamp_tax(印花税金额，截图未显示则为null)、transfer_fee(过户费金额，截图未显示则为null)、other_fee(其他交易费用金额；截图只有合计费用且无法拆分时填这里，未显示则为null)。如果截图直接显示费率，还要返回 commission_rate、stamp_tax_rate、transfer_fee_rate、other_fee_rate，数值使用百分比显示值（例如万1.3返回0.013），未显示为null；截图显示最低佣金时返回commission_min，否则为null。持仓字段：code、name、price、quantity。格式示例：[{"kind":"trade","code":"000001","name":"平安银行","price":12.34,"quantity":100,"amount":1234,"direction":"buy","date":"2026-07-09","commission":5,"stamp_tax":0,"transfer_fee":0.01,"other_fee":0,"commission_rate":null,"stamp_tax_rate":null,"transfer_fee_rate":null,"other_fee_rate":null,"commission_min":null}]。如果无法识别返回空数组[]。只返回JSON数组，不要任何其他文字。' },
+            { type: 'text', text: VISION_PARSE_PROMPT },
             { type: 'image_url', image_url: { url: image } }
           ]
-        }], 2000, model);
+        }], 6000, model, { wantMeta: true });
 
-    const jsonMatch = content.match(/\[[\s\S]*\]/);
-    if (!jsonMatch) return res.json({ items: [] });
+    const outcome = parseModelItems(aiResult.content, aiResult.finishReason);
+    if (outcome.status !== 'ok') {
+      // 错误/截断不当作零条成功
+      return res.json({ items: [], parse: { status: outcome.status, message: outcome.message } });
+    }
 
-    const items = await normalizeImportedItems(JSON.parse(jsonMatch[0]));
-    res.json({ items: items });
+    const { items: cleaned } = cleanseImportedItems(outcome.items);
+    const normalized = await normalizeImportedItems(cleaned);
+    const items = finalizeImportedItems(normalized);
+    res.json({ items: items, parse: { status: 'ok', finishReason: outcome.finishReason || null, rawCount: outcome.items.length } });
   } catch (e) {
     res.json({ error: '识别失败: ' + e.message });
   }
@@ -300,14 +363,23 @@ router.post('/api/excel-parse', requireLogin, rateLimit({ prefix: 'ai', windowMs
 
     const content = await callAiFallback([{
           role: 'user',
-          content: '以下是从Excel中提取的原始数据（第一行为表头）。请先判断这是交易明细表还是持仓表，然后逐行识别。对每一行，必须返回 kind 字段：交易为 "trade"，持仓为 "position"。交易字段：code(证券代码，必须作为字符串返回并保留前导零，如 000001)、name(证券名称)、price(成交价格数字)、quantity(成交数量整数)、direction(buy或sell)、date(交易日期YYYY-MM-DD，没有则留空)。持仓字段：code(证券代码，必须作为字符串返回并保留前导零)、name(证券名称)、quantity(持仓数量整数，优先取"股票余额/持仓数量/总余额")、price(成本价或买入均价数字；没有成本价则填市价，必须大于0)。格式示例：[{"kind":"trade","code":"000001","name":"平安银行","price":12.34,"quantity":100,"direction":"buy","date":"2026-07-09"},{"kind":"position","code":"000001","name":"平安银行","price":12.34,"quantity":100}]。如果无法识别返回空数组[]。只返回JSON数组，不要任何其他文字。\n\n' + rowsPayload
-        }], 4000, model);
+          content: '以下是从Excel中提取的原始数据（第一行为表头）。请先判断这是交易明细表还是持仓表，然后逐行识别。对每一行，必须返回 kind 字段：交易为 "trade"，持仓为 "position"。\n' +
+            '数值硬约束：数值只输出 JSON number 或 null，不带货币符号、千分位逗号或单位文字；成本价允许 0 和负数；数量原样提取为数字，不取整、不取绝对值，数量单位单独放 quantity_unit（只填 股/张/手/份 之一，看不出填 null）。\n' +
+            '证券代码必须作为字符串返回并保留前导零（如 000001），不补位、不改市场；另输出 market_hint（只填 HK/SH/SZ/BJ 之一，看不出填 null）。\n' +
+            '币种 currency 只填 "CNY"、"HKD" 或 null：按明确币种文字判断（HK$/HKD/港币 为 HKD，人民币/RMB 为 CNY）；判断不了填 null，禁止猜。\n' +
+            '交易字段：code、name、price(成交价格)、quantity、quantity_unit、direction(buy 或 sell)、date(交易日期YYYY-MM-DD，没有则留空)、currency。\n' +
+            '持仓字段：code、name、quantity(持仓数量，优先取"股票余额/持仓数量/总余额")、quantity_unit、cost(成本价，缺失填 null)、avg_buy_price(买入均价，缺失填 null)、market_price(市价，缺失填 null)、currency。成本与市价分开：成本允许 0 和负数；没有成本价填 null，禁止用市价冒充成本。\n' +
+            '格式示例：[{"kind":"trade","code":"000001","name":"平安银行","price":12.34,"quantity":100,"quantity_unit":"股","direction":"buy","date":"2026-07-09","currency":"CNY"},{"kind":"position","code":"000001","name":"平安银行","cost":12.34,"avg_buy_price":null,"market_price":13.2,"quantity":100,"quantity_unit":"股","currency":"CNY"}]。如果无法识别返回空数组[]。只返回JSON数组，不要任何其他文字。\n\n' + rowsPayload
+        }], 4000, model, { wantMeta: true });
 
-    const jsonMatch = content.match(/\[[\s\S]*\]/);
-    if (!jsonMatch) return res.json({ items: [] });
+    const outcome = parseModelItems(content.content, content.finishReason);
+    if (outcome.status !== 'ok') {
+      return res.json({ items: [], parse: { status: outcome.status, message: outcome.message } });
+    }
 
-    const items = await normalizeImportedItems(JSON.parse(jsonMatch[0]));
-    res.json({ items: items });
+    const { items: cleaned } = cleanseImportedItems(outcome.items);
+    const items = finalizeImportedItems(await normalizeImportedItems(cleaned));
+    res.json({ items: items, parse: { status: 'ok', rawCount: outcome.items.length } });
   } catch (e) {
     res.json({ error: '解析失败: ' + e.message });
   }
@@ -358,5 +430,8 @@ router.buildStructuredItems = buildStructuredItems;
 router.parseNumericCell = parseNumericCell;
 router.normalizeDateCell = normalizeDateCell;
 router.normalizeImportedItems = normalizeImportedItems;
+router.parseModelItems = parseModelItems;
+router.VISION_PARSE_PROMPT = VISION_PARSE_PROMPT; // 供验收实测脚本复用同一识别指令
+router.callAiFallback = callAiFallback; // 供验收实测脚本走同一多模型调用链
 
 module.exports = router;

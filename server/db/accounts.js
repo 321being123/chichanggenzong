@@ -7,6 +7,7 @@ const classifyCode = require('../../public/js/code-classify');
 const NavMath = require('../../public/shared/nav-math');
 const CoreDate = require('../../public/shared/core-date');
 const { loadCashState } = require('../services/accountCash');
+const { ACCOUNT_SCOPED_TABLES, ACCOUNT_METADATA_TABLE, listAccountScopedTables, findAccountNameLeftovers } = require('./accountScopedTables');
 
 // 按唯一键去重：同 key 只保留最后一条（前序被后序覆盖，与旧版逐条 INSERT 的覆盖语义一致）。
 // 批量 INSERT + ON CONFLICT DO UPDATE 遇重复唯一键会报 "cannot affect row a second time"，写入前必须先归一。
@@ -901,10 +902,12 @@ async function deleteAccountData(username, accountName) {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    const tables = ['positions', 'trades', 'nav_history', 'cash_flows', 'daily_prices', 'index_history', 'account_data', 'accounts'];
-    for (const t of tables) {
-      await client.query(`DELETE FROM ${t} WHERE username=$1 AND account_name=$2`, [username, accountName]);
+    // 账户级业务表由 information_schema 动态发现：新增表自动覆盖，不再依赖手写清单（漏表会留孤儿数据）。
+    const tables = await listAccountScopedTables(client);
+    for (const { table } of tables) {
+      await client.query(`DELETE FROM ${table} WHERE username=$1 AND account_name=$2`, [username, accountName]);
     }
+    await client.query(`DELETE FROM ${ACCOUNT_METADATA_TABLE} WHERE username=$1 AND account_name=$2`, [username, accountName]);
     // 同步 users.accounts 列表（移除被删账户名）
     const u = await loadUsers();
     if (u[username] && Array.isArray(u[username].accounts)) {
@@ -941,11 +944,29 @@ async function renameAccountData(username, oldName, newName) {
       await client.query('ROLLBACK');
       return { ok: false, conflict: '原账户不存在' };
     }
-    const tables = ['positions', 'trades', 'nav_history', 'cash_flows', 'daily_prices', 'index_history', 'account_data'];
-    for (const t of tables) {
-      await client.query(`UPDATE ${t} SET account_name=$3 WHERE username=$1 AND account_name=$2`, [username, oldName, newName]);
+    // 账户级业务表由 information_schema 动态发现，且优先按不可变 account_id 定位：
+    // 新增表自动覆盖（不会再出现"清单漏一张表"），account_id 命中还能顺带修正历史脏账户名的行。
+    const accountId = oldAccount.rows[0].id;
+    const tables = await listAccountScopedTables(client);
+    for (const { table, hasAccountId } of tables) {
+      // 有不可变主键时按 id 定位（还能顺带修正历史脏账户名的行）；迁移未跑的表降级为按账户名定位。
+      const where = hasAccountId
+        ? 'WHERE (account_id IS NOT NULL AND account_id=$4) OR (username=$1 AND account_name=$2)'
+        : 'WHERE username=$1 AND account_name=$2';
+      const params = hasAccountId ? [username, oldName, newName, accountId] : [username, oldName, newName];
+      await client.query(`UPDATE ${table} SET account_name=$3 ${where}`, params);
     }
     await client.query('UPDATE accounts SET account_name=$3, updated_at=to_char(now(),\'YYYY-MM-DD HH24:MI:SS\') WHERE username=$1 AND account_name=$2', [username, oldName, newName]);
+    // 运行期自检（2026-10-26 事故补强）：改完逐表核对旧账户名残留，任何一张不为 0 就整体回滚。
+    // 不能把"改名成功"当成默认结论——上次就是改了 7 张表算成功，剩下 5 张静默割裂了净值链。
+    const leftovers = await findAccountNameLeftovers(client, username, oldName);
+    if (leftovers.length) {
+      await client.query('ROLLBACK');
+      return {
+        ok: false,
+        conflict: `改名未完成，已回滚：${leftovers.map(item => `${item.table}(${item.count})`).join('、')} 仍存在旧账户名数据`,
+      };
+    }
     // 同步 users.accounts 列表
     const u = await loadUsers();
     if (u[username] && Array.isArray(u[username].accounts)) {

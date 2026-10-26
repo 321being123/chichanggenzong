@@ -80,6 +80,7 @@ assert.ok(migration.includes('087_convertible_bond_waive_same_day_validity'), '�
 assert.ok(migration.includes('CREATE VIEW public.bond_unified'));
 const redemptionService = fs.readFileSync(path.join(root, 'server', 'services', 'convertibleBondRedemptionService.js'), 'utf8');
 const redemptionSync = fs.readFileSync(path.join(root, 'server', 'services', 'convertibleBondRedemptionSync.js'), 'utf8');
+const adminRoutes = fs.readFileSync(path.join(root, 'server', 'routes', 'admin.js'), 'utf8');
 const suspensionSync = fs.readFileSync(path.join(root, 'server', 'services', 'convertibleBondSuspensionSync.js'), 'utf8');
 const callEventParser = fs.readFileSync(path.join(root, 'server', 'scripts', 'extractConvertibleBondCallEvent.py'), 'utf8');
 assert.ok(redemptionService.includes('JOIN market.convertible_bond_daily_metrics dm'));
@@ -119,9 +120,12 @@ assert.strictEqual(callItemsFromOfficialEvents([{ instrument_id: 319, source_num
 assert.strictEqual(callItemsFromOfficialEvents([{ instrument_id: 319, source_number: 'replay-3', event_date: '2026-08-08', url: 'https://static.cninfo.com.cn/finalpage/2026-08-09/replay.pdf' }])[0].announcedAt, '2026-08-09',
   '缓存回放应优先使用官方 PDF URL 日期，不能保留旧缓存的错误公告日');
 assert.ok(/SELECT e\.instrument_id AS "instrumentId"/.test(redemptionSync), '缓存重解析查询必须携带已有事件证券身份');
-assert.ok(/FILTER \(WHERE parser_version IS DISTINCT FROM \$1\)/.test(redemptionSync)
-  && !/WHERE parser_version IS DISTINCT FROM \$1 OR parse_status <> 'complete'/.test(redemptionSync),
-  '旧解析器积压统计不能把当前解析器的 partial 结果重复计入');
+// old_count 只看解析版本，不得把当前版本下 parse_status 未完成的记录再算一遍积压。
+{
+  const oldCountFilter = (redemptionSync.match(/COUNT\(\*\) FILTER \(WHERE[\s\S]*?\)::int AS old_count/) || [''])[0];
+  assert.ok(/parser_version/.test(oldCountFilter) && !/parse_status/.test(oldCountFilter),
+    '旧解析器积压统计不能把当前解析器的 partial 结果重复计入');
+}
 assert.ok(redemptionSync.includes("COUNT(*) FILTER (WHERE parser_version=$1 AND parse_status <> 'complete')")
   && redemptionSync.includes("issue_type='document_cache_miss'"),
   '强赎质量门禁必须统计全局部分解析和文档失败，不能只看本批结果');
@@ -147,4 +151,16 @@ assert.ok(redemptionSync.includes('现金管理') && redemptionSync.includes('�
 assert.ok(analysis.includes('DATASET_INCOMPLETE') && analysis.includes('markStockDailyBackfillStale')
   && !analysis.includes('source.tushare, recentDays.length'), '正股补水失败必须标记分区过期，且不再传入多余 SQL 参数');
 assert.ok(suspensionSync.includes('JOIN public.bond_unified u') && suspensionSync.includes("u.status='listed'"), '停牌覆盖目标必须按当前在市转债选择，不能依赖历史行情日');
+// 2026-10-26：解析器版本升级必须能区分"兼容型（结果可直接沿用）"与"破坏型（历史必须回放）"。
+// 否则一次空版本号变更就会让全库历史变成假缺口，把当日任务连同下游打板日历一起堵住。
+assert.ok(redemptionSync.includes('PARSER_COMPATIBLE_VERSIONS') && redemptionSync.includes('compatible_parser_events'),
+  '解析版本必须支持兼容声明，兼容版本不计入待回放');
+assert.ok(/PARSER_COMPATIBLE_VERSIONS\s*=\s*\[[^\]]*'call-event-v3'/.test(redemptionSync),
+  'call-event-v3 与 v4 解析逻辑一致，必须登记为兼容版本');
+assert.ok(redemptionSync.includes("COALESCE(parser_version,'') <> ALL(") || redemptionSync.includes("<> ALL($2::text[])"),
+  '待回放统计必须排除兼容版本，不能把历史全量误判为缺口');
+// 必须回放的升级要有可执行入口：manualOnly 任务不能只靠"人工触发"四个字存在。
+assert.ok(adminRoutes.includes('/jobs/convertible-bond-reparse') && adminRoutes.includes("enqueueManualJob('convertible_bond_announcement_reparse'"),
+  '可转债旧公告重解析必须提供管理员手动入口（复用统一执行器）');
+assert.ok(adminRoutes.includes('requireCapability(\'ops_manage\')'), '重解析入口必须限运维权限');
 console.log('convertible bond redemption tests passed');

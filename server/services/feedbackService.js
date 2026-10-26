@@ -7,6 +7,7 @@ const fs = require('fs');
 const path = require('path');
 const { pool, DATA_DIR } = require('../db');
 const store = require('../db/feedback');
+const notificationService = require('./notificationService');
 const { hasCapability, isAdminIdentity } = require('../middleware/auth');
 
 // ---------- 常量 ----------
@@ -946,6 +947,14 @@ async function adminUpdate(id, actor, patch) {
       statusFrom: fb.status, statusTo: fields.status || fb.status,
       summary: '管理员更新处理信息', note: note, revision: revision,
     });
+    // 离开 implemented 的任何目标状态（new/accepted/in_progress/needs_info/duplicate/declined）都要
+    // 失效当前完成通知；不能只监听「重新打开」。失效走同一事务 client，失败则整项回滚。
+    if (fb.status === 'implemented' && fields.status && fields.status !== 'implemented') {
+      await notificationService.invalidateFeedbackNotifications(client, {
+        feedbackId: id,
+        reason: '处理状态已更新为「' + (STATUS_LABELS[fields.status] || fields.status) + '」',
+      });
+    }
     await client.query('COMMIT');
     return { id: id, revision: revision };
   } catch (e) {

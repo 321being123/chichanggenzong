@@ -12,13 +12,16 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(
 from external_call_guard import guarded_urlopen
 
 
-PARSER_VERSION = "call-event-v3"
+PARSER_VERSION = "call-event-v4"
 MAX_PDF_BYTES = 12 * 1024 * 1024
 DATE = r"(20\d{2})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日?"
 PARTIAL_DATE = r"(\d{1,2})\s*月\s*(\d{1,2})\s*日?"
 DATE_TOKEN = rf"(?:{DATE}|{PARTIAL_DATE})"
 RANGE_SEPARATOR = r"\s*(?:至|到|—|-)\s*"
 NO_CALL_PATTERN = r"不提前赎回|不行使(?:提前)?赎回|不实施赎回|暂不赎回|(?:无法|不能)实施(?:有条件)?赎回"
+# “自……起至……到期日止，均不行使提前赎回权”一类以到期日封顶的承诺。
+MATURITY_LOCK_PATTERN = r"至[^。；;，,]{0,14}?到期日?(?:止|为止|前)"
+MATURITY_CONFIRM_PATTERN = r"均不行使|不行使(?:提前)?赎回|不提前赎回|不实施赎回|暂不赎回"
 
 
 def compact(text):
@@ -112,6 +115,12 @@ def extract_decision_date(text, event_type, year_hint, fallback=None):
         rf"({DATE_TOKEN})[^。；;]{{0,100}}?(?:董事会|董事会会议)[^。；;]{{0,120}}?(?:审议通过|决定)",
     ]
     candidates = []
+    limit = None
+    if fallback:
+        try:
+            limit = date.fromisoformat(str(fallback)[:10])
+        except ValueError:
+            limit = None
     for pattern in patterns:
         for hit in re.finditer(pattern, text):
             value = parse_date_token(hit.group(1), text[max(0, hit.start() - 120):hit.end() + 160], year_hint)
@@ -131,11 +140,29 @@ def extract_decision_date(text, event_type, year_hint, fallback=None):
             elif event_type == "waive":
                 if re.search(r"不提前赎回|不行使.*赎回|暂不赎回", nearby):
                     score += 12
-            candidates.append((score, value, nearby))
+            # 本次决定紧邻公告日；“前次不提前赎回”复述的旧决定通常至少相隔数月。
+            if limit:
+                try:
+                    delta = (limit - date.fromisoformat(value)).days
+                except ValueError:
+                    delta = None
+                if delta is not None:
+                    if delta < 0:
+                        score -= 30
+                    elif delta <= 7:
+                        score += 6
+                    elif delta <= 45:
+                        score += 3
+                    elif delta > 90:
+                        score -= 18
+                    else:
+                        score -= 6
+            candidates.append((score, date.fromisoformat(value).toordinal(), value, nearby))
     if not candidates:
         return fallback, None
-    candidates.sort(key=lambda item: (-item[0], item[1]))
-    _, value, evidence = candidates[0]
+    # 同一份公告可能复述多轮决定，得分相同时取最近的一轮，而不是最早的日期。
+    candidates.sort(key=lambda item: (-item[0], -item[1]))
+    _, _, value, evidence = candidates[0]
     return value, evidence
 
 
@@ -144,7 +171,7 @@ def extract_no_call(text, decision_date, year_hint):
     errors = []
     waive_hits = list(re.finditer(NO_CALL_PATTERN, text))
     if not waive_hits:
-        return None, None, None, evidence, errors
+        return None, None, None, None, evidence, errors
     contexts = []
     for phrase in waive_hits:
         context_start = max(0, phrase.start() - 100)
@@ -158,11 +185,19 @@ def extract_no_call(text, decision_date, year_hint):
             date_hit = re.search(DATE_TOKEN, next_hit.group(0))
             if date_hit:
                 next_count_start_date = parse_date_token(date_hit.group(0), context, year_hint)
-        if re.search(r"至本次债券到期|到期前|直至到期|至债券到期", context):
+        maturity_lock = re.search(r"至本次债券到期|到期前|直至到期|至债券到期", context)
+        if not maturity_lock:
+            # “自本次董事会审议通过之日起至可转债到期日止，均不行使提前赎回权”同样锁到到期日；
+            # 必须同时具备不行使承诺，避免把“转股期至可转债到期日止”一类条款误判为锁定至到期。
+            phrase = re.search(MATURITY_LOCK_PATTERN, context)
+            if phrase and re.search(MATURITY_CONFIRM_PATTERN,
+                                    context[max(0, phrase.start() - 80):phrase.end() + 80]):
+                maturity_lock = phrase
+        if maturity_lock:
             if next_count_start_date:
                 evidence["next_count_start_date"] = next_hit.group(0)
             evidence["no_call_until"] = context[:500]
-            return None, "through_maturity", next_count_start_date, evidence, errors
+            return None, "through_maturity", next_count_start_date, None, evidence, errors
 
         # 临近到期公告可能不写“直至到期”，而是明确说明债券即将到期，受赎回
         # 实施最短间隔限制影响，已经无法再办理提前赎回。该表述等价于到期前
@@ -183,7 +218,7 @@ def extract_no_call(text, decision_date, year_hint):
                 evidence["no_call_until"] = context[:500]
                 evidence["maturity_operational_impossibility"] = operationally_impossible.group(0)
                 evidence["maturity_date"] = maturity_date
-                return None, "through_maturity", next_count_start_date, evidence, errors
+                return None, "through_maturity", next_count_start_date, None, evidence, errors
 
     candidates = []
     range_pattern = DATE_TOKEN + r"(?:起)?" + RANGE_SEPARATOR + DATE_TOKEN
@@ -214,13 +249,20 @@ def extract_no_call(text, decision_date, year_hint):
             if left and right:
                 before = context[max(0, hit.start() - 80):hit.start()]
                 after = context[hit.end():min(len(context), hit.end() + 120)]
+                after_near = after[:40]
                 nearby = before + after
                 score = 0
                 if re.search(r"均不行使|期间(?:均)?不(?:提前)?行使|不提前赎回|锁定", nearby):
                     score += 8
+                # 区间之后紧接着“均不行使/不提前赎回”才是本次承诺锁定期。
+                if re.search(r"均不行使|不提前赎回|不行使", after_near):
+                    score += 10
                 if re.search(r"未来[一二三四五六七八九十\d]+个?月|期限", nearby):
                     score += 4
-                if re.search(r"股票.{0,30}(?:已)?满足|触发.{0,30}赎回", nearby):
+                # “自X至Y期间已触发/已满足赎回条件”是历史触发观察窗口，不是锁定区间。
+                if re.search(r"期间?已?(?:触发|满足)", after_near):
+                    score -= 14
+                elif re.search(r"股票.{0,30}(?:已)?满足|触发.{0,30}赎回", nearby):
                     score -= 6
                 if absolute_start >= phrase_start:
                     score += 2
@@ -228,18 +270,26 @@ def extract_no_call(text, decision_date, year_hint):
                     score -= 2
                 if decision_date:
                     try:
-                        score += 3 if date.fromisoformat(right) > date.fromisoformat(decision_date) else -4
+                        left_value = date.fromisoformat(left)
+                        right_value = date.fromisoformat(right)
+                        decision_value = date.fromisoformat(decision_date)
+                        score += 3 if right_value > decision_value else -6
+                        score += 4 if left_value >= decision_value else 0
                     except ValueError:
                         pass
-                candidates.append((score, abs(absolute_start - phrase_start), right, "explicit_range",
+                candidates.append((score, abs(absolute_start - phrase_start), right, left,
                                    context[:500], next_count_start_date, hit.group(0)))
     if candidates:
         candidates.sort(key=lambda item: (-item[0], item[1]))
-        _, _, value, basis, context, next_count_start_date, range_text = candidates[0]
+        _, _, value, lock_start, context, next_count_start_date, range_text = candidates[0]
         evidence["no_call_until"] = context
         if next_count_start_date:
             evidence["next_count_start_date"] = next_count_start_date
-        return value, basis, next_count_start_date, evidence, errors
+        # “X年X月X日后首个交易日重新计算”只给出重新计数基准日，首个交易日由交易日历派生。
+        rule = re.search(rf"(?:{DATE_TOKEN})(?:之?后)(?:的)?\s*(?:首个|第一个)交易日", context)
+        if rule:
+            evidence["next_count_rule"] = rule.group(0)
+        return value, "explicit_range", next_count_start_date, lock_start, evidence, errors
 
     explicit_pattern = rf"(?:{NO_CALL_PATTERN}).{{0,240}}?((?:20\d{{2}}\s*年\s*)?\d{{1,2}}\s*月\s*\d{{1,2}}\s*日?)(?:前|止|起)?"
     explicit_candidates = []
@@ -265,7 +315,7 @@ def extract_no_call(text, decision_date, year_hint):
         explicit_candidates.sort(key=lambda item: (-item[0], item[1]))
         _, _, value, context = explicit_candidates[0]
         evidence["no_call_until"] = context
-        return value, "explicit_range", None, evidence, errors
+        return value, "explicit_range", None, None, evidence, errors
 
     number_map = {"一": 1, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9, "十": 10}
     duration_candidates = []
@@ -282,9 +332,9 @@ def extract_no_call(text, decision_date, year_hint):
         duration_candidates.sort(key=lambda item: item[0])
         _, value, context = duration_candidates[0]
         evidence["no_call_until"] = context
-        return value, "duration_from_decision", None, evidence, errors
+        return value, "duration_from_decision", None, None, evidence, errors
     errors.append("no_call_deadline_not_found")
-    return None, "unknown", next_count_start_date, evidence, errors
+    return None, "unknown", next_count_start_date, None, evidence, errors
 
 
 def extract_one(url, cached_text=None, metadata=None):
@@ -322,7 +372,9 @@ def extract_one(url, cached_text=None, metadata=None):
     decision_date, decision_evidence = extract_decision_date(
         text, event_type, year_hint, metadata.get("decision_date") or announced_at
     )
-    no_call_until, validity_basis, next_count_start_date, evidence, errors = extract_no_call(text, decision_date, year_hint)
+    no_call_until, validity_basis, next_count_start_date, lock_start_date, evidence, errors = extract_no_call(
+        text, decision_date, year_hint
+    )
     if decision_evidence:
         evidence["decision_date"] = decision_evidence
     elif event_type in ("waive", "exercise") and not evidence.get("maturity_operational_impossibility"):
@@ -332,6 +384,7 @@ def extract_one(url, cached_text=None, metadata=None):
             if date.fromisoformat(no_call_until) <= date.fromisoformat(decision_date):
                 evidence["no_call_until_candidate"] = no_call_until
                 no_call_until = None
+                lock_start_date = None
                 validity_basis = "unknown"
                 errors.append("no_call_deadline_not_after_decision")
         except ValueError:
@@ -365,7 +418,7 @@ def extract_one(url, cached_text=None, metadata=None):
         "source_url": url,
         "event_type": event_type,
         "decision_date": decision_date,
-        "lock_start_date": decision_date if event_type == "waive" else None,
+        "lock_start_date": lock_start_date if event_type == "waive" else None,
         "no_call_until": no_call_until,
         "validity_basis": validity_basis,
         "next_count_start_date": next_count_start_date,

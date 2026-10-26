@@ -2,7 +2,7 @@
 const express = require('express');
 const router = express.Router();
 const asyncHandler = require('../middleware/async');
-const { requireStaff, requireCapability } = require('../middleware/auth');
+const { requireStaff, requireCapability, isAdminIdentity } = require('../middleware/auth');
 const { REGISTER_CODE } = require('../config');
 const {
   adminOverview,   countUsers, listUsers, setUserRole, setUserStatus, adminSetPassword, setKnowledgeEnabled,
@@ -46,6 +46,8 @@ function adminCapabilityForPath(p) {
   if (normalized.indexOf('/users') === 0) return 'user_manage';
   if (normalized.indexOf('/knowledge') === 0) return 'content_manage';
   if (normalized.indexOf('/feedback') === 0) return 'content_manage';
+  // 站内通知群发：首期只给系统管理员，不登记为可授予员工的通用能力
+  if (normalized.indexOf('/notifications') === 0) return 'admin_only';
   if (normalized.indexOf('/brokers') === 0 || normalized.indexOf('/jobs') === 0 || normalized.indexOf('/holidays') === 0 ||
       normalized.indexOf('/models') === 0 || normalized.indexOf('/settings') === 0 || normalized.indexOf('/arbitrage') === 0 ||
       normalized.indexOf('/analytics') === 0) return 'ops_manage';
@@ -56,6 +58,15 @@ router.use(function (req, res, next) {
   const cap = adminCapabilityForPath(req.path);
   if (cap === '') return next();
   if (!cap) return res.status(403).json({ error: '该后台接口未登记所需能力', requestId: req.id });
+  // admin_only：首期站内通知群发只给系统管理员，不登记为可授予员工的通用能力
+  if (cap === 'admin_only') {
+    const user = req.authUser;
+    if (!user) return res.status(401).json({ error: '未登录', requestId: req.id });
+    if (!isAdminIdentity(user.username, user.role)) {
+      return res.status(403).json({ error: '无权限：该操作仅限管理员执行', requestId: req.id });
+    }
+    return next();
+  }
   requireCapability(cap)(req, res, next);
 });
 
@@ -807,6 +818,8 @@ router.post('/arbitrage/sync', asyncHandler(async (req, res) => {
 
 // 反馈管理：挂在既有员工/能力中间件之后，路由内再次校验 content_manage
 router.use('/feedback', require('./adminFeedback'));
+// 站内通知群发：仅系统管理员（路径派发已判 admin_only，子路由再按管理员身份校验一次）
+router.use('/notifications', require('./adminNotifications'));
 
 module.exports = router;
 // 供测试核验能力派发矩阵（2026-10-21 审查 R-2：未登记路径默认拒绝）

@@ -35,7 +35,8 @@ const expectedPublic = ['home', 'knowledge', 'stock-analysis', 'bond-safety', 'm
 ok(JSON.stringify(publicPages) === JSON.stringify(expectedPublic),
   '公开页面应为 ' + expectedPublic.join(',') + '，实际为 ' + publicPages.join(','));
 
-const expectedProtected = ['holdings', 'profile', 'position-compare'];
+// 站内通知属本人数据，必须登录（2026-10-25）
+const expectedProtected = ['holdings', 'profile', 'position-compare', 'notifications'];
 ok(JSON.stringify(protectedPages) === JSON.stringify(expectedProtected),
   '受限页面应为 ' + expectedProtected.join(',') + '，实际为 ' + protectedPages.join(','));
 
@@ -184,5 +185,65 @@ ok(/\.filter-bar select\s*\{[\s\S]{0,300}?height:\s*36px/.test(styleCss),
   '后台筛选栏下拉框应与输入框同高（36px）');
 ok(/\.filter-bar[\s\S]{0,600}?input\[type="date"\][\s\S]{0,120}?width:\s*150px/.test(styleCss),
   '后台筛选栏日期框应统一宽度');
+
+// ===== 站内通知：铃铛常驻 + 通知页三级子栏目 + 登录页保护（2026-10-25） =====
+const sessionJs = fs.readFileSync(path.join(root, 'public/js/session.js'), 'utf8');
+ok(/function buildBell\(/.test(sessionJs) && /nav-bell-badge/.test(sessionJs),
+  'session.js 应构建常驻铃铛与未读徽标');
+// 铃铛必须在头像按钮之前插入（头像左侧），不能反过来
+ok(sessionJs.indexOf('wrap.appendChild(buildBell())') >= 0
+  && sessionJs.indexOf('wrap.appendChild(buildBell())') < sessionJs.lastIndexOf('wrap.appendChild(button)'),
+  '铃铛应挂在头像左侧');
+ok(/total > 99 \? '99\+'/.test(sessionJs), '未读超过 99 应显示 99+');
+ok(/stopNotificationPolling\(\)/.test(sessionJs) && /document\.hidden/.test(sessionJs),
+  '隐藏时必须暂停轮询，退出登录必须清理计时器');
+ok(/if \(seq !== notifPoll\.seq \|\| who !== username\) return null;/.test(sessionJs),
+  '旧响应不得覆盖新未读数');
+ok(html.includes('id="main-notifications"'), '缺少站内通知一级页容器');
+ok(/data-nt-sub="all"[\s\S]{0,200}?data-nt-sub="feedback"[\s\S]{0,200}?data-nt-sub="system"/.test(html),
+  '通知页应有全部/反馈/系统三个子栏目');
+const notificationsJs = fs.readFileSync(path.join(root, 'public/js/notifications.js'), 'utf8');
+ok(/params\.set\('sub', state\.sub\)/.test(notificationsJs) && /notification/.test(notificationsJs),
+  '通知页应把子栏目与正文编号写进地址栏，支持刷新与返回恢复');
+ok(!/markRead\([^)]*\);\s*render\(\);\s*loadFirst/.test(notificationsJs),
+  '打开列表不得自动已读');
+ok(/data-nt-act="readall"/.test(notificationsJs), '通知页应提供全部已读入口');
+// 2026-10-25 验收反例：同一浏览器换账号 / 删号后同名重注册都不得复用上一个人的通知缓存。
+// 只比对用户名不够——同名重注册用户名相同但账号身份不同，必须绑定不可复用身份。
+ok(/user:\s*who,\s*identity:\s*identity/.test(notificationsJs), '通知列表快照必须同时记录登录名与账号身份');
+ok(/data\.identity !== identity/.test(notificationsJs) && /clearSnapshot\(\)/.test(notificationsJs),
+  '快照的账号身份与当前身份不一致时必须丢弃');
+ok(/function ownerKey\(\)/.test(notificationsJs) && /'u:'\s*\+\s*who\s*\+\s*'\|id:'\s*\+\s*currentIdentity\(\)/.test(notificationsJs),
+  '列表归属键必须同时包含用户名与账号身份（只用建号时间会把不同账号判成同一人）');
+ok(/state\.owner/.test(notificationsJs) && /switched/, '换账号（含同名重注册）必须整体丢弃内存列表与详情');
+ok(/firstMount/.test(notificationsJs), '首次挂载不能误判为换账号而丢弃快照');
+ok(/clearCache:\s*clearCache/.test(notificationsJs), '通知模块必须导出 clearCache 供退出登录清理');
+const sessionSrc = fs.readFileSync(path.join(root, 'public/js/session.js'), 'utf8');
+ok(/accountIdentity\s*=\s*String\(d\.accountIdentity/.test(sessionSrc), 'session.js 必须保存 /api/me 返回的账号身份');
+ok(/async function logout\(\)[\s\S]{0,200}?clearNotificationCache\(\)/.test(sessionSrc),
+  '退出登录必须清理通知缓存');
+ok(/if \(!d\.username\)[\s\S]{0,200}?clearNotificationCache\(\)/.test(sessionSrc),
+  '会话失效（含账号被删）时必须清理通知缓存');
+const authRouteSrc = fs.readFileSync(path.join(root, 'server/routes/auth.js'), 'utf8');
+ok(/accountIdentity:\s*String\(a\.account_identity/.test(authRouteSrc), '/api/me 必须返回不可复用的账号身份');
+const usersSrc = fs.readFileSync(path.join(root, 'server/db/users.js'), 'utf8');
+ok(/AS account_identity/.test(usersSrc), 'getUserAuth 必须带出与收件人同口径的账号身份');
+ok(html.includes('js/notifications.js'), '首页必须加载 js/notifications.js');
+const accessPolicyJs = fs.readFileSync(path.join(root, 'public/js/access-policy.js'), 'utf8');
+ok(/protectedPages[\s\S]{0,200}'notifications'/.test(accessPolicyJs), '通知页必须要求登录');
+const navigationJs = fs.readFileSync(path.join(root, 'public/js/navigation.js'), 'utf8');
+ok(navigationJs.includes("main === 'notifications'"), 'navigation.js 应派发通知页入口');
+ok(/\.nav-bell[\s\S]{0,300}?width:\s*36px/.test(styleCss), '铃铛应有共享样式（shared/style.css）');
+ok(/\.nav-bell-badge\[hidden\]\s*\{\s*display:\s*none/.test(styleCss), '未读为 0 时徽标必须隐藏');
+
+// 后台：站内通知仅系统管理员可见，接口路径派发为 admin_only
+const adminHtml = fs.readFileSync(path.join(root, 'public/admin.html'), 'utf8');
+ok(/data-view="notifications" data-admin-only="1"/.test(adminHtml), '后台菜单应标记站内通知仅管理员可见');
+ok(adminHtml.includes('js/admin-notifications.js'), '后台必须加载 admin-notifications.js');
+const adminJs = fs.readFileSync(path.join(root, 'public/js/admin.js'), 'utf8');
+ok(/dataset\.adminOnly === '1'/.test(adminJs), '后台菜单应按 adminOnly 隐藏非管理员入口');
+const adminRoutes = fs.readFileSync(path.join(root, 'server/routes/admin.js'), 'utf8');
+ok(/indexOf\('\/notifications'\) === 0\) return 'admin_only'/.test(adminRoutes.replace(/\s+/g, ' '))
+  || adminRoutes.includes("return 'admin_only'"), '后台通知接口必须登记为仅管理员可用');
 
 console.log('frontend-navigation: ' + checks + ' 项断言通过');

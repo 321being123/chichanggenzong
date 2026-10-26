@@ -721,6 +721,92 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC'
 }
 .nav-user-item:hover { background: #f2f4f8; }
 
+/* ===== 站内通知：顶部铃铛与收件箱（2026-10-25） ===== */
+/* 铃铛常驻头像左侧：0 隐藏徽标、1~99 数字、超过 99 显示 99+ */
+.nav-bell {
+  position: relative; display: inline-flex; align-items: center; justify-content: center;
+  width: 36px; height: 36px; margin-right: 4px; padding: 0;
+  border: 0; border-radius: 50%; background: transparent;
+  color: rgba(255,255,255,.88); cursor: pointer; flex: 0 0 auto;
+}
+.nav-bell:hover, .nav-bell:focus-visible { background: rgba(255,255,255,.14); color: #fff; }
+.nav-bell:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
+.nav-bell svg { display: block; }
+.nav-bell-badge {
+  position: absolute; top: 1px; right: 0;
+  min-width: 16px; height: 16px; padding: 0 4px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 999px; background: #e53935; color: #fff;
+  font-size: 10px; font-weight: 700; line-height: 1; letter-spacing: 0;
+  box-shadow: 0 0 0 2px rgba(26,35,126,.9);
+}
+.nav-bell-badge[hidden] { display: none; }
+
+.nt-sub-nav { margin-bottom: 0; }
+#main-notifications > .bond-header { margin-bottom: 0; }
+.nt-page { padding-top: 16px; }
+.nt-body { display: flex; flex-direction: column; gap: 12px; }
+.nt-toolbar {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 10px 12px; background: #fff; border: 1px solid #e3e8f0; border-radius: 8px;
+}
+.nt-toggle { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: #273142; cursor: pointer; }
+.nt-toggle input { width: 16px; height: 16px; }
+.nt-toolbar-spacer { flex: 1 1 auto; }
+.nt-panel {
+  padding: 28px 16px; background: #fff; border: 1px solid #e3e8f0; border-radius: 8px;
+  text-align: center;
+}
+.nt-empty { margin: 0; color: #6b7280; font-size: 13px; }
+.nt-error { margin: 0 0 12px; color: #c62828; font-size: 13px; }
+.nt-list { display: flex; flex-direction: column; gap: 10px; }
+.nt-item {
+  display: flex; gap: 12px; padding: 14px 16px;
+  background: #fff; border: 1px solid #e3e8f0; border-radius: 8px;
+  cursor: pointer; text-align: left;
+}
+.nt-item:hover { border-color: #c5cfe0; box-shadow: 0 2px 10px rgba(20,30,60,.06); }
+.nt-item:focus-visible { outline: 2px solid #1a237e; outline-offset: 2px; }
+.nt-item--unread { border-left: 3px solid #1a237e; }
+.nt-item--invalid { background: #fafbfd; }
+.nt-item-main { min-width: 0; flex: 1 1 auto; }
+.nt-item-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.nt-item-title { font-size: 14px; color: #171c2a; font-weight: 600; }
+.nt-dot {
+  width: 7px; height: 7px; border-radius: 50%; background: transparent; flex: 0 0 auto;
+}
+.nt-item--unread .nt-dot { background: #e53935; }
+.nt-item-type {
+  padding: 1px 7px; border-radius: 999px; background: #eef1f8; color: #3f51b5;
+  font-size: 11px; line-height: 18px;
+}
+.nt-item-body {
+  margin: 6px 0 0; font-size: 13px; color: #4b5565; line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+.nt-item-meta {
+  display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 8px;
+  font-size: 12px; color: #8b93a4;
+}
+.nt-item-invalid { margin-top: 6px; font-size: 12px; color: #b26a00; }
+.nt-more { display: flex; justify-content: center; padding: 4px 0 8px; }
+.nt-detail {
+  display: flex; flex-direction: column; gap: 12px; align-items: flex-start;
+  padding: 18px; background: #fff; border: 1px solid #e3e8f0; border-radius: 8px;
+}
+.nt-detail-title { margin: 0; font-size: 17px; color: #171c2a; }
+.nt-detail-meta { font-size: 12px; color: #8b93a4; }
+.nt-detail-body { font-size: 14px; color: #273142; line-height: 1.7; overflow-wrap: anywhere; }
+
+@media (max-width: 760px) {
+  .nt-page { padding-top: 12px; }
+  .nt-toolbar { gap: 8px; }
+  .nt-toggle { font-size: 14px; min-height: 44px; }
+  .nt-item { padding: 12px; }
+  .nt-item-body { font-size: 14px; }
+  .nt-detail { padding: 14px; }
+}
+
 /* ===== 首页工作台 ===== */
 .home-dashboard-shell {
   --home-primary: #1a237e;

@@ -70,6 +70,27 @@ try {
   assert.strictEqual(unableToExercise.validity_basis, 'through_maturity');
   assert.strictEqual(unableToExercise.parse_status, 'complete');
   assert.strictEqual(unableToExercise.evidence.maturity_date, '2024-11-27');
+  // 公告复述“前次不提前赎回情况”时，必须取本次决定与本次锁定期，不能沿用上一轮。
+  const previousWaiver = rows.get(fixture.previous_waiver_reference.url);
+  assert.strictEqual(previousWaiver.event_type, 'waive');
+  assert.strictEqual(previousWaiver.decision_date, '2026-06-16');
+  assert.strictEqual(previousWaiver.lock_start_date, '2026-06-17');
+  assert.strictEqual(previousWaiver.no_call_until, '2027-05-16');
+  assert.strictEqual(previousWaiver.validity_basis, 'explicit_range');
+  assert.strictEqual(previousWaiver.parse_status, 'complete');
+  assert.ok(previousWaiver.evidence.next_count_rule.includes('2027年5月16日'), '必须留存重新计数基准日证据');
+  // 复述“前次决定”的散文句不能抢走本次决定日。
+  const previousProse = rows.get(fixture.previous_waiver_prose.url);
+  assert.strictEqual(previousProse.decision_date, '2025-10-30');
+  assert.strictEqual(previousProse.lock_start_date, '2025-10-31');
+  assert.strictEqual(previousProse.no_call_until, '2026-12-22');
+  assert.strictEqual(previousProse.parse_status, 'complete');
+  // “至到期日止均不行使”必须锁定至到期日，不能被触发观察窗口顶替。
+  const lockToMaturity = rows.get(fixture.lock_to_maturity_phrase.url);
+  assert.strictEqual(lockToMaturity.decision_date, '2026-07-31');
+  assert.strictEqual(lockToMaturity.validity_basis, 'through_maturity');
+  assert.strictEqual(lockToMaturity.no_call_until, null);
+  assert.strictEqual(lockToMaturity.parse_status, 'complete');
   assert.strictEqual(rows.get(fixture.expected_trigger.url).event_type, 'warning');
   assert.strictEqual(rows.get(fixture.expected_trigger.url).parse_status, 'complete');
   assert.strictEqual(rows.get(fixture.completion_result.url).event_type, 'completion');

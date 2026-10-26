@@ -515,16 +515,19 @@ async function claimSlot(slotId, workerId = WORKER_ID, triggerType = 'scheduled'
     }
     return null;
   }
+  // 执行令牌（2026-10-25）：每次领取生成唯一令牌，接管时必然更换。
+  // 旧执行后续的续租/状态写入/收件进度必须因令牌不匹配而影响 0 行，不能写回新执行。
+  const executionToken = require('crypto').randomUUID();
   const { rows } = await pool.query(
     `UPDATE ops.job_schedule_slots
         SET status='running', attempt_count=attempt_count+1, lease_owner=$2,
             lease_until=now()+($5::integer * interval '1 minute'), heartbeat_at=now(),
-            next_attempt_at=NULL, trigger_type=$3, updated_at=now()
+            next_attempt_at=NULL, trigger_type=$3, execution_token=$6, updated_at=now()
       WHERE slot_id=$1 AND status IN ('pending','failed','waiting_external')
         AND attempt_count < $4 + CASE WHEN job_code='nav_snapshot' AND result_summary ? 'dependencyRecovery' THEN 1 ELSE 0 END
         AND (next_attempt_at IS NULL OR next_attempt_at<=now())
       RETURNING *, business_date::text AS business_date`,
-    [slotId, workerId, triggerType, definition.maxAttempts || 3, definition.timeoutMinutes || 30]
+    [slotId, workerId, triggerType, definition.maxAttempts || 3, definition.timeoutMinutes || 30, executionToken]
   );
   return rows[0] || null;
 }
@@ -552,7 +555,7 @@ async function recoverExpiredSlots() {
     await pool.query(
       `UPDATE ops.job_schedule_slots
           SET status=$2, next_attempt_at=CASE WHEN $2='pending' THEN now()+($3::integer * interval '1 minute') ELSE NULL END,
-              lease_owner=NULL, lease_until=NULL, heartbeat_at=now(),
+              lease_owner=NULL, lease_until=NULL, execution_token=NULL, heartbeat_at=now(),
               last_error='执行租约已过期，系统已自动接管', updated_at=now()
         WHERE slot_id=$1 AND status='running'`,
       [slot.slot_id, nextStatus, retryDelay]
@@ -811,13 +814,13 @@ async function resolveDataAsOf(jobCode, businessDate, resultSummary = {}) {
   return queryDataAsOf(jobCode, businessDate).catch(() => null);
 }
 
-async function completeSlot(slotId, status, resultSummary, errorMessage, runId) {
+async function completeSlot(slotId, status, resultSummary, errorMessage, runId, expectedToken) {
   const allowed = ['succeeded', 'degraded', 'failed', 'blocked', 'skipped'];
   const requestedStatus = allowed.includes(status) ? status : 'failed';
   const current = await pool.query('SELECT job_code,business_date::text AS business_date,request_payload FROM ops.job_schedule_slots WHERE slot_id=$1', [slotId]);
   if (!current.rows[0]) return null;
   const definition = getJobDefinition(current.rows[0].job_code);
-  resultSummary = await mergeSlotExternalCallSummary(slotId, resultSummary || {});
+  resultSummary = await mergeSlotExternalCallSummary(slotId, resultSummary || {}, expectedToken);
   const request = current.rows[0].request_payload || {};
   const requestedMode = request.mode || (request.targetCodes?.length ? 'targeted' : definition.mode || 'core');
   const phase = definition.datasetPublicationByMode?.[requestedMode];
@@ -845,10 +848,19 @@ async function completeSlot(slotId, status, resultSummary, errorMessage, runId) 
         SET status=$2, last_run_id=COALESCE($5,last_run_id), data_as_of=CASE WHEN $2 IN ('succeeded','degraded') THEN COALESCE($6, data_as_of) ELSE data_as_of END,
             result_summary=$3::jsonb, last_error=$4, lease_owner=NULL, lease_until=NULL,
             heartbeat_at=now(), updated_at=now()
-      WHERE slot_id=$1 AND status='running' RETURNING *`,
-    [slotId, nextStatus, JSON.stringify(sanitizeJobResult(resultSummary || {})), finalError ? sanitizeJobError(finalError) : null, runId || null, dataAsOf]
+      WHERE slot_id=$1 AND status='running'
+        AND ($7::text IS NULL OR (execution_token=$7
+             -- 收尾也必须按实际时间复核：租约已过期就不能标记成功
+             AND lease_until IS NOT NULL AND lease_until > clock_timestamp())) RETURNING *`,
+    [slotId, nextStatus, JSON.stringify(sanitizeJobResult(resultSummary || {})), finalError ? sanitizeJobError(finalError) : null, runId || null, dataAsOf,
+      expectedToken || null]
   );
   const completed = rows[0] || null;
+  // 传了执行令牌却影响 0 行：说明令牌被接管或租约已过期，本次收尾不被承认。
+  // 保留 running 让恢复流程回收重跑，绝不在日志之外伪装成成功。
+  if (!completed && expectedToken) {
+    console.warn(`[job-slot] 收尾被拒绝（执行资格已失效）slot=${slotId} status=${nextStatus}`);
+  }
   if (completed && nextStatus === 'succeeded') {
     const { resolveJobSlotAlerts } = require('./jobAlertMailer');
     await resolveJobSlotAlerts(completed).catch(error => console.warn('[job-alert] 恢复告警处理失败:', error.message));
@@ -867,26 +879,31 @@ async function completeSlot(slotId, status, resultSummary, errorMessage, runId) 
   return completed;
 }
 
-async function deferSlot(slotId, errorMessage, resultSummary, delayMinutes = 5, runId = null) {
-  resultSummary = await mergeSlotExternalCallSummary(slotId, resultSummary || {});
+async function deferSlot(slotId, errorMessage, resultSummary, delayMinutes = 5, runId = null, expectedToken = null) {
+  resultSummary = await mergeSlotExternalCallSummary(slotId, resultSummary || {}, expectedToken);
   const { rows } = await pool.query(
     `UPDATE ops.job_schedule_slots
         SET status='failed', last_run_id=COALESCE($5,last_run_id), trigger_type='auto_retry',
             next_attempt_at=now()+($2 || ' minutes')::interval,
             result_summary=$3::jsonb, last_error=$4, lease_owner=NULL, lease_until=NULL,
             heartbeat_at=now(), updated_at=now()
-      WHERE slot_id=$1 AND status='running' RETURNING *`,
+      WHERE slot_id=$1 AND status='running'
+        AND ($6::text IS NULL OR (execution_token=$6
+             AND lease_until IS NOT NULL AND lease_until > clock_timestamp())) RETURNING *`,
     [slotId, String(Math.max(Number(delayMinutes) || 5, 1)), JSON.stringify(sanitizeJobResult(resultSummary || {})),
-      errorMessage ? sanitizeJobError(errorMessage) : null, runId]
+      errorMessage ? sanitizeJobError(errorMessage) : null, runId, expectedToken || null]
   );
+  if (!rows[0] && expectedToken) {
+    console.warn(`[job-slot] 退避写入被拒绝（执行资格已失效）slot=${slotId}`);
+  }
   return rows[0] || null;
 }
 
-async function waitForExternalSlot(slotId, errorMessage, resultSummary, retryAt = null, runId = null) {
+async function waitForExternalSlot(slotId, errorMessage, resultSummary, retryAt = null, runId = null, expectedToken = null) {
   const parsedRetryAt = retryAt ? new Date(retryAt) : null;
   const nextAttemptAt = parsedRetryAt && !Number.isNaN(parsedRetryAt.getTime())
     ? parsedRetryAt : new Date(Date.now() + 30 * 60 * 1000);
-  resultSummary = await mergeSlotExternalCallSummary(slotId, resultSummary || {});
+  resultSummary = await mergeSlotExternalCallSummary(slotId, resultSummary || {}, expectedToken);
   const safeSummary = sanitizeJobResult({
     ...(resultSummary || {}),
     waitingExternal: true,
@@ -898,15 +915,18 @@ async function waitForExternalSlot(slotId, errorMessage, resultSummary, retryAt 
             next_attempt_at=$2, attempt_count=GREATEST(attempt_count-1,0),
             result_summary=$3::jsonb, last_error=$5, lease_owner=NULL, lease_until=NULL,
             heartbeat_at=now(), updated_at=now()
-      WHERE slot_id=$1 AND status='running' RETURNING *`,
+      WHERE slot_id=$1 AND status='running'
+        AND ($6::text IS NULL OR (execution_token=$6
+             AND lease_until IS NOT NULL AND lease_until > clock_timestamp())) RETURNING *`,
     [slotId, nextAttemptAt, JSON.stringify(safeSummary), runId,
-      errorMessage ? sanitizeJobError(errorMessage) : null]
+      errorMessage ? sanitizeJobError(errorMessage) : null, expectedToken || null]
   );
   return rows[0] || null;
 }
 
 // 单槽位累计调用量必须由数据库原子累加，不能由多个 Worker 读旧值后覆盖。
-async function mergeSlotExternalCallSummary(slotId, resultSummary = {}) {
+// 传 executionToken 时同时校验执行归属：接管后的旧执行不得再累加或覆盖进度。
+async function mergeSlotExternalCallSummary(slotId, resultSummary = {}, expectedToken = null) {
   const attemptExternalCalls = Math.max(Number(
     resultSummary.attemptExternalCalls ?? resultSummary.externalCalls ?? resultSummary.externalCallCount ?? 0
   ) || 0, 0);
@@ -918,8 +938,10 @@ async function mergeSlotExternalCallSummary(slotId, resultSummary = {}) {
             'attemptExternalCalls', $3::integer),
             updated_at=now()
       WHERE slot_id=$1 AND status='running'
+        AND ($4::text IS NULL OR (execution_token=$4
+             AND lease_until IS NOT NULL AND lease_until > clock_timestamp()))
       RETURNING result_summary`,
-    [slotId, JSON.stringify(sanitizeJobResult(resultSummary || {})), attemptExternalCalls]
+    [slotId, JSON.stringify(sanitizeJobResult(resultSummary || {})), attemptExternalCalls, expectedToken || null]
   );
   const stored = rows[0] && rows[0].result_summary || {};
   const storedLimit = Number(stored.slotExternalCallsLimit || 0);
@@ -929,8 +951,8 @@ async function mergeSlotExternalCallSummary(slotId, resultSummary = {}) {
     slotExternalCallsLimit: Number(resultSummary.slotExternalCallsLimit || storedLimit) || null };
 }
 
-async function continueSlot(slotId, resultSummary = {}, delayMinutes = 1, runId = null) {
-  resultSummary = await mergeSlotExternalCallSummary(slotId, resultSummary || {});
+async function continueSlot(slotId, resultSummary = {}, delayMinutes = 1, runId = null, expectedToken = null) {
+  resultSummary = await mergeSlotExternalCallSummary(slotId, resultSummary || {}, expectedToken);
   const nextAttemptAt = resultSummary.nextAttemptAt ? new Date(resultSummary.nextAttemptAt) : new Date(Date.now() + Math.max(Number(delayMinutes) || 1, 1) * 60000);
   const safeNext = Number.isNaN(nextAttemptAt.getTime()) ? new Date(Date.now() + 60000) : nextAttemptAt;
   const { rows } = await pool.query(
@@ -939,18 +961,26 @@ async function continueSlot(slotId, resultSummary = {}, delayMinutes = 1, runId 
             attempt_count=GREATEST(attempt_count-1,0), next_attempt_at=$2,
             result_summary=$3::jsonb, last_error=NULL, lease_owner=NULL, lease_until=NULL,
             heartbeat_at=now(), updated_at=now()
-      WHERE slot_id=$1 AND status='running' RETURNING *`,
-    [slotId, safeNext, JSON.stringify(sanitizeJobResult({ ...resultSummary, continuationRequired: true, nextAttemptAt: safeNext.toISOString() })), runId]
+      WHERE slot_id=$1 AND status='running'
+        AND ($5::text IS NULL OR (execution_token=$5
+             AND lease_until IS NOT NULL AND lease_until > clock_timestamp())) RETURNING *`,
+    [slotId, safeNext, JSON.stringify(sanitizeJobResult({ ...resultSummary, continuationRequired: true, nextAttemptAt: safeNext.toISOString() })), runId,
+      expectedToken || null]
   );
+  if (!rows[0] && expectedToken) {
+    console.warn(`[job-slot] 续批写入被拒绝（执行资格已失效）slot=${slotId}`);
+  }
   return rows[0] || null;
 }
 
-async function touchSlot(slotId, workerId = WORKER_ID) {
+async function touchSlot(slotId, workerId = WORKER_ID, expectedToken = null) {
   const { rows } = await pool.query('SELECT job_code FROM ops.job_schedule_slots WHERE slot_id=$1', [slotId]);
   const timeoutMinutes = rows[0] ? Number(getJobDefinition(rows[0].job_code).timeoutMinutes || 30) : 30;
   await pool.query(
     `UPDATE ops.job_schedule_slots SET heartbeat_at=now(), lease_until=now()+($3::integer * interval '1 minute'), updated_at=now()
-      WHERE slot_id=$1 AND lease_owner=$2`, [slotId, workerId, timeoutMinutes]
+      WHERE slot_id=$1 AND lease_owner=$2
+        AND ($4::text IS NULL OR (execution_token=$4
+             AND lease_until IS NOT NULL AND lease_until > clock_timestamp()))`, [slotId, workerId, timeoutMinutes, expectedToken || null]
   );
 }
 
@@ -962,6 +992,7 @@ async function retryJobSlot(slotId) {
     `UPDATE ops.job_schedule_slots
         SET status='pending', attempt_count=0, next_attempt_at=now(), trigger_type='manual_retry',
             lease_owner=NULL, lease_until=NULL, acknowledged_at=NULL, last_error=NULL,
+            execution_token=NULL,
             result_summary='{}'::jsonb, request_payload=request_payload - 'force', updated_at=now()
       WHERE slot_id=$1 AND status IN ('failed','degraded','blocked','skipped','waiting_external')
       RETURNING *`, [slotId]

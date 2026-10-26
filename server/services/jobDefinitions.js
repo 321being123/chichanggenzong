@@ -61,6 +61,8 @@ const JOB_DEFINITION_SOURCE = [
   { jobCode: 'arbitrage_reparse', label: '套利公告重新解析', manualOnly: true, requiresDataWatermark: false, deadlineMinutes: 240, timeoutMinutes: 120, importance: 'high', sourceDescription: '已入库官方公告 PDF 链接与本地解析器', mayConsumeQuota: true, externalSources: ['巨潮资讯', '港交所'], externalApis: ['cninfo', 'hkex'], maxExternalCallsPerRun: null },
   { jobCode: 'holiday_sync', label: '休市日历月度同步', hour: 7, minute: 0, weekdays: false, monthly: true, deadlineMinutes: 1440, catchupWindowMinutes: 43200, catchupMode: 'latest_only', requiresDataWatermark: false, category: 'system', importance: 'high', sourceDescription: 'Tushare 交易日历接口', mayConsumeQuota: true, externalSources: ['tushare'], retryPolicy: 'external', retryDelaysMinutes: [15, 60], maxAttempts: 3 },
   { jobCode: 'site_analytics_retention', label: '网站统计数据保留清理', hour: 2, minute: 0, weekdays: false, deadlineMinutes: 120, catchupWindowMinutes: 360, catchupMode: 'latest_only', requiresDataWatermark: false, category: 'system', importance: 'normal', sourceDescription: '本地网站统计事实表与运行采样表', mayConsumeQuota: false, externalSources: [], externalApis: [], retryPolicy: 'local', retryDelaysMinutes: [15, 60], maxAttempts: 3 },
+  // 站内通知群发投递：只在后台确认后由任务框架执行，无外部数据源，不发布金融数据集
+  { jobCode: 'notification_dispatch', label: '站内通知投递', manualOnly: true, dataDatePolicy: 'none', requiresDataWatermark: false, strictDatasetPublication: false, timeoutMinutes: 15, deadlineMinutes: 60, category: 'system', importance: 'normal', sourceDescription: '预览时已固定的本地收件名单；投递前重验账号，不调用任何外部接口', mayConsumeQuota: false, externalSources: [], externalApis: [], maxExternalCallsPerRun: 0, retryPolicy: 'local', retryDelaysMinutes: [1, 5, 15], maxAttempts: 3 },
 ];
 
 // 任务→接口→数据集契约是生成矩阵和预算门禁的唯一输入；没有外部接口的计算任务必须显式保持空数组。
@@ -127,6 +129,7 @@ const JOB_CONTRACTS = {
   'arbitrage_reparse': { externalApis: ['cninfo', 'hkex'], producesDatasets: ['arbitrage_cases'], consumesDatasets: ['arbitrage_documents'], maxExternalCallsPerRun: null },
   'holiday_sync': { externalApis: ['trade_cal'], producesDatasets: ['trade_calendar'], consumesDatasets: [], maxExternalCallsPerRun: null },
   'site_analytics_retention': { externalApis: [], producesDatasets: ['site_events', 'site_runtime_minute'], consumesDatasets: [], maxExternalCallsPerRun: 0 },
+  'notification_dispatch': { externalApis: [], producesDatasets: [], consumesDatasets: [], maxExternalCallsPerRun: 0 },
 };
 
 const DATA_DATE_POLICIES = Object.freeze(['none', 'same_day', 'previous_trading_day', 'latest_available']);

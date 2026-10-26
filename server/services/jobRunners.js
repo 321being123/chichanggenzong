@@ -70,6 +70,8 @@ async function runJobByCode(jobCode, reason = 'manual-retry', businessDate, cont
       return require('../jobs/holidaySync').ensureHolidaysCurrent({ businessDate });
     case 'site_analytics_retention':
       return require('./siteAnalytics').purgeAnalyticsData();
+    case 'notification_dispatch':
+      return require('../jobs/notificationDispatch').runNotificationDispatch(reason, context);
     case 'convertible_bond_universe_refresh': {
       if (context.mode === 'stock_lifecycle') return require('./convertibleBondAnalysis').syncTrackedStockLifecycle(context.targetCodes);
       const { expectedDataDate } = require('./jobScheduleSlots');

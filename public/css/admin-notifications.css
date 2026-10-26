@@ -1,0 +1,81 @@
+/* ===== 后台站内通知群发（2026-10-25） ===== */
+/* 控件取值与全站统一规范一致（36px 高、7px 圆角、#d8dee8 边框、主色聚焦环）；表格复用 .biz-table。 */
+.an-card {
+  background: #fff; border: 1px solid #e3e8f0; border-radius: 10px;
+  padding: 16px 18px; margin-bottom: 18px;
+  box-shadow: 0 1px 3px rgba(0,0,0,.04);
+}
+.an-card-title { margin: 0 0 12px; font-size: 15px; color: #171c2a; }
+.an-field { display: block; margin-bottom: 12px; }
+.an-field > span { display: block; margin-bottom: 6px; font-size: 13px; color: #4b5565; }
+.an-field input[type="text"], .an-field textarea, .an-field select,
+.an-search input, .an-filter-grid input, .an-filter-grid select {
+  width: 100%; box-sizing: border-box;
+  min-height: 36px; padding: 6px 10px;
+  border: 1px solid #d8dee8; border-radius: 7px;
+  font-size: 13px; color: #273142; background: #fff;
+  outline: none;
+}
+.an-field textarea { min-height: 88px; resize: vertical; line-height: 1.6; }
+.an-field input:focus, .an-field textarea:focus, .an-field select:focus,
+.an-search input:focus, .an-filter-grid input:focus, .an-filter-grid select:focus {
+  border-color: #1a237e; box-shadow: 0 0 0 2px rgba(26,35,126,.08);
+}
+.an-mode-group { display: flex; gap: 8px; flex-wrap: wrap; }
+.an-mode {
+  min-height: 36px; padding: 0 14px;
+  border: 1px solid #d8dee8; border-radius: 7px; background: #fff;
+  font-size: 13px; color: #273142; cursor: pointer;
+}
+.an-mode.active { border-color: #1a237e; color: #1a237e; background: #eef1f8; font-weight: 600; }
+.an-search { display: flex; gap: 8px; margin-bottom: 8px; }
+.an-search input { flex: 1 1 auto; }
+.an-user-list { max-height: 180px; overflow-y: auto; border: 1px solid #eef1f8; border-radius: 7px; }
+.an-user-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 6px 10px; font-size: 13px; color: #273142; border-bottom: 1px solid #f2f4f8;
+}
+.an-user-row:last-child { border-bottom: 0; }
+.an-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.an-chip {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 2px 6px 2px 10px; border-radius: 999px;
+  background: #eef1f8; color: #1a237e; font-size: 12px;
+}
+.an-chip button {
+  border: 0; background: transparent; color: #1a237e;
+  font-size: 14px; line-height: 1; cursor: pointer; padding: 2px 4px;
+}
+.an-filter-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 10px;
+}
+.an-filter-grid label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: #6b7280; }
+.an-hint { font-size: 12px; color: #8b93a4; }
+.an-warn { font-size: 12px; color: #c62828; margin-top: 6px; }
+.an-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 4px; }
+.an-preview {
+  margin-top: 12px; padding: 10px 12px;
+  background: #f7f9fc; border: 1px solid #e3e8f0; border-radius: 8px;
+}
+.an-preview-line { font-size: 13px; color: #273142; }
+.an-ops { white-space: nowrap; }
+.an-ops .btn { margin-right: 4px; }
+.an-status { font-size: 12px; padding: 1px 8px; border-radius: 999px; background: #eef1f8; color: #3f51b5; }
+.an-status--completed { background: #e8f5e9; color: #2e7d32; }
+.an-status--partial, .an-status--running, .an-status--queued { background: #fff8e1; color: #b26a00; }
+.an-status--cancelled { background: #f2f4f8; color: #6b7280; }
+.an-pager-info { font-size: 12px; color: #6b7280; padding: 0 8px; }
+.an-detail { display: flex; flex-direction: column; gap: 10px; }
+.an-detail-line { font-size: 13px; color: #273142; }
+
+@media (max-width: 760px) {
+  .an-card { padding: 14px 12px; }
+  .an-field input[type="text"], .an-field textarea, .an-field select,
+  .an-search input, .an-filter-grid input, .an-filter-grid select {
+    min-height: 44px; font-size: 16px;
+  }
+  .an-mode { min-height: 44px; font-size: 14px; }
+  .an-filter-grid { grid-template-columns: 1fr; }
+  .an-search { flex-wrap: wrap; }
+  .an-search .btn { min-height: 44px; }
+}

@@ -18,7 +18,7 @@ async function exportVerifiedBondCallFacts() {
       JOIN ops.data_sources es ON es.source_id=e.source_id
       JOIN event.documents d ON d.document_id=e.document_id
       JOIN ops.data_sources ds ON ds.source_id=d.source_id
-     WHERE e.parser_version='call-event-v3'
+     WHERE e.parser_version='call-event-v4'
        AND e.parse_status='complete'
        AND d.document_type='convertible_bond_call_announcement'
        AND d.raw_payload->'extraction'->>'status'='complete'

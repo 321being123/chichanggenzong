@@ -99,7 +99,7 @@ assert.ok(redemptionSync.includes('eventParseComplete') && redemptionSync.includ
 assert.ok(redemptionSync.includes('return null') && redemptionSync.includes('不能默认取第一只'), '同一正股多只转债时禁止模糊匹配');
 assert.ok((redemptionCss.includes('color:#172033') || redemptionCss.includes('var(--bond-feature-text)')) && redemptionCss.includes('.bond-redemption-toolbar input,.bond-redemption-toolbar select') && redemptionCss.includes('font-size:13px'), '强赎卡片文字和输入控件必须沿用统一 UI 颜色与样式');
 assert.ok(page.includes("['last_trade_date','停止交易日']") && page.includes("['last_conversion_date','停止转股日']") && !page.includes("['announcement_title','最新公告']"), '强赎表格应显示停止交易日、停止转股日并移除最新公告列');
-assert.ok(callEventParser.includes('PARTIAL_DATE') && callEventParser.includes('停止交易日') && callEventParser.includes('停止转股日') && callEventParser.includes('call-event-v3') && callEventParser.includes('content_hash'), '强赎公告解析必须支持不重复年份的停止交易/停止转股日期并保留正文哈希');
+assert.ok(callEventParser.includes('PARTIAL_DATE') && callEventParser.includes('停止交易日') && callEventParser.includes('停止转股日') && callEventParser.includes('call-event-v4') && callEventParser.includes('content_hash'), '强赎公告解析必须支持不重复年份的停止交易/停止转股日期并保留正文哈希');
 assert.ok(list.includes('getLatestCallStateMap') && list.includes('JOIN public.bond_unified u'));
 assert.ok(analysis.includes('getLatestCallState') && analysis.includes('call_status'));
 assert.ok(list.includes('call_status') && fs.readFileSync(path.join(root, 'public', 'js', 'bond-list.js'), 'utf8').includes('bondListLifecycleMarker'), '上市列表必须复用统一强赎状态并展示名称标识');
@@ -110,7 +110,7 @@ assert.ok(runner.includes("convertible_bond_announcement_history_sync")
   && analysis.includes("require('./convertibleBondRedemptionSync').syncConvertibleBondCallAnnouncements"),
   '强赎公告必须由统一可转债公告任务采集并分发');
 assert.ok(valuation.includes('JOIN public.bond_unified u'));
-assert.ok(redemptionSync.includes('convertible_bond_call_projection:call-event-v3') && redemptionSync.includes('event.documents')
+assert.ok(redemptionSync.includes('convertible_bond_call_projection:call-event-v4') && redemptionSync.includes('event.documents')
   && redemptionSync.includes('pending_old_parser'), '强赎同步必须独立维护正文解析水位、文档缓存和旧解析器积压');
 assert.strictEqual(callItemsFromOfficialEvents([{ instrument_id: 319, source_number: 'replay-1', url: 'https://static.cninfo.com.cn/replay.pdf' }])[0].instrumentId, 319,
   '缓存回放必须保留已有事件的证券身份，不能因正股代码缺失重新模糊匹配');

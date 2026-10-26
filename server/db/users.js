@@ -59,7 +59,10 @@ async function getUserProfile(username) {
 // ====== 登录鉴权（精简记录，含密码/角色/状态/会话版本，避免 loadUsers 全表）======
 async function getUserAuth(username) {
   const { rows } = await pool.query(
-    'SELECT username, password, role, status, email, auth_version FROM users WHERE username=$1',
+    // account_identity 与通知收件人同口径：建号时间是不可复用身份，删号后同名重注册会变
+    `SELECT username, password, role, status, email, auth_version,
+            COALESCE(extract(epoch FROM created_at)::text, '') AS account_identity
+       FROM users WHERE username=$1`,
     [username]
   );
   return rows[0] || null;

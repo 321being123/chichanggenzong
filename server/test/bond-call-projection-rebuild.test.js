@@ -38,7 +38,7 @@ assert.match(rebuild, /parser_version<>\$1 OR e\.parse_status<>'complete'/);
 assert.match(rebuild, /verified_projection_rebuild/);
 assert.match(rebuild, /publishDatasetSnapshot\(DATASET_CODE/);
 assert.match(rebuild, /retryJobSlot/);
-assert.match(exporter, /parser_version='call-event-v3'/);
+assert.match(exporter, /parser_version='call-event-v4'/);
 assert.match(exporter, /parse_status='complete'/);
 assert.match(exporter, /extracted_text/);
 assert.match(deploy, /portfolio-db-backup\.service/);

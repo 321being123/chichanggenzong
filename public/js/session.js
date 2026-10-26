@@ -4,20 +4,144 @@
 // 顶层变量不挂 window，但同属经典脚本作用域，其他脚本可直接按名读取）。
 var username = null;
 var myProfile = null;   // 个人中心资料缓存（nickname/avatar/email/last_login/accounts）
+// 不可复用账号身份（建号时间摘要）：删号后同名重注册会变。
+// 前端所有按账号隔离的缓存都必须绑定它，只比对用户名的缓存会串号。
+var accountIdentity = '';
+
+// ============== 站内通知铃铛（2026-10-25） ==============
+// 契约见 docs/意见反馈与版本发布闭环研发方案_20261023.md 第 14.3 节：
+// 铃铛常驻头像左侧、0 隐藏 / 1~99 显示数字 / 超过 99 显示 99+；点击直达通知列表（无中间弹窗）。
+// 只在登录后轮询；隐藏时暂停、恢复可见立即查；重复挂载不叠加计时器；失败保留旧数不伪装 0。
+var NOTIFICATION_POLL_MS = 60000;
+var notifPoll = { total: null, seq: 0, timer: null, user: null };
+
+function bellLabel(total) {
+  if (total === null || total === undefined) return '通知，未读数暂不可用';
+  if (!total) return '通知，无未读';
+  return '通知，' + total + ' 条未读';
+}
+
+function paintBell(total) {
+  var bell = document.getElementById('nav-bell');
+  if (!bell) return;
+  var badge = document.getElementById('nav-bell-badge');
+  bell.setAttribute('aria-label', bellLabel(total));
+  bell.setAttribute('title', total === null || total === undefined
+    ? '通知（未读数刷新失败，点击查看）' : bellLabel(total));
+  if (!badge) return;
+  if (!total) { badge.hidden = true; badge.textContent = ''; return; }
+  badge.hidden = false;
+  badge.textContent = total > 99 ? '99+' : String(total);
+}
+
+function resetBell() {
+  notifPoll.total = null;
+  paintBell(null);
+}
+
+// 未读数：旧响应不能覆盖新结果（seq 递增作废），换账号后旧响应直接丢弃
+async function refreshUnreadCount() {
+  if (!username) { resetBell(); return null; }
+  var seq = ++notifPoll.seq;
+  var who = username;
+  try {
+    var r = await fetch(api('/api/notifications/unread-count'));
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    var d = await r.json();
+    if (seq !== notifPoll.seq || who !== username) return null;
+    var total = Number(d && d.total);
+    notifPoll.total = Number.isFinite(total) && total > 0 ? total : 0;
+    paintBell(notifPoll.total);
+    return d;
+  } catch (e) {
+    if (seq !== notifPoll.seq || who !== username) return null;
+    // 失败保留旧数并提示重试，绝不伪装成 0
+    paintBell(notifPoll.total);
+    return null;
+  }
+}
+
+function stopNotificationPolling() {
+  if (notifPoll.timer) { clearInterval(notifPoll.timer); notifPoll.timer = null; }
+  notifPoll.seq++;
+  notifPoll.user = null;
+}
+
+function startNotificationPolling() {
+  stopNotificationPolling();
+  if (!username) { resetBell(); return; }
+  notifPoll.user = username;
+  refreshUnreadCount();
+  notifPoll.timer = setInterval(function () {
+    if (document.hidden) return;   // 隐藏时暂停查询
+    refreshUnreadCount();
+  }, NOTIFICATION_POLL_MS);
+}
+
+// 页面恢复可见：立即刷新一次（隐藏期间不查，回到前台补齐）
+if (typeof document !== 'undefined' && document.addEventListener) {
+  document.addEventListener('visibilitychange', function () {
+    if (!document.hidden && username) refreshUnreadCount();
+  });
+}
+
+// 通知入口：登录后常驻，点击直接进入统一通知列表
+function openNotificationCenter() {
+  if (typeof switchMain === 'function') { switchMain('notifications'); return; }
+  window.location.href = api('/?main=notifications');
+}
+
+function buildBell() {
+  var bell = document.createElement('button');
+  bell.type = 'button';
+  bell.id = 'nav-bell';
+  bell.className = 'nav-bell';
+  bell.setAttribute('aria-label', '通知');
+  bell.setAttribute('title', '通知');
+  bell.addEventListener('click', function (e) { e.stopPropagation(); openNotificationCenter(); });
+  var svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('viewBox', '0 0 24 24');
+  svg.setAttribute('aria-hidden', 'true');
+  svg.setAttribute('focusable', 'false');
+  svg.setAttribute('width', '18');
+  svg.setAttribute('height', '18');
+  var path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+  path.setAttribute('d', 'M12 3a5 5 0 0 0-5 5v3.2l-1.6 2.7A1 1 0 0 0 6.3 15h11.4a1 1 0 0 0 .9-1.1L17 11.2V8a5 5 0 0 0-5-5Zm0 18a2.6 2.6 0 0 0 2.5-2h-5A2.6 2.6 0 0 0 12 21Z');
+  path.setAttribute('fill', 'currentColor');
+  svg.appendChild(path);
+  bell.appendChild(svg);
+  var badge = document.createElement('span');
+  badge.id = 'nav-bell-badge';
+  badge.className = 'nav-bell-badge';
+  badge.hidden = true;
+  bell.appendChild(badge);
+  return bell;
+}
 
 async function checkAuth() {
   try {
     const r = await fetch(api('/api/me'));
     const d = await r.json();
-    if (!d.username) { username = null; myProfile = null; renderTopUser(null); return false; }
+    if (!d.username) {
+      username = null; myProfile = null; accountIdentity = ''; stopNotificationPolling(); clearNotificationCache(); renderTopUser(null); return false;
+    }
     username = d.username;
     myProfile = d;
+    accountIdentity = String(d.accountIdentity || '');
     const nu0 = document.getElementById('nav-user');
     if (nu0) nu0.textContent = d.nickname || username;
     renderTopUser(d);
+    startNotificationPolling();
     return true;
   } catch (e) {
-    username = null; myProfile = null; renderTopUser(null); return false;
+    username = null; myProfile = null; accountIdentity = ''; stopNotificationPolling(); clearNotificationCache(); renderTopUser(null); return false;
+  }
+}
+
+// 通知缓存按账号隔离：退出/失效时立即清掉，避免下一个人看到上一个人的私密通知
+function clearNotificationCache() {
+  if (window.AppNotifications && typeof window.AppNotifications.clearCache === 'function') {
+    window.AppNotifications.clearCache();
   }
 }
 
@@ -79,12 +203,18 @@ function renderTopUser(p) {
   });
   button.addEventListener('click', function (e) { e.stopPropagation(); menu.classList.toggle('open'); });
   document.addEventListener('click', function (e) { if (!wrap.contains(e.target)) closeMenu(); });
+  // 铃铛常驻在头像左侧（仅登录态），保留原头像菜单
+  wrap.appendChild(buildBell());
   wrap.appendChild(button);
   wrap.appendChild(menu);
   el.appendChild(wrap);
+  paintBell(notifPoll.total);
 }
 
 async function logout() {
+  stopNotificationPolling();
+  clearNotificationCache();
+  accountIdentity = '';
   await fetch(api('/api/logout'), { method: 'POST' });
   window.location.href = api('/');
 }

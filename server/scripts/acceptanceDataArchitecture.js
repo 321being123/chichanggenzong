@@ -137,7 +137,8 @@ async function main() {
     '计划实例、租约和 waiting_external 状态均由 PostgreSQL 持久化', queueRows[0] || {});
 
   const declaredCalls = JOB_DEFINITIONS.reduce((sum, job) => sum + declaredDailyExternalCallBudget(job), 0);
-  addCheck(checks, 'job_matrix_budget', JOB_DEFINITIONS.length === 23 && declaredCalls <= 80,
+  // 任务数随定义增删调整：2026-10-25 新增 notification_dispatch（原 28 → 29）
+  addCheck(checks, 'job_matrix_budget', JOB_DEFINITIONS.length === 29 && declaredCalls <= 80,
     `任务定义 ${JOB_DEFINITIONS.length} 个，声明预算 ${declaredCalls}/日（任务报表目标≤80，不是来源日限额）`,
     { jobs: JOB_DEFINITIONS.length, declaredCalls });
 

@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "lastReviewed": "2026-10-25",
+  "lastReviewed": "2026-10-26",
   "rules": [
     {
       "id": "BOND-PROSPECTUS-SELECTION-059",
@@ -3855,6 +3855,38 @@
       ],
       "owner": "Codex",
       "status": "production_verified"
+    },
+    {
+      "id": "NOTIFICATION-DISPATCH-001",
+      "title": "站内通知群发必须带执行令牌；进入态/每页/收尾的批次与槽位写入均校验代次+槽位running+令牌+租约，租约判断用clock_timestamp（now()在事务内固定，跨期会放行），0行即回滚停写；只消费预览固定名单，投递前比对账号身份（同名重注册记skipped）；delivered/skipped不重投，pending=0且failed=0才完成",
+      "implementation": {
+        "file": "server/jobs/notificationDispatch.js",
+        "symbol": "runNotificationDispatch"
+      },
+      "tests": [
+        {
+          "file": "server/test/notification-center.test.js",
+          "pattern": "NOTIFICATION-DISPATCH-001"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "local_verified"
+    },
+    {
+      "id": "NOTIFICATION-COMPLETE-001",
+      "title": "反馈完成通知只由已通过专项验收的发布批次在applyOne逐项业务事务内生成；回滚与离开implemented的任意状态转换在原事务失效，作者删除保留唯一槽位并记skipped/author_deleted；通知列表缓存归属键必须是用户名+不可复用账号身份（accountIdentity），单用任一维都会串号：只用用户名漏同名重注册，只用建号时间漏同刻建号的不同账号；退出登录清缓存",
+      "implementation": {
+        "file": "server/services/notificationService.js",
+        "symbol": "createFeedbackImplementedNotice"
+      },
+      "tests": [
+        {
+          "file": "server/test/notification-center.test.js",
+          "pattern": "NOTIFICATION-COMPLETE-001"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "local_verified"
     }
   ]
 }

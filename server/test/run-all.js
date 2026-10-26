@@ -26,7 +26,9 @@ const isCI = process.env.CI === '1';
 // 注入 PYTHON：测试子进程内部再 spawn Python 时（如 PDF 夹具生成）统一使用同一解释器，
 // 避免 CI 上 venv 位于 ipo-report/venv 而各处硬编码 root/venv 导致回退到缺包的系统 python3。
 const resolvedPython = findPython();
-const testEnv = { ...process.env, NODE_ENV: 'test', EXTERNAL_CALL_GUARD: '0', ALERT_EMAIL_TO: '', ALERT_EMAIL_FROM: '' };
+// Python 输出与 Node 的 UTF-8 解码保持一致，避免 Windows GBK 破坏中文证据或无法输出 Unicode。
+const testEnv = { ...process.env, NODE_ENV: 'test', EXTERNAL_CALL_GUARD: '0', ALERT_EMAIL_TO: '', ALERT_EMAIL_FROM: '',
+  PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8' };
 if (!testEnv.PYTHON && resolvedPython) testEnv.PYTHON = resolvedPython;
 const TEST_DATABASE = String(process.env.PGTESTDATABASE || 'portfolio_test').replace(/[^a-zA-Z0-9_]/g, '_');
 

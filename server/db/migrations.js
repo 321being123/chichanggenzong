@@ -14,6 +14,7 @@ const M = Object.assign({},
   require('./migrations/era05DataIdentity'),
   require('./migrations/era06ChannelsAnalytics'),
   require('./migrations/era07Feedback'),
+  require('./migrations/era08Notifications'),
 );
 
 const MIGRATIONS = [
@@ -188,6 +189,9 @@ const MIGRATIONS = [
   { version: '169_instrument_name_cleanup', up: M.migration169InstrumentNameCleanup },
   { version: '170_feedback_module', up: M.migration170FeedbackModule },
   { version: '171_feedback_release_rollback', up: M.migration171FeedbackReleaseRollback },
+  { version: '172_notification_center', up: M.migration172NotificationCenter },
+  { version: '173_notification_recipient_identity', up: M.migration173NotificationRecipientIdentity },
+  { version: '174_trades_amount_guard_trigger', up: () => require('./migrations/era02bTradesAmountGuard').migration174TradesAmountGuard(pool) },
 ];
 
 async function ensureMigrationsTable() {

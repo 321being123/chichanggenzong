@@ -19,6 +19,7 @@ const VIEW_TITLES = {
   ops: '数据运维',
   knowledge: '投资笔记管理',
   feedback: '反馈管理',
+  notifications: '站内通知',
   arbitrage: '套利审核'
 };
 
@@ -103,6 +104,10 @@ function applyMenuPermissions() {
   document.querySelectorAll('.admin-menu-item').forEach(function (item) {
     const cap = VIEW_CAPABILITY[item.dataset.view];
     if (cap && !adminCan(cap)) item.style.display = 'none';
+    // 站内通知群发首期仅系统管理员：不登记为可授予员工的通用能力
+    if (item.dataset.adminOnly === '1' && !(adminProfile && adminProfile.role === 'admin')) {
+      item.style.display = 'none';
+    }
   });
 }
 
@@ -127,6 +132,7 @@ function switchView(view) {
   else if (view === 'ops') renderOps();
   else if (view === 'knowledge') renderKnowledge();
   else if (view === 'feedback') renderAdminFeedback();
+  else if (view === 'notifications') renderAdminNotifications();
   else if (view === 'arbitrage') renderArbitrage();
   else renderPlaceholder(view);
 }
@@ -505,6 +511,7 @@ const JOB_LABELS = {
   arbitrage_reparse: '套利公告重新解析',
   holiday_sync: '休市日历同步',
   site_analytics_retention: '网站统计数据保留清理',
+  notification_dispatch: '站内通知投递',
   manual_backfill: '手动补漏收盘数据',
   manual_holiday_sync: '手动核对休市日历',
 };
@@ -630,6 +637,7 @@ function jobDescription(job) {
     arbitrage_reparse: '按指定事件重新解析已入库公告，补齐套利条款和风险字段。',
     holiday_sync: '每月自动核对交易所法定休市日，确保「是否交易日」判断准确。',
     site_analytics_retention: '每天凌晨清理超过保留期限的网站匿名统计和运行采样。',
+    notification_dispatch: '按后台确认的通知批次向站内收件人投递，只处理未完成项。',
     manual_backfill: '手动触发：查询每个账户已落库日期范围内缺失的交易日，再重新抓取补齐。',
     manual_holiday_sync: '手动触发：立即从交易所日历重新拉取并校正当年休市日。'
   };

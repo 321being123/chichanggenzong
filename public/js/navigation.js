@@ -22,6 +22,8 @@ function switchMain(main, noPushState, bondSub) {
       if (main !== 'bond-safety' && main !== 'feedback') params.delete('sub');
       else if (bondSub) params.set('sub', bondSub);
       if (main !== 'feedback') params.delete('feedback');
+      if (main !== 'notifications') params.delete('notification');
+      if (main !== 'notifications') params.delete('unread');
     }
     if (main !== 'arbitrage') { params.delete('case'); params.delete('arb_type'); }
     var newUrl = params.toString() ? '/?' + params.toString() : '/';
@@ -47,10 +49,13 @@ function switchMain(main, noPushState, bondSub) {
   }
   var lazySection = { 'bond-safety': 'bond-safety', 'stock-analysis': 'stock-analysis',
     'market-volatility': 'market-volatility', knowledge: 'knowledge', ipo: 'ipo',
-    feedback: 'feedback', 'position-compare': 'position-compare' }[main];
+    feedback: 'feedback', 'position-compare': 'position-compare', holdings: 'holdings' }[main];
   var ready = (lazySection && window.LazySections) ? LazySections.ensureSection(lazySection) : Promise.resolve();
   return ready.then(function () {
     if (main === 'profile') loadProfile();
+    if (main === 'notifications' && window.AppNotifications && typeof window.AppNotifications.load === 'function') {
+      window.AppNotifications.load();
+    }
     if (main === 'feedback' && typeof loadFeedbackPage === 'function') loadFeedbackPage();
     if (main === 'ipo') loadIpo();
     if (main === 'bond-safety') {

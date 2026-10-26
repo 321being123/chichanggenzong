@@ -144,7 +144,9 @@ router.get('/me', asyncHandler(async (req, res) => {
   // PERM-01：能力经白名单过滤后返回布尔值，绝不直接回传数据库任意 JSON
   const capabilities = {};
   CAPABILITY_WHITELIST.forEach(function (c) { capabilities[c] = hasCapability(p, c); });
-  res.json({ username: p.username, nickname: p.nickname || '', avatar: p.avatar || '', role, status: p.status || 'active', knowledgeEnabled: p.knowledgeEnabled || false, capabilities });
+  // accountIdentity 是不可复用账号身份（建号时间），供前端隔离跨账号缓存；
+  // 只暴露这个摘要，不返回注册时间原值或其他内部字段。
+  res.json({ username: p.username, nickname: p.nickname || '', avatar: p.avatar || '', role, status: p.status || 'active', knowledgeEnabled: p.knowledgeEnabled || false, capabilities, accountIdentity: String(a.account_identity || '') });
 }));
 router.get('/config', asyncHandler(async (req, res) => {
   const registerOpen = (await getConfig('register_open', '1')) === '1';

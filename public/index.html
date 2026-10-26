@@ -330,6 +330,22 @@
   </div>
 </div>
 
+<!-- 站内通知（一级页：全部 / 反馈 / 系统），入口为右上角铃铛 -->
+<div class="main-page" id="main-notifications">
+  <div class="bond-header">
+    <nav class="bond-sub-nav nt-sub-nav" aria-label="通知子栏目">
+      <button type="button" class="bond-sub-tab active" role="tab" aria-selected="true" data-nt-sub="all" data-nt-act="sub">全部</button>
+      <button type="button" class="bond-sub-tab" role="tab" aria-selected="false" data-nt-sub="feedback" data-nt-act="sub">反馈</button>
+      <button type="button" class="bond-sub-tab" role="tab" aria-selected="false" data-nt-sub="system" data-nt-act="sub">系统</button>
+    </nav>
+  </div>
+  <div class="nt-page feature-page-shell">
+    <div class="nt-body" id="nt-body">
+      <div class="nt-panel"><p class="nt-empty">加载中…</p></div>
+    </div>
+  </div>
+</div>
+
 <!-- 证券分析（一级页，位于打新日历前） -->
 <!-- 知识分享：左侧目录树 + 右侧阅读/编辑区 -->
 <div class="main-page" id="main-knowledge">
@@ -1206,13 +1222,15 @@
 <script type="text/lazy" data-lazy-section="market-volatility" src="js/market-volatility.js?v=__APP_VERSION__"></script>
 <script type="text/lazy" data-lazy-section="market-volatility" src="js/market-cycle-metrics.js?v=__APP_VERSION__"></script>
 <script src="js/home-dashboard.js?v=__APP_VERSION__" defer></script>
-<script type="text/lazy" data-lazy-section="position-compare" src="js/position-comparison.js?v=__APP_VERSION__"></script>
+<!-- 持仓页标题右侧的「仓位对比」按钮与官方标杆发布下拉也由本脚本渲染，故 holdings 栏目同样需要加载 -->
+<script type="text/lazy" data-lazy-section="position-compare holdings" src="js/position-comparison.js?v=__APP_VERSION__"></script>
 <script type="text/lazy" data-lazy-section="knowledge" src="vendor/vditor/dist/index.min.js?v=20260904"></script>
 <script type="text/lazy" data-lazy-section="knowledge" src="shared/md-safe.js?v=__APP_VERSION__"></script>
 <script type="text/lazy" data-lazy-section="knowledge" src="js/knowledge.js?v=__APP_VERSION__"></script>
 <script type="text/lazy" data-lazy-section="feedback" src="js/feedback.js?v=__APP_VERSION__"></script>
 <script src="js/access-policy.js?v=__APP_VERSION__" defer></script>
 <script src="js/session.js?v=__APP_VERSION__" defer></script>
+<script src="js/notifications.js?v=__APP_VERSION__" defer></script>
 <script src="js/feedback-fab.js?v=__APP_VERSION__" defer></script>
 <script src="js/arbitrage.js?v=__APP_VERSION__" defer></script>
 <script src="shared/lazy-sections.js?v=__APP_VERSION__" defer></script>

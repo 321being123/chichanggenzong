@@ -7,6 +7,7 @@ const fs = require('fs');
 const { pool } = require('../db');
 const store = require('../db/feedback');
 const feedbackService = require('./feedbackService');
+const notificationService = require('./notificationService');
 const { hasCapability, isAdminIdentity } = require('../middleware/auth');
 
 const REVIEW_POLICY_VERSION = '2026-10-23';
@@ -540,6 +541,17 @@ async function applyOne(runId, run, item, opts) {
       statusFrom: fb.status, statusTo: fields.status, summary: summary,
       note: String(item.evidenceSummary || '').slice(0, 500), revision: revision, releaseRunId: runId,
     });
+    // 唯一完成来源是已验收批次的应用：通知必须与反馈、事件、明细同事务提交。
+    // 这里只能用本项业务 client；禁止 pool / 外层 lockClient / 另开连接（否则会出现
+    // 「反馈已实施但通知丢失」或「通知已写但反馈回滚」）。写失败由下方 catch 整体回滚并按 failed 留因。
+    if (item.conclusion === 'solved') {
+      await notificationService.createFeedbackImplementedNotice(client, {
+        feedbackId: item.feedbackId,
+        releaseRunId: runId,
+        appVersion: run.appVersion,
+        authorUsername: fb.authorUsername,
+      });
+    }
     await client.query(
       `UPDATE ops.feedback_release_items
           SET apply_status='applied', apply_error='', revision_before=$1, revision_after=$2,
@@ -604,10 +616,13 @@ async function rollbackRun(runId, options) {
     }
     const restored = results.filter(function (r) { return r.result === 'restored'; }).length;
     const kept = results.filter(function (r) { return r.result === 'kept_after_modification'; }).length;
-    const overall = restored === 0 ? 'applied' : (kept > 0 ? 'partial' : 'rolled_back');
+    // 失效通知写入失败 = 本项整体未回滚（反馈/事件/明细/通知都保持事务前状态），必须报告失败而不是记为保留
+    const failed = results.filter(function (r) { return r.result === 'failed'; }).length;
+    const overall = failed > 0 ? 'partial'
+      : (restored === 0 ? 'applied' : (kept > 0 ? 'partial' : 'rolled_back'));
     await lockClient.query('UPDATE ops.feedback_release_runs SET apply_status=$1, updated_at=now() WHERE id=$2', [overall, runId]);
     await lockClient.query('COMMIT');
-    return { runId: String(runId), applyStatus: overall, restored: restored, kept: kept, items: results };
+    return { runId: String(runId), applyStatus: overall, restored: restored, kept: kept, failed: failed, items: results };
   } catch (e) {
     await lockClient.query('ROLLBACK').catch(function () {});
     throw e;
@@ -653,6 +668,12 @@ async function rollbackOne(runId, run, item, opts) {
       summary: '版本 ' + run.appVersion + ' 回滚，恢复为核对前状态',
       note: '', revision: revision, releaseRunId: runId,
     });
+    // 回滚只失效本批次确实恢复未完成的对应项；同一事务内失效，写失败则整项恢复到事务前状态并报告失败。
+    await notificationService.invalidateFeedbackNotifications(client, {
+      feedbackId: item.feedbackId,
+      releaseRunId: runId,
+      reason: '版本 ' + run.appVersion + ' 已回滚，处理状态已更新',
+    });
     await client.query(
       `UPDATE ops.feedback_release_items SET apply_status='rolled_back', updated_at=now()
         WHERE run_id=$1 AND feedback_id=$2`,
@@ -662,7 +683,7 @@ async function rollbackOne(runId, run, item, opts) {
     return { feedbackId: item.feedbackId, result: 'restored', revisionAfter: revision };
   } catch (e) {
     await client.query('ROLLBACK').catch(function () {});
-    return { feedbackId: item.feedbackId, result: 'kept_after_modification', error: e.message };
+    return { feedbackId: item.feedbackId, result: 'failed', error: e.message };
   } finally {
     client.release();
   }

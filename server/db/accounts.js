@@ -922,8 +922,9 @@ async function deleteAccountData(username, accountName) {
 // 重命名账户：单事务内把所有业务表 + 账户元数据 + 兼容 JSON + users.accounts 列表改为新名
 // （只改 account_name，不搬运/复制任何数据；失败整体回滚）。
 // account_id 是不可变账户主键，重命名不能修改 accounts.id 或子表 account_id。
-// 历史交易可能违反 NOT VALID 的 amount 关系约束；PostgreSQL 更新这些旧行时仍会检查，
-// 因此改名事务内暂时移除并按原验证状态恢复该约束。
+// ⚠️ 运行期只允许 DML：生产运行账号 portfolio_user 不是表 owner，任何 ALTER TABLE 都会报
+//    "must be owner of table trades"（2026-10-26 线上实测）。金额一致性由迁移 174 的触发器
+//    承担（只在新增和金额相关列变化时校验），只改 account_name 的改名不会被历史期初导入交易拦住。
 async function renameAccountData(username, oldName, newName) {
   const client = await pool.connect();
   try {
@@ -940,23 +941,11 @@ async function renameAccountData(username, oldName, newName) {
       await client.query('ROLLBACK');
       return { ok: false, conflict: '原账户不存在' };
     }
-    const amountConstraint = await client.query(
-      `SELECT convalidated FROM pg_constraint
-         WHERE conname='chk_trades_amount_rel' AND conrelid='trades'::regclass`
-    );
-    if (amountConstraint.rowCount > 0) {
-      await client.query('ALTER TABLE trades DROP CONSTRAINT chk_trades_amount_rel');
-    }
     const tables = ['positions', 'trades', 'nav_history', 'cash_flows', 'daily_prices', 'index_history', 'account_data'];
     for (const t of tables) {
       await client.query(`UPDATE ${t} SET account_name=$3 WHERE username=$1 AND account_name=$2`, [username, oldName, newName]);
     }
     await client.query('UPDATE accounts SET account_name=$3, updated_at=to_char(now(),\'YYYY-MM-DD HH24:MI:SS\') WHERE username=$1 AND account_name=$2', [username, oldName, newName]);
-    if (amountConstraint.rowCount > 0) {
-      const notValid = amountConstraint.rows[0].convalidated ? '' : ' NOT VALID';
-      await client.query(`ALTER TABLE trades ADD CONSTRAINT chk_trades_amount_rel
-        CHECK (direction IN ('open','adjust') OR amount IS NULL OR ABS(amount - ROUND(price*quantity, 2)) < 0.02)${notValid}`);
-    }
     // 同步 users.accounts 列表
     const u = await loadUsers();
     if (u[username] && Array.isArray(u[username].accounts)) {

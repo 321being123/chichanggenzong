@@ -6,6 +6,8 @@
 //   12.4 数据架构（迁移幂等 / 默认值 / 回填 / 交易单位表约束）
 // 纯单元 + 可选 PG 集成（无 PG 时自动跳过集成部分，与现有测试约定一致）
 const assert = require('assert');
+const fs = require('fs');
+const path = require('path');
 const { pool } = require('../db/connection');
 const { getATradeRule, isStarBoard } = require('../services/tradeLot');
 const { normalizeSecCode, secKey, similarity, compareSecurities, groupByField, sanitizeSemiPublic } = require('../services/positionComparison');
@@ -25,6 +27,26 @@ async function checkAsync(name, fn) {
 let isPg = false;
 check('数据库可用性探测（无 PG 时集成测试自动跳过）', () => {
   isPg = !!pool; // pool 连接对象存在即视为可尝试；真正失败会在集成用例内捕获
+});
+
+console.log('A0. 前端脚本加载（持仓页「仓位对比」控件可达）');
+// 回归：0.8.3.102 把 position-comparison.js 改为按栏目懒加载后，持仓页控件脚本从未注入，
+// 对比按钮与官方标杆发布下拉永久空白，且进入对比页的唯一入口就是该按钮（功能完全不可达）。
+const PUBLIC_DIR = path.join(__dirname, '..', '..', 'public');
+check('仓位对比脚本在持仓页栏目也会加载', () => {
+  const html = fs.readFileSync(path.join(PUBLIC_DIR, 'index.html'), 'utf8');
+  const m = html.match(/<script[^>]*data-lazy-section="([^"]*)"[^>]*src="js\/position-comparison\.js/);
+  assert(m, 'index.html 应存在 position-comparison.js 的懒加载声明');
+  assert(m[1].split(/\s+/).includes('holdings'), 'position-comparison.js 必须在 holdings 栏目加载，否则持仓页对比按钮不渲染');
+});
+check('导航把 holdings 栏目映射到懒加载分组', () => {
+  const nav = fs.readFileSync(path.join(PUBLIC_DIR, 'js', 'navigation.js'), 'utf8');
+  assert(/holdings:\s*'holdings'/.test(nav), 'navigation.js 需把 holdings 映射为懒加载分组，进入持仓页才会注入脚本');
+});
+check('脚本自带首次渲染兜底（renderAll 早于脚本注入时不空白）', () => {
+  const src = fs.readFileSync(path.join(PUBLIC_DIR, 'js', 'position-comparison.js'), 'utf8');
+  assert(/function bootstrapControls/.test(src), 'position-comparison.js 应有注入后主动渲染的兜底');
+  assert(/getElementById\('position-comp-controls'\)/.test(src), '兜底应检查真实存在的控件容器');
 });
 
 console.log('A. 证券代码与身份归一化（12.2 合并规则）');

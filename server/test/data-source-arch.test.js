@@ -187,10 +187,13 @@ function payload(over) {
     // ---------- 5) 账户重命名原子（走 db 层真实函数 renameAccountData） ----------
     await checkAsync('重命名账户：renameAccountData 全表原子改名 + users.accounts 同步', async () => {
       // 无论断言成败都恢复原名，避免 id(sha256) 残留导致后续用例主键冲突
-      const amountConstraint = await pool.query(
-        `SELECT convalidated FROM pg_constraint
-           WHERE conname='chk_trades_amount_rel' AND conrelid='trades'::regclass`
+      // 金额一致性已由触发器承担（迁移 174），本用例临时停用它写入历史错额行
+      const guardTriggers = ['trg_trades_amount_rel_ins', 'trg_trades_amount_rel_upd'];
+      const { rows: guardRows } = await pool.query(
+        `SELECT tgname FROM pg_trigger WHERE tgrelid='trades'::regclass AND tgname = ANY($1::text[])`,
+        [guardTriggers]
       );
+      const existingGuards = guardRows.map(function (r) { return r.tgname; });
       try {
         // 确保 users.accounts 列表含被重命名账户（重建同名用例不更新列表，这里补上）
         await pool.query(`UPDATE users SET accounts=$2::jsonb::text WHERE username=$1`,
@@ -200,16 +203,19 @@ function payload(over) {
         );
         assert.ok(accountRows[0] && accountRows[0].id, '重命名前应存在账户主键');
         const oldAccountId = accountRows[0].id;
-        // 模拟迁移 046/047 兼容的历史错额交易：约束允许存量违反，但改 account_name 时会重新检查。
-        await pool.query('ALTER TABLE trades DROP CONSTRAINT IF EXISTS chk_trades_amount_rel');
-        await pool.query(
-          `INSERT INTO trades (id, username, account_name, account_id, date, trade_date, executed_at,
-                               code, name, direction, price, quantity, amount)
-           VALUES ('rename_legacy_trade',$1,$2,$3,'2026-01-02 09:30','2026-01-02','2026-01-02 09:30',
-                   '600519','贵州茅台','buy',10,100,999)`, [U, A, oldAccountId]
-        );
-        await pool.query(`ALTER TABLE trades ADD CONSTRAINT chk_trades_amount_rel
-          CHECK (direction IN ('open','adjust') OR amount IS NULL OR ABS(amount - ROUND(price*quantity, 2)) < 0.02) NOT VALID`);
+        // 模拟迁移 046/047 兼容的历史错额交易：金额触发器只约束新增与金额列变化，
+        // 这里临时停用它写入存量违反行（改名只改 account_name，生产中无 DDL 权限也应成功）。
+        for (const tg of existingGuards) await pool.query(`ALTER TABLE trades DISABLE TRIGGER ${tg}`);
+        try {
+          await pool.query(
+            `INSERT INTO trades (id, username, account_name, account_id, date, trade_date, executed_at,
+                                 code, name, direction, price, quantity, amount)
+             VALUES ('rename_legacy_trade',$1,$2,$3,'2026-01-02 09:30','2026-01-02','2026-01-02 09:30',
+                     '600519','贵州茅台','buy',10,100,999)`, [U, A, oldAccountId]
+          );
+        } finally {
+          for (const tg of existingGuards) await pool.query(`ALTER TABLE trades ENABLE TRIGGER ${tg}`);
+        }
         const r = await renameAccountData(U, A, A + '_新名');
         assert.strictEqual(r.ok, true);
         const { rows: renamedAccountRows } = await pool.query(
@@ -247,15 +253,8 @@ function payload(over) {
         await pool.query('DELETE FROM account_data WHERE username=$1 AND account_name=$2', [U, A + '_新名']);
         await pool.query('DELETE FROM accounts WHERE username=$1 AND account_name=$2', [U, A + '_新名']);
       } finally {
-        const currentAmountConstraint = await pool.query(
-          `SELECT 1 FROM pg_constraint
-             WHERE conname='chk_trades_amount_rel' AND conrelid='trades'::regclass`
-        );
-        if (amountConstraint.rowCount > 0 && currentAmountConstraint.rowCount === 0) {
-          const notValid = amountConstraint.rows[0].convalidated ? '' : ' NOT VALID';
-          await pool.query(`ALTER TABLE trades ADD CONSTRAINT chk_trades_amount_rel
-            CHECK (direction IN ('open','adjust') OR amount IS NULL OR ABS(amount - ROUND(price*quantity, 2)) < 0.02)${notValid}`);
-        }
+        // 异常中断时确保金额触发器恢复启用（改名前临时停用）
+        for (const tg of existingGuards) await pool.query(`ALTER TABLE trades ENABLE TRIGGER ${tg}`);
         // 确保恢复到 A 名下的干净状态
         await cleanup();
         await pool.query(`UPDATE users SET accounts=$2::jsonb::text WHERE username=$1`, [U, JSON.stringify([A])]);
@@ -292,6 +291,25 @@ function payload(over) {
       for (const re of forbidden) {
         assert.ok(!re.test(src), '发现禁止的 JSON 兼容链路模式: ' + re);
       }
+    });
+
+    await checkAsync('静态边界：运行期业务代码不得执行 DDL（生产运行账号 portfolio_user 非表 owner）', () => {
+      // 2026-10-26 线上事故：renameAccountData 在事务里 DROP/ADD CONSTRAINT，
+      // 生产运行账号不是 trades 所有者 → "must be owner of table trades"，账户改名全部失败。
+      // 运行期只允许 DML；DDL 一律走 migrations（由 portfolio_migrator 执行）。
+      const dir = path.join(__dirname, '..', 'db');
+      const skip = new Set(['cashIncomeMigration.js', 'migrations.js']); // 迁移实现，不在运行期执行
+      const ddl = /(ALTER\s+TABLE|ADD\s+CONSTRAINT|DROP\s+CONSTRAINT|CREATE\s+(UNIQUE\s+)?INDEX|DROP\s+INDEX|CREATE\s+TRIGGER|DROP\s+TRIGGER)/i;
+      const offenders = [];
+      for (const f of fs.readdirSync(dir)) {
+        if (!f.endsWith('.js') || skip.has(f)) continue;
+        const code = fs.readFileSync(path.join(dir, f), 'utf-8')
+          .split('\n')
+          .filter(function (l) { return !/^\s*(\/\/|\*|\/\*)/.test(l); })
+          .join('\n');
+        if (ddl.test(code)) offenders.push(f);
+      }
+      assert.deepStrictEqual(offenders, [], '运行期出现 DDL（生产无表 owner 权限会失败）: ' + offenders.join(','));
     });
 
     await checkAsync('迁移041执行器级：失败账户抛错不登记，下次启动重试成功后登记', async () => {

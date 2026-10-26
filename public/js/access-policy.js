@@ -15,11 +15,12 @@
     'changelog'         // 旧「版本记录」公开别名，前端归一化到 feedback/sub=versions
   ];
 
-  // 需要登录的页面（本人资产 / 个人中心 / 仓位对比）
+  // 需要登录的页面（本人资产 / 个人中心 / 仓位对比 / 站内通知）
   var protectedPages = [
     'holdings',
     'profile',
-    'position-compare'
+    'position-compare',
+    'notifications'
   ];
 
   // 所有可作为 ?main= 的页面（公开 + 受限的并集）

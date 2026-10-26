@@ -1,7 +1,8 @@
 {
   "schemaVersion": 1,
-  "lastReviewed": "2026-10-23",
+  "lastReviewed": "2026-10-26",
   "requiredFiles": [
+    "docs/知识库公共规则.md",
     "docs/知识索引.md",
     "docs/技术架构.md",
     "docs/生产部署流程.md",
@@ -23,7 +24,11 @@
         "docs/incidents/README.md",
         "docs/tasks/README.md",
         "docs/知识索引历史记录_*.md",
-        "docs/技术架构历史记录_*.md"
+        "docs/技术架构历史记录_*.md",
+        "docs/近期问题复盘与通用研发规范_*.md",
+        "docs/生产部署历史记录_*.md",
+        "docs/文档治理核查_*.md",
+        "docs/知识库公共规则.md"
       ],
       "keywords": [
         "知识整理",
@@ -32,10 +37,24 @@
         "历史收敛",
         "过时文档",
         "知识归档",
-        "知识必要性"
+        "知识必要性",
+        "多Agent知识写入",
+        "知识管理",
+        "通用规范",
+        "近期复盘",
+        "并发文档",
+        "文档遍历",
+        "全仓文档",
+        "文档污染",
+        "文档核查",
+        "知识库公共规则",
+        "录入规范",
+        "结构优化",
+        "证据生命周期"
       ],
       "read": [
         "AGENTS.md",
+        "docs/知识库公共规则.md",
         "docs/知识索引.md",
         "docs/技术架构.md",
         "docs/decisions/README.md",
@@ -55,7 +74,69 @@
         "旧结论替代",
         "路由引用",
         "源代码和最终验收证据"
-      ]
+      ],
+      "readSections": {
+        "docs/技术架构.md": [
+          "## 2.1 项目知识治理"
+        ],
+        "docs/知识库公共规则.md": [
+          "## 0. 每次任务的最小必读",
+          "## 2. 写入前的六项判断",
+          "## 4. 状态必须分开表达",
+          "## 6. 多Agent写入与整合顺序",
+          "## 7. 证据引用、替代与归档",
+          "## 8. 阅读与路由管理",
+          "## 9. 收尾核对清单"
+        ],
+        "docs/知识索引.md": [
+          "## 快速入口（按需读取）"
+        ]
+      }
+    },
+    {
+      "id": "knowledge-common-rules",
+      "risk": "medium",
+      "paths": [
+        "docs/知识库公共规则.md"
+      ],
+      "keywords": [
+        "公共规则变更",
+        "知识录入规范",
+        "治理结构调整"
+      ],
+      "read": [
+        "AGENTS.md",
+        "docs/知识库公共规则.md",
+        "docs/知识索引.md",
+        "docs/技术架构.md",
+        "governance/knowledge-map.json"
+      ],
+      "update": [
+        "AGENTS.md",
+        "docs/知识索引.md",
+        "docs/技术架构.md",
+        "governance/knowledge-map.json"
+      ],
+      "checks": [
+        "npm.cmd run check:knowledge"
+      ],
+      "expandOn": [
+        "公共入口不一致",
+        "默认阅读与历史边界",
+        "录入职责改变"
+      ],
+      "readSections": {
+        "docs/技术架构.md": [
+          "## 2.1 项目知识治理"
+        ],
+        "docs/知识库公共规则.md": [
+          "## 0. 每次任务的最小必读",
+          "## 8. 阅读与路由管理"
+        ],
+        "docs/知识索引.md": [
+          "## 快速入口（按需读取）"
+        ]
+      }
     },
     {
       "id": "date-time-boundary",
@@ -121,7 +202,18 @@
         "市场时区",
         "输入类型",
         "历史补算"
-      ]
+      ],
+      "readSections": {
+        "docs/技术架构.md": [
+          "### 8.2.2 后台任务、质量和熔断不变量（P0-2～P0-7）",
+          "## 11. 后台任务"
+        ],
+        "docs/日期时间统一治理研发方案_20260928.md": [
+          "### 3.1 三类值必须分开",
+          "### 3.2 最小公共能力",
+          "### 3.3 数据库边界"
+        ]
+      }
     },
     {
       "id": "solution-design",
@@ -160,7 +252,13 @@
         "任务依赖",
         "重复调用",
         "恢复退避"
-      ]
+      ],
+      "readSections": {
+        "docs/技术架构.md": [
+          "## 3. 总体结构",
+          "### 8.2 标准数据流"
+        ]
+      }
     },
     {
       "id": "portfolio-cash-income",
@@ -229,7 +327,28 @@
         "回购结算日历",
         "估算入账与实际替换",
         "投入本金分类"
-      ]
+      ],
+      "readSections": {
+        "docs/技术架构.md": [
+          "### 9.1 持仓与收益",
+          "## 11. 后台任务"
+        ],
+        "docs/decisions/ADR-0001-公告数据源优先级与统一采集.md": [
+          "## 决策",
+          "## 影响范围",
+          "## 何时重新评估"
+        ],
+        "docs/decisions/ADR-0002-后台任务与数据质量不变量.md": [
+          "## 决策",
+          "## 影响范围",
+          "## 何时重新评估"
+        ],
+        "docs/decisions/ADR-0003-告警与任务治理门禁补强.md": [
+          "## 决策",
+          "## 影响范围",
+          "## 何时重新评估"
+        ]
+      }
     },
     {
       "id": "announcement-data-source",
@@ -272,7 +391,18 @@
         "PDF缓存",
         "解析版本",
         "失败重试"
-      ]
+      ],
+      "readSections": {
+        "docs/技术架构.md": [
+          "### 8.2.1 公告数据源优先级与统一采集（P0-1）",
+          "## 10. 外部数据源与缓存"
+        ],
+        "docs/decisions/ADR-0001-公告数据源优先级与统一采集.md": [
+          "## 决策",
+          "## 影响范围",
+          "## 何时重新评估"
+        ]
+      }
     },
     {
       "id": "ipo-industry-enrichment",
@@ -312,7 +442,8 @@
         "docs/decisions/ADR-0003-告警与任务治理门禁补强.md",
         "docs/decisions/ADR-0004-A股IPO行业事实与PE口径隔离.md",
         "docs/自动任务重复执行与API调用保护整改方案_20260815.md",
-        "docs/incidents/INC-0033-A股IPO行业漏解析与持续补全研发方案.md"
+        "docs/incidents/INC-0033-A股IPO行业漏解析与持续补全研发方案.md",
+        "docs/线上告警与异常整改开发方案_20261023.md"
       ],
       "update": [
         "docs/技术架构.md",
@@ -333,7 +464,36 @@
         "PE来源",
         "存量回放",
         "续跑"
-      ]
+      ],
+      "readSections": {
+        "docs/技术架构.md": [
+          "### 8.2.1 公告数据源优先级与统一采集（P0-1）",
+          "### 8.2.3 解析、身份和发布验收（P1）"
+        ],
+        "docs/decisions/ADR-0001-公告数据源优先级与统一采集.md": [
+          "## 决策",
+          "## 影响范围",
+          "## 何时重新评估"
+        ],
+        "docs/decisions/ADR-0002-后台任务与数据质量不变量.md": [
+          "## 决策",
+          "## 影响范围",
+          "## 何时重新评估"
+        ],
+        "docs/decisions/ADR-0003-告警与任务治理门禁补强.md": [
+          "## 决策",
+          "## 影响范围",
+          "## 何时重新评估"
+        ],
+        "docs/decisions/ADR-0004-A股IPO行业事实与PE口径隔离.md": [
+          "## 决策",
+          "## 影响范围",
+          "## 何时重新评估"
+        ],
+        "docs/线上告警与异常整改开发方案_20261023.md": [
+          "#### 正常等待披露的运营确认（2026-10-25，沿用0.8.4.38，无代码变更）"
+        ]
+      }
     },
     {
       "id": "ipo-prediction-model",
@@ -379,7 +539,17 @@
         "赛道成分股",
         "回测",
         "预测区间"
-      ]
+      ],
+      "readSections": {
+        "docs/技术架构.md": [
+          "### 9.3 可转债"
+        ],
+        "docs/decisions/ADR-0004-A股IPO行业事实与PE口径隔离.md": [
+          "## 决策",
+          "## 影响范围",
+          "## 何时重新评估"
+        ]
+      }
     },
     {
       "id": "task-quality-governance",
@@ -432,7 +602,23 @@
         "续跑",
         "恢复证据",
         "通用不变量"
-      ]
+      ],
+      "readSections": {
+        "docs/技术架构.md": [
+          "### 8.2.2 后台任务、质量和熔断不变量（P0-2～P0-7）",
+          "## 11. 后台任务"
+        ],
+        "docs/decisions/ADR-0002-后台任务与数据质量不变量.md": [
+          "## 决策",
+          "## 影响范围",
+          "## 何时重新评估"
+        ],
+        "docs/decisions/ADR-0003-告警与任务治理门禁补强.md": [
+          "## 决策",
+          "## 影响范围",
+          "## 何时重新评估"
+        ]
+      }
     },
     {
       "id": "task-quality-governance-record",
@@ -445,7 +631,7 @@
         "恢复证据",
         "目标分区",
         "查询状态",
-        "生产部署"
+        "告警治理发布记录"
       ],
       "read": [
         "docs/技术架构.md",
@@ -464,7 +650,22 @@
         "生产部署",
         "告警状态",
         "治理决策"
-      ]
+      ],
+      "readSections": {
+        "docs/技术架构.md": [
+          "### 8.2.2 后台任务、质量和熔断不变量（P0-2～P0-7）"
+        ],
+        "docs/decisions/ADR-0002-后台任务与数据质量不变量.md": [
+          "## 决策",
+          "## 影响范围",
+          "## 何时重新评估"
+        ],
+        "docs/decisions/ADR-0003-告警与任务治理门禁补强.md": [
+          "## 决策",
+          "## 影响范围",
+          "## 何时重新评估"
+        ]
+      }
     },
     {
       "id": "convertible-bond-redemption",
@@ -508,7 +709,17 @@
         "状态优先级",
         "数据质量",
         "历史回补"
-      ]
+      ],
+      "readSections": {
+        "docs/技术架构.md": [
+          "### 8.2.3 解析、身份和发布验收（P1）"
+        ],
+        "docs/可转债强赎公告解析与锁定期状态治理_研发方案_20260915.md": [
+          "### 7.1 状态优先级与时间口径",
+          "### 7.2 锁定期口径",
+          "### 13.2 状态边界"
+        ]
+      }
     },
     {
       "id": "hk-ipo-development",
@@ -561,7 +772,14 @@
         "时间切片",
         "任务依赖",
         "数据库迁移"
-      ]
+      ],
+      "readSections": {
+        "docs/技术架构.md": [
+          "### 9.3 可转债",
+          "## 10. 外部数据源与缓存",
+          "## 11. 后台任务"
+        ]
+      }
     },
     {
       "id": "database",
@@ -593,7 +811,13 @@
         "单位",
         "时间口径",
         "回滚"
-      ]
+      ],
+      "readSections": {
+        "docs/技术架构.md": [
+          "### 8.1 Schema 分工",
+          "### 8.2 标准数据流"
+        ]
+      }
     },
     {
       "id": "background-job",
@@ -623,7 +847,13 @@
         "重试",
         "补偿",
         "告警"
-      ]
+      ],
+      "readSections": {
+        "docs/技术架构.md": [
+          "### 8.2.2 后台任务、质量和熔断不变量（P0-2～P0-7）",
+          "## 11. 后台任务"
+        ]
+      }
     },
     {
       "id": "api",
@@ -652,7 +882,13 @@
         "兼容",
         "权限",
         "错误格式"
-      ]
+      ],
+      "readSections": {
+        "docs/技术架构.md": [
+          "### 4.3 中间件顺序",
+          "## 7. API 模块"
+        ]
+      }
     },
     {
       "id": "data-service",
@@ -682,6 +918,49 @@
         "缓存",
         "增量",
         "失败保留"
+      ],
+      "readSections": {
+        "docs/技术架构.md": [
+          "### 8.2 标准数据流",
+          "## 10. 外部数据源与缓存"
+        ]
+      }
+    },
+    {
+      "id": "market-cycle",
+      "risk": "high",
+      "paths": [
+        "public/js/market-volatility.js",
+        "public/js/market-cycle-metrics.js",
+        "server/routes/marketVolatility.js",
+        "server/services/marketVolatility.js"
+      ],
+      "keywords": [
+        "市场周期",
+        "格雷厄姆",
+        "PE/PB/M2",
+        "市场波动"
+      ],
+      "read": [
+        "docs/技术架构.md"
+      ],
+      "readSections": {
+        "docs/技术架构.md": [
+          "### 9.4 市场周期",
+          "### 7.1 页面级访问矩阵（ACCESS-01）"
+        ]
+      },
+      "update": [
+        "docs/技术架构.md"
+      ],
+      "checks": [
+        "npm.cmd run check:knowledge"
+      ],
+      "expandOn": [
+        "账户列表就绪和归属校验",
+        "市场时区与日期窗口",
+        "数据新鲜度/外部数据源",
+        "缓存与界面状态"
       ]
     },
     {
@@ -714,7 +993,15 @@
         "用户流程",
         "移动端兼容",
         "触屏交互"
-      ]
+      ],
+      "readSections": {
+        "docs/技术架构.md": [
+          "### 5.0 反馈入口、筛选栏与日期控件",
+          "### 5.1 全局业务表格规范",
+          "#### 5.3.1 共用移动端规则",
+          "### 7.1 页面级访问矩阵（ACCESS-01）"
+        ]
+      }
     },
     {
       "id": "security-share",
@@ -759,7 +1046,13 @@
         "共享组件",
         "移动端兼容",
         "外部请求保护"
-      ]
+      ],
+      "readSections": {
+        "docs/技术架构.md": [
+          "### 9.7 证券分析与通用分享（2026-10-22 实现，0.8.4.9/247c898 已生产发布）",
+          "## 12. 配置与敏感信息"
+        ]
+      }
     },
     {
       "id": "feedback",
@@ -818,6 +1111,88 @@
         "持锁生命周期与凭证",
         "锁释放顺序",
         "凭证按批次隔离"
+      ],
+      "readSections": {
+        "docs/技术架构.md": [
+          "### 9.8 意见反馈与版本发布闭环（已实现；站内通知已本地实现，待生产部署）",
+          "### 7.1 页面级访问矩阵（ACCESS-01）",
+          "## 12. 配置与敏感信息"
+        ],
+        "docs/意见反馈与版本发布闭环研发方案_20261023.md": [
+          "### 4.2 权限矩阵",
+          "### 5.2 图片保存与读取",
+          "### 13.14 三条线上反馈的实体修复（2026-10-25，0.8.4.39）"
+        ],
+        "docs/生产部署流程.md": [
+          "## 阅读与写入边界"
+        ]
+      }
+    },
+    {
+      "id": "notification-center",
+      "risk": "high",
+      "paths": [
+        "public/js/notifications.js",
+        "public/js/admin-notifications.js",
+        "server/routes/notifications.js",
+        "server/routes/adminNotifications.js",
+        "server/services/notificationService.js",
+        "server/db/notifications.js",
+        "server/db/migrations/*Notification*.js",
+        "server/db/migrations/notification*.js",
+        "server/test/notification*.test.js",
+        "public/css/admin-notifications.css",
+        "server/services/notificationBatchService.js",
+        "server/jobs/notificationDispatch.js",
+        "server/db/migrations/era08Notifications.js",
+        "server/services/feedbackRelease.js",
+        "server/services/feedbackService.js"
+      ],
+      "keywords": [
+        "站内通知",
+        "通知中心",
+        "通知管理",
+        "反馈完成通知",
+        "群发通知",
+        "通知账号隔离",
+        "通知旧响应"
+      ],
+      "read": [
+        "docs/意见反馈与版本发布闭环研发方案_20261023.md",
+        "docs/技术架构.md",
+        "docs/生产部署流程.md"
+      ],
+      "readSections": {
+        "docs/意见反馈与版本发布闭环研发方案_20261023.md": [
+          "### 14.4 反馈触发、失效与精确事务",
+          "### 14.6 数据模型、删除账号与锁",
+          "### 14.7 服务、接口与权限",
+          "### 14.8 Worker、扫描重试与状态机",
+          "#### 14.12.4 整体复测后的局部修复（2026-10-26，本地未部署）"
+        ],
+        "docs/技术架构.md": [
+          "### 9.8 意见反馈与版本发布闭环（已实现；站内通知已本地实现，待生产部署）",
+          "### 7.1 页面级访问矩阵（ACCESS-01）"
+        ],
+        "docs/生产部署流程.md": [
+          "## 待发布：统一站内通知（2026-10-25 本地已实现，未部署）"
+        ]
+      },
+      "update": [
+        "docs/意见反馈与版本发布闭环研发方案_20261023.md",
+        "docs/技术架构.md",
+        "docs/知识索引.md",
+        "docs/生产部署流程.md"
+      ],
+      "checks": [
+        "npm.cmd run check:knowledge"
+      ],
+      "expandOn": [
+        "账号实体与旧异步响应",
+        "通知权限",
+        "生产发布及迁移",
+        "投递阶段/租约/失效事务",
+        "故障与大批量续跑"
       ]
     },
     {
@@ -859,7 +1234,21 @@
         "密钥",
         "生产",
         "版本"
-      ]
+      ],
+      "readSections": {
+        "docs/技术架构.md": [
+          "### 4.2 启动顺序",
+          "## 12. 配置与敏感信息",
+          "## 13. 运行、测试与部署"
+        ],
+        "docs/生产部署流程.md": [
+          "## 1. 先更新版本记录",
+          "## 2. 本地验证",
+          "## 3. Git 正式发布",
+          "## 4. 服务器标准部署",
+          "## 5. 部署后验收"
+        ]
+      }
     }
   ]
 }

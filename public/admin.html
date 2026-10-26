@@ -8,6 +8,7 @@
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <link rel="stylesheet" href="shared/style.css?v=__APP_VERSION__">
 <link rel="stylesheet" href="css/feedback.css?v=__APP_VERSION__">
+<link rel="stylesheet" href="css/admin-notifications.css?v=__APP_VERSION__">
 <script src="shared/autofill-guard.js?v=__APP_VERSION__"></script>
 <script src="shared/ui-actions.js?v=__APP_VERSION__"></script>
 <script src="shared/mobile-ui.js?v=__APP_VERSION__" defer></script>
@@ -29,6 +30,7 @@
       <button class="admin-menu-item" data-view="ops">数据运维</button>
       <button class="admin-menu-item" data-view="knowledge">投资笔记管理</button>
       <button class="admin-menu-item" data-view="feedback">反馈管理</button>
+      <button class="admin-menu-item" data-view="notifications" data-admin-only="1">站内通知</button>
       <button class="admin-menu-item" data-view="arbitrage">套利审核</button>
     </nav>
     <div class="admin-sidebar-foot">
@@ -53,6 +55,7 @@
       <section class="admin-view" id="view-ops"></section>
       <section class="admin-view" id="view-knowledge"></section>
       <section class="admin-view" id="view-feedback"></section>
+      <section class="admin-view" id="view-notifications"></section>
       <section class="admin-view" id="view-arbitrage"></section>
     </div>
   </main>
@@ -76,6 +79,7 @@
 <script src="shared/business-table.js?v=__APP_VERSION__"></script>
 <script src="js/admin-analytics.js?v=__APP_VERSION__"></script>
 <script src="js/admin-feedback.js?v=__APP_VERSION__"></script>
+<script src="js/admin-notifications.js?v=__APP_VERSION__"></script>
 <script src="js/admin.js?v=__APP_VERSION__"></script>
 </body>
 </html>

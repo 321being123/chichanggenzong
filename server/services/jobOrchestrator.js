@@ -463,7 +463,7 @@ async function markRunFailed(runId, detail, failure = null, result = {}) {
   );
 }
 
-async function failOrRetry(slot, error, runId, result = {}) {
+async function failOrRetry(slot, error, runId, result = {}, executionToken = null) {
   const definition = getJobDefinition(slot.job_code);
   const failure = classifyFailure(error, result);
   const message = sanitizeJobError(failure.message || '任务执行失败');
@@ -491,7 +491,7 @@ async function failOrRetry(slot, error, runId, result = {}) {
       };
       await finishManagedRun(runId, slot.job_code, false, normalized, failure).catch(() => {});
       const completed = await completeSlot(slot.slot_id, 'blocked', blockedSummary,
-        `${message}；外部来源连续 3 次未提供恢复时间，已停止自动重试`, runId);
+        `${message}；外部来源连续 3 次未提供恢复时间，已停止自动重试`, runId, executionToken);
       const { notifyJobFailure } = require('./jobAlertMailer');
       await notifyJobFailure({
         jobCode: slot.job_code, slotId: slot.slot_id,
@@ -505,7 +505,7 @@ async function failOrRetry(slot, error, runId, result = {}) {
     const waiting = await waitForExternalSlot(slot.slot_id, message, {
       ...sanitizeJobResult(normalized), retryInMinutes: recovery.delayMinutes,
       missingRecoverAtCount: recovery.missingCount,
-    }, recovery.retryAt, runId);
+    }, recovery.retryAt, runId, executionToken);
     if (waiting && !(slot.result_summary && slot.result_summary.waitingExternal)) {
       const { notifyJobFailure } = require('./jobAlertMailer');
       await notifyJobFailure({
@@ -535,7 +535,8 @@ async function failOrRetry(slot, error, runId, result = {}) {
       'blocked',
       blockedSummary,
       `外部来源返回无权限，任务已暂停，等待人工处理：${message}`,
-      runId
+      runId,
+      executionToken
     );
     const { notifyJobFailure } = require('./jobAlertMailer');
     await notifyJobFailure({
@@ -554,7 +555,7 @@ async function failOrRetry(slot, error, runId, result = {}) {
   }
   if (noRetry || Number(slot.attempt_count || 0) >= maxAttempts) {
     await finishManagedRun(runId, slot.job_code, false, normalized, failure).catch(() => {});
-    const completed = await completeSlot(slot.slot_id, 'failed', { ...sanitizeJobResult(normalized), attempts: slot.attempt_count }, message, runId);
+    const completed = await completeSlot(slot.slot_id, 'failed', { ...sanitizeJobResult(normalized), attempts: slot.attempt_count }, message, runId, executionToken);
     const { notifyJobFailure } = require('./jobAlertMailer');
     await notifyJobFailure({
       jobCode: slot.job_code,
@@ -572,7 +573,7 @@ async function failOrRetry(slot, error, runId, result = {}) {
   const delays = Array.isArray(definition.retryDelaysMinutes) ? definition.retryDelaysMinutes : [5, 15, 45];
   const delay = Number(failure.delayMinutes || delays[Math.min(Number(slot.attempt_count || 1) - 1, delays.length - 1)] || 15);
   await finishManagedRun(runId, slot.job_code, false, normalized, failure).catch(() => {});
-  const deferred = await deferSlot(slot.slot_id, message, { ...sanitizeJobResult(normalized), retryInMinutes: delay, errorType: failure.type }, delay, runId);
+  const deferred = await deferSlot(slot.slot_id, message, { ...sanitizeJobResult(normalized), retryInMinutes: delay, errorType: failure.type }, delay, runId, executionToken);
   if (Number(slot.attempt_count || 0) === 2) {
     const { notifyJobFailure } = require('./jobAlertMailer');
     await notifyJobFailure({
@@ -606,15 +607,18 @@ async function runSlot(slot, reason = reasonForSlot(slot)) {
     return { ok: false, skipped: true, reason: 'not_claimed' };
   }
   const definition = getRegisteredJobDefinition(claimed.job_code);
+  // 本次领取的唯一执行令牌：后续所有槽位状态写入都带上它，
+  // 被接管后旧执行的影响行数为 0，不能续租、不能改状态、不能写收件进度。
+  const executionToken = claimed.execution_token || null;
   if (!definition) {
     const message = `未知任务定义，禁止执行：${claimed.job_code}`;
-    await completeSlot(claimed.slot_id, 'blocked', { ok: false, unknownJobDefinition: true }, message).catch(() => {});
+    await completeSlot(claimed.slot_id, 'blocked', { ok: false, unknownJobDefinition: true }, message, null, executionToken).catch(() => {});
     activeRuns -= 1;
     notifyStopWaiters();
     return { ok: false, skipped: true, reason: 'unknown_job_definition' };
   }
   if (stopping) {
-    await deferSlot(claimed.slot_id, 'Worker 正在停机，任务已回到补偿队列', { workerStopping: true }, 1).catch(() => {});
+    await deferSlot(claimed.slot_id, 'Worker 正在停机，任务已回到补偿队列', { workerStopping: true }, 1, null, executionToken).catch(() => {});
     activeRuns -= 1;
     notifyStopWaiters();
     return { ok: false, skipped: true, reason: 'executor_stopping' };
@@ -627,7 +631,7 @@ async function runSlot(slot, reason = reasonForSlot(slot)) {
   const controller = new AbortController();
   activeControllers.add(controller);
   const heartbeatTimer = setInterval(() => {
-    touchSlot(claimed.slot_id, WORKER_ID).catch(() => {});
+    touchSlot(claimed.slot_id, WORKER_ID, executionToken).catch(() => {});
     if (runId) pool.query(
       `UPDATE job_runs SET heartbeat_at=now(), locked_until=now()+($2::integer * interval '1 minute')
          WHERE id=$1 AND status='running'`,
@@ -643,6 +647,10 @@ async function runSlot(slot, reason = reasonForSlot(slot)) {
   activeRunMeta.add(runMeta);
   const runContext = {
     slotId: claimed.slot_id,
+    executionToken: executionToken,
+    // 站内通知投递：只消费后台确认后固定的批次，不在此处重新计算名单
+    ...(claimed.job_code === 'notification_dispatch' && claimed.request_payload?.batchId
+      ? { batchId: String(claimed.request_payload.batchId) } : {}),
     force: Boolean(claimed.request_payload && claimed.request_payload.force === true),
     mode: String(claimed.request_payload && claimed.request_payload.mode || 'core'),
     ...(claimed.job_code === 'convertible_bond_universe_refresh' && claimed.request_payload?.mode === 'stock_lifecycle'
@@ -695,7 +703,7 @@ async function runSlot(slot, reason = reasonForSlot(slot)) {
       if (datasetsPublished && dataAsOf && isDataAsOfFresh(dataAsOf, claimed.business_date, definition)) {
         const freshResult = normalizeJobResult({ ok: true, status: 'fresh', dataAsOf, externalCalls: 0 });
         await finishManagedRun(runId, claimed.job_code, true, freshResult);
-        await completeSlot(claimed.slot_id, 'succeeded', freshResult, null, runId);
+        await completeSlot(claimed.slot_id, 'succeeded', freshResult, null, runId, executionToken);
         return freshResult;
       }
     }
@@ -724,28 +732,28 @@ async function runSlot(slot, reason = reasonForSlot(slot)) {
 
     if (result && result.unsupported) {
       await finishManagedRun(runId, claimed.job_code, true, result);
-      await completeSlot(claimed.slot_id, 'blocked', result, result.error, runId);
+      await completeSlot(claimed.slot_id, 'blocked', result, result.error, runId, executionToken);
       return result;
     }
     if (hasSkipped && ['failed', 'error'].includes(result.reason)) {
-      await failOrRetry(claimed, result.error || result.reason, runId, result);
+      await failOrRetry(claimed, result.error || result.reason, runId, result, executionToken);
       return result;
     }
     if (hasSkipped && ['fresh', 'already-ran-today'].includes(result.reason)) {
       result.status = 'fresh';
       await finishManagedRun(runId, claimed.job_code, true, result);
-      await completeSlot(claimed.slot_id, 'succeeded', result, null, runId);
+      await completeSlot(claimed.slot_id, 'succeeded', result, null, runId, executionToken);
       return result;
     }
     if (hasSkipped && result.reason !== 'not_configured') {
       const failure = classifyFailure(result.error || result.reason, result);
       await finishManagedRun(runId, claimed.job_code, false, result, failure);
-      await deferSlot(claimed.slot_id, result.reason || '任务被其他实例占用', result, 5, runId);
+      await deferSlot(claimed.slot_id, result.reason || '任务被其他实例占用', result, 5, runId, executionToken);
       return result;
     }
     if (hasSkipped && result.reason === 'not_configured') {
       await finishManagedRun(runId, claimed.job_code, true, result);
-      await completeSlot(claimed.slot_id, 'skipped', result, '当前任务未配置，保留上一份有效数据', runId);
+      await completeSlot(claimed.slot_id, 'skipped', result, '当前任务未配置，保留上一份有效数据', runId, executionToken);
       return result;
     }
     if (result && result.continuationRequired === true) {
@@ -767,23 +775,23 @@ async function runSlot(slot, reason = reasonForSlot(slot)) {
       await finishManagedRun(runId, claimed.job_code, true, result);
       if (result.continuationBlocked || result.continuationStopReason || result.blocked === true) {
         await completeSlot(claimed.slot_id, 'blocked', result,
-          result.continuationStopReason || '续批达到停止条件，已暂停等待人工处理', runId);
+          result.continuationStopReason || '续批达到停止条件，已暂停等待人工处理', runId, executionToken);
       } else {
-        await continueSlot(claimed.slot_id, result, result.nextAttemptInMinutes || 1, runId);
+        await continueSlot(claimed.slot_id, result, result.nextAttemptInMinutes || 1, runId, executionToken);
       }
       return { ok: true, result, continuation: true };
     }
     if (result && result.ok === false && !hasSkipped) {
-      await failOrRetry(claimed, result.error, runId, result);
+      await failOrRetry(claimed, result.error, runId, result, executionToken);
       return result;
     }
     if (rawResult === undefined && !runId) {
-      await deferSlot(claimed.slot_id, '任务未产生运行记录，等待下一次自动补偿', {}, 5);
+      await deferSlot(claimed.slot_id, '任务未产生运行记录，等待下一次自动补偿', {}, 5, null, executionToken);
       return { ok: false, skipped: true, reason: 'no_run_record' };
     }
     await finishManagedRun(runId, claimed.job_code, true, result);
     await notifyDatasetDiagnostics(claimed, result);
-    await completeSlot(claimed.slot_id, 'succeeded', result || { ok: true }, null, runId);
+    await completeSlot(claimed.slot_id, 'succeeded', result || { ok: true }, null, runId, executionToken);
     return { ok: true, result };
   } catch (error) {
     const timedOut = controller.signal.aborted;
@@ -804,7 +812,7 @@ async function runSlot(slot, reason = reasonForSlot(slot)) {
     };
     const failure = classifyFailure(error, errorResult);
     await markRunFailed(runId, timedOut ? 'job timeout or worker shutdown' : error.message || error, failure, errorResult).catch(() => {});
-    await failOrRetry(claimed, error, runId, { ...errorResult, errorCode: failure.code, errorType: failure.type });
+    await failOrRetry(claimed, error, runId, { ...errorResult, errorCode: failure.code, errorType: failure.type }, executionToken);
     return { ok: false, error: sanitizeJobError(error.message || error), ...errorResult };
   } finally {
     if (timeoutTimer) clearTimeout(timeoutTimer);

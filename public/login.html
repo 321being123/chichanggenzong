@@ -60,6 +60,12 @@ body {
 }
 .toast.show { opacity:1; }
 
+/* 注册/找回模式：全局 .form-group:last-child 会把分组容器内最后一个表单项的下边距清零，
+   导致「注册」按钮紧贴验证码框、「邀请码」紧贴确认密码框，这里恢复统一间距 */
+#register-fields .form-group:last-child,
+#forgot-fields .form-group:last-child,
+#register-email-fields .form-group:last-child { margin-bottom: 14px; }
+
 @media (max-width:760px) { .login-page { min-height:calc(100dvh - var(--site-nav-height)); padding:16px 12px; align-items:flex-start; } .login-box { width:100%; max-width:400px; padding:24px 18px; } .login-box .pwd-toggle { right:2px; } .login-box .form-group input { padding-right:48px; } }
 </style>
 <script src="shared/mobile-ui.js?v=1" defer></script>
@@ -92,7 +98,7 @@ body {
   <p class="sub" id="subtitle">账号登录</p>
 
   <div class="error" id="error"></div>
-  <div class="error" id="email-service-hint" class="js-hidden"></div>
+  <div class="error js-hidden" id="email-service-hint"></div>
 
   <div class="form-group">
     <label for="username">账号</label>

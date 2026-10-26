@@ -371,4 +371,14 @@
     doReplicate: doReplicate,
     closeSelf: closeSelf,
   };
+
+  // 脚本按栏目懒加载：注入完成即主动渲染一次持仓页控件。
+  // renderAll() 可能在脚本注入前就执行过（账户数据先到、或停留在持仓页），没有这层兜底按钮会一直空白。
+  function bootstrapControls() {
+    var wrap = document.getElementById('position-comp-controls');
+    if (!wrap || wrap.childElementCount) return; // 已渲染过则不重复请求
+    try { initPositionControls(); } catch (e) { /* 等下一次 renderAll 再渲染 */ }
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', bootstrapControls);
+  else bootstrapControls();
 })();

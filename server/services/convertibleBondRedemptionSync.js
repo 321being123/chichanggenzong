@@ -8,8 +8,8 @@ const { childProcessEnv, mergeExternalCallStatsFromStderr } = require('./externa
 
 const SOURCE_CODE = 'convertible_bond_redemption_announcements';
 const DATASET_CODE = 'bond_redemption_events';
-const PARSER_VERSION = 'call-event-v3';
-const PROJECTION_SCOPE = 'convertible_bond_call_projection:call-event-v3';
+const PARSER_VERSION = 'call-event-v4';
+const PROJECTION_SCOPE = 'convertible_bond_call_projection:call-event-v4';
 
 function isoDate(value) {
   if (!value) return null;

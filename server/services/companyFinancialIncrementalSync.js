@@ -2,6 +2,8 @@
 // 安全性和股票分析只读这里的已入库事实，不在请求链路内补数。
 const { pool, tryClaimJob, releaseJob, startJobRun, finishJobRun } = require('../db');
 const { withTransaction } = require('../db/transaction');
+const financialRepository = require('../repositories/companyFinancialRepository');
+const { createIngestionRun } = require('../repositories/stockProjectionRepository');
 const { tushareQuery, tsRows, toTsCode, tsDateStr } = require('./market');
 const { statementApiFields } = require('./stockStatements');
 const { syncReportRows } = require('./financialDataArchitecture');
@@ -69,35 +71,7 @@ async function listTargetCompanies(client = pool, targetTradeDate = null) {
 }
 
 async function listCurrentBondUnderlyingTargets(client = pool, targetTradeDate = null) {
-  const { rows } = await client.query(`
-    WITH market_day AS (
-      SELECT MAX(trade_date) FILTER (WHERE $1::date IS NULL OR trade_date <= $1::date) AS trade_date FROM market.convertible_bond_daily_metrics
-    )
-    SELECT DISTINCT s.instrument_id,s.canonical_code AS ts_code,p.stock_instrument_id,ci.company_id
-      FROM market_day md
-      JOIN market.convertible_bond_daily_metrics dm ON dm.trade_date=md.trade_date
-      JOIN core.instruments i ON i.instrument_id=dm.instrument_id AND i.asset_class='convertible_bond'
-      JOIN fundamental.convertible_bond_profiles p ON p.instrument_id=i.instrument_id
-      LEFT JOIN fundamental.convertible_bond_issuance iss ON iss.instrument_id=i.instrument_id
-      JOIN core.instruments s ON s.instrument_id=p.stock_instrument_id AND s.asset_class='stock'
-      JOIN core.company_instruments ci ON ci.instrument_id=s.instrument_id
-     WHERE ($1::date IS NULL OR md.trade_date <= $1::date)
-       AND i.status='listed'
-       AND (iss.issue_type IS NULL OR iss.issue_type NOT IN ('定向','私募'))
-       AND (i.delist_date IS NULL OR i.delist_date>md.trade_date)
-       AND (p.maturity_date IS NULL OR p.maturity_date>=md.trade_date)
-    UNION
-    SELECT DISTINCT s.instrument_id,s.canonical_code AS ts_code,p.stock_instrument_id,ci.company_id
-      FROM core.instruments i
-      JOIN fundamental.convertible_bond_profiles p ON p.instrument_id=i.instrument_id
-      LEFT JOIN fundamental.convertible_bond_issuance iss ON iss.instrument_id=i.instrument_id
-      JOIN core.instruments s ON s.instrument_id=p.stock_instrument_id AND s.asset_class='stock'
-      JOIN core.company_instruments ci ON ci.instrument_id=s.instrument_id
-     WHERE (i.list_date IS NULL OR i.list_date>=CURRENT_DATE)
-       AND COALESCE(i.status,'') NOT IN ('cancelled','canceled')
-       AND (iss.issue_type IS NULL OR iss.issue_type NOT IN ('定向','私募'))
-    ORDER BY 2
-  `, [targetTradeDate || null]);
+  const rows = await financialRepository.listBondUnderlyingRows({ targetTradeDate }, client);
   return uniqueTarget(rows.map(row => ({
     companyId: row.company_id,
     instrumentId: row.stock_instrument_id || row.instrument_id,
@@ -109,15 +83,9 @@ async function listCurrentBondUnderlyingTargets(client = pool, targetTradeDate =
 async function readCompanyStates(targets, client = pool) {
   const companyIds = [...new Set((targets || []).map(target => target.companyId).filter(Boolean))];
   if (!companyIds.length) return new Map();
-  const result = await client.query(
-    `SELECT company_id,report_kind,period_end::text AS period_end,announced_at::text AS announced_at,
-            f_ann_date::text AS f_ann_date,report_type,is_current_version
-       FROM fundamental.financial_reports
-      WHERE company_id=ANY($1::bigint[]) AND is_current_version=true
-      ORDER BY company_id,period_end DESC,announced_at DESC NULLS LAST`, [companyIds]
-  );
+  const rows = await financialRepository.listCompanyReportRows({ companyIds }, client);
   const map = new Map();
-  for (const row of result.rows) {
+  for (const row of rows) {
     const key = String(row.company_id);
     if (!map.has(key)) map.set(key, []);
     map.get(key).push(row);
@@ -146,10 +114,7 @@ function stateForTarget(target, rows, options = {}) {
 async function readFinancialCursors(targets, client = pool, datasetCode = 'financial') {
   const scopes = (targets || []).flatMap(target => REPORT_KINDS.map(kind => `company:${target.companyId}:${kind}`));
   if (!scopes.length) return new Map();
-  const { rows } = await client.query(
-    `SELECT scope_key,last_success_date,last_source_update,last_attempt_at,last_error,retry_count
-       FROM ops.sync_cursors WHERE dataset_code=$2 AND scope_key=ANY($1::text[])`, [scopes, datasetCode]
-  );
+  const rows = await financialRepository.listFinancialCursors({ scopes, datasetCode }, client);
   return new Map(rows.map(row => [row.scope_key, row]));
 }
 
@@ -280,13 +245,10 @@ async function persistCompanyReports(target, reportResult, options = {}) {
   const failed = [];
   let ingestionRunId = null;
   return withTransaction(async client => {
-    const source = (await client.query("SELECT source_id FROM ops.data_sources WHERE source_code='tushare' LIMIT 1")).rows[0];
+    const source = await financialRepository.readTushareSource({}, client);
     if (!source) throw new Error('未找到 Tushare 数据源登记');
-    ingestionRunId = (await client.query(
-      `INSERT INTO ops.ingestion_runs(source_id,dataset_code,request_range,status)
-       VALUES($1,'stock_financial_reports',$2::jsonb,'running') RETURNING run_id`,
-      [source.source_id, JSON.stringify({ company_id: target.companyId, ts_code: target.tsCode, kinds: target.needs || REPORT_KINDS })]
-    )).rows[0].run_id;
+    ingestionRunId = await createIngestionRun({ sourceId: source.source_id, datasetCode: 'stock_financial_reports',
+      requestRange: { company_id: target.companyId, ts_code: target.tsCode, kinds: target.needs || REPORT_KINDS } }, client);
     for (const kind of (target.needs || REPORT_KINDS)) {
       const rows = reportResult.results[kind] || [];
       const error = reportResult.errors[kind];
@@ -298,11 +260,9 @@ async function persistCompanyReports(target, reportResult, options = {}) {
         await markDatasetSuccess(scope, 'financial', { client, companyId: target.companyId, instrumentId: target.instrumentId,
           lastSuccessDate: normalizeDate(latestPeriod), lastSourceUpdate: normalizeDate(latestAnnouncement) });
         successful.push(kind);
-        if (options.historyStart) await client.query(
-          `INSERT INTO ops.sync_cursors(company_id,instrument_id,scope_key,dataset_code,last_success_date,last_source_update,last_attempt_at,last_error)
-           VALUES($1,$2,$3,'financial_history',$4,now(),now(),'') ON CONFLICT(scope_key,dataset_code)
-           DO UPDATE SET last_success_date=LEAST(sync_cursors.last_success_date,EXCLUDED.last_success_date),last_source_update=now(),last_attempt_at=now(),last_error='',updated_at=now()`,
-          [target.companyId, target.instrumentId, scope, normalizeDate(options.historyStart)]);
+        if (options.historyStart) await financialRepository.writeFinancialHistoryCursor({
+          companyId: target.companyId, instrumentId: target.instrumentId, scope,
+          historyStart: normalizeDate(options.historyStart) }, client);
       } else {
         const message = error ? `${error.code || 'FINANCIAL_SYNC_FAILED'}: ${error.message}` : '接口返回空数组，保留上一份有效数据';
         await markDatasetFailure(scope, 'financial', message, { client, companyId: target.companyId, instrumentId: target.instrumentId });
@@ -310,21 +270,16 @@ async function persistCompanyReports(target, reportResult, options = {}) {
       }
     }
     const status = failed.length ? (successful.length ? 'degraded' : 'failed') : 'succeeded';
-    await client.query(
-      `UPDATE ops.ingestion_runs SET status=$2,row_count=$3,error_message=$4,finished_at=now() WHERE run_id=$1`,
-      [ingestionRunId, status, successful.reduce((count, kind) => count + (reportResult.results[kind] || []).length, 0), failed.map(item => `${item.kind}:${item.error}`).join('；')]
-    );
+    await financialRepository.finishFinancialIngestion({ runId: ingestionRunId, status,
+      rowCount: successful.reduce((count, kind) => count + (reportResult.results[kind] || []).length, 0),
+      errorMessage: failed.map(item => `${item.kind}:${item.error}`).join('；') }, client);
     return { ok: failed.length === 0, successful, failed, ingestionRunId };
   });
 }
 
 async function latestFinancialDataAsOf(client = pool) {
-  const { rows } = await client.query(
-    `SELECT MAX(COALESCE(f_ann_date,announced_at,period_end))::text AS data_as_of,
-            COUNT(*) FILTER (WHERE report_type='1' AND is_current_version=true)::int AS row_count
-       FROM fundamental.financial_reports`
-  );
-  return { dataAsOf: rows[0] && rows[0].data_as_of ? String(rows[0].data_as_of).slice(0, 10) : null, rowCount: Number(rows[0] && rows[0].row_count || 0) };
+  const row = await financialRepository.readLatestFinancialData({}, client);
+  return { dataAsOf: row && row.data_as_of ? String(row.data_as_of).slice(0, 10) : null, rowCount: Number(row && row.row_count || 0) };
 }
 
 function selectCompanyBatch(queue, requestedLimit, options = {}) {
@@ -433,12 +388,8 @@ async function enqueueCompanyFinancialSyncByCode(rawCode, reason = 'request') {
   const target = (await listCurrentBondUnderlyingTargets()).find(item => item.tsCode === tsCode);
   if (!target) return { queued: false, reason: 'not_current_listed_bond_underlying' };
   for (const kind of REPORT_KINDS) {
-    await pool.query(
-      `INSERT INTO ops.sync_cursors(company_id,instrument_id,scope_key,dataset_code,last_attempt_at,last_error,retry_count)
-       VALUES($1,$2,$3,'financial',now(),$4,1)
-       ON CONFLICT(scope_key,dataset_code) DO UPDATE SET last_attempt_at=now(),last_error=EXCLUDED.last_error,retry_count=ops.sync_cursors.retry_count+1,updated_at=now()`,
-      [target.companyId, target.instrumentId, `company:${target.companyId}:${kind}`, `${reason}: 等待财务增量任务处理`]
-    );
+    await financialRepository.markFinancialSyncPending({ companyId: target.companyId, instrumentId: target.instrumentId,
+      scope: `company:${target.companyId}:${kind}`, message: `${reason}: 等待财务增量任务处理` });
   }
   return { queued: true, companyId: target.companyId, tsCode };
 }
@@ -460,9 +411,7 @@ async function syncRequestedStockAnalysis(options) {
   if (!Array.isArray(codes) || codes.length !== 1) throw new Error('单股刷新必须指定一只股票');
   const tsCode = normalizeStockCode(codes[0]);
   if (!tsCode || !isOrdinaryAStock(tsCode)) throw new Error('仅支持A股普通股票');
-  const { rows } = await pool.query(`SELECT i.instrument_id,ci.company_id,i.list_date::text AS list_date
-    FROM core.instruments i JOIN core.company_instruments ci USING(instrument_id)
-    WHERE i.canonical_code=$1 AND i.asset_class='stock'`, [tsCode]);
+  const rows = await financialRepository.findStockTargetRows({ tsCode });
   if (rows.length !== 1) throw new Error('股票基础档案缺失或公司关系不唯一，暂不能刷新');
   const row = rows[0];
   const target = { tsCode, instrumentId: row.instrument_id, companyId: row.company_id, needs: REPORT_KINDS };

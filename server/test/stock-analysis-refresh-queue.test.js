@@ -17,6 +17,7 @@ const stock = {
 };
 const context = { module: { exports: {} }, Date, console, process,
   require: name => name === '../db' ? { pool: { query: async () => ({ rows: targets }) } }
+    : name === '../repositories/companyFinancialRepository' ? { findStockTargetRows: async () => targets }
     : name === './stockAnalysis' ? stock
     : name === './jobScheduleSlots' ? { enqueueManualJob: async (...args) => { slotCalls.push(args); return { slot_id: 42 }; } }
     : nativeRequire(name),

@@ -1,0 +1,2519 @@
+{
+  "baseCommit": "b20d5bb3",
+  "capturedOn": "2026-10-28",
+  "scope": "隔离库；2026-08-28行情目标与当日待上市集合，查询包含数据库当前日期",
+  "data": {
+    "date": "2026-08-28",
+    "targets": [
+      {
+        "companyId": "4804",
+        "instrumentId": "234",
+        "tsCode": "000301.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "5173",
+        "instrumentId": "196",
+        "tsCode": "000401.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "4090",
+        "instrumentId": "792",
+        "tsCode": "000422.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "4349",
+        "instrumentId": "494",
+        "tsCode": "000498.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "5898",
+        "instrumentId": "496",
+        "tsCode": "000528.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "7854",
+        "instrumentId": "210",
+        "tsCode": "000552.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "5836",
+        "instrumentId": "668",
+        "tsCode": "000591.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "8973",
+        "instrumentId": "396",
+        "tsCode": "000703.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "4382",
+        "instrumentId": "334",
+        "tsCode": "000708.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "9025",
+        "instrumentId": "360",
+        "tsCode": "000723.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "8943",
+        "instrumentId": "292",
+        "tsCode": "000876.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "1587",
+        "instrumentId": "236",
+        "tsCode": "000902.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "6248",
+        "instrumentId": "808",
+        "tsCode": "001202.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "2849",
+        "instrumentId": "412",
+        "tsCode": "001203.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "9190",
+        "instrumentId": "602",
+        "tsCode": "001205.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "9201",
+        "instrumentId": "600",
+        "tsCode": "001269.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "6548",
+        "instrumentId": "582",
+        "tsCode": "001288.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "4113",
+        "instrumentId": "736",
+        "tsCode": "001301.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "7595",
+        "instrumentId": "262",
+        "tsCode": "002049.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "8421",
+        "instrumentId": "270",
+        "tsCode": "002091.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "4904",
+        "instrumentId": "588",
+        "tsCode": "002111.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "8854",
+        "instrumentId": "504",
+        "tsCode": "002120.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "1899",
+        "instrumentId": "678",
+        "tsCode": "002125.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "3489",
+        "instrumentId": "258",
+        "tsCode": "002126.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "1780",
+        "instrumentId": "612",
+        "tsCode": "002135.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "9219",
+        "instrumentId": "324",
+        "tsCode": "002381.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "6913",
+        "instrumentId": "362",
+        "tsCode": "002398.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "3891",
+        "instrumentId": "370",
+        "tsCode": "002430.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "6483",
+        "instrumentId": "618",
+        "tsCode": "002442.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "6260",
+        "instrumentId": "748",
+        "tsCode": "002452.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "3923",
+        "instrumentId": "540",
+        "tsCode": "002459.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "5390",
+        "instrumentId": "194",
+        "tsCode": "002475.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "2509",
+        "instrumentId": "484",
+        "tsCode": "002540.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "4837",
+        "instrumentId": "180",
+        "tsCode": "002541.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "3899",
+        "instrumentId": "184",
+        "tsCode": "002557.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "4506",
+        "instrumentId": "288",
+        "tsCode": "002568.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "7729",
+        "instrumentId": "586",
+        "tsCode": "002598.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "6415",
+        "instrumentId": "616",
+        "tsCode": "002605.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "8105",
+        "instrumentId": "694",
+        "tsCode": "002626.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "3792",
+        "instrumentId": "422",
+        "tsCode": "002698.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "8256",
+        "instrumentId": "284",
+        "tsCode": "002714.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "8717",
+        "instrumentId": "352",
+        "tsCode": "002753.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "1037",
+        "instrumentId": "608",
+        "tsCode": "002761.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "5380",
+        "instrumentId": "290",
+        "tsCode": "002798.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "1207",
+        "instrumentId": "530",
+        "tsCode": "002810.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "7626",
+        "instrumentId": "252",
+        "tsCode": "002887.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "8744",
+        "instrumentId": "286",
+        "tsCode": "002918.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "4257",
+        "instrumentId": "214",
+        "tsCode": "002946.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "6254",
+        "instrumentId": "408",
+        "tsCode": "002959.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "9166",
+        "instrumentId": "198",
+        "tsCode": "002973.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "7470",
+        "instrumentId": "358",
+        "tsCode": "002982.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "4523",
+        "instrumentId": "296",
+        "tsCode": "002984.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "3865",
+        "instrumentId": "320",
+        "tsCode": "002988.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "1406",
+        "instrumentId": "328",
+        "tsCode": "002989.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "6496",
+        "instrumentId": "406",
+        "tsCode": "002996.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "3663",
+        "instrumentId": "452",
+        "tsCode": "002998.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "6954",
+        "instrumentId": "462",
+        "tsCode": "003004.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "6499",
+        "instrumentId": "594",
+        "tsCode": "003036.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "3803",
+        "instrumentId": "688",
+        "tsCode": "003816.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "1451",
+        "instrumentId": "428",
+        "tsCode": "300037.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "7536",
+        "instrumentId": "438",
+        "tsCode": "300041.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "1218",
+        "instrumentId": "670",
+        "tsCode": "300054.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "4038",
+        "instrumentId": "242",
+        "tsCode": "300112.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "1723",
+        "instrumentId": "226",
+        "tsCode": "300118.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "7564",
+        "instrumentId": "552",
+        "tsCode": "300121.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "4245",
+        "instrumentId": "240",
+        "tsCode": "300151.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "6821",
+        "instrumentId": "374",
+        "tsCode": "300185.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "9279",
+        "instrumentId": "220",
+        "tsCode": "300196.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "1176",
+        "instrumentId": "558",
+        "tsCode": "300239.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "6139",
+        "instrumentId": "176",
+        "tsCode": "300246.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "3160",
+        "instrumentId": "230",
+        "tsCode": "300253.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "5226",
+        "instrumentId": "216",
+        "tsCode": "300298.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "2094",
+        "instrumentId": "354",
+        "tsCode": "300305.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "5971",
+        "instrumentId": "222",
+        "tsCode": "300332.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "4638",
+        "instrumentId": "656",
+        "tsCode": "300337.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "3260",
+        "instrumentId": "662",
+        "tsCode": "300351.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "5535",
+        "instrumentId": "724",
+        "tsCode": "300378.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "6797",
+        "instrumentId": "476",
+        "tsCode": "300401.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "8277",
+        "instrumentId": "382",
+        "tsCode": "300406.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "2529",
+        "instrumentId": "200",
+        "tsCode": "300429.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "4042",
+        "instrumentId": "524",
+        "tsCode": "300452.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "2811",
+        "instrumentId": "136280",
+        "tsCode": "300453.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "5006",
+        "instrumentId": "174",
+        "tsCode": "300482.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "7346",
+        "instrumentId": "512",
+        "tsCode": "300487.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "8858",
+        "instrumentId": "764",
+        "tsCode": "300491.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "1867",
+        "instrumentId": "238",
+        "tsCode": "300498.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "1260",
+        "instrumentId": "492",
+        "tsCode": "300501.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "8925",
+        "instrumentId": "206",
+        "tsCode": "300517.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "4772",
+        "instrumentId": "268",
+        "tsCode": "300529.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "7648",
+        "instrumentId": "632",
+        "tsCode": "300553.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "6513",
+        "instrumentId": "336",
+        "tsCode": "300556.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "7752",
+        "instrumentId": "720",
+        "tsCode": "300563.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "8988",
+        "instrumentId": "474",
+        "tsCode": "300567.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "8313",
+        "instrumentId": "186",
+        "tsCode": "300569.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "3295",
+        "instrumentId": "274",
+        "tsCode": "300601.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "8586",
+        "instrumentId": "460",
+        "tsCode": "300605.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "6536",
+        "instrumentId": "280",
+        "tsCode": "300613.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "9046",
+        "instrumentId": "470",
+        "tsCode": "300614.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "6000",
+        "instrumentId": "752",
+        "tsCode": "300622.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "6071",
+        "instrumentId": "804",
+        "tsCode": "300631.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "5995",
+        "instrumentId": "550",
+        "tsCode": "300644.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "2821",
+        "instrumentId": "516",
+        "tsCode": "300645.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "7652",
+        "instrumentId": "282",
+        "tsCode": "300655.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "5587",
+        "instrumentId": "414",
+        "tsCode": "300663.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "3535",
+        "instrumentId": "310",
+        "tsCode": "300673.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "4343",
+        "instrumentId": "5122",
+        "tsCode": "300697.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "8046",
+        "instrumentId": "578",
+        "tsCode": "300705.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "5722",
+        "instrumentId": "212",
+        "tsCode": "300707.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "2370",
+        "instrumentId": "188",
+        "tsCode": "300729.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "1601",
+        "instrumentId": "562",
+        "tsCode": "300737.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "6186",
+        "instrumentId": "302",
+        "tsCode": "300738.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "7353",
+        "instrumentId": "706",
+        "tsCode": "300763.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "6481",
+        "instrumentId": "256",
+        "tsCode": "300775.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "3020",
+        "instrumentId": "272",
+        "tsCode": "300779.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "2756",
+        "instrumentId": "506",
+        "tsCode": "300787.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "7061",
+        "instrumentId": "246",
+        "tsCode": "300791.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "1592",
+        "instrumentId": "614",
+        "tsCode": "300793.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "1230",
+        "instrumentId": "4433",
+        "tsCode": "300815.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "6648",
+        "instrumentId": "734",
+        "tsCode": "300818.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "957",
+        "instrumentId": "482",
+        "tsCode": "300837.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "1759",
+        "instrumentId": "696",
+        "tsCode": "300843.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "4627",
+        "instrumentId": "340",
+        "tsCode": "300853.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "7393",
+        "instrumentId": "508",
+        "tsCode": "300856.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "6246",
+        "instrumentId": "680",
+        "tsCode": "300866.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "6679",
+        "instrumentId": "384",
+        "tsCode": "300869.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "5379",
+        "instrumentId": "624",
+        "tsCode": "300870.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "6116",
+        "instrumentId": "762",
+        "tsCode": "300881.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "834",
+        "instrumentId": "584",
+        "tsCode": "300890.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "2237",
+        "instrumentId": "446",
+        "tsCode": "300891.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "5893",
+        "instrumentId": "404",
+        "tsCode": "300894.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "2425",
+        "instrumentId": "604",
+        "tsCode": "300911.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "7896",
+        "instrumentId": "572",
+        "tsCode": "300926.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "8769",
+        "instrumentId": "570",
+        "tsCode": "300942.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "5642",
+        "instrumentId": "546",
+        "tsCode": "300948.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "4228",
+        "instrumentId": "7923",
+        "tsCode": "300953.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "7096",
+        "instrumentId": "758",
+        "tsCode": "300964.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "5362",
+        "instrumentId": "448",
+        "tsCode": "300966.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "4260",
+        "instrumentId": "502",
+        "tsCode": "300967.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "6724",
+        "instrumentId": "478",
+        "tsCode": "300973.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "9059",
+        "instrumentId": "430",
+        "tsCode": "300992.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "7260",
+        "instrumentId": "716",
+        "tsCode": "300996.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "3603",
+        "instrumentId": "3066",
+        "tsCode": "301000.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "5153",
+        "instrumentId": "646",
+        "tsCode": "301004.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "1806",
+        "instrumentId": "510",
+        "tsCode": "301015.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "3249",
+        "instrumentId": "454",
+        "tsCode": "301017.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "1877",
+        "instrumentId": "728",
+        "tsCode": "301036.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "6312",
+        "instrumentId": "410",
+        "tsCode": "301040.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "5456",
+        "instrumentId": "780",
+        "tsCode": "301059.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "6627",
+        "instrumentId": "592",
+        "tsCode": "301062.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "7369",
+        "instrumentId": "626",
+        "tsCode": "301081.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "883",
+        "instrumentId": "556",
+        "tsCode": "301127.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "4635",
+        "instrumentId": "498",
+        "tsCode": "301186.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "3247",
+        "instrumentId": "760",
+        "tsCode": "301210.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "2613",
+        "instrumentId": "772",
+        "tsCode": "301215.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "6194",
+        "instrumentId": "634",
+        "tsCode": "301216.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "2850",
+        "instrumentId": "580",
+        "tsCode": "301266.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "1419",
+        "instrumentId": "560",
+        "tsCode": "301268.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "6099",
+        "instrumentId": "710",
+        "tsCode": "301398.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "9155",
+        "instrumentId": "175626",
+        "tsCode": "301459.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "1793",
+        "instrumentId": "794",
+        "tsCode": "301499.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "6299",
+        "instrumentId": "65935",
+        "tsCode": "301565.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "2012",
+        "instrumentId": "756",
+        "tsCode": "301611.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "2637",
+        "instrumentId": "7117",
+        "tsCode": "301626.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "9349",
+        "instrumentId": "178734",
+        "tsCode": "301628.SZ",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "7999",
+        "instrumentId": "182",
+        "tsCode": "600029.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "3994",
+        "instrumentId": "376",
+        "tsCode": "600075.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "9076",
+        "instrumentId": "466",
+        "tsCode": "600370.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "2982",
+        "instrumentId": "798",
+        "tsCode": "600389.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "4691",
+        "instrumentId": "640",
+        "tsCode": "600419.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "3896",
+        "instrumentId": "330",
+        "tsCode": "600438.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "7325",
+        "instrumentId": "786",
+        "tsCode": "600456.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "8401",
+        "instrumentId": "202",
+        "tsCode": "600461.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "8291",
+        "instrumentId": "564",
+        "tsCode": "600481.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "7889",
+        "instrumentId": "704",
+        "tsCode": "600483.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "6584",
+        "instrumentId": "366",
+        "tsCode": "600496.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "4401",
+        "instrumentId": "192",
+        "tsCode": "600521.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "8654",
+        "instrumentId": "806",
+        "tsCode": "600642.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "2544",
+        "instrumentId": "654",
+        "tsCode": "600713.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "2446",
+        "instrumentId": "278",
+        "tsCode": "600745.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "5483",
+        "instrumentId": "178",
+        "tsCode": "600810.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "2109",
+        "instrumentId": "738",
+        "tsCode": "600853.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "2689",
+        "instrumentId": "312",
+        "tsCode": "600903.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "8467",
+        "instrumentId": "424",
+        "tsCode": "600933.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "4188",
+        "instrumentId": "318",
+        "tsCode": "601012.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "5183",
+        "instrumentId": "266",
+        "tsCode": "601016.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "2202",
+        "instrumentId": "208",
+        "tsCode": "601108.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "1719",
+        "instrumentId": "418",
+        "tsCode": "601128.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "3153",
+        "instrumentId": "554",
+        "tsCode": "601139.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "5287",
+        "instrumentId": "658",
+        "tsCode": "601158.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "3220",
+        "instrumentId": "314",
+        "tsCode": "601166.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "3702",
+        "instrumentId": "228",
+        "tsCode": "601229.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "5551",
+        "instrumentId": "332",
+        "tsCode": "601330.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "8431",
+        "instrumentId": "232",
+        "tsCode": "601609.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "2467",
+        "instrumentId": "260",
+        "tsCode": "601633.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "1467",
+        "instrumentId": "488",
+        "tsCode": "601666.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "1862",
+        "instrumentId": "348",
+        "tsCode": "601686.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "4642",
+        "instrumentId": "248",
+        "tsCode": "601778.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "9248",
+        "instrumentId": "372",
+        "tsCode": "601865.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "2421",
+        "instrumentId": "344",
+        "tsCode": "601963.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "8213",
+        "instrumentId": "544",
+        "tsCode": "603018.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "4643",
+        "instrumentId": "800",
+        "tsCode": "603019.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "2885",
+        "instrumentId": "692",
+        "tsCode": "603037.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "2050",
+        "instrumentId": "316",
+        "tsCode": "603055.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "6800",
+        "instrumentId": "356",
+        "tsCode": "603058.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "8361",
+        "instrumentId": "638",
+        "tsCode": "603060.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "2180",
+        "instrumentId": "5120",
+        "tsCode": "603067.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "2961",
+        "instrumentId": "642",
+        "tsCode": "603077.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "1902",
+        "instrumentId": "684",
+        "tsCode": "603097.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "6490",
+        "instrumentId": "596",
+        "tsCode": "603105.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "6967",
+        "instrumentId": "768",
+        "tsCode": "603112.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "7771",
+        "instrumentId": "770",
+        "tsCode": "603129.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "6079",
+        "instrumentId": "456",
+        "tsCode": "603176.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "3045",
+        "instrumentId": "514",
+        "tsCode": "603180.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "1083",
+        "instrumentId": "644",
+        "tsCode": "603197.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "2532",
+        "instrumentId": "264",
+        "tsCode": "603208.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "2514",
+        "instrumentId": "610",
+        "tsCode": "603213.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "2103",
+        "instrumentId": "590",
+        "tsCode": "603220.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "1765",
+        "instrumentId": "190",
+        "tsCode": "603233.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "7756",
+        "instrumentId": "776",
+        "tsCode": "603270.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "4329",
+        "instrumentId": "622",
+        "tsCode": "603289.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "2979",
+        "instrumentId": "754",
+        "tsCode": "603290.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "3140",
+        "instrumentId": "576",
+        "tsCode": "603306.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "4490",
+        "instrumentId": "434",
+        "tsCode": "603355.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "6057",
+        "instrumentId": "346",
+        "tsCode": "603466.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "6322",
+        "instrumentId": "368",
+        "tsCode": "603477.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "9018",
+        "instrumentId": "300",
+        "tsCode": "603486.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "2513",
+        "instrumentId": "746",
+        "tsCode": "603500.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "5330",
+        "instrumentId": "224",
+        "tsCode": "603501.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "8103",
+        "instrumentId": "472",
+        "tsCode": "603529.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "1569",
+        "instrumentId": "416",
+        "tsCode": "603535.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "1370",
+        "instrumentId": "398",
+        "tsCode": "603568.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "6330",
+        "instrumentId": "326",
+        "tsCode": "603585.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "8096",
+        "instrumentId": "686",
+        "tsCode": "603596.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "5441",
+        "instrumentId": "304",
+        "tsCode": "603605.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "3166",
+        "instrumentId": "364",
+        "tsCode": "603609.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "2680",
+        "instrumentId": "672",
+        "tsCode": "603628.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "6629",
+        "instrumentId": "204",
+        "tsCode": "603669.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "4296",
+        "instrumentId": "294",
+        "tsCode": "603689.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "2402",
+        "instrumentId": "538",
+        "tsCode": "603730.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "7318",
+        "instrumentId": "742",
+        "tsCode": "603759.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "8865",
+        "instrumentId": "796",
+        "tsCode": "603786.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "930",
+        "instrumentId": "664",
+        "tsCode": "603801.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "5815",
+        "instrumentId": "444",
+        "tsCode": "603806.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "4681",
+        "instrumentId": "778",
+        "tsCode": "603809.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "5022",
+        "instrumentId": "378",
+        "tsCode": "603810.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "5451",
+        "instrumentId": "400",
+        "tsCode": "603833.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "6587",
+        "instrumentId": "276",
+        "tsCode": "603877.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "8168",
+        "instrumentId": "536",
+        "tsCode": "603878.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "929",
+        "instrumentId": "490",
+        "tsCode": "603890.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "3433",
+        "instrumentId": "442",
+        "tsCode": "603896.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "7130",
+        "instrumentId": "386",
+        "tsCode": "603916.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "1763",
+        "instrumentId": "598",
+        "tsCode": "603937.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "7437",
+        "instrumentId": "620",
+        "tsCode": "603939.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "2308",
+        "instrumentId": "218",
+        "tsCode": "603979.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "7943",
+        "instrumentId": "308",
+        "tsCode": "603995.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "5478",
+        "instrumentId": "306",
+        "tsCode": "605007.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "4445",
+        "instrumentId": "718",
+        "tsCode": "605058.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "3935",
+        "instrumentId": "350",
+        "tsCode": "605068.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "5736",
+        "instrumentId": "606",
+        "tsCode": "605077.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "2774",
+        "instrumentId": "630",
+        "tsCode": "605116.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "2635",
+        "instrumentId": "65931",
+        "tsCode": "605123.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "6593",
+        "instrumentId": "440",
+        "tsCode": "605138.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "1896",
+        "instrumentId": "338",
+        "tsCode": "605166.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "5599",
+        "instrumentId": "532",
+        "tsCode": "605177.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "7698",
+        "instrumentId": "254",
+        "tsCode": "605222.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "3919",
+        "instrumentId": "682",
+        "tsCode": "605319.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "1987",
+        "instrumentId": "526",
+        "tsCode": "605337.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "5260",
+        "instrumentId": "568",
+        "tsCode": "605368.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "6031",
+        "instrumentId": "464",
+        "tsCode": "605488.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "3252",
+        "instrumentId": "790",
+        "tsCode": "605589.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "3992",
+        "instrumentId": "458",
+        "tsCode": "688002.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "6862",
+        "instrumentId": "722",
+        "tsCode": "688003.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "6177",
+        "instrumentId": "380",
+        "tsCode": "688026.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "6596",
+        "instrumentId": "342",
+        "tsCode": "688030.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "8681",
+        "instrumentId": "450",
+        "tsCode": "688066.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "6080",
+        "instrumentId": "774",
+        "tsCode": "688092.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "2132",
+        "instrumentId": "402",
+        "tsCode": "688096.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "5944",
+        "instrumentId": "522",
+        "tsCode": "688103.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "2045",
+        "instrumentId": "322",
+        "tsCode": "688116.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "8709",
+        "instrumentId": "650",
+        "tsCode": "688131.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "5633",
+        "instrumentId": "690",
+        "tsCode": "688147.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "8220",
+        "instrumentId": "426",
+        "tsCode": "688148.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "8593",
+        "instrumentId": "784",
+        "tsCode": "688200.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "8679",
+        "instrumentId": "392",
+        "tsCode": "688208.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "4375",
+        "instrumentId": "744",
+        "tsCode": "688210.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "8819",
+        "instrumentId": "518",
+        "tsCode": "688223.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "7623",
+        "instrumentId": "636",
+        "tsCode": "688239.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "3903",
+        "instrumentId": "3080",
+        "tsCode": "688278.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "3777",
+        "instrumentId": "660",
+        "tsCode": "688292.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "4970",
+        "instrumentId": "732",
+        "tsCode": "688300.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "805",
+        "instrumentId": "390",
+        "tsCode": "688321.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "2838",
+        "instrumentId": "708",
+        "tsCode": "688352.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "4004",
+        "instrumentId": "480",
+        "tsCode": "688357.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "2314",
+        "instrumentId": "766",
+        "tsCode": "688377.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "5735",
+        "instrumentId": "574",
+        "tsCode": "688398.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "9315",
+        "instrumentId": "676",
+        "tsCode": "688401.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "5043",
+        "instrumentId": "802",
+        "tsCode": "688480.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "7458",
+        "instrumentId": "782",
+        "tsCode": "688484.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "1873",
+        "instrumentId": "714",
+        "tsCode": "688502.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "6915",
+        "instrumentId": "566",
+        "tsCode": "688516.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "5780",
+        "instrumentId": "534",
+        "tsCode": "688533.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "5025",
+        "instrumentId": "528",
+        "tsCode": "688589.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "8977",
+        "instrumentId": "394",
+        "tsCode": "688595.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "958",
+        "instrumentId": "542",
+        "tsCode": "688597.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "2553",
+        "instrumentId": "468",
+        "tsCode": "688599.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "2197",
+        "instrumentId": "65933",
+        "tsCode": "688605.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "8909",
+        "instrumentId": "788",
+        "tsCode": "688668.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "2651",
+        "instrumentId": "726",
+        "tsCode": "688676.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "1819",
+        "instrumentId": "4431",
+        "tsCode": "688686.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "1628",
+        "instrumentId": "436",
+        "tsCode": "688772.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "4778",
+        "instrumentId": "432",
+        "tsCode": "688779.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "2702",
+        "instrumentId": "740",
+        "tsCode": "688798.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      },
+      {
+        "companyId": "2053",
+        "instrumentId": "712",
+        "tsCode": "688800.SH",
+        "reasons": [
+          "convertible_bond"
+        ]
+      }
+    ],
+    "states": [],
+    "latest": {
+      "dataAsOf": "2026-08-15",
+      "rowCount": 3053
+    }
+  }
+}

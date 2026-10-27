@@ -245,7 +245,9 @@ check('安全性页面读取仍按在市口径过滤，待上市债不进列表'
   assert.ok(service.includes("status = 'listed'"), '页面过滤必须保持在市转债口径');
 });
 check('财务增量同步目标范围含待上市新债正股', () => {
-  const source = fs.readFileSync(path.resolve(__dirname, '..', 'services', 'companyFinancialIncrementalSync.js'), 'utf8');
+  const service = fs.readFileSync(path.resolve(__dirname, '..', 'services', 'companyFinancialIncrementalSync.js'), 'utf8');
+  const source = fs.readFileSync(path.resolve(__dirname, '..', 'repositories', 'companyFinancialRepository.js'), 'utf8');
+  assert.ok(service.includes('financialRepository.listBondUnderlyingRows'), '财务同步必须实际调用目标仓储');
   assert.ok(source.includes('UNION'), '财务同步目标集合缺少待上市新债正股分支');
   assert.ok(/i\.list_date IS NULL OR i\.list_date>=CURRENT_DATE/.test(source),
     '待上市正股分支必须以上市日界定范围');

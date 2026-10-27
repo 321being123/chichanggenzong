@@ -55,6 +55,7 @@ const rejected = { ...current, data: current.data.map((row, index) => index === 
 assert.strictEqual(publicationQualityGate(rejected, previous).ok, false);
 
 const serviceSource = fs.readFileSync(path.resolve(__dirname, '..', 'services', 'companyFinancialIncrementalSync.js'), 'utf8');
+const repositorySource = fs.readFileSync(path.resolve(__dirname, '..', 'repositories', 'companyFinancialRepository.js'), 'utf8');
 const routeSource = fs.readFileSync(path.resolve(__dirname, '..', 'routes', 'stockAnalysis.js'), 'utf8');
 const jobSource = fs.readFileSync(path.resolve(__dirname, '..', 'services', 'jobDefinitions.js'), 'utf8');
 const backfillSource = fs.readFileSync(path.resolve(__dirname, '..', 'scripts', 'backfillCompanyFinancials.js'), 'utf8');
@@ -66,13 +67,13 @@ assert.ok(jobSource.includes("jobCode: 'company_financial_incremental_sync'"));
 assert.ok(jobSource.includes("strictDatasetPublication: true"));
 assert.ok(backfillSource.includes("valueOf('--offset'"));
 assert.ok(serviceSource.includes('pendingTargets.slice(offset, offset + limit)'));
-assert.ok(serviceSource.includes('market.convertible_bond_daily_metrics'));
+assert.ok(serviceSource.includes('financialRepository.listBondUnderlyingRows') && repositorySource.includes('market.convertible_bond_daily_metrics'));
 assert.ok(serviceSource.includes("['fina_indicator', 'fina_indicator_vip'].includes(apiName)"));
 assert.ok(serviceSource.includes('options.resume === false'));
 assert.ok(backfillSource.includes("const resume = !has('--force')"));
 assert.ok(serviceSource.includes('return listCurrentBondUnderlyingTargets(client)'));
 assert.ok(!serviceSource.includes("'holding' AS reason") && !serviceSource.includes("'ipo' AS reason"));
-assert.ok(serviceSource.includes("i.status='listed'") && serviceSource.includes("iss.issue_type NOT IN ('定向','私募')"));
+assert.ok(repositorySource.includes("i.status='listed'") && repositorySource.includes("iss.issue_type NOT IN ('定向','私募')"));
 assert.ok(backfillSource.includes('includeHistoricalGaps: true'));
 assert.strictEqual(shouldAbortFinancialBatch({ code: 'JOB_BUDGET_EXCEEDED' }), true);
 

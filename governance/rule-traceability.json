@@ -755,6 +755,10 @@
           "pattern": "交易事件保留用户日期"
         },
         {
+          "file": "server/test/smart-position-client.test.js",
+          "pattern": "批量持仓保留用户确认日期"
+        },
+        {
           "file": "ipo-report/test_ipo_unit.py",
           "pattern": "日历业务日期固定按上海时区"
         }

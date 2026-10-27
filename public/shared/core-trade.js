@@ -1116,9 +1116,9 @@ function applyLedgerData(jdata) {
 // 结果未知（网络异常/响应丢失）时按原 id 核对是否已落库（方案 4.4 第 5 条）
 async function verifySmartEventsSaved(ids) {
   try {
-    var r = await fetch(api('/api/data/' + encodeURIComponent(currentAccount)));
+    var r = await window.tradeLedgerApi.accountData(currentAccount);
     if (!r.ok) return { all: false, any: false };
-    var j = await r.json().catch(function() { return {}; });
+    var j = r.payload;
     if (j.data) applyLedgerData(j.data);
     var trades = (data && data.trades) || [];
     var saved = (ids || []).filter(function(id) {
@@ -1169,12 +1169,8 @@ async function submitPositionRows(rows) {
   });
   var ids = events.map(function(e) { return e.id; });
   try {
-    var r = await fetch(api('/api/accounts/' + encodeURIComponent(currentAccount) + '/ledger/position-events/batch?version=' + (dataVersion != null ? dataVersion : '')), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ events: events })
-    });
-    var j = await r.json().catch(function() { return {}; });
+    var r = await window.holdingsQuoteApi.addPositions(currentAccount, dataVersion, events);
+    var j = r.payload;
     if (!r.ok) {
       if (r.status === 409) {
         // 409 可能是"整批已成功但响应丢失后带旧版本重试"：先按原 id 核对整组，全部存在才标已保存

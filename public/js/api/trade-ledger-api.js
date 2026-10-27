@@ -22,5 +22,14 @@
     recomputeNav: function (account, fromDate) {
       return request('/api/data/' + encodeURIComponent(account) + '/recompute-nav', jsonWrite({ fromDate: fromDate }));
     },
+    accountData: async function (account) {
+      var result = await global.siteApi.requestRaw('/api/data/' + encodeURIComponent(account), { timeoutMs: 0, headers: {} });
+      if (!result.response) throw new Error(result.error || '网络异常');
+      var payload = {};
+      if (result.ok) {
+        try { payload = await result.response.json(); } catch (_) { payload = {}; }
+      }
+      return { ok: result.ok, status: result.status, payload: payload };
+    },
   };
 })(typeof window !== 'undefined' ? window : globalThis);

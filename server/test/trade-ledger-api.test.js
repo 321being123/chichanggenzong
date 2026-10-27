@@ -7,9 +7,15 @@ const html = fs.readFileSync(path.join(root, 'public/index.html'), 'utf8');
 assert(html.indexOf('js/api/client.js') < html.indexOf('js/api/trade-ledger-api.js') &&
   html.indexOf('js/api/trade-ledger-api.js') < html.indexOf('shared/core-trade.js'));
 const requests = [];
+let rawMode = 'ok';
 const apiContext = { window: { siteApi: { request: async (url, options) => {
   requests.push({ url, options });
   return { ok: true, status: 200, payload: {} };
+}, requestRaw: async (url, options) => {
+  requests.push({ url, options });
+  if (rawMode === 'network') return { ok: false, status: 0, response: null, error: '网络故障' };
+  if (rawMode === 'unauthorized') return { ok: false, status: 403, response: { json: async () => { throw new Error('不应解析'); } } };
+  return { ok: true, status: 200, response: { json: async () => ({ data: { trades: [] } }) } };
 } } } };
 vm.runInNewContext(fs.readFileSync(path.join(root, 'public/js/api/trade-ledger-api.js'), 'utf8'), apiContext);
 const api = apiContext.window.tradeLedgerApi;
@@ -18,16 +24,22 @@ const api = apiContext.window.tradeLedgerApi;
   await api.addTrade('账户%', 3, { id: 'fixed-id', date: '2026-10-01' });
   await api.deleteTrade('账户%', 3, 'trade/1');
   await api.recomputeNav('账户%', '2026-10-01');
+  await api.accountData('账户%');
   assert.deepStrictEqual(requests.map(x => x.url), [
     '/api/accounts/%E8%B4%A6%E6%88%B7%25/ledger/trades?version=3',
     '/api/accounts/%E8%B4%A6%E6%88%B7%25/ledger/trades/trade%2F1?version=3',
     '/api/data/%E8%B4%A6%E6%88%B7%25/recompute-nav',
+    '/api/data/%E8%B4%A6%E6%88%B7%25',
   ]);
-  assert.deepStrictEqual(requests.map(x => x.options.method), ['POST', 'DELETE', 'POST']);
+  assert.deepStrictEqual(requests.map(x => x.options.method || 'GET'), ['POST', 'DELETE', 'POST', 'GET']);
   assert(requests.every(x => x.options.timeoutMs === 0));
   assert.strictEqual(JSON.parse(requests[0].options.body).trade.id, 'fixed-id');
   assert.strictEqual(JSON.parse(requests[0].options.body).trade.date, '2026-10-01', '交易事件保留用户日期');
   assert.strictEqual(JSON.parse(requests[2].options.body).fromDate, '2026-10-01');
+  rawMode = 'unauthorized';
+  assert.strictEqual((await api.accountData('账户%')).ok, false, '未授权时不得尝试解析或认定事件存在');
+  rawMode = 'network';
+  await assert.rejects(api.accountData('账户%'), /网络故障/);
 
   const source = fs.readFileSync(path.join(root, 'public/shared/core-trade.js'), 'utf8');
   const section = source.slice(source.indexOf('async function addTradeInternal('), source.indexOf('// ===================== 税费设置'));

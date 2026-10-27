@@ -65,7 +65,9 @@
   async function requestRaw(path, options) {
     var opts = Object.assign({}, options || {});
     var timeoutMs = opts.timeoutMs === undefined ? DEFAULT_TIMEOUT_MS : opts.timeoutMs;
+    var relativePath = opts.relativePath === true;
     delete opts.timeoutMs;
+    delete opts.relativePath;
     if (!opts.headers) opts.headers = withTelemetry();
     var controller = null;
     var timer = null;
@@ -75,7 +77,7 @@
       timer = setTimeout(function () { controller.abort(); }, timeoutMs);
     }
     try {
-      var response = await fetch(endpoint(path), opts);
+      var response = await fetch(relativePath ? path : endpoint(path), opts);
       return { ok: response.ok, status: response.status, response: response };
     } catch (error) {
       var aborted = error && (error.name === 'AbortError' || String(error.message || '').indexOf('abort') >= 0);

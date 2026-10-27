@@ -34,9 +34,9 @@ async function loadChangelog() {
   var el = document.getElementById('changelog-content');
   if (!el) return;
   try {
-    var resp = await fetch('changelog.json');
+    var resp = await window.earningsHistoryApi.changelog();
     if (!resp.ok) throw new Error('HTTP ' + resp.status);
-    var data = await resp.json();
+    var data = resp.payload;
     el.innerHTML = renderChangelogHtml(data);
   } catch (err) {
     el.innerHTML = '<p data-style="color:#c00;text-align:center;">版本记录加载失败：' + (err.message || err) + '</p>';
@@ -391,12 +391,8 @@ async function importFundExcel(event) {
   try {
     openImportProgress();
     const base64 = await fileToBase64(file);
-    const r = await fetch(api('/api/excel-history-parse'), {
-      method: 'POST',
-      headers: typeof window !== 'undefined' && window.SiteTelemetry ? window.SiteTelemetry.getHeaders({ 'Content-Type': 'application/json' }) : { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ file: base64 })
-    });
-    const d = await r.json().catch(function () { return {}; });
+    const r = await window.earningsHistoryApi.parseExcel(base64);
+    const d = r.payload;
     if (!r.ok || d.error) { showImportError(d.error || ('请求失败：HTTP ' + r.status)); return; }
     if (!d.headers || !d.rows || d.rows.length === 0) { closeImportProgress(); showToast('Excel 中没有可识别的数据行'); return; }
 
@@ -476,12 +472,8 @@ async function finishImport(rows, mapping) {
   try {
     // 导入字段是券商账户级事实：同日一律覆盖；持仓数量不在此接口中写入。
     var importBody = { account: currentAccount, records: importedRecords, mode: 'merge' };
-    var r = await fetch(api('/api/nav/import?version=' + (dataVersion != null ? dataVersion : '')), {
-      method: 'POST',
-      headers: typeof window !== 'undefined' && window.SiteTelemetry ? window.SiteTelemetry.getHeaders({ 'Content-Type': 'application/json' }) : { 'Content-Type': 'application/json' },
-      body: JSON.stringify(importBody)
-    });
-    var j = await r.json().catch(function(){ return {}; });
+    var r = await window.earningsHistoryApi.importNav(dataVersion, importBody);
+    var j = r.payload;
     if (!r.ok) { showToast(j.error || '导入失败'); return; }
     if (j.data) refreshDataFromServer(j.data);
   } catch(e) { showToast('导入失败：' + (e.message || e)); return; }
@@ -501,7 +493,7 @@ async function finishImport(rows, mapping) {
 async function backupNavHistoryServer() {
   if (!currentAccount) return true; // 无账户上下文不备份也不阻塞
   try {
-    var r = await fetch(api('/api/accounts/' + encodeURIComponent(currentAccount) + '/backup-nav-history'), { method: 'POST' });
+    var r = await window.earningsHistoryApi.backup(currentAccount);
     if (!r.ok) { console.warn('历史数据备份失败：HTTP ' + r.status); return false; }
     return true;
   } catch (e) { console.warn('历史数据备份失败', e); return false; }
@@ -514,8 +506,8 @@ async function openNavHistoryManageModal() {
   var restoreBtn = document.getElementById('nav-mgmt-restore-btn');
   if (info) info.innerHTML = '正在读取备份信息...';
   try {
-    var r = await fetch(api('/api/accounts/' + encodeURIComponent(currentAccount) + '/nav-history-backup-info'));
-    var d = await r.json();
+    var r = await window.earningsHistoryApi.backupInfo(currentAccount);
+    var d = r.payload;
     if (d.hasBackup) {
       if (info) info.innerHTML = '✓ 已备份 <b>' + (d.rows || 0) + '</b> 条记录，备份时间：' + escapeHtml(String(d.at || '')).replace('T', ' ').replace(/\..*$/, '');
       if (restoreBtn) restoreBtn.disabled = false;
@@ -541,8 +533,8 @@ async function doRestoreNavHistory() {
   if (!currentAccount) return;
   closeModal('modal-nav-restore-confirm');
   try {
-    var r = await fetch(api('/api/accounts/' + encodeURIComponent(currentAccount) + '/restore-nav-history'), { method: 'POST' });
-    var d = await r.json();
+    var r = await window.earningsHistoryApi.restore(currentAccount);
+    var d = r.payload;
     if (!r.ok || d.error) { showToast('还原失败：' + (d.error || r.status)); return; }
     showToast('已还原 ' + (d.rows || 0) + ' 条记录' + (d.backupAt ? '（备份时间 ' + String(d.backupAt).replace('T',' ').replace(/\..*$/,'') + '）' : ''));
     var fresh = await loadData(currentAccount);
@@ -562,12 +554,8 @@ async function doClearNavHistory() {
   if (!currentAccount) return;
   closeModal('modal-nav-clear-confirm');
   try {
-    var r = await fetch(api('/api/accounts/' + encodeURIComponent(currentAccount) + '/clear-nav-history'), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ mode: 'keep-latest' })
-    });
-    var d = await r.json();
+    var r = await window.earningsHistoryApi.clear(currentAccount);
+    var d = r.payload;
     if (!r.ok || d.error) { showToast('清空失败：' + (d.error || r.status)); return; }
     showToast('已清空历史数据，仅保留最近一天，共删除 ' + (d.rows || 0) + ' 条记录');
     var fresh = await loadData(currentAccount);

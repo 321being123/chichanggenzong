@@ -31,7 +31,10 @@ assert.ok(source.includes('行累计投入资金异常，已沿用前一有效�
       return { ok: true, json: async () => ({ ok: true }) };
     }
   };
+  context.window = context;
   vm.createContext(context);
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '../../public/js/api/client.js'), 'utf8'), context);
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '../../public/js/api/earnings-history-api.js'), 'utf8'), context);
   vm.runInContext(source, context);
   await context.finishImport([
     ['2026-07-05', 2.99, 2063297.01, 1664240.92, ''],

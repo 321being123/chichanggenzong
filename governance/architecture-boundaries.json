@@ -823,7 +823,8 @@
       "public/js/stock-analysis.js",
       "public/js/stock-analysis-statements.js",
       "public/shared/core-quote.js",
-      "public/shared/core-account.js"
+      "public/shared/core-account.js",
+      "public/shared/core-earnings.js"
     ],
     "pending": []
   },

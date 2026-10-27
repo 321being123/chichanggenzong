@@ -417,18 +417,18 @@ async function loadIpo() {
   var initialCalendar = ipoSwitchMarket(initialMarket);
   ipoLoadHistory(ipoHistoryType);
   try {
-    var rr = await fetch(api('/api/ipo/report'));
+    var rr = await window.siteApi.get('/api/ipo/report');
     if (!rr.ok) throw new Error('日报接口返回 ' + rr.status);
-    var rep = await rr.json();
+    var rep = rr.payload;
     var adv = document.getElementById('ipo-advice');
     var cal;
     if (initialMarket === 'CN') {
       cal = await initialCalendar;
       if (!cal) throw new Error('日历读取失败');
     } else {
-      var rc = await fetch(api('/api/ipo/calendar?days=90&market=CN'));
+      var rc = await window.siteApi.get('/api/ipo/calendar?days=90&market=CN');
       if (!rc.ok) throw new Error('日历接口返回 ' + rc.status);
-      cal = await rc.json();
+      cal = rc.payload;
     }
     if (adv) adv.innerHTML = ipoRenderAdvice(rep && rep.md, {
       reportDate: rep && rep.report_date,
@@ -450,9 +450,9 @@ async function ipoSwitchMarket(market) {
   var calendar = document.getElementById('ipo-calendar');
   if (calendar) calendar.innerHTML = '<div class="empty-state">加载中...</div>';
   try {
-    var r = await fetch(api('/api/ipo/calendar?days=90&market=' + encodeURIComponent(market)));
+    var r = await window.siteApi.get('/api/ipo/calendar?days=90&market=' + encodeURIComponent(market));
     if (!r.ok) throw new Error('日历接口返回 ' + r.status);
-    var d = await r.json();
+    var d = r.payload;
     if (requestId !== ipoCalendarRequestId) return d;
     if (calendar) calendar.innerHTML = ipoRenderCalendar(d.calendar || [], d.pending_hk_stocks || []);
     return d;
@@ -697,10 +697,10 @@ async function ipoLoadHistoryPage(type, offset, refreshQuotes) {
   try {
     var pageSize = 200;
     var pageOffset = Math.max(Number(offset) || 0, 0);
-    var r = await fetch(api('/api/ipo/history?type=' + type + '&limit=' + pageSize + '&offset=' + pageOffset
-      + (type !== 'bond' && refreshQuotes ? '&refresh_quotes=' + refreshQuotes : '')));
+    var r = await window.siteApi.get('/api/ipo/history?type=' + type + '&limit=' + pageSize + '&offset=' + pageOffset
+      + (type !== 'bond' && refreshQuotes ? '&refresh_quotes=' + refreshQuotes : ''));
     if (!r.ok) throw new Error('历史接口返回 ' + r.status);
-    var d = await r.json();
+    var d = r.payload;
     if (requestId !== ipoHistoryRequestId) return;
     if (d.type !== type) throw new Error('历史接口返回的市场与所选市场不一致');
     ipoHistoryOffset = pageOffset;

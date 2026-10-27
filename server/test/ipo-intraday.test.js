@@ -64,8 +64,12 @@ function check(fn) { fn(); cases++; }
   const urls = [];
   const ctx = vm.createContext({ window: dom.window, document: dom.window.document, console,
     api: value => value, escapeHtml: value => String(value).replace(/&/g,'&amp;').replace(/</g,'&lt;'),
-    fetch: async url => { urls.push(url); return { ok: true, json: async () => ({ type: 'stock', total: 1, rows: [{ ...stock,
+    setTimeout, clearTimeout, AbortController,
+    fetch: async url => { urls.push(url); return { ok: true, status: 200, json: async () => ({ type: 'stock', total: 1, rows: [{ ...stock,
       ...firstDayPerformance(stock, quote, now) }] }) }; } });
+  // 批次4：页面取数经统一客户端发送，测试必须加载同一份底座，fetch 桩才能拦截到真实请求；
+  // 这样断言校验的仍是页面拼出的 URL，不是桩的替代实现。
+  vm.runInContext(fs.readFileSync(require('path').join(__dirname, '../../public/js/api/client.js'), 'utf8'), ctx);
   vm.runInContext(fs.readFileSync(require('path').join(__dirname, '../../public/js/ipo.js'), 'utf8'), ctx);
   await ctx.ipoLoadHistory('stock');
   check(() => assert.match(urls[0], /refresh_quotes=1$/));

@@ -4,6 +4,7 @@ const fs = require('fs');
 const vm = require('vm');
 const { JSDOM } = require('jsdom');
 const source = fs.readFileSync(require('path').join(__dirname, '../../public/js/ipo.js'), 'utf8');
+const clientSource = fs.readFileSync(require('path').join(__dirname, '../../public/js/api/client.js'), 'utf8');
 
 function setup() {
   const dom = new JSDOM(`<div id="ipo-advice"></div><div id="ipo-calendar"></div><div id="ipo-history"></div>
@@ -12,7 +13,10 @@ function setup() {
   const requests = [];
   const ctx = vm.createContext({ document: dom.window.document, window: dom.window,
     api: value => value, escapeHtml: value => String(value), console,
+    setTimeout, clearTimeout, AbortController,
     fetch: url => new Promise((resolve, reject) => requests.push({ url, resolve, reject })) });
+  // 批次4：页面取数经统一客户端发送，测试加载同一份底座，断言针对真实请求链路。
+  vm.runInContext(clientSource, ctx);
   vm.runInContext(source, ctx);
   ctx.ipoRenderHistory = (type, rows) => type + ':' + rows.map(row => row.security_code).join(',');
   ctx.ipoRenderCalendar = rows => rows.map(row => row.code).join(',');

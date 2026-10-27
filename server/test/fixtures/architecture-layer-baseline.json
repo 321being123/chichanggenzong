@@ -2,10 +2,10 @@
   "schemaVersion": 1,
   "scanner": "audit-layer-coupling",
   "scannerVersion": "1.0.0",
-  "rulesVersion": "layer-coupling-3",
+  "rulesVersion": "layer-coupling-4",
   "commit": "449254fabddb078acd2ac27546305ba3617e6729",
   "dirty": false,
-  "scannedAt": "2026-10-27T11:17:33.919Z",
+  "scannedAt": "2026-10-27T15:26:30.436Z",
   "scope": {
     "includeExtensions": [
       ".js",

@@ -237,6 +237,28 @@ function calleeName(node) {
   return null;
 }
 
+// 拼出完整调用路径（如 window.siteApi.request），用于识别统一请求入口。
+function calleePath(node) {
+  const callee = node && node.callee;
+  if (!callee) return null;
+  const parts = [];
+  let cursor = callee;
+  while (cursor && cursor.type === 'MemberExpression' && !cursor.computed) {
+    parts.unshift(cursor.property.name);
+    cursor = cursor.object;
+  }
+  if (!cursor || cursor.type !== 'Identifier') return null;
+  parts.unshift(cursor.name);
+  return parts.join('.');
+}
+
+// 统一请求入口（public/js/api/client.js）是页面唯一的传输点：
+// 页面调用 siteApi.* 属于走适配层，不再算"非适配层直接联网"。
+function viaSiteApi(node) {
+  const path = calleePath(node);
+  return !!path && /(^|\.)siteApi\./.test(path);
+}
+
 function firstStringArgument(node) {
   const arg = node.arguments && node.arguments[0];
   if (!arg) return null;
@@ -300,7 +322,7 @@ function scanJs(source, filePath) {
         const sql = firstStringArgument(node);
         if (sql && SQL_KEYWORD.test(sql)) push('SQL_IN_NON_DATA_LAYER', node, symbol, `${name}(<sql>)`);
       }
-      if (JS_NETWORK_CALLEES.has(name)) {
+      if (JS_NETWORK_CALLEES.has(name) && !viaSiteApi(node)) {
         push('NETWORK_IN_NON_ADAPTER', node, symbol, `${name}()`);
       }
       if (domScope && (name === 'alert' || name === 'confirm' || name === 'prompt')) {
@@ -800,6 +822,8 @@ module.exports = {
   resolveRole,
   rolePolicy,
   scanImportEdges,
+  calleePath,
+  viaSiteApi,
   scan,
   scanHtmlInlineScripts,
   scanJs,

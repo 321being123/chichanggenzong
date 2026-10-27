@@ -38,12 +38,16 @@ const context = {
 };
 vm.createContext(context);
 vm.runInContext(fs.readFileSync(path.join(root, 'public/js/utils.js'), 'utf8'), context);
+vm.runInContext(fs.readFileSync(path.join(root, 'public/js/api/client.js'), 'utf8'), context);
+vm.runInContext(fs.readFileSync(path.join(root, 'public/js/api/holdings-quote-api.js'), 'utf8'), context);
 vm.runInContext(fs.readFileSync(path.join(root, 'public/shared/core-quote.js'), 'utf8'), context);
 
 assert.ok(indexHtml.includes('<button class="btn-refresh" data-act="doRefresh" title="刷新持仓实时价格并重新计算总资产">刷新行情</button>'),
   '现有账户工具栏应显示复用 doRefresh 的“刷新行情”按钮');
 assert.ok(indexHtml.includes('shared/core-quote.js?v=__APP_VERSION__') && indexHtml.includes('shared/core-tables.js?v=__APP_VERSION__'),
   '修改后的共享行情与统计脚本必须使用当前版本缓存键');
+assert(indexHtml.indexOf('js/api/client.js') < indexHtml.indexOf('js/api/holdings-quote-api.js') &&
+  indexHtml.indexOf('js/api/holdings-quote-api.js') < indexHtml.indexOf('shared/core-quote.js'), '持仓行情客户端必须在共享行情之前加载');
 assert.ok(sharedStyle.includes('.sub-nav .btn-refresh { background: #fff; color: #1a237e; border: 1px solid #c7cedb; }'),
   '桌面白色工具栏上的刷新按钮应使用可辨认的文字和边框');
 assert.ok(sharedStyle.includes('.mobile-account-tools .btn-refresh { min-height: 44px; }'),

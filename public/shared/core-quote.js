@@ -31,9 +31,9 @@ function setHint(id, text) {
 
 async function fetchQuoteFromServer(code) {
   try {
-    const r = await fetch(api('/api/quote/' + encodeURIComponent(code)));
+    const r = await window.holdingsQuoteApi.quote(code);
     if (r.ok) {
-      const data = await r.json();
+      const data = r.payload;
       // 即使 price 为 null（停牌/无行情），只要有 name 就返回（用于自动填充名称）
       if (data && (data.price || data.name)) return data;
     }
@@ -72,9 +72,9 @@ async function fetchQuote(code, forceRefresh) {
 
 async function fetchHKRate(realtime) {
   try {
-    const r = await fetch(api('/api/hkrate' + (realtime ? '?realtime=1' : '')));
+    const r = await window.holdingsQuoteApi.hkRate(realtime);
     if (r.ok) {
-      const d = await r.json();
+      const d = r.payload;
       if (d && d.rate > 0) return d.rate;
     }
   } catch(e) {}
@@ -120,8 +120,8 @@ async function refreshAllPrices(marketsToRefresh) {
   const fetchQuoteBatch = async function (batchCodes) {
     if (!batchCodes.length) return {};
     try {
-      const rr = await fetch(api('/api/quotes?codes=' + encodeURIComponent(batchCodes.join(','))));
-      if (rr.ok) return await rr.json() || {};
+      const rr = await window.holdingsQuoteApi.quotes(batchCodes);
+      if (rr.ok) return rr.payload || {};
     } catch (e) {}
     return {};
   };
@@ -214,12 +214,8 @@ async function refreshAllPrices(marketsToRefresh) {
     .map(function(p) { return { code: p.code, price: p.price }; }).filter(function(p) { return p.code && p.price != null; });
   var pricesSaved = false;
   try {
-    var pr = await fetch(api('/api/positions/prices?version=' + (dataVersion != null ? dataVersion : '')), {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ account: currentAccount, prices: pricesToSave })
-    });
-    var pj = await pr.json().catch(function(){ return {}; });
+    var pr = await window.holdingsQuoteApi.savePrices(currentAccount, dataVersion, pricesToSave);
+    var pj = pr.payload;
     // 2026-08-04 阻断修复：必须检查保存状态，否则 400/500 时仍提示"刷新完成"，下次打开价格回退旧值
     if (!pr.ok) {
       console.warn('[refreshAllPrices] 价格保存失败', pr.status, pj.error || '');
@@ -379,11 +375,7 @@ async function saveDailyPricesToDB(validatedQuotes) {
     });
     for (var market of ['CN', 'HK']) {
       if (!pricesByMarket[market].length) continue;
-      var response = await fetch(api('/api/daily-prices/' + encodeURIComponent(currentAccount)), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prices: pricesByMarket[market], date: writeDate })
-      });
+      var response = await window.holdingsQuoteApi.saveDailyPrices(currentAccount, writeDate, pricesByMarket[market]);
       if (!response.ok) throw new Error('收盘价保存失败：HTTP ' + response.status);
       try { localStorage.setItem('_dailyPricesSaved_' + currentAccount + '_' + market, writeDate); } catch(e) {}
     }
@@ -505,12 +497,9 @@ async function addQuickPosition() {
   // 阶段二-6：快速添加走 position-events，服务端统一事务写持仓+交易
   // 幂等键：event.id 前端生成，重复点击/网络重试不会新增第二条（2026-08-04 修复）
   try {
-    var r = await fetch(api('/api/accounts/' + encodeURIComponent(currentAccount) + '/ledger/position-events?version=' + (dataVersion != null ? dataVersion : '')), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ event: { id: uid(), code, name, direction: 'open', price: price, quantity: qty, type, subtype, date: todayCN(), note: '快速添加' } })
-    });
-    var j = await r.json().catch(function(){ return {}; });
+    var r = await window.holdingsQuoteApi.addPosition(currentAccount, dataVersion,
+      { id: uid(), code, name, direction: 'open', price: price, quantity: qty, type, subtype, date: todayCN(), note: '快速添加' });
+    var j = r.payload;
     if (!r.ok) { showToast(j.error || '添加失败'); return; }
     if (j.data) refreshDataFromServer(j.data);
     renderAll();
@@ -574,12 +563,8 @@ async function executePasteImport() {
     return;
   }
   try {
-    var r = await fetch(api('/api/accounts/' + encodeURIComponent(currentAccount) + '/ledger/position-events/batch?version=' + (dataVersion != null ? dataVersion : '')), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ events: events })
-    });
-    var j = await r.json().catch(function(){ return {}; });
+    var r = await window.holdingsQuoteApi.addPositions(currentAccount, dataVersion, events);
+    var j = r.payload;
     if (!r.ok) { showToast(j.error || '导入失败'); return; }
     if (j.data) refreshDataFromServer(j.data);
     renderAll();

@@ -52,7 +52,7 @@ context.data = {
 assert.strictEqual(context.calcSummary().total, 700, '普通账户总资产必须等于实时持仓市值加现金');
 
 const renderAt = quote.indexOf('renderAll();', quote.indexOf('async function refreshAllPrices'));
-const saveAt = quote.indexOf("fetch(api('/api/positions/prices", renderAt);
+const saveAt = quote.indexOf('window.holdingsQuoteApi.savePrices(', renderAt);
 const navAt = quote.indexOf('if (pricesSaved) await recordNav();', saveAt);
 const attributionRenderAt = quote.indexOf("if (pricesSaved && typeof renderStats === 'function') renderStats();", navAt);
 assert.ok(renderAt >= 0 && saveAt > renderAt, '行情到齐后应先刷新页面，再等待价格落库');

@@ -444,6 +444,13 @@
       "status": "registered"
     },
     {
+      "path": "server/dataAccess/adapters/announcementSourceAdapter.js",
+      "role": "data_adapter",
+      "batch": 4,
+      "status": "registered",
+      "note": "公告与社区贴采集（巨潮/上交所/深交所/东财F10/雪球/股吧），从 services/stockAnalysis.js 迁入"
+    },
+    {
       "path": "server/services/bondSafetyFetcher.js",
       "role": "data_adapter",
       "batch": 3,

@@ -8,7 +8,9 @@ const migrations = fs.readFileSync(require.resolve('../db/migrations'), 'utf8');
 const audit = fs.readFileSync(require.resolve('../scripts/auditInstrumentMerges'), 'utf8');
 const identity = fs.readFileSync(require.resolve('../services/securityIdentity'), 'utf8');
 const marketRoute = fs.readFileSync(require.resolve('../routes/market'), 'utf8');
-const stockAnalysis = fs.readFileSync(require.resolve('../services/stockAnalysis'), 'utf8');
+const stockAnalysis = fs.readFileSync(require.resolve('../services/stockAnalysis'), 'utf8')
+  // 批次4：雪球/股吧等采集已迁入数据接入层，采集契约断言同时覆盖适配器。
+  + '\n' + fs.readFileSync(require.resolve('../dataAccess/adapters/announcementSourceAdapter'), 'utf8');
 const tencentQuote = fs.readFileSync(require.resolve('../services/tencentQuote'), 'utf8');
 const pythonIdentity = fs.readFileSync(require.resolve('../../ipo-report/instrument_identity.py'), 'utf8');
 const pythonQuote = fs.readFileSync(require.resolve('../../ipo-report/ipo_lib_common.py'), 'utf8');

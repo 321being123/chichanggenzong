@@ -56,8 +56,9 @@ assert.ok(/if \(snapshotResult\.status === 404\)[\s\S]*?暂无分析快照[\s\S]
 assert.ok(/if \(!refresh && analysis\.needs_refresh\)[\s\S]*?showToast\('数据待更新，请点击“刷新数据”进行更新。'\)/.test(bondScript)
   && !/if \(!refresh && analysis\.needs_refresh\)[\s\S]*?return bondAnalysisLoad\(true/.test(bondScript),
   '可转债分析页面打开只能提示过期，不能自动触发外部刷新');
-assert.ok(/response\.status===404&&!refresh[\s\S]*?暂无分析快照[\s\S]*?刷新数据/.test(bondScript)
-  && !/response\.status===404&&!refresh[\s\S]*?return bondAnalysisLoad\(true/.test(bondScript),
+// 批次4：取数改走统一客户端后，响应变量名由 response 变为 res；判定语义不变（404 只提示不自动建档）。
+assert.ok(/res\.status===404&&!refresh[\s\S]*?暂无分析快照[\s\S]*?刷新数据/.test(bondScript)
+  && !/res\.status===404&&!refresh[\s\S]*?return bondAnalysisLoad\(true/.test(bondScript),
   '可转债分析页面首次打开无快照时不能自动建档');
 assert.ok(html.includes('js/stock-analysis-chart.js'), '缺少盈利分红图表脚本引用');
 assert.ok(chartScript.includes('dividend_history'), '缺少历史分红记录渲染');

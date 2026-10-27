@@ -24,7 +24,9 @@ const ipoRepositorySource = fs.readFileSync(path.join(root, 'server', 'repositor
 const bondAnalysis = fs.readFileSync(path.join(root, 'server', 'routes', 'bondAnalysis.js'), 'utf8');
 // 可转债证券检索 SQL 已按批次3 迁入仓储，定向/私募排除规则随之落在仓储内，断言须指向真实实现位置。
 const bondAnalysisRepository = fs.readFileSync(path.join(root, 'server', 'repositories', 'bondAnalysisRepository.js'), 'utf8');
-const stockAnalysisService = fs.readFileSync(path.join(root, 'server', 'services', 'stockAnalysis.js'), 'utf8');
+const stockAnalysisService = fs.readFileSync(path.join(root, 'server', 'services', 'stockAnalysis.js'), 'utf8')
+  // 批次4：公告采集与来源映射已迁入数据接入层，断言同时覆盖适配器，避免搬移让检查静默失效。
+  + '\n' + fs.readFileSync(path.join(root, 'server', 'dataAccess', 'adapters', 'announcementSourceAdapter.js'), 'utf8');
 
 assert.ok(html.includes('data-sub="revision"') && html.includes('id="sub-bond-revision"'), '缺少下修二级页');
 assert.ok(html.includes('css/bond-revision.css?v=__APP_VERSION__') && html.includes('js/bond-revision.js?v=__APP_VERSION__'), '下修资源未接入首页');

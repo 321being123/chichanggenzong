@@ -42,7 +42,9 @@ const safetyCss = fs.readFileSync(path.join(root, 'public', 'css', 'bond-safety.
 const cycle = fs.readFileSync(path.join(root, 'public', 'js', 'bond-cycle.js'), 'utf8');
 const { readMigrationSource } = require('./helpers/migration-source');
 const migration = readMigrationSource();
-const stockAnalysis = fs.readFileSync(path.join(root, 'server', 'services', 'stockAnalysis.js'), 'utf8');
+const stockAnalysis = fs.readFileSync(path.join(root, 'server', 'services', 'stockAnalysis.js'), 'utf8')
+  // 批次4：采集函数已迁入数据接入层，分页完整性等采集断言需同时覆盖适配器（业务口径未变，只改实现位置）。
+  + '\n' + fs.readFileSync(path.join(root, 'server', 'dataAccess', 'adapters', 'announcementSourceAdapter.js'), 'utf8');
 const list = fs.readFileSync(path.join(root, 'server', 'services', 'convertibleBondListService.js'), 'utf8');
 const { readServiceSource } = require('./helpers/service-source');
 const analysis = readServiceSource('convertibleBondAnalysis');

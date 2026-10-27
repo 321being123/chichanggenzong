@@ -140,12 +140,8 @@ async function addTrade() {
 
   // 服务端统一账本事务（2026-08-03 整改）：持仓/现金由服务端重算并返回，前端不再自行计算
   try {
-    const r = await fetch(api('/api/accounts/' + encodeURIComponent(currentAccount) + '/ledger/trades?version=' + (dataVersion != null ? dataVersion : '')), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ trade: trade })
-    });
-    const j = await r.json().catch(() => ({}));
+    const r = await window.tradeLedgerApi.addTrade(currentAccount, dataVersion, trade);
+    const j = r.payload;
     if (!r.ok) {
       showToast(j.error || '保存交易失败');
       return;
@@ -162,10 +158,8 @@ async function addTrade() {
     // 过去日期的交易：触发历史净值精确回填（Tushare 历史回补，不近似）
     if (pickedDate && pickedDate < todayCN()) {
       try {
-        const rr = await fetch(api('/api/data/' + encodeURIComponent(currentAccount) + '/recompute-nav'), {
-          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ fromDate: pickedDate })
-        });
-        const jj = await rr.json().catch(function () { return {}; });
+        const rr = await window.tradeLedgerApi.recomputeNav(currentAccount, pickedDate);
+        const jj = rr.payload;
         if (jj && jj.ok) data = await loadData(currentAccount);
       } catch (e) {}
     }
@@ -192,10 +186,8 @@ async function addTrade() {
 async function deleteTrade(id) {
   // 服务端统一账本事务：删除交易后服务端重放持仓/现金并返回最新结果
   try {
-    const r = await fetch(api('/api/accounts/' + encodeURIComponent(currentAccount) + '/ledger/trades/' + encodeURIComponent(id) + '?version=' + (dataVersion != null ? dataVersion : '')), {
-      method: 'DELETE'
-    });
-    const j = await r.json().catch(() => ({}));
+    const r = await window.tradeLedgerApi.deleteTrade(currentAccount, dataVersion, id);
+    const j = r.payload;
     if (!r.ok) { showToast(j.error || '删除交易失败'); return; }
     if (j.data) {
       data = j.data;
@@ -1470,11 +1462,8 @@ async function addTradeInternal(code, name, direction, price, quantity, date, im
 
   // 服务端统一账本事务：持仓/现金由服务端重算并返回
   try {
-    const r = await fetch(api('/api/accounts/' + encodeURIComponent(currentAccount) + '/ledger/trades?version=' + (dataVersion != null ? dataVersion : '')), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        trade: {
+    const r = await window.tradeLedgerApi.addTrade(currentAccount, dataVersion,
+        {
           id: tradeId,
           code: code, name: name || code, direction: direction,
           price: price, quantity: quantity,
@@ -1483,10 +1472,8 @@ async function addTradeInternal(code, name, direction, price, quantity, date, im
           quote_currency: opts.quoteCurrency || undefined,
           date: date, // 日期必须显式给定（重校验已阻止缺失，不默认今天；方案 4.1 第 6 条）
           import_batch_id: importBatchId || null
-        }
-      })
-    });
-    const j = await r.json().catch(function () { return {}; });
+        });
+    const j = r.payload;
     if (!r.ok) {
       if (r.status === 409) {
         // 409 可能是"已保存但响应丢失后带旧版本重试"：先按原 id 核对，已落库才标已保存（方案 4.4 第 5 条）
@@ -1510,10 +1497,8 @@ async function addTradeInternal(code, name, direction, price, quantity, date, im
     // 过去日期的交易：触发历史净值精确回填（Tushare 历史回补，不近似）；失败与交易已保存分开提示
     if (date && date < todayCN()) {
       try {
-        const rr = await fetch(api('/api/data/' + encodeURIComponent(currentAccount) + '/recompute-nav'), {
-          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ fromDate: date })
-        });
-        const jj = await rr.json().catch(function () { return {}; });
+        const rr = await window.tradeLedgerApi.recomputeNav(currentAccount, date);
+        const jj = rr.payload;
         if (jj && jj.ok) data = await loadData(currentAccount); // 刷新 navHistory
       } catch (e) {
         renderAll();

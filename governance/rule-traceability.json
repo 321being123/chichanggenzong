@@ -751,6 +751,10 @@
           "pattern": "持仓事件沿用上海业务日"
         },
         {
+          "file": "server/test/trade-ledger-api.test.js",
+          "pattern": "交易事件保留用户日期"
+        },
+        {
           "file": "ipo-report/test_ipo_unit.py",
           "pattern": "日历业务日期固定按上海时区"
         }

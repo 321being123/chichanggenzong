@@ -80,7 +80,8 @@ assert.ok(html.includes("startParams.get('metric')") && html.includes('switchMar
 assert.ok(html.includes('id="mv-home" hidden') && html.includes('id="mvc-home" hidden'), '四个指标缺少管理员“设为首页”按钮');
 assert.ok(frontend.includes("myProfile.role === 'admin'") && frontend.includes("metricButton.hidden=!admin"), '普通账户仍会显示“设为首页”按钮');
 assert.ok(frontend.includes("?'已设为首页':'设为首页'") && frontend.includes('metricButton.disabled=metricCurrent'), '当前首页指标未进入不可点击状态');
-assert.ok(frontend.includes("method:'PUT'") && frontend.includes('/home-cycle/config'), '管理员设置首页指标未接入接口');
+// 批次4：取数改走统一入口后，PUT 由入口的 put 方法表达（仍带登录凭据），判定语义不变。
+assert.ok(frontend.includes('window.siteApi.put(') && frontend.includes('/home-cycle/config'), '管理员设置首页指标未接入接口');
 assert.ok(html.includes('id="mvc-boundary-controls" hidden'), 'PE/PB/M2仍显示边界输入框');
 assert.ok(!frontend.includes("getElementById('mvc-boundary-controls').hidden=false"), '边界输入框会被重新显示');
 

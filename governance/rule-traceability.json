@@ -747,6 +747,10 @@
           "pattern": "R3 日期边界测试通过"
         },
         {
+          "file": "server/test/position-actions-frontend.test.js",
+          "pattern": "持仓事件沿用上海业务日"
+        },
+        {
           "file": "ipo-report/test_ipo_unit.py",
           "pattern": "日历业务日期固定按上海时区"
         }

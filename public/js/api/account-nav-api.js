@@ -19,6 +19,9 @@
     brokers: function () { return request('/api/brokers?market=A'); },
     setBroker: function (name, broker) { return request('/api/accounts/broker', jsonWrite('PUT', { account_name: name, broker: broker })); },
     accountBrokers: function () { return request('/api/accounts/broker'); },
+    saveSettings: function (account, version, body) {
+      return request('/api/accounts/' + encodeURIComponent(account) + '/settings?version=' + (version != null ? version : ''), jsonWrite('PATCH', body));
+    },
     deleteAccount: function (name) { return request('/api/accounts/' + encodeURIComponent(name), { method: 'DELETE' }); },
     renameAccount: function (name, newName) { return request('/api/accounts/' + encodeURIComponent(name) + '/rename', jsonWrite('POST', { newName: newName })); },
   };

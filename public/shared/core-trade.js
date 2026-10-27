@@ -266,12 +266,8 @@ function savePosition() {
   if (editingId === 'cash') {
     (async function () {
       try {
-        var r = await fetch(api('/api/accounts/' + encodeURIComponent(currentAccount) + '/settings?version=' + (dataVersion != null ? dataVersion : '')), {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ cashType: type, cashSubtype: subtype })
-        });
-        var j = await r.json().catch(function(){ return {}; });
+        var r = await window.accountNavApi.saveSettings(currentAccount, dataVersion, { cashType: type, cashSubtype: subtype });
+        var j = r.payload;
         if (!r.ok) { showToast(j.error || '更新失败'); return; }
         // 同步新版本号（2026-08-04 第二轮修复）
         if (typeof j.version === 'number') dataVersion = j.version;
@@ -308,11 +304,8 @@ function savePosition() {
     if (delta !== 0) {
       (async function () {
         try {
-          var r = await fetch(api('/api/accounts/' + encodeURIComponent(currentAccount) + '/ledger/position-events?version=' + (dataVersion != null ? dataVersion : '')), {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              event: {
+          var r = await window.holdingsQuoteApi.addPosition(currentAccount, dataVersion,
+              {
                 id: uid(), // 幂等键：重复点击/网络重试不会重复写入（2026-08-04 修复）
                 code: code, name: name || code,
                 direction: 'adjust',
@@ -320,10 +313,8 @@ function savePosition() {
                 quantity: qty, // adjust 语义 = 调整后目标数量（绝对设置）
                 type: type, subtype: subtype,
                 date: todayCN(), note: note || ('持仓调整至 ' + qty)
-              }
-            })
-          });
-          var j = await r.json().catch(function () { return {}; });
+              });
+          var j = r.payload;
           if (!r.ok) { showToast(j.error || '保存持仓失败'); return; }
           if (j.data) {
             data = j.data;
@@ -345,12 +336,9 @@ function savePosition() {
       // 数量未变：仅元数据变化，走局部接口
       (async function () {
         try {
-          var r2 = await fetch(api('/api/positions/' + editingId + '/meta?version=' + (dataVersion != null ? dataVersion : '')), {
-            method: 'PATCH',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ account: currentAccount, name: name, type: type, subtype: subtype, note: note })
-          });
-          var j2 = await r2.json().catch(function(){ return {}; });
+          var r2 = await window.holdingsQuoteApi.updatePositionMetadata(editingId, dataVersion,
+            { account: currentAccount, name: name, type: type, subtype: subtype, note: note });
+          var j2 = r2.payload;
           if (!r2.ok) { showToast(j2.error || '保存失败'); return; }
           // 同步新版本号，防止紧接着的第二次操作误报"其他窗口已修改"（2026-08-04 第二轮修复）
           if (typeof j2.version === 'number') dataVersion = j2.version;
@@ -366,21 +354,16 @@ function savePosition() {
   // 新增持仓（手动添加新代码）：用 open 期初建仓事件
   (async function () {
     try {
-      var r2 = await fetch(api('/api/accounts/' + encodeURIComponent(currentAccount) + '/ledger/position-events?version=' + (dataVersion != null ? dataVersion : '')), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          event: {
+      var r2 = await window.holdingsQuoteApi.addPosition(currentAccount, dataVersion,
+          {
             id: uid(), // 幂等键：重复点击/网络重试不会重复建仓（2026-08-04 修复）
             code: code, name: name || code,
             direction: 'open',
             price: cost || price, quantity: qty,
             type: type, subtype: subtype,
             date: todayCN(), note: note || '手动建仓'
-          }
-        })
-      });
-      var j2 = await r2.json().catch(function () { return {}; });
+          });
+      var j2 = r2.payload;
       if (!r2.ok) { showToast(j2.error || '添加持仓失败'); return; }
       if (j2.data) {
         data = j2.data;
@@ -419,11 +402,8 @@ function confirmDelete() {
     if (p && p.code) {
       (async function () {
         try {
-          var r = await fetch(api('/api/accounts/' + encodeURIComponent(currentAccount) + '/ledger/position-events?version=' + (dataVersion != null ? dataVersion : '')), {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              event: {
+          var r = await window.holdingsQuoteApi.addPosition(currentAccount, dataVersion,
+              {
                 id: uid(), // 幂等键（2026-08-04 修复）
                 code: p.code, name: p.name || p.code,
                 direction: 'adjust',
@@ -431,10 +411,8 @@ function confirmDelete() {
                 quantity: 0, // 清仓
                 type: p.type || '股权', subtype: p.subtype || '',
                 date: todayCN(), note: '删除持仓（清仓）'
-              }
-            })
-          });
-          var j = await r.json().catch(function () { return {}; });
+              });
+          var j = r.payload;
           if (!r.ok) { showToast(j.error || '删除持仓失败'); return; }
           if (j.data) {
             data = j.data;
@@ -971,12 +949,8 @@ async function saveSmartFeeRates() {
   });
   data.feeSettings = settings;
   try {
-    var r = await fetch(api('/api/accounts/' + encodeURIComponent(currentAccount) + '/settings?version=' + (dataVersion != null ? dataVersion : '')), {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ feeSettings: data.feeSettings })
-    });
-    var j = await r.json().catch(function(){ return {}; });
+    var r = await window.accountNavApi.saveSettings(currentAccount, dataVersion, { feeSettings: data.feeSettings });
+    var j = r.payload;
     if (!r.ok) { showToast(j.error || '保存失败'); return; }
     if (typeof j.version === 'number') dataVersion = j.version; // 同步新版本号（2026-08-04 第二轮修复）
   } catch(e) { showToast('保存失败：' + (e.message || e)); return; }
@@ -1615,12 +1589,8 @@ async function saveFeeSettings() {
   });
   data.feeSettings = groups;
   try {
-    var r = await fetch(api('/api/accounts/' + encodeURIComponent(currentAccount) + '/settings?version=' + (dataVersion != null ? dataVersion : '')), {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ feeSettings: data.feeSettings })
-    });
-    var j = await r.json().catch(function(){ return {}; });
+    var r = await window.accountNavApi.saveSettings(currentAccount, dataVersion, { feeSettings: data.feeSettings });
+    var j = r.payload;
     if (!r.ok) { showToast(j.error || '保存失败'); return; }
     if (typeof j.version === 'number') dataVersion = j.version; // 同步新版本号（2026-08-04 第二轮修复）
   } catch(e) { showToast('保存失败：' + (e.message || e)); return; }

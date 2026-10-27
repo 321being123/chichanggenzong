@@ -24,15 +24,18 @@ const api = context.window.accountNavApi;
   await api.accountBrokers();
   await api.deleteAccount('账户%');
   await api.renameAccount('账户%', '新账户');
+  await api.saveSettings('账户%', 3, { cashType: '现金' });
   assert.deepStrictEqual(calls.map(x => x.url), [
     '/api/nav/2026-10-28?version=3', '/api/nav/2026-10-28?version=3',
     '/api/brokers?market=A', '/api/accounts/broker', '/api/accounts/broker',
     '/api/accounts/%E8%B4%A6%E6%88%B7%25', '/api/accounts/%E8%B4%A6%E6%88%B7%25/rename',
+    '/api/accounts/%E8%B4%A6%E6%88%B7%25/settings?version=3',
   ]);
-  assert.deepStrictEqual(calls.map(x => x.options.method || 'GET'), ['PUT', 'DELETE', 'GET', 'PUT', 'GET', 'DELETE', 'POST']);
+  assert.deepStrictEqual(calls.map(x => x.options.method || 'GET'), ['PUT', 'DELETE', 'GET', 'PUT', 'GET', 'DELETE', 'POST', 'PATCH']);
   assert(calls.every(x => x.options.timeoutMs === 0));
   assert.strictEqual(JSON.parse(calls[0].options.body).account, '账户%');
   assert.strictEqual(JSON.parse(calls[6].options.body).newName, '新账户');
+  assert.strictEqual(JSON.parse(calls[7].options.body).cashType, '现金');
   error = true;
   await assert.rejects(api.deleteAccount('账户%'), /网络故障/);
 

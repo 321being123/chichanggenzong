@@ -26,5 +26,8 @@
     addPositions: function (account, version, events) {
       return request('/api/accounts/' + encodeURIComponent(account) + '/ledger/position-events/batch?version=' + (version != null ? version : ''), jsonWrite('POST', { events: events }));
     },
+    updatePositionMetadata: function (id, version, body) {
+      return request('/api/positions/' + id + '/meta?version=' + (version != null ? version : ''), jsonWrite('PATCH', body));
+    },
   };
 })(typeof window !== 'undefined' ? window : globalThis);

@@ -23,16 +23,19 @@ const api = ui.window.holdingsQuoteApi;
   await api.saveDailyPrices('账户甲', '2026-10-28', [{ code: '600000', price: 10 }]);
   await api.addPosition('账户甲', 3, { id: 'fixed-event', code: '600000' });
   await api.addPositions('账户甲', 3, [{ id: 'fixed-batch-event' }]);
+  await api.updatePositionMetadata('p1', 3, { account: '账户甲', name: '样本' });
   assert.deepStrictEqual(calls.map(x => x.url), [
     '/api/quote/600000.SH', '/api/hkrate?realtime=1', '/api/quotes?codes=600000%2C00700',
     '/api/positions/prices?version=3', '/api/daily-prices/%E8%B4%A6%E6%88%B7%E7%94%B2',
     '/api/accounts/%E8%B4%A6%E6%88%B7%E7%94%B2/ledger/position-events?version=3',
     '/api/accounts/%E8%B4%A6%E6%88%B7%E7%94%B2/ledger/position-events/batch?version=3',
+    '/api/positions/p1/meta?version=3',
   ]);
   assert(calls.every(x => x.options.timeoutMs === 0), '沿用原请求的不设客户端超时口径');
-  assert.deepStrictEqual(calls.slice(3).map(x => x.options.method), ['PATCH', 'POST', 'POST', 'POST']);
+  assert.deepStrictEqual(calls.slice(3).map(x => x.options.method), ['PATCH', 'POST', 'POST', 'POST', 'PATCH']);
   assert.strictEqual(JSON.parse(calls[5].options.body).event.id, 'fixed-event', '保留原交易幂等键');
   assert.strictEqual(JSON.parse(calls[6].options.body).events[0].id, 'fixed-batch-event');
+  assert.strictEqual(JSON.parse(calls[7].options.body).account, '账户甲');
   conflict = true;
   const stale = await api.savePrices('账户甲', 3, []);
   assert.strictEqual(stale.status, 409);

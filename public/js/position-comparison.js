@@ -44,8 +44,8 @@
     var sel = document.getElementById('position-visibility-select');
     if (!sel) return;
     try {
-      var r = await fetch(api('/api/position-comparisons/visibility?account=' + encodeURIComponent(accountName)));
-      var d = await r.json().catch(function () { return {}; });
+      var res = await window.siteApi.get('/api/position-comparisons/visibility?account=' + encodeURIComponent(accountName));
+      var d = res.payload || {};
       if (d && VALID_VISIBILITY.indexOf(d.visibility) >= 0) sel.value = d.visibility;
     } catch (e) { /* 忽略：保持默认 */ }
   }
@@ -61,13 +61,9 @@
       if (!ok) { initPositionControls(); return; }
     }
     try {
-      var r = await fetch(api('/api/accounts/' + encodeURIComponent(accountName) + '/position-visibility'), {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ visibility: visibility })
-      });
-      var d = await r.json().catch(function () { return {}; });
-      if (!r.ok) { showToast(d.error || '发布失败，请重试'); initPositionControls(); return; }
+      var res = await window.siteApi.put('/api/accounts/' + encodeURIComponent(accountName) + '/position-visibility', { visibility: visibility });
+      var d = res.payload || {};
+      if (!res.ok) { showToast(d.error || '发布失败，请重试'); initPositionControls(); return; }
       showToast(visibility === 'private' ? '已取消发布（不发布）' : (visibility === 'public' ? '已发布为完整标杆' : '已发布为脱敏标杆'));
       refreshBenchmarkButton();
     } catch (e) { showToast('发布失败，请重试'); initPositionControls(); }
@@ -78,8 +74,8 @@
     var btn = document.getElementById('pc-open-btn');
     if (!btn) return;
     try {
-      var r = await fetch(api('/api/position-comparisons/benchmarks'));
-      state.benchmarks = r.ok ? (await r.json()) : [];
+      var res = await window.siteApi.get('/api/position-comparisons/benchmarks');
+      state.benchmarks = res.ok ? (res.payload || []) : [];
       btn.classList.remove('js-hidden'); btn.style.display = state.benchmarks.length ? '' : 'none';
     } catch (e) { btn.style.display = 'none'; }
   }
@@ -88,8 +84,8 @@
   async function openBenchmarkPicker() {
     if (!state.benchmarks.length) {
       try {
-        var r = await fetch(api('/api/position-comparisons/benchmarks'));
-        state.benchmarks = r.ok ? (await r.json()) : [];
+        var res = await window.siteApi.get('/api/position-comparisons/benchmarks');
+        state.benchmarks = res.ok ? (res.payload || []) : [];
       } catch (e) {}
     }
     if (!state.benchmarks.length) { showToast('暂无可对比的官方标杆'); return; }
@@ -120,13 +116,11 @@
     closeSelf();
     showToast('正在计算对比…');
     try {
-      var r = await fetch(api('/api/position-comparisons/compare'), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ myAccountName: myAccountName, benchmarkAccountId: benchmarkAccountId })
+      var res = await window.siteApi.post('/api/position-comparisons/compare', {
+        myAccountName: myAccountName, benchmarkAccountId: benchmarkAccountId
       });
-      var d = await r.json().catch(function () { return {}; });
-      if (!r.ok) { showToast(d.error || '对比失败，请重试'); return; }
+      var d = res.payload || {};
+      if (!res.ok) { showToast(d.error || '对比失败，请重试'); return; }
       if (d.empty) { showToast(d.message || '没有可对比的资产'); return; }
       state.compareData = d;
       // 打开独立对比页（非弹框）
@@ -255,17 +249,13 @@
     if (!Number.isFinite(availableCash) || availableCash <= 0) { showToast('请输入大于 0 的新增资金'); return; }
     showToast('正在测算…');
     try {
-      var r = await fetch(api('/api/position-comparisons/replicate'), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          myAccountName: getAccount(),
-          benchmarkAccountId: state.currentBenchmark,
-          availableCash: availableCash
-        })
+      var res = await window.siteApi.post('/api/position-comparisons/replicate', {
+        myAccountName: getAccount(),
+        benchmarkAccountId: state.currentBenchmark,
+        availableCash: availableCash
       });
-      var d = await r.json().catch(function () { return {}; });
-      if (!r.ok) { showToast(d.error || '测算失败，请重试'); return; }
+      var d = res.payload || {};
+      if (!res.ok) { showToast(d.error || '测算失败，请重试'); return; }
       state.replicateData = d;
       renderReplicate(d);
     } catch (e) { showToast('测算失败，请重试'); }

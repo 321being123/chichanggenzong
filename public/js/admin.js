@@ -71,8 +71,8 @@ function closeAdminModal() {
 // ====== 鉴权 ======
 async function checkAuth() {
   try {
-    const r = await fetch(api('/api/me'));
-    const d = await r.json();
+    const r = await window.siteApi.get('/api/me');
+    const d = r.payload;
     if (!d.username) { window.location.href = api('/login.html?redirect=' + encodeURIComponent('/admin.html')); return false; }
     adminProfile = d;
     const caps = d.capabilities || {};
@@ -88,7 +88,7 @@ async function checkAuth() {
 }
 
 async function adminLogout() {
-  await fetch(api('/api/logout'), { method: 'POST' });
+  await window.siteApi.post('/api/logout', {});
   window.location.href = api('/login.html');
 }
 
@@ -156,9 +156,9 @@ async function renderOverview() {
   if (!el) return;
   el.innerHTML = '<div class="admin-placeholder"><div class="spinner u-mx-auto-12" ></div>加载中...</div>';
   try {
-    const r = await fetch(api('/api/admin/overview'));
+    const r = await window.siteApi.get('/api/admin/overview');
     if (!r.ok) { el.innerHTML = '<div class="admin-placeholder"><div class="icon">⚠️</div>无权限或加载失败</div>'; return; }
-    const d = await r.json();
+    const d = r.payload;
     const cards = [
       { label: '平台总用户', value: d.totalUsers, icon: '👥', bg: 'icon-bg-blue', sub: '含管理员' },
       { label: '管理员', value: d.adminUsers, icon: '🛡️', bg: 'icon-bg-red', sub: 'role=admin' },
@@ -217,9 +217,9 @@ async function loadUsersData() {
   const tbody = document.getElementById('users-tbody');
   const pager = document.getElementById('users-pager');
   try {
-    const r = await fetch(api('/api/admin/users?search=' + encodeURIComponent(usersSearch) + '&limit=' + usersLimit + '&offset=' + usersOffset));
+    const r = await window.siteApi.get('/api/admin/users?search=' + encodeURIComponent(usersSearch) + '&limit=' + usersLimit + '&offset=' + usersOffset);
     if (!r.ok) { tbody.innerHTML = '<tr><td colspan="6" class="biz-table-state-cell biz-table-error">加载失败</td></tr>'; return; }
-    const d = await r.json();
+    const d = r.payload;
     if (!d.list.length) {
       tbody.innerHTML = '<tr><td colspan="6" class="biz-table-state-cell">暂无用户</td></tr>';
     } else {
@@ -261,11 +261,11 @@ async function loadUsersData() {
 async function adminToggleStatus(username, cur) {
   const next = cur === 'active' ? 'disabled' : 'active';
   try {
-    const r = await fetch(api('/api/admin/users/' + encodeURIComponent(username) + '/status'), {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
+    const r = await window.siteApi.request('/api/admin/users/' + encodeURIComponent(username) + '/status', {
+      method: 'POST', headers: window.siteApi.jsonHeaders(),
       body: JSON.stringify({ status: next })
     });
-    const d = await r.json();
+    const d = r.payload;
     if (!r.ok) { showToast(d.error || '操作失败'); return; }
     showToast(next === 'active' ? '已启用' : '已禁用');
     loadUsersData();
@@ -275,11 +275,11 @@ async function adminToggleStatus(username, cur) {
 async function adminToggleRole(username, cur) {
   const next = cur === 'admin' ? 'user' : 'admin';
   try {
-    const r = await fetch(api('/api/admin/users/' + encodeURIComponent(username) + '/role'), {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
+    const r = await window.siteApi.request('/api/admin/users/' + encodeURIComponent(username) + '/role', {
+      method: 'POST', headers: window.siteApi.jsonHeaders(),
       body: JSON.stringify({ role: next })
     });
-    const d = await r.json();
+    const d = r.payload;
     if (!r.ok) { showToast(d.error || '操作失败'); return; }
     showToast(next === 'admin' ? '已设为管理员' : '已取消管理员');
     loadUsersData();
@@ -297,11 +297,11 @@ async function doAdminResetPwd(username) {
   const pwd = document.getElementById('admin-pwd-input').value;
   if (!pwd || pwd.length < 6) { showToast('密码至少6位'); return; }
   try {
-    const r = await fetch(api('/api/admin/users/' + encodeURIComponent(username) + '/password'), {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
+    const r = await window.siteApi.request('/api/admin/users/' + encodeURIComponent(username) + '/password', {
+      method: 'POST', headers: window.siteApi.jsonHeaders(),
       body: JSON.stringify({ password: pwd })
     });
-    const d = await r.json();
+    const d = r.payload;
     if (!r.ok) { showToast(d.error || '重置失败'); return; }
     showToast('密码已重置');
     closeAdminModal();
@@ -317,8 +317,8 @@ function adminDeleteUser(username) {
 }
 async function doAdminDeleteUser(username) {
   try {
-    const r = await fetch(api('/api/admin/users/' + encodeURIComponent(username)), { method: 'DELETE' });
-    const d = await r.json();
+    const r = await window.siteApi.del('/api/admin/users/' + encodeURIComponent(username));
+    const d = r.payload;
     if (!r.ok) { showToast(d.error || '删除失败'); return; }
     showToast('已删除');
     closeAdminModal();
@@ -328,9 +328,9 @@ async function doAdminDeleteUser(username) {
 
 async function adminShowDetail(username) {
   try {
-    const r = await fetch(api('/api/admin/users/' + encodeURIComponent(username)));
+    const r = await window.siteApi.get('/api/admin/users/' + encodeURIComponent(username));
     if (!r.ok) { showToast('加载失败'); return; }
-    const d = await r.json();
+    const d = r.payload;
     const accts = (d.accounts || []).map(function (a) {
       return '<div class="profile-acct">' + escapeHtml(a.account_name) + ' <span class="tag">' + escapeHtml(a.broker || 'other') + '</span></div>';
     }).join('') || '<div class="acct-empty">暂无账户</div>';
@@ -396,9 +396,9 @@ async function loadBrokersData() {
   const tbody = document.getElementById('brokers-tbody');
   try {
     const qs = 'search=' + encodeURIComponent(brokersSearch) + '&market=' + encodeURIComponent(brokersMarket);
-    const r = await fetch(api('/api/admin/brokers?' + qs));
+    const r = await window.siteApi.get('/api/admin/brokers?' + qs);
     if (!r.ok) { tbody.innerHTML = '<tr><td colspan="6" class="biz-table-state-cell biz-table-error">加载失败</td></tr>'; return; }
-    const d = await r.json();
+    const d = r.payload;
     if (!d.list.length) {
       tbody.innerHTML = '<tr><td colspan="6" class="biz-table-state-cell">暂无券商</td></tr>';
     } else {
@@ -434,7 +434,7 @@ function openBrokerForm(code) {
     '<button class="btn btn-primary" data-act="submitBroker">保存</button>'
   );
   if (isEdit) {
-    fetch(api('/api/admin/brokers/' + encodeURIComponent(code))).then(function (r) { return r.json(); }).then(function (b) {
+    window.siteApi.get('/api/admin/brokers/' + encodeURIComponent(code)).then(function (r) { return r.payload; }).then(function (b) {
       const n = document.getElementById('broker-name'); if (n) n.value = b.name || '';
       const m = document.getElementById('broker-market'); if (m) m.value = b.market || 'A';
       const u = document.getElementById('broker-unit'); if (u) u.value = b.import_unit || 'sheet';
@@ -456,8 +456,8 @@ async function submitBroker() {
   const method = isEdit ? 'PUT' : 'POST';
   const body = isEdit ? { name, market, import_unit, sort_order } : { code, name, market, import_unit, sort_order };
   try {
-    const r = await fetch(api(url), { method: method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-    const d = await r.json();
+    const r = await window.siteApi.request(url, { method: method, headers: window.siteApi.jsonHeaders(), body: JSON.stringify(body) });
+    const d = r.payload;
     if (!r.ok) { showToast(d.error || '保存失败'); return; }
     showToast('已保存');
     closeAdminModal();
@@ -474,8 +474,8 @@ function deleteBrokerConfirm(code) {
 }
 async function doDeleteBroker(code) {
   try {
-    const r = await fetch(api('/api/admin/brokers/' + encodeURIComponent(code)), { method: 'DELETE' });
-    const d = await r.json();
+    const r = await window.siteApi.del('/api/admin/brokers/' + encodeURIComponent(code));
+    const d = r.payload;
     if (!r.ok) { showToast(d.error || '删除失败'); return; }
     showToast('已删除');
     closeAdminModal();
@@ -698,7 +698,7 @@ async function importFederalFunds() {
   if (!file) return showToast('请选择 CSV 或 XLSX 文件');
   const button = document.getElementById('set-btn-fed'), form = new FormData(); form.append('file', file); button.disabled = true;
   try {
-    const r = await fetch(api('/api/market-volatility/federal-funds/import'), { method: 'POST', body: form }), d = await r.json();
+    const r = await window.siteApi.request('/api/market-volatility/federal-funds/import', { method: 'POST', body: form }), d = r.payload;
     if (!r.ok) throw new Error(d.error || r.status); input.value = ''; showToast('已导入 ' + d.imported + ' 条日频利率数据');
   } catch (e) { showToast('导入失败：' + (e.message || e)); }
   finally { button.disabled = false; }
@@ -708,9 +708,9 @@ async function loadJobsDataLegacy() {
   const tbody = document.getElementById('jobs-tbody');
   const summary = document.getElementById('jobs-summary');
   try {
-    const r = await fetch(api('/api/admin/jobs?limit=50'));
+    const r = await window.siteApi.get('/api/admin/jobs?limit=50');
     if (!r.ok) { tbody.innerHTML = '<tr><td colspan="6" class="biz-table-state-cell biz-table-error">加载失败</td></tr>'; return; }
-    const d = await r.json();
+    const d = r.payload;
     // 各任务最近状态卡片
     if (summary) {
       summary.innerHTML = (d.summary && d.summary.length)
@@ -794,16 +794,16 @@ function renderJobs() {
 
 async function retryJobSlotFromUi(slotId) {
   try {
-    const detailResponse = await fetch(api('/api/admin/jobs/slots/' + encodeURIComponent(slotId)));
-    const detail = await detailResponse.json();
+    const detailResponse = await window.siteApi.get('/api/admin/jobs/slots/' + encodeURIComponent(slotId));
+    const detail = detailResponse.payload;
     if (!detailResponse.ok) return showToast(detail.error || '读取任务信息失败');
     const label = detail.definition && detail.definition.label || detail.job_code || '该任务';
     const targetDate = detail.business_date ? String(detail.business_date).slice(0, 10) : '-';
     const source = detail.definition && detail.definition.sourceDescription || '本地数据库与该任务已配置的数据源';
     const cost = detail.definition && detail.definition.mayConsumeQuota ? '可能消耗接口额度' : '通常不产生额外接口费用';
     if (!(await projectConfirm('确认补跑“' + label + '”？\n目标业务日期：' + targetDate + '\n访问数据源：' + source + '\n成本提示：' + cost + '。', { danger: true, title: '确认补跑' }))) return;
-    const r = await fetch(api('/api/admin/jobs/slots/' + encodeURIComponent(slotId) + '/retry'), { method: 'POST' });
-    const d = await r.json();
+    const r = await window.siteApi.post('/api/admin/jobs/slots/' + encodeURIComponent(slotId) + '/retry', {});
+    const d = r.payload;
     showToast(r.ok ? (d.queued ? '已加入补跑队列' : '补跑完成') : (d.error || '补跑失败'));
   } catch (e) { showToast('网络错误'); }
   loadJobsData();
@@ -811,8 +811,8 @@ async function retryJobSlotFromUi(slotId) {
 
 async function validateJobSlotFromUi(slotId) {
   try {
-    const r = await fetch(api('/api/admin/jobs/slots/' + encodeURIComponent(slotId) + '/validate'), { method: 'POST' });
-    const d = await r.json();
+    const r = await window.siteApi.post('/api/admin/jobs/slots/' + encodeURIComponent(slotId) + '/validate', {});
+    const d = r.payload;
     showToast(d.message || (r.ok ? '重新校验通过' : '重新校验未通过'));
   } catch (e) { showToast('网络错误'); }
   loadJobsData();
@@ -820,8 +820,8 @@ async function validateJobSlotFromUi(slotId) {
 
 async function acknowledgeJobSlot(slotId) {
   try {
-    const r = await fetch(api('/api/admin/jobs/slots/' + encodeURIComponent(slotId) + '/acknowledge'), { method: 'POST' });
-    const d = await r.json();
+    const r = await window.siteApi.post('/api/admin/jobs/slots/' + encodeURIComponent(slotId) + '/acknowledge', {});
+    const d = r.payload;
     showToast(r.ok ? '已确认并接管' : (d.error || '操作失败'));
   } catch (e) { showToast('网络错误'); }
   loadJobsData();
@@ -829,8 +829,8 @@ async function acknowledgeJobSlot(slotId) {
 
 async function testJobAlertEmail() {
   try {
-    const r = await fetch(api('/api/admin/jobs/alert-email/test'), { method: 'POST' });
-    const d = await r.json();
+    const r = await window.siteApi.post('/api/admin/jobs/alert-email/test', {});
+    const d = r.payload;
     showToast(r.ok ? '测试邮件已发送' : (d.error || '邮件测试失败'));
   } catch (e) { showToast('网络错误'); }
 }
@@ -845,13 +845,13 @@ async function loadJobsData() {
   ensureJobMonitorAdvancedControls();
   try {
     const responses = await Promise.all([
-      fetch(api('/api/admin/jobs/overview')),
-      fetch(api('/api/admin/jobs/slots?limit=100' + jobSlotQuery())),
-      fetch(api('/api/admin/jobs?limit=50')),
-      fetch(api('/api/admin/jobs/notifications?limit=30')),
-      fetch(api('/api/admin/jobs/notifications?status=history&limit=30')),
+      window.siteApi.get('/api/admin/jobs/overview'),
+      window.siteApi.get('/api/admin/jobs/slots?limit=100' + jobSlotQuery()),
+      window.siteApi.get('/api/admin/jobs?limit=50'),
+      window.siteApi.get('/api/admin/jobs/notifications?limit=30'),
+      window.siteApi.get('/api/admin/jobs/notifications?status=history&limit=30'),
     ]);
-    const data = await Promise.all(responses.map(r => r.json()));
+    const data = await Promise.all(responses.map(r => r.payload));
     if (responses.some(r => !r.ok)) throw new Error('load failed');
     const overview = data[0], slots = data[1].list || [], runs = data[2], alerts = data[3].list || [], alertHistory = data[4].list || [];
     if (summary) {
@@ -966,8 +966,8 @@ function renderJobSlotRow(slot) {
 
 async function resendJobAlert(alertId) {
   try {
-    const r = await fetch(api('/api/admin/jobs/notifications/' + encodeURIComponent(alertId) + '/resend'), { method: 'POST' });
-    const d = await r.json();
+    const r = await window.siteApi.post('/api/admin/jobs/notifications/' + encodeURIComponent(alertId) + '/resend', {});
+    const d = r.payload;
     showToast(r.ok ? '告警邮件已重新投递' : (d.error || '邮件投递失败'));
   } catch (e) { showToast('网络错误'); }
   loadJobsData();
@@ -975,8 +975,8 @@ async function resendJobAlert(alertId) {
 
 async function acknowledgeJobAlert(alertId) {
   try {
-    const r = await fetch(api('/api/admin/jobs/alerts/' + encodeURIComponent(alertId) + '/acknowledge'), { method: 'POST' });
-    const d = await r.json();
+    const r = await window.siteApi.post('/api/admin/jobs/alerts/' + encodeURIComponent(alertId) + '/acknowledge', {});
+    const d = r.payload;
     showToast(r.ok ? '告警已确认' : (d.error || '确认失败'));
   } catch (e) { showToast('网络错误'); }
   loadJobsData();
@@ -984,8 +984,8 @@ async function acknowledgeJobAlert(alertId) {
 
 async function openJobSlotDetailLegacy(slotId) {
   try {
-    const r = await fetch(api('/api/admin/jobs/slots/' + encodeURIComponent(slotId)));
-    const d = await r.json();
+    const r = await window.siteApi.get('/api/admin/jobs/slots/' + encodeURIComponent(slotId));
+    const d = r.payload;
     if (!r.ok) return showToast(d.error || '读取详情失败');
     openAdminModal('任务详情', '<div class="job-detail"><p><b>任务：</b>' + escapeHtml(jobLabel(d.job_code)) + '</p><p><b>状态：</b>' + jobSlotStatusTag(d.status) + '</p><p><b>计划时间：</b>' + fmtTime(d.scheduled_for) + '</p><p><b>最近错误：</b>' + escapeHtml(jobDisplayText(d.last_error || '无', 1000)) + '</p><p><b>结果：</b><br>' + escapeHtml(jobDisplayText(d.result_summary || {}, 4000)) + '</p></div>', '<button class="btn btn-outline" data-act="closeAdminModal">关闭</button>');
   } catch (e) { showToast('网络错误'); }
@@ -994,8 +994,8 @@ async function openJobSlotDetailLegacy(slotId) {
 // 任务详情包含执行尝试、数据水位、依赖、邮件告警和人工审计，便于直接定位异常。
 async function openJobSlotDetail(slotId) {
   try {
-    const r = await fetch(api('/api/admin/jobs/slots/' + encodeURIComponent(slotId)));
-    const d = await r.json();
+    const r = await window.siteApi.get('/api/admin/jobs/slots/' + encodeURIComponent(slotId));
+    const d = r.payload;
     if (!r.ok) return showToast(d.error || '读取详情失败');
     const list = function (items, mapper, empty) {
       return (items || []).map(mapper).join('') || '<li>' + empty + '</li>';
@@ -1023,8 +1023,8 @@ async function runJobBackfill() {
   const btn = document.getElementById('job-btn-backfill');
   if (btn) { btn.disabled = true; btn.textContent = '补漏中...'; }
   try {
-    const r = await fetch(api('/api/admin/jobs/backfill'), { method: 'POST' });
-    const d = await r.json();
+    const r = await window.siteApi.post('/api/admin/jobs/backfill', {});
+    const d = r.payload;
     showToast(r.ok ? '补漏完成' : (d.error || '补漏失败'));
   } catch (e) { showToast('网络错误'); }
   if (btn) { btn.disabled = false; btn.textContent = '手动补漏收盘数据'; }
@@ -1035,8 +1035,8 @@ async function runJobHolidaySync() {
   const btn = document.getElementById('holiday-btn-sync');
   if (btn) { btn.disabled = true; btn.textContent = '核对中...'; }
   try {
-    const r = await fetch(api('/api/admin/jobs/holiday-sync'), { method: 'POST' });
-    const d = await r.json();
+    const r = await window.siteApi.post('/api/admin/jobs/holiday-sync', {});
+    const d = r.payload;
     showToast(r.ok ? '休市日历已核对' : (d.error || '核对失败'));
   } catch (e) { showToast('网络错误'); }
   if (btn) { btn.disabled = false; btn.textContent = '从交易所核对本年休市日'; }
@@ -1047,7 +1047,7 @@ async function runJobHolidaySync() {
 function renderSettings() {
   const el = document.getElementById('view-settings'); if (!el) return;
   el.innerHTML = '<div class="admin-placeholder"><div class="spinner u-mx-auto-12" ></div>加载中...</div>';
-  fetch(api('/api/admin/settings')).then(function (r) { return r.ok ? r.json() : null; }).then(function (s) {
+  window.siteApi.get('/api/admin/settings').then(function (r) { return r.ok ? r.payload : null; }).then(function (s) {
     if (!s) { el.innerHTML = '<div class="admin-placeholder"><div class="icon">⚠️</div>加载失败</div>'; return; }
     renderSettingsTabs(el, s); return;
     const o = s.register_open === '1' ? 'checked' : '';
@@ -1172,8 +1172,8 @@ async function saveEndpointPolicies() {
     return copy;
   });
   try {
-    const r = await fetch(api('/api/admin/settings/external-api/tushare/policies'), { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ policies: policies }) });
-    const d = await r.json();
+    const r = await window.siteApi.request('/api/admin/settings/external-api/tushare/policies', { method: 'PUT', headers: window.siteApi.jsonHeaders(), body: JSON.stringify({ policies: policies }) });
+    const d = r.payload;
     if (!r.ok) { showToast(d.error || '保存接口策略失败'); return; }
     showToast('接口策略已保存'); renderSettings();
   } catch (e) { showToast('网络错误'); }
@@ -1194,8 +1194,8 @@ function switchSettingsTab(tab) {
 async function saveExternalApiSettings() {
   const body = { external_api: { provider: 'tushare', primary_token: document.getElementById('set-tushare-primary').value || '', backup_token: document.getElementById('set-tushare-backup').value || '', mode: document.getElementById('set-tushare-mode').value, notify_on_switch: document.getElementById('set-tushare-notify').checked } };
   try {
-    const r = await fetch(api('/api/admin/settings'), { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-    const d = await r.json();
+    const r = await window.siteApi.request('/api/admin/settings', { method: 'PUT', headers: window.siteApi.jsonHeaders(), body: JSON.stringify(body) });
+    const d = r.payload;
     if (!r.ok) { showToast(d.error || '保存失败'); return; }
     showToast('外部 API 参数已保存');
     renderSettings();
@@ -1204,8 +1204,8 @@ async function saveExternalApiSettings() {
 async function switchExternalApiMode(provider) {
   const mode = document.getElementById('set-tushare-mode').value;
   try {
-    const r = await fetch(api('/api/admin/settings/external-api/' + encodeURIComponent(provider) + '/switch'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode: mode }) });
-    const d = await r.json();
+    const r = await window.siteApi.request('/api/admin/settings/external-api/' + encodeURIComponent(provider) + '/switch', { method: 'POST', headers: window.siteApi.jsonHeaders(), body: JSON.stringify({ mode: mode }) });
+    const d = r.payload;
     if (!r.ok) { showToast(d.error || '切换失败'); return; }
     showToast('已手动应用' + (mode === 'auto' ? '自动故障转移' : mode === 'primary' ? '主 Token' : '备用 Token'));
     renderSettings();
@@ -1218,8 +1218,8 @@ async function testExternalApiAvailability(provider, role) {
   const label = role === 'primary' ? '主' : role === 'backup' ? '备用' : '当前';
   const apiName = provider === 'geoscope_lixinger' ? 'cn.company' : (document.getElementById('set-tushare-test-api') || {}).value || 'trade_cal';
   try {
-    const r = await fetch(api('/api/admin/settings/external-api/' + encodeURIComponent(provider) + '/test'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ role: role, api_name: apiName }) });
-    const d = await r.json();
+    const r = await window.siteApi.request('/api/admin/settings/external-api/' + encodeURIComponent(provider) + '/test', { method: 'POST', headers: window.siteApi.jsonHeaders(), body: JSON.stringify({ role: role, api_name: apiName }) });
+    const d = r.payload;
     if (!r.ok) { showToast(d.error || '测试失败'); if (button) { button.disabled = false; button.textContent = originalText; } return; }
     showToast((d.result && d.result.ok ? label + ' API 可用' : label + ' API 不可用：' + ((d.result && d.result.message) || '请检查配置')));
     renderSettings();
@@ -1229,8 +1229,8 @@ async function testExternalApiAvailability(provider, role) {
 async function submitSettings() {
   const body = { register_open: document.getElementById('set-register-open').checked, register_code: document.getElementById('set-register-code').value || '', require_email: document.getElementById('set-require-email').checked };
   try {
-    const r = await fetch(api('/api/admin/settings'), { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-    const d = await r.json();
+    const r = await window.siteApi.request('/api/admin/settings', { method: 'PUT', headers: window.siteApi.jsonHeaders(), body: JSON.stringify(body) });
+    const d = r.payload;
     if (!r.ok) { showToast(d.error || '保存失败'); return; }
     showToast('设置已保存（即时生效）');
   } catch (e) { showToast('网络错误'); }
@@ -1245,7 +1245,7 @@ function fmtDate(y, m, d) { return y + '-' + pad2(m) + '-' + pad2(d); }
 function renderHolidays() {
   const el = document.getElementById('view-holidays'); if (!el) return;
   el.innerHTML = '<div class="admin-placeholder"><div class="spinner u-mx-auto-12" ></div>加载中...</div>';
-  fetch(api('/api/admin/holidays')).then(function (r) { return r.ok ? r.json() : null; }).then(function (d) {
+  window.siteApi.get('/api/admin/holidays').then(function (r) { return r.ok ? r.payload : null; }).then(function (d) {
     if (!d) { el.innerHTML = '<div class="admin-placeholder"><div class="icon">⚠️</div>加载失败</div>'; return; }
     const years = Object.keys(d.years || {}).sort();
     if (!years.length) { el.innerHTML = '<div class="admin-placeholder">暂无休市数据</div>'; return; }
@@ -1319,8 +1319,8 @@ async function saveHolidays() {
   if (!holidayEditSet) return;
   const dates = Array.from(holidayEditSet).sort();
   try {
-    const r = await fetch(api('/api/admin/holidays'), { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ year: holidayYear, dates: dates }) });
-    const d = await r.json();
+    const r = await window.siteApi.request('/api/admin/holidays', { method: 'PUT', headers: window.siteApi.jsonHeaders(), body: JSON.stringify({ year: holidayYear, dates: dates }) });
+    const d = r.payload;
     if (!r.ok) { showToast(d.error || '保存失败'); return; }
     showToast('已保存 ' + holidayYear + ' 年休市日（' + dates.length + '天）');
     renderHolidays();
@@ -1357,9 +1357,9 @@ async function loadAuditData() {
   const r = resultSel ? resultSel.value : '';
   const qs = 'limit=100' + (m ? '&module=' + encodeURIComponent(m) : '') + (a ? '&actor=' + encodeURIComponent(a) : '') + (r ? '&result=' + encodeURIComponent(r) : '');
   try {
-    const resp = await fetch(api('/api/admin/audit?' + qs));
+    const resp = await window.siteApi.get('/api/admin/audit?' + qs);
     if (!resp.ok) { tb.innerHTML = '<tr><td colspan="6" class="biz-table-state-cell biz-table-error">加载失败</td></tr>'; return; }
-    const d = await resp.json();
+    const d = resp.payload;
     if (moduleSel && d.modules) {
       d.modules.forEach(function (k) {
         if (!moduleSel.querySelector('option[value="' + k + '"]')) {
@@ -1400,8 +1400,8 @@ function opsCard(title, desc, actionHtml) {
 async function opsRefreshBondSafety() {
   const btn = document.getElementById('ops-bond-safety-refresh'); if (btn) { btn.disabled = true; btn.textContent = '刷新中...'; }
   try {
-    const r = await fetch(api('/api/bond-safety/refresh'), { method: 'POST' });
-    const d = await r.json().catch(function () { return {}; });
+    const r = await window.siteApi.post('/api/bond-safety/refresh', {});
+    const d = (r.payload || {});
     if (!r.ok) showToast(d.error || '刷新失败');
     else showToast('可转债安全性数据已刷新');
   } catch (e) { showToast('网络错误'); }
@@ -1410,8 +1410,8 @@ async function opsRefreshBondSafety() {
 async function opsRefreshBondValuation() {
   const btn = document.getElementById('ops-bond-valuation-refresh'); if (btn) { btn.disabled = true; btn.textContent = '刷新中...'; }
   try {
-    const r = await fetch(api('/api/bond-valuation/refresh'), { method: 'POST' });
-    const d = await r.json().catch(function () { return {}; });
+    const r = await window.siteApi.post('/api/bond-valuation/refresh', {});
+    const d = (r.payload || {});
     if (!r.ok) showToast(d.error || '刷新失败');
     else showToast('可转债估值已刷新');
   } catch (e) { showToast('网络错误'); }
@@ -1425,8 +1425,8 @@ async function opsImportFederalFunds() {
   try {
     const fd = new FormData();
     fd.append('file', fileEl.files[0]);
-    const r = await fetch(api('/api/market-volatility/federal-funds/import'), { method: 'POST', body: fd });
-    const d = await r.json().catch(function () { return {}; });
+    const r = await window.siteApi.request('/api/market-volatility/federal-funds/import', { method: 'POST', body: fd });
+    const d = (r.payload || {});
     if (!r.ok) showToast(d.error || '导入失败');
     else showToast('已导入 ' + (d.imported || 0) + ' 条利率数据');
   } catch (e) { showToast('网络错误'); }
@@ -1435,9 +1435,9 @@ async function opsImportFederalFunds() {
 async function opsLoadJobs() {
   const tb = document.getElementById('ops-jobs-tbody'); if (!tb) return;
   try {
-    const r = await fetch(api('/api/admin/jobs?limit=20'));
+    const r = await window.siteApi.get('/api/admin/jobs?limit=20');
     if (!r.ok) { tb.innerHTML = '<tr><td colspan="5" class="biz-table-state-cell biz-table-error">加载失败</td></tr>'; return; }
-    const list = (await r.json()).list || [];
+    const list = (r.payload).list || [];
     if (!list.length) { tb.innerHTML = '<tr><td colspan="5" class="biz-table-state-cell">暂无任务记录</td></tr>'; return; }
     tb.innerHTML = list.map(function (j) {
       const st = j.status === 'done' ? '<span class="tag tag-ok">成功</span>' : (j.status === 'failed' ? '<span class="tag tag-over">失败</span>' : (j.status === 'running' ? '<span class="tag tag-a">运行中</span>' : '<span class="tag">' + escapeHtml(j.status || '—') + '</span>'));
@@ -1485,9 +1485,9 @@ function aimodelStatusHtml(st) {
 async function loadAimodelsData() {
   const tb = document.getElementById('aimodels-tbody'); if (!tb) return;
   try {
-    const r = await fetch(api('/api/admin/models'));
+    const r = await window.siteApi.get('/api/admin/models');
     if (!r.ok) { tb.innerHTML = '<tr><td colspan="6" class="biz-table-state-cell biz-table-error">加载失败</td></tr>'; return; }
-    const d = await r.json();
+    const d = r.payload;
     const list = d.list || [];
     if (!list.length) { tb.innerHTML = '<tr><td colspan="6" class="biz-table-state-cell">暂无模型，点击右上角「新增模型」</td></tr>'; return; }
     const minOrder = Math.min.apply(null, list.map(function (m) { return m.order || 0; }));
@@ -1532,7 +1532,7 @@ function openModelForm(id) {
     '<button class="btn btn-primary" data-act="submitModel">保存</button>'
   );
   if (isEdit) {
-    fetch(api('/api/admin/models')).then(function (r) { return r.ok ? r.json() : null; }).then(function (d) {
+    window.siteApi.get('/api/admin/models').then(function (r) { return r.ok ? r.payload : null; }).then(function (d) {
       const m = findModel(d && d.list, id); if (!m) return;
       const n = document.getElementById('model-name'); if (n) n.value = m.name || '';
       const md = document.getElementById('model-model'); if (md) md.value = m.model || '';
@@ -1557,8 +1557,8 @@ async function submitModel() {
   const method = isEdit ? 'PUT' : 'POST';
   const body = { name: name, model: model, apiUrl: apiUrl, apiKey: apiKey, enabled: enabled };
   try {
-    const r = await fetch(api(url), { method: method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-    const d = await r.json();
+    const r = await window.siteApi.request(url, { method: method, headers: window.siteApi.jsonHeaders(), body: JSON.stringify(body) });
+    const d = r.payload;
     if (!r.ok) { showToast(d.error || '保存失败'); return; }
     showToast('已保存'); closeAdminModal(); loadAimodelsData();
   } catch (e) { showToast('网络错误'); }
@@ -1572,8 +1572,8 @@ function deleteModelConfirm(id) {
 }
 async function doDeleteModel(id) {
   try {
-    const r = await fetch(api('/api/admin/models/' + encodeURIComponent(id)), { method: 'DELETE' });
-    const d = await r.json();
+    const r = await window.siteApi.del('/api/admin/models/' + encodeURIComponent(id));
+    const d = r.payload;
     if (!r.ok) { showToast(d.error || '删除失败'); return; }
     showToast('已删除'); closeAdminModal(); loadAimodelsData();
   } catch (e) { showToast('网络错误'); }
@@ -1582,8 +1582,8 @@ async function doDeleteModel(id) {
 async function testModel(id, btn) {
   if (btn) { btn.disabled = true; btn.textContent = '测试中...'; }
   try {
-    const r = await fetch(api('/api/admin/models/' + encodeURIComponent(id) + '/test'), { method: 'POST' });
-    const d = await r.json();
+    const r = await window.siteApi.post('/api/admin/models/' + encodeURIComponent(id) + '/test', {});
+    const d = r.payload;
     if (!r.ok) { showToast(d.error || '测试失败'); }
     else if (d.ok) { showToast('测试成功（耗时 ' + (d.ms || 0) + 'ms）'); }
     else { showToast('测试失败：' + (d.error || '未知错误')); }
@@ -1594,8 +1594,8 @@ async function testModel(id, btn) {
 
 async function setDefaultModel(id) {
   try {
-    const r = await fetch(api('/api/admin/models/' + encodeURIComponent(id) + '/default'), { method: 'POST' });
-    const d = await r.json();
+    const r = await window.siteApi.post('/api/admin/models/' + encodeURIComponent(id) + '/default', {});
+    const d = r.payload;
     if (!r.ok) { showToast(d.error || '操作失败'); return; }
     showToast('已设为默认模型'); loadAimodelsData();
   } catch (e) { showToast('网络错误'); }
@@ -1603,8 +1603,8 @@ async function setDefaultModel(id) {
 
 async function moveModel(id, dir) {
   try {
-    const r = await fetch(api('/api/admin/models/' + encodeURIComponent(id) + '/move'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ dir: dir }) });
-    const d = await r.json();
+    const r = await window.siteApi.request('/api/admin/models/' + encodeURIComponent(id) + '/move', { method: 'POST', headers: window.siteApi.jsonHeaders(), body: JSON.stringify({ dir: dir }) });
+    const d = r.payload;
     if (!r.ok) { showToast(d.error || '操作失败'); return; }
     loadAimodelsData();
   } catch (e) { showToast('网络错误'); }
@@ -1653,8 +1653,8 @@ async function ksLoadKsArticles(status) {
   const tbody = document.getElementById('ks-ad-tbody');
   const count = document.getElementById('ks-ad-count');
   try {
-    const r = await fetch(api('/api/admin/knowledge/articles?limit=50' + (status ? '&status=' + status : '')));
-    const d = await r.json();
+    const r = await window.siteApi.get('/api/admin/knowledge/articles?limit=50' + (status ? '&status=' + status : ''));
+    const d = r.payload;
     if (count) count.textContent = '共 ' + d.total + ' 篇';
   if (!d.list.length) { tbody.innerHTML = '<tr><td colspan="8" class="biz-table-state-cell">暂无文章</td></tr>'; return; }
     tbody.innerHTML = d.list.map(function (a) {
@@ -1678,11 +1678,11 @@ async function ksLoadKsArticles(status) {
         const id = btn.dataset.id, act = btn.dataset.act;
         if (act === 'del') {
           if (!await projectConfirm('确定删除这篇文章？', { title: '删除文章', confirmText: '删除', danger: true })) return;
-          await fetch(api('/api/admin/knowledge/articles/' + id), { method: 'DELETE' });
+          await window.siteApi.del('/api/admin/knowledge/articles/' + id);
           showToast('已删除'); ksLoadKsArticles(document.getElementById('ks-ad-status').value);
         } else if (act === 'status') {
           const next = btn.dataset.cur === 'draft' ? 'published' : 'draft';
-          await fetch(api('/api/admin/knowledge/articles/' + id + '/status'), { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: next }) });
+          await window.siteApi.request('/api/admin/knowledge/articles/' + id + '/status', { method: 'PUT', headers: window.siteApi.jsonHeaders(), body: JSON.stringify({ status: next }) });
           showToast(next === 'published' ? '已发布' : '已撤回'); ksLoadKsArticles(document.getElementById('ks-ad-status').value);
         }
       });
@@ -1709,8 +1709,8 @@ async function ksLoadKsComments(articleId) {
   const tbody = document.getElementById('ks-cm-tbody');
   const count = document.getElementById('ks-cm-count');
   try {
-    const r = await fetch(api('/api/admin/knowledge/comments?limit=50' + (articleId ? '&article_id=' + articleId : '')));
-    const d = await r.json();
+    const r = await window.siteApi.get('/api/admin/knowledge/comments?limit=50' + (articleId ? '&article_id=' + articleId : ''));
+    const d = r.payload;
     if (count) count.textContent = '共 ' + d.total + ' 条';
   if (!d.list.length) { tbody.innerHTML = '<tr><td colspan="7" class="biz-table-state-cell">暂无评论</td></tr>'; return; }
     tbody.innerHTML = d.list.map(function (c) {
@@ -1728,7 +1728,7 @@ async function ksLoadKsComments(articleId) {
     tbody.querySelectorAll('button[data-id]').forEach(function (btn) {
       btn.addEventListener('click', async function () {
         if (!await projectConfirm('确定删除这条评论？', { title: '删除评论', confirmText: '删除', danger: true })) return;
-        await fetch(api('/api/admin/knowledge/comments/' + btn.dataset.id), { method: 'DELETE' });
+        await window.siteApi.del('/api/admin/knowledge/comments/' + btn.dataset.id);
         showToast('已删除'); ksLoadKsComments(document.getElementById('ks-cm-article').value.trim());
       });
     });
@@ -1753,8 +1753,8 @@ async function ksRenderKsPermissions() {
 async function ksLoadKsPermissions(search) {
   const tbody = document.getElementById('ks-per-tbody');
   try {
-    const r = await fetch(api('/api/admin/knowledge/users' + (search ? '?search=' + encodeURIComponent(search) : '')));
-    const d = await r.json();
+    const r = await window.siteApi.get('/api/admin/knowledge/users' + (search ? '?search=' + encodeURIComponent(search) : ''));
+    const d = r.payload;
   if (!d.list.length) { tbody.innerHTML = '<tr><td colspan="5" class="biz-table-state-cell">暂无用户</td></tr>'; return; }
     tbody.innerHTML = d.list.map(function (u) {
       const isAdmin = u.role === 'admin';
@@ -1775,8 +1775,8 @@ async function ksLoadKsPermissions(search) {
     tbody.querySelectorAll('button[data-act="toggle"]').forEach(function (btn) {
       btn.addEventListener('click', async function () {
         const next = btn.dataset.cur !== '1';
-        await fetch(api('/api/admin/knowledge/users/' + encodeURIComponent(btn.dataset.username) + '/permission'), {
-          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: next })
+        await window.siteApi.request('/api/admin/knowledge/users/' + encodeURIComponent(btn.dataset.username) + '/permission', {
+          method: 'POST', headers: window.siteApi.jsonHeaders(), body: JSON.stringify({ enabled: next })
         });
         showToast(next ? '已开启写权限' : '已关闭写权限');
         ksLoadKsPermissions(document.getElementById('ks-per-search').value.trim());
@@ -1804,9 +1804,9 @@ async function loadArbCandidates() {
   const tb = document.getElementById('arb-admin-tbody');
   if (!tb) return;
   try {
-    const r = await fetch(api('/api/admin/arbitrage/candidates?status=approved&page_size=100'));
+    const r = await window.siteApi.get('/api/admin/arbitrage/candidates?status=approved&page_size=100');
     if (!r.ok) throw new Error('HTTP ' + r.status);
-    const d = await r.json();
+    const d = r.payload;
     const meta = document.getElementById('arb-admin-meta');
     if (meta) meta.textContent = '共 ' + (d.total || 0) + ' 条事件';
     if (!d.rows || !d.rows.length) {
@@ -1836,9 +1836,9 @@ async function loadArbCandidates() {
 
 async function adminArbReview(caseId, status) {
   try {
-    const r = await fetch(api('/api/admin/arbitrage/' + caseId), {
+    const r = await window.siteApi.request('/api/admin/arbitrage/' + caseId, {
       method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
+      headers: window.siteApi.jsonHeaders(),
       body: JSON.stringify({ review_status: status })
     });
     if (!r.ok) throw new Error('HTTP ' + r.status);
@@ -1851,9 +1851,9 @@ async function adminArbReview(caseId, status) {
 
 async function adminArbDetail(caseId) {
   try {
-    const r = await fetch(api('/api/admin/arbitrage/' + caseId));
+    const r = await window.siteApi.get('/api/admin/arbitrage/' + caseId);
     if (!r.ok) throw new Error('HTTP ' + r.status);
-    const d = await r.json();
+    const d = r.payload;
     var docs = (d.documents || []).map(function (doc) {
       return '<div data-style="padding:4px 0;border-bottom:1px solid #eee;font-size:13px;">' +
         '<span class="u-c-dim">' + (doc.announced_at ? String(doc.announced_at).slice(0, 10) : '') + '</span> ' +
@@ -1877,9 +1877,9 @@ async function adminArbDetail(caseId) {
 
 async function adminArbSync() {
   try {
-    const r = await fetch(api('/api/admin/arbitrage/sync'), { method: 'POST' });
+    const r = await window.siteApi.post('/api/admin/arbitrage/sync', {});
     if (!r.ok) throw new Error('HTTP ' + r.status);
-    const d = await r.json();
+    const d = r.payload;
     showToast(d.message || '同步已启动');
   } catch (e) {
     showToast('同步失败: ' + e.message);
@@ -1890,9 +1890,9 @@ async function adminArbSync() {
 async function openArbEditForm(caseId) {
   let d;
   try {
-    const r = await fetch(api('/api/admin/arbitrage/' + caseId));
+    const r = await window.siteApi.get('/api/admin/arbitrage/' + caseId);
     if (!r.ok) throw new Error('HTTP ' + r.status);
-    d = await r.json();
+    d = r.payload;
   } catch (e) { showToast('加载失败: ' + e.message); return; }
   const v = function (x) { return x == null ? '' : x; };
   const g = function (label, id, type, step) {
@@ -1982,10 +1982,10 @@ async function submitArbEdit(caseId) {
     description: strOrNull('arb-edit-description'),
   };
   try {
-    const r = await fetch(api('/api/admin/arbitrage/' + caseId), {
-      method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+    const r = await window.siteApi.request('/api/admin/arbitrage/' + caseId, {
+      method: 'PATCH', headers: window.siteApi.jsonHeaders(), body: JSON.stringify(body)
     });
-    const d = await r.json();
+    const d = r.payload;
     if (!r.ok) { showToast(d.error || '保存失败'); return; }
     showToast('条款已保存');
     closeAdminModal();

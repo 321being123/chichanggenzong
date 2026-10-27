@@ -40,18 +40,14 @@ async function saveNavEdit() {
   // 编辑场景：取编辑前的旧日期，改日期时服务端先删旧再写新（2026-08-04 阻断修复）
   const oldDate = (navEditIndex >= 0 && data.navHistory[navEditIndex]) ? data.navHistory[navEditIndex].date : null;
   try {
-    var r = await fetch(api('/api/nav/' + date + '?version=' + (dataVersion != null ? dataVersion : '')), {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
+    var r = await window.accountNavApi.saveNav(date, dataVersion, {
         nav: nav,
         totalAsset: (totalRaw === '' || totalRaw == null) ? null : parseFloat(totalRaw),
         invested: (invRaw === '' || invRaw == null) ? null : parseFloat(invRaw),
         account: currentAccount,
         fromDate: (oldDate && oldDate !== date) ? oldDate : null
-      })
     });
-    var j = await r.json().catch(function(){ return {}; });
+    var j = r.payload;
     if (!r.ok) { showToast(j.error || '保存失败'); return; }
     if (j.data) refreshDataFromServer(j.data);
   } catch(e) { showToast('保存失败：' + (e.message || e)); return; }
@@ -66,12 +62,8 @@ async function deleteNav(date) {
     title: '删除净值记录', confirmText: '删除', danger: true
   })) return;
   try {
-    var r = await fetch(api('/api/nav/' + date + '?version=' + (dataVersion != null ? dataVersion : '')), {
-      method: 'DELETE',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ account: currentAccount })
-    });
-    var j = await r.json().catch(function(){ return {}; });
+    var r = await window.accountNavApi.deleteNav(date, dataVersion, currentAccount);
+    var j = r.payload;
     if (!r.ok) { showToast(j.error || '删除失败'); return; }
     if (j.data) refreshDataFromServer(j.data);
   } catch(e) { showToast('删除失败：' + (e.message || e)); return; }
@@ -327,8 +319,8 @@ var _brokerDictCache = null;
 async function loadBrokerDict() {
   if (_brokerDictCache) return _brokerDictCache;
   try {
-    var r = await fetch(api('/api/brokers?market=A'));
-    _brokerDictCache = r.ok ? await r.json() : [];
+    var r = await window.accountNavApi.brokers();
+    _brokerDictCache = r.ok && Array.isArray(r.payload) ? r.payload : [];
   } catch (e) { _brokerDictCache = []; }
   return _brokerDictCache;
 }
@@ -336,11 +328,7 @@ async function loadBrokerDict() {
 // 用户在账户管理里为某账户选择券商 → 落库；若为当前账户则同步 data._broker，交易录入单位换算即时生效
 async function saveAccountBroker(name, broker) {
   try {
-    var r = await fetch(api('/api/accounts/broker'), {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ account_name: name, broker: broker })
-    });
+    var r = await window.accountNavApi.setBroker(name, broker);
     if (!r.ok) throw new Error('HTTP ' + r.status);
     if (name === currentAccount && data) data._broker = broker;
     showToast('已设置「' + name + '」券商');
@@ -438,8 +426,8 @@ async function showAccountMenu() {
   var brokerDict = await loadBrokerDict();
   var acctBrokers = {};
   try {
-    var rb = await fetch(api('/api/accounts/broker'));
-    if (rb.ok) acctBrokers = await rb.json();
+    var rb = await window.accountNavApi.accountBrokers();
+    if (rb.ok) acctBrokers = rb.payload;
   } catch (e) {}
 
   // 渲染账户列表，每个账户都显示券商下拉 + 操作按钮
@@ -520,8 +508,8 @@ async function confirmDeleteAccount() {
   // 2026-08-03 整改（报告 3.6）：后端单事务删除该账户全部业务数据 + 兼容 JSON + 列表项，
   // 杜绝"删除后重建同名账户又看到旧数据"的孤立数据问题。删除失败则中止，不静默改列表。
   try {
-    var dr = await fetch(api('/api/accounts/' + encodeURIComponent(name)), { method: 'DELETE' });
-    if (!dr.ok) { var de = {}; try { de = await dr.json(); } catch (ee) {} showToast('删除失败：' + (de.error || dr.status)); return; }
+    var dr = await window.accountNavApi.deleteAccount(name);
+    if (!dr.ok) { var de = dr.payload; showToast('删除失败：' + (de.error || dr.status)); return; }
   } catch (e) { showToast('删除失败：' + e.message); return; }
   
   accounts = accounts.filter(function(a) { return a !== name; });
@@ -569,13 +557,8 @@ async function saveAccountName() {
   if (oldIdx === -1) { showToast('找不到该账户'); return; }
 
   try {
-    var rn = await fetch(api('/api/accounts/' + encodeURIComponent(targetName) + '/rename'), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ newName: n })
-    });
-    var rnBody = {};
-    try { rnBody = await rn.json(); } catch (ee) {}
+    var rn = await window.accountNavApi.renameAccount(targetName, n);
+    var rnBody = rn.payload;
     if (!rn.ok) { showToast('重命名失败：' + (rnBody.error || rn.status)); return; }
   } catch (e) { showToast('重命名失败：' + e.message); return; }
 

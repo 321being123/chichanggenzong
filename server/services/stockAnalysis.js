@@ -66,7 +66,13 @@ async function fetchIndustry(tsCode) {
   try {
     const rows = await fetchRequired('index_member_all', { ts_code: tsCode, is_new: 'Y' }, 'ts_code,l1_code,l1_name,l2_code,l2_name,l3_code,l3_name,is_new');
     const row = rows.find(item => item.l3_name) || rows[0];
-    return row ? { industry: row.l3_name || row.l2_name || row.l1_name || '', industry_system: '申万2021', industry_level: row.l3_name ? '三级' : (row.l2_name ? '二级' : '一级'), industry_path: [row.l1_name,row.l2_name,row.l3_name].filter(Boolean) } : null;
+    if (row) return { industry: row.l3_name || row.l2_name || row.l1_name || '', industry_system: '申万2021', industry_level: row.l3_name ? '三级' : (row.l2_name ? '二级' : '一级'), industry_path: [row.l1_name,row.l2_name,row.l3_name].filter(Boolean) };
+  } catch (error) {
+    if (error.code === 'JOB_BUDGET_EXCEEDED') throw error;
+  }
+  if (!process.env.GEOSCOPE_API_KEY) return null;
+  try {
+    return await require('./lixinger').fetchLixingerIndustry(tsCode);
   } catch (_) { return null; }
 }
 

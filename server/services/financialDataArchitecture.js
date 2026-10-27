@@ -70,7 +70,7 @@ async function ensureMaster(client, tsCode, sources, metadata) {
       ON CONFLICT(taxonomy_id,industry_code) DO UPDATE SET industry_name=EXCLUDED.industry_name,level=COALESCE(EXCLUDED.level,core.industry_nodes.level) RETURNING industry_node_id`,[taxonomy.taxonomy_id,industryCode,industryName,level])).rows[0];
     await client.query(`UPDATE core.company_industry_memberships SET is_current=false,valid_to=CURRENT_DATE WHERE company_id=$1 AND is_current=true AND industry_node_id<>$2`,[company.company_id,node.industry_node_id]);
     await client.query(`INSERT INTO core.company_industry_memberships(company_id,industry_node_id,source_id,valid_from,is_current)
-      VALUES($1,$2,$3,$4,true) ON CONFLICT(company_id,industry_node_id,valid_from) DO UPDATE SET is_current=true,valid_to=NULL`,[company.company_id,node.industry_node_id,sources.tushare,asDate(legacy.list_date)]);
+      VALUES($1,$2,$3,$4,true) ON CONFLICT(company_id,industry_node_id,valid_from) DO UPDATE SET is_current=true,valid_to=NULL,source_id=EXCLUDED.source_id`,[company.company_id,node.industry_node_id,sources[raw.industry_source || 'tushare'],asDate(legacy.list_date)]);
   }
   const controller=raw.actual_controller;
   if(controller&&controller.name){

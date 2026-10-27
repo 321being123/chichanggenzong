@@ -424,7 +424,6 @@
         "server/services/jobOrchestrator.js",
         "ipo-report/test_ipo_history_sync.py",
         "ipo-report/test_ipo_unit.py",
-        "server/services/externalApiConfig.js",
         "server/services/jobDefinitions.js",
         "server/services/tushare.js",
         "server/routes/ipo.js",

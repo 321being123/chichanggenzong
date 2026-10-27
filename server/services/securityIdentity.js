@@ -223,6 +223,7 @@ function deriveProviderIdentifier(canonicalCode, sourceCode, identifierType) {
   if (!match) return null;
   const bare = match[1];
   const exchange = match[2].toUpperCase();
+  if (source === 'geoscope_lixinger' && type === 'stock_code' && ['SH', 'SZ', 'BJ'].includes(exchange)) return bare;
   if (source === 'tencent' && type === 'quote_symbol') {
     const { describeTencentCode } = require('./tencentQuote');
     return describeTencentCode(canonical)?.symbol || null;

@@ -1096,6 +1096,14 @@ function renderSettingsTabs(el, s) {
      '<div data-style="display:flex;gap:8px;flex-wrap:wrap;"><button id="test-tushare-primary" class="btn btn-outline btn-sm" data-act="testExternalApiAvailability" data-arg1="tushare" data-arg2="primary">测试主 API</button><button id="test-tushare-backup" class="btn btn-outline btn-sm" data-act="testExternalApiAvailability" data-arg1="tushare" data-arg2="backup">测试备用 API</button><button id="test-tushare-current" class="btn btn-outline btn-sm" data-act="testExternalApiAvailability" data-arg1="tushare" data-arg2="current">测试当前 API</button></div>' +
       '<div data-style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:12px;">' + renderExternalApiTestResult(getLatestExternalApiTest(apiTests, 'primary'), '主 Token') + renderExternalApiTestResult(getLatestExternalApiTest(apiTests, 'backup'), '备用 Token') + '</div>' + renderExternalApiCircuits(apiSettings.circuits) + renderEndpointPolicyPanel(apiSettings.endpoint_policies) + '</div></div></div>';
   el.insertAdjacentHTML('beforeend', '<div class="settings-panel" data-panel="brokers" id="view-brokers" hidden></div><div class="settings-panel" data-panel="holidays" id="view-holidays" hidden></div>');
+  const lixinger = s.external_apis && s.external_apis.geoscope_lixinger || {};
+  const lixingerPrimary = lixinger.primary || {};
+  const externalPanel = el.querySelector('[data-panel="external-api"]');
+  if (externalPanel) externalPanel.insertAdjacentHTML('beforeend', '<div class="u-section-foot"><div class="u-h-sm">GeoScope／理杏仁备用数据源</div>' +
+    '<div class="u-note u-mb-12">配置状态：' + (lixingerPrimary.configured ? '已配置（' + escapeHtml(lixingerPrimary.masked || '') + '）' : '未配置') +
+    '。公司资料、财务、估值、行业及 GDP 共用落库取数入口；基金净值与指数暂不可用。密钥仅在服务端环境配置。</div>' +
+    '<button id="test-geoscope_lixinger-current" class="btn btn-outline" data-act="testExternalApiAvailability" data-arg1="geoscope_lixinger" data-arg2="current">测试理杏仁连接</button>' +
+    renderExternalApiTestResult(getLatestExternalApiTest(lixinger.test_results || {}, 'primary'), '理杏仁') + '</div>');
   switchSettingsTab(settingsTab);
 }
 function renderExternalApiTestResult(result, label) {
@@ -1208,7 +1216,7 @@ async function testExternalApiAvailability(provider, role) {
   const originalText = button ? button.textContent : '';
   if (button) { button.disabled = true; button.textContent = '测试中...'; }
   const label = role === 'primary' ? '主' : role === 'backup' ? '备用' : '当前';
-  const apiName = (document.getElementById('set-tushare-test-api') || {}).value || 'trade_cal';
+  const apiName = provider === 'geoscope_lixinger' ? 'cn.company' : (document.getElementById('set-tushare-test-api') || {}).value || 'trade_cal';
   try {
     const r = await fetch(api('/api/admin/settings/external-api/' + encodeURIComponent(provider) + '/test'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ role: role, api_name: apiName }) });
     const d = await r.json();

@@ -91,11 +91,22 @@ async function extractOnce(endpoint, params, requestKey, options) {
     if (!response.ok) {
       const status = response.status;
       const code = status === 401 ? 'INVALID_CREDENTIAL' : status === 403 ? 'PERMISSION_DENIED' : status === 429 ? 'RATE_LIMIT' : 'UPSTREAM_ERROR';
-      const message = `理杏仁接口请求失败（HTTP ${status}）`;
+      let upstream = {};
+      try { upstream = await response.json(); } catch (_) { /* 非JSON错误仍保留实际HTTP状态 */ }
+      const provider = upstream?.data && !Array.isArray(upstream.data) ? upstream.data : upstream;
+      const upstreamError = upstream?.error ?? provider?.error;
+      const details = {
+        statusCode: status,
+        upstreamCode: upstream?.code ?? provider?.code ?? null,
+        upstreamError: typeof upstreamError === 'string' ? upstreamError : upstreamError?.code || null,
+        requestId: upstream?.request_id || provider?.request_id || response.headers?.get('x-request-id') || null,
+      };
+      const message = (`理杏仁接口请求失败（HTTP ${status}）；code=${details.upstreamCode ?? ''}；error=${details.upstreamError ?? ''}；request_id=${details.requestId ?? ''}`)
+        .split(token).join('***');
       if (status === 401 || status === 403) await recordEndpointPermission(SOURCE, 'primary', policy.apiName, fingerprint,
         { status: 'permission_denied', message });
       if (status === 429) await openExternalCircuit(SOURCE, message, { ...guardOptions, errorCode: code });
-      throw sourceError(code, message);
+      throw Object.assign(sourceError(code, message), details);
     }
     let payload;
     try { payload = await response.json(); } catch (_) { throw sourceError('INVALID_RESPONSE', '理杏仁响应不是有效 JSON'); }

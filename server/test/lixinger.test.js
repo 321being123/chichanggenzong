@@ -89,6 +89,22 @@ const { getProviderRuntime, getExternalApiSettings, saveProviderSettings } = req
   const preserved = await extractLixingerData('cn/company', params, { fetch: () => { throw new Error('不应联网'); } });
   assert.strictEqual(preserved.rawRecordId, first.rawRecordId, '拒绝/失败不破坏已落库有效事实');
 
+  for (const status of [400, 401, 403, 429, 503]) {
+    await assert.rejects(extractLixingerData('cn/company', { stockCodes: [`600${status}`] }, {
+      guard: async (_source, _dataset, _date, run) => run(),
+      fetch: async () => ({ ok: false, status,
+        json: async () => ({ code: `code_${status}`, error: `error_${status}`, request_id: `req_${status}` }) }),
+    }), error => error.statusCode === status && error.upstreamCode === `code_${status}`
+      && error.upstreamError === `error_${status}` && error.requestId === `req_${status}`,
+    'HTTP状态、原始错误码及request_id必须完整保留');
+  }
+  await assert.rejects(extractLixingerData('cn/company', { stockCodes: ['600502'] }, {
+    guard: async (_source, _dataset, _date, run) => run(),
+    fetch: async () => ({ ok: false, status: 503,
+      json: async () => ({ ok: false, data: { code: 'upstream_unavailable', error: 'temporary_failure', request_id: 'req_nested' } }) }),
+  }), error => error.statusCode === 503 && error.upstreamCode === 'upstream_unavailable'
+    && error.upstreamError === 'temporary_failure' && error.requestId === 'req_nested');
+
   assert.strictEqual((await getProviderRuntime(SOURCE)).primary, process.env.GEOSCOPE_API_KEY);
   const settings = await getExternalApiSettings();
   assert.strictEqual(settings[SOURCE].primary.configured, true);
@@ -98,6 +114,8 @@ const { getProviderRuntime, getExternalApiSettings, saveProviderSettings } = req
 
   // 不污染后续测试；只恢复本测试明确改动的接口状态，保留两条既有拒绝策略。
   await pool.query(`UPDATE ops.source_endpoint_policies SET enabled=true,permission_status='unknown' WHERE source_id=(SELECT source_id FROM ops.data_sources WHERE source_code=$1) AND api_name IN ('cn.company','macro.gdp')`, [SOURCE]);
+  await pool.query(`DELETE FROM ops.external_circuits WHERE source=$1 AND token_fingerprint=$2`,
+    [SOURCE, require('../services/externalCallGuard').tokenFingerprint(process.env.GEOSCOPE_API_KEY)]);
   if (keyBefore == null) delete process.env.GEOSCOPE_API_KEY; else process.env.GEOSCOPE_API_KEY = keyBefore;
   console.log('lixinger: 来源登记、受控请求、缓存去重、主备顺序、空结果、失败保留、权限隔离及密钥保护通过');
 })().catch(error => { console.error(error); process.exitCode = 1; }).finally(() => pool.end());

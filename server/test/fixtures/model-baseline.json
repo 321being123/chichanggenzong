@@ -1,0 +1,228 @@
+{
+  "suite": "model-baseline-v1",
+  "recordedAt": "2026-10-27T13:42:13.887Z",
+  "note": "批次5 确定性入口的输入→输出基线；重组前后必须逐字段一致，差异需解释为规则版本变化才允许重录。",
+  "cases": {
+    "fees.cn_stock_buy_10000": {
+      "status": "ok",
+      "hash": "aadc233b5bf40c7cc2e55b052620d106",
+      "value": {
+        "commission": 5,
+        "other_fee": 0,
+        "stamp_tax": 0,
+        "transfer_fee": 0.1
+      }
+    },
+    "fees.cn_stock_sell_10000": {
+      "status": "ok",
+      "hash": "2c1a31ac7a23f7b9391a3273013fd011",
+      "value": {
+        "commission": 5,
+        "other_fee": 0,
+        "stamp_tax": 5,
+        "transfer_fee": 0.1
+      }
+    },
+    "fees.cn_stock_buy_123456.78": {
+      "status": "ok",
+      "hash": "7b287b2c4acb3667d87d797f60ec63f4",
+      "value": {
+        "commission": 30.86,
+        "other_fee": 0,
+        "stamp_tax": 0,
+        "transfer_fee": 1.23
+      }
+    },
+    "fees.cn_bond_sell_123456.78": {
+      "status": "ok",
+      "hash": "c701850e277579c6be180cee6348a2cb",
+      "value": {
+        "commission": 30.86,
+        "other_fee": 0,
+        "stamp_tax": 61.73,
+        "transfer_fee": 1.23
+      }
+    },
+    "fees.cn_etf_buy_50000": {
+      "status": "ok",
+      "hash": "25d3f664717ff6f467ccda0f042b1f01",
+      "value": {
+        "commission": 12.5,
+        "other_fee": 0,
+        "stamp_tax": 0,
+        "transfer_fee": 0.5
+      }
+    },
+    "fees.hk_stock_sell_50000": {
+      "status": "ok",
+      "hash": "63778d43e40d7bc386fa8643d90601bd",
+      "value": {
+        "commission": 12.5,
+        "other_fee": 0,
+        "stamp_tax": 25,
+        "transfer_fee": 0.5
+      }
+    },
+    "fees.fee_groups": {
+      "status": "ok",
+      "hash": "105fadd3825d8c13fe52299f9c9deb87",
+      "value": [
+        "ashare_stock",
+        "ashare_bond",
+        "ashare_fund",
+        "hk_stock",
+        "us_stock",
+        "otc_fund"
+      ]
+    },
+    "date.normalize_business_date.compact": {
+      "status": "ok",
+      "hash": "74234e98afe7498fb5daf1f36ac2d78a",
+      "value": null
+    },
+    "date.normalize_business_date.iso": {
+      "status": "ok",
+      "hash": "385ceada9f6cde107bed820a0c01f937",
+      "value": "2026-10-27"
+    },
+    "date.normalize_business_date.slash": {
+      "status": "ok",
+      "hash": "74234e98afe7498fb5daf1f36ac2d78a",
+      "value": null
+    },
+    "date.normalize_business_date.empty": {
+      "status": "ok",
+      "hash": "74234e98afe7498fb5daf1f36ac2d78a",
+      "value": null
+    },
+    "date.compact_to_iso": {
+      "status": "ok",
+      "hash": "385ceada9f6cde107bed820a0c01f937",
+      "value": "2026-10-27"
+    },
+    "date.date_in_zone.shanghai_cross_day": {
+      "status": "ok",
+      "hash": "2a886ee9f697259e2667ea5bdb4f165f",
+      "value": "2026-10-28"
+    },
+    "date.date_time_in_zone.shanghai": {
+      "status": "ok",
+      "hash": "6e2ca89f3ea7d83e4aed49ceda3788a0",
+      "value": "2026-10-28 01:30:00"
+    },
+    "date.subtract_years": {
+      "status": "ok",
+      "hash": "976563111a62bdfb8edf61e93ac908e9",
+      "value": "2023-10-27"
+    },
+    "valuation.growth_metric.cagr": {
+      "status": "ok",
+      "hash": "55ae058c18ad6969fb602db0eb674c64",
+      "value": {
+        "method": "CAGR",
+        "value": 0.10000000000000009
+      }
+    },
+    "valuation.percentile.mid": {
+      "status": "ok",
+      "hash": "6c7e9ba29076f6c6192282311dd21343",
+      "value": {
+        "reason": "",
+        "samples": 5,
+        "value": 0.5
+      }
+    },
+    "valuation.percentile.below_all": {
+      "status": "ok",
+      "hash": "bf9a3701fda7081105d13612388314c8",
+      "value": {
+        "reason": "",
+        "samples": 5,
+        "value": 0
+      }
+    },
+    "valuation.quantile.median": {
+      "status": "ok",
+      "hash": "f5ca38f748a1d6eaf726b8a42fb575c3",
+      "value": 20
+    },
+    "valuation.ttm.annual_last": {
+      "status": "ok",
+      "hash": "40510175845988f13f6162ed8526f0b0",
+      "value": 1000
+    },
+    "valuation.ttm.interim_roll": {
+      "status": "ok",
+      "hash": "ffa6059b954a4602a9fa1518d10ca616",
+      "value": 1050
+    },
+    "valuation.latest_annual_rows": {
+      "status": "ok",
+      "hash": "771f48e96731bd984f5639a7b2025566",
+      "value": [
+        "20251231"
+      ]
+    },
+    "valuation.comparator.pe": {
+      "status": "ok",
+      "hash": "95cb9b4f84ceff132cc7a875d8c192bf",
+      "value": [
+        null,
+        null
+      ]
+    },
+    "valuation.finite.nan_text": {
+      "status": "ok",
+      "hash": "74234e98afe7498fb5daf1f36ac2d78a",
+      "value": null
+    },
+    "valuation.iso_date.compact": {
+      "status": "ok",
+      "hash": "385ceada9f6cde107bed820a0c01f937",
+      "value": "2026-10-27"
+    },
+    "valuation.ts_date_str.utc8": {
+      "status": "ok",
+      "hash": "9361551983681e45460a0ea28592747b",
+      "value": "20261028"
+    },
+    "facts.hash.sample": {
+      "status": "ok",
+      "hash": "9a0b3e2533f7dcea6e389436aca293ac",
+      "value": "b28c94b2195c8ed259f0b415aaee3f39b0b2920a4537611499fa044956917a21"
+    },
+    "facts.stable_payload.sample": {
+      "status": "ok",
+      "hash": "43258cff783fe7036d8a43033f830adf",
+      "value": {
+        "a": 1,
+        "b": 2
+      }
+    },
+    "facts.as_date.compact": {
+      "status": "ok",
+      "hash": "385ceada9f6cde107bed820a0c01f937",
+      "value": "2026-10-27"
+    },
+    "facts.period_type.q3": {
+      "status": "ok",
+      "hash": "f5c8604e5f4919254f801755ae083b12",
+      "value": "q3"
+    },
+    "facts.period_type.annual": {
+      "status": "ok",
+      "hash": "5309f4237b7293dbef693bb89444e1a5",
+      "value": "annual"
+    },
+    "facts.fact_map.keys": {
+      "status": "ok",
+      "hash": "f6b20f62af489a4936bdb2cfd379a810",
+      "value": [
+        "balance",
+        "cashflow",
+        "income",
+        "indicator"
+      ]
+    }
+  }
+}

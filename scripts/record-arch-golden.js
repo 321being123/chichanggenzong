@@ -117,7 +117,9 @@ async function runCase(pool, testCase) {
     if (typeof fn !== 'function') {
       return { status: 'blocked', reason: `入口未导出函数：${testCase.entry}#${testCase.export}`, durationMs: Date.now() - startedAt };
     }
-    const value = await fn(...(testCase.params || []));
+    let value = await fn(...(testCase.params || []));
+    // pick：入口返回 pg result 时只取关心的字段（rows 等），避免把驱动元数据写进基线。
+    if (testCase.pick) value = value == null ? value : value[testCase.pick];
     const normalized = normalizeValue(value, []);
     const durationMs = Date.now() - startedAt;
     const empty = normalized === null || normalized === undefined

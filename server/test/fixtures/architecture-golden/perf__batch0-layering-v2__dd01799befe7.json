@@ -1,0 +1,160 @@
+{
+  "schemaVersion": 1,
+  "kind": "performance",
+  "caseSet": "batch0-layering-v2",
+  "toolVersion": "1.0.0",
+  "baselineCommit": "dd01799befe7947627d712bf9925b23df8b0bb11",
+  "dirty": true,
+  "recordedAt": "2026-10-27T12:12:35.462Z",
+  "environment": {
+    "node": "v22.22.2",
+    "platform": "win32",
+    "cpus": 12
+  },
+  "schema": {
+    "tables": 149,
+    "latest_migration": "177_lixinger_source"
+  },
+  "budgetRule": "T ≤ B + min(20%×B, 50ms)",
+  "readonlyGuards": {
+    "pgOptions": "-c default_transaction_read_only=on"
+  },
+  "cases": {
+    "bond-rating-distribution": {
+      "status": "ok",
+      "measure": "service_call_ms",
+      "p50": 15.3166,
+      "p95": 19.3889,
+      "groups": [
+        {
+          "p50": 15.8206,
+          "p95": 20.8582
+        },
+        {
+          "p50": 15.3166,
+          "p95": 17.081
+        },
+        {
+          "p50": 14.7256,
+          "p95": 19.3889
+        }
+      ],
+      "settings": {
+        "warmup": 5,
+        "groups": 3,
+        "samplesPerGroup": 30
+      },
+      "statementsPerCall": 1,
+      "explain": {
+        "nodeType": "Sort",
+        "totalCost": 18303.44,
+        "planRows": 6,
+        "sequentialScan": false
+      },
+      "entry": "server/services/bondDataService.js",
+      "export": "getRatingDistribution"
+    },
+    "bond-active-codes": {
+      "status": "ok",
+      "measure": "service_call_ms",
+      "p50": 14.5987,
+      "p95": 19.4851,
+      "groups": [
+        {
+          "p50": 15.2873,
+          "p95": 19.4851
+        },
+        {
+          "p50": 13.9794,
+          "p95": 20.8398
+        },
+        {
+          "p50": 14.5987,
+          "p95": 18.7929
+        }
+      ],
+      "settings": {
+        "warmup": 5,
+        "groups": 3,
+        "samplesPerGroup": 30
+      },
+      "statementsPerCall": 1,
+      "explain": {
+        "nodeType": "Nested Loop",
+        "totalCost": 18089.72,
+        "planRows": 6,
+        "sequentialScan": false
+      },
+      "entry": "server/services/bondDataService.js",
+      "export": "getActiveBondCodes"
+    },
+    "stock-latest-valuation-600000": {
+      "status": "ok",
+      "measure": "service_call_ms",
+      "p50": 0.3816,
+      "p95": 0.5,
+      "groups": [
+        {
+          "p50": 0.4302,
+          "p95": 0.6195
+        },
+        {
+          "p50": 0.3816,
+          "p95": 0.5
+        },
+        {
+          "p50": 0.3491,
+          "p95": 0.4121
+        }
+      ],
+      "settings": {
+        "warmup": 5,
+        "groups": 3,
+        "samplesPerGroup": 30
+      },
+      "statementsPerCall": 1,
+      "explain": {
+        "nodeType": "Nested Loop",
+        "totalCost": 12.11,
+        "planRows": 1,
+        "sequentialScan": false
+      },
+      "entry": "server/repositories/stockRepository.js",
+      "export": "listLatestValuations"
+    },
+    "stock-list-search-600000": {
+      "status": "ok",
+      "measure": "service_call_ms",
+      "p50": 20.9057,
+      "p95": 22.6308,
+      "groups": [
+        {
+          "p50": 20.9057,
+          "p95": 22.1254
+        },
+        {
+          "p50": 21.3302,
+          "p95": 22.6308
+        },
+        {
+          "p50": 20.5216,
+          "p95": 25.8466
+        }
+      ],
+      "settings": {
+        "warmup": 5,
+        "groups": 3,
+        "samplesPerGroup": 30
+      },
+      "statementsPerCall": 1,
+      "explain": {
+        "nodeType": "Limit",
+        "totalCost": 576.18,
+        "planRows": 2,
+        "sequentialScan": false
+      },
+      "entry": "server/repositories/stockRepository.js",
+      "export": "listStocks"
+    }
+  }
+}

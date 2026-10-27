@@ -356,6 +356,17 @@ function scanImportEdges(source, filePath, config, { rootDir = path.resolve(__di
     ImportDeclaration(node) {
       if (node.source && typeof node.source.value === 'string') specifiers.add(node.source.value);
     },
+    // 动态 import() 与 export ... from 同样构成依赖边：漏掉它们，改写成 import() 就能绕过跨层检查。
+    ImportExpression(node) {
+      const source = node.source;
+      if (source && source.type === 'Literal' && typeof source.value === 'string') specifiers.add(source.value);
+    },
+    ExportNamedDeclaration(node) {
+      if (node.source && typeof node.source.value === 'string') specifiers.add(node.source.value);
+    },
+    ExportAllDeclaration(node) {
+      if (node.source && typeof node.source.value === 'string') specifiers.add(node.source.value);
+    },
   });
   const findings = [];
   for (const spec of specifiers) {

@@ -91,5 +91,41 @@ const service = context.module.exports;
   ui.fetch = async () => ({ ok: true, status: 202, json: async () => ({ queued: { queued: false }, warning: '未能排队' }) });
   await ui.stockAnalysisRefresh();
   assert.strictEqual(messages.at(-1), '未能排队');
+  // 验收缺口回归：A→B→A 快速切换时，第一次 A 的迟到响应不得覆盖第三次 A 的结果。
+  // 只比对 tsCode 的写法会让 A-old 通过检查，所以这里必须构造"乱序返回"才能暴露问题。
+  const selectSource = frontend.slice(
+    frontend.indexOf('async function stockAnalysisSelect('),
+    frontend.indexOf('async function stockAnalysisRefresh('),
+  );
+  const pendingSnapshots = [];
+  const rendered = [];
+  const raceUi = {
+    stockAnalysisState: { selected: '', stocks: [], data: null, loading: false, selectToken: 0 },
+    username: 'test',
+    document: { getElementById: () => ({ style: {}, classList: { add() {}, remove() {} } }) },
+    api: value => value,
+    stockAnalysisApi: {
+      getSnapshot: tsCode => new Promise(resolve => pendingSnapshots.push({ tsCode, resolve })),
+    },
+    stockAnalysisSwitchView() {},
+    stockAnalysisSetMessage() {},
+    stockAnalysisRender: payload => rendered.push(payload),
+    showToast() {},
+  };
+  vm.runInNewContext(selectSource, raceUi);
+  const firstA = raceUi.stockAnalysisSelect('AAA');
+  const askB = raceUi.stockAnalysisSelect('BBB');
+  const secondA = raceUi.stockAnalysisSelect('AAA');
+  assert.strictEqual(pendingSnapshots.length, 3, '每次选择都应真正发出一次请求');
+  // 乱序：先返回第三次 A（新），再返回第一次 A（旧）与 B
+  pendingSnapshots[2].resolve({ ok: true, status: 200, payload: { tag: 'A-new' } });
+  await secondA;
+  pendingSnapshots[0].resolve({ ok: true, status: 200, payload: { tag: 'A-old' } });
+  await firstA;
+  pendingSnapshots[1].resolve({ ok: true, status: 200, payload: { tag: 'B' } });
+  await askB;
+  assert.deepStrictEqual(rendered.map(item => item.tag), ['A-new'],
+    'A→B→A 时只允许渲染最后一次 A 的结果，旧 A 与 B 都必须被丢弃');
+
   console.log('stock analysis refresh queue tests passed');
 })().catch(error => { console.error(error); process.exitCode = 1; });

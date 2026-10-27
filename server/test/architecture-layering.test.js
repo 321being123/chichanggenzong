@@ -99,6 +99,29 @@ check('跨层引用：domain 引用仓储或调度器必须报错', () => {
   );
   assert.strictEqual(cleaned.length, 0, 'domain 引用同层模块不应被误判');
 });
+check('跨层引用：动态 import() 与 export-from 同样必须报错', () => {
+  const dynamicImport = scanner.scanImportEdges(
+    "const m = import('../repositories/stockRepository');",
+    'server/domain/probe.js', boundaries,
+  );
+  assert.strictEqual(dynamicImport.length, 1, '动态 import() 引用仓储必须被检出');
+  const chained = scanner.scanImportEdges(
+    "import('../jobs/replayNav').then(mod => mod.run());",
+    'server/domain/probe.js', boundaries,
+  );
+  assert.strictEqual(chained.length, 1, 'import().then() 链式写法同样必须被检出');
+  const exportFrom = scanner.scanImportEdges(
+    "export { listStocks } from '../repositories/stockRepository';",
+    'server/domain/probe.js', boundaries,
+  );
+  assert.strictEqual(exportFrom.length, 1, 'export ... from 也必须算依赖边');
+  const sameLayer = scanner.scanImportEdges(
+    "const f = import('./stockFacts');",
+    'server/domain/probe.js', boundaries,
+  );
+  assert.strictEqual(sameLayer.length, 0, '同层动态 import 不应误判');
+});
+
 check('跨层引用：仓储引用 domain 纯函数属依赖倒置，不报', () => {
   const findings = scanner.scanImportEdges(
     "const facts = require('../domain/stockFacts');",

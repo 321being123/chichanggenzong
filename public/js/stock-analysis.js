@@ -1,4 +1,4 @@
-var stockAnalysisState = { loaded:false, stocks:[], selected:'', data:null, loading:false };
+var stockAnalysisState = { loaded:false, stocks:[], selected:'', data:null, loading:false, selectToken:0 };
 
 var stockAnalysisHelpTexts = {
   '滚动市盈率':'当前总市值 ÷ 最近12个月归母净利润。',
@@ -106,6 +106,10 @@ async function loadStockAnalysis(force) {
 }
 
 async function stockAnalysisSelect(tsCode) {
+  // 每次选择都领一个新序号。只比对 tsCode 无法区分 A→B→A：第一次 A 与第三次 A 同码，
+  // 先发的旧 A 响应回来时仍满足 selected === tsCode，会把新 A 的结果覆盖成旧数据。
+  var selectToken = (stockAnalysisState.selectToken || 0) + 1;
+  stockAnalysisState.selectToken = selectToken;
   stockAnalysisState.selected = tsCode || '';
   stockAnalysisState.data = null;
   if (typeof stockAnalysisSwitchView === 'function') stockAnalysisSwitchView('analysis');
@@ -116,15 +120,15 @@ async function stockAnalysisSelect(tsCode) {
   stockAnalysisSetMessage('正在读取分析结果...');
   try {
     var snapshotResult = await stockAnalysisApi.getSnapshot(tsCode);
-    // 迟到的响应不得覆盖当前选择（快速切换时先发的请求可能后返回）
-    if (stockAnalysisState.selected !== tsCode) return;
+    // 迟到的响应不得覆盖当前选择：按序号判定，覆盖 A→B→A 这类同码重选
+    if (stockAnalysisState.selectToken !== selectToken) return;
     if (snapshotResult.status === 404) {
       if (!username) return stockAnalysisSetMessage('该股票暂未建档，登录后可刷新并建立分析数据。');
       // 页面打开只读本地快照；建立分析数据必须由用户明确点击“刷新数据”。
       return stockAnalysisSetMessage('该股票暂无分析快照，请点击“刷新数据”建立。');
     }
     var payload = snapshotResult.payload;
-    if (stockAnalysisState.selected !== tsCode) return;
+    if (stockAnalysisState.selectToken !== selectToken) return;
     if (!snapshotResult.ok) throw new Error(payload.error || '分析读取失败');
     if (payload.needs_refresh) {
       var reasons = payload.freshness && payload.freshness.reasons ? payload.freshness.reasons.map(function(r){return r.message;}).join('；') : '数据待更新';
@@ -133,7 +137,7 @@ async function stockAnalysisSelect(tsCode) {
     }
     stockAnalysisRender(payload);
   } catch (error) {
-    if (stockAnalysisState.selected !== tsCode) return;
+    if (stockAnalysisState.selectToken !== selectToken) return;
     stockAnalysisSetMessage(error.message || String(error), true);
   }
 }

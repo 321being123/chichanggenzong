@@ -86,7 +86,11 @@ const { isCleanSecurityName } = require('../services/securityIdentity');
   const utils = fs.readFileSync(path.join(root, 'public', 'js', 'utils.js'), 'utf8');
   const arbitrage = fs.readFileSync(path.join(root, 'public', 'js', 'arbitrage.js'), 'utf8');
   await check('U-17 切换与刷新均核对当前选择后再渲染', () => {
-    assert.ok(stockAnalysis.includes('if (stockAnalysisState.selected !== tsCode) return;'), 'select 缺乱序守卫');
+    // select 的乱序守卫自批次2 起改为递增序号：只比对 tsCode 无法区分 A→B→A（第一次 A 与第三次 A 同码）。
+    // 两种写法都要求"回来时必须重新核对当前选择"，没有放宽检查。
+    const selectGuarded = stockAnalysis.includes('if (stockAnalysisState.selected !== tsCode) return;')
+      || stockAnalysis.includes('if (stockAnalysisState.selectToken !== selectToken) return;');
+    assert.ok(selectGuarded, 'select 缺乱序守卫');
     assert.ok(stockAnalysis.includes('var stillCurrent = stockAnalysisState.selected === tsCode;'), 'refresh 缺乱序守卫');
   });
   await check('U-18 官方链接白名单覆盖上交所/深交所/巨潮且仅 https', () => {

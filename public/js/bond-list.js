@@ -123,9 +123,10 @@ async function loadBondList(forceRefresh) {
   var status = document.getElementById('bond-list-updated');
   try {
     var url = '/api/bond-analysis/bonds?limit=1000' + (forceRefresh ? '&refresh=1' : '');
-    var response = await fetch(api(url), { cache: 'no-store' });
-    if (!response.ok) throw new Error('接口返回 ' + response.status);
-    var data = await response.json();
+    // 批次4：取数统一走 siteApi（View 不直接 fetch），错误与 JSON 解析由客户端归一。
+    var result = await window.siteApi.get(url, { cache: 'no-store' });
+    if (!result.ok) throw new Error('接口返回 ' + result.status);
+    var data = result.payload;
     bondListState.rows = Array.isArray(data.data) ? data.data : [];
     bondListState.loaded = true;
     bondListState.lastRefreshAt = Date.now();

@@ -10,6 +10,8 @@ const migration = readMigrationSource();
 const sync = fs.readFileSync(path.join(root, 'ipo-report', 'ipo_history_sync.py'), 'utf8');
 const identity = fs.readFileSync(path.join(root, 'server', 'services', 'securityIdentity.js'), 'utf8');
 const route = fs.readFileSync(path.join(root, 'server', 'routes', 'ipo.js'), 'utf8');
+// 批次3：IPO 的 SQL 已迁入仓储，字段级断言需同时覆盖两处。
+const ipoRepositorySource = fs.readFileSync(path.join(root, 'server', 'repositories', 'ipoRepository.js'), 'utf8');
 const hkex = require('../services/hkexAnnouncement');
 
 assert.match(migration, /140_ipo_instrument_identity/);
@@ -24,7 +26,7 @@ assert.match(sync, /ensure_instrument\(/);
 assert.match(sync, /"instrument_id"\] = master\["instrument_id"\]/);
 assert.match(sync, /market_code='CN'/);
 assert.match(identity, /core\.instruments\.status='listed'/);
-assert.match(route, /h\.market_code='CN'/);
+assert.match(route + ipoRepositorySource, /h\.market_code='CN'/);
 assert.ok(hkex.ALLOWED_DOMAINS.has('www1.hkexnews.hk'));
 assert.ok(hkex.ALLOWED_DOMAINS.has('www2.hkexnews.hk'));
 assert.ok(!hkex.ALLOWED_DOMAINS.has('example.com'));

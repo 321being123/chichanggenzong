@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "lastReviewed": "2026-10-26",
+  "lastReviewed": "2026-10-27",
   "rules": [
     {
       "id": "BOND-PROSPECTUS-SELECTION-059",
@@ -1057,7 +1057,7 @@
       "id": "IPO-API-QUALITY-001",
       "title": "空 IPO 业务赛道数组必须在接口字段状态中保持待补全",
       "implementation": {
-        "file": "server/routes/ipo.js",
+        "file": "server/repositories/ipoRepository.js",
         "symbol": "stockFieldStatusSql"
       },
       "tests": [
@@ -1908,7 +1908,7 @@
       "id": "IPO-CHAIN-API-001",
       "title": "完整原文关系无赛道映射仍与Runner字段质量一致",
       "implementation": {
-        "file": "server/routes/ipo.js",
+        "file": "server/repositories/ipoRepository.js",
         "symbol": "stockFieldStatusSql"
       },
       "tests": [

@@ -37,9 +37,11 @@ const response = (code, period = '20251231') => ({ fields: ['ts_code', 'ann_date
   const native = require('module').createRequire(file);
   let fresh = false, apiCalls = 0, saved = [], wrongStock = false;
   const context = { module: { exports: {} }, console, process, Date,
-    require: name => name === '../db/connection' ? { pool: { query: async () => ({ rows: [
-      { ts_code: '600370.SH', name: '*ST三房', market: 'CN', list_date: '20030306', raw_data: { industry: '化工' } },
-    ] }) } } : name === './market' ? { ...native(name), tushareQuery: async (api, params) => {
+    // 批次2：主档读取已迁入仓储，注入同语义实现；行业/名称断言保持不变
+    require: name => name === '../repositories/stockAnalysisRepository' ? {
+      ...native(name),
+      readInstrumentMeta: async () => ({ ts_code: '600370.SH', name: '*ST三房', market: 'CN', list_date: '20030306', raw_data: { industry: '化工' } }),
+    } : name === './market' ? { ...native(name), tushareQuery: async (api, params) => {
       apiCalls++; assert.strictEqual(api, 'dividend'); assert.deepStrictEqual(Object.keys(params), ['ts_code']);
       return { fields: ['ts_code', 'end_date', 'cash_div_tax'], items: [[wrongStock ? '600763.SH' : '600370.SH', '20221231', 0.1]] };
     } } : name === './financialDataArchitecture' ? { ...native(name), persistCollectedData: async (metadata, bundle) => saved.push({ metadata, bundle }) }
@@ -72,6 +74,18 @@ const response = (code, period = '20251231') => ({ fields: ['ts_code', 'ann_date
   }, release() {} };
   const persistContext = { module: { exports: {} }, console, process, Date,
     require: name => name === '../db' ? { pool: { connect: async () => client } }
+      // 批次1：事务边界改由统一封装承担，注入同语义实现，COMMIT/ROLLBACK 断言保持不变
+      : name === '../db/transaction' ? { withTransaction: async fn => {
+        await client.query('BEGIN');
+        try {
+          const value = await fn(client);
+          await client.query('COMMIT');
+          return value;
+        } catch (error) {
+          await client.query('ROLLBACK');
+          throw error;
+        }
+      } }
       : name === './financialDataArchitecture' ? { syncReportRows: async () => {} }
       : name === './datasetCursors' ? { markDatasetSuccess: async () => {}, markDatasetFailure: async () => {} }
       : serviceRequire(name),

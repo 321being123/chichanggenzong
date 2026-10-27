@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "caseSet": "batch0-layering",
+  "note": "固定证券/聚合入口与动态排除名单；只登记受控只读入口，不触发刷新、外采或快照补写。",
+  "excludeFields": ["updated_at", "created_at"],
+  "cases": [
+    {
+      "id": "bond-rating-distribution",
+      "entry": "server/services/bondDataService.js",
+      "export": "getRatingDistribution",
+      "params": [],
+      "readonly": true,
+      "note": "只读聚合，不依赖特定证券存在",
+      "perf": { "warmup": 5, "groups": 3, "samplesPerGroup": 30 },
+      "explainSql": "SELECT display_rating AS rating, COUNT(*) AS cnt FROM public.bond_unified WHERE status = 'listed' AND (issue_type IS NULL OR issue_type NOT IN ('定向', '私募')) GROUP BY display_rating ORDER BY cnt DESC"
+    },
+    {
+      "id": "bond-active-codes",
+      "entry": "server/services/bondDataService.js",
+      "export": "getActiveBondCodes",
+      "params": [],
+      "readonly": true,
+      "note": "只读列表，用于核对证券集合与排序",
+      "perf": { "warmup": 5, "groups": 3, "samplesPerGroup": 30 },
+      "explainSql": "SELECT bond_code FROM public.bond_unified WHERE status = 'listed' AND (issue_type IS NULL OR issue_type NOT IN ('定向', '私募'))"
+    },
+    {
+      "id": "bond-detail-113050",
+      "entry": "server/services/bondDataService.js",
+      "export": "getBondDetail",
+      "params": ["113050.SH"],
+      "readonly": true,
+      "note": "固定单债样例；库内无该证券时记 not_available，不视为通过"
+    }
+  ]
+}

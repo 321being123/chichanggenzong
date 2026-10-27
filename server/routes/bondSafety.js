@@ -7,7 +7,8 @@ const { getLatestSnapshot, refreshBondSafety } = require('../services/bondSafety
 const { isConfigured } = require('../services/bondSafetyFetcher');
 const { getLatestCallStateBySecurityCodes } = require('../services/convertibleBondRedemptionService');
 const { filterAndSortRows, buildBondSafetyWorkbook } = require('../services/bondSafetyExport');
-const { auditEvent, pool } = require('../db');
+const { auditEvent } = require('../db');
+const bondSafetyRepository = require('../repositories/bondSafetyRepository');
 const { getDatasetMetadata } = require('../services/datasetPartitions');
 const { publishJobDatasets } = require('../services/datasetPartitionRegistry');
 const { applyPublicCache } = require('../middleware/publicCache');
@@ -25,20 +26,10 @@ router.get('/bonds', asyncHandler(async (req, res) => {
   let callStateVersion = '';
   if (!summaryView) {
     try {
-      const { rows } = await pool.query(`
-        SELECT
-          (SELECT COALESCE(MAX(calculated_at)::text, '')
-             FROM analytics.convertible_bond_trigger_daily
-            WHERE trigger_type='call') AS trigger_calculated_at,
-          (SELECT COALESCE(MAX(updated_at)::text, '')
-             FROM event.convertible_bond_call_events) AS event_updated_at,
-          (SELECT COALESCE(MAX(event_id)::text, '')
-             FROM event.convertible_bond_call_events) AS event_id,
-          (SELECT COALESCE(MAX(trade_date)::text, '')
-             FROM market.convertible_bond_daily_metrics) AS market_trade_date`);
-      callStateVersion = rows[0]
-        ? [rows[0].trigger_calculated_at, rows[0].event_updated_at, rows[0].event_id,
-          rows[0].market_trade_date].join('|')
+      const row = await bondSafetyRepository.readCallStateWatermark();
+      callStateVersion = row
+        ? [row.trigger_calculated_at, row.event_updated_at, row.event_id,
+          row.market_trade_date].join('|')
         : '';
     } catch (e) {
       // 兼容旧库：状态版本查询失败不阻断原有列表读取，部署后由日志和 nginx 验收发现。

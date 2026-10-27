@@ -4,7 +4,9 @@ const asyncHandler = require('../middleware/async');
 const { requireLogin, requireCapability } = require('../middleware/auth');
 const svc = require('../services/marketVolatility');
 const cycleMetrics = require('../services/marketCycleMetrics');
-const { pool, auditEvent } = require('../db');
+const { auditEvent } = require('../db');
+const { withTransaction } = require('../db/transaction');
+const marketCycleRepository = require('../repositories/marketCycleRepository');
 const multer = require('multer');
 const ExcelJS = require('exceljs');
 const { calculateGraham } = require('../jobs/marketVolatilitySync');
@@ -55,14 +57,12 @@ function query(req) {
   return { metric, market, benchmark };
 }
 async function assertAccount(username, account) {
-  const { rows } = await pool.query('SELECT 1 FROM accounts WHERE username=$1 AND account_name=$2 LIMIT 1', [username, account]);
-  if (!rows.length) { const e = new Error('账户不存在或无权访问'); e.status = 403; throw e; }
+  const exists = await marketCycleRepository.accountExists({ username, accountName: account });
+  if (!exists) { const e = new Error('账户不存在或无权访问'); e.status = 403; throw e; }
 }
 async function homeCycleConfig() {
-  const { rows } = await pool.query(`SELECT metric_code AS metric,market_code AS market,benchmark_code AS benchmark,
-    reference_username,reference_account FROM analytics.market_cycle_home_setting
-    WHERE setting_key='market_cycle_home' LIMIT 1`);
-  return rows[0] || {
+  const row = await marketCycleRepository.readHomeSetting();
+  return row || {
     metric: 'pe', market: 'CN', benchmark: 'CSI300',
     reference_username: process.env.HOME_PE_REFERENCE_USER || 'daicunzai',
     reference_account: process.env.HOME_PE_REFERENCE_ACCOUNT || '华泰账户',
@@ -96,21 +96,10 @@ router.get('/home-cycle', asyncHandler(async (req, res) => {
   const rangeCutoff = cycleMetrics.rangeCutoff(range);
   let cacheVersion = [config.metric, config.market, config.benchmark, config.reference_username, config.reference_account, range, rangeCutoff || 'all'].join('|');
   try {
-    const metricTable = config.metric === 'graham'
-      ? `analytics.graham_index_daily WHERE market_code=$1 AND benchmark_code=$2`
-      : config.metric === 'm2_market_cap'
-        ? `analytics.m2_market_cap_daily WHERE TRUE`
-        : `market.index_valuation_history WHERE index_code=$1 AND valuation_method='market_cap_weighted'`;
-    const calculatedColumn = config.metric === 'pe' || config.metric === 'pb' ? 'ingested_at' : 'calculated_at';
-    const params = config.metric === 'm2_market_cap' ? [] : [config.metric === 'graham' ? config.market : config.benchmark,
-      ...(config.metric === 'graham' ? [config.benchmark] : [])];
-    const { rows } = await pool.query(
-      `SELECT COALESCE(MAX(trade_date)::text, '1900-01-01') AS latest_date,
-              COALESCE(MAX(${calculatedColumn})::text, '') AS latest_calculated
-         FROM ${metricTable}`,
-      params
-    );
-    if (rows[0]) cacheVersion += '|' + rows[0].latest_date + '|' + rows[0].latest_calculated;
+    const row = await marketCycleRepository.readMetricWatermark({
+      metric: config.metric, market: config.market, benchmark: config.benchmark,
+    });
+    if (row) cacheVersion += '|' + row.latest_date + '|' + row.latest_calculated;
   } catch (e) {}
   if (applyPublicCache(req, res, cacheVersion)) return;
   const sourceRows = isGraham
@@ -135,21 +124,13 @@ router.put('/home-cycle/config', requireCapability('ops_manage'), asyncHandler(a
   if (metric === 'm2_market_cap') { market = 'CN'; benchmark = 'ASHARE'; }
   else if (!svc.validMarketBenchmark(market, benchmark)) return res.status(400).json({ error: '市场或指数参数不合法' });
   await assertAccount(req.session.user, account);
-  const saved = metric === 'graham'
-    ? await pool.query(`SELECT 1 FROM analytics.graham_strategy_settings
-        WHERE username=$1 AND account_name=$2 AND market_code=$3 AND benchmark_code=$4 AND is_current LIMIT 1`,
-      [req.session.user, account, market, benchmark])
-    : await pool.query(`SELECT 1 FROM analytics.market_cycle_strategy_settings
-        WHERE username=$1 AND account_name=$2 AND metric_code=$3 AND market_code=$4 AND benchmark_code=$5 AND is_current LIMIT 1`,
-      [req.session.user, account, metric, market, benchmark]);
-  if (!saved.rows.length) return res.status(400).json({ error: '请先保存当前页面的仓位边界，再设为首页' });
-  await pool.query(`INSERT INTO analytics.market_cycle_home_setting
-    (setting_key,metric_code,market_code,benchmark_code,reference_username,reference_account,updated_by,updated_at)
-    VALUES('market_cycle_home',$1,$2,$3,$4,$5,$4,now())
-    ON CONFLICT(setting_key) DO UPDATE SET metric_code=EXCLUDED.metric_code,market_code=EXCLUDED.market_code,
-      benchmark_code=EXCLUDED.benchmark_code,reference_username=EXCLUDED.reference_username,
-      reference_account=EXCLUDED.reference_account,updated_by=EXCLUDED.updated_by,updated_at=now()`,
-  [metric, market, benchmark, req.session.user, account]);
+  const saved = await marketCycleRepository.hasSavedStrategy({
+    username: req.session.user, accountName: account, metric, market, benchmark,
+  });
+  if (!saved) return res.status(400).json({ error: '请先保存当前页面的仓位边界，再设为首页' });
+  await marketCycleRepository.upsertHomeSetting({
+    metric, market, benchmark, username: req.session.user, accountName: account,
+  });
   await auditEvent({ actor: req.session.user, action: 'market_cycle_home', target: metric, result: 'success', requestId: req.id, detail: market + '/' + benchmark + '/' + account });
   res.json({ ok: true, ...publicHomeConfig({ metric, market, benchmark }) });
 }));
@@ -174,13 +155,9 @@ router.post('/federal-funds/import', requireCapability('ops_manage'), upload.sin
   const sourceRecords = await parseFederalFundsFile(req.file);
   if (!sourceRecords.length) return res.status(400).json({ error: '未识别到有效数据；需要日期和利率两列' });
   const records = expandFederalFundsDaily(sourceRecords);
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-    for (const row of records) await client.query(`INSERT INTO market.sovereign_yield_daily(market_code,tenor_years,trade_date,yield_pct,source_code,source_date,raw_payload)
-      VALUES('US',10,$1,$2,'manual_fed_funds',$3,$4) ON CONFLICT(market_code,tenor_years,trade_date,source_code) DO UPDATE SET yield_pct=EXCLUDED.yield_pct,source_date=EXCLUDED.source_date,raw_payload=EXCLUDED.raw_payload,ingested_at=now()`, [row.tradeDate, row.yieldPct, row.sourceDate, JSON.stringify({ source: req.file.originalname, sourceDate: row.sourceDate, rate: row.yieldPct })]);
-    await client.query('COMMIT');
-  } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
+  await withTransaction(async tx => {
+    await marketCycleRepository.upsertSovereignYield({ rows: records, sourceName: req.file.originalname }, tx);
+  });
   try {
     await calculateGraham();
     await auditEvent({ actor: req.session.user, action: 'market_rate_import', target: 'US_10Y', result: 'success', requestId: req.id, metadata: { sourceRows: sourceRecords.length, imported: records.length } });

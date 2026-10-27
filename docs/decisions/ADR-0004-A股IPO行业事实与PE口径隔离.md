@@ -1,5 +1,6 @@
 # ADR-0004：A 股 IPO 行业事实与 PE 口径隔离
 
+2026-10-27 共享入口核对（应用分层批次3，本地实现、未部署）：IPO 的 SQL 与 SQL 片段生成器由 `server/routes/ipo.js` 整段迁入 `server/repositories/ipoRepository.js`，`hkOfferPhaseSql`／`stockFieldStatusSql` 仍从路由转发导出；字段口径、行业/PE 判定、预测模型与门禁均未改动，只改实现位置。港股 IPO 继续暂停，不因本次结构迁移恢复任何来源或任务。
 > 当前阅读边界（2026-10-26）：本ADR维护长期决策；实现/生产状态按规则追踪矩阵及原告警方案9.27核对，不能用历史流水的待发布状态代替当前结论。旧顶部流水保留在文末历史段。
 
 状态：已采纳

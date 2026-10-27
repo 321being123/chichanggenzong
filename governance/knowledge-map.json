@@ -28,7 +28,8 @@
         "docs/近期问题复盘与通用研发规范_*.md",
         "docs/生产部署历史记录_*.md",
         "docs/文档治理核查_*.md",
-        "docs/知识库公共规则.md"
+        "docs/知识库公共规则.md",
+        "scripts/check-knowledge.js"
       ],
       "keywords": [
         "知识整理",
@@ -235,6 +236,10 @@
         "public/js/views/**",
         "public/js/api/**",
         "governance/architecture-boundaries.json",
+        "governance/architecture-golden-cases.json",
+        "server/test/fixtures/architecture-layer-baseline.json",
+        "server/test/fixtures/architecture-golden/**",
+        "server/test/fixtures/architecture-layer-reports/**",
         "server/scripts/acceptanceDataArchitecture.js",
         "server/db/transaction.js",
         "scripts/audit-layer-coupling.js",
@@ -278,13 +283,17 @@
           "### 8.4 统一数据层读写矩阵"
         ],
         "docs/应用分层与MVP架构整改方案_20261027.md": [
+          "### 2.4 批次1的迁移范围冻结",
           "## 3. 目标结构与依赖规则",
           "## 4. 数据层合同与主备选择",
           "## 5. 业务层、协议与 MVP",
           "## 6. 分批实施与退出条件",
+          "### 6.3 批次0交付清单与CI接入点",
           "## 7. 验收与防回退",
+          "### 7.2.1 性能预算默认口径",
           "### 8.1 每批正文更新落点",
-          "### 8.2 本轮评审建议的采纳结论"
+          "### 8.2 本轮评审建议的采纳结论",
+          "### 8.3 本次补充评审的采纳结论"
         ]
       }
     },
@@ -635,7 +644,6 @@
         "server/services/jobRunnerProcess.js",
         "server/services/jobScheduleSlots.js",
         "server/services/datasetPartitionRegistry.js",
-        "scripts/check-knowledge.js",
         "scripts/generate-job-matrix.js",
         "governance/rule-traceability.json"
       ],
@@ -1186,7 +1194,7 @@
       ],
       "readSections": {
         "docs/技术架构.md": [
-          "### 9.8 意见反馈与版本发布闭环（已实现；站内通知已本地实现，待生产部署）",
+          "### 9.8 意见反馈与版本发布闭环（已实现；站内通知已随 0.8.4.42 生产上线）",
           "### 7.1 页面级访问矩阵（ACCESS-01）",
           "## 12. 配置与敏感信息"
         ],
@@ -1243,11 +1251,11 @@
           "#### 14.12.4 整体复测后的局部修复（2026-10-26，本地未部署）"
         ],
         "docs/技术架构.md": [
-          "### 9.8 意见反馈与版本发布闭环（已实现；站内通知已本地实现，待生产部署）",
+          "### 9.8 意见反馈与版本发布闭环（已实现；站内通知已随 0.8.4.42 生产上线）",
           "### 7.1 页面级访问矩阵（ACCESS-01）"
         ],
         "docs/生产部署流程.md": [
-          "## 待发布：统一站内通知（2026-10-25 本地已实现，未部署）"
+          "## 已发布归档：统一站内通知（0.8.4.42，2026-10-26）"
         ]
       },
       "update": [

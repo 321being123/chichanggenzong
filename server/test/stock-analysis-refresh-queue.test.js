@@ -80,6 +80,11 @@ const service = context.module.exports;
     stockAnalysisSetMessage: message => messages.push(message), stockAnalysisRender() {},
     fetch: async () => ({ ok: true, status: 202, json: async () => ({ queued: { queued: true } }) }),
   };
+  // 批次2c：站内 HTTP 已迁入 API 客户端，在同一上下文加载真实客户端后仅执行刷新函数
+  ui.window = ui;
+  // 批次4：统一请求底座 client.js 提供 window.siteApi，分析客户端依赖它，须先加载。
+  vm.runInNewContext(fs.readFileSync(path.join(root, 'public/js/api/client.js'), 'utf8'), ui);
+  vm.runInNewContext(fs.readFileSync(path.join(root, 'public/js/api/stock-analysis-api.js'), 'utf8'), ui);
   vm.runInNewContext(frontend.slice(frontend.indexOf('async function stockAnalysisRefresh()'), frontend.indexOf('async function stockAnalysisAddWatchlist()')), ui);
   await ui.stockAnalysisRefresh();
   assert(messages.at(-1).includes('后台刷新队列'));

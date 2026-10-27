@@ -6,6 +6,7 @@ const crypto = require('crypto');
 const net = require('net');
 const dns = require('dns').promises;
 const { pool, auditLog } = require('../db');
+const knowledgeRepository = require('../repositories/knowledgeRepository');
 const { requireLogin, optionalLogin, isAdminIdentity } = require('../middleware/auth');
 const rateLimit = require('../middleware/rateLimit');
 const { redis } = require('../config');
@@ -89,8 +90,7 @@ async function requireKsWrite(req, res, next) {
 
 // 当前用户角色与写权限
 async function getUserKsInfo(username) {
-  const { rows } = await pool.query('SELECT role, knowledge_enabled, permissions FROM users WHERE username=$1', [username]);
-  const r = rows[0];
+  const r = await knowledgeRepository.readUserAccess({ username });
   const role = r && r.role;
   const isAdmin = isAdminIdentity(username, role);
   const canWrite = isAdmin || !!(r && r.permissions && r.permissions.knowledge_write);
@@ -103,10 +103,10 @@ async function requireArticleOwner(req, res, next) {
   if (!username) return res.status(401).json({ error: '未登录' });
   try {
     const id = parseInt(req.params.id, 10);
-    const { rows } = await pool.query('SELECT author_username FROM articles WHERE id=$1', [id]);
-    if (!rows[0]) return res.status(404).json({ error: '文章不存在' });
+    const authorRow = await knowledgeRepository.readArticleAuthor({ id });
+    if (!authorRow) return res.status(404).json({ error: '文章不存在' });
     const info = await getUserKsInfo(username);
-    if (info.canWrite && rows[0].author_username === username) return next();
+    if (info.canWrite && authorRow.author_username === username) return next();
     return res.status(403).json({ error: '无权操作该文章' });
   } catch (e) {
     return res.status(500).json({ error: '校验权限失败' });
@@ -120,10 +120,10 @@ async function requireCategoryOwner(req, res, next) {
   try {
     const id = parseInt(req.params.id, 10);
     if (!Number.isInteger(id)) return res.status(400).json({ error: '分类参数无效' });
-    const { rows } = await pool.query('SELECT owner_username FROM article_categories WHERE id=$1', [id]);
-    if (!rows[0]) return res.status(404).json({ error: '分类不存在' });
+    const ownerRow = await knowledgeRepository.readCategoryOwner({ id });
+    if (!ownerRow) return res.status(404).json({ error: '分类不存在' });
     const info = await getUserKsInfo(username);
-    if (info.canWrite && rows[0].owner_username === username) return next();
+    if (info.canWrite && ownerRow.owner_username === username) return next();
     return res.status(403).json({ error: '只能管理自己创建的分类' });
   } catch (e) {
     return res.status(500).json({ error: '校验分类权限失败' });
@@ -158,14 +158,8 @@ function buildTree(rows) {
 router.get('/categories', optionalLogin, asyncHandler(async (req, res) => {
   try {
     const username = req.authUser && req.authUser.username;
-    const r = await pool.query(
-      `SELECT id, name, parent_id, sort_order,
-              COALESCE(owner_username = $1, false) AS can_manage
-       FROM article_categories
-       ORDER BY sort_order, id`,
-      [username || null]
-    );
-    res.json(buildTree(r.rows));
+    const rows = await knowledgeRepository.listCategories({ username });
+    res.json(buildTree(rows));
   } catch (e) {
     res.status(500).json({ error: '读取分类失败' });
   }
@@ -178,13 +172,11 @@ router.post('/categories', requireLogin, requireKsWrite, asyncHandler(async (req
     if (!name) return res.status(400).json({ error: '分类名称不能为空' });
     const parentId = req.body.parent_id ? parseInt(req.body.parent_id, 10) : null;
     const sortOrder = parseInt(req.body.sort_order || '0', 10) || 0;
-    const r = await pool.query(
-      `INSERT INTO article_categories (name, parent_id, sort_order, owner_username)
-       VALUES ($1, $2, $3, $4) RETURNING id`,
-      [name, parentId, sortOrder, req.session.user]
-    );
-    await auditLog(req.session.user, 'ks_category_create', r.rows[0].id, '新建分类：' + name).catch(() => {});
-    res.json({ id: r.rows[0].id });
+    const created = await knowledgeRepository.insertCategory({
+      name, parentId, sortOrder, ownerUsername: req.session.user,
+    });
+    await auditLog(req.session.user, 'ks_category_create', created.id, '新建分类：' + name).catch(() => {});
+    res.json({ id: created.id });
   } catch (e) {
     if (/uq_cat_parent_name/.test(e.message || '')) return res.status(400).json({ error: '同级已存在同名分类' });
     res.status(500).json({ error: '新建分类失败' });
@@ -196,10 +188,7 @@ router.put('/categories/:id', requireLogin, requireCategoryOwner, asyncHandler(a
     const id = parseInt(req.params.id, 10);
     const name = String(req.body.name || '').trim().slice(0, LIMITS.categoryName);
     if (!name) return res.status(400).json({ error: '分类名称不能为空' });
-    await pool.query(
-      'UPDATE article_categories SET name=$1 WHERE id=$2',
-      [name, id]
-    );
+    await knowledgeRepository.renameCategory({ name, id });
     await auditLog(req.session.user, 'ks_category_update', id, '编辑分类：' + name).catch(() => {});
     res.json({ ok: true });
   } catch (e) {
@@ -294,7 +283,7 @@ router.post('/categories/:id/move', requireLogin, requireCategoryOwner, asyncHan
 router.delete('/categories/:id', requireLogin, requireCategoryOwner, asyncHandler(async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
-    await pool.query('DELETE FROM article_categories WHERE id=$1', [id]);
+    await knowledgeRepository.deleteCategory({ id });
     await auditLog(req.session.user, 'ks_category_delete', id, '删除分类').catch(() => {});
     res.json({ ok: true });
   } catch (e) {
@@ -346,8 +335,7 @@ router.get('/articles', optionalLogin, asyncHandler(async (req, res) => {
       ORDER BY ${orderBy}
       LIMIT 200
     `;
-    const r = await pool.query(sql, params);
-    const rows = r.rows.map(a => ({
+    const rows = (await knowledgeRepository.listArticles({ where, values: params })).map(a => ({
       ...a,
       can_edit: me.canWrite && a.author_username === username,
       can_delete: me.canWrite && a.author_username === username,
@@ -362,15 +350,7 @@ router.get('/articles', optionalLogin, asyncHandler(async (req, res) => {
 router.get('/latest', asyncHandler(async (req, res) => {
   try {
     const limit = Math.min(parseInt(req.query.limit, 10) || 5, 20);
-    const r = await pool.query(
-      `SELECT a.id, a.title, a.summary, c.name AS category_name, a.view_count, a.published_at
-       FROM articles a
-       LEFT JOIN article_categories c ON c.id = a.category_id
-       WHERE a.status='published'
-       ORDER BY a.published_at DESC LIMIT $1`,
-      [limit]
-    );
-    res.json(r.rows);
+    res.json(await knowledgeRepository.listLatestArticles({ limit }));
   } catch (e) {
     res.status(500).json({ error: '读取最新文章失败' });
   }
@@ -378,14 +358,7 @@ router.get('/latest', asyncHandler(async (req, res) => {
 
 // ---------- 单篇文章详情 ----------
 async function getRawArticle(id) {
-  const r = await pool.query(
-    `SELECT a.*, c.name AS category_name
-     FROM articles a
-     LEFT JOIN article_categories c ON c.id = a.category_id
-     WHERE a.id=$1`,
-    [id]
-  );
-  return r.rows[0] || null;
+  return knowledgeRepository.readArticleById({ id });
 }
 
 router.get('/articles/:id', optionalLogin, asyncHandler(async (req, res) => {
@@ -417,14 +390,7 @@ router.get('/articles/:id', optionalLogin, asyncHandler(async (req, res) => {
 router.get('/share/:token', asyncHandler(async (req, res) => {
   try {
     const token = String(req.params.token || '');
-    const r = await pool.query(
-      `SELECT a.*, c.name AS category_name
-       FROM articles a
-       LEFT JOIN article_categories c ON c.id = a.category_id
-       WHERE a.share_token=$1`,
-      [token]
-    );
-    const row = r.rows[0];
+    const row = await knowledgeRepository.readArticleByShareToken({ token });
     if (!row || row.status !== 'published') return res.status(404).json({ error: '分享链接无效或文章未发布' });
     res.json(row);
   } catch (e) {
@@ -448,15 +414,11 @@ router.post('/articles', requireLogin, requireKsWrite, asyncHandler(async (req, 
     const categoryId = req.body.category_id ? parseInt(req.body.category_id, 10) : null;
     const status = req.body.status === 'published' ? 'published' : 'draft';
     const shareToken = genToken();
-    const r = await pool.query(
-      `INSERT INTO articles
-        (title, content, html_content, summary, category_id, status, share_token, author_username, published_at, sort_order)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,${status === 'published' ? 'now()' : 'NULL'},
-               COALESCE((SELECT MAX(sort_order) + 10 FROM articles), 10))
-       RETURNING id`,
-      [title, content, htmlContent, summary, categoryId, status, shareToken, req.session.user]
-    );
-    const newId = r.rows[0].id;
+    const created = await knowledgeRepository.insertArticle({
+      title, content, htmlContent, summary, categoryId, status,
+      shareToken, authorUsername: req.session.user,
+    });
+    const newId = created.id;
     await auditLog(req.session.user, 'ks_article_create', newId, '新建' + (status === 'published' ? '并发布' : '草稿') + '文章：' + title).catch(() => {});
     res.json({ id: newId, share_token: shareToken, status });
   } catch (e) {
@@ -533,25 +495,16 @@ router.put('/articles/:id', requireLogin, requireArticleOwner, asyncHandler(asyn
     if (hasCategoryId && categoryId !== null && !Number.isInteger(categoryId)) {
       return res.status(400).json({ error: '文章分类无效' });
     }
-    const cur = await pool.query('SELECT status, published_at FROM articles WHERE id=$1', [id]);
-    if (!cur.rows[0]) return res.status(404).json({ error: '文章不存在' });
-    const curRow = cur.rows[0];
+    const curRow = await knowledgeRepository.readArticleStatusAndPublished({ id });
+    if (!curRow) return res.status(404).json({ error: '文章不存在' });
     const status = req.body.status === 'published' ? 'published'
       : req.body.status === 'draft' ? 'draft' : curRow.status;
     // P1-2：已发布文章普通编辑保留原发布时间；草稿首次发布才设为 now()
     const publishedAtSql = (status === 'published' && !curRow.published_at) ? 'now()' : 'published_at';
-    await pool.query(
-      `UPDATE articles SET
-         title=COALESCE($1, title),
-         content=COALESCE($2, content),
-         summary=COALESCE($3, summary),
-         category_id=CASE WHEN $4::boolean THEN $5 ELSE category_id END,
-         status=$6,
-         published_at=${publishedAtSql === 'now()' ? 'now()' : 'published_at'},
-         updated_at=now()
-       WHERE id=$7`,
-      [title, content, summary, hasCategoryId, categoryId, status, id]
-    );
+    await knowledgeRepository.updateArticle({
+      title, content, summary, hasCategoryId, categoryId, status, id,
+      setPublishedNow: publishedAtSql === 'now()',
+    });
     await auditLog(req.session.user, 'ks_article_update', id, '编辑文章（状态：' + status + '）').catch(() => {});
     res.json({ ok: true, status });
   } catch (e) {
@@ -563,7 +516,7 @@ router.put('/articles/:id', requireLogin, requireArticleOwner, asyncHandler(asyn
 router.delete('/articles/:id', requireLogin, requireArticleOwner, asyncHandler(async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
-    await pool.query('DELETE FROM articles WHERE id=$1', [id]);
+    await knowledgeRepository.deleteArticle({ id });
     await auditLog(req.session.user, 'ks_article_delete', id, '删除文章').catch(() => {});
     res.json({ ok: true });
   } catch (e) {
@@ -575,14 +528,11 @@ router.delete('/articles/:id', requireLogin, requireArticleOwner, asyncHandler(a
 router.post('/articles/:id/publish', requireLogin, requireArticleOwner, asyncHandler(async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
-    const cur = await pool.query('SELECT share_token, published_at FROM articles WHERE id=$1', [id]);
-    if (!cur.rows[0]) return res.status(404).json({ error: '文章不存在' });
-    const token = cur.rows[0].share_token || genToken();
+    const curRow = await knowledgeRepository.readArticleShareToken({ id });
+    if (!curRow) return res.status(404).json({ error: '文章不存在' });
+    const token = curRow.share_token || genToken();
     // 保留原有发布时间；撤回后再发布则使用当前时间
-    await pool.query(
-      "UPDATE articles SET status='published', published_at=COALESCE(published_at, now()), share_token=$1, updated_at=now() WHERE id=$2",
-      [token, id]
-    );
+    await knowledgeRepository.publishArticle({ token, id });
     await auditLog(req.session.user, 'ks_article_publish', id, '发布文章').catch(() => {});
     res.json({ ok: true, share_token: token });
   } catch (e) {
@@ -593,10 +543,7 @@ router.post('/articles/:id/publish', requireLogin, requireArticleOwner, asyncHan
 router.post('/articles/:id/unpublish', requireLogin, requireArticleOwner, asyncHandler(async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
-    await pool.query(
-      "UPDATE articles SET status='draft', published_at=NULL, updated_at=now() WHERE id=$1",
-      [id]
-    );
+    await knowledgeRepository.unpublishArticle({ id });
     await auditLog(req.session.user, 'ks_article_unpublish', id, '撤回文章').catch(() => {});
     res.json({ ok: true });
   } catch (e) {
@@ -608,10 +555,10 @@ router.post('/articles/:id/unpublish', requireLogin, requireArticleOwner, asyncH
 router.post('/articles/:id/view', asyncHandler(async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
-    const { rows } = await pool.query('SELECT status FROM articles WHERE id=$1', [id]);
-    if (!rows[0]) return res.status(404).json({ error: '文章不存在' });
-    if (rows[0].status !== 'published') return res.status(404).json({ error: '文章未发布' });
-    await pool.query('UPDATE articles SET view_count = view_count + 1 WHERE id=$1', [id]);
+    const statusRow = await knowledgeRepository.readArticleStatus({ id });
+    if (!statusRow) return res.status(404).json({ error: '文章不存在' });
+    if (statusRow.status !== 'published') return res.status(404).json({ error: '文章未发布' });
+    await knowledgeRepository.incrementArticleView({ id });
     res.json({ ok: true });
   } catch (e) {
     res.status(500).json({ error: '更新阅读量失败' });
@@ -633,15 +580,7 @@ router.get('/articles/:id/comments', optionalLogin, asyncHandler(async (req, res
         return res.status(404).json({ error: '文章不存在或未发布' });
       }
     }
-    const r = await pool.query(
-      `SELECT c.id, c.parent_id, c.root_id,
-              COALESCE(NULLIF(BTRIM(u.nickname), ''), c.author_username, c.nickname) AS nickname,
-              c.content, c.author_username, c.created_at
-       FROM article_comments c
-       LEFT JOIN users u ON u.username = c.author_username
-       WHERE c.article_id=$1 ORDER BY c.created_at ASC`,
-      [id]
-    );
+    const r = { rows: await knowledgeRepository.listComments({ articleId: id }) };
     const username = req.authUser && req.authUser.username;
     const me = username ? await getUserKsInfo(username) : { isAdmin: false, username: null };
     const all = r.rows.map(c => ({
@@ -674,35 +613,33 @@ router.post('/articles/:id/comments', requireLogin,
   asyncHandler(async (req, res) => {
     try {
       const id = parseInt(req.params.id, 10);
-      const article = await pool.query('SELECT status FROM articles WHERE id=$1', [id]);
-      if (!article.rows[0] || article.rows[0].status !== 'published') {
+      const articleRow = await knowledgeRepository.readArticleStatus({ id });
+      if (!articleRow || articleRow.status !== 'published') {
         return res.status(404).json({ error: '文章不存在或未发布' });
       }
       const content = String(req.body.content || '').trim();
       if (!content) return res.status(400).json({ error: '评论内容不能为空' });
       if (content.length > LIMITS.comment) return res.status(400).json({ error: '评论内容过长' });
-      const userResult = await pool.query('SELECT nickname FROM users WHERE username=$1', [req.session.user]);
-      if (!userResult.rows[0]) return res.status(401).json({ error: '登录状态已失效' });
-      const nickname = resolveCommentNickname(userResult.rows[0].nickname, req.session.user);
+      const userRow = await knowledgeRepository.readUserNickname({ username: req.session.user });
+      if (!userRow) return res.status(401).json({ error: '登录状态已失效' });
+      const nickname = resolveCommentNickname(userRow.nickname, req.session.user);
       const ipHash = hashIp(clientIp(req));
       // 处理楼中楼：parent_id 指向某条已有评论
       let parentId = null;
       let rootId = null;
       if (req.body.parent_id) {
         const pid = parseInt(req.body.parent_id, 10);
-        const pr = await pool.query('SELECT id, root_id FROM article_comments WHERE id=$1 AND article_id=$2', [pid, id]);
-        if (pr.rows[0]) {
-          parentId = pr.rows[0].id;
-          rootId = pr.rows[0].root_id || pr.rows[0].id;
+        const pr = await knowledgeRepository.readCommentParent({ id: pid, articleId: id });
+        if (pr) {
+          parentId = pr.id;
+          rootId = pr.root_id || pr.id;
         }
       }
       // P0-3：author_username 从会话写入，不接受前端传入
-      const r = await pool.query(
-        `INSERT INTO article_comments (article_id, parent_id, root_id, nickname, content, ip_hash, author_username)
-         VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id, parent_id, root_id, nickname, content, author_username, created_at`,
-        [id, parentId, rootId, nickname, content, ipHash, req.session.user]
-      );
-      res.json(r.rows[0]);
+      const inserted = await knowledgeRepository.insertComment({
+        articleId: id, parentId, rootId, nickname, content, ipHash, authorUsername: req.session.user,
+      });
+      res.json(inserted);
     } catch (e) {
       res.status(500).json({ error: '发表评论失败' });
     }
@@ -713,13 +650,13 @@ router.post('/articles/:id/comments', requireLogin,
 router.delete('/comments/:id', requireLogin, asyncHandler(async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
-    const { rows } = await pool.query('SELECT author_username FROM article_comments WHERE id=$1', [id]);
-    if (!rows[0]) return res.status(404).json({ error: '评论不存在' });
+    const authorRow = await knowledgeRepository.readCommentAuthor({ id });
+    if (!authorRow) return res.status(404).json({ error: '评论不存在' });
     const me = await getUserKsInfo(req.session.user);
-    if (!me.isAdmin && rows[0].author_username !== req.session.user) {
+    if (!me.isAdmin && authorRow.author_username !== req.session.user) {
       return res.status(403).json({ error: '无权删除该评论' });
     }
-    await pool.query('DELETE FROM article_comments WHERE id=$1', [id]);
+    await knowledgeRepository.deleteComment({ id });
     res.json({ ok: true });
   } catch (e) {
     res.status(500).json({ error: '删除评论失败' });

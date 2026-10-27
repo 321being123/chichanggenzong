@@ -2,7 +2,7 @@ const express = require('express');
 const asyncHandler = require('../middleware/async');
 const { requireLogin } = require('../middleware/auth');
 const rateLimit = require('../middleware/rateLimit');
-const { pool } = require('../db/connection');
+const bondAnalysisRepository = require('../repositories/bondAnalysisRepository');
 const {
   normalizeBondCode, refreshConvertibleBondAnalysis, getConvertibleBondSnapshot,
   buildConvertibleBondAnalysisFromDatabase,
@@ -19,15 +19,7 @@ function validBond(req, res, next) {
 }
 
 router.get('/list/securities', requireLogin, asyncHandler(async (req, res) => {
-  const { rows } = await pool.query(
-    `SELECT code,MAX(name) AS name,BOOL_OR(held) AS held,BOOL_OR(watchlisted) AS watchlisted FROM (
-       SELECT p.code,MAX(p.name) AS name,true AS held,false AS watchlisted FROM positions p
-        WHERE p.username=$1 AND p.code ~ '^[0-9]{6}$' GROUP BY p.code
-       UNION ALL
-       SELECT substring(w.ts_code,1,6),MAX(w.name),false,true FROM stock_watchlist w
-        WHERE w.username=$1 GROUP BY substring(w.ts_code,1,6)
-     ) s GROUP BY code ORDER BY held DESC,name,code`, [req.session.user]
-  );
+  const rows = await bondAnalysisRepository.listOwnedSecurities({ username: req.session.user });
   res.json({ data: rows.map(row => Object.assign(row, { type: normalizeBondCode(row.code) ? 'bond' : 'stock' })) });
 }));
 
@@ -36,35 +28,7 @@ router.get('/search/securities', asyncHandler(async (req, res) => {
   if (!keyword) return res.json({ data: [] });
   const like = `%${keyword}%`;
   const prefix = `${keyword}%`;
-  const { rows } = await pool.query(
-    `WITH candidates AS (
-       SELECT substring(m.ts_code,1,6) AS code,m.ts_code,m.name,'stock'::text AS type,''::text AS stock_name
-         FROM market_instruments m
-        WHERE m.source='tushare'
-          AND m.ts_code ~ '^(60|68|00|30|43|83|87|92)[0-9]{4}\\.(SH|SZ|BJ)$'
-          AND (m.name ILIKE $1 OR m.ts_code ILIKE $1 OR substring(m.ts_code,1,6) ILIKE $1)
-       UNION ALL
-       SELECT substring(b.canonical_code,1,6),b.canonical_code,p.bond_short_name,'bond',COALESCE(s.name,'')
-         FROM fundamental.convertible_bond_profiles p
-         JOIN core.instruments b ON b.instrument_id=p.instrument_id
-         JOIN public.bond_unified bu ON bu.instrument_id=b.instrument_id
-         LEFT JOIN core.instruments s ON s.instrument_id=p.stock_instrument_id
-        WHERE bu.status='listed'
-          AND (bu.issue_type IS NULL OR bu.issue_type NOT IN ('定向','私募'))
-          AND (b.delist_date IS NULL OR b.delist_date > CURRENT_DATE)
-          AND (p.maturity_date IS NULL OR p.maturity_date >= CURRENT_DATE)
-          AND (p.conv_end_date IS NULL OR p.conv_end_date >= CURRENT_DATE)
-          AND (p.conv_stop_date IS NULL OR p.conv_stop_date > CURRENT_DATE)
-          AND (p.bond_short_name ILIKE $1 OR b.canonical_code ILIKE $1
-               OR substring(b.canonical_code,1,6) ILIKE $1 OR COALESCE(s.name,'') ILIKE $1)
-     )
-     SELECT code,ts_code,name,type,stock_name
-       FROM candidates
-      ORDER BY CASE WHEN name ILIKE $2 THEN 0 WHEN code ILIKE $2 THEN 1 ELSE 2 END,
-               CASE type WHEN 'stock' THEN 0 ELSE 1 END,name,code
-      LIMIT 12`,
-    [like, prefix]
-  );
+  const rows = await bondAnalysisRepository.searchSecurities({ like, prefix });
   res.json({ data: rows });
 }));
 

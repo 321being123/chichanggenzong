@@ -98,10 +98,9 @@ async function loadStockAnalysis(force) {
   }
   if (stockAnalysisState.loaded && !force) return;
   try {
-    var response = await fetch(api('/api/stock-analysis/stocks'));
-    if (!response.ok) throw new Error((await response.json()).error || '股票列表加载失败');
-    var payload = await response.json();
-    stockAnalysisState.stocks = payload.data || [];
+    var listResult = await stockAnalysisApi.listStocks();
+    if (!listResult.ok) throw new Error(listResult.payload.error || '股票列表加载失败');
+    stockAnalysisState.stocks = listResult.payload.data || [];
     stockAnalysisState.loaded = true;
   } catch (error) { stockAnalysisSetMessage(error.message || String(error), true); }
 }
@@ -116,17 +115,17 @@ async function stockAnalysisSelect(tsCode) {
   if (!tsCode) { stockAnalysisSetMessage('从持仓或自选股中选择一只股票开始分析。'); document.getElementById('stock-analysis-content').style.display='none'; return; }
   stockAnalysisSetMessage('正在读取分析结果...');
   try {
-    var response = await fetch(api('/api/stock-analysis/' + encodeURIComponent(tsCode)));
+    var snapshotResult = await stockAnalysisApi.getSnapshot(tsCode);
     // 迟到的响应不得覆盖当前选择（快速切换时先发的请求可能后返回）
     if (stockAnalysisState.selected !== tsCode) return;
-    if (response.status === 404) {
+    if (snapshotResult.status === 404) {
       if (!username) return stockAnalysisSetMessage('该股票暂未建档，登录后可刷新并建立分析数据。');
       // 页面打开只读本地快照；建立分析数据必须由用户明确点击“刷新数据”。
       return stockAnalysisSetMessage('该股票暂无分析快照，请点击“刷新数据”建立。');
     }
-    var payload = await response.json();
+    var payload = snapshotResult.payload;
     if (stockAnalysisState.selected !== tsCode) return;
-    if (!response.ok) throw new Error(payload.error || '分析读取失败');
+    if (!snapshotResult.ok) throw new Error(payload.error || '分析读取失败');
     if (payload.needs_refresh) {
       var reasons = payload.freshness && payload.freshness.reasons ? payload.freshness.reasons.map(function(r){return r.message;}).join('；') : '数据待更新';
       // 页面打开只读本地快照；外部采集必须由用户明确点击“刷新数据”触发。
@@ -149,18 +148,18 @@ async function stockAnalysisRefresh() {
   stockAnalysisSetMessage('正在提交股票刷新任务...');
   try {
     if (typeof stockAnalysisInvalidateStatements === 'function') stockAnalysisInvalidateStatements(tsCode);
-    var response = await fetch(api('/api/stock-analysis/' + encodeURIComponent(tsCode) + '/refresh'), { method:'POST' });
-    var payload = await response.json();
+    var refreshResult = await stockAnalysisApi.requestRefresh(tsCode);
+    var payload = refreshResult.payload;
     var analysis = payload.analysis;
-    if (!response.ok && !analysis) throw new Error(payload.error || '刷新失败');
+    if (!refreshResult.ok && !analysis) throw new Error(payload.error || '刷新失败');
     // 刷新期间切换了股票则丢弃过期结果，避免旧股渲染覆盖当前选择
     var stillCurrent = stockAnalysisState.selected === tsCode;
     if (analysis && stillCurrent) stockAnalysisRender(analysis);
-    if (response.status === 202) {
+    if (refreshResult.status === 202) {
       if (!payload.queued || !payload.queued.queued) throw new Error(payload.warning || '未能登记刷新任务，请稍后重试');
       if (stillCurrent) stockAnalysisSetMessage('已加入后台刷新队列，完成后重新查询该股票即可查看。首次建档需要采集历史财报，请稍候。');
     }
-    if (!response.ok && payload.error && stillCurrent) showToast('刷新失败，已显示上一份有效数据：' + payload.error);
+    if (!refreshResult.ok && payload.error && stillCurrent) showToast('刷新失败，已显示上一份有效数据：' + payload.error);
   } catch (error) {
     if (stockAnalysisState.selected === tsCode) stockAnalysisSetMessage(error.message || String(error), true);
   } finally { stockAnalysisState.loading = false; if (button) { button.disabled=false; button.textContent='刷新数据'; } }
@@ -172,9 +171,9 @@ async function stockAnalysisAddWatchlist() {
   if (!code) return showToast('请输入股票代码');
   stockAnalysisSetMessage('正在添加自选股并建立财务档案...');
   try {
-    var response = await fetch(api('/api/stock-analysis/watchlist'), { method:'POST', headers: typeof window !== 'undefined' && window.SiteTelemetry ? window.SiteTelemetry.getHeaders({'Content-Type':'application/json'}) : {'Content-Type':'application/json'}, body:JSON.stringify({ts_code:code}) });
-    var payload = await response.json();
-    if (!response.ok && response.status !== 202) throw new Error(payload.error || '添加失败');
+    var addResult = await stockAnalysisApi.addWatchlist(code);
+    var payload = addResult.payload;
+    if (!addResult.ok && addResult.status !== 202) throw new Error(payload.error || '添加失败');
     stockAnalysisState.loaded = false;
     await loadStockAnalysis(true);
     stockAnalysisState.selected = payload.stock.ts_code;
@@ -191,8 +190,8 @@ async function stockAnalysisAddWatchlist() {
 async function stockAnalysisRemoveWatchlist() {
   if (!stockAnalysisState.selected) return;
   try {
-    var response = await fetch(api('/api/stock-analysis/watchlist/' + encodeURIComponent(stockAnalysisState.selected)), { method:'DELETE' });
-    var payload = await response.json(); if (!response.ok) throw new Error(payload.error || '删除失败');
+    var removeResult = await stockAnalysisApi.removeWatchlist(stockAnalysisState.selected);
+    if (!removeResult.ok) throw new Error(removeResult.payload.error || '删除失败');
     stockAnalysisState.loaded = false; stockAnalysisState.selected = ''; stockAnalysisState.data = null;
     await loadStockAnalysis(true); stockAnalysisSelect(''); showToast('已移出自选股');
   } catch (error) { showToast(error.message || String(error)); }

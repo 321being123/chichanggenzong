@@ -82,9 +82,10 @@ async function loadBondRevision(force) {
   bondRevisionState.loading = true;
   var updated = document.getElementById('bond-revision-updated');
   try {
-    var response = await fetch(api('/api/bond-revision?limit=2000'), { cache: 'no-store' });
+    // 批次4：取数统一走 siteApi（View 不直接 fetch）
+    var response = await window.siteApi.get('/api/bond-revision?limit=2000', { cache: 'no-store' });
     if (!response.ok) throw new Error('接口返回 ' + response.status);
-    var data = await response.json();
+    var data = response.payload;
     bondRevisionState.rows = Array.isArray(data.data) ? data.data : [];
     bondRevisionState.loaded = true;
     bondRevisionRenderSummary(data.summary);

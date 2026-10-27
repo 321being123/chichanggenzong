@@ -73,6 +73,71 @@ function loadMap(rootDir, errors) {
   }
 }
 
+// ---------- readSections 标题校验（应用分层整改方案 7.1） ----------
+// 逐个验证路由声明的完整 Markdown 标题：忽略代码围栏内示例，
+// 统一空白并把尾部井号规范化，缺失时报 route ID、文件和标题。
+function normalizeHeadingText(raw) {
+  return String(raw).replace(/\s+/g, ' ').trim().replace(/\s*#+\s*$/, '').trim();
+}
+
+function extractHeadings(text) {
+  const headings = new Set();
+  let fenceMarker = null;
+  for (const line of String(text).split('\n')) {
+    const trimmed = line.trim();
+    const fence = trimmed.match(/^(```|~~~)/);
+    if (fence) {
+      if (!fenceMarker) fenceMarker = fence[1];
+      else if (fence[1] === fenceMarker) fenceMarker = null;
+      continue;
+    }
+    if (fenceMarker) continue;
+    const heading = trimmed.match(/^(#{1,6})\s+(.*)$/);
+    if (!heading) continue;
+    const text = normalizeHeadingText(heading[2]);
+    if (text) headings.add(`${heading[1]} ${text}`);
+  }
+  return headings;
+}
+
+function normalizeHeadingReference(reference) {
+  const match = String(reference).trim().match(/^(#{1,6})\s+(.*)$/);
+  if (!match) return null;
+  const text = normalizeHeadingText(match[2]);
+  return text ? `${match[1]} ${text}` : null;
+}
+
+function collectReadSectionErrors(rootDir, map) {
+  const errors = [];
+  for (const route of map.routes) {
+    const sections = route.readSections;
+    if (!sections || typeof sections !== 'object') continue;
+    for (const [file, headings] of Object.entries(sections)) {
+      if (!Array.isArray(headings)) {
+        errors.push(`路由「${route.id}」的 readSections.${file} 必须是标题数组。`);
+        continue;
+      }
+      const absolute = path.join(rootDir, file);
+      if (!fs.existsSync(absolute)) {
+        errors.push(`路由「${route.id}」readSections 指向的文件不存在：${file}`);
+        continue;
+      }
+      const available = extractHeadings(fs.readFileSync(absolute, 'utf8'));
+      for (const heading of headings) {
+        const normalized = normalizeHeadingReference(heading);
+        if (!normalized) {
+          errors.push(`路由「${route.id}」readSections 标题格式非法：${file} → ${heading}`);
+          continue;
+        }
+        if (!available.has(normalized)) {
+          errors.push(`路由「${route.id}」readSections 标题缺失：${file} → ${heading}`);
+        }
+      }
+    }
+  }
+  return errors;
+}
+
 function collectVersionErrors(rootDir) {
   const errors = [];
   if (!fs.existsSync(path.join(rootDir, 'package.json'))) return errors;
@@ -272,6 +337,7 @@ function runCheck({ rootDir = path.resolve(__dirname, '..'), changedFiles = [] }
   errors.push(...collectGeneratedMatrixErrors(rootDir));
   errors.push(...collectTaskGovernanceImplementationErrors(rootDir));
   errors.push(...collectJobContractErrors(rootDir));
+  errors.push(...collectReadSectionErrors(rootDir, map));
   const files = [...new Set(changedFiles.map(normalize).filter(Boolean))];
   const releaseMetadataOnly = isReleaseMetadataOnly(rootDir, files);
   const matchedRoutes = [];
@@ -374,4 +440,17 @@ function main() {
 
 if (require.main === module) main();
 
-module.exports = { collectVersionErrors, collectGeneratedMatrixErrors, globMatches, isReleaseMetadataOnly, parseArgs, runCheck, splitGitOutput, workingTreeFiles };
+module.exports = {
+  collectReadSectionErrors,
+  collectVersionErrors,
+  collectGeneratedMatrixErrors,
+  extractHeadings,
+  globMatches,
+  isReleaseMetadataOnly,
+  normalizeHeadingReference,
+  normalizeHeadingText,
+  parseArgs,
+  runCheck,
+  splitGitOutput,
+  workingTreeFiles,
+};

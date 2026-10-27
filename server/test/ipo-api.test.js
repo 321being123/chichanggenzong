@@ -101,7 +101,10 @@ async function main() {
   check('详情包含当前赛道热度系数', () => assert.ok(j.md.includes('当前赛道热度系数')));
 
   // 数据库报告必须优先于仓库内可能过期的 individual Markdown。
-  const routeSource = require('fs').readFileSync(require.resolve('../routes/ipo'), 'utf8');
+  // 批次3：IPO 的 SQL 与 SQL 片段生成器已迁入 server/repositories/ipoRepository.js；
+  // 字段级断言必须同时覆盖路由与仓储，否则搬移会让这些检查静默失效。
+  const routeSource = require('fs').readFileSync(require.resolve('../routes/ipo'), 'utf8')
+    + '\n' + require('fs').readFileSync(require.resolve('../repositories/ipoRepository'), 'utf8');
   check('空业务赛道数组仍为待补全', () => {
     assert.match(routeSource, /jsonb_typeof\(\$\{alias\}\.business_exposure->'exposures'\) = 'array'[\s\S]*jsonb_array_length\(\$\{alias\}\.business_exposure->'exposures'\) > 0/);
   });
@@ -130,7 +133,8 @@ async function main() {
     assert.ok(rangeIdx > 0 && portionIdx > rangeIdx, '个股赛道分量行应在最终可能区间之后，便于核对赛道系数');
   });
   check('单债详情优先读取数据库报告', () => {
-    const dbRead = routeSource.indexOf("SELECT md FROM ipo_reports WHERE md LIKE $1");
+    // SQL 已在批次3 迁入仓储，这里改查调用点：仍要求“先读库、文件回退在后”。
+    const dbRead = routeSource.indexOf('ipoRepository.reportMarkdownByCode');
     const fileRead = routeSource.indexOf('fs.existsSync(file)', dbRead);
     assert.ok(dbRead >= 0 && fileRead > dbRead);
   });

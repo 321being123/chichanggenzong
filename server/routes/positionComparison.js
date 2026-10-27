@@ -13,7 +13,8 @@ const router = express.Router();
 const asyncHandler = require('../middleware/async');
 const { requireLogin, assertOwnership, requireCapability } = require('../middleware/auth');
 const rateLimit = require('../middleware/rateLimit');
-const { pool, auditEvent } = require('../db');
+const { auditEvent } = require('../db');
+const positionComparisonRepository = require('../repositories/positionComparisonRepository');
 const { isValidAccountName } = require('../middleware/validate');
 const { fetchTencentQuotes } = require('../services/tencentQuote');
 const { getCurrentFxRate } = require('../jobs/hkRate');
@@ -34,11 +35,7 @@ router.put('/accounts/:name/position-visibility', requireLogin, requireCapabilit
     await auditEvent({ actor: req.session.user, action: 'benchmark_publish', target: name, result: 'failure', requestId: req.id, detail: '公开状态不合法' });
     return res.status(400).json({ error: '公开状态不合法' });
   }
-  const { rows } = await pool.query(
-    `UPDATE accounts SET position_visibility=$1, position_visibility_updated_at=now(), updated_at=to_char(now(),'YYYY-MM-DD HH24:MI:SS')
-      WHERE username=$2 AND account_name=$3 RETURNING id`,
-    [visibility, req.session.user, name]
-  );
+  const rows = await positionComparisonRepository.setVisibility({ visibility, username: req.session.user, accountName: name });
   if (rows.length === 0) {
     await auditEvent({ actor: req.session.user, action: 'benchmark_publish', target: name, result: 'failure', requestId: req.id, detail: '账户不存在' });
     return res.status(404).json({ error: '账户不存在' });
@@ -51,11 +48,8 @@ router.put('/accounts/:name/position-visibility', requireLogin, requireCapabilit
 router.get('/position-comparisons/visibility', requireLogin, asyncHandler(async (req, res) => {
   const accountName = req.query.account || '';
   if (!accountName) return res.json({ visibility: 'private' });
-  const { rows } = await pool.query(
-    `SELECT position_visibility FROM accounts WHERE username=$1 AND account_name=$2`,
-    [req.session.user, accountName]
-  );
-  res.json({ visibility: rows[0] ? rows[0].position_visibility : 'private' });
+  const visibilityRow = await positionComparisonRepository.readVisibility({ username: req.session.user, accountName });
+  res.json({ visibility: visibilityRow ? visibilityRow.position_visibility : 'private' });
 }));
 
 // ========== 标杆账户列表（5.2 / 8.4） ==========
@@ -69,32 +63,15 @@ const compareLimiter = rateLimit({ prefix: 'poscmp', windowMs: 10 * 1000, max: 1
 
 // 校验标杆账户仍公开（返回 account 行或 null；含持仓/更新时间字段供页面展示）
 async function requireBenchmarkOpen(accountId) {
-  const { rows } = await pool.query(
-    `SELECT a.id, a.account_name, a.username, a.position_visibility,
-            a.position_visibility_updated_at, a.updated_at,
-            ad.updated_at AS data_updated_at
-       FROM accounts a
-       LEFT JOIN account_data ad ON ad.username=a.username AND ad.account_name=a.account_name
-      WHERE a.id=$1`,
-    [accountId]
-  );
-  if (rows.length === 0) return null;
-  const row = rows[0];
+  const row = await positionComparisonRepository.readAccountById({ accountId });
+  if (!row) return null;
   if (row.position_visibility === 'private') return null;
   return row;
 }
 
 // 读取我的账户行（本人 + 存在；含持仓更新时间 account_data.updated_at 与账户更新时间）
 async function requireMyAccount(username, accountName) {
-  const { rows } = await pool.query(
-    `SELECT a.account_name, a.updated_at,
-            ad.updated_at AS data_updated_at
-       FROM accounts a
-       LEFT JOIN account_data ad ON ad.username=a.username AND ad.account_name=a.account_name
-      WHERE a.username=$1 AND a.account_name=$2`,
-    [username, accountName]
-  );
-  return rows[0] || null;
+  return positionComparisonRepository.readMyAccount({ username, accountName });
 }
 
 // 持仓更新时间：真实持仓保存时间优先（account_data.updated_at，随持仓保存更新），

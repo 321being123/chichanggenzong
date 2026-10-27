@@ -57,7 +57,10 @@ assert.match(source, /"security_set_hash": security_set_hash/, 'IPO事实分区�
 assert.match(source, /"ingestion_run_id": run_id/, 'IPO事实分区缺少采集批次');
 assert.match(source, /"missing_listing_date_count": missing_listing_date_count/, 'IPO事实分区缺少上市日缺失诊断');
 
-const routeSource = fs.readFileSync(path.join(__dirname, '..', 'routes', 'ipo.js'), 'utf8');
+// 批次3：IPO 的 SQL 已整段迁入 server/repositories/ipoRepository.js，
+// 路由保留业务编排与报告拼装。字段级断言需同时覆盖两处，否则迁移会静默丢字段。
+const routeSource = fs.readFileSync(path.join(__dirname, '..', 'routes', 'ipo.js'), 'utf8')
+  + '\n' + fs.readFileSync(path.join(__dirname, '..', 'repositories', 'ipoRepository.js'), 'utf8');
 const { readServiceSource } = require('./helpers/service-source');
 const hkexSource = readServiceSource('hkexIpo');
 assert.match(routeSource, /history_stage/, '新股历史没有阶段字段');

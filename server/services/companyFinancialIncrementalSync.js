@@ -1,6 +1,7 @@
 // 公司级财务增量同步：唯一负责把 Tushare 财报写入标准财务层。
 // 安全性和股票分析只读这里的已入库事实，不在请求链路内补数。
 const { pool, tryClaimJob, releaseJob, startJobRun, finishJobRun } = require('../db');
+const { withTransaction } = require('../db/transaction');
 const { tushareQuery, tsRows, toTsCode, tsDateStr } = require('./market');
 const { statementApiFields } = require('./stockStatements');
 const { syncReportRows } = require('./financialDataArchitecture');
@@ -275,12 +276,10 @@ async function fetchCompanyReports(target, options = {}) {
 }
 
 async function persistCompanyReports(target, reportResult, options = {}) {
-  const client = await pool.connect();
   const successful = [];
   const failed = [];
   let ingestionRunId = null;
-  try {
-    await client.query('BEGIN');
+  return withTransaction(async client => {
     const source = (await client.query("SELECT source_id FROM ops.data_sources WHERE source_code='tushare' LIMIT 1")).rows[0];
     if (!source) throw new Error('未找到 Tushare 数据源登记');
     ingestionRunId = (await client.query(
@@ -315,14 +314,8 @@ async function persistCompanyReports(target, reportResult, options = {}) {
       `UPDATE ops.ingestion_runs SET status=$2,row_count=$3,error_message=$4,finished_at=now() WHERE run_id=$1`,
       [ingestionRunId, status, successful.reduce((count, kind) => count + (reportResult.results[kind] || []).length, 0), failed.map(item => `${item.kind}:${item.error}`).join('；')]
     );
-    await client.query('COMMIT');
     return { ok: failed.length === 0, successful, failed, ingestionRunId };
-  } catch (error) {
-    await client.query('ROLLBACK').catch(() => {});
-    throw error;
-  } finally {
-    client.release();
-  }
+  });
 }
 
 async function latestFinancialDataAsOf(client = pool) {

@@ -117,7 +117,8 @@ const requestedDates = [];
   assert.match(ipoJob, /dataAsOf: targetDate/);
   assert.ok(!/dataAsOf:\s*new Date\(\)\.toISOString\(\)/.test(ipoJob));
   assert.match(read('server/services/jobScheduleSlots.js'), /hk_rate: `SELECT max\(rate_date\)::text AS data_as_of/);
-  assert.match(read('server/services/financialDataArchitecture.js'), /market: \{ trade_date: asDate\(analysis\.latest_market_trade_date\),/);
+  // 批次1：标准层写入已迁入仓储，水印断言指向实际实现位置（检查意义不变）
+  assert.match(read('server/repositories/stockProjectionRepository.js'), /market: \{ trade_date: asDate\(analysis\.latest_market_trade_date\),/);
   assert.match(read('server/jobs/hkRate.js'), /stateDate < today[\s\S]*historicalRateResult\(stateDate\)/);
   assert.match(read('server/services/jobRunners.js'), /runHkIpoSync\('postclose', reason, \{ \.\.\.context, targetDate: context\.targetDate \|\| businessDate \}\)/);
   assert.match(read('server/routes/marketVolatility.js'), /rangeCutoff\s*\|\|\s*'all'/,

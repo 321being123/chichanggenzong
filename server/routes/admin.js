@@ -9,9 +9,11 @@ const {
   deleteUser, getUserDetail, hashPwd, adminListBrokers, createBroker, updateBroker, deleteBroker,
   isValidBroker, adminJobRuns, startJobRun, finishJobRun,
   getConfig, setConfig,
-  auditEvent, listAudit, AUDIT_MODULES, pool
+  auditEvent, listAudit, AUDIT_MODULES
 } = require('../db');
 const { backfillMissingCloses } = require('../jobs/marketClose');
+const adminRepository = require('../repositories/adminRepository');
+const knowledgeRepository = require('../repositories/knowledgeRepository');
 const { ensureHolidaysCurrent, saveManualHolidays } = require('../jobs/holidaySync');
 const { loadHolidays } = require('../config/holidays');
 const { getModels, saveModels, maskKey, recordStatus, getStatus } = require('../services/aiModels');
@@ -174,9 +176,9 @@ router.get('/brokers', asyncHandler(async (req, res) => {
   res.json({ list });
 }));
 router.get('/brokers/:code', asyncHandler(async (req, res) => {
-  const { rows } = await pool.query('SELECT code, name, market, sort_order, import_unit FROM brokers WHERE code=$1', [req.params.code]);
-  if (!rows.length) return res.status(404).json({ error: '券商不存在' });
-  res.json(rows[0]);
+  const broker = await adminRepository.readBroker({ code: req.params.code });
+  if (!broker) return res.status(404).json({ error: '券商不存在' });
+  res.json(broker);
 }));
 router.post('/brokers', asyncHandler(async (req, res) => {
   const { code, name, market, sort_order, import_unit } = req.body || {};
@@ -239,10 +241,7 @@ router.post('/jobs/slots/:slotId/retry', asyncHandler(async (req, res) => {
   // 普通补跑仍遵守新鲜度门禁；只有管理员明确传 force=true 才允许强制重拉。
   if (req.body && req.body.force === true) {
     if (!req.user || req.user.role !== 'admin') return res.status(403).json({ error: '只有管理员可以强制重拉外部数据' });
-    await pool.query(
-      `UPDATE ops.job_schedule_slots SET request_payload=request_payload || '{"force":true}'::jsonb, updated_at=now() WHERE slot_id=$1`,
-      [slotId]
-    );
+    await adminRepository.markJobSlotForce({ slotId });
     slot.request_payload = { ...(slot.request_payload || {}), force: true };
   }
   await audit(req, 'job_retry', slot.job_code, { detail: '后台手动补跑已入队', metadata: { slotId, queued: true } });
@@ -566,23 +565,14 @@ router.get('/knowledge/articles', asyncHandler(async (req, res) => {
   const params = [];
   let where = '';
   if (status === 'draft' || status === 'published') { params.push(status); where = 'WHERE a.status=$1'; }
-  const { rows } = await pool.query(
-    `SELECT a.id, a.title, a.status, a.view_count, a.author_username, a.published_at, a.updated_at,
-            c.name AS category_name
-     FROM articles a
-     LEFT JOIN article_categories c ON c.id = a.category_id
-     ${where}
-     ORDER BY COALESCE(a.published_at, a.updated_at) DESC
-     LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
-    [...params, limit, offset]
-  );
-  const { rows: cnt } = await pool.query('SELECT COUNT(*)::int AS c FROM articles' + where, params);
-  res.json({ total: cnt[0].c, list: rows, limit, offset });
+  const rows = await knowledgeRepository.adminListArticles({ where, values: params, limit, offset });
+  const total = await knowledgeRepository.countArticles({ where, values: params });
+  res.json({ total, list: rows, limit, offset });
 }));
 // 删除文章
 router.delete('/knowledge/articles/:id', asyncHandler(async (req, res) => {
   const id = parseInt(req.params.id, 10);
-  await pool.query('DELETE FROM articles WHERE id=$1', [id]);
+  await knowledgeRepository.deleteArticle({ id });
   await audit(req, 'ks_article_delete', id, { detail: '后台删除投资笔记文章' });
   res.json({ ok: true });
 }));
@@ -592,15 +582,12 @@ router.put('/knowledge/articles/:id/status', asyncHandler(async (req, res) => {
   const status = req.body && req.body.status;
   if (status !== 'draft' && status !== 'published') return res.status(400).json({ error: '状态非法' });
   if (status === 'published') {
-    const cur = await pool.query('SELECT share_token FROM articles WHERE id=$1', [id]);
-    if (!cur.rows[0]) return res.status(404).json({ error: '文章不存在' });
-    const token = cur.rows[0].share_token || crypto.randomBytes(24).toString('hex');
-    await pool.query(
-      "UPDATE articles SET status='published', published_at=now(), share_token=$1, updated_at=now() WHERE id=$2",
-      [token, id]
-    );
+    const curRow = await knowledgeRepository.readArticleShareToken({ id });
+    if (!curRow) return res.status(404).json({ error: '文章不存在' });
+    const token = curRow.share_token || crypto.randomBytes(24).toString('hex');
+    await knowledgeRepository.publishArticle({ token, id });
   } else {
-    await pool.query("UPDATE articles SET status='draft', published_at=NULL, updated_at=now() WHERE id=$1", [id]);
+    await knowledgeRepository.unpublishArticle({ id });
   }
   await audit(req, 'ks_article_status', id, { detail: status === 'published' ? '发布' : '撤回' });
   res.json({ ok: true });
@@ -614,26 +601,14 @@ router.get('/knowledge/comments', asyncHandler(async (req, res) => {
   const params = [];
   let where = '';
   if (articleId) { params.push(articleId); where = 'WHERE c.article_id=$1'; }
-  const { rows } = await pool.query(
-    `SELECT c.id, c.article_id,
-            COALESCE(NULLIF(BTRIM(u.nickname), ''), c.author_username, c.nickname) AS nickname,
-            c.content, c.parent_id, c.root_id, c.created_at,
-            a.title AS article_title
-     FROM article_comments c
-     LEFT JOIN articles a ON a.id = c.article_id
-     LEFT JOIN users u ON u.username = c.author_username
-     ${where}
-     ORDER BY c.created_at DESC
-     LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
-    [...params, limit, offset]
-  );
-  const { rows: cnt } = await pool.query('SELECT COUNT(*)::int AS c FROM article_comments' + where, params);
-  res.json({ total: cnt[0].c, list: rows, limit, offset });
+  const rows = await knowledgeRepository.adminListComments({ where, values: params, limit, offset });
+  const total = await knowledgeRepository.countComments({ where, values: params });
+  res.json({ total, list: rows, limit, offset });
 }));
 // 删除评论
 router.delete('/knowledge/comments/:id', asyncHandler(async (req, res) => {
   const id = parseInt(req.params.id, 10);
-  await pool.query('DELETE FROM article_comments WHERE id=$1', [id]);
+  await knowledgeRepository.deleteComment({ id });
   await audit(req, 'ks_comment_delete', id, { detail: '后台删除评论' });
   res.json({ ok: true });
 }));
@@ -644,11 +619,7 @@ router.get('/knowledge/users', asyncHandler(async (req, res) => {
   const params = [];
   let where = '';
   if (search) { params.push('%' + search + '%'); where = 'WHERE username ILIKE $1'; }
-  const { rows } = await pool.query(
-    `SELECT username, role, status, knowledge_enabled
-     FROM users ${where} ORDER BY created_at DESC, username`,
-    params
-  );
+  const rows = await knowledgeRepository.adminListUsers({ where, values: params });
   res.json({ list: rows });
 }));
 // 开关用户写权限

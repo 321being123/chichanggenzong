@@ -208,9 +208,11 @@ check('人工安全评分与任务契约一致，只读已入库标准层', () =
 });
 check('安全性完整列表缓存版本覆盖强赎状态，静态响应只保留单一缓存头', () => {
   const route = fs.readFileSync(path.resolve(__dirname, '..', 'routes', 'bondSafety.js'), 'utf8');
+  // 强赎状态水位的 SQL 已按批次3 迁入仓储，断言须指向真实实现位置（路由保留版本拼装）。
+  const repository = fs.readFileSync(path.resolve(__dirname, '..', 'repositories', 'bondSafetyRepository.js'), 'utf8');
   assert.ok(route.includes('callStateVersion'), '完整安全性列表未纳入强赎状态版本');
-  assert.ok(route.includes('analytics.convertible_bond_trigger_daily'), '未读取强赎计算更新时间');
-  assert.ok(route.includes('event.convertible_bond_call_events'), '未读取强赎公告更新时间');
+  assert.ok(repository.includes('analytics.convertible_bond_trigger_daily'), '未读取强赎计算更新时间');
+  assert.ok(repository.includes('event.convertible_bond_call_events'), '未读取强赎公告更新时间');
   ['nginx-portfolio.conf', 'nginx-portfolio-http.conf'].forEach(file => {
     const nginx = fs.readFileSync(path.resolve(__dirname, '..', '..', 'deploy', file), 'utf8');
     assert.strictEqual((nginx.match(/proxy_hide_header Cache-Control/g) || []).length, 2,

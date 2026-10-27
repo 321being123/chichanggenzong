@@ -94,9 +94,10 @@ async function loadBondCycle() {
     bondCycleState.loading = true;
     if (statusEl) statusEl.textContent = '正在读取周期数据...';
     try {
-      var r = await fetch(api('/api/bond-cycle?range=' + encodeURIComponent(bondCycleState.range)));
+      // 批次4：取数统一走 siteApi（View 不直接 fetch）
+      var r = await window.siteApi.get('/api/bond-cycle?range=' + encodeURIComponent(bondCycleState.range));
       if (!r.ok) throw new Error('接口返回 ' + r.status);
-      bondCycleState.data = await r.json();
+      bondCycleState.data = r.payload;
     } catch (e) {
       bondCycleState.loading = false;
       if (statusEl) statusEl.textContent = '数据加载失败：' + (e.message || e);

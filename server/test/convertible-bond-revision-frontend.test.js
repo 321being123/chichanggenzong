@@ -19,7 +19,11 @@ const jobs = fs.readFileSync(path.join(root, 'server', 'services', 'jobDefinitio
 const redemptionSync = fs.readFileSync(path.join(root, 'server', 'services', 'convertibleBondRedemptionSync.js'), 'utf8');
 const suspensionSync = fs.readFileSync(path.join(root, 'server', 'services', 'convertibleBondSuspensionSync.js'), 'utf8');
 const ipo = fs.readFileSync(path.join(root, 'server', 'routes', 'ipo.js'), 'utf8');
+// 批次3：IPO 的 SQL 已迁入仓储，定向/私募排除规则随之落位，证券检索断言指向真实实现。
+const ipoRepositorySource = fs.readFileSync(path.join(root, 'server', 'repositories', 'ipoRepository.js'), 'utf8');
 const bondAnalysis = fs.readFileSync(path.join(root, 'server', 'routes', 'bondAnalysis.js'), 'utf8');
+// 可转债证券检索 SQL 已按批次3 迁入仓储，定向/私募排除规则随之落在仓储内，断言须指向真实实现位置。
+const bondAnalysisRepository = fs.readFileSync(path.join(root, 'server', 'repositories', 'bondAnalysisRepository.js'), 'utf8');
 const stockAnalysisService = fs.readFileSync(path.join(root, 'server', 'services', 'stockAnalysis.js'), 'utf8');
 
 assert.ok(html.includes('data-sub="revision"') && html.includes('id="sub-bond-revision"'), '缺少下修二级页');
@@ -94,9 +98,11 @@ assert.ok(refresh.includes('scheduleDaily(7, 40') && refresh.includes('syncConve
 assert.ok(refresh.includes('pending_parse') && refresh.includes('cachedOnly: true') && refresh.includes('parser_version IS DISTINCT FROM'), '启动补漏未处理旧解析器积压');
 assert.ok(jobs.includes("convertible_bond_announcement_history_sync") && jobs.includes('hour: 7, minute: 40'), '下修公告任务未纳入日常调度');
 assert.ok(jobs.includes('convertible_bond_revision_motive_inputs_sync') && jobs.includes('hour: 7, minute: 20') && jobs.includes('catchupWindowMinutes: 4320'), '动机输入同步任务未纳入日常调度或周末补偿');
-for (const [name, source] of Object.entries({ redemptionSync, suspensionSync, ipo, bondAnalysis })) {
+for (const [name, source] of Object.entries({ redemptionSync, suspensionSync })) {
   assert.ok(source.includes("NOT IN ('定向','私募')"), `${name} 未排除定向私募债券`);
 }
+assert.ok(bondAnalysisRepository.includes("NOT IN ('定向','私募')"), 'bondAnalysis 未排除定向私募债券');
+assert.ok(ipoRepositorySource.includes("NOT IN ('定向','私募')"), 'ipo 未排除定向私募债券');
 assert.ok(stockAnalysisService.includes("channelCode: ['listedNotice_disc']") && stockAnalysisService.includes('payload.announceCount'), '深交所公告必须使用上市公司公告频道并支持分页');
 assert.ok(css.includes('.bond-revision-stats') && css.includes('.bond-revision-status'), '下修样式缺少概览和状态类');
 assert.ok(sharedCss.includes('--bond-feature-gradient-start') && html.includes('bond-feature-hero'), '下修页未复用可转债功能页统一视觉');

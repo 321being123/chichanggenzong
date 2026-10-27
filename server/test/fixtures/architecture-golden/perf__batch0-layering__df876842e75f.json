@@ -1,0 +1,92 @@
+{
+  "schemaVersion": 1,
+  "kind": "performance",
+  "caseSet": "batch0-layering",
+  "toolVersion": "1.0.0",
+  "baselineCommit": "df876842e75f697284db5cca332486982dc19cd5",
+  "dirty": true,
+  "recordedAt": "2026-10-27T11:26:34.820Z",
+  "environment": {
+    "node": "v22.22.2",
+    "platform": "win32",
+    "cpus": 12
+  },
+  "schema": {
+    "tables": 149,
+    "latest_migration": "177_lixinger_source"
+  },
+  "budgetRule": "T ≤ B + min(20%×B, 50ms)",
+  "readonlyGuards": {
+    "pgOptions": "-c default_transaction_read_only=on"
+  },
+  "cases": {
+    "bond-rating-distribution": {
+      "status": "ok",
+      "measure": "service_call_ms",
+      "p50": 17.4133,
+      "p95": 22.2277,
+      "groups": [
+        {
+          "p50": 17.4322,
+          "p95": 22.3376
+        },
+        {
+          "p50": 16.7153,
+          "p95": 20.0837
+        },
+        {
+          "p50": 17.4133,
+          "p95": 22.2277
+        }
+      ],
+      "settings": {
+        "warmup": 5,
+        "groups": 3,
+        "samplesPerGroup": 30
+      },
+      "statementsPerCall": 1,
+      "explain": {
+        "nodeType": "Sort",
+        "totalCost": 18303.44,
+        "planRows": 6,
+        "sequentialScan": false
+      },
+      "entry": "server/services/bondDataService.js",
+      "export": "getRatingDistribution"
+    },
+    "bond-active-codes": {
+      "status": "ok",
+      "measure": "service_call_ms",
+      "p50": 17.1107,
+      "p95": 21.5532,
+      "groups": [
+        {
+          "p50": 16.436,
+          "p95": 20.9107
+        },
+        {
+          "p50": 17.1107,
+          "p95": 24.909
+        },
+        {
+          "p50": 17.9853,
+          "p95": 21.5532
+        }
+      ],
+      "settings": {
+        "warmup": 5,
+        "groups": 3,
+        "samplesPerGroup": 30
+      },
+      "statementsPerCall": 1,
+      "explain": {
+        "nodeType": "Nested Loop",
+        "totalCost": 18089.72,
+        "planRows": 6,
+        "sequentialScan": false
+      },
+      "entry": "server/services/bondDataService.js",
+      "export": "getActiveBondCodes"
+    }
+  }
+}

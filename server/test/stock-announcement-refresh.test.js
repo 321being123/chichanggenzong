@@ -7,10 +7,11 @@ const originalRequire = require('module').createRequire(file);
 let state = [], calls = [], saved = [], writes = 0, primaryFailure = false, partial = false, secondaryFailure = false;
 const event = { is_official: true, event_date: '20261014', title: '关于回购股份减少注册资本通知债权人的公告', url: 'https://www.sse.com.cn/example.pdf' };
 const context = { module: { exports: {} }, console: { warn() {} }, process, Date, URLSearchParams,
-  require: name => name === '../db/connection' ? { pool: { query: async sql => {
-    if (sql.startsWith('SELECT')) return { rows: state };
-    writes++; return { rows: [] };
-  } } } : originalRequire(name),
+  // 批次2：事件游标读写已迁入仓储，注入同语义实现；SELECT/写入断言保持不变
+  require: name => name === '../repositories/stockAnalysisRepository' ? {
+    readEventCursor: async () => (state[0] || null),
+    upsertEventCursor: async () => { writes++; return { rows: [] }; },
+  } : originalRequire(name),
   exchange: async () => { calls.push('exchange'); if (primaryFailure) throw new Error('主源失败'); return { complete: !partial, events: [event] }; },
   cninfo: async () => { calls.push('cninfo'); if (secondaryFailure) throw new Error('备源失败'); return { complete: true, events: [event] }; },
   save: async (code, events) => saved.push({ code, events }),

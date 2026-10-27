@@ -8,12 +8,15 @@ const path = require('path');
 
 const job = fs.readFileSync(path.join(__dirname, '..', 'jobs', 'marketVolatilitySync.js'), 'utf8');
 const svc = fs.readFileSync(path.join(__dirname, '..', 'services', 'stockDataService.js'), 'utf8');
+// 批次1：聚合 SQL 已迁入仓储；断言指向实际实现位置（检查意义不变）
+const repo = fs.readFileSync(path.join(__dirname, '..', 'repositories', 'stockRepository.js'), 'utf8');
 
 // P0-1-①：统一层必须显式接收目标交易日，不能无参聚合"每只最新值"
 assert.ok(job.includes('getTotalMarketCap(normDate(day))'), '统一层聚合未传目标交易日');
 assert.ok(svc.includes('async function getTotalMarketCap(tradeDate)'), 'getTotalMarketCap 未接收 tradeDate 参数');
-assert.ok(svc.includes('dv.trade_date = $1'), 'getTotalMarketCap 未按 trade_date 过滤完整分区');
-assert.ok(svc.includes("i.asset_class = 'stock'"), 'getTotalMarketCap 未限定股票资产类别');
+assert.ok(repo.includes('dv.trade_date = $1'), 'getTotalMarketCap 未按 trade_date 过滤完整分区');
+assert.ok(repo.includes("i.asset_class = 'stock'"), 'getTotalMarketCap 未限定股票资产类别');
+assert.ok(/totalMarketCap\(\{ tradeDate \}\)/.test(svc), '服务必须转发到仓储聚合实现');
 
 // P0-1-②：单位换算——daily_valuations 为元，写入亿元列须除以 1e8；Tushare 万元 ÷ 1e4
 assert.ok(job.includes('YUAN_TO_100M = 100000000'), '统一层元→亿元换算常量缺失');

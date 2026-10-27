@@ -80,7 +80,9 @@ const { isCleanSecurityName } = require('../services/securityIdentity');
 
   console.log('D. U-17/U-18/R-17 前端源码回归');
   const root = path.join(__dirname, '..', '..');
-  const stockAnalysis = fs.readFileSync(path.join(root, 'public', 'js', 'stock-analysis.js'), 'utf8');
+  // 批次4：状态与选择已拆入 Presenter，守卫断言需同时覆盖 View 与 Presenter，避免拆分让检查失效。
+  const stockAnalysis = fs.readFileSync(path.join(root, 'public', 'js', 'stock-analysis.js'), 'utf8')
+    + '\n' + fs.readFileSync(path.join(root, 'public', 'js', 'presenters', 'stock-analysis-presenter.js'), 'utf8');
   const bondAnalysis = fs.readFileSync(path.join(root, 'public', 'js', 'bond-analysis.js'), 'utf8');
   const positionComparison = fs.readFileSync(path.join(root, 'server', 'routes', 'positionComparison.js'), 'utf8');
   const utils = fs.readFileSync(path.join(root, 'public', 'js', 'utils.js'), 'utf8');

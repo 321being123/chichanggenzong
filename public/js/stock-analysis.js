@@ -1,4 +1,6 @@
-var stockAnalysisState = { loaded:false, stocks:[], selected:'', data:null, loading:false, selectToken:0 };
+// 股票分析 View（批次4：View／Presenter 分离）。
+// 职责：只做渲染与表单读写，并把用户操作上报给全局入口；取数、状态与请求序号在 presenters/stock-analysis-presenter.js。
+// 约定：本文件不直接发请求（静态门禁 frontend_api_client 校验），也不决定何时采集。
 
 var stockAnalysisHelpTexts = {
   '滚动市盈率':'当前总市值 ÷ 最近12个月归母净利润。',
@@ -75,130 +77,55 @@ function stockAnalysisMetric(label, value, note, negative) {
   return '<div class="stock-analysis-metric"><span>' + analysisHelp(label, stockAnalysisLabelHelp(label)) + '</span><strong' + cls + '>' + escapeHtml(String(value)) + '</strong>' +
     (note ? '<small>' + escapeHtml(note) + '</small>' : '') + '</div>';
 }
+// View 对外入口（批次4）：Presenter 只调这些函数改界面，自己不碰 DOM。
+function stockAnalysisApplyRefreshAvailability(signedIn) {
+  var refresh = document.getElementById('stock-analysis-refresh');
+  if (!refresh) return;
+  refresh.disabled = !signedIn;
+  refresh.title = signedIn ? '刷新分析数据' : '登录后可刷新数据';
+}
+
+function stockAnalysisSetRefreshButton(busy, text) {
+  var button = document.getElementById('stock-analysis-refresh');
+  if (!button) return;
+  button.disabled = !!busy;
+  button.textContent = text;
+}
+
+function stockAnalysisApplyRemoveVisibility(visible) {
+  var remove = document.getElementById('stock-analysis-remove');
+  if (!remove) return;
+  remove.classList.remove('js-hidden');
+  remove.style.display = visible ? '' : 'none';
+}
+
+function stockAnalysisShowContent(visible) {
+  var el = document.getElementById('stock-analysis-content');
+  if (el) el.style.display = visible ? '' : 'none';
+}
+
+// 下拉选项的 value 是六位纯数字，证券代码带市场后缀，截取在这里完成。
+function stockAnalysisSelectOption(tsCode) {
+  var select = document.getElementById('security-analysis-select');
+  if (select) select.value = String(tsCode || '').slice(0, 6);
+}
+
+function stockAnalysisReadCodeInput() {
+  var input = document.getElementById('stock-analysis-code');
+  return ((input && input.value) || '').trim();
+}
+
+function stockAnalysisClearCodeInput() {
+  var input = document.getElementById('stock-analysis-code');
+  if (input) input.value = '';
+}
+
 function stockAnalysisSetMessage(text, error, ctx) {
   var el = document.getElementById((ctx === 'bond' ? 'bond-analysis-' : 'stock-analysis-') + 'message');
   if (!el) return;
   el.style.display = text ? 'block' : 'none';
   el.style.color = error ? '#b42318' : '#777';
   el.textContent = text || '';
-}
-
-async function loadStockAnalysis(force) {
-  // 必须 await：加自选后要等下拉填充完成才能回选，否则 value 落在空列表上被重置
-  if (window.securityAnalysisLoadList) await window.securityAnalysisLoadList(force);
-  var refresh = document.getElementById('stock-analysis-refresh');
-  if (refresh) {
-    refresh.disabled = !username;
-    refresh.title = username ? '刷新分析数据' : '登录后可刷新数据';
-  }
-  if (!username) {
-    stockAnalysisState.stocks = [];
-    stockAnalysisState.loaded = true;
-    return;
-  }
-  if (stockAnalysisState.loaded && !force) return;
-  try {
-    var listResult = await stockAnalysisApi.listStocks();
-    if (!listResult.ok) throw new Error(listResult.payload.error || '股票列表加载失败');
-    stockAnalysisState.stocks = listResult.payload.data || [];
-    stockAnalysisState.loaded = true;
-  } catch (error) { stockAnalysisSetMessage(error.message || String(error), true); }
-}
-
-async function stockAnalysisSelect(tsCode) {
-  // 每次选择都领一个新序号。只比对 tsCode 无法区分 A→B→A：第一次 A 与第三次 A 同码，
-  // 先发的旧 A 响应回来时仍满足 selected === tsCode，会把新 A 的结果覆盖成旧数据。
-  var selectToken = (stockAnalysisState.selectToken || 0) + 1;
-  stockAnalysisState.selectToken = selectToken;
-  stockAnalysisState.selected = tsCode || '';
-  stockAnalysisState.data = null;
-  if (typeof stockAnalysisSwitchView === 'function') stockAnalysisSwitchView('analysis');
-  var remove = document.getElementById('stock-analysis-remove');
-  var row = stockAnalysisState.stocks.find(function(item) { return item.ts_code === tsCode; });
-  if (remove) { remove.classList.remove('js-hidden'); remove.style.display = row && row.watchlisted ? '' : 'none'; }
-  if (!tsCode) { stockAnalysisSetMessage('从持仓或自选股中选择一只股票开始分析。'); document.getElementById('stock-analysis-content').style.display='none'; return; }
-  stockAnalysisSetMessage('正在读取分析结果...');
-  try {
-    var snapshotResult = await stockAnalysisApi.getSnapshot(tsCode);
-    // 迟到的响应不得覆盖当前选择：按序号判定，覆盖 A→B→A 这类同码重选
-    if (stockAnalysisState.selectToken !== selectToken) return;
-    if (snapshotResult.status === 404) {
-      if (!username) return stockAnalysisSetMessage('该股票暂未建档，登录后可刷新并建立分析数据。');
-      // 页面打开只读本地快照；建立分析数据必须由用户明确点击“刷新数据”。
-      return stockAnalysisSetMessage('该股票暂无分析快照，请点击“刷新数据”建立。');
-    }
-    var payload = snapshotResult.payload;
-    if (stockAnalysisState.selectToken !== selectToken) return;
-    if (!snapshotResult.ok) throw new Error(payload.error || '分析读取失败');
-    if (payload.needs_refresh) {
-      var reasons = payload.freshness && payload.freshness.reasons ? payload.freshness.reasons.map(function(r){return r.message;}).join('；') : '数据待更新';
-      // 页面打开只读本地快照；外部采集必须由用户明确点击“刷新数据”触发。
-      showToast('数据待更新：' + reasons);
-    }
-    stockAnalysisRender(payload);
-  } catch (error) {
-    if (stockAnalysisState.selectToken !== selectToken) return;
-    stockAnalysisSetMessage(error.message || String(error), true);
-  }
-}
-
-async function stockAnalysisRefresh() {
-  var tsCode = stockAnalysisState.selected;
-  if (!tsCode || stockAnalysisState.loading) return;
-  if (!username) return stockAnalysisSetMessage('登录后可刷新并建立分析数据。');
-  stockAnalysisState.loading = true;
-  var button = document.getElementById('stock-analysis-refresh');
-  if (button) { button.disabled = true; button.textContent = '刷新中...'; }
-  stockAnalysisSetMessage('正在提交股票刷新任务...');
-  try {
-    if (typeof stockAnalysisInvalidateStatements === 'function') stockAnalysisInvalidateStatements(tsCode);
-    var refreshResult = await stockAnalysisApi.requestRefresh(tsCode);
-    var payload = refreshResult.payload;
-    var analysis = payload.analysis;
-    if (!refreshResult.ok && !analysis) throw new Error(payload.error || '刷新失败');
-    // 刷新期间切换了股票则丢弃过期结果，避免旧股渲染覆盖当前选择
-    var stillCurrent = stockAnalysisState.selected === tsCode;
-    if (analysis && stillCurrent) stockAnalysisRender(analysis);
-    if (refreshResult.status === 202) {
-      if (!payload.queued || !payload.queued.queued) throw new Error(payload.warning || '未能登记刷新任务，请稍后重试');
-      if (stillCurrent) stockAnalysisSetMessage('已加入后台刷新队列，完成后重新查询该股票即可查看。首次建档需要采集历史财报，请稍候。');
-    }
-    if (!refreshResult.ok && payload.error && stillCurrent) showToast('刷新失败，已显示上一份有效数据：' + payload.error);
-  } catch (error) {
-    if (stockAnalysisState.selected === tsCode) stockAnalysisSetMessage(error.message || String(error), true);
-  } finally { stockAnalysisState.loading = false; if (button) { button.disabled=false; button.textContent='刷新数据'; } }
-}
-
-async function stockAnalysisAddWatchlist() {
-  var input = document.getElementById('stock-analysis-code');
-  var code = (input && input.value || '').trim();
-  if (!code) return showToast('请输入股票代码');
-  stockAnalysisSetMessage('正在添加自选股并建立财务档案...');
-  try {
-    var addResult = await stockAnalysisApi.addWatchlist(code);
-    var payload = addResult.payload;
-    if (!addResult.ok && addResult.status !== 202) throw new Error(payload.error || '添加失败');
-    stockAnalysisState.loaded = false;
-    await loadStockAnalysis(true);
-    stockAnalysisState.selected = payload.stock.ts_code;
-    // 下拉 option 的 value 是六位纯数字，ts_code 带后缀（600000.SH）需截取
-    var select = document.getElementById('security-analysis-select');
-    if (select) select.value = String(payload.stock.ts_code).slice(0, 6);
-    var remove = document.getElementById('stock-analysis-remove'); if (remove) { remove.classList.remove('js-hidden'); remove.style.display = ''; }
-    if (input) input.value = '';
-    if (payload.analysis) stockAnalysisRender(payload.analysis); else await stockAnalysisSelect(payload.stock.ts_code);
-    if (payload.warning) showToast('已加入自选，建档稍后重试：' + payload.warning);
-  } catch (error) { stockAnalysisSetMessage(error.message || String(error), true); }
-}
-
-async function stockAnalysisRemoveWatchlist() {
-  if (!stockAnalysisState.selected) return;
-  try {
-    var removeResult = await stockAnalysisApi.removeWatchlist(stockAnalysisState.selected);
-    if (!removeResult.ok) throw new Error(removeResult.payload.error || '删除失败');
-    stockAnalysisState.loaded = false; stockAnalysisState.selected = ''; stockAnalysisState.data = null;
-    await loadStockAnalysis(true); stockAnalysisSelect(''); showToast('已移出自选股');
-  } catch (error) { showToast(error.message || String(error)); }
 }
 
 function stockAnalysisRender(d) {

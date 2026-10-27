@@ -8,6 +8,8 @@ const loginHtml = fs.readFileSync(path.join(root, 'public', 'login.html'), 'utf8
 const adminHtml = fs.readFileSync(path.join(root, 'public', 'admin.html'), 'utf8');
 const coreTradeScript = fs.readFileSync(path.join(root, 'public', 'shared', 'core-trade.js'), 'utf8');
 const script = fs.readFileSync(path.join(root, 'public', 'js', 'stock-analysis.js'), 'utf8');
+// 批次4：股票分析已拆为 View（渲染）与 Presenter（状态/请求序号/取数编排），断言按职责分别校验。
+const stockPresenter = fs.readFileSync(path.join(root, 'public', 'js', 'presenters', 'stock-analysis-presenter.js'), 'utf8');
 const chartScript = fs.readFileSync(path.join(root, 'public', 'js', 'stock-analysis-chart.js'), 'utf8');
 const valuationChartScript = fs.readFileSync(path.join(root, 'public', 'js', 'stock-analysis-valuation-chart.js'), 'utf8');
 const bondScript = fs.readFileSync(path.join(root, 'public', 'js', 'bond-analysis.js'), 'utf8');
@@ -44,14 +46,16 @@ assert.ok(script.includes('PE为负通常代表公司亏损') === false, '分位
 // 批次2c：站内 HTTP 已收进 API 客户端；断言指向实际落点，并新增“View 不得直接 fetch”
 const apiClient = fs.readFileSync(path.join(root, 'public', 'js', 'api', 'stock-analysis-api.js'), 'utf8');
 assert.ok(apiClient.includes('/api/stock-analysis/'), 'API 客户端未接入股票分析接口');
-assert.ok(/stockAnalysisApi\./.test(script), 'View 未通过 API 客户端取数');
-assert.ok(!/await fetch\(/.test(script), 'View 不得直接 fetch');
+assert.ok(/stockAnalysisApi\./.test(stockPresenter), 'Presenter 未通过 API 客户端取数');
+assert.ok(!/await fetch\(/.test(script + stockPresenter), 'View 与 Presenter 均不得直接 fetch');
 assert.ok(html.includes('js/api/stock-analysis-api.js'), '页面未加载股票分析 API 客户端');
-assert.ok(/if \(payload\.needs_refresh\)[\s\S]*?showToast\('数据待更新：'/.test(script)
-  && !/if \(payload\.needs_refresh\)[\s\S]*?return stockAnalysisRefresh\(\)/.test(script),
+assert.ok(html.indexOf('js/stock-analysis.js') < html.indexOf('js/presenters/stock-analysis-presenter.js')
+  && html.includes('js/presenters/stock-analysis-presenter.js'), '页面未按序加载股票分析 Presenter');
+assert.ok(/if \(payload\.needs_refresh\)[\s\S]*?showToast\('数据待更新：'/.test(stockPresenter)
+  && !/if \(payload\.needs_refresh\)[\s\S]*?return stockAnalysisRefresh\(\)/.test(stockPresenter),
   '股票分析页面打开只能提示过期，不能自动触发外部刷新');
-assert.ok(/if \(snapshotResult\.status === 404\)[\s\S]*?暂无分析快照[\s\S]*?刷新数据/.test(script)
-  && !/if \(snapshotResult\.status === 404\)[\s\S]*?return stockAnalysisRefresh\(\)/.test(script),
+assert.ok(/if \(snapshotResult\.status === 404\)[\s\S]*?暂无分析快照[\s\S]*?刷新数据/.test(stockPresenter)
+  && !/if \(snapshotResult\.status === 404\)[\s\S]*?return stockAnalysisRefresh\(\)/.test(stockPresenter),
   '股票分析页面首次打开无快照时不能自动建档');
 assert.ok(/if \(!refresh && analysis\.needs_refresh\)[\s\S]*?showToast\('数据待更新，请点击“刷新数据”进行更新。'\)/.test(bondScript)
   && !/if \(!refresh && analysis\.needs_refresh\)[\s\S]*?return bondAnalysisLoad\(true/.test(bondScript),

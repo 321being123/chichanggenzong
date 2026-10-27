@@ -15,7 +15,9 @@ assert.ok(html.includes('id="bond-analysis-content"'), '缺少可转债分析结
 assert.ok(html.includes('id="security-analysis-select"'), '缺少持仓和自选入口');
 assert.ok(script.includes("'security-analysis-select'"), '持仓和自选下拉填充引用的 id 必须与 index.html 一致，否则选项为空');
 {
-  const stockScript = fs.readFileSync(path.join(root, 'public', 'js', 'stock-analysis.js'), 'utf8');
+  // 批次4：股票分析的加载编排已迁入 Presenter，等待列表填充的断言需覆盖 View＋Presenter。
+  const stockScript = fs.readFileSync(path.join(root, 'public', 'js', 'stock-analysis.js'), 'utf8')
+    + '\n' + fs.readFileSync(path.join(root, 'public', 'js', 'presenters', 'stock-analysis-presenter.js'), 'utf8');
   assert.ok(!stockScript.includes('stock-analysis-select'), 'stock-analysis.js 不得再引用已废弃的下拉 id stock-analysis-select（现为 security-analysis-select）');
   assert.ok(/await\s+window\.securityAnalysisLoadList\(/.test(stockScript), '加载分析页时必须等待持仓和自选列表填充完成，否则加自选后无法自动回选');
 }

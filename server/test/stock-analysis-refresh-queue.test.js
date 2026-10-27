@@ -73,11 +73,14 @@ const service = context.module.exports;
   targets = [];
   await assert.rejects(service.syncRequestedStockAnalysis(options), /档案缺失/);
 
-  const frontend = fs.readFileSync(path.join(root, 'public/js/stock-analysis.js'), 'utf8');
+  // 批次4：选择与请求序号已迁入 Presenter，提取对象随之改到 Presenter 文件。
+  const frontend = fs.readFileSync(path.join(root, 'public/js/presenters/stock-analysis-presenter.js'), 'utf8');
   const messages = [];
   const ui = { stockAnalysisState: { selected: '600763.SH', loading: false }, username: 'test',
     document: { getElementById: () => null }, api: value => value,
     stockAnalysisSetMessage: message => messages.push(message), stockAnalysisRender() {},
+    // 刷新按钮的禁用与文案由 View 负责，Presenter 只发指令。
+    stockAnalysisSetRefreshButton() {},
     fetch: async () => ({ ok: true, status: 202, json: async () => ({ queued: { queued: true } }) }),
   };
   // 批次2c：站内 HTTP 已迁入 API 客户端，在同一上下文加载真实客户端后仅执行刷新函数
@@ -109,6 +112,9 @@ const service = context.module.exports;
     },
     stockAnalysisSwitchView() {},
     stockAnalysisSetMessage() {},
+    // View 对 Presenter 暴露的入口：这里只记录是否被调用，DOM 细节由 View 自己的测试覆盖。
+    stockAnalysisApplyRemoveVisibility() {},
+    stockAnalysisShowContent() {},
     stockAnalysisRender: payload => rendered.push(payload),
     showToast() {},
   };

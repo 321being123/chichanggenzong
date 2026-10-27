@@ -669,9 +669,10 @@
       {
         "symbol": "stockAnalysisState",
         "kind": "variable",
-        "file": "public/js/stock-analysis.js",
+        "file": "public/js/presenters/stock-analysis-presenter.js",
         "consumers": [
           "public/js/stock-analysis.js",
+          "public/js/presenters/stock-analysis-presenter.js",
           "public/js/stock-analysis-statements.js",
           "public/js/bond-analysis.js"
         ]
@@ -685,7 +686,7 @@
       {
         "symbol": "loadStockAnalysis",
         "kind": "function",
-        "file": "public/js/stock-analysis.js",
+        "file": "public/js/presenters/stock-analysis-presenter.js",
         "consumers": ["public/js/stock-analysis.js", "public/index.html"],
         "batch": 2,
         "status": "retire_planned"
@@ -693,7 +694,7 @@
       {
         "symbol": "stockAnalysisSelect",
         "kind": "function",
-        "file": "public/js/stock-analysis.js",
+        "file": "public/js/presenters/stock-analysis-presenter.js",
         "consumers": ["public/js/stock-analysis.js", "public/index.html"],
         "batch": 2,
         "status": "retire_planned"
@@ -710,6 +711,7 @@
             "scripts": [
               "public/js/api/stock-analysis-api.js",
               "public/js/stock-analysis.js",
+              "public/js/presenters/stock-analysis-presenter.js",
               "public/js/bond-analysis.js",
               "public/js/stock-analysis-statements.js",
               "public/js/stock-analysis-chart.js",

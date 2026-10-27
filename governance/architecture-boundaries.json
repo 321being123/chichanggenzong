@@ -603,7 +603,20 @@
     },
     {
       "path": "ipo-report/ipo_lib_train.py",
+      "role": "application",
+      "batch": 5,
+      "status": "registered",
+      "note": "兼容入口，只重导出算法和训练样本读取接口"
+    },
+    {
+      "path": "ipo-report/ipo_training_domain.py",
       "role": "domain_algorithm",
+      "batch": 5,
+      "status": "registered"
+    },
+    {
+      "path": "ipo-report/ipo_training_data.py",
+      "role": "data_access",
       "batch": 5,
       "status": "registered"
     },
@@ -813,6 +826,18 @@
     "pending": []
   },
   "compatibilityExits": [
+    {
+      "id": "ipo-training-facade",
+      "entry": "ipo-report/ipo_lib_train.py",
+      "implementation": "ipo-report/ipo_training_domain.py 与 ipo-report/ipo_training_data.py",
+      "internalConsumers": ["ipo-report/train_xgb_model.py", "ipo-report/backtest_ipo_prediction.py"],
+      "externalConsumers": [],
+      "batch": 5,
+      "owner": "应用分层批次5",
+      "status": "long_term_facade",
+      "reason": "训练与回测保留原导入路径，分别转发唯一算法和数据读取实现",
+      "reviewedAt": "2026-10-28"
+    },
     {
       "id": "db-aggregate-exports",
       "entry": "server/db/index.js",

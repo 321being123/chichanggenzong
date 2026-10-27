@@ -77,10 +77,9 @@ async function loadArbUnreadCount() {
   arbState.unreadLoading = true;
   var version = arbState.unreadVersion;
   try {
-    var response = await fetch(api('/api/arbitrage/unread-count'), { cache: 'no-store' });
-    if (!response.ok) return;
-    var result = await response.json();
-    if (version === arbState.unreadVersion) renderArbUnreadCount(result.unreadCount);
+    var res = await window.siteApi.get('/api/arbitrage/unread-count', { cache: 'no-store' });
+    if (!res.ok) return;
+    if (version === arbState.unreadVersion) renderArbUnreadCount(res.payload.unreadCount);
   } catch (error) { /* 查询失败保留已确认的计数 */ }
   finally { arbState.unreadLoading = false; }
 }
@@ -103,9 +102,9 @@ async function markArbSeen(caseId) {
   arbState.markingSeen[caseId] = true;
   document.querySelectorAll('[data-arb-seen="' + caseId + '"]').forEach(function (el) { el.disabled = true; });
   try {
-    var response = await fetch(api('/api/arbitrage/' + caseId + '/seen'), { method: 'POST' });
-    var result = await response.json();
-    if (!response.ok || !result.ok) throw new Error(result.error || '标记失败，请重试');
+    var res = await window.siteApi.post('/api/arbitrage/' + caseId + '/seen', {});
+    var result = res.payload || {};
+    if (!res.ok || !result.ok) throw new Error(result.error || '标记失败，请重试');
     renderArbUnreadCount(result.unreadCount);
     if (arbState.data) {
       arbState.data.rows.forEach(function (row) { if (Number(row.case_id) === caseId) row.is_new = false; });
@@ -190,9 +189,9 @@ async function loadArbitrage() {
   var statusEl = document.getElementById('arb-status');
   if (statusEl) statusEl.textContent = '\u6b63\u5728\u8bfb\u53d6\u5957\u5229\u6570\u636e...';
   try {
-    var r = await fetch(api('/api/arbitrage?type=' + arbState.type + '&page=1&page_size=100'));
-    if (!r.ok) throw new Error('\u63a5\u53e3\u8fd4\u56de ' + r.status);
-    var json = await r.json();
+    var res = await window.siteApi.get('/api/arbitrage?type=' + arbState.type + '&page=1&page_size=100');
+    if (!res.ok) throw new Error('\u63a5\u53e3\u8fd4\u56de ' + res.status);
+    var json = res.payload;
     arbState.data = json;
     renderArbUnreadCount(json.unreadCount);
     renderArbTable(json);
@@ -341,9 +340,9 @@ async function openArbDetail(caseId, skipPush) {
   detail.innerHTML = '<div class="u-pad-20 u-c-muted">\u52a0\u8f7d\u4e2d...</div>';
 
   try {
-    var r = await fetch(api('/api/arbitrage/' + caseId));
-    if (!r.ok) throw new Error('\u63a5\u53e3\u8fd4\u56de ' + r.status);
-    var d = await r.json();
+    var res = await window.siteApi.get('/api/arbitrage/' + caseId);
+    if (!res.ok) throw new Error('\u63a5\u53e3\u8fd4\u56de ' + res.status);
+    var d = res.payload;
     arbState.detailData = d;
     renderArbDetail(d);
     if (window.SiteTelemetry && window.SiteTelemetry.trackDetail) window.SiteTelemetry.trackDetail({ page_key: 'arbitrage.detail', module: 'arbitrage', entry: 'list', detail_key: String(caseId), properties: { detail_type: 'arbitrage' } });

@@ -807,7 +807,8 @@
       "public/js/market-cycle-metrics.js",
       "public/js/market-volatility.js",
       "public/js/position-comparison.js",
-      "public/js/stock-analysis.js"
+      "public/js/stock-analysis.js",
+      "public/js/stock-analysis-statements.js"
     ],
     "pending": []
   },

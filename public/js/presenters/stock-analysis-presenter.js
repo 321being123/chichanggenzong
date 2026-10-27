@@ -63,10 +63,17 @@ async function stockAnalysisSelect(tsCode) {
   }
 }
 
+function stockAnalysisCancelSelection() {
+  stockAnalysisState.selectToken = (stockAnalysisState.selectToken || 0) + 1;
+  stockAnalysisState.selected = '';
+  stockAnalysisState.data = null;
+}
+
 async function stockAnalysisRefresh() {
   var tsCode = stockAnalysisState.selected;
   if (!tsCode || stockAnalysisState.loading) return;
   if (!username) return stockAnalysisSetMessage('登录后可刷新并建立分析数据。');
+  var selectToken = stockAnalysisState.selectToken;
   stockAnalysisState.loading = true;
   stockAnalysisSetRefreshButton(true, '刷新中...');
   stockAnalysisSetMessage('正在提交股票刷新任务...');
@@ -77,7 +84,7 @@ async function stockAnalysisRefresh() {
     var analysis = payload.analysis;
     if (!refreshResult.ok && !analysis) throw new Error(payload.error || '刷新失败');
     // 刷新期间切换了股票则丢弃过期结果，避免旧股渲染覆盖当前选择
-    var stillCurrent = stockAnalysisState.selected === tsCode;
+    var stillCurrent = stockAnalysisState.selected === tsCode && stockAnalysisState.selectToken === selectToken;
     if (analysis && stillCurrent) stockAnalysisRender(analysis);
     if (refreshResult.status === 202) {
       if (!payload.queued || !payload.queued.queued) throw new Error(payload.warning || '未能登记刷新任务，请稍后重试');
@@ -85,7 +92,7 @@ async function stockAnalysisRefresh() {
     }
     if (!refreshResult.ok && payload.error && stillCurrent) showToast('刷新失败，已显示上一份有效数据：' + payload.error);
   } catch (error) {
-    if (stockAnalysisState.selected === tsCode) stockAnalysisSetMessage(error.message || String(error), true);
+    if (stockAnalysisState.selected === tsCode && stockAnalysisState.selectToken === selectToken) stockAnalysisSetMessage(error.message || String(error), true);
   } finally {
     stockAnalysisState.loading = false;
     stockAnalysisSetRefreshButton(false, '刷新数据');

@@ -1321,15 +1321,17 @@
       "entry": "server/repositories/stockRepository.js",
       "export": "listStocks"
     },
-    "account-names-daicunzai": {
+    "account-names-synthetic": {
       "status": "ok",
       "value": [
-        "招商证券账户",
-        "华泰账户"
+        "合成账户甲",
+        "合成账户乙"
       ],
-      "durationMs": 3,
       "entry": "server/repositories/accountsRepository.js",
-      "export": "listAccountNames"
+      "export": "listAccountNames",
+      "correction": "原真实账户样本已移除；合成账号按 dd01799b 仓储重新采集",
+      "sourceCommit": "dd01799b",
+      "correctedAt": "2026-10-27T15:57:06.009Z"
     },
     "knowledge-categories-anon": {
       "status": "ok",

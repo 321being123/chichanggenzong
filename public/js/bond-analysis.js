@@ -1,4 +1,4 @@
-var securityAnalysisState = { type:'', code:'', loading:false, suggestions:[], suggestionIndex:-1, searchTimer:null, searchSeq:0 };
+var securityAnalysisState = { type:'', code:'', loading:false, requestToken:0, suggestions:[], suggestionIndex:-1, searchTimer:null, searchSeq:0 };
 
 function securityAnalysisHideSuggestions(ctx) {
   var p = ctx === 'bond' ? 'bond-analysis-' : 'stock-analysis-';
@@ -272,6 +272,11 @@ async function securityAnalysisSubmit(selectedCode, ctx) {
   var input=document.getElementById(p+'code'), raw=String(selectedCode||(input&&input.value)||'').trim().toUpperCase();
   var match=raw.match(/^(\d{6})(?:\.(?:SH|SZ|BJ))?$/), code=match&&match[1];
   if (!code) return securityAnalysisResolveName(raw,ctx);
+  securityAnalysisState.requestToken++;
+  securityAnalysisState.loading=false;
+  ['stock-analysis-refresh','bond-analysis-refresh'].forEach(function(id){
+    var button=document.getElementById(id); if(button){button.disabled=false;button.textContent='刷新数据';}
+  });
   securityAnalysisState.type=securityAnalysisKind(code); securityAnalysisState.code=code;
   if (securityAnalysisState.type==='stock') {
     stockAnalysisState.selected=code;
@@ -280,6 +285,7 @@ async function securityAnalysisSubmit(selectedCode, ctx) {
     return stockAnalysisSelect(code);
   }
   // 证券分析页已内置可转债分析内容区，输入可转债代码直接在当前页渲染结果
+  if (typeof stockAnalysisCancelSelection === 'function') stockAnalysisCancelSelection();
   var stock=document.getElementById('stock-analysis-content'); if(stock) stock.style.display='none';
   return bondAnalysisLoad(false, ctx);
 }
@@ -294,15 +300,19 @@ async function securityAnalysisRefresh(ctx) {
 async function bondAnalysisLoad(refresh, ctx) {
   if (securityAnalysisState.loading) return;
   securityAnalysisState.loading=true;
+  var requestToken=securityAnalysisState.requestToken, code=securityAnalysisState.code;
+  function isCurrent(){return securityAnalysisState.requestToken===requestToken && securityAnalysisState.type==='bond' && securityAnalysisState.code===code;}
   var p = ctx === 'bond' ? 'bond-analysis-' : 'stock-analysis-';
   var button=document.getElementById(p+'refresh');
   if(button){button.disabled=true;button.textContent='刷新中...';}
   stockAnalysisSetMessage(refresh ? '正在更新可转债数据...' : '正在读取可转债分析结果...', false, ctx);
   try {
-    var path='/api/bond-analysis/'+encodeURIComponent(securityAnalysisState.code)+(refresh?'/refresh':'');
+    var path='/api/bond-analysis/'+encodeURIComponent(code)+(refresh?'/refresh':'');
     var res=await window.siteApi.request(path, refresh?{method:'POST'}:{});
+    if(!isCurrent()) return;
     if(res.status===404&&!refresh){
-      var shown=await bondAnalysisRenderListFallback(ctx);
+      var shown=await bondAnalysisRenderListFallback(ctx, code, isCurrent);
+      if(!isCurrent()) return;
       if(shown) return;
       return stockAnalysisSetMessage(username?'该转债暂无分析快照或上市列表资料，可登录后点击“刷新数据”尝试建立分析。':'该转债暂无详细分析快照，当前也没有可展示的上市行情资料。', false, ctx);
     }
@@ -317,15 +327,16 @@ async function bondAnalysisLoad(refresh, ctx) {
     if(payload.queued)showToast('已显示数据库中的分析结果，缺失资料已交后台补采。');
     if (window.SiteTelemetry && window.SiteTelemetry.trackDetail) window.SiteTelemetry.trackDetail({ page_key: 'bond.analysis', module: 'bond', entry: ctx || 'analysis', detail_key: securityAnalysisState.code || 'bond', properties: { detail_type: 'bond' } });
     if(!res.ok&&payload.error) showToast('更新失败，已显示上一份有效数据：'+payload.error);
-  } catch(error) { stockAnalysisSetMessage(error.message||String(error),true, ctx); }
-  finally { securityAnalysisState.loading=false;if(button){button.disabled=false;button.textContent='刷新数据';} }
+  } catch(error) { if(isCurrent()) stockAnalysisSetMessage(error.message||String(error),true, ctx); }
+  finally { if(isCurrent()){securityAnalysisState.loading=false;if(button){button.disabled=false;button.textContent='刷新数据';}} }
 }
 
-async function bondAnalysisRenderListFallback(ctx) {
-  var res=await window.siteApi.get('/api/bond-analysis/bonds?q='+encodeURIComponent(securityAnalysisState.code));
+async function bondAnalysisRenderListFallback(ctx, code, isCurrent) {
+  var res=await window.siteApi.get('/api/bond-analysis/bonds?q='+encodeURIComponent(code));
+  if(!isCurrent()) return false;
   if(!res.ok) return false;
   var payload=res.payload, rows=Array.isArray(payload.data)?payload.data:[];
-  var row=rows.find(function(item){return String(item.bond_code||item.ts_code||'').replace(/\D/g,'')===securityAnalysisState.code;});
+  var row=rows.find(function(item){return String(item.bond_code||item.ts_code||'').replace(/\D/g,'')===code;});
   if(!row) return false;
   stockAnalysisSetMessage('',false,ctx);
   var stock=document.getElementById('stock-analysis-content'), root=document.getElementById('bond-analysis-content');

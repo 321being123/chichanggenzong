@@ -2,7 +2,10 @@
   "schemaVersion": 1,
   "caseSet": "batch0-layering-v2",
   "note": "第二轮验收扩面：覆盖可转债、股票、账户、投资笔记、打新五个域的受控只读入口，不触发刷新、外采或快照补写。基线用于同一次结构改动的前后等价对比；库内事实变化后需按新提交重录，不作为常驻回归阈值。",
-  "excludeFields": ["updated_at", "created_at"],
+  "excludeFields": [
+    "updated_at",
+    "created_at"
+  ],
   "cases": [
     {
       "id": "bond-rating-distribution",
@@ -11,7 +14,11 @@
       "params": [],
       "readonly": true,
       "note": "可转债域：只读聚合，不依赖特定证券存在",
-      "perf": { "warmup": 5, "groups": 3, "samplesPerGroup": 30 },
+      "perf": {
+        "warmup": 5,
+        "groups": 3,
+        "samplesPerGroup": 30
+      },
       "explainSql": "SELECT display_rating AS rating, COUNT(*) AS cnt FROM public.bond_unified WHERE status = 'listed' AND (issue_type IS NULL OR issue_type NOT IN ('定向', '私募')) GROUP BY display_rating ORDER BY cnt DESC"
     },
     {
@@ -21,14 +28,20 @@
       "params": [],
       "readonly": true,
       "note": "可转债域：只读列表，用于核对证券集合与排序",
-      "perf": { "warmup": 5, "groups": 3, "samplesPerGroup": 30 },
+      "perf": {
+        "warmup": 5,
+        "groups": 3,
+        "samplesPerGroup": 30
+      },
       "explainSql": "SELECT bond_code FROM public.bond_unified WHERE status = 'listed' AND (issue_type IS NULL OR issue_type NOT IN ('定向', '私募'))"
     },
     {
       "id": "bond-detail-113050",
       "entry": "server/services/bondDataService.js",
       "export": "getBondDetail",
-      "params": ["113050.SH"],
+      "params": [
+        "113050.SH"
+      ],
       "readonly": true,
       "note": "可转债域：固定单债样例；库内无该证券时记 not_available，不视为通过"
     },
@@ -36,35 +49,63 @@
       "id": "stock-latest-valuation-600000",
       "entry": "server/repositories/stockRepository.js",
       "export": "listLatestValuations",
-      "params": [{ "codes": ["600000.SH"] }],
+      "params": [
+        {
+          "codes": [
+            "600000.SH"
+          ]
+        }
+      ],
       "readonly": true,
       "note": "股票域：按代码读最新估值快照（stock_unified），核对单券字段与口径",
-      "perf": { "warmup": 5, "groups": 3, "samplesPerGroup": 30 },
+      "perf": {
+        "warmup": 5,
+        "groups": 3,
+        "samplesPerGroup": 30
+      },
       "explainSql": "SELECT stock_code, stock_name, pe_ttm, pb, total_market_cap, circulating_market_cap, last_valuation_date FROM public.stock_unified WHERE stock_code = ANY(ARRAY['600000.SH'])"
     },
     {
       "id": "stock-list-search-600000",
       "entry": "server/repositories/stockRepository.js",
       "export": "listStocks",
-      "params": [{ "filters": { "search": "600000" } }],
+      "params": [
+        {
+          "filters": {
+            "search": "600000"
+          }
+        }
+      ],
       "readonly": true,
       "note": "股票域：筛选与排序口径，覆盖 search 条件下的列表读取",
-      "perf": { "warmup": 5, "groups": 3, "samplesPerGroup": 30 },
+      "perf": {
+        "warmup": 5,
+        "groups": 3,
+        "samplesPerGroup": 30
+      },
       "explainSql": "SELECT stock_code, stock_name, market, status FROM public.stock_unified WHERE status = 'listed' AND (stock_code ILIKE '%600000%' OR stock_name ILIKE '%600000%') ORDER BY stock_code LIMIT 200"
     },
     {
-      "id": "account-names-daicunzai",
+      "id": "account-names-synthetic",
       "entry": "server/repositories/accountsRepository.js",
       "export": "listAccountNames",
-      "params": [{ "username": "daicunzai" }],
+      "params": [
+        {
+          "username": "arch_golden_test_user"
+        }
+      ],
       "readonly": true,
-      "note": "账户域：账户清单与排序（只读），核对按 created_at 的稳定顺序"
+      "note": "账户域：仅使用隔离库预先创建的合成身份；缺少样本时保持待测"
     },
     {
       "id": "knowledge-categories-anon",
       "entry": "server/repositories/knowledgeRepository.js",
       "export": "listCategories",
-      "params": [{ "username": null }],
+      "params": [
+        {
+          "username": null
+        }
+      ],
       "readonly": true,
       "note": "投资笔记域：匿名视角的分类目录（can_manage 恒为 false），核对可见性口径"
     },

@@ -16,6 +16,9 @@
     getSnapshot: function (code) {
       return request('/api/stock-analysis/' + encodeURIComponent(code));
     },
+    getStatements: function (code, type) {
+      return request('/api/stock-analysis/' + encodeURIComponent(code) + '/statements?type=' + encodeURIComponent(type) + '&limit=10');
+    },
     requestRefresh: function (code) {
       return request('/api/stock-analysis/' + encodeURIComponent(code) + '/refresh', { method: 'POST' });
     },

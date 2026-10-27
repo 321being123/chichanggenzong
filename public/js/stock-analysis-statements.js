@@ -1,7 +1,8 @@
-var stockStatementState = { type:'balance', loadedCode:'', cache:{} };
+var stockStatementState = { type:'balance', loadedCode:'', cache:{}, requestToken:0 };
 
 function stockAnalysisSwitchView(view) {
   var statements = ['balance','income','cashflow'].includes(view);
+  if (!statements) stockStatementState.requestToken++;
   var analysisPane = document.getElementById('stock-analysis-analysis-pane');
   var statementsPane = document.getElementById('stock-analysis-statements-pane');
   var analysisTab = document.getElementById('stock-analysis-view-analysis');
@@ -21,6 +22,8 @@ async function stockAnalysisLoadStatements(type) {
   stockStatementState.type = type;
   var code = stockAnalysisState.selected;
   if (!code) return;
+  var requestToken = ++stockStatementState.requestToken;
+  var selectToken = stockAnalysisState.selectToken;
   var key = code + ':' + type;
   if (stockStatementState.cache[key]) return stockAnalysisRenderStatements(stockStatementState.cache[key]);
   var message = document.getElementById('stock-analysis-statements-message');
@@ -28,12 +31,14 @@ async function stockAnalysisLoadStatements(type) {
   if (message) { message.style.display='block'; message.textContent='正在读取三表数据...'; }
   if (wrap) wrap.style.display='none';
   try {
-    var response = await fetch(api('/api/stock-analysis/' + encodeURIComponent(code) + '/statements?type=' + type + '&limit=10'));
-    var payload = await response.json();
+    var response = await stockAnalysisApi.getStatements(code, type);
+    var payload = response.payload;
+    if (requestToken !== stockStatementState.requestToken || selectToken !== stockAnalysisState.selectToken) return;
     if (!response.ok) throw new Error(payload.error || '三表读取失败');
     stockStatementState.cache[key] = payload;
     stockAnalysisRenderStatements(payload);
   } catch (error) {
+    if (requestToken !== stockStatementState.requestToken || selectToken !== stockAnalysisState.selectToken) return;
     if (message) { message.style.display='block'; message.textContent=error.message || String(error); }
   }
 }
@@ -80,6 +85,7 @@ function stockAnalysisRenderStatements(data) {
 }
 
 function stockAnalysisInvalidateStatements(code) {
+  stockStatementState.requestToken++;
   Object.keys(stockStatementState.cache).forEach(function(key) {
     if (!code || key.indexOf(code + ':') === 0) delete stockStatementState.cache[key];
   });

@@ -28,7 +28,20 @@ const CASES_PATH = path.join(ROOT, 'governance', 'architecture-golden-cases.json
 const OUTPUT_DIR = path.join(ROOT, 'server', 'test', 'fixtures', 'architecture-golden');
 
 function loadCases() {
-  return JSON.parse(fs.readFileSync(CASES_PATH, 'utf8'));
+  const definition = JSON.parse(fs.readFileSync(CASES_PATH, 'utf8'));
+  validateCases(definition);
+  return definition;
+}
+
+function validateCases(definition) {
+  for (const item of definition.cases || []) {
+    if (item.entry === 'server/repositories/accountsRepository.js') {
+      const username = item.params && item.params[0] && item.params[0].username;
+      if (typeof username !== 'string' || !/^arch_golden_test_[a-z0-9_]+$/.test(username)) {
+        throw new Error(`账户基线必须使用隔离库预置的合成账号：${item.id}`);
+      }
+    }
+  }
 }
 
 function gitHead(rootDir = ROOT) {
@@ -492,6 +505,7 @@ if (require.main === module) {
 }
 
 module.exports = {
+  validateCases,
   PERF_DEFAULTS,
   TOOL_VERSION,
   compare,

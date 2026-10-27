@@ -249,6 +249,11 @@ check('验收工具不在顶层加载数据库连接', () => {
 });
 
 console.log('F. 等价基线工具（方案 7.2）');
+check('账户基线只允许合成账号', () => {
+  const definition = username => ({ cases: [{ id: 'account', entry: 'server/repositories/accountsRepository.js', params: [{ username }] }] });
+  assert.throws(() => golden.validateCases(definition('real-user')), /合成账号/);
+  assert.doesNotThrow(() => golden.validateCases(definition('arch_golden_test_user')));
+});
 check('动态字段按登记名单剔除，键顺序稳定', () => {
   const normalized = golden.normalizeValue({ b: 1, a: 2, updated_at: 'x', nested: { d: 1 } }, ['updated_at']);
   assert.deepStrictEqual(Object.keys(normalized), ['a', 'b', 'nested']);

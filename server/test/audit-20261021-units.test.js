@@ -93,7 +93,7 @@ const { isCleanSecurityName } = require('../services/securityIdentity');
     const selectGuarded = stockAnalysis.includes('if (stockAnalysisState.selected !== tsCode) return;')
       || stockAnalysis.includes('if (stockAnalysisState.selectToken !== selectToken) return;');
     assert.ok(selectGuarded, 'select 缺乱序守卫');
-    assert.ok(stockAnalysis.includes('var stillCurrent = stockAnalysisState.selected === tsCode;'), 'refresh 缺乱序守卫');
+    assert.ok(stockAnalysis.includes('var stillCurrent = stockAnalysisState.selected === tsCode && stockAnalysisState.selectToken === selectToken;'), 'refresh 缺乱序守卫');
   });
   await check('U-18 官方链接白名单覆盖上交所/深交所/巨潮且仅 https', () => {
     assert.ok(bondAnalysis.includes("host === 'static.cninfo.com.cn'"), '缺巨潮白名单');

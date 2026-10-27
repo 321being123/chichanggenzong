@@ -38,13 +38,14 @@ assert.ok(html.includes('js/stock-analysis-statements.js'), '缺少三表脚本�
 assert.ok(html.indexOf('id="stock-analysis-summary"') < html.indexOf('id="stock-analysis-view-analysis"'), '三表切换必须位于股票名称下方');
 assert.ok(html.indexOf('data-statement-view="balance"') < html.indexOf('股票基本信息'), '财务报表切换必须位于股票基本信息上方');
 for (const type of ['balance','income','cashflow']) assert.ok(html.includes(`data-statement-view="${type}"`), `缺少${type}顶部标签`);
-assert.ok(statementsScript.includes('/statements?type=') && statementsScript.includes('同比'), '三表页面未接入年度原值和同比数据');
+assert.ok(statementsScript.includes('stockAnalysisApi.getStatements') && statementsScript.includes('同比'), '三表页面未接入年度原值和同比数据');
 assert.ok(statementsScript.includes('statement-section-'), '财务报表缺少分区展示');
 assert.ok(statementsScript.includes('statement-level-') && statementsScript.includes('statement-branch'), '财务科目缺少父子层级展示');
 assert.ok(html.includes('css/stock-analysis.css'), '缺少股票分析样式引用');
 assert.ok(script.includes('PE为负通常代表公司亏损') === false, '分位点固定说明应由后端统一返回');
 // 批次2c：站内 HTTP 已收进 API 客户端；断言指向实际落点，并新增“View 不得直接 fetch”
 const apiClient = fs.readFileSync(path.join(root, 'public', 'js', 'api', 'stock-analysis-api.js'), 'utf8');
+assert.ok(apiClient.includes('/statements?type=') && !/\bfetch\s*\(/.test(statementsScript), '三表请求必须经股票分析客户端');
 assert.ok(apiClient.includes('/api/stock-analysis/'), 'API 客户端未接入股票分析接口');
 assert.ok(/stockAnalysisApi\./.test(stockPresenter), 'Presenter 未通过 API 客户端取数');
 assert.ok(!/await fetch\(/.test(script + stockPresenter), 'View 与 Presenter 均不得直接 fetch');

@@ -84,9 +84,9 @@ async function loadKnowledge(force) {
   if (ksState.loaded && !force) return;
   try {
     const [catRes, listRes, meRes] = await Promise.all([
-      fetch(api('/api/knowledge/categories')).then(r => r.json()),
-      fetch(api('/api/knowledge/articles')).then(r => r.json()),
-      username ? fetch(api('/api/knowledge/can-write')).then(r => r.json()).catch(() => ({ canWrite: false })) : Promise.resolve({ canWrite: false }),
+      window.siteApi.get('/api/knowledge/categories').then(r => r.payload),
+      window.siteApi.get('/api/knowledge/articles').then(r => r.payload),
+      username ? window.siteApi.get('/api/knowledge/can-write').then(r => r.payload || { canWrite: false }) : Promise.resolve({ canWrite: false }),
     ]);
     ksState.categories = Array.isArray(catRes) ? catRes : [];
     ksState.articles = Array.isArray(listRes) ? listRes : [];
@@ -174,7 +174,7 @@ function ksRenderNodes(nodes, depth) {
 }
 
 async function ksLoadArticles() {
-  let url = api('/api/knowledge/articles');
+  let url = '/api/knowledge/articles';
   const params = [];
   if (ksState.currentCategory) params.push('category_id=' + ksState.currentCategory);
   if (username) {
@@ -185,9 +185,9 @@ async function ksLoadArticles() {
   if (q) params.push('q=' + encodeURIComponent(q));
   if (params.length) url += '?' + params.join('&');
   try {
-    const r = await fetch(url);
+    const r = await window.siteApi.get(url);
     if (!r.ok) throw new Error('接口返回 ' + r.status);
-    const data = await r.json();
+    const data = r.payload;
     ksState.articles = Array.isArray(data) ? data : [];
     ksRenderList();
   } catch (e) {
@@ -296,12 +296,8 @@ async function ksSaveArticleOrder() {
   const box = ksEl('ks-article-list');
   const articleIds = Array.from(box.querySelectorAll('.ks-card')).map(function (card) { return parseInt(card.dataset.id, 10); });
   try {
-    const r = await fetch(api('/api/knowledge/articles/reorder'), {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ category_id: ksState.currentCategory, article_ids: articleIds }),
-    });
-    if (!r.ok) { showToast((await r.json().catch(function () { return {}; })).error || '排序保存失败'); await ksLoadArticles(); return false; }
+    const r = await window.siteApi.put('/api/knowledge/articles/reorder', { category_id: ksState.currentCategory, article_ids: articleIds });
+    if (!r.ok) { showToast((r.payload || {}).error || '排序保存失败'); await ksLoadArticles(); return false; }
     showToast('排序已保存');
     return true;
   } catch (e) {
@@ -354,9 +350,9 @@ async function ksCardOp(act, id) {
   }
   try {
     const path = act === 'publish' ? '/publish' : '/unpublish';
-    const r = await fetch(api('/api/knowledge/articles/' + id + path), { method: 'POST' });
-    if (!r.ok) { showToast(ksWriteErrMsg(r.status)); return; }
-    const d = await r.json().catch(() => ({}));
+    const r = await window.siteApi.post('/api/knowledge/articles/' + id + path, {});
+    if (!r.ok) { showToast(r.status ? ksWriteErrMsg(r.status) : '网络异常，请检查后重试'); return; }
+    const d = r.payload || {};
     showToast(act === 'publish' && d.share_token ? '已发布，分享链接已生成' : '已撤回为草稿');
     await ksLoadArticles();
   } catch (e) {
@@ -367,9 +363,9 @@ async function ksCardOp(act, id) {
 // ---------- 阅读视图 ----------
 async function ksOpenArticle(id) {
   ksState.readingId = id;
-  const r = await fetch(api('/api/knowledge/articles/' + id));
+  const r = await window.siteApi.get('/api/knowledge/articles/' + id);
   if (!r.ok) { ksState.readingId = null; showToast('文章不存在或未发布'); return; }
-  const a = await r.json();
+  const a = r.payload || {};
   ksState.currentArticle = a;
   if (window.SiteTelemetry) {
     window.SiteTelemetry.trackPage('knowledge.detail', 'knowledge', 'article');
@@ -381,7 +377,7 @@ async function ksOpenArticle(id) {
     '<span>作者：' + escapeHtml(a.author_username || '未知') + '</span>' +
     '<span>' + date + '</span><span>' + (a.view_count || 0) + ' 次阅读</span>';
   // 阅读量 +1
-  fetch(api('/api/knowledge/articles/' + id + '/view'), { method: 'POST' }).catch(() => {});
+  window.siteApi.post('/api/knowledge/articles/' + id + '/view', {});
   ksEl('ks-read-meta').innerHTML = meta;
   // 渲染正文（统一安全渲染：Vditor 优先，marked+DOMPurify 兜底净化）
   const content = ksEl('ks-read-content');
@@ -445,13 +441,9 @@ function ksCopyShare(token) {
 
 async function ksDeleteArticle(id) {
   if (!await projectConfirm('确定删除这篇文章？', { title: '删除文章', confirmText: '删除', danger: true })) return;
-  let r;
-  try {
-    r = await fetch(api('/api/knowledge/articles/' + id), { method: 'DELETE' });
-  } catch (e) {
-    showToast('网络异常，请检查后重试'); return;
-  }
-  if (!r.ok) { showToast(ksWriteErrMsg(r.status)); return; }
+  // 入口不抛错：网络异常表现为 status 0，提示文案与原来的 catch 一致。
+  const r = await window.siteApi.del('/api/knowledge/articles/' + id);
+  if (!r.ok) { showToast(r.status ? ksWriteErrMsg(r.status) : '网络异常，请检查后重试'); return; }
   showToast('已删除');
   ksShowView('list');
   ksLoadArticles();
@@ -461,8 +453,8 @@ async function ksDeleteArticle(id) {
 async function ksLoadComments(id) {
   const box = ksEl('ks-comment-list');
   if (!box) return;
-  const r = await fetch(api('/api/knowledge/articles/' + id + '/comments'));
-  const list = await r.json();
+  const r = await window.siteApi.get('/api/knowledge/articles/' + id + '/comments');
+  const list = r.payload || [];
   if (!list.length) { box.innerHTML = '<div class="ks-comment-empty">暂无评论</div>'; return; }
   box.innerHTML = ksRenderComments(list, 0);
   // 绑定回复按钮与提交
@@ -487,9 +479,9 @@ async function ksLoadComments(id) {
   box.querySelectorAll('.ks-comment-del').forEach(btn => {
     btn.addEventListener('click', async function () {
       if (!await projectConfirm('确定删除这条评论？', { title: '删除评论', confirmText: '删除', danger: true })) return;
-      fetch(api('/api/knowledge/comments/' + btn.dataset.id), { method: 'DELETE' })
+      window.siteApi.del('/api/knowledge/comments/' + btn.dataset.id)
         .then(r => {
-          if (!r.ok) { showToast(ksWriteErrMsg(r.status)); return; }
+          if (!r.ok) { showToast(r.status ? ksWriteErrMsg(r.status) : '网络异常，请检查后重试'); return; }
           showToast('已删除'); ksLoadComments(ksState.currentArticle.id);
         })
         .catch(() => showToast('网络异常，请检查后重试'));
@@ -522,18 +514,10 @@ async function ksSubmitComment(parentId, textInput) {
   if (!text) { showToast('评论内容不能为空'); return; }
   const body = { content: text };
   if (parentId) body.parent_id = parentId;
-  let r;
-  try {
-    r = await fetch(api('/api/knowledge/articles/' + a.id + '/comments'), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-  } catch (e) {
-    showToast('网络异常，请检查后重试'); return;
-  }
+  const r = await window.siteApi.post('/api/knowledge/articles/' + a.id + '/comments', body);
   if (!r.ok) {
-    if (r.status === 400 || r.status === 429) { const d = await r.json().catch(() => ({})); showToast(d.error || ksWriteErrMsg(r.status)); }
+    if (!r.status) { showToast('网络异常，请检查后重试'); return; }
+    if (r.status === 400 || r.status === 429) { const d = r.payload || {}; showToast(d.error || ksWriteErrMsg(r.status)); }
     else showToast(ksWriteErrMsg(r.status));
     return;
   }
@@ -738,9 +722,9 @@ async function ksOpenEditor(id) {
   let article = null;
   if (id) {
     try {
-      const r = await fetch(api('/api/knowledge/articles/' + id));
+      const r = await window.siteApi.get('/api/knowledge/articles/' + id);
       if (!r.ok) { showToast('无法加载文章'); return; }
-      article = await r.json();
+      article = r.payload || {};
       if (!article.can_edit) { showToast('只能编辑自己创建的文章'); return; }
     } catch (e) {
       showToast('网络异常，无法加载文章');
@@ -790,22 +774,17 @@ async function ksSave(status) {
   const html = editor.getHTML();
   const summary = content.replace(/[#>*`\-\s]/g, ' ').slice(0, 120).trim();
   const body = JSON.stringify({ title: title || '无标题', content: content, html_content: html, summary: summary, category_id: categoryId, status: status });
-  let r;
-  try {
-    if (ksState.editingId) {
-      r = await fetch(api('/api/knowledge/articles/' + ksState.editingId), { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: body });
-    } else {
-      r = await fetch(api('/api/knowledge/articles'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: body });
-    }
-  } catch (e) {
-    showToast('网络异常，请检查后重试'); return;
-  }
+  // body 已是序列化好的 JSON 串：这里透传，不再二次序列化。
+  const r = ksState.editingId
+    ? await window.siteApi.request('/api/knowledge/articles/' + ksState.editingId, { method: 'PUT', headers: window.siteApi.jsonHeaders(), body: body })
+    : await window.siteApi.request('/api/knowledge/articles', { method: 'POST', headers: window.siteApi.jsonHeaders(), body: body });
   if (!r.ok) {
-    if (r.status === 400) { const d = await r.json().catch(() => ({})); showToast(d.error || ksWriteErrMsg(r.status)); }
+    if (!r.status) { showToast('网络异常，请检查后重试'); return; }
+    if (r.status === 400) { const d = r.payload || {}; showToast(d.error || ksWriteErrMsg(r.status)); }
     else showToast(ksWriteErrMsg(r.status));
     return;
   }
-  const d = await r.json();
+  const d = r.payload || {};
   if (status === 'published' && d.share_token) showToast('已发布，分享链接已生成');
   else showToast(status === 'draft' ? '草稿已保存' : '已保存');
   ksState.editingId = d.id || ksState.editingId;
@@ -834,12 +813,9 @@ async function ksImportUrlGo() {
   const st = ksEl('ks-import-status');
   if (!url) { showToast('请先粘贴链接'); return; }
   if (st) st.textContent = '正在抓取…';
-  const r = await fetch(api('/api/knowledge/import-url'), {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ url: url }),
-  });
-  if (!r.ok) { const d = await r.json().catch(() => ({})); if (st) st.textContent = '抓取失败：' + (d.error || ''); return; }
-  const d = await r.json();
+  const r = await window.siteApi.post('/api/knowledge/import-url', { url: url });
+  if (!r.ok) { const d = r.payload || {}; if (st) st.textContent = '抓取失败：' + (d.error || ''); return; }
+  const d = r.payload || {};
   if (st) st.textContent = '已抓取，已填入编辑器（请检查后发布）';
   ksState.editingId = null;
   let editor;
@@ -861,9 +837,10 @@ async function ksImportFileGo() {
   if (st) st.textContent = '正在解析…';
   const fd = new FormData();
   fd.append('file', input.files[0]);
-  const r = await fetch(api('/api/knowledge/import-file'), { method: 'POST', body: fd });
-  if (!r.ok) { const d = await r.json().catch(() => ({})); if (st) st.textContent = '解析失败：' + (d.error || ''); return; }
-  const d = await r.json();
+  // 文件上传走原始请求：不设 JSON 头，浏览器自己带 multipart 边界。
+  const r = await window.siteApi.request('/api/knowledge/import-file', { method: 'POST', body: fd });
+  if (!r.ok) { const d = r.payload || {}; if (st) st.textContent = '解析失败：' + (d.error || ''); return; }
+  const d = r.payload || {};
   if (st) st.textContent = '已解析，已填入编辑器（请检查后发布）';
   ksState.editingId = null;
   let editor;
@@ -908,12 +885,9 @@ async function ksAddCategory() {
   const parentId = ksState.currentCategory || null;
   if (saveButton) saveButton.disabled = true;
   try {
-    const r = await fetch(api('/api/knowledge/categories'), {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: name, parent_id: parentId }),
-    });
+    const r = await window.siteApi.post('/api/knowledge/categories', { name: name, parent_id: parentId });
     if (!r.ok) {
-      const d = await r.json().catch(() => ({}));
+      const d = r.payload || {};
       showToast(d.error || '新建分类失败');
       return;
     }
@@ -986,15 +960,14 @@ async function ksUpdateCategory() {
   if (saveButton) saveButton.disabled = true;
   try {
     const isMove = ksState.categoryActionMode === 'move';
-    const r = await fetch(api('/api/knowledge/categories/' + category.id + (isMove ? '/move' : '')), {
-      method: isMove ? 'POST' : 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(isMove
-        ? { parent_id: parentSelect && parentSelect.value ? parentSelect.value : null, before_id: null }
-        : { name: name }),
-    });
+    const categoryPayload = isMove
+      ? { parent_id: parentSelect && parentSelect.value ? parentSelect.value : null, before_id: null }
+      : { name: name };
+    const r = isMove
+      ? await window.siteApi.post('/api/knowledge/categories/' + category.id + '/move', categoryPayload)
+      : await window.siteApi.put('/api/knowledge/categories/' + category.id, categoryPayload);
     if (!r.ok) {
-      const d = await r.json().catch(() => ({}));
+      const d = r.payload || {};
       showToast(d.error || (isMove ? '移动分类失败' : '重命名分类失败'));
       return;
     }
@@ -1020,9 +993,9 @@ async function ksDeleteCategory(categoryId) {
     { title: '删除分类', confirmText: '删除', danger: true }
   )) return;
   try {
-    const r = await fetch(api('/api/knowledge/categories/' + category.id), { method: 'DELETE' });
+    const r = await window.siteApi.del('/api/knowledge/categories/' + category.id);
     if (!r.ok) {
-      const d = await r.json().catch(() => ({}));
+      const d = r.payload || {};
       showToast(d.error || '删除分类失败');
       return;
     }
@@ -1088,13 +1061,9 @@ async function ksMoveCategory(categoryId, parentId, beforeId) {
   const category = ksFindCategory(ksState.categories, categoryId);
   if (!category || !category.can_manage) return;
   try {
-    const r = await fetch(api('/api/knowledge/categories/' + categoryId + '/move'), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ parent_id: parentId || null, before_id: beforeId || null }),
-    });
+    const r = await window.siteApi.post('/api/knowledge/categories/' + categoryId + '/move', { parent_id: parentId || null, before_id: beforeId || null });
     if (!r.ok) {
-      const d = await r.json().catch(() => ({}));
+      const d = r.payload || {};
       showToast(d.error || '移动分类失败');
       return;
     }

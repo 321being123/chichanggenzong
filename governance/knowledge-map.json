@@ -223,6 +223,65 @@
       }
     },
     {
+      "id": "architecture-layering",
+      "risk": "high",
+      "paths": [
+        "docs/应用分层与MVP架构整改方案_20261027.md",
+        "server/domain/**",
+        "server/application/**",
+        "server/data/**",
+        "server/repositories/**",
+        "public/js/presenters/**",
+        "public/js/views/**",
+        "public/js/api/**",
+        "governance/architecture-boundaries.json",
+        "scripts/check-architecture-boundaries.js"
+      ],
+      "keywords": [
+        "应用分层",
+        "分层整改",
+        "MVP",
+        "Presenter",
+        "层间依赖",
+        "业务数据解耦",
+        "架构边界"
+      ],
+      "read": [
+        "docs/技术架构.md",
+        "docs/应用分层与MVP架构整改方案_20261027.md"
+      ],
+      "update": [
+        "docs/技术架构.md",
+        "docs/知识索引.md",
+        "docs/应用分层与MVP架构整改方案_20261027.md"
+      ],
+      "checks": [
+        "npm.cmd run check:knowledge",
+        "npm.cmd run test:all"
+      ],
+      "expandOn": [
+        "数据源替换",
+        "多来源优选",
+        "跨模块迁移",
+        "Python算法",
+        "公开分享渲染",
+        "并行增量"
+      ],
+      "readSections": {
+        "docs/技术架构.md": [
+          "## 5. 前端结构",
+          "## 6. 后端分层",
+          "### 8.4 统一数据层读写矩阵"
+        ],
+        "docs/应用分层与MVP架构整改方案_20261027.md": [
+          "## 3. 目标结构与依赖规则",
+          "## 4. 数据层合同与主备选择",
+          "## 6. 分批实施与退出条件",
+          "## 7. 验收与防回退"
+        ]
+      }
+    },
+    {
       "id": "solution-design",
       "risk": "high",
       "paths": [

@@ -229,13 +229,16 @@
         "docs/应用分层与MVP架构整改方案_20261027.md",
         "server/domain/**",
         "server/application/**",
-        "server/data/**",
+        "server/dataAccess/**",
         "server/repositories/**",
         "public/js/presenters/**",
         "public/js/views/**",
         "public/js/api/**",
         "governance/architecture-boundaries.json",
-        "scripts/check-architecture-boundaries.js"
+        "server/scripts/acceptanceDataArchitecture.js",
+        "server/db/transaction.js",
+        "scripts/audit-layer-coupling.js",
+        "scripts/record-arch-golden.js"
       ],
       "keywords": [
         "应用分层",
@@ -257,6 +260,7 @@
       ],
       "checks": [
         "npm.cmd run check:knowledge",
+        "npm.cmd run check:data-architecture",
         "npm.cmd run test:all"
       ],
       "expandOn": [
@@ -276,8 +280,11 @@
         "docs/应用分层与MVP架构整改方案_20261027.md": [
           "## 3. 目标结构与依赖规则",
           "## 4. 数据层合同与主备选择",
+          "## 5. 业务层、协议与 MVP",
           "## 6. 分批实施与退出条件",
-          "## 7. 验收与防回退"
+          "## 7. 验收与防回退",
+          "### 8.1 每批正文更新落点",
+          "### 8.2 本轮评审建议的采纳结论"
         ]
       }
     },

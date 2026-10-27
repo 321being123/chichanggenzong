@@ -257,13 +257,14 @@ function runStaticChecks() {
       `存量越界 ${comparison.baselineViolations} → ${comparison.currentViolations}`,
     ];
     if (comparison.added.length) detailParts.push(`新增越界 ${comparison.added.length} 条：${comparison.added.slice(0, 5).map(item => item.id).join('；')}`);
+    if (comparison.increased.length) detailParts.push(`存量违规调用增加 ${comparison.increased.length} 条：${comparison.increased.slice(0, 5).map(item => `${item.id}（${item.baselineCount}→${item.currentCount}）`).join('；')}`);
     if (comparison.legacyRoleNewFiles.length) detailParts.push(`新增文件落入存量/待登记角色：${comparison.legacyRoleNewFiles.map(item => item.path).join('、')}`);
     if (comparison.resolved.length) detailParts.push(`已消除 ${comparison.resolved.length} 条`);
     if (report.unresolved.length) detailParts.push(`无法解析 ${report.unresolved.length} 个文件，需补职责核查`);
     addCheck(checks, 'layer_coupling_baseline',
       comparison.ok && report.unresolved.length === 0,
       detailParts.join('；'),
-      { added: comparison.added.length, resolved: comparison.resolved.length, current: comparison.currentViolations, unresolved: report.unresolved });
+      { added: comparison.added.length, increased: comparison.increased.length, resolved: comparison.resolved.length, current: comparison.currentViolations, unresolved: report.unresolved });
     if (report.unresolved.length) pending.push('存在无法静态解析的文件，须补人工/行为测试覆盖，不得视为已检查');
   }
 

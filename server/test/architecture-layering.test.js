@@ -79,6 +79,12 @@ check('普通字符串里的 SQL 关键字不算违规', () => {
   const findings = scanner.scanJs("const note = 'SELECT 1 FROM x'; function f(){ return note; }", 'sample.js');
   assert.strictEqual(findings.length, 0);
 });
+check('伪造 siteApi 对象不得绕过直接联网检查', () => {
+  const fake = scanner.scanJs("fake.siteApi.fetch('/x'); fake.siteApi.request('/x');", 'public/js/views/probe.js');
+  assert.strictEqual(fake.filter(item => item.rule === 'NETWORK_IN_NON_ADAPTER').length, 2);
+  const valid = scanner.scanJs("window.siteApi.request('/x');", 'public/js/views/probe.js');
+  assert.strictEqual(valid.length, 0, '统一客户端调用不得误判');
+});
 
 // 验收缺口反例：跨层引用与 DOM 必须真的被拒绝，不能只检查 SQL/网络。
 check('跨层引用：domain 引用仓储或调度器必须报错', () => {
@@ -149,6 +155,16 @@ check('DOM：presenter 操作页面必须报错，后端业务对象不算页面
 });
 
 console.log('B. C0 基线比对反例（新增越界必须失败）');
+check('同一存量违规函数增加调用也必须失败', () => {
+  const id = 'NETWORK_IN_NON_ADAPTER|a.js|f';
+  const frozen = { violations: [{ id, count: 1 }], files: [{ path: 'a.js' }] };
+  const report = { violations: [{ id, count: 2 }], files: [{ path: 'a.js', roleStatus: 'registered' }], unresolved: [] };
+  const result = scanner.compareToBaseline(report, frozen);
+  assert.strictEqual(result.ok, false);
+  assert.deepStrictEqual(result.increased, [{ id, baselineCount: 1, currentCount: 2 }]);
+  report.violations[0].count = 1;
+  assert.strictEqual(scanner.compareToBaseline(report, frozen).ok, true, '调用数量未增加不应误判');
+});
 const emptyBaseline = { commit: 'c0', rulesVersion: 'layer-coupling-1', violations: [], files: [] };
 check('新增违规使比对失败并给出 ID', () => {
   const report = {

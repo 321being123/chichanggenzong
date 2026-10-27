@@ -21,7 +21,7 @@ const path = require('path');
 
 const ROOT_DIR = path.resolve(__dirname, '..');
 const BOUNDARIES_PATH = path.join(ROOT_DIR, 'governance', 'architecture-boundaries.json');
-const SCANNER_VERSION = '1.0.0';
+const SCANNER_VERSION = '1.1.0';
 
 function loadBoundaries(rootDir = ROOT_DIR) {
   const filePath = path.join(rootDir, 'governance', 'architecture-boundaries.json');
@@ -256,7 +256,7 @@ function calleePath(node) {
 // 页面调用 siteApi.* 属于走适配层，不再算"非适配层直接联网"。
 function viaSiteApi(node) {
   const path = calleePath(node);
-  return !!path && /(^|\.)siteApi\./.test(path);
+  return !!path && /^(?:(?:window|globalThis|global)\.)?siteApi\.(?:request|requestRaw|requestOrThrow|get|getRaw|post|put|del)$/.test(path);
 }
 
 function firstStringArgument(node) {
@@ -716,9 +716,14 @@ function scan(rootDir, { commit = 'HEAD', worktree = false, boundaries = null } 
 
 function compareToBaseline(report, baseline) {
   const baselineIds = new Set((baseline.violations || []).map(item => item.id));
+  const baselineById = new Map((baseline.violations || []).map(item => [item.id, item]));
   const baselineFiles = new Map((baseline.files || []).map(item => [item.path, item]));
   const currentIds = new Set(report.violations.map(item => item.id));
   const added = report.violations.filter(item => !baselineIds.has(item.id));
+  const increased = report.violations.filter(item => baselineById.has(item.id) &&
+    (item.count || 1) > (baselineById.get(item.id).count || 1)).map(item => ({
+    id: item.id, baselineCount: baselineById.get(item.id).count || 1, currentCount: item.count || 1,
+  }));
   const resolved = [...baselineIds].filter(id => !currentIds.has(id));
   const newFiles = report.files.filter(file => !baselineFiles.has(file.path));
   const legacyRoleNewFiles = newFiles.filter(file => {
@@ -726,11 +731,12 @@ function compareToBaseline(report, baseline) {
     return status === 'legacy' || status === 'pending_contract';
   });
   return {
-    ok: added.length === 0 && legacyRoleNewFiles.length === 0,
+    ok: added.length === 0 && increased.length === 0 && legacyRoleNewFiles.length === 0,
     baselineCommit: baseline.commit || null,
     baselineViolations: baselineIds.size,
     currentViolations: currentIds.size,
     added,
+    increased,
     resolved,
     newFiles: newFiles.map(file => ({ path: file.path, role: file.role, roleStatus: file.roleStatus })),
     legacyRoleNewFiles: legacyRoleNewFiles.map(file => ({ path: file.path, role: file.role, roleStatus: file.roleStatus })),
@@ -796,6 +802,10 @@ function main() {
       if (comparison.added.length) {
         console.log('新增越界：');
         comparison.added.forEach(item => console.log(`  + ${item.id}（第 ${item.line} 行，${item.role}）`));
+      }
+      if (comparison.increased.length) {
+        console.log('存量违规调用增加：');
+        comparison.increased.forEach(item => console.log(`  + ${item.id}（${item.baselineCount} → ${item.currentCount}）`));
       }
       if (comparison.legacyRoleNewFiles.length) {
         console.log('新增文件落入存量/待登记角色：');

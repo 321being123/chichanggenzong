@@ -31,9 +31,13 @@ async function loadMarketVolatility() {
     if (window.accountDataReady) { try { await window.accountDataReady; } catch (err) {} }
     account = mvAccount();
     var qs = 'market=' + encodeURIComponent(mvState.market) + '&benchmark=' + encodeURIComponent(mvState.benchmark);
-    var both = await Promise.all([fetch(api('/api/market-volatility/overview?' + qs + '&account=' + encodeURIComponent(account))), fetch(api('/api/market-volatility/history?' + qs + '&range=' + encodeURIComponent(mvState.range)))]);
+    // 仍并发两个请求（互相不依赖，串行会白白多等一个往返），只是发送统一走入口。
+    var both = await Promise.all([
+      window.siteApi.get('/api/market-volatility/overview?' + qs + '&account=' + encodeURIComponent(account)),
+      window.siteApi.get('/api/market-volatility/history?' + qs + '&range=' + encodeURIComponent(mvState.range)),
+    ]);
     if (!both[0].ok || !both[1].ok) throw new Error('接口返回 ' + (!both[0].ok ? both[0].status : both[1].status));
-    mvState.overview = await both[0].json(); mvState.history = (await both[1].json()).history || [];
+    mvState.overview = both[0].payload; mvState.history = (both[1].payload || {}).history || [];
     mvState.draft = null; mvRender();
   } catch (e) { status.textContent = '数据加载失败：' + (e.message || e); document.getElementById('mv-content').style.display = 'none'; }
   finally { mvState.loading = false; }
@@ -97,11 +101,10 @@ async function mvSaveDraft() {
   if(!account){showToast('请先选择账户后再保存');return;}
   button.disabled=true;button.textContent='保存中...';
   try {
-    var r=await fetch(api('/api/market-volatility/settings'),{
-      method:'PUT',headers:{'Content-Type':'application/json'},credentials:'same-origin',
-      body:JSON.stringify({market:mvState.market,benchmark:mvState.benchmark,lowerBoundaryPct:d.lower,upperBoundaryPct:d.upper,accountName:account,version:d.version})
-    });
-    var json=await r.json();if(!r.ok)throw new Error(json.error||r.status);
+    var r=await window.siteApi.put('/api/market-volatility/settings',{
+      market:mvState.market,benchmark:mvState.benchmark,lowerBoundaryPct:d.lower,upperBoundaryPct:d.upper,accountName:account,version:d.version
+    },{credentials:'same-origin'});
+    var json=r.payload||{};if(!r.ok)throw new Error(json.error||r.status);
     mvState.draft=null;document.getElementById('mv-cancel').disabled=true;document.getElementById('mv-draft').hidden=true;
     await loadMarketVolatility();showToast('边界保存成功');
   } catch(e) {

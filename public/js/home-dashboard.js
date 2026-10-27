@@ -241,8 +241,8 @@ async function loadHomeMarketCycles() {
   try {
     // 两张周期卡各自成败，互不拖累（2026-10-21 审查 U-19）
     var responses = await Promise.all([
-      fetchHomeJson(api('/api/bond-cycle?range=all&view=home&maxPoints=800')),
-      fetchHomeJson(api('/api/market-volatility/home-cycle?range=20y'))
+      fetchHomeJson('/api/bond-cycle?range=all&view=home&maxPoints=800'),
+      fetchHomeJson('/api/market-volatility/home-cycle?range=20y')
     ]);
     if (responses[0].ok) renderHomeBondCycle(responses[0].data);
     else homeCardError(document.getElementById('home-bond-cycle-chart'), '可转债周期加载失败：' + (responses[0].error.message || ''), loadHomeMarketCycles);
@@ -281,12 +281,11 @@ function homeCardError(el, message, retry) {
   if (btn && retry) btn.addEventListener('click', retry);
 }
 
-async function fetchHomeJson(url) {
-  try {
-    var r = await fetch(url);
-    if (!r.ok) throw new Error('接口返回 ' + r.status);
-    return { ok: true, data: await r.json() };
-  } catch (e) { return { ok: false, error: e }; }
+async function fetchHomeJson(path) {
+  // 传入站内路径（不含 API 前缀），拼接与发送统一由入口负责。
+  var res = await window.siteApi.get(path);
+  if (!res.ok) return { ok: false, error: new Error(res.error || ('接口返回 ' + res.status)) };
+  return { ok: true, data: res.payload };
 }
 
 // U-15c：原内联多语句事件抽为具名函数
@@ -302,7 +301,7 @@ async function loadHomeDashboard() {
   if (homeDashboardLoading) return;
   homeDashboardLoading = true;
   try {
-    var results = await Promise.all([fetchHomeJson(api('/api/ipo/calendar?days=90')), fetchHomeJson(api('/api/bond-safety/bonds?view=summary'))]);
+    var results = await Promise.all([fetchHomeJson('/api/ipo/calendar?days=90'), fetchHomeJson('/api/bond-safety/bonds?view=summary')]);
     if (results[0].ok) renderHomeIpo(results[0].data.calendar || []);
     else homeCardError(document.getElementById('home-ipo-list'), '近期打新安排加载失败：' + (results[0].error.message || ''), loadHomeDashboard);
     if (results[1].ok) renderHomeBonds(results[1].data);
@@ -316,9 +315,9 @@ async function renderHomeArticles() {
   var heroBox = document.getElementById('home-hero-articles');
   if (!heroBox) return;
   try {
-    var r = await fetch(api('/api/knowledge/latest?limit=5'));
-    if (!r.ok) throw new Error('HTTP ' + r.status);
-    var list = await r.json();
+    var res = await window.siteApi.get('/api/knowledge/latest?limit=5');
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    var list = res.payload;
     if (!Array.isArray(list)) throw new Error('返回格式错误');
     if (!list.length) {
       heroBox.innerHTML = '<span class="home-hero-article-loading">暂无已发布文章</span>';

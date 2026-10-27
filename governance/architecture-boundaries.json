@@ -797,19 +797,19 @@
       "public/js/bond-list.js",
       "public/js/bond-redemption.js",
       "public/js/bond-revision.js",
+      "public/js/bond-safety.js",
+      "public/js/bond-valuation.js",
+      "public/js/feedback.js",
+      "public/js/home-dashboard.js",
       "public/js/ipo.js",
+      "public/js/market-cycle-metrics.js",
+      "public/js/market-volatility.js",
       "public/js/position-comparison.js",
       "public/js/stock-analysis.js"
     ],
     "pending": [
       "public/js/admin.js",
-      "public/js/knowledge.js",
-      "public/js/bond-valuation.js",
-      "public/js/market-cycle-metrics.js",
-      "public/js/market-volatility.js",
-      "public/js/bond-safety.js",
-      "public/js/home-dashboard.js",
-      "public/js/feedback.js"
+      "public/js/knowledge.js"
     ]
   },
   "compatibilityExits": [

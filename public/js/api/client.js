@@ -58,6 +58,38 @@
     }
   }
 
+  /**
+   * 原始响应：用于下载 Excel/PDF 等二进制，不解析 body。
+   * 返回 { ok, status, response }；超时与网络异常同样归一到 ok:false，由调用方决定提示文案。
+   */
+  async function requestRaw(path, options) {
+    var opts = Object.assign({}, options || {});
+    var timeoutMs = opts.timeoutMs === undefined ? DEFAULT_TIMEOUT_MS : opts.timeoutMs;
+    delete opts.timeoutMs;
+    if (!opts.headers) opts.headers = withTelemetry();
+    var controller = null;
+    var timer = null;
+    if (timeoutMs > 0 && typeof AbortController === 'function') {
+      controller = new AbortController();
+      opts.signal = controller.signal;
+      timer = setTimeout(function () { controller.abort(); }, timeoutMs);
+    }
+    try {
+      var response = await fetch(endpoint(path), opts);
+      return { ok: response.ok, status: response.status, response: response };
+    } catch (error) {
+      var aborted = error && (error.name === 'AbortError' || String(error.message || '').indexOf('abort') >= 0);
+      return {
+        ok: false,
+        status: 0,
+        response: null,
+        error: aborted ? '请求超时，请稍后重试' : (error && error.message) || '网络异常',
+      };
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
   /** 取 JSON 或把失败归一成 Error（供需要 try/catch 的调用方使用） */
   async function requestOrThrow(path, options) {
     var result = await request(path, options);
@@ -73,9 +105,11 @@
 
   global.siteApi = {
     request: request,
+    requestRaw: requestRaw,
     requestOrThrow: requestOrThrow,
     jsonHeaders: jsonHeaders,
     get: function (path, options) { return request(path, Object.assign({ method: 'GET' }, options || {})); },
+    getRaw: function (path, options) { return requestRaw(path, Object.assign({ method: 'GET' }, options || {})); },
     post: function (path, body, options) {
       return request(path, Object.assign({ method: 'POST', headers: jsonHeaders(), body: JSON.stringify(body === undefined ? {} : body) }, options || {}));
     },

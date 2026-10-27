@@ -168,12 +168,13 @@ async function exportBondSafety() {
   });
   if (button) { button.disabled = true; button.textContent = '导出中...'; }
   try {
-    var response = await fetch(api('/api/bond-safety/export?' + params.toString()));
-    if (!response.ok) {
-      var error = await response.json().catch(function() { return {}; });
-      throw new Error(error.error || '导出失败');
+    // 导出是二进制下载，走统一入口的"原始响应"分支，超时与网络异常同样归一。
+    var exported = await window.siteApi.getRaw('/api/bond-safety/export?' + params.toString());
+    if (!exported.ok) {
+      var error = exported.response ? await exported.response.json().catch(function() { return {}; }) : {};
+      throw new Error(error.error || exported.error || '导出失败');
     }
-    var blob = await response.blob();
+    var blob = await exported.response.blob();
     var url = URL.createObjectURL(blob);
     var link = document.createElement('a');
     link.href = url;
@@ -194,9 +195,9 @@ async function loadBondSafety(force) {
   var el = document.getElementById('bond-safety-table');
   if (el) el.innerHTML = '<div class="bond-safety-empty">正在加载安全性数据...</div>';
   try {
-    var response = await fetch(api('/api/bond-safety/bonds'));
-    var d = await response.json();
-    if (!response.ok) throw new Error(d.error || '加载失败');
+    var res = await window.siteApi.get('/api/bond-safety/bonds');
+    var d = res.payload || {};
+    if (!res.ok) throw new Error(d.error || '加载失败');
     bondSafetyState.rows = Array.isArray(d.data) ? d.data : [];
     bondSafetyState.loaded = true;
     var updated = document.getElementById('bond-safety-updated');

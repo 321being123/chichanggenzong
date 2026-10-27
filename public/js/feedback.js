@@ -82,16 +82,14 @@
 
   // ---------- 请求 ----------
   async function requestJson(url, options) {
-    var r = await fetch(api(url), options);
-    var payload = null;
-    try { payload = await r.json(); } catch (e) { payload = null; }
-    if (!r.ok) {
-      var msg = (payload && payload.error) || ('请求失败（' + r.status + '）');
+    var res = await window.siteApi.request(url, options);
+    if (!res.ok) {
+      var msg = (res.payload && res.payload.error) || ('请求失败（' + res.status + '）');
       var err = new Error(msg);
-      err.status = r.status;
+      err.status = res.status;
       throw err;
     }
-    return payload || {};
+    return res.payload || {};
   }
 
   function buildQuery(base) {
@@ -420,9 +418,9 @@
     var merged = [];
     var loadError = null;
     try {
-      var r = await fetch('/changelog.json');
-      if (!r.ok) throw new Error('版本记录读取失败');
-      merged = mergeChangelogByDate(await r.json());
+      var res = await window.siteApi.get('/changelog.json');
+      if (!res.ok) throw new Error('版本记录读取失败');
+      merged = mergeChangelogByDate(res.payload);
     } catch (err) { loadError = err; }
     // 版本关联映射失败时不影响版本正文展示
     var linkMap = {};

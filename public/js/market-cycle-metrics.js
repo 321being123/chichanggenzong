@@ -46,8 +46,8 @@ function updateMarketCycleHomeButtons() {
 }
 async function loadMarketCycleHomeConfig() {
   try{
-    var response=await fetch(api('/api/market-volatility/home-cycle/config'));
-    if(response.ok)marketCycleHomeConfig=await response.json();
+    var res=await window.siteApi.get('/api/market-volatility/home-cycle/config');
+    if(res.ok)marketCycleHomeConfig=res.payload;
   }catch(error){}
   updateMarketCycleHomeButtons();
 }
@@ -56,11 +56,10 @@ async function setMarketCycleHome(metric,market,benchmark) {
   var account=mvcAccount();
   if(!account){showToast('请先选择账户');return;}
   try{
-    var response=await fetch(api('/api/market-volatility/home-cycle/config'),{
-      method:'PUT',headers:{'Content-Type':'application/json'},credentials:'same-origin',
-      body:JSON.stringify({metric:metric,market:market,benchmark:benchmark,accountName:account})
-    });
-    var json=await response.json();if(!response.ok)throw new Error(json.error||response.status);
+    var response=await window.siteApi.put('/api/market-volatility/home-cycle/config',{
+      metric:metric,market:market,benchmark:benchmark,accountName:account
+    },{credentials:'same-origin'});
+    var json=response.payload||{};if(!response.ok)throw new Error(json.error||response.status);
     marketCycleHomeConfig=json;updateMarketCycleHomeButtons();showToast('已设为首页');
   }catch(error){showToast('设置失败：'+(error.message||error));}
 }
@@ -95,11 +94,11 @@ async function mvcLoad() {
     if(window.accountDataReady){try{await window.accountDataReady;}catch(err){}}
     var qs='metric='+encodeURIComponent(mvcState.metric)+'&market='+encodeURIComponent(mvcState.market)+'&benchmark='+encodeURIComponent(mvcState.benchmark);
     var responses=await Promise.all([
-      fetch(api('/api/market-volatility/overview?'+qs+'&account='+encodeURIComponent(mvcAccount()))),
-      fetch(api('/api/market-volatility/history?'+qs+'&range='+encodeURIComponent(mvcState.range)))
+      window.siteApi.get('/api/market-volatility/overview?'+qs+'&account='+encodeURIComponent(mvcAccount())),
+      window.siteApi.get('/api/market-volatility/history?'+qs+'&range='+encodeURIComponent(mvcState.range))
     ]);
     if(!responses[0].ok||!responses[1].ok)throw new Error('接口返回 '+(!responses[0].ok?responses[0].status:responses[1].status));
-    mvcState.overview=await responses[0].json();mvcState.history=(await responses[1].json()).history||[];mvcRender();
+    mvcState.overview=responses[0].payload;mvcState.history=(responses[1].payload||{}).history||[];mvcRender();
   }catch(error){status.textContent='数据加载失败：'+(error.message||error);document.getElementById('mvc-content').hidden=true;}
   finally{mvcState.loading=false;}
 }
@@ -211,11 +210,10 @@ async function mvcSave(){
   if(!(lower>0&&upper>lower)){showToast('边界值无效，请重新拖动');return;}
   button.disabled=true;button.textContent='保存中...';
   try{
-    var response=await fetch(api('/api/market-volatility/settings'),{
-      method:'PUT',headers:{'Content-Type':'application/json'},credentials:'same-origin',
-      body:JSON.stringify({metric:mvcState.metric,market:mvcState.market,benchmark:mvcState.benchmark,accountName:account,lowerBoundaryPct:lower,upperBoundaryPct:upper,version:setting?setting.version:0})
-    });
-    var json=await response.json();if(!response.ok)throw new Error(json.error||response.status);
+    var response=await window.siteApi.put('/api/market-volatility/settings',{
+      metric:mvcState.metric,market:mvcState.market,benchmark:mvcState.benchmark,accountName:account,lowerBoundaryPct:lower,upperBoundaryPct:upper,version:setting?setting.version:0
+    },{credentials:'same-origin'});
+    var json=response.payload||{};if(!response.ok)throw new Error(json.error||response.status);
     await mvcLoad();button.disabled=true;showToast('边界保存成功');
   }catch(error){
     button.disabled=false;showToast('保存失败：'+(error.message||error));

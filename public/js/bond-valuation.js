@@ -32,9 +32,9 @@ async function loadBondValuation() {
   var statusEl = document.getElementById('bond-val-status');
   if (statusEl) statusEl.textContent = '正在读取估值数据...';
   try {
-    var r = await fetch(api('/api/bond-valuation/bonds'));
-    if (!r.ok) throw new Error('接口返回 ' + r.status);
-    var json = await r.json();
+    var res = await window.siteApi.get('/api/bond-valuation/bonds');
+    if (!res.ok) throw new Error('接口返回 ' + res.status);
+    var json = res.payload;
     bondValState.data = json;
     renderBondValOverview(json);
     bondValState.loading = false;
@@ -233,15 +233,15 @@ function openBondValDetail(code, skipPush) {
   detail.innerHTML = '<div class="bond-val-detail-loading">正在读取 ' + esc(code) + ' 的估值详情...</div>';
 
   Promise.all([
-    fetch(api('/api/bond-valuation/bonds/' + encodeURIComponent(code))),
-    fetch(api('/api/bond-valuation/bonds/' + encodeURIComponent(code) + '/history?range=all')),
-    fetch(api('/api/bond-valuation/bonds/' + encodeURIComponent(code) + '/alerts'))
-  ]).then(function (res) {
+    window.siteApi.get('/api/bond-valuation/bonds/' + encodeURIComponent(code)),
+    window.siteApi.get('/api/bond-valuation/bonds/' + encodeURIComponent(code) + '/history?range=all'),
+    window.siteApi.get('/api/bond-valuation/bonds/' + encodeURIComponent(code) + '/alerts')
+  ]).then(function (results) {
     // 统一检查 HTTP 状态（404 的详情/历史允许继续渲染错误提示）
-    return Promise.all(res.map(function (r) {
+    return results.map(function (r) {
       if (!r.ok && r.status !== 404) throw new Error('接口返回 ' + r.status);
-      return r.json();
-    }));
+      return r.payload;
+    });
   })
     .then(function (out) {
       renderBondValDetail(out[0], out[1], out[2]);
@@ -400,8 +400,8 @@ function bondValReloadHistory(code, range, btn) {
   btn.classList.add('active');
   var box = document.getElementById('bond-val-charts');
   if (box) box.innerHTML = '<div class="bond-val-detail-loading">加载历史...</div>';
-  fetch(api('/api/bond-valuation/bonds/' + encodeURIComponent(code) + '/history?range=' + range))
-    .then(function (r) { return r.json(); }).then(function (h) { drawBondValCharts((h && h.data) || [], h && h.boundaries); })
+  window.siteApi.get('/api/bond-valuation/bonds/' + encodeURIComponent(code) + '/history?range=' + range)
+    .then(function (r) { return r.payload; }).then(function (h) { drawBondValCharts((h && h.data) || [], h && h.boundaries); })
     .catch(function (e) { if (box) box.innerHTML = '历史加载失败：' + esc(e.message || e); });
 }
 

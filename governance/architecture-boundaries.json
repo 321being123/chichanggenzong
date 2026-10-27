@@ -782,6 +782,7 @@
     "client": "public/js/api/client.js",
     "rule": "migrated 中的页面脚本不得再出现直接 fetch(，由静态门禁逐条校验；pending 是批次4 剩余清单，只减不增",
     "migrated": [
+      "public/js/bond-analysis.js",
       "public/js/bond-cycle.js",
       "public/js/bond-list.js",
       "public/js/bond-redemption.js",
@@ -793,7 +794,6 @@
       "public/js/admin.js",
       "public/js/knowledge.js",
       "public/js/bond-valuation.js",
-      "public/js/bond-analysis.js",
       "public/js/market-cycle-metrics.js",
       "public/js/ipo.js",
       "public/js/arbitrage.js",

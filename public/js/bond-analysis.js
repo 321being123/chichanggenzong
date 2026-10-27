@@ -70,11 +70,10 @@ async function securityAnalysisSearchSuggestions(value, ctx) {
   if(!keyword){securityAnalysisState.suggestions=[];return securityAnalysisHideSuggestions(ctx);}
   var seq=++securityAnalysisState.searchSeq;
   try {
-    var response=await fetch(api('/api/bond-analysis/search/securities?q='+encodeURIComponent(keyword)));
-    var payload=await response.json();
+    var res=await window.siteApi.get('/api/bond-analysis/search/securities?q='+encodeURIComponent(keyword));
     if(seq!==securityAnalysisState.searchSeq) return;
-    if(!response.ok) throw new Error(payload.error||'证券搜索失败');
-    securityAnalysisRenderSuggestions(payload.data||[], ctx);
+    if(!res.ok) throw new Error(res.payload.error||'证券搜索失败');
+    securityAnalysisRenderSuggestions(res.payload.data||[], ctx);
   } catch(_) {
     if(seq===securityAnalysisState.searchSeq) securityAnalysisHideSuggestions(ctx);
   }
@@ -118,8 +117,8 @@ async function securityAnalysisLoadList(force) {
   }
   if (securityAnalysisState.listLoaded && !force) return;
   try {
-    var response=await fetch(api('/api/bond-analysis/list/securities')), payload=await response.json();
-    if(!response.ok) throw new Error(payload.error||'持仓和自选加载失败');
+    var res=await window.siteApi.get('/api/bond-analysis/list/securities'), payload=res.payload;
+    if(!res.ok) throw new Error(payload.error||'持仓和自选加载失败');
     var options='<option value="">选择持仓或自选</option>'+(payload.data||[]).map(function(row){
       var tags=(row.held?'持仓':'')+(row.watchlisted?(row.held?' / 自选':'自选'):'');
       return '<option value="'+escapeHtml(row.code)+'">'+escapeHtml((row.name||row.code)+' · '+row.code+'（'+tags+'）')+'</option>';
@@ -245,10 +244,10 @@ async function securityAnalysisResolveName(keyword, ctx) {
   securityAnalysisHideSuggestions(ctx);
   stockAnalysisSetMessage('正在搜索证券...', false, ctx);
   try {
-    var response=await fetch(api('/api/bond-analysis/search/securities?q='+encodeURIComponent(query)));
-    var payload=await response.json();
+    var res=await window.siteApi.get('/api/bond-analysis/search/securities?q='+encodeURIComponent(query));
     if(seq!==securityAnalysisState.searchSeq) return;
-    if(!response.ok) throw new Error(payload.error||'证券搜索失败');
+    if(!res.ok) throw new Error(res.payload.error||'证券搜索失败');
+    var payload=res.payload;
     var rows=Array.isArray(payload.data)?payload.data:[];
     var normalized=query.normalize('NFKC').toLocaleLowerCase();
     var exact=rows.filter(function(row){return String(row.name||'').normalize('NFKC').toLocaleLowerCase()===normalized;});
@@ -301,14 +300,14 @@ async function bondAnalysisLoad(refresh, ctx) {
   stockAnalysisSetMessage(refresh ? '正在更新可转债数据...' : '正在读取可转债分析结果...', false, ctx);
   try {
     var path='/api/bond-analysis/'+encodeURIComponent(securityAnalysisState.code)+(refresh?'/refresh':'');
-    var response=await fetch(api(path), refresh?{method:'POST'}:undefined);
-    if(response.status===404&&!refresh){
+    var res=await window.siteApi.request(path, refresh?{method:'POST'}:{});
+    if(res.status===404&&!refresh){
       var shown=await bondAnalysisRenderListFallback(ctx);
       if(shown) return;
       return stockAnalysisSetMessage(username?'该转债暂无分析快照或上市列表资料，可登录后点击“刷新数据”尝试建立分析。':'该转债暂无详细分析快照，当前也没有可展示的上市行情资料。', false, ctx);
     }
-    var payload=await response.json(), analysis=payload.analysis||payload;
-    if(!response.ok&&!payload.analysis) throw new Error(payload.error||'可转债分析失败');
+    var payload=res.payload, analysis=payload.analysis||payload;
+    if(!res.ok&&!payload.analysis) throw new Error(payload.error||'可转债分析失败');
     // 缓存版本过旧时只提示，页面读取不自动触发外部采集。
     if (!refresh && analysis.needs_refresh) {
       // 页面打开只读本地快照；外部采集必须由用户明确点击“刷新数据”触发。
@@ -317,15 +316,15 @@ async function bondAnalysisLoad(refresh, ctx) {
     bondAnalysisRender(analysis, ctx);
     if(payload.queued)showToast('已显示数据库中的分析结果，缺失资料已交后台补采。');
     if (window.SiteTelemetry && window.SiteTelemetry.trackDetail) window.SiteTelemetry.trackDetail({ page_key: 'bond.analysis', module: 'bond', entry: ctx || 'analysis', detail_key: securityAnalysisState.code || 'bond', properties: { detail_type: 'bond' } });
-    if(!response.ok&&payload.error) showToast('更新失败，已显示上一份有效数据：'+payload.error);
+    if(!res.ok&&payload.error) showToast('更新失败，已显示上一份有效数据：'+payload.error);
   } catch(error) { stockAnalysisSetMessage(error.message||String(error),true, ctx); }
   finally { securityAnalysisState.loading=false;if(button){button.disabled=false;button.textContent='刷新数据';} }
 }
 
 async function bondAnalysisRenderListFallback(ctx) {
-  var response=await fetch(api('/api/bond-analysis/bonds?q='+encodeURIComponent(securityAnalysisState.code)));
-  if(!response.ok) return false;
-  var payload=await response.json(), rows=Array.isArray(payload.data)?payload.data:[];
+  var res=await window.siteApi.get('/api/bond-analysis/bonds?q='+encodeURIComponent(securityAnalysisState.code));
+  if(!res.ok) return false;
+  var payload=res.payload, rows=Array.isArray(payload.data)?payload.data:[];
   var row=rows.find(function(item){return String(item.bond_code||item.ts_code||'').replace(/\D/g,'')===securityAnalysisState.code;});
   if(!row) return false;
   stockAnalysisSetMessage('',false,ctx);

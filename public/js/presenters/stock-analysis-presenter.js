@@ -31,9 +31,12 @@ async function loadStockAnalysis(force) {
 }
 
 function stockAnalysisResetAccount() {
+  stockAnalysisState.accountEpoch = (stockAnalysisState.accountEpoch || 0) + 1;
   stockAnalysisState.listSeq = (stockAnalysisState.listSeq || 0) + 1;
   stockAnalysisState.loaded = false;
   stockAnalysisState.stocks = [];
+  stockAnalysisCancelSelection();
+  stockAnalysisApplyRemoveVisibility(false);
 }
 
 async function stockAnalysisSelect(tsCode) {
@@ -115,33 +118,45 @@ async function stockAnalysisRefresh() {
 async function stockAnalysisAddWatchlist() {
   var code = stockAnalysisReadCodeInput();
   if (!code) return showToast('请输入股票代码');
+  var user = typeof username === 'string' ? username : '';
+  var identity = typeof accountIdentity === 'string' ? accountIdentity : '';
+  var epoch = stockAnalysisState.accountEpoch || 0;
+  function current() { return epoch === (stockAnalysisState.accountEpoch || 0) && user === (typeof username === 'string' ? username : '') && identity === (typeof accountIdentity === 'string' ? accountIdentity : ''); }
   stockAnalysisSetMessage('正在添加自选股并建立财务档案...');
   try {
     var addResult = await stockAnalysisApi.addWatchlist(code);
+    if (!current()) return;
     var payload = addResult.payload;
     if (!addResult.ok && addResult.status !== 202) throw new Error(payload.error || '添加失败');
     stockAnalysisState.loaded = false;
     await loadStockAnalysis(true);
+    if (!current()) return;
     stockAnalysisState.selected = payload.stock.ts_code;
     // 下拉 option 的 value 是六位纯数字，ts_code 带后缀（如 600000.SH）需由 View 截取
     stockAnalysisSelectOption(payload.stock.ts_code);
     stockAnalysisApplyRemoveVisibility(true);
     stockAnalysisClearCodeInput();
     if (payload.analysis) stockAnalysisRender(payload.analysis); else await stockAnalysisSelect(payload.stock.ts_code);
-    if (payload.warning) showToast('已加入自选，建档稍后重试：' + payload.warning);
-  } catch (error) { stockAnalysisSetMessage(error.message || String(error), true); }
+    if (current() && payload.warning) showToast('已加入自选，建档稍后重试：' + payload.warning);
+  } catch (error) { if (current()) stockAnalysisSetMessage(error.message || String(error), true); }
 }
 
 async function stockAnalysisRemoveWatchlist() {
   if (!stockAnalysisState.selected) return;
+  var user = typeof username === 'string' ? username : '';
+  var identity = typeof accountIdentity === 'string' ? accountIdentity : '';
+  var epoch = stockAnalysisState.accountEpoch || 0;
+  function current() { return epoch === (stockAnalysisState.accountEpoch || 0) && user === (typeof username === 'string' ? username : '') && identity === (typeof accountIdentity === 'string' ? accountIdentity : ''); }
   try {
     var removeResult = await stockAnalysisApi.removeWatchlist(stockAnalysisState.selected);
+    if (!current()) return;
     if (!removeResult.ok) throw new Error(removeResult.payload.error || '删除失败');
     stockAnalysisState.loaded = false;
     stockAnalysisState.selected = '';
     stockAnalysisState.data = null;
     await loadStockAnalysis(true);
+    if (!current()) return;
     stockAnalysisSelect('');
     showToast('已移出自选股');
-  } catch (error) { showToast(error.message || String(error)); }
+  } catch (error) { if (current()) showToast(error.message || String(error)); }
 }

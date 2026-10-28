@@ -218,6 +218,41 @@ check('符号定义可识别，缺失时必须报错', () => {
   assert(acceptance.hasSymbolDefinition('window.thing = 1;', 'thing'));
   assert(!acceptance.hasSymbolDefinition('const other = 1;', 'stockAnalysisState'));
 });
+check('global/window 挂载的全局符号均可识别', () => {
+  assert(acceptance.hasSymbolDefinition('global.siteApi = {};', 'siteApi'));
+  assert(acceptance.hasSymbolDefinition('window.thing = 1;', 'thing'));
+  assert(!acceptance.hasSymbolDefinition('global.other = 1;', 'siteApi'));
+});
+check('全部页面契约已登记且整页脚本与实际 HTML 一致', () => {
+  assert.strictEqual(boundaries.globalContracts.pendingPages.length, 0, '不得残留未登记页面');
+  for (const page of boundaries.globalContracts.pages) {
+    const html = fs.readFileSync(path.join(ROOT, page.page), 'utf8');
+    const actual = acceptance.parsePageScripts(html);
+    if (Array.isArray(page.scripts)) {
+      assert.deepStrictEqual(page.scripts, actual.plain, `${page.page} 契约脚本与实际不符`);
+      for (const symbol of page.requiredSymbols || []) {
+        const defined = page.scripts.some((script) => {
+          const source = fs.readFileSync(path.join(ROOT, script), 'utf8');
+          return acceptance.hasSymbolDefinition(source, symbol);
+        });
+        assert(defined, `${page.page} 缺少必需符号 ${symbol}`);
+      }
+    }
+  }
+});
+check('整页脚本契约漂移必须被门禁发现', () => {
+  const page = boundaries.globalContracts.pages.find(item => Array.isArray(item.scripts));
+  assert(page, '缺少整页脚本契约样例');
+  const driftPage = { ...page, scripts: [...page.scripts.slice(0, -1)] };
+  const boundariesCopy = {
+    ...boundaries,
+    globalContracts: { ...boundaries.globalContracts, pages: [driftPage] },
+  };
+  const result = acceptance.runStaticChecks(boundariesCopy);
+  const failed = result.checks.find(check => check.code === 'page_global_contract' && !check.ok);
+  assert(failed, '脚本清单漂移时 page_global_contract 必须失败');
+});
+
 check('已登记页面的懒加载脚本与实际 HTML 一致', () => {
   const page = boundaries.globalContracts.pages[0];
   const html = fs.readFileSync(path.join(ROOT, page.page), 'utf8');

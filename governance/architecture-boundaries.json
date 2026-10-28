@@ -778,8 +778,8 @@
     }
   ],
   "globalContracts": {
-    "status": "first-batch",
-    "scope": "股票分析样板、主站外壳、公开分享入口及其实际依赖闭包；其余页面随批次4补齐",
+    "status": "all-pages-registered",
+    "scope": "全站 6 个页面契约已登记（含整页脚本顺序与统一请求入口符号）；供应商 vendor 脚本只登记文件不改写；精细符号随各批继续补齐",
     "surfaces": [
       {
         "id": "site-shell",
@@ -864,35 +864,107 @@
             ]
           }
         ]
-      }
-    ],
-    "pendingPages": [
+      },
       {
         "page": "public/admin.html",
-        "contractStatus": "pending_contract",
-        "batch": 4
-      },
-      {
-        "page": "public/bond-revision-motive.html",
-        "contractStatus": "pending_contract",
-        "batch": 4
-      },
-      {
-        "page": "public/ipo-report.html",
-        "contractStatus": "pending_contract",
-        "batch": 4
+        "contractStatus": "registered",
+        "batch": 4,
+        "scripts": [
+          "public/shared/autofill-guard.js",
+          "public/shared/ui-actions.js",
+          "public/shared/mobile-ui.js",
+          "public/shared/telemetry.js",
+          "public/shared/core-date.js",
+          "public/js/utils.js",
+          "public/js/api/client.js",
+          "public/shared/dialog.js",
+          "public/shared/business-table.js",
+          "public/js/admin-analytics.js",
+          "public/js/admin-feedback.js",
+          "public/js/admin-notifications.js",
+          "public/js/admin.js"
+        ],
+        "requiredSymbols": [
+          "siteApi"
+        ],
+        "note": "管理后台整页脚本契约；全部取数经统一客户端，无懒加载段"
       },
       {
         "page": "public/login.html",
-        "contractStatus": "pending_contract",
-        "batch": 0
+        "contractStatus": "registered",
+        "batch": 0,
+        "scripts": [
+          "public/shared/autofill-guard.js",
+          "public/shared/mobile-ui.js",
+          "public/shared/telemetry.js",
+          "public/shared/ui-actions.js",
+          "public/shared/core-date.js",
+          "public/js/utils.js",
+          "public/js/api/client.js"
+        ],
+        "requiredSymbols": [
+          "siteApi"
+        ],
+        "note": "登录页整页脚本契约（主站外壳族）；无页面专属脚本与懒加载段"
+      },
+      {
+        "page": "public/ipo-report.html",
+        "contractStatus": "registered",
+        "batch": 4,
+        "scripts": [
+          "public/shared/autofill-guard.js",
+          "public/shared/ui-actions.js",
+          "public/vendor/marked.min.js",
+          "public/vendor/dompurify.min.js",
+          "public/shared/mobile-ui.js",
+          "public/shared/telemetry.js",
+          "public/js/api/client.js"
+        ],
+        "requiredSymbols": [
+          "siteApi"
+        ],
+        "note": "打新日报整页脚本契约；markdown 渲染走 vendor，无懒加载段"
       },
       {
         "page": "public/share-knowledge.html",
-        "contractStatus": "pending_contract",
-        "batch": 4
+        "contractStatus": "registered",
+        "batch": 4,
+        "scripts": [
+          "public/shared/autofill-guard.js",
+          "public/shared/ui-actions.js",
+          "public/shared/mobile-ui.js",
+          "public/shared/telemetry.js",
+          "public/vendor/vditor/dist/index.min.js",
+          "public/vendor/marked.min.js",
+          "public/vendor/dompurify.min.js",
+          "public/shared/md-safe.js",
+          "public/shared/dialog.js",
+          "public/js/api/client.js"
+        ],
+        "requiredSymbols": [
+          "siteApi"
+        ],
+        "note": "知识分享整页脚本契约；编辑器与渲染经 vendor 及 md-safe，无懒加载段"
+      },
+      {
+        "page": "public/bond-revision-motive.html",
+        "contractStatus": "registered",
+        "batch": 4,
+        "scripts": [
+          "public/shared/mobile-ui.js",
+          "public/shared/telemetry.js",
+          "public/shared/ui-actions.js",
+          "public/shared/business-table.js",
+          "public/js/api/client.js",
+          "public/js/bond-revision-motive.js"
+        ],
+        "requiredSymbols": [
+          "siteApi"
+        ],
+        "note": "下修博弈整页脚本契约；无懒加载段"
       }
-    ]
+    ],
+    "pendingPages": []
   },
   "batchScopeTemplate": {
     "note": "批次1—5 各小批开工前在其唯一任务卡按本格式冻结范围；本文件只给格式与候选，不冒充正式名单。",

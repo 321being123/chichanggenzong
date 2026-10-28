@@ -47,6 +47,7 @@ function hasSymbolDefinition(source, symbol) {
     new RegExp(`\\b(?:var|let|const)\\s+${escaped}\\b`),
     new RegExp(`\\bfunction\\s+${escaped}\\b`),
     new RegExp(`\\bwindow\\.${escaped}\\s*=`),
+    new RegExp(`\\bglobal\\.${escaped}\\s*=`),
     new RegExp(`\\b${escaped}\\s*=\\s*(?:async\\s*)?(?:function|\\()`),
   ];
   return patterns.some(pattern => pattern.test(source));
@@ -91,10 +92,9 @@ function hasInlineStyle(html) {
   return false;
 }
 
-function runStaticChecks() {
+function runStaticChecks(boundaries = readJson(BOUNDARIES_RELATIVE)) {
   const checks = [];
   const pending = [];
-  const boundaries = readJson(BOUNDARIES_RELATIVE);
   if (!boundaries) {
     addCheck(checks, 'boundaries_manifest', false, `缺少或无法解析 ${BOUNDARIES_RELATIVE}`);
     return { checks, pending };
@@ -151,6 +151,27 @@ function runStaticChecks() {
     const pageHtml = readText(page.page);
     if (pageHtml === null) { pageErrors.push(`${page.page}（页面缺失）`); continue; }
     const actual = parsePageScripts(pageHtml);
+    // 整页脚本契约（无懒加载段的页面）：声明的按序脚本必须与页面实际加载一致。
+    if (Array.isArray(page.scripts)) {
+      const declaredPlain = page.scripts;
+      const plainDrift = declaredPlain.length !== actual.plain.length
+        || declaredPlain.some((file, index) => file !== actual.plain[index]);
+      if (plainDrift) {
+        pageErrors.push(`${page.page} 契约脚本与实际不符：声明 [${declaredPlain.join('、')}]，实际 [${actual.plain.join('、')}]`);
+      }
+      const plainSources = new Map();
+      for (const script of declaredPlain) {
+        const source = readText(script);
+        if (source === null) pageErrors.push(`${page.page} 脚本缺失：${script}`);
+        else plainSources.set(script, source);
+      }
+      for (const symbol of page.requiredSymbols || []) {
+        const provider = providers.find(item => item.symbol === symbol);
+        const provided = plainSources.has(provider && provider.file)
+          || [...plainSources.values()].some(source => hasSymbolDefinition(source, symbol));
+        if (!provided) pageErrors.push(`${page.page} 缺少必需符号 ${symbol}`);
+      }
+    }
     for (const section of page.lazySections || []) {
       const actualScripts = actual.lazy
         .filter(item => item.sections.includes(section.name))

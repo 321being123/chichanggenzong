@@ -119,22 +119,27 @@ function buildBell() {
 }
 
 async function checkAuth() {
+  const previousUser = username, previousIdentity = accountIdentity;
+  function invalidateIfChanged() {
+    if ((previousUser !== username || previousIdentity !== accountIdentity) && typeof window.invalidateSmartImportScope === 'function') window.invalidateSmartImportScope();
+  }
   try {
     const r = await fetch(api('/api/me'));
     const d = await r.json();
     if (!d.username) {
-      username = null; myProfile = null; accountIdentity = ''; stopNotificationPolling(); clearNotificationCache(); renderTopUser(null); return false;
+      username = null; myProfile = null; accountIdentity = ''; invalidateIfChanged(); stopNotificationPolling(); clearNotificationCache(); renderTopUser(null); return false;
     }
     username = d.username;
     myProfile = d;
     accountIdentity = String(d.accountIdentity || '');
+    invalidateIfChanged();
     const nu0 = document.getElementById('nav-user');
     if (nu0) nu0.textContent = d.nickname || username;
     renderTopUser(d);
     startNotificationPolling();
     return true;
   } catch (e) {
-    username = null; myProfile = null; accountIdentity = ''; stopNotificationPolling(); clearNotificationCache(); renderTopUser(null); return false;
+    username = null; myProfile = null; accountIdentity = ''; invalidateIfChanged(); stopNotificationPolling(); clearNotificationCache(); renderTopUser(null); return false;
   }
 }
 
@@ -211,6 +216,7 @@ function renderTopUser(p) {
 }
 
 async function logout() {
+  if (typeof window.invalidateSmartImportScope === 'function') window.invalidateSmartImportScope();
   stopNotificationPolling();
   clearNotificationCache();
   accountIdentity = '';

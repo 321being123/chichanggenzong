@@ -8,6 +8,7 @@ const submit = source.slice(source.indexOf('async function submitPositionRows(')
 let mode = 'success', saved = [], sent = [];
 const ui = {
   currentAccount: '账户%', dataVersion: 3, data: { positions: [], trades: [] },
+  captureSmartImportScope: () => ({ account: '账户%' }), isSmartImportScopeCurrent: () => true,
   convertRowUnit() {}, recognizeCode: () => ({ type: '股权', subtype: '沪市' }), renderAll() {},
   applyLedgerData(value) { if (value) ui.data = value; },
   window: { _smartBatchId: 'batch-test', holdingsQuoteApi: { addPositions: async (_account, _version, events) => {
@@ -16,7 +17,7 @@ const ui = {
     return mode === 'conflict' ? { ok: false, status: 409, payload: { error: '版本冲突' } }
       : { ok: true, status: 200, payload: {} };
   } }, tradeLedgerApi: { accountData: async () => ({ ok: true, status: 200,
-    payload: { data: { positions: [], trades: saved.map(id => ({ id })) } } }) } },
+    payload: { positions: [], trades: saved.map(id => ({ id })) } }) } },
 };
 vm.createContext(ui);
 vm.runInContext(verify + '\n' + submit, ui);
@@ -39,6 +40,8 @@ function rows() { return [
   result = await ui.submitPositionRows(rows());
   assert.strictEqual(result.status, 'conflict', '部分 ID 不得认定整批成功');
   assert.strictEqual((await ui.verifySmartEventsSaved([])).all, false);
+  ui.data.trades = [{ id: 'stale' }]; saved = [];
+  assert.strictEqual((await ui.verifySmartEventsSaved(['stale'])).all, false, '服务器缺少事件时不得使用旧缓存冒充已保存');
   mode = 'network'; saved = [];
   result = await ui.submitPositionRows(rows());
   assert.strictEqual(result.status, 'unknown', '网络异常且未查到 ID 应保留待确认');

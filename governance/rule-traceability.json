@@ -759,6 +759,10 @@
           "pattern": "批量持仓保留用户确认日期"
         },
         {
+          "file": "server/test/smart-import-identity.test.js",
+          "pattern": "跨账号提交仍保留确认日期"
+        },
+        {
           "file": "ipo-report/test_ipo_unit.py",
           "pattern": "日历业务日期固定按上海时区"
         }

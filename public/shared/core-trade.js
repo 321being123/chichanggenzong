@@ -441,6 +441,7 @@ function closeModal(id) {
 var tradeMode = 'manual';
 
 function switchTradeMode(mode) {
+  if (tradeMode === 'smart' && mode !== 'smart') invalidateSmartImportScope();
   tradeMode = mode;
   document.getElementById('mode-manual').classList.toggle('active', mode === 'manual');
   document.getElementById('mode-smart').classList.toggle('active', mode === 'smart');
@@ -457,8 +458,54 @@ var _smartParsed = [];        // 合并后的预览行（每行带 _rowId/_event
 var _smartBatchId = null;
 var _smartSubmitting = false;
 var _smartRowSeq = 0;
+var _smartScopeGeneration = 0;
+var _smartBoundScope = '';
 var VISION_MAX_IMAGES = 6;            // 每批最多 6 张（与服务端一致）
 var VISION_MAX_IMAGE_BYTES = 6 * 1024 * 1024; // 单张原始文件 ≤ 6MiB（与服务端一致）
+
+function captureSmartImportScope() {
+  return { generation: _smartScopeGeneration, user: typeof username === 'string' ? username : '',
+    identity: typeof accountIdentity === 'string' ? accountIdentity : '', account: typeof currentAccount === 'string' ? currentAccount : '' };
+}
+
+function isSmartImportScopeCurrent(scope) {
+  var now = captureSmartImportScope();
+  return !!scope && scope.generation === now.generation && scope.user === now.user &&
+    scope.identity === now.identity && scope.account === now.account;
+}
+
+function invalidateSmartImportScope() {
+  _smartScopeGeneration++;
+  _smartBoundScope = '';
+  _visionQueue = [];
+  _smartParsed = [];
+  _smartBatchId = null;
+  _smartSubmitting = false;
+  _visionPaused = false;
+  window._smartAccount = null;
+  if (typeof _qrPollTimer !== 'undefined' && _qrPollTimer) clearInterval(_qrPollTimer);
+  _qrPollTimer = null;
+  _qrToken = null;
+  _qrGeneration = (_qrGeneration || 0) + 1;
+  var qr = document.getElementById('qr-image'); if (qr) qr.src = '';
+  var qrStatus = document.getElementById('qr-status');
+  if (qrStatus) qrStatus.innerHTML = '二维码已暂停 <button class="btn btn-outline btn-sm" data-act="initVisionQr">重新生成二维码</button>';
+  var loading = document.getElementById('smart-loading'); if (loading) loading.style.display = 'none';
+  setSmartButtonsDisabled(false);
+  renderVisionQueue();
+  renderSmartItems();
+}
+
+function bindSmartImportScope() {
+  var scope = captureSmartImportScope();
+  var key = JSON.stringify([scope.user, scope.identity, scope.account]);
+  if (_smartBoundScope !== key) {
+    invalidateSmartImportScope();
+    _smartBoundScope = key;
+    window._smartAccount = scope.account;
+  }
+  return captureSmartImportScope();
+}
 
 function newSmartRowId() {
   _smartRowSeq += 1;
@@ -488,17 +535,8 @@ async function handleExcelFile(event) {
 
 // 图片入队（选择/拖拽/粘贴/扫码统一入口）：读取文件前校验，不让新结果直接覆盖已有预览
 function enqueueVisionFiles(files) {
-  // 队列与预览绑定账户：切换账户后旧队列/预览作废（方案 4.3 第 6 条）
-  if (window._smartAccount !== currentAccount) {
-    if (_visionQueue.length || (_smartParsed || []).length) {
-      _visionQueue = [];
-      _smartParsed = [];
-      window._smartBatchId = null;
-      renderVisionQueue();
-      renderSmartItems();
-    }
-    window._smartAccount = currentAccount;
-  }
+  // 文件读取也绑定账号实体、账户和本次切换代数。
+  var scope = bindSmartImportScope();
   var added = 0;
   var pending = [];
   for (var i = 0; i < files.length; i++) {
@@ -518,6 +556,7 @@ function enqueueVisionFiles(files) {
   if (!pending.length) return;
   Promise.all(pending.map(function(file) {
     return fileToBase64(file).then(function(base64) {
+      if (!isSmartImportScopeCurrent(scope)) return;
       _visionQueue.push({
         imageId: 'img_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8),
         name: file.name || '截图',
@@ -529,6 +568,7 @@ function enqueueVisionFiles(files) {
       });
     });
   })).then(function() {
+    if (!isSmartImportScopeCurrent(scope)) return;
     renderVisionQueue();
     processVisionQueue();
   });
@@ -536,12 +576,16 @@ function enqueueVisionFiles(files) {
 
 // 并发固定 1，逐图独立识别；成功结果本次会话复用，不重新调用模型；只重试失败图
 var _visionProcessing = false;
+var _visionProcessingGeneration = null;
 var _visionPaused = false;
 async function processVisionQueue() {
-  if (_visionProcessing) return;
+  var scope = captureSmartImportScope();
+  if (_visionProcessingGeneration === scope.generation) return;
+  _visionProcessingGeneration = scope.generation;
   _visionProcessing = true;
   try {
     for (var i = 0; i < _visionQueue.length; i++) {
+      if (!isSmartImportScopeCurrent(scope)) return;
       if (_visionPaused) break;
       var job = _visionQueue[i];
       if (job.status !== 'queued') continue;
@@ -555,14 +599,7 @@ async function processVisionQueue() {
         });
         var d = await r.json().catch(function() { return {}; });
         // 账户已切换：旧响应作废，不恢复旧预览
-        if (window._smartAccount !== currentAccount) {
-          job.status = 'failed';
-          job.error = '账户已切换，该结果已丢弃';
-          _visionQueue = [];
-          _smartParsed = [];
-          window._smartBatchId = null;
-          break;
-        }
+        if (!isSmartImportScopeCurrent(scope)) return;
         if (r.status === 429) {
           // 遇限流按服务端提示暂停，保留队列
           job.status = 'queued';
@@ -584,6 +621,7 @@ async function processVisionQueue() {
           mergeSmartItems(job.items, job.name);
         }
       } catch (e) {
+        if (!isSmartImportScopeCurrent(scope)) return;
         job.status = 'failed';
         job.error = (e && e.message) || '网络错误';
       }
@@ -591,9 +629,11 @@ async function processVisionQueue() {
       renderSmartItems();
     }
   } finally {
-    _visionProcessing = false;
-    renderVisionQueue();
-    renderSmartItems();
+    if (_visionProcessingGeneration === scope.generation) {
+      _visionProcessingGeneration = null;
+      _visionProcessing = false;
+      if (isSmartImportScopeCurrent(scope)) { renderVisionQueue(); renderSmartItems(); }
+    }
   }
 }
 
@@ -697,6 +737,7 @@ function mergeSmartItems(items, imageTag) {
 
 // 手机扫码传来的图片批量入队（与本地选图同一队列）
 function enqueueBase64Images(images, namePrefix) {
+  bindSmartImportScope();
   (images || []).forEach(function(base64, i) {
     if (_visionQueue.length >= VISION_MAX_IMAGES) return;
     _visionQueue.push({
@@ -725,11 +766,13 @@ async function doSmartParse(file, source) {
     enqueueVisionFiles([file]);
     return;
   }
+  var scope = bindSmartImportScope();
   var result = document.getElementById('smart-result');
   if (loading) loading.style.display = 'block';
 
   try {
     var base64 = await fileToBase64(file);
+    if (!isSmartImportScopeCurrent(scope)) return;
     if (loading) loading.innerHTML = '<span class="spinner"></span>AI识别中...';
     var r2 = await fetch(api('/api/excel-parse'), {
       method: 'POST',
@@ -737,6 +780,7 @@ async function doSmartParse(file, source) {
       body: JSON.stringify({ file: base64 })
     });
     var d = await r2.json();
+    if (!isSmartImportScopeCurrent(scope)) return;
 
     if (loading) loading.style.display = 'none';
 
@@ -756,6 +800,7 @@ async function doSmartParse(file, source) {
     renderVisionQueue();
     renderSmartItems();
   } catch(e) {
+    if (!isSmartImportScopeCurrent(scope)) return;
     if (loading) loading.style.display = 'none';
     if (result) result.innerHTML = '<div class="u-c-danger u-pad-8-10">识别失败: ' + escapeHtml(e.message) + '</div>';
   }
@@ -1114,13 +1159,18 @@ function applyLedgerData(jdata) {
 }
 
 // 结果未知（网络异常/响应丢失）时按原 id 核对是否已落库（方案 4.4 第 5 条）
-async function verifySmartEventsSaved(ids) {
+async function verifySmartEventsSaved(ids, operationScope) {
+  var scope = operationScope || captureSmartImportScope();
+  if (!isSmartImportScopeCurrent(scope)) return { all: false, any: false };
   try {
-    var r = await window.tradeLedgerApi.accountData(currentAccount);
+    var r = await window.tradeLedgerApi.accountData(scope.account);
+    if (!isSmartImportScopeCurrent(scope)) return { all: false, any: false };
     if (!r.ok) return { all: false, any: false };
     var j = r.payload;
-    if (j.data) applyLedgerData(j.data);
-    var trades = (data && data.trades) || [];
+    // /api/data/:name 返回顶层账户对象；缺少有效交易列表时不得使用旧缓存冒充核对结果。
+    if (!j || !Array.isArray(j.trades)) return { all: false, any: false };
+    applyLedgerData(j);
+    var trades = j.trades;
     var saved = (ids || []).filter(function(id) {
       return trades.some(function(t) { return t.id === id; });
     });
@@ -1131,17 +1181,19 @@ async function verifySmartEventsSaved(ids) {
 }
 
 // 交易单行提交：结果语义 saved/exists/duplicate/failed/conflict/unknown
-async function submitTradeRow(row) {
+async function submitTradeRow(row, operationScope) {
   convertRowUnit(row);
   var item = row._item;
   var fees = getSmartItemFees(item, row.code, row.name, row);
   return await addTradeInternal(row.code, row.name, row.direction, row.price, row.quantity, row.date,
-    fees, window._smartBatchId || null, { eventId: item._eventId, quoteCurrency: row.currency, skipUnitConversion: true });
+    fees, window._smartBatchId || null, { eventId: item._eventId, quoteCurrency: row.currency, skipUnitConversion: true, scope: operationScope });
 }
 
 // 持仓批量提交（方案 4.4 第 2 条）：复用完整账户批量接口，单事务；
 // 已有证券 adjust（目标数量）/新证券 open；失败持仓全留。
-async function submitPositionRows(rows) {
+async function submitPositionRows(rows, operationScope) {
+  var scope = operationScope || captureSmartImportScope();
+  if (!isSmartImportScopeCurrent(scope)) return { status: 'scope_changed', message: '账户已切换，旧结果已丢弃' };
   if (!rows.length) return { status: 'saved', message: '' };
   // 同代码多行必须由【最早日期】那行做 open（其余 adjust）：账本按日期升序重放，
   // 若 open 落在较晚日期，重放会把期初事件叠加到目标数量上（2026-10-26 验收 E2E 实证）。
@@ -1169,18 +1221,21 @@ async function submitPositionRows(rows) {
   });
   var ids = events.map(function(e) { return e.id; });
   try {
-    var r = await window.holdingsQuoteApi.addPositions(currentAccount, dataVersion, events);
+    var r = await window.holdingsQuoteApi.addPositions(scope.account, dataVersion, events);
+    if (!isSmartImportScopeCurrent(scope)) return { status: 'scope_changed', message: '账户已切换，旧结果已丢弃' };
     var j = r.payload;
     if (!r.ok) {
       if (r.status === 409) {
         // 409 可能是"整批已成功但响应丢失后带旧版本重试"：先按原 id 核对整组，全部存在才标已保存
         // （方案 4.4 第 5 条），不能只让刷新重试
-        var verify409 = await verifySmartEventsSaved(ids);
+        var verify409 = await verifySmartEventsSaved(ids, scope);
+        if (!isSmartImportScopeCurrent(scope)) return { status: 'scope_changed', message: '账户已切换，旧结果已丢弃' };
         if (verify409.all) return { status: 'saved', message: '已保存（核对确认，响应丢失后重试遇版本冲突）' };
         return { status: 'conflict', message: j.error || '数据已在其他窗口被修改，请刷新页面后重试' };
       }
       // 响应丢失/失败：按原 id 核对整组事件是否已落库，全部存在才标已保存
-      var verify = await verifySmartEventsSaved(ids);
+      var verify = await verifySmartEventsSaved(ids, scope);
+      if (!isSmartImportScopeCurrent(scope)) return { status: 'scope_changed', message: '账户已切换，旧结果已丢弃' };
       if (verify.all) return { status: 'saved', message: '已保存（核对确认，响应丢失）' };
       return { status: 'failed', message: j.error || '持仓导入失败' };
     }
@@ -1188,7 +1243,9 @@ async function submitPositionRows(rows) {
     renderAll();
     return { status: 'saved', message: '已导入持仓' };
   } catch (e) {
-    var verify2 = await verifySmartEventsSaved(ids);
+    if (!isSmartImportScopeCurrent(scope)) return { status: 'scope_changed', message: '账户已切换，旧结果已丢弃' };
+    var verify2 = await verifySmartEventsSaved(ids, scope);
+    if (!isSmartImportScopeCurrent(scope)) return { status: 'scope_changed', message: '账户已切换，旧结果已丢弃' };
     if (verify2.all) return { status: 'saved', message: '已保存（网络异常后核对确认）' };
     return { status: 'unknown', message: '网络异常，结果待确认，请稍后重试（不会重复录入）：' + (e.message || e) };
   }
@@ -1210,6 +1267,7 @@ function excludeSmartRow(rowId) {
 
 async function confirmSmartItem(rowId) {
   if (_smartSubmitting) return;
+  var scope = captureSmartImportScope();
   var found = smartRowById(rowId);
   if (!found) return;
   var v = revalidateSmartRow(rowId);
@@ -1223,7 +1281,8 @@ async function confirmSmartItem(rowId) {
   _smartSubmitting = true;
   setSmartButtonsDisabled(true);
   try {
-    var r = row.kind === 'trade' ? await submitTradeRow(row) : await submitPositionRows([row]);
+    var r = row.kind === 'trade' ? await submitTradeRow(row, scope) : await submitPositionRows([row], scope);
+    if (!isSmartImportScopeCurrent(scope)) return;
     if (r.status === 'saved' || r.status === 'duplicate') {
       removeSmartRows([rowId]);
       showToast(r.message || '已保存');
@@ -1232,8 +1291,10 @@ async function confirmSmartItem(rowId) {
       revalidateSmartRow(rowId);
     }
   } finally {
-    _smartSubmitting = false;
-    setSmartButtonsDisabled(false);
+    if (isSmartImportScopeCurrent(scope)) {
+      _smartSubmitting = false;
+      setSmartButtonsDisabled(false);
+    }
   }
 }
 
@@ -1248,6 +1309,7 @@ function collectSmartConflicts() {
 
 async function confirmAllSmartItems() {
   if (_smartSubmitting) return;
+  var scope = captureSmartImportScope();
   var items = window._smartParsed || [];
   if (items.length === 0) return;
   syncAllSmartRowsFromDom();
@@ -1291,7 +1353,8 @@ async function confirmAllSmartItems() {
     });
     // 持仓批量（单事务）：失败全留
     if (posRows.length) {
-      var pr = await submitPositionRows(posRows);
+      var pr = await submitPositionRows(posRows, scope);
+      if (!isSmartImportScopeCurrent(scope)) return;
       if (pr.status === 'saved' || pr.status === 'duplicate') {
         posSaved = posRows.length;
         posRows.forEach(function(row) { savedRows.push(row.rowId); });
@@ -1305,7 +1368,8 @@ async function confirmAllSmartItems() {
     for (var i = 0; i < tradeRows.length; i++) {
       if (stopped) break;
       var row = tradeRows[i];
-      var r = await submitTradeRow(row);
+      var r = await submitTradeRow(row, scope);
+      if (!isSmartImportScopeCurrent(scope)) return;
       if (r.status === 'saved' || r.status === 'duplicate') {
         tradeSaved++;
         savedRows.push(row.rowId);
@@ -1320,9 +1384,11 @@ async function confirmAllSmartItems() {
       }
     }
   } finally {
-    _smartSubmitting = false;
-    setSmartButtonsDisabled(false);
-    if (savedRows.length) removeSmartRows(savedRows);
+    if (isSmartImportScopeCurrent(scope)) {
+      _smartSubmitting = false;
+      setSmartButtonsDisabled(false);
+      if (savedRows.length) removeSmartRows(savedRows);
+    }
   }
   var parts = [];
   if (posRowsCountable(posSaved, posFailed)) parts.push('持仓 ' + posSaved + ' 条已保存' + (posFailed ? '、' + posFailed + ' 条失败保留' : ''));
@@ -1359,6 +1425,7 @@ function base64ToFile(base64, filename) {
 // ===================== 手机扫码上传 =====================
 var _qrPollTimer = null;
 var _qrToken = null;
+var _qrGeneration = 0;
 
 // 二维码下方状态文案（过期提示 + 重新生成入口，方案 4.6 第 4 条）
 function setQrStatus(html) {
@@ -1367,45 +1434,56 @@ function setQrStatus(html) {
 }
 
 function initVisionQr() {
+  var scope = bindSmartImportScope();
+  var qrGeneration = ++_qrGeneration;
+  function currentQr() { return qrGeneration === _qrGeneration && isSmartImportScopeCurrent(scope); }
   fetch(api('/api/vision-token'), { method: 'POST' })
     .then(function(r) { return r.json(); })
     .then(function(d) {
+      if (!currentQr()) return;
       _qrToken = d.token;
       var img = document.getElementById('qr-image');
       if (img) img.src = d.qr || '';
       setQrStatus('手机扫码上传图片');
 
       if (_qrPollTimer) clearInterval(_qrPollTimer);
-      _qrPollTimer = setInterval(function() {
+      var pollTimer = setInterval(function() {
+        if (!currentQr()) {
+          clearInterval(pollTimer);
+          if (_qrPollTimer === pollTimer) _qrPollTimer = null;
+          return;
+        }
         fetch(api('/api/vision-check/' + d.token))
           .then(function(r) { return r.json(); })
           .then(function(result) {
             // 切换账户后旧轮询结果作废，不恢复旧预览
-            if (window._smartAccount && window._smartAccount !== currentAccount) {
-              clearInterval(_qrPollTimer);
-              _qrPollTimer = null;
+            if (!currentQr()) {
+              clearInterval(pollTimer);
+              if (_qrPollTimer === pollTimer) _qrPollTimer = null;
               return;
             }
             if (result.expired) {
-              clearInterval(_qrPollTimer);
-              _qrPollTimer = null;
+              clearInterval(pollTimer);
+              if (_qrPollTimer === pollTimer) _qrPollTimer = null;
               // 过期即时提示并给重新生成入口（断网/响应丢失后的恢复边界如实提示）
               setQrStatus('二维码已过期 <button class="btn btn-outline btn-sm" data-act="initVisionQr">重新生成二维码</button>');
               return;
             }
             var images = result.images && result.images.length ? result.images : (result.image ? [result.image] : []);
             if (images.length) {
-              clearInterval(_qrPollTimer);
-              _qrPollTimer = null;
+              clearInterval(pollTimer);
+              if (_qrPollTimer === pollTimer) _qrPollTimer = null;
               // 整批进入识别队列（与本地选图同一队列）
               enqueueBase64Images(images, '手机上传');
             }
           });
       }, 2000);
+      _qrPollTimer = pollTimer;
     });
 }
 
 function stopVisionQr() {
+  _qrGeneration++;
   if (_qrPollTimer) { clearInterval(_qrPollTimer); _qrPollTimer = null; }
   _qrToken = null;
   var img = document.getElementById('qr-image');
@@ -1437,6 +1515,8 @@ function updateQtyHint(code) {
 //       | failed（明确失败）| conflict（版本/会话问题，暂停）| unknown（结果待确认）
 async function addTradeInternal(code, name, direction, price, quantity, date, importedFees, importBatchId, opts) {
   opts = opts || {};
+  var scope = opts.scope || captureSmartImportScope();
+  if (!isSmartImportScopeCurrent(scope)) return { status: 'scope_changed', message: '账户已切换，旧结果已丢弃' };
   code = classifyCode.normalizeCode(code, name);
   // 单位只转换一次：导入路径（skipUnitConversion）已在预览换算过，不重复按券商配置换算
   if (!opts.skipUnitConversion) quantity = normalizeQuantity(quantity, code);
@@ -1458,7 +1538,7 @@ async function addTradeInternal(code, name, direction, price, quantity, date, im
 
   // 服务端统一账本事务：持仓/现金由服务端重算并返回
   try {
-    const r = await window.tradeLedgerApi.addTrade(currentAccount, dataVersion,
+    const r = await window.tradeLedgerApi.addTrade(scope.account, dataVersion,
         {
           id: tradeId,
           code: code, name: name || code, direction: direction,
@@ -1469,17 +1549,20 @@ async function addTradeInternal(code, name, direction, price, quantity, date, im
           date: date, // 日期必须显式给定（重校验已阻止缺失，不默认今天；方案 4.1 第 6 条）
           import_batch_id: importBatchId || null
         });
+    if (!isSmartImportScopeCurrent(scope)) return { status: 'scope_changed', message: '账户已切换，旧结果已丢弃' };
     const j = r.payload;
     if (!r.ok) {
       if (r.status === 409) {
         // 409 可能是"已保存但响应丢失后带旧版本重试"：先按原 id 核对，已落库才标已保存（方案 4.4 第 5 条）
-        var verify409 = await verifySmartEventsSaved([tradeId]);
+        var verify409 = await verifySmartEventsSaved([tradeId], scope);
+        if (!isSmartImportScopeCurrent(scope)) return { status: 'scope_changed', message: '账户已切换，旧结果已丢弃' };
         if (verify409.all) return { status: 'saved', message: '已保存（核对确认，响应丢失后重试遇版本冲突）' };
         return { status: 'conflict', message: j.error || '数据已在其他窗口被修改，请刷新页面后重试' };
       }
       if (r.status === 401 || r.status === 403) return { status: 'conflict', message: j.error || '登录状态失效，请重新登录后继续' };
       // 失败后按原 id 核对：可能是响应丢失
-      var verifyFailed = await verifySmartEventsSaved([tradeId]);
+      var verifyFailed = await verifySmartEventsSaved([tradeId], scope);
+      if (!isSmartImportScopeCurrent(scope)) return { status: 'scope_changed', message: '账户已切换，旧结果已丢弃' };
       if (verifyFailed.all) return { status: 'saved', message: '已保存（核对确认，响应丢失）' };
       return { status: 'failed', message: j.error || '保存交易失败' };
     }
@@ -1493,10 +1576,16 @@ async function addTradeInternal(code, name, direction, price, quantity, date, im
     // 过去日期的交易：触发历史净值精确回填（Tushare 历史回补，不近似）；失败与交易已保存分开提示
     if (date && date < todayCN()) {
       try {
-        const rr = await window.tradeLedgerApi.recomputeNav(currentAccount, date);
+        const rr = await window.tradeLedgerApi.recomputeNav(scope.account, date);
+        if (!isSmartImportScopeCurrent(scope)) return { status: 'scope_changed', message: '账户已切换，旧结果已丢弃' };
         const jj = rr.payload;
-        if (jj && jj.ok) data = await loadData(currentAccount); // 刷新 navHistory
+        if (jj && jj.ok) {
+          var refreshed = await loadData(scope.account);
+          if (!isSmartImportScopeCurrent(scope)) return { status: 'scope_changed', message: '账户已切换，旧结果已丢弃' };
+          data = refreshed;
+        }
       } catch (e) {
+        if (!isSmartImportScopeCurrent(scope)) return { status: 'scope_changed', message: '账户已切换，旧结果已丢弃' };
         renderAll();
         return { status: 'saved', message: '已记录 ' + (direction === 'buy' ? '买入' : '卖出') + ' ' + (name || code) + '（历史净值重算失败，可稍后在净值页重试）' };
       }
@@ -1504,8 +1593,10 @@ async function addTradeInternal(code, name, direction, price, quantity, date, im
     renderAll();
     return { status: 'saved', message: '已记录 ' + (direction === 'buy' ? '买入' : '卖出') + ' ' + (name || code) };
   } catch (e) {
+    if (!isSmartImportScopeCurrent(scope)) return { status: 'scope_changed', message: '账户已切换，旧结果已丢弃' };
     // 网络异常：结果未知，先按原 id 核对是否已落库
-    var verify = await verifySmartEventsSaved([tradeId]);
+    var verify = await verifySmartEventsSaved([tradeId], scope);
+    if (!isSmartImportScopeCurrent(scope)) return { status: 'scope_changed', message: '账户已切换，旧结果已丢弃' };
     if (verify.all) return { status: 'saved', message: '已保存（网络异常后核对确认）' };
     return { status: 'unknown', message: '网络异常，结果待确认（重试不会重复录入）：' + (e.message || e) };
   }

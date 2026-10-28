@@ -292,10 +292,14 @@ function renderAccountSelect() {
 
 async function switchAccount(name) {
   if (name === currentAccount) return;
+  if (typeof window.invalidateSmartImportScope === 'function') window.invalidateSmartImportScope();
   currentAccount = name;
   window.currentAccount = name; // 同步全局（仓位对比等独立脚本经 window 读取）
+  var scope = typeof captureSmartImportScope === 'function' ? captureSmartImportScope() : null;
   priceChangeMap = {};
-  data = await loadData(currentAccount);
+  var loaded = await loadData(name);
+  if (scope && !isSmartImportScopeCurrent(scope)) return;
+  data = loaded;
   // loadData() 已从 data.changes 和持仓 price 恢复 priceChangeMap
   renderAccountSelect();
   renderAll();
@@ -516,6 +520,7 @@ async function confirmDeleteAccount() {
   saveAccounts();
   
   if (name === currentAccount) {
+    if (typeof window.invalidateSmartImportScope === 'function') window.invalidateSmartImportScope();
     currentAccount = accounts[0];
   }
   window.currentAccount = currentAccount; // 删除账户后同步全局
@@ -535,6 +540,7 @@ async function saveAccountName() {
     if (accounts.includes(n)) { showToast('该账户已存在'); return; }
     accounts.push(n);
     saveAccounts();
+    if (typeof window.invalidateSmartImportScope === 'function') window.invalidateSmartImportScope();
     currentAccount = n;
     window.currentAccount = n; // 新建后同步全局（仓位对比等独立脚本读取）
     data = await loadData(currentAccount);
@@ -563,7 +569,10 @@ async function saveAccountName() {
   } catch (e) { showToast('重命名失败：' + e.message); return; }
 
   accounts[oldIdx] = n;
-  if (wasCurrent) currentAccount = n;
+  if (wasCurrent) {
+    if (typeof window.invalidateSmartImportScope === 'function') window.invalidateSmartImportScope();
+    currentAccount = n;
+  }
   window.currentAccount = currentAccount; // 重命名后同步全局（当前账户名可能已变化）
   saveAccounts();
 

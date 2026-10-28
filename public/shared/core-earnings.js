@@ -4,6 +4,8 @@
 function initNav() {
   document.querySelectorAll('.nav-tab').forEach(function (tab) {
     tab.addEventListener('click', function () {
+      var tradesPage = document.getElementById('page-trades');
+      if (tab.dataset.page !== 'trades' && tradesPage && tradesPage.classList.contains('active') && typeof window.invalidateSmartImportScope === 'function') window.invalidateSmartImportScope();
       document.querySelectorAll('.nav-tab').forEach(function (t) { t.classList.remove('active'); });
       document.querySelectorAll('.page').forEach(function (p) { p.classList.remove('active'); });
       tab.classList.add('active');

@@ -13,6 +13,9 @@ function switchMain(main, noPushState, bondSub) {
     window.location.href = api('/login.html?redirect=' + encodeURIComponent('/?main=' + main));
     return Promise.resolve();
   }
+  var holdingsPage = document.getElementById('main-holdings');
+  var tradesPage = document.getElementById('page-trades');
+  if (main !== 'holdings' && holdingsPage && holdingsPage.classList.contains('active') && tradesPage && tradesPage.classList.contains('active') && typeof window.invalidateSmartImportScope === 'function') window.invalidateSmartImportScope();
   // 同步地址栏：首页清掉参数，其他页面带上 ?main=，可转债保留 sub，反馈保留 sub 与详情编号
   if (!noPushState) {
     var params = new URLSearchParams(window.location.search);

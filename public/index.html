@@ -1433,6 +1433,7 @@ async function autoSaveAvatar(dataUrl) {
 }
 
 async function logout() {
+  if (typeof window.invalidateSmartImportScope === 'function') window.invalidateSmartImportScope();
   await fetch(api('/api/logout'), { method: 'POST' });
   window.location.href = api('/');
 }
@@ -1482,10 +1483,21 @@ function saveAccounts() {
   }).catch(() => {});
 }
 
+var accountLoadSequence = 0;
 async function loadData(accountName) {
+  var sequence = ++accountLoadSequence;
+  var owner = typeof username === 'string' ? username : '';
+  var identity = typeof accountIdentity === 'string' ? accountIdentity : '';
+  function currentLoad() {
+    return sequence === accountLoadSequence && accountName === currentAccount &&
+      owner === (typeof username === 'string' ? username : '') &&
+      identity === (typeof accountIdentity === 'string' ? accountIdentity : '');
+  }
   try {
     const r = await fetch(api(`/api/data/${encodeURIComponent(accountName)}`));
-    data = await r.json();
+    const received = await r.json();
+    if (!currentLoad()) return data;
+    data = received;
     // pg 驱动可能把 numeric 返回为字符串，统一转 number（否则图表 .toFixed 报错 + 保存校验 400）
     if (data && Array.isArray(data.navHistory)) {
       data.navHistory.forEach(function (n) {
@@ -1525,7 +1537,7 @@ async function loadData(accountName) {
         if (c.amount != null) c.amount = Number(c.amount);
       });
     }
-  } catch(e) { data = null; }
+  } catch(e) { if (!currentLoad()) return data; data = null; }
   if (!data) {
     data = { positions: [], trades: [], cash: 0, navHistory: [], cashFlows: [] };
   }
@@ -1539,8 +1551,9 @@ async function loadData(accountName) {
   if (!data.hkRate) data.hkRate = 0.868; // 默认汇率
   try {
     var sharedHkRate = await fetchUnifiedHKRate();
+    if (!currentLoad()) return data;
     if (sharedHkRate != null && sharedHkRate > 0) data.hkRate = sharedHkRate;
-  } catch (e) {}
+  } catch (e) { if (!currentLoad()) return data; }
   if (!data.cashType) data.cashType = '现金';
   if (!data.cashSubtype) data.cashSubtype = '现金';
   if (!data.valuation_map) data.valuation_map = {}; // 可转债估值对照表（缺失则渲染为 —）

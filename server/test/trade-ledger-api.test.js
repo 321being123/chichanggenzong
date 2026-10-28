@@ -15,7 +15,7 @@ const apiContext = { window: { siteApi: { request: async (url, options) => {
   requests.push({ url, options });
   if (rawMode === 'network') return { ok: false, status: 0, response: null, error: '网络故障' };
   if (rawMode === 'unauthorized') return { ok: false, status: 403, response: { json: async () => { throw new Error('不应解析'); } } };
-  return { ok: true, status: 200, response: { json: async () => ({ data: { trades: [] } }) } };
+  return { ok: true, status: 200, response: { json: async () => ({ positions: [], trades: [] }) } };
 } } } };
 vm.runInNewContext(fs.readFileSync(path.join(root, 'public/js/api/trade-ledger-api.js'), 'utf8'), apiContext);
 const api = apiContext.window.tradeLedgerApi;
@@ -46,6 +46,7 @@ const api = apiContext.window.tradeLedgerApi;
   let mode = 'conflict', verified = false, sent;
   const ui = {
     data: { trades: [] }, currentAccount: '账户%', dataVersion: 3,
+    captureSmartImportScope: () => ({ account: '账户%' }), isSmartImportScopeCurrent: () => true,
     classifyCode: { normalizeCode: x => x }, normalizeQuantity: n => n,
     recognizeCode: () => ({ type: '股权', subtype: '沪市' }), uid: () => 'fixed-id',
     calcTradeFees: () => ({ commission: 1, stamp_tax: 0, transfer_fee: 0, other_fee: 0 }),

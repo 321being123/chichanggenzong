@@ -122,6 +122,21 @@ async function checkAsync(name, fn) {
       assert.strictEqual(pos.quantity, 100, '重复提交数量不得翻倍');
     });
 
+    await checkAsync('事件核对使用真实账户数据的顶层交易列表，拒绝旧缓存假成功', async () => {
+      const fs = require('fs'), vm = require('vm');
+      const source = fs.readFileSync(path.join(__dirname, '../../public/shared/core-trade.js'), 'utf8');
+      const section = source.slice(source.indexOf('async function verifySmartEventsSaved('), source.indexOf('// 交易单行提交'));
+      const snapshot = await loadAccountData(U, A);
+      assert(Array.isArray(snapshot.trades) && snapshot.trades.some(item => item.id === 'ev_idem_001'));
+      const ui = { currentAccount: A, data: { trades: [{ id: 'stale-only' }] },
+        captureSmartImportScope: () => ({ account: A }), isSmartImportScopeCurrent: () => true,
+        window: { tradeLedgerApi: { accountData: async () => ({ ok: true, status: 200, payload: snapshot }) } } };
+      ui.applyLedgerData = value => { ui.data = value; };
+      vm.runInNewContext(section, ui);
+      assert.strictEqual((await ui.verifySmartEventsSaved(['stale-only'])).all, false, '旧缓存不应冒充服务器事件');
+      assert.strictEqual((await ui.verifySmartEventsSaved(['ev_idem_001'])).all, true, '服务器已保存事件应被确认');
+    });
+
     // ========== 3) 账户归属校验 ==========
     await checkAsync('归属：向不存在的账户 PATCH prices → 403', async () => {
       const r = await fetch(base + '/positions/prices', {

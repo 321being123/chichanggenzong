@@ -142,7 +142,81 @@ async function select_market_trade_calendar_1(params, client = pool) {
                    AND trade_date < (now() AT TIME ZONE 'Asia/Shanghai')::date`);
 }
 
+// 强赎概览的筛选条件：在市口径 + 可选状态/关键字/交易日，占位符在本层拼装
+function buildCallWhere({ status, query, date }) {
+  const marketAsOf = `(SELECT COALESCE(MAX(trade_date), CURRENT_DATE) FROM market.convertible_bond_daily_metrics)`;
+  const clauses = [
+    `u.status='listed'`,
+    `(u.issue_type IS NULL OR u.issue_type NOT IN ('定向','私募'))`,
+    `(u.delist_date IS NULL OR u.delist_date > ${marketAsOf})`,
+    `(u.maturity_date IS NULL OR u.maturity_date >= ${marketAsOf})`,
+    `(u.conv_end_date IS NULL OR u.conv_end_date >= ${marketAsOf})`,
+    `(u.conv_stop_date IS NULL OR u.conv_stop_date > ${marketAsOf})`,
+  ];
+  const values = [];
+  if (status) { values.push(status); clauses.push(`c.business_status=$${values.length}`); }
+  if (query) {
+    values.push(`%${query}%`);
+    const p = `$${values.length}`;
+    clauses.push(`(c.security_code ILIKE ${p} OR c.ts_code ILIKE ${p} OR c.bond_name ILIKE ${p} OR c.stock_code ILIKE ${p} OR c.stock_name ILIKE ${p})`);
+  }
+  if (date) { values.push(date); clauses.push(`c.trade_date=$${values.length}::date`); }
+  return { clauses, values };
+}
+
+function buildCallBase(filter) {
+  return `
+    FROM analytics.convertible_bond_call_latest c
+    JOIN public.bond_unified u ON u.instrument_id=c.instrument_id
+    JOIN LATERAL (
+      SELECT close,conversion_value,conversion_premium_pct,trade_date AS market_trade_date
+       FROM market.convertible_bond_daily_metrics m
+       WHERE m.instrument_id=c.instrument_id
+         AND m.trade_date=(SELECT MAX(trade_date) FROM market.convertible_bond_daily_metrics)
+       ORDER BY m.trade_date DESC LIMIT 1
+    ) m ON true
+   WHERE ${filter.clauses.join(' AND ')}`;
+}
+
+// 强赎概览主列表：按业务状态优先级与剩余天数排序
+async function listCallOverviewRows(params, client = pool) {
+  const filter = buildCallWhere(params.filter || {});
+  const base = buildCallBase(filter);
+  return client.query(
+    `SELECT c.instrument_id,c.ts_code,c.security_code,c.bond_name,c.stock_code,c.stock_name,
+              m.close AS bond_close,m.market_trade_date,c.stock_close,c.current_conv_price,c.trigger_ratio,c.trigger_price,
+              c.distance_to_trigger_pct,c.trade_date,c.matched_days,c.required_days,c.observation_days,
+              c.remaining_days,c.calculated_status,c.official_status,c.business_status,c.data_status,c.diagnostics,
+              c.announced_at,c.decision_date,c.lock_start_date,c.no_call_until,c.validity_basis,
+              c.next_count_start_date,c.calendar_status,c.data_quality_reason,c.redemption_record_date,c.last_trade_date,
+              c.last_conversion_date,c.redemption_price,c.source_url,c.announcement_title,
+              c.announcement_parse_status,c.remain_size,c.maturity_date,c.conv_start_date,c.conv_end_date,
+              c.calculated_at
+         ${base}
+        ORDER BY CASE c.business_status WHEN 'announced' THEN 1 WHEN 'maturity_redeem' THEN 2 WHEN 'maturity_near' THEN 3
+                                       WHEN 'redemption_unconfirmed' THEN 4 WHEN 'met_pending' THEN 5
+                                       WHEN 'near' THEN 6 WHEN 'tracking' THEN 7 WHEN 'waived' THEN 8 WHEN 'not_active' THEN 9 ELSE 10 END,
+                 COALESCE(c.remaining_days,9999),c.security_code
+        LIMIT $${filter.values.length + 1}`,
+    [...filter.values, params.safeLimit],
+  );
+}
+
+// 强赎概览状态汇总
+async function listCallOverviewSummary(params, client = pool) {
+  const filter = buildCallWhere(params.filter || {});
+  const base = buildCallBase(filter);
+  return client.query(
+    `SELECT c.business_status,count(*)::int AS count
+         ${base}
+        GROUP BY c.business_status`, filter.values,
+  );
+}
+
 module.exports = {
+  buildCallWhere,
+  listCallOverviewRows,
+  listCallOverviewSummary,
   getLatestCallState,
   getLatestCallStateBySecurityCodes,
   getLatestCallStateMap,

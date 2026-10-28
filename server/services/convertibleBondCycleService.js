@@ -41,42 +41,23 @@ async function resolveInstruments(client, rows) {
 async function saveDailyFacts(client, tradeDate, sourceId, rows, instrumentMap) {
   const date = isoDate(tradeDate);
   if (!date) return;
-  const mParams = [], mVals = [];
-  const bParams = [], bVals = [];
+  const prepared = [];
   for (const r of (rows || [])) {
     const code = String(r.ts_code).trim().toUpperCase();
     const id = instrumentMap.get(code);
     const close = toNumber(r.close);
     if (!id || close == null || close <= 0) continue; // 事实表 close>0 约束
-    let n = mParams.length;
-    mParams.push(id, date, sourceId, close, toNumber(r.cb_value), toNumber(r.cb_over_rate), toNumber(r.bond_value), toNumber(r.bond_over_rate), JSON.stringify(r));
-    mVals.push(`($${n + 1},$${n + 2},$${n + 3},$${n + 4},$${n + 5},$${n + 6},$${n + 7},$${n + 8},$${n + 9})`);
-    let m = bParams.length;
-    bParams.push(id, date, sourceId, toNumber(r.open), toNumber(r.high), toNumber(r.low), close, toNumber(r.vol), toNumber(r.amount));
-    bVals.push(`($${m + 1},$${m + 2},$${m + 3},$${m + 4},$${m + 5},$${m + 6},$${m + 7},$${m + 8},$${m + 9})`);
+    prepared.push({
+      id, close,
+      cbValue: toNumber(r.cb_value), cbOverRate: toNumber(r.cb_over_rate),
+      bondValue: toNumber(r.bond_value), bondOverRate: toNumber(r.bond_over_rate),
+      open: toNumber(r.open), high: toNumber(r.high), low: toNumber(r.low),
+      vol: toNumber(r.vol), amount: toNumber(r.amount),
+      raw: JSON.stringify(r),
+    });
   }
-  if (mVals.length) {
-    await client.query(
-      `INSERT INTO market.convertible_bond_daily_metrics
-        (instrument_id,trade_date,source_id,close,conversion_value,conversion_premium_pct,bond_value,bond_premium_pct,raw_payload)
-       VALUES ${mVals.join(',')}
-       ON CONFLICT(instrument_id,trade_date,source_id) DO UPDATE SET
-        close=EXCLUDED.close,conversion_value=EXCLUDED.conversion_value,conversion_premium_pct=EXCLUDED.conversion_premium_pct,
-        bond_value=EXCLUDED.bond_value,bond_premium_pct=EXCLUDED.bond_premium_pct,raw_payload=EXCLUDED.raw_payload,ingested_at=now()`,
-      mParams
-    );
-  }
-  if (bVals.length) {
-    await client.query(
-      `INSERT INTO market.daily_bars(instrument_id,trade_date,source_id,open,high,low,close,volume,amount)
-       VALUES ${bVals.join(',')}
-       ON CONFLICT(instrument_id,trade_date,source_id) DO UPDATE SET
-        open=EXCLUDED.open,high=EXCLUDED.high,low=EXCLUDED.low,close=EXCLUDED.close,volume=EXCLUDED.volume,amount=EXCLUDED.amount,ingested_at=now()`,
-      bParams
-    );
-  }
+  await repository.upsertDailyFacts({ date, sourceId, rows: prepared }, client);
 }
-
 // 取当前日之前、同公式版本+同样本池版本的有效综合估值（用于滚动分位），按时间倒序取前 PRIOR_LIMIT 个
 async function fetchPriorComposites(client, formulaVersion, tradeDate, limit = PRIOR_LIMIT, universeVersion = UNIVERSE_VERSION) {
   const { rows } = await repository.select_analytics_convertible_bond_cycle_daily([formulaVersion, universeVersion, tradeDate, limit], client);

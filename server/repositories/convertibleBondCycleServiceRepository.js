@@ -99,7 +99,46 @@ async function listCycleHistory(formulaVersion, universeVersion, cutoff, client 
   return rows;
 }
 
+// 当日可转债周期事实批量写入：指标表与日线表各一批，占位符按行拼装
+async function upsertDailyFacts(params, client = pool) {
+  const rows = params.rows || [];
+  if (!rows.length) return;
+  const mParams = [];
+  const mVals = [];
+  const bParams = [];
+  const bVals = [];
+  for (const r of rows) {
+    let n = mParams.length;
+    mParams.push(r.id, params.date, params.sourceId, r.close, r.cbValue, r.cbOverRate, r.bondValue, r.bondOverRate, r.raw);
+    mVals.push(`(${n + 1},${n + 2},${n + 3},${n + 4},${n + 5},${n + 6},${n + 7},${n + 8},${n + 9})`);
+    let m = bParams.length;
+    bParams.push(r.id, params.date, params.sourceId, r.open, r.high, r.low, r.close, r.vol, r.amount);
+    bVals.push(`(${m + 1},${m + 2},${m + 3},${m + 4},${m + 5},${m + 6},${m + 7},${m + 8},${m + 9})`);
+  }
+  if (mVals.length) {
+    await client.query(
+      `INSERT INTO market.convertible_bond_daily_metrics
+        (instrument_id,trade_date,source_id,close,conversion_value,conversion_premium_pct,bond_value,bond_premium_pct,raw_payload)
+       VALUES ${mVals.join(',')}
+       ON CONFLICT(instrument_id,trade_date,source_id) DO UPDATE SET
+        close=EXCLUDED.close,conversion_value=EXCLUDED.conversion_value,conversion_premium_pct=EXCLUDED.conversion_premium_pct,
+        bond_value=EXCLUDED.bond_value,bond_premium_pct=EXCLUDED.bond_premium_pct,raw_payload=EXCLUDED.raw_payload,ingested_at=now()`
+      , mParams,
+    );
+  }
+  if (bVals.length) {
+    await client.query(
+      `INSERT INTO market.daily_bars(instrument_id,trade_date,source_id,open,high,low,close,volume,amount)
+       VALUES ${bVals.join(',')}
+       ON CONFLICT(instrument_id,trade_date,source_id) DO UPDATE SET
+        open=EXCLUDED.open,high=EXCLUDED.high,low=EXCLUDED.low,close=EXCLUDED.close,volume=EXCLUDED.volume,amount=EXCLUDED.amount,ingested_at=now()`
+      , bParams,
+    );
+  }
+}
+
 module.exports = {
+  upsertDailyFacts,
   listCycleHistory,
   getSyncCursor,
   getTushareSourceId,

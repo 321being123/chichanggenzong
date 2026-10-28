@@ -135,7 +135,29 @@ async function select_ops_worker_heartbeats(params, client = pool) {
       FROM ops.worker_heartbeats ORDER BY role, last_seen_at DESC`);
 }
 
+// 埋点事件批量写入：占位符按行拼装，event_id 冲突时保留首条
+async function insertSiteEvents(params, client = pool) {
+  const events = params.events || [];
+  const identity = params.identity || {};
+  if (!events.length) return { rowCount: 0 };
+  const values = [];
+  const args = [];
+  const add = (value) => { args.push(value); return '$' + args.length; };
+  for (const event of events) {
+    values.push(`(${add(event.eventId)}, now(), ${add(event.occurredAt)}, ${add(identity.visitorKey)}, ${add(identity.userKey)}, ${add(identity.sessionKey || event.sessionKey)}, ${add(event.pageViewId)}, ${add(event.eventName)}, ${add(event.pageKey)}, ${add(event.module)}, ${add(event.entry)}, ${add(event.deviceType)}, ${add(event.sourceDomain || identity.sourceDomain || '')}, ${add(identity.internal)}, 1, ${add(JSON.stringify(event.properties))}::jsonb)`);
+  }
+  return client.query(
+    `INSERT INTO ops.site_events
+    (event_id, received_at, occurred_at, visitor_key, user_key, session_key, page_view_id,
+     event_name, page_key, module, entry, device_type, source_domain, is_internal, data_version, properties)
+    VALUES ${values.join(',')}
+    ON CONFLICT (event_id) DO NOTHING`,
+    args,
+  );
+}
+
 module.exports = {
+  insertSiteEvents,
   purgeAnalyticsData,
   insert_ops_site_runtime_minute,
   select_users,

@@ -29,52 +29,9 @@ function deduplicateArbitrageDocuments(documents) {
   });
 }
 
-// 公开页只展示具备核心计算条款的案件；同时兜底排除历史上被误建为“进行中”的终态公告。
-// 后台审核页仍保留全部案件，便于检查和修正原始数据。
-const PUBLIC_TARGET_ROLE_FILTER = `NOT (c.strategy_type = 'a_cash_offer' AND EXISTS (
-    SELECT 1 FROM event.documents buyer_doc
-    WHERE buyer_doc.document_id=c.primary_document_id
-      AND COALESCE(buyer_doc.title, '') ~ '${BUYER_OFFER_TITLE_PATTERN}'
-  ))`;
-const PUBLIC_CASE_FILTER = `
-  c.review_status = 'approved'
-  AND (c.parser_version IS NULL OR c.parse_status = 'validated')
-  AND c.event_status NOT IN ('completed','terminated','expired')
-  AND ${PUBLIC_TARGET_ROLE_FILTER}
-  AND (c.expected_completion_date IS NULL OR c.expected_completion_date >= CURRENT_DATE)
-  AND (
-    (c.strategy_type IN ('a_cash_offer','hk_privatisation') AND COALESCE(c.offer_price,c.cash_choice_price) > 0)
-    OR (c.strategy_type = 'a_share_swap' AND (
-        COALESCE(c.cash_choice_price,c.offer_price) > 0
-        OR (c.swap_ratio > 0
-          AND c.reference_instrument_id IS NOT NULL
-          AND c.reference_instrument_id <> c.target_instrument_id
-          AND EXISTS (
-            SELECT 1 FROM core.instruments ref_valid
-            WHERE ref_valid.instrument_id = c.reference_instrument_id
-              AND COALESCE(ref_valid.name, '') <> ''
-          ))))
-    OR (c.strategy_type = 'hk_rights' AND c.subscription_price > 0
-        AND c.rights_units_per_new_share > 0 AND c.rights_instrument_id IS NOT NULL)
-  )
-  AND NOT EXISTS (
-    SELECT 1
-    FROM event.arbitrage_case_documents acd_terminal
-    JOIN event.documents d_terminal ON d_terminal.document_id = acd_terminal.document_id
-    WHERE acd_terminal.case_id = c.case_id
-      AND COALESCE(d_terminal.title, '') ~* '(终止([^上]|$)|終止([^上]|$)|完成过户|完成過戶|过户完成|過戶完成|交割完成|交割完毕|交割完畢|实施结果|實施結果|申报结果|申報結果|供股.{0,12}结果|供股.{0,12}結果|私有化.{0,12}完成|privati[sz]ation.{0,20}completed|lapsed|terminated|withdrawn)'
-  )
-  AND NOT EXISTS (
-    SELECT 1
-    FROM event.arbitrage_cases terminal_case
-    JOIN event.arbitrage_case_documents terminal_link ON terminal_link.case_id=terminal_case.case_id
-    JOIN event.documents terminal_doc ON terminal_doc.document_id=terminal_link.document_id
-    WHERE terminal_case.target_instrument_id=c.target_instrument_id
-      AND terminal_case.strategy_type=c.strategy_type
-      AND terminal_case.case_id<>c.case_id
-      AND terminal_case.event_status IN ('completed','terminated','expired')
-      AND terminal_doc.announced_at>=c.announced_at
-  )`;
+// 公开页只展示具备核心计算条款的案件；兜底条件由数据层构造，后台审核页仍保留全部案件。
+const { buildCaseFilter } = repository;
+const PUBLIC_CASE_FILTER = buildCaseFilter(BUYER_OFFER_TITLE_PATTERN);
 
 // ========== 查询 ==========
 
@@ -88,30 +45,9 @@ async function getArbitrageList(type, page = 1, pageSize = 50, username = null) 
   };
   const types = typeMap[type] || typeMap.a_stock;
 
-  const { rows } = await pool.query(`
-    SELECT c.*, i.canonical_code, regexp_replace(i.name,'<[^>]+>','','g') AS name, i.currency_code as inst_currency,
-           ri.canonical_code as ref_code, regexp_replace(ri.name,'<[^>]+>','','g') AS ref_name,
-           rwi.canonical_code as rights_code, rwi.name as rights_name,
-           pd.url AS announcement_url,
-           CASE WHEN $4::text IS NULL THEN NULL ELSE NOT (
-             (SELECT arbitrage_seen_cases FROM users WHERE username=$4) ? c.case_id::text
-           ) END AS is_new
-    FROM event.arbitrage_cases c
-    LEFT JOIN core.instruments i ON c.target_instrument_id = i.instrument_id
-    LEFT JOIN core.instruments ri ON c.reference_instrument_id = ri.instrument_id
-    LEFT JOIN core.instruments rwi ON c.rights_instrument_id = rwi.instrument_id
-    LEFT JOIN event.documents pd ON c.primary_document_id = pd.document_id
-    WHERE c.strategy_type = ANY($1)
-      AND ${PUBLIC_CASE_FILTER}
-    ORDER BY is_new DESC NULLS LAST, c.terms_updated_at DESC NULLS LAST
-    LIMIT $2 OFFSET $3
-  `, [types, pageSize, offset, username]);
+  const { rows } = await repository.listArbitrageCases({ types, pageSize, offset, username, buyerOfferPattern: BUYER_OFFER_TITLE_PATTERN });
 
-  const { rows: countRows } = await pool.query(`
-    SELECT count(*) as total FROM event.arbitrage_cases c
-    WHERE c.strategy_type = ANY($1)
-      AND ${PUBLIC_CASE_FILTER}
-  `, [types]);
+  const { rows: countRows } = await repository.countArbitrageCases({ types, buyerOfferPattern: BUYER_OFFER_TITLE_PATTERN });
 
   // 收集所有需取行情的代码（正股 / 换股参考股 / 供股权）
   const codeSet = new Set();
@@ -183,21 +119,7 @@ async function getArbitrageList(type, page = 1, pageSize = 50, username = null) 
 
 // 详情
 async function getArbitrageDetail(caseId, username = null) {
-  const { rows } = await pool.query(`
-    SELECT c.*, i.canonical_code, regexp_replace(i.name,'<[^>]+>','','g') AS name, i.currency_code as inst_currency,
-           ri.canonical_code as ref_code, regexp_replace(ri.name,'<[^>]+>','','g') AS ref_name,
-           rwi.canonical_code as rights_code, rwi.name as rights_name,
-           pd.url AS announcement_url,
-           CASE WHEN $2::text IS NULL THEN NULL ELSE NOT (
-             (SELECT arbitrage_seen_cases FROM users WHERE username=$2) ? c.case_id::text
-           ) END AS is_new
-    FROM event.arbitrage_cases c
-    LEFT JOIN core.instruments i ON c.target_instrument_id = i.instrument_id
-    LEFT JOIN core.instruments ri ON c.reference_instrument_id = ri.instrument_id
-    LEFT JOIN core.instruments rwi ON c.rights_instrument_id = rwi.instrument_id
-    LEFT JOIN event.documents pd ON c.primary_document_id = pd.document_id
-    WHERE c.case_id = $1 AND c.review_status = 'approved' AND ${PUBLIC_TARGET_ROLE_FILTER}
-  `, [caseId, username]);
+  const { rows } = await repository.selectArbitrageDetail({ caseId, username, buyerOfferPattern: BUYER_OFFER_TITLE_PATTERN });
 
   if (!rows.length) return null;
   const c = rows[0];
@@ -363,51 +285,14 @@ async function resolveCodeToId(code) {
 
 // 更新事件（审核/修正）
 async function updateCase(caseId, updates, reviewer) {
-  const allowed = [
-    'strategy_type', 'event_status', 'review_status',
-    'currency_code', 'offer_price', 'cash_choice_price', 'cash_component', 'swap_ratio',
-    'subscription_price', 'rights_units_per_new_share', 'rights_ratio_numerator', 'rights_ratio_denominator',
-    'announced_at', 'expected_completion_date',
-    'rights_trade_start', 'rights_trade_end', 'payment_deadline', 'listing_date',
-    'offeror', 'offeror_holding_pct', 'registrar', 'transaction_method',
-    'headcount_required', 'shortable', 'description',
-    'target_instrument_id', 'reference_instrument_id', 'rights_instrument_id',
-  ];
-
-  const sets = [];
-  const params = [];
-  let pi = 1;
-
-  for (const [key, val] of Object.entries(updates)) {
-    if (!allowed.includes(key)) continue;
-    sets.push(`${key} = $${pi}`);
-    params.push(val);
-    pi++;
-  }
-
   // 管理员可直接输入「参考证券 / 供股权」的代码，后端解析为 instrument_id（解析不到则自动建证券）
-  if (updates.reference_instrument_code !== undefined) {
-    const id = await resolveCodeToId(updates.reference_instrument_code);
-    sets.push(`reference_instrument_id = $${pi}`); params.push(id); pi++;
-  }
-  if (updates.rights_instrument_code !== undefined) {
-    const id = await resolveCodeToId(updates.rights_instrument_code);
-    sets.push(`rights_instrument_id = $${pi}`); params.push(id); pi++;
-  }
-
-  // 审核状态变更时记录审核人
-  if (updates.review_status === 'approved' || updates.review_status === 'rejected') {
-    sets.push(`reviewed_by = $${pi}`); params.push(reviewer); pi++;
-    sets.push(`reviewed_at = now()`);
-  }
-
-  sets.push(`updated_at = now()`);
-
-  const { rows } = await pool.query(
-    `UPDATE event.arbitrage_cases SET ${sets.join(', ')} WHERE case_id = $${pi} RETURNING *`,
-    [...params, caseId]
-  );
-
+  const referenceInstrumentId = updates.reference_instrument_code !== undefined
+    ? await resolveCodeToId(updates.reference_instrument_code) : undefined;
+  const rightsInstrumentId = updates.rights_instrument_code !== undefined
+    ? await resolveCodeToId(updates.rights_instrument_code) : undefined;
+  const { rows } = await repository.updateArbitrageCase({
+    caseId, updates, reviewer, referenceInstrumentId, rightsInstrumentId,
+  });
   return rows.length ? rows[0] : null;
 }
 
@@ -590,20 +475,12 @@ function round(n) {
 
 async function getArbitrageUnreadCount(username) {
   if (!username) return 0;
-  const { rows } = await pool.query(`
-    SELECT count(*)::int AS count FROM event.arbitrage_cases c
-    WHERE ${PUBLIC_CASE_FILTER} AND NOT (
-      (SELECT arbitrage_seen_cases FROM users WHERE username=$1) ? c.case_id::text
-    )`, [username]);
+  const { rows } = await repository.countUnreadArbitrages({ username, buyerOfferPattern: BUYER_OFFER_TITLE_PATTERN });
   return rows[0].count;
 }
 
 async function markArbitrageSeen(username, caseId) {
-  const { rowCount } = await pool.query(`
-    UPDATE users SET arbitrage_seen_cases = arbitrage_seen_cases || jsonb_build_object($2::text, true)
-    WHERE username=$1 AND EXISTS (
-      SELECT 1 FROM event.arbitrage_cases c WHERE c.case_id=$2::bigint AND ${PUBLIC_CASE_FILTER}
-    )`, [username, String(caseId)]);
+  const { rowCount } = await repository.markArbitrageSeenCase({ username, caseId, buyerOfferPattern: BUYER_OFFER_TITLE_PATTERN });
   return rowCount > 0;
 }
 

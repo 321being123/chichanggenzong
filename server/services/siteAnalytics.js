@@ -231,18 +231,7 @@ function currentUser(req) {
 
 async function insertEvents(events, identity = {}) {
   if (!events.length || !isEnabled()) return { accepted: 0, disabled: !isEnabled() };
-  const values = [];
-  const params = [];
-  const add = value => { params.push(value); return '$' + params.length; };
-  for (const event of events) {
-    values.push(`(${add(event.eventId)}, now(), ${add(event.occurredAt)}, ${add(identity.visitorKey)}, ${add(identity.userKey)}, ${add(identity.sessionKey || event.sessionKey)}, ${add(event.pageViewId)}, ${add(event.eventName)}, ${add(event.pageKey)}, ${add(event.module)}, ${add(event.entry)}, ${add(event.deviceType)}, ${add(event.sourceDomain || identity.sourceDomain || '')}, ${add(identity.internal)}, 1, ${add(JSON.stringify(event.properties))}::jsonb)`);
-  }
-  const sql = `INSERT INTO ops.site_events
-    (event_id, received_at, occurred_at, visitor_key, user_key, session_key, page_view_id,
-     event_name, page_key, module, entry, device_type, source_domain, is_internal, data_version, properties)
-    VALUES ${values.join(',')}
-    ON CONFLICT (event_id) DO NOTHING`;
-  const result = await pool.query(sql, params);
+  const result = await repository.insertSiteEvents({ events, identity });
   return { accepted: result.rowCount || 0, received: events.length };
 }
 

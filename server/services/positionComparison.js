@@ -9,7 +9,8 @@ const { loadCashState } = require('./accountCash');
 const { pool } = require('../db/connection');
 const { fetchTencentQuotes } = require('./tencentQuote');
 const { todayCN } = require('./market');
-const { listBenchmarks, loadEffectivePositions } = require('../repositories/positionComparisonDataRepository.js');
+const positionComparisonRepository = require('../repositories/positionComparisonDataRepository.js');
+const { listBenchmarks, loadEffectivePositions } = positionComparisonRepository;
 
 // ========== 工具 ==========
 
@@ -47,15 +48,8 @@ function secKey(pos) {
 // 读取账户现金（口径与持仓页一致：cash = cashBase + 现金流净额 + 交易净额）
 // 简单复用 loadAccountData 太重（会拉全部 trades/nav），这里直接算现金
 async function loadAccountCash(username, accountName) {
-  const { rows: am } = await pool.query(
-    `SELECT cash_base::float8 AS cash_base,
-            COALESCE((SELECT rate::float8 FROM market.fx_rates
-                       WHERE base_currency='HKD' AND quote_currency='CNY'
-                         AND rate_date <= (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai')::date
-                       ORDER BY rate_date DESC, fetched_at DESC LIMIT 1), hk_rate::float8) AS hk_rate,
-            hk_rate_updated_at FROM accounts WHERE username=$1 AND account_name=$2`,
-    [username, accountName]
-  );
+  const amRow = await positionComparisonRepository.readAccountCashBase({ username, accountName });
+  const am = amRow ? [amRow] : [];
   const cashBase = am[0] ? am[0].cash_base : 0;
   const hkRate = (am[0] && am[0].hk_rate > 0) ? am[0].hk_rate : 0.868;
   // 真实汇率更新时间（迁移 039 专用列），不随持仓保存/公开状态修改而更新

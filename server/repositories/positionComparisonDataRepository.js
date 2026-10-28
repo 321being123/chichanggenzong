@@ -46,7 +46,22 @@ async function loadEffectivePositions(username, accountName) {
   return rows;
 }
 
+// 账户现金基准与港币汇率（同日取最新，缺失回退账户缓存列）
+async function readAccountCashBase(params, client = pool) {
+  const { rows } = await client.query(
+    `SELECT cash_base::float8 AS cash_base,
+            COALESCE((SELECT rate::float8 FROM market.fx_rates
+                       WHERE base_currency='HKD' AND quote_currency='CNY'
+                         AND rate_date <= (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai')::date
+                       ORDER BY rate_date DESC, fetched_at DESC LIMIT 1), hk_rate::float8) AS hk_rate,
+            hk_rate_updated_at FROM accounts WHERE username=$1 AND account_name=$2`,
+    [params.username, params.accountName],
+  );
+  return rows[0] || null;
+}
+
 module.exports = {
   listBenchmarks,
   loadEffectivePositions,
+  readAccountCashBase,
 };

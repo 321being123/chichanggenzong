@@ -28,6 +28,7 @@
     <div class="md" id="md-content"><div class="state">加载中…</div></div>
   </div>
 
+<script src="js/api/client.js?v=__APP_VERSION__"></script>
 <script>
 function ipoReportBack() { document.referrer && new URL(document.referrer).origin === location.origin ? history.back() : location.assign("/?main=ipo"); }
   function getParam(name) {
@@ -46,7 +47,7 @@ function ipoReportBack() { document.referrer && new URL(document.referrer).origi
       : '/api/ipo/report' + (date ? ('?date=' + encodeURIComponent(date)) : '');
   }
   // 详情请求与 Markdown 渲染库并行发起，避免首次打开时串行等待。
-  var reportRequest = fetch(api(reportUrl()), { credentials: 'same-origin' });
+  var reportRequest = window.siteApi.fetchResponse(api(reportUrl()), { credentials: 'same-origin' });
   // 安全输出状态/错误信息：用 textContent，绝不拼接进 innerHTML（防 XSS）
   // 自行获取容器元素，避免依赖外部作用域变量（修复 ReferenceError）
   function setState(msg, isErr) {

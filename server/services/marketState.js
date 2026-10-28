@@ -1,3 +1,4 @@
+const layerRepository = require('../repositories/marketStateRepository');
 const { pool } = require('../db/connection');
 const { isCnHoliday } = require('../config/holidays');
 
@@ -104,12 +105,7 @@ async function prefetchMarketFacts(market, dates, query = pool.query.bind(pool))
     return !cached || Date.now() - cached.cachedAt >= CACHE_TTL_MS;
   });
   if (!missingDates.length) return;
-  const { rows } = await query(
-    `SELECT trade_date::text AS trade_date, is_open, source_code, raw_payload
-       FROM market.trade_calendar
-      WHERE exchange='HKEX' AND trade_date=ANY($1::date[])`,
-    [missingDates]
-  );
+  const { rows } = await layerRepository.listMarketCalendar(query, [missingDates]);
   const rowsByDate = new Map(rows.map(row => [String(row.trade_date).slice(0, 10), row]));
   for (const date of missingDates) {
     const row = rowsByDate.get(date);

@@ -1308,7 +1308,7 @@ function togglePwdCard() {
 // 加载个人中心资料
 async function loadProfile() {
   try {
-    const r = await fetch(api('/api/profile'));
+    const r = await window.siteApi.fetchResponse(api('/api/profile'));
     if (!r.ok) return;
     const p = await r.json();
     myProfile = Object.assign({}, myProfile, p);
@@ -1353,7 +1353,7 @@ async function saveProfile() {
     ...(currentPassword ? { currentPassword } : {})
   };
   try {
-    const r = await fetch(api('/api/profile'), {
+    const r = await window.siteApi.fetchResponse(api('/api/profile'), {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
@@ -1376,7 +1376,7 @@ async function changePwd() {
   if (newP.length < 6) { showToast('新密码至少 6 位'); return; }
   if (newP !== newP2) { showToast('两次新密码不一致'); return; }
   try {
-    const r = await fetch(api('/api/profile/password'), {
+    const r = await window.siteApi.fetchResponse(api('/api/profile/password'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ oldPassword: oldP, newPassword: newP })
@@ -1421,7 +1421,7 @@ function onAvatarChange(e) {
 // 仅保存头像（上传即落库）；失败提示用户手动点「保存资料」兜底
 async function autoSaveAvatar(dataUrl) {
   try {
-    const r = await fetch(api('/api/profile'), {
+    const r = await window.siteApi.fetchResponse(api('/api/profile'), {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ avatar: dataUrl })
@@ -1435,13 +1435,13 @@ async function autoSaveAvatar(dataUrl) {
 async function logout() {
   if (typeof window.invalidateSmartImportScope === 'function') window.invalidateSmartImportScope();
   if (typeof window.securityAnalysisResetAccount === 'function') window.securityAnalysisResetAccount();
-  await fetch(api('/api/logout'), { method: 'POST' });
+  await window.siteApi.fetchResponse(api('/api/logout'), { method: 'POST' });
   window.location.href = api('/');
 }
 
 async function fetchAccounts() {
   try {
-    const r = await fetch(api('/api/accounts'));
+    const r = await window.siteApi.fetchResponse(api('/api/accounts'));
     accounts = await r.json();
     if (!Array.isArray(accounts) || accounts.length === 0) accounts = ['默认账户'];
   } catch(e) { accounts = ['默认账户']; }
@@ -1450,7 +1450,7 @@ async function fetchAccounts() {
 // 首页轻量账户摘要：先展示持仓数量/资产卡，完整交易与净值历史在后台继续加载。
 async function loadAccountSummary(accountName) {
   try {
-    var r = await fetch(api(`/api/data/${encodeURIComponent(accountName)}?scope=summary`));
+    var r = await window.siteApi.fetchResponse(api(`/api/data/${encodeURIComponent(accountName)}?scope=summary`));
     if (!r.ok) throw new Error('账户摘要读取失败');
     var summary = await r.json();
     if (!summary || !Array.isArray(summary.positions)) throw new Error('账户摘要格式错误');
@@ -1477,7 +1477,7 @@ async function loadAccountSummary(accountName) {
 }
 
 function saveAccounts() {
-  fetch(api('/api/accounts'), {
+  window.siteApi.fetchResponse(api('/api/accounts'), {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(accounts)
@@ -1495,7 +1495,7 @@ async function loadData(accountName) {
       identity === (typeof accountIdentity === 'string' ? accountIdentity : '');
   }
   try {
-    const r = await fetch(api(`/api/data/${encodeURIComponent(accountName)}`));
+    const r = await window.siteApi.fetchResponse(api(`/api/data/${encodeURIComponent(accountName)}`));
     const received = await r.json();
     if (!currentLoad()) return data;
     data = received;

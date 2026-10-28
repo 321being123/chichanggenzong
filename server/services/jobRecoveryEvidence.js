@@ -1,3 +1,4 @@
+const layerSql = require('../repositories/jobRecoveryEvidenceRepository');
 // 任务恢复的中立证据层：调度器和告警层共用，避免只凭单一 data_as_of 把槽位误判为已完成。
 const { pool } = require('../db/connection');
 const { getRegisteredJobDefinition, stageCompletionEvidence } = require('./jobDefinitions');
@@ -159,10 +160,7 @@ async function verifySlotRecoveryEvidence(slot, query = (sql, params) => reposit
   if (!definition) {
     return { recovered: false, reason: 'unknown_job_definition', evidence: { slot } };
   }
-  const { rows: runRows } = await query(
-    `SELECT id,slot_id,status,result_json,attempt_no,trigger_type
-       FROM job_runs WHERE slot_id=$1 ORDER BY id DESC LIMIT 1`, [slot.slot_id]
-  );
+  const { rows: runRows } = await layerSql.verifySlotRecoveryEvidenceLayerQuery1(query, [], [slot.slot_id]);
   const run = runRows[0] || null;
   if (!run || run.status !== 'done' || (run.slot_id != null && String(run.slot_id) !== String(slot.slot_id))) {
     return { recovered: false, reason: 'successful_run_evidence_missing', evidence: { slot, run } };
@@ -200,11 +198,7 @@ async function verifySlotRecoveryEvidence(slot, query = (sql, params) => reposit
   const partitionKey = expectedDataDate(slot.job_code, businessDate) || businessDate;
   let datasetEvidence = [];
   if ((definition.strictDatasetPublication||phase?.requireStageComplete||legacyHkPostclose) && datasets.length && partitionKey) {
-    const { rows } = await query(
-      `SELECT dataset_code,scope_key,partition_key,status,is_stale,diagnostics
-         FROM ops.dataset_partitions
-        WHERE dataset_code=ANY($1::text[]) AND partition_key=$2::date`, [datasets, partitionKey]
-    );
+    const { rows } = await layerSql.verifySlotRecoveryEvidenceLayerQuery2(query, [], [datasets, partitionKey]);
     const byCodeAndScope = new Map(rows.map(row => [`${row.dataset_code}:${row.scope_key}`, row]));
     datasetEvidence = datasets.map(code => {
       const expectedScopeKey = resolveDatasetScope(code,slot.request_payload||{});

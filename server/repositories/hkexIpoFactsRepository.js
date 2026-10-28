@@ -61,7 +61,45 @@ async function insert_event_instrument_events(params, client = pool) {
           ON CONFLICT(source_id,source_key) DO UPDATE SET event_date=EXCLUDED.event_date,event_at=EXCLUDED.event_at,details=EXCLUDED.details,updated_at=now()`, params);
 }
 
+
+function persistHkexProbeLayerQuery1(executor, parts, ...args) { return executor("SELECT source_id FROM ops.data_sources WHERE source_code='hkex_announcements' LIMIT 1", ...args); }
+
+function persistHkexProbeLayerQuery2(executor, parts, ...args) { return executor(`INSERT INTO ops.ingestion_runs(source_id,dataset_code,request_range,status,row_count,error_message,finished_at)
+     VALUES($1,'hkex_ipo_probe',$2::jsonb,$3,$4,$5,now()) RETURNING run_id`, ...args); }
+
+function persistHkexProbeLayerQuery3(executor, parts, ...args) { return executor(`INSERT INTO ops.raw_records(run_id,source_id,dataset_code,source_key,source_updated_at,payload,payload_hash)
+       SELECT $1,$2,'hkex_ipo_probe',x.source_key,now(),x.payload,md5(x.payload::text)
+         FROM jsonb_to_recordset($3::jsonb) AS x(source_key text,payload jsonb)
+       ON CONFLICT(source_id,dataset_code,source_key,payload_hash) DO NOTHING`, ...args); }
+
+function readHkIpoCompletenessLayerQuery1(executor, parts, ...args) { return executor(`SELECT security_code,ipo_status,offer_open_at,offer_close_at,pricing_at,allotment_at,
+    listing_at,listing_date,issue_price_low,issue_price_high,issue_price_final,lot_size_shares,source_documents,data_completeness
+    FROM public.ipo_history WHERE market_code='HK'`, ...args); }
+
+function recomputeHkIpoCompletenessLayerQuery1(executor, parts, ...args) { return executor(`
+    SELECT security_code,ipo_status,offer_open_at,offer_close_at,pricing_at,allotment_at,listing_at,listing_date,
+           issue_price_low,issue_price_high,issue_price_final,lot_size_shares,source_documents,data_completeness
+      FROM public.ipo_history
+     WHERE market_code='HK'
+       ${parts[0]}
+  `, ...args); }
+
+function syncStoredHkListingsLayerQuery1(executor, parts, ...args) { return executor(`SELECT h.security_code,h.security_name,h.security_name_cn,h.market_type,i.list_date::text,
+      i.status,r.raw_record_id,r.payload,r.payload_hash,r.source_updated_at,r.request_range,r.ingestion_status
+    FROM public.ipo_history h JOIN core.instruments i ON i.instrument_id=h.instrument_id
+    JOIN LATERAL (SELECT rr.raw_record_id,rr.payload,rr.payload_hash,rr.source_updated_at,ir.request_range,ir.status AS ingestion_status
+      FROM ops.raw_records rr JOIN ops.data_sources ds USING(source_id) JOIN ops.ingestion_runs ir ON ir.run_id=rr.run_id AND ir.source_id=rr.source_id
+      WHERE ds.source_code='tushare' AND rr.dataset_code='hk_basic' AND rr.source_key=h.security_code
+        AND rr.payload->>'ts_code'=h.security_code AND ir.dataset_code='hk_basic'
+        AND ir.request_range->>'list_status'='L' AND ir.status='success'
+      ORDER BY rr.ingested_at DESC,rr.raw_record_id DESC LIMIT 1) r ON true
+    WHERE h.market_code='HK' AND h.listing_at IS NULL AND COALESCE(h.listing_date,'')=''
+      AND i.market='HK' AND i.status='listed' AND i.list_date<=$1::date
+      AND h.ipo_status NOT IN ('cancelled','canceled','postponed','introduction','gem_transfer','de_spac')
+      AND (cardinality($2::text[])=0 OR h.security_code=ANY($2::text[]))`, ...args); }
+
 module.exports = {
+  persistHkexProbeLayerQuery1, persistHkexProbeLayerQuery2, persistHkexProbeLayerQuery3, readHkIpoCompletenessLayerQuery1, recomputeHkIpoCompletenessLayerQuery1, syncStoredHkListingsLayerQuery1,
   select_ops_data_sources,
   insert_public_ipo_history,
   insert_event_instrument_events,

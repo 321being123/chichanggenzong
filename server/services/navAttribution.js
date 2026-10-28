@@ -1,3 +1,4 @@
+const layerRepository = require('../repositories/navAttributionRepository');
 const NavMath = require('../../public/shared/nav-math');
 // 净值涨跌归因的唯一后端实现。
 // 前端只展示结果，不再自行拼接价格、汇率和账本公式。
@@ -246,12 +247,8 @@ async function computeNavHistoryTotals(username, accountName, data, query = pool
   const navs = (data.navHistory || []).slice().sort((a, b) => dateKey(a.date).localeCompare(dateKey(b.date)));
   if (!navs.length) return {};
   // 一次读取账户已落库价格，不逐日期查询或触发外部采集。
-  const { rows } = await query(`SELECT date, code, price::float8 AS price FROM daily_prices
-    WHERE username=$1 AND account_name=$2 AND date::date <= $3::date ORDER BY date, code`,
-  [username, accountName, dateKey(navs[navs.length - 1].date)]);
-  const { rows: fxRows } = await query(`SELECT DISTINCT ON (rate_date) rate_date, rate::float8 AS rate
-    FROM market.fx_rates WHERE base_currency='HKD' AND quote_currency='CNY' AND rate_date <= $1
-    ORDER BY rate_date ASC, fetched_at DESC, source_id DESC`, [dateKey(navs[navs.length - 1].date)]);
+  const { rows } = await layerRepository.listHistoryPrices(query, [username, accountName, dateKey(navs[navs.length - 1].date)]);
+  const { rows: fxRows } = await layerRepository.listHistoryFxRates(query, [dateKey(navs[navs.length - 1].date)]);
   const fx = new Map(fxRows.map(r => [dateKey(r.rate_date), Number(r.rate)]));
   const prices = new Map();
   const currentPositions = aggregateCurrentPositions(data.positions);
@@ -433,29 +430,15 @@ async function computeNavAttribution(username, accountName, data, currentTotal, 
   const prevQty = quantityAsOf(data, prevDate, previous.snapshot_at);
   const relevantCodes = new Set([...prevQty.keys(), ...currentByCode.keys()]);
   const [previousPricesResult, currentPricesResult] = await Promise.all([
-    query(
-      `SELECT DISTINCT ON (code) date, code, price::float8 AS price FROM daily_prices
-        WHERE username=$1 AND account_name=$2 AND code=ANY($3::text[]) AND date::date <= $4::date
-        ORDER BY code, date DESC`,
-      [username, accountName, [...relevantCodes], prevDate]
-    ),
-    query(
-      `SELECT DISTINCT ON (code) date, code, price::float8 AS price FROM daily_prices
-        WHERE username=$1 AND account_name=$2 AND code=ANY($3::text[]) AND date::date <= $4::date
-        ORDER BY code, date DESC`,
-      [username, accountName, [...relevantCodes], currentDate]
-    ),
+    layerRepository.listBasisPrices(query, [username, accountName, [...relevantCodes], prevDate]),
+    layerRepository.listEarlierBasisPrices(query, [username, accountName, [...relevantCodes], currentDate]),
   ]);
   const priceRowsByCode = (rows) => new Map(rows.map(row => [String(row.code), {
     date: dateKey(row.date), price: Number(row.price)
   }]));
   const previousPriceByCode = priceRowsByCode(previousPricesResult.rows);
   const currentPriceByCode = priceRowsByCode(currentPricesResult.rows);
-  const { rows: fxRows } = await query(
-    `SELECT DISTINCT ON (rate_date) rate_date, rate::float8 AS rate FROM market.fx_rates
-      WHERE base_currency='HKD' AND quote_currency='CNY' AND rate_date <= $1
-      ORDER BY rate_date ASC, fetched_at DESC, source_id DESC`, [currentDate]
-  );
+  const { rows: fxRows } = await layerRepository.listBasisFxRates(query, [currentDate]);
   const fxByDate = new Map(fxRows.map(r => [dateKey(r.rate_date), Number(r.rate)]));
   // 已保存快照中的汇率是历史事实，行情表只能作为缺失时的明确回退，不能静默使用当前汇率。
   const rateAt = (date, nav) => Number(nav && nav.hkRate) > 0 ? Number(nav.hkRate) :

@@ -223,7 +223,7 @@ function functionNameOf(ancestors) {
   return '<module>';
 }
 
-const SQL_KEYWORD = /\b(?:select\s+[\s\S]{0,200}?\sfrom|insert\s+into|update\s+\w+\s+set|delete\s+from|with\s+\w+\s+as\s*\()/i;
+const SQL_KEYWORD = /\b(?:select\s+[\s\S]*?\sfrom|insert\s+into|update\s+\w+\s+set|delete\s+from|with\s+\w+\s+as\s*\()/i;
 
 function calleeName(node) {
   const callee = node.callee;
@@ -256,7 +256,7 @@ function calleePath(node) {
 // 页面调用 siteApi.* 属于走适配层，不再算"非适配层直接联网"。
 function viaSiteApi(node) {
   const path = calleePath(node);
-  return !!path && /^(?:(?:window|globalThis|global)\.)?siteApi\.(?:request|requestRaw|requestOrThrow|get|getRaw|post|put|del)$/.test(path);
+  return !!path && /^(?:(?:window|globalThis|global)\.)?siteApi\.(?:request|requestRaw|requestOrThrow|fetchResponse|get|getRaw|post|put|del)$/.test(path);
 }
 
 function firstStringArgument(node) {
@@ -318,7 +318,7 @@ function scanJs(source, filePath) {
       const symbol = functionNameOf(ancestors);
       if (JS_SQL_CALLEES.has(name)) {
         push('SQL_IN_NON_DATA_LAYER', node, symbol, `${name}()`);
-      } else if (name.endsWith('.query') || name.endsWith('.execute')) {
+      } else if (name.endsWith('.query') || name.endsWith('.execute') || /^(?:query|executor)$/.test(name)) {
         const sql = firstStringArgument(node);
         if (sql && SQL_KEYWORD.test(sql)) push('SQL_IN_NON_DATA_LAYER', node, symbol, `${name}(<sql>)`);
       }

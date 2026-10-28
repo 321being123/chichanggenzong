@@ -105,10 +105,19 @@
     return result.payload;
   }
 
+  // 兼容既有页面的 Response 消费方式；调用方已完成同源路径拼接。
+  async function fetchResponse(url, options) {
+    var opts = Object.assign({ timeoutMs: 0, relativePath: true, headers: {} }, options || {});
+    var result = await requestRaw(url, opts);
+    if (!result.response) throw new Error(result.error || '网络异常');
+    return result.response;
+  }
+
   global.siteApi = {
     request: request,
     requestRaw: requestRaw,
     requestOrThrow: requestOrThrow,
+    fetchResponse: fetchResponse,
     jsonHeaders: jsonHeaders,
     get: function (path, options) { return request(path, Object.assign({ method: 'GET' }, options || {})); },
     getRaw: function (path, options) { return requestRaw(path, Object.assign({ method: 'GET' }, options || {})); },

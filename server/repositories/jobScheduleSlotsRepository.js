@@ -532,7 +532,23 @@ async function selectStrictRecoveryCandidates(params, client = pool) {
   );
 }
 
+
+function recoverNavDependenciesLayerQuery1(executor, parts, ...args) { return executor("SELECT *,business_date::text AS business_date FROM ops.job_schedule_slots WHERE job_code='nav_snapshot' AND status='blocked' AND acknowledged_at IS NULL AND NOT (result_summary ? 'dependencyRecovery') AND last_error LIKE '数据集 %连续%'", ...args); }
+
+function recoverNavDependenciesLayerQuery2(executor, parts, ...args) { return executor(`SELECT p.updated_at AS evidence_at,p.partition_id::text AS evidence_id
+              FROM ops.dataset_partitions p WHERE dataset_code='repo_daily_rates' AND scope_key='CN'
+              AND partition_key=$1::date AND status='published' AND NOT is_stale AND diagnostics->>'quality_status'='passed'
+              AND EXISTS(SELECT 1 FROM market.repo_daily_rates r JOIN core.instruments i USING(instrument_id)
+                WHERE i.canonical_code='204001.SH' AND r.trade_date=$1::date AND r.quality_status='passed')`, ...args); }
+
+function recoverNavDependenciesLayerQuery3(executor, parts, ...args) { return executor(`SELECT c.updated_at AS evidence_at,c.cursor_id::text AS evidence_id FROM ops.sync_cursors c
+              JOIN core.instruments i ON c.scope_key='cash_dividend:'||i.instrument_id::text
+              WHERE c.dataset_code='stock_cash_dividend_facts' AND (i.canonical_code=$1 OR split_part(i.canonical_code,'.',1)=$1)
+              AND c.last_success_date >= $2::date AND c.cursor_payload->>'complete'='true'
+              AND c.cursor_payload->>'parserVersion'=$3`, ...args); }
+
 module.exports = {
+  recoverNavDependenciesLayerQuery1, recoverNavDependenciesLayerQuery2, recoverNavDependenciesLayerQuery3,
   selectStrictRecoveryCandidates,
   countAlertsByStatus,
   DATA_AS_OF_QUERIES,

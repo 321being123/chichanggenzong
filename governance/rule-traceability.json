@@ -767,6 +767,10 @@
           "pattern": "跨账号提交仍保留确认日期"
         },
         {
+          "file": "server/test/hk-ipo-backtest-repository.test.js",
+          "pattern": "港股回测仓储"
+        },
+        {
           "file": "ipo-report/test_ipo_unit.py",
           "pattern": "日历业务日期固定按上海时区"
         }

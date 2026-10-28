@@ -1,3 +1,4 @@
+const layerSql = require('../repositories/jobScheduleSlotsRepository');
 const os = require('os');
 const { pool } = require('../db/connection');
 const { JOB_DEFINITIONS, getJobDefinition, getRegisteredJobDefinition, PARTITION_DATE_POLICIES, stageCompletionEvidence } = require('./jobDefinitions');
@@ -567,7 +568,7 @@ function attemptLimit(slot,definition){
 }
 
 async function recoverNavDependencies(query=(sql,params)=>jobScheduleSlotsRepository.runQuery(sql,params)){
-  const {rows}=await query("SELECT *,business_date::text AS business_date FROM ops.job_schedule_slots WHERE job_code='nav_snapshot' AND status='blocked' AND acknowledged_at IS NULL AND NOT (result_summary ? 'dependencyRecovery') AND last_error LIKE '数据集 %连续%'");
+  const {rows}=await layerSql.recoverNavDependenciesLayerQuery1(query, []);
   for(const slot of rows){
     const summary=slot.result_summary||{};
     if((slot.request_payload?.mode||'core')!=='core'||summary.continuationStopReason||summary.continuationBlocked)continue;
@@ -581,17 +582,9 @@ async function recoverNavDependencies(query=(sql,params)=>jobScheduleSlotsReposi
           if(pending.date&&pending.date!==date){ready=false;break;}
           let result;
           if(pending.reason==='missing_repo_daily_rate'){
-            result=await query(`SELECT p.updated_at AS evidence_at,p.partition_id::text AS evidence_id
-              FROM ops.dataset_partitions p WHERE dataset_code='repo_daily_rates' AND scope_key='CN'
-              AND partition_key=$1::date AND status='published' AND NOT is_stale AND diagnostics->>'quality_status'='passed'
-              AND EXISTS(SELECT 1 FROM market.repo_daily_rates r JOIN core.instruments i USING(instrument_id)
-                WHERE i.canonical_code='204001.SH' AND r.trade_date=$1::date AND r.quality_status='passed')`,[date]);
+            result=await layerSql.recoverNavDependenciesLayerQuery2(query, [], [date]);
           }else{
-            result=await query(`SELECT c.updated_at AS evidence_at,c.cursor_id::text AS evidence_id FROM ops.sync_cursors c
-              JOIN core.instruments i ON c.scope_key='cash_dividend:'||i.instrument_id::text
-              WHERE c.dataset_code='stock_cash_dividend_facts' AND (i.canonical_code=$1 OR split_part(i.canonical_code,'.',1)=$1)
-              AND c.last_success_date >= $2::date AND c.cursor_payload->>'complete'='true'
-              AND c.cursor_payload->>'parserVersion'=$3`,[pending.code,date,require('./cashDividendFacts').PARSER]);
+            result=await layerSql.recoverNavDependenciesLayerQuery3(query, [], [pending.code,date,require('./cashDividendFacts').PARSER]);
           }
           if(result.rows.length!==1){ready=false;break;}
           evidence.push({reason:pending.reason,code:pending.code,...result.rows[0]});

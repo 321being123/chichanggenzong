@@ -327,7 +327,44 @@ async function runQuery(sql, params, client = pool) {
   return client.query(sql, params);
 }
 
+
+function loadRecentRecoverySequenceLayerQuery1(executor, parts, ...args) { return executor(`SELECT slot_id,job_code,status,business_date,scheduled_for,request_payload,result_summary,data_as_of
+       FROM ops.job_schedule_slots
+      WHERE job_code=$1 AND business_date=$2::date AND scheduled_for>$3::timestamptz
+        AND status = ANY($${parts[0]}::text[])
+        AND ${parts[1]}
+      ORDER BY scheduled_for DESC,slot_id DESC LIMIT $${parts[2]}`, ...args); }
+
+function verifyAlertScopeLayerQuery1(executor, parts, ...args) { return executor(`SELECT slot_id,job_code,business_date,status,scheduled_for,updated_at,updated_at::text AS updated_at_exact,
+              request_payload,result_summary,data_as_of
+         FROM ops.job_schedule_slots WHERE slot_id=$1`, ...args); }
+
+function verifyAlertScopeLayerQuery2(executor, parts, ...args) { return executor(`SELECT slot_id,status,business_date,scheduled_for,request_payload,result_summary
+         FROM ops.job_schedule_slots WHERE job_code=$1
+        ORDER BY scheduled_for DESC,slot_id DESC LIMIT 3`, ...args); }
+
+function verifyAlertScopeLayerQuery3(executor, parts, ...args) { return executor(`SELECT dataset_code,scope_key,partition_key::text,status,is_stale,diagnostics,published_at,updated_at
+         FROM ops.dataset_partitions
+        WHERE dataset_code=$1 AND scope_key=$2 AND partition_key=$3::date
+        ORDER BY updated_at DESC LIMIT 1`, ...args); }
+
+function verifyAlertScopeLayerQuery4(executor, parts, ...args) { return executor(`SELECT r.consecutive_fallback_count,r.last_primary_success_at
+           FROM ops.source_endpoint_runtime r
+           JOIN ops.data_sources ds ON ds.source_id=r.source_id
+          WHERE ds.source_code=$1 AND r.api_name=$2`, ...args); }
+
+function loadScopedCircuits(executor, allApis, params) {
+  const sql = allApis
+    ? `SELECT source,api_name,state,recover_at,last_success_at,updated_at
+           FROM ops.external_circuits WHERE source=$1 ORDER BY updated_at DESC`
+    : `SELECT source,api_name,state,recover_at,last_success_at,updated_at
+           FROM ops.external_circuits WHERE source=$1 AND api_name=$2 ORDER BY updated_at DESC`;
+  return executor(sql, params);
+}
+
 module.exports = {
+  loadScopedCircuits,
+  loadRecentRecoverySequenceLayerQuery1, verifyAlertScopeLayerQuery1, verifyAlertScopeLayerQuery2, verifyAlertScopeLayerQuery3, verifyAlertScopeLayerQuery4,
   runQuery,
   ACTIVE_ALERT_WHERE,
   listAlertPage,

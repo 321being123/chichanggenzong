@@ -76,14 +76,13 @@ const txControl = require('../repositories/transactionControl');
   return report;
 }
 async function loadRepoRates(executor=pool.query.bind(pool)) {
-  const rows=(await executor(`SELECT r.*,r.trade_date::text FROM market.repo_daily_rates r JOIN core.instruments i USING(instrument_id)
-    WHERE i.canonical_code=$1 AND r.quality_status='passed' ORDER BY r.trade_date,r.ingested_at`,[CODE])).rows;
+  const rows=(await repository.loadRepoRates(executor,CODE)).rows;
   return Object.fromEntries(rows.map(r=>[r.trade_date,{annualRate:Number(r.weighted_annual_rate),sourceId:r.source_id,rawRecordId:r.raw_record_id,sourceRevision:r.source_revision}]));
 }
 async function ensureNavRepoRate(targetDate,{query=pool.query.bind(pool),sync=syncRepoDailyRates}={}) {
-  const {rows:enabled}=await query("SELECT COUNT(*)::int AS enabled_count FROM accounts WHERE cash_income_policy->>'enabled'='true'");
+  const {rows:enabled}=await repository.countEnabledAccounts(query);
   if(!Number(enabled[0]?.enabled_count)||!tradingDates(targetDate,targetDate).length) return null;
-  const {rows:rates}=await query("SELECT 1 FROM market.repo_daily_rates r JOIN core.instruments i USING(instrument_id) WHERE i.canonical_code='204001.SH' AND r.trade_date=$1::date AND r.quality_status='passed' LIMIT 1",[targetDate]);
+  const {rows:rates}=await repository.findRateForDate(query,targetDate);
   if(rates.length) return null;
   return sync({targetDate,startDate:targetDate,allowCompletedToday:true}).catch(error=>({ok:false,error:error.message}));
 }

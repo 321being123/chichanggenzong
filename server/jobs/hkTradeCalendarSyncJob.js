@@ -1,3 +1,4 @@
+const layerSql = require('../repositories/hkTradeCalendarJobRepository');
 const { syncHkTradeCalendar } = require('./hkTradeCalendarSync');
 const { pool, tryClaimJob, releaseJob, startJobRun, finishJobRun } = require('../db');
 const { supportedScheduleYears } = require('../config/hkexAnnualSchedules');
@@ -14,16 +15,7 @@ async function checkAnnualScheduleReminder(date, { query = pool.query.bind(pool)
   if (!enabled) return { status: 'suppressed_non_production' };
   const targetYear = Number(currentDate.slice(0, 4)) + 1;
   const daysInYear = new Date(Date.UTC(targetYear, 1, 29)).getUTCDate() === 29 ? 366 : 365;
-  const { rows } = await query(
-    `SELECT COUNT(DISTINCT trade_date)::int AS covered_days,
-            COUNT(*) FILTER (WHERE raw_payload ? 'official_schedule'
-              AND COALESCE(raw_payload#>>'{official_schedule,source_url}','') <> ''
-              AND COALESCE(raw_payload#>>'{official_schedule,verified_at}','') <> ''
-              AND COALESCE(raw_payload#>>'{official_schedule,quality_status}','') = 'passed')::int AS verified_days
-       FROM market.trade_calendar
-      WHERE exchange='HKEX' AND trade_date >= $1::date AND trade_date < ($1::date + interval '1 year')`,
-    [`${targetYear}-01-01`]
-  );
+  const { rows } = await layerSql.checkAnnualScheduleReminderQuery1(query, [`${targetYear}-01-01`]);
   const coveredDays = Number(rows[0] && rows[0].covered_days || 0);
   const verifiedDays = Number(rows[0] && rows[0].verified_days || 0);
   const complete = supportedScheduleYears().includes(targetYear) && coveredDays === daysInYear && verifiedDays === daysInYear;

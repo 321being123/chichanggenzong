@@ -1,3 +1,4 @@
+const layerSql = require('../repositories/stockRefreshRepository');
 const { tryClaimJob, releaseJob, startJobRun, finishJobRun } = require('../db');
 const { listUserStocks, refreshStockAnalysis } = require('../services/stockAnalysis');
 const { pool } = require('../db/connection');
@@ -48,15 +49,7 @@ async function trackedStocks() {
 
 async function verifiedStockDataDate(tsCode, tradeDate, expectedDate, query = pool.query.bind(pool)) {
   if (!tradeDate || !expectedDate || tradeDate >= expectedDate) return { dataAsOf: tradeDate, lastTradeDate: tradeDate };
-  const { rows } = await query(`SELECT COUNT(*)::int AS expected_count,
-      (SELECT COUNT(*) FROM market.trade_calendar WHERE exchange='SSE'
-        AND trade_date>$2::date AND trade_date<=$3::date)::int AS calendar_count,
-      ($3::date-$2::date)::int AS calendar_days,
-      COUNT(*) FILTER (WHERE EXISTS (SELECT 1 FROM market.stock_suspend_calendar s
-        WHERE s.instrument_id=i.instrument_id AND s.trade_date=c.trade_date AND s.suspend_type='S'))::int AS suspended_count
-    FROM market.trade_calendar c CROSS JOIN core.instruments i
-    WHERE i.canonical_code=$1 AND c.exchange='SSE' AND c.is_open
-      AND c.trade_date>$2::date AND c.trade_date<=$3::date`, [tsCode, tradeDate, expectedDate]);
+  const { rows } = await layerSql.verifiedStockDataDateQuery1(query, [tsCode, tradeDate, expectedDate]);
   const coverage = rows[0] || {};
   const verified = Number(coverage.calendar_count) === Number(coverage.calendar_days)
     && Number(coverage.expected_count) > 0 && Number(coverage.expected_count) === Number(coverage.suspended_count);
@@ -65,9 +58,7 @@ async function verifiedStockDataDate(tsCode, tradeDate, expectedDate, query = po
 }
 
 async function activeStockScope(stocks, targetDate, query = pool.query.bind(pool)) {
-  const { rows } = await query(`SELECT canonical_code,delist_date::text FROM core.instruments
-    WHERE canonical_code=ANY($1::text[]) AND status='delisted' AND delist_date<=$2::date`,
-  [stocks.map(stock => stock.ts_code), targetDate]);
+  const { rows } = await layerSql.activeStockScopeQuery1(query, [stocks.map(stock => stock.ts_code), targetDate]);
   const excluded = rows.map(row => ({ code: row.canonical_code, reason: 'confirmed_delisted', delistDate: row.delist_date }));
   const delistedCodes = new Set(excluded.map(row => row.code));
   return { activeStocks: stocks.filter(stock => !delistedCodes.has(stock.ts_code)), excluded };

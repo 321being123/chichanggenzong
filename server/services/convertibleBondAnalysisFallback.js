@@ -1,3 +1,4 @@
+const layerSql = require('../repositories/convertibleBondAnalysisFallbackRepository');
 // 原资料Runner的Tushare末级备源：原文失败后才调用，原始响应先入库，空结果不生成事实。
 const crypto=require('crypto');
 const {pool}=require('../db/connection');
@@ -64,7 +65,7 @@ async function readApiRows(kind,bond,period,deps={}) {
   const api=APIS[kind],query=deps.query||pool.query.bind(pool);
   // 已有同报告期的标准持有人事实优先，禁止为同一份名单重复外采。
   if(kind==='holders') {
-    const local=await query(`SELECT raw_payload FROM fundamental.convertible_bond_holder_positions WHERE instrument_id=$1 AND report_date=$2::date AND source_key LIKE 'top10_cb_holders:%' ORDER BY holder_rank`,[bond.instrument_id,period]);
+    const local=await layerSql.readApiRowsQuery1(query, [bond.instrument_id,period]);
     if(local.rows.length===10) {
       const rows=local.rows.map(r=>r.raw_payload);
       try{validateRows(kind,rows,bond,period,period);return {rows,cache:'standard_facts'};}catch{}

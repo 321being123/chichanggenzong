@@ -16,7 +16,9 @@ const finance = read('server/services/companyFinancialIncrementalSync.js');
 const hkex = readServiceSource('hkexIpo');
 const arbitrage = read('server/jobs/arbitrageSync.js');
 const market = read('server/jobs/marketVolatilitySync.js');
-const evidence = read('server/services/jobRecoveryEvidence.js');
+const evidenceService = read('server/services/jobRecoveryEvidence.js');
+const evidence = evidenceService + '\n' + read('server/repositories/jobRecoveryEvidenceRepository.js');
+assert.match(evidenceService, /layerSql\.verifySlotRecoveryEvidenceLayerQuery/);
 const { businessDateText } = require('../services/jobRecoveryEvidence');
 const { datasetPartitionKeyForSlot } = require('../services/jobOrchestrator');
 

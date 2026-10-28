@@ -36,7 +36,11 @@ async function insert_fundamental_convertible_bond_coupon_schedule(params, clien
           VALUES($1,$2,$3,$4,$3,$5,$6) ON CONFLICT(instrument_id,interest_year) DO NOTHING`, params);
 }
 
+
+function readApiRowsQuery1(executor, ...args) { return executor(`SELECT raw_payload FROM fundamental.convertible_bond_holder_positions WHERE instrument_id=$1 AND report_date=$2::date AND source_key LIKE 'top10_cb_holders:%' ORDER BY holder_rank`, ...args); }
+
 module.exports = {
+  readApiRowsQuery1,
   select_data,
   select_ops_raw_records,
   insert_ops_raw_records,

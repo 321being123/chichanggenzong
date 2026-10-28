@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "lastReviewed": "2026-10-27",
-  "rulesVersion": "layer-coupling-4",
+  "rulesVersion": "layer-coupling-5",
   "defaultRole": "pending_contract",
   "scan": {
     "includeExtensions": [

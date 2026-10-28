@@ -1,3 +1,4 @@
+const layerSql = require('../repositories/hkIpoSyncRepository');
 const { runHkexIpoProbe, buildProbePlan, persistHkexProbe, upsertHkIpoFacts, recomputeHkIpoCompleteness, readHkIpoCompleteness, syncHkexHistoricalReports, syncHkexNonPublicListings, syncHkexListingStatusNotices, syncHkexProspectusFacts, syncHkexAllotmentFacts, syncHkexPricingFacts, syncStoredHkListings } = require('../services/hkexIpo');
 const { syncTencentHkDailyCoverage } = require('../services/hkDailyCoverage');
 const { syncHkIpoMarketSignals } = require('../services/hkIpoMarketSignals');
@@ -56,14 +57,7 @@ async function syncHkIpoTencentNames(seedCodes = [], { batchSize = null, targetC
   const candidateLimitClause = configuredLimit ? ' LIMIT $2' : '';
   const candidateParams = [CHINESE_NAME_PATTERN];
   if (configuredLimit) candidateParams.push(configuredLimit);
-  const candidates = targetCodes.length ? { rows: [], rowCount: 0 } : await executor(`
-    SELECT security_code
-      FROM public.ipo_history
-     WHERE market_code='HK'
-       AND COALESCE(NULLIF(security_name_cn,''),'') !~ $1
-     ORDER BY CASE WHEN listing_at IS NOT NULL OR ipo_status='listed' THEN 0 ELSE 1 END,
-              COALESCE(listing_at,NULLIF(updated_at,'')::timestamptz) DESC NULLS LAST,security_code
-     ${candidateLimitClause}`, candidateParams);
+  const candidates = targetCodes.length ? { rows: [], rowCount: 0 } : await layerSql.syncHkIpoTencentNamesLayerQuery1(executor, [candidateLimitClause], candidateParams);
   const limit = configuredLimit || Number.MAX_SAFE_INTEGER;
   const codes = [];
   const seen = new Set();

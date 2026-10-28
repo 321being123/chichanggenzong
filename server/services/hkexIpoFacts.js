@@ -1,3 +1,4 @@
+const hkexFactsSql = require('../repositories/hkexIpoFactsRepository');
 // 港股 IPO 事实入库与完整度核算
 // R-10 拆分自 ./hkexIpo.js（2026-10-21）：本文件只放港股 IPO 事实入库与完整度核算；对外入口仍是 ./hkexIpo.js。
 const crypto = require('crypto');
@@ -10,7 +11,7 @@ const repository = require('../repositories/hkexIpoFactsRepository.js');
 
 async function persistHkexProbe(result, { environment = 'local', executor = pool.query.bind(pool) } = {}) {
   if (!['local', 'server'].includes(environment)) throw new Error(`未知探针环境：${environment}`);
-  const source = await executor("SELECT source_id FROM ops.data_sources WHERE source_code='hkex_announcements' LIMIT 1");
+  const source = await hkexFactsSql.persistHkexProbeLayerQuery1(executor, []);
   if (!source.rows[0]) throw new Error('港交所数据源未登记');
   const targets = Array.isArray(result?.targets) ? result.targets : [];
   const invalidEvidence = targets.filter(target => target.ok && (!/^2\d\d$/.test(String(target.httpStatus || ''))
@@ -19,26 +20,16 @@ async function persistHkexProbe(result, { environment = 'local', executor = pool
   const status = targets.length && !invalidEvidence.length && targets.every(target => target.ok)
     ? 'succeeded' : targets.some(target => target.ok) ? 'degraded' : 'failed';
   if (invalidEvidence.length) throw new Error(`探针证据不完整：${invalidEvidence.map(target => target.key).join('、')}`);
-  const run = await executor(
-    `INSERT INTO ops.ingestion_runs(source_id,dataset_code,request_range,status,row_count,error_message,finished_at)
-     VALUES($1,'hkex_ipo_probe',$2::jsonb,$3,$4,$5,now()) RETURNING run_id`,
-    [source.rows[0].source_id, JSON.stringify({ environment, generatedAt: result?.generatedAt || null, targetCount: targets.length }), status,
-      targets.reduce((sum, target) => sum + Number(target.rowCount || 0), 0), targets.filter(target => !target.ok).map(target => `${target.key}:${target.error || 'failed'}`).join('; ').slice(0, 2000)]
-  );
+  const run = await hkexFactsSql.persistHkexProbeLayerQuery2(executor, [], [source.rows[0].source_id, JSON.stringify({ environment, generatedAt: result?.generatedAt || null, targetCount: targets.length }), status,
+      targets.reduce((sum, target) => sum + Number(target.rowCount || 0), 0), targets.filter(target => !target.ok).map(target => `${target.key}:${target.error || 'failed'}`).join('; ').slice(0, 2000)]);
   if (targets.length) {
-    await executor(
-      `INSERT INTO ops.raw_records(run_id,source_id,dataset_code,source_key,source_updated_at,payload,payload_hash)
-       SELECT $1,$2,'hkex_ipo_probe',x.source_key,now(),x.payload,md5(x.payload::text)
-         FROM jsonb_to_recordset($3::jsonb) AS x(source_key text,payload jsonb)
-       ON CONFLICT(source_id,dataset_code,source_key,payload_hash) DO NOTHING`,
-      [run.rows[0].run_id, source.rows[0].source_id, JSON.stringify(targets.map(target => ({
+    await hkexFactsSql.persistHkexProbeLayerQuery3(executor, [], [run.rows[0].run_id, source.rows[0].source_id, JSON.stringify(targets.map(target => ({
         source_key: `${environment}|${target.key}|${target.responseSha256 || target.requestedAt || ''}`,
         payload: { environment, key: target.key, url: target.url, ok: target.ok, httpStatus: target.httpStatus || null,
           parserStatus: target.parserStatus, rowCount: target.rowCount || 0, responseBytes: target.responseBytes || 0,
           responseSha256: target.responseSha256 || null, dns: target.dns || null, cookieRequired: target.cookieRequired || null,
           wafSignals: target.wafSignals || [], error: target.error || null },
-      })))]
-    );
+      })))]);
   }
   return { runId: run.rows[0].run_id, environment, status, targets: targets.length };
 }
@@ -245,9 +236,7 @@ function expectedDateByValue(event) {
 }
 
 async function readHkIpoCompleteness(executor = pool.query.bind(pool), asOfDate = todayShanghai(), options = {}) {
-  const { rows } = await executor(`SELECT security_code,ipo_status,offer_open_at,offer_close_at,pricing_at,allotment_at,
-    listing_at,listing_date,issue_price_low,issue_price_high,issue_price_final,lot_size_shares,source_documents,data_completeness
-    FROM public.ipo_history WHERE market_code='HK'`);
+  const { rows } = await hkexFactsSql.readHkIpoCompletenessLayerQuery1(executor, []);
   let complete = 0, pending = 0, missing = 0;
   for (const row of rows) {
     const status = recomputeCompletenessForStoredRow(row, asOfDate, options).status;
@@ -262,13 +251,7 @@ async function readHkIpoCompleteness(executor = pool.query.bind(pool), asOfDate 
 async function recomputeHkIpoCompleteness(executor = pool.query.bind(pool), targetCodes = [], asOfDate = todayShanghai(), options = {}) {
   const scopedCodes = [...new Set((Array.isArray(targetCodes) ? targetCodes : []).map(canonicalHkCode).filter(Boolean))];
   const targetFilter = scopedCodes.length ? ' AND security_code=ANY($1::text[])' : '';
-  const { rows } = await executor(`
-    SELECT security_code,ipo_status,offer_open_at,offer_close_at,pricing_at,allotment_at,listing_at,listing_date,
-           issue_price_low,issue_price_high,issue_price_final,lot_size_shares,source_documents,data_completeness
-      FROM public.ipo_history
-     WHERE market_code='HK'
-       ${targetFilter}
-  `, scopedCodes.length ? [scopedCodes] : []);
+  const { rows } = await hkexFactsSql.recomputeHkIpoCompletenessLayerQuery1(executor, [targetFilter], scopedCodes.length ? [scopedCodes] : []);
   let updated = 0;
   let complete = 0;
   let pending = 0;
@@ -296,19 +279,7 @@ async function syncStoredHkListings({asOfDate=todayShanghai(),targetCodes=[],exe
   if(CoreDate.normalizeBusinessDate(asOfDate)!==asOfDate) throw new Error('实际上市事实目标日无效');
   if(!Array.isArray(targetCodes)||targetCodes.some(code=>!canonicalHkCode(code))) throw new Error('实际上市事实目标代码无效');
   const codes=[...new Set(targetCodes.map(canonicalHkCode).filter(Boolean))];
-  const {rows}=await executor(`SELECT h.security_code,h.security_name,h.security_name_cn,h.market_type,i.list_date::text,
-      i.status,r.raw_record_id,r.payload,r.payload_hash,r.source_updated_at,r.request_range,r.ingestion_status
-    FROM public.ipo_history h JOIN core.instruments i ON i.instrument_id=h.instrument_id
-    JOIN LATERAL (SELECT rr.raw_record_id,rr.payload,rr.payload_hash,rr.source_updated_at,ir.request_range,ir.status AS ingestion_status
-      FROM ops.raw_records rr JOIN ops.data_sources ds USING(source_id) JOIN ops.ingestion_runs ir ON ir.run_id=rr.run_id AND ir.source_id=rr.source_id
-      WHERE ds.source_code='tushare' AND rr.dataset_code='hk_basic' AND rr.source_key=h.security_code
-        AND rr.payload->>'ts_code'=h.security_code AND ir.dataset_code='hk_basic'
-        AND ir.request_range->>'list_status'='L' AND ir.status='success'
-      ORDER BY rr.ingested_at DESC,rr.raw_record_id DESC LIMIT 1) r ON true
-    WHERE h.market_code='HK' AND h.listing_at IS NULL AND COALESCE(h.listing_date,'')=''
-      AND i.market='HK' AND i.status='listed' AND i.list_date<=$1::date
-      AND h.ipo_status NOT IN ('cancelled','canceled','postponed','introduction','gem_transfer','de_spac')
-      AND (cardinality($2::text[])=0 OR h.security_code=ANY($2::text[]))`,[asOfDate,codes]);
+  const {rows}=await hkexFactsSql.syncStoredHkListingsLayerQuery1(executor, [], [asOfDate,codes]);
   const verified=[],failures=[];
   for(const row of rows) {
     const raw=row.payload||{}, compact=String(raw.list_date||'');

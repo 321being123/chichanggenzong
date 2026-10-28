@@ -71,7 +71,8 @@ assert(mailer.includes("scope_type=\'slot\' AND scope_key=$1::text"));
 assert(mailer.includes('RECOVERY_SEQUENCE_STATUSES') && mailer.includes('ORDER BY scheduled_for DESC,slot_id DESC'),
   '告警恢复必须按最近计划时间取候选，不能取最早的失败记录');
 assert(!/ORDER BY scheduled_for ASC,slot_id ASC/.test(mailer), '告警恢复不得再按最早候选取数');
-assert(/status = ANY\(\$\$\{statusIndex\}::text\[\]\)/.test(mailer), '只有已产生结果的后续实例才能进入恢复序列');
+assert(/loadRecentRecoverySequenceLayerQuery1\(query,\s*\[statusIndex,\s*recoveryScope\.sql,\s*limitIndex\]/.test(mailer)
+  && /status = ANY\(\$\$\{parts\[0\]\}::text\[\]\)/.test(mailer), '只有已产生结果的后续实例才能进入恢复序列');
 assert.deepStrictEqual(closedCircuitApiNames([{ api_name: '*' }, { api_name: 'topSearch' }, { api_name: '*' }]), ['*', 'topSearch']);
 {
   const definition = getJobDefinition('hk_rate');

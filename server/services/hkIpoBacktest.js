@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { pool } = require('../db');
+const repository = require('../repositories/hkIpoBacktestRepository');
 
 const CONFIG_PATH = path.join(__dirname, '..', '..', 'config', 'ipo_hk_model_freeze_v1.json');
 const MODEL_CONFIG_TEXT = fs.readFileSync(CONFIG_PATH, 'utf8');
@@ -182,31 +183,14 @@ function auditFormalValidation(rows = [], windows = []) {
 
 async function loadCandidates({ fromDate = '2025-08-04', toDate = null } = {}, executor = pool.query.bind(pool)) {
   const upper = toDate || new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(new Date());
-  const result = await executor(`
-    SELECT h.security_code,h.security_name,h.instrument_id,h.ipo_status,
-           (CASE WHEN h.listing_at IS NOT NULL THEN h.listing_at::date
-                 WHEN h.listing_date ~ '^\\d{4}-\\d{2}-\\d{2}$' THEN h.listing_date::date END)::text AS listing_date,
-           h.offer_open_at,h.offer_close_at,h.issue_price_final,h.issue_price_low,h.issue_price_high,
-           h.public_offer_ratio,h.international_offer_ratio,h.lot_size_shares,h.data_completeness,h.source_documents
-           ,h.online_lottery_rate,h.industry,h.board_key,h.application_fee_hkd,h.brokerage_fee_hkd
-      FROM public.ipo_history h
-     WHERE h.market_code='HK'
-       AND (h.listing_at::date BETWEEN $1::date AND $2::date
-            OR (h.listing_at IS NULL AND h.listing_date ~ '^\\d{4}-\\d{2}-\\d{2}$' AND h.listing_date::date BETWEEN $1::date AND $2::date))
-       AND COALESCE(h.ipo_status,'active')='listed'
-     ORDER BY listing_date,h.security_code`, [fromDate, upper]);
+  const result = await repository.listCandidates(executor, fromDate, upper);
   return result.rows;
 }
 
 async function loadBars(candidates, toDate, executor = pool.query.bind(pool)) {
   const ids = candidates.map(row => row.instrument_id).filter(Boolean);
   if (!ids.length) return new Map();
-  const result = await executor(`
-    SELECT DISTINCT ON (instrument_id,trade_date) instrument_id,trade_date::text AS trade_date,close
-      FROM market.daily_bars
-     WHERE instrument_id=ANY($1::bigint[])
-       AND trade_date <= $2::date
-     ORDER BY instrument_id,trade_date,source_id DESC`, [ids, toDate]);
+  const result = await repository.listBars(executor, ids, toDate);
   const grouped = new Map();
   for (const row of result.rows) {
     if (!grouped.has(String(row.instrument_id))) grouped.set(String(row.instrument_id), []);
@@ -216,12 +200,7 @@ async function loadBars(candidates, toDate, executor = pool.query.bind(pool)) {
 }
 
 async function loadHkexOpenDates(fromDate, toDate, executor = pool.query.bind(pool)) {
-  const result = await executor(`
-    SELECT trade_date::text AS trade_date
-      FROM market.trade_calendar
-     WHERE exchange='HKEX' AND is_open
-       AND trade_date BETWEEN $1::date AND $2::date
-     ORDER BY trade_date`, [fromDate, toDate]);
+  const result = await repository.listOpenDates(executor, fromDate, toDate);
   return result.rows.map(row => String(row.trade_date).slice(0, 10));
 }
 
@@ -290,31 +269,16 @@ function dailyCoverageFromBars(candidates, barsByInstrument, openDates = []) {
 }
 
 async function persistModelConfigSnapshot(executor = pool.query.bind(pool)) {
-  const source = await executor("SELECT source_id FROM ops.data_sources WHERE source_code='calculated' LIMIT 1");
+  const source = await repository.findCalculatedSource(executor);
   if (!source.rows[0]) throw new Error('系统计算数据源未登记，无法保存港股模型配置快照');
   const range = { modelVersion: MODEL_CONFIG.model_version, configSha256: MODEL_CONFIG_HASH, configPath: 'config/ipo_hk_model_freeze_v1.json' };
-  const run = await executor(
-    `INSERT INTO ops.ingestion_runs(source_id,dataset_code,request_range,status,row_count)
-     VALUES($1,'hk_ipo_model_config',$2::jsonb,'running',0) RETURNING run_id`,
-    [source.rows[0].source_id, JSON.stringify(range)]
-  );
+  const run = await repository.startConfigRun(executor, [source.rows[0].source_id, JSON.stringify(range)]);
   try {
     const payload = { ...MODEL_CONFIG, configSha256: MODEL_CONFIG_HASH, configPath: range.configPath };
-    await executor(
-      `INSERT INTO ops.raw_records(run_id,source_id,dataset_code,source_key,source_updated_at,payload,payload_hash)
-       VALUES($1,$2,'hk_ipo_model_config',$3,now(),$4::jsonb,$5)
-       ON CONFLICT(source_id,dataset_code,source_key,payload_hash) DO UPDATE SET run_id=EXCLUDED.run_id,ingested_at=now()`,
-      [run.rows[0].run_id, source.rows[0].source_id, MODEL_CONFIG.model_version, JSON.stringify(payload), MODEL_CONFIG_HASH]
-    );
-    await executor(
-      `UPDATE ops.ingestion_runs SET status='succeeded',row_count=1,finished_at=now() WHERE run_id=$1`,
-      [run.rows[0].run_id]
-    );
+    await repository.saveConfigRecord(executor, [run.rows[0].run_id, source.rows[0].source_id, MODEL_CONFIG.model_version, JSON.stringify(payload), MODEL_CONFIG_HASH]);
+    await repository.completeConfigRun(executor, [run.rows[0].run_id]);
   } catch (error) {
-    await executor(
-      `UPDATE ops.ingestion_runs SET status='failed',error_message=$2,finished_at=now() WHERE run_id=$1`,
-      [run.rows[0].run_id, String(error.message || error).slice(0, 2000)]
-    ).catch(() => {});
+    await repository.failConfigRun(executor, [run.rows[0].run_id, String(error.message || error).slice(0, 2000)]).catch(() => {});
     throw error;
   }
   return { runId: run.rows[0].run_id, modelVersion: MODEL_CONFIG.model_version, configSha256: MODEL_CONFIG_HASH };
@@ -336,22 +300,7 @@ function consecutiveWorkdayCount(stableDates, openDates) {
 }
 
 async function loadProbeAudit(executor = pool.query.bind(pool)) {
-  const result = await executor(`
-    WITH run_stats AS (
-      SELECT ir.run_id,ir.request_range->>'environment' AS environment,
-             (ir.started_at AT TIME ZONE 'Asia/Shanghai')::date AS observed_date,
-             COUNT(rr.raw_record_id)::int AS target_count,
-             COUNT(*) FILTER (WHERE rr.payload->>'responseSha256' ~ '^[0-9a-fA-F]{64}$')::int AS valid_targets,
-             COUNT(*) FILTER (WHERE rr.payload->>'parserStatus'='parsed')::int AS parsed_targets
-        FROM ops.ingestion_runs ir
-        LEFT JOIN ops.raw_records rr ON rr.run_id=ir.run_id AND rr.dataset_code='hkex_ipo_probe'
-       WHERE ir.dataset_code='hkex_ipo_probe' AND ir.status='succeeded'
-       GROUP BY ir.run_id,ir.request_range->>'environment',ir.started_at
-    )
-    SELECT environment,observed_date::text AS observed_date,target_count,valid_targets,parsed_targets,
-           (target_count > 0 AND valid_targets=target_count) AS stable
-      FROM run_stats
-     ORDER BY observed_date`);
+  const result = await repository.listProbeRuns(executor);
   const environments = {
     local: { environment: 'local', valid_targets: 0, parsed_targets: 0, stableDates: [] },
     server: { environment: 'server', valid_targets: 0, parsed_targets: 0, stableDates: [] },
@@ -368,12 +317,7 @@ async function loadProbeAudit(executor = pool.query.bind(pool)) {
     .sort();
   let openDates = [];
   if (sharedStableDates.length) {
-    const calendar = await executor(`
-      SELECT trade_date::text AS trade_date
-        FROM market.trade_calendar
-       WHERE exchange='HKEX' AND is_open
-         AND trade_date BETWEEN $1::date AND $2::date
-       ORDER BY trade_date`, [sharedStableDates[0], sharedStableDates[sharedStableDates.length - 1]]);
+    const calendar = await repository.listProbeCalendar(executor, [sharedStableDates[0], sharedStableDates[sharedStableDates.length - 1]]);
     openDates = calendar.rows.map(row => String(row.trade_date).slice(0, 10));
   }
   const local = {
@@ -462,11 +406,7 @@ async function runHkIpoBacktest({ fromDate = '2025-08-04', toDate, dailyCoverage
   const inputHash = crypto.createHash('sha256').update(JSON.stringify(payload)).digest('hex');
   if (persist) {
     await persistModelConfigSnapshot(executor);
-    await executor(`INSERT INTO analytics.hk_ipo_backtests
-      (model_version,from_date,to_date,candidate_count,eligible_count,test_count,first_day_coverage,five_day_coverage,
-       metrics,windows,gate_status,gate_reasons,input_hash,created_at)
-      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10::jsonb,$11,$12::jsonb,$13,now())`,
-      [MODEL_CONFIG.model_version, fromDate, upper, candidates.length, gate.eligibleCount, gate.testCount,
+    await repository.saveBacktest(executor, [MODEL_CONFIG.model_version, fromDate, upper, candidates.length, gate.eligibleCount, gate.testCount,
         auditedCoverage.firstDayCoverage, auditedCoverage.fiveDayCoverage, JSON.stringify({ ...metrics, modelConfigHash: MODEL_CONFIG_HASH, dailyCoverage: auditedCoverage, probe: auditedProbe, gateDiagnostics: { vetoCounts: gate.vetoCounts, formalValidation } }), JSON.stringify(windows),
         gate.status, JSON.stringify(gate.reasons), inputHash]);
   }
@@ -474,8 +414,7 @@ async function runHkIpoBacktest({ fromDate = '2025-08-04', toDate, dailyCoverage
 }
 
 async function getHkFormalGateStatus(executor = pool.query.bind(pool)) {
-  const result = await executor(`SELECT gate_status,gate_reasons,metrics,model_version,created_at
-    FROM analytics.hk_ipo_backtests ORDER BY created_at DESC LIMIT 1`);
+  const result = await repository.findLatestGate(executor);
   const row = result.rows[0];
   return row ? { passed: row.gate_status === 'passed', ...row } : { passed: false, gate_status: 'blocked', gate_reasons: ['尚未完成港股回测'] };
 }
@@ -490,17 +429,7 @@ async function assertHkFormalGate(executor = pool.query.bind(pool)) {
 async function upsertHkFormalRecommendationSnapshot({ instrumentId, asOfDate, modelVersion = MODEL_CONFIG.model_version,
   score = null, advice = '', riskFlags = [], inputCompleteness = {}, dataAsOf = null, rawPayload = {}, executor = pool.query.bind(pool) } = {}) {
   await assertHkFormalGate(executor);
-  const result = await executor(`
-    INSERT INTO analytics.ipo_recommendation_snapshots(
-      instrument_id,market_code,stage,as_of_date,model_version,score,advice,risk_flags,input_completeness,
-      data_as_of,published_at,is_stale,stale_reason,raw_payload,created_at,updated_at
-    ) VALUES($1,'HK','formal',$2::date,$3,$4,$5,$6::jsonb,$7::jsonb,$8::date,now(),false,'',$9::jsonb,now(),now())
-    ON CONFLICT(instrument_id,stage,as_of_date,model_version) DO UPDATE SET
-      score=EXCLUDED.score,advice=EXCLUDED.advice,risk_flags=EXCLUDED.risk_flags,input_completeness=EXCLUDED.input_completeness,
-      data_as_of=EXCLUDED.data_as_of,published_at=EXCLUDED.published_at,is_stale=false,stale_reason='',raw_payload=EXCLUDED.raw_payload,updated_at=now()
-    RETURNING snapshot_id`,
-    [instrumentId, asOfDate, modelVersion, score, advice, JSON.stringify(riskFlags), JSON.stringify(inputCompleteness), dataAsOf, JSON.stringify(rawPayload)]
-  );
+  const result = await repository.saveFormalRecommendation(executor, [instrumentId, asOfDate, modelVersion, score, advice, JSON.stringify(riskFlags), JSON.stringify(inputCompleteness), dataAsOf, JSON.stringify(rawPayload)]);
   return { gate: true, snapshotId: result.rows[0]?.snapshot_id || null };
 }
 

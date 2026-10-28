@@ -611,7 +611,11 @@ async function findHkTargetCodes(codes, tx) {
     `, [codes]);
 }
 
+
+function attachFirstDayPerformanceQuery1(executor, ...args) { return executor("SELECT symbol,price,quote_time FROM market_quote_cache WHERE source='tencent' AND symbol=ANY($1::text[])", ...args); }
+
 module.exports = {
+  attachFirstDayPerformanceQuery1,
   hkOfferPhaseSql,
   hkIpoShortNameJoinSql,
   hkSignalJoinSql,

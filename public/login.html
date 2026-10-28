@@ -217,11 +217,11 @@ function safeRedirect(raw) {
 let REDIRECT = safeRedirect(getParam('redirect'));
 
 // 如果已登录，直接跳转到回跳页
-fetch(api('/api/me')).then(r => r.json()).then(d => {
+window.siteApi.fetchResponse(api('/api/me')).then(r => r.json()).then(d => {
   if (d.username) window.location.href = api(REDIRECT);
 }).catch(() => {});
 
-fetch(api('/api/config')).then(r => r.json()).then(cfg => {
+window.siteApi.fetchResponse(api('/api/config')).then(r => r.json()).then(cfg => {
   needCode = !!cfg.needRegisterCode;
   requireEmail = !!cfg.requireEmail;
   emailServiceAvailable = !!cfg.emailServiceAvailable;
@@ -304,7 +304,7 @@ async function sendCode() {
   const btn = document.getElementById('send-code-btn');
   btn.disabled = true;
   try {
-    const r = await fetch(api('/api/send-code'), {
+    const r = await window.siteApi.fetchResponse(api('/api/send-code'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ email })
@@ -341,7 +341,7 @@ async function sendResetCode() {
   const btn = document.getElementById('reset-send-code-btn');
   btn.disabled = true;
   try {
-    const r = await fetch(api('/api/forgot-password/send-code'), {
+    const r = await window.siteApi.fetchResponse(api('/api/forgot-password/send-code'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ username, email })
@@ -390,7 +390,7 @@ function submit() {
 
     submitting = true;
     document.getElementById('submit-btn').disabled = true;
-    fetch(api('/api/forgot-password/reset'), {
+    window.siteApi.fetchResponse(api('/api/forgot-password/reset'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ username, email, emailCode, newPassword })
@@ -419,7 +419,7 @@ function submit() {
     if (!password) { showError('请输入密码'); return; }
     submitting = true;
     document.getElementById('submit-btn').disabled = true;
-    fetch(api('/api/login'), {
+    window.siteApi.fetchResponse(api('/api/login'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ username, password })
@@ -467,7 +467,7 @@ function submit() {
   document.getElementById('submit-btn').disabled = true;
   showToast('注册中...');
   if (window.SiteTelemetry) window.SiteTelemetry.trackEvent('register_submit', { page_key: 'register', module: 'auth', entry: 'submit', properties: { step: 'form' } });
-  fetch(api('/api/register'), {
+  window.siteApi.fetchResponse(api('/api/register'), {
     method: 'POST',
     headers: typeof window !== 'undefined' && window.SiteTelemetry ? window.SiteTelemetry.getHeaders({ 'Content-Type': 'application/json' }) : { 'Content-Type': 'application/json' },
     body: JSON.stringify(body)

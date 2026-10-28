@@ -28,4 +28,13 @@ function recoveryScopeFilter(slot, startIndex) {
   return { sql: clauses.join('\n          AND '), params, nextIndex: fieldsIndex + 1 };
 }
 
-module.exports = { recoveryScopeFilter, runQuery };
+
+function verifySlotRecoveryEvidenceLayerQuery1(executor, parts, ...args) { return executor(`SELECT id,slot_id,status,result_json,attempt_no,trigger_type
+       FROM job_runs WHERE slot_id=$1 ORDER BY id DESC LIMIT 1`, ...args); }
+
+function verifySlotRecoveryEvidenceLayerQuery2(executor, parts, ...args) { return executor(`SELECT dataset_code,scope_key,partition_key,status,is_stale,diagnostics
+         FROM ops.dataset_partitions
+        WHERE dataset_code=ANY($1::text[]) AND partition_key=$2::date`, ...args); }
+
+module.exports = {
+  verifySlotRecoveryEvidenceLayerQuery1, verifySlotRecoveryEvidenceLayerQuery2, recoveryScopeFilter, runQuery };

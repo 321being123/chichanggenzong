@@ -1,3 +1,4 @@
+const layerSql = require('../repositories/ipoRepository');
 const { pool } = require('../db/connection');
 const CoreDate = require('../../public/shared/core-date');
 const { fetchTencentQuotes } = require('./tencentQuote');
@@ -56,9 +57,7 @@ async function attachFirstDayPerformance(rows, market, { now = null, query = poo
     try { await collectQuotes([...symbols.keys()], { businessDate: today, force }, fetchQuotes); }
     catch (_) { refreshFailed = true; }
   }
-  const cached = symbols.size ? await query(
-    "SELECT symbol,price,quote_time FROM market_quote_cache WHERE source='tencent' AND symbol=ANY($1::text[])",
-    [[...new Set(symbols.values())]]) : { rows: [] };
+  const cached = symbols.size ? await layerSql.attachFirstDayPerformanceQuery1(query, [[...new Set(symbols.values())]]) : { rows: [] };
   const quotes = new Map(cached.rows.map(row => [row.symbol, row]));
   // 只展示已持久化的报价；联网失败保留同日旧报价并明确标记。
   const displayNow = now || new Date();

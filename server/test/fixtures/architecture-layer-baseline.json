@@ -1,11 +1,11 @@
 {
   "schemaVersion": 1,
   "scanner": "audit-layer-coupling",
-  "scannerVersion": "1.0.0",
-  "rulesVersion": "layer-coupling-4",
+  "scannerVersion": "1.1.0",
+  "rulesVersion": "layer-coupling-5",
   "commit": "449254fabddb078acd2ac27546305ba3617e6729",
   "dirty": false,
-  "scannedAt": "2026-10-27T15:26:30.436Z",
+  "scannedAt": "2026-10-28T15:28:43.974Z",
   "scope": {
     "includeExtensions": [
       ".js",
@@ -1190,9 +1190,9 @@
       "directory": "server/services",
       "files": 102,
       "lines": 37003,
-      "sqlCandidates": 1093,
+      "sqlCandidates": 1194,
       "networkCandidates": 15,
-      "sqlModules": 64,
+      "sqlModules": 70,
       "networkModules": 12
     },
     {
@@ -1217,7 +1217,7 @@
       "directory": "server/scripts",
       "files": 61,
       "lines": 10659,
-      "sqlCandidates": 221,
+      "sqlCandidates": 237,
       "networkCandidates": 13,
       "sqlModules": 32,
       "networkModules": 11
@@ -1253,9 +1253,9 @@
       "directory": "server/jobs",
       "files": 21,
       "lines": 4866,
-      "sqlCandidates": 90,
+      "sqlCandidates": 94,
       "networkCandidates": 7,
-      "sqlModules": 15,
+      "sqlModules": 16,
       "networkModules": 3
     },
     {
@@ -1913,7 +1913,7 @@
     },
     {
       "path": "ipo-report/ipo_lib_train.py",
-      "role": "domain_algorithm",
+      "role": "application",
       "roleSource": "file",
       "batch": 5,
       "roleStatus": "registered",
@@ -3431,7 +3431,7 @@
       "roleStatus": "registered",
       "lines": 433,
       "findings": {
-        "sql": 1,
+        "sql": 2,
         "network": 0,
         "dom": 0,
         "crossLayer": 0
@@ -3473,7 +3473,7 @@
       "roleStatus": "registered",
       "lines": 78,
       "findings": {
-        "sql": 0,
+        "sql": 1,
         "network": 0,
         "dom": 0,
         "crossLayer": 0
@@ -3627,7 +3627,7 @@
       "roleStatus": "registered",
       "lines": 198,
       "findings": {
-        "sql": 2,
+        "sql": 4,
         "network": 0,
         "dom": 0,
         "crossLayer": 0
@@ -4117,7 +4117,7 @@
       "roleStatus": "registered",
       "lines": 224,
       "findings": {
-        "sql": 1,
+        "sql": 15,
         "network": 0,
         "dom": 0,
         "crossLayer": 0
@@ -4719,7 +4719,7 @@
       "roleStatus": "registered",
       "lines": 247,
       "findings": {
-        "sql": 8,
+        "sql": 10,
         "network": 0,
         "dom": 0,
         "crossLayer": 0
@@ -5167,7 +5167,7 @@
       "roleStatus": "legacy",
       "lines": 567,
       "findings": {
-        "sql": 3,
+        "sql": 4,
         "network": 0,
         "dom": 0,
         "crossLayer": 0
@@ -5349,7 +5349,7 @@
       "roleStatus": "legacy",
       "lines": 158,
       "findings": {
-        "sql": 15,
+        "sql": 16,
         "network": 0,
         "dom": 0,
         "crossLayer": 0
@@ -5363,7 +5363,7 @@
       "roleStatus": "legacy",
       "lines": 632,
       "findings": {
-        "sql": 20,
+        "sql": 22,
         "network": 0,
         "dom": 0,
         "crossLayer": 0
@@ -5391,7 +5391,7 @@
       "roleStatus": "registered",
       "lines": 1159,
       "findings": {
-        "sql": 53,
+        "sql": 54,
         "network": 1,
         "dom": 0,
         "crossLayer": 2
@@ -5405,7 +5405,7 @@
       "roleStatus": "legacy",
       "lines": 1901,
       "findings": {
-        "sql": 45,
+        "sql": 47,
         "network": 0,
         "dom": 0,
         "crossLayer": 0
@@ -5576,7 +5576,7 @@
         "sql": 1,
         "network": 0,
         "dom": 0,
-        "crossLayer": 1
+        "crossLayer": 0
       }
     },
     {
@@ -5587,7 +5587,7 @@
       "roleStatus": "registered",
       "lines": 74,
       "findings": {
-        "sql": 2,
+        "sql": 3,
         "network": 0,
         "dom": 0,
         "crossLayer": 1
@@ -5685,7 +5685,7 @@
       "roleStatus": "registered",
       "lines": 669,
       "findings": {
-        "sql": 17,
+        "sql": 27,
         "network": 0,
         "dom": 0,
         "crossLayer": 0
@@ -5699,7 +5699,7 @@
       "roleStatus": "legacy",
       "lines": 779,
       "findings": {
-        "sql": 59,
+        "sql": 62,
         "network": 0,
         "dom": 0,
         "crossLayer": 0
@@ -5713,7 +5713,7 @@
       "roleStatus": "legacy",
       "lines": 979,
       "findings": {
-        "sql": 38,
+        "sql": 39,
         "network": 0,
         "dom": 0,
         "crossLayer": 0
@@ -5769,7 +5769,7 @@
       "roleStatus": "legacy",
       "lines": 507,
       "findings": {
-        "sql": 0,
+        "sql": 11,
         "network": 0,
         "dom": 0,
         "crossLayer": 0
@@ -5839,7 +5839,7 @@
       "roleStatus": "legacy",
       "lines": 450,
       "findings": {
-        "sql": 6,
+        "sql": 12,
         "network": 0,
         "dom": 0,
         "crossLayer": 0
@@ -5853,7 +5853,7 @@
       "roleStatus": "legacy",
       "lines": 1127,
       "findings": {
-        "sql": 5,
+        "sql": 25,
         "network": 0,
         "dom": 0,
         "crossLayer": 0
@@ -5881,7 +5881,7 @@
       "roleStatus": "legacy",
       "lines": 69,
       "findings": {
-        "sql": 0,
+        "sql": 1,
         "network": 0,
         "dom": 0,
         "crossLayer": 0
@@ -5895,7 +5895,7 @@
       "roleStatus": "legacy",
       "lines": 957,
       "findings": {
-        "sql": 38,
+        "sql": 44,
         "network": 0,
         "dom": 0,
         "crossLayer": 0
@@ -5903,10 +5903,10 @@
     },
     {
       "path": "server/services/jobDefinitions.js",
-      "role": "service_legacy",
-      "roleSource": "directory",
-      "batch": 3,
-      "roleStatus": "legacy",
+      "role": "shared_pure",
+      "roleSource": "file",
+      "batch": 0,
+      "roleStatus": "registered",
       "lines": 308,
       "findings": {
         "sql": 0,
@@ -5951,7 +5951,7 @@
       "roleStatus": "legacy",
       "lines": 261,
       "findings": {
-        "sql": 1,
+        "sql": 3,
         "network": 0,
         "dom": 0,
         "crossLayer": 0
@@ -5993,7 +5993,7 @@
       "roleStatus": "legacy",
       "lines": 1380,
       "findings": {
-        "sql": 63,
+        "sql": 66,
         "network": 0,
         "dom": 0,
         "crossLayer": 0
@@ -6049,7 +6049,7 @@
       "roleStatus": "legacy",
       "lines": 210,
       "findings": {
-        "sql": 0,
+        "sql": 1,
         "network": 0,
         "dom": 0,
         "crossLayer": 0
@@ -6077,7 +6077,7 @@
       "roleStatus": "legacy",
       "lines": 602,
       "findings": {
-        "sql": 0,
+        "sql": 5,
         "network": 0,
         "dom": 0,
         "crossLayer": 0
@@ -6161,7 +6161,7 @@
       "roleStatus": "legacy",
       "lines": 94,
       "findings": {
-        "sql": 9,
+        "sql": 12,
         "network": 0,
         "dom": 0,
         "crossLayer": 0
@@ -6175,7 +6175,7 @@
       "roleStatus": "legacy",
       "lines": 47,
       "findings": {
-        "sql": 0,
+        "sql": 7,
         "network": 0,
         "dom": 0,
         "crossLayer": 0
@@ -6189,7 +6189,7 @@
       "roleStatus": "registered",
       "lines": 390,
       "findings": {
-        "sql": 0,
+        "sql": 14,
         "network": 0,
         "dom": 0,
         "crossLayer": 0
@@ -6506,23 +6506,6 @@
         {
           "line": null,
           "evidence": "data_access 引用 service_legacy：require('./market') → server/services/market.js"
-        }
-      ]
-    },
-    {
-      "id": "CROSS_LAYER_IMPORT|server/services/datasetPartitionRegistry.js|import:./jobDefinitions",
-      "rule": "CROSS_LAYER_IMPORT",
-      "file": "server/services/datasetPartitionRegistry.js",
-      "symbol": "import:./jobDefinitions",
-      "role": "data_access",
-      "batch": 0,
-      "line": null,
-      "evidence": "data_access 引用 service_legacy：require('./jobDefinitions') → server/services/jobDefinitions.js",
-      "count": 1,
-      "locations": [
-        {
-          "line": null,
-          "evidence": "data_access 引用 service_legacy：require('./jobDefinitions') → server/services/jobDefinitions.js"
         }
       ]
     },
@@ -10059,7 +10042,7 @@
       "rule": "SQL_IN_NON_DATA_LAYER",
       "file": "ipo-report/ipo_lib_train.py",
       "symbol": "load_training_rows",
-      "role": "domain_algorithm",
+      "role": "application",
       "batch": 5,
       "line": 125,
       "evidence": "conn.execute()",
@@ -10220,6 +10203,23 @@
       ]
     },
     {
+      "id": "SQL_IN_NON_DATA_LAYER|server/jobs/hkIpoSync.js|syncHkIpoTencentNames",
+      "rule": "SQL_IN_NON_DATA_LAYER",
+      "file": "server/jobs/hkIpoSync.js",
+      "symbol": "syncHkIpoTencentNames",
+      "role": "job",
+      "batch": 3,
+      "line": 58,
+      "evidence": "executor(<sql>)",
+      "count": 1,
+      "locations": [
+        {
+          "line": 58,
+          "evidence": "executor(<sql>)"
+        }
+      ]
+    },
+    {
       "id": "SQL_IN_NON_DATA_LAYER|server/jobs/hkTradeCalendarSync.js|resolveSyncRange",
       "rule": "SQL_IN_NON_DATA_LAYER",
       "file": "server/jobs/hkTradeCalendarSync.js",
@@ -10262,6 +10262,23 @@
         {
           "line": 206,
           "evidence": "pool.query()"
+        }
+      ]
+    },
+    {
+      "id": "SQL_IN_NON_DATA_LAYER|server/jobs/hkTradeCalendarSyncJob.js|checkAnnualScheduleReminder",
+      "rule": "SQL_IN_NON_DATA_LAYER",
+      "file": "server/jobs/hkTradeCalendarSyncJob.js",
+      "symbol": "checkAnnualScheduleReminder",
+      "role": "job",
+      "batch": 3,
+      "line": 17,
+      "evidence": "query(<sql>)",
+      "count": 1,
+      "locations": [
+        {
+          "line": 17,
+          "evidence": "query(<sql>)"
         }
       ]
     },
@@ -11000,6 +11017,23 @@
       ]
     },
     {
+      "id": "SQL_IN_NON_DATA_LAYER|server/jobs/stockAnalysisRefresh.js|activeStockScope",
+      "rule": "SQL_IN_NON_DATA_LAYER",
+      "file": "server/jobs/stockAnalysisRefresh.js",
+      "symbol": "activeStockScope",
+      "role": "job",
+      "batch": 3,
+      "line": 75,
+      "evidence": "query(<sql>)",
+      "count": 1,
+      "locations": [
+        {
+          "line": 75,
+          "evidence": "query(<sql>)"
+        }
+      ]
+    },
+    {
       "id": "SQL_IN_NON_DATA_LAYER|server/jobs/stockAnalysisRefresh.js|latestStockAnalysisDate",
       "rule": "SQL_IN_NON_DATA_LAYER",
       "file": "server/jobs/stockAnalysisRefresh.js",
@@ -11030,6 +11064,23 @@
         {
           "line": 47,
           "evidence": "pool.query()"
+        }
+      ]
+    },
+    {
+      "id": "SQL_IN_NON_DATA_LAYER|server/jobs/stockAnalysisRefresh.js|verifiedStockDataDate",
+      "rule": "SQL_IN_NON_DATA_LAYER",
+      "file": "server/jobs/stockAnalysisRefresh.js",
+      "symbol": "verifiedStockDataDate",
+      "role": "job",
+      "batch": 3,
+      "line": 58,
+      "evidence": "query(<sql>)",
+      "count": 1,
+      "locations": [
+        {
+          "line": 58,
+          "evidence": "query(<sql>)"
         }
       ]
     },
@@ -12856,6 +12907,23 @@
       ]
     },
     {
+      "id": "SQL_IN_NON_DATA_LAYER|server/services/bondSafetyTushare.js|fetchBondSafetySourceFromDatabase",
+      "rule": "SQL_IN_NON_DATA_LAYER",
+      "file": "server/services/bondSafetyTushare.js",
+      "symbol": "fetchBondSafetySourceFromDatabase",
+      "role": "service_legacy",
+      "batch": 3,
+      "line": 445,
+      "evidence": "query(<sql>)",
+      "count": 1,
+      "locations": [
+        {
+          "line": 445,
+          "evidence": "query(<sql>)"
+        }
+      ]
+    },
+    {
       "id": "SQL_IN_NON_DATA_LAYER|server/services/bondSafetyTushare.js|filterPublicBonds",
       "rule": "SQL_IN_NON_DATA_LAYER",
       "file": "server/services/bondSafetyTushare.js",
@@ -13538,10 +13606,14 @@
       "symbol": "readApiRows",
       "role": "service_legacy",
       "batch": 3,
-      "line": 75,
-      "evidence": "client.query()",
-      "count": 7,
+      "line": 65,
+      "evidence": "query(<sql>)",
+      "count": 8,
       "locations": [
+        {
+          "line": 65,
+          "evidence": "query(<sql>)"
+        },
         {
           "line": 75,
           "evidence": "client.query()"
@@ -13643,6 +13715,23 @@
         {
           "line": 137,
           "evidence": "pool.query()"
+        }
+      ]
+    },
+    {
+      "id": "SQL_IN_NON_DATA_LAYER|server/services/convertibleBondAnalysisInputs.js|initialRatingBindingArguments",
+      "rule": "SQL_IN_NON_DATA_LAYER",
+      "file": "server/services/convertibleBondAnalysisInputs.js",
+      "symbol": "initialRatingBindingArguments",
+      "role": "service_legacy",
+      "batch": 3,
+      "line": 57,
+      "evidence": "query(<sql>)",
+      "count": 1,
+      "locations": [
+        {
+          "line": 57,
+          "evidence": "query(<sql>)"
         }
       ]
     },
@@ -13768,6 +13857,23 @@
         {
           "line": 231,
           "evidence": "client.query()"
+        }
+      ]
+    },
+    {
+      "id": "SQL_IN_NON_DATA_LAYER|server/services/convertibleBondAnalysisInputs.js|suspectRatingUrls",
+      "rule": "SQL_IN_NON_DATA_LAYER",
+      "file": "server/services/convertibleBondAnalysisInputs.js",
+      "symbol": "suspectRatingUrls",
+      "role": "service_legacy",
+      "batch": 3,
+      "line": 34,
+      "evidence": "query(<sql>)",
+      "count": 1,
+      "locations": [
+        {
+          "line": 34,
+          "evidence": "query(<sql>)"
         }
       ]
     },
@@ -14019,6 +14125,23 @@
       ]
     },
     {
+      "id": "SQL_IN_NON_DATA_LAYER|server/services/convertibleBondAnalysisSync.js|readBondGapQueue",
+      "rule": "SQL_IN_NON_DATA_LAYER",
+      "file": "server/services/convertibleBondAnalysisSync.js",
+      "symbol": "readBondGapQueue",
+      "role": "service_legacy",
+      "batch": 3,
+      "line": 353,
+      "evidence": "executor(<sql>)",
+      "count": 1,
+      "locations": [
+        {
+          "line": 353,
+          "evidence": "executor(<sql>)"
+        }
+      ]
+    },
+    {
       "id": "SQL_IN_NON_DATA_LAYER|server/services/convertibleBondAnalysisSync.js|recordedNextBondTradeDate",
       "rule": "SQL_IN_NON_DATA_LAYER",
       "file": "server/services/convertibleBondAnalysisSync.js",
@@ -14202,6 +14325,23 @@
         {
           "line": 413,
           "evidence": "pool.query()"
+        }
+      ]
+    },
+    {
+      "id": "SQL_IN_NON_DATA_LAYER|server/services/convertibleBondAnalysisSync.js|writeBondGapQueue",
+      "rule": "SQL_IN_NON_DATA_LAYER",
+      "file": "server/services/convertibleBondAnalysisSync.js",
+      "symbol": "writeBondGapQueue",
+      "role": "service_legacy",
+      "batch": 3,
+      "line": 363,
+      "evidence": "executor(<sql>)",
+      "count": 1,
+      "locations": [
+        {
+          "line": 363,
+          "evidence": "executor(<sql>)"
         }
       ]
     },
@@ -15944,12 +16084,20 @@
       "symbol": "applyRun",
       "role": "service_legacy",
       "batch": 3,
-      "line": 448,
+      "line": 414,
       "evidence": "lockClient.query(<sql>)",
-      "count": 1,
+      "count": 3,
       "locations": [
         {
+          "line": 414,
+          "evidence": "lockClient.query(<sql>)"
+        },
+        {
           "line": 448,
+          "evidence": "lockClient.query(<sql>)"
+        },
+        {
+          "line": 457,
           "evidence": "lockClient.query(<sql>)"
         }
       ]
@@ -16234,10 +16382,14 @@
       "batch": 3,
       "line": 586,
       "evidence": "lockClient.query(<sql>)",
-      "count": 1,
+      "count": 2,
       "locations": [
         {
           "line": 586,
+          "evidence": "lockClient.query(<sql>)"
+        },
+        {
+          "line": 605,
           "evidence": "lockClient.query(<sql>)"
         }
       ]
@@ -16529,6 +16681,23 @@
         {
           "line": 689,
           "evidence": "client.query()"
+        }
+      ]
+    },
+    {
+      "id": "SQL_IN_NON_DATA_LAYER|server/services/feedbackService.js|nicknameOf",
+      "rule": "SQL_IN_NON_DATA_LAYER",
+      "file": "server/services/feedbackService.js",
+      "symbol": "nicknameOf",
+      "role": "service_legacy",
+      "batch": 3,
+      "line": 164,
+      "evidence": "query(<sql>)",
+      "count": 1,
+      "locations": [
+        {
+          "line": 164,
+          "evidence": "query(<sql>)"
         }
       ]
     },
@@ -17309,6 +17478,82 @@
       ]
     },
     {
+      "id": "SQL_IN_NON_DATA_LAYER|server/services/hkexIpoFacts.js|persistHkexProbe",
+      "rule": "SQL_IN_NON_DATA_LAYER",
+      "file": "server/services/hkexIpoFacts.js",
+      "symbol": "persistHkexProbe",
+      "role": "service_legacy",
+      "batch": 3,
+      "line": 11,
+      "evidence": "executor(<sql>)",
+      "count": 3,
+      "locations": [
+        {
+          "line": 11,
+          "evidence": "executor(<sql>)"
+        },
+        {
+          "line": 20,
+          "evidence": "executor(<sql>)"
+        },
+        {
+          "line": 27,
+          "evidence": "executor(<sql>)"
+        }
+      ]
+    },
+    {
+      "id": "SQL_IN_NON_DATA_LAYER|server/services/hkexIpoFacts.js|readHkIpoCompleteness",
+      "rule": "SQL_IN_NON_DATA_LAYER",
+      "file": "server/services/hkexIpoFacts.js",
+      "symbol": "readHkIpoCompleteness",
+      "role": "service_legacy",
+      "batch": 3,
+      "line": 246,
+      "evidence": "executor(<sql>)",
+      "count": 1,
+      "locations": [
+        {
+          "line": 246,
+          "evidence": "executor(<sql>)"
+        }
+      ]
+    },
+    {
+      "id": "SQL_IN_NON_DATA_LAYER|server/services/hkexIpoFacts.js|recomputeHkIpoCompleteness",
+      "rule": "SQL_IN_NON_DATA_LAYER",
+      "file": "server/services/hkexIpoFacts.js",
+      "symbol": "recomputeHkIpoCompleteness",
+      "role": "service_legacy",
+      "batch": 3,
+      "line": 263,
+      "evidence": "executor(<sql>)",
+      "count": 1,
+      "locations": [
+        {
+          "line": 263,
+          "evidence": "executor(<sql>)"
+        }
+      ]
+    },
+    {
+      "id": "SQL_IN_NON_DATA_LAYER|server/services/hkexIpoFacts.js|syncStoredHkListings",
+      "rule": "SQL_IN_NON_DATA_LAYER",
+      "file": "server/services/hkexIpoFacts.js",
+      "symbol": "syncStoredHkListings",
+      "role": "service_legacy",
+      "batch": 3,
+      "line": 297,
+      "evidence": "executor(<sql>)",
+      "count": 1,
+      "locations": [
+        {
+          "line": 297,
+          "evidence": "executor(<sql>)"
+        }
+      ]
+    },
+    {
       "id": "SQL_IN_NON_DATA_LAYER|server/services/hkexIpoFacts.js|upsertHkIpoFacts",
       "rule": "SQL_IN_NON_DATA_LAYER",
       "file": "server/services/hkexIpoFacts.js",
@@ -17346,6 +17591,35 @@
       ]
     },
     {
+      "id": "SQL_IN_NON_DATA_LAYER|server/services/hkexIpoSync.js|syncHkexAllotmentFacts",
+      "rule": "SQL_IN_NON_DATA_LAYER",
+      "file": "server/services/hkexIpoSync.js",
+      "symbol": "syncHkexAllotmentFacts",
+      "role": "service_legacy",
+      "batch": 3,
+      "line": 63,
+      "evidence": "executor(<sql>)",
+      "count": 4,
+      "locations": [
+        {
+          "line": 63,
+          "evidence": "executor(<sql>)"
+        },
+        {
+          "line": 82,
+          "evidence": "executor(<sql>)"
+        },
+        {
+          "line": 168,
+          "evidence": "executor(<sql>)"
+        },
+        {
+          "line": 254,
+          "evidence": "executor(<sql>)"
+        }
+      ]
+    },
+    {
       "id": "SQL_IN_NON_DATA_LAYER|server/services/hkexIpoSync.js|syncHkexHistoricalReports",
       "rule": "SQL_IN_NON_DATA_LAYER",
       "file": "server/services/hkexIpoSync.js",
@@ -17375,6 +17649,270 @@
         {
           "line": 1113,
           "evidence": "pool.query()"
+        }
+      ]
+    },
+    {
+      "id": "SQL_IN_NON_DATA_LAYER|server/services/hkexIpoSync.js|syncHkexListingStatusNotices",
+      "rule": "SQL_IN_NON_DATA_LAYER",
+      "file": "server/services/hkexIpoSync.js",
+      "symbol": "syncHkexListingStatusNotices",
+      "role": "service_legacy",
+      "batch": 3,
+      "line": 530,
+      "evidence": "executor(<sql>)",
+      "count": 4,
+      "locations": [
+        {
+          "line": 530,
+          "evidence": "executor(<sql>)"
+        },
+        {
+          "line": 539,
+          "evidence": "executor(<sql>)"
+        },
+        {
+          "line": 553,
+          "evidence": "executor(<sql>)"
+        },
+        {
+          "line": 626,
+          "evidence": "executor(<sql>)"
+        }
+      ]
+    },
+    {
+      "id": "SQL_IN_NON_DATA_LAYER|server/services/hkexIpoSync.js|syncHkexNonPublicListings",
+      "rule": "SQL_IN_NON_DATA_LAYER",
+      "file": "server/services/hkexIpoSync.js",
+      "symbol": "syncHkexNonPublicListings",
+      "role": "service_legacy",
+      "batch": 3,
+      "line": 413,
+      "evidence": "executor(<sql>)",
+      "count": 4,
+      "locations": [
+        {
+          "line": 413,
+          "evidence": "executor(<sql>)"
+        },
+        {
+          "line": 417,
+          "evidence": "executor(<sql>)"
+        },
+        {
+          "line": 426,
+          "evidence": "executor(<sql>)"
+        },
+        {
+          "line": 453,
+          "evidence": "executor(<sql>)"
+        }
+      ]
+    },
+    {
+      "id": "SQL_IN_NON_DATA_LAYER|server/services/hkexIpoSync.js|syncHkexPricingFacts",
+      "rule": "SQL_IN_NON_DATA_LAYER",
+      "file": "server/services/hkexIpoSync.js",
+      "symbol": "syncHkexPricingFacts",
+      "role": "service_legacy",
+      "batch": 3,
+      "line": 14,
+      "evidence": "executor(<sql>)",
+      "count": 3,
+      "locations": [
+        {
+          "line": 14,
+          "evidence": "executor(<sql>)"
+        },
+        {
+          "line": 33,
+          "evidence": "executor(<sql>)"
+        },
+        {
+          "line": 38,
+          "evidence": "executor(<sql>)"
+        }
+      ]
+    },
+    {
+      "id": "SQL_IN_NON_DATA_LAYER|server/services/hkexIpoSync.js|syncHkexProspectusFacts",
+      "rule": "SQL_IN_NON_DATA_LAYER",
+      "file": "server/services/hkexIpoSync.js",
+      "symbol": "syncHkexProspectusFacts",
+      "role": "service_legacy",
+      "batch": 3,
+      "line": 679,
+      "evidence": "executor(<sql>)",
+      "count": 5,
+      "locations": [
+        {
+          "line": 679,
+          "evidence": "executor(<sql>)"
+        },
+        {
+          "line": 703,
+          "evidence": "executor(<sql>)"
+        },
+        {
+          "line": 761,
+          "evidence": "executor(<sql>)"
+        },
+        {
+          "line": 898,
+          "evidence": "executor(<sql>)"
+        },
+        {
+          "line": 920,
+          "evidence": "executor(<sql>)"
+        }
+      ]
+    },
+    {
+      "id": "SQL_IN_NON_DATA_LAYER|server/services/hkIpoBacktest.js|getHkFormalGateStatus",
+      "rule": "SQL_IN_NON_DATA_LAYER",
+      "file": "server/services/hkIpoBacktest.js",
+      "symbol": "getHkFormalGateStatus",
+      "role": "service_legacy",
+      "batch": 3,
+      "line": 477,
+      "evidence": "executor(<sql>)",
+      "count": 1,
+      "locations": [
+        {
+          "line": 477,
+          "evidence": "executor(<sql>)"
+        }
+      ]
+    },
+    {
+      "id": "SQL_IN_NON_DATA_LAYER|server/services/hkIpoBacktest.js|loadBars",
+      "rule": "SQL_IN_NON_DATA_LAYER",
+      "file": "server/services/hkIpoBacktest.js",
+      "symbol": "loadBars",
+      "role": "service_legacy",
+      "batch": 3,
+      "line": 204,
+      "evidence": "executor(<sql>)",
+      "count": 1,
+      "locations": [
+        {
+          "line": 204,
+          "evidence": "executor(<sql>)"
+        }
+      ]
+    },
+    {
+      "id": "SQL_IN_NON_DATA_LAYER|server/services/hkIpoBacktest.js|loadCandidates",
+      "rule": "SQL_IN_NON_DATA_LAYER",
+      "file": "server/services/hkIpoBacktest.js",
+      "symbol": "loadCandidates",
+      "role": "service_legacy",
+      "batch": 3,
+      "line": 185,
+      "evidence": "executor(<sql>)",
+      "count": 1,
+      "locations": [
+        {
+          "line": 185,
+          "evidence": "executor(<sql>)"
+        }
+      ]
+    },
+    {
+      "id": "SQL_IN_NON_DATA_LAYER|server/services/hkIpoBacktest.js|loadHkexOpenDates",
+      "rule": "SQL_IN_NON_DATA_LAYER",
+      "file": "server/services/hkIpoBacktest.js",
+      "symbol": "loadHkexOpenDates",
+      "role": "service_legacy",
+      "batch": 3,
+      "line": 219,
+      "evidence": "executor(<sql>)",
+      "count": 1,
+      "locations": [
+        {
+          "line": 219,
+          "evidence": "executor(<sql>)"
+        }
+      ]
+    },
+    {
+      "id": "SQL_IN_NON_DATA_LAYER|server/services/hkIpoBacktest.js|loadProbeAudit",
+      "rule": "SQL_IN_NON_DATA_LAYER",
+      "file": "server/services/hkIpoBacktest.js",
+      "symbol": "loadProbeAudit",
+      "role": "service_legacy",
+      "batch": 3,
+      "line": 339,
+      "evidence": "executor(<sql>)",
+      "count": 2,
+      "locations": [
+        {
+          "line": 339,
+          "evidence": "executor(<sql>)"
+        },
+        {
+          "line": 371,
+          "evidence": "executor(<sql>)"
+        }
+      ]
+    },
+    {
+      "id": "SQL_IN_NON_DATA_LAYER|server/services/hkIpoBacktest.js|persistModelConfigSnapshot",
+      "rule": "SQL_IN_NON_DATA_LAYER",
+      "file": "server/services/hkIpoBacktest.js",
+      "symbol": "persistModelConfigSnapshot",
+      "role": "service_legacy",
+      "batch": 3,
+      "line": 293,
+      "evidence": "executor(<sql>)",
+      "count": 3,
+      "locations": [
+        {
+          "line": 293,
+          "evidence": "executor(<sql>)"
+        },
+        {
+          "line": 296,
+          "evidence": "executor(<sql>)"
+        },
+        {
+          "line": 303,
+          "evidence": "executor(<sql>)"
+        }
+      ]
+    },
+    {
+      "id": "SQL_IN_NON_DATA_LAYER|server/services/hkIpoBacktest.js|runHkIpoBacktest",
+      "rule": "SQL_IN_NON_DATA_LAYER",
+      "file": "server/services/hkIpoBacktest.js",
+      "symbol": "runHkIpoBacktest",
+      "role": "service_legacy",
+      "batch": 3,
+      "line": 465,
+      "evidence": "executor(<sql>)",
+      "count": 1,
+      "locations": [
+        {
+          "line": 465,
+          "evidence": "executor(<sql>)"
+        }
+      ]
+    },
+    {
+      "id": "SQL_IN_NON_DATA_LAYER|server/services/hkIpoBacktest.js|upsertHkFormalRecommendationSnapshot",
+      "rule": "SQL_IN_NON_DATA_LAYER",
+      "file": "server/services/hkIpoBacktest.js",
+      "symbol": "upsertHkFormalRecommendationSnapshot",
+      "role": "service_legacy",
+      "batch": 3,
+      "line": 493,
+      "evidence": "executor(<sql>)",
+      "count": 1,
+      "locations": [
+        {
+          "line": 493,
+          "evidence": "executor(<sql>)"
         }
       ]
     },
@@ -17430,6 +17968,23 @@
         {
           "line": 437,
           "evidence": "executor.query(<sql>)"
+        }
+      ]
+    },
+    {
+      "id": "SQL_IN_NON_DATA_LAYER|server/services/ipoIntraday.js|attachFirstDayPerformance",
+      "rule": "SQL_IN_NON_DATA_LAYER",
+      "file": "server/services/ipoIntraday.js",
+      "symbol": "attachFirstDayPerformance",
+      "role": "service_legacy",
+      "batch": 3,
+      "line": 59,
+      "evidence": "query(<sql>)",
+      "count": 1,
+      "locations": [
+        {
+          "line": 59,
+          "evidence": "query(<sql>)"
         }
       ]
     },
@@ -17563,6 +18118,23 @@
         {
           "line": 907,
           "evidence": "pool.query()"
+        }
+      ]
+    },
+    {
+      "id": "SQL_IN_NON_DATA_LAYER|server/services/jobAlertMailer.js|loadRecentRecoverySequence",
+      "rule": "SQL_IN_NON_DATA_LAYER",
+      "file": "server/services/jobAlertMailer.js",
+      "symbol": "loadRecentRecoverySequence",
+      "role": "service_legacy",
+      "batch": 3,
+      "line": 106,
+      "evidence": "query(<sql>)",
+      "count": 1,
+      "locations": [
+        {
+          "line": 106,
+          "evidence": "query(<sql>)"
         }
       ]
     },
@@ -17764,11 +18336,15 @@
       "batch": 3,
       "line": 593,
       "evidence": "pool.query()",
-      "count": 1,
+      "count": 2,
       "locations": [
         {
           "line": 593,
           "evidence": "pool.query()"
+        },
+        {
+          "line": 616,
+          "evidence": "query(<sql>)"
         }
       ]
     },
@@ -17798,11 +18374,27 @@
       "batch": 3,
       "line": 161,
       "evidence": "pool.query()",
-      "count": 1,
+      "count": 5,
       "locations": [
         {
           "line": 161,
           "evidence": "pool.query()"
+        },
+        {
+          "line": 173,
+          "evidence": "query(<sql>)"
+        },
+        {
+          "line": 242,
+          "evidence": "query(<sql>)"
+        },
+        {
+          "line": 258,
+          "evidence": "query(<sql>)"
+        },
+        {
+          "line": 294,
+          "evidence": "query(<sql>)"
         }
       ]
     },
@@ -17938,11 +18530,19 @@
       "batch": 3,
       "line": 169,
       "evidence": "pool.query()",
-      "count": 1,
+      "count": 3,
       "locations": [
         {
           "line": 169,
           "evidence": "pool.query()"
+        },
+        {
+          "line": 181,
+          "evidence": "query(<sql>)"
+        },
+        {
+          "line": 222,
+          "evidence": "query(<sql>)"
         }
       ]
     },
@@ -18419,11 +19019,23 @@
       "batch": 3,
       "line": 703,
       "evidence": "pool.query()",
-      "count": 1,
+      "count": 4,
       "locations": [
         {
           "line": 703,
           "evidence": "pool.query()"
+        },
+        {
+          "line": 704,
+          "evidence": "query(<sql>)"
+        },
+        {
+          "line": 718,
+          "evidence": "query(<sql>)"
+        },
+        {
+          "line": 724,
+          "evidence": "query(<sql>)"
         }
       ]
     },
@@ -18752,6 +19364,23 @@
       ]
     },
     {
+      "id": "SQL_IN_NON_DATA_LAYER|server/services/marketState.js|prefetchMarketFacts",
+      "rule": "SQL_IN_NON_DATA_LAYER",
+      "file": "server/services/marketState.js",
+      "symbol": "prefetchMarketFacts",
+      "role": "service_legacy",
+      "batch": 3,
+      "line": 107,
+      "evidence": "query(<sql>)",
+      "count": 1,
+      "locations": [
+        {
+          "line": 107,
+          "evidence": "query(<sql>)"
+        }
+      ]
+    },
+    {
       "id": "SQL_IN_NON_DATA_LAYER|server/services/marketVolatility.js|getHistory",
       "rule": "SQL_IN_NON_DATA_LAYER",
       "file": "server/services/marketVolatility.js",
@@ -18853,6 +19482,52 @@
         {
           "line": 109,
           "evidence": "client.query()"
+        }
+      ]
+    },
+    {
+      "id": "SQL_IN_NON_DATA_LAYER|server/services/navAttribution.js|computeNavAttribution",
+      "rule": "SQL_IN_NON_DATA_LAYER",
+      "file": "server/services/navAttribution.js",
+      "symbol": "computeNavAttribution",
+      "role": "service_legacy",
+      "batch": 3,
+      "line": 436,
+      "evidence": "query(<sql>)",
+      "count": 3,
+      "locations": [
+        {
+          "line": 436,
+          "evidence": "query(<sql>)"
+        },
+        {
+          "line": 442,
+          "evidence": "query(<sql>)"
+        },
+        {
+          "line": 454,
+          "evidence": "query(<sql>)"
+        }
+      ]
+    },
+    {
+      "id": "SQL_IN_NON_DATA_LAYER|server/services/navAttribution.js|computeNavHistoryTotals",
+      "rule": "SQL_IN_NON_DATA_LAYER",
+      "file": "server/services/navAttribution.js",
+      "symbol": "computeNavHistoryTotals",
+      "role": "service_legacy",
+      "batch": 3,
+      "line": 249,
+      "evidence": "query(<sql>)",
+      "count": 2,
+      "locations": [
+        {
+          "line": 249,
+          "evidence": "query(<sql>)"
+        },
+        {
+          "line": 252,
+          "evidence": "query(<sql>)"
         }
       ]
     },
@@ -19198,6 +19873,44 @@
       ]
     },
     {
+      "id": "SQL_IN_NON_DATA_LAYER|server/services/repoDailyRates.js|ensureNavRepoRate",
+      "rule": "SQL_IN_NON_DATA_LAYER",
+      "file": "server/services/repoDailyRates.js",
+      "symbol": "ensureNavRepoRate",
+      "role": "service_legacy",
+      "batch": 3,
+      "line": 88,
+      "evidence": "query(<sql>)",
+      "count": 2,
+      "locations": [
+        {
+          "line": 88,
+          "evidence": "query(<sql>)"
+        },
+        {
+          "line": 90,
+          "evidence": "query(<sql>)"
+        }
+      ]
+    },
+    {
+      "id": "SQL_IN_NON_DATA_LAYER|server/services/repoDailyRates.js|loadRepoRates",
+      "rule": "SQL_IN_NON_DATA_LAYER",
+      "file": "server/services/repoDailyRates.js",
+      "symbol": "loadRepoRates",
+      "role": "service_legacy",
+      "batch": 3,
+      "line": 83,
+      "evidence": "executor(<sql>)",
+      "count": 1,
+      "locations": [
+        {
+          "line": 83,
+          "evidence": "executor(<sql>)"
+        }
+      ]
+    },
+    {
       "id": "SQL_IN_NON_DATA_LAYER|server/services/repoDailyRates.js|syncRepoDailyRates",
       "rule": "SQL_IN_NON_DATA_LAYER",
       "file": "server/services/repoDailyRates.js",
@@ -19243,6 +19956,73 @@
         {
           "line": 75,
           "evidence": "pool.query()"
+        }
+      ]
+    },
+    {
+      "id": "SQL_IN_NON_DATA_LAYER|server/services/repoSourceAdmission.js|load",
+      "rule": "SQL_IN_NON_DATA_LAYER",
+      "file": "server/services/repoSourceAdmission.js",
+      "symbol": "load",
+      "role": "service_legacy",
+      "batch": 3,
+      "line": 32,
+      "evidence": "executor(<sql>)",
+      "count": 1,
+      "locations": [
+        {
+          "line": 32,
+          "evidence": "executor(<sql>)"
+        }
+      ]
+    },
+    {
+      "id": "SQL_IN_NON_DATA_LAYER|server/services/repoSourceAdmission.js|probeOfficial",
+      "rule": "SQL_IN_NON_DATA_LAYER",
+      "file": "server/services/repoSourceAdmission.js",
+      "symbol": "probeOfficial",
+      "role": "service_legacy",
+      "batch": 3,
+      "line": 35,
+      "evidence": "executor(<sql>)",
+      "count": 4,
+      "locations": [
+        {
+          "line": 35,
+          "evidence": "executor(<sql>)"
+        },
+        {
+          "line": 37,
+          "evidence": "executor(<sql>)"
+        },
+        {
+          "line": 39,
+          "evidence": "executor(<sql>)"
+        },
+        {
+          "line": 44,
+          "evidence": "executor(<sql>)"
+        }
+      ]
+    },
+    {
+      "id": "SQL_IN_NON_DATA_LAYER|server/services/repoSourceAdmission.js|record",
+      "rule": "SQL_IN_NON_DATA_LAYER",
+      "file": "server/services/repoSourceAdmission.js",
+      "symbol": "record",
+      "role": "service_legacy",
+      "batch": 3,
+      "line": 31,
+      "evidence": "executor(<sql>)",
+      "count": 2,
+      "locations": [
+        {
+          "line": 31,
+          "evidence": "executor(<sql>)"
+        },
+        {
+          "line": 31,
+          "evidence": "executor(<sql>)"
         }
       ]
     },

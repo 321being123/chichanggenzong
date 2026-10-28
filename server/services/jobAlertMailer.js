@@ -1,3 +1,4 @@
+const layerSql = require('../repositories/jobAlertMailerRepository');
 const { pool } = require('../db/connection');
 const { auditEvent } = require('../db');
 const { mailer } = require('../config');
@@ -92,16 +93,8 @@ async function loadRecentRecoverySequence(row, limit, query) {
   const recoveryScope = recoveryScopeFilter(row, 4);
   const statusIndex = recoveryScope.nextIndex;
   const limitIndex = statusIndex + 1;
-  const { rows } = await query(
-    `SELECT slot_id,job_code,status,business_date,scheduled_for,request_payload,result_summary,data_as_of
-       FROM ops.job_schedule_slots
-      WHERE job_code=$1 AND business_date=$2::date AND scheduled_for>$3::timestamptz
-        AND status = ANY($${statusIndex}::text[])
-        AND ${recoveryScope.sql}
-      ORDER BY scheduled_for DESC,slot_id DESC LIMIT $${limitIndex}`,
-    [row.job_code, row.business_date, row.scheduled_for, ...recoveryScope.params,
-      RECOVERY_SEQUENCE_STATUSES, limit]
-  );
+  const { rows } = await layerSql.loadRecentRecoverySequenceLayerQuery1(query, [statusIndex, recoveryScope.sql, limitIndex], [row.job_code, row.business_date, row.scheduled_for, ...recoveryScope.params,
+      RECOVERY_SEQUENCE_STATUSES, limit]);
   return rows;
 }
 
@@ -159,11 +152,7 @@ async function verifyAlertScope(alert, query = (sql, params) => repository.runQu
     return { recovered: false, evidence: null, reason: policy.notificationOnly ? 'notification_only_alert' : 'alert_type_not_auto_resolvable' };
   }
   if (scope.type === 'slot') {
-    const { rows } = await query(
-      `SELECT slot_id,job_code,business_date,status,scheduled_for,updated_at,updated_at::text AS updated_at_exact,
-              request_payload,result_summary,data_as_of
-         FROM ops.job_schedule_slots WHERE slot_id=$1`, [scope.key]
-    );
+    const { rows } = await layerSql.verifyAlertScopeLayerQuery1(query, [], [scope.key]);
     const row = rows[0];
     // dependency_blocked 允许复用同槽位成功运行 + 发布分区的严格证据；
     // data_quality 仍必须使用 dataset 作用域，不能被单次任务成功掩盖。
@@ -228,11 +217,7 @@ async function verifyAlertScope(alert, query = (sql, params) => repository.runQu
     if (DATA_BOUND_ALERT_TYPES.has(alertType)) {
       return { recovered: false, evidence: null, reason: 'data_bound_alert_requires_dataset_evidence' };
     }
-    const { rows } = await query(
-      `SELECT slot_id,status,business_date,scheduled_for,request_payload,result_summary
-         FROM ops.job_schedule_slots WHERE job_code=$1
-        ORDER BY scheduled_for DESC,slot_id DESC LIMIT 3`, [scope.key]
-    );
+    const { rows } = await layerSql.verifyAlertScopeLayerQuery2(query, [], [scope.key]);
     const recovered = rows.length === 3 && rows.every(row => row.status === 'succeeded');
     return { recovered, evidence: rows, ...(recovered ? {} : { reason: 'insufficient_later_successes' }) };
   }
@@ -244,12 +229,7 @@ async function verifyAlertScope(alert, query = (sql, params) => repository.runQu
     if (!datasetCode || !partitionKey || !/^\d{4}-\d{2}-\d{2}$/.test(partitionKey)) {
       return { recovered: false, evidence: null, reason: 'invalid_dataset_scope' };
     }
-    const { rows } = await query(
-      `SELECT dataset_code,scope_key,partition_key::text,status,is_stale,diagnostics,published_at,updated_at
-         FROM ops.dataset_partitions
-        WHERE dataset_code=$1 AND scope_key=$2 AND partition_key=$3::date
-        ORDER BY updated_at DESC LIMIT 1`, [datasetCode, datasetScope, partitionKey]
-    );
+    const { rows } = await layerSql.verifyAlertScopeLayerQuery3(query, [], [datasetCode, datasetScope, partitionKey]);
     const row = rows[0];
     const quality = row && row.diagnostics && row.diagnostics.quality_status;
     const recovered = Boolean(row && row.status === 'published' && !row.is_stale && (!quality || quality === 'passed'));
@@ -262,12 +242,7 @@ async function verifyAlertScope(alert, query = (sql, params) => repository.runQu
     const params = apiName === '*'
       ? [source]
       : [source, apiName];
-    const sql = apiName === '*'
-      ? `SELECT source,api_name,state,recover_at,last_success_at,updated_at
-           FROM ops.external_circuits WHERE source=$1 ORDER BY updated_at DESC`
-      : `SELECT source,api_name,state,recover_at,last_success_at,updated_at
-           FROM ops.external_circuits WHERE source=$1 AND api_name=$2 ORDER BY updated_at DESC`;
-    const { rows: queriedRows } = await query(sql, params);
+    const { rows: queriedRows } = await layerSql.loadScopedCircuits(query, apiName === '*', params);
     // 查询和证据都做一次精确作用域过滤，避免错误 SQL、历史兼容层或测试替身把 source:* 混入具体接口。
     const rows = apiName === '*'
       ? queriedRows
@@ -280,12 +255,7 @@ async function verifyAlertScope(alert, query = (sql, params) => repository.runQu
     const recovered = allCircuitsClosed(rows) && hasNewProbeSuccess;
     if (alertType === 'source_fallback_degraded') {
       const runtimeApi = apiName === '*' ? 'arbitrage' : apiName;
-      const { rows: runtime } = await query(
-        `SELECT r.consecutive_fallback_count,r.last_primary_success_at
-           FROM ops.source_endpoint_runtime r
-           JOIN ops.data_sources ds ON ds.source_id=r.source_id
-          WHERE ds.source_code=$1 AND r.api_name=$2`, [source, runtimeApi]
-      );
+      const { rows: runtime } = await layerSql.verifyAlertScopeLayerQuery4(query, [], [source, runtimeApi]);
       const runtimeRecovered = runtime.some(item => Number(item.consecutive_fallback_count || 0) === 0
         && item.last_primary_success_at
         && (!Number.isFinite(lastSeen) || new Date(item.last_primary_success_at).getTime() > lastSeen));

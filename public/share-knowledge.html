@@ -40,6 +40,7 @@
 <script src="vendor/dompurify.min.js?v=3.4.17"></script>
 <script src="shared/md-safe.js?v=__APP_VERSION__"></script>
 <script src="shared/dialog.js?v=__APP_VERSION__"></script>
+<script src="js/api/client.js?v=__APP_VERSION__"></script>
 <script>
 function api(path) { return path; }
 function escapeHtml(str) {
@@ -64,7 +65,7 @@ async function loadArticle() {
   const token = getToken();
   if (!token) { document.getElementById('status').textContent = '缺少分享参数'; return; }
   try {
-    const r = await fetch(api('/api/knowledge/share/' + encodeURIComponent(token)));
+    const r = await window.siteApi.fetchResponse(api('/api/knowledge/share/' + encodeURIComponent(token)));
     if (!r.ok) { document.getElementById('status').textContent = '分享链接无效或文章未发布'; return; }
     const a = await r.json();
     aId = a.id;
@@ -93,7 +94,7 @@ async function loadArticle() {
 async function loadComments(id) {
   const box = document.getElementById('s-comment-list');
   try {
-    const r = await fetch(api('/api/knowledge/articles/' + id + '/comments'));
+    const r = await window.siteApi.fetchResponse(api('/api/knowledge/articles/' + id + '/comments'));
     const list = await r.json();
     if (!list.length) { box.innerHTML = '<div class="ks-comment-empty">还没有评论，来抢沙发～</div>'; return; }
     box.innerHTML = renderComments(list, 0);
@@ -139,7 +140,7 @@ async function submitComment() {
   if (!text) { await projectAlert('评论内容不能为空'); return; }
   let r;
   try {
-    r = await fetch(api('/api/knowledge/articles/' + aId + '/comments'), {
+    r = await window.siteApi.fetchResponse(api('/api/knowledge/articles/' + aId + '/comments'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ content: text }),
@@ -159,7 +160,7 @@ function renderCommentForm(id) {
   if (!box) return;
   aId = id;
   // 检查登录状态
-  fetch(api('/api/me')).then(function (r) { return r.json(); }).then(function (u) {
+  window.siteApi.fetchResponse(api('/api/me')).then(function (r) { return r.json(); }).then(function (u) {
     if (u && u.username) {
       box.innerHTML = '<textarea id="s-comment" placeholder="写下你的评论…"></textarea>' +
         '<button class="ks-btn ks-btn-primary" id="s-submit">发表评论</button>';
@@ -177,7 +178,7 @@ async function submitReply(id, parentId, text) {
   if (!text) { await projectAlert('评论内容不能为空'); return; }
   let r;
   try {
-    r = await fetch(api('/api/knowledge/articles/' + id + '/comments'), {
+    r = await window.siteApi.fetchResponse(api('/api/knowledge/articles/' + id + '/comments'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ content: text, parent_id: parentId }),

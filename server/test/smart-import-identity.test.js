@@ -155,7 +155,9 @@ function context() {
   const load = { data: { positions: [], trades: [], cashFlows: [] }, currentAccount: 'A', username: 'user', accountIdentity: 'id',
     api: value => value, fetch: () => new Promise((resolve, reject) => pendingLoads.push({ resolve, reject })), fetchUnifiedHKRate: async () => 1,
     priceChangeMap: {}, previousPriceMap: {}, TOTAL_ASSET: 0, classifyCode: () => null };
+  load.window = load;
   vm.createContext(load);
+  vm.runInContext(apiClient, load);
   vm.runInContext(part(html, 'var accountLoadSequence = 0;', 'var dataVersion = 0;'), load);
   const first = load.loadData('A'); load.currentAccount = 'B'; const middle = load.loadData('B');
   load.currentAccount = 'A'; const last = load.loadData('A');

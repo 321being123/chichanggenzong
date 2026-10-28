@@ -79,6 +79,12 @@ check('普通字符串里的 SQL 关键字不算违规', () => {
   const findings = scanner.scanJs("const note = 'SELECT 1 FROM x'; function f(){ return note; }", 'sample.js');
   assert.strictEqual(findings.length, 0);
 });
+check('函数式数据库执行器里的 SQL 不得漏检', () => {
+  const findings = scanner.scanJs("async function read(){ await executor('SELECT * FROM x', []); await query(`UPDATE x SET n=1`); }", 'server/services/probe.js');
+  assert.strictEqual(findings.filter(item => item.rule === 'SQL_IN_NON_DATA_LAYER').length, 2);
+  assert.strictEqual(scanner.scanJs("executor('SELECT " + 'x,'.repeat(150) + "x FROM t')", 'server/services/probe.js').length, 1, '长字段列表不得漏检');
+  assert.strictEqual(scanner.scanJs("query('普通文本'); executor('非 SQL');", 'server/services/probe.js').length, 0);
+});
 check('伪造 siteApi 对象不得绕过直接联网检查', () => {
   const fake = scanner.scanJs("fake.siteApi.fetch('/x'); fake.siteApi.request('/x');", 'public/js/views/probe.js');
   assert.strictEqual(fake.filter(item => item.rule === 'NETWORK_IN_NON_ADAPTER').length, 2);

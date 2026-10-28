@@ -1,3 +1,4 @@
+const repository=require('../repositories/repoDailyRatesRepository');
 // 来源准入与字段质量分开；人工交叉样本复用既有探测入口，不增加行情事实表或调度。
 const crypto=require('crypto'),DateApi=require('../../public/shared/core-date');
 const CODE='204001.SH',DOC='https://tushare.pro/document/2?doc_id=256';
@@ -28,20 +29,20 @@ function assess({rows,expectedDates,targetDate,officialSamples=[],fetchedAt,perm
   const status=mismatches.length?'rejected':gaps.length?'pending_evidence':'admitted';
   return {version:'repo-source-admission-v1',status,code:CODE,metric:'daily_volume_weighted',inputUnit:'percent',storedUnit:'annual_decimal',scale:'divide_by_100',doc:DOC,targetDate,fetchedAt,expectedDays:expectedDates.length,observedDays:seen.size,missing,mismatches,gaps:[...new Set(gaps)],officialSamples:comparable,officialEvidence:officialSamples,permissionVerified,brokerVerified:false};
 }
-async function record(report,executor){const source=(await executor("SELECT source_id FROM ops.data_sources WHERE source_code='tushare'")).rows[0];if(!source)throw new Error('Tushare来源未注册');const payloadHash=crypto.createHash('sha256').update(JSON.stringify(report)).digest('hex');const raw=(await executor(`INSERT INTO ops.raw_records(source_id,dataset_code,source_key,payload,payload_hash) VALUES($1,'repo_daily_admission',$2,$3,$4) ON CONFLICT(source_id,dataset_code,source_key,payload_hash) DO UPDATE SET ingested_at=now() RETURNING raw_record_id`,[source.source_id,CODE+':'+report.targetDate,report,payloadHash])).rows[0];return {...report,rawRecordId:raw.raw_record_id};}
-async function load(executor){return (await executor("SELECT raw_record_id,payload FROM ops.raw_records WHERE dataset_code='repo_daily_admission' AND source_key LIKE '204001.SH:%' ORDER BY ingested_at DESC,raw_record_id DESC LIMIT 1")).rows[0]||null;}
+async function record(report,executor){const source=(await repository.findTushareAdmissionSource(executor)).rows[0];if(!source)throw new Error('Tushare来源未注册');const payloadHash=crypto.createHash('sha256').update(JSON.stringify(report)).digest('hex');const raw=(await repository.saveAdmissionRecord(executor, [source.source_id,CODE+':'+report.targetDate,report,payloadHash])).rows[0];return {...report,rawRecordId:raw.raw_record_id};}
+async function load(executor){return (await repository.loadAdmissionRecord(executor)).rows[0]||null;}
 async function probeOfficial(targetDate,executor){
   if(!DateApi.normalizeBusinessDate(targetDate)||targetDate>=DateApi.todayInZone('Asia/Shanghai'))throw new TypeError('官方准入样本须为已完成交易日');
-  const source=(await executor("SELECT source_id FROM ops.data_sources WHERE source_code='sse'")).rows[0];
+  const source=(await repository.findSseAdmissionSource(executor)).rows[0];
   if(!source)throw new Error('上交所来源未注册');
-  const cached=(await executor("SELECT payload FROM ops.raw_records WHERE source_id=$1 AND dataset_code='repo_daily_admission' AND source_key=$2 ORDER BY ingested_at DESC,raw_record_id DESC LIMIT 1",[source.source_id,'official:'+CODE+':'+targetDate])).rows[0];
+  const cached=(await repository.loadOfficialAdmission(executor, [source.source_id,'official:'+CODE+':'+targetDate])).rows[0];
   if(cached&&cached.payload.date===targetDate&&cached.payload.code===CODE&&cached.payload.metric==='daily_volume_weighted'&&cached.payload.sqlId==='COMMON_SSEBOND_SCSJ_SCTJ_SCGL_ZQZYSHGSCGL_CX_L')return cached.payload;
-  await executor(`INSERT INTO ops.source_endpoint_policies(source_id,api_name,credential_profile,permission_mode,official_doc_url,notes) VALUES($1,'repo_overview','anonymous','public','https://bond.sse.com.cn/data/statistics/overview/Pledgerepo/','人工准入交叉样本，仅目标完成交易日；不写市场行情事实、不自动抓取；额度未知保持NULL') ON CONFLICT(source_id,api_name,credential_profile) DO NOTHING`,[source.source_id]);
+  await repository.registerOfficialAdmissionPolicy(executor, [source.source_id]);
   const {promisify}=require('util'),{execFile}=require('child_process'),path=require('path');
   const python=process.env.IPO_PYTHON_PATH||path.resolve('venv/Scripts/python.exe');
   const output=await promisify(execFile)(python,[path.resolve('server/scripts/probeRepoOfficial.py'),targetDate],{timeout:45000,maxBuffer:2*1024*1024,windowsHide:true,env:process.env});
   const sample=JSON.parse(output.stdout.trim());if(sample.error)throw new Error(sample.error);
-  await executor(`INSERT INTO ops.raw_records(source_id,dataset_code,source_key,payload,payload_hash) VALUES($1,'repo_daily_admission',$2,$3,$4) ON CONFLICT(source_id,dataset_code,source_key,payload_hash) DO NOTHING`,[source.source_id,'official:'+CODE+':'+targetDate,sample,sample.contentHash]);
+  await repository.saveOfficialAdmission(executor, [source.source_id,'official:'+CODE+':'+targetDate,sample,sample.contentHash]);
   return sample;
 }
 module.exports={assess,record,load,probeOfficial};

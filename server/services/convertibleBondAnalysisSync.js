@@ -1,3 +1,4 @@
+const layerSql = require('../repositories/convertibleBondAnalysisSyncRepository');
 // 转债宇宙同步、回补与公告处理
 // R-10 拆分自 ./convertibleBondAnalysis.js（2026-10-21）：本文件只放转债宇宙同步、回补与公告处理；对外入口仍是 ./convertibleBondAnalysis.js。
 const { pool, tryClaimJob, releaseJob, startJobRun, finishJobRun } = require('../db');
@@ -329,23 +330,14 @@ function buildBondGapQueue({ targetTradeDate, expectedCodes, missingCodes, previ
 }
 
 async function readBondGapQueue(executor = pool.query.bind(pool)) {
-  const { rows } = await executor(
-    `SELECT cursor_payload FROM ops.sync_cursors
-      WHERE scope_key='convertible_bond_universe' AND dataset_code='cb_basic_cb_daily' LIMIT 1`
-  );
+  const { rows } = await layerSql.readBondGapQueueQuery1(executor);
   const payload = rows[0] && rows[0].cursor_payload;
   return payload && payload.bond_daily_gap_queue && typeof payload.bond_daily_gap_queue === 'object'
     ? payload.bond_daily_gap_queue : null;
 }
 
 async function writeBondGapQueue(executor, queue) {
-  await executor(
-    `INSERT INTO ops.sync_cursors(scope_key,dataset_code,cursor_payload,last_attempt_at,last_error)
-     VALUES('convertible_bond_universe','cb_basic_cb_daily',jsonb_build_object('bond_daily_gap_queue',$1::jsonb),now(),'')
-     ON CONFLICT(scope_key,dataset_code) DO UPDATE SET
-       cursor_payload=jsonb_set(COALESCE(ops.sync_cursors.cursor_payload,'{}'::jsonb),'{bond_daily_gap_queue}',$1::jsonb,true),
-       last_attempt_at=now(),updated_at=now()`, [JSON.stringify(queue)]
-  );
+  await layerSql.writeBondGapQueueQuery1(executor, [JSON.stringify(queue)]);
 }
 
 function isTencentBondWindow(targetTradeDate, now = new Date(), recordedNextTradeDate = null) {

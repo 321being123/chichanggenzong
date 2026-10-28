@@ -111,7 +111,21 @@ async function select_ops_sync_cursors_1(params, client = pool) {
   return client.query(`SELECT cursor_payload FROM ops.sync_cursors WHERE scope_key=$1 AND dataset_code='inputs'`, params);
 }
 
+
+function suspectRatingUrlsQuery1(executor, ...args) { return executor(`SELECT DISTINCT raw_payload->>'source_url' AS url FROM fundamental.convertible_bond_ratings
+    WHERE instrument_id=$1 AND raw_payload->>'rating_date_source'='official_document'
+    AND ((raw_payload->>'rating_context_version' IS DISTINCT FROM 'current-narrative-v2'
+      AND NOT raw_payload ? 'identity_binding' AND rating_date<date_trunc('year',announced_at))
+      OR (raw_payload->>'text_method'='rapidocr-onnx-v1' AND rating='AA'
+        AND raw_payload->>'rating_evidence' LIKE '%信用等级%'
+        AND raw_payload->>'rating_grade_context_version' IS DISTINCT FROM 'current-grade-v1'))`, ...args); }
+
+function initialRatingBindingArgumentsQuery1(executor, ...args) { return executor(`SELECT COUNT(*)::int AS matches,BOOL_OR(p.instrument_id=$3) AS is_target FROM fundamental.convertible_bond_profiles p
+    JOIN core.instruments s ON s.instrument_id=p.stock_instrument_id WHERE s.canonical_code=$1 AND p.issue_size=$2
+    AND p.value_date BETWEEN $4::date AND $5::date`, ...args); }
+
 module.exports = {
+  suspectRatingUrlsQuery1, initialRatingBindingArgumentsQuery1,
   persistBondInputs,
   readDocuments,
   readRatingHistory,

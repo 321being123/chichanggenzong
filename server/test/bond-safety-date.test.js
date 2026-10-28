@@ -60,7 +60,9 @@ const complete = response([{ ts_code: '000001.SZ', trade_date: '20260824', close
     '权限错误不能被当作空数据吞掉',
   );
   const source = fs.readFileSync(path.resolve(__dirname, '..', 'services', 'bondSafetyTushare.js'), 'utf8');
-  assert.ok(source.includes('dm.trade_date::text AS trade_date'), '安全评分读取 PostgreSQL DATE 必须先转为日历日期文本');
+  const repo = fs.readFileSync(path.resolve(__dirname, '..', 'repositories', 'bondSafetyTushareRepository.js'), 'utf8');
+  assert.ok(source.includes('bondSafetyTushareRepository.loadBondSafetyFacts'), '安全评分必须调用标准事实仓储');
+  assert.ok(repo.includes('dm.trade_date::text AS trade_date'), '安全评分读取 PostgreSQL DATE 必须先转为日历日期文本');
   assert.ok(source.includes('const tradeDate = date || normalizeTradeDate(rows.find(row=>row.trade_date)?.trade_date)'), '安全评分须优先原目标日，再读取非空日历日期文本');
 
   // 待上市新债：日报在上市前一交易日就要用转股价生成首日建议，判定必须覆盖到。

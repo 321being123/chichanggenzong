@@ -1,3 +1,4 @@
+const layerSql = require('../repositories/convertibleBondAnalysisInputsRepository');
 // Extend the existing announcement Runner: discovery -> shared documents -> versioned projections.
 const {pool}=require('../db/connection');
 const {execFile}=require('child_process');
@@ -34,13 +35,7 @@ function validateRatingGrade(result) {
 }
 async function suspectRatingUrls(bond,query=pool.query.bind(pool)) {
   if(!bond.instrument_id)return new Set();
-  const {rows}=await query(`SELECT DISTINCT raw_payload->>'source_url' AS url FROM fundamental.convertible_bond_ratings
-    WHERE instrument_id=$1 AND raw_payload->>'rating_date_source'='official_document'
-    AND ((raw_payload->>'rating_context_version' IS DISTINCT FROM 'current-narrative-v2'
-      AND NOT raw_payload ? 'identity_binding' AND rating_date<date_trunc('year',announced_at))
-      OR (raw_payload->>'text_method'='rapidocr-onnx-v1' AND rating='AA'
-        AND raw_payload->>'rating_evidence' LIKE '%信用等级%'
-        AND raw_payload->>'rating_grade_context_version' IS DISTINCT FROM 'current-grade-v1'))`,[bond.instrument_id]);
+  const {rows}=await layerSql.suspectRatingUrlsQuery1(query, [bond.instrument_id]);
   return new Set(rows.map(row=>row.url).filter(Boolean));
 }
 function validateTrackingRatingYear(event,output) {
@@ -57,9 +52,7 @@ async function initialRatingBindingArguments(bond,event,query=pool.query.bind(po
   if(creditDate&&creditDate>issued)return [];
   const args=['--initial-issue-size-yuan',String(size),'--initial-tenor-years',String(Number(maturity.slice(0,4))-Number(issued.slice(0,4)))];
   if(!creditDate)return args;
-  const {rows}=await query(`SELECT COUNT(*)::int AS matches,BOOL_OR(p.instrument_id=$3) AS is_target FROM fundamental.convertible_bond_profiles p
-    JOIN core.instruments s ON s.instrument_id=p.stock_instrument_id WHERE s.canonical_code=$1 AND p.issue_size=$2
-    AND p.value_date BETWEEN $4::date AND $5::date`,[bond.stock_code,size,bond.instrument_id,creditDate,issued]);
+  const {rows}=await layerSql.initialRatingBindingArgumentsQuery1(query, [bond.stock_code,size,bond.instrument_id,creditDate,issued]);
   return rows[0]?.matches===1&&rows[0]?.is_target===true?
     args:[];
 }

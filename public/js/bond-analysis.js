@@ -111,6 +111,11 @@ function securityAnalysisInitSearch(ctx) {
 
 async function securityAnalysisLoadList(force) {
   var selects = ['security-analysis-select'].map(function(id){return document.getElementById(id);}).filter(Boolean);
+  var user = typeof username === 'string' ? username : '';
+  var identity = typeof accountIdentity === 'string' ? accountIdentity : '';
+  var seq = (securityAnalysisState.listSeq || 0) + 1;
+  securityAnalysisState.listSeq = seq;
+  function current() { return securityAnalysisState.listSeq === seq && user === (typeof username === 'string' ? username : '') && identity === (typeof accountIdentity === 'string' ? accountIdentity : ''); }
   if(!username){
     selects.forEach(function(s){s.disabled=true;s.innerHTML='<option value="">登录后可选择持仓和自选</option>';});
     return;
@@ -118,6 +123,7 @@ async function securityAnalysisLoadList(force) {
   if (securityAnalysisState.listLoaded && !force) return;
   try {
     var res=await window.siteApi.get('/api/bond-analysis/list/securities'), payload=res.payload;
+    if (!current()) return;
     if(!res.ok) throw new Error(payload.error||'持仓和自选加载失败');
     var options='<option value="">选择持仓或自选</option>'+(payload.data||[]).map(function(row){
       var tags=(row.held?'持仓':'')+(row.watchlisted?(row.held?' / 自选':'自选'):'');
@@ -125,7 +131,15 @@ async function securityAnalysisLoadList(force) {
     }).join('');
     selects.forEach(function(s){s.innerHTML=options; s.disabled=false;});
     securityAnalysisState.listLoaded=true;
-  } catch(error) { stockAnalysisSetMessage(error.message||String(error),true); }
+  } catch(error) { if (current()) stockAnalysisSetMessage(error.message||String(error),true); }
+}
+
+function securityAnalysisResetAccount() {
+  securityAnalysisState.listSeq = (securityAnalysisState.listSeq || 0) + 1;
+  securityAnalysisState.listLoaded = false;
+  var select = document.getElementById('security-analysis-select');
+  if (select) { select.disabled = true; select.innerHTML = '<option value="">登录后可选择持仓和自选</option>'; }
+  if (typeof stockAnalysisResetAccount === 'function') stockAnalysisResetAccount();
 }
 
 function securityAnalysisSelect(code, ctx) {

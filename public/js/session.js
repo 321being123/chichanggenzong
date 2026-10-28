@@ -122,6 +122,7 @@ async function checkAuth() {
   const previousUser = username, previousIdentity = accountIdentity;
   function invalidateIfChanged() {
     if ((previousUser !== username || previousIdentity !== accountIdentity) && typeof window.invalidateSmartImportScope === 'function') window.invalidateSmartImportScope();
+    if ((previousUser !== username || previousIdentity !== accountIdentity) && typeof window.securityAnalysisResetAccount === 'function') window.securityAnalysisResetAccount();
   }
   try {
     const r = await fetch(api('/api/me'));
@@ -216,9 +217,10 @@ function renderTopUser(p) {
 }
 
 async function logout() {
-  if (typeof window.invalidateSmartImportScope === 'function') window.invalidateSmartImportScope();
   stopNotificationPolling();
   clearNotificationCache();
+  if (typeof window.invalidateSmartImportScope === 'function') window.invalidateSmartImportScope();
+  if (typeof window.securityAnalysisResetAccount === 'function') window.securityAnalysisResetAccount();
   accountIdentity = '';
   await fetch(api('/api/logout'), { method: 'POST' });
   window.location.href = api('/');

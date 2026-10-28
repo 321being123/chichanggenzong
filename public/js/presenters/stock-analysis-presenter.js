@@ -6,8 +6,14 @@
 var stockAnalysisState = { loaded: false, stocks: [], selected: '', data: null, loading: false, selectToken: 0 };
 
 async function loadStockAnalysis(force) {
+  var user = typeof username === 'string' ? username : '';
+  var identity = typeof accountIdentity === 'string' ? accountIdentity : '';
+  var seq = (stockAnalysisState.listSeq || 0) + 1;
+  stockAnalysisState.listSeq = seq;
+  function current() { return stockAnalysisState.listSeq === seq && user === (typeof username === 'string' ? username : '') && identity === (typeof accountIdentity === 'string' ? accountIdentity : ''); }
   // 必须 await：加自选后要等下拉填充完成才能回选，否则 value 落在空列表上被重置
   if (window.securityAnalysisLoadList) await window.securityAnalysisLoadList(force);
+  if (!current()) return;
   stockAnalysisApplyRefreshAvailability(!!username);
   if (!username) {
     stockAnalysisState.stocks = [];
@@ -17,10 +23,17 @@ async function loadStockAnalysis(force) {
   if (stockAnalysisState.loaded && !force) return;
   try {
     var listResult = await stockAnalysisApi.listStocks();
+    if (!current()) return;
     if (!listResult.ok) throw new Error(listResult.payload.error || '股票列表加载失败');
     stockAnalysisState.stocks = listResult.payload.data || [];
     stockAnalysisState.loaded = true;
-  } catch (error) { stockAnalysisSetMessage(error.message || String(error), true); }
+  } catch (error) { if (current()) stockAnalysisSetMessage(error.message || String(error), true); }
+}
+
+function stockAnalysisResetAccount() {
+  stockAnalysisState.listSeq = (stockAnalysisState.listSeq || 0) + 1;
+  stockAnalysisState.loaded = false;
+  stockAnalysisState.stocks = [];
 }
 
 async function stockAnalysisSelect(tsCode) {

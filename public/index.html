@@ -1434,6 +1434,7 @@ async function autoSaveAvatar(dataUrl) {
 
 async function logout() {
   if (typeof window.invalidateSmartImportScope === 'function') window.invalidateSmartImportScope();
+  if (typeof window.securityAnalysisResetAccount === 'function') window.securityAnalysisResetAccount();
   await fetch(api('/api/logout'), { method: 'POST' });
   window.location.href = api('/');
 }

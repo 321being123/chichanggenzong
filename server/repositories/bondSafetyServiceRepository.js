@@ -87,8 +87,26 @@ async function saveSnapshot(result, sourceUpdatedAt, reason, publicationStatus =
   return rows[0];
 }
 
+// 在市可转债代码（按统一视图状态、退市日、到期日与转股期过滤）
+async function listActiveBondCodes(codes, asOfDate, client = pool) {
+  const { rows } = await client.query(
+    `SELECT bond_code FROM public.bond_unified
+      WHERE (bond_code = ANY($1) OR bond_code LIKE ANY(ARRAY(SELECT unnest($1::text[]) || '.%')))
+        AND status = 'listed'
+        AND (delist_date IS NULL OR delist_date > $2::date)
+        AND (maturity_date IS NULL OR maturity_date >= $2::date)
+        AND (conv_end_date IS NULL OR conv_end_date >= $2::date)
+        AND (conv_stop_date IS NULL OR conv_stop_date > $2::date)
+        AND (cb_type IS NULL OR cb_type IN ('CB', ''))
+        AND (issue_type IS NULL OR issue_type NOT IN ('定向', '私募'))`,
+    [codes, asOfDate],
+  );
+  return rows.map((row) => String(row.bond_code || '').trim());
+}
+
 module.exports = {
   getLatestSnapshot,
+  listActiveBondCodes,
   getPreviousPublishedSnapshot,
   saveSnapshot,
 };

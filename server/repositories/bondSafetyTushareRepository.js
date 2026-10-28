@@ -23,7 +23,19 @@ async function saveFinancialCache(tsCode, stockName, data) {
   );
 }
 
+// 按证券代码读取发行方式，供服务层排除非公开发行标的
+async function loadIssuanceTypes(codes, client = pool) {
+  const result = await client.query(`
+    SELECT i.canonical_code, v.issue_type
+      FROM core.instruments i
+      JOIN fundamental.convertible_bond_issuance v ON v.instrument_id=i.instrument_id
+     WHERE i.canonical_code = ANY($1::text[])
+  `, [codes]);
+  return result.rows;
+}
+
 module.exports = {
   loadFinancialCache,
+  loadIssuanceTypes,
   saveFinancialCache,
 };

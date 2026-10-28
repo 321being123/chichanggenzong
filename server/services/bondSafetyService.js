@@ -1,7 +1,8 @@
 const { pool, tryClaimJob, releaseJob, startJobRun, finishJobRun } = require('../db');
 const { evaluateBondSafety } = require('./bondSafety');
 const { fetchBondSafetySource, isConfigured } = require('./bondSafetyFetcher');
-const { getLatestSnapshot, getPreviousPublishedSnapshot, saveSnapshot } = require('../repositories/bondSafetyServiceRepository.js');
+const bondSafetyServiceRepository = require('../repositories/bondSafetyServiceRepository.js');
+const { getLatestSnapshot, getPreviousPublishedSnapshot, saveSnapshot } = bondSafetyServiceRepository;
 
 const JOB_NAME = 'bond_safety_refresh';
 
@@ -35,18 +36,7 @@ async function filterInactiveBonds(snapshot) {
   const codes = data.map(row => String(row.bond_code || '').trim()).filter(Boolean);
   if (!codes.length) return snapshot;
   const today = shanghaiDate();
-  const { rows } = await pool.query(
-    `SELECT bond_code FROM public.bond_unified
-      WHERE (bond_code = ANY($1) OR bond_code LIKE ANY(ARRAY(SELECT unnest($1::text[]) || '.%')))
-        AND status = 'listed'
-        AND (delist_date IS NULL OR delist_date > $2::date)
-        AND (maturity_date IS NULL OR maturity_date >= $2::date)
-        AND (conv_end_date IS NULL OR conv_end_date >= $2::date)
-        AND (conv_stop_date IS NULL OR conv_stop_date > $2::date)
-        AND (cb_type IS NULL OR cb_type IN ('CB', ''))
-        AND (issue_type IS NULL OR issue_type NOT IN ('定向', '私募'))`,
-    [codes, today]
-  );
+  const rows = (await bondSafetyServiceRepository.listActiveBondCodes(codes, today)).map(code => ({ bond_code: code }));
   // 构建活跃码集合，兼容带后缀和不带后缀的匹配
   const active = new Set();
   for (const row of rows) {

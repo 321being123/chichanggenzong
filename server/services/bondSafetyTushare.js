@@ -1,7 +1,8 @@
 const { pool } = require('../db/connection');
 const { tushareQuery, tsRows, tsDateStr } = require('./market');
 const { fetchTencentQuotes } = require('./tencentQuote');
-const { loadFinancialCache, saveFinancialCache } = require('../repositories/bondSafetyTushareRepository.js');
+const bondSafetyTushareRepository = require('../repositories/bondSafetyTushareRepository.js');
+const { loadFinancialCache, saveFinancialCache } = bondSafetyTushareRepository;
 
 const FINANCIAL_TTL_DAYS = 30;
 // 单批最多 15 家：每家公司并发请求 3 个财务接口，45 次请求低于主、备 Token 的每分钟预算，
@@ -68,13 +69,8 @@ async function filterPublicBonds(rows, client = pool) {
     .map(row => String(row && row.ts_code || '').trim().toUpperCase())
     .filter(Boolean)));
   if (!candidates.length) return rows || [];
-  const result = await client.query(`
-    SELECT i.canonical_code, v.issue_type
-      FROM core.instruments i
-      JOIN fundamental.convertible_bond_issuance v ON v.instrument_id=i.instrument_id
-     WHERE i.canonical_code = ANY($1::text[])
-  `, [candidates]);
-  const excluded = new Set((result.rows || [])
+  const issuanceRows = await bondSafetyTushareRepository.loadIssuanceTypes(candidates, client);
+  const excluded = new Set((issuanceRows || [])
     .filter(row => NON_PUBLIC_ISSUE_TYPES.has(String(row.issue_type || '').trim()))
     .map(row => String(row.canonical_code || '').trim().toUpperCase()));
   return (rows || []).filter(row => !excluded.has(String(row && row.ts_code || '').trim().toUpperCase()));

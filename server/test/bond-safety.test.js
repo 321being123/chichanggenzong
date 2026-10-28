@@ -242,7 +242,8 @@ check('安全性快照源覆盖待上市新债，上市前即可按正股财务�
 });
 check('安全性页面读取仍按在市口径过滤，待上市债不进列表', () => {
   const service = fs.readFileSync(path.resolve(__dirname, '..', 'services', 'bondSafetyService.js'), 'utf8');
-  assert.ok(service.includes("status = 'listed'"), '页面过滤必须保持在市转债口径');
+  const repo = fs.readFileSync(path.resolve(__dirname, '..', 'repositories', 'bondSafetyServiceRepository.js'), 'utf8');
+  assert.ok(service.includes('listActiveBondCodes') && repo.includes("status = 'listed'"), '页面过滤必须保持在市转债口径');
 });
 check('财务增量同步目标范围含待上市新债正股', () => {
   const service = fs.readFileSync(path.resolve(__dirname, '..', 'services', 'companyFinancialIncrementalSync.js'), 'utf8');

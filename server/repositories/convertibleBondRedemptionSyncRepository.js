@@ -220,7 +220,59 @@ async function update_ops_ingestion_runs_1(params, client = pool) {
   return client.query(`UPDATE ops.ingestion_runs SET status='failed',error_message=$2,finished_at=now() WHERE run_id=$1`, params);
 }
 
+// 待解析的强赎公告事件：版本/解析状态/锁定日/原文时间等条件全部进 WHERE
+async function listPendingCallEvents(params, client = pool) {
+  const limitClause = params.configuredLimit ? ' LIMIT $4' : '';
+  const retryPlaceholder = params.configuredLimit ? '$5' : '$4';
+  return client.query(
+    `SELECT e.instrument_id AS "instrumentId",e.source_key AS "sourceKey",e.source_url AS "fileLink",e.title,
+              e.announced_at AS "announcedAt",split_part(s.canonical_code,'.',1) AS "stockCode",
+              e.event_type AS "eventType",e.raw_payload AS "rawPayload"
+         FROM event.convertible_bond_call_events e
+         LEFT JOIN fundamental.convertible_bond_profiles p ON p.instrument_id=e.instrument_id
+         LEFT JOIN core.instruments s ON s.instrument_id=p.stock_instrument_id
+        WHERE e.announced_at BETWEEN $1::date AND $2::date
+          AND e.source_url <> ''
+          AND (e.parser_version IS DISTINCT FROM $3 OR e.parse_status <> 'complete'
+            OR (e.event_type <> 'waive' AND e.no_call_until IS NOT NULL)
+            OR (e.event_type = 'waive' AND e.no_call_until IS NOT NULL AND e.decision_date IS NOT NULL
+                AND e.no_call_until <= e.decision_date)
+            OR (e.event_type IN ('waive','exercise') AND NOT (COALESCE(e.details,'{}'::jsonb)->'evidence' ? 'decision_date'))
+            OR CASE WHEN e.raw_payload->>'announcementTime' ~ '^[0-9]+
+  loadDocumentCache,
+  reconcileCallQuality,
+  recordCallQuality,
+  resolveCallQuality,
+  insert_event_documents,
+  select_ops_data_sources,
+  select_fundamental_convertible_bond_profiles,
+  select_core_instruments,
+  insert_ops_ingestion_runs,
+  insert_ops_raw_records,
+  select_event_convertible_bond_call_events,
+  insert_event_convertible_bond_call_events,
+  update_event_convertible_bond_call_events,
+  update_event_convertible_bond_call_events_1,
+  select_event_convertible_bond_call_events_1,
+  select_ops_data_quality_issues,
+  insert_ops_sync_cursors,
+  insert_ops_sync_cursors_1,
+  update_ops_ingestion_runs,
+  update_ops_ingestion_runs_1,
+};
+
+                    THEN e.announced_at IS DISTINCT FROM to_timestamp((e.raw_payload->>'announcementTime')::double precision / 1000)::date
+                    ELSE false END
+            OR (e.source_url ~ '/20[0-9]{2}-[0-9]{2}-[0-9]{2}/'
+                AND e.announced_at IS DISTINCT FROM substring(e.source_url from '/(20[0-9]{2}-[0-9]{2}-[0-9]{2})/')::date))
+          AND (${retryPlaceholder}::boolean OR e.parse_status <> 'failed')
+        ORDER BY e.announced_at,e.event_id${limitClause}`,
+    params.queryParams,
+  );
+}
+
 module.exports = {
+  listPendingCallEvents,
   loadDocumentCache,
   reconcileCallQuality,
   recordCallQuality,

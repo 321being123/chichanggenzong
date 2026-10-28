@@ -295,28 +295,7 @@ async function syncConvertibleBondCallAnnouncements({ fromDate, toDate, exchange
     const queryParams = configuredLimit
       ? [start, end, PARSER_VERSION, configuredLimit, retryFailed]
       : [start, end, PARSER_VERSION, retryFailed];
-    const pending = await pool.query(
-      `SELECT e.instrument_id AS "instrumentId",e.source_key AS "sourceKey",e.source_url AS "fileLink",e.title,
-              e.announced_at AS "announcedAt",split_part(s.canonical_code,'.',1) AS "stockCode",
-              e.event_type AS "eventType",e.raw_payload AS "rawPayload"
-         FROM event.convertible_bond_call_events e
-         LEFT JOIN fundamental.convertible_bond_profiles p ON p.instrument_id=e.instrument_id
-         LEFT JOIN core.instruments s ON s.instrument_id=p.stock_instrument_id
-        WHERE e.announced_at BETWEEN $1::date AND $2::date
-          AND e.source_url <> ''
-          AND (e.parser_version IS DISTINCT FROM $3 OR e.parse_status <> 'complete'
-            OR (e.event_type <> 'waive' AND e.no_call_until IS NOT NULL)
-            OR (e.event_type = 'waive' AND e.no_call_until IS NOT NULL AND e.decision_date IS NOT NULL
-                AND e.no_call_until <= e.decision_date)
-            OR (e.event_type IN ('waive','exercise') AND NOT (COALESCE(e.details,'{}'::jsonb)->'evidence' ? 'decision_date'))
-            OR CASE WHEN e.raw_payload->>'announcementTime' ~ '^[0-9]+$'
-                    THEN e.announced_at IS DISTINCT FROM to_timestamp((e.raw_payload->>'announcementTime')::double precision / 1000)::date
-                    ELSE false END
-            OR (e.source_url ~ '/20[0-9]{2}-[0-9]{2}-[0-9]{2}/'
-                AND e.announced_at IS DISTINCT FROM substring(e.source_url from '/(20[0-9]{2}-[0-9]{2}-[0-9]{2})/')::date))
-          AND (${retryPlaceholder}::boolean OR e.parse_status <> 'failed')
-        ORDER BY e.announced_at,e.event_id${limitClause}`, queryParams
-    );
+    const pending = await repository.listPendingCallEvents({ configuredLimit, queryParams });
     announcements = pending.rows.map(row => ({ ...row, sourceKey: row.sourceKey, fileLink: row.fileLink,
       announcedAt: announcementDate({ announcedAt: row.announcedAt, fileLink: row.fileLink, rawPayload: row.rawPayload }),
       stockCode: String(row.stockCode || '').slice(0, 6), rawPayload: row.rawPayload }));

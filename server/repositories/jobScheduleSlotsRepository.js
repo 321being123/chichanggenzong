@@ -398,7 +398,146 @@ async function update_ops_job_schedule_slots_20(params, client = pool) {
         RETURNING *`, params);
 }
 
+// 通用语句执行入口：供「可注入查询器」的默认实现使用，连接与执行留在数据层
+async function runQuery(sql, params, client = pool) {
+  return client.query(sql, params);
+}
+
+// 各任务的数据水位查询映射：表名与口径按任务代码固定，不接受外部输入
+const DATA_AS_OF_QUERIES = {
+    // 手动回查可能晚于正式快照写入、但数据日期更旧；水位必须取所有快照中的最新数据日期。
+    bond_safety_refresh: `SELECT MAX(COALESCE(source_updated_at, refreshed_at)) AS data_as_of FROM bond_safety_snapshots`,
+    hk_rate: `SELECT max(rate_date)::text AS data_as_of FROM market.fx_rates WHERE base_currency='HKD' AND quote_currency='CNY'`,
+    nav_snapshot: `SELECT max(date)::text AS data_as_of FROM nav_history`,
+    index_baseline: `SELECT max(date)::text AS data_as_of FROM index_history`,
+    index_recent: `SELECT max(date)::text AS data_as_of FROM index_history`,
+    ipo_calendar_refresh: `SELECT max(to_date(report_date, 'YYYYMMDD'))::text AS data_as_of
+      FROM ipo_reports WHERE report_date ~ '^\\d{8}
+  runQuery,
+  listStaleSlots,
+  readSlotRequestPayload,
+  taskDependencyStates,
+  insert_ops_job_schedule_slots,
+  select_ops_dataset_partitions,
+  select_data,
+  select_ops_job_schedule_slots,
+  insert_ops_job_schedule_slots_1,
+  update_ops_job_schedule_slots,
+  update_ops_job_schedule_slots_1,
+  update_ops_job_schedule_slots_2,
+  update_ops_job_schedule_slots_3,
+  update_ops_job_schedule_slots_4,
+  select_job_runs,
+  select_job_runs_1,
+  update_ops_job_schedule_slots_5,
+  select_ops_job_schedule_slots_1,
+  update_ops_job_schedule_slots_6,
+  update_ops_job_schedule_slots_7,
+  update_job_runs,
+  select_ops_job_schedule_slots_2,
+  update_ops_job_schedule_slots_8,
+  select_ops_job_schedule_slots_3,
+  update_ops_job_schedule_slots_9,
+  update_ops_job_schedule_slots_10,
+  select_ops_job_schedule_slots_4,
+  update_ops_job_schedule_slots_11,
+  update_ops_job_schedule_slots_12,
+  update_ops_job_schedule_slots_13,
+  update_ops_job_schedule_slots_14,
+  update_ops_job_schedule_slots_15,
+  select_ops_job_schedule_slots_5,
+  update_ops_job_schedule_slots_16,
+  update_ops_job_schedule_slots_17,
+  update_ops_job_schedule_slots_18,
+  select_ops_job_schedule_slots_6,
+  select_ops_job_schedule_slots_7,
+  select_job_runs_2,
+  select_ops_job_schedule_slots_8,
+  select_ops_alert_notifications,
+  select_admin_audit_log,
+  update_ops_worker_heartbeats,
+  insert_ops_worker_heartbeats,
+  select_ops_job_schedule_slots_9,
+  select_ops_job_schedule_slots_10,
+  with_ops_worker_heartbeats,
+  select_ops_job_schedule_slots_11,
+  select_job_runs_3,
+  update_ops_job_schedule_slots_19,
+  update_ops_job_schedule_slots_20,
+};
+`,
+    ipo_history_sync: `SELECT max(last_success_date)::text AS data_as_of FROM ops.sync_cursors WHERE scope_key='global:ipo_history'`,
+    stock_analysis_refresh: `SELECT max(NULLIF(snapshot.payload->>'latest_market_trade_date','')::date)::text AS data_as_of
+      FROM analytics.stock_overview_latest latest
+      JOIN LATERAL (
+        SELECT payload FROM analytics.analysis_snapshots
+         WHERE instrument_id=latest.instrument_id AND as_of_date=latest.as_of_date AND snapshot_type='stock_analysis'
+         ORDER BY created_at DESC LIMIT 1
+      ) snapshot ON true`,
+    hk_trade_rules_sync: `SELECT max(source_updated_at)::text AS data_as_of FROM market.instrument_trade_rules`,
+    // 套利任务必须同时确认港交所、上交所和深交所；取 max 会被单一来源的成功掩盖另一来源的落后。
+    arbitrage_sync: `SELECT LEAST(
+      COALESCE((SELECT max(last_success_date) FROM ops.sync_cursors WHERE scope_key='arbitrage_hkex' AND dataset_code='hkex_announcements'), '1900-01-01'::date),
+      COALESCE((SELECT max(last_success_date) FROM ops.sync_cursors WHERE scope_key='arbitrage_sse' AND dataset_code='sse_announcements'), '1900-01-01'::date),
+      COALESCE((SELECT max(last_success_date) FROM ops.sync_cursors WHERE scope_key='arbitrage_szse' AND dataset_code='szse_announcements'), '1900-01-01'::date)
+    )::text AS data_as_of`,
+    convertible_bond_announcement_history_sync: `SELECT max(last_success_date)::text AS data_as_of
+      FROM ops.sync_cursors WHERE scope_key='convertible_bond_announcement_history' AND dataset_code='official_announcements'`,
+    convertible_bond_universe_refresh: `SELECT max(last_success_date)::text AS data_as_of
+      FROM ops.sync_cursors WHERE scope_key='convertible_bond_universe' AND dataset_code='cb_basic_cb_daily'`,
+    convertible_bond_valuation_refresh: `SELECT max(trade_date)::text AS data_as_of FROM analytics.convertible_bond_valuation_daily`,
+    market_volatility_sync: `SELECT LEAST(
+      COALESCE((SELECT max(trade_date) FROM market.market_valuation_daily WHERE market_code='CN' AND benchmark_code='CSI300' AND source_code='csindex'), '1900-01-01'::date),
+      COALESCE((SELECT max(trade_date) FROM market.market_valuation_daily WHERE market_code='CN' AND benchmark_code='CSIALL' AND source_code='csindex'), '1900-01-01'::date),
+      COALESCE((SELECT max(trade_date) FROM market.market_valuation_daily WHERE market_code='HK' AND benchmark_code='HSI' AND source_code='hsi_official'), '1900-01-01'::date),
+      COALESCE((SELECT max(trade_date) FROM market.sovereign_yield_daily WHERE market_code='CN' AND tenor_years=10 AND source_code='chinabond'), '1900-01-01'::date),
+      COALESCE((SELECT max(trade_date) FROM market.sovereign_yield_daily WHERE market_code='US' AND tenor_years=10 AND source_code='tushare_us_tycr'), '1900-01-01'::date),
+      COALESCE((SELECT max(trade_date) FROM analytics.graham_index_daily WHERE market_code='CN' AND benchmark_code='CSI300'), '1900-01-01'::date),
+      COALESCE((SELECT max(trade_date) FROM analytics.graham_index_daily WHERE market_code='CN' AND benchmark_code='CSIALL'), '1900-01-01'::date),
+      COALESCE((SELECT max(month) FROM market.money_supply_monthly WHERE market_code='CN'), '1900-01-01'::date),
+      COALESCE((SELECT max(trade_date) FROM market.a_share_market_cap_daily WHERE source_code='tushare_daily_basic'), '1900-01-01'::date)
+    )::text AS data_as_of`,
+};
+
+// 按任务代码取数据水位对应的日期文本
+async function selectDataAsOfDate(sql, params, client = pool) {
+  const { rows } = await client.query(sql, params);
+  return rows;
+}
+
+// 按状态统计活动告警条数（活动告警口径由 jobAlertMailerRepository 定义）
+async function countAlertsByStatus(client = pool) {
+  const { ACTIVE_ALERT_WHERE } = require('./jobAlertMailerRepository');
+  const { rows } = await client.query(
+    `SELECT status, COUNT(*)::int AS count FROM ops.alert_notifications WHERE ${ACTIVE_ALERT_WHERE} GROUP BY status`,
+  );
+  return rows;
+}
+
+// 严格恢复候选分页：范围条件已全部进 WHERE，分页只跳过“范围匹配但证据不足”的候选
+async function selectStrictRecoveryCandidates(params, client = pool) {
+  const { recoveryScopeFilter } = require('./jobRecoveryEvidenceRepository');
+  const slot = params.slot;
+  const scope = recoveryScopeFilter(slot, 5);
+  const limitIndex = scope.nextIndex;
+  const offsetIndex = limitIndex + 1;
+  return client.query(
+    `SELECT slot_id,job_code,business_date,status,scheduled_for,request_payload,result_summary,data_as_of
+       FROM ops.job_schedule_slots
+      WHERE job_code=$1 AND business_date=$2::date AND status IN ('succeeded','degraded')
+        AND slot_id<>$3 AND scheduled_for>$4::timestamptz
+        AND ${scope.sql}
+      ORDER BY scheduled_for ASC, slot_id ASC LIMIT $${limitIndex} OFFSET $${offsetIndex}`,
+    [slot.job_code, slot.business_date, slot.slot_id, slot.scheduled_for, ...scope.params, params.limit, params.offset],
+  );
+}
+
 module.exports = {
+  selectStrictRecoveryCandidates,
+  countAlertsByStatus,
+  DATA_AS_OF_QUERIES,
+  selectDataAsOfDate,
+  runQuery,
   listStaleSlots,
   readSlotRequestPayload,
   taskDependencyStates,

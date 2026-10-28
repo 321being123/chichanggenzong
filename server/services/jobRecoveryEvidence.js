@@ -1,6 +1,7 @@
 // 任务恢复的中立证据层：调度器和告警层共用，避免只凭单一 data_as_of 把槽位误判为已完成。
 const { pool } = require('../db/connection');
 const { getRegisteredJobDefinition, stageCompletionEvidence } = require('./jobDefinitions');
+const repository = require('../repositories/jobRecoveryEvidenceRepository.js');
 
 function businessDateText(value) {
   const text = String(value || '').trim();
@@ -48,27 +49,7 @@ function sameSlotRecoveryScope(left, right) {
 // “前 N 条都是别的目标”变成固定上限，后面的同范围成功永远找不到。
 // targetCodes/targetFields 用 jsonb 双向包含表达集合相等（顺序无关、忽略重复），
 // 与 sameTargetScope 的去重集合语义一致；SQL 之后仍由 sameSlotRecoveryScope 复核。
-const SCOPE_PAYLOAD_KEYS = ['username', 'accountName', 'market', 'scopeKey', 'fromDate', 'throughDate'];
-
-function recoveryScopeFilter(slot, startIndex) {
-  const payload = (slot && slot.request_payload) || {};
-  const first = Number(startIndex) || 5;
-  const clauses = [`COALESCE(request_payload->>'mode','core')=$${first}`];
-  const params = [String(payload.mode || 'core')];
-  SCOPE_PAYLOAD_KEYS.forEach((key, index) => {
-    clauses.push(`COALESCE(request_payload->>'${key}','')=$${first + index + 1}`);
-    params.push(String(payload[key] ?? ''));
-  });
-  const codesIndex = first + SCOPE_PAYLOAD_KEYS.length + 1;
-  const fieldsIndex = codesIndex + 1;
-  clauses.push(`COALESCE(request_payload->'targetCodes','[]'::jsonb) @> $${codesIndex}::jsonb`);
-  clauses.push(`$${codesIndex}::jsonb @> COALESCE(request_payload->'targetCodes','[]'::jsonb)`);
-  clauses.push(`COALESCE(request_payload->'targetFields','[]'::jsonb) @> $${fieldsIndex}::jsonb`);
-  clauses.push(`$${fieldsIndex}::jsonb @> COALESCE(request_payload->'targetFields','[]'::jsonb)`);
-  params.push(JSON.stringify([...((payload.targetCodes || []))].map(String)));
-  params.push(JSON.stringify([...((payload.targetFields || []))].map(String)));
-  return { sql: clauses.join('\n          AND '), params, nextIndex: fieldsIndex + 1 };
-}
+const { recoveryScopeFilter } = repository;
 
 // 槽位版本必须是数据库精确值（微秒级）。JS Date 只保留毫秒，用 ±1 毫秒容差做“同版本”
 // 判断会把 0.5 毫秒后写入的新一次续批误当成同一版本，从而覆盖新的执行意图。
@@ -166,7 +147,7 @@ function slotWaitingState(slot, now = new Date()) {
   return state;
 }
 
-async function verifySlotRecoveryEvidence(slot, query = (sql, params) => pool.query(sql, params), options = {}) {
+async function verifySlotRecoveryEvidence(slot, query = (sql, params) => repository.runQuery(sql, params), options = {}) {
   if (!slot || !slot.job_code || !['succeeded', 'degraded'].includes(options.candidateStatus || slot.status)) {
     return { recovered: false, reason: 'slot_not_successful', evidence: slot || null };
   }

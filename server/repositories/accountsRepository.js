@@ -206,6 +206,39 @@ async function readAccountId(params, tx) {
   return rows[0] || null;
 }
 
+// 持仓单价更新（批量保存行情时逐条写）
+async function updatePositionPrice(params, tx) {
+  const runner = tx || pool;
+  return runner.query(
+    'UPDATE positions SET price=$1 WHERE username=$2 AND account_name=$3 AND code=$4',
+    [params.price, params.username, params.accountName, params.code],
+  );
+}
+
+// 提升持仓版本与总版本，返回新版本号
+async function bumpPositionVersion(params, tx) {
+  const runner = tx || pool;
+  return runner.query(
+    `INSERT INTO account_data (username, account_name, data, version, pos_version) VALUES ($1,$2,'{}',0,0) ON CONFLICT (username, account_name) DO UPDATE SET pos_version=account_data.pos_version+1, version=account_data.version+1 RETURNING version`,
+    [params.username, params.accountName],
+  );
+}
+
+// 持仓字段更新：列名按白名单拼装，不接受外部输入
+const POSITION_EDITABLE_COLUMNS = new Set(['name', 'type', 'subtype', 'note']);
+async function updatePositionFields(params, tx) {
+  const runner = tx || pool;
+  const patch = params.patch || {};
+  const cols = Object.keys(patch).filter((k) => POSITION_EDITABLE_COLUMNS.has(k));
+  if (!cols.length) return { rowCount: 0 };
+  const sets = cols.map((c, i) => `${c}=${i + 4}`);
+  const args = [params.username, params.accountName, params.posId, ...cols.map((c) => patch[c])];
+  return runner.query(
+    `UPDATE positions SET ${sets.join(', ')} WHERE username=$1 AND account_name=$2 AND id=$3`,
+    args,
+  );
+}
+
 module.exports = {
   clearNavDirtyFrom,
   listAccountNames,

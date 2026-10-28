@@ -7,28 +7,14 @@ const { verifySlotRecoveryEvidence, sameSlotRecoveryScope, slotWaitingState, rec
 const txControl = require('../repositories/transactionControl');
 const { claimAlertDelivery, claimRecoverySummaryAlerts, loadResolutionCandidates } = require('../repositories/jobAlertMailerRepository.js');
 const repository = require('../repositories/jobAlertMailerRepository.js');
+const { ACTIVE_ALERT_WHERE } = repository;
 
 const DELIVERY_RETRY_MINUTES = [1, 5, 15];
 const MAX_DELIVERY_ATTEMPTS = DELIVERY_RETRY_MINUTES.length + 1;
 const RECOVERY_SUMMARY_RETRY_MINUTES = 15;
 const MAX_RECOVERY_SUMMARY_ATTEMPTS = 3;
 const RECONCILIATION_COOLDOWN_MINUTES = [60, 360, 1440];
-// 故障告警在人工确认或任务恢复前保持待处理；一次性通知发送后不再算待处理。
-const ACTIVE_ALERT_WHERE = `status NOT IN ('resolved','acknowledged')
-        AND NOT (alert_type IN ('recovery','worker_recovered','job_overdue_recovered','external_api_switch','external_api_interface_failover')
-          AND status IN ('sent','suppressed'))
-        AND NOT (alert_type='failure_warning' AND EXISTS (
-          SELECT 1 FROM ops.alert_notifications newer
-           WHERE newer.slot_id=ops.alert_notifications.slot_id
-             AND newer.alert_type='failure'
-             AND newer.status NOT IN ('resolved','acknowledged')
-        ))
-        AND NOT (alert_type='late' AND EXISTS (
-          SELECT 1 FROM ops.alert_notifications blocker
-           WHERE blocker.slot_id=ops.alert_notifications.slot_id
-             AND blocker.alert_type='dependency_blocked'
-             AND blocker.status NOT IN ('resolved','acknowledged')
-        ))`;
+// 活动告警口径（SQL 片段）已下沉到数据层，由仓储导出共用。
 
 function productionAlertsEnabled() {
   return process.env.NODE_ENV === 'production';
@@ -161,7 +147,7 @@ function classifyAlertDisposition(alert = {}, verification = {}) {
 }
 
 // 运行时自动收敛和历史告警调和共用这一个证据入口；historical 只表示历史槽位额外需要连续三次成功。
-async function verifyAlertScope(alert, query = (sql, params) => pool.query(sql, params), options = {}) {
+async function verifyAlertScope(alert, query = (sql, params) => repository.runQuery(sql, params), options = {}) {
   const scope = parseAlertScope(alert);
   const historical = Boolean(options.historical);
   const alertType = String(alert.alert_type || '');
@@ -678,13 +664,7 @@ async function listAlerts(options = {}) {
   const history = status === 'history';
   const allowed = ['pending', 'sending', 'sent', 'suppressed', 'send_failed', 'resolved', 'acknowledged'];
   const exact = allowed.includes(status) ? status : null;
-  const { rows } = await pool.query(
-    `SELECT * FROM ops.alert_notifications
-      WHERE ($1::boolean = false OR (${ACTIVE_ALERT_WHERE}))
-        AND ($2::text IS NULL OR status=$2)
-        AND ($3::boolean = false OR status IN ('resolved','acknowledged'))
-      ORDER BY last_seen_at DESC LIMIT $4`, [open, exact, history, limit]
-  );
+  const { rows } = await repository.listAlertPage({ open, exact, history, limit });
   return rows.map(sanitizeAlertRecord);
 }
 

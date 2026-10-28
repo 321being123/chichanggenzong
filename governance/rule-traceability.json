@@ -3999,6 +3999,10 @@
         {
           "file": "server/test/job-slot-takeover-db.test.js",
           "pattern": "接续成功必须能按真实查询结果自动收敛告警"
+        },
+        {
+          "file": "server/test/job-slot-takeover-db.test.js",
+          "pattern": "OK job-slot-takeover-db:"
         }
       ],
       "owner": "任务治理",
@@ -4111,6 +4115,10 @@
         {
           "file": "server/test/job-slot-takeover-db.test.js",
           "pattern": "归档终态不得被旧失败记录改写"
+        },
+        {
+          "file": "server/test/job-slot-takeover-db.test.js",
+          "pattern": "OK job-slot-takeover-db:"
         }
       ],
       "owner": "任务治理",

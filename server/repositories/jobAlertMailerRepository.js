@@ -294,7 +294,43 @@ async function update_ops_alert_notifications_16(params, client = pool) {
   return client.query(`UPDATE ops.alert_notifications SET status='acknowledged',acknowledged_at=now(),updated_at=now() WHERE alert_id=$1 RETURNING *`, params);
 }
 
+const ACTIVE_ALERT_WHERE = `status NOT IN ('resolved','acknowledged')
+        AND NOT (alert_type IN ('recovery','worker_recovered','job_overdue_recovered','external_api_switch','external_api_interface_failover')
+          AND status IN ('sent','suppressed'))
+        AND NOT (alert_type='failure_warning' AND EXISTS (
+          SELECT 1 FROM ops.alert_notifications newer
+           WHERE newer.slot_id=ops.alert_notifications.slot_id
+             AND newer.alert_type='failure'
+             AND newer.status NOT IN ('resolved','acknowledged')
+        ))
+        AND NOT (alert_type='late' AND EXISTS (
+          SELECT 1 FROM ops.alert_notifications blocker
+           WHERE blocker.slot_id=ops.alert_notifications.slot_id
+             AND blocker.alert_type='dependency_blocked'
+             AND blocker.status NOT IN ('resolved','acknowledged')
+        ))`;
+
+// 告警列表分页：待处理/历史两种口径，活动告警口径由 ACTIVE_ALERT_WHERE 定义
+async function listAlertPage(params, client = pool) {
+  return client.query(
+    `SELECT * FROM ops.alert_notifications
+      WHERE ($1::boolean = false OR (${ACTIVE_ALERT_WHERE}))
+        AND ($2::text IS NULL OR status=$2)
+        AND ($3::boolean = false OR status IN ('resolved','acknowledged'))
+      ORDER BY last_seen_at DESC LIMIT $4`,
+    [params.open, params.exact, params.history, params.limit],
+  );
+}
+
+// 通用语句执行入口：供「可注入查询器」的默认实现使用，连接与执行留在数据层
+async function runQuery(sql, params, client = pool) {
+  return client.query(sql, params);
+}
+
 module.exports = {
+  runQuery,
+  ACTIVE_ALERT_WHERE,
+  listAlertPage,
   claimAlertDelivery,
   claimRecoverySummaryAlerts,
   loadResolutionCandidates,

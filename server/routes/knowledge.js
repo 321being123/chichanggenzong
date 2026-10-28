@@ -218,14 +218,14 @@ router.post('/categories/:id/move', requireLogin, requireCategoryOwner, asyncHan
       return res.status(404).json({ error: '分类不存在' });
     }
     if (parentId !== null) {
-      const parent = await client.query('SELECT id FROM article_categories WHERE id=$1 AND owner_username=$2', [parentId, req.session.user]);
+      const parent = await knowledgeRepository.findCategoryForOwner({ id: parentId, owner: req.session.user }, client);
       if (!parent.rows[0]) {
         await txControl.rollback(client);
         return res.status(400).json({ error: '目标分类不存在' });
       }
     }
 
-    const all = await client.query('SELECT id, parent_id FROM article_categories');
+    const all = await knowledgeRepository.listCategories(client);
     const parentMap = new Map(all.rows.map(row => [row.id, row.parent_id]));
     let cursor = parentId;
     while (cursor !== null) {
@@ -237,7 +237,7 @@ router.post('/categories/:id/move', requireLogin, requireCategoryOwner, asyncHan
     }
 
     const oldParentId = current.rows[0].parent_id;
-    await client.query('UPDATE article_categories SET parent_id=$1 WHERE id=$2', [parentId, id]);
+    await knowledgeRepository.updateCategoryParent({ parentId, id }, client);
     const target = await client.query(
       `SELECT id FROM article_categories
        WHERE parent_id IS NOT DISTINCT FROM $1 AND id<>$2 AND owner_username=$3

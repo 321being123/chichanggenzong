@@ -610,16 +610,10 @@ router.patch('/positions/prices', requireLogin, asyncHandler(assertOwnership), r
       await tradeLedger.checkVersionInTxn(tx, username, accountName, req.query.version);
       for (const p of prices) {
         if (!p.code || p.price == null) continue;
-        await tx.query(
-          'UPDATE positions SET price=$1 WHERE username=$2 AND account_name=$3 AND code=$4',
-          [round(p.price, 4), username, accountName, p.code]
-        );
+        await accountsRepository.updatePositionPrice({ price: round(p.price, 4), username, accountName, code: p.code }, tx);
       }
       // 提升 pos_version + 总版本（RETURNING 返回新版本号供前端同步，2026-08-04 第二轮修复）
-      const upV = await tx.query(
-        `INSERT INTO account_data (username, account_name, data, version, pos_version) VALUES ($1,$2,'{}',0,0) ON CONFLICT (username, account_name) DO UPDATE SET pos_version=account_data.pos_version+1, version=account_data.version+1 RETURNING version`,
-        [username, accountName]
-      );
+      const upV = await accountsRepository.bumpPositionVersion({ username, accountName }, tx);
       return upV.rows[0] ? Number(upV.rows[0].version) : null;
     });
     res.json({ ok: true, version });
@@ -636,30 +630,17 @@ router.patch('/positions/:id/meta', requireLogin, asyncHandler(assertOwnership),
   const accountName = req.body.account;
   if (!accountName) return res.status(400).json({ error: '缺少 account' });
   const username = req.session.user;
-  const fields = ['name', 'type', 'subtype', 'note'];
-  const sets = [];
-  const vals = [username, accountName, posId];
-  let idx = 4;
-  for (const f of fields) {
-    if (req.body[f] !== undefined) {
-      sets.push(f + '=$' + idx);
-      vals.push(req.body[f]);
-      idx++;
-    }
+  const patch = {};
+  for (const f of ['name', 'type', 'subtype', 'note']) {
+    if (req.body[f] !== undefined) patch[f] = req.body[f];
   }
-  if (sets.length === 0) return res.status(400).json({ error: '没有要修改的字段' });
+  if (Object.keys(patch).length === 0) return res.status(400).json({ error: '没有要修改的字段' });
   try {
     // 乐观锁（2026-08-04）：版本不一致 → 409
     const version = await withTransaction(async tx => {
       await tradeLedger.checkVersionInTxn(tx, username, accountName, req.query.version);
-      await tx.query(
-        'UPDATE positions SET ' + sets.join(', ') + ' WHERE username=$1 AND account_name=$2 AND id=$3',
-        vals
-      );
-      const upV = await tx.query(
-        `INSERT INTO account_data (username, account_name, data, version, pos_version) VALUES ($1,$2,'{}',0,0) ON CONFLICT (username, account_name) DO UPDATE SET pos_version=account_data.pos_version+1, version=account_data.version+1 RETURNING version`,
-        [username, accountName]
-      );
+      await accountsRepository.updatePositionFields({ username, accountName, posId, patch }, tx);
+      const upV = await accountsRepository.bumpPositionVersion({ username, accountName }, tx);
       return upV.rows[0] ? Number(upV.rows[0].version) : null;
     });
     res.json({ ok: true, version });

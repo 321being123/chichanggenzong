@@ -139,18 +139,7 @@ async function invalidateFeedbackNotifications(client, options) {
   const feedbackId = String(opts.feedbackId || '');
   if (!feedbackId) throw createError(400, '失效反馈通知缺少反馈编号');
   const reason = cleanText(opts.reason, 200) || '处理状态已更新';
-  const params = [feedbackId];
-  let extra = '';
-  if (opts.releaseRunId) {
-    params.push(String(opts.releaseRunId));
-    extra = ' AND release_run_id = $' + params.length;
-  }
-  const { rows } = await client.query(
-    `SELECT id::text AS id FROM public.notifications
-      WHERE feedback_id=$1 AND invalidated_at IS NULL${extra}
-      ORDER BY id DESC`,
-    params
-  );
+  const { rows } = await repository.selectInvalidatableFeedbackNotifications({ feedbackId, releaseRunId: opts.releaseRunId }, client);
   let invalidated = 0;
   for (let i = 0; i < rows.length; i++) {
     const done = await store.invalidateNotification(client, rows[i].id, reason);

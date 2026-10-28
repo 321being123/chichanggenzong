@@ -244,15 +244,9 @@ async function findStrictRecoverySlot(slot) {
   const limitIndex = scope.nextIndex;
   const offsetIndex = limitIndex + 1;
   for (let offset = 0; ; offset += TAKEOVER_PAGE_SIZE) {
-    const { rows } = await pool.query(
-      `SELECT slot_id,job_code,business_date,status,scheduled_for,request_payload,result_summary,data_as_of
-         FROM ops.job_schedule_slots
-        WHERE job_code=$1 AND business_date=$2::date AND status IN ('succeeded','degraded')
-          AND slot_id<>$3 AND scheduled_for>$4::timestamptz
-          AND ${scope.sql}
-        ORDER BY scheduled_for ASC, slot_id ASC LIMIT $${limitIndex} OFFSET $${offsetIndex}`,
-      [slot.job_code, slot.business_date, slot.slot_id, slot.scheduled_for, ...scope.params, TAKEOVER_PAGE_SIZE, offset]
-    );
+    const { rows } = await jobScheduleSlotsRepository.selectStrictRecoveryCandidates({
+      slot, limit: TAKEOVER_PAGE_SIZE, offset,
+    });
     for (const candidate of rows) {
       // SQL 用双向包含表达集合相等，这里再按同一规则复核一次，防止表达差异放宽范围。
       if (!sameSlotRecoveryScope(slot, candidate)) continue;
@@ -366,7 +360,7 @@ async function reconcileSlot(slot) {
       const { verifySlotRecoveryEvidence } = require('./jobRecoveryEvidence');
       const evidence = await verifySlotRecoveryEvidence(
         { ...slot, status: 'succeeded', data_as_of: actualDataAsOf },
-        (sql, params) => pool.query(sql, params)
+        (sql, params) => jobScheduleSlotsRepository.runQuery(sql, params)
       );
       if (!evidence.recovered) return slot;
       const { rows: recoveredRows } = await repository.update_ops_job_schedule_slots_2([slot.slot_id, actualDataAsOf]);
@@ -382,7 +376,7 @@ async function reconcileSlot(slot) {
     const actualDataAsOf = await queryDataAsOf(slot.job_code, slot.business_date).catch(() => null);
     if (isDataAsOfFresh(actualDataAsOf, slot.business_date, definition)) {
       const { verifySlotRecoveryEvidence } = require('./jobRecoveryEvidence');
-      const evidence = await verifySlotRecoveryEvidence(slot, (sql, params) => pool.query(sql, params), { candidateStatus: 'succeeded' });
+      const evidence = await verifySlotRecoveryEvidence(slot, (sql, params) => jobScheduleSlotsRepository.runQuery(sql, params), { candidateStatus: 'succeeded' });
       if (!evidence.recovered) return slot;
       const { rows: recoveredRows } = await repository.update_ops_job_schedule_slots_3([slot.slot_id, actualDataAsOf]);
       if (recoveredRows[0]) {
@@ -429,7 +423,7 @@ async function reconcileSlot(slot) {
     const { verifySlotRecoveryEvidence } = require('./jobRecoveryEvidence');
     const evidence = await verifySlotRecoveryEvidence(
       { ...slot, status: 'succeeded', data_as_of: dataAsOf || slot.data_as_of, result_summary: resultSummary },
-      (sql, params) => pool.query(sql, params)
+      (sql, params) => jobScheduleSlotsRepository.runQuery(sql, params)
     );
     if (!evidence.recovered) return slot;
   }
@@ -572,7 +566,7 @@ function attemptLimit(slot,definition){
   return (definition.maxAttempts||3)+(slot.job_code==='nav_snapshot'&&slot.result_summary?.dependencyRecovery?1:0);
 }
 
-async function recoverNavDependencies(query=(sql,params)=>pool.query(sql,params)){
+async function recoverNavDependencies(query=(sql,params)=>jobScheduleSlotsRepository.runQuery(sql,params)){
   const {rows}=await query("SELECT *,business_date::text AS business_date FROM ops.job_schedule_slots WHERE job_code='nav_snapshot' AND status='blocked' AND acknowledged_at IS NULL AND NOT (result_summary ? 'dependencyRecovery') AND last_error LIKE '数据集 %连续%'");
   for(const slot of rows){
     const summary=slot.result_summary||{};
@@ -788,7 +782,7 @@ async function queryDataAsOf(jobCode, businessDate) {
     : null);
   if (!sql) return null;
   const normalizedBusinessDate = normalizeBusinessDate(businessDate);
-  const { rows } = await pool.query(sql, marketPredicate ? [normalizedBusinessDate] : []);
+  const { rows } = await jobScheduleSlotsRepository.selectDataAsOfDate(sql, marketPredicate ? [normalizedBusinessDate] : []);
   if (!rows[0] || !rows[0].data_as_of) return null;
   if (jobCode === 'hk_rate') return normalizeDataAsOf(rows[0].data_as_of);
   const raw = String(rows[0].data_as_of).slice(0, 10);
@@ -1025,7 +1019,7 @@ async function getJobOverview() {
   const [counts, slots, alerts, workers] = await Promise.all([
     repository.select_ops_job_schedule_slots_9([today]),
     repository.select_ops_job_schedule_slots_10([today]),
-    pool.query(`SELECT status, COUNT(*)::int AS count FROM ops.alert_notifications WHERE ${ACTIVE_ALERT_WHERE} GROUP BY status`),
+    jobScheduleSlotsRepository.countAlertsByStatus(),
     repository.with_ops_worker_heartbeats(),
   ]);
   return {

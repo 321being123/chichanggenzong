@@ -308,6 +308,32 @@ async function adminListUsers(params, tx) {
   return rows;
 }
 
+// 分类归属锁定与树形调整：owner 校验在 WHERE 内，越权不可见
+async function lockCategoryForUpdate(params, client = pool) {
+  return client.query(
+    'SELECT id, parent_id FROM article_categories WHERE id=$1 AND owner_username=$2 FOR UPDATE',
+    [params.id, params.owner],
+  );
+}
+
+async function findCategoryForOwner(params, client = pool) {
+  return client.query(
+    'SELECT id FROM article_categories WHERE id=$1 AND owner_username=$2',
+    [params.id, params.owner],
+  );
+}
+
+async function listCategories(client = pool) {
+  return client.query('SELECT id, parent_id FROM article_categories');
+}
+
+async function updateCategoryParent(params, client = pool) {
+  return client.query(
+    'UPDATE article_categories SET parent_id=$1 WHERE id=$2',
+    [params.parentId, params.id],
+  );
+}
+
 module.exports = {
   adminListArticles,
   adminListComments,

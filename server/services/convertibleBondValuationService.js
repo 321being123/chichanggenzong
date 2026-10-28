@@ -105,39 +105,7 @@ async function getList(asOf, filters = {}) {
   // 默认列表即使展示的是上一有效快照，也必须按当前预期交易日剔除已退市、
   // 已到期或已停止转股的债券；显式查询历史日期时则按该历史日还原范围。
   const universeDate = asOf ? tradeDate : expectedTradeDate();
-  const where = [
-    'v.trade_date = $1',
-    "u.status = 'listed'",
-    "(u.issue_type IS NULL OR u.issue_type NOT IN ('定向', '私募'))",
-    '(i.list_date IS NULL OR i.list_date <= $2::date)',
-    '(i.delist_date IS NULL OR i.delist_date > $2::date)',
-    '(p.maturity_date IS NULL OR p.maturity_date >= $2::date)',
-    '(p.conv_end_date IS NULL OR p.conv_end_date >= $2::date)',
-    '(u.conv_stop_date IS NULL OR u.conv_stop_date > $2::date)',
-    "(p.cb_type IS NULL OR p.cb_type IN ('CB', ''))",
-    "(s.status IS NULL OR s.status = 'listed')",
-    '(s.delist_date IS NULL OR s.delist_date > $2::date)',
-  ];
-  const params = [tradeDate, universeDate];
-  let pi = 3;
-  if (filters.search) {
-    where.push(`(i.canonical_code ILIKE $${pi} OR i.name ILIKE $${pi} OR COALESCE(s.name,'') ILIKE $${pi})`);
-    params.push('%' + filters.search + '%');
-    pi++;
-  }
-  if (filters.final_evaluation) { where.push(`v.eval_class = $${pi}`); params.push(filters.final_evaluation); pi++; }
-  if (filters.safety_level) { where.push(`v.safety_level = $${pi}`); params.push(filters.safety_level); pi++; }
-  if (filters.data_status) { where.push(`v.data_status = $${pi}`); params.push(filters.data_status); pi++; }
-  if (filters.alert_level && filters.alert_level !== '无') {
-    const lvl = filters.alert_level === '重要' ? 2 : 1;
-    where.push(`COALESCE(al.alert_rank,0) >= $${pi}`);
-    params.push(lvl); pi++;
-  }
-  const sql = LIST_SELECT + ' WHERE ' + where.join(' AND ') +
-    ' ORDER BY CASE v.eval_class ' +
-    Object.entries(EVAL_ORDER).map(([k, v]) => `WHEN '${k}' THEN ${v}`).join(' ') +
-    " ELSE 7 END, v.valuation_percentile ASC";
-  const { rows } = await pool.query(sql, params);
+  const rows = await repository.listValuationPage({ tradeDate, universeDate, filters });
   const data = rows.map(mapListRow);
 
   // 计数
@@ -181,10 +149,7 @@ async function getList(asOf, filters = {}) {
 async function getBondDetail(code, asOf) {
   const tradeDate = asOf || (await getLatestTradeDate());
   if (!tradeDate) return null;
-  const { rows } = await pool.query(
-    LIST_SELECT + ' WHERE v.trade_date=$1 AND i.canonical_code=$2',
-    [tradeDate, code]
-  );
+  const rows = await repository.selectValuationDetail({ tradeDate, code });
   if (!rows.length) return null;
   const r = rows[0];
   const cur = mapListRow(r);
@@ -269,12 +234,7 @@ async function getBondDetail(code, asOf) {
 const { loadSafety } = require('./convertibleBondAnalysis');
 
 async function getCreditHistory(code) {
-  const sql = `
-    SELECT r.rating_date, r.rating, r.rating_outlook, r.rating_type, r.announced_at
-    FROM fundamental.convertible_bond_ratings r
-    JOIN core.instruments i ON i.instrument_id = r.instrument_id
-    WHERE i.canonical_code = $1 ORDER BY r.rating_date DESC LIMIT 20`;
-  const { rows } = await pool.query(sql, [code]);
+  const rows = await repository.listCreditHistory(code);
   return rows.map(r => ({
     rating_date: isoDate(r.rating_date),
     announced_at: isoDate(r.announced_at),
@@ -287,16 +247,7 @@ async function getCreditHistory(code) {
 // ---- 历史估值 ----
 async function getHistory(code, range) {
   const cutoff = rangeCutoff(range);
-  const sql = `
-    SELECT v.trade_date, v.close, v.anchor_value, v.fair_price, v.fair_price_low, v.fair_price_high,
-           v.absolute_deviation_pct, v.valuation_percentile, v.market_heat_pct,
-           v.relative_market_deviation_pct, v.base_evaluation, v.final_evaluation, v.model_version
-    FROM analytics.convertible_bond_valuation_daily v
-    JOIN core.instruments i ON i.instrument_id = v.instrument_id
-    WHERE i.canonical_code = $1 ${cutoff ? 'AND v.trade_date >= $2' : ''}
-    ORDER BY v.trade_date ASC`;
-  const params = cutoff ? [code, cutoff] : [code];
-  const { rows } = await pool.query(sql, params);
+  const rows = await repository.listValuationHistory({ code, cutoff });
   return rows.map(r => ({
     date: isoDate(r.trade_date),
     close: r.close,
@@ -316,22 +267,7 @@ async function getHistory(code, range) {
 
 // ---- 预警 ----
 async function getAlerts(filters = {}) {
-  const where = [];
-  const params = [];
-  let pi = 1;
-  if (filters.level) { where.push(`a.alert_level = $${pi}`); params.push(filters.level); pi++; }
-  if (filters.active !== undefined) { where.push(`a.is_active = $${pi}`); params.push(filters.active); pi++; }
-  const cutoff = rangeCutoff(filters.range);
-  if (cutoff) { where.push(`a.trade_date >= $${pi}`); params.push(cutoff); pi++; }
-  const sql = `
-    SELECT a.trade_date, a.alert_type, a.alert_level, a.previous_state, a.current_state,
-           a.trigger_payload, a.model_version, a.created_at, a.is_active,
-           i.canonical_code AS bond_code, i.name AS bond_name
-    FROM analytics.convertible_bond_valuation_alerts a
-    JOIN core.instruments i ON i.instrument_id = a.instrument_id
-    ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
-    ORDER BY a.trade_date DESC, a.alert_level DESC LIMIT 500`;
-  const { rows } = await pool.query(sql, params);
+  const rows = await repository.listValuationAlerts({ filters, cutoff });
   return rows.map(r => ({
     bond_code: r.bond_code, bond_name: r.bond_name,
     trade_date: isoDate(r.trade_date), alert_type: r.alert_type, alert_level: r.alert_level,
@@ -342,13 +278,7 @@ async function getAlerts(filters = {}) {
 }
 
 async function getBondAlerts(code) {
-  const sql = `
-    SELECT a.trade_date, a.alert_type, a.alert_level, a.previous_state, a.current_state,
-           a.trigger_payload, a.model_version, a.created_at, a.is_active
-    FROM analytics.convertible_bond_valuation_alerts a
-    JOIN core.instruments i ON i.instrument_id = a.instrument_id
-    WHERE i.canonical_code = $1 ORDER BY a.trade_date DESC LIMIT 100`;
-  const { rows } = await pool.query(sql, [code]);
+  const rows = await repository.listBondAlerts(code);
   return rows.map(r => ({
     trade_date: isoDate(r.trade_date), alert_type: r.alert_type, alert_level: r.alert_level,
     previous_state: r.previous_state, current_state: r.current_state,
@@ -367,13 +297,7 @@ async function getValuationByCodes(codes) {
   if (clean.length === 0) return {};
   const tradeDate = await getLatestTradeDate();
   if (!tradeDate) return {};
-  const sql = `
-    SELECT i.canonical_code, v.final_evaluation, v.eval_class, v.valuation_percentile, v.trade_date
-    FROM analytics.convertible_bond_valuation_daily v
-    JOIN core.instruments i ON i.instrument_id = v.instrument_id
-    WHERE v.trade_date = $1
-      AND REGEXP_REPLACE(i.canonical_code, '\\D', '', 'g') = ANY($2)`;
-  const { rows } = await pool.query(sql, [tradeDate, clean]);
+  const rows = await repository.listValuationByCodes({ tradeDate, codes: clean });
   const out = {};
   for (const r of rows) {
     const code = String(r.canonical_code || '').replace(/\D/g, '');

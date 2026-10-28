@@ -2524,8 +2524,8 @@
       "id": "HK-DAILY-LIFECYCLE-001",
       "title": "定向港股日线不得绕过实际上市日期和目标日",
       "implementation": {
-        "file": "server/services/hkDailyCoverage.js",
-        "symbol": "i.list_date IS NOT NULL"
+        "file": "server/repositories/hkDailyCoverageRepository.js",
+        "symbol": "loadCandidates"
       },
       "tests": [
         {
@@ -2748,7 +2748,7 @@
       "id": "BOND-ANALYSIS-LIFECYCLE-015",
       "title": "旧目标证券集合按实际交易退市日期不借当前主档状态",
       "implementation": {
-        "file": "server/services/convertibleBondAnalysisSnapshots.js",
+        "file": "server/repositories/convertibleBondAnalysisSnapshotsRepository.js",
         "symbol": "i.status='delisted'"
       },
       "tests": [
@@ -4191,6 +4191,10 @@
         {
           "file": "server/test/ops-alert-remediation-regression.test.js",
           "pattern": "告警恢复必须按最近计划时间取候选"
+        },
+        {
+          "file": "server/test/job-orchestration-regression.test.js",
+          "pattern": "SMTP 恢复摘要必须使用跨进程全局锁"
         }
       ],
       "owner": "运维治理",

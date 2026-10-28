@@ -1,4 +1,6 @@
 const { pool } = require('../db/connection');
+const txControl = require('../repositories/transactionControl');
+const { getLatestCallState, getLatestCallStateBySecurityCodes, getLatestCallStateMap } = require('../repositories/convertibleBondRedemptionServiceRepository.js');
 
 const FORMULA_VERSION = 'call-v1';
 
@@ -236,7 +238,7 @@ async function calculateConvertibleBondCallStatus(tradeDate = null) {
 
   const client = await pool.connect();
   try {
-    await client.query('BEGIN');
+    await txControl.begin(client);
     for (const row of results) {
       await client.query(
         `INSERT INTO analytics.convertible_bond_trigger_daily
@@ -251,9 +253,9 @@ async function calculateConvertibleBondCallStatus(tradeDate = null) {
           row.observationDays,row.status,FORMULA_VERSION,JSON.stringify(row.diagnostics),row.dataStatus]
       );
     }
-    await client.query('COMMIT');
+    await txControl.commit(client);
   } catch (error) {
-    await client.query('ROLLBACK');
+    await txControl.rollback(client);
     throw error;
   } finally {
     client.release();
@@ -370,31 +372,11 @@ async function getBondRedemptionOverview({ status = '', query = '', date = '', l
   };
 }
 
-async function getLatestCallState(instrumentId) {
-  const { rows } = await pool.query(
-    `SELECT * FROM analytics.convertible_bond_call_latest WHERE instrument_id=$1 LIMIT 1`, [instrumentId]
-  );
-  return rows[0] || null;
-}
+/* getLatestCallState 已迁入 server/repositories/convertibleBondRedemptionServiceRepository.js */
 
-async function getLatestCallStateMap(instrumentIds) {
-  const ids = [...new Set((instrumentIds || []).map(Number).filter(Number.isInteger))];
-  if (!ids.length) return new Map();
-  const { rows } = await pool.query(
-    `SELECT * FROM analytics.convertible_bond_call_latest WHERE instrument_id=ANY($1::bigint[])`, [ids]
-  );
-  return new Map(rows.map(row => [Number(row.instrument_id), row]));
-}
+/* getLatestCallStateMap 已迁入 server/repositories/convertibleBondRedemptionServiceRepository.js */
 
-async function getLatestCallStateBySecurityCodes(codes) {
-  const normalized = [...new Set((codes || []).map(value => String(value || '').trim().toUpperCase().replace(/\.(SH|SZ|BJ|HK)$/, '')).filter(Boolean))];
-  if (!normalized.length) return new Map();
-  const { rows } = await pool.query(
-    `SELECT * FROM analytics.convertible_bond_call_latest
-      WHERE security_code=ANY($1::text[])`, [normalized]
-  );
-  return new Map(rows.map(row => [String(row.security_code || '').toUpperCase(), row]));
-}
+/* getLatestCallStateBySecurityCodes 已迁入 server/repositories/convertibleBondRedemptionServiceRepository.js */
 
 module.exports = {
   FORMULA_VERSION,

@@ -6,7 +6,8 @@ const vm = require('vm');
 const root = path.join(__dirname, '..', '..');
 const tables = fs.readFileSync(path.join(root, 'public', 'shared', 'core-tables.js'), 'utf8');
 const trade = fs.readFileSync(path.join(root, 'public', 'shared', 'core-trade.js'), 'utf8');
-const ledger = fs.readFileSync(path.join(root, 'server', 'services', 'tradeLedger.js'), 'utf8');
+const ledger = fs.readFileSync(path.join(root, 'server', 'services', 'tradeLedger.js'), 'utf8')
+  + fs.readFileSync(path.join(root, 'server', 'repositories', 'tradeLedgerRepository.js'), 'utf8');
 const accountsRoute = fs.readFileSync(path.join(root, 'server', 'routes', 'accounts.js'), 'utf8');
 
 // “今日盈亏”必须按行情涨跌计算，不能误用上一条净值快照价格。

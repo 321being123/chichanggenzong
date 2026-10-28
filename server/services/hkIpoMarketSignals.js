@@ -4,6 +4,7 @@ const crypto = require('crypto');
 const { pool } = require('../db');
 const { withExternalCallGuard } = require('./externalCallGuard');
 const { ALLOWED_HOSTS, requestExternal } = require('./hkIpoMarketSource');
+const { persistRaw } = require('../repositories/hkIpoMarketSignalsRepository.js');
 
 const LIVERMORE_CURRENT_URL = 'https://trade-info-api.jesselivermore.com/api/info/get-h5-ipo-setting';
 const LIVERMORE_HISTORY_URL = 'https://h5stockserver.huanshoulv.com/aimapp/hkstock/hotNewStock';
@@ -323,16 +324,7 @@ function buildSourceRecordHash({
   return crypto.createHash('sha256').update(record).digest('hex');
 }
 
-async function persistRaw(sourceCode, datasetCode, sourceKey, payload, executor = pool) {
-  const source = await executor.query('SELECT source_id FROM ops.data_sources WHERE source_code=$1 LIMIT 1', [sourceCode]);
-  if (!source.rows[0]) return;
-  const text = JSON.stringify(payload || {});
-  await executor.query(`
-    INSERT INTO ops.raw_records(source_id,dataset_code,source_key,source_updated_at,payload,payload_hash)
-    VALUES($1,$2,$3,now(),$4::jsonb,$5)
-    ON CONFLICT(source_id,dataset_code,source_key,payload_hash) DO UPDATE SET ingested_at=now()
-  `, [source.rows[0].source_id, datasetCode, sourceKey, text, crypto.createHash('sha256').update(text).digest('hex')]);
-}
+/* persistRaw 已迁入 server/repositories/hkIpoMarketSignalsRepository.js */
 
 async function persistName(code, name, executor = pool) {
   if (!code || !hasChinese(name)) return false;

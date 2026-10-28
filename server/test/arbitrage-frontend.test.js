@@ -4,7 +4,8 @@ const path = require('path');
 
 const root = path.join(__dirname, '..', '..');
 const frontend = fs.readFileSync(path.join(root, 'public', 'js', 'arbitrage.js'), 'utf8');
-const service = fs.readFileSync(path.join(root, 'server', 'services', 'arbitrageService.js'), 'utf8');
+const service = fs.readFileSync(path.join(root, 'server', 'services', 'arbitrageService.js'), 'utf8')
+  + fs.readFileSync(path.join(root, 'server', 'repositories', 'arbitrageServiceRepository.js'), 'utf8');
 const html = fs.readFileSync(path.join(root, 'public', 'index.html'), 'utf8');
 const style = fs.readFileSync(path.join(root, 'public', 'shared', 'style.css'), 'utf8');
 const { JSDOM } = require('jsdom');

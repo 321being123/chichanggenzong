@@ -5,6 +5,7 @@ const {coversDocument,terminalApplies}=require('./convertibleBondAnalysisFallbac
 const { tushareQuery, tsRows, tsDateStr } = require('./market');
 const path = require('path');
 const { evaluateConvertibleBondFreshness, CONV_PRICE_EPS } = require('./analysisFreshness');
+const { getResetNetAssetFloor } = require('../repositories/convertibleBondAnalysisRepository.js');
 const { datasetScope, getDatasetCursors, isDatasetFresh, markDatasetSuccess,
   recordQualityIssue, resolveQualityIssue } = require('./datasetCursors');
 const { getLatestCallState } = require('./convertibleBondRedemptionService');
@@ -344,16 +345,7 @@ async function buildStandardTermsHash(pool, instrumentId, asOf) {
   });
 }
 
-async function getResetNetAssetFloor(instrumentId, asOf) {
-  const { rows } = await pool.query(
-    `SELECT CASE WHEN net_asset_floor_applicable THEN true
-                 WHEN parse_status='complete' THEN false ELSE NULL END AS applicable
-       FROM fundamental.convertible_bond_terms
-      WHERE instrument_id=$1 AND term_type='reset' AND effective_from<=$2::date
-        AND (effective_to IS NULL OR effective_to>$2::date)
-      ORDER BY effective_from DESC LIMIT 1`, [instrumentId, asOf]);
-  return rows[0]?.applicable ?? null;
-}
+/* getResetNetAssetFloor 已迁入 server/repositories/convertibleBondAnalysisRepository.js */
 
 async function getConvertibleBondSnapshot(value) {
   const tsCode = normalizeBondCode(value);

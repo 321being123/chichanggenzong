@@ -9,6 +9,7 @@ const { loadCashState } = require('./accountCash');
 const { pool } = require('../db/connection');
 const { fetchTencentQuotes } = require('./tencentQuote');
 const { todayCN } = require('./market');
+const { listBenchmarks, loadEffectivePositions } = require('../repositories/positionComparisonDataRepository.js');
 
 // ========== 工具 ==========
 
@@ -36,52 +37,12 @@ function secKey(pos) {
 // ========== 标杆列表（4.1 / 5.2） ==========
 
 // 返回其他用户的 public / semi_public 账户，不含 username 与绝对金额
-async function listBenchmarks(currentUsername) {
-  const { rows } = await pool.query(
-    `SELECT a.id AS account_id, a.account_name, a.username, a.position_visibility,
-            COALESCE(u.nickname, a.username) AS nickname,
-            a.updated_at,
-            ad.updated_at AS data_updated_at
-       FROM accounts a
-       LEFT JOIN users u ON u.username = a.username
-       LEFT JOIN account_data ad ON ad.username=a.username AND ad.account_name=a.account_name
-      WHERE a.position_visibility <> 'private'
-        AND a.username <> $1
-      ORDER BY a.updated_at DESC NULLS LAST`,
-    [currentUsername]
-  );
-  const result = [];
-  for (const row of rows) {
-    // 证券只数（半公开也可展示只数，但不能展示持仓数量）
-    const { rows: cnt } = await pool.query(
-      `SELECT COUNT(DISTINCT COALESCE(instrument_id::text, code))::int AS cnt
-         FROM positions WHERE username=$1 AND account_name=$2 AND quantity > 0`,
-      [row.username, row.account_name]
-    );
-    result.push({
-      accountId: row.account_id,
-      displayName: `${row.nickname || row.username} · ${row.account_name}`,
-      visibility: row.position_visibility,
-      // 持仓更新时间：真实持仓保存时间优先（account_data.updated_at），不用公开状态修改时间
-      positionUpdatedAt: row.data_updated_at || row.updated_at || null,
-      securityCount: cnt[0] ? cnt[0].cnt : 0,
-    });
-  }
-  return result;
-}
+/* listBenchmarks 已迁入 server/repositories/positionComparisonDataRepository.js */
 
 // ========== 持仓读取与统一估值（6.1 / 6.2） ==========
 
 // 读取账户全部有效持仓（数量>0），合并同一证券多条记录
-async function loadEffectivePositions(username, accountName) {
-  const { rows } = await pool.query(
-    `SELECT id, code, name, price::float8 AS price, quantity::float8 AS quantity,
-            cost::float8 AS cost, type, subtype, note, instrument_id
-       FROM positions WHERE username=$1 AND account_name=$2 AND quantity > 0`,
-    [username, accountName]
-  );
-  return rows;
-}
+/* loadEffectivePositions 已迁入 server/repositories/positionComparisonDataRepository.js */
 
 // 读取账户现金（口径与持仓页一致：cash = cashBase + 现金流净额 + 交易净额）
 // 简单复用 loadAccountData 太重（会拉全部 trades/nav），这里直接算现金

@@ -7,6 +7,9 @@ const { ACTIVE_ALERT_WHERE } = require('./jobAlertMailer');
 const { sameSlotRecoveryScope, slotWaitingState, businessDateText, slotVersionText } = require('./jobRecoveryEvidence');
 const classifyCode = require('../../public/js/code-classify');
 const { appVersion } = require('../../package.json');
+const txControl = require('../repositories/transactionControl');
+const jobScheduleSlotsRepository = require('../repositories/jobScheduleSlotsRepository');
+const { taskDependencyStates } = jobScheduleSlotsRepository;
 
 const HOSTNAME = os.hostname();
 
@@ -158,18 +161,7 @@ async function ensureSlot(jobCode, scheduledFor, businessDate, triggerType = 'sc
   return rows[0] || null;
 }
 
-async function taskDependencyStates(slot, dependencies) {
-  if (!dependencies.length) return new Map();
-  const { rows } = await pool.query(
-    `SELECT DISTINCT ON (job_code) job_code,status
-       FROM ops.job_schedule_slots
-      WHERE business_date=$1::date AND job_code=ANY($2::text[])
-        AND scheduled_for <= $3::timestamptz
-      ORDER BY job_code,scheduled_for DESC`,
-    [slot.business_date, dependencies, slot.scheduled_for]
-  );
-  return new Map(rows.map(row => [row.job_code, row.status]));
-}
+/* taskDependencyStates 已迁入 server/repositories/jobScheduleSlotsRepository.js */
 
 async function datasetDependencyState(slot, definition) {
   const requirements = definition.datasetDependencies || [];
@@ -229,7 +221,7 @@ async function enqueueManualJob(jobCode, requestPayload = {}, transactionClient 
   const safePayload = sanitizeJobResult(requestPayload || {});
   const client = transactionClient || await pool.connect();
   try {
-    if(!transactionClient) await client.query('BEGIN');
+    if(!transactionClient) await txControl.begin(client);
     await client.query("SELECT pg_advisory_xact_lock(hashtext('manual_job:' || $1 || ':' || $2))", [jobCode, JSON.stringify(safePayload)]);
     const active = await client.query(`
       SELECT * FROM ops.job_schedule_slots
@@ -240,7 +232,7 @@ async function enqueueManualJob(jobCode, requestPayload = {}, transactionClient 
        ORDER BY slot_id DESC LIMIT 1
     `, [jobCode, Number(definition.maxAttempts || 3), JSON.stringify(safePayload)]);
     if (active.rows[0]) {
-      if(!transactionClient) await client.query('COMMIT');
+      if(!transactionClient) await txControl.commit(client);
       return active.rows[0];
     }
     const scheduledFor = new Date();
@@ -248,10 +240,10 @@ async function enqueueManualJob(jobCode, requestPayload = {}, transactionClient 
       INSERT INTO ops.job_schedule_slots(job_code,scheduled_for,business_date,trigger_type,next_attempt_at,request_payload)
       VALUES($1,$2,$3,'manual_retry',$2,$4::jsonb) RETURNING *
     `, [jobCode, scheduledFor, dateText(scheduledFor), JSON.stringify(safePayload)]);
-    if(!transactionClient) await client.query('COMMIT');
+    if(!transactionClient) await txControl.commit(client);
     return rows[0] || null;
   } catch (error) {
-    if(!transactionClient) await client.query('ROLLBACK').catch(() => {});
+    if(!transactionClient) await txControl.rollback(client).catch(() => {});
     throw error;
   } finally {
     if(!transactionClient) client.release();
@@ -749,15 +741,7 @@ let sweepCursor = 0;
 
 async function sweepStaleSlots(limit = 20) {
   const safeLimit = Math.min(Math.max(Number(limit) || 20, 1), SWEEP_PAGE_SIZE_MAX);
-  const { rows } = await pool.query(
-    `SELECT *, business_date::text AS business_date, updated_at::text AS updated_at_exact
-       FROM ops.job_schedule_slots
-      WHERE status IN ('pending','failed','waiting_external','blocked','degraded')
-        AND scheduled_for < now() - ($2::integer * interval '1 minute')
-        AND slot_id > $1
-      ORDER BY slot_id ASC LIMIT $3`,
-    [sweepCursor, SWEEP_MIN_AGE_MINUTES, safeLimit]
-  );
+  const rows = await jobScheduleSlotsRepository.listStaleSlots(sweepCursor, SWEEP_MIN_AGE_MINUTES, safeLimit);
   if (!rows.length) {
     const wrapped = sweepCursor > 0;
     sweepCursor = 0;

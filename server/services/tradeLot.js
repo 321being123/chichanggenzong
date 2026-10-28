@@ -7,6 +7,8 @@
 const { pool } = require('../db/connection');
 const { ensureInstrumentIdentity } = require('./securityIdentity');
 const { tushareQuery, tsRows, todayCN } = require('./market');
+const txControl = require('../repositories/transactionControl');
+const { backfillPositionInstrumentIds, upsertTradeRule } = require('../repositories/tradeLotRepository.js');
 
 // ========== A 股交易单位（市场规则，不落库） ==========
 
@@ -133,7 +135,7 @@ async function syncHkTradeRules() {
   const today = todayCN();
   const client = await pool.connect();
   try {
-    await client.query('BEGIN');
+    await txControl.begin(client);
     const { rows: srcRows } = await client.query(`SELECT source_id FROM ops.data_sources WHERE source_code='tushare'`);
     const tushareSourceId = srcRows[0] ? srcRows[0].source_id : null;
     if (!tushareSourceId) throw new Error('tushare 数据源未注册');
@@ -188,12 +190,12 @@ async function syncHkTradeRules() {
     );
 
     await client.query(`UPDATE ops.ingestion_runs SET status='success',row_count=$2,finished_at=now() WHERE run_id=$1`, [run.run_id, rows.length]);
-    await client.query('COMMIT');
+    await txControl.commit(client);
     // 同步落库后回填持仓 instrument_id（港股主档刚写入 core.instruments，持仓即可匹配）
     await backfillPositionInstrumentIds();
     return { total: rows.length, upserted, missingLot, failed };
   } catch (error) {
-    await client.query('ROLLBACK');
+    await txControl.rollback(client);
     throw error;
   } finally {
     client.release();
@@ -213,110 +215,11 @@ async function syncHkTradeRules() {
 // ⚠️ valid_from 是 timestamptz，与 today（东八区 YYYY-MM-DD 字符串）比较必须先转东八区日期，
 //    否则（如服务器 UTC 时区）同一天写入的记录 valid_from='YYYY-MM-DDT16:00:00Z' 会被误判为历史，
 //    走"关闭旧规则"分支 → valid_to=昨天 < valid_from=今天 → 违反约束导致同步失败。
-async function upsertTradeRule(client, instrumentId, sourceId, today, lot, rawRecordId) {
-  const cur = (await client.query(
-    `SELECT buy_lot_size_shares,
-            to_char(valid_from AT TIME ZONE 'Asia/Shanghai','YYYY-MM-DD') AS valid_from_cn
-       FROM market.instrument_trade_rules
-      WHERE instrument_id=$1 AND source_id=$2 AND valid_to IS NULL
-      ORDER BY valid_from DESC LIMIT 1`,
-    [instrumentId, sourceId]
-  )).rows[0];
-  if (cur && cur.buy_lot_size_shares === lot) return false; // 无变化
-  if (!cur) {
-    await client.query(
-      `INSERT INTO market.instrument_trade_rules(instrument_id,source_id,valid_from,buy_lot_size_shares,source_updated_at,raw_record_id)
-       VALUES($1,$2,$3::date,$4,now(),$5)`,
-      [instrumentId, sourceId, today, lot, rawRecordId || null]
-    );
-    return true;
-  }
-  if (cur.valid_from_cn === today) {
-    // 同一天内首次同步后每手股数再次变化：直接 UPDATE 当天记录（覆盖数值），
-    // 不能关闭旧规则（否则 valid_to=昨天 < valid_from=今天 违反约束）
-    await client.query(
-      `UPDATE market.instrument_trade_rules
-          SET buy_lot_size_shares=$3, source_updated_at=now(), raw_record_id=$4
-        WHERE instrument_id=$1 AND source_id=$2 AND valid_to IS NULL
-          AND to_char(valid_from AT TIME ZONE 'Asia/Shanghai','YYYY-MM-DD')=$5`,
-      [instrumentId, sourceId, lot, rawRecordId || null, today]
-    );
-    return true;
-  }
-  // 历史某天生效的规则变更：关闭旧规则（valid_to = 新规则生效日前一天，
-  // 避免"新规则生效当天"两条规则同时满足 valid_from<=day<=valid_to）
-  const prevDay = new Date(today + 'T00:00:00');
-  prevDay.setDate(prevDay.getDate() - 1);
-  const validTo = `${prevDay.getFullYear()}-${String(prevDay.getMonth() + 1).padStart(2, '0')}-${String(prevDay.getDate()).padStart(2, '0')}`;
-  await client.query(
-    `UPDATE market.instrument_trade_rules SET valid_to=$3::date
-      WHERE instrument_id=$1 AND source_id=$2 AND valid_to IS NULL`,
-    [instrumentId, sourceId, validTo]
-  );
-  await client.query(
-    `INSERT INTO market.instrument_trade_rules(instrument_id,source_id,valid_from,buy_lot_size_shares,source_updated_at,raw_record_id)
-     VALUES($1,$2,$3::date,$4,now(),$5)`,
-    [instrumentId, sourceId, today, lot, rawRecordId || null]
-  );
-  return true;
-}
+/* upsertTradeRule 已迁入 server/repositories/tradeLotRepository.js */
 
 // 回填历史持仓的 instrument_id（与迁移 037 同规则，幂等；供同步后/启动时调用）
 // 匹配：canonical_code 精确 → 去符号纯代码唯一匹配；未匹配写入质量问题（不删除持仓）
-async function backfillPositionInstrumentIds() {
-  await pool.query(`
-    UPDATE positions p
-       SET instrument_id = i.instrument_id
-      FROM core.instruments i
-     WHERE p.instrument_id IS NULL
-       AND i.canonical_code = p.code
-  `);
-  await pool.query(`
-    UPDATE positions p
-       SET instrument_id = m.instrument_id
-      FROM (
-        SELECT p.username, p.account_name, p.id, min(i.instrument_id) AS instrument_id
-          FROM positions p
-          JOIN core.instruments i
-            ON REGEXP_REPLACE(i.canonical_code, '[^0-9]', '', 'g') = REGEXP_REPLACE(p.code, '[^0-9]', '', 'g')
-         WHERE p.instrument_id IS NULL
-         GROUP BY p.username, p.account_name, p.id
-        HAVING count(DISTINCT i.instrument_id) = 1
-      ) m
-     WHERE p.username = m.username AND p.account_name = m.account_name AND p.id = m.id
-  `);
-  // 映射成功：关闭已 open 的未匹配质量记录（status → resolved）
-  await pool.query(`
-    UPDATE ops.data_quality_issues q
-       SET status='resolved', resolved_at=now(), details=jsonb_set(details,'{resolved_by}','"backfill"')
-      FROM positions p
-     WHERE q.dataset_code='positions' AND q.field_code='instrument_id' AND q.issue_type='unmatched_position'
-       AND q.status='open'
-       AND p.instrument_id IS NOT NULL
-       AND q.details->>'username'=p.username AND q.details->>'account_name'=p.account_name AND q.details->>'code'=p.code
-  `);
-  // 未匹配：先查重再插入（instrument_id 为 NULL 时 UNIQUE 约束不生效，须手动去重防累积）
-  await pool.query(`
-    INSERT INTO ops.data_quality_issues(instrument_id,dataset_code,field_code,issue_type,severity,details)
-    SELECT NULL,'positions','instrument_id','unmatched_position','warning',
-           jsonb_build_object('username',p.username,'account_name',p.account_name,'code',p.code)
-      FROM positions p
-     WHERE p.instrument_id IS NULL
-       AND NOT EXISTS (
-         SELECT 1 FROM core.instruments i
-          WHERE REGEXP_REPLACE(i.canonical_code, '[^0-9]', '', 'g') = REGEXP_REPLACE(p.code, '[^0-9]', '', 'g')
-       )
-       AND NOT EXISTS (
-         SELECT 1 FROM ops.data_quality_issues q
-          WHERE q.dataset_code='positions' AND q.field_code='instrument_id'
-            AND q.issue_type='unmatched_position' AND q.status='open'
-            AND q.details->>'username'=p.username
-            AND q.details->>'account_name'=p.account_name
-            AND q.details->>'code'=p.code
-       )
-  `);
-  return { ok: true };
-}
+/* backfillPositionInstrumentIds 已迁入 server/repositories/tradeLotRepository.js */
 
 module.exports = {
   isStarBoard,

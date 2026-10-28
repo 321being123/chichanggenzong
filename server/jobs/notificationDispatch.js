@@ -10,6 +10,8 @@
 //  - 已投递(delivered)/跳过(skipped) 永不重投，重试只处理 pending + failed。
 const { pool } = require('../db');
 const store = require('../db/notifications');
+const txControl = require('../repositories/transactionControl');
+const { loadBatch, verifyExecution } = require('../repositories/notificationDispatchRepository.js');
 
 const JOB_CODE = 'notification_dispatch';
 const PAGE_SIZE = 50;
@@ -22,34 +24,7 @@ function emptyCounts() {
 }
 
 // 每页写入前的守卫：批次状态 + 槽位执行令牌 + 有效租约 + 批次代次
-async function verifyExecution(client, opts) {
-  if (!opts.executionToken) return { ok: false, reason: 'missing_execution_token' };
-  const slot = await client.query(
-    `SELECT slot_id, status, execution_token, lease_until,
-            -- 实际时钟：now() 在事务内固定为事务开始时刻，会让「页内跨过到期」逃过校验
-            (lease_until IS NOT NULL AND lease_until > clock_timestamp()) AS lease_ok
-       FROM ops.job_schedule_slots WHERE slot_id=$1 FOR UPDATE`,
-    [opts.slotId]
-  );
-  const row = slot.rows[0];
-  if (!row) return { ok: false, reason: 'slot_missing' };
-  if (row.status !== 'running') return { ok: false, reason: 'slot_not_running' };
-  if (String(row.execution_token || '') !== String(opts.executionToken)) {
-    return { ok: false, reason: 'execution_token_mismatch' };
-  }
-  if (!row.lease_ok) return { ok: false, reason: 'lease_expired' };
-  const batch = await client.query(
-    'SELECT dispatch_generation, status FROM public.notification_batches WHERE id=$1 FOR UPDATE',
-    [opts.batchId]
-  );
-  const b = batch.rows[0];
-  if (!b) return { ok: false, reason: 'batch_missing' };
-  if (['cancelled', 'completed'].includes(b.status)) return { ok: false, reason: 'batch_not_running' };
-  if (Number(b.dispatch_generation) !== Number(opts.generation)) {
-    return { ok: false, reason: 'dispatch_generation_changed' };
-  }
-  return { ok: true };
-}
+/* verifyExecution 已迁入 server/repositories/notificationDispatchRepository.js */
 
 // 带守卫的批次写入：0 行表示本执行已失去归属，抛错让整页回滚
 async function writeBatch(client, opts, fields) {
@@ -65,15 +40,7 @@ async function writeBatch(client, opts, fields) {
   return updated;
 }
 
-async function loadBatch(batchId) {
-  const { rows } = await pool.query(
-    `SELECT id::text AS id, notification_id::text AS "notificationId", status,
-            dispatch_generation, scan_round, cursor, dispatch_slot_id
-       FROM public.notification_batches WHERE id=$1`,
-    [batchId]
-  );
-  return rows[0] || null;
-}
+/* loadBatch 已迁入 server/repositories/notificationDispatchRepository.js */
 
 // 收尾：以收件表实际状态核对计数后定状态，不用累计缓存冒充进度
 async function finalize(client, opts, counts) {
@@ -156,37 +123,37 @@ async function runNotificationDispatch(reason, context) {
   let pages = 0;
   try {
     // 进入执行态：必须在事务内先核验令牌/租约/代次，再用同样的守卫写入
-    await client.query('BEGIN');
+    await txControl.begin(client);
     const enterGuard = await verifyExecution(client, opts);
     if (!enterGuard.ok) {
-      await client.query('ROLLBACK');
+      await txControl.rollback(client);
       const counts = await store.countRecipients(pool, batch.notificationId);
       return lostResult(counts, enterGuard.reason);
     }
     await writeBatch(client, opts, { status: 'running' });
-    await client.query('COMMIT');
+    await txControl.commit(client);
 
     let exhausted = false;
     while (!exhausted) {
       if (pages >= MAX_PAGES_PER_RUN) break;
-      await client.query('BEGIN');
+      await txControl.begin(client);
       let rows;
       try {
         const guard = await verifyExecution(client, opts);
         if (!guard.ok) {
-          await client.query('ROLLBACK');
+          await txControl.rollback(client);
           guardLost = guard.reason;
           break;
         }
         rows = await store.scanRecipients(client, batch.notificationId, opts.cursor, PAGE_SIZE, opts.scanRound);
         if (!rows.length) {
-          await client.query('COMMIT');
+          await txControl.commit(client);
           exhausted = true;
           break;
         }
         for (let i = 0; i < rows.length; i++) {
           const row = rows[i];
-          await client.query('SAVEPOINT recipient');
+          await txControl.savepoint(client, 'recipient');
           try {
             const username = row.recipientUsername;
             // 投递前重验账号：删号 → account_deleted；停用 → account_inactive；
@@ -204,13 +171,13 @@ async function runNotificationDispatch(reason, context) {
             } else if (await store.deliverRecipient(client, row.id, opts.scanRound)) {
               delivered++;
             }
-            await client.query('RELEASE SAVEPOINT recipient');
+            await txControl.releaseSavepoint(client, 'recipient');
           } catch (rowError) {
             // 逐行可恢复失败：本行记 failed，本页其他行继续
-            await client.query('ROLLBACK TO SAVEPOINT recipient').catch(function () {});
+            await txControl.rollbackToSavepoint(client, 'recipient').catch(function () {});
             await store.failRecipient(client, row.id, rowError && rowError.message, opts.scanRound).catch(function () {});
             failed++;
-            await client.query('RELEASE SAVEPOINT recipient').catch(function () {});
+            await txControl.releaseSavepoint(client, 'recipient').catch(function () {});
           }
           opts.cursor = row.id;
         }
@@ -225,12 +192,12 @@ async function runNotificationDispatch(reason, context) {
         delivered = Number(counts.delivered);
         skipped = Number(counts.skipped);
         failed = Number(counts.failed);
-        await client.query('COMMIT');
+        await txControl.commit(client);
         pages++;
         if (rows.length < PAGE_SIZE) exhausted = true;
       } catch (pageError) {
         // 页级异常（含失去执行归属）：整页回滚，不推进本页游标，交给原框架退避
-        await client.query('ROLLBACK').catch(function () {});
+        await txControl.rollback(client).catch(function () {});
         throw pageError;
       }
     }
@@ -242,20 +209,20 @@ async function runNotificationDispatch(reason, context) {
     }
 
     // 收尾事务：重新核验令牌后按实际收件状态定状态
-    await client.query('BEGIN');
+    await txControl.begin(client);
     let result;
     try {
       const guard = await verifyExecution(client, opts);
       if (!guard.ok) {
-        await client.query('ROLLBACK');
+        await txControl.rollback(client);
         const counts = await store.countRecipients(pool, batch.notificationId);
         return lostResult(counts, guard.reason);
       }
       const counts = await store.countRecipients(client, batch.notificationId);
       result = await finalize(client, opts, counts);
-      await client.query('COMMIT');
+      await txControl.commit(client);
     } catch (e) {
-      await client.query('ROLLBACK').catch(function () {});
+      await txControl.rollback(client).catch(function () {});
       if (e && e.executionLost) {
         const counts = await store.countRecipients(pool, batch.notificationId);
         return lostResult(counts, 'write_guard_failed');

@@ -4,6 +4,7 @@
 const { pool } = require('../db');
 const cycle = require('./convertibleBondCycle');
 const { ensureInstrumentIdentity } = require('./securityIdentity');
+const { getSyncCursor, getTushareSourceId, upsertCycleDaily } = require('../repositories/convertibleBondCycleServiceRepository.js');
 
 const { toNumber, aggregateDaily, finalizeCycle, computePercentile, cycleLevel, LOOKBACK_DAYS, FORMULA_VERSION, UNIVERSE_VERSION, ANOMALY_REASONS } = cycle;
 
@@ -89,23 +90,7 @@ async function fetchPriorComposites(client, formulaVersion, tradeDate, limit = P
 }
 
 // 原子写入当日周期聚合（质量不通过者由调用方决定不调用本函数）
-async function upsertCycleDaily(client, row) {
-  await client.query(
-    `INSERT INTO analytics.convertible_bond_cycle_daily
-      (trade_date,formula_version,universe_version,bond_count,premium_count,coverage_ratio,median_price,median_conversion_value,
-       median_conversion_premium_pct,premium_weight,composite_value,rolling_percentile,cycle_level,source_id,diagnostics,calculated_at)
-     VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,now())
-     ON CONFLICT(trade_date,formula_version,universe_version) DO UPDATE SET
-      bond_count=EXCLUDED.bond_count,premium_count=EXCLUDED.premium_count,coverage_ratio=EXCLUDED.coverage_ratio,
-      median_price=EXCLUDED.median_price,median_conversion_value=EXCLUDED.median_conversion_value,
-      median_conversion_premium_pct=EXCLUDED.median_conversion_premium_pct,premium_weight=EXCLUDED.premium_weight,
-      composite_value=EXCLUDED.composite_value,rolling_percentile=EXCLUDED.rolling_percentile,cycle_level=EXCLUDED.cycle_level,
-      source_id=EXCLUDED.source_id,diagnostics=EXCLUDED.diagnostics,calculated_at=now()`,
-    [row.trade_date, row.formula_version, row.universe_version, row.bond_count, row.premium_count, row.coverage_ratio,
-     row.median_price, row.median_conversion_value, row.median_conversion_premium_pct, row.premium_weight, row.composite_value,
-     row.rolling_percentile, row.cycle_level, row.source_id, JSON.stringify(row.diagnostics || {})]
-  );
-}
+/* upsertCycleDaily 已迁入 server/repositories/convertibleBondCycleServiceRepository.js */
 
 // 游标只前进不后退（补历史空洞时不回拨），成功时清空失败记录
 async function updateSyncCursor(client, tradeDate) {
@@ -133,12 +118,7 @@ async function recordCycleFailure(client, tradeDate, reason) {
   );
 }
 
-async function getSyncCursor() {
-  const { rows } = await pool.query(
-    "SELECT to_char(last_success_date,'YYYYMMDD') AS d FROM ops.sync_cursors WHERE scope_key=$1 AND dataset_code=$2", [CYCLE_SCOPE, DATASET]
-  );
-  return rows[0] ? rows[0].d : null;
-}
+/* getSyncCursor 已迁入 server/repositories/convertibleBondCycleServiceRepository.js */
 
 // 处理单个交易日：过滤→聚合→（质量通过）写事实+滚动分位+聚合入库+更新游标
 // 返回 { stored, failed, reason, metrics?, aggregate? }
@@ -246,10 +226,7 @@ async function getCycleHistory(formulaVersion = FORMULA_VERSION, range = '5y', u
   return rows;
 }
 
-async function getTushareSourceId(client = pool) {
-  const { rows } = await client.query("SELECT source_id FROM ops.data_sources WHERE source_code='tushare' LIMIT 1");
-  return rows[0] ? rows[0].source_id : null;
-}
+/* getTushareSourceId 已迁入 server/repositories/convertibleBondCycleServiceRepository.js */
 
 module.exports = {
   CYCLE_SCOPE,

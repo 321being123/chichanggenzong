@@ -34,6 +34,7 @@ async function syncRepoDailyRates({targetDate,startDate,probe=false,allowComplet
   let identity=await resolveInstrument({canonicalCode:CODE});
   if(!identity) {
     const master=await require('./securityIdentity').ensureInstrumentIdentity({canonicalCode:CODE,name:'GC001',assetClass:'repo',market:'CN',exchangeCode:'SSE',currencyCode:'CNY',status:'listed'});
+const txControl = require('../repositories/transactionControl');
     identity={instrument_id:master.instrumentId};
   }
   const source=(await pool.query("SELECT source_id FROM ops.data_sources WHERE source_code='tushare'")).rows[0].source_id;
@@ -59,7 +60,7 @@ async function syncRepoDailyRates({targetDate,startDate,probe=false,allowComplet
         const payloadHash=crypto.createHash('sha256').update(JSON.stringify(row)).digest('hex');
         const client=await pool.connect();
         try {
-          await client.query('BEGIN');
+          await txControl.begin(client);
           const raw=(await client.query(`INSERT INTO ops.raw_records(source_id,dataset_code,source_key,payload,payload_hash)
             VALUES($1,'repo_daily_rates',$2,$3,$4) ON CONFLICT(source_id,dataset_code,source_key,payload_hash)
             DO UPDATE SET ingested_at=now() RETURNING raw_record_id`,[source,CODE+':'+value.date,row,payloadHash])).rows[0];
@@ -67,8 +68,8 @@ async function syncRepoDailyRates({targetDate,startDate,probe=false,allowComplet
             VALUES($1,$2,$3,1,$4,$5,'annual_decimal',$6,'passed',$7)
             ON CONFLICT(instrument_id,trade_date,source_id) DO UPDATE SET weighted_annual_rate=EXCLUDED.weighted_annual_rate,
             close_annual_rate=EXCLUDED.close_annual_rate,raw_record_id=EXCLUDED.raw_record_id,source_revision=EXCLUDED.source_revision,ingested_at=now()`,[identity.instrument_id,value.date,source,value.weighted,value.close,raw.raw_record_id,payloadHash]);
-          await client.query('COMMIT');samples.push({...row,weighted_annual_rate:value.weighted});
-        } catch(e) {await client.query('ROLLBACK');throw e;} finally {client.release();}
+          await txControl.commit(client);samples.push({...row,weighted_annual_rate:value.weighted});
+        } catch(e) {await txControl.rollback(client);throw e;} finally {client.release();}
       }
     } catch(e) {failures.push({year,message:e.message,code:e.code||'DATASET_INCOMPLETE'});}
   }

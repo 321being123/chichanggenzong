@@ -10,6 +10,8 @@ const { ensureInstrumentIdentity, isCleanSecurityName } = require('./securityIde
 const { fetchSseEventsBatch, fetchSzseEventsBatch } = require('./stockAnalysis');
 const { sendAlert, resolveSourceEndpointAlerts } = require('./jobAlertMailer');
 const { probeCninfoPermission } = require('./sourceEndpointProbe');
+const txControl = require('../repositories/transactionControl');
+const { createIngestionRun, findOpenCase, finishIngestionRun, getCursor, getSourceId, ingestRawRecord, upsertCursor } = require('../repositories/arbitrageAnnouncementSyncRepository.js');
 const {
   cleanSecurityText,
   firstSecurityCode,
@@ -176,79 +178,24 @@ function normalizeCursorDate(value) {
 }
 
 // 获取数据源 ID
-async function getSourceId(sourceCode) {
-  const { rows } = await pool.query('SELECT source_id FROM ops.data_sources WHERE source_code=$1', [sourceCode]);
-  if (!rows.length) throw new Error('Data source not found: ' + sourceCode);
-  return rows[0].source_id;
-}
+/* getSourceId 已迁入 server/repositories/arbitrageAnnouncementSyncRepository.js */
 
 // 读取游标
-async function getCursor(scopeKey, dataset) {
-  const { rows } = await pool.query(
-    'SELECT last_success_date, last_source_update, last_error, retry_count FROM ops.sync_cursors WHERE scope_key=$1 AND dataset_code=$2',
-    [scopeKey, dataset]
-  );
-  return rows.length ? rows[0] : null;
-}
+/* getCursor 已迁入 server/repositories/arbitrageAnnouncementSyncRepository.js */
 
 // 写入/更新游标：失败只能记录错误，不能把已有成功水位回退到重叠窗口起点。
-async function upsertCursor(scopeKey, dataset, lastSuccessDate, lastSourceUpdate, error) {
-  await pool.query(`
-    INSERT INTO ops.sync_cursors(scope_key, dataset_code, last_success_date, last_source_update, last_attempt_at, last_error, retry_count, updated_at)
-    VALUES($1,$2,$3,$4,now(),$5,0,now())
-    ON CONFLICT(scope_key, dataset_code) DO UPDATE SET
-      last_success_date = GREATEST(
-        COALESCE(ops.sync_cursors.last_success_date, '1900-01-01'::date),
-        COALESCE(EXCLUDED.last_success_date, '1900-01-01'::date)
-      ),
-      last_source_update = COALESCE(EXCLUDED.last_source_update, ops.sync_cursors.last_source_update),
-      last_attempt_at = now(),
-      last_error = EXCLUDED.last_error,
-      retry_count = CASE WHEN EXCLUDED.last_error <> '' THEN ops.sync_cursors.retry_count + 1 ELSE 0 END,
-      updated_at = now()
-  `, [scopeKey, dataset, lastSuccessDate, lastSourceUpdate, error || '']);
-}
+/* upsertCursor 已迁入 server/repositories/arbitrageAnnouncementSyncRepository.js */
 
 // 创建摄取运行记录
-async function createIngestionRun(sourceId, dataset, range) {
-  const { rows } = await pool.query(
-    `INSERT INTO ops.ingestion_runs(source_id, dataset_code, request_range, status) VALUES($1,$2,$3,'running') RETURNING run_id`,
-    [sourceId, dataset, JSON.stringify(range)]
-  );
-  return rows[0].run_id;
-}
+/* createIngestionRun 已迁入 server/repositories/arbitrageAnnouncementSyncRepository.js */
 
-async function finishIngestionRun(runId, rowCount, errorMessage) {
-  await pool.query(
-    `UPDATE ops.ingestion_runs SET status=$1, row_count=$2, error_message=$3, finished_at=now() WHERE run_id=$4`,
-    [errorMessage ? 'failed' : 'completed', rowCount, errorMessage || '', runId]
-  );
-}
+/* finishIngestionRun 已迁入 server/repositories/arbitrageAnnouncementSyncRepository.js */
 
 // 入库原始记录（幂等）
-async function ingestRawRecord(runId, sourceId, dataset, ann) {
-  const sourceKey = ann.sourceKey;
-  const payloadHash = require('crypto').createHash('sha256').update(JSON.stringify(ann.rawPayload)).digest('hex').slice(0, 32);
-  const { rows } = await pool.query(`
-    INSERT INTO ops.raw_records(run_id, source_id, dataset_code, source_key, source_updated_at, payload, payload_hash)
-    VALUES($1,$2,$3,$4,$5,$6,$7)
-    ON CONFLICT(source_id, dataset_code, source_key, payload_hash) DO UPDATE SET run_id=EXCLUDED.run_id, ingested_at=now()
-    RETURNING raw_record_id
-  `, [runId, sourceId, dataset, sourceKey, ann.announcedAt ? ann.announcedAt + 'T00:00:00Z' : null, JSON.stringify(ann.rawPayload), payloadHash]);
-  return rows[0].raw_record_id;
-}
+/* ingestRawRecord 已迁入 server/repositories/arbitrageAnnouncementSyncRepository.js */
 
 // 查找同一标的 + 同一策略的「进行中」事件（用于把同一事项的多份公告合并成一条事件链）
-async function findOpenCase(client, instrumentId, strategyType) {
-  if (!instrumentId) return null;
-  const { rows } = await client.query(`
-    SELECT case_id, review_status FROM event.arbitrage_cases
-    WHERE target_instrument_id=$1 AND strategy_type=$2
-      AND event_status NOT IN ('completed','terminated','expired')
-    ORDER BY created_at DESC LIMIT 1
-  `, [instrumentId, strategyType]);
-  return rows[0] || null;
-}
+/* findOpenCase 已迁入 server/repositories/arbitrageAnnouncementSyncRepository.js */
 
 // 历史数据中的巨潮文档可能没有 announcement_merge_key，不能只靠 raw_payload 去重。
 // 按证券、公告日和规范化标题再比一次，确保后续交易所公告能接回原事件链。
@@ -303,7 +250,7 @@ async function standardizeAnnouncement(sourceId, rawRecordId, ann, scope) {
   let touchedDocumentId = null;
   let touchedDocumentRole = 'other';
   try {
-    await client.query('BEGIN');
+    await txControl.begin(client);
 
     // 查找或创建 instrument
     let instrumentId = null;
@@ -366,7 +313,7 @@ async function standardizeAnnouncement(sourceId, rawRecordId, ann, scope) {
         `, [riskCase.case_id, documentId, ann.announcedAt]);
         await client.query('UPDATE event.arbitrage_cases SET updated_at=now() WHERE case_id=$1', [riskCase.case_id]);
       }
-      await client.query('COMMIT');
+      await txControl.commit(client);
       return;
     }
     const update = detectUpdate(classificationText);
@@ -384,7 +331,7 @@ async function standardizeAnnouncement(sourceId, rawRecordId, ann, scope) {
           ON CONFLICT(case_id, document_id) DO UPDATE SET document_role=EXCLUDED.document_role
         `, [caseId, documentId, ann.announcedAt, documentRole]);
         await client.query(`UPDATE event.arbitrage_cases SET event_status=$1, terms_updated_at=now(), updated_at=now() WHERE case_id=$2`, [update.status, caseId]);
-        await client.query('COMMIT');
+        await txControl.commit(client);
         return;
       }
       // 找不到进行中事件时，把终态公告归到最近的同标的同策略案件；绝不反向新建进行中案件。
@@ -401,7 +348,7 @@ async function standardizeAnnouncement(sourceId, rawRecordId, ann, scope) {
         `, [latest[0].case_id, documentId, ann.announcedAt, documentRole]);
         await client.query('UPDATE event.arbitrage_cases SET event_status=$1,updated_at=now() WHERE case_id=$2', [update.status, latest[0].case_id]);
       }
-      await client.query('COMMIT');
+      await txControl.commit(client);
       return;
     }
 
@@ -429,7 +376,7 @@ async function standardizeAnnouncement(sourceId, rawRecordId, ann, scope) {
           WHERE case_id=$2
         `, [ann.announcedAt || null, row.case_id]);
       }
-      await client.query('COMMIT');
+      await txControl.commit(client);
       return;
     }
 
@@ -515,7 +462,7 @@ async function standardizeAnnouncement(sourceId, rawRecordId, ann, scope) {
       }
     }
 
-    await client.query('COMMIT');
+    await txControl.commit(client);
 
     // 每份条款类 PDF 只解析一次并把证据存入数据库；再按公告角色聚合，不允许低优先级公告覆盖正式方案。
     if (touchedCaseId && touchedDocumentId && touchedDocumentRole !== 'terminal' && ann.fileLink && /\.pdf$/i.test(ann.fileLink)) {
@@ -528,7 +475,7 @@ async function standardizeAnnouncement(sourceId, rawRecordId, ann, scope) {
       }
     }
   } catch (err) {
-    await client.query('ROLLBACK');
+    await txControl.rollback(client);
     throw err;
   } finally {
     client.release();

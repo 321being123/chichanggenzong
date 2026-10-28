@@ -135,8 +135,8 @@ check('接口路由在单债动态参数之前注册', () => {
 
 check('列表发布失败时使用事务回滚并保留上一份快照', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'services', 'convertibleBondListService.js'), 'utf8');
-  assert.ok(source.includes("await client.query('BEGIN')"));
-  assert.ok(source.includes("await client.query('ROLLBACK')"));
+  assert.ok(source.includes('txControl.begin(client)'));
+  assert.ok(source.includes('txControl.rollback(client)'));
   assert.ok(source.includes('ON CONFLICT(trade_date,instrument_id,formula_version) DO UPDATE'));
   assert.ok(source.includes('latestPublishedTradeDate'));
   assert.ok(source.includes('fetchTencentQuotes') && source.includes('refreshQuotes'));

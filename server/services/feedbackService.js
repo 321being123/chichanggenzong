@@ -9,6 +9,7 @@ const { pool, DATA_DIR } = require('../db');
 const store = require('../db/feedback');
 const notificationService = require('./notificationService');
 const { hasCapability, isAdminIdentity } = require('../middleware/auth');
+const txControl = require('../repositories/transactionControl');
 
 // ---------- 常量 ----------
 const TYPES = ['bug', 'improvement', 'feature'];
@@ -301,10 +302,10 @@ async function createFeedback(actor, input, files) {
   const client = await pool.connect();
   let written = [];
   try {
-    await client.query('BEGIN');
+    await txControl.begin(client);
     const dup = clientRequestId ? await store.findByIdempotencyKey(client, actor.username, clientRequestId) : null;
     if (dup) {
-      await client.query('ROLLBACK');
+      await txControl.rollback(client);
       if (dup.requestHash !== requestHash) {
         throw createError(409, '该提交标识已用于另一份内容，请刷新页面后重新提交');
       }
@@ -331,10 +332,10 @@ async function createFeedback(actor, input, files) {
       feedbackId: created.id, actorUsername: actor.username, actorSource: 'user',
       eventType: 'create', statusTo: 'new', summary: '提交反馈', revision: created.revision,
     });
-    await client.query('COMMIT');
+    await txControl.commit(client);
     return { id: created.id, revision: created.revision, created: true };
   } catch (e) {
-    await client.query('ROLLBACK').catch(function () {});
+    await txControl.rollback(client).catch(function () {});
     removeFiles(written);
     throw e;
   } finally {
@@ -479,7 +480,7 @@ async function updateOwn(id, actor, patch, expectedRevision) {
   if (!actor.username) throw createError(401, '请先登录');
   const client = await pool.connect();
   try {
-    await client.query('BEGIN');
+    await txControl.begin(client);
     const fb = await store.lockFeedback(client, id);
     if (!canView(fb, actor)) throw notFound();
     if (!canEditOwn(fb, actor)) throw createError(403, '当前阶段不能修改正文，可在回复中补充');
@@ -506,10 +507,10 @@ async function updateOwn(id, actor, patch, expectedRevision) {
       feedbackId: id, actorUsername: actor.username, actorSource: 'user',
       eventType: 'edit', summary: '修改反馈内容', revision: revision,
     });
-    await client.query('COMMIT');
+    await txControl.commit(client);
     return { id: id, revision: revision };
   } catch (e) {
-    await client.query('ROLLBACK').catch(function () {});
+    await txControl.rollback(client).catch(function () {});
     throw e;
   } finally {
     client.release();
@@ -520,7 +521,7 @@ async function withdraw(id, actor, expectedRevision) {
   if (!actor.username) throw createError(401, '请先登录');
   const client = await pool.connect();
   try {
-    await client.query('BEGIN');
+    await txControl.begin(client);
     const fb = await store.lockFeedback(client, id);
     if (!canView(fb, actor)) throw notFound();
     if (fb.authorUsername !== actor.username) throw createError(403, '只有提交人可以撤回');
@@ -531,10 +532,10 @@ async function withdraw(id, actor, expectedRevision) {
       feedbackId: id, actorUsername: actor.username, actorSource: 'user',
       eventType: 'withdraw', summary: '提交人撤回反馈', revision: revision,
     });
-    await client.query('COMMIT');
+    await txControl.commit(client);
     return { id: id, revision: revision };
   } catch (e) {
-    await client.query('ROLLBACK').catch(function () {});
+    await txControl.rollback(client).catch(function () {});
     throw e;
   } finally {
     client.release();
@@ -547,7 +548,7 @@ async function setVisibility(id, actor, visibility, expectedRevision) {
   if (visibility !== 'public' && visibility !== 'private') throw createError(400, '可见范围不合法');
   const client = await pool.connect();
   try {
-    await client.query('BEGIN');
+    await txControl.begin(client);
     const fb = await store.lockFeedback(client, id);
     if (!canView(fb, actor)) throw notFound();
     if (fb.authorUsername !== actor.username) throw createError(403, '只有提交人可以修改可见范围');
@@ -559,10 +560,10 @@ async function setVisibility(id, actor, visibility, expectedRevision) {
       eventType: 'visibility', summary: visibility === 'public' ? '改为公开' : '改为仅本人可见',
       revision: revision,
     });
-    await client.query('COMMIT');
+    await txControl.commit(client);
     return { id: id, revision: revision };
   } catch (e) {
-    await client.query('ROLLBACK').catch(function () {});
+    await txControl.rollback(client).catch(function () {});
     throw e;
   } finally {
     client.release();
@@ -574,7 +575,7 @@ async function completeInfo(id, actor, expectedRevision) {
   if (!actor.username) throw createError(401, '请先登录');
   const client = await pool.connect();
   try {
-    await client.query('BEGIN');
+    await txControl.begin(client);
     const fb = await store.lockFeedback(client, id);
     if (!canView(fb, actor)) throw notFound();
     if (fb.authorUsername !== actor.username) throw createError(403, '只有提交人可以提交补充');
@@ -585,10 +586,10 @@ async function completeInfo(id, actor, expectedRevision) {
       feedbackId: id, actorUsername: actor.username, actorSource: 'user', eventType: 'complete_info',
       statusFrom: 'needs_info', statusTo: 'new', summary: '提交人完成补充', revision: revision,
     });
-    await client.query('COMMIT');
+    await txControl.commit(client);
     return { id: id, revision: revision };
   } catch (e) {
-    await client.query('ROLLBACK').catch(function () {});
+    await txControl.rollback(client).catch(function () {});
     throw e;
   } finally {
     client.release();
@@ -603,14 +604,14 @@ async function addComment(id, actor, content, clientRequestId) {
   const requestHash = hashRequest({ feedbackId: id, content: body });
   const client = await pool.connect();
   try {
-    await client.query('BEGIN');
+    await txControl.begin(client);
     const fb = await store.lockFeedback(client, id);
     if (!canView(fb, actor)) throw notFound();
     if (fb.withdrawnAt) throw createError(400, '该反馈已撤回，不能再回复');
     if (clientRequestId) {
       const dup = await store.findCommentByRequest(client, actor.username, clientRequestId);
       if (dup) {
-        await client.query('ROLLBACK');
+        await txControl.rollback(client);
         if (dup.requestHash !== requestHash) throw createError(409, '该回复标识已用于另一条内容');
         return { id: dup.id, feedbackId: dup.feedbackId, created: false };
       }
@@ -626,10 +627,10 @@ async function addComment(id, actor, content, clientRequestId) {
       feedbackId: id, actorUsername: actor.username, actorSource: actor.canModerate ? 'admin' : 'user',
       eventType: 'comment', summary: '新增回复', revision: revision,
     });
-    await client.query('COMMIT');
+    await txControl.commit(client);
     return { id: created.id, feedbackId: id, created: true, revision: revision };
   } catch (e) {
-    await client.query('ROLLBACK').catch(function () {});
+    await txControl.rollback(client).catch(function () {});
     throw e;
   } finally {
     client.release();
@@ -640,7 +641,7 @@ async function deleteOwnComment(id, commentId, actor) {
   if (!actor.username) throw createError(401, '请先登录');
   const client = await pool.connect();
   try {
-    await client.query('BEGIN');
+    await txControl.begin(client);
     const fb = await store.lockFeedback(client, id);
     if (!canView(fb, actor)) throw notFound();
     const comment = await store.getComment(client, commentId);
@@ -653,10 +654,10 @@ async function deleteOwnComment(id, commentId, actor) {
       feedbackId: id, actorUsername: actor.username, actorSource: 'user', eventType: 'comment_delete',
       summary: '删除回复', revision: revision,
     });
-    await client.query('COMMIT');
+    await txControl.commit(client);
     return { id: id, revision: revision };
   } catch (e) {
-    await client.query('ROLLBACK').catch(function () {});
+    await txControl.rollback(client).catch(function () {});
     throw e;
   } finally {
     client.release();
@@ -668,7 +669,7 @@ async function moderateComment(id, commentId, actor, action, reason) {
   if (['hide', 'restore'].indexOf(action) < 0) throw createError(400, '操作不合法');
   const client = await pool.connect();
   try {
-    await client.query('BEGIN');
+    await txControl.begin(client);
     const fb = await store.lockFeedback(client, id);
     if (!fb) throw notFound();
     const comment = await store.getComment(client, commentId);
@@ -683,10 +684,10 @@ async function moderateComment(id, commentId, actor, action, reason) {
       summary: action === 'hide' ? '隐藏违规回复' : '恢复被隐藏回复',
       note: cleanText(reason, 200), revision: revision,
     });
-    await client.query('COMMIT');
+    await txControl.commit(client);
     return { id: id, revision: revision };
   } catch (e) {
-    await client.query('ROLLBACK').catch(function () {});
+    await txControl.rollback(client).catch(function () {});
     throw e;
   } finally {
     client.release();
@@ -702,7 +703,7 @@ async function addAttachments(id, actor, files, expectedRevision, clientRequestI
   const client = await pool.connect();
   let written = [];
   try {
-    await client.query('BEGIN');
+    await txControl.begin(client);
     const fb = await store.lockFeedback(client, id);
     if (!canView(fb, actor)) throw notFound();
     if (!canEditOwn(fb, actor)) throw createError(403, '当前阶段不能修改截图');
@@ -714,7 +715,7 @@ async function addAttachments(id, actor, files, expectedRevision, clientRequestI
         if (dup) dupRows.push(dup);
       }
       if (dupRows.length) {
-        await client.query('ROLLBACK');
+        await txControl.rollback(client);
         const sameHash = dupRows.every(function (r) { return r.requestHash === requestHash; });
         if (!sameHash) throw createError(409, '该图片请求标识已用于另一批图片');
         return { feedbackId: id, attachmentIds: dupRows.map(function (r) { return r.id; }), created: false };
@@ -741,10 +742,10 @@ async function addAttachments(id, actor, files, expectedRevision, clientRequestI
       feedbackId: id, actorUsername: actor.username, actorSource: 'user', eventType: 'attachment_add',
       summary: '追加截图 ' + encoded.length + ' 张', revision: revision,
     });
-    await client.query('COMMIT');
+    await txControl.commit(client);
     return { feedbackId: id, attachmentIds: ids, created: true, revision: revision };
   } catch (e) {
-    await client.query('ROLLBACK').catch(function () {});
+    await txControl.rollback(client).catch(function () {});
     removeFiles(written);
     throw e;
   } finally {
@@ -756,7 +757,7 @@ async function deleteAttachment(id, attachmentId, actor, expectedRevision) {
   if (!actor.username) throw createError(401, '请先登录');
   const client = await pool.connect();
   try {
-    await client.query('BEGIN');
+    await txControl.begin(client);
     const fb = await store.lockFeedback(client, id);
     if (!canView(fb, actor)) throw notFound();
     if (!canEditOwn(fb, actor)) throw createError(403, '当前阶段不能修改截图');
@@ -769,10 +770,10 @@ async function deleteAttachment(id, attachmentId, actor, expectedRevision) {
       feedbackId: id, actorUsername: actor.username, actorSource: 'user', eventType: 'attachment_remove',
       summary: '移除截图', revision: revision,
     });
-    await client.query('COMMIT');
+    await txControl.commit(client);
     return { id: id, revision: revision };
   } catch (e) {
-    await client.query('ROLLBACK').catch(function () {});
+    await txControl.rollback(client).catch(function () {});
     throw e;
   } finally {
     client.release();
@@ -915,7 +916,7 @@ async function adminUpdate(id, actor, patch) {
   if (!actor.canModerate) throw createError(403, '无权限：需要 content_manage 能力');
   const client = await pool.connect();
   try {
-    await client.query('BEGIN');
+    await txControl.begin(client);
     const fb = await store.lockFeedback(client, id);
     if (!fb) throw notFound();
     assertRevision(fb, patch.expectedRevision);
@@ -955,10 +956,10 @@ async function adminUpdate(id, actor, patch) {
         reason: '处理状态已更新为「' + (STATUS_LABELS[fields.status] || fields.status) + '」',
       });
     }
-    await client.query('COMMIT');
+    await txControl.commit(client);
     return { id: id, revision: revision };
   } catch (e) {
-    await client.query('ROLLBACK').catch(function () {});
+    await txControl.rollback(client).catch(function () {});
     throw e;
   } finally {
     client.release();

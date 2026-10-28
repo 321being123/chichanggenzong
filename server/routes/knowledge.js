@@ -11,6 +11,7 @@ const { requireLogin, optionalLogin, isAdminIdentity } = require('../middleware/
 const rateLimit = require('../middleware/rateLimit');
 const { redis } = require('../config');
 const { safeParseDocx } = require('../services/docxSafe');
+const txControl = require('../repositories/transactionControl');
 
 // 生成公开分享 token（随机 48 位十六进制，唯一）
 function genToken() {
@@ -207,19 +208,19 @@ router.post('/categories/:id/move', requireLogin, requireCategoryOwner, asyncHan
 
   const client = await pool.connect();
   try {
-    await client.query('BEGIN');
+    await txControl.begin(client);
     const current = await client.query(
       'SELECT id, parent_id FROM article_categories WHERE id=$1 AND owner_username=$2 FOR UPDATE',
       [id, req.session.user]
     );
     if (!current.rows[0]) {
-      await client.query('ROLLBACK');
+      await txControl.rollback(client);
       return res.status(404).json({ error: '分类不存在' });
     }
     if (parentId !== null) {
       const parent = await client.query('SELECT id FROM article_categories WHERE id=$1 AND owner_username=$2', [parentId, req.session.user]);
       if (!parent.rows[0]) {
-        await client.query('ROLLBACK');
+        await txControl.rollback(client);
         return res.status(400).json({ error: '目标分类不存在' });
       }
     }
@@ -229,7 +230,7 @@ router.post('/categories/:id/move', requireLogin, requireCategoryOwner, asyncHan
     let cursor = parentId;
     while (cursor !== null) {
       if (cursor === id) {
-        await client.query('ROLLBACK');
+        await txControl.rollback(client);
         return res.status(400).json({ error: '不能移动到自身或自己的子分类下' });
       }
       cursor = parentMap.get(cursor) ?? null;
@@ -248,7 +249,7 @@ router.post('/categories/:id/move', requireLogin, requireCategoryOwner, asyncHan
     if (beforeId !== null) {
       insertAt = targetIds.indexOf(beforeId);
       if (insertAt < 0) {
-        await client.query('ROLLBACK');
+        await txControl.rollback(client);
         return res.status(400).json({ error: '目标排序位置无效' });
       }
     }
@@ -268,11 +269,11 @@ router.post('/categories/:id/move', requireLogin, requireCategoryOwner, asyncHan
         await client.query('UPDATE article_categories SET sort_order=$1 WHERE id=$2', [(i + 1) * 10, old.rows[i].id]);
       }
     }
-    await client.query('COMMIT');
+    await txControl.commit(client);
     await auditLog(req.session.user, 'ks_category_move', id, '移动分类').catch(() => {});
     res.json({ ok: true });
   } catch (e) {
-    await client.query('ROLLBACK').catch(() => {});
+    await txControl.rollback(client).catch(() => {});
     if (/uq_cat_parent_name/.test(e.message || '')) return res.status(400).json({ error: '目标位置已有同名分类' });
     res.status(500).json({ error: '移动分类失败' });
   } finally {
@@ -440,7 +441,7 @@ router.put('/articles/reorder', requireLogin, requireKsWrite, asyncHandler(async
 
   const client = await pool.connect();
   try {
-    await client.query('BEGIN');
+    await txControl.begin(client);
     const rows = await client.query(
       'SELECT id, category_id, author_username FROM articles ORDER BY sort_order, id FOR UPDATE'
     );
@@ -449,12 +450,12 @@ router.put('/articles/reorder', requireLogin, requireKsWrite, asyncHandler(async
       : rows.rows.filter(row => Number(row.category_id) === categoryId);
     const actualIds = scopedRows.map(row => row.id);
     if (actualIds.length !== orderedIds.length || actualIds.some(id => !orderedIds.includes(id))) {
-      await client.query('ROLLBACK');
+      await txControl.rollback(client);
       return res.status(409).json({ error: '文章列表已变化，请刷新后重试' });
     }
     const me = await getUserKsInfo(req.session.user);
     if (!me.isAdmin && scopedRows.some(row => row.author_username !== req.session.user)) {
-      await client.query('ROLLBACK');
+      await txControl.rollback(client);
       return res.status(403).json({ error: '只能排序自己创建的文章' });
     }
     const queue = orderedIds.slice();
@@ -464,11 +465,11 @@ router.put('/articles/reorder', requireLogin, requireKsWrite, asyncHandler(async
     for (let i = 0; i < finalIds.length; i++) {
       await client.query('UPDATE articles SET sort_order=$1 WHERE id=$2', [(i + 1) * 10, finalIds[i]]);
     }
-    await client.query('COMMIT');
+    await txControl.commit(client);
     await auditLog(req.session.user, 'ks_article_reorder', categoryId, '调整分类内文章顺序').catch(() => {});
     res.json({ ok: true });
   } catch (e) {
-    await client.query('ROLLBACK').catch(() => {});
+    await txControl.rollback(client).catch(() => {});
     res.status(500).json({ error: '文章排序失败' });
   } finally {
     client.release();

@@ -43,12 +43,16 @@ const cycle = fs.readFileSync(path.join(root, 'public', 'js', 'bond-cycle.js'), 
 const { readMigrationSource } = require('./helpers/migration-source');
 const migration = readMigrationSource();
 const stockAnalysis = fs.readFileSync(path.join(root, 'server', 'services', 'stockAnalysis.js'), 'utf8')
+  + fs.readFileSync(path.join(root, 'server', 'repositories', 'stockAnalysisRepository.js'), 'utf8')
   // 批次4：采集函数已迁入数据接入层，分页完整性等采集断言需同时覆盖适配器（业务口径未变，只改实现位置）。
   + '\n' + fs.readFileSync(path.join(root, 'server', 'dataAccess', 'adapters', 'announcementSourceAdapter.js'), 'utf8');
-const list = fs.readFileSync(path.join(root, 'server', 'services', 'convertibleBondListService.js'), 'utf8');
+const list = fs.readFileSync(path.join(root, 'server', 'services', 'convertibleBondListService.js'), 'utf8')
+  + fs.readFileSync(path.join(root, 'server', 'repositories', 'convertibleBondListServiceRepository.js'), 'utf8')
+  + fs.readFileSync(path.join(root, 'server', 'repositories', 'convertibleBondListServiceRepository.js'), 'utf8');
 const { readServiceSource } = require('./helpers/service-source');
 const analysis = readServiceSource('convertibleBondAnalysis');
-const valuation = fs.readFileSync(path.join(root, 'server', 'services', 'convertibleBondValuationService.js'), 'utf8');
+const valuation = fs.readFileSync(path.join(root, 'server', 'services', 'convertibleBondValuationService.js'), 'utf8')
+  + fs.readFileSync(path.join(root, 'server', 'repositories', 'convertibleBondValuationServiceRepository.js'), 'utf8');
 const runner = fs.readFileSync(path.join(root, 'server', 'services', 'jobRunners.js'), 'utf8');
 
 assert.ok(html.includes('data-sub="redemption"') && html.includes('id="sub-bond-redemption"'));
@@ -80,10 +84,13 @@ assert.ok(migration.includes('147_convertible_bond_call_announcement_precedence'
   '已公告强赎不能被后续 warning 事件覆盖，提前赎回与到期赎回都必须保持 announced');
 assert.ok(migration.includes('087_convertible_bond_waive_same_day_validity'), '同日公司公告与核查意见必须合并有效期');
 assert.ok(migration.includes('CREATE VIEW public.bond_unified'));
-const redemptionService = fs.readFileSync(path.join(root, 'server', 'services', 'convertibleBondRedemptionService.js'), 'utf8');
-const redemptionSync = fs.readFileSync(path.join(root, 'server', 'services', 'convertibleBondRedemptionSync.js'), 'utf8');
+const redemptionService = fs.readFileSync(path.join(root, 'server', 'services', 'convertibleBondRedemptionService.js'), 'utf8')
+  + fs.readFileSync(path.join(root, 'server', 'repositories', 'convertibleBondRedemptionServiceRepository.js'), 'utf8');
+const redemptionSync = fs.readFileSync(path.join(root, 'server', 'services', 'convertibleBondRedemptionSync.js'), 'utf8')
+  + fs.readFileSync(path.join(root, 'server', 'repositories', 'convertibleBondRedemptionSyncRepository.js'), 'utf8');
 const adminRoutes = fs.readFileSync(path.join(root, 'server', 'routes', 'admin.js'), 'utf8');
-const suspensionSync = fs.readFileSync(path.join(root, 'server', 'services', 'convertibleBondSuspensionSync.js'), 'utf8');
+const suspensionSync = fs.readFileSync(path.join(root, 'server', 'services', 'convertibleBondSuspensionSync.js'), 'utf8')
+  + fs.readFileSync(path.join(root, 'server', 'repositories', 'convertibleBondSuspensionSyncRepository.js'), 'utf8');
 const callEventParser = fs.readFileSync(path.join(root, 'server', 'scripts', 'extractConvertibleBondCallEvent.py'), 'utf8');
 assert.ok(redemptionService.includes('JOIN market.convertible_bond_daily_metrics dm'));
 assert.ok(redemptionService.includes('m.trade_date=(SELECT MAX(trade_date) FROM market.convertible_bond_daily_metrics)'));

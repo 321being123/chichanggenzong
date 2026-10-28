@@ -11,6 +11,7 @@ const {
 } = require('./arbitrageRules');
 const { sanitizeJobError } = require('./jobErrorSanitizer');
 const { enqueueManualJob } = require('./jobScheduleSlots');
+const { getCandidates, getCaseDetail } = require('../repositories/arbitrageServiceRepository.js');
 
 const FORMULA_VERSION = 'v2.0';
 
@@ -378,49 +379,10 @@ function estimateSwapSuccess(caseRow, documents) {
 // ========== 管理后台 ==========
 
 // 待审核候选列表
-async function getCandidates(page = 1, pageSize = 50, status = 'pending') {
-  const offset = (page - 1) * pageSize;
-  const { rows } = await pool.query(`
-    SELECT c.*, i.canonical_code, i.name
-    FROM event.arbitrage_cases c
-    LEFT JOIN core.instruments i ON c.target_instrument_id = i.instrument_id
-    WHERE c.review_status = $1
-    ORDER BY c.created_at DESC
-    LIMIT $2 OFFSET $3
-  `, [status, pageSize, offset]);
-
-  const { rows: countRows } = await pool.query(
-    'SELECT count(*) as total FROM event.arbitrage_cases WHERE review_status=$1', [status]
-  );
-
-  return { rows, total: parseInt(countRows[0].total), page, pageSize };
-}
+/* getCandidates 已迁入 server/repositories/arbitrageServiceRepository.js */
 
 // 管理后台详情
-async function getCaseDetail(caseId) {
-  const { rows } = await pool.query(`
-    SELECT c.*, i.canonical_code, i.name,
-           ri.canonical_code as ref_code, ri.name as ref_name,
-           rwi.canonical_code as rights_code, rwi.name as rights_name
-    FROM event.arbitrage_cases c
-    LEFT JOIN core.instruments i ON c.target_instrument_id = i.instrument_id
-    LEFT JOIN core.instruments ri ON c.reference_instrument_id = ri.instrument_id
-    LEFT JOIN core.instruments rwi ON c.rights_instrument_id = rwi.instrument_id
-    WHERE c.case_id = $1
-  `, [caseId]);
-
-  if (!rows.length) return null;
-
-  const { rows: docs } = await pool.query(`
-    SELECT d.document_id, d.title, d.announced_at, d.url, acd.relation_type
-    FROM event.arbitrage_case_documents acd
-    JOIN event.documents d ON acd.document_id = d.document_id
-    WHERE acd.case_id = $1
-    ORDER BY d.announced_at DESC NULLS LAST
-  `, [caseId]);
-
-  return { ...rows[0], documents: docs };
-}
+/* getCaseDetail 已迁入 server/repositories/arbitrageServiceRepository.js */
 
 // 把管理员输入的证券代码解析为 instrument_id（解析不到则自动建证券）；空值返回 null 以清空关联
 async function resolveCodeToId(code) {

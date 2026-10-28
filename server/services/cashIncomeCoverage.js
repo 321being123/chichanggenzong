@@ -5,12 +5,13 @@ const { resolveInstrument } = require('./securityIdentity');
 const NavMath = require('../../public/shared/nav-math');
 const CoreDate = require('../../public/shared/core-date');
 const classifyCode = require('../../public/js/code-classify');
+const txControl = require('../repositories/transactionControl');
 
 async function auditCashIncomeCoverage(username, accountName, targetDate = CoreDate.todayInZone('Asia/Shanghai')) {
   if (!CoreDate.normalizeBusinessDate(targetDate)) throw new TypeError('无效覆盖审计日期');
   const client = await pool.connect();
   try {
-    await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
+    await txControl.begin(client, { isolation: 'REPEATABLE READ', readOnly: true });
     const account = (await client.query('SELECT id,cash_income_policy,cash_income_state FROM accounts WHERE username=$1 AND account_name=$2', [username,accountName])).rows[0];
     if (!account) throw Object.assign(new Error('账户不存在'), {status:404});
     const input = await loadCashInputs(username, accountName, client);
@@ -50,7 +51,7 @@ async function auditCashIncomeCoverage(username, accountName, targetDate = CoreD
     }
     const included = coverage.filter(r=>r.status !== 'explained_exclusion');
     const cash = NavMath.cashAt(input,targetDate);
-    await client.query('COMMIT');
+    await txControl.commit(client);
     return { accountId:account.id, targetDate, algorithm:'cash-income-coverage-v1', scope:'all_current_and_historical_securities',
       verificationScope:'broker_settlement_evidence', brokerStatementsRequired:false, calculationPolicy:account.cash_income_policy, calculationState:account.cash_income_state,
       cashAnchorDate:anchor?.date || null, cashDataIncomplete:cash.incomplete,
@@ -58,7 +59,7 @@ async function auditCashIncomeCoverage(username, accountName, targetDate = CoreD
         'unverified_available_cny_cash','unverified_repo_settlement_calendar','unverified_fee_timing']},
       summary:{total:coverage.length, denominator:included.length, eligible:included.filter(r=>!r.reasons.length).length, pending:included.filter(r=>r.reasons.length).length,
         excluded:coverage.length-included.length, historicalOnly:coverage.filter(r=>r.historicalOnly).length}, rows:coverage };
-  } catch(e) { await client.query('ROLLBACK'); throw e; }
+  } catch(e) { await txControl.rollback(client); throw e; }
   finally { client.release(); }
 }
 module.exports = { auditCashIncomeCoverage };

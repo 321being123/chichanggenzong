@@ -1,6 +1,7 @@
 const { pool } = require('../db/connection');
 const { tushareQuery, tsRows, tsDateStr } = require('./market');
 const { fetchTencentQuotes } = require('./tencentQuote');
+const { loadFinancialCache, saveFinancialCache } = require('../repositories/bondSafetyTushareRepository.js');
 
 const FINANCIAL_TTL_DAYS = 30;
 // 单批最多 15 家：每家公司并发请求 3 个财务接口，45 次请求低于主、备 Token 的每分钟预算，
@@ -114,26 +115,9 @@ function selectFinancialReport(indicators, balances, incomes, today) {
   };
 }
 
-async function loadFinancialCache() {
-  const { rows } = await pool.query('SELECT ts_code, stock_name, data, fetched_at FROM bond_safety_financial_cache');
-  return new Map(rows.map(row => [row.ts_code, {
-    stock_name: row.stock_name,
-    data: row.data || {},
-    fetched_at: new Date(row.fetched_at).getTime(),
-  }]));
-}
+/* loadFinancialCache 已迁入 server/repositories/bondSafetyTushareRepository.js */
 
-async function saveFinancialCache(tsCode, stockName, data) {
-  await pool.query(
-    `INSERT INTO bond_safety_financial_cache
-       (ts_code, stock_name, report_end_date, announced_at, data)
-     VALUES ($1,$2,$3,$4,$5::jsonb)
-     ON CONFLICT (ts_code) DO UPDATE SET stock_name=EXCLUDED.stock_name,
-       report_end_date=EXCLUDED.report_end_date, announced_at=EXCLUDED.announced_at,
-       data=EXCLUDED.data, fetched_at=now()`,
-    [tsCode, stockName || '', data.report_end_date, data.announced_at, JSON.stringify(data)]
-  );
-}
+/* saveFinancialCache 已迁入 server/repositories/bondSafetyTushareRepository.js */
 
 // 由已缓存的最近报告期推算“增量窗口起点”：只拉取该报告期往前约一年，
 // 覆盖最新一期及其修订，避免缓存过期后重拉全部历史。首次无缓存则返回 null（全量）。

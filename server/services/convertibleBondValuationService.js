@@ -3,6 +3,7 @@ const { pool } = require('../db');
 const { getLatestCycle } = require('./convertibleBondCycleService');
 const { expectedTradeDate } = require('../routes/bondCycle');
 const { getDatasetMetadata } = require('./datasetPartitions');
+const { getActiveModel } = require('../repositories/convertibleBondValuationServiceRepository.js');
 
 const EVAL_ORDER = { '低估': 0, '偏低估': 1, '合理': 2, '偏高估': 3, '高估': 4, '风险折价': 5, '数据不足': 6 };
 
@@ -28,13 +29,7 @@ function isValuationStale(tradeDate, expectedDate, latestMarketDate) {
 }
 
 // ---- 基础：模型版本与最新估值日 ----
-async function getActiveModel() {
-  const { rows } = await pool.query(
-    "SELECT model_version, formula_version, universe_version, neutral_market_extra, residual_quantiles, training_end_date " +
-    "FROM analytics.convertible_bond_valuation_models WHERE is_active=true ORDER BY created_at DESC LIMIT 1"
-  );
-  return rows[0] || null;
-}
+/* getActiveModel 已迁入 server/repositories/convertibleBondValuationServiceRepository.js */
 
 async function getLatestTradeDate() {
   const { rows } = await pool.query(

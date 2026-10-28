@@ -1,6 +1,8 @@
 const { pool } = require('../db/connection');
 const { tushareQuery, tsRows } = require('./market');
 const { publishDatasetPartition } = require('./datasetPartitions');
+const txControl = require('../repositories/transactionControl');
+const { tushareSourceId } = require('../repositories/convertibleBondSuspensionSyncRepository.js');
 
 function compactDate(value) {
   const text = String(value || '').replace(/-/g, '').slice(0, 8);
@@ -42,10 +44,7 @@ function mergeDateRanges(dates, openDates = dates) {
   return ranges;
 }
 
-async function tushareSourceId() {
-  const { rows } = await pool.query("SELECT source_id FROM ops.data_sources WHERE source_code='tushare' LIMIT 1");
-  return rows[0] && rows[0].source_id;
-}
+/* tushareSourceId 已迁入 server/repositories/convertibleBondSuspensionSyncRepository.js */
 
 async function openDaysInRange(startDate, endDate) {
   const { rows } = await pool.query(
@@ -110,7 +109,7 @@ async function syncConvertibleBondSuspensions({ startDate, endDate, targetCodes 
 
   const client = await pool.connect();
   try {
-    await client.query('BEGIN');
+    await txControl.begin(client);
     const result = await client.query(`
       INSERT INTO market.stock_suspend_calendar
         (instrument_id,trade_date,suspend_type,suspend_reason,source_id,raw_payload)
@@ -122,7 +121,7 @@ async function syncConvertibleBondSuspensions({ startDate, endDate, targetCodes 
         suspend_reason=EXCLUDED.suspend_reason,
         raw_payload=EXCLUDED.raw_payload,
         ingested_at=now()`, [JSON.stringify(rows), sourceId]);
-    await client.query('COMMIT');
+    await txControl.commit(client);
     return {
       ok: true,
       status: 'succeeded',
@@ -134,7 +133,7 @@ async function syncConvertibleBondSuspensions({ startDate, endDate, targetCodes 
       sourceId,
     };
   } catch (error) {
-    await client.query('ROLLBACK');
+    await txControl.rollback(client);
     throw error;
   } finally {
     client.release();

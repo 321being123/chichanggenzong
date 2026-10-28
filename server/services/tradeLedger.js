@@ -20,6 +20,8 @@ const { todayCN, fetchQuotesByCodes } = require('../services/market');
 const CoreDate = require('../../public/shared/core-date.js');
 const classifyCode = require('../../public/js/code-classify');
 const { resolveAmbiguousSecurity } = require('./securityIdentity');
+const txControl = require('../repositories/transactionControl');
+const { heldQuantity } = require('../repositories/tradeLedgerRepository.js');
 
 // 业务错误（带 status，路由按 400/409 返回）
 function bizError(msg, status = 400) {
@@ -75,14 +77,7 @@ function validateTrade(t) {
 }
 
 // 读取当前持仓数量（按 code 聚合，含多 id 同一 code 的情况）
-async function heldQuantity(client, username, accountName, code) {
-  const { rows } = await client.query(
-    `SELECT COALESCE(SUM(quantity), 0) AS qty FROM positions
-      WHERE username=$1 AND account_name=$2 AND code=$3`,
-    [username, accountName, code]
-  );
-  return Number(rows[0] ? rows[0].qty : 0);
-}
+/* heldQuantity 已迁入 server/repositories/tradeLedgerRepository.js */
 
 // 移动加权成本重算：按时间顺序重放该证券全部事件（buy/open 累加数量与成本；sell/adjust 增减数量）
 // 返回 { quantity, cost }（cost=移动加权单位成本；无持仓时 cost 保留最后买入价）
@@ -215,7 +210,7 @@ async function applyTrade(username, accountName, trade, externalClient = null, e
   const client = externalClient || await pool.connect();
   const ownTxn = !externalClient;
   try {
-    if (ownTxn) await client.query('BEGIN');
+    if (ownTxn) await txControl.begin(client);
     // 幂等预检（2026-08-04）：event.id 已存在 → 直接返回成功，不校验版本。
     // 放在版本校验之前：双击/网络重试的第二个请求携带同一 id 与同一旧版本号，
     // 若先校验版本会因第一个请求已 +1 而 409，与"幂等不新增"的语义矛盾。
@@ -225,7 +220,7 @@ async function applyTrade(username, accountName, trade, externalClient = null, e
         [t.id, username, accountName]
       );
       if (idDup.rows[0]) {
-        if (ownTxn) await client.query('COMMIT');
+        if (ownTxn) await txControl.commit(client);
         return { ok: true, id: t.id, code: t.code, skipped: 'duplicate', cash: null, tradeDate: tradeDate };
       }
     }
@@ -280,7 +275,7 @@ async function applyTrade(username, accountName, trade, externalClient = null, e
         [username, accountName, t.import_batch_id, t.code, tradeDate, t.direction, price, quantity]
       );
       if (dup.rows[0]) {
-        if (ownTxn) await client.query('COMMIT');
+        if (ownTxn) await txControl.commit(client);
         return { ok: true, id: dup.rows[0].id, code: t.code, skipped: 'duplicate', cash: null, tradeDate: tradeDate };
       }
     }
@@ -372,10 +367,10 @@ async function applyTrade(username, accountName, trade, externalClient = null, e
       [username, accountName]
     );
     const cash = await recomputeCash(client, username, accountName);
-    if (ownTxn) await client.query('COMMIT');
+    if (ownTxn) await txControl.commit(client);
     return { ok: true, id: tradeId, code: t.code, cash: cash, tradeDate: tradeDate };
   } catch (e) {
-    if (ownTxn) await client.query('ROLLBACK');
+    if (ownTxn) await txControl.rollback(client);
     throw e;
   } finally {
     if (ownTxn) client.release();
@@ -404,7 +399,7 @@ async function refreshPositionPrices(username, accountName, codes, options = {})
   const unavailable = [];
   const client = await pool.connect();
   try {
-    await client.query('BEGIN');
+    await txControl.begin(client);
     for (const code of uniqueCodes) {
       const quote = quotes && (quotes[code] || quotes[String(code).toUpperCase()]);
       const price = Number(quote && quote.price);
@@ -430,10 +425,10 @@ async function refreshPositionPrices(username, accountName, codes, options = {})
         [username, accountName]
       );
     }
-    await client.query('COMMIT');
+    await txControl.commit(client);
     return { ok: true, refreshed, unavailable };
   } catch (e) {
-    await client.query('ROLLBACK').catch(() => {});
+    await txControl.rollback(client).catch(() => {});
     console.warn('[ledger] 交易已保存，但行情价格落库失败:', e.message);
     return { ok: false, refreshed: [], unavailable: uniqueCodes, error: '行情刷新失败' };
   } finally {
@@ -450,17 +445,17 @@ async function applyTradesBatch(username, accountName, events, expectedVersion =
   const ids = [];
   const codes = [];
   try {
-    await client.query('BEGIN');
+    await txControl.begin(client);
     await checkVersionInTxn(client, username, accountName, expectedVersion);
     for (const event of events) {
       const r = await applyTrade(username, accountName, event, client);
       ids.push(r.id);
       if (r.code) codes.push(r.code);
     }
-    await client.query('COMMIT');
+    await txControl.commit(client);
     return { ok: true, ids, codes: [...new Set(codes)], added: ids.length };
   } catch (e) {
-    await client.query('ROLLBACK');
+    await txControl.rollback(client);
     throw e;
   } finally {
     client.release();
@@ -475,7 +470,7 @@ async function applyTradesBatch(username, accountName, events, expectedVersion =
 async function deleteTrade(username, accountName, tradeId, expectedVersion = null) {
   const client = await pool.connect();
   try {
-    await client.query('BEGIN');
+    await txControl.begin(client);
     await checkVersionInTxn(client, username, accountName, expectedVersion);
     // 账户级并发锁（与 applyTrade 同锁，防删除与新增并发交错）
     await client.query(`SELECT id FROM accounts WHERE username=$1 AND account_name=$2 FOR UPDATE`, [username, accountName]);
@@ -513,10 +508,10 @@ async function deleteTrade(username, accountName, tradeId, expectedVersion = nul
       [username, accountName]
     );
     const cash = await recomputeCash(client, username, accountName);
-    await client.query('COMMIT');
+    await txControl.commit(client);
     return { ok: true, cash: cash, fromDate: fromDate };
   } catch (e) {
-    await client.query('ROLLBACK');
+    await txControl.rollback(client);
     throw e;
   } finally {
     client.release();
@@ -534,7 +529,7 @@ async function clearTrades(username, accountName) {
 async function deleteCashFlow(username, accountName, flowId, expectedVersion = null) {
   const client = await pool.connect();
   try {
-    await client.query('BEGIN');
+    await txControl.begin(client);
     await checkVersionInTxn(client, username, accountName, expectedVersion);
     // 读取被删现金流原日期（验收修复：历史净值须从该日期起重算，而非仅今天）
     const del = await client.query(
@@ -551,10 +546,10 @@ async function deleteCashFlow(username, accountName, flowId, expectedVersion = n
       [username, accountName]
     );
     const cash = await recomputeCash(client, username, accountName);
-    await client.query('COMMIT');
+    await txControl.commit(client);
     return { ok: true, cash: cash, fromDate: fromDate };
   } catch (e) {
-    await client.query('ROLLBACK');
+    await txControl.rollback(client);
     throw e;
   } finally {
     client.release();
@@ -578,7 +573,7 @@ async function addCashFlow(username, accountName, cf, expectedVersion = null) {
   if (!date) throw bizError('日期格式错误');
   const client = await pool.connect();
   try {
-    await client.query('BEGIN');
+    await txControl.begin(client);
     // 幂等预检（2026-08-04）：同一 cf.id 已存在 → 直接返回成功，不校验版本
     // （双击/网络重试的第二个请求带同一 id 与同一旧版本号，若先校验版本会 409）
     if (cf.id) {
@@ -588,7 +583,7 @@ async function addCashFlow(username, accountName, cf, expectedVersion = null) {
       );
       if (idDup.rows[0]) {
         if (idDup.rows[0].origin !== 'manual') throw bizError('不能覆盖自动或导入流水', 409);
-        await client.query('COMMIT');
+        await txControl.commit(client);
         const result = await loadLedgerResult(username, accountName);
         return { ok: true, id: cf.id, cash: null, data: result, skipped: 'duplicate' };
       }
@@ -609,7 +604,7 @@ async function addCashFlow(username, accountName, cf, expectedVersion = null) {
     );
     if (ins.rowCount === 0) {
       // 幂等命中：同一 id 已存在，不重复新增
-      await client.query('COMMIT');
+      await txControl.commit(client);
       const result = await loadLedgerResult(username, accountName);
       return { ok: true, id: flowId, cash: null, data: result, skipped: 'duplicate' };
     }
@@ -620,11 +615,11 @@ async function addCashFlow(username, accountName, cf, expectedVersion = null) {
       [username, accountName]
     );
     const cash = await recomputeCash(client, username, accountName);
-    await client.query('COMMIT');
+    await txControl.commit(client);
     const result = await loadLedgerResult(username, accountName);
     return { ok: true, id: flowId, cash, data: result };
   } catch (e) {
-    await client.query('ROLLBACK');
+    await txControl.rollback(client);
     throw e;
   } finally {
     client.release();

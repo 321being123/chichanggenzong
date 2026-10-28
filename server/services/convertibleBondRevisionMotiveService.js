@@ -3,6 +3,8 @@
 const crypto = require('crypto');
 const { pool } = require('../db');
 const { tushareQuery, tsRows } = require('./market');
+const txControl = require('../repositories/transactionControl');
+const { saveRevisionCycles, saveSyncCursor, saveSyncRawPayload } = require('../repositories/convertibleBondRevisionMotiveServiceRepository.js');
 
 // 评分规则移除无效的“剩余规模低于发行规模”和跨债种市场热度加分，必须升级模型版本，避免旧快照混入新规则。
 const MOTIVE_MODEL_VERSION = 'motive-v1.1';
@@ -401,23 +403,7 @@ function buildRevisionCycles(events, noRevisionRows = [], triggerRows = []) {
   return cycles.map((row, index) => { const { last_observation_date, ...clean } = row; return { ...clean, cycle_no: index + 1 }; });
 }
 
-async function saveRevisionCycles(client, instrumentId, cycles, termId) {
-  await client.query('DELETE FROM analytics.convertible_bond_revision_cycles WHERE instrument_id=$1 AND cycle_version=$2', [instrumentId, CYCLE_VERSION]);
-  for (const row of cycles || []) {
-    await client.query(
-      `INSERT INTO analytics.convertible_bond_revision_cycles
-       (instrument_id,cycle_no,cycle_start_date,first_match_date,trigger_date,proposal_date,decision_date,cycle_end_date,implementation_date,outcome,short_label,proposal_type,no_revision,lock_until,term_id,cycle_version,evidence)
-       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17::jsonb)
-       ON CONFLICT(instrument_id,cycle_no,cycle_version) DO UPDATE SET cycle_start_date=EXCLUDED.cycle_start_date,
-         first_match_date=EXCLUDED.first_match_date,trigger_date=EXCLUDED.trigger_date,proposal_date=EXCLUDED.proposal_date,decision_date=EXCLUDED.decision_date,
-         cycle_end_date=EXCLUDED.cycle_end_date,implementation_date=EXCLUDED.implementation_date,outcome=EXCLUDED.outcome,short_label=EXCLUDED.short_label,
-         proposal_type=EXCLUDED.proposal_type,no_revision=EXCLUDED.no_revision,lock_until=EXCLUDED.lock_until,term_id=EXCLUDED.term_id,evidence=EXCLUDED.evidence,calculated_at=now()` ,
-      [instrumentId, row.cycle_no, row.cycle_start_date, row.first_match_date, row.trigger_date, row.proposal_date, row.decision_date, row.cycle_end_date,
-        row.implementation_date, row.outcome, row.short_label, row.proposal_type, row.no_revision, row.lock_until, termId, CYCLE_VERSION, JSON.stringify(row.evidence)]
-    );
-  }
-  return cycles.length;
-}
+/* saveRevisionCycles 已迁入 server/repositories/convertibleBondRevisionMotiveServiceRepository.js */
 
 function scoreHistory(input) {
   const cutoff = input.tradeDate ? new Date(`${input.tradeDate}T00:00:00Z`).getTime() - 730 * 86400000 : null;
@@ -930,12 +916,12 @@ async function calculateConvertibleBondRevisionMotiveScores(tradeDate) {
   const client = await pool.connect();
   for (const row of rows) {
     try {
-      await client.query('BEGIN');
+      await txControl.begin(client);
       const result = await calculateBondRevisionMotive(row.ts_code, targetDate, client);
-      await client.query('COMMIT');
+      await txControl.commit(client);
       if (result) results.push(result);
     } catch (error) {
-      try { await client.query('ROLLBACK'); } catch (_) {}
+      try { await txControl.rollback(client); } catch (_) {}
       failures.push({ tsCode: row.ts_code, error: String(error.message || error).slice(0, 300) });
     }
   }
@@ -988,34 +974,9 @@ async function getBondRevisionMotiveDetail({ tsCode, tradeDate = null }) {
   };
 }
 
-async function saveSyncRawPayload(client, sourceId, datasetCode, sourceKey, businessDate, rows) {
-  if (!sourceId || !Array.isArray(rows) || !rows.length) return null;
-  const payload = JSON.stringify({ business_date: businessDate, rows });
-  const payloadHash = crypto.createHash('sha256').update(payload).digest('hex');
-  const { rows: saved } = await client.query(
-    `INSERT INTO ops.raw_records(source_id,dataset_code,source_key,source_updated_at,payload,payload_hash)
-     VALUES($1,$2,$3,$4::date,$5::jsonb,$6)
-     ON CONFLICT(source_id,dataset_code,source_key,payload_hash) DO NOTHING
-     RETURNING raw_record_id`,
-    [sourceId, datasetCode, sourceKey, businessDate, payload, payloadHash]
-  );
-  return saved[0] && saved[0].raw_record_id || null;
-}
+/* saveSyncRawPayload 已迁入 server/repositories/convertibleBondRevisionMotiveServiceRepository.js */
 
-async function saveSyncCursor(client, { instrumentId = null, companyId = null, scopeKey, datasetCode, successDate = null, error = '' }) {
-  await client.query(
-    `INSERT INTO ops.sync_cursors(instrument_id,company_id,scope_key,dataset_code,last_success_date,last_attempt_at,last_error,retry_count,updated_at)
-     VALUES($1,$2,$3,$4,$5::date,now(),$6,CASE WHEN $6='' THEN 0 ELSE 1 END,now())
-     ON CONFLICT(scope_key,dataset_code) DO UPDATE SET
-       instrument_id=COALESCE(EXCLUDED.instrument_id,ops.sync_cursors.instrument_id),
-       company_id=COALESCE(EXCLUDED.company_id,ops.sync_cursors.company_id),
-       last_success_date=CASE WHEN EXCLUDED.last_success_date IS NULL THEN ops.sync_cursors.last_success_date
-                              ELSE GREATEST(COALESCE(ops.sync_cursors.last_success_date,'1900-01-01'::date),EXCLUDED.last_success_date) END,
-       last_attempt_at=now(),last_error=EXCLUDED.last_error,
-       retry_count=CASE WHEN EXCLUDED.last_error='' THEN 0 ELSE ops.sync_cursors.retry_count+1 END,updated_at=now()`,
-    [instrumentId, companyId, scopeKey, datasetCode, successDate, error]
-  );
-}
+/* saveSyncCursor 已迁入 server/repositories/convertibleBondRevisionMotiveServiceRepository.js */
 
 async function syncRevisionMotiveInputs({ businessDate = null, limit = null } = {}) {
   const date = dateText(businessDate) || dateText(new Date());
@@ -1179,7 +1140,7 @@ async function syncRevisionMotiveInputs({ businessDate = null, limit = null } = 
 
     const client = await pool.connect();
     try {
-      await client.query('BEGIN');
+      await txControl.begin(client);
       if (holderRows.length) {
         await saveSyncRawPayload(client, sourceMap.tushare, 'top10_cb_holders', `${bond.ts_code}:${date}`, date, holderRows);
         holderCount += await saveConvertibleBondHolderPositions(client, bond.instrument_id, holderRows, sourceMap.tushare, relatedNames);
@@ -1202,9 +1163,9 @@ async function syncRevisionMotiveInputs({ businessDate = null, limit = null } = 
       } else if (bond.company_id && pledgeAttempted && pledgeError) {
         await saveSyncCursor(client, { companyId: bond.company_id, scopeKey: `company:${bond.company_id}`, datasetCode: 'pledge_stat', error: errorText(pledgeError) });
       }
-      await client.query('COMMIT');
+      await txControl.commit(client);
     } catch (error) {
-      try { await client.query('ROLLBACK'); } catch (_) {}
+      try { await txControl.rollback(client); } catch (_) {}
       failures.push({ tsCode: bond.ts_code, dataset: 'persistence', error: errorText(error) });
     } finally { client.release(); }
   }

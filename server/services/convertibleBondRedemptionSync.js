@@ -5,6 +5,8 @@ const { execFile } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const { childProcessEnv, mergeExternalCallStatsFromStderr } = require('./externalCallGuard');
+const txControl = require('../repositories/transactionControl');
+const { loadDocumentCache, reconcileCallQuality, recordCallQuality, resolveCallQuality } = require('../repositories/convertibleBondRedemptionSyncRepository.js');
 
 const SOURCE_CODE = 'convertible_bond_redemption_announcements';
 const DATASET_CODE = 'bond_redemption_events';
@@ -131,16 +133,7 @@ function parseQualityRank(value) {
   return { failed: 0, partial: 1, complete: 2 }[String(value || '')] ?? 0;
 }
 
-async function loadDocumentCache(urls) {
-  if (!urls.length) return new Map();
-  const { rows } = await pool.query(
-    `SELECT DISTINCT ON (url) document_id,url,content_hash,raw_payload
-       FROM event.documents
-      WHERE document_type='convertible_bond_call_announcement' AND url=ANY($1::text[])
-      ORDER BY url,created_at DESC,document_id DESC`, [urls]
-  );
-  return new Map(rows.map(row => [row.url, row]));
-}
+/* loadDocumentCache 已迁入 server/repositories/convertibleBondRedemptionSyncRepository.js */
 
 async function parseOfficialDocuments(items, maxUrls = null, { cachedOnly = false } = {}) {
   const uniqueUrls = [...new Set((items || []).map(item => item.fileLink).filter(Boolean))];
@@ -271,96 +264,11 @@ async function saveDocument(client, item, parsed, sourceId, rawRecordId) {
   return rows[0] && rows[0].document_id;
 }
 
-async function recordCallQuality(client, item, instrumentId, issueType, details, severity = 'warning') {
-  if (instrumentId) {
-    await client.query(
-      `INSERT INTO ops.data_quality_issues(instrument_id,dataset_code,field_code,issue_type,severity,details)
-       VALUES($1,$2,'announcement',$3,$4,$5::jsonb)
-       ON CONFLICT(instrument_id,dataset_code,field_code,issue_type,status)
-       DO UPDATE SET severity=EXCLUDED.severity,details=EXCLUDED.details,detected_at=now(),resolved_at=NULL`,
-      [instrumentId, DATASET_CODE, issueType, severity, JSON.stringify({ source_key: item.sourceKey, ...(details || {}) })]
-    );
-    return;
-  }
-  const payload = JSON.stringify({ source_key: item.sourceKey, ...(details || {}) });
-  const existing = await client.query(
-    `SELECT issue_id FROM ops.data_quality_issues
-      WHERE instrument_id IS NULL AND dataset_code=$1 AND field_code='announcement' AND issue_type=$2
-        AND status='open' AND details->>'source_key'=$3 LIMIT 1`, [DATASET_CODE, issueType, item.sourceKey]
-  );
-  if (existing.rows[0]) {
-    await client.query(`UPDATE ops.data_quality_issues SET severity=$2,details=$3::jsonb,detected_at=now() WHERE issue_id=$1`,
-      [existing.rows[0].issue_id, severity, payload]);
-  } else {
-    await client.query(
-      `INSERT INTO ops.data_quality_issues(instrument_id,dataset_code,field_code,issue_type,severity,details)
-       VALUES(NULL,$1,'announcement',$2,$3,$4::jsonb)`, [DATASET_CODE, issueType, severity, payload]
-    );
-  }
-}
+/* recordCallQuality 已迁入 server/repositories/convertibleBondRedemptionSyncRepository.js */
 
-async function resolveCallQuality(client, item, instrumentId, issueType) {
-  const scopes = [];
-  if (instrumentId) scopes.push({
-    where: `instrument_id=$1 AND dataset_code=$2 AND field_code='announcement' AND issue_type=$3`,
-    params: [instrumentId, DATASET_CODE, issueType],
-  });
-  scopes.push({
-    where: `instrument_id IS NULL AND dataset_code=$1 AND field_code='announcement' AND issue_type=$2 AND details->>'source_key'=$3`,
-    params: [DATASET_CODE, issueType, item.sourceKey],
-  });
-  for (const scope of scopes) {
-    const openRows = await client.query(
-      `SELECT issue_id FROM ops.data_quality_issues WHERE ${scope.where} AND status='open' ORDER BY issue_id`, scope.params
-    );
-    if (!openRows.rows.length) continue;
-    const resolved = await client.query(
-      `SELECT issue_id FROM ops.data_quality_issues WHERE ${scope.where} AND status='resolved' LIMIT 1`, scope.params
-    );
-    if (resolved.rows.length) {
-      await client.query('DELETE FROM ops.data_quality_issues WHERE issue_id=ANY($1::bigint[])', [openRows.rows.map(row => row.issue_id)]);
-    } else {
-      await client.query(
-        `UPDATE ops.data_quality_issues SET status='resolved',resolved_at=now() WHERE issue_id=ANY($1::bigint[])`,
-        [openRows.rows.map(row => row.issue_id)]
-      );
-    }
-  }
-}
+/* resolveCallQuality 已迁入 server/repositories/convertibleBondRedemptionSyncRepository.js */
 
-async function reconcileCallQuality(client) {
-  await client.query(
-    `DELETE FROM ops.data_quality_issues q
-      WHERE q.dataset_code=$1 AND q.field_code='announcement' AND q.issue_type='unmatched_security' AND q.status='open'
-        AND EXISTS (
-          SELECT 1 FROM ops.data_quality_issues resolved
-           WHERE resolved.dataset_code=q.dataset_code AND resolved.field_code=q.field_code
-             AND resolved.issue_type=q.issue_type AND resolved.status='resolved'
-             AND resolved.instrument_id IS NULL AND resolved.details->>'source_key'=q.details->>'source_key'
-        )`, [DATASET_CODE]
-  );
-  await client.query(
-    `UPDATE ops.data_quality_issues q SET status='resolved',resolved_at=now()
-      WHERE q.dataset_code=$1 AND q.field_code='announcement' AND q.issue_type='unmatched_security' AND q.status='open'
-        AND EXISTS (
-          SELECT 1 FROM event.convertible_bond_call_events e
-           WHERE e.instrument_id IS NOT NULL
-             AND (e.source_key=q.details->>'source_key' OR e.source_url=q.details->>'source_key')
-        )`, [DATASET_CODE]
-  );
-  await client.query(
-    `UPDATE ops.data_quality_issues q SET status='resolved',resolved_at=now()
-      WHERE q.dataset_code=$1 AND q.field_code='announcement' AND q.issue_type='document_cache_miss' AND q.status='open'
-        AND EXISTS (
-          SELECT 1
-            FROM event.convertible_bond_call_events e
-            JOIN event.documents d ON d.document_id=e.document_id
-           WHERE (e.source_key=q.details->>'source_key' OR e.source_url=q.details->>'source_key')
-             AND d.document_type='convertible_bond_call_announcement'
-             AND d.raw_payload->'extraction'->>'status'='complete'
-        )`, [DATASET_CODE]
-  );
-}
+/* reconcileCallQuality 已迁入 server/repositories/convertibleBondRedemptionSyncRepository.js */
 
 async function syncConvertibleBondCallAnnouncements({ fromDate, toDate, exchanges = ['sse', 'szse'], stock = '', keywords = null,
   officialEvents = null, cachedOnly = false, retryFailed = false, limit = null } = {}) {
@@ -445,7 +353,7 @@ async function syncConvertibleBondCallAnnouncements({ fromDate, toDate, exchange
   const client = await pool.connect();
   let runId = null;
   try {
-    await client.query('BEGIN');
+    await txControl.begin(client);
     const run = await client.query(
       `INSERT INTO ops.ingestion_runs(source_id,dataset_code,request_range,status)
        VALUES($1,$2,$3::jsonb,'running') RETURNING run_id`,
@@ -630,7 +538,7 @@ async function syncConvertibleBondCallAnnouncements({ fromDate, toDate, exchange
     }
     const runStatus = projectionComplete ? 'succeeded' : qualityStatus === 'stale' ? 'degraded' : 'failed';
     await client.query(`UPDATE ops.ingestion_runs SET status=$2,row_count=$3,finished_at=now() WHERE run_id=$1`, [runId, runStatus, stats.matched]);
-    await client.query('COMMIT');
+    await txControl.commit(client);
     return { ok: projectionComplete, status: runStatus, fromDate: start, toDate: end, runId, ...stats,
       diagnostics: { quality_status: qualityStatus, parser_version: PARSER_VERSION, projection_scope: PROJECTION_SCOPE,
         parser_compatible_versions: PARSER_COMPATIBLE_VERSIONS,
@@ -638,7 +546,7 @@ async function syncConvertibleBondCallAnnouncements({ fromDate, toDate, exchange
         compatible_parser_events: Number(stats.compatible_parser_events || 0),
         projection_advanced: projectionComplete, projection_last_success_date: projectionComplete ? end : null } };
   } catch (error) {
-    await client.query('ROLLBACK');
+    await txControl.rollback(client);
     if (runId) await pool.query(`UPDATE ops.ingestion_runs SET status='failed',error_message=$2,finished_at=now() WHERE run_id=$1`, [runId, String(error.message || error).slice(0, 1000)]).catch(() => {});
     throw error;
   } finally { client.release(); }

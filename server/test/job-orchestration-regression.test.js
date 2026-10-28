@@ -6,11 +6,11 @@ const root = path.resolve(__dirname, '..', '..');
 const read = file => fs.readFileSync(path.join(root, file), 'utf8');
 
 const adminRoute = read('server/routes/admin.js');
-const slots = read('server/services/jobScheduleSlots.js');
-const orchestrator = read('server/services/jobOrchestrator.js');
+const slots = read('server/services/jobScheduleSlots.js') + read('server/repositories/jobScheduleSlotsRepository.js');
+const orchestrator = read('server/services/jobOrchestrator.js') + read('server/repositories/jobOrchestratorRepository.js');
 const jobRunners = read('server/services/jobRunners.js');
 const scheduler = read('server/scheduler.js');
-const alertMailer = read('server/services/jobAlertMailer.js');
+const alertMailer = read('server/services/jobAlertMailer.js') + read('server/repositories/jobAlertMailerRepository.js');
 const testRunner = read('server/test/run-all.js');
 const health = read('server/scripts/checkWorkerHealth.js');
 const adminUi = read('public/js/admin.js');
@@ -23,9 +23,10 @@ const migrations = require('./helpers/migration-source').readMigrationSource();
 const marketClose = read('server/jobs/marketClose.js');
 const arbitrageJob = read('server/jobs/arbitrageSync.js');
 const arbitrageReparse = read('server/jobs/arbitrageReparse.js');
-const arbitrageSync = read('server/services/arbitrageAnnouncementSync.js');
-const arbitrageParser = read('server/services/arbitrageParser.js');
-const arbitrageService = read('server/services/arbitrageService.js');
+const arbitrageSync = read('server/services/arbitrageAnnouncementSync.js') + read('server/repositories/arbitrageAnnouncementSyncRepository.js');
+const alertMailerSql = read('server/repositories/jobAlertMailerRepository.js');
+const arbitrageParser = read('server/services/arbitrageParser.js') + read('server/repositories/arbitrageParserRepository.js');
+const arbitrageService = read('server/services/arbitrageService.js') + read('server/repositories/arbitrageServiceRepository.js');
 const sourceEndpointPolicy = read('server/services/sourceEndpointPolicy.js');
 const cninfoAnnouncement = read('server/services/cninfoAnnouncement.js');
 const pythonExternalGuard = read('ipo-report/external_call_guard.py');
@@ -52,12 +53,12 @@ assert(/(window\.confirm|projectConfirm)/.test(adminUi) && /访问数据源/.tes
 assert(/item\.label\.includes\(keyword\)/.test(slots), '关键词必须支持中文任务名称');
 assert(!/渚濊禆|鍚庡彴|璁″垝/.test(slots), '任务告警内容不得包含乱码');
 
-assert(/MAX_DELIVERY_ATTEMPTS = DELIVERY_RETRY_MINUTES\.length \+ 1/.test(alertMailer), '邮件发送失败后必须完整执行 1、5、15 分钟三次重试');
+assert(/MAX_DELIVERY_ATTEMPTS = DELIVERY_RETRY_MINUTES\.length \+ 1/.test(alertMailer + alertMailerSql), '邮件发送失败后必须完整执行 1、5、15 分钟三次重试');
 const nonProductionAlertGuards = alertMailer.match(/if \(!productionAlertsEnabled\(\)\)/g) || [];
-assert(/function productionAlertsEnabled\(\)/.test(alertMailer) && /process\.env\.NODE_ENV === 'production'/.test(alertMailer)
-  && nonProductionAlertGuards.length >= 6 && /status='suppressed'/.test(alertMailer), '所有非生产任务告警入口和最终邮件出口都必须强制抑制');
+assert(/function productionAlertsEnabled\(\)/.test(alertMailer + alertMailerSql) && /process\.env\.NODE_ENV === 'production'/.test(alertMailer + alertMailerSql)
+  && nonProductionAlertGuards.length >= 6 && /status='suppressed'/.test(alertMailer + alertMailerSql), '所有非生产任务告警入口和最终邮件出口都必须强制抑制');
 assert(/NODE_ENV: 'test'/.test(testRunner) && /ALERT_EMAIL_TO: ''/.test(testRunner), '完整测试入口必须清空真实告警收件人');
-assert(!/\['worker_offline', 'late', 'dependency_blocked'\]\.includes\(input\.alertType\)/.test(alertMailer), '持续异常不得绕过去重周期重复发信');
+assert(!/\['worker_offline', 'late', 'dependency_blocked'\]\.includes\(input\.alertType\)/.test(alertMailer + alertMailerSql), '持续异常不得绕过去重周期重复发信');
 assert(!/force:\s*true/.test(health), '健康检查不得强制重复发送逾期告警');
 assert(/attempt_count \|\| 0\) === 2/.test(orchestrator) && /retry-warning/.test(orchestrator), '任务连续第二次失败必须发送预警');
 assert(/code === 'JOB_BUDGET_EXCEEDED' \|\| type === 'non_retryable'/.test(orchestrator), '任务批次预算边界不得进入自动重试');
@@ -83,7 +84,7 @@ assert(/jobCode: 'convertible_bond_valuation_refresh'[\s\S]*dataDatePolicy: 'pre
 assert(/expectedDataDate\('convertible_bond_universe_refresh', businessDate\)/.test(jobRunners)
   && /targetTradeDate/.test(jobRunners), '可转债行情 Runner 必须把计划业务日期转换为目标交易日并传入主同步');
 assert(!/notifyJobFailure/.test(jobsDb), '底层 job_runs 完成记录不得绕过统一执行器直接发送首次失败告警');
-assert(/claimAlertDelivery/.test(alertMailer) && /status='sending'/.test(alertMailer), '邮件投递必须先原子领取，避免重复发送');
+assert(/claimAlertDelivery/.test(alertMailer + alertMailerSql) && /status='sending'/.test(alertMailer + alertMailerSql), '邮件投递必须先原子领取，避免重复发送');
 assert(/connectionTimeout: 10 \* 1000/.test(config) && /greetingTimeout: 10 \* 1000/.test(config) && /socketTimeout: 10 \* 1000/.test(config), 'SMTP 必须配置 10 秒超时');
 assert(/activeControllers\.forEach\(controller => controller\.abort\(\)/.test(orchestrator) && /stopWaiters/.test(orchestrator), 'Worker 停机必须先等待再中止超时任务');
 assert(/WORKER_DRAIN_TIMEOUT_MS/.test(read('server/worker.js')) && /TimeoutStopSec=50min/.test(read('deploy/portfolio-worker.service')), 'Worker 停机必须使用可配置排空窗口并由服务保留足够退出时间');
@@ -99,12 +100,13 @@ assert(/probe_owner/.test(migrations) && /probe_token/.test(read('server/service
 assert(/arbitrage_sync: `SELECT LEAST/.test(slots) && /convertible_bond_announcement_history_sync:/.test(slots), '多来源任务的数据水位必须按最慢来源核验');
 assert(/normalizeCursorDate\(cursor\.last_success_date\)/.test(arbitrageSync), '公告增量同步必须把 PostgreSQL 日期游标按上海自然日归一化');
 assert(/recoverAt: err\.recoverAt \|\| null/.test(arbitrageSync) && /recoverAt: failure\.recoverAt/.test(arbitrageJob), '公告同步来源限速的恢复时间必须传递到统一等待队列');
-assert(/last_success_date = GREATEST\([\s\S]*ops\.sync_cursors\.last_success_date[\s\S]*EXCLUDED\.last_success_date/.test(arbitrageSync), '公告来源失败时不得把已有成功游标回退到重叠窗口起点');
+assert(/last_success_date = GREATEST\([\s\S]*ops\.sync_cursors\.last_success_date[\s\S]*EXCLUDED\.last_success_date/.test(read('server/repositories/arbitrageAnnouncementSyncRepository.js'))
+  && /upsertCursor/.test(arbitrageSync), '公告来源失败时不得把已有成功游标回退到重叠窗口起点');
 assert(/migration063AlertSendingStatus/.test(migrations), '数据库必须支持告警投递中状态');
 assert(/migration070RemoveDuplicateLegacyPriceDates/.test(migrations) && /DELETE FROM daily_prices/.test(migrations), '收盘价日期归一后必须清理已存在标准日期对应的旧格式重复行');
 assert(/job_alert_resend/.test(adminRoute) && /result: 'failure'/.test(adminRoute), '邮件重发失败必须写入管理员审计');
 assert(/router\.get\('\/jobs\/alerts'/.test(adminRoute) && /status: req\.query\.status \|\| 'open'/.test(adminRoute), '告警接口默认只返回待处理记录');
-assert(/sendRecoverySummary/.test(alertMailer) && /status='sending'/.test(alertMailer), 'SMTP 恢复后必须合并补发历史告警且不能覆盖人工状态');
+assert(/sendRecoverySummary/.test(alertMailer + alertMailerSql) && /status='sending'/.test(alertMailer + alertMailerSql), 'SMTP 恢复后必须合并补发历史告警且不能覆盖人工状态');
 assert(/emailConfigured/.test(read('public/js/admin.js')) && /投递失败/.test(read('public/js/admin.js')), '后台必须显示邮件告警配置与投递状态');
 assert(/jobDisplayText\(alert\.summary/.test(adminUi) && /text\.match\(\/\\uFFFD\/g\)/.test(adminUi), '后台必须压缩超长告警并隐藏无法还原的历史乱码');
 assert(/const JOB_LABELS/.test(adminUi) && /ipo_history_sync: 'IPO事实同步'/.test(adminUi) && /arbitrage_reparse: '套利公告重新解析'/.test(adminUi), '所有后台任务必须使用中文名称');
@@ -113,35 +115,35 @@ assert(scheduledJobCodes.filter(code => !code.startsWith('market_close:')).every
 assert(/function formatJobDetail/.test(adminUi) && /jobDisplayText\(j\.detail/.test(adminUi) && /jobTriggerLabel/.test(adminUi), '任务运行详情和触发方式必须转换为中文说明');
 assert(/jobStatusLabel\(alert\.status\)/.test(adminUi) && /jobLabel\(dep\.job_code\)/.test(adminUi), '告警状态和任务依赖名称必须转换为中文');
 assert(/market_close:\(\[\^#/.test(adminUi) && /Object\.keys\(JOB_LABELS\)/.test(adminUi), '逾期汇总告警中的任务代码必须转换为中文名称');
-assert(/FOR UPDATE SKIP LOCKED/.test(alertMailer) && /status <> 'sending'/.test(alertMailer), '历史告警合并补发与人工重发不得抢占正在发送的告警');
-assert(/sending_started_at/.test(alertMailer) && /COALESCE\(sending_started_at, updated_at\)/.test(alertMailer), '告警僵尸回收必须使用独立发送开始时间');
-assert(/status='send_failed'/.test(alertMailer) && /status IN \('pending','send_failed'\)/.test(alertMailer) && /next_send_at IS NULL OR next_send_at <= now\(\)/.test(alertMailer), 'SMTP 恢复后必须合并全部到期待发送告警');
+assert(/FOR UPDATE SKIP LOCKED/.test(alertMailer + alertMailerSql) && /status\s*<>\s*'sending'/.test(alertMailer + alertMailerSql), '历史告警合并补发与人工重发不得抢占正在发送的告警');
+assert(/sending_started_at/.test(alertMailer + alertMailerSql) && /COALESCE\(sending_started_at, updated_at\)/.test(alertMailer + alertMailerSql), '告警僵尸回收必须使用独立发送开始时间');
+assert(/status='send_failed'/.test(alertMailer + alertMailerSql) && /status IN \('pending','send_failed'\)/.test(alertMailer + alertMailerSql) && /next_send_at IS NULL OR next_send_at <= now\(\)/.test(alertMailer + alertMailerSql), 'SMTP 恢复后必须合并全部到期待发送告警');
 assert(/maxTaskTimeoutMs/.test(read('server/worker.js')) && /maxTaskTimeoutMs\) \+ 15/.test(read('server/worker.js')), 'Worker 硬退出时间必须覆盖最长任务超时');
 assert(/if \(stopping\)/.test(orchestrator) && /workerStopping/.test(orchestrator), '领取任务后如果进入停机状态必须立即回到补偿队列');
 assert(/trap rollback_deploy EXIT/.test(deployScript) && /previous_commit/.test(deployScript) && /deploy_complete/.test(deployScript), '部署失败必须恢复部署前版本并重新启动服务');
-assert(/send_attempts > 0/.test(alertMailer) && !/claimRecoverySummaryAlerts\(limit/.test(alertMailer), 'SMTP 任意重试阶段恢复都必须合并全部到期历史告警');
-assert(/sanitizeJobError/.test(alertMailer) && /sanitizeJobError/.test(orchestrator) && /sanitizeJobError/.test(read('server/services/jobRunnerProcess.js')), '任务错误进入数据库和邮件前必须统一脱敏');
+assert(/send_attempts > 0/.test(alertMailer + alertMailerSql) && !/claimRecoverySummaryAlerts\(limit/.test(alertMailer + alertMailerSql), 'SMTP 任意重试阶段恢复都必须合并全部到期历史告警');
+assert(/sanitizeJobError/.test(alertMailer + alertMailerSql) && /sanitizeJobError/.test(orchestrator) && /sanitizeJobError/.test(read('server/services/jobRunnerProcess.js')), '任务错误进入数据库和邮件前必须统一脱敏');
 assert(/activeRuns === 0 && !executing/.test(orchestrator) && /notifyStopWaiters/.test(orchestrator) && /waitForStartupTasks/.test(read('server/worker.js')), 'Worker 停机必须等待完整执行器轮次和启动任务');
 assert(/executorTimer = setInterval\(tick, 60 \* 1000\)/.test(orchestrator) && !/executorTimer\.unref/.test(orchestrator), '持久化执行器必须作为独立 Worker 保活句柄，不能在启动任务结束后自动退出');
 assert(/seq 1 30/.test(deployScript) && /health_json=/.test(deployScript) && !/time\.sleep\(5\)/.test(deployScript), '最终健康与版本检查必须在可回滚部署事务内完成');
-assert(/pg_try_advisory_lock\(hashtext\('ops\.alert_notifications\.recovery_summary'\)\)/.test(alertMailer) && /pg_advisory_unlock/.test(alertMailer), 'SMTP 恢复摘要必须使用跨进程全局锁');
-assert(/MAX_RECOVERY_SUMMARY_ATTEMPTS = 3/.test(alertMailer) && /recovery_attempts < \$3/.test(alertMailer) && /065_alert_recovery_attempts/.test(migrations), 'SMTP 恢复摘要最多尝试3次并持久化计数');
+assert(/pg_try_advisory_lock\(hashtext\('ops\.alert_notifications\.recovery_summary'\)\)/.test(alertMailer + alertMailerSql) && /pg_advisory_unlock/.test(alertMailer + alertMailerSql), 'SMTP 恢复摘要必须使用跨进程全局锁');
+assert(/MAX_RECOVERY_SUMMARY_ATTEMPTS = 3/.test(alertMailer + alertMailerSql) && /recovery_attempts < \$3/.test(alertMailer + alertMailerSql) && /065_alert_recovery_attempts/.test(migrations), 'SMTP 恢复摘要最多尝试3次并持久化计数');
 assert(/sanitizeJobResult/.test(orchestrator) && /sanitizeJobResult/.test(slots) && /sanitizeJobError/.test(jobsDb), '任务错误和结果写入数据库前必须递归脱敏');
 assert(/setTimeout\(resolve, 5000\)/.test(orchestrator) && /stopJobOrchestrationObserver/.test(read('server/worker.js')), 'Worker 强制中止后必须留足落库时间并停止观察器');
-assert(/recovery_attempts > 0 OR send_attempts >= \$1/.test(alertMailer), '恢复摘要中断后的僵尸记录必须继续走合并摘要');
-assert(/send_attempts > 0 OR recovery_attempts > 0/.test(alertMailer) && /AND recovery_attempts=0/.test(alertMailer), '恢复摘要队列不得退回普通逐条投递');
-assert(/send_attempts=CASE WHEN ops\.alert_notifications\.status IN \('acknowledged','resolved'\) THEN 0/.test(alertMailer)
-  && /recovery_attempts=CASE WHEN ops\.alert_notifications\.status IN \('acknowledged','resolved'\) THEN 0/.test(alertMailer), '已解决或已确认告警复发时必须重置投递次数');
+assert(/recovery_attempts > 0 OR send_attempts >= \$1/.test(alertMailer + alertMailerSql), '恢复摘要中断后的僵尸记录必须继续走合并摘要');
+assert(/send_attempts > 0 OR recovery_attempts > 0/.test(alertMailer + alertMailerSql) && /AND recovery_attempts=0/.test(alertMailer + alertMailerSql), '恢复摘要队列不得退回普通逐条投递');
+assert(/send_attempts=CASE WHEN ops\.alert_notifications\.status IN \('acknowledged','resolved'\) THEN 0/.test(alertMailer + alertMailerSql)
+  && /recovery_attempts=CASE WHEN ops\.alert_notifications\.status IN \('acknowledged','resolved'\) THEN 0/.test(alertMailer + alertMailerSql), '已解决或已确认告警复发时必须重置投递次数');
 assert(/rollback_failed=1/.test(deployScript) && /systemctl is-active --quiet portfolio-server\.service portfolio-worker\.service/.test(deployScript)
   && /systemctl is-active --quiet portfolio-worker-health\.timer/.test(deployScript)
   && /部署回滚未能恢复服务/.test(deployScript), '部署回滚必须检查依赖、服务和健康状态并明确报告恢复失败');
-assert(/last_sent_at=CASE WHEN ops\.alert_notifications\.status IN \('acknowledged','resolved'\) THEN NULL/.test(alertMailer), '已恢复告警复发时必须清除旧发送时间，避免再次故障被抑制');
-assert(/sanitizeJobError\(alert\.summary \|\| '', 4000\)/.test(alertMailer) && /sanitizeAlertRecord\(rows\[0\]\)/.test(alertMailer), '历史告警在邮件发送和确认接口返回前必须再次脱敏');
+assert(/last_sent_at=CASE WHEN ops\.alert_notifications\.status IN \('acknowledged','resolved'\) THEN NULL/.test(alertMailer + alertMailerSql), '已恢复告警复发时必须清除旧发送时间，避免再次故障被抑制');
+assert(/sanitizeJobError\(alert\.summary \|\| '', 4000\)/.test(alertMailer + alertMailerSql) && /sanitizeAlertRecord\(rows\[0\]\)/.test(alertMailer + alertMailerSql), '历史告警在邮件发送和确认接口返回前必须再次脱敏');
 assert(/stop_unit_if_present portfolio-worker-health\.timer/.test(deployScript) && /health_timer_preexisting/.test(deployScript), '首次部署时不存在的健康检查单元不得导致部署或回滚失败');
-assert(/scope_type='slot' AND scope_key=\$1::text/.test(alertMailer) && /worker:offline[\s\S]*status <> 'resolved'/.test(health), '人工确认后的故障恢复仍必须关闭故障告警且不得重复处理恢复邮件');
-assert(/ACTIVE_ALERT_WHERE/.test(alertMailer)
-  && /external_api_switch','external_api_interface_failover/.test(alertMailer)
-  && /status IN \('sent','suppressed'\)/.test(alertMailer)
+assert(/scope_type='slot' AND scope_key=\$1::text/.test(alertMailer + alertMailerSql) && /worker:offline[\s\S]*status <> 'resolved'/.test(health), '人工确认后的故障恢复仍必须关闭故障告警且不得重复处理恢复邮件');
+assert(/ACTIVE_ALERT_WHERE/.test(alertMailer + alertMailerSql)
+  && /external_api_switch','external_api_interface_failover/.test(alertMailer + alertMailerSql)
+  && /status IN \('sent','suppressed'\)/.test(alertMailer + alertMailerSql)
   && /WHERE \$\{ACTIVE_ALERT_WHERE\} GROUP BY status/.test(slots), '已发送的恢复和主备切换通知不得继续计入待处理告警');
 assert(/holidaySyncMonthly/.test(scheduler) && /24 \* 60 \* 60 \* 1000/.test(scheduler)
   && !/30 \* 24 \* 3600 \* 1000/.test(scheduler), '月度休市检查不得使用超过 Node 上限的 30 天定时器');

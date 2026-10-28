@@ -6,6 +6,7 @@ const NavMath = require('../../public/shared/nav-math');
 const CoreDate = require('../../public/shared/core-date');
 const { loadHolidays } = require('../config/holidays');
 const { resolveInstrument } = require('./securityIdentity');
+const txControl = require('../repositories/transactionControl');
 const VERSION = 'cash-income-v1';
 function stable(value) {
   if(value instanceof Date) return value.toJSON();
@@ -152,10 +153,10 @@ async function settleCashIncome(username,accountName,{targetDate=CoreDate.todayI
   if(!CoreDate.normalizeBusinessDate(targetDate) || targetDate>CoreDate.todayInZone('Asia/Shanghai')) throw Object.assign(new Error('无效收益目标日'),{status:400});
   const client=await pool.connect();
   try {
-    await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
+    await txControl.begin(client, { isolation: 'REPEATABLE READ', readOnly: true });
     const input=await readInputs(client,username,accountName,targetDate);
     const inputVersion=(await client.query('SELECT version FROM account_data WHERE username=$1 AND account_name=$2',[username,accountName])).rows[0]?.version || 0;
-    await client.query('COMMIT');
+    await txControl.commit(client);
     if(!enable && !input.account.cash_income_policy?.enabled) return {status:'not_enabled'};
     if(expectedVersion!=null && Number(expectedVersion)!==inputVersion) throw Object.assign(new Error('账户已修改，请刷新重算'),{status:409});
     const anchor=NavMath.selectCashAnchor(input.data.navHistory,targetDate);
@@ -259,7 +260,7 @@ async function settleCashIncome(username,accountName,{targetDate=CoreDate.todayI
     const computed=calculateRepo(input.data,anchor,targetDate,calendarFor(calendar.years),dividends,{rates:input.rates,sourceAdmission:input.sourceAdmission?.payload||{status:'pending_evidence'},fallbackThrough:'2026-10-10',excludedEvents:input.userExcluded});
     pending.push(...computed.pending);
     for(const trade of computed.trades.filter(r=>r.rateSource==='market_daily_weighted')) resolutions.push({code:'204001.SH',eventKey:'repo:204001.SH:'+trade.tradeDate,reason:'market_daily_rate_available',rateEvidence:trade.rateEvidence});
-    await client.query('BEGIN');
+    await txControl.begin(client);
     const lockedAccount=await client.query('SELECT id FROM accounts WHERE id=$1 FOR UPDATE',[input.account.id]);
     if(!lockedAccount.rowCount) throw Object.assign(new Error('账户已删除'),{status:409});
     const lockedVersion=(await client.query('SELECT version FROM account_data WHERE username=$1 AND account_name=$2 FOR UPDATE',[username,accountName])).rows[0]?.version || 0;
@@ -356,8 +357,8 @@ async function settleCashIncome(username,accountName,{targetDate=CoreDate.todayI
     await client.query('UPDATE accounts SET cash_income_state=$2 WHERE id=$1',[input.account.id,state]);
     if(navUpdated) await client.query(`UPDATE account_data SET nav_version=COALESCE(nav_version,0)+1,
       version=COALESCE(version,0)+1 WHERE username=$1 AND account_name=$2`,[username,accountName]);
-    await client.query('COMMIT');
+    await txControl.commit(client);
     return state;
-  } catch(e) {await client.query('ROLLBACK');throw e;} finally {client.release();}
+  } catch(e) {await txControl.rollback(client);throw e;} finally {client.release();}
 }
 module.exports={settleCashIncome,calculateBondInterest,calculateRepo,holdingAt,calendarFor,hkDividendCalendar,shiftDay,VERSION,userTaxExemption,userScopeExclusion};

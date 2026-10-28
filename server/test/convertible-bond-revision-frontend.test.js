@@ -9,15 +9,19 @@ const css = fs.readFileSync(path.join(root, 'public', 'css', 'bond-revision.css'
 const sharedCss = fs.readFileSync(path.join(root, 'public', 'shared', 'style.css'), 'utf8');
 const cycle = fs.readFileSync(path.join(root, 'public', 'js', 'bond-cycle.js'), 'utf8');
 const route = fs.readFileSync(path.join(root, 'server', 'routes', 'bondRevision.js'), 'utf8');
-const service = fs.readFileSync(path.join(root, 'server', 'services', 'convertibleBondRevisionService.js'), 'utf8');
+const service = fs.readFileSync(path.join(root, 'server', 'services', 'convertibleBondRevisionService.js'), 'utf8')
+  + fs.readFileSync(path.join(root, 'server', 'repositories', 'convertibleBondRevisionServiceRepository.js'), 'utf8')
+  + fs.readFileSync(path.join(root, 'server', 'repositories', 'convertibleBondRevisionServiceRepository.js'), 'utf8');
 const { readServiceSource } = require('./helpers/service-source');
 const analysis = readServiceSource('convertibleBondAnalysis');
 const { readMigrationSource } = require('./helpers/migration-source');
 const migration = readMigrationSource();
 const refresh = fs.readFileSync(path.join(root, 'server', 'jobs', 'convertibleBondRefresh.js'), 'utf8');
 const jobs = fs.readFileSync(path.join(root, 'server', 'services', 'jobDefinitions.js'), 'utf8');
-const redemptionSync = fs.readFileSync(path.join(root, 'server', 'services', 'convertibleBondRedemptionSync.js'), 'utf8');
-const suspensionSync = fs.readFileSync(path.join(root, 'server', 'services', 'convertibleBondSuspensionSync.js'), 'utf8');
+const redemptionSync = fs.readFileSync(path.join(root, 'server', 'services', 'convertibleBondRedemptionSync.js'), 'utf8')
+  + fs.readFileSync(path.join(root, 'server', 'repositories', 'convertibleBondRedemptionSyncRepository.js'), 'utf8');
+const suspensionSync = fs.readFileSync(path.join(root, 'server', 'services', 'convertibleBondSuspensionSync.js'), 'utf8')
+  + fs.readFileSync(path.join(root, 'server', 'repositories', 'convertibleBondSuspensionSyncRepository.js'), 'utf8');
 const ipo = fs.readFileSync(path.join(root, 'server', 'routes', 'ipo.js'), 'utf8');
 // 批次3：IPO 的 SQL 已迁入仓储，定向/私募排除规则随之落位，证券检索断言指向真实实现。
 const ipoRepositorySource = fs.readFileSync(path.join(root, 'server', 'repositories', 'ipoRepository.js'), 'utf8');
@@ -25,6 +29,7 @@ const bondAnalysis = fs.readFileSync(path.join(root, 'server', 'routes', 'bondAn
 // 可转债证券检索 SQL 已按批次3 迁入仓储，定向/私募排除规则随之落在仓储内，断言须指向真实实现位置。
 const bondAnalysisRepository = fs.readFileSync(path.join(root, 'server', 'repositories', 'bondAnalysisRepository.js'), 'utf8');
 const stockAnalysisService = fs.readFileSync(path.join(root, 'server', 'services', 'stockAnalysis.js'), 'utf8')
+  + fs.readFileSync(path.join(root, 'server', 'repositories', 'stockAnalysisRepository.js'), 'utf8')
   // 批次4：公告采集与来源映射已迁入数据接入层，断言同时覆盖适配器，避免搬移让检查静默失效。
   + '\n' + fs.readFileSync(path.join(root, 'server', 'dataAccess', 'adapters', 'announcementSourceAdapter.js'), 'utf8');
 

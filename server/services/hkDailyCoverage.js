@@ -5,6 +5,8 @@ const { pool } = require('../db');
 const { tushareQuery } = require('./tushare');
 const { withExternalCallGuard } = require('./externalCallGuard');
 const { requestTencentHkKline } = require('./tencentQuote');
+const txControl = require('../repositories/transactionControl');
+const { loadCandidates, sourceIdFor } = require('../repositories/hkDailyCoverageRepository.js');
 
 const HK_DAILY_FIELDS = 'ts_code,trade_date,open,high,low,close,pre_close,change,pct_chg,vol,amount';
 const DEFAULT_FROM_DATE = '2025-08-04';
@@ -90,47 +92,13 @@ function coverageForCandidate(candidate, rows) {
   };
 }
 
-async function sourceIdFor(executor = pool, sourceCode = 'tushare') {
-  const { rows } = await executor.query('SELECT source_id FROM ops.data_sources WHERE source_code=$1 LIMIT 1', [sourceCode]);
-  if (!rows[0]) throw new Error(`${sourceCode} 数据源未注册`);
-  return rows[0].source_id;
-}
+/* sourceIdFor 已迁入 server/repositories/hkDailyCoverageRepository.js */
 
 async function sourceId(executor = pool) {
   return sourceIdFor(executor, 'tushare');
 }
 
-async function loadCandidates(client, fromDate, toDate, limit = null, targetCodes = []) {
-  const scopedCodes = [...new Set((Array.isArray(targetCodes) ? targetCodes : []).map(code => String(code || '').trim().toUpperCase()).filter(code => /^\d{5}\.HK$/.test(code)))];
-  const targeted = scopedCodes.length > 0;
-  const candidateLimit = Number.isInteger(Number(limit)) && Number(limit) > 0 ? Number(limit) : null;
-  const coverageDateParam = targeted ? 1 : 2;
-  const targetFilter = targeted ? ' AND i.canonical_code=ANY($2::text[])' : '';
-  const dateFilter = targeted ? '' : ' AND i.list_date::date BETWEEN $1::date AND $2::date';
-  const params = targeted ? [toDate, scopedCodes] : [fromDate, toDate];
-  const limitClause = candidateLimit ? ` LIMIT $${params.length + 1}` : '';
-  if (candidateLimit) params.push(candidateLimit);
-  const { rows } = await client.query(
-    `SELECT i.instrument_id,i.canonical_code,i.list_date::text AS list_date,i.status
-       FROM core.instruments i
-       LEFT JOIN LATERAL (
-         SELECT COUNT(DISTINCT b.trade_date)::int AS observed_days
-           FROM market.daily_bars b
-          WHERE b.instrument_id=i.instrument_id
-            AND b.trade_date >= i.list_date
-            AND b.trade_date <= $${coverageDateParam}::date
-       ) coverage ON true
-      WHERE i.asset_class='stock' AND i.market='HK'
-        AND i.list_date IS NOT NULL AND i.list_date::date <= $${coverageDateParam}::date
-        AND i.canonical_code ~ '^\\d{5}\\.HK$'
-        ${dateFilter}
-        AND COALESCE(coverage.observed_days,0) < 5
-        ${targetFilter}
-      ORDER BY i.list_date,i.canonical_code
-      ${limitClause}`, params
-  );
-  return rows;
-}
+/* loadCandidates 已迁入 server/repositories/hkDailyCoverageRepository.js */
 
 async function fetchOne(candidate, fetchImpl, toDate) {
   const startDate = isoDate(candidate.list_date) || addDays(toDate, -30);
@@ -227,7 +195,7 @@ async function syncHkDailyCoverage({ fromDate = DEFAULT_FROM_DATE, toDate = toda
       payload: { api_name: 'hk_daily', ts_code: result.candidate.canonical_code, start_date: result.startDate, end_date: result.endDate,
         row_count: result.rows.length, coverage: result.coverage, error: result.error ? result.error.message || String(result.error) : null },
     }));
-    await client.query('BEGIN');
+    await txControl.begin(client);
     if (rawRows.length) {
       await client.query(
         `INSERT INTO ops.raw_records(run_id,source_id,dataset_code,source_key,source_updated_at,payload,payload_hash)
@@ -266,7 +234,7 @@ async function syncHkDailyCoverage({ fromDate = DEFAULT_FROM_DATE, toDate = toda
     );
     await client.query('UPDATE ops.ingestion_runs SET status=$2,row_count=$3,error_message=$4,finished_at=now() WHERE run_id=$1',
       [runId, finalStatus, bars.length, finalErrorText]);
-    await client.query('COMMIT');
+    await txControl.commit(client);
     const coverage = results.map(result => result.coverage);
     return {
       ok: finalStatus !== 'failed', status: finalStatus, runId, candidates: candidates.length, rows: bars.length,
@@ -276,7 +244,7 @@ async function syncHkDailyCoverage({ fromDate = DEFAULT_FROM_DATE, toDate = toda
       dataAsOf: latestDate,
     };
   } catch (error) {
-    await client.query('ROLLBACK').catch(() => {});
+    await txControl.rollback(client).catch(() => {});
     if (runId) await client.query('UPDATE ops.ingestion_runs SET status=$2,error_message=$3,finished_at=now() WHERE run_id=$1', [runId, 'failed', error.message || String(error)]).catch(() => {});
     throw error;
   } finally {
@@ -312,7 +280,7 @@ async function syncTencentHkDailyCoverage({ fromDate = DEFAULT_FROM_DATE, toDate
         end_date: result.endDate, row_count: result.rows.length, coverage: result.coverage,
         error: result.error ? result.error.message || String(result.error) : null },
     }));
-    await client.query('BEGIN');
+    await txControl.begin(client);
     if (rawRows.length) {
       await client.query(
         `INSERT INTO ops.raw_records(run_id,source_id,dataset_code,source_key,source_updated_at,payload,payload_hash)
@@ -351,14 +319,14 @@ async function syncTencentHkDailyCoverage({ fromDate = DEFAULT_FROM_DATE, toDate
     );
     await client.query('UPDATE ops.ingestion_runs SET status=$2,row_count=$3,error_message=$4,finished_at=now() WHERE run_id=$1',
       [runId, finalStatus, bars.length, finalErrorText]);
-    await client.query('COMMIT');
+    await txControl.commit(client);
     const coverage = results.map(result => result.coverage);
     return { ok: finalStatus !== 'failed', status: finalStatus, source: 'tencent_hk_kline', runId, candidates: candidates.length, rows: bars.length,
       firstDayCoverage: coverage.length ? coverage.filter(item => item.firstDay).length / coverage.length : 0,
       fiveDayCoverage: coverage.length ? coverage.filter(item => item.fiveDay).length / coverage.length : 0,
       coverage, failures: failures.length, limited, dataAsOf: latestDate };
   } catch (error) {
-    await client.query('ROLLBACK').catch(() => {});
+    await txControl.rollback(client).catch(() => {});
     if (runId) await client.query('UPDATE ops.ingestion_runs SET status=$2,error_message=$3,finished_at=now() WHERE run_id=$1', [runId, 'failed', error.message || String(error)]).catch(() => {});
     throw error;
   } finally {

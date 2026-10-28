@@ -3,6 +3,7 @@ const {pool}=require('../db/connection');
 const CoreDate=require('../../public/shared/core-date');
 const {resolveInstrument}=require('./securityIdentity');
 const crypto=require('crypto');
+const txControl = require('../repositories/transactionControl');
 const PARSER='cash-dividend-v6';
 const BOND_INTEREST_PARSER='bond-interest-v2';
 function normalizeChineseDates(text){
@@ -140,7 +141,7 @@ async function storeDocument(identity,ann,sourceId) {
   const payloadHash=crypto.createHash('sha256').update(JSON.stringify(payload)).digest('hex');
   const client=await pool.connect();
   try {
-    await client.query('BEGIN');
+    await txControl.begin(client);
     const raw=(await client.query(`INSERT INTO ops.raw_records(source_id,dataset_code,source_key,payload,payload_hash) VALUES($1,'stock_cash_dividend_facts',$2,$3,$4)
       ON CONFLICT(source_id,dataset_code,source_key,payload_hash) DO UPDATE SET ingested_at=now() RETURNING raw_record_id`,[sourceId,sourceKey,payload,payloadHash])).rows[0];
     const announcedAt=ann.announcedAt||dateValue(ann.event_date?.replace(/(\d{4})(\d{2})(\d{2})/,'$1-$2-$3'));
@@ -149,8 +150,8 @@ async function storeDocument(identity,ann,sourceId) {
     if(!fact.reason&&!fact.classification) await client.query(`INSERT INTO fundamental.corporate_actions(instrument_id,action_type,announced_at,record_date,ex_date,pay_date,status,cash_per_share_pre_tax,currency_code,source_id,source_key,raw_payload)
       VALUES($1,'dividend',$2,$3,$4,$5,'实施',$6,$7,$8,$9,$10) ON CONFLICT(source_id,source_key) DO UPDATE SET announced_at=EXCLUDED.announced_at,
       record_date=EXCLUDED.record_date,ex_date=EXCLUDED.ex_date,pay_date=EXCLUDED.pay_date,cash_per_share_pre_tax=EXCLUDED.cash_per_share_pre_tax,currency_code=EXCLUDED.currency_code,raw_payload=EXCLUDED.raw_payload,ingested_at=now()`,[identity.instrument_id,announcedAt,fact.recordDate,fact.exDate,fact.payDate,fact.amount,fact.currency,sourceId,sourceKey,{...payload.cashDividend,documentId:document.document_id,url,sourceKey,issuerTaxEvidence:'not_verified',stockConnectSettlement:'not_verified'}]);
-    await client.query('COMMIT');return {ok:!fact.reason,fact,url,code:identity.code};
-  }catch(e){await client.query('ROLLBACK');throw e;}finally{client.release();}
+    await txControl.commit(client);return {ok:!fact.reason,fact,url,code:identity.code};
+  }catch(e){await txControl.rollback(client);throw e;}finally{client.release();}
 }
 function sameDividendPeriod(a,b) {
   return a.period && a.dividendType && a.period===b.period && a.dividendType===b.dividendType && a.currency===b.currency && a.amount===b.amount && (!a.dividendNature||!b.dividendNature||a.dividendNature===b.dividendNature);

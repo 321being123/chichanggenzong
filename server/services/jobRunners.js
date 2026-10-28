@@ -55,12 +55,8 @@ async function runJobByCode(jobCode, reason = 'manual-retry', businessDate, cont
       {const result=await require('../jobs/arbitrageSync').runArbitrageSync(reason, {...context,targetDate:context.targetDate||businessDate});
       return {...result,mode:context.mode==='cash_dividends'?'cash_dividends':'core',publishDatasetCodes:context.mode==='cash_dividends'?['stock_cash_dividend_facts']:['arbitrage_cases']};}
     case 'arbitrage_reparse': {
-      const { pool } = require('../db');
-      const { rows } = await pool.query(
-        'SELECT request_payload FROM ops.job_schedule_slots WHERE slot_id=$1',
-        [context.slotId]
-      );
-      const caseId = Number(rows[0] && rows[0].request_payload && rows[0].request_payload.caseId);
+      const requestPayload = await require('../repositories/jobScheduleSlotsRepository').readSlotRequestPayload(context.slotId);
+      const caseId = Number(requestPayload && requestPayload.caseId);
       if (!Number.isSafeInteger(caseId) || caseId <= 0) {
         return { ok: false, error: '重新解析任务缺少有效事件编号' };
       }

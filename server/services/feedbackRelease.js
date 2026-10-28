@@ -9,6 +9,8 @@ const store = require('../db/feedback');
 const feedbackService = require('./feedbackService');
 const notificationService = require('./notificationService');
 const { hasCapability, isAdminIdentity } = require('../middleware/auth');
+const txControl = require('../repositories/transactionControl');
+const { listItems, listRuns, readBack, readCandidates, releaseLock } = require('../repositories/feedbackReleaseRepository.js');
 
 const REVIEW_POLICY_VERSION = '2026-10-23';
 const OPEN_STATUSES = ['new', 'needs_info', 'accepted', 'in_progress'];
@@ -131,34 +133,11 @@ async function acquireReleaseLock(client, opts) {
   return { external: false };
 }
 
-async function releaseLock(client, handle) {
-  if (handle && handle.external) return; // 外部持锁进程负责解锁，本会话不得替它解锁
-  await client.query('SELECT pg_advisory_unlock($1)', [RELEASE_LOCK_ID]).catch(function () {});
-}
+/* releaseLock 已迁入 server/repositories/feedbackReleaseRepository.js */
 
 // ---------- 核对读取（read 模式） ----------
 // 只输出编号、revision、状态与必要的公开字段；私密正文不随日志或 Git 传播，由调用方按需再取详情。
-async function readCandidates(options) {
-  const opts = options || {};
-  const limit = Math.min(Math.max(parseInt(opts.limit, 10) || 100, 1), 500);
-  const afterId = opts.afterId ? String(opts.afterId) : null;
-  const params = [];
-  let where = `f.withdrawn_at IS NULL AND f.status = ANY($1::text[])`;
-  params.push(OPEN_STATUSES);
-  if (afterId) { params.push(afterId); where += ` AND f.id > $${params.length}`; }
-  params.push(limit);
-  const { rows } = await pool.query(
-    `SELECT f.id::text AS "feedbackId", f.revision::text AS revision, f.status, f.type,
-            f.visibility, f.moderation, f.title, f.updated_at AS "updatedAt"
-       FROM public.feedbacks f
-      WHERE ${where}
-      ORDER BY f.id ASC
-      LIMIT $${params.length}`,
-    params
-  );
-  const next = rows.length === limit ? rows[rows.length - 1].feedbackId : null;
-  return { items: rows, nextCursor: next, complete: next === null };
-}
+/* readCandidates 已迁入 server/repositories/feedbackReleaseRepository.js */
 
 async function readDetail(feedbackId, options) {
   const opts = options || {};
@@ -182,14 +161,14 @@ async function prepareRun(input) {
   const client = await pool.connect();
   let lockHandle = null;
   try {
-    await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ');
+    await txControl.begin(client, { isolation: 'REPEATABLE READ' });
     lockHandle = await acquireReleaseLock(client);
     const existing = await client.query(
       'SELECT id::text AS id, manifest_hash AS "manifestHash", prepare_status AS "prepareStatus" FROM ops.feedback_release_runs WHERE environment=$1 AND deployment_id=$2',
       [environment, deploymentId]
     );
     if (existing.rows[0]) {
-      await client.query('ROLLBACK');
+      await txControl.rollback(client);
       return {
         runId: existing.rows[0].id, deploymentId: deploymentId,
         manifestHash: existing.rows[0].manifestHash, reused: true,
@@ -235,13 +214,13 @@ async function prepareRun(input) {
         WHERE id=$3`,
       [manifestHash, inserted, runId]
     );
-    await client.query('COMMIT');
+    await txControl.commit(client);
     return {
       runId: runId, deploymentId: deploymentId, manifestHash: manifestHash,
       snapshotCount: inserted, reused: false,
     };
   } catch (e) {
-    await client.query('ROLLBACK').catch(function () {});
+    await txControl.rollback(client).catch(function () {});
     throw e;
   } finally {
     await releaseLock(client, lockHandle);
@@ -257,7 +236,7 @@ async function setItemConclusion(runId, feedbackId, patch) {
   const client = await pool.connect();
   let lockHandle = null;
   try {
-    await client.query('BEGIN');
+    await txControl.begin(client);
     lockHandle = await acquireReleaseLock(client);
     const run = await client.query(
       'SELECT id::text AS id, prepare_status AS "prepareStatus", verify_status AS "verifyStatus" FROM ops.feedback_release_runs WHERE id=$1 FOR UPDATE',
@@ -291,13 +270,13 @@ async function setItemConclusion(runId, feedbackId, patch) {
         WHERE id=$2`,
       [manifestHash, runId]
     );
-    await client.query('COMMIT');
+    await txControl.commit(client);
     return {
       runId: String(runId), feedbackId: String(feedbackId), conclusion: patch.conclusion,
       manifestHash: manifestHash, verificationInvalidated: invalidated,
     };
   } catch (e) {
-    await client.query('ROLLBACK').catch(function () {});
+    await txControl.rollback(client).catch(function () {});
     throw e;
   } finally {
     await releaseLock(client, lockHandle);
@@ -309,7 +288,7 @@ async function freezeRun(runId) {
   const client = await pool.connect();
   let lockHandle = null;
   try {
-    await client.query('BEGIN');
+    await txControl.begin(client);
     lockHandle = await acquireReleaseLock(client);
     const items = await client.query(
       'SELECT feedback_id::text AS "feedbackId", expected_revision::text AS "expectedRevision", conclusion, implementation_commit AS "implementationCommit", evidence_summary AS "evidenceSummary" FROM ops.feedback_release_items WHERE run_id=$1',
@@ -326,10 +305,10 @@ async function freezeRun(runId) {
       [manifestHash, runId]
     );
     if (!rows[0]) throw createError(404, '发布批次不存在');
-    await client.query('COMMIT');
+    await txControl.commit(client);
     return { runId: String(runId), manifestHash: manifestHash };
   } catch (e) {
-    await client.query('ROLLBACK').catch(function () {});
+    await txControl.rollback(client).catch(function () {});
     throw e;
   } finally {
     await releaseLock(client, lockHandle);
@@ -345,7 +324,7 @@ async function verifyRun(runId, input) {
   const client = await pool.connect();
   let lockHandle = null;
   try {
-    await client.query('BEGIN');
+    await txControl.begin(client);
     lockHandle = await acquireReleaseLock(client);
     const { rows } = await client.query(
       'SELECT id::text AS id, release_sha AS "releaseSha", app_version AS "appVersion", owner, manifest_hash AS "manifestHash", prepare_status AS "prepareStatus" FROM ops.feedback_release_runs WHERE id=$1 FOR UPDATE',
@@ -380,10 +359,10 @@ async function verifyRun(runId, input) {
         WHERE id=$4`,
       [passed ? 'passed' : 'failed', JSON.stringify(evidence), manifestHash, runId]
     );
-    await client.query('COMMIT');
+    await txControl.commit(client);
     return { runId: String(runId), verifyStatus: passed ? 'passed' : 'failed' };
   } catch (e) {
-    await client.query('ROLLBACK').catch(function () {});
+    await txControl.rollback(client).catch(function () {});
     throw e;
   } finally {
     await releaseLock(client, lockHandle);
@@ -406,7 +385,7 @@ async function applyRun(runId, options) {
   try {
     // B-03：从读取验收/哈希/明细到写入，全部在发布锁内完成。
     // 排队期间清单被改、验收失效，拿到锁后会看到最新状态并拒绝，不再按旧结论更新。
-    await lockClient.query('BEGIN');
+    await txControl.begin(lockClient);
     // C-03：部署第二段回写携带持锁凭证时跳过重复抢锁，否则正常获取
     lockHandle = await acquireReleaseLock(lockClient, {
       heldLockToken: opts.heldLockToken, heldLockReadyFile: opts.heldLockReadyFile,
@@ -472,10 +451,10 @@ async function applyRun(runId, options) {
     const failed = results.filter(function (r) { return r.applyStatus !== 'applied' && r.applyStatus !== 'skipped'; }).length;
     const overall = failed === 0 ? 'applied' : (applied > 0 ? 'partial' : 'failed');
     await lockClient.query('UPDATE ops.feedback_release_runs SET apply_status=$1, updated_at=now() WHERE id=$2', [overall, runId]);
-    await lockClient.query('COMMIT');
+    await txControl.commit(lockClient);
     return { runId: String(runId), applyStatus: overall, applied: applied, failed: failed, items: results };
   } catch (e) {
-    await lockClient.query('ROLLBACK').catch(function () {});
+    await txControl.rollback(lockClient).catch(function () {});
     throw e;
   } finally {
     await releaseLock(lockClient, lockHandle);
@@ -486,7 +465,7 @@ async function applyRun(runId, options) {
 async function applyOne(runId, run, item, opts) {
   const client = await pool.connect();
   try {
-    await client.query('BEGIN');
+    await txControl.begin(client);
     const locked = await client.query(
       `SELECT id, apply_status AS "applyStatus", revision_after::text AS "revisionAfter"
          FROM ops.feedback_release_items
@@ -494,28 +473,28 @@ async function applyOne(runId, run, item, opts) {
       [runId, item.feedbackId]
     );
     const row = locked.rows[0];
-    if (!row) { await client.query('ROLLBACK'); return { feedbackId: item.feedbackId, applyStatus: 'failed', error: '明细不存在' }; }
+    if (!row) { await txControl.rollback(client); return { feedbackId: item.feedbackId, applyStatus: 'failed', error: '明细不存在' }; }
     if (row.applyStatus === 'applied') {
-      await client.query('ROLLBACK');
+      await txControl.rollback(client);
       return { feedbackId: item.feedbackId, applyStatus: 'applied', revisionAfter: row.revisionAfter, reused: true };
     }
     if (row.applyStatus === 'skipped') {
-      await client.query('ROLLBACK');
+      await txControl.rollback(client);
       return { feedbackId: item.feedbackId, applyStatus: 'skipped' };
     }
     const fb = await store.lockFeedback(client, item.feedbackId);
     if (!fb) {
-      await client.query('ROLLBACK');
+      await txControl.rollback(client);
       await markItem(item.feedbackId, runId, 'failed', '反馈不存在');
       return { feedbackId: item.feedbackId, applyStatus: 'failed', error: '反馈不存在' };
     }
     if (fb.withdrawnAt) {
-      await client.query('ROLLBACK');
+      await txControl.rollback(client);
       await markItem(item.feedbackId, runId, 'skipped', '反馈已撤回');
       return { feedbackId: item.feedbackId, applyStatus: 'skipped', error: '反馈已撤回' };
     }
     if (String(fb.revision) !== String(item.expectedRevision) || fb.status !== item.expectedStatus) {
-      await client.query('ROLLBACK');
+      await txControl.rollback(client);
       await markItem(item.feedbackId, runId, 'conflict', '核对后反馈已被修改');
       return { feedbackId: item.feedbackId, applyStatus: 'conflict', error: '核对后反馈已被修改' };
     }
@@ -559,10 +538,10 @@ async function applyOne(runId, run, item, opts) {
         WHERE run_id=$3 AND feedback_id=$4`,
       [fb.revision, revision, runId, item.feedbackId]
     );
-    await client.query('COMMIT');
+    await txControl.commit(client);
     return { feedbackId: item.feedbackId, applyStatus: 'applied', revisionBefore: fb.revision, revisionAfter: revision };
   } catch (e) {
-    await client.query('ROLLBACK').catch(function () {});
+    await txControl.rollback(client).catch(function () {});
     await markItem(item.feedbackId, runId, 'failed', String(e.message || e).slice(0, 300)).catch(function () {});
     return { feedbackId: item.feedbackId, applyStatus: 'failed', error: e.message };
   } finally {
@@ -578,7 +557,7 @@ async function rollbackRun(runId, options) {
   const lockClient = await pool.connect();
   let lockHandle = null;
   try {
-    await lockClient.query('BEGIN');
+    await txControl.begin(lockClient);
     // C-03：同 applyRun，部署回滚接续可携带持锁凭证跳过重复抢锁
     lockHandle = await acquireReleaseLock(lockClient, {
       heldLockToken: opts.heldLockToken, heldLockReadyFile: opts.heldLockReadyFile,
@@ -621,10 +600,10 @@ async function rollbackRun(runId, options) {
     const overall = failed > 0 ? 'partial'
       : (restored === 0 ? 'applied' : (kept > 0 ? 'partial' : 'rolled_back'));
     await lockClient.query('UPDATE ops.feedback_release_runs SET apply_status=$1, updated_at=now() WHERE id=$2', [overall, runId]);
-    await lockClient.query('COMMIT');
+    await txControl.commit(lockClient);
     return { runId: String(runId), applyStatus: overall, restored: restored, kept: kept, failed: failed, items: results };
   } catch (e) {
-    await lockClient.query('ROLLBACK').catch(function () {});
+    await txControl.rollback(lockClient).catch(function () {});
     throw e;
   } finally {
     await releaseLock(lockClient, lockHandle);
@@ -635,25 +614,25 @@ async function rollbackRun(runId, options) {
 async function rollbackOne(runId, run, item, opts) {
   const client = await pool.connect();
   try {
-    await client.query('BEGIN');
+    await txControl.begin(client);
     const locked = await client.query(
       'SELECT id, apply_status AS "applyStatus" FROM ops.feedback_release_items WHERE run_id=$1 AND feedback_id=$2 FOR UPDATE',
       [runId, item.feedbackId]
     );
     if (!locked.rows[0] || locked.rows[0].applyStatus !== 'applied') {
-      await client.query('ROLLBACK');
+      await txControl.rollback(client);
       return { feedbackId: item.feedbackId, result: 'kept_after_modification' };
     }
     const fb = await store.lockFeedback(client, item.feedbackId);
     if (!fb) {
-      await client.query('ROLLBACK');
+      await txControl.rollback(client);
       return { feedbackId: item.feedbackId, result: 'kept_after_modification', error: '反馈不存在' };
     }
     const unchanged = fb.status === 'implemented'
       && String(fb.implementedReleaseSha || '') === String(run.releaseSha)
       && String(fb.revision) === String(item.revisionAfter);
     if (!unchanged) {
-      await client.query('ROLLBACK');
+      await txControl.rollback(client);
       return { feedbackId: item.feedbackId, result: 'kept_after_modification' };
     }
     const revision = await store.updateFeedbackFields(client, item.feedbackId, {
@@ -679,10 +658,10 @@ async function rollbackOne(runId, run, item, opts) {
         WHERE run_id=$1 AND feedback_id=$2`,
       [runId, item.feedbackId]
     );
-    await client.query('COMMIT');
+    await txControl.commit(client);
     return { feedbackId: item.feedbackId, result: 'restored', revisionAfter: revision };
   } catch (e) {
-    await client.query('ROLLBACK').catch(function () {});
+    await txControl.rollback(client).catch(function () {});
     return { feedbackId: item.feedbackId, result: 'failed', error: e.message };
   } finally {
     client.release();
@@ -698,36 +677,9 @@ async function markItem(feedbackId, runId, status, error) {
 }
 
 // 回读：确认主记录、版本关联与处理历史
-async function readBack(runId) {
-  const { rows } = await pool.query(
-    `SELECT i.feedback_id::text AS "feedbackId", i.apply_status AS "applyStatus",
-            f.status, f.implemented_version AS "implementedVersion",
-            f.implemented_release_sha AS "implementedReleaseSha", f.revision::text AS revision,
-            (SELECT count(*)::int FROM public.feedback_events e
-              WHERE e.feedback_id = i.feedback_id AND e.release_run_id = i.run_id) AS "eventCount"
-       FROM ops.feedback_release_items i
-       JOIN public.feedbacks f ON f.id = i.feedback_id
-      WHERE i.run_id=$1 AND i.apply_status IN ('applied','skipped','conflict','failed')
-      ORDER BY i.feedback_id ASC`,
-    [runId]
-  );
-  return rows;
-}
+/* readBack 已迁入 server/repositories/feedbackReleaseRepository.js */
 
-async function listRuns(query) {
-  const pageSize = Math.min(Math.max(parseInt(query.pageSize, 10) || 20, 1), 100);
-  const page = Math.max(parseInt(query.page, 10) || 1, 1);
-  const { rows } = await pool.query(
-    `SELECT id::text AS id, deployment_id::text AS "deploymentId", environment,
-            release_sha AS "releaseSha", app_version AS "appVersion", prepare_status AS "prepareStatus",
-            verify_status AS "verifyStatus", apply_status AS "applyStatus", snapshot_count AS "snapshotCount",
-            snapshot_at AS "snapshotAt", owner, created_at AS "createdAt"
-       FROM ops.feedback_release_runs ORDER BY id DESC LIMIT $1 OFFSET $2`,
-    [pageSize, (page - 1) * pageSize]
-  );
-  const total = await pool.query('SELECT count(*)::int AS total FROM ops.feedback_release_runs');
-  return { items: rows, total: total.rows[0].total, page: page, pageSize: pageSize };
-}
+/* listRuns 已迁入 server/repositories/feedbackReleaseRepository.js */
 
 async function getRun(runId) {
   const { rows } = await pool.query(
@@ -745,25 +697,7 @@ async function getRun(runId) {
 }
 
 // 明细按编号游标分页，不以持续变化的列表 offset 作为完整性依据
-async function listItems(runId, query) {
-  const limit = Math.min(Math.max(parseInt(query.limit, 10) || 100, 1), 500);
-  const afterId = query.afterId ? String(query.afterId) : null;
-  const params = [runId];
-  let where = 'run_id = $1';
-  if (afterId) { params.push(afterId); where += ' AND feedback_id > $' + params.length; }
-  params.push(limit);
-  const { rows } = await pool.query(
-    `SELECT feedback_id::text AS "feedbackId", expected_revision::text AS "expectedRevision",
-            expected_status AS "expectedStatus", conclusion, implementation_commit AS "implementationCommit",
-            evidence_summary AS "evidenceSummary", apply_status AS "applyStatus", apply_error AS "applyError",
-            revision_before::text AS "revisionBefore", revision_after::text AS "revisionAfter"
-       FROM ops.feedback_release_items
-      WHERE ${where} ORDER BY feedback_id ASC LIMIT $${params.length}`,
-    params
-  );
-  const next = rows.length === limit ? rows[rows.length - 1].feedbackId : null;
-  return { items: rows, nextCursor: next, complete: next === null };
-}
+/* listItems 已迁入 server/repositories/feedbackReleaseRepository.js */
 
 async function status(runId) {
   const run = await getRun(runId);

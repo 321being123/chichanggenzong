@@ -3,6 +3,7 @@ const { fork, execFile } = require('child_process');
 const path = require('path');
 const { sanitizeJobError, sanitizeJobResult } = require('./jobErrorSanitizer');
 const { JOB_DEFINITIONS, getJobDefinition, getRegisteredJobDefinition } = require('./jobDefinitions');
+const { readRunStatus } = require('../repositories/jobOrchestratorRepository.js');
 const {
   WORKER_ID, syncScheduleSlots, recoverExpiredSlots, listDueSlots, sweepStaleSlots,
   claimSlot, completeSlot, deferSlot, waitForExternalSlot, continueSlot, mergeSlotExternalCallSummary, touchSlot, queryDataAsOf, isDataAsOfFresh, expectedDataDate,
@@ -361,11 +362,7 @@ async function linkLatestRun(slot, startedAt, reason) {
   return rows[0] ? rows[0].id : null;
 }
 
-async function readRunStatus(runId) {
-  if (!runId) return null;
-  const { rows } = await pool.query('SELECT id, status, detail FROM job_runs WHERE id=$1', [runId]);
-  return rows[0] || null;
-}
+/* readRunStatus 已迁入 server/repositories/jobOrchestratorRepository.js */
 
 function killProcessTree(child, graceMs = 3000) {
   return new Promise(resolve => {

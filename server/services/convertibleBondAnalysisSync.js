@@ -28,6 +28,7 @@ const { sendAlert } = require('./jobAlertMailer');
 const { isActiveBond, isPendingListingBond, filterPublicBonds } = require('./bondSafetyTushare');
 const { ANNOUNCEMENT_OVERLAP_DAYS, BOND_FIRSTDAY_SCRIPT, BOND_GAP_QUEUE_SCHEMA_VERSION, BOND_ISSUE_RESULT_SCRIPT, BOND_LIQUIDITY_SCRIPT, CN_OFFSET_MS, DAILY_FIELDS, FORMULA_VERSION, PROFILE_FIELDS, STOCK_STATUS_FIELDS, UNIFIED_ANNOUNCEMENT_KEYWORDS, addDays, defaultBondTargetTradeDate, finite, isoDate, normalizeBondCode, revisionDecision } = require('./convertibleBondAnalysisCore.js');
 const { announcementSourceId, announcementSourceKey, backfillMissingRatings, ensureStockUniverse, extractNoRevisionPeriods, extractPriceChangeDetails, loadNoRevisionCache, loadPriceChangeCache, loadRevisionEventCache, loadTrackedDelistedStocks, pythonCandidates, saveDailyBar, saveFullStockMarketPartition, saveProfile, saveRevisionEvents, sourceIds } = require('./convertibleBondAnalysisStore.js');
+const txControl = require('../repositories/transactionControl');
 
 function announcementMatchesBond(event, profile) {
   const title = String(event.title || ''), name = String(profile.bond_short_name || '');
@@ -774,7 +775,7 @@ async function syncConvertibleBondUniverse(reason = 'scheduled', options = {}) {
     let tushareSourceId = null;
     const convPriceChanges = [];
     try {
-      await client.query('BEGIN');
+      await txControl.begin(client);
       const sources = await sourceIds(client);
       tushareSourceId = sources.tushare;
 
@@ -824,9 +825,9 @@ async function syncConvertibleBondUniverse(reason = 'scheduled', options = {}) {
         [unresolvedCodes.length ? null : isoDate(daily.tradeDate)]
       );
       await writeBondGapQueue(client.query.bind(client), gapQueue);
-      await client.query('COMMIT');
+      await txControl.commit(client);
       console.log(`[主同步] 可转债全量同步已提交（${saved} 只，行情日期 ${daily.tradeDate}）`);
-    } catch (error) { await client.query('ROLLBACK'); throw error; }
+    } catch (error) { await txControl.rollback(client); throw error; }
     finally { client.release(); }
     if (tencentFallbackCount > 0 || unresolvedCodes.length === 0) {
       await updateBondFallbackRuntime(tencentFallbackCount > 0, targetTradeDate).catch(error => {
@@ -924,13 +925,13 @@ async function syncConvertibleBondUniverse(reason = 'scheduled', options = {}) {
     // 可转债周期：主同步提交后，用独立事务计算（周期失败只影响周期数据，不影响主同步）
     const cycleClient = await pool.connect();
     try {
-      await cycleClient.query('BEGIN');
+      await txControl.begin(cycleClient);
       const cyc = await cycleService.processCycleDay(daily.tradeDate, activeDailyRows, { sourceId: tushareSourceId, client: cycleClient });
-      await cycleClient.query('COMMIT');
+      await txControl.commit(cycleClient);
       if (cyc.stored) console.log(`[cycle] 当日周期指标已发布（${daily.tradeDate}）`);
       else console.warn(`[cycle] 当日未发布周期指标（${daily.tradeDate}，原因：${cyc.reason}）`);
     } catch (cycErr) {
-      await cycleClient.query('ROLLBACK').catch(() => {});
+      await txControl.rollback(cycleClient).catch(() => {});
       console.warn('[cycle] 当日周期计算失败（不影响主同步）：', cycErr.message);
     } finally { cycleClient.release(); }
     const failedDatasets = [];
@@ -1043,20 +1044,20 @@ async function backfillCycleGaps({ windowDays = 90, targetTradeDate = null } = {
         const rows = tsRows(data);
         if (!rows.length) continue;
         // 行情事实与周期结果分开提交：周期字段不完整时仍保留完整的日行情分区。
-        await client.query('BEGIN');
+        await txControl.begin(client);
         for (const quote of rows) {
           const bondId = instrumentMap.get(quote.ts_code);
           if (bondId) await saveDailyBar(client, bondId, quote, sourceId);
         }
-        await client.query('COMMIT');
+        await txControl.commit(client);
 
-        await client.query('BEGIN');
+        await txControl.begin(client);
         const res = await cycleService.processCycleDay(day, rows, { sourceId, client });
-        if (res.failed) { await client.query('ROLLBACK'); console.warn(`[cycle-backfill] ${day} 数据异常，停止补齐：${res.reason}`); break; }
-        await client.query('COMMIT');
+        if (res.failed) { await txControl.rollback(client); console.warn(`[cycle-backfill] ${day} 数据异常，停止补齐：${res.reason}`); break; }
+        await txControl.commit(client);
         if (res.stored) gapFilled++;
       } catch (e) {
-        await client.query('ROLLBACK').catch(() => {});
+        await txControl.rollback(client).catch(() => {});
         console.warn(`[cycle-backfill] ${day} 补齐失败，停止：${e.message}`);
         break;
       }
@@ -1440,7 +1441,7 @@ async function syncConvertibleBondAnnouncementHistories({ tsCodes = [], fromDate
     if (announcements.length) {
       const client = await pool.connect();
       try {
-        await client.query('BEGIN');
+        await txControl.begin(client);
         const sources = await sourceIds(client);
         await saveAnnouncementHistories(client, profile.instrument_id, announcements, profile,
           sources.cninfo || sources.calculated, noRevisionPeriods, priceChangeDetails, sources);
@@ -1467,9 +1468,9 @@ async function syncConvertibleBondAnnouncementHistories({ tsCodes = [], fromDate
             [profile.instrument_id, isoDate(cachedRow.announced_at)]
           );
         }
-        await client.query('COMMIT');
+        await txControl.commit(client);
       } catch (error) {
-        await client.query('ROLLBACK');
+        await txControl.rollback(client);
         if (globalSync) {
           await pool.query(
             `INSERT INTO ops.sync_cursors(scope_key,dataset_code,last_attempt_at,last_error,retry_count,updated_at)
@@ -1760,15 +1761,15 @@ async function backfillUnderlyingStockMarket({ windowDays = 500, targetTradeDate
       await new Promise(resolve => setTimeout(resolve, 1200));
       const client = await pool.connect();
       try {
-        await client.query('BEGIN');
+        await txControl.begin(client);
         const saved = await saveFullStockMarketPartition(client, instrumentMap, tsRows(dailyData), tsRows(valuationData), source.tushare);
-        await client.query('COMMIT');
+        await txControl.commit(client);
         savedBars += saved.bars;
         savedValuations += saved.valuations;
         if (saved.bars || saved.valuations) filledDays += 1;
         else emptyDays += 1;
       } catch (error) {
-        await client.query('ROLLBACK');
+        await txControl.rollback(client);
         throw error;
       } finally {
         client.release();
@@ -1813,12 +1814,12 @@ async function backfillUnderlyingStockMarket({ windowDays = 500, targetTradeDate
         }, 'ts_code,trade_date,open,high,low,close,vol,amount', { allowEmpty: true });
         const client = await pool.connect();
         try {
-          await client.query('BEGIN');
+          await txControl.begin(client);
           const saved = await saveFullStockMarketPartition(client, instrumentMap, tsRows(daily), [], source.tushare);
-          await client.query('COMMIT');
+          await txControl.commit(client);
           repairedBars += saved.bars;
         } catch (error) {
-          await client.query('ROLLBACK');
+          await txControl.rollback(client);
           throw error;
         } finally { client.release(); }
       }

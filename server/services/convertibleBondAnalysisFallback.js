@@ -6,6 +6,7 @@ const CoreDate=require('../../public/shared/core-date');
 const store=require('./convertibleBondAnalysisStore');
 const {isoDate,finite}=require('./convertibleBondAnalysisCore');
 const {sanitizeJobError}=require('./jobErrorSanitizer');
+const txControl = require('../repositories/transactionControl');
 
 const VERSION='tushare-input-fallback-v1';
 const APIS=Object.freeze({
@@ -72,11 +73,11 @@ async function readApiRows(kind,bond,period,deps={}) {
   const today=CoreDate.todayInZone();
   const client=deps.client||await pool.connect();
   try {
-    await client.query('BEGIN');
+    await txControl.begin(client);
     await client.query('SELECT pg_advisory_xact_lock(hashtext($1))',[`${api.name}:${key}`]);
     const cached=await client.query(`SELECT raw_record_id,payload FROM ops.raw_records WHERE dataset_code=$1 AND source_key=$2 ORDER BY raw_record_id DESC LIMIT 1`,[api.name,key]);
     if(cached.rows[0]?.payload?.fetched_on===today) {
-      await client.query('COMMIT');return {rows:cached.rows[0].payload.rows,rawRecordId:cached.rows[0].raw_record_id,cache:'raw_records'};
+      await txControl.commit(client);return {rows:cached.rows[0].payload.rows,rawRecordId:cached.rows[0].raw_record_id,cache:'raw_records'};
     }
     const params={ts_code:bond.ts_code};if(kind==='holders')params.period=period.replace(/-/g,'');
     const response=await (deps.fetch||tushareQuery)(api.name,params,api.fields,{allowEmpty:true});
@@ -88,15 +89,15 @@ async function readApiRows(kind,bond,period,deps={}) {
       SELECT source_id,$1,$2,$3::jsonb,$4 FROM ops.data_sources WHERE source_code='tushare'
       ON CONFLICT(source_id,dataset_code,source_key,payload_hash) DO UPDATE SET payload=EXCLUDED.payload RETURNING raw_record_id`,[api.name,key,JSON.stringify(payload),hash]);
     if(!saved.rows.length)throw Error('Tushare来源未登记');
-    await client.query('COMMIT');return {rows,rawRecordId:saved.rows[0].raw_record_id,cache:'api'};
-  } catch(error){await client.query('ROLLBACK');throw error;}
+    await txControl.commit(client);return {rows,rawRecordId:saved.rows[0].raw_record_id,cache:'api'};
+  } catch(error){await txControl.rollback(client);throw error;}
   finally{if(!deps.client)client.release();}
 }
 
 async function saveFallback(kind,bond,value,evidence) {
   const client=await pool.connect();
   try {
-    await client.query('BEGIN');
+    await txControl.begin(client);
     const source=(await store.sourceIds(client)).tushare;
     if(kind==='holders') {
       const existing=await client.query('SELECT raw_payload FROM fundamental.convertible_bond_fund_holdings WHERE instrument_id=$1 AND report_date=$2::date FOR UPDATE',[bond.instrument_id,value.report_date]);
@@ -126,8 +127,8 @@ async function saveFallback(kind,bond,value,evidence) {
           VALUES($1,$2,$3,$4,$3,$5,$6) ON CONFLICT(instrument_id,interest_year) DO NOTHING`,[bond.instrument_id,index+1,row.coupon_rate,isoDate(row.rate_end_date),Number(row.coupon_rate)*.8,source]);
       }
     }
-    await client.query('COMMIT');
-  } catch(error){await client.query('ROLLBACK');throw error;}
+    await txControl.commit(client);
+  } catch(error){await txControl.rollback(client);throw error;}
   finally{client.release();}
 }
 

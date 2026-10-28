@@ -5,6 +5,7 @@ const { pool } = require('../db/connection');
 const { ensureInstrumentIdentity } = require('./securityIdentity');
 const { httpRequest, ALLOWED_DOMAINS, searchAnnouncements } = require('./hkexAnnouncement');
 const { HKEX_ALLOTMENT_FACTS_PARSER_VERSION, HKEX_NEW_LISTING_TARGETS, HKEX_PREDEFINED_DOCUMENT_TARGETS, assertOfficialUrl, canonicalHkCode, parseNewListingsHtml, parsePredefinedDocumentHtml } = require('./hkexIpoCore.js');
+const txControl = require('../repositories/transactionControl');
 
 async function persistHkexProbe(result, { environment = 'local', executor = pool.query.bind(pool) } = {}) {
   if (!['local', 'server'].includes(environment)) throw new Error(`未知探针环境：${environment}`);
@@ -332,7 +333,7 @@ async function upsertHkIpoFacts(rows, { sourceCode = 'hkex_announcements', dbPoo
   const client = await dbPool.connect();
   let events = 0;
   try {
-    await client.query('BEGIN');
+    await txControl.begin(client);
     const sourceResult = await client.query('SELECT source_id FROM ops.data_sources WHERE source_code=$1 LIMIT 1', [sourceCode]);
     if (!sourceResult.rows[0]) throw new Error(`未登记数据源：${sourceCode}`);
     const sourceId = sourceResult.rows[0].source_id;
@@ -423,10 +424,10 @@ async function upsertHkIpoFacts(rows, { sourceCode = 'hkex_announcements', dbPoo
         events += 1;
       }
     }
-    await client.query('COMMIT');
+    await txControl.commit(client);
     return { ok: true, rows: input.length, events };
   } catch (error) {
-    await client.query('ROLLBACK');
+    await txControl.rollback(client);
     throw error;
   } finally {
     client.release();

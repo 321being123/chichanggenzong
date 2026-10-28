@@ -9,6 +9,8 @@ const {childProcessEnv,mergeExternalCallStatsFromStderr}=require('./externalCall
 const {isoDate,normalizeBondCode,announcementDateWindows,analysisInputTools:tools}=require('./convertibleBondAnalysis');
 const {loadAnalysisUniverse,persistAnalysisProgress,latestAnalysisDate}=require('./convertibleBondAnalysisSnapshots');
 const {tryAnalysisApiFallback,terminalApplies,APIS:FALLBACK_APIS}=require('./convertibleBondAnalysisFallback');
+const txControl = require('../repositories/transactionControl');
+const { persistBondInputs, readDocuments, readRatingHistory } = require('../repositories/convertibleBondAnalysisInputsRepository.js');
 
 const INPUT_VERSION='analysis-input-v4';
 const DOCUMENT_SELECTION_VERSION='bond-doc-selection-2026-10-24-v2';
@@ -94,14 +96,7 @@ async function projectDocument(kind,event,bond) {
     (event.title.match(/(20\d{2})年?\s*(半年度|年度)报告/)||[]).slice(1).map((v,index)=>index?v==='半年度'?'06-30':'12-31':v).join('-'):undefined};
 }
 
-async function readDocuments(bond,targetDate) {
-  const {rows}=await pool.query(`SELECT DISTINCT d.document_id,d.url,d.title,d.content_hash,d.announced_at::text AS event_date,
-    ds.source_code AS source,d.raw_payload FROM event.documents d
-    JOIN ops.data_sources ds USING(source_id) JOIN core.company_instruments ci USING(company_id)
-    JOIN core.instruments i ON i.instrument_id=ci.instrument_id
-    WHERE i.canonical_code=$1 AND d.announced_at<=$2::date AND d.url<>'' ORDER BY event_date DESC`,[bond.stock_code,targetDate]);
-  return rows;
-}
+/* readDocuments 已迁入 server/repositories/convertibleBondAnalysisInputsRepository.js */
 
 async function discoverDocuments(bond,targetDate,state,{repairStart}={}) {
   const scopeKey=`bond_analysis_documents:${bond.stock_code}`;
@@ -154,7 +149,7 @@ async function saveProjection(kind,event,result,bond) {
   if(kind==='holders'&&result.parse_status==='not_applicable')validateHolderExemption(result,bond);
   const client=await pool.connect();
   try {
-    await client.query('BEGIN');
+    await txControl.begin(client);
     const sources=await tools.sourceIds(client);
     const sourceId=sources[event.source];
     if(!sourceId)throw new Error('公告来源未登记');
@@ -227,17 +222,11 @@ async function saveProjection(kind,event,result,bond) {
       if(result.rating_requirement_version!==RATING_REQUIREMENT_VERSION)await tools.saveRatingOutlooks(client,bond.instrument_id,[result]);
     }
     if(kind==='price_history'&&result.price_changes?.length) await tools.savePriceChanges(client,bond.instrument_id,result.price_changes,sourceId);
-    await client.query('COMMIT');
-  } catch(error){await client.query('ROLLBACK');throw error;} finally{client.release();}
+    await txControl.commit(client);
+  } catch(error){await txControl.rollback(client);throw error;} finally{client.release();}
 }
 
-async function persistBondInputs(bond,state) {
-  // 人工留证的终态优先于已启动Runner的旧快照，避免续批将刚登记的证据覆盖掉。
-  await pool.query(`UPDATE fundamental.convertible_bond_profiles SET raw_payload=raw_payload||jsonb_build_object('analysis_inputs',
-    $2::jsonb || CASE WHEN (raw_payload->'analysis_inputs') ? 'terminal_gaps' THEN jsonb_build_object('terminal_gaps',
-      COALESCE($2::jsonb->'terminal_gaps','{}'::jsonb)||(raw_payload->'analysis_inputs'->'terminal_gaps')) ELSE '{}'::jsonb END),updated_at=now()
-    WHERE instrument_id=$1`,[bond.instrument_id,JSON.stringify(state)]);
-}
+/* persistBondInputs 已迁入 server/repositories/convertibleBondAnalysisInputsRepository.js */
 
 // 资料终态：来源确实未覆盖、原文明确未披露、或存在无法消解的证据冲突。
 // 终态只用于停止每日重试并保留证据，不改变“已完整”事实；无证据不得写入。
@@ -397,13 +386,7 @@ function missingReportRepairStart(bond,state,targetDate,selected) {
   return isoDate(start);
 }
 
-async function readRatingHistory(bond,targetDate) {
-  if(!bond.instrument_id)return [];
-  const {rows}=await pool.query(`SELECT rating_date::text,announced_at::text,rating_company,rating,rating_outlook,raw_payload
-    FROM fundamental.convertible_bond_ratings WHERE instrument_id=$1 AND rating_date<=$2::date
-      AND (announced_at IS NULL OR announced_at<=$2::date) ORDER BY rating_date DESC,announced_at DESC`,[bond.instrument_id,targetDate]);
-  return rows;
-}
+/* readRatingHistory 已迁入 server/repositories/convertibleBondAnalysisInputsRepository.js */
 
 function ratingRequirement(bond,records,documents,targetDate,suspectUrls=new Set()) {
   const available=records.filter(row=>row.rating&&isoDate(row.rating_date)&&isoDate(row.rating_date)<=targetDate&&

@@ -8,6 +8,8 @@ const { pool } = require('../db');
 const store = require('../db/notifications');
 const { isAdminIdentity } = require('../middleware/auth');
 const ns = require('./notificationService');
+const txControl = require('../repositories/transactionControl');
+const { lockRequest } = require('../repositories/notificationBatchServiceRepository.js');
 
 const AUDIENCE_MODES = ['all', 'selected', 'filter'];
 const FILTER_ROLES = ['admin', 'user'];
@@ -129,11 +131,7 @@ async function resolveAudience(db, mode, input) {
 
 // 同一请求标识串行化：并发提交同一 clientRequestId 时，后者等到前者提交后能读到原结果，
 // 不会重复建批次，也不会把「复用的成功」误报成 409。
-async function lockRequest(db, actorUsername, operation, clientRequestId) {
-  await db.query('SELECT pg_advisory_xact_lock(hashtext($1)::bigint)', [
-    'notification_op:' + String(actorUsername || '') + ':' + operation + ':' + clientRequestId,
-  ]);
-}
+/* lockRequest 已迁入 server/repositories/notificationBatchServiceRepository.js */
 
 async function findReplay(db, batchId, actorUsername, operation, clientRequestId, requestHash) {
   const existing = await store.findOperation(db, batchId, actorUsername, operation, clientRequestId);
@@ -162,11 +160,11 @@ async function previewBatch(actor, input) {
 
   const client = await pool.connect();
   try {
-    await client.query('BEGIN');
+    await txControl.begin(client);
     await lockRequest(client, actor.username, 'preview', clientRequestId);
     const replay = await findReplay(client, null, actor.username, 'preview', clientRequestId, requestHash);
     if (replay) {
-      await client.query('ROLLBACK');
+      await txControl.rollback(client);
       return Object.assign({}, replay, { reused: true });
     }
     await assertAdmin(actor, client);
@@ -217,10 +215,10 @@ async function previewBatch(actor, input) {
       batchId: null, actorUsername: actor.username, operation: 'preview',
       clientRequestId: clientRequestId, requestHash: requestHash, result: result,
     });
-    await client.query('COMMIT');
+    await txControl.commit(client);
     return result;
   } catch (e) {
-    await client.query('ROLLBACK').catch(function () {});
+    await txControl.rollback(client).catch(function () {});
     throw e;
   } finally {
     client.release();
@@ -241,11 +239,11 @@ async function sendBatch(actor, batchId, input) {
 
   const client = await pool.connect();
   try {
-    await client.query('BEGIN');
+    await txControl.begin(client);
     await lockRequest(client, actor.username, 'send', clientRequestId);
     const replay = await findReplay(client, id, actor.username, 'send', clientRequestId, requestHash);
     if (replay) {
-      await client.query('ROLLBACK');
+      await txControl.rollback(client);
       return Object.assign({}, replay, { reused: true });
     }
     await assertAdmin(actor, client);
@@ -255,7 +253,7 @@ async function sendBatch(actor, batchId, input) {
     // 等行锁期间同标识请求可能已提交：拿到锁后必须复检，复用原结果而不是报 409
     const replayAfterLock = await findReplay(client, id, actor.username, 'send', clientRequestId, requestHash);
     if (replayAfterLock) {
-      await client.query('ROLLBACK');
+      await txControl.rollback(client);
       return Object.assign({}, replayAfterLock, { reused: true });
     }
     if (batch.status !== 'draft') throw createError(409, '该批次已确认或已取消，不能重复发送');
@@ -287,10 +285,10 @@ async function sendBatch(actor, batchId, input) {
       batchId: id, actorUsername: actor.username, operation: 'send',
       clientRequestId: clientRequestId, requestHash: requestHash, result: result,
     });
-    await client.query('COMMIT');
+    await txControl.commit(client);
     return result;
   } catch (e) {
-    await client.query('ROLLBACK').catch(function () {});
+    await txControl.rollback(client).catch(function () {});
     throw e;
   } finally {
     client.release();
@@ -316,11 +314,11 @@ async function retryBatch(actor, batchId, input) {
 
   const client = await pool.connect();
   try {
-    await client.query('BEGIN');
+    await txControl.begin(client);
     await lockRequest(client, actor.username, 'retry', clientRequestId);
     const replay = await findReplay(client, id, actor.username, 'retry', clientRequestId, requestHash);
     if (replay) {
-      await client.query('ROLLBACK');
+      await txControl.rollback(client);
       return Object.assign({}, replay, { reused: true });
     }
     await assertAdmin(actor, client);
@@ -328,7 +326,7 @@ async function retryBatch(actor, batchId, input) {
     if (!batch) throw createError(404, '发送批次不存在');
     const replayAfterLock = await findReplay(client, id, actor.username, 'retry', clientRequestId, requestHash);
     if (replayAfterLock) {
-      await client.query('ROLLBACK');
+      await txControl.rollback(client);
       return Object.assign({}, replayAfterLock, { reused: true });
     }
     if (RETRYABLE.indexOf(batch.status) < 0) throw createError(409, '该批次当前状态不能重试');
@@ -347,7 +345,7 @@ async function retryBatch(actor, batchId, input) {
           batchId: id, actorUsername: actor.username, operation: 'retry',
           clientRequestId: clientRequestId, requestHash: requestHash, result: merged,
         });
-        await client.query('COMMIT');
+        await txControl.commit(client);
         return merged;
       }
     }
@@ -370,10 +368,10 @@ async function retryBatch(actor, batchId, input) {
       batchId: id, actorUsername: actor.username, operation: 'retry',
       clientRequestId: clientRequestId, requestHash: requestHash, result: result,
     });
-    await client.query('COMMIT');
+    await txControl.commit(client);
     return result;
   } catch (e) {
-    await client.query('ROLLBACK').catch(function () {});
+    await txControl.rollback(client).catch(function () {});
     throw e;
   } finally {
     client.release();
@@ -391,11 +389,11 @@ async function cancelBatch(actor, batchId, input) {
 
   const client = await pool.connect();
   try {
-    await client.query('BEGIN');
+    await txControl.begin(client);
     await lockRequest(client, actor.username, 'cancel', clientRequestId);
     const replay = await findReplay(client, id, actor.username, 'cancel', clientRequestId, requestHash);
     if (replay) {
-      await client.query('ROLLBACK');
+      await txControl.rollback(client);
       return Object.assign({}, replay, { reused: true });
     }
     await assertAdmin(actor, client);
@@ -403,7 +401,7 @@ async function cancelBatch(actor, batchId, input) {
     if (!batch) throw createError(404, '发送批次不存在');
     const replayAfterLock = await findReplay(client, id, actor.username, 'cancel', clientRequestId, requestHash);
     if (replayAfterLock) {
-      await client.query('ROLLBACK');
+      await txControl.rollback(client);
       return Object.assign({}, replayAfterLock, { reused: true });
     }
     // 仅草稿可取消；queued/running/partial 不可取消（已进入投递）
@@ -416,10 +414,10 @@ async function cancelBatch(actor, batchId, input) {
       batchId: id, actorUsername: actor.username, operation: 'cancel',
       clientRequestId: clientRequestId, requestHash: requestHash, result: result,
     });
-    await client.query('COMMIT');
+    await txControl.commit(client);
     return result;
   } catch (e) {
-    await client.query('ROLLBACK').catch(function () {});
+    await txControl.rollback(client).catch(function () {});
     throw e;
   } finally {
     client.release();

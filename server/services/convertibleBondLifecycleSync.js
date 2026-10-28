@@ -6,6 +6,8 @@ const { pool } = require('../db/connection');
 const { tushareQuery, tsRows, tsDateStr } = require('./market');
 const { ensureInstrumentIdentity, resolveCanonicalCode } = require('./securityIdentity');
 const { childProcessEnv, mergeExternalCallStatsFromStderr } = require('./externalCallGuard');
+const txControl = require('../repositories/transactionControl');
+const { sourceIds } = require('../repositories/convertibleBondLifecycleSyncRepository.js');
 
 const ISSUE_FIELDS = 'ts_code,ann_date,res_ann_date,issue_size,issue_price,issue_type,shd_ration_record_date,shd_ration_ratio,onl_date,onl_name,onl_size,onl_pch_num,offl_size,shd_ration_size';
 const OVERLAP_DAYS = 3;
@@ -88,10 +90,7 @@ async function parseLifecycleDocuments(events) {
   return parsed.filter(row => !row.error && row.bond_code && (row.online_date || row.listing_date || row.shareholder_record_date));
 }
 
-async function sourceIds(client) {
-  const { rows } = await client.query("SELECT source_id,source_code FROM ops.data_sources WHERE source_code IN ('tushare','cninfo','sse','szse')");
-  return Object.fromEntries(rows.map(row => [row.source_code, row.source_id]));
-}
+/* sourceIds 已迁入 server/repositories/convertibleBondLifecycleSyncRepository.js */
 
 async function ensureMinimalProfile(client, row, sources) {
   const canonicalCode = await resolveCanonicalCode(row.ts_code || row.bond_code, 'convertible_bond', client.query.bind(client));
@@ -212,7 +211,7 @@ async function syncConvertibleBondLifecycleFacts({ toDate, officialEvents = [], 
   const client = await pool.connect();
   let runId = null;
   try {
-    await client.query('BEGIN');
+    await txControl.begin(client);
     const sources = await sourceIds(client);
     const run = await client.query(
       `INSERT INTO ops.ingestion_runs(source_id,dataset_code,request_range,status)
@@ -264,12 +263,12 @@ async function syncConvertibleBondLifecycleFacts({ toDate, officialEvents = [], 
       );
     }
     await client.query("UPDATE ops.ingestion_runs SET status='success',row_count=$2,finished_at=now() WHERE run_id=$1", [runId, persisted.size]);
-    await client.query('COMMIT');
+    await txControl.commit(client);
     return { ok: true, fromDate: window.startDate, toDate: window.endDate, issueCount: issueRows.length,
       officialCount: officialRows.length, eventCount: uniqueExpected.length,
       qualityStatus: 'passed', persistedCodes: [...persisted].filter(Boolean) };
   } catch (error) {
-    await client.query('ROLLBACK');
+    await txControl.rollback(client);
     if (runId) await pool.query("UPDATE ops.ingestion_runs SET status='failed',error_message=$2,finished_at=now() WHERE run_id=$1", [runId, String(error.message || error).slice(0, 1000)]).catch(() => {});
     throw error;
   } finally { client.release(); }

@@ -2,6 +2,7 @@
 const {pool}=require('../db/connection');
 const crypto=require('crypto');
 const CoreDate=require('../../public/shared/core-date');
+const txControl = require('../repositories/transactionControl');
 const bad=message=>Object.assign(new Error(message),{status:400});
 function validate(records) {
   if(!Array.isArray(records)||!records.length) throw Object.assign(new Error('缺少实际收益记录'),{status:400});
@@ -36,7 +37,7 @@ function validate(records) {
 async function importActual(username,accountName,records,version) {
   const normalized=validate(records),client=await pool.connect();
   try {
-    await client.query('BEGIN');
+    await txControl.begin(client);
     const account=(await client.query('SELECT id FROM accounts WHERE username=$1 AND account_name=$2 FOR UPDATE',[username,accountName])).rows[0];
     if(!account) throw Object.assign(new Error('账户不存在'),{status:404});
     await require('./tradeLedger').checkVersionInTxn(client,username,accountName,version);
@@ -76,7 +77,7 @@ async function importActual(username,accountName,records,version) {
         [id,username,accountName,account.id,r.date,r.amountCny,r.flow_type,r.eventKey,anchor.date,evidence,{reference:r.sourceRef},revision,r.status,r.currency,r.originalAmount,r.settledAt||null]);
       await require('./tradeLedger').markNavDirty(client,username,accountName,old?.date<r.date?old.date:r.date,'cashflow');changed++;
     }
-    await client.query('COMMIT');return {ok:true,changed,records:normalized.length};
-  }catch(e){await client.query('ROLLBACK');throw e;}finally{client.release();}
+    await txControl.commit(client);return {ok:true,changed,records:normalized.length};
+  }catch(e){await txControl.rollback(client);throw e;}finally{client.release();}
 }
 module.exports={validate,importActual};

@@ -3,7 +3,9 @@ const fs = require('fs');
 const path = require('path');
 
 const root = path.join(__dirname, '..', '..');
-const service = fs.readFileSync(path.join(root, 'server', 'services', 'convertibleBondRevisionMotiveService.js'), 'utf8');
+const service = fs.readFileSync(path.join(root, 'server', 'services', 'convertibleBondRevisionMotiveService.js'), 'utf8')
+  + fs.readFileSync(path.join(root, 'server', 'repositories', 'convertibleBondRevisionMotiveServiceRepository.js'), 'utf8')
+  + fs.readFileSync(path.join(root, 'server', 'repositories', 'convertibleBondRevisionMotiveServiceRepository.js'), 'utf8');
 const html = fs.readFileSync(path.join(root, 'public', 'bond-revision-motive.html'), 'utf8');
 const script = fs.readFileSync(path.join(root, 'public', 'js', 'bond-revision-motive.js'), 'utf8');
 const css = fs.readFileSync(path.join(root, 'public', 'css', 'bond-revision-motive.css'), 'utf8');

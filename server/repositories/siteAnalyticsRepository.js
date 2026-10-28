@@ -156,7 +156,111 @@ async function insertSiteEvents(params, client = pool) {
   );
 }
 
+// 事件时间窗与内部流量口径（调用方传结构化 scope，SQL 片段在本层拼装）
+function buildEventWhere(alias, includeInternal) {
+  const where = [`${alias}.occurred_at >= $1`, `${alias}.occurred_at < $2`];
+  if (!includeInternal) where.push(`${alias}.is_internal=false`);
+  return where.join(' AND ');
+}
+
+// 概览：汇总、按日趋势、热门页面、设备分布
+async function loadOverviewData(scope, client = pool) {
+  const where = buildEventWhere('e', scope.includeInternal);
+  const params = [scope.start, scope.end];
+  const trendSql = scope.range === 'today'
+    ? `timezone('Asia/Shanghai', date_trunc('hour', occurred_at)) AS day`
+    : `timezone('Asia/Shanghai', occurred_at)::date AS day`;
+  const [summary, daily, pages, devices] = await Promise.all([
+    client.query(`SELECT COUNT(*) FILTER (WHERE event_name='page_view')::int AS pv,
+        COUNT(DISTINCT visitor_key)::int AS uv, COUNT(DISTINCT session_key)::int AS sessions,
+        COUNT(DISTINCT user_key) FILTER (WHERE event_name <> 'telemetry_init')::int AS logged_users,
+        COUNT(DISTINCT visitor_key) FILTER (WHERE occurred_at >= now() - interval '5 minutes'
+          AND event_name IN ('page_view','engagement','detail_open','filter_apply','register_view','register_submit','register_success','watchlist_add_success','import_result'))::int AS active_visitors,
+        COUNT(*) FILTER (WHERE event_name='register_success')::int AS registrations,
+        COUNT(*) FILTER (WHERE event_name='watchlist_add_success')::int AS watchlist_adds
+        FROM ops.site_events e WHERE ${where}`, params),
+    client.query(`SELECT ${trendSql},
+        COUNT(*) FILTER (WHERE event_name='page_view')::int AS pv,
+        COUNT(DISTINCT visitor_key)::int AS uv
+        FROM ops.site_events e WHERE ${where}
+        GROUP BY 1 ORDER BY 1`, params),
+    client.query(`SELECT page_key, COUNT(*) FILTER (WHERE event_name='page_view')::int AS pv,
+        COUNT(DISTINCT visitor_key)::int AS uv,
+        COUNT(*) FILTER (WHERE event_name='page_view' AND entry <> '')::int AS entries,
+        ROUND(AVG((properties->>'duration_sec')::numeric) FILTER (WHERE event_name='engagement'),1) AS avg_duration_sec
+        FROM ops.site_events e WHERE ${where}
+        GROUP BY page_key ORDER BY pv DESC LIMIT 12`, params),
+    client.query(`SELECT device_type, COUNT(*) FILTER (WHERE event_name='page_view')::int AS pv
+        FROM ops.site_events e WHERE ${where} GROUP BY device_type ORDER BY pv DESC`, params),
+  ]);
+  return { summary: summary.rows, daily: daily.rows, pages: pages.rows, devices: devices.rows };
+}
+
+// 流量来源：来源域、落地入口、按日会话、页面明细
+async function loadTrafficData(scope, client = pool) {
+  const where = buildEventWhere('e', scope.includeInternal);
+  const params = [scope.start, scope.end];
+  const [sources, entries, sessions, pages] = await Promise.all([
+    client.query(`SELECT COALESCE(NULLIF(source_domain,''),'直接访问') AS source_domain,
+        COUNT(*) FILTER (WHERE event_name='page_view')::int AS pv,
+        COUNT(DISTINCT visitor_key)::int AS uv FROM ops.site_events e WHERE ${where}
+        GROUP BY 1 ORDER BY pv DESC LIMIT 20`, params),
+    client.query(`SELECT COALESCE(NULLIF(entry,''),'未标记') AS entry,
+        COUNT(*) FILTER (WHERE event_name='page_view')::int AS pv,
+        COUNT(DISTINCT visitor_key)::int AS uv FROM ops.site_events e WHERE ${where}
+        GROUP BY 1 ORDER BY pv DESC LIMIT 20`, params),
+    client.query(`SELECT timezone('Asia/Shanghai', occurred_at)::date AS day,
+        COUNT(DISTINCT session_key)::int AS sessions, COUNT(DISTINCT user_key)::int AS logged_users
+        FROM ops.site_events e WHERE ${where} GROUP BY 1 ORDER BY 1`, params),
+    client.query(`SELECT page_key, COUNT(*) FILTER (WHERE event_name='page_view')::int AS pv,
+        COUNT(DISTINCT visitor_key)::int AS uv,
+        COUNT(*) FILTER (WHERE event_name='page_view' AND entry <> '')::int AS entry_count,
+        ROUND(AVG((properties->>'duration_sec')::numeric) FILTER (WHERE event_name='engagement'),1) AS avg_duration_sec
+        FROM ops.site_events e WHERE ${where} GROUP BY page_key ORDER BY pv DESC LIMIT 20`, params),
+  ]);
+  return { sources: sources.rows, entries: entries.rows, sessions: sessions.rows, pages: pages.rows };
+}
+
+// 行为分析：事件分布、注册/收藏/导入漏斗、页面停留、最近原始事件
+async function loadBehaviorData(scope, client = pool) {
+  const where = buildEventWhere('e', scope.includeInternal);
+  const params = [scope.start, scope.end];
+  const [events, funnel, details, recent] = await Promise.all([
+    client.query(`SELECT event_name, COUNT(*)::int AS count,
+        COUNT(DISTINCT COALESCE(user_key,visitor_key))::int AS users
+        FROM ops.site_events e WHERE ${where} GROUP BY event_name ORDER BY count DESC`, params),
+    client.query(`WITH session_steps AS (
+          SELECT session_key,
+            MIN(occurred_at) FILTER (WHERE event_name='register_view') AS register_view_at,
+            MIN(occurred_at) FILTER (WHERE event_name='register_submit') AS register_submit_at,
+            MIN(occurred_at) FILTER (WHERE event_name='register_success') AS register_success_at,
+            MIN(occurred_at) FILTER (WHERE event_name='watchlist_add_success') AS watchlist_add_at,
+            MIN(occurred_at) FILTER (WHERE event_name='import_result' AND properties->>'result'='success') AS import_success_at
+          FROM ops.site_events e WHERE ${where} AND session_key IS NOT NULL GROUP BY session_key
+        )
+        SELECT COUNT(*) FILTER (WHERE register_view_at IS NOT NULL)::int AS register_view,
+          COUNT(*) FILTER (WHERE register_view_at IS NOT NULL AND register_submit_at > register_view_at)::int AS register_submit,
+          COUNT(*) FILTER (WHERE register_submit_at IS NOT NULL AND register_success_at > register_submit_at)::int AS register_success,
+          COUNT(*) FILTER (WHERE watchlist_add_at IS NOT NULL)::int AS watchlist_add_success,
+          COUNT(*) FILTER (WHERE import_success_at IS NOT NULL)::int AS import_success
+        FROM session_steps`, params),
+    client.query(`SELECT page_key, COUNT(*)::int AS count, ROUND(AVG((properties->>'duration_sec')::numeric),1) AS avg_duration_sec
+        FROM ops.site_events e WHERE ${where} AND event_name IN ('detail_open','engagement') GROUP BY page_key ORDER BY count DESC LIMIT 20`, params),
+    client.query(`SELECT occurred_at, event_name, page_key, module, entry,
+          COALESCE(NULLIF(right(visitor_key,8),''),'匿名') AS visitor_label,
+          (user_key IS NOT NULL) AS logged_in
+        FROM ops.site_events e
+        WHERE e.occurred_at >= GREATEST($1, now() - interval '30 minutes') AND e.occurred_at < $2
+          ${scope.includeInternal ? '' : 'AND e.is_internal=false'} AND event_name <> 'telemetry_init'
+        ORDER BY occurred_at DESC LIMIT 50`, params),
+  ]);
+  return { events: events.rows, funnel: funnel.rows, details: details.rows, recent: recent.rows };
+}
+
 module.exports = {
+  loadBehaviorData,
+  loadOverviewData,
+  loadTrafficData,
   insertSiteEvents,
   purgeAnalyticsData,
   insert_ops_site_runtime_minute,

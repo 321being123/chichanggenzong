@@ -202,7 +202,77 @@ async function with_analytics_convertible_bond_announcement_history(params, clie
                       AND NULLIF(last_error,'') IS NOT NULL) AS announcement_errors`);
 }
 
+// 下修列表的查询字段（视图已按当前交易日行情和单券索引取数）
+const REVISION_SELECT_FIELDS = [
+  'business_status','security_code','ts_code','bond_name','bond_close','remain_size','stock_instrument_id',
+  'stock_name','stock_code','current_conv_price','conversion_value','conversion_premium_pct',
+  'net_asset_floor_applicable','net_asset_floor_value','net_asset_floor_blocked','trigger_ratio','trigger_price','distance_to_trigger_pct','matched_days','required_days','remaining_days','rolling_remaining_days',
+  'observation_days','minimum_future_days','no_revision_announced_at','no_revision_valid_until','next_eligible_date','official_announced_at',
+  'meeting_date','price_after','effective_date','reached_floor','official_source_url','official_source_number',
+  'official_title','official_summary','trade_date','maturity_date','conv_start_date','conv_end_date',
+  'conv_stop_date','issue_type','official_event_type',
+].map(field => `r.${field}`).join(',');
+const MOTIVE_SELECT_FIELDS = `motive.motive_level,motive.trade_date AS motive_trade_date,motive.motive_score,
+  motive.research_percentile,motive.model_version AS motive_model_version,motive.model_version AS model_version,
+  motive.quality_status AS motive_quality_status,motive.executability_status AS motive_executability_status`;
+
+// 下修列表的筛选条件：只有状态/关键字/临期三个入口，占位符按实际顺序递增
+function buildRevisionWhere({ status = '', query = '', near = false } = {}) {
+  const clauses = [
+    `r.business_status IS NOT NULL`,
+    `(r.issue_type IS NULL OR r.issue_type NOT IN ('定向','私募'))`,
+  ];
+  const values = [];
+  if (status) { values.push(status); clauses.push(`r.business_status=$${values.length}`); }
+  if (near) clauses.push(`r.business_status IN ('near','met_pending','proposed','meeting_pending','approved')`);
+  if (query) {
+    values.push(`%${query}%`);
+    const p = `$${values.length}`;
+    clauses.push(`(r.security_code ILIKE ${p} OR r.ts_code ILIKE ${p} OR r.bond_name ILIKE ${p} OR r.stock_code ILIKE ${p} OR r.stock_name ILIKE ${p})`);
+  }
+  return { clauses, values };
+}
+
+// 下修概览的主列表与状态汇总（共用同一段 FROM/WHERE，排序与截断交给数据库）
+async function loadRevisionOverview({ filter, modelVersion, limit }) {
+  // 模型版本是服务层常量，不是外部输入；仍做一次单引号转义，避免拼接出语法错误。
+  const safeModelVersion = String(modelVersion == null ? '' : modelVersion).replace(/'/g, "''");
+  const base = `FROM analytics.convertible_bond_revision_latest r
+    LEFT JOIN LATERAL (
+      SELECT motive_level,trade_date,motive_score,model_version,quality_status,executability_status,
+             (SELECT count(*) FILTER (WHERE peer.motive_score <= md.motive_score)::numeric / NULLIF(count(*),0)
+                FROM analytics.convertible_bond_revision_motive_daily peer
+               WHERE peer.trade_date=md.trade_date AND peer.model_version=md.model_version) AS research_percentile
+        FROM analytics.convertible_bond_revision_motive_daily md
+       WHERE md.instrument_id=r.instrument_id AND md.model_version='${safeModelVersion}'
+       ORDER BY md.trade_date DESC,md.calculated_at DESC LIMIT 1
+    ) motive ON true
+    WHERE ${filter.clauses.join(' AND ')}`;
+  const order = `ORDER BY CASE r.business_status
+      WHEN 'implemented' THEN 1 WHEN 'proposed' THEN 2 WHEN 'meeting_pending' THEN 3
+      WHEN 'approved' THEN 4 WHEN 'met_pending' THEN 5 WHEN 'near' THEN 6
+      WHEN 'locked' THEN 7 WHEN 'floor_blocked' THEN 8 WHEN 'tracking' THEN 9 ELSE 10 END,
+    COALESCE(r.remaining_days,9999),r.security_code LIMIT $${filter.values.length + 1}`;
+  const [rowsResult, summaryResult] = await Promise.all([
+    pool.query(`SELECT ${REVISION_SELECT_FIELDS},${MOTIVE_SELECT_FIELDS} ${base} ${order}`, [...filter.values, limit]),
+    pool.query(`SELECT r.business_status,count(*)::int AS count ${base} GROUP BY r.business_status`, filter.values),
+  ]);
+  return { rows: rowsResult.rows, summaryRows: summaryResult.rows };
+}
+
+// 最近一个已完成的开市日（收盘后才要求当日数据；盘中/休市沿用最近已完成交易日）
+async function selectLatestCompletedTradeDate(expectTodayData) {
+  return pool.query(`SELECT MAX(trade_date)::text AS trade_date
+                  FROM market.trade_calendar
+                 WHERE exchange='SSE' AND is_open
+                   AND trade_date ${expectTodayData ? '<=' : '<'} (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai')::date`);
+}
+
 module.exports = {
+  buildRevisionWhere,
+  loadRevisionOverview,
+  selectLatestCompletedTradeDate,
+
   loadPriceChanges,
   loadRevisionBonds,
   loadRevisionResponseHistory,

@@ -4,6 +4,8 @@ const CoreDate=require('../../public/shared/core-date');
 const {resolveInstrument}=require('./securityIdentity');
 const crypto=require('crypto');
 const txControl = require('../repositories/transactionControl');
+const {shiftDay: shiftBusinessDay} = require('./tradingDayShift');
+const {fetchSseEvents, fetchSzseEvents} = require('../dataAccess/adapters/announcementSourceAdapter');
 const PARSER='cash-dividend-v6';
 const BOND_INTEREST_PARSER='bond-interest-v2';
 function normalizeChineseDates(text){
@@ -83,7 +85,7 @@ function parseDividend(text,identity) {
   const period=identity.market==='HK'?labeledDate(flat,'宣派股息的報告期末|宣派股息的报告期末'):null;
   const dividendType=flat.match(/股息類型\s*([^\n]+)/)?.[1]?.trim()||null;
   const dividendNature=flat.match(/股息性質\s*([^\n]+)/)?.[1]?.trim()||null;
-  const taxTreatment=identity.market==='CN'?require('./cashDividendSettlement').parseCnTaxTreatment(flat):require('./cashDividendSettlement').parseHkTaxTreatment(flat);
+  const taxTreatment=identity.market==='CN'?require('./cashDividendTaxTerms').parseCnTaxTreatment(flat):require('./cashDividendTaxTerms').parseHkTaxTreatment(flat);
   const terms={recordDate,exDate,payDate,currency,amount,period,dividendType,dividendNature,...(taxTreatment?{taxTreatment}: {})};
   if(!recordDate||!payDate||!currency||amount==null||!Number.isFinite(amount)||amount<0) return {reason:'incomplete_dividend_terms',...terms};
   if(payDate<recordDate) return {reason:'invalid_dividend_timeline',...terms};
@@ -121,7 +123,7 @@ async function cohort() {
   return [...new Map(list.map(i=>[i.instrument_id,i])).values()];
 }
 async function storeDocument(identity,ann,sourceId) {
-  const {runPythonExtraction}=require('./arbitrageParser');
+  const {runPythonExtraction}=require('./arbitrageDocumentSource');
   const url=ann.fileLink||ann.url,sourceKey=ann.sourceKey||ann.source_number||url;
   const cached=(await pool.query(`SELECT document_id,raw_payload FROM event.documents WHERE source_id=$1 AND url=$2 ORDER BY document_id DESC LIMIT 1`,[sourceId,url])).rows[0];
   if(cached?.raw_payload?.cashDividend?.parserVersion===PARSER && cached.raw_payload.cashDividend.quality==='passed'
@@ -166,7 +168,7 @@ async function syncCashDividends({targetDate=CoreDate.todayInZone('Asia/Shanghai
     const scope='cash_dividend:'+identity.instrument_id;
     const cursor=(await pool.query("SELECT last_success_date::text,cursor_payload,last_error FROM ops.sync_cursors WHERE scope_key=$1 AND dataset_code='stock_cash_dividend_facts'",[scope])).rows[0];
     const discovered=cursor?.cursor_payload?.discoveryThrough || (cursor?.cursor_payload?.targetDate && cursor.last_error==='公告条款解析未完成'?cursor.cursor_payload.targetDate:null) || cursor?.last_success_date;
-    const from=startDate || (discovered?require('./cashIncome').shiftDay(discovered):targetDate.slice(0,4)+'-01-01');
+    const from=startDate || (discovered?shiftBusinessDay(discovered):targetDate.slice(0,4)+'-01-01');
     const sourceCode=identity.market==='HK'?'hkex':identity.exchange_code==='SSE'?'sse':identity.exchange_code==='SZSE'?'szse':null;
     try {
       if(!sourceCode) throw new Error('该市场的分红官方源尚未准入');
@@ -177,13 +179,12 @@ async function syncCashDividends({targetDate=CoreDate.todayInZone('Asia/Shanghai
       let announcements=local.concat(cursor?.cursor_payload?.announcementQueue||[]);
       if(!localOnly&&from<=targetDate&&sourceCode==='hkex') announcements=announcements.concat(await require('./hkexAnnouncement').searchAnnouncements({fromDate:from,toDate:targetDate,stockCode:String(identity.canonical_code).split('.')[0]}));
       else if(!localOnly&&from<=targetDate) {
-        const module=require('./stockAnalysis');
         let announcementCode=identity.canonical_code;
         if(identity.asset_class==='convertible_bond'){
           announcementCode=(await pool.query('SELECT i.canonical_code FROM fundamental.convertible_bond_profiles p JOIN core.instruments i ON i.instrument_id=p.stock_instrument_id WHERE p.instrument_id=$1',[identity.instrument_id])).rows[0]?.canonical_code;
           if(!announcementCode)throw new Error('可转债发行人身份缺失，不能核验付息公告覆盖');
         }
-        const batch=await (sourceCode==='sse'?module.fetchSseEvents:module.fetchSzseEvents)(announcementCode,from,targetDate,'',{structured:true});
+        const batch=await (sourceCode==='sse'?fetchSseEvents:fetchSzseEvents)(announcementCode,from,targetDate,'',{structured:true});
         if(!batch.complete) throw new Error('官方公告分页不完整');announcements=announcements.concat(batch.events);
       }
       const candidates=[...new Map(announcements.filter(a=>identity.asset_class==='convertible_bond'?/付息公告/.test(a.title):sourceCode==='hkex'?/股息|Dividend/i.test(a.title)&&!/計劃|计划|代息股份|董事|股[东東]大[会會]|取消|cancel/i.test(a.title):/(?:权益分派|利润分配).*实施公告/.test(a.title)).map(a=>[a.fileLink||a.url,a])).values()];

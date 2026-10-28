@@ -754,6 +754,27 @@
       "role": "domain_algorithm",
       "batch": 5,
       "status": "registered"
+    },
+    {
+      "path": "server/services/arbitrageDocumentSource.js",
+      "role": "data_adapter",
+      "batch": 6,
+      "status": "registered",
+      "note": "套利公告 PDF 的 Python 解析桥接（无业务判定）"
+    },
+    {
+      "path": "server/services/cashDividendTaxTerms.js",
+      "role": "shared_pure",
+      "batch": 6,
+      "status": "registered",
+      "note": "股息税务条款纯解析，结算内核与分红采集共用"
+    },
+    {
+      "path": "server/services/tradingDayShift.js",
+      "role": "shared_pure",
+      "batch": 6,
+      "status": "registered",
+      "note": "自然日位移纯函数（Asia/Shanghai 归属日）"
     }
   ],
   "globalContracts": {

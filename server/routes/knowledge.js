@@ -209,10 +209,7 @@ router.post('/categories/:id/move', requireLogin, requireCategoryOwner, asyncHan
   const client = await pool.connect();
   try {
     await txControl.begin(client);
-    const current = await client.query(
-      'SELECT id, parent_id FROM article_categories WHERE id=$1 AND owner_username=$2 FOR UPDATE',
-      [id, req.session.user]
-    );
+    const current = await knowledgeRepository.lockCategoryForOwner({ id, username: req.session.user }, client);
     if (!current.rows[0]) {
       await txControl.rollback(client);
       return res.status(404).json({ error: '分类不存在' });
@@ -238,12 +235,7 @@ router.post('/categories/:id/move', requireLogin, requireCategoryOwner, asyncHan
 
     const oldParentId = current.rows[0].parent_id;
     await knowledgeRepository.updateCategoryParent({ parentId, id }, client);
-    const target = await client.query(
-      `SELECT id FROM article_categories
-       WHERE parent_id IS NOT DISTINCT FROM $1 AND id<>$2 AND owner_username=$3
-       ORDER BY sort_order, id`,
-      [parentId, id, req.session.user]
-    );
+    const target = await knowledgeRepository.listSiblingCategoryIds({ parentId, excludeId: id, username: req.session.user }, client);
     const targetIds = target.rows.map(row => row.id);
     let insertAt = targetIds.length;
     if (beforeId !== null) {
@@ -255,18 +247,13 @@ router.post('/categories/:id/move', requireLogin, requireCategoryOwner, asyncHan
     }
     targetIds.splice(insertAt, 0, id);
     for (let i = 0; i < targetIds.length; i++) {
-      await client.query('UPDATE article_categories SET sort_order=$1 WHERE id=$2', [(i + 1) * 10, targetIds[i]]);
+      await knowledgeRepository.updateCategorySortOrder({ sortOrder: (i + 1) * 10, id: targetIds[i] }, client);
     }
 
     if (oldParentId !== parentId) {
-      const old = await client.query(
-        `SELECT id FROM article_categories
-         WHERE parent_id IS NOT DISTINCT FROM $1 AND owner_username=$2
-         ORDER BY sort_order, id`,
-        [oldParentId, req.session.user]
-      );
+      const old = await knowledgeRepository.listChildCategoryIds({ parentId: oldParentId, username: req.session.user }, client);
       for (let i = 0; i < old.rows.length; i++) {
-        await client.query('UPDATE article_categories SET sort_order=$1 WHERE id=$2', [(i + 1) * 10, old.rows[i].id]);
+        await knowledgeRepository.updateCategorySortOrder({ sortOrder: (i + 1) * 10, id: old.rows[i].id }, client);
       }
     }
     await txControl.commit(client);
@@ -442,9 +429,7 @@ router.put('/articles/reorder', requireLogin, requireKsWrite, asyncHandler(async
   const client = await pool.connect();
   try {
     await txControl.begin(client);
-    const rows = await client.query(
-      'SELECT id, category_id, author_username FROM articles ORDER BY sort_order, id FOR UPDATE'
-    );
+    const rows = await knowledgeRepository.lockArticlesForReorder(client);
     const scopedRows = categoryId === null
       ? rows.rows
       : rows.rows.filter(row => Number(row.category_id) === categoryId);
@@ -463,7 +448,7 @@ router.put('/articles/reorder', requireLogin, requireKsWrite, asyncHandler(async
       ? queue
       : rows.rows.map(row => Number(row.category_id) === categoryId ? queue.shift() : row.id);
     for (let i = 0; i < finalIds.length; i++) {
-      await client.query('UPDATE articles SET sort_order=$1 WHERE id=$2', [(i + 1) * 10, finalIds[i]]);
+      await knowledgeRepository.updateArticleSortOrder({ sortOrder: (i + 1) * 10, id: finalIds[i] }, client);
     }
     await txControl.commit(client);
     await auditLog(req.session.user, 'ks_article_reorder', categoryId, '调整分类内文章顺序').catch(() => {});

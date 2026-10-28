@@ -334,7 +334,54 @@ async function updateCategoryParent(params, client = pool) {
   );
 }
 
+// 分类移动：先锁住本分类行，再取同级分类与批量改排序（顺序值按 10 递增）
+async function lockCategoryForOwner({ id, username }, client = pool) {
+  return client.query(
+    'SELECT id, parent_id FROM article_categories WHERE id=$1 AND owner_username=$2 FOR UPDATE',
+    [id, username],
+  );
+}
+
+async function listSiblingCategoryIds({ parentId, excludeId, username }, client = pool) {
+  return client.query(
+    `SELECT id FROM article_categories
+       WHERE parent_id IS NOT DISTINCT FROM $1 AND id<>$2 AND owner_username=$3
+       ORDER BY sort_order, id`,
+    [parentId, excludeId, username],
+  );
+}
+
+async function listChildCategoryIds({ parentId, username }, client = pool) {
+  return client.query(
+    `SELECT id FROM article_categories
+         WHERE parent_id IS NOT DISTINCT FROM $1 AND owner_username=$2
+         ORDER BY sort_order, id`,
+    [parentId, username],
+  );
+}
+
+async function updateCategorySortOrder({ sortOrder, id }, client = pool) {
+  return client.query('UPDATE article_categories SET sort_order=$1 WHERE id=$2', [sortOrder, id]);
+}
+
+// 文章排序：先整表加锁读出当前顺序，再按最终顺序回写
+async function lockArticlesForReorder(client = pool) {
+  return client.query(
+    'SELECT id, category_id, author_username FROM articles ORDER BY sort_order, id FOR UPDATE',
+  );
+}
+
+async function updateArticleSortOrder({ sortOrder, id }, client = pool) {
+  return client.query('UPDATE articles SET sort_order=$1 WHERE id=$2', [sortOrder, id]);
+}
+
 module.exports = {
+  lockCategoryForOwner,
+  listSiblingCategoryIds,
+  listChildCategoryIds,
+  updateCategorySortOrder,
+  lockArticlesForReorder,
+  updateArticleSortOrder,
   adminListArticles,
   adminListComments,
   adminListUsers,

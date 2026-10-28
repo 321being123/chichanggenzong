@@ -240,6 +240,7 @@ async function updatePositionFields(params, tx) {
 }
 
 module.exports = {
+  bumpPositionVersion,
   clearNavDirtyFrom,
   listAccountNames,
   listAllDailyPrices,
@@ -258,4 +259,6 @@ module.exports = {
   readExactAnchorPrices,
   readNavBackupInfo,
   readPreviousCompleteAnchorPrices,
+  updatePositionFields,
+  updatePositionPrice,
 };

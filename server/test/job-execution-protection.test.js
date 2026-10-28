@@ -180,8 +180,8 @@ assert.ok(/JOB_EXTERNAL_CALL_USED/.test(pythonGuard) && /_budget_date_text/.test
 assert.ok(/setExternalCallCount/.test(externalGuard) && /setExternalCallCount\(message\.context/.test(runnerProcess),
   'Node 子进程必须继承计划实例累计调用数');
 assert.ok(/childProcessEnv/.test(bondAnalysis) && /mergeExternalCallStatsFromStderr/.test(bondAnalysis)
-  && /childProcessEnv/.test(read('server/services/arbitrageParser.js'))
-  && /mergeExternalCallStatsFromStderr/.test(read('server/services/convertibleBondRedemptionSync.js')),
+  && /childProcessEnv/.test(read('server/services/arbitrageParser.js') + read('server/services/arbitrageDocumentSource.js'))
+  && /mergeExternalCallStatsFromStderr/.test(read('server/services/convertibleBondRedemptionSync.js') + read('server/services/arbitrageDocumentSource.js')),
   '历史 Python/PDF 子进程必须继承并回传统一 Guard 的累计调用数');
 assert.ok(/JOB_BUDGET_EXCEEDED/.test(ipoHistoryJob) && /error\.code !== 'ENOENT'/.test(ipoHistoryJob)
   && /externalCallCount = structured\.externalCalls/.test(ipoHistoryJob), 'IPO 业务/API错误不得换解释器重跑，且必须透传结构化预算信息');

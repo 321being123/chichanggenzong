@@ -11,6 +11,7 @@ const { loadUser, updateUserAccounts, loadAccountData, loadAccountSummary, saveA
 const { round } = require('../db/util');
 const { withTransaction } = require('../db/transaction');
 const accountsRepository = require('../repositories/accountsRepository');
+const navImportRepository = require('../repositories/navImportRepository');
 const { fetchQuotesByCodes, todayCN, isCnTradingDate, toTsCode, validateDailyPriceBatch } = require('../services/market');
 const { recomputeNav } = require('../jobs/replayNav');
 const { getValuationByCodes } = require('../services/convertibleBondValuationService');
@@ -654,63 +655,28 @@ router.patch('/positions/:id/meta', requireLogin, asyncHandler(assertOwnership),
 router.patch('/accounts/:name/settings', requireLogin, asyncHandler(assertOwnership), requireVersion, rateLimit({ prefix: 'save', windowMs: 60000, max: 30, getKey: (r) => r.session.user || r.ip, message: '保存过于频繁，请稍后再试' }), asyncHandler(async (req, res) => {
   const name = req.params.name;
   const username = req.session.user;
-  const sets = [];
-  const vals = [username, name];
-  let idx = 3;
-  if (req.body.cashBase !== undefined) {
-    sets.push('cash_base=$' + idx);
-    vals.push(round(req.body.cashBase, 2));
-    idx++;
-  }
-  if (req.body.hkRate !== undefined) {
-    sets.push('hk_rate=$' + idx);
-    vals.push(round(req.body.hkRate, 6));
-    idx++;
-  }
+  // 只收集本次要改的字段，列名白名单在数据层
+  const patch = {};
+  if (req.body.cashBase !== undefined) patch.cash_base = round(req.body.cashBase, 2);
+  if (req.body.hkRate !== undefined) patch.hk_rate = round(req.body.hkRate, 6);
   if (req.body.feeSettings !== undefined) {
-    sets.push('fee_settings=$' + idx);
-    vals.push(typeof req.body.feeSettings === 'object' ? JSON.stringify(req.body.feeSettings) : req.body.feeSettings);
-    idx++;
+    patch.fee_settings = typeof req.body.feeSettings === 'object' ? JSON.stringify(req.body.feeSettings) : req.body.feeSettings;
   }
-  if (req.body.cashType !== undefined) {
-    sets.push('cash_type=$' + idx);
-    vals.push(req.body.cashType);
-    idx++;
-  }
-  if (req.body.cashSubtype !== undefined) {
-    sets.push('cash_subtype=$' + idx);
-    vals.push(req.body.cashSubtype);
-    idx++;
-  }
-  if (sets.length === 0) return res.status(400).json({ error: '没有要修改的设置' });
+  if (req.body.cashType !== undefined) patch.cash_type = req.body.cashType;
+  if (req.body.cashSubtype !== undefined) patch.cash_subtype = req.body.cashSubtype;
+  if (Object.keys(patch).length === 0) return res.status(400).json({ error: '没有要修改的设置' });
   try {
     // 乐观锁（2026-08-04）：版本不一致 → 409
     const version = await withTransaction(async tx => {
       await tradeLedger.checkVersionInTxn(tx, username, name, req.query.version);
-      await tx.query(
-        'UPDATE accounts SET ' + sets.join(', ') + ', updated_at=to_char(now(),\'YYYY-MM-DD HH24:MI:SS\'), version=COALESCE(version,0)+1 WHERE username=$1 AND account_name=$2',
-        vals
-      );
+      await navImportRepository.updateAccountSettings({ username, accountName: name, patch }, tx);
       if (req.body.hkRate !== undefined) {
         const globalRate = round(req.body.hkRate, 6);
-        await tx.query(
-          `INSERT INTO market.fx_rates(base_currency,quote_currency,rate_date,source_id,rate,fetched_at)
-           VALUES ('HKD','CNY',(CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai')::date,7,$1,now())
-           ON CONFLICT (base_currency,quote_currency,rate_date)
-           DO UPDATE SET source_id=7, rate=EXCLUDED.rate, fetched_at=EXCLUDED.fetched_at`,
-          [globalRate]
-        );
-        await tx.query(
-          "UPDATE accounts SET hk_rate=$1, hk_rate_updated_at=now(), updated_at=to_char(now(),'YYYY-MM-DD HH24:MI:SS')",
-          [globalRate]
-        );
+        await navImportRepository.upsertHkdCnyRate({ rate: globalRate }, tx);
+        await navImportRepository.syncLegacyAccountHkRate({ rate: globalRate }, tx);
       }
       // 同步提升 account_data 总版本（并发乐观锁基准），RETURNING 返回新版本号供前端同步
-      const upV = await tx.query(
-        `INSERT INTO account_data (username, account_name, data, version) VALUES ($1,$2,'{}',0)
-         ON CONFLICT (username, account_name) DO UPDATE SET version=account_data.version+1 RETURNING version`,
-        [username, name]
-      );
+      const upV = await navImportRepository.bumpAccountDataVersion({ username, accountName: name }, tx);
       return upV.rows[0] ? Number(upV.rows[0].version) : null;
     });
     res.json({ ok: true, version });
@@ -776,24 +742,14 @@ router.delete('/nav/:date', requireLogin, asyncHandler(assertOwnership), require
   try {
     await withTransaction(async tx => {
       await tradeLedger.checkVersionInTxn(tx, username, accountName, req.query.version);
-      const { rows: locked } = await tx.query(
-        `SELECT is_locked AS "isLocked", source_priority AS "sourcePriority"
-           FROM nav_history WHERE username=$1 AND account_name=$2 AND date=$3 FOR UPDATE`,
-        [username, accountName, date]
-      );
+      const { rows: locked } = await navImportRepository.lockNavRow({ username, accountName, date }, tx);
       if (locked[0] && locked[0].isLocked === true && Number(locked[0].sourcePriority || 0) >= 100) {
         const e = new Error('券商导入快照已锁定，不能删除');
         e.status = 409;
         throw e;
       }
-      await tx.query(
-        'DELETE FROM nav_history WHERE username=$1 AND account_name=$2 AND date=$3',
-        [username, accountName, date]
-      );
-      await tx.query(
-        `INSERT INTO account_data (username, account_name, data, version, nav_version) VALUES ($1,$2,'{}',0,0) ON CONFLICT (username, account_name) DO UPDATE SET nav_version=account_data.nav_version+1, version=account_data.version+1`,
-        [username, accountName]
-      );
+      await navImportRepository.deleteNavByDate({ username, accountName, date }, tx);
+      await navImportRepository.bumpNavVersion({ username, accountName }, tx);
     });
     const result = await loadAccountData(username, accountName);
     res.json({ ok: true, data: result });
@@ -839,14 +795,7 @@ router.post('/nav/import', requireLogin, asyncHandler(assertOwnership), requireV
   let outcome = null;
   try {
     outcome = await withTransaction(async client => {
-    const { rows: oldBatch } = await client.query(
-      `SELECT id, input_hash AS "inputHash", row_count AS "rowCount"
-         FROM nav_import_batches WHERE username=$1 AND account_name=$2
-           AND (id=$3 OR input_hash=$4)
-         ORDER BY CASE WHEN id=$3 THEN 0 ELSE 1 END, imported_at DESC
-         LIMIT 1 FOR UPDATE`,
-      [username, accountName, importBatchId, inputHash]
-    );
+    const { rows: oldBatch } = await navImportRepository.findImportBatch({ username, accountName, batchId: importBatchId, inputHash }, client);
     if (oldBatch[0]) {
       if (oldBatch[0].inputHash !== inputHash) {
         const e = new Error('importBatchId 已存在但内容不同，拒绝覆盖');
@@ -862,13 +811,7 @@ router.post('/nav/import', requireLogin, asyncHandler(assertOwnership), requireV
     }
     // 乐观锁（2026-08-04）：版本不一致 → 409；幂等重试已在上面无写入返回，不受旧版本影响。
     await tradeLedger.checkVersionInTxn(client, username, accountName, req.query.version);
-    const { rows: currentNav } = await client.query(
-      `SELECT date, nav, total_asset AS "totalAsset", invested, snapshot_at, hk_rate AS "hkRate",
-              cash_cny AS "cashCny", market_value_cny AS "marketValueCny", system_market_value_at_snapshot AS "systemMarketValueAtSnapshot",
-              snapshot_source AS "snapshotSource", source_priority AS "sourcePriority", import_batch_id AS "importBatchId",
-              calc_status AS "calcStatus", diagnostics, is_locked AS "isLocked", input_hash AS "inputHash"
-         FROM nav_history WHERE username=$1 AND account_name=$2 ORDER BY date`, [username, accountName]
-    );
+    const { rows: currentNav } = await navImportRepository.listNavHistory({ username, accountName }, client);
     const hasStoredNumber = (value) => value != null && value !== '' && Number.isFinite(Number(value));
     const existingCashByDate = new Map(currentNav.filter((n) => hasStoredNumber(n.cashCny))
       .map((n) => [String(n.date || '').slice(0, 10), Number(n.cashCny)]));
@@ -886,25 +829,12 @@ router.post('/nav/import', requireLogin, asyncHandler(assertOwnership), requireV
       return !latest || date > latest ? date : latest;
     }, '');
     const preserveExistingAnchor = req.body.mode !== 'replace' && latestExistingAnchor > maxImportDate;
-    const { rows: posRows } = await client.query(
-      `SELECT code, name, price::float8 AS price, quantity::float8 AS quantity, subtype, type
-         FROM positions WHERE username=$1 AND account_name=$2`, [username, accountName]
-    );
-    const { rows: tradeRows } = await client.query(
-      `SELECT code, name, direction, quantity::float8 AS quantity, trade_date, date, executed_at, created_at, subtype, type,
-              quote_currency, amount_cny::float8 AS amount_cny
-         FROM trades WHERE username=$1 AND account_name=$2`, [username, accountName]
-    );
+    const { rows: posRows } = await navImportRepository.listPositionsForImport({ username, accountName }, client);
+    const { rows: tradeRows } = await navImportRepository.listTradesForImport({ username, accountName }, client);
     const anchorPositions = preserveExistingAnchor ? [] : buildAnchorPositions(posRows, tradeRows, maxImportDate);
-    const { rows: acctRows } = await client.query(
-      `SELECT hk_rate::float8 AS hk_rate FROM accounts WHERE username=$1 AND account_name=$2`, [username, accountName]
-    );
+    const { rows: acctRows } = await navImportRepository.readAccountHkRate({ username, accountName }, client);
     const requestedAnchorDate = maxImportDate;
-    const { rows: fxRows } = await client.query(
-      `SELECT DISTINCT ON (rate_date) rate_date, rate::float8 AS rate FROM market.fx_rates
-        WHERE base_currency='HKD' AND quote_currency='CNY' AND rate_date <= $1
-        ORDER BY rate_date ASC, fetched_at DESC, source_id DESC`, [requestedAnchorDate]
-    );
+    const { rows: fxRows } = await navImportRepository.listFxRatesUntil({ date: requestedAnchorDate }, client);
     const fxAtDate = (date) => {
       let rate = 0;
       for (const row of fxRows) {
@@ -944,32 +874,19 @@ router.post('/nav/import', requireLogin, asyncHandler(assertOwnership), requireV
     }, 0);
     const priorLatestCash = currentNav.length && currentNav[currentNav.length - 1].cashCny != null
       ? Number(currentNav[currentNav.length - 1].cashCny) : null;
-    await client.query(
-      `INSERT INTO nav_import_batches (id, username, account_name, range_start, range_end, row_count, input_hash, status, backup_payload, diagnostics)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,'committed',$8::jsonb,$9::jsonb)
-       ON CONFLICT (id) DO NOTHING`,
+    await navImportRepository.insertImportBatch(
       [importBatchId, username, accountName, minImportDate, maxImportDate, normalizedRecords.length, inputHash,
-        JSON.stringify(currentNav), JSON.stringify({ systemRate, systemMarketValue, preservedAnchorDate: preserveExistingAnchor ? latestExistingAnchor : null })]
+        JSON.stringify(currentNav), JSON.stringify({ systemRate, systemMarketValue, preservedAnchorDate: preserveExistingAnchor ? latestExistingAnchor : null })],
+      client,
     );
     // 全量替换模式：先清空再导入
     if (req.body.mode === 'replace') {
-      await client.query('DELETE FROM nav_history WHERE username=$1 AND account_name=$2', [username, accountName]);
+      await navImportRepository.deleteAllNav({ username, accountName }, client);
     }
     for (const r of normalizedRecords) {
       const brokerPositionValue = round(r.totalAsset - r.cash, 2);
       const isAnchor = !preserveExistingAnchor && r.date === maxImportDate;
-      await client.query(
-        `INSERT INTO nav_history
-          (username, account_name, account_id, date, nav, total_asset, invested, snapshot_at, hk_rate,
-           cash_cny, market_value_cny, system_market_value_at_snapshot, broker_fx_rate,
-           snapshot_source, source_priority, import_batch_id, calc_status, diagnostics, is_locked, input_hash)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'imported',100,$14,$15,$16,true,$17)
-         ON CONFLICT (username, account_name, date) DO UPDATE SET
-           nav=EXCLUDED.nav, total_asset=EXCLUDED.total_asset, invested=EXCLUDED.invested, snapshot_at=EXCLUDED.snapshot_at,
-           hk_rate=EXCLUDED.hk_rate, cash_cny=EXCLUDED.cash_cny, market_value_cny=EXCLUDED.market_value_cny,
-           system_market_value_at_snapshot=EXCLUDED.system_market_value_at_snapshot, broker_fx_rate=EXCLUDED.broker_fx_rate,
-           snapshot_source='imported', source_priority=100, import_batch_id=EXCLUDED.import_batch_id,
-           calc_status=EXCLUDED.calc_status, diagnostics=EXCLUDED.diagnostics, is_locked=true, input_hash=EXCLUDED.input_hash`,
+      await navImportRepository.upsertImportedNav(
         [username, accountName, accountId, r.date, round(r.nav, 6), round(r.totalAsset, 2), round(r.invested, 2),
            `${r.date} 23:59:59`, round(r.hkRate != null && r.hkRate > 0 ? r.hkRate : (fxAtDate(r.date) || systemRate), 6),
           round(r.cash, 2), brokerPositionValue, isAnchor ? round(systemMarketValue, 2) : null,
@@ -990,50 +907,31 @@ router.post('/nav/import', requireLogin, asyncHandler(assertOwnership), requireV
           for (const p of anchorPositions) {
             const price = dayPrices.get(String(p.code));
             if (!(price > 0)) continue;
-            await client.query(
-              `INSERT INTO daily_prices (username, account_name, account_id, date, code, name, price)
-               VALUES ($1,$2,$3,$4,$5,$6,$7)
-               ON CONFLICT (username, account_name, date, code) DO UPDATE SET
-                 name=EXCLUDED.name, price=EXCLUDED.price`,
-              [username, accountName, accountId, requestedAnchorDate, p.code, p.name || '', price]
+            await navImportRepository.upsertAnchorDailyPrice(
+              [username, accountName, accountId, requestedAnchorDate, p.code, p.name || '', price], client,
             );
           }
         }
-        await client.query('DELETE FROM nav_position_snapshots WHERE snapshot_id=$1', [importBatchId]);
+        await navImportRepository.deletePositionSnapshotsByBatch({ snapshotId: importBatchId }, client);
         for (const p of anchorPositions) {
           const price = maxImportDate === todayCN()
             ? (Number(p.price) || 0)
             : (dayPrices.get(String(p.code)) > 0 ? dayPrices.get(String(p.code)) : (Number(p.quantity) === 0 ? 0 : null));
           const fx = p.subtype === '港股' ? systemRate : 1;
-          await client.query(
-            `INSERT INTO nav_position_snapshots
-               (snapshot_id, username, account_name, snapshot_date, instrument_code, quantity, price,
-                quote_currency, fx_rate_to_cny, market_value_cny, source)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+          await navImportRepository.insertPositionSnapshot(
             [importBatchId, username, accountName, maxImportDate, p.code, Number(p.quantity) || 0,
               price, p.subtype === '港股' ? 'HKD' : 'CNY', fx,
               round(price * (Number(p.quantity) || 0) * fx, 2),
-              anchorPriceDate && anchorPriceDate !== requestedAnchorDate ? 'system_previous_close' : 'system_daily_price']
+              anchorPriceDate && anchorPriceDate !== requestedAnchorDate ? 'system_previous_close' : 'system_daily_price'],
+            client,
           );
         }
       }
     }
     // 导入成功后，导入批次的最新日期之前只保留导入数据；清理旧的系统/手工快照，
     // 避免它们继续混入历史曲线或在后续刷新时被误当成有效历史。
-    const { rowCount: deletedLegacyRows } = await client.query(
-      `DELETE FROM nav_history
-         WHERE username=$1 AND account_name=$2
-           AND COALESCE(snapshot_source, '') <> 'imported'
-           AND date < (
-             SELECT MAX(date) FROM nav_history
-              WHERE username=$1 AND account_name=$2 AND snapshot_source='imported'
-           )`,
-      [username, accountName]
-    );
-    await client.query(
-      `INSERT INTO account_data (username, account_name, data, version, nav_version) VALUES ($1,$2,'{}',0,0) ON CONFLICT (username, account_name) DO UPDATE SET nav_version=account_data.nav_version+1, version=account_data.version+1`,
-      [username, accountName]
-    );
+    const { rowCount: deletedLegacyRows } = await navImportRepository.deleteLegacyNavRows({ username, accountName }, client);
+    await navImportRepository.bumpNavVersion({ username, accountName }, client);
     return { deletedLegacyRows };
     });
   } catch (e) {
@@ -1058,11 +956,7 @@ router.post('/nav/import/:batchId/rollback', requireLogin, asyncHandler(assertOw
   try {
     const outcome = await withTransaction(async client => {
       await tradeLedger.checkVersionInTxn(client, username, accountName, req.query.version);
-      const { rows: batches } = await client.query(
-        `SELECT id, status, backup_payload FROM nav_import_batches
-          WHERE id=$1 AND username=$2 AND account_name=$3 FOR UPDATE`,
-        [batchId, username, accountName]
-      );
+      const { rows: batches } = await navImportRepository.lockImportBatch({ batchId, username, accountName }, client);
       if (!batches[0]) {
         const e = new Error('导入批次不存在');
         e.status = 404;
@@ -1070,31 +964,22 @@ router.post('/nav/import/:batchId/rollback', requireLogin, asyncHandler(assertOw
       }
       if (batches[0].status === 'rolled_back') return { idempotent: true, rows: 0 };
     const backup = Array.isArray(batches[0].backup_payload) ? batches[0].backup_payload : [];
-    const { rows: aRows } = await client.query('SELECT id FROM accounts WHERE username=$1 AND account_name=$2', [username, accountName]);
-    const accountId = aRows[0] ? aRows[0].id : null;
-    await client.query('DELETE FROM nav_history WHERE username=$1 AND account_name=$2', [username, accountName]);
-    await client.query('DELETE FROM nav_position_snapshots WHERE username=$1 AND account_name=$2 AND snapshot_id=$3', [username, accountName, batchId]);
+    const accountIdRow = await accountsRepository.readAccountId({ username, accountName });
+    const accountId = accountIdRow ? accountIdRow.id : null;
+    await navImportRepository.deleteAllNav({ username, accountName }, client);
+    await navImportRepository.deletePositionSnapshotsByAccountBatch({ username, accountName, batchId }, client);
     for (const n of backup) {
-      await client.query(
-        `INSERT INTO nav_history
-          (username, account_name, account_id, date, nav, total_asset, invested, snapshot_at, hk_rate,
-           cash_cny, market_value_cny, system_market_value_at_snapshot, broker_fx_rate,
-           snapshot_source, source_priority, import_batch_id, calc_status, diagnostics, is_locked, input_hash)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)`,
+      await navImportRepository.restoreNavRow(
         [username, accountName, accountId, n.date, round(n.nav, 6), round(n.totalAsset, 2), n.invested == null ? null : round(n.invested, 2),
           n.snapshot_at || null, n.hkRate || null, n.cashCny == null ? null : round(n.cashCny, 2),
           n.marketValueCny == null ? null : round(n.marketValueCny, 2), n.systemMarketValueAtSnapshot == null ? null : round(n.systemMarketValueAtSnapshot, 2),
           n.brokerFxRate || null, n.snapshotSource || 'legacy', Number(n.sourcePriority || 10), n.importBatchId || null,
-          n.calcStatus || 'complete', JSON.stringify(n.diagnostics || {}), n.isLocked === true, n.inputHash || null]
+          n.calcStatus || 'complete', JSON.stringify(n.diagnostics || {}), n.isLocked === true, n.inputHash || null],
+        client,
       );
     }
-    await client.query(`UPDATE nav_import_batches SET status='rolled_back' WHERE id=$1`, [batchId]);
-    await client.query(
-      `INSERT INTO account_data (username, account_name, data, version, nav_version)
-       VALUES ($1,$2,'{}',0,1)
-       ON CONFLICT (username, account_name) DO UPDATE SET version=account_data.version+1, nav_version=account_data.nav_version+1`,
-      [username, accountName]
-    );
+    await navImportRepository.markImportBatchRolledBack({ batchId }, client);
+    await navImportRepository.bumpNavVersion({ username, accountName, initialNavVersion: 1 }, client);
     return { idempotent: false, rows: backup.length };
     });
     if (outcome.idempotent) {

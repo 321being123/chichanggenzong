@@ -227,7 +227,76 @@ async function insert_ops_data_quality_issues_1(params, client = pool) {
       `, params);
 }
 
+// 条款字段白名单：只有这些列允许出现在动态 SET 中（不接受外部输入的列名）。
+const TERMS_COLUMNS = [
+  'offer_price', 'cash_choice_price', 'subscription_price', 'swap_ratio', 'target_swap_price', 'reference_swap_price', 'cash_component',
+  'rights_ratio_numerator', 'rights_ratio_denominator', 'rights_units_per_new_share', 'offeror', 'offeror_holding_pct',
+  'rights_trade_start', 'rights_trade_end', 'payment_deadline',
+  'description',
+];
+
+// 局部更新条款：只写 patch 里明确给出的列（列名按白名单校验），附参考/供股证券关系。
+async function patchArbitrageCaseTerms(caseId, patch, client = pool) {
+  const terms = patch.terms || {};
+  const sets = [];
+  const params = [];
+  for (const column of TERMS_COLUMNS) {
+    if (!Object.prototype.hasOwnProperty.call(terms, column)) continue;
+    params.push(terms[column]);
+    sets.push(`${column} = $${params.length}`);
+  }
+  if (patch.referenceInstrumentId != null) {
+    params.push(patch.referenceInstrumentId);
+    sets.push(`reference_instrument_id = $${params.length}`);
+  }
+  if (patch.rightsInstrumentId != null) {
+    params.push(patch.rightsInstrumentId);
+    sets.push(`rights_instrument_id = $${params.length}`);
+  }
+  if (!sets.length) return 0;
+  sets.push('terms_updated_at = now()', 'updated_at = now()');
+  params.push(caseId);
+  const result = await client.query(
+    `UPDATE event.arbitrage_cases SET ${sets.join(', ')} WHERE case_id = $${params.length}`,
+    params,
+  );
+  return result.rowCount || 0;
+}
+
+// 整行重写条款（人工重新解析后覆盖）：白名单内的列全部写一遍，再写解析状态与置信度。
+async function rewriteArbitrageCaseTerms(patch, client = pool) {
+  const values = patch.values || {};
+  const sets = [];
+  const params = [];
+  for (const column of TERMS_COLUMNS) {
+    params.push(values[column] ?? null);
+    sets.push(`${column}=$${params.length}`);
+  }
+  params.push(patch.referenceInstrumentId ?? null);
+  const refIdx = params.length;
+  params.push(patch.rightsInstrumentId ?? null);
+  const rightsIdx = params.length;
+  params.push(patch.parseStatus);
+  const statusIdx = params.length;
+  params.push(patch.parserVersion);
+  const versionIdx = params.length;
+  params.push(patch.confidence ?? null);
+  const confidenceIdx = params.length;
+  params.push(patch.caseId);
+  const caseIdx = params.length;
+  return client.query(`
+    UPDATE event.arbitrage_cases SET ${sets.join(',')},
+      reference_instrument_id=$${refIdx},rights_instrument_id=$${rightsIdx},
+      parse_status=$${statusIdx},parser_version=$${versionIdx},terms_confidence=$${confidenceIdx},
+      review_status='approved',terms_updated_at=now(),updated_at=now()
+    WHERE case_id=$${caseIdx}
+  `, params);
+}
+
 module.exports = {
+  TERMS_COLUMNS,
+  patchArbitrageCaseTerms,
+  rewriteArbitrageCaseTerms,
   acquireDocumentParseLock,
   resolveInstrumentByCode,
   resolveParseFailure,

@@ -815,18 +815,7 @@ async function calculateConvertibleBondRevisionMotiveScores(tradeDate) {
 async function getBondRevisionMotiveDetail({ tsCode, tradeDate = null }) {
   const code = normalizeBondCode(tsCode);
   if (!code) throw Object.assign(new Error('可转债代码不合法'), { statusCode: 400 });
-  const params = [code, MOTIVE_MODEL_VERSION];
-  let dateClause = '';
-  if (tradeDate) { params.push(dateText(tradeDate)); dateClause = ` AND m.trade_date=$${params.length}::date`; }
-  const { rows } = await pool.query(
-    `SELECT m.*,i.canonical_code AS ts_code,i.name AS bond_name,p.stock_instrument_id,si.canonical_code AS stock_code,si.name AS stock_name,
-            (SELECT count(*) FILTER (WHERE peer.motive_score <= m.motive_score)::numeric / NULLIF(count(*),0)
-               FROM analytics.convertible_bond_revision_motive_daily peer
-              WHERE peer.trade_date=m.trade_date AND peer.model_version=m.model_version) AS research_percentile
-       FROM analytics.convertible_bond_revision_motive_daily m JOIN core.instruments i ON i.instrument_id=m.instrument_id
-       JOIN fundamental.convertible_bond_profiles p ON p.instrument_id=i.instrument_id LEFT JOIN core.instruments si ON si.instrument_id=p.stock_instrument_id
-      WHERE i.canonical_code=$1 AND m.model_version=$2${dateClause} ORDER BY m.trade_date DESC,m.calculated_at DESC LIMIT 1`, params
-  );
+  const { rows } = await repository.selectRevisionMotiveDetail({ code, modelVersion: MOTIVE_MODEL_VERSION, tradeDate: tradeDate ? dateText(tradeDate) : null });
   if (!rows.length) {
     const { rows: bonds } = await repository.select_core_instruments([code]);
     if (!bonds.length) return null;
@@ -862,55 +851,7 @@ async function getBondRevisionMotiveDetail({ tsCode, tradeDate = null }) {
 async function syncRevisionMotiveInputs({ businessDate = null, limit = null } = {}) {
   const date = dateText(businessDate) || dateText(new Date());
   const configuredLimit = Number.isInteger(Number(limit)) && Number(limit) > 0 ? Number(limit) : null;
-  const limitClause = configuredLimit ? ' LIMIT $2' : '';
-  const queryParams = configuredLimit ? [date, configuredLimit] : [date];
-  const { rows: bonds } = await pool.query(`SELECT p.instrument_id,p.stock_instrument_id,i.canonical_code AS ts_code,i.list_date,
-             si.canonical_code AS stock_code,ci.company_id,holder_wm.holder_report_date
-      FROM fundamental.convertible_bond_profiles p JOIN core.instruments i ON i.instrument_id=p.instrument_id
-      JOIN public.bond_unified u ON u.instrument_id=i.instrument_id
-      JOIN market.convertible_bond_daily_metrics md ON md.instrument_id=i.instrument_id
-       AND md.trade_date=(SELECT max(trade_date) FROM market.convertible_bond_daily_metrics WHERE trade_date <= $1::date)
-      LEFT JOIN core.instruments si ON si.instrument_id=p.stock_instrument_id
-      LEFT JOIN core.company_instruments ci ON ci.instrument_id=p.stock_instrument_id AND ci.relation_type='issued_by'
-      LEFT JOIN ops.sync_cursors hcur ON hcur.instrument_id=p.instrument_id
-       AND hcur.scope_key=('convertible_bond:' || p.instrument_id::text) AND hcur.dataset_code='top10_cb_holders'
-      LEFT JOIN ops.sync_cursors pcur ON pcur.company_id=ci.company_id
-       AND pcur.scope_key=('company:' || ci.company_id::text) AND pcur.dataset_code='pledge_stat'
-      LEFT JOIN LATERAL (
-        SELECT max(report_date)::text AS holder_report_date
-          FROM fundamental.convertible_bond_holder_positions hpwm
-         WHERE hpwm.instrument_id=p.instrument_id
-      ) holder_wm ON true
-      LEFT JOIN fundamental.convertible_bond_issuance iss ON iss.instrument_id=i.instrument_id
-      LEFT JOIN LATERAL (
-        SELECT max(last_trade_date) AS last_trade_date,
-               max(COALESCE(last_conversion_date,last_trade_date)) AS last_conversion_date
-          FROM event.convertible_bond_call_events ce
-         WHERE ce.instrument_id=i.instrument_id AND ce.event_type IN ('exercise','implementation','completion')
-      ) call_stop ON true
-     WHERE i.asset_class='convertible_bond' AND i.status='listed' AND u.status='listed'
-       AND (p.cb_type IS NULL OR p.cb_type IN ('CB',''))
-       AND (u.issue_type IS NULL OR u.issue_type NOT IN ('定向','私募'))
-       AND (iss.issue_type IS NULL OR iss.issue_type NOT IN ('定向','私募'))
-       AND (i.list_date IS NULL OR i.list_date <= $1::date)
-       AND (i.delist_date IS NULL OR i.delist_date > $1::date)
-       AND (p.maturity_date IS NULL OR p.maturity_date >= $1::date)
-       AND (p.conv_end_date IS NULL OR p.conv_end_date >= $1::date)
-       AND (p.conv_stop_date IS NULL OR p.conv_stop_date > $1::date)
-       AND (COALESCE(call_stop.last_trade_date,call_stop.last_conversion_date) IS NULL OR COALESCE(call_stop.last_trade_date,call_stop.last_conversion_date) > $1::date)
-     ORDER BY CASE WHEN EXISTS (
-                SELECT 1 FROM fundamental.convertible_bond_holder_positions hp
-                 WHERE hp.instrument_id=p.instrument_id
-              ) THEN 1 ELSE 0 END,
-              CASE WHEN hcur.last_attempt_at IS NULL THEN 0 ELSE 1 END,
-              hcur.last_attempt_at ASC NULLS FIRST,
-              CASE WHEN ci.company_id IS NULL OR EXISTS (
-                SELECT 1 FROM fundamental.company_pledge_snapshots cps
-                 WHERE cps.company_id=ci.company_id
-              ) THEN 1 ELSE 0 END,
-              CASE WHEN pcur.last_attempt_at IS NULL THEN 0 ELSE 1 END,
-              pcur.last_attempt_at ASC NULLS FIRST,
-              i.canonical_code${limitClause}`, queryParams);
+  const { rows: bonds } = await repository.selectRevisionMotiveInputTargets({ date, limit: configuredLimit });
   const { rows: sourceRows } = await repository.select_ops_data_sources();
   const sourceMap = Object.fromEntries(sourceRows.map(row => [row.source_code, row.source_id]));
   let holderCount = 0, pledgeCount = 0, externalCalls = 0;

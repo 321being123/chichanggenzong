@@ -7,7 +7,7 @@ const fs = require('fs');
 const { pool } = require('../db');
 const { hashString } = require('../db/util');
 const { sanitizeJobError } = require('./jobErrorSanitizer');
-const { childProcessEnv, mergeExternalCallStatsFromStderr } = require('./externalCallGuard');
+const { resolvePython, runPythonExtraction } = require('./arbitrageDocumentSource');
 const txControl = require('../repositories/transactionControl');
 const { acquireDocumentParseLock, resolveInstrumentByCode, resolveParseFailure } = require('../repositories/arbitrageParserRepository.js');
 const repository = require('../repositories/arbitrageParserRepository.js');
@@ -74,73 +74,7 @@ function getParseRetryDecision(existing, force = false, now = new Date()) {
 
 /* acquireDocumentParseLock 已迁入 server/repositories/arbitrageParserRepository.js */
 
-// 复用项目已有的 Python 定位逻辑（与 marketVolatilitySync / convertibleBondAnalysis 一致）：
-// 优先 PYTHON 环境变量，其次项目内 venv（root/venv 或 ipo-report/venv，Windows/类 Unix），最后退回 PATH。
-function resolvePython() {
-  const root = path.resolve(__dirname, '..', '..');
-  if (process.env.PYTHON) return process.env.PYTHON;
-  const candidates = process.platform === 'win32'
-    ? [
-        path.join(root, 'venv', 'Scripts', 'python.exe'),
-        path.join(root, 'ipo-report', 'venv', 'Scripts', 'python.exe'),
-      ]
-    : [
-        path.join(root, 'venv', 'bin', 'python'),
-        path.join(root, 'ipo-report', 'venv', 'bin', 'python'),
-      ];
-  for (const c of candidates) if (fs.existsSync(c)) return c;
-  return process.platform === 'win32' ? 'python.exe' : 'python3'; // 退回 PATH
-}
-
-// 调用 Python 解析器提取单条公告 URL 的条款
-// targetCode: 目标证券代码（如 A 股换股吸收合并中的被吸收合并方），帮助解析器选择正确的换股价格
-function runPythonExtraction(url, targetCode, {rawText=false}={}) {
-  return new Promise((resolve, reject) => {
-    if (!/^https?:\/\//i.test(url)) return reject(new Error('only http(s) urls are supported'));
-    const py = resolvePython();
-    const args = [SCRIPT, url];
-    if (targetCode) args.push('--target-code', String(targetCode));
-    if(rawText) args.push('--raw-text');
-    const child = spawn(py, args, {
-      cwd: path.resolve(__dirname, '..', '..'),
-      env: childProcessEnv({ PYTHONUTF8: '1' }),
-      windowsHide: true,
-      timeout: 120000,
-    });
-    let out = '';
-    let err = '';
-    child.stdout.on('data', (d) => { out += d; });
-    child.stderr.on('data', (d) => { err += d; });
-    child.on('error', reject);
-    child.on('close', (code) => {
-      mergeExternalCallStatsFromStderr(err);
-      if (!out.trim()) return reject(new Error('parser empty output (code ' + code + '): ' + err.slice(0, 300)));
-      try {
-        const json = JSON.parse(out);
-        if (json.error) {
-          const message = String(json.error);
-          const typed = message.match(/\[(BUDGET_WAIT|RATE_LIMIT|QUOTA_EXHAUSTED|CIRCUIT_OPEN|POLICY_NOT_CONFIGURED|POLICY_DISABLED|PERMISSION_DENIED)\]\[([^\]]+)\](?:\[([^\]]+)\])?/i);
-          const error = new Error(message);
-          if (typed) {
-            error.code = typed[1].toUpperCase();
-            error.errorType = ['BUDGET_WAIT', 'RATE_LIMIT', 'QUOTA_EXHAUSTED'].includes(error.code) ? 'rate_limit' : 'circuit_open';
-            error.source = typed[2];
-            error.apiName = typed[3] || '*';
-          }
-          if (json.error_code) error.code = String(json.error_code).toUpperCase();
-          if (json.error_type) error.errorType = String(json.error_type);
-          if (json.source) error.source = String(json.source);
-          if (json.api_name) error.apiName = String(json.api_name);
-          if (json.recover_at) error.recoverAt = json.recover_at;
-          return reject(error);
-        }
-        resolve(json);
-      } catch (e) {
-        reject(new Error('parser output not JSON: ' + out.slice(0, 300)));
-      }
-    });
-  });
-}
+// Python 定位与解析桥接已迁入 server/services/arbitrageDocumentSource.js（外部取数适配）。
 
 // 将解析器输出映射为 arbitrage_cases 的标量列
 function mapParserFields(parsed) {
@@ -172,12 +106,8 @@ function mapParserFields(parsed) {
   return f;
 }
 
-const TERMS_COLUMNS = [
-  'offer_price', 'cash_choice_price', 'subscription_price', 'swap_ratio', 'target_swap_price', 'reference_swap_price', 'cash_component',
-  'rights_ratio_numerator', 'rights_ratio_denominator', 'rights_units_per_new_share', 'offeror', 'offeror_holding_pct',
-  'rights_trade_start', 'rights_trade_end', 'payment_deadline',
-  'description',
-];
+// 条款列白名单由数据层持有（与动态 SET 拼装同源），服务层只做取值映射
+const { TERMS_COLUMNS } = repository;
 
 const SWAP_BUNDLE_FIELDS = ['target_swap_price', 'reference_swap_price', 'swap_ratio'];
 
@@ -231,14 +161,11 @@ async function resolveInstrumentByName(raw) {
 // 回写提取到的条款 + 参考/供股证券关系（仅更新非空字段）
 async function applyExtractedTerms(caseId, parsed) {
   const fields = mapParserFields(parsed);
-  const sets = [];
-  const params = [];
-  let pi = 1;
+  // 只收集「本次确实提取到」的列，SET 拼装与列名白名单都在数据层完成
+  const collected = {};
   for (const col of TERMS_COLUMNS) {
     if (fields[col] !== undefined && (fields[col] !== null || (col === 'offeror_holding_pct' && parsed.clear_offeror_holding_pct))) {
-      sets.push(`${col} = $${pi}`);
-      params.push(fields[col]);
-      pi++;
+      collected[col] = fields[col];
     }
   }
 
@@ -249,21 +176,17 @@ async function applyExtractedTerms(caseId, parsed) {
   // 换股公告的代码上下文在多标的合并中容易指向另一家被合并方；结构识别出的合并方名称优先级更高。
   if (refName) refId = await resolveInstrumentByName(String(refName));
   if (!refId && refCode) refId = await resolveInstrumentByCode(String(refCode));
-  if (refId) { sets.push(`reference_instrument_id = $${pi}`); params.push(refId); pi++; }
   // 供股权证券（供股的临时交易代码）
   const rightsCode = (parsed && parsed.rights_codes && parsed.rights_codes[0]) || null;
-  if (rightsCode) {
-    const id = await resolveInstrumentByCode(String(rightsCode));
-    if (id) { sets.push(`rights_instrument_id = $${pi}`); params.push(id); pi++; }
-  }
+  let rightsId = null;
+  if (rightsCode) rightsId = await resolveInstrumentByCode(String(rightsCode));
 
-  if (!sets.length) return false;
-  sets.push('terms_updated_at = now()');
-  sets.push('updated_at = now()');
-  await pool.query(
-    `UPDATE event.arbitrage_cases SET ${sets.join(', ')} WHERE case_id = $${pi}`,
-    [...params, caseId]
-  );
+  if (!Object.keys(collected).length && !refId && !rightsId) return false;
+  await repository.patchArbitrageCaseTerms(caseId, {
+    terms: collected,
+    referenceInstrumentId: refId || null,
+    rightsInstrumentId: rightsId || null,
+  });
   return true;
 }
 
@@ -384,20 +307,16 @@ async function rebuildCaseTerms(caseId) {
   let rightsId = null;
   if (checked.parsed.rights_codes?.[0]) rightsId = await resolveInstrumentByCode(checked.parsed.rights_codes[0]);
 
-  const sets = [];
-  const params = [];
-  for (const column of TERMS_COLUMNS) {
-    params.push(values[column]);
-    sets.push(`${column}=$${params.length}`);
-  }
-  params.push(refId, rightsId, checked.parseStatus, PARSER_VERSION, checked.confidence, caseId);
-  await pool.query(`
-    UPDATE event.arbitrage_cases SET ${sets.join(',')},
-      reference_instrument_id=$${params.length - 5},rights_instrument_id=$${params.length - 4},
-      parse_status=$${params.length - 3},parser_version=$${params.length - 2},terms_confidence=$${params.length - 1},
-      review_status='approved',terms_updated_at=now(),updated_at=now()
-    WHERE case_id=$${params.length}
-  `, params);
+  // 整行重写：列名白名单与占位符拼装都在数据层完成
+  await repository.rewriteArbitrageCaseTerms({
+    values,
+    referenceInstrumentId: refId,
+    rightsInstrumentId: rightsId,
+    parseStatus: checked.parseStatus,
+    parserVersion: PARSER_VERSION,
+    confidence: checked.confidence,
+    caseId,
+  });
   return { status: 'validated', confidence: checked.confidence, extracted: values };
 }
 

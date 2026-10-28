@@ -1,5 +1,7 @@
 // 股息结算纯内核；无取数、无默认税率。实际凭证始终优先，测算不是实收。
 const DateApi=require('../../public/shared/core-date');
+// 税务条款解析的纯实现放在 cashDividendTaxTerms，本文件按原样再导出，调用方无需改动
+const {parseCnTaxTreatment,parseHkTaxTreatment}=require('./cashDividendTaxTerms');
 const VERSION='dividend-settlement-v1';
 const TAX_RULE='https://www.chinatax.gov.cn/n810341/n810755/c1797427/content.html';
 const FIFO_RULE='https://www.chinatax.gov.cn/chinatax/n810341/n810765/n812151/n812386/c1082457/content.html';
@@ -13,22 +15,6 @@ function date(value){const d=DateApi.normalizeBusinessDate(value);if(!d)throw ne
 function anniversary(day,months){date(day);const [y,m,d]=day.split('-').map(Number),index=y*12+m-1+months,year=Math.floor(index/12),month=index%12+1;const last=new Date(Date.UTC(year,month,0)).getUTCDate();return `${year}-${String(month).padStart(2,'0')}-${String(Math.min(d,last)).padStart(2,'0')}`;}
 function taxRate(acquired,sold){date(acquired);date(sold);if(sold<acquired)throw new TypeError('卖出日在购入日前');return sold<=anniversary(acquired,1)?0.2:sold<=anniversary(acquired,12)?0.1:0;}
 function taxEvent(parent,saleId){return parent+':tax:'+Buffer.from(String(saleId),'utf8').toString('base64url');}
-function parseCnTaxTreatment(body){
-  const flat=String(body||'').replace(/\s+/g,'');
-  const excerpt=flat.match(/(?:自然人股东|个人投资者|个人股东)[\s\S]{0,350}?暂不扣缴个人所得税/)?.[0];
-  if(!excerpt||!/(?:2015.{0,8}101|财税.{0,12}101)/.test(flat))return null;
-  return {version:VERSION,kind:'CN_personal_deferred_2015',investor:'mainland_personal_unrestricted',initialWithholdingRate:'0',sourceExcerpt:excerpt,rule:TAX_RULE,brokerVerified:false};
-}
-function parseHkTaxTreatment(body){
-  const flat=String(body||'').replace(/\s+/g,'');
-  const none=flat.match(/股息所涉及的代扣所得[稅税]不適用/);
-  if(none)return {kind:'HK_connect_personal',amountBasis:'gross',issuerWithholding:'none_in_event_announcement',sourceExcerpt:none[0],layers:[{rate:'0.20',base:'gross',sourceRef:HK_TAX_RULE}],brokerVerified:false};
-  for(const m of flat.matchAll(/20[%％]/g)){
-    const excerpt=flat.slice(Math.max(0,m.index-80),m.index+180);
-    if(/(?:內地|内地)(?:個人|个人)/.test(excerpt)&&/(?:滬港通|沪港通|深港通|港股通)/.test(excerpt))return {kind:'HK_connect_personal',amountBasis:'gross',sourceExcerpt:excerpt,layers:[{rate:'0.20',base:'gross',sourceRef:'event_announcement_connect_personal_20_percent'}],brokerVerified:false};
-  }
-  return null;
-}
 function hkReceiptDate(payDate,calendar){
   date(payDate);let current=payDate;const countedDays=[];
   while(countedDays.length<3){

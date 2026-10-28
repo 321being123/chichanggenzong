@@ -1210,64 +1210,9 @@ async function syncConvertibleBondAnnouncementHistories({ tsCodes = [], fromDate
   const cursorDate = cursorResult.rows[0] && isoDate(cursorResult.rows[0].last_success_date);
   const scanStart = fromDate ? isoDate(fromDate) : (cursorDate
     ? isoDate(addDays(new Date(`${cursorDate}T00:00:00+08:00`), -ANNOUNCEMENT_OVERLAP_DAYS)) : null);
-  const params = [];
-  const clauses = ["i.asset_class='convertible_bond'", "i.status='listed'",
-    "(iss.issue_type IS NULL OR iss.issue_type NOT IN ('定向','私募'))",
-    `EXISTS (SELECT 1 FROM market.convertible_bond_daily_metrics active_dm
-              WHERE active_dm.instrument_id=i.instrument_id
-                AND active_dm.trade_date=(SELECT MAX(trade_date) FROM market.convertible_bond_daily_metrics))`,
-    '(i.list_date IS NULL OR i.list_date <= $1::date)'];
-  params.push(end);
-  if (normalizedCodes.length) { params.push(normalizedCodes); clauses.push(`i.canonical_code=ANY($${params.length}::text[])`); }
-  if (cachedOnly && !normalizedCodes.length) {
-    clauses.push(`(EXISTS (
-      SELECT 1
-        FROM analytics.convertible_bond_announcement_history pending_no_revision
-       WHERE pending_no_revision.instrument_id=i.instrument_id
-         AND pending_no_revision.fact_type='no_revision'
-         AND pending_no_revision.fact_id=(SELECT h_latest.fact_id
-                                            FROM analytics.convertible_bond_announcement_history h_latest
-                                           WHERE h_latest.instrument_id=i.instrument_id
-                                             AND h_latest.fact_type='no_revision'
-                                           ORDER BY h_latest.announced_at DESC,h_latest.fact_id DESC LIMIT 1)
-         AND ((pending_no_revision.parser_version IS DISTINCT FROM '7'
-               AND (pending_no_revision.next_eligible_date IS NULL
-                    OR NOT COALESCE((pending_no_revision.raw_payload->>'lock_declared')::boolean,false)))
-              OR (pending_no_revision.next_eligible_date IS NULL
-                  AND NOT (COALESCE((pending_no_revision.raw_payload->>'no_revision_evidence')::boolean,false)
-                           OR COALESCE((pending_no_revision.raw_payload->>'lock_declared')::boolean,false)))
-              OR (pending_no_revision.parser_version = '7'
-                  AND EXISTS (
-                    SELECT 1 FROM fundamental.convertible_bond_profiles maturity_profile
-                     WHERE maturity_profile.instrument_id=pending_no_revision.instrument_id
-                       AND (pending_no_revision.next_eligible_date=maturity_profile.maturity_date
-                            OR pending_no_revision.valid_until=maturity_profile.maturity_date)
-                  )
-                  AND COALESCE(pending_no_revision.raw_payload->'reparse'->>'status','') <> 'maturity_checked'))
-         AND COALESCE(pending_no_revision.raw_payload->'reparse'->>'status','') <> 'failed'
-       ) OR EXISTS (
-           SELECT 1 FROM event.convertible_bond_call_events pending_call
-            WHERE pending_call.instrument_id=i.instrument_id
-              AND pending_call.source_url <> ''
-              AND (pending_call.parser_version IS DISTINCT FROM 'call-event-v3'
-                   OR pending_call.parse_status <> 'complete')
-         )
-    )`);
-  }
-  const configuredLimit = Number.isInteger(Number(limit)) && Number(limit) > 0 ? Number(limit) : null;
-  const limitClause = configuredLimit ? ` LIMIT $${params.length + 1}` : '';
-  if (configuredLimit) params.push(configuredLimit);
-  const { rows: profiles } = await pool.query(
-    `SELECT i.instrument_id,i.canonical_code AS ts_code,p.bond_short_name,p.value_date,p.list_date,p.maturity_date,
-            s.canonical_code AS stock_code
-       FROM core.instruments i
-       JOIN fundamental.convertible_bond_profiles p ON p.instrument_id=i.instrument_id
-       LEFT JOIN fundamental.convertible_bond_issuance iss ON iss.instrument_id=i.instrument_id
-       LEFT JOIN core.instruments s ON s.instrument_id=p.stock_instrument_id
-      WHERE ${clauses.join(' AND ')}
-      ORDER BY i.canonical_code${limitClause}`,
-    params
-  );
+  const { rows: profiles } = await repository.selectAnnouncementHistoryTargets({
+    end, codes: normalizedCodes, cachedOnly, limit,
+  });
   const results = [];
   const sourceFailures = [];
   let changedCount = 0;
@@ -1616,30 +1561,9 @@ async function backfillUnderlyingStockMarket({ windowDays = 500, targetTradeDate
     // 只处理确实存在缺口的证券，避免“整体覆盖率90%”掩盖单券缺失。
     const recentDays = openDays.slice(-30);
     if (recentDays.length) {
-      const missingStockSql =
-        `SELECT s.canonical_code,s.instrument_id
-           FROM core.instruments s
-          WHERE s.instrument_id=ANY($1::bigint[])
-            AND (SELECT COUNT(*)
-                   FROM unnest($2::date[]) AS d(trade_date)
-                  WHERE NOT EXISTS (
-                    SELECT 1 FROM market.stock_suspend_calendar sc
-                     WHERE sc.instrument_id=s.instrument_id AND sc.trade_date=d.trade_date AND sc.source_id=$3
-                  )) > 0
-            AND (SELECT COUNT(DISTINCT b.trade_date)
-                   FROM market.daily_bars b
-                  WHERE b.instrument_id=s.instrument_id
-                    AND b.trade_date=ANY($2::date[])
-                    AND b.source_id=$3)
-                < (SELECT COUNT(*)
-                     FROM unnest($2::date[]) AS d(trade_date)
-                     WHERE NOT EXISTS (
-                       SELECT 1 FROM market.stock_suspend_calendar sc
-                        WHERE sc.instrument_id=s.instrument_id AND sc.trade_date=d.trade_date AND sc.source_id=$3
-                     ))
-          ORDER BY s.canonical_code`;
+      // 缺口判定（停牌日排除 + 行情行数与应开市日数比较）在数据层完成
       const missingStockParams = [[...instrumentMap.values()], recentDays.map(isoDate), source.tushare];
-      const { rows: missingStocks } = await pool.query(missingStockSql, missingStockParams);
+      const { rows: missingStocks } = await repository.selectMissingStockBars(missingStockParams);
       const repairLimit = Math.max(Number(process.env.CONVERTIBLE_BOND_STOCK_REPAIR_LIMIT) || 80, 1);
       const repairTargets = missingStocks.slice(0, repairLimit);
       for (const stock of repairTargets) {
@@ -1659,7 +1583,7 @@ async function backfillUnderlyingStockMarket({ windowDays = 500, targetTradeDate
           throw error;
         } finally { client.release(); }
       }
-      const { rows: remainingStocks } = await pool.query(missingStockSql, missingStockParams);
+      const { rows: remainingStocks } = await repository.selectMissingStockBars(missingStockParams);
       if (remainingStocks.length) {
         const detail = `最近30个交易日仍有 ${remainingStocks.length} 只正股行情缺口，本批已处理 ${repairTargets.length} 只`;
         await finishJobRun(runId, true, detail);

@@ -12,18 +12,7 @@ const FORMULA_VERSION = 'reset-v2';
 const CALCULATION_LOGIC_VERSION = 'reset-logic-20260903-1';
 const OVERLAP_DAYS = 3;
 const NEAR_REMAINING_DAYS = 5;
-const REVISION_SELECT_FIELDS = [
-  'business_status','security_code','ts_code','bond_name','bond_close','remain_size','stock_instrument_id',
-  'stock_name','stock_code','current_conv_price','conversion_value','conversion_premium_pct',
-  'net_asset_floor_applicable','net_asset_floor_value','net_asset_floor_blocked','trigger_ratio','trigger_price','distance_to_trigger_pct','matched_days','required_days','remaining_days','rolling_remaining_days',
-  'observation_days','minimum_future_days','no_revision_announced_at','no_revision_valid_until','next_eligible_date','official_announced_at',
-  'meeting_date','price_after','effective_date','reached_floor','official_source_url','official_source_number',
-  'official_title','official_summary','trade_date','maturity_date','conv_start_date','conv_end_date',
-  'conv_stop_date','issue_type','official_event_type',
-].map(field => `r.${field}`).join(',');
-const MOTIVE_SELECT_FIELDS = `motive.motive_level,motive.trade_date AS motive_trade_date,motive.motive_score,
-  motive.research_percentile,motive.model_version AS motive_model_version,motive.model_version AS model_version,
-  motive.quality_status AS motive_quality_status,motive.executability_status AS motive_executability_status`;
+// 列表字段、筛选条件与排序口径由数据层持有（与 SQL 同源）
 
 function numberOrNull(value) {
   if (value === null || value === undefined || value === '') return null;
@@ -358,57 +347,23 @@ async function calculateConvertibleBondRevisionStatus(tradeDate = null) {
     incomplete: results.filter(row => row.dataStatus !== 'complete').length };
 }
 
-function buildRevisionWhere({ status = '', query = '', near = false } = {}) {
-  const clauses = [
-    `r.business_status IS NOT NULL`,
-    `(r.issue_type IS NULL OR r.issue_type NOT IN ('定向','私募'))`,
-  ];
-  const values = [];
-  if (status) { values.push(status); clauses.push(`r.business_status=$${values.length}`); }
-  if (near) clauses.push(`r.business_status IN ('near','met_pending','proposed','meeting_pending','approved')`);
-  if (query) {
-    values.push(`%${query}%`);
-    const p = `$${values.length}`;
-    clauses.push(`(r.security_code ILIKE ${p} OR r.ts_code ILIKE ${p} OR r.bond_name ILIKE ${p} OR r.stock_code ILIKE ${p} OR r.stock_name ILIKE ${p})`);
-  }
-  return { clauses, values };
-}
-
 async function getBondRevisionOverview({ status = '', query = '', near = false, limit = 2000 } = {}) {
   const safeLimit = Math.min(Math.max(Number(limit) || 2000, 1), 2000);
   const now = shanghaiDateTime();
   const todayState = await getMarketState({ market: 'CN', businessDate: now.businessDate, time: now.time });
   const expectTodayData = todayState.status === 'open' && todayState.isAfterMarketClose;
-  const filter = buildRevisionWhere({ status: String(status || '').trim(), query: String(query || '').trim().slice(0, 50), near: Boolean(near) });
-  const base = `FROM analytics.convertible_bond_revision_latest r
-    LEFT JOIN LATERAL (
-      SELECT motive_level,trade_date,motive_score,model_version,quality_status,executability_status,
-             (SELECT count(*) FILTER (WHERE peer.motive_score <= md.motive_score)::numeric / NULLIF(count(*),0)
-                FROM analytics.convertible_bond_revision_motive_daily peer
-               WHERE peer.trade_date=md.trade_date AND peer.model_version=md.model_version) AS research_percentile
-        FROM analytics.convertible_bond_revision_motive_daily md
-       WHERE md.instrument_id=r.instrument_id AND md.model_version='${MOTIVE_MODEL_VERSION}'
-       ORDER BY md.trade_date DESC,md.calculated_at DESC LIMIT 1
-    ) motive ON true
-    WHERE ${filter.clauses.join(' AND ')}`;
-  const order = `ORDER BY CASE r.business_status
-      WHEN 'implemented' THEN 1 WHEN 'proposed' THEN 2 WHEN 'meeting_pending' THEN 3
-      WHEN 'approved' THEN 4 WHEN 'met_pending' THEN 5 WHEN 'near' THEN 6
-      WHEN 'locked' THEN 7 WHEN 'floor_blocked' THEN 8 WHEN 'tracking' THEN 9 ELSE 10 END,
-    COALESCE(r.remaining_days,9999),r.security_code LIMIT $${filter.values.length + 1}`;
-  const [rowsResult, summaryResult, marketResult, stateResult, expectedResult, qualityResult] = await Promise.all([
-    // 视图已按当前交易日行情和单券索引取数，排序与截断交给数据库完成。
-    pool.query(`SELECT ${REVISION_SELECT_FIELDS},${MOTIVE_SELECT_FIELDS} ${base} ${order}`, [...filter.values, safeLimit]),
-    pool.query(`SELECT r.business_status,count(*)::int AS count ${base} GROUP BY r.business_status`, filter.values),
+  const filter = repository.buildRevisionWhere({ status: String(status || '').trim(), query: String(query || '').trim().slice(0, 50), near: Boolean(near) });
+  // 视图已按当前交易日行情和单券索引取数；主列表与状态汇总共用同一段条件，排序与截断交给数据库完成。
+  const [overviewData, marketResult, stateResult, expectedResult, qualityResult] = await Promise.all([
+    repository.loadRevisionOverview({ filter, modelVersion: MOTIVE_MODEL_VERSION, limit: safeLimit }),
     repository.select_market_convertible_bond_daily_metrics(),
     repository.select_analytics_convertible_bond_trigger_daily([FORMULA_VERSION]),
     // 收盘后才要求当日数据；盘中/休市沿用最近已完成交易日属正常（2026-10-21 审查 P-10）
-    pool.query(`SELECT MAX(trade_date)::text AS trade_date
-                  FROM market.trade_calendar
-                 WHERE exchange='SSE' AND is_open
-                   AND trade_date ${expectTodayData ? '<=' : '<'} (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai')::date`),
+    repository.selectLatestCompletedTradeDate(expectTodayData),
     repository.with_analytics_convertible_bond_announcement_history(),
   ]);
+  const rowsResult = { rows: overviewData.rows };
+  const summaryResult = { rows: overviewData.summaryRows };
   const summary = { implemented: 0, approved: 0, meeting_pending: 0, proposed: 0, terminated: 0,
     met_pending: 0, near: 0, locked: 0, floor_blocked: 0, tracking: 0, incomplete: 0 };
   for (const row of summaryResult.rows) {

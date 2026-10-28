@@ -17,6 +17,19 @@ function check(name, fn) {
 }
 
 async function main() {
+  const valuationRepo = require('../repositories/convertibleBondValuationServiceRepository');
+  const valuationService = require('../services/convertibleBondValuationService');
+  const originalListAlerts = valuationRepo.listValuationAlerts;
+  let captured;
+  try {
+    valuationRepo.listValuationAlerts = async params => { captured = params; return []; };
+    await valuationService.getAlerts({ range: '1y', active: true, level: '关注' });
+    const expectedCutoff = new Date(); expectedCutoff.setFullYear(expectedCutoff.getFullYear() - 1);
+    assert.strictEqual(captured.cutoff, expectedCutoff.toISOString().slice(0, 10));
+    assert.deepStrictEqual(captured.filters, { range: '1y', active: true, level: '关注' });
+    await valuationService.getAlerts({ range: 'all' });
+    assert.strictEqual(captured.cutoff, null);
+  } finally { valuationRepo.listValuationAlerts = originalListAlerts; }
   check('stale 始终返回布尔值', () => {
     assert.strictEqual(isValuationStale('2026-08-24', '2026-08-24', null), false);
     assert.strictEqual(isValuationStale('2026-08-23', '2026-08-24', null), true);
@@ -227,6 +240,17 @@ async function main() {
   console.log('== 8b. 预警语义校验 ==');
   r = await fetch(base + '/api/bond-valuation/alerts?limit=2000');
   check('HTTP 200', () => assert.strictEqual(r.status, 200));
+  const ranged = await fetch(base + '/api/bond-valuation/alerts?range=1y&active=true&level=' + encodeURIComponent('关注'));
+  check('预警范围和状态筛选 HTTP 200', () => assert.strictEqual(ranged.status, 200));
+  const rangedBody = await ranged.json();
+  const cutoff = new Date(); cutoff.setFullYear(cutoff.getFullYear() - 1);
+  check('预警筛选保留日期、状态和级别', () => {
+    for (const alert of rangedBody.data) {
+      assert.ok(alert.trade_date >= cutoff.toISOString().slice(0, 10));
+      assert.strictEqual(alert.is_active, true);
+      assert.strictEqual(alert.alert_level, '关注');
+    }
+  });
   let ja = await r.json();
   const arows = ja.data || [];
   if (arows.length) {

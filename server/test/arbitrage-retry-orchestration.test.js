@@ -115,6 +115,20 @@ test('质量异常二次恢复在同一事务中先删旧 resolved 再关闭 ope
   assert.equal(released, true);
 });
 
+test('证券代码候选由业务层决定，仓储只查有效主档', async (t) => {
+  const original = pool.query;
+  t.after(() => { pool.query = original; });
+  const seen = [];
+  pool.query = async (sql, params) => { seen.push({ sql, params }); return { rows: [{ instrument_id: 7 }] }; };
+  assert.equal(await parser.resolveInstrumentByCode('601198'), 7);
+  assert.deepEqual(seen[0].params, [['601198', '601198.SH'], '601198']);
+  assert.equal(await parser.resolveInstrumentByCode('00358'), 7);
+  assert.deepEqual(seen[1].params, [['00358.HK'], '00358.HK']);
+  assert.match(seen[0].sql, /coalesce\(name,''\) <> ''/);
+  assert.equal(await parser.resolveInstrumentByCode('123'), null);
+  assert.equal(seen.length, 2);
+});
+
 test('质量异常恢复失败时回滚并归还连接', async (t) => {
   const originalConnect = pool.connect;
   t.after(() => { pool.connect = originalConnect; });

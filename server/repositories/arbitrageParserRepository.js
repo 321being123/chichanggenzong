@@ -1,6 +1,5 @@
 const { pool } = require('../db/connection');
 
-const txControl = require('./transactionControl');
 const { hashString } = require('../db/util');
 
 // 自 server/services/arbitrageParser.js 迁入的数据读写函数（只做标准事实读写，业务判定仍留在服务层）。
@@ -25,27 +24,8 @@ async function acquireDocumentParseLock(caseId, documentId) {
   }
 }
 
-async function resolveInstrumentByCode(raw) {
-  const code = String(raw || '').replace(/\D/g, '');
-  if (!code) return null;
-  let canonical, market, exchange, currency;
-  if (code.length === 5) {
-    canonical = code.padStart(5, '0') + '.HK';
-    market = 'HK'; exchange = 'SEHK'; currency = 'HKD';
-  } else if (code.length === 6) {
-    canonical = code;
-    market = 'CN';
-    exchange = (code.startsWith('6') || code.startsWith('9')) ? 'SSE' : 'SZSE';
-    currency = 'CNY';
-  } else {
-    return null;
-  }
-  // 仅返回有名称的有效证券；空名记录（早期错误链接产生的垃圾）一律排除，避免链到脏数据
-  const marketSuffix = exchange === 'SSE' ? 'SH' : (exchange === 'SZSE' ? 'SZ' : null);
-  const canonicalCandidates = canonical === code
-    ? [canonical, marketSuffix ? `${code}.${marketSuffix}` : canonical]
-    : [canonical];
-  const { rows } = await pool.query(`
+async function findInstrumentByCandidates(canonicalCandidates, canonical, client = pool) {
+  const { rows } = await client.query(`
     SELECT instrument_id
       FROM core.instruments
      WHERE canonical_code=ANY($1::text[]) AND coalesce(name,'') <> ''
@@ -57,20 +37,19 @@ async function resolveInstrumentByCode(raw) {
   return null;
 }
 
-async function resolveParseFailure(caseId) {
-  const client = await pool.connect();
-  try {
-    await txControl.begin(client);
+async function findParseFailureInstrument(caseId, client) {
     const { rows } = await client.query('SELECT target_instrument_id FROM event.arbitrage_cases WHERE case_id=$1', [caseId]);
-    if (!rows.length) {
-      await txControl.rollback(client);
-      return;
-    }
-    const instrumentId = rows[0].target_instrument_id;
+    return rows.length ? rows[0] : null;
+}
+
+async function lockParseFailure(caseId, instrumentId, client) {
     await client.query('SELECT pg_advisory_xact_lock($1,$2)', [
       hashString('arbitrage_parse_quality'),
       instrumentId == null ? hashString(`case:${caseId}`) : Number(instrumentId) | 0,
     ]);
+}
+
+async function hasParseFailures(caseId, instrumentId, client) {
     const { rows: failedRows } = await client.query(`
       SELECT 1
         FROM event.arbitrage_case_documents acd
@@ -80,7 +59,10 @@ async function resolveParseFailure(caseId) {
          AND (($2::bigint IS NOT NULL AND c.target_instrument_id=$2) OR ($2::bigint IS NULL AND c.case_id=$1))
        LIMIT 1
     `, [caseId, instrumentId]);
-    if (!failedRows.length) {
+    return failedRows.length > 0;
+}
+
+async function resolveParseFailureIssues(caseId, instrumentId, client) {
       await client.query(`
         DELETE FROM ops.data_quality_issues q
          WHERE q.dataset_code='arbitrage' AND q.field_code='pdf_parse'
@@ -96,14 +78,6 @@ async function resolveParseFailure(caseId) {
            AND (($2::bigint IS NOT NULL AND q.instrument_id=$2)
              OR ($2::bigint IS NULL AND q.instrument_id IS NULL AND q.details->>'case_id'=$1::text))
       `, [caseId, instrumentId]);
-    }
-    await txControl.commit(client);
-  } catch (error) {
-    await txControl.rollback(client).catch(() => {});
-    throw error;
-  } finally {
-    client.release();
-  }
 }
 
 async function select_core_instruments(params, client = pool) {
@@ -298,8 +272,11 @@ module.exports = {
   patchArbitrageCaseTerms,
   rewriteArbitrageCaseTerms,
   acquireDocumentParseLock,
-  resolveInstrumentByCode,
-  resolveParseFailure,
+  findInstrumentByCandidates,
+  findParseFailureInstrument,
+  lockParseFailure,
+  hasParseFailures,
+  resolveParseFailureIssues,
   select_core_instruments,
   select_core_instruments_1,
   select_event_arbitrage_cases,

@@ -9,7 +9,8 @@ const { hashString } = require('../db/util');
 const { sanitizeJobError } = require('./jobErrorSanitizer');
 const { resolvePython, runPythonExtraction } = require('./arbitrageDocumentSource');
 const txControl = require('../repositories/transactionControl');
-const { acquireDocumentParseLock, resolveInstrumentByCode, resolveParseFailure } = require('../repositories/arbitrageParserRepository.js');
+const { acquireDocumentParseLock } = require('../repositories/arbitrageParserRepository.js');
+const { withTransaction } = require('../db/transaction');
 const repository = require('../repositories/arbitrageParserRepository.js');
 const {
   PARSER_VERSION,
@@ -126,7 +127,13 @@ function selectSwapBundle(docs) {
 }
 
 // 按代码解析/创建证券（5 位→港股，6 位→A股）
-/* resolveInstrumentByCode 已迁入 server/repositories/arbitrageParserRepository.js */
+async function resolveInstrumentByCode(raw) {
+  const code = String(raw || '').replace(/\D/g, '');
+  if (code.length === 5) return repository.findInstrumentByCandidates([code + '.HK'], code + '.HK');
+  if (code.length !== 6) return null;
+  const suffix = /^[69]/.test(code) ? 'SH' : 'SZ';
+  return repository.findInstrumentByCandidates([code, `${code}.${suffix}`], code);
+}
 
 // 按公司简称解析证券（公告里收购方仅以名称出现、代码不在正文时回查；名称可能带 <em> 标签，先做清洗）
 async function resolveInstrumentByName(raw) {
@@ -349,7 +356,17 @@ async function recordParseFailure(caseId, message) {
   }
 }
 
-/* resolveParseFailure 已迁入 server/repositories/arbitrageParserRepository.js */
+async function resolveParseFailure(caseId) {
+  return withTransaction(async client => {
+    const row = await repository.findParseFailureInstrument(caseId, client);
+    if (!row) return;
+    const instrumentId = row.target_instrument_id;
+    await repository.lockParseFailure(caseId, instrumentId, client);
+    if (!await repository.hasParseFailures(caseId, instrumentId, client)) {
+      await repository.resolveParseFailureIssues(caseId, instrumentId, client);
+    }
+  });
+}
 
 module.exports = {
   runPythonExtraction,

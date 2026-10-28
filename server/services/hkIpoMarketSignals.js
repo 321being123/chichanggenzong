@@ -229,7 +229,7 @@ function parseHkIpoXHtml(html) {
 }
 
 async function loadIpoMap(executor = pool) {
-  const { rows } = await repository.select_public_ipo_history();
+  const { rows } = await repository.select_public_ipo_history([], executor);
   const map = new Map();
   for (const row of rows) {
     const code = normalizeCode(row.security_code);
@@ -325,7 +325,7 @@ function buildSourceRecordHash({
 
 async function persistName(code, name, executor = pool) {
   if (!code || !hasChinese(name)) return false;
-  const result = await repository.update_public_ipo_history([code, String(name).trim()]);
+  const result = await repository.update_public_ipo_history([code, String(name).trim()], executor);
   return result.rowCount > 0;
 }
 
@@ -362,7 +362,7 @@ async function persistSnapshot({
   });
   await repository.insert_analytics_hk_ipo_market_snapshots([code, instrumentId || null, sourceCode, signalType, dataDate, observedAt || null, sourceObservedAt || null,
     subscriptionMultiple, marginAmountHkd, normalizedMarginMultiple, greyMarketPrice, greyMarketChangePct,
-    normalizedSignalKind, sourceRecordHash, qualityStatus, JSON.stringify(rawPayload || {})]);
+    normalizedSignalKind, sourceRecordHash, qualityStatus, JSON.stringify(rawPayload || {})], executor);
   return true;
 }
 

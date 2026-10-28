@@ -113,6 +113,8 @@ global.Date = class extends RealDate {
   context.currentAccount='a';context.dataVersion=0;context.syncDataVersions=()=>{};context.api=url=>url;
   context.fetch=async()=>({ok:true,json:async()=>({data:{navHistory:data.navHistory,performanceHistory:rows,navReturnTotals:totals,
     cash:110,totalAsset:230,authoritativeTotalAsset:230,authoritativeCash:110,positions:[{code:'ignored-server-copy'}]}})});
+  context.window = context;
+  vm.runInContext(fs.readFileSync(path.resolve(__dirname, '../../public/js/api/client.js'), 'utf8'), context);
   vm.runInContext(auto,context);await context.recordNav();
   assert.strictEqual(context.data.cash,110,'自动保存后现金必须同步服务端确认值');
   assert.strictEqual(context.data.authoritativeTotalAsset,230,'自动保存后首页资产标量必须与投影同源');

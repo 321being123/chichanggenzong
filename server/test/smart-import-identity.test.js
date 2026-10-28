@@ -5,6 +5,7 @@ const vm = require('vm');
 const root = path.resolve(__dirname, '../..');
 const trade = fs.readFileSync(path.join(root, 'public/shared/core-trade.js'), 'utf8');
 const html = fs.readFileSync(path.join(root, 'public/index.html'), 'utf8');
+const apiClient = fs.readFileSync(path.join(root, 'public/js/api/client.js'), 'utf8');
 const part = (source, start, end) => source.slice(source.indexOf(start), source.indexOf(end));
 const helpers = part(trade, 'var _visionQueue =', 'function newSmartRowId()');
 const flush = () => new Promise(resolve => setImmediate(resolve));
@@ -18,6 +19,7 @@ function context() {
   };
   ui.window = ui;
   vm.createContext(ui);
+  vm.runInContext(apiClient, ui);
   vm.runInContext(helpers, ui);
   return ui;
 }

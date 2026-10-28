@@ -23,6 +23,7 @@ const app = read('server/app.js');
 const auth = read('server/routes/auth.js');
 const users = read('server/db/users.js');
 const knowledge = read('server/routes/knowledge.js');
+const knowledgeRepository = read('server/repositories/knowledgeRepository.js');
 const excelSafe = read('server/services/excelSafe.js');
 const excelWorker = read('server/services/excelParser.worker.js');
 const login = read('public/login.html');
@@ -179,7 +180,12 @@ check('登录回跳按 URL 语义限制为同源', () => {
 
 check('分类移动只读取并重排当前用户拥有的分类', () => {
   const move = knowledge.slice(knowledge.indexOf("router.post('/categories/:id/move'"), knowledge.indexOf("router.delete('/categories/:id'"));
-  assert.ok(/owner_username/.test(move));
+  assert.ok(/requireCategoryOwner/.test(move));
+  for (const method of ['lockCategoryForOwner', 'findCategoryForOwner', 'listSiblingCategoryIds', 'listChildCategoryIds']) {
+    assert.ok(move.includes('knowledgeRepository.' + method), method + ' 必须由移动流程调用');
+    const body = knowledgeRepository.slice(knowledgeRepository.indexOf('async function ' + method + '('));
+    assert.ok(/owner_username\s*=\s*\$\d/.test(body.slice(0, body.indexOf('\n}'))), method + ' 必须限制所有者');
+  }
   assert.ok(/req\.session\.user/.test(move));
 });
 

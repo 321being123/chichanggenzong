@@ -6,14 +6,32 @@ const { persistSnapshot, syncHkIpoMarketSignals } = require('../services/hkIpoMa
 
 const syncCode = '09995.HK';
 const syncDate = '2099-12-30';
+const testSource = 'test-p0-' + require('crypto').randomBytes(8).toString('hex');
 
 (async () => {
+  // 同域读取和名称更新也必须传递同一执行器，不能悄悄回退连接池。
+  const fs = require('fs'), vm = require('vm'), acorn = require('acorn');
+  const source = fs.readFileSync(require.resolve('../services/hkIpoMarketSignals'), 'utf8');
+  const ast = acorn.parse(source, { ecmaVersion: 'latest' });
+  const names = ['loadIpoMap', 'persistName'];
+  const functions = ast.body.filter(n => n.type === 'FunctionDeclaration' && names.includes(n.id.name));
+  assert.strictEqual(functions.length, 2);
+  const executor = { name: 'transaction' }, calls = [];
+  const context = vm.createContext({ pool: {}, normalizeCode: x => x, hasChinese: () => true,
+    repository: {
+      select_public_ipo_history: async (params, client) => { calls.push(client); return { rows: [] }; },
+      update_public_ipo_history: async (params, client) => { calls.push(client); return { rowCount: 1 }; },
+    } });
+  vm.runInContext(functions.map(n => source.slice(n.start, n.end)).join('\n'), context);
+  await context.loadIpoMap(executor);
+  await context.persistName('09995.HK', '测试', executor);
+  assert.deepStrictEqual(calls, [executor, executor]);
   await runMigrations();
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
     const base = {
-      code: '09996.HK', sourceCode: 'test-p0', signalType: 'subscription', signalKind: 'margin_estimate',
+      code: '09996.HK', sourceCode: testSource, signalType: 'subscription', signalKind: 'margin_estimate',
       dataDate: '2026-09-20', subscriptionMultiple: 12.50004, marginAmountHkd: 100000000,
       sourceObservedAt: '2026-09-20T10:00:00+08:00', rawPayload: { signal_kind: 'margin_estimate' },
     };
@@ -31,8 +49,8 @@ const syncDate = '2099-12-30';
              COUNT(*) FILTER (WHERE margin_multiple=3.2)::int AS margin_only_count,
              COUNT(*) FILTER (WHERE quality_status='valid')::int AS valid_count
         FROM analytics.hk_ipo_market_snapshots
-       WHERE source_code='test-p0'
-    `);
+       WHERE source_code=$1
+    `, [testSource]);
     const row = result.rows[0];
     assert.strictEqual(row.row_count, 3, '同日不同信号及新孖展字段必须保存');
     assert.strictEqual(row.hash_count, 3, '不同规范化内容必须生成不同哈希');
@@ -40,7 +58,7 @@ const syncDate = '2099-12-30';
     assert.strictEqual(row.margin_only_count, 1, '仅有孖展金额/倍数也不得被静默丢弃');
     assert.strictEqual(row.valid_count, 3, '新快照质量状态必须为 valid');
     const sameMultiple = {
-      code: '09998.HK', sourceCode: 'test-p0', signalType: 'subscription', signalKind: 'subscription_estimate',
+      code: '09998.HK', sourceCode: testSource, signalType: 'subscription', signalKind: 'subscription_estimate',
       dataDate: '2026-09-20', subscriptionMultiple: 12.5,
     };
     for (const collectionPoint of ['preopen', 'midday', 'close']) {
@@ -59,11 +77,13 @@ const syncDate = '2099-12-30';
       SELECT COUNT(*)::int AS row_count,
              COUNT(DISTINCT raw_payload->>'collection_point')::int AS point_count
         FROM analytics.hk_ipo_market_snapshots
-       WHERE source_code='test-p0' AND security_code='09998.HK'
-    `);
+       WHERE source_code=$1 AND security_code='09998.HK'
+    `, [testSource]);
     assert.strictEqual(captureRows.rows[0].row_count, 3, '三时段同值采集必须保留三条独立记录');
     assert.strictEqual(captureRows.rows[0].point_count, 3, '每条快照必须记录采集时段');
     await client.query('ROLLBACK');
+    const afterRollback = await client.query('SELECT COUNT(*)::int AS n FROM analytics.hk_ipo_market_snapshots WHERE source_code=$1', [testSource]);
+    assert.strictEqual(afterRollback.rows[0].n, 0, '外层事务回滚后不得留下快照');
     console.log('hk-ipo-snapshot-persistence.test.js direct persistence passed');
   } catch (error) {
     await client.query('ROLLBACK').catch(() => {});

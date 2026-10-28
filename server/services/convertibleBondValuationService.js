@@ -267,6 +267,7 @@ async function getHistory(code, range) {
 
 // ---- 预警 ----
 async function getAlerts(filters = {}) {
+  const cutoff = rangeCutoff(filters.range);
   const rows = await repository.listValuationAlerts({ filters, cutoff });
   return rows.map(r => ({
     bond_code: r.bond_code, bond_name: r.bond_name,

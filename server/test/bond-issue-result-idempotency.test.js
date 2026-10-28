@@ -37,9 +37,13 @@ print('quality closure atomicity and evidence preserved')
 `;
   const py=spawnSync(resolvePython(),['-c',code],{cwd:root,encoding:'utf8',env:{...process.env,PYTHONUTF8:'1'},timeout:30000});
   assert.equal(py.status,0,py.stderr||py.stdout);
-  const file=require.resolve('../services/convertibleBondAnalysis');
-  const context=vm.createContext({require:require('module').createRequire(file),module:{exports:{}},process,console,Buffer,setTimeout,clearTimeout,__dirname:path.dirname(file)});
-  vm.runInContext(require('./helpers/service-source').readServiceFlatten('convertibleBondAnalysis'),context);
+  const file=require.resolve('../services/convertibleBondAnalysisSync');
+  const source=fs.readFileSync(file,'utf8');
+  const ast=require('acorn').parse(source,{ecmaVersion:'latest',sourceType:'script'});
+  const fn=ast.body.find(node=>node.type==='FunctionDeclaration' && node.id.name==='backfillBondIssueResults');
+  assert.ok(fn,'同步服务必须保留发行结果回填入口');
+  const context=vm.createContext({fs:{existsSync:()=>true},BOND_ISSUE_RESULT_SCRIPT:'fixture',pythonCandidates:()=>[],runBondIssueResultBackfill:async()=>({})});
+  vm.runInContext(source.slice(fn.start,fn.end),context);
   vm.runInContext("pythonCandidates=()=>['first','second'];globalThis.attempts=0;runBondIssueResultBackfill=async()=>{globalThis.attempts++;throw Error('UniqueViolation business failure')}",context);
   await assert.rejects(vm.runInContext('backfillBondIssueResults',context)(),/UniqueViolation/);
   assert.equal(context.attempts,1);

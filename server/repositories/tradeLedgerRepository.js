@@ -136,7 +136,36 @@ async function insert_cash_flows(params, client = pool) {
        ON CONFLICT (id, username, account_name) DO NOTHING`, params);
 }
 
+// 账本写入后提升账户数据版本并标记净值需重算；列名按数据集白名单选择，不接受外部输入
+const DIRTY_COLUMNS = {
+  position: 'pos_version',
+  cashflow: 'cashflow_version',
+  nav: 'nav_version',
+};
+
+async function markAccountDataDirty(params, client = pool) {
+  const col = DIRTY_COLUMNS[params.dataset] || 'trade_version';
+  const anchorDate = params.fromDate || params.today;
+  // account_data 行可能不存在（账本首笔写入前）→ INSERT 兜底建行再提升
+  await client.query(
+    `INSERT INTO account_data (username, account_name, data, version, ${col}, nav_cash_cutoff, nav_dirty_from)
+     VALUES ($1,$2,'{}',0,0,$3::text,$4::date)
+     ON CONFLICT (username, account_name) DO NOTHING`,
+    [params.username, params.accountName, anchorDate, anchorDate],
+  );
+  await client.query(
+    `UPDATE account_data
+        SET nav_cash_cutoff=$3::text,
+            nav_dirty_from=CASE WHEN nav_dirty_from IS NULL OR nav_dirty_from > $4::date THEN $4::date ELSE nav_dirty_from END,
+            version=COALESCE(version,0)+1,
+            ${col}=COALESCE(${col},0)+1
+      WHERE username=$1 AND account_name=$2`,
+    [params.username, params.accountName, anchorDate, anchorDate],
+  );
+}
+
 module.exports = {
+  markAccountDataDirty,
   heldQuantity,
   select_trades,
   select_account_data,

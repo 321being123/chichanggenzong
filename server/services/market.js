@@ -94,24 +94,7 @@ function tushareTradeTime(tradeDate) {
 
 async function saveDailyCache(rows) {
   try {
-    for (let start = 0; start < rows.length; start += 300) {
-      const chunk = rows.slice(start, start + 300);
-      const params = [];
-      const values = chunk.map((row, index) => {
-        const base = index * 8;
-        params.push(row.ts_code, 'tushare_daily', row.ts_code, String(row.ts_code).split('.')[1].toLowerCase(), '', row.close, row.pct_chg, tushareTradeTime(row.trade_date));
-        return `($${base + 1},$${base + 2},$${base + 3},$${base + 4},$${base + 5},$${base + 6},$${base + 7},$${base + 8})`;
-      });
-      await pool.query(
-        `INSERT INTO market_quote_cache
-           (symbol, source, code, market, name, price, change_pct, quote_time)
-         VALUES ${values.join(',')}
-         ON CONFLICT (symbol, source) DO UPDATE SET
-           price=EXCLUDED.price, change_pct=EXCLUDED.change_pct,
-           quote_time=EXCLUDED.quote_time, fetched_at=now()`,
-        params
-      );
-    }
+    await repository.saveDailyQuoteCache(rows);
   } catch (_) {}
 }
 

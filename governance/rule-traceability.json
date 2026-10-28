@@ -3967,6 +3967,10 @@
         {
           "file": "server/test/import-cleanse.test.js",
           "pattern": "open 允许零与负成本"
+        },
+        {
+          "file": "server/test/trade-ledger-api.test.js",
+          "pattern": "交易客户端：接口、原 ID、用户日期、冲突和重算失败通过"
         }
       ],
       "owner": "WorkBuddy",

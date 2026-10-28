@@ -136,25 +136,7 @@ async function recomputeCash(client, username, accountName) {
 // 仍以旧 version 校验通过，删除重建把账本新写入覆盖掉。
 // dataset: 'trade' | 'position' | 'cashflow' | 'nav'（决定提升哪个数据集版本）
 async function markNavDirty(client, username, accountName, fromDate, dataset) {
-  const col = dataset === 'position' ? 'pos_version' :
-    dataset === 'cashflow' ? 'cashflow_version' :
-    dataset === 'nav' ? 'nav_version' : 'trade_version';
-  // account_data 行可能不存在（账本首笔写入前）→ INSERT 兜底建行再提升
-  await client.query(
-    `INSERT INTO account_data (username, account_name, data, version, ${col}, nav_cash_cutoff, nav_dirty_from)
-     VALUES ($1,$2,'{}',0,0,$3::text,$4::date)
-     ON CONFLICT (username, account_name) DO NOTHING`,
-    [username, accountName, fromDate || todayCN(), fromDate || todayCN()]
-  );
-  await client.query(
-    `UPDATE account_data
-        SET nav_cash_cutoff=$3::text,
-            nav_dirty_from=CASE WHEN nav_dirty_from IS NULL OR nav_dirty_from > $4::date THEN $4::date ELSE nav_dirty_from END,
-            version=COALESCE(version,0)+1,
-            ${col}=COALESCE(${col},0)+1
-      WHERE username=$1 AND account_name=$2`,
-    [username, accountName, fromDate || todayCN(), fromDate || todayCN()]
-  );
+  await repository.markAccountDataDirty({ username, accountName, fromDate, today: todayCN(), dataset }, client);
 }
 
 // 返回服务端最新账户结果（供前端直接刷新内存，方案阶段二第 8 条）

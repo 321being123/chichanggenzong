@@ -592,11 +592,14 @@ async function processVisionQueue() {
       job.status = 'parsing';
       renderVisionQueue();
       try {
-        var r = await fetch(api('/api/vision-parse'), {
+        var raw = await window.siteApi.requestRaw('/api/vision-parse', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ image: job.base64 })
+          body: JSON.stringify({ image: job.base64 }),
+          timeoutMs: 0
         });
+        if (!raw.response) throw new Error(raw.error || '网络异常');
+        var r = raw.response;
         var d = await r.json().catch(function() { return {}; });
         // 账户已切换：旧响应作废，不恢复旧预览
         if (!isSmartImportScopeCurrent(scope)) return;
@@ -774,11 +777,14 @@ async function doSmartParse(file, source) {
     var base64 = await fileToBase64(file);
     if (!isSmartImportScopeCurrent(scope)) return;
     if (loading) loading.innerHTML = '<span class="spinner"></span>AI识别中...';
-    var r2 = await fetch(api('/api/excel-parse'), {
+    var raw2 = await window.siteApi.requestRaw('/api/excel-parse', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ file: base64 })
+      body: JSON.stringify({ file: base64 }),
+      timeoutMs: 0
     });
+    if (!raw2.response) throw new Error(raw2.error || '网络异常');
+    var r2 = raw2.response;
     var d = await r2.json();
     if (!isSmartImportScopeCurrent(scope)) return;
 
@@ -1437,8 +1443,8 @@ function initVisionQr() {
   var scope = bindSmartImportScope();
   var qrGeneration = ++_qrGeneration;
   function currentQr() { return qrGeneration === _qrGeneration && isSmartImportScopeCurrent(scope); }
-  fetch(api('/api/vision-token'), { method: 'POST' })
-    .then(function(r) { return r.json(); })
+  window.siteApi.requestRaw('/api/vision-token', { method: 'POST', timeoutMs: 0 })
+    .then(function(raw) { if (!raw.response) throw new Error(raw.error || '网络异常'); return raw.response.json(); })
     .then(function(d) {
       if (!currentQr()) return;
       _qrToken = d.token;
@@ -1453,8 +1459,8 @@ function initVisionQr() {
           if (_qrPollTimer === pollTimer) _qrPollTimer = null;
           return;
         }
-        fetch(api('/api/vision-check/' + d.token))
-          .then(function(r) { return r.json(); })
+        window.siteApi.requestRaw('/api/vision-check/' + d.token, { timeoutMs: 0 })
+          .then(function(raw) { if (!raw.response) throw new Error(raw.error || '网络异常'); return raw.response.json(); })
           .then(function(result) {
             // 切换账户后旧轮询结果作废，不恢复旧预览
             if (!currentQr()) {
@@ -1703,11 +1709,14 @@ function importData(event) {
       const imported = JSON.parse(e.target.result);
       if (imported.positions && imported.trades !== undefined) {
         // 全量导入走专用快照导入接口（DATA-01：替代旧整包写接口，跳过版本检查强制覆盖）
-        var r = await fetch(api('/api/accounts/' + encodeURIComponent(currentAccount) + '/import-snapshot'), {
+        var raw = await window.siteApi.requestRaw('/api/accounts/' + encodeURIComponent(currentAccount) + '/import-snapshot', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(imported)
+          body: JSON.stringify(imported),
+          timeoutMs: 0
         });
+        if (!raw.response) { showToast(raw.error || '网络异常'); return; }
+        var r = raw.response;
         var j = await r.json().catch(function(){ return {}; });
         if (!r.ok) { showToast(j.error || '导入失败'); return; }
         if (j.version) {
@@ -1719,8 +1728,8 @@ function importData(event) {
         }
         // 刷新本地数据
         try {
-          var r2 = await fetch(api('/api/data/' + encodeURIComponent(currentAccount)));
-          if (r2.ok) { var j2 = await r2.json().catch(function(){ return {}; }); if (j2.data) refreshDataFromServer(j2.data); else { data = imported; renderAll(); } }
+          var raw2 = await window.siteApi.requestRaw('/api/data/' + encodeURIComponent(currentAccount), { timeoutMs: 0 });
+          if (raw2.response) { var r2 = raw2.response; if (r2.ok) { var j2 = await r2.json().catch(function(){ return {}; }); if (j2.data) refreshDataFromServer(j2.data); else { data = imported; renderAll(); } } else { data = imported; renderAll(); } }
           else { data = imported; renderAll(); }
         } catch (e2) { data = imported; renderAll(); }
         showToast('数据导入成功！');

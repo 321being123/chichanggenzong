@@ -88,7 +88,10 @@ assert(orchestrator.includes('scopeType: \'dataset\''));
 const partitionService = read('server/services/datasetPartitions.js');
 const latestFunction = partitionService.slice(partitionService.indexOf('async function getLatestPublishedPartition'));
 assert(!latestFunction.includes('options.diagnostics'));
-assert(partitionService.includes('resolveDatasetAlerts(datasetCode, scopeKey, partitionKey)'));
+// 发布成功→告警恢复的契约改为依赖倒置钩子：数据层按相同参数调用钩子，告警侧注册 resolveDatasetAlerts。
+assert(partitionService.includes('_onDatasetPublished(datasetCode, scopeKey, partitionKey)'));
+const alertMailerSource = read('server/services/jobAlertMailer.js');
+assert(alertMailerSource.includes('setDatasetPublishedHook(resolveDatasetAlerts)'));
 
 const holiday = read('server/config/holidays.js');
 assert(holiday.includes("process.env.HOLIDAY_CONFIG_PATH"));

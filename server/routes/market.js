@@ -1,6 +1,5 @@
 // ========== 行情代理路由 ==========
 const express = require('express');
-const https = require('https');
 const router = express.Router();
 const asyncHandler = require('../middleware/async');
 const { requireLogin } = require('../middleware/auth');
@@ -8,30 +7,13 @@ const {
   fetchQuoteByCode, fetchQuotesByCodes, tushareQuery, tsRows,
   tsDateStr, normDate
 } = require('../services/market');
+const { getText } = require('../services/marketHttpSource');
 const { resolveInstrument, resolveProviderCode } = require('../services/securityIdentity');
 const { withExternalCallGuard } = require('../services/externalCallGuard');
 const { getCurrentMarketStates, getMarketState } = require('../services/marketState');
 
 function guardedTextGet(source, dataset, url, options = {}) {
-  return withExternalCallGuard(source, dataset, process.env.JOB_BUSINESS_DATE, () => new Promise((resolve, reject) => {
-    https.get(url, options, (resp) => {
-      let data = '';
-      resp.on('data', chunk => data += chunk);
-      resp.on('end', () => {
-        if (resp.statusCode === 429) {
-          const error = new Error(`${source} HTTP 429`);
-          error.code = 'RATE_LIMIT'; error.errorType = 'rate_limit'; error.source = source;
-          return reject(error);
-        }
-        if (resp.statusCode >= 500) {
-          const error = new Error(`${source} HTTP ${resp.statusCode}`);
-          error.code = 'UPSTREAM_5XX'; error.errorType = 'network'; error.source = source;
-          return reject(error);
-        }
-        resolve(data);
-      });
-    }).on('error', reject).on('timeout', function () { this.destroy(); reject(new Error(`${source} timeout`)); });
-  }));
+  return withExternalCallGuard(source, dataset, process.env.JOB_BUSINESS_DATE, () => getText(source, url, options));
 }
 
 router.get('/quote/:code', requireLogin, asyncHandler(async (req, res) => {

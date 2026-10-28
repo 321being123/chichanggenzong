@@ -117,6 +117,7 @@ function assertContinuousParameters(sql, params) {
   const context = vm.createContext({ module: { exports: {} }, process, console, Date,
     require: name => {
       if (name === '../db/connection') return { pool: { query: async sql => ({ rows: sql.includes('SELECT security_code FROM') ? [{ security_code: '01256.HK' }] : [] }) } };
+      if (name === '../repositories/ipoRepository') return { findHkTargetCodes: async codes => ({ rows: codes.filter(code => code === '01256.HK').map(security_code => ({ security_code })) }) };
       if (name === '../services/hkexIpo') return {
         upsertHkIpoFacts: async () => ({ ok: true, rows: 1, events: 0 }),
         syncStoredHkListings: async options => {assert.strictEqual(options.asOfDate,'2020-01-06');assert.deepStrictEqual(Array.from(options.targetCodes),['01256.HK']);return {ok:true,rows:0};},

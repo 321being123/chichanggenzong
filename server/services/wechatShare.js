@@ -6,12 +6,12 @@
 // - 不新增后台定时任务，不写金融事实表。
 const crypto = require('crypto');
 const { redis } = require('../config');
+const { fetchJson } = require('./wechatShareSource');
 
 const TOKEN_CACHE_KEY = 'share:wechat:access_token';
 const TICKET_CACHE_KEY = 'share:wechat:jsapi_ticket';
 const FAIL_CACHE_KEY = 'share:wechat:fail_until';
 
-const REQUEST_TIMEOUT_MS = 8000;
 const FAIL_COOLDOWN_MS = 5 * 60 * 1000;
 const EXPIRY_SAFETY_MS = 5 * 60 * 1000; // 提前 5 分钟视为过期，避免临界失败
 
@@ -44,23 +44,6 @@ async function cacheSet(key, value, ttlSeconds) {
   }
 }
 
-async function fetchJson(url, label) {
-  let response;
-  try {
-    response = await fetch(url, { signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
-  } catch (error) {
-    throw new Error(`${label}请求失败：${error && error.message ? error.message : error}`);
-  }
-  if (!response.ok) throw new Error(`${label}返回 HTTP ${response.status}`);
-  let payload;
-  try { payload = await response.json(); } catch (_) { throw new Error(`${label}返回内容无法解析`); }
-  if (!payload || payload.errcode) {
-    // 只暴露错误码，不暴露上游原始响应体，避免票据/密钥进入日志。
-    const code = payload && payload.errcode ? payload.errcode : 'unknown';
-    throw new Error(`${label}被微信拒绝（errcode=${code}）`);
-  }
-  return payload;
-}
 
 async function getAccessToken() {
   const cached = await cacheGet(TOKEN_CACHE_KEY);

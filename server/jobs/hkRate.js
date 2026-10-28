@@ -1,11 +1,11 @@
 // ========== 港币→人民币汇率：盘中实时、收盘最终值 ==========
 // 盘中使用 Yahoo Finance Japan 的 HKDCNY=X 行情页，数据库按 5 分钟去重；收盘任务强制再抓一次。
 // open.er-api.com 仍作为收盘实时源失败时的每日汇率兜底。
-const https = require('https');
 const { tryClaimJob, releaseJob, startJobRun, finishJobRun } = require('../db');
 const { cnDate, validRate, upsertFxRate, syncLegacyAccountRates, getFxRate, getCurrentFxRate, getCurrentFxRateSnapshot } = require('../services/fxRate');
 const { getMarketState, shanghaiDateTime, isPotentialHkTradingTime } = require('../services/marketState');
-const { withExternalCallGuard, openExternalCircuit, ExternalCallGuardError } = require('../services/externalCallGuard');
+const { openExternalCircuit, ExternalCallGuardError } = require('../services/externalCallGuard');
+const hkRateSource = require('../services/hkRateSource');
 const CoreDate = require('../../public/shared/core-date.js');
 
 const FRESH_RATE_MS = 24 * 60 * 60 * 1000;
@@ -30,24 +30,7 @@ function structuredRateError(error, fallbackCode = 'EXCHANGE_RATE_FETCH_FAILED',
 // 数据源 open.er-api.com：免费、无需 key，返回 rates.CNY = 1 HKD 兑多少人民币（约 0.865）
 async function fetchHkRate() {
   try {
-    const text = await withExternalCallGuard('exchange-rate', 'HKD:CNY', process.env.JOB_BUSINESS_DATE, () => new Promise((resolve, reject) => {
-      https.get('https://open.er-api.com/v6/latest/HKD', { timeout: 8000 }, (resp) => {
-        let data = ''; resp.on('data', c => data += c);
-        resp.on('end', () => {
-          if (resp.statusCode === 429) {
-            const error = new Error('汇率接口 HTTP 429');
-            error.code = 'RATE_LIMIT'; error.errorType = 'rate_limit'; error.source = 'exchange-rate';
-            return reject(error);
-          }
-          if (resp.statusCode >= 500) {
-            const error = new Error(`汇率接口 HTTP ${resp.statusCode}`);
-            error.code = 'UPSTREAM_5XX'; error.errorType = 'network'; error.source = 'exchange-rate';
-            return reject(error);
-          }
-          resolve(data);
-        });
-      }).on('error', reject).on('timeout', function () { this.destroy(); reject(new Error('timeout')); });
-    }), { apiName: 'exchange_rate', credentialProfile: 'anonymous', tokenFingerprint: 'none' });
+    const text = await hkRateSource.fetchDailyText();
     let json;
     try { json = JSON.parse(text); }
     catch (error) { throw structuredRateError(error, 'INVALID_RESPONSE', 'parse'); }
@@ -86,31 +69,7 @@ function parseRealtimeHkRateHtml(text) {
 // 改读同一报价的 Yahoo Finance Japan 行情页；数据库和 Guard 共同限制为 5 分钟一次。
 async function fetchRealtimeHkRate() {
   try {
-    const text = await withExternalCallGuard('exchange-rate', 'HKD:CNY', process.env.JOB_BUSINESS_DATE, () => new Promise((resolve, reject) => {
-      https.get('https://finance.yahoo.co.jp/quote/HKDCNY%3DX', {
-        timeout: 8000,
-        headers: {
-          'User-Agent': 'Mozilla/5.0',
-          'Accept': 'text/html,application/xhtml+xml',
-        },
-      }, (resp) => {
-        let data = ''; resp.on('data', c => data += c);
-        resp.on('end', () => {
-          if (resp.statusCode === 429) {
-            const error = new Error('实时汇率接口 HTTP 429');
-            error.code = 'RATE_LIMIT'; error.errorType = 'rate_limit'; error.source = 'exchange-rate'; error.apiName = REALTIME_API_NAME;
-            return reject(error);
-          }
-          if (resp.statusCode >= 400) {
-            const error = new Error(`实时汇率接口 HTTP ${resp.statusCode}`);
-            error.code = resp.statusCode >= 500 ? 'UPSTREAM_5XX' : 'UPSTREAM_4XX';
-            error.errorType = 'network'; error.source = 'exchange-rate'; error.apiName = REALTIME_API_NAME;
-            return reject(error);
-          }
-          resolve(data);
-        });
-      }).on('error', reject).on('timeout', function () { this.destroy(); reject(new Error('realtime timeout')); });
-    }), { apiName: REALTIME_API_NAME, credentialProfile: 'anonymous', tokenFingerprint: 'none' });
+    const text = await hkRateSource.fetchRealtimeText(REALTIME_API_NAME);
     const rate = parseRealtimeHkRateHtml(text);
     if (rate) return rate;
     throw structuredRateError(new Error('实时汇率接口响应缺少有效 HKD/CNY 汇率'), 'INVALID_RESPONSE', 'parse', REALTIME_API_NAME);

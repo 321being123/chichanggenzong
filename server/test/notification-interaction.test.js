@@ -28,6 +28,7 @@ async function adminForm(width) {
     return response({ items: [{ username: 'alice' }], total: 1 });
   };
   try {
+    w.eval(read('public/js/api/client.js'));
     w.eval(read('public/js/admin-notifications.js'));
     w.renderAdminNotifications();
     const input = (id, value) => { w.document.getElementById(id).value = value; };
@@ -84,6 +85,7 @@ async function pendingList() {
     return response({ items: [{ id: '9', title: '通知', body: '', target: { kind: 'notification' } }], nextCursor: '9', complete: false });
   };
   try {
+    w.eval(read('public/js/api/client.js'));
     w.eval(read('public/js/notifications.js'));
     w.AppNotifications.load(); await tick();
     w.document.querySelector('[data-nt-act="more"]').click();
@@ -117,6 +119,7 @@ async function detailRace(kind) {
     return response({ items: [], complete: true });
   };
   try {
+    w.eval(read('public/js/api/client.js'));
     w.eval(read('public/js/notifications.js'));
     w.AppNotifications.load();
     await tick();

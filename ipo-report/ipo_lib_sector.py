@@ -1,5 +1,4 @@
 # 本文件由 ipo_daily_report.py 物理拆分而来，函数体/常量未改动，仅调整文件归属。
-import requests
 import json
 import math
 import os
@@ -254,38 +253,7 @@ def _effective_sector_multiplier(sector_key, fallback=1.0):
 _SECTOR_DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sector_heat.db")
 
 def _init_sector_db():
-    """初始化赛道热度数据库"""
-    import sqlite3
-    conn = db_pg.connect()
-    # 已上市股票-赛道映射表（存储哪些股票属于哪个赛道）
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS stock_sector (
-            stock_code TEXT,
-            sector_key TEXT,
-            stock_name TEXT,
-            PRIMARY KEY (stock_code, sector_key)
-        )
-    """)
-    # 赛道热度快照表（每日存储一次赛道统计结果）
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS sector_heat (
-            sector_key TEXT PRIMARY KEY,
-            avg_gain_60d REAL,
-            stock_count INTEGER,
-            boost REAL,
-            updated_at TEXT
-        )
-    """)
-    # 股票涨跌幅缓存表（存储最近一次获取的60日涨跌幅）
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS stock_gain (
-            stock_code TEXT PRIMARY KEY,
-            gain_60d REAL,
-            updated_at TEXT
-        )
-    """)
-    conn.commit()
-    return conn
+    return db_pg.init_sector_db()
 
 def sector_tables_from_history(history_rows):
     """按给定历史样本重算赛道系数表，供生产校准与回测（历史时点）共用。
@@ -378,17 +346,11 @@ def calibrate_sector_boost():
         del NEW_STOCK_HOT_SECTORS[key]
 
     # 清空旧的全市场板块数据，只保留基于新股首日涨幅重算的结果
-    conn.execute("DELETE FROM sector_heat")
+    db_pg.clear_sector_heat(conn)
 
     # 已上市新股：主营业务 / 行业 / 上市首日涨跌幅
     cutoff = (datetime.now() - timedelta(days=SECTOR_CALIBRATION_DAYS)).strftime("%Y-%m-%d")
-    rows = conn.execute(
-        """SELECT security_code, security_name, market_type, listing_date,
-                  main_business, industry, ld_close_change, source_payload
-             FROM ipo_history
-            WHERE listing_date >= ? AND ld_close_change IS NOT NULL""",
-        (cutoff,),
-    ).fetchall()
+    rows = db_pg.load_sector_history(conn, cutoff)
 
     table, _benchmark = sector_tables_from_history(rows)
 
@@ -396,15 +358,10 @@ def calibrate_sector_boost():
     for sector_key, item in table.items():
         SECTOR_SAMPLE_COUNTS[sector_key] = item["sample_count"]
         SECTOR_EFFECTIVE_BOOSTS[sector_key] = item["boost"]
-        conn.execute(
-            "INSERT OR REPLACE INTO sector_heat (sector_key, avg_gain_60d, stock_count, boost, updated_at) VALUES (?,?,?,?,?)",
-            (sector_key, round(item["robust_gain"], 2), item["sample_count"], item["boost"], now_str),
-        )
+        db_pg.save_sector_heat(conn, sector_key, item, now_str)
     conn.commit()
 
-    rows = conn.execute(
-        "SELECT sector_key, boost, avg_gain_60d, stock_count FROM sector_heat ORDER BY boost DESC"
-    ).fetchall()
+    rows = db_pg.load_sector_heat(conn)
     conn.close()
 
     updated = []
@@ -525,11 +482,7 @@ def detect_market_temperature(ref_date=None):
     upper = anchor.strftime("%Y-%m-%d")
     try:
         conn = _init_ipo_db()
-        rows = conn.execute(
-            "SELECT ld_close_change FROM ipo_history WHERE listing_date >= ? AND listing_date <= ?"
-            " AND ld_close_change IS NOT NULL AND market_type != '北交所'",
-            (cutoff, upper),
-        ).fetchall()
+        rows = db_pg.load_market_temperature_rows(conn, cutoff, upper)
         conn.close()
     except Exception:
         rows = []
@@ -717,7 +670,7 @@ def _sync_sector_boost_from_db():
     避免源码硬编码默认值与运行时实际值不一致（防止误读旧值）"""
     try:
         conn = _init_sector_db()
-        rows = conn.execute("SELECT sector_key, boost, stock_count FROM sector_heat").fetchall()
+        rows = db_pg.load_sector_boost_rows(conn)
         for sector_key, boost, stock_count in rows:
             effective = boost if boost and boost > 0 else 1.0
             SECTOR_EFFECTIVE_BOOSTS[sector_key] = effective

@@ -45,7 +45,9 @@ async function refreshUnreadCount() {
   var seq = ++notifPoll.seq;
   var who = username;
   try {
-    var r = await fetch(api('/api/notifications/unread-count'));
+    var result = await window.siteApi.requestRaw('/api/notifications/unread-count', { timeoutMs: 0, headers: {} });
+    if (!result.response) throw new Error(result.error || '网络异常');
+    var r = result.response;
     if (!r.ok) throw new Error('HTTP ' + r.status);
     var d = await r.json();
     if (seq !== notifPoll.seq || who !== username) return null;
@@ -125,7 +127,9 @@ async function checkAuth() {
     if ((previousUser !== username || previousIdentity !== accountIdentity) && typeof window.securityAnalysisResetAccount === 'function') window.securityAnalysisResetAccount();
   }
   try {
-    const r = await fetch(api('/api/me'));
+    const result = await window.siteApi.requestRaw('/api/me', { timeoutMs: 0, headers: {} });
+    if (!result.response) throw new Error(result.error || '网络异常');
+    const r = result.response;
     const d = await r.json();
     if (!d.username) {
       username = null; myProfile = null; accountIdentity = ''; invalidateIfChanged(); stopNotificationPolling(); clearNotificationCache(); renderTopUser(null); return false;
@@ -222,7 +226,8 @@ async function logout() {
   if (typeof window.invalidateSmartImportScope === 'function') window.invalidateSmartImportScope();
   if (typeof window.securityAnalysisResetAccount === 'function') window.securityAnalysisResetAccount();
   accountIdentity = '';
-  await fetch(api('/api/logout'), { method: 'POST' });
+  const result = await window.siteApi.requestRaw('/api/logout', { method: 'POST', timeoutMs: 0, headers: {} });
+  if (!result.response) throw new Error(result.error || '网络异常');
   window.location.href = api('/');
 }
 

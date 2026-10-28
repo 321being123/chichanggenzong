@@ -74,7 +74,9 @@
     var query = 'contentType=' + encodeURIComponent(target.contentType)
       + '&resourceKind=' + encodeURIComponent(target.kind)
       + '&resourceKey=' + encodeURIComponent(target.code);
-    var response = await fetch((window.BASE_URL || '') + '/api/share/qrcode?' + query, { headers: { Accept: 'application/json' } });
+    var result = await window.siteApi.requestRaw('/api/share/qrcode?' + query, { timeoutMs: 0, headers: { Accept: 'application/json' } });
+    if (!result.response) throw new Error(result.error || '分享信息暂时不可用');
+    var response = result.response;
     var payload = await response.json().catch(function () { return {}; });
     if (!response.ok) throw new Error(payload.error || '分享信息暂时不可用');
     if (!payload.url) throw new Error('分享地址未配置');

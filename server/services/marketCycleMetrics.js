@@ -1,4 +1,5 @@
-const { pool, loadAccountSummary } = require('../db');
+const { loadAccountSummary } = require('../db');
+const marketStrategyRepository = require('../repositories/marketStrategyRepository');
 const CoreDate = require('../../public/shared/core-date.js');
 
 const METRICS = {
@@ -67,31 +68,7 @@ function metricRecommendedPosition(value, lower, upper, direction) {
   return 20;
 }
 
-async function metricRows(metric, market, benchmark) {
-  if (metric === 'm2_market_cap') {
-    const { rows } = await pool.query(`SELECT trade_date::text AS date, ratio_pct::float8 AS value,
-      m2_100m_yuan::float8 AS m2_100m_yuan, total_market_cap_100m_yuan::float8 AS total_market_cap_100m_yuan,
-      m2_month::text AS m2_month, data_status
-      FROM analytics.m2_market_cap_daily ORDER BY trade_date`);
-    return rows;
-  }
-  const field = metric === 'pe' ? 'pe_ttm' : 'pb';
-  if (market === 'CN' && benchmark === 'CSIALL') {
-    if (metric === 'pb') return [];
-    const { rows } = await pool.query(`SELECT DISTINCT ON (trade_date) trade_date::text AS date, pe::float8 AS value,
-      'normal'::text AS data_status FROM market.market_valuation_daily
-      WHERE market_code='CN' AND benchmark_code='CSIALL' AND pe > 0
-      ORDER BY trade_date, CASE WHEN source_code='csindex' THEN 0 ELSE 1 END`);
-    return rows;
-  }
-  const { rows } = await pool.query(`SELECT DISTINCT ON (trade_date) trade_date::text AS date,
-    ${field}::float8 AS value, close::float8 AS close, market_cap::float8 AS market_cap, 'normal'::text AS data_status
-    FROM market.index_valuation_history
-    WHERE index_code=$1 AND valuation_method='market_cap_weighted' AND ${field} > 0
-    ORDER BY trade_date, CASE WHEN source_code='tushare_index_dailybasic' THEN 0 WHEN source_code='user_supplied_weighted_csv' THEN 1 ELSE 2 END`,
-  [benchmark]);
-  return rows;
-}
+const metricRows = marketStrategyRepository.metricRows;
 
 async function loadRows(metric, market, benchmark) {
   return metricRows(metric, market, benchmark);
@@ -99,10 +76,7 @@ async function loadRows(metric, market, benchmark) {
 
 async function getSetting(username, account, metric, market, benchmark) {
   if (!username || !account) return null;
-  const { rows } = await pool.query(`SELECT lower_boundary::float8 AS lower, upper_boundary::float8 AS upper, version
-    FROM analytics.market_cycle_strategy_settings
-    WHERE username=$1 AND account_name=$2 AND metric_code=$3 AND market_code=$4 AND benchmark_code=$5 AND is_current
-    LIMIT 1`, [username, account, metric, market, benchmark]);
+  const { rows } = await marketStrategyRepository.readSetting(username, account, metric, market, benchmark);
   return rows[0] || null;
 }
 
@@ -130,7 +104,7 @@ async function getOverview(username, account, metric, market, benchmark, rowsOve
   const recommendedPosition = metricRecommendedPosition(current.value, setting.lower, setting.upper, METRICS[metric].direction);
   const [actual, pointResult] = await Promise.all([
     actualPosition(username, account),
-    pool.query('SELECT close::float8 AS value, date::text AS trade_date FROM index_history WHERE name=$1 ORDER BY date DESC LIMIT 1', [INDEX_NAMES[benchmark]]),
+    marketStrategyRepository.readIndexPoint(INDEX_NAMES[benchmark]),
   ]);
   const delta = actual == null || recommendedPosition == null ? null : Number((actual - recommendedPosition).toFixed(2));
   return {
@@ -155,23 +129,8 @@ async function saveSetting(username, account, metric, market, benchmark, lower, 
   if (previous && Number(version) !== Number(previous.version)) { const error = new Error('设置已被其他页面更新，请刷新后重试'); error.conflict = true; throw error; }
   if (!previous && Number(version || 0) !== 0) { const error = new Error('设置版本错误，请刷新后重试'); error.conflict = true; throw error; }
   const nextVersion = (previous ? previous.version : 0) + 1;
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-    await client.query(`UPDATE analytics.market_cycle_strategy_settings SET is_current=false
-      WHERE username=$1 AND account_name=$2 AND metric_code=$3 AND market_code=$4 AND benchmark_code=$5 AND is_current`,
-    [username, account, metric, market, benchmark]);
-    await client.query(`INSERT INTO analytics.market_cycle_strategy_settings
-      (username,account_name,metric_code,market_code,benchmark_code,lower_boundary,upper_boundary,version)
-      VALUES($1,$2,$3,$4,$5,$6,$7,$8)`, [username, account, metric, market, benchmark, lower, upper, nextVersion]);
-    await client.query('COMMIT');
-    return { lower: Number(lower), upper: Number(upper), version: nextVersion, ladder };
-  } catch (error) {
-    await client.query('ROLLBACK');
-    throw error;
-  } finally {
-    client.release();
-  }
+  await marketStrategyRepository.writeSetting(username, account, metric, market, benchmark, lower, upper, nextVersion);
+  return { lower: Number(lower), upper: Number(upper), version: nextVersion, ladder };
 }
 
 module.exports = {

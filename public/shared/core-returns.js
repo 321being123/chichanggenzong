@@ -72,7 +72,7 @@ async function addCashFlow() {
   // 幂等键：前端生成唯一 id，重复点击/网络重试不会新增第二条（2026-08-04 修复）
   var cfId = uid();
   try {
-    var r = await fetch(api('/api/accounts/' + encodeURIComponent(currentAccount) + '/ledger/cash-flows?version=' + (dataVersion != null ? dataVersion : '')), {
+    var result = await window.siteApi.requestRaw('/api/accounts/' + encodeURIComponent(currentAccount) + '/ledger/cash-flows?version=' + (dataVersion != null ? dataVersion : ''), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -82,8 +82,11 @@ async function addCashFlow() {
           amount: cfAmount,
           note: noteInput ? noteInput.value.trim() : ''
         }
-      })
+      }),
+      timeoutMs: 0
     });
+    if (!result.response) { showToast(result.error || '网络异常'); return; }
+    var r = result.response;
     var j = await r.json().catch(function(){ return {}; });
     if (!r.ok) { showToast(j.error || '记录失败'); return; }
     if (j.data) refreshDataFromServer(j.data);
@@ -121,10 +124,13 @@ async function recordNav() {
   const today = todayCN();
   // 自动净值只提交意图，由服务端在账户锁内按首页资产基准计算；浏览器不写自算NAV。
   try {
-    const response = await fetch(api('/api/nav/' + today + '?version=' + (dataVersion != null ? dataVersion : '')), {
+    const result = await window.siteApi.requestRaw('/api/nav/' + today + '?version=' + (dataVersion != null ? dataVersion : ''), {
       method: 'PUT', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ account: currentAccount, calculationMode: 'system' })
+      body: JSON.stringify({ account: currentAccount, calculationMode: 'system' }),
+      timeoutMs: 0
     });
+    if (!result.response) { showToast(result.error || '网络异常'); return; }
+    const response = result.response;
     const _j2 = await response.json().catch(function () { return {}; });
     if (!response.ok) { showToast(_j2.error || '净值基准不完整，未保存'); return; }
     if (_j2.data) {

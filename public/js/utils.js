@@ -196,7 +196,9 @@ var marketStateSnapshot = null;
 
 async function refreshMarketStateSnapshot() {
   try {
-    var response = await fetch(api('/api/market-state'));
+    var result = await window.siteApi.requestRaw('/api/market-state', { timeoutMs: 0, headers: {} });
+    if (!result.response) return marketStateSnapshot;
+    var response = result.response;
     if (!response.ok) return marketStateSnapshot;
     var snapshot = await response.json();
     if (snapshot && snapshot.businessDate && snapshot.markets) marketStateSnapshot = snapshot;

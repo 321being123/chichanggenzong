@@ -127,7 +127,9 @@
 
   // ---------- 请求 ----------
   async function requestJson(url, options) {
-    var r = await fetch(api(url), options);
+    var result = await window.siteApi.requestRaw(url, Object.assign({ timeoutMs: 0, headers: {} }, options || {}));
+    if (!result.response) throw new Error(result.error || '网络异常');
+    var r = result.response;
     var payload = null;
     try { payload = await r.json(); } catch (e) { payload = null; }
     if (!r.ok) {

@@ -1,5 +1,4 @@
 // ===================== 行情服务层（原 server.js 中的行情代理逻辑集中于此） =====================
-const https = require('https');
 const { pool } = require('../db/connection');
 const CoreDate = require('../../public/shared/core-date.js');
 const { tushareQuery } = require('./tushare');
@@ -12,24 +11,8 @@ const {
 const { canonicalizeSecurityCode } = require('./securityIdentity');
 const classifyCode = require('../../public/js/code-classify');
 
-// 通用 HTTPS GET（支持 gbk 解码）
-function httpsGet(url, encoding) {
-  return new Promise((resolve, reject) => {
-    https.get(url, { timeout: 6000 }, (resp) => {
-      const chunks = [];
-      resp.on('data', chunk => chunks.push(chunk));
-      resp.on('end', () => {
-        const buf = Buffer.concat(chunks);
-        if (encoding === 'gbk') {
-          try { resolve(new TextDecoder('gbk').decode(buf)); }
-          catch (e) { resolve(buf.toString('utf8')); }
-        } else {
-          resolve(buf.toString('utf8'));
-        }
-      });
-    }).on('error', reject).on('timeout', function () { this.destroy(); reject(new Error('timeout')); });
-  });
-}
+// 通用 HTTPS GET（支持 gbk 解码）：网络请求统一走 marketHttpSource 适配器。
+const { httpsGet } = require('./marketHttpSource');
 
 // ===================== Tushare 数据层（A股优先数据源） =====================
 // 港股实时 / 恒生指数 / 汇率：Tushare 2000积分无权限，仍走腾讯。

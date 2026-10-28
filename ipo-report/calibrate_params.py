@@ -3,9 +3,9 @@
 从东财详情页获取完整发行数据，运行预测模型后与实际涨幅对比，
 通过网格搜索调优各因子系数。
 """
-import requests
+import ipo_calibration_source
 import re
-import sqlite3
+import ipo_training_data
 import json
 import os
 import sys
@@ -14,27 +14,15 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from ipo_daily_report import NEW_STOCK_HOT_SECTORS
 
-s = requests.Session()
-s.headers.update({'User-Agent': 'Mozilla/5.0'})
-
 # 1. 获取最近20只非北交所新股
-conn = sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "ipo_history.db"))
-rows = conn.execute("""
-    SELECT security_code, security_name, board_key, ld_close_change, listing_date 
-    FROM ipo_history 
-    WHERE board_key != '北交所'
-    ORDER BY listing_date DESC LIMIT 20
-""").fetchall()
-conn.close()
+rows = ipo_training_data.load_calibration_rows(os.path.join(os.path.dirname(os.path.abspath(__file__)), "ipo_history.db"))
 
 print(f"找到 {len(rows)} 只非北交所新股\n")
 
 all_stocks = []
 for code, name, board, actual_gain, date in rows:
-    url = f"https://ds.emoney.cn/DataCenter2/datacenter/NewStockXgzl?secucode={code}&type=ss"
     try:
-        resp = s.get(url, timeout=15)
-        html = resp.text
+        html = ipo_calibration_source.fetch_new_stock_detail(code)
     except:
         print(f"  {code} {name}: 请求失败，跳过")
         continue

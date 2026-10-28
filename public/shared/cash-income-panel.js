@@ -14,7 +14,9 @@ async function openCashIncomePanel(){
   wrap.addEventListener('keydown',function(e){if(e.key==='Escape')closeCashIncomePanel();});
   document.getElementById('income-close').focus();
   try {
-    var response=await fetch(api('/api/accounts/'+encodeURIComponent(account)+'/cash-income'));
+    var raw=await window.siteApi.requestRaw('/api/accounts/'+encodeURIComponent(account)+'/cash-income',{timeoutMs:0});
+    if(!raw.response)throw new Error(raw.error||'网络异常');
+    var response=raw.response;
     var result=await response.json();if(!response.ok)throw new Error(result.error||'读取失败');
     if(!wrap.isConnected||account!==currentAccount)return;
     cashIncomeRows=result.rows||[];
@@ -44,7 +46,7 @@ async function openCashIncomePanel(){
       var row=pending[Number(button.dataset.pendingIndex)];if(!row.event_key||row.state==='resolved')return;
       var reason=await projectPrompt(row.state==='excluded_by_user'?'填写重新打开的原因':'填写本事件不参与的原因');if(!reason)return;
       button.disabled=true;
-      try {var r=await fetch(api('/api/accounts/'+encodeURIComponent(account)+'/cash-income/pending/'+row.pending_key+'?version='+dataVersion),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({exclude:row.state!=='excluded_by_user',reason:reason})});var body=await r.json();if(!r.ok)throw new Error(body.error);if(account!==currentAccount||!wrap.isConnected)return;data=await loadData(account);renderAll();await openCashIncomePanel();}catch(e){if(wrap.isConnected){showToast(e.message);button.disabled=false;}}
+      try {var raw=await window.siteApi.requestRaw('/api/accounts/'+encodeURIComponent(account)+'/cash-income/pending/'+row.pending_key+'?version='+dataVersion,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({exclude:row.state!=='excluded_by_user',reason:reason}),timeoutMs:0});if(!raw.response)throw new Error(raw.error||'网络异常');var r=raw.response;var body=await r.json();if(!r.ok)throw new Error(body.error);if(account!==currentAccount||!wrap.isConnected)return;data=await loadData(account);renderAll();await openCashIncomePanel();}catch(e){if(wrap.isConnected){showToast(e.message);button.disabled=false;}}
     };});
     var events=Array.from(new Set(cashIncomeRows.map(function(r){return r.event_key;}).concat(pending.map(function(r){return r.event_key;}),(policy.upcomingDividends||[]).map(function(r){return r.eventKey;})).filter(Boolean)));
     document.getElementById('income-event').innerHTML=events.map(function(key){return '<option value="'+incomeCell(key)+'">'+incomeCell(key)+'</option>';}).join('');
@@ -57,7 +59,7 @@ async function openCashIncomePanel(){
       var button=document.getElementById('income-import-actual');button.disabled=true;
       var currency=document.getElementById('income-currency').value,amount=document.getElementById('income-amount').value.trim();
       var record={eventKey:document.getElementById('income-event').value,date:document.getElementById('income-date').value,flow_type:document.getElementById('income-flow-type').value,amountCny:amount,currency:currency,originalAmount:document.getElementById('income-original').value.trim()||(currency==='CNY'?amount:null),sourceRef:document.getElementById('income-reference').value.trim(),status:document.getElementById('income-status').value,settlement:{amountBasis:'net'}};
-      try {var response=await fetch(api('/api/accounts/'+encodeURIComponent(account)+'/cash-income/actual?version='+dataVersion),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({records:[record]})});var result=await response.json();if(!response.ok)throw new Error(result.error);if(account!==currentAccount||!wrap.isConnected)return;data=await loadData(account);renderAll();showToast('实际流水已保存');await openCashIncomePanel();}catch(e){if(wrap.isConnected){document.getElementById('income-message').textContent=e.message;button.disabled=false;}}
+      try {var raw=await window.siteApi.requestRaw('/api/accounts/'+encodeURIComponent(account)+'/cash-income/actual?version='+dataVersion,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({records:[record]}),timeoutMs:0});if(!raw.response)throw new Error(raw.error||'网络异常');var response=raw.response;var result=await response.json();if(!response.ok)throw new Error(result.error);if(account!==currentAccount||!wrap.isConnected)return;data=await loadData(account);renderAll();showToast('实际流水已保存');await openCashIncomePanel();}catch(e){if(wrap.isConnected){document.getElementById('income-message').textContent=e.message;button.disabled=false;}}
     };
   }catch(e){if(wrap.isConnected&&account===currentAccount)wrap.querySelector('#income-summary').textContent=e.message;}
 }

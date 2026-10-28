@@ -35,7 +35,9 @@ async function anRequest(path, options) {
     init.headers['Content-Type'] = 'application/json';
     init.body = JSON.stringify(opt.body);
   }
-  const r = await fetch(api(path), init);
+  const result = await window.siteApi.requestRaw(path, Object.assign({ timeoutMs: 0 }, init));
+  if (!result.response) throw new Error(result.error || '网络异常');
+  const r = result.response;
   let payload = null;
   try { payload = await r.json(); } catch (e) { payload = null; }
   if (!r.ok) {

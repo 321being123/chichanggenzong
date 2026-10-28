@@ -1,30 +1,16 @@
 // 官网/Tushare 数据同步：中债 10 年期、恒指历史 PE；港股基准利率使用美国十年期国债收益率替代。
 // 不用第三方替代中证全指 PE；该数据源未拿到精确 000985 指数值时保持缺失。
-const https = require('https');
 const { spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const { pool, tryClaimJob, releaseJob, startJobRun, finishJobRun } = require('../db');
+const grahamRepository = require('../repositories/marketGrahamRepository');
+const marketYieldRepository = require('../repositories/marketYieldRepository');
 const { tushareQuery, tsRows, normDate } = require('../services/market');
-const { withExternalCallGuard, openExternalCircuit } = require('../services/externalCallGuard');
+const marketSource = require('../services/marketVolatilitySource');
 const { expectedTradeDate } = require('../routes/bondCycle');
 
-function request(url, binary, source = 'market-volatility', dataset = url) {
-  return withExternalCallGuard(source, dataset, process.env.JOB_BUSINESS_DATE, () => new Promise((resolve, reject) => {
-  https.get(url, { headers: { 'User-Agent': 'portfolio-server/1.0 (+official-data-sync)' }, timeout: 60000 }, r => {
-    const chunks = []; r.on('data', c => chunks.push(c)); r.on('end', () => {
-      if (r.statusCode < 200 || r.statusCode >= 300) {
-        const error = new Error('HTTP ' + r.statusCode);
-        error.code = r.statusCode === 429 ? 'RATE_LIMIT' : r.statusCode >= 500 ? 'UPSTREAM_5XX' : 'UPSTREAM_ERROR';
-        error.errorType = r.statusCode === 429 ? 'rate_limit' : r.statusCode >= 500 ? 'network' : 'upstream';
-        error.source = source;
-        return reject(error);
-      }
-      const b = Buffer.concat(chunks); resolve(binary ? b : JSON.parse(b.toString('utf8')));
-    });
-  }).on('error', reject).on('timeout', function () { this.destroy(new Error('timeout')); });
-  }));
-}
+
 function dateStr(d) { return d.toISOString().slice(0, 10); }
 async function parseHsiWorkbook(buffer) {
   if (buffer[0] === 0x50 && buffer[1] === 0x4b) {
@@ -43,16 +29,12 @@ async function parseHsiWorkbook(buffer) {
   child.on('close', n => { if (n !== 0) return reject(new Error('恒指 PE 文件解析失败（退出码 ' + n + '）：' + err)); try { resolve(JSON.parse(out)); } catch(e) { reject(e); } }); child.stdin.end(buffer);
 }); }
 async function syncChinaYield(start, end) {
-  async function queryRange(from, to) {
-    const u = 'https://yield.chinabond.com.cn/cbweb-mn/pgxh/historyQuery?startDate=' + from + '&&endDate=' + to + '&&gjqx=10&&locale=cn_ZH';
-    return withExternalCallGuard('chinabond', `yield:${from}:${to}`, process.env.JOB_BUSINESS_DATE, () => new Promise((resolve, reject) => { const req = https.request(u, { method: 'POST', headers: { 'User-Agent': 'portfolio-server/1.0', Referer: 'https://yield.chinabond.com.cn/cbweb-mn/pgxh/showHistory' } }, r => { let b=''; r.on('data', c => b += c); r.on('end', () => { try { if (r.statusCode === 429) { const e = new Error('中债接口 HTTP 429'); e.code='RATE_LIMIT'; e.errorType='rate_limit'; e.source='chinabond'; throw e; } if (r.statusCode >= 500) { const e = new Error('中债接口 HTTP ' + r.statusCode); e.code='UPSTREAM_5XX'; e.errorType='network'; e.source='chinabond'; throw e; } const data=JSON.parse(b); if (!Array.isArray(data)) throw new Error('中债返回格式错误'); resolve(data); } catch(e) { if (!e.code) { e = new Error('中债 ' + from + ' 至 ' + to + ' 查询失败：' + e.message); } reject(e); } }); }); req.on('error', reject); req.end(); }));
-  }
+
   let count = 0, cursor = new Date(start + 'T00:00:00Z'), last = new Date(end + 'T00:00:00Z');
   while (cursor <= last) {
     const rangeEnd = new Date(Date.UTC(cursor.getUTCFullYear() + 1, cursor.getUTCMonth(), cursor.getUTCDate() - 1));
-    const to = rangeEnd < last ? rangeEnd : last; const rows = await queryRange(dateStr(cursor), dateStr(to));
-    for (const r of rows) if (Number(r.tenYear) > 0) { await pool.query(`INSERT INTO market.sovereign_yield_daily(market_code,tenor_years,trade_date,yield_pct,source_code,source_date,raw_payload)
-    VALUES('CN',10,$1,$2,'chinabond',$1,$3) ON CONFLICT(market_code,tenor_years,trade_date,source_code) DO UPDATE SET yield_pct=EXCLUDED.yield_pct,raw_payload=EXCLUDED.raw_payload,ingested_at=now()`, [r.workTime, r.tenYear, JSON.stringify(r)]);
+    const to = rangeEnd < last ? rangeEnd : last; const rows = await marketSource.fetchChinaYield(dateStr(cursor), dateStr(to));
+    for (const r of rows) if (Number(r.tenYear) > 0) { await marketYieldRepository.saveChinaYield(r);
       count++; }
     cursor = new Date(to.getTime() + 86400000);
   }
@@ -60,11 +42,11 @@ async function syncChinaYield(start, end) {
 }
 async function syncCsiIndexPe(benchmark, indexCode) {
   // 水位：本地该基准最新日期往前 45 天重叠窗口（首次空表则全量）
-  const wm = await pool.query(`SELECT max(trade_date)::text AS mx FROM market.market_valuation_daily WHERE market_code='CN' AND benchmark_code=$1 AND source_code='csindex'`, [benchmark]);
+  const wm = await marketYieldRepository.readCsiWatermark(benchmark);
   const maxDate = wm.rows[0].mx;
   const since = maxDate ? dateStr(new Date(new Date(maxDate).getTime() - 45 * 86400000)) : '2005-01-01';
   // 中证 PE 专用接口只能返回全部历史，下载后在内存过滤只保留重叠窗口
-  const data = await request('https://www.csindex.com.cn/csindex-home/perf/indexCsiDsPe?indexCode=' + indexCode, false, 'csindex', `pe:${benchmark}:${indexCode}`);
+  const data = await marketSource.fetchCsiPe(benchmark, indexCode);
   const rows = data && data.success && Array.isArray(data.data) ? data.data : [];
   const kept = [];
   for (const r of rows) {
@@ -77,38 +59,25 @@ async function syncCsiIndexPe(benchmark, indexCode) {
   }
   let written = 0;
   if (kept.length) {
-    const values = [], params = []; let p = 1;
-    for (const k of kept) {
-      values.push(`($${p},$${p+1},$${p+2},$${p+3},'csindex',$${p+2},$${p+4})`);
-      params.push('CN', benchmark, k.day, k.pe, JSON.stringify(k.raw));
-      p += 5;
-    }
-    await pool.query(`INSERT INTO market.market_valuation_daily(market_code,benchmark_code,trade_date,pe,source_code,source_date,raw_payload)
-      VALUES ${values.join(',')} ON CONFLICT(market_code,benchmark_code,trade_date,source_code) DO UPDATE SET pe=EXCLUDED.pe,raw_payload=EXCLUDED.raw_payload,ingested_at=now()`, params);
+    await marketYieldRepository.saveCsiValuations(benchmark, kept);
     written = kept.length;
   }
   console.log(`[市场周期] 中证PE(${benchmark}) 接口返回=${rows.length}条, 重叠窗口(${since}起)保留=${kept.length}条, 写入=${written}条`);
   return written;
 }
 async function syncHsiPe() {
-  const b = await request('https://www.hsi.com.hk/content/dam/wpb/hsil/index_operation/historical_pe/en_hk/hsi/hsi.xlsx', true, 'hsi-official', 'monthly-pe');
+  const b = await marketSource.fetchHsiPe();
   const data = await parseHsiWorkbook(b); let count=0;
   for (const r of data.slice(3)) { const d = new Date(String(r[0])); const pe = Number(r[1]); if (Number.isNaN(d.getTime()) || !(pe > 0)) continue; const day = dateStr(d);
-    await pool.query(`INSERT INTO market.market_valuation_daily(market_code,benchmark_code,trade_date,pe,source_code,source_date,raw_payload)
-      VALUES('HK','HSI',$1,$2,'hsi_official',$1,$3) ON CONFLICT(market_code,benchmark_code,trade_date,source_code) DO UPDATE SET pe=EXCLUDED.pe,raw_payload=EXCLUDED.raw_payload,ingested_at=now()`, [day, pe, JSON.stringify(r)]);
-    await pool.query(`INSERT INTO market.index_valuation_history(index_code,valuation_method,trade_date,pe_ttm,source_code,raw_payload)
-      VALUES('HSI','market_cap_weighted',$1,$2,'hsi_official',$3)
-      ON CONFLICT(index_code,valuation_method,trade_date,source_code) DO UPDATE SET
-        pe_ttm=EXCLUDED.pe_ttm,raw_payload=EXCLUDED.raw_payload,ingested_at=now()`, [day, pe, JSON.stringify(r)]);
+    await marketYieldRepository.saveHsiMarketValuation(day, pe, r);
+    await marketYieldRepository.saveHsiIndexHistory(day, pe, r);
     count++; }
   return count;
 }
 const US_TREASURY_YIELD_SOURCE = 'tushare_us_tycr';
 
 async function syncUsTreasuryYield(end = dateStr(new Date())) {
-  const wm = await pool.query(`SELECT max(trade_date)::text AS mx
-    FROM market.sovereign_yield_daily
-    WHERE market_code='US' AND tenor_years=10 AND source_code=$1`, [US_TREASURY_YIELD_SOURCE]);
+  const wm = await marketYieldRepository.readUsYieldWatermark(US_TREASURY_YIELD_SOURCE);
   const maxDate = wm.rows[0] && wm.rows[0].mx;
   const start = maxDate
     ? dateStr(new Date(new Date(maxDate + 'T00:00:00Z').getTime() - 14 * 86400000))
@@ -132,20 +101,7 @@ async function syncUsTreasuryYield(end = dateStr(new Date())) {
     })).filter(row => row.day && Number.isFinite(row.yieldPct));
     for (let i = 0; i < rows.length; i += 500) {
       const batch = rows.slice(i, i + 500);
-      const values = [], params = [];
-      let p = 1;
-      for (const row of batch) {
-        values.push(`('US',10,$${p},$${p + 1},'${US_TREASURY_YIELD_SOURCE}',$${p},$${p + 2})`);
-        params.push(row.day, row.yieldPct, JSON.stringify(row.raw));
-        p += 3;
-      }
-      if (!values.length) continue;
-      await pool.query(`INSERT INTO market.sovereign_yield_daily
-        (market_code,tenor_years,trade_date,yield_pct,source_code,source_date,raw_payload)
-        VALUES ${values.join(',')}
-        ON CONFLICT(market_code,tenor_years,trade_date,source_code) DO UPDATE SET
-          yield_pct=EXCLUDED.yield_pct,source_date=EXCLUDED.source_date,
-          raw_payload=EXCLUDED.raw_payload,ingested_at=now()`, params);
+      await marketYieldRepository.saveUsYieldBatch(batch, US_TREASURY_YIELD_SOURCE);
       count += batch.length;
     }
     cursor = new Date(to.getTime() + 86400000);
@@ -155,16 +111,10 @@ async function syncUsTreasuryYield(end = dateStr(new Date())) {
 }
 async function calculateGraham(pg = pool, recalcFrom = null) {
   // 水位：上次计算最大日期往前 45 天重叠窗口；仅重算本轮变化的日期
-  const wm = await pg.query(`SELECT max(trade_date)::text AS mx FROM analytics.graham_index_daily`);
+  const wm = await grahamRepository.readWatermark(pg);
   const maxDate = wm.rows[0].mx;
   const since = recalcFrom || (maxDate ? dateStr(new Date(new Date(maxDate).getTime() - 45 * 86400000)) : '2005-01-01');
-  const { rows } = await pg.query(`SELECT v.market_code,v.benchmark_code,v.trade_date,v.pe,
-    (SELECT y.yield_pct FROM market.sovereign_yield_daily y WHERE y.market_code=CASE WHEN v.market_code='HK' THEN 'US' ELSE v.market_code END AND y.tenor_years=10 AND (v.market_code<>'HK' OR y.source_code='tushare_us_tycr') AND y.trade_date<=v.trade_date AND y.trade_date>=v.trade_date-CASE WHEN v.market_code='HK' THEN 10 ELSE 5 END ORDER BY y.trade_date DESC LIMIT 1) AS yield_pct,
-    (SELECT y.trade_date FROM market.sovereign_yield_daily y WHERE y.market_code=CASE WHEN v.market_code='HK' THEN 'US' ELSE v.market_code END AND y.tenor_years=10 AND (v.market_code<>'HK' OR y.source_code='tushare_us_tycr') AND y.trade_date<=v.trade_date AND y.trade_date>=v.trade_date-CASE WHEN v.market_code='HK' THEN 10 ELSE 5 END ORDER BY y.trade_date DESC LIMIT 1) AS yield_date
-    FROM (SELECT DISTINCT ON (market_code,benchmark_code,trade_date) market_code,benchmark_code,trade_date,pe
-      FROM market.market_valuation_daily WHERE pe>0
-      ORDER BY market_code,benchmark_code,trade_date,CASE WHEN source_code='hsi_weighted_manual' THEN 0 WHEN source_code='hsi_official' THEN 1 ELSE 2 END) v
-    WHERE v.trade_date >= $1`, [since]);
+  const { rows } = await grahamRepository.listInputs(pg, since);
   if (!rows.length) return 0;
   const rowsToInsert = [];
   for (const r of rows) {
@@ -181,17 +131,7 @@ async function calculateGraham(pg = pool, recalcFrom = null) {
   const BATCH = 1000;
   for (let i = 0; i < rowsToInsert.length; i += BATCH) {
     const chunk = rowsToInsert.slice(i, i + BATCH);
-    const values = [], params = []; let p = 1;
-    for (const row of chunk) {
-      values.push(`($${p},$${p+1},$${p+2},$${p+3},$${p+4},$${p+5},$${p+6},$${p+7},$${p+8})`);
-      params.push(row.market_code, row.benchmark_code, row.trade_date, row.pe, row.earnings, row.y, row.yield_date, row.graham, row.status);
-      p += 9;
-    }
-    await pg.query(`INSERT INTO analytics.graham_index_daily(market_code,benchmark_code,trade_date,pe,earnings_yield_pct,sovereign_yield_pct,sovereign_yield_date,graham_index_pct,data_status)
-      VALUES ${values.join(',')}
-      ON CONFLICT(market_code,benchmark_code,trade_date,formula_version) DO UPDATE SET
-        pe=EXCLUDED.pe,earnings_yield_pct=EXCLUDED.earnings_yield_pct,sovereign_yield_pct=EXCLUDED.sovereign_yield_pct,
-        sovereign_yield_date=EXCLUDED.sovereign_yield_date,graham_index_pct=EXCLUDED.graham_index_pct,data_status=EXCLUDED.data_status,calculated_at=now()`, params);
+    await grahamRepository.saveChunk(pg, chunk);
   }
   console.log(`[市场周期] 格雷厄姆指数 重算窗口(${since}起)=${rows.length}条, 有效写入=${rowsToInsert.length}条`);
   return rowsToInsert.length;
@@ -206,7 +146,7 @@ function wait(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
 
 async function syncCsi300Valuation(full) {
   // 水位：本地 CSI300 估值最新日期；空表才全量，否则只拉最近 45 天重叠窗口
-  const wm = await pool.query(`SELECT max(trade_date)::text AS mx FROM market.index_valuation_history WHERE index_code='CSI300' AND source_code='tushare_index_dailybasic'`);
+  const wm = await marketYieldRepository.readCsi300Watermark();
   const maxDate = wm.rows[0].mx;
   // 沪深300估值是否全量，只看它自己表是否为空；不再受“A股总市值表为空”牵连，避免总市值丢失时误触发估值全量重拉
   const needFull = !maxDate;
@@ -224,19 +164,8 @@ async function syncCsi300Valuation(full) {
       return day && ((pe > 0) || (pb > 0));
     });
     if (!kept.length) continue;
-    const values = [], params = []; let p = 1;
-    for (const row of kept) {
-      const day = normDate(row.trade_date), pe = Number(row.pe_ttm), pb = Number(row.pb);
-      values.push(`('CSI300','market_cap_weighted',$${p},$${p+1},$${p+2},$${p+3},'tushare_index_dailybasic',$${p+4})`);
-      params.push(day, Number(row.total_mv) || null, pe > 0 ? pe : null, pb > 0 ? pb : null, JSON.stringify(row));
-      p += 5;
-    }
-    await pool.query(`INSERT INTO market.index_valuation_history
-      (index_code,valuation_method,trade_date,market_cap,pe_ttm,pb,source_code,raw_payload)
-      VALUES ${values.join(',')}
-      ON CONFLICT(index_code,valuation_method,trade_date,source_code) DO UPDATE SET
-        market_cap=EXCLUDED.market_cap,pe_ttm=EXCLUDED.pe_ttm,pb=EXCLUDED.pb,
-        raw_payload=EXCLUDED.raw_payload,ingested_at=now()`, params);
+    const prepared = kept.map(row => ({ day: normDate(row.trade_date), pe: Number(row.pe_ttm), pb: Number(row.pb), raw: row }));
+    await marketYieldRepository.saveCsi300Valuations(prepared);
     count += kept.length;
   }
   console.log(`[市场周期] 沪深300估值 ${needFull ? '全量' : '增量(45天)'} 写入=${count}条`);
@@ -247,7 +176,7 @@ async function syncMoneySupply() {
   const data = await tushareQuery('cn_m', {}, 'month,m2,m2_yoy');
   if (!data) return 0;
   // 水位：本地最新月份；只保留最近 24 个月重叠窗口（首次空表则全量）
-  const wm = await pool.query(`SELECT max(month)::text AS mx FROM market.money_supply_monthly WHERE market_code='CN'`);
+  const wm = await marketYieldRepository.readMoneyWatermark();
   const maxMonth = wm.rows[0].mx;
   const since = maxMonth ? (new Date(maxMonth).getUTCFullYear() - 2) + '-' + String(new Date(maxMonth).getUTCMonth() + 1).padStart(2, '0') + '-01' : '1990-01-01';
   const kept = [];
@@ -259,24 +188,7 @@ async function syncMoneySupply() {
   }
   let written = 0;
   if (kept.length) {
-    const values = [], params = []; let p = 1;
-    for (const k of kept) {
-      values.push(`('CN',$${p},$${p+1},'nbs_via_tushare',$${p+2})`);
-      params.push(k.month, k.m2, JSON.stringify({
-        ...k.row,
-        source: 'https://data.stats.gov.cn/',
-        fiscalReference: 'https://gks.mof.gov.cn/tongjishuju/',
-        transport: 'tushare.cn_m',
-        unit: '100m CNY',
-        m1DefinitionVersion: String(k.row.month) >= '202501' ? '2025_revised' : 'pre_2025',
-      }));
-      p += 3;
-    }
-    await pool.query(`INSERT INTO market.money_supply_monthly
-      (market_code,month,m2_100m_yuan,source_code,raw_payload)
-      VALUES ${values.join(',')}
-      ON CONFLICT(market_code,month,source_code) DO UPDATE SET
-        m2_100m_yuan=EXCLUDED.m2_100m_yuan,raw_payload=EXCLUDED.raw_payload,ingested_at=now()`, params);
+    await marketYieldRepository.saveMoneySupply(kept);
     written = kept.length;
   }
   console.log(`[市场周期] 货币供应量 接口返回=${tsRows(data).length}条, 重叠窗口(近24月)保留=${kept.length}条, 写入=${written}条`);
@@ -312,8 +224,7 @@ async function syncAShareMarketCap(full) {
   const currentYear = new Date().getUTCFullYear();
   const dates = await tradeMonthEnds(full ? 2010 : currentYear, currentYear);
   if (!dates.length) return 0;
-  const existing = await pool.query(`SELECT to_char(trade_date,'YYYYMMDD') AS day
-    FROM market.a_share_market_cap_daily WHERE source_code='tushare_daily_basic'`);
+  const existing = await marketYieldRepository.listMarketCapDates();
   const seen = new Set(existing.rows.map(row => row.day));
   const targets = full ? dates.filter(day => !seen.has(day)) : [dates.at(-1)].filter(day => day && !seen.has(day));
   let count = 0;
@@ -344,18 +255,7 @@ async function syncAShareMarketCap(full) {
       totalYi = valid.reduce((sum, row) => sum + Number(row.total_mv), 0) / 10000;
     }
     if (!(totalYi > 0)) continue;
-    await pool.query(`INSERT INTO market.a_share_market_cap_daily
-      (trade_date,total_market_cap_100m_yuan,security_count,source_code,raw_payload)
-      VALUES($1,$2,$3,'tushare_daily_basic',$4)
-      ON CONFLICT(trade_date,source_code) DO UPDATE SET
-        total_market_cap_100m_yuan=EXCLUDED.total_market_cap_100m_yuan,
-        security_count=EXCLUDED.security_count,raw_payload=EXCLUDED.raw_payload,ingested_at=now()`,
-    [normDate(day), totalYi, securityCount, JSON.stringify({
-      upstreamUnit: fromUnified ? 'CNY' : '10000 CNY',
-      storedUnit: '100m CNY',
-      securityCount,
-      source: fromUnified ? 'unified_daily_valuations' : 'tushare_daily_basic',
-    })]);
+    await marketYieldRepository.saveMarketCap({ day: normDate(day), totalYi, securityCount, fromUnified });
     count++;
     if (!fromUnified) await wait(350);  // 只有回退 Tushare 才需要限流
   }
@@ -363,10 +263,7 @@ async function syncAShareMarketCap(full) {
 }
 
 async function m2MarketCapInputFreshness() {
-  const { rows } = await pool.query(`
-    SELECT
-      (SELECT max(month)::text FROM market.money_supply_monthly WHERE market_code='CN') AS m2_month,
-      (SELECT max(trade_date)::text FROM market.a_share_market_cap_daily WHERE source_code='tushare_daily_basic') AS cap_date`);
+  const { rows } = await marketYieldRepository.readM2Inputs();
   const row = rows[0] || {};
   const today = new Date(`${dateStr(new Date())}T00:00:00Z`);
   const m2Date = row.m2_month ? new Date(`${String(row.m2_month).slice(0, 10)}T00:00:00Z`) : null;
@@ -387,22 +284,7 @@ async function calculateM2MarketCap(options = {}) {
     const freshness = await m2MarketCapInputFreshness();
     if (!freshness.fresh) return { status: 'stale', rowCount: 0, freshness };
   }
-  const result = await (options.executor || pool.query.bind(pool))(`INSERT INTO analytics.m2_market_cap_daily
-    (trade_date,m2_month,m2_100m_yuan,total_market_cap_100m_yuan,ratio_pct,data_status)
-    SELECT c.trade_date,m.month,m.m2_100m_yuan,c.total_market_cap_100m_yuan,
-      m.m2_100m_yuan/c.total_market_cap_100m_yuan*100,
-      CASE WHEN date_trunc('month',c.trade_date) <= (m.month + INTERVAL '2 months') THEN 'normal' ELSE 'carried_forward' END
-    FROM market.a_share_market_cap_daily c
-    JOIN LATERAL (
-      SELECT month,m2_100m_yuan FROM market.money_supply_monthly
-      WHERE market_code='CN' AND month <= date_trunc('month',c.trade_date)
-      ORDER BY month DESC LIMIT 1
-    ) m ON true
-    WHERE c.source_code='tushare_daily_basic'
-    ON CONFLICT(trade_date,formula_version) DO UPDATE SET
-      m2_month=EXCLUDED.m2_month,m2_100m_yuan=EXCLUDED.m2_100m_yuan,
-      total_market_cap_100m_yuan=EXCLUDED.total_market_cap_100m_yuan,
-      ratio_pct=EXCLUDED.ratio_pct,data_status=EXCLUDED.data_status,calculated_at=now()`);
+  const result = await marketYieldRepository.calculateM2MarketCap(options.executor);
   return options.requireFresh ? { status: 'fresh', rowCount: result.rowCount } : result.rowCount;
 }
 
@@ -423,23 +305,23 @@ async function syncMarketCycleMetrics(full, options = {}) {
 }
 
 const MARKET_SUBDATASET_POLICIES = Object.freeze({
-  cn_yield: { maxLagDays: 1, sql: "SELECT max(trade_date)::text AS data_as_of FROM market.sovereign_yield_daily WHERE market_code='CN' AND tenor_years=10 AND source_code='chinabond'" },
-  csi300_pe: { maxLagDays: 1, sql: "SELECT max(trade_date)::text AS data_as_of FROM market.market_valuation_daily WHERE market_code='CN' AND benchmark_code='CSI300' AND source_code='csindex'" },
-  csi_all_pe: { maxLagDays: 1, sql: "SELECT max(trade_date)::text AS data_as_of FROM market.market_valuation_daily WHERE market_code='CN' AND benchmark_code='CSIALL' AND source_code='csindex'" },
-  hsi_pe: { maxLagDays: 45, sql: "SELECT max(trade_date)::text AS data_as_of FROM market.market_valuation_daily WHERE market_code='HK' AND benchmark_code='HSI' AND source_code='hsi_official'" },
-  us_treasury_yield: { maxLagDays: 10, sql: "SELECT max(trade_date)::text AS data_as_of FROM market.sovereign_yield_daily WHERE market_code='US' AND tenor_years=10 AND source_code='tushare_us_tycr'" },
-  m2: { maxLagMonths: 2, sql: "SELECT max(month)::text AS data_as_of FROM market.money_supply_monthly WHERE market_code='CN'" },
-  a_share_market_cap: { maxLagDays: 1, sql: "SELECT max(trade_date)::text AS data_as_of FROM market.a_share_market_cap_daily WHERE source_code='tushare_daily_basic'" },
-  m2_market_cap: { maxLagDays: 1, sql: "SELECT max(trade_date)::text AS data_as_of FROM analytics.m2_market_cap_daily WHERE data_status='normal'" },
-  graham_csi300: { maxLagDays: 1, sql: "SELECT max(trade_date)::text AS data_as_of FROM analytics.graham_index_daily WHERE market_code='CN' AND benchmark_code='CSI300'" },
-  graham_csi_all: { maxLagDays: 1, sql: "SELECT max(trade_date)::text AS data_as_of FROM analytics.graham_index_daily WHERE market_code='CN' AND benchmark_code='CSIALL'" },
+  cn_yield: { maxLagDays: 1 },
+  csi300_pe: { maxLagDays: 1 },
+  csi_all_pe: { maxLagDays: 1 },
+  hsi_pe: { maxLagDays: 45 },
+  us_treasury_yield: { maxLagDays: 10 },
+  m2: { maxLagMonths: 2 },
+  a_share_market_cap: { maxLagDays: 1 },
+  m2_market_cap: { maxLagDays: 1 },
+  graham_csi300: { maxLagDays: 1 },
+  graham_csi_all: { maxLagDays: 1 },
 });
 
 async function readMarketSubdatasetFreshness(targetDate) {
   const target = new Date(`${String(targetDate || dateStr(new Date())).slice(0, 10)}T00:00:00Z`);
   const diagnostics = {};
   for (const [code, policy] of Object.entries(MARKET_SUBDATASET_POLICIES)) {
-    const { rows } = await pool.query(policy.sql);
+    const { rows } = await marketYieldRepository.readSubdatasetFreshness(code);
     const raw = rows[0] && rows[0].data_as_of;
     const dataAsOf = raw ? String(raw).slice(0, 10) : null;
     const actual = dataAsOf ? new Date(`${dataAsOf}T00:00:00Z`) : null;
@@ -447,7 +329,6 @@ async function readMarketSubdatasetFreshness(targetDate) {
     const lagMonths = dataAsOf ? Math.max(0, (target.getUTCFullYear() - actual.getUTCFullYear()) * 12 + target.getUTCMonth() - actual.getUTCMonth()) : null;
     const fresh = policy.maxLagMonths != null ? lagMonths != null && lagMonths <= policy.maxLagMonths : lagDays != null && lagDays <= policy.maxLagDays;
     diagnostics[code] = { status: fresh ? 'fresh' : 'stale', data_as_of: dataAsOf, ...(lagDays == null ? {} : { lag_days: lagDays }), ...(lagMonths == null ? {} : { lag_months: lagMonths }), ...policy };
-    delete diagnostics[code].sql;
   }
   return diagnostics;
 }
@@ -472,9 +353,9 @@ async function runMarketVolatilitySync(context = {}) {
   };
   try {
     const end = String(context.targetDate || context.businessDate || process.env.JOB_BUSINESS_DATE || dateStr(new Date())).slice(0, 10);
-    const seen = await pool.query("SELECT count(*)::int AS n FROM market.sovereign_yield_daily WHERE market_code='CN' AND source_code='chinabond'");
+    const seen = await marketYieldRepository.countChinaYield();
     const first = seen.rows[0].n === 0;
-    const capSeen = await pool.query("SELECT count(*)::int AS n FROM market.a_share_market_cap_daily WHERE source_code='tushare_daily_basic'");
+    const capSeen = await marketYieldRepository.countMarketCap();
     const cycleFirst = capSeen.rows[0].n === 0;
     const start = first ? '2006-03-01' : dateStr(new Date(Date.now() - 14 * 86400000));
     await runDataset('cn_yield', () => syncChinaYield(start, end));

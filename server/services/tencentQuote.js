@@ -1,5 +1,5 @@
 const https = require('https');
-const { pool } = require('../db/connection');
+const { loadCache, saveCache } = require('../repositories/tencentQuoteCacheRepository');
 const { withExternalCallGuard } = require('./externalCallGuard');
 const classifyCode = require('../../public/js/code-classify');
 const {
@@ -109,62 +109,6 @@ function requestText(url) {
   });
 }
 
-async function loadCache(symbols) {
-  if (!symbols.length) return new Map();
-  try {
-    const { rows } = await pool.query(
-      `SELECT symbol, code, market, name, price, change_pct, quote_time, fetched_at
-         FROM market_quote_cache WHERE source = $1 AND symbol = ANY($2::text[])`,
-      [SOURCE, symbols]
-    );
-    return new Map(rows.map(row => [row.symbol, {
-      symbol: row.symbol,
-      code: row.code,
-      market: row.market,
-      name: row.name,
-      price: row.price == null ? null : Number(row.price),
-      change: row.change_pct == null ? null : Number(row.change_pct),
-      quote_time: row.quote_time,
-      fetched_at: row.fetched_at,
-      source: SOURCE,
-      cached: true,
-    }]));
-  } catch (_) {
-    // 兼容迁移尚未执行或数据库临时不可用；行情仍可直连上游。
-    return new Map();
-  }
-}
-
-async function saveCache(quotes) {
-  const rows = Array.from(quotes.values());
-  if (!rows.length) return;
-  const chunkSize = 100;
-  try {
-    for (let start = 0; start < rows.length; start += chunkSize) {
-      const chunk = rows.slice(start, start + chunkSize);
-      const values = [];
-      const params = [];
-      chunk.forEach((row, index) => {
-        const base = index * 8;
-        values.push(`($${base + 1},$${base + 2},$${base + 3},$${base + 4},$${base + 5},$${base + 6},$${base + 7},$${base + 8})`);
-        params.push(row.symbol, SOURCE, row.code, row.market, row.name || '', row.price, row.change, row.quote_time);
-      });
-      await pool.query(
-        `INSERT INTO market_quote_cache
-           (symbol, source, code, market, name, price, change_pct, quote_time)
-         VALUES ${values.join(',')}
-         ON CONFLICT (symbol, source) DO UPDATE SET
-           code=EXCLUDED.code, market=EXCLUDED.market, name=EXCLUDED.name,
-           price=EXCLUDED.price, change_pct=EXCLUDED.change_pct,
-           quote_time=EXCLUDED.quote_time, fetched_at=now()`,
-        params
-      );
-    }
-  } catch (_) {
-    // 缓存写入失败不能让行情请求失败。
-  }
-}
-
 async function resolveTencentDescriptor(rawCode) {
   const original = String(rawCode || '').trim().toUpperCase();
   if (!original) return null;
@@ -264,6 +208,37 @@ async function fetchTencentQuotes(rawCodes, options = {}) {
   return result;
 }
 
+// 港股日 K 线（腾讯 web.ifzq），供港股日线覆盖补齐使用。
+function requestTencentHkKline(symbol, startDate, endDate) {
+  const code = String(symbol || '').replace(/\.HK$/i, '').padStart(5, '0');
+  const url = `https://web.ifzq.gtimg.cn/appstock/app/kline/kline?param=${encodeURIComponent(`hk${code},day,${startDate},${endDate},500`)}`;
+  return new Promise((resolve, reject) => {
+    const request = https.get(url, {
+      timeout: 15000,
+      headers: { 'User-Agent': 'Mozilla/5.0', Referer: 'https://gu.qq.com/' },
+    }, response => {
+      const chunks = [];
+      response.on('data', chunk => chunks.push(chunk));
+      response.on('end', () => {
+        if (response.statusCode !== 200) {
+          const error = new Error(`Tencent HK K 线 HTTP ${response.statusCode}`);
+          error.code = response.statusCode === 429 ? 'RATE_LIMIT' : 'UPSTREAM_ERROR';
+          return reject(error);
+        }
+        try {
+          const payload = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+          if (payload.code !== 0) throw new Error(payload.msg || 'Tencent HK K 线返回错误');
+          resolve(payload);
+        } catch (error) {
+          reject(error);
+        }
+      });
+    });
+    request.on('timeout', () => request.destroy(new Error('Tencent HK K 线请求超时')));
+    request.on('error', reject);
+  });
+}
+
 module.exports = {
   normalizeCode,
   describeTencentCode,
@@ -273,4 +248,5 @@ module.exports = {
   parseTencentQuoteText,
   quoteLookupKeys,
   fetchTencentQuotes,
+  requestTencentHkKline,
 };

@@ -1,5 +1,4 @@
 # 本文件由 ipo_daily_report.py 物理拆分而来，函数体/常量未改动，仅调整文件归属。
-import requests
 import json
 import os
 import re

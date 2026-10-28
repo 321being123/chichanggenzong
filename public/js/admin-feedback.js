@@ -35,7 +35,9 @@
   }
 
   async function apiJson(url, options) {
-    var r = await fetch(api(url), options);
+    var result = await window.siteApi.requestRaw(url, Object.assign({ timeoutMs: 0, headers: {} }, options || {}));
+    if (!result.response) throw new Error(result.error || '网络异常');
+    var r = result.response;
     var data = null;
     try { data = await r.json(); } catch (e) { data = null; }
     if (!r.ok) throw new Error((data && data.error) || ('请求失败（' + r.status + '）'));

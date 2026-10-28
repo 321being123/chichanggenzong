@@ -46,3 +46,16 @@ def load_training_rows():
         return []
     finally:
         conn.close()
+
+
+def load_calibration_rows(path):
+    conn = sqlite3.connect(path)
+    try:
+        return conn.execute("""
+            SELECT security_code, security_name, board_key, ld_close_change, listing_date
+            FROM ipo_history
+            WHERE board_key != '北交所'
+            ORDER BY listing_date DESC LIMIT 20
+        """).fetchall()
+    finally:
+        conn.close()

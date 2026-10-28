@@ -2,7 +2,8 @@
 // 采集是后台辅助能力，文件不存在或单次解析失败都不能影响 Worker 健康检查。
 const fs = require('fs');
 const path = require('path');
-const { pool } = require('../db/connection');
+const { withTransaction } = require('../db/transaction');
+const nginxCursorRepository = require('../repositories/nginxCursorRepository');
 const { writeRuntimeRows, normalizedRoute } = require('./siteAnalytics');
 
 const MAX_BYTES = 2 * 1024 * 1024;
@@ -67,13 +68,6 @@ function extractCompleteLines(text) {
   return { lineMatches, selectedText: lineMatches.slice(0, MAX_LINES).join('') };
 }
 
-async function saveCursor(client, payload, lastError = '') {
-  await client.query(`INSERT INTO ops.sync_cursors(scope_key,dataset_code,last_success_date,last_source_update,last_attempt_at,last_error,cursor_payload)
-    VALUES ($1,$2,CURRENT_DATE,now(),now(),$3,$4::jsonb)
-    ON CONFLICT(scope_key,dataset_code) DO UPDATE SET last_success_date=CURRENT_DATE,last_source_update=now(),last_attempt_at=now(),last_error=EXCLUDED.last_error,cursor_payload=EXCLUDED.cursor_payload,updated_at=now()`,
-  [SCOPE_KEY, DATASET_CODE, lastError, JSON.stringify(payload)]);
-}
-
 async function collectNginxRuntime() {
   const filePath = String(process.env.NGINX_ACCESS_LOG_PATH || '').trim();
   if (!filePath) return { status: 'not_configured', processed: 0 };
@@ -83,25 +77,19 @@ async function collectNginxRuntime() {
     return { status: 'unavailable', processed: 0, error: error.message };
   }
   const identity = fileIdentity(filePath, stat);
-  const cursorResult = await pool.query(`SELECT cursor_payload FROM ops.sync_cursors WHERE scope_key=$1 AND dataset_code=$2 LIMIT 1`, [SCOPE_KEY, DATASET_CODE]);
+  const cursorResult = await nginxCursorRepository.loadCursor(SCOPE_KEY, DATASET_CODE);
   const previous = cursorResult.rows[0] && cursorResult.rows[0].cursor_payload || {};
   let offset = Number(previous.offset) || 0;
   let generation = Number(previous.generation) || 0;
   let cursorWarning = '';
   if (!previous.fileIdentity) {
-    const client = await pool.connect();
-    try { await client.query('BEGIN'); await saveCursor(client, { fileIdentity: identity, offset: stat.size, generation }); await client.query('COMMIT'); }
-    catch (error) { await client.query('ROLLBACK').catch(() => {}); throw error; }
-    finally { client.release(); }
+    await withTransaction(client => nginxCursorRepository.saveCursor(client, SCOPE_KEY, DATASET_CODE, { fileIdentity: identity, offset: stat.size, generation }));
     return { status: 'initialized_at_tail', processed: 0, offset: stat.size };
   }
   if (previous.fileIdentity && previous.fileIdentity !== identity) { offset = 0; generation++; cursorWarning = '日志文件已轮转，旧文件尾部未核对'; }
   if (stat.size < offset) { offset = 0; generation++; cursorWarning = '日志文件被截断，已从新位置继续'; }
   if (stat.size === offset) {
-    const client = await pool.connect();
-    try { await client.query('BEGIN'); await saveCursor(client, { fileIdentity: identity, offset, generation }, cursorWarning); await client.query('COMMIT'); }
-    catch (error) { await client.query('ROLLBACK').catch(() => {}); throw error; }
-    finally { client.release(); }
+    await withTransaction(client => nginxCursorRepository.saveCursor(client, SCOPE_KEY, DATASET_CODE, { fileIdentity: identity, offset, generation }, cursorWarning));
     return { status: 'ok', processed: 0, offset };
   }
   const readLength = Math.min(MAX_BYTES, stat.size - offset);
@@ -112,10 +100,7 @@ async function collectNginxRuntime() {
   const text = buffer.subarray(0, bytesRead).toString('utf8');
   const extracted = extractCompleteLines(text);
   if (!extracted.lineMatches.length) {
-    const client = await pool.connect();
-    try { await client.query('BEGIN'); await saveCursor(client, { fileIdentity: identity, offset, generation }, cursorWarning || '日志尚未形成完整行'); await client.query('COMMIT'); }
-    catch (error) { await client.query('ROLLBACK').catch(() => {}); throw error; }
-    finally { client.release(); }
+    await withTransaction(client => nginxCursorRepository.saveCursor(client, SCOPE_KEY, DATASET_CODE, { fileIdentity: identity, offset, generation }, cursorWarning || '日志尚未形成完整行'));
     return { status: 'waiting_for_line', processed: 0, offset };
   }
   const selectedText = extracted.selectedText;
@@ -133,19 +118,13 @@ async function collectNginxRuntime() {
   if (parseFailures) rows.forEach(row => { row.coverageStatus = 'partial'; });
   if (parseFailures) cursorWarning = [cursorWarning, `有${parseFailures}行日志无法解析`].filter(Boolean).join('；');
   const payload = { fileIdentity: identity, offset: endOffset, generation, lastReadAt: new Date().toISOString() };
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
+  await withTransaction(async client => {
     await writeRuntimeRows([...rows.values()].map(row => ({ ...row,
       batchId: `nginx:${generation}:${offset}-${endOffset}:${row.bucketStart.toISOString()}:${row.routeKey}`,
       processInstance: 'nginx-collector', sourceFile: path.basename(filePath),
     })), client);
-    await saveCursor(client, payload, cursorWarning);
-    await client.query('COMMIT');
-  } catch (error) {
-    await client.query('ROLLBACK').catch(() => {});
-    throw error;
-  } finally { client.release(); }
+    await nginxCursorRepository.saveCursor(client, SCOPE_KEY, DATASET_CODE, payload, cursorWarning);
+  });
   return { status: 'ok', processed, rows: rows.size, offset: endOffset };
 }
 

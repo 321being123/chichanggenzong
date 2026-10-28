@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "lastReviewed": "2026-10-27",
+  "lastReviewed": "2026-10-28",
   "rules": [
     {
       "id": "BOND-PROSPECTUS-SELECTION-059",
@@ -333,6 +333,10 @@
         {
           "file": "server/test/production-ops-recovery.test.js",
           "pattern": "月频宽限须覆盖整个第二个月"
+        },
+        {
+          "file": "server/test/market-volatility-source.test.js",
+          "pattern": "market volatility source: guarded paths, parameters and response types passed"
         }
       ],
       "owner": "市场周期",

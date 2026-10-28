@@ -1,4 +1,4 @@
-const { pool } = require('../db/connection');
+const { listAnnualStatements } = require('../repositories/stockStatementsRepository');
 
 const STATEMENTS = {
   balance: { name:'资产负债表', sections:[
@@ -43,9 +43,7 @@ function statementApiFields(type) {
 
 function finite(value){if(value===null||value===undefined||value==='')return null;const n=Number(value);return Number.isFinite(n)?n:null;}
 
-async function getStockStatements(tsCode,type='balance',limit=8){const definition=STATEMENTS[type];if(!definition)throw new Error('三表类型无效');const {rows}=await pool.query(`SELECT to_char(r.period_end,'YYYY') AS fiscal_year,to_char(r.announced_at,'YYYY-MM-DD') AS announced_at,r.raw_payload
-  FROM fundamental.financial_reports r JOIN core.company_instruments ci ON ci.company_id=r.company_id JOIN core.instruments i ON i.instrument_id=ci.instrument_id
-  WHERE i.canonical_code=$1 AND r.report_kind=$2 AND r.period_type='annual' AND r.is_current_version=true ORDER BY r.period_end DESC LIMIT $3`,[tsCode,type,Math.max(3,Math.min(20,Number(limit)||8))]);
+async function getStockStatements(tsCode,type='balance',limit=8){const definition=STATEMENTS[type];if(!definition)throw new Error('三表类型无效');const {rows}=await listAnnualStatements(tsCode,type,Math.max(3,Math.min(20,Number(limit)||8)));
   const periods=rows.map(row=>({year:row.fiscal_year,announced_at:row.announced_at||'',data:row.raw_payload||{}}));
   const visible=definition.fields.filter(([code])=>periods.some(period=>finite(period.data[code])!==null)),visibleCodes=new Set(visible.map(([code])=>code));
   const parentCodes=new Set(visible.map(([, , , ,parent])=>parent).filter(parent=>parent&&visibleCodes.has(parent)));

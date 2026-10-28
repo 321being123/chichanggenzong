@@ -1,6 +1,7 @@
 // GeoScope 理杏仁：统一数据层入口。只开放已核验路径，响应先落库再交消费者。
 const crypto = require('crypto');
 const { pool } = require('../db/connection');
+const lixingerRepository = require('../repositories/lixingerRepository');
 const { withExternalCallGuard, tokenFingerprint, openExternalCircuit } = require('./externalCallGuard');
 const { recordEndpointPermission } = require('./sourceEndpointPolicy');
 
@@ -61,11 +62,7 @@ async function extractLixingerData(endpoint, params, options = {}) {
 async function extractOnce(endpoint, params, requestKey, options) {
   const client = options.client || pool;
   const policy = ENDPOINTS[endpoint];
-  const cached = await client.query(`SELECT r.raw_record_id,r.payload,r.payload_hash
-    FROM ops.raw_records r JOIN ops.data_sources s USING(source_id)
-    WHERE s.source_code=$1 AND r.dataset_code='lixinger_response' AND r.source_key=$2
-      AND r.ingested_at >= now()-($3::bigint * interval '1 millisecond')
-    ORDER BY r.ingested_at DESC,r.raw_record_id DESC LIMIT 1`, [SOURCE, requestKey, policy.ttlMs]);
+  const cached = await lixingerRepository.findRecent(SOURCE, requestKey, policy.ttlMs, client);
   if (cached.rows[0]) return resultFromRecord(cached.rows[0], endpoint, true);
   const token = process.env.GEOSCOPE_API_KEY || '';
   if (!token) throw sourceError('NOT_CONFIGURED', '理杏仁备用源尚未配置 GEOSCOPE_API_KEY');
@@ -75,11 +72,7 @@ async function extractOnce(endpoint, params, requestKey, options) {
   const fetcher = options.fetch || fetch;
   return guard(SOURCE, requestKey, options.targetDate || null, async () => {
     // 跨进程在 Guard 串行后再核对一次，避免等待期间已被另一进程采集。
-    const recent = await client.query(`SELECT r.raw_record_id,r.payload,r.payload_hash
-      FROM ops.raw_records r JOIN ops.data_sources s USING(source_id)
-      WHERE s.source_code=$1 AND r.dataset_code='lixinger_response' AND r.source_key=$2
-        AND r.ingested_at >= now()-($3::bigint * interval '1 millisecond')
-      ORDER BY r.ingested_at DESC,r.raw_record_id DESC LIMIT 1`, [SOURCE, requestKey, policy.ttlMs]);
+    const recent = await lixingerRepository.findRecent(SOURCE, requestKey, policy.ttlMs, client);
     if (recent.rows[0]) return resultFromRecord(recent.rows[0], endpoint, true);
     let response;
     try {
@@ -113,10 +106,7 @@ async function extractOnce(endpoint, params, requestKey, options) {
     const rows = unwrapResponse(payload);
     const record = { endpoint, params, response: payload };
     const payloadJson = JSON.stringify(record), payloadHash = hash(payloadJson);
-    const saved = await client.query(`INSERT INTO ops.raw_records(source_id,dataset_code,source_key,payload,payload_hash)
-      SELECT source_id,'lixinger_response',$2,$3::jsonb,$4 FROM ops.data_sources WHERE source_code=$1
-      ON CONFLICT(source_id,dataset_code,source_key,payload_hash) DO UPDATE SET ingested_at=now()
-      RETURNING raw_record_id,payload,payload_hash`, [SOURCE, requestKey, payloadJson, payloadHash]);
+    const saved = await lixingerRepository.saveResponse(SOURCE, requestKey, payloadJson, payloadHash, client);
     if (!saved.rows[0]) throw sourceError('SOURCE_NOT_REGISTERED', '理杏仁数据源尚未登记，响应未交付');
     await recordEndpointPermission(SOURCE, 'primary', policy.apiName, fingerprint,
       { status: rows.length ? 'available' : 'empty_but_accepted', message: rows.length ? '采集成功，原始响应已落库' : '成功空结果已留证，不推进覆盖水位' });

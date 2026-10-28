@@ -1,4 +1,6 @@
-const { pool, loadAccountSummary } = require('../db');
+const { loadAccountSummary } = require('../db');
+const grahamStrategyRepository = require('../repositories/grahamStrategyRepository');
+const marketStrategyRepository = require('../repositories/marketStrategyRepository');
 const cycleMetrics = require('./marketCycleMetrics');
 
 const BENCHMARKS = { CN: ['CSI300', 'CSIALL'], HK: ['HSI'] };
@@ -44,11 +46,7 @@ function deviation(actual, recommended) {
 }
 
 async function getSetting(username, account, market, benchmark) {
-  const { rows } = await pool.query(
-    `SELECT lower_boundary_pct::float8 AS lower, upper_boundary_pct::float8 AS upper, version
-     FROM analytics.graham_strategy_settings WHERE username=$1 AND account_name=$2 AND market_code=$3 AND benchmark_code=$4 AND is_current
-     LIMIT 1`, [username, account, market, benchmark]
-  );
+  const { rows } = await grahamStrategyRepository.readSetting(username, account, market, benchmark);
   return rows[0] || null;
 }
 async function getAccountPosition(username, account) {
@@ -56,22 +54,15 @@ async function getAccountPosition(username, account) {
   return accountPosition(data.positions || [], data.cash, data.hkRate);
 }
 async function loadRows(market, benchmark) {
-  const { rows } = await pool.query(`SELECT trade_date::text AS trade_date, pe::float8 AS pe, earnings_yield_pct::float8 AS earnings_yield_pct,
-                       sovereign_yield_pct::float8 AS sovereign_yield_pct, sovereign_yield_date::text AS sovereign_yield_date,
-                       graham_index_pct::float8 AS graham_index_pct, data_status
-                FROM analytics.graham_index_daily WHERE market_code=$1 AND benchmark_code=$2 ORDER BY trade_date`, [market, benchmark]);
+  const { rows } = await grahamStrategyRepository.listGrahamRows(market, benchmark);
   return rows;
 }
 async function getOverview(username, account, market, benchmark, rowsOverride = null) {
   const [setting, latestRows, position, indexPoint] = await Promise.all([
     username && account ? getSetting(username, account, market, benchmark) : null,
-    rowsOverride ? Promise.resolve({ rows: rowsOverride.slice(-1) }) : pool.query(`SELECT trade_date::text AS trade_date, pe::float8 AS pe, earnings_yield_pct::float8 AS earnings_yield_pct,
-                       sovereign_yield_pct::float8 AS sovereign_yield_pct, sovereign_yield_date::text AS sovereign_yield_date,
-                       graham_index_pct::float8 AS graham_index_pct, data_status
-                FROM analytics.graham_index_daily WHERE market_code=$1 AND benchmark_code=$2
-                ORDER BY trade_date DESC LIMIT 1`, [market, benchmark]),
+    rowsOverride ? Promise.resolve({ rows: rowsOverride.slice(-1) }) : grahamStrategyRepository.latestGrahamRow(market, benchmark),
     username && account ? getAccountPosition(username, account) : Promise.resolve({ actualPosition: null, hasUs: false }),
-    pool.query('SELECT close::float8 AS value, date::text AS trade_date FROM index_history WHERE name=$1 ORDER BY date DESC LIMIT 1', [INDEX_NAMES[benchmark]])
+    marketStrategyRepository.readIndexPoint(INDEX_NAMES[benchmark])
   ]);
   const current = latestRows.rows[0] || null;
   const recommended = setting && current && current.data_status !== 'missing' ? recommendedPosition(current.graham_index_pct, setting.lower, setting.upper) : null;
@@ -79,14 +70,9 @@ async function getOverview(username, account, market, benchmark, rowsOverride = 
     actualPosition: position.actualPosition, deviation: deviation(position.actualPosition, recommended), hasUsPosition: position.hasUs };
 }
 async function getHistory(market, benchmark, range, rowsOverride = null) {
-  const params = [market, benchmark];
-  let cutoff = '';
   const cutoffDate = cycleMetrics.rangeCutoff(range);
-  if (cutoffDate) { params.push(cutoffDate); cutoff = 'AND trade_date >= $3::date'; }
   const { rows } = rowsOverride ? { rows: rowsOverride.map(row => ({ date: row.trade_date, value: row.graham_index_pct, pe: row.pe,
-    sovereign_yield_pct: row.sovereign_yield_pct, data_status: row.data_status })) } : await pool.query(`SELECT trade_date::text AS date, graham_index_pct::float8 AS value, pe::float8 AS pe,
-    sovereign_yield_pct::float8 AS sovereign_yield_pct, data_status
-    FROM analytics.graham_index_daily WHERE market_code=$1 AND benchmark_code=$2 ${cutoff} ORDER BY trade_date`, params);
+    sovereign_yield_pct: row.sovereign_yield_pct, data_status: row.data_status })) } : await grahamStrategyRepository.readGrahamHistory(market, benchmark, cutoffDate);
   if (!cutoffDate) return rows;
   if (rowsOverride) return rows.filter(row => String(row.date || '').slice(0, 10) >= cutoffDate);
   return rows;
@@ -98,14 +84,7 @@ async function saveSetting(username, account, market, benchmark, lowerBoundary, 
   const pair = boundaries(lowerBoundary, upperBoundary);
   if (!pair) { const err = new Error('边界值必须大于 0'); err.status = 400; throw err; }
   const nextVersion = (previous ? previous.version : 0) + 1;
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-    await client.query(`UPDATE analytics.graham_strategy_settings SET is_current=false WHERE username=$1 AND account_name=$2 AND market_code=$3 AND benchmark_code=$4 AND is_current`, [username, account, market, benchmark]);
-    await client.query(`INSERT INTO analytics.graham_strategy_settings(username,account_name,market_code,benchmark_code,lower_boundary_pct,upper_boundary_pct,version)
-      VALUES($1,$2,$3,$4,$5,$6,$7)`, [username, account, market, benchmark, pair.lower, pair.upper, nextVersion]);
-    await client.query('COMMIT');
-    return { ...pair, version: nextVersion, ladder: ladder(pair.lower, pair.upper) };
-  } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
+  await grahamStrategyRepository.writeSetting(username, account, market, benchmark, pair, nextVersion);
+  return { ...pair, version: nextVersion, ladder: ladder(pair.lower, pair.upper) };
 }
 module.exports = { BENCHMARKS, validMarketBenchmark, ladder, recommendedPosition, boundaries, accountPosition, deviation, loadRows, getOverview, getHistory, saveSetting };

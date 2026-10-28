@@ -4,7 +4,10 @@
   "rulesVersion": "layer-coupling-4",
   "defaultRole": "pending_contract",
   "scan": {
-    "includeExtensions": [".js", ".py"],
+    "includeExtensions": [
+      ".js",
+      ".py"
+    ],
     "excludePaths": [
       "node_modules/",
       ".worktrees/",
@@ -21,8 +24,18 @@
       "outputs/",
       "deploy/"
     ],
-    "excludeSegments": ["node_modules", "venv", "__pycache__"],
-    "excludeFilePatterns": ["^test[._-]", "\\.test\\.js$", "^_tmp", "^debug_", "^_probe"]
+    "excludeSegments": [
+      "node_modules",
+      "venv",
+      "__pycache__"
+    ],
+    "excludeFilePatterns": [
+      "^test[._-]",
+      "\\.test\\.js$",
+      "^_tmp",
+      "^debug_",
+      "^_probe"
+    ]
   },
   "roles": {
     "route": {
@@ -144,7 +157,13 @@
       "allowDom": false,
       "newFilesAllowed": true
     },
-    "frontend_infrastructure": {"description":"前端基础设施（遥测、懒加载、UI 动作、移动端壳），允许 DOM 与网络","allowSql":false,"allowNetwork":true,"allowDom":true,"newFilesAllowed":true},
+    "frontend_infrastructure": {
+      "description": "前端基础设施（遥测、懒加载、UI 动作、移动端壳），允许 DOM 与网络",
+      "allowSql": false,
+      "allowNetwork": true,
+      "allowDom": true,
+      "newFilesAllowed": true
+    },
     "shared_render": {
       "description": "可复用渲染与交互组件",
       "allowSql": false,
@@ -177,7 +196,14 @@
       "legacy": true
     }
   },
-  "sqlAllowedRoles": ["repository", "data_access", "data_prep", "script_cli", "migration", "infrastructure"],
+  "sqlAllowedRoles": [
+    "repository",
+    "data_access",
+    "data_prep",
+    "script_cli",
+    "migration",
+    "infrastructure"
+  ],
   "directoryRoles": [
     {
       "path": "server/routes",
@@ -412,6 +438,30 @@
       "status": "registered"
     },
     {
+      "path": "server/services/hkRateSource.js",
+      "role": "data_adapter",
+      "batch": 3,
+      "status": "registered"
+    },
+    {
+      "path": "server/services/tushareHealthSource.js",
+      "role": "data_adapter",
+      "batch": 3,
+      "status": "registered"
+    },
+    {
+      "path": "server/services/wechatShareSource.js",
+      "role": "data_adapter",
+      "batch": 3,
+      "status": "registered"
+    },
+    {
+      "path": "server/services/marketVolatilitySource.js",
+      "role": "data_adapter",
+      "batch": 3,
+      "status": "registered"
+    },
+    {
       "path": "server/services/tushare.js",
       "role": "data_adapter",
       "batch": 1,
@@ -430,6 +480,27 @@
       "role": "data_adapter",
       "batch": 1,
       "status": "registered"
+    },
+    {
+      "path": "server/services/hkIpoMarketSource.js",
+      "role": "data_adapter",
+      "batch": 3,
+      "status": "registered",
+      "note": "港股 IPO 市场信号白名单外采适配"
+    },
+    {
+      "path": "server/services/knowledgeSource.js",
+      "role": "data_adapter",
+      "batch": 3,
+      "status": "registered",
+      "note": "知识导入 undici 请求与限流读取适配"
+    },
+    {
+      "path": "server/services/marketHttpSource.js",
+      "role": "data_adapter",
+      "batch": 3,
+      "status": "registered",
+      "note": "行情/指数 HTTPS 文本取数适配"
     },
     {
       "path": "server/services/hkexAnnouncement.js",
@@ -504,6 +575,27 @@
       "role": "data_access",
       "batch": 0,
       "status": "registered"
+    },
+    {
+      "path": "server/services/jobDefinitions.js",
+      "role": "shared_pure",
+      "batch": 0,
+      "status": "registered",
+      "note": "任务契约与调度定义纯数据模块：零 require、零 SQL/联网/DOM，供任务编排与数据集登记共用"
+    },
+    {
+      "path": "server/services/convertibleBondAnalysisTerms.js",
+      "role": "shared_pure",
+      "batch": 3,
+      "status": "registered",
+      "note": "可转债条款/数值纯工具（零 I/O），供数据层安全共用"
+    },
+    {
+      "path": "server/services/tushareFormat.js",
+      "role": "shared_pure",
+      "batch": 3,
+      "status": "registered",
+      "note": "Tushare 响应格式化纯工具（零 I/O）"
     },
     {
       "path": "server/services/datasetPartitionRegistry.js",
@@ -621,6 +713,13 @@
       "status": "registered"
     },
     {
+      "path": "ipo-report/ipo_calibration_source.py",
+      "role": "data_adapter",
+      "batch": 5,
+      "status": "registered",
+      "note": "调参脚本东财详情页联网适配"
+    },
+    {
       "path": "ipo-report/ipo_lib_prediction.py",
       "role": "domain_algorithm",
       "batch": 5,
@@ -694,13 +793,18 @@
         "symbol": "securityAnalysisLoadList",
         "kind": "function",
         "file": "public/js/bond-analysis.js",
-        "consumers": ["public/js/stock-analysis.js"]
+        "consumers": [
+          "public/js/stock-analysis.js"
+        ]
       },
       {
         "symbol": "loadStockAnalysis",
         "kind": "function",
         "file": "public/js/presenters/stock-analysis-presenter.js",
-        "consumers": ["public/js/stock-analysis.js", "public/index.html"],
+        "consumers": [
+          "public/js/stock-analysis.js",
+          "public/index.html"
+        ],
         "batch": 2,
         "status": "retire_planned"
       },
@@ -708,7 +812,10 @@
         "symbol": "stockAnalysisSelect",
         "kind": "function",
         "file": "public/js/presenters/stock-analysis-presenter.js",
-        "consumers": ["public/js/stock-analysis.js", "public/index.html"],
+        "consumers": [
+          "public/js/stock-analysis.js",
+          "public/index.html"
+        ],
         "batch": 2,
         "status": "retire_planned"
       }
@@ -730,7 +837,10 @@
               "public/js/stock-analysis-chart.js",
               "public/js/stock-analysis-valuation-chart.js"
             ],
-            "requiredSymbols": ["stockAnalysisState", "securityAnalysisLoadList"]
+            "requiredSymbols": [
+              "stockAnalysisState",
+              "securityAnalysisLoadList"
+            ]
           }
         ]
       }
@@ -769,19 +879,34 @@
       {
         "key": "mustMigrate",
         "label": "本批必迁",
-        "fields": ["path", "symbols", "targetRole", "contractIds", "removesViolationIds"],
+        "fields": [
+          "path",
+          "symbols",
+          "targetRole",
+          "contractIds",
+          "removesViolationIds"
+        ],
         "rule": "按具体文件和符号冻结，不将整个 service 文件默认迁移；必须有真实调用切换，不能只新增未使用接口"
       },
       {
         "key": "reuseVerified",
         "label": "复用验证、不重写",
-        "fields": ["path", "interface", "unchangedBoundary"],
+        "fields": [
+          "path",
+          "interface",
+          "unchangedBoundary"
+        ],
         "rule": "确需修改时先改列本批必迁，不能藏在复用里"
       },
       {
         "key": "notMigrated",
         "label": "本批不迁的存量",
-        "fields": ["path", "violationIds", "nextBatch", "owner"],
+        "fields": [
+          "path",
+          "violationIds",
+          "nextBatch",
+          "owner"
+        ],
         "rule": "写明后续批次和责任位置，不标成已分离，也不成为永久豁免"
       }
     ]
@@ -789,13 +914,70 @@
   "layerRules": {
     "note": "跨层引用与 DOM 禁令。domain 不得依赖任何外层实现；仓储不得被路由/任务反向依赖；presenter 不得引用 view 或操作 DOM。仓储依赖 domain 的纯常量/纯函数属依赖倒置，允许。",
     "forbiddenImports": {
-      "domain": ["repository", "data_access", "data_adapter", "route", "job", "application", "service_legacy", "config", "infrastructure"],
-      "domain_algorithm": ["repository", "data_access", "data_adapter", "route", "job", "application", "service_legacy", "config", "infrastructure"],
-      "repository": ["route", "job", "application", "service_legacy", "config"],
-      "data_access": ["route", "job", "application", "service_legacy", "config"],
-      "presenter": ["view", "route", "job", "repository", "data_access", "config"],
-      "api_client": ["view", "presenter", "route", "job", "repository", "data_access"],
-      "shared_pure": ["repository", "data_access", "data_adapter", "route", "job", "application", "config", "infrastructure", "view", "presenter"]
+      "domain": [
+        "repository",
+        "data_access",
+        "data_adapter",
+        "route",
+        "job",
+        "application",
+        "service_legacy",
+        "config",
+        "infrastructure"
+      ],
+      "domain_algorithm": [
+        "repository",
+        "data_access",
+        "data_adapter",
+        "route",
+        "job",
+        "application",
+        "service_legacy",
+        "config",
+        "infrastructure"
+      ],
+      "repository": [
+        "route",
+        "job",
+        "application",
+        "service_legacy",
+        "config"
+      ],
+      "data_access": [
+        "route",
+        "job",
+        "application",
+        "service_legacy",
+        "config"
+      ],
+      "presenter": [
+        "view",
+        "route",
+        "job",
+        "repository",
+        "data_access",
+        "config"
+      ],
+      "api_client": [
+        "view",
+        "presenter",
+        "route",
+        "job",
+        "repository",
+        "data_access"
+      ],
+      "shared_pure": [
+        "repository",
+        "data_access",
+        "data_adapter",
+        "route",
+        "job",
+        "application",
+        "config",
+        "infrastructure",
+        "view",
+        "presenter"
+      ]
     },
     "domForbiddenByRole": "由 roles[role].allowDom 决定：allowDom=false 的角色不得出现 document/alert/innerHTML 等页面操作"
   },
@@ -833,7 +1015,10 @@
       "id": "ipo-training-facade",
       "entry": "ipo-report/ipo_lib_train.py",
       "implementation": "ipo-report/ipo_training_domain.py 与 ipo-report/ipo_training_data.py",
-      "internalConsumers": ["ipo-report/train_xgb_model.py", "ipo-report/backtest_ipo_prediction.py"],
+      "internalConsumers": [
+        "ipo-report/train_xgb_model.py",
+        "ipo-report/backtest_ipo_prediction.py"
+      ],
       "externalConsumers": [],
       "batch": 5,
       "owner": "应用分层批次5",
@@ -845,7 +1030,12 @@
       "id": "db-aggregate-exports",
       "entry": "server/db/index.js",
       "implementation": "server/db 各拆分模块（connection/util/migrations/users/accounts/brokers/jobs/config）",
-      "internalConsumers": ["server/routes/**", "server/services/**", "server/jobs/**", "server/scripts/**"],
+      "internalConsumers": [
+        "server/routes/**",
+        "server/services/**",
+        "server/jobs/**",
+        "server/scripts/**"
+      ],
       "externalConsumers": [],
       "batch": 0,
       "owner": "架构分层整改（批次0）",
@@ -857,7 +1047,11 @@
       "id": "db-compat-shell",
       "entry": "server/db.js",
       "implementation": "server/db/index.js 聚合模块",
-      "internalConsumers": ["server/app.js", "server/worker.js", "server/scheduler.js"],
+      "internalConsumers": [
+        "server/app.js",
+        "server/worker.js",
+        "server/scheduler.js"
+      ],
       "externalConsumers": [],
       "batch": 0,
       "owner": "架构分层整改（批次0）",
@@ -869,8 +1063,13 @@
       "id": "bond-unified-view",
       "entry": "public.bond_unified（数据库兼容视图）",
       "implementation": "core/market/fundamental 标准层与 analytics 计算指标",
-      "internalConsumers": ["server/services/bondDataService.js", "server/scripts/backfillBondUnifiedLinks.js"],
-      "externalConsumers": ["只读运维查询"],
+      "internalConsumers": [
+        "server/services/bondDataService.js",
+        "server/scripts/backfillBondUnifiedLinks.js"
+      ],
+      "externalConsumers": [
+        "只读运维查询"
+      ],
       "batch": 3,
       "owner": "架构分层整改（批次3）",
       "status": "long_term_facade",
@@ -881,7 +1080,9 @@
       "id": "bond-by-security-code",
       "entry": "server/services/bondDataService.js#getBondBySecurityCode",
       "implementation": "server/services/bondDataService.js#getBondDetail（经 securityIdentity 解析）",
-      "internalConsumers": ["IPO 模块/脚本按六位纯数字代码读取"],
+      "internalConsumers": [
+        "IPO 模块/脚本按六位纯数字代码读取"
+      ],
       "externalConsumers": [],
       "batch": 3,
       "owner": "架构分层整改（批次3）",
@@ -893,7 +1094,10 @@
       "id": "stock-analysis-global-entries",
       "entry": "public/js/stock-analysis.js 的全局函数 loadStockAnalysis / stockAnalysisSelect",
       "implementation": "待建 Presenter（批次2）",
-      "internalConsumers": ["public/index.html 事件绑定", "public/js/stock-analysis.js 内部调用"],
+      "internalConsumers": [
+        "public/index.html 事件绑定",
+        "public/js/stock-analysis.js 内部调用"
+      ],
       "externalConsumers": [],
       "batch": 2,
       "owner": "架构分层整改（批次2）",
@@ -905,7 +1109,11 @@
       "id": "shared-core-fees",
       "entry": "public/shared/core-fees.js",
       "implementation": "同一份文件同时被 Node 记账校验与浏览器费用预览引用",
-      "internalConsumers": ["server/db/connection.js", "server/services/**", "public/js/**"],
+      "internalConsumers": [
+        "server/db/connection.js",
+        "server/services/**",
+        "public/js/**"
+      ],
       "externalConsumers": [],
       "batch": 4,
       "owner": "架构分层整改（批次4）",
@@ -935,7 +1143,11 @@
     },
     {
       "id": "shared-pure-preview",
-      "files": ["public/shared/core-date.js", "public/shared/core-fees.js", "public/shared/core-returns.js"],
+      "files": [
+        "public/shared/core-date.js",
+        "public/shared/core-fees.js",
+        "public/shared/core-returns.js"
+      ],
       "kind": "shared_pure_function",
       "reason": "View 可调用逐符号批准的只读格式化/费用/收益预览函数；不得带 I/O、修改业务状态或决定正式入账/评分",
       "source": "应用分层与MVP架构整改方案 5.3"

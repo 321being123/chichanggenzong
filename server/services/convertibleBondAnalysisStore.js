@@ -1,14 +1,15 @@
 // 数据读写与 Python 提取器
 // R-10 拆分自 ./convertibleBondAnalysis.js（2026-10-21）：本文件只放数据读写与 Python 提取器；对外入口仍是 ./convertibleBondAnalysis.js。
 const { pool, tryClaimJob, releaseJob, startJobRun, finishJobRun } = require('../db');
-const { tushareQuery, tsRows, tsDateStr } = require('./market');
+const { tushareQuery } = require('./tushare');
+const { tsRows, tsDateStr } = require('./tushareFormat');
 const { fetchTencentQuotes, describeTencentCode } = require('./tencentQuote');
 const { spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const { resolveCanonicalCode, ensureInstrumentIdentity } = require('./securityIdentity');
 const { childProcessEnv, mergeExternalCallStatsFromStderr } = require('./externalCallGuard');
-const { STOCK_STATUS_FIELDS, addDays, addYears, finite, hasNetAssetFloorClause, instrumentStatus, isoDate, normalizePriceChange, normalizePriceChanges, parseTriggerRatio, parseWindow, revisionDecision } = require('./convertibleBondAnalysisCore.js');
+const { STOCK_STATUS_FIELDS, addDays, addYears, finite, hasNetAssetFloorClause, instrumentStatus, isoDate, normalizePriceChange, normalizePriceChanges, parseTriggerRatio, parseWindow, revisionDecision } = require('./convertibleBondAnalysisTerms.js');
 
 async function sourceIds(client = pool) {
   const { rows } = await client.query(`SELECT source_id,source_code FROM ops.data_sources WHERE source_code IN ('tushare','tencent','cninfo','sse','szse','calculated')`);
@@ -38,7 +39,7 @@ async function ensureInstrument(client, tsCode, name, assetClass, listDate, deli
 async function loadTrackedDelistedStocks(listedRows, targetCodes = [], deps = {}) {
   if (!listedRows.length && !targetCodes.length) return [];
   const query = deps.query || pool.query.bind(pool);
-  const fetch = deps.fetch || tushareQuery;
+  const querySource = deps.fetch || tushareQuery;
   const { rows } = await query(`SELECT i.canonical_code FROM core.instruments i
     WHERE i.asset_class='stock' AND i.status='listed'
       AND NOT (i.canonical_code=ANY($1::text[]))
@@ -48,7 +49,7 @@ async function loadTrackedDelistedStocks(listedRows, targetCodes = [], deps = {}
   [listedRows.map(row => row.ts_code), targetCodes]);
   const confirmed = [];
   for (const { canonical_code: code } of rows) {
-    const data = await fetch('stock_basic', { ts_code: code, list_status: 'D' }, STOCK_STATUS_FIELDS, { allowEmpty: true });
+    const data = await querySource('stock_basic', { ts_code: code, list_status: 'D' }, STOCK_STATUS_FIELDS, { allowEmpty: true });
     const matches = tsRows(data).filter(row => row.ts_code === code && row.list_status === 'D' && isoDate(row.delist_date));
     if (matches.length === 1) confirmed.push(matches[0]);
   }

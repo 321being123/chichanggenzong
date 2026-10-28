@@ -772,8 +772,10 @@ function renderTrades() {
 async function recalculateCashIncomeForAccount(button) {
   if(button) button.disabled=true;
   try {
-    const response=await fetch(api('/api/accounts/'+encodeURIComponent(currentAccount)+'/cash-income/recalculate?version='+dataVersion),
-      {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:true})});
+    const raw = await window.siteApi.requestRaw('/api/accounts/'+encodeURIComponent(currentAccount)+'/cash-income/recalculate?version='+dataVersion,
+      {method:'POST',headers:{'Content-Type': 'application/json'},body:JSON.stringify({enabled:true}),timeoutMs:0});
+    if (!raw.response) throw new Error(raw.error || '网络异常');
+    const response = raw.response;
     const result=await response.json();
     if(!response.ok) throw new Error(result.error || '现金收益计算失败');
     if(result.status==='missing_cash_anchor') {showToast('请先导入有效持仓现金基准');return;}
@@ -788,9 +790,11 @@ async function deleteCashFlow(id) {
   if (!id) return;
   // 服务端统一账本：删除后重算现金并返回最新结果（方案阶段一第 5 条）
   try {
-    const r = await fetch(api('/api/accounts/' + encodeURIComponent(currentAccount) + '/ledger/cash-flows/' + encodeURIComponent(id) + '?version=' + (dataVersion != null ? dataVersion : '')), {
-      method: 'DELETE'
+    const raw = await window.siteApi.requestRaw('/api/accounts/' + encodeURIComponent(currentAccount) + '/ledger/cash-flows/' + encodeURIComponent(id) + '?version=' + (dataVersion != null ? dataVersion : ''), {
+      method: 'DELETE', timeoutMs: 0
     });
+    if (!raw.response) { showToast(raw.error || '网络异常'); return; }
+    const r = raw.response;
     const j = await r.json().catch(() => ({}));
     if (!r.ok) { showToast(j.error || '删除现金流失败'); return; }
     if (j.data) {

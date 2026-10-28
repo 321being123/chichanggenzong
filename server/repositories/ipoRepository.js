@@ -600,6 +600,17 @@ async function reportMarkdownByCode(params = {}, tx) {
   return runner.query('SELECT md FROM ipo_reports WHERE md LIKE $1 ORDER BY report_date DESC', [params.pattern]);
 }
 
+async function latestReportDate(_params = {}, tx) {
+  return (tx || pool).query('SELECT report_date FROM ipo_reports ORDER BY report_date DESC LIMIT 1');
+}
+
+async function findHkTargetCodes(codes, tx) {
+  return (tx || pool).query(`
+      SELECT security_code FROM public.ipo_history
+       WHERE market_code='HK' AND security_code=ANY($1::text[])
+    `, [codes]);
+}
+
 module.exports = {
   hkOfferPhaseSql,
   hkIpoShortNameJoinSql,
@@ -620,6 +631,8 @@ module.exports = {
   reportByDate,
   countCnHistoryTotal,
   latestReport,
+  latestReportDate,
+  findHkTargetCodes,
   reportIndex,
   countHkHistoryTotal,
   listHkHistory,

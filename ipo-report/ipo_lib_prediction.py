@@ -1,5 +1,4 @@
 # 本文件由 ipo_daily_report.py 物理拆分而来，函数体/常量未改动，仅调整文件归属。
-import requests
 import json
 import os
 import re
@@ -52,12 +51,7 @@ def _log_prediction_errors():
     cutoff = (datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d")
 
     for ptype, label in [("stock", "新股"), ("bond", "新债")]:
-        rows = conn.execute(
-            "SELECT name, code, pred_return, actual_return, listing_date FROM predictions "
-            "WHERE type=? AND status='fulfilled' AND actual_return IS NOT NULL AND pred_return IS NOT NULL "
-            "AND pred_date >= ? ORDER BY listing_date DESC LIMIT 10",
-            (ptype, cutoff),
-        ).fetchall()
+        rows = db_pg.load_prediction_errors(conn, ptype, cutoff)
         if rows:
             errors = [abs(r[2] - r[3]) for r in rows if r[3] is not None]
             if errors:
@@ -128,10 +122,7 @@ def save_predictions(apply_stocks, apply_bonds, list_stocks, list_bonds, pred_da
         if pred_return is None:
             continue
 
-        instrument_row = conn.execute(
-            "SELECT instrument_id FROM public.bond_unified WHERE security_code=? LIMIT 1",
-            (str(b["code"]).split(".")[0],),
-        ).fetchone()
+        instrument_row = db_pg.load_bond_instrument(conn, str(b["code"]).split(".")[0])
         if not instrument_row:
             raise RuntimeError(f"可转债 {b['code']} 尚未建立 instrument_id，拒绝保存预测")
         valuation_context = dict(analysis.get("liquidity_calibration") or {})
@@ -146,38 +137,7 @@ def save_predictions(apply_stocks, apply_bonds, list_stocks, list_bonds, pred_da
 
     for row in rows:
         try:
-            if len(row) == 15:
-                # 股票预测：含当次上线模型版本（验收第二批缺口——版本追溯）
-                conn.execute("""
-                INSERT OR REPLACE INTO predictions
-                    (type, code, name, listing_date, pred_date, pred_return, pred_price, pred_advice, updated_at,
-                     base_pred_return, sector_adjustment_pp, sector_multiplier, sector_confidence,
-                     valuation_model_version, prediction_context)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?::jsonb)
-                """, row)
-                continue
-            if len(row) == 14:
-                conn.execute("""
-                INSERT OR REPLACE INTO predictions
-                    (type, code, name, listing_date, pred_date, pred_return, pred_price, pred_advice, updated_at,
-                     base_pred_return, sector_adjustment_pp, sector_multiplier, sector_confidence, prediction_context)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?::jsonb)
-                """, row)
-                continue
-            if len(row) == 17:
-                conn.execute("""
-                INSERT OR REPLACE INTO predictions
-                    (type, code, name, listing_date, pred_date, pred_return, pred_price, pred_advice, updated_at, instrument_id,
-                     transfer_value, circulation_scale, base_price_no_liquidity, liquidity_adjustment_pp,
-                     liquidity_sample_count, valuation_model_version, valuation_context)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?::jsonb)
-                """, row)
-                continue
-            conn.execute("""
-                INSERT OR REPLACE INTO predictions
-                    (type, code, name, listing_date, pred_date, pred_return, pred_price, pred_advice, updated_at)
-                VALUES (?,?,?,?,?,?,?,?,?)
-            """, row)
+            db_pg.save_prediction_row(conn, row)
         except Exception as e:
             # 静默吞错会掩盖列数不匹配这类问题——预测留档失败必须可见（验收第二批缺口）
             print(f"[预测跟踪] 预测记录保存失败 {row[1]}: {e}")
@@ -194,88 +154,45 @@ def backfill_prediction_actuals():
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     # ── 1. 补全：标准上市表现表已上市但 predictions 缺记录的债券 ──
-    conn.execute(
-        """INSERT INTO predictions(type,code,name,listing_date,pred_date,actual_return,actual_price,actual_date,status,updated_at,instrument_id)
-           SELECT 'bond',split_part(i.canonical_code,'.',1),i.name,lp.listing_date::text,lp.listing_date::text,
-                  lp.return_pct,100*(1+lp.return_pct/100),lp.observation_date::text,'fulfilled',?,i.instrument_id
-             FROM analytics.convertible_bond_listing_performance lp
-             JOIN core.instruments i ON i.instrument_id=lp.instrument_id
-            WHERE lp.measurement_type='first_non_limit_day'
-              AND NOT EXISTS (SELECT 1 FROM predictions p WHERE p.type='bond' AND p.code=split_part(i.canonical_code,'.',1))""",
-        (now,),
-    )
-    stock_rows = conn.execute(
-        "SELECT security_code, security_name, listing_date, ld_close_change, issue_price FROM ipo_history WHERE ld_close_change IS NOT NULL"
-    ).fetchall()
+    db_pg.insert_missing_bond_predictions(conn, (now,))
+    stock_rows = db_pg.list_ipo_actuals(conn).fetchall()
     for code, name, ldate, ldc, issue_price in stock_rows:
-        if not conn.execute("SELECT 1 FROM predictions WHERE code=?", (code,)).fetchone():
+        if not db_pg.prediction_exists(conn, (code,)).fetchone():
             ld = str(ldate)[:10] if ldate else None
-            conn.execute(
-                "INSERT INTO predictions (type,code,name,listing_date,pred_date,actual_return,actual_price,actual_date,status,updated_at) VALUES ('stock',?,?,?,?,?,?,?,'fulfilled',?)",
-                (code, name, ld, ld, ldc, _price_from_return(issue_price, ldc), ld, now),
-            )
+            db_pg.insert_stock_actual(conn, (code, name, ld, ld, ldc, _price_from_return(issue_price, ldc), ld, now))
 
     # 补齐旧记录中尚未保存的预测价格，避免后续准确率统计缺少价格口径。
-    missing_prices = conn.execute(
-        "SELECT id, type, code, pred_return FROM predictions "
-        "WHERE pred_price IS NULL AND pred_return IS NOT NULL"
-    ).fetchall()
+    missing_prices = db_pg.list_predictions_missing_price(conn).fetchall()
     for pid, ptype, code, pred_return in missing_prices:
         if ptype == "bond":
             pred_price = _price_from_return(100, pred_return)
         else:
-            issue_row = conn.execute(
-                "SELECT issue_price FROM ipo_history WHERE security_code=? AND issue_price IS NOT NULL",
-                (code,),
-            ).fetchone()
+            issue_row = db_pg.load_stock_issue_price(conn, (code,)).fetchone()
             pred_price = _price_from_return(issue_row[0], pred_return) if issue_row else None
         if pred_price is not None:
-            conn.execute(
-                "UPDATE predictions SET pred_price=?, updated_at=? WHERE id=?",
-                (pred_price, now, pid),
-            )
+            db_pg.update_prediction_price(conn, (pred_price, now, pid))
     conn.commit()
 
     # ── 2. 刷新所有有预测值且已上市的实际结果 ──
     # 不只更新 pending：历史行情可能在后续任务中被修正，fulfilled 也必须同步刷新。
-    tracked = conn.execute(
-        "SELECT id, type, code, name, listing_date, pred_price FROM predictions "
-        "WHERE (pred_return IS NOT NULL OR pred_price IS NOT NULL) AND listing_date <= ?",
-        (datetime.now().strftime("%Y-%m-%d"),),
-    ).fetchall()
+    tracked = db_pg.list_tracked_predictions(conn, (datetime.now().strftime("%Y-%m-%d"),)).fetchall()
 
     updated = 0
     for pid, ptype, code, name, listing_date, pred_price in tracked:
         try:
             if ptype == "stock":
-                row = conn.execute(
-                    "SELECT ld_close_change, issue_price, listing_date FROM ipo_history WHERE security_code=? AND ld_close_change IS NOT NULL",
-                    (code,),
-                ).fetchone()
+                row = db_pg.load_stock_actual(conn, (code,)).fetchone()
                 if row:
                     actual_price = _price_from_return(row[1], row[0])
-                    conn.execute(
-                        "UPDATE predictions SET actual_return=?, actual_price=?, actual_date=?, status='fulfilled', updated_at=? WHERE id=?",
-                        (row[0], actual_price, row[2], now, pid),
-                    )
+                    db_pg.update_stock_actual(conn, (row[0], actual_price, row[2], now, pid))
                     updated += 1
             else:
-                row = conn.execute(
-                    """SELECT lp.return_pct,lp.listing_date,lp.observation_date,i.instrument_id
-                         FROM analytics.convertible_bond_listing_performance lp
-                         JOIN core.instruments i ON i.instrument_id=lp.instrument_id
-                        WHERE lp.measurement_type='first_non_limit_day'
-                          AND split_part(i.canonical_code,'.',1)=? AND lp.return_pct IS NOT NULL""",
-                    (code,),
-                ).fetchone()
+                row = db_pg.load_bond_actual(conn, (code,)).fetchone()
                 if row:
                     actual_return = _bond_first_non_limit_return(row[0])
                     pred_return = _bond_predicted_return(pred_price)
                     actual_price = _price_from_return(100, actual_return)
-                    conn.execute(
-                        "UPDATE predictions SET instrument_id=?, pred_return=COALESCE(?, pred_return), actual_return=?, actual_price=?, actual_date=?, status='fulfilled', updated_at=? WHERE id=?",
-                        (row[3], pred_return, actual_return, actual_price, row[2], now, pid),
-                    )
+                    db_pg.update_bond_actual(conn, (row[3], pred_return, actual_return, actual_price, row[2], now, pid))
                     updated += 1
         except Exception:
             pass
@@ -297,10 +214,7 @@ def get_prediction_accuracy(days=90):
                "bond": {"total": 0, "fulfilled": 0, "errors": [], "mae": 0}}
 
     for ptype in ("stock", "bond"):
-        rows = conn.execute(
-            "SELECT pred_return, actual_return FROM predictions WHERE type=? AND status='fulfilled' AND actual_return IS NOT NULL AND pred_date >= ?",
-            (ptype, cutoff),
-        ).fetchall()
+        rows = db_pg.load_prediction_accuracy(conn, ptype, cutoff)
         if rows:
             pred_rows = [r for r in rows if r[0] is not None]
             results[ptype]["fulfilled"] = len(pred_rows)
@@ -399,10 +313,7 @@ def calibrate_board_base():
 
     # ── 1. 先查本地数据库 ──
     conn = _init_ipo_db()
-    db_rows = conn.execute(
-        "SELECT board_key, ld_close_change FROM ipo_history WHERE listing_date >= ? AND ld_close_change IS NOT NULL",
-        (cutoff_str,),
-    ).fetchall()
+    db_rows = db_pg.load_board_calibration(conn, cutoff_str)
     db_gains = {}
     for bk, gain in db_rows:
         if bk not in db_gains:
@@ -414,7 +325,7 @@ def calibrate_board_base():
 
     # ── 判断是否需要从接口拉取 ──
     # 检查数据库最近更新时间，超过1天再拉
-    last_update = conn.execute("SELECT MAX(updated_at) FROM ipo_history").fetchone()[0]
+    last_update = db_pg.load_ipo_last_update(conn)[0]
     need_fetch = True
     if last_update:
         try:
@@ -453,10 +364,7 @@ def calibrate_board_base():
                     print(f"[校准] 数据库已是最新，无需拉取")
 
                 # 重新从数据库统计（包含新数据）
-                db_rows = conn.execute(
-                    "SELECT board_key, ld_close_change FROM ipo_history WHERE listing_date >= ? AND ld_close_change IS NOT NULL",
-                    (cutoff_str,),
-                ).fetchall()
+                db_rows = db_pg.load_board_calibration(conn, cutoff_str)
                 db_gains = {}
                 for bk, gain in db_rows:
                     if bk not in db_gains:

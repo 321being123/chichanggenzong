@@ -85,25 +85,7 @@ async function hasIndexBaselineGap() {
 async function fetchHsiHistory(fromDate, toDate) {
   const url = `https://web.ifzq.gtimg.cn/appstock/app/hkfqkline/get?param=hkHSI,day,${fromDate},${toDate},4000,qfq`;
   try {
-    const txt = await withExternalCallGuard('tencent', `hsi-history:${fromDate}:${toDate}`, process.env.JOB_BUSINESS_DATE, () => new Promise((resolve, reject) => {
-      const https = require('https');
-      https.get(url, { timeout: 10000 }, (resp) => {
-        let data = ''; resp.on('data', c => data += c);
-        resp.on('end', () => {
-          if (resp.statusCode === 429) {
-            const error = new Error('腾讯恒指接口 HTTP 429');
-            error.code = 'RATE_LIMIT'; error.errorType = 'rate_limit'; error.source = 'tencent';
-            return reject(error);
-          }
-          if (resp.statusCode >= 500) {
-            const error = new Error(`腾讯恒指接口 HTTP ${resp.statusCode}`);
-            error.code = 'UPSTREAM_5XX'; error.errorType = 'network'; error.source = 'tencent';
-            return reject(error);
-          }
-          resolve(data);
-        });
-      }).on('error', reject).on('timeout', function () { this.destroy(); reject(new Error('timeout')); });
-    }));
+    const txt = await withExternalCallGuard('tencent', `hsi-history:${fromDate}:${toDate}`, process.env.JOB_BUSINESS_DATE, () => require('../services/marketHttpSource').getText('tencent', url, { timeout: 10000 }));
     const json = JSON.parse(txt);
     const dayArr = json && json.data && json.data.hkHSI && json.data.hkHSI.day;
     if (!Array.isArray(dayArr)) return [];

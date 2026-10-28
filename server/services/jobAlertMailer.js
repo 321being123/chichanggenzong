@@ -955,3 +955,6 @@ module.exports = {
   ACTIVE_ALERT_WHERE, parseAlertScope, allCircuitsClosed, verifyAlertScope, ALERT_EVIDENCE_POLICIES,
   classifyAlertDisposition, ALERT_DISPOSITION_LABELS, alertEvidencePolicy, RECOVERY_SEQUENCE_STATUSES,
 };
+
+// 告警服务挂载到数据集发布钩子：数据层不反向依赖本模块，加载时自动接线。
+require('./datasetPartitions').setDatasetPublishedHook(resolveDatasetAlerts);

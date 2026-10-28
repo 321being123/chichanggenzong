@@ -1,7 +1,8 @@
 const { spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
-const { pool, tryClaimJob, releaseJob, startJobRun, finishJobRun } = require('../db');
+const { tryClaimJob, releaseJob, startJobRun, finishJobRun } = require('../db');
+const { latestReportDate } = require('../repositories/ipoRepository');
 const { notifyJobFailure } = require('../services/jobAlertMailer');
 const { getProviderRuntime, notifyTushareFailover } = require('../services/externalApiConfig');
 
@@ -212,7 +213,7 @@ async function runIpoCalendarStartupCatchup(now = new Date()) {
     }
   }
   if (Number(p.hour) < 8) return { skipped: true, reason: 'not_due', today };
-  const { rows } = await pool.query('SELECT report_date FROM ipo_reports ORDER BY report_date DESC LIMIT 1');
+  const { rows } = await latestReportDate();
   const last = rows[0] && rows[0].report_date ? String(rows[0].report_date).replace(/-/g, '').slice(0, 8) : '';
   const expected = expectedDate.replace(/-/g, '');
   if (last >= expected) return { skipped: true, reason: 'fresh', last, expected };

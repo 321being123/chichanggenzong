@@ -1,10 +1,10 @@
 // 港股 IPO 上市首日/上市后五个交易日日线覆盖与标准层同步。
 // 官方 Tushare 路径保留兼容；IPO enrichment 使用腾讯港股 K 线免 Token 补漏路径。
 const crypto = require('crypto');
-const https = require('https');
 const { pool } = require('../db');
 const { tushareQuery } = require('./tushare');
 const { withExternalCallGuard } = require('./externalCallGuard');
+const { requestTencentHkKline } = require('./tencentQuote');
 
 const HK_DAILY_FIELDS = 'ts_code,trade_date,open,high,low,close,pre_close,change,pct_chg,vol,amount';
 const DEFAULT_FROM_DATE = '2025-08-04';
@@ -23,36 +23,6 @@ function addDays(date, days) {
   const value = new Date(`${date}T00:00:00Z`);
   value.setUTCDate(value.getUTCDate() + days);
   return value.toISOString().slice(0, 10);
-}
-
-function requestTencentHkKline(symbol, startDate, endDate) {
-  const code = String(symbol || '').replace(/\.HK$/i, '').padStart(5, '0');
-  const url = `https://web.ifzq.gtimg.cn/appstock/app/kline/kline?param=${encodeURIComponent(`hk${code},day,${startDate},${endDate},500`)}`;
-  return new Promise((resolve, reject) => {
-    const request = https.get(url, {
-      timeout: 15000,
-      headers: { 'User-Agent': 'Mozilla/5.0', Referer: 'https://gu.qq.com/' },
-    }, response => {
-      const chunks = [];
-      response.on('data', chunk => chunks.push(chunk));
-      response.on('end', () => {
-        if (response.statusCode !== 200) {
-          const error = new Error(`Tencent HK K 线 HTTP ${response.statusCode}`);
-          error.code = response.statusCode === 429 ? 'RATE_LIMIT' : 'UPSTREAM_ERROR';
-          return reject(error);
-        }
-        try {
-          const payload = JSON.parse(Buffer.concat(chunks).toString('utf8'));
-          if (payload.code !== 0) throw new Error(payload.msg || 'Tencent HK K 线返回错误');
-          resolve(payload);
-        } catch (error) {
-          reject(error);
-        }
-      });
-    });
-    request.on('timeout', () => request.destroy(new Error('Tencent HK K 线请求超时')));
-    request.on('error', reject);
-  });
 }
 
 function rowsFromTencentHkKline(payload, symbol) {

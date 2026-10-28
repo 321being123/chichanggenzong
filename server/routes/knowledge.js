@@ -851,43 +851,15 @@ async function fetchWithProxy(url, options = {}) {
     } else {
       dispatcher = getProxyDispatcher();
     }
-    const requestOptions = { ...options, signal: ctrl.signal };
-    delete requestOptions.maxBytes;
-    delete requestOptions.allowedTypes;
-    delete requestOptions.timeoutMs;
-    delete requestOptions.enforcePublicTarget;
-    if (dispatcher) requestOptions.dispatcher = dispatcher;
-    const r = await undici.request(url, requestOptions);
-    const statusCode = r.statusCode;
-    const headers = r.headers || {};
-    const ct = (typeof headers['content-type'] === 'string' ? headers['content-type'] : (headers['Content-Type'] || '')).toLowerCase();
-    const len = parseInt(headers['content-length'] || '0', 10);
-    if (len > maxBytes) { safeClose(r.body); return { ok: false, status: 413, text: () => Promise.resolve('') }; }
-    if (allowedTypes && allowedTypes.length && !allowedTypes.some(t => ct.startsWith(t))) {
-      safeClose(r.body); return { ok: false, status: 415, text: () => Promise.resolve('') };
-    }
-    // 流式读取并限制大小，避免超大响应占满内存
-    const chunks = [];
-    let received = 0;
-    const body = r.body;
-    if (body && typeof body.getReader === 'function') {
-      const reader = body.getReader();
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        received += value.length;
-        chunks.push(Buffer.from(value));
-        if (received > maxBytes) { try { reader.cancel(); } catch (e) {} return { ok: false, status: 413, text: () => Promise.resolve('') }; }
-      }
-    } else if (body) {
-      for await (const chunk of body) {
-        received += chunk.length;
-        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-        if (received > maxBytes) { try { body.destroy(); } catch (e) {} return { ok: false, status: 413, text: () => Promise.resolve('') }; }
-      }
-    }
-    const text = Buffer.concat(chunks).toString('utf8');
-    return { ok: statusCode >= 200 && statusCode < 300, status: statusCode, text: () => Promise.resolve(text) };
+    const { requestWithLimits } = require('../services/knowledgeSource');
+    return await requestWithLimits(url, {
+      dispatcher,
+      signal: ctrl.signal,
+      headers: options.headers,
+      method: options.method,
+      maxBytes,
+      allowedTypes,
+    });
   } catch (e) {
     return { ok: false, status: 0, statusText: 'fetch error', text: () => Promise.resolve(String((e && e.message) || '')) };
   } finally {

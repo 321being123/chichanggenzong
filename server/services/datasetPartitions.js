@@ -1,5 +1,12 @@
 const { pool } = require('../db/connection');
 
+// 数据集发布成功后的告警恢复钩子：由 jobAlertMailer 在加载时注册，
+// 数据层不反向依赖告警服务（依赖倒置，消除跨层引用）。
+let _onDatasetPublished = null;
+function setDatasetPublishedHook(fn) {
+  _onDatasetPublished = typeof fn === 'function' ? fn : null;
+}
+
 function dateText(value) {
   const text = String(value || '').replace(/-/g, '').slice(0, 8);
   return /^\d{8}$/.test(text) ? `${text.slice(0, 4)}-${text.slice(4, 6)}-${text.slice(6, 8)}` : null;
@@ -31,8 +38,7 @@ async function publishDatasetPartition(datasetCode, scopeKey, options = {}, exec
   const published = result.rows[0] || null;
   if (published && status === 'published' && !stale
       && (!options.diagnostics || !options.diagnostics.quality_status || options.diagnostics.quality_status === 'passed')) {
-    const { resolveDatasetAlerts } = require('./jobAlertMailer');
-    await resolveDatasetAlerts(datasetCode, scopeKey, partitionKey);
+    if (_onDatasetPublished) await _onDatasetPublished(datasetCode, scopeKey, partitionKey);
   }
   return published;
 }
@@ -71,4 +77,4 @@ async function getDatasetMetadata(datasetCode, scopeKey = '') {
   return { data_as_of: null, published_at: null, is_stale: true, stale_reason: '尚无已发布数据分区', row_count: 0, diagnostics: {} };
 }
 
-module.exports = { dateText, publishDatasetPartition, getLatestPublishedPartition, getLatestReadablePartition, getDatasetMetadata };
+module.exports = { dateText, publishDatasetPartition, getLatestPublishedPartition, getLatestReadablePartition, getDatasetMetadata, setDatasetPublishedHook };

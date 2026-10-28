@@ -1,6 +1,7 @@
 const { tryClaimJob, releaseJob, startJobRun, finishJobRun } = require('../db');
 const { listUserStocks, refreshStockAnalysis } = require('../services/stockAnalysis');
 const { pool } = require('../db/connection');
+const stockRefreshRepository = require('../repositories/stockRefreshRepository');
 const { datasetScope, markDatasetFailure, markDatasetSuccess } = require('../services/datasetCursors');
 const { dailyConsistencyStats } = require('./consistencyStats');
 const CoreDate = require('../../public/shared/core-date.js');
@@ -22,15 +23,7 @@ function nextShanghaiDelay(hour = 8, minute = 20, now = new Date()) {
 }
 
 async function latestStockAnalysisDate() {
-  const { rows } = await pool.query(
-    `SELECT max(NULLIF(snapshot.payload->>'latest_market_trade_date','')::date)::text AS data_as_of
-       FROM analytics.stock_overview_latest latest
-       JOIN LATERAL (
-         SELECT payload FROM analytics.analysis_snapshots
-          WHERE instrument_id=latest.instrument_id AND as_of_date=latest.as_of_date AND snapshot_type='stock_analysis'
-          ORDER BY created_at DESC LIMIT 1
-       ) snapshot ON true`
-  );
+  const { rows } = await stockRefreshRepository.latestAnalysisDate();
   return rows[0] && rows[0].data_as_of ? String(rows[0].data_as_of).slice(0, 10) : null;
 }
 
@@ -44,7 +37,7 @@ function targetDateStatus(targetDate, now = new Date()) {
 }
 
 async function trackedStocks() {
-  const { rows: users } = await pool.query('SELECT username FROM users WHERE status=$1', ['active']);
+  const { rows: users } = await stockRefreshRepository.listActiveUsers();
   const map = new Map();
   for (const user of users) {
     const stocks = await listUserStocks(user.username);

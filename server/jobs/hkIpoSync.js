@@ -2,6 +2,7 @@ const { runHkexIpoProbe, buildProbePlan, persistHkexProbe, upsertHkIpoFacts, rec
 const { syncTencentHkDailyCoverage } = require('../services/hkDailyCoverage');
 const { syncHkIpoMarketSignals } = require('../services/hkIpoMarketSignals');
 const { pool } = require('../db/connection');
+const ipoRepository = require('../repositories/ipoRepository');
 const { fetchTencentQuotes } = require('../services/tencentQuote');
 const CoreDate = require('../../public/shared/core-date.js');
 
@@ -246,10 +247,7 @@ async function runHkIpoSync(mode = 'preopen', reason = 'scheduled', context = {}
   }
   const rows = targeted ? [] : rowsFromProbe(probe);
   if (targeted) {
-    const { rows: foundRows } = await pool.query(`
-      SELECT security_code FROM public.ipo_history
-       WHERE market_code='HK' AND security_code=ANY($1::text[])
-    `, [targetCodes]);
+    const { rows: foundRows } = await ipoRepository.findHkTargetCodes(targetCodes);
     const found = new Set(foundRows.map(row => canonicalHkCode(row.security_code)));
     const missingTargetCodes = targetCodes.filter(code => !found.has(code));
     if (missingTargetCodes.length) {

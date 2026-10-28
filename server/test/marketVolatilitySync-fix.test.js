@@ -10,6 +10,7 @@ const job = fs.readFileSync(path.join(__dirname, '..', 'jobs', 'marketVolatility
 const svc = fs.readFileSync(path.join(__dirname, '..', 'services', 'stockDataService.js'), 'utf8');
 // 批次1：聚合 SQL 已迁入仓储；断言指向实际实现位置（检查意义不变）
 const repo = fs.readFileSync(path.join(__dirname, '..', 'repositories', 'stockRepository.js'), 'utf8');
+const marketRepo = fs.readFileSync(path.join(__dirname, '..', 'repositories', 'marketYieldRepository.js'), 'utf8');
 
 // P0-1-①：统一层必须显式接收目标交易日，不能无参聚合"每只最新值"
 assert.ok(job.includes('getTotalMarketCap(normDate(day))'), '统一层聚合未传目标交易日');
@@ -30,8 +31,9 @@ assert.ok(job.includes('MIN_UNIFIED_MARKET_COUNT'), '统一表覆盖门禁常量
 assert.ok(job.includes('cap.stock_count >= MIN_UNIFIED_MARKET_COUNT'), '统一表未按门禁校验证券数量');
 
 // P0-1-④：写库统一使用 securityCount，禁止引用分支局部变量 rows
-assert.ok(job.includes('[normDate(day), totalYi, securityCount,'), '写库未统一使用 securityCount');
-assert.ok(!/\brows\.length\b/.test(job.split('INSERT INTO market.a_share_market_cap_daily')[1] || ''), '写库参数仍引用 rows.length');
+assert.ok(job.includes('saveMarketCap({ day: normDate(day), totalYi, securityCount, fromUnified })'), '写库未统一使用 securityCount');
+assert.ok(marketRepo.includes('[day, totalYi, securityCount,'), '仓储参数未使用 securityCount');
+assert.ok(!/\brows\.length\b/.test(marketRepo.split('INSERT INTO market.a_share_market_cap_daily')[1] || ''), '写库参数仍引用 rows.length');
 
 // P0-1-⑤：回退数据验证（数量、有效市值占比）与异常保留上一份数据
 assert.ok(job.includes('rows.length < 1000'), '回退未验证证券数量下限');

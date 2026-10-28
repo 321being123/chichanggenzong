@@ -121,7 +121,7 @@ const { buildDatasetDiagnosticAlerts, datasetPartitionKeyForSlot } = require('..
 
   // 对实际 Runner 注入恒指失败，验证 A 股派生计算仍执行且任务不会假报成功。
   const source = fs.readFileSync(require.resolve('../jobs/marketVolatilitySync'), 'utf8');
-  const context = vm.createContext({ require: name => name === '../db' ? { pool: { query: async () => ({ rows: [{ n: 1 }] }) }, tryClaimJob: async () => true, startJobRun: async () => 1, finishJobRun: async () => {}, releaseJob: async () => {} } : require(name), module: { exports: {} }, exports: {}, process, console: { log() {} }, Buffer, __dirname: require('path').dirname(require.resolve('../jobs/marketVolatilitySync')) });
+  const context = vm.createContext({ require: name => name === '../repositories/marketYieldRepository' ? { countChinaYield: async () => ({ rows: [{ n: 1 }] }), countMarketCap: async () => ({ rows: [{ n: 1 }] }) } : name === '../db' ? { pool: { query: async () => ({ rows: [{ n: 1 }] }) }, tryClaimJob: async () => true, startJobRun: async () => 1, finishJobRun: async () => {}, releaseJob: async () => {} } : require(name), module: { exports: {} }, exports: {}, process, console: { log() {} }, Buffer, __dirname: require('path').dirname(require.resolve('../jobs/marketVolatilitySync')) });
   vm.runInContext(source, context);
   vm.runInContext("syncChinaYield=syncCsiIndexPe=syncUsTreasuryYield=syncMarketCycleMetrics=async()=>1; syncHsiPe=async()=>{throw new Error('HTTP 302')}; calculateGraham=async()=>{globalThis.grahamRan=true}; readMarketSubdatasetFreshness=async()=>({});", context);
   const failed = await context.module.exports.runMarketVolatilitySync({ businessDate: '2026-10-08' });

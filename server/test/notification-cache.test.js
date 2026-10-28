@@ -35,6 +35,7 @@ async function fixture(responses) {
   };
   w.showToast = function () {};
   w.eval(read('public/js/utils.js'));
+  w.eval(read('public/js/api/client.js'));
   w.eval(read('public/js/notifications.js'));
   await tick();
   return { dom: dom, w: w, fetches: function () { return fetches; } };

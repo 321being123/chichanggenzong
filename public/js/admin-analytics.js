@@ -176,7 +176,9 @@ function analyticsLoad() {
   var requestId = ++analyticsRequest;
   panel.innerHTML = '<div class="admin-placeholder"><div class="spinner u-mx-auto-12" ></div>加载中...</div>';
   var query = '?range=' + encodeURIComponent(analyticsState.range) + (analyticsState.internal ? '&include_internal=1' : '');
-  fetch(api('/api/admin/analytics/' + analyticsState.tab + query)).then(function (response) {
+  window.siteApi.requestRaw('/api/admin/analytics/' + analyticsState.tab + query, { timeoutMs: 0, headers: {} }).then(function (result) {
+    if (!result.response) throw new Error(result.error || '网络异常');
+    var response = result.response;
     return response.json().then(function (data) { return { ok: response.ok, data: data }; });
   }).then(function (result) {
     if (requestId !== analyticsRequest) return;

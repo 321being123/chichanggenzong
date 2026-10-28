@@ -3,7 +3,8 @@
 // 用 daily_prices（部署后已逐日攒齐的持仓收盘价）重放 trades 得到各日持仓与市值，
 // 对「晚录入股票在交易日至录入日前」缺价的几天，用 Tushare 历史收盘回补 daily_prices。
 // Tushare 拉不到的缺口日 → 跳过那天（保留原快照），不近似。
-const { pool, loadAccountData, saveDailyPrices, upsertNav } = require('../db');
+const { loadAccountData, saveDailyPrices, upsertNav } = require('../db');
+const accountsRepository = require('../repositories/accountsRepository');
 const { tushareQuery, tsRows, toTsCode, normDate } = require('../services/market');
 const classifyCode = require('../../public/js/code-classify');
 const { isCnHoliday } = require('../config/holidays');
@@ -91,10 +92,7 @@ async function recomputeNav(username, accountName, fromDate) {
     .map(tradeDay);
 
   // daily_prices → map "code|date" → price
-  const { rows: dpRows } = await pool.query(
-    'SELECT date, code, price::float8 AS price FROM daily_prices WHERE username=$1 AND account_name=$2',
-    [username, accountName]
-  );
+  const dpRows = await accountsRepository.listAllDailyPrices({ username, accountName });
   const dpMap = new Map();
   dpRows.forEach(function (r) { dpMap.set(r.code + '|' + r.date, r.price); });
   const backfilled = new Set(); // 本run已回填过的代码，避免重复拉 Tushare
@@ -138,11 +136,7 @@ async function recomputeNav(username, accountName, fromDate) {
   }
 
   const today = cnDate(new Date());
-  const { rows: fxRows } = await pool.query(
-    `SELECT rate_date, rate::float8 AS rate FROM market.fx_rates
-      WHERE base_currency='HKD' AND quote_currency='CNY' AND rate_date <= $1`,
-    [today]
-  );
+  const fxRows = await accountsRepository.listHkdCnyRateRows({ date: today });
   const fxByDate = new Map(fxRows.map(r => [cnDate(r.rate_date), Number(r.rate)]));
   const currentFxRate = fxByDate.get(today) || await getCurrentFxRate();
   const missingDates = [];
@@ -173,10 +167,7 @@ async function recomputeNav(username, accountName, fromDate) {
           backfilled.add(code);
           const ok = await backfillDailyPrices(username, accountName, code, fromDate, today);
           if (ok) {
-            const { rows } = await pool.query(
-              'SELECT date, price::float8 AS price FROM daily_prices WHERE username=$1 AND account_name=$2 AND code=$3',
-              [username, accountName, code]
-            );
+            const rows = await accountsRepository.listDailyPricesByCode({ username, accountName, code });
             rows.forEach(function (r) { dpMap.set(code + '|' + r.date, r.price); });
           }
         }
@@ -224,7 +215,7 @@ async function recomputeNav(username, accountName, fromDate) {
   }
 
   if (affected > 0 && missingDates.length === 0) {
-    await pool.query('UPDATE account_data SET nav_dirty_from=NULL WHERE username=$1 AND account_name=$2', [username, accountName]);
+    await accountsRepository.clearNavDirtyFrom({ username, accountName });
   }
   return { ok: missingDates.length === 0, status: missingDates.length ? 'partial' : 'succeeded', days: affected, missingDates: [...new Set(missingDates)] };
 }

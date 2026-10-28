@@ -2,7 +2,7 @@
 // 每天 08:30（上海时间）增量同步，启动时执行断点补偿检查
 const { tryClaimJob, releaseJob, startJobRun, finishJobRun } = require('../db');
 const sync = require('../services/arbitrageAnnouncementSync');
-const { pool } = require('../db');
+const syncCursorRepository = require('../repositories/syncCursorRepository');
 const { sanitizeJobError } = require('../services/jobErrorSanitizer');
 const { cleanupArbitragePdfCache } = require('../services/arbitragePdfCache');
 
@@ -87,11 +87,8 @@ async function runArbitrageSync(reason = 'scheduled', context = {}) {
 // 启动时检查是否需要断点补偿
 async function checkStartupBackfill() {
   try {
-    const { rows } = await pool.query(`
-      SELECT scope_key, last_success_date, last_error
-      FROM ops.sync_cursors
-      WHERE scope_key = ANY($1::text[])
-    `, [Object.keys(sync.SCOPES).map(scope => 'arbitrage_' + scope)]);
+    const rows = await syncCursorRepository.findCursorsByScopeKeys(
+      Object.keys(sync.SCOPES).map(scope => 'arbitrage_' + scope));
     if (!rows.length) {
       // 从未同步过 → 不自动启动首次同步（需管理员手动触发）
       console.log('[arbitrage-sync] 首次同步尚未执行，等待管理员手动触发');

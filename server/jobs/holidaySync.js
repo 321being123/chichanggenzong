@@ -2,7 +2,7 @@
 // 由 systemd 托管的 worker 进程调用，不依赖 WorkBuddy 自动化，跨年自动跟上。
 const { tushareQuery, normDate } = require('../services/market');
 const { loadHolidays, saveHolidays, getHolidayLoadError } = require('../config/holidays');
-const { pool } = require('../db/connection');
+const calendarRepository = require('../repositories/tradeCalendarRepository');
 const CoreDate = require('../../public/shared/core-date');
 
 const REFRESH_DAYS = 30;
@@ -65,25 +65,12 @@ function validateCalendarRows(data, expectedDates) {
   return [...rows.values()].sort((a, b) => a.trade_date.localeCompare(b.trade_date));
 }
 
-async function storeCalendar(client, rows, source) {
-  await client.query(`INSERT INTO market.trade_calendar(exchange,trade_date,is_open,source_code,raw_payload)
-    SELECT x.exchange,x.trade_date,x.is_open,$2,x.raw_payload FROM jsonb_to_recordset($1::jsonb)
-      AS x(exchange text,trade_date date,is_open boolean,raw_payload jsonb)
-    ON CONFLICT(exchange,trade_date) DO UPDATE SET is_open=EXCLUDED.is_open,
-      source_code=EXCLUDED.source_code,raw_payload=EXCLUDED.raw_payload,ingested_at=now()`, [JSON.stringify(rows), source]);
+function storeCalendar(client, rows, source) {
+  return calendarRepository.upsertCalendarRows(rows, source, client);
 }
 
-async function withCalendarLock(work) {
-  const client = await pool.connect();
-  let locked = false;
-  try {
-    locked = (await client.query("SELECT pg_try_advisory_lock(hashtext('holiday_sync')) AS locked")).rows[0].locked;
-    if (!locked) return { ok: false, skipped: true, reason: 'already_running' };
-    return await work(client);
-  } finally {
-    try { if (locked) await client.query("SELECT pg_advisory_unlock(hashtext('holiday_sync'))"); }
-    finally { client.release(); }
-  }
+function withCalendarLock(work) {
+  return calendarRepository.withAdvisoryLock('holiday_sync', work);
 }
 
 async function saveManualHolidays(year, dates) {
@@ -117,9 +104,8 @@ async function ensureHolidaysCurrent({ businessDate = CoreDate.todayInZone('Asia
   const years = businessDate.slice(5, 7) === '12' ? [year, year + 1] : [year];
   for (const targetYear of years) {
     const expectedDates = datesForYear(targetYear);
-    const { rows } = await client.query(`SELECT trade_date::text AS trade_date,is_open,source_code,raw_payload
-      FROM market.trade_calendar WHERE exchange='SSE' AND trade_date BETWEEN $1::date AND $2::date ORDER BY trade_date`,
-    [expectedDates[0], expectedDates[expectedDates.length - 1]]);
+    const rows = await calendarRepository.loadCalendarRange(
+      expectedDates[0], expectedDates[expectedDates.length - 1], client);
     const known = new Set(rows.map(row => row.trade_date));
     const missing = expectedDates.filter(date => !known.has(date));
     const manual = obj.manualYears?.[targetYear] || rows.some(row => row.source_code === 'admin_holiday_schedule');
@@ -146,14 +132,14 @@ async function ensureHolidaysCurrent({ businessDate = CoreDate.todayInZone('Asia
     await storeCalendar(client, fetched, 'tushare');
     nextObj.years[targetYear] = incomingHolidays;
   }
-  const nextDay = await client.query("SELECT trade_date::text AS trade_date FROM market.trade_calendar WHERE exchange='SSE' AND is_open=true AND trade_date>$1::date ORDER BY trade_date LIMIT 1", [businessDate]);
-  if (!nextDay.rows.length) throw new Error('共享SSE日历缺少下一交易日，不能确认同步完成');
+  const nextTradeDate = await calendarRepository.findNextTradingDate(businessDate, client);
+  if (!nextTradeDate) throw new Error('共享SSE日历缺少下一交易日，不能确认同步完成');
   nextObj.updatedAt = businessDate;
   // 缓存命中不推进外部核对日期，避免每天检查把月度刷新永久短路。
   if (JSON.stringify(nextObj.years) !== JSON.stringify(obj.years) || stale) saveHolidays(nextObj);
   return { ok: true, status: 'succeeded', dataAsOf: `${years[years.length - 1]}-12-31`,
     datasetDiagnostics: { trade_calendar: { query_status: 'success', quality_status: 'passed',
-      coverage_status: 'complete', exchange: 'SSE', next_trade_date: nextDay.rows[0].trade_date } } };
+      coverage_status: 'complete', exchange: 'SSE', next_trade_date: nextTradeDate } } };
   });
 }
 

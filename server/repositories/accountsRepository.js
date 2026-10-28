@@ -105,6 +105,15 @@ async function listDailyPricesAt(params, tx) {
   return rows;
 }
 
+async function listAllDailyPrices(params, tx) {
+  const runner = tx || pool;
+  const { rows } = await runner.query(
+    'SELECT date, code, price::float8 AS price FROM daily_prices WHERE username=$1 AND account_name=$2',
+    [params.username, params.accountName],
+  );
+  return rows;
+}
+
 async function readAccountVersion(params, tx) {
   const runner = tx || pool;
   const { rows } = await runner.query(
@@ -160,6 +169,34 @@ async function listHkdCnyRatesUntil(params, tx) {
 }
 
 // 账户主键（净值批次写入时需要带 account_id）
+// HKD→CNY 全量汇率行（不做同日优选，调用方自行按日期归并）
+async function listHkdCnyRateRows(params, tx) {
+  const runner = tx || pool;
+  const { rows } = await runner.query(
+    `SELECT rate_date, rate::float8 AS rate FROM market.fx_rates
+      WHERE base_currency='HKD' AND quote_currency='CNY' AND rate_date <= $1`,
+    [params.date],
+  );
+  return rows;
+}
+
+// 单个证券在本账户的历史收盘价（缺价回补后重载）
+async function listDailyPricesByCode(params, tx) {
+  const runner = tx || pool;
+  const { rows } = await runner.query(
+    'SELECT date, price::float8 AS price FROM daily_prices WHERE username=$1 AND account_name=$2 AND code=$3',
+    [params.username, params.accountName, params.code],
+  );
+  return rows;
+}
+
+// 标记该账户净值不再需要重算
+async function clearNavDirtyFrom(params, tx) {
+  const runner = tx || pool;
+  await runner.query('UPDATE account_data SET nav_dirty_from=NULL WHERE username=$1 AND account_name=$2',
+    [params.username, params.accountName]);
+}
+
 async function readAccountId(params, tx) {
   const runner = tx || pool;
   const { rows } = await runner.query(
@@ -170,10 +207,14 @@ async function readAccountId(params, tx) {
 }
 
 module.exports = {
+  clearNavDirtyFrom,
   listAccountNames,
+  listAllDailyPrices,
   listCashFlows,
   listCashIncomePending,
   listDailyPricesAt,
+  listDailyPricesByCode,
+  listHkdCnyRateRows,
   listHkdCnyRatesUntil,
   listPositionsForNavPreview,
   listTradesForNavPreview,

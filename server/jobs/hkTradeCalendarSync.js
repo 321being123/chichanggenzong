@@ -1,6 +1,6 @@
 // ========== 港交所交易日历同步 ==========
 // 港股日历与 SSE 日历分开保存；若上游权限/入口尚未确认，任务安全跳过并保留上一份数据。
-const { pool } = require('../db');
+const calendarRepository = require('../repositories/tradeCalendarRepository');
 const { tushareQuery } = require('../services/tushare');
 const { scheduleForDate, supportedScheduleYears } = require('../config/hkexAnnualSchedules');
 const { invalidateMarketStateCache } = require('../services/marketState');
@@ -103,33 +103,16 @@ async function resolveSyncRange({ fromDate, toDate, today }) {
   }
   const year = Number(today.slice(0, 4));
   const requestedEnd = supportedScheduleYears().includes(year) ? `${year}-12-31` : addDays(today, 90);
-  const { rows } = await pool.query(
-    `SELECT MIN(trade_date)::text AS first_date, MAX(trade_date)::text AS last_date
-       FROM market.trade_calendar WHERE exchange='HKEX' AND trade_date BETWEEN $1::date AND $2::date`,
-    [`${year}-01-01`, requestedEnd]
-  );
-  const first = rows[0] && rows[0].first_date;
-  const last = rows[0] && rows[0].last_date;
-  const missing = await pool.query(
-    `SELECT d::date::text AS missing_date
-       FROM generate_series($1::date,$2::date,'1 day'::interval) d
-       LEFT JOIN market.trade_calendar tc ON tc.exchange='HKEX' AND tc.trade_date=d::date
-      WHERE tc.trade_date IS NULL ORDER BY d LIMIT 1`,
-    [`${year}-01-01`, requestedEnd]
-  );
-  const firstMissing = missing.rows[0] && missing.rows[0].missing_date;
+  const bounds = await calendarRepository.loadCalendarBounds('HKEX', `${year}-01-01`, requestedEnd);
+  const first = bounds && bounds.first_date;
+  const last = bounds && bounds.last_date;
+  const firstMissing = await calendarRepository.findFirstMissingDate('HKEX', `${year}-01-01`, requestedEnd);
   if (!first || !last || firstMissing) {
     return { fromDate: firstMissing || `${year}-01-01`, toDate: requestedEnd };
   }
-  const missingPretrade = await pool.query(
-    `SELECT MIN(trade_date)::text AS missing_date
-       FROM market.trade_calendar
-      WHERE exchange='HKEX' AND trade_date BETWEEN $1::date AND $2::date
-        AND NULLIF(COALESCE(raw_payload#>>'{tushare,pretrade_date}',raw_payload->>'pretrade_date'),'') IS NULL`,
-    [`${year}-01-01`, requestedEnd]
-  );
-  if (missingPretrade.rows[0] && missingPretrade.rows[0].missing_date) {
-    return { fromDate: String(missingPretrade.rows[0].missing_date).slice(0, 10), toDate: requestedEnd };
+  const missingPretrade = await calendarRepository.findFirstMissingPretradeDate('HKEX', `${year}-01-01`, requestedEnd);
+  if (missingPretrade) {
+    return { fromDate: String(missingPretrade).slice(0, 10), toDate: requestedEnd };
   }
   const overlapStart = addDays(today, -5);
   return { fromDate: overlapStart < `${year}-01-01` ? `${year}-01-01` : overlapStart, toDate: today };
@@ -147,11 +130,7 @@ async function upsertCalendarFacts({ tushareRows, officialRows }) {
     ...(officialRows || []).map(row => row.tradeDate),
   ])].sort();
   if (!allDates.length) return { rows: 0, conflicts: [] };
-  const { rows: existingRows } = await pool.query(
-    `SELECT trade_date::text AS trade_date, is_open, source_code, raw_payload
-       FROM market.trade_calendar WHERE exchange='HKEX' AND trade_date=ANY($1::date[])`,
-    [allDates]
-  );
+  const existingRows = await calendarRepository.loadCalendarRowsByDates('HKEX', allDates);
   const existingByDate = new Map(existingRows.map(row => [String(row.trade_date).slice(0, 10), row]));
   const tushareByDate = new Map((tushareRows || []).map(row => [row.tradeDate, row]));
   const officialByDate = new Map((officialRows || []).map(row => [row.tradeDate, row.schedule]));
@@ -203,13 +182,9 @@ async function upsertCalendarFacts({ tushareRows, officialRows }) {
       && existing.source_code === sourceCode
       && JSON.stringify(existing.raw_payload || {}) === JSON.stringify(rawPayload);
     if (unchanged) continue;
-    await pool.query(
-      `INSERT INTO market.trade_calendar(exchange,trade_date,is_open,source_code,raw_payload,ingested_at)
-       VALUES('HKEX',$1::date,$2,$3,$4::jsonb,now())
-       ON CONFLICT(exchange,trade_date) DO UPDATE SET is_open=EXCLUDED.is_open,
-         source_code=EXCLUDED.source_code,raw_payload=EXCLUDED.raw_payload,ingested_at=now()`,
-      [tradeDate, effectiveOpen, sourceCode, JSON.stringify(rawPayload)]
-    );
+    await calendarRepository.upsertCalendarRow('HKEX', {
+      tradeDate, isOpen: effectiveOpen, sourceCode, rawPayload,
+    });
     written++;
   }
   invalidateMarketStateCache({ market: 'HK' });

@@ -1559,6 +1559,14 @@
         {
           "file": "server/test/ops-calendar-stage-recovery.test.js",
           "pattern": "新鲜JSON不能短路共享SSE缺口"
+        },
+        {
+          "file": "server/test/cross-market-calendar-nav.test.js",
+          "pattern": "日历事实应通过 UPSERT 保存"
+        },
+        {
+          "file": "server/test/cross-market-calendar-nav.test.js",
+          "pattern": "价格与汇率归因应闭合"
         }
       ],
       "owner": "任务治理",

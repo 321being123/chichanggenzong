@@ -146,11 +146,16 @@ assert.match(issueResultSource, /source_field_unavailable/, '发行结果缺口�
 assert.match(firstDaySource, /listing_date < CURRENT_DATE/, '首日表现补全会误处理尚未形成首日行情的债券');
 assert.match(firstDaySource, /source_unavailable/, '首日表现缺口没有质量分类');
 
-const slotSource = fs.readFileSync(path.join(__dirname, '..', 'services', 'jobScheduleSlots.js'), 'utf8');
+const slotSource = fs.readFileSync(path.join(__dirname, '..', 'services', 'jobScheduleSlots.js'), 'utf8')
+    + fs.readFileSync(path.join(__dirname, '..', 'repositories', 'jobScheduleSlotsRepository.js'), 'utf8')
+    + fs.readFileSync(path.join(__dirname, '..', 'repositories', 'jobScheduleSlotsRepository.js'), 'utf8');
 assert.match(slotSource, /resultSummary\?\.window_end/, '任务成功判定未使用同步结果日期兜底');
-const orchestratorSource = fs.readFileSync(path.join(__dirname, '..', 'services', 'jobOrchestrator.js'), 'utf8');
+const orchestratorSource = fs.readFileSync(path.join(__dirname, '..', 'services', 'jobOrchestrator.js'), 'utf8')
+    + fs.readFileSync(path.join(__dirname, '..', 'repositories', 'jobOrchestratorRepository.js'), 'utf8')
+    + fs.readFileSync(path.join(__dirname, '..', 'repositories', 'jobOrchestratorRepository.js'), 'utf8');
 assert.match(orchestratorSource, /\['fresh', 'already-ran-today'\]/, '已完成任务仍会被当作跳过反复补偿');
-const historyJobSource = fs.readFileSync(path.join(__dirname, '..', 'jobs', 'ipoHistorySync.js'), 'utf8');
+const historyJobSource = fs.readFileSync(path.join(__dirname, '..', 'jobs', 'ipoHistorySync.js'), 'utf8')
+    + fs.readFileSync(path.join(__dirname, '..', 'repositories', 'ipoHistorySyncRepository.js'), 'utf8');
 assert.match(historyJobSource, /parseTushareFailovers/, 'Python 成功切备用后的接口标记未进入 Node 解析链');
 assert.match(historyJobSource, /notifyTushareFailovers/, 'Python 成功切备用后的接口告警未接入');
 assert.match(historyJobSource, /let scheduleMarker = mode === 'enrichment'/, 'IPO 失败路径必须保留可用的计划标记，不能因块级作用域异常丢失失败状态');
@@ -184,7 +189,8 @@ const { readMigrationSource } = require('./helpers/migration-source');
 const migrationSource = readMigrationSource();
 assert.match(migrationSource, /071_deduplicate_instrument_events/, '重复发行事件没有独立迁移');
 assert.match(migrationSource, /uq_instrument_events_business/, '发行事件缺少业务唯一约束');
-const bondRefreshSource = fs.readFileSync(path.join(__dirname, '..', 'jobs', 'convertibleBondRefresh.js'), 'utf8');
+const bondRefreshSource = fs.readFileSync(path.join(__dirname, '..', 'jobs', 'convertibleBondRefresh.js'), 'utf8')
+    + fs.readFileSync(path.join(__dirname, '..', 'repositories', 'convertibleBondRefreshRepository.js'), 'utf8');
 assert.match(bondRefreshSource, /ipo-report.*venv.*bin.*python/, '估值任务没有 Linux Python 解释器兜底');
 
 const reportSource = fs.readFileSync(path.join(__dirname, '..', '..', 'ipo-report', 'ipo_lib_report.py'), 'utf8');

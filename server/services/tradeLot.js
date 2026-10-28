@@ -9,6 +9,7 @@ const { ensureInstrumentIdentity } = require('./securityIdentity');
 const { tushareQuery, tsRows, todayCN } = require('./market');
 const txControl = require('../repositories/transactionControl');
 const { backfillPositionInstrumentIds, upsertTradeRule } = require('../repositories/tradeLotRepository.js');
+const repository = require('../repositories/tradeLotRepository.js');
 
 // ========== A 股交易单位（市场规则，不落库） ==========
 
@@ -40,18 +41,7 @@ function isACode(code) {
 async function getHkLotRule(instrumentId, asOfDate) {
   if (!instrumentId) return null;
   const date = asOfDate || todayCN();
-  const { rows } = await pool.query(
-    `SELECT r.buy_lot_size_shares, r.valid_from, r.source_updated_at, r.raw_record_id,
-            s.source_code, s.priority
-       FROM market.instrument_trade_rules r
-       JOIN ops.data_sources s ON s.source_id = r.source_id
-      WHERE r.instrument_id = $1
-        AND r.valid_from <= $2
-        AND (r.valid_to IS NULL OR r.valid_to >= $2)
-      ORDER BY s.priority ASC, r.valid_from DESC
-      LIMIT 1`,
-    [instrumentId, date]
-  );
+  const { rows } = await repository.select_market_instrument_trade_rules([instrumentId, date]);
   const row = rows[0];
   if (!row) return null;
   return {
@@ -71,16 +61,7 @@ async function getHkLotRulesByInstrumentIds(instrumentIds, asOfDate) {
   const ids = [...new Set(Array.from(instrumentIds.values()).filter(Boolean))];
   if (!ids.length) return map;
   const date = asOfDate || todayCN();
-  const { rows } = await pool.query(
-    `SELECT r.instrument_id, r.buy_lot_size_shares, r.valid_from, r.source_updated_at, r.raw_record_id,
-            s.source_code, s.priority
-       FROM market.instrument_trade_rules r
-       JOIN ops.data_sources s ON s.source_id = r.source_id
-      WHERE r.instrument_id = ANY($1::bigint[])
-        AND r.valid_from <= $2
-        AND (r.valid_to IS NULL OR r.valid_to >= $2)`,
-    [ids, date]
-  );
+  const { rows } = await repository.select_market_instrument_trade_rules_1([ids, date]);
   // 每只证券取 priority 最低（权威最高）、valid_from 最新的那条
   const best = new Map();
   for (const row of rows) {
@@ -136,15 +117,11 @@ async function syncHkTradeRules() {
   const client = await pool.connect();
   try {
     await txControl.begin(client);
-    const { rows: srcRows } = await client.query(`SELECT source_id FROM ops.data_sources WHERE source_code='tushare'`);
+    const { rows: srcRows } = await repository.select_ops_data_sources(client);
     const tushareSourceId = srcRows[0] ? srcRows[0].source_id : null;
     if (!tushareSourceId) throw new Error('tushare 数据源未注册');
 
-    const run = (await client.query(
-      `INSERT INTO ops.ingestion_runs(source_id,dataset_code,request_range,status)
-       VALUES($1,'hk_basic',$2::jsonb,'running') RETURNING run_id`,
-      [tushareSourceId, JSON.stringify({ list_status: 'L', trade_date: today })]
-    )).rows[0];
+    const run = (await repository.insert_ops_ingestion_runs([tushareSourceId, JSON.stringify({ list_status: 'L', trade_date: today })], client)).rows[0];
 
     let upserted = 0, missingLot = 0, failed = 0;
 
@@ -161,19 +138,10 @@ async function syncHkTradeRules() {
       const inst = { instrument_id: master.instrumentId };
 
       // 2) core.instrument_identifiers（ts_code）
-      await client.query(
-        `INSERT INTO core.instrument_identifiers(instrument_id,source_id,identifier_type,identifier_value,valid_from)
-         VALUES($1,$2,'ts_code',$3,$4) ON CONFLICT(source_id,identifier_type,identifier_value,valid_from) DO NOTHING`,
-        [inst.instrument_id, tushareSourceId, tsCode, listDate]
-      );
+      await repository.insert_core_instrument_identifiers([inst.instrument_id, tushareSourceId, tsCode, listDate], client);
 
       // 3) ops.raw_records（原始响应，payload_hash 去重）
-      const raw = (await client.query(
-        `INSERT INTO ops.raw_records(run_id,source_id,dataset_code,source_key,source_updated_at,payload,payload_hash)
-         VALUES($1,$2,'hk_basic',$3,now(),$4::jsonb,$5) ON CONFLICT(source_id,dataset_code,source_key,payload_hash) DO NOTHING
-         RETURNING raw_record_id`,
-        [run.run_id, tushareSourceId, tsCode, JSON.stringify(row), require('crypto').createHash('md5').update(JSON.stringify(row)).digest('hex')]
-      )).rows[0];
+      const raw = (await repository.insert_ops_raw_records([run.run_id, tushareSourceId, tsCode, JSON.stringify(row), require('crypto').createHash('md5').update(JSON.stringify(row)).digest('hex')], client)).rows[0];
 
       // 4) market.instrument_trade_rules（文档 9.3：无变化不新增；变化时按生效日处理）
       if (await upsertTradeRule(client, inst.instrument_id, tushareSourceId, today, lot, raw ? raw.raw_record_id : null)) {
@@ -182,14 +150,9 @@ async function syncHkTradeRules() {
     }
 
     // 5) sync_cursors
-    await client.query(
-      `INSERT INTO ops.sync_cursors(scope_key,dataset_code,last_success_date,last_attempt_at,last_error)
-       VALUES('hk_basic','hk_basic',$1,now(),'') ON CONFLICT(scope_key,dataset_code)
-       DO UPDATE SET last_success_date=$1,last_attempt_at=now(),last_error='',updated_at=now()`,
-      [today]
-    );
+    await repository.insert_ops_sync_cursors([today], client);
 
-    await client.query(`UPDATE ops.ingestion_runs SET status='success',row_count=$2,finished_at=now() WHERE run_id=$1`, [run.run_id, rows.length]);
+    await repository.update_ops_ingestion_runs([run.run_id, rows.length], client);
     await txControl.commit(client);
     // 同步落库后回填持仓 instrument_id（港股主档刚写入 core.instruments，持仓即可匹配）
     await backfillPositionInstrumentIds();

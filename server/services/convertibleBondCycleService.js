@@ -5,6 +5,7 @@ const { pool } = require('../db');
 const cycle = require('./convertibleBondCycle');
 const { ensureInstrumentIdentity } = require('./securityIdentity');
 const { getSyncCursor, getTushareSourceId, upsertCycleDaily } = require('../repositories/convertibleBondCycleServiceRepository.js');
+const repository = require('../repositories/convertibleBondCycleServiceRepository.js');
 
 const { toNumber, aggregateDaily, finalizeCycle, computePercentile, cycleLevel, LOOKBACK_DAYS, FORMULA_VERSION, UNIVERSE_VERSION, ANOMALY_REASONS } = cycle;
 
@@ -21,9 +22,7 @@ const PRIOR_LIMIT = LOOKBACK_DAYS - 1; // 窗口含当前日，历史取前 1259
 async function resolveInstruments(client, rows) {
   const codes = [...new Set((rows || []).map(r => String(r.ts_code).trim().toUpperCase()).filter(Boolean))];
   if (!codes.length) return new Map();
-  const { rows: existing } = await client.query(
-    'SELECT instrument_id, canonical_code FROM core.instruments WHERE canonical_code = ANY($1)', [codes]
-  );
+  const { rows: existing } = await repository.select_core_instruments([codes], client);
   const map = new Map(existing.map(r => [r.canonical_code, r.instrument_id]));
   const missing = codes.filter(c => !map.has(c));
   if (missing.length) {
@@ -80,12 +79,7 @@ async function saveDailyFacts(client, tradeDate, sourceId, rows, instrumentMap) 
 
 // 取当前日之前、同公式版本+同样本池版本的有效综合估值（用于滚动分位），按时间倒序取前 PRIOR_LIMIT 个
 async function fetchPriorComposites(client, formulaVersion, tradeDate, limit = PRIOR_LIMIT, universeVersion = UNIVERSE_VERSION) {
-  const { rows } = await client.query(
-    `SELECT composite_value FROM analytics.convertible_bond_cycle_daily
-     WHERE formula_version=$1 AND universe_version=$2 AND trade_date < $3 AND composite_value IS NOT NULL
-     ORDER BY trade_date DESC LIMIT $4`,
-    [formulaVersion, universeVersion, tradeDate, limit]
-  );
+  const { rows } = await repository.select_analytics_convertible_bond_cycle_daily([formulaVersion, universeVersion, tradeDate, limit], client);
   return rows.map(r => r.composite_value);
 }
 
@@ -96,26 +90,13 @@ async function fetchPriorComposites(client, formulaVersion, tradeDate, limit = P
 async function updateSyncCursor(client, tradeDate) {
   const d = isoDate(tradeDate);
   if (!d) return;
-  await client.query(
-    `INSERT INTO ops.sync_cursors(scope_key,dataset_code,last_success_date,last_source_update,last_attempt_at,last_error,retry_count,updated_at)
-     VALUES($1,$2,$3,now(),now(),'',0,now())
-     ON CONFLICT(scope_key,dataset_code) DO UPDATE SET
-      last_success_date=GREATEST(sync_cursors.last_success_date,EXCLUDED.last_success_date),
-      last_source_update=now(),last_attempt_at=now(),last_error='',retry_count=0,updated_at=now()`,
-    [CYCLE_SCOPE, DATASET, d]
-  );
+  await repository.insert_ops_sync_cursors([CYCLE_SCOPE, DATASET, d], client);
 }
 
 // 记录失败日期与原因（不改变 last_success_date，供下次续跑与排查）
 async function recordCycleFailure(client, tradeDate, reason) {
   const d = isoDate(tradeDate) || '';
-  await client.query(
-    `INSERT INTO ops.sync_cursors(scope_key,dataset_code,last_success_date,last_source_update,last_attempt_at,last_error,retry_count,updated_at)
-     VALUES($1,$2,NULL,now(),now(),$3,1,now())
-     ON CONFLICT(scope_key,dataset_code) DO UPDATE SET
-      last_attempt_at=now(),last_error=EXCLUDED.last_error,retry_count=sync_cursors.retry_count+1,updated_at=now()`,
-    [CYCLE_SCOPE, DATASET, `${d} ${reason}`.trim()]
-  );
+  await repository.insert_ops_sync_cursors_1([CYCLE_SCOPE, DATASET, `${d} ${reason}`.trim()], client);
 }
 
 /* getSyncCursor 已迁入 server/repositories/convertibleBondCycleServiceRepository.js */
@@ -149,21 +130,13 @@ async function processCycleDay(tradeDate, rows, { sourceId, client = pool } = {}
 
 // 按时间顺序重算全部滚动分位与周期档位（补空洞或历史修复后调用；同版本内计算）
 async function recomputePercentiles({ client = pool, formulaVersion = FORMULA_VERSION, universeVersion = UNIVERSE_VERSION } = {}) {
-  const { rows } = await client.query(
-    `SELECT trade_date, composite_value FROM analytics.convertible_bond_cycle_daily
-     WHERE formula_version=$1 AND universe_version=$2 ORDER BY trade_date ASC`,
-    [formulaVersion, universeVersion]
-  );
+  const { rows } = await repository.select_analytics_convertible_bond_cycle_daily_1([formulaVersion, universeVersion], client);
   const window = [];
   let updated = 0;
   for (const r of rows) {
     const prior = window.slice(-PRIOR_LIMIT);
     const q = computePercentile(r.composite_value, prior);
-    await client.query(
-      `UPDATE analytics.convertible_bond_cycle_daily SET rolling_percentile=$1, cycle_level=$2, calculated_at=now()
-       WHERE trade_date=$3 AND formula_version=$4 AND universe_version=$5`,
-      [q, cycleLevel(q), r.trade_date, formulaVersion, universeVersion]
-    );
+    await repository.update_analytics_convertible_bond_cycle_daily([q, cycleLevel(q), r.trade_date, formulaVersion, universeVersion], client);
     updated++;
     const v = toNumber(r.composite_value);
     if (v !== null) window.push(v);
@@ -176,16 +149,7 @@ async function recomputePercentiles({ client = pool, formulaVersion = FORMULA_VE
 async function findGapDays(openDays, { client = pool } = {}) {
   const days = (openDays || []).map(isoDate).filter(Boolean);
   if (!days.length) return [];
-  const { rows } = await client.query(
-    `SELECT to_char(d.day,'YYYYMMDD') AS day FROM unnest($1::date[]) AS d(day)
-     LEFT JOIN (
-       SELECT trade_date, count(*) AS c, count(conversion_premium_pct) AS p
-       FROM market.convertible_bond_daily_metrics GROUP BY trade_date
-     ) f ON f.trade_date = d.day
-     WHERE f.trade_date IS NULL OR (f.c >= 100 AND f.p = 0)
-     ORDER BY d.day`,
-    [days]
-  );
+  const { rows } = await repository.select_unnest([days], client);
   return rows.map(r => r.day);
 }
 
@@ -204,26 +168,13 @@ function shiftYears(years) {
 }
 
 async function getLatestCycle(formulaVersion = FORMULA_VERSION, universeVersion = UNIVERSE_VERSION) {
-  const { rows } = await pool.query(
-    `SELECT trade_date,formula_version,universe_version,bond_count,premium_count,coverage_ratio,
-            median_price,median_conversion_value,median_conversion_premium_pct,premium_weight,
-            composite_value,rolling_percentile,cycle_level,source_id,diagnostics,calculated_at
-     FROM analytics.convertible_bond_cycle_daily WHERE formula_version=$1 AND universe_version=$2
-     ORDER BY trade_date DESC LIMIT 1`,
-    [formulaVersion, universeVersion]
-  );
+  const { rows } = await repository.select_analytics_convertible_bond_cycle_daily_2([formulaVersion, universeVersion]);
   return rows[0] || null;
 }
 
 async function getCycleHistory(formulaVersion = FORMULA_VERSION, range = '5y', universeVersion = UNIVERSE_VERSION) {
   const cutoff = rangeCutoff(range);
-  const sql = `SELECT trade_date,cycle_level,rolling_percentile,composite_value,median_price,
-                      median_conversion_premium_pct,median_conversion_value,premium_weight,bond_count,coverage_ratio
-               FROM analytics.convertible_bond_cycle_daily WHERE formula_version=$1 AND universe_version=$2
-               ${cutoff ? 'AND trade_date >= $3' : ''} ORDER BY trade_date ASC`;
-  const params = cutoff ? [formulaVersion, universeVersion, cutoff] : [formulaVersion, universeVersion];
-  const { rows } = await pool.query(sql, params);
-  return rows;
+  return repository.listCycleHistory(formulaVersion, universeVersion, cutoff);
 }
 
 /* getTushareSourceId 已迁入 server/repositories/convertibleBondCycleServiceRepository.js */

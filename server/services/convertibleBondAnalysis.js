@@ -6,6 +6,7 @@ const { tushareQuery, tsRows, tsDateStr } = require('./market');
 const path = require('path');
 const { evaluateConvertibleBondFreshness, CONV_PRICE_EPS } = require('./analysisFreshness');
 const { getResetNetAssetFloor } = require('../repositories/convertibleBondAnalysisRepository.js');
+const repository = require('../repositories/convertibleBondAnalysisRepository.js');
 const { datasetScope, getDatasetCursors, isDatasetFresh, markDatasetSuccess,
   recordQualityIssue, resolveQualityIssue } = require('./datasetCursors');
 const { getLatestCallState } = require('./convertibleBondRedemptionService');
@@ -16,18 +17,10 @@ const { activeProfile, addTradingDays, announcementDateWindows, backfillBondFirs
 // Detailed analysis uses the same calculation for manual refresh and the existing daily chain.
 // This path reads standard facts only; missing source facts belong to the announcement/input Runner.
 async function buildConvertibleBondAnalysisFromDatabase(tsCode, requestedDate, options = {}) {
-  const { rows } = await pool.query(
-    `SELECT p.*,i.canonical_code,s.canonical_code AS stock_code,s.name AS stock_name,
-            i.delist_date::text AS instrument_delist_date
-       FROM fundamental.convertible_bond_profiles p
-       JOIN core.instruments i USING(instrument_id)
-       LEFT JOIN core.instruments s ON s.instrument_id=p.stock_instrument_id
-      WHERE i.canonical_code=$1`, [tsCode]);
+  const { rows } = await repository.select_fundamental_convertible_bond_profiles([tsCode]);
   const row = rows[0];
   if (!row || !row.stock_code) throw new Error('缺少可转债或正股标准档案');
-  const { rows: dates } = await pool.query(
-    `SELECT MAX(trade_date)::text AS date FROM market.convertible_bond_daily_metrics WHERE instrument_id=$1`,
-    [row.instrument_id]);
+  const { rows: dates } = await repository.select_market_convertible_bond_daily_metrics([row.instrument_id]);
   const targetDate = isoDate(requestedDate) || dates[0]?.date;
   if (!targetDate || dates[0]?.date !== targetDate) throw new Error('目标交易日缺少可转债行情，保留上一份分析');
   const start = isoDate(addDays(new Date(`${targetDate}T00:00:00+08:00`), -500));
@@ -35,12 +28,8 @@ async function buildConvertibleBondAnalysisFromDatabase(tsCode, requestedDate, o
   const stockCode = row.stock_code;
   const [valuations, financialRows, calendar, prospectusCache, priceChangeCache, noRevisionCache] = await Promise.all([
     loadCachedStockValuations(stockCode, start),
-    pool.query(`SELECT r.report_kind,r.period_end::text,r.raw_payload FROM fundamental.financial_reports r
-      JOIN core.company_instruments ci ON ci.company_id=r.company_id
-      WHERE ci.instrument_id=$1 AND r.announced_at<=$2::date AND r.period_end<=$2::date
-      ORDER BY r.period_end DESC,r.announced_at DESC`, [row.stock_instrument_id,targetDate]),
-    pool.query(`SELECT trade_date::text AS cal_date,CASE WHEN is_open THEN '1' ELSE '0' END AS is_open FROM market.trade_calendar
-      WHERE exchange='SSE' AND trade_date>=$1::date ORDER BY trade_date`, [targetDate]),
+    repository.select_fundamental_financial_reports([row.stock_instrument_id,targetDate]),
+    repository.select_market_trade_calendar([targetDate]),
     loadProspectusCache(tsCode),loadPriceChangeCache(tsCode),loadNoRevisionCache(tsCode),
   ]);
   const profile = { ...(row.raw_payload || {}), ts_code:tsCode,stk_code:stockCode,
@@ -60,9 +49,7 @@ async function buildConvertibleBondAnalysisFromDatabase(tsCode, requestedDate, o
   const reports = kind => financialRows.rows.filter(r=>r.report_kind===kind).map(r=>({...r.raw_payload,end_date:r.period_end}));
   const balances = reports('balance');
   const putPeriod = currentPutPeriod(profile.maturity_date,profile.put_clause,targetDate);
-  const { rows: putEvents } = await pool.query(`SELECT e.event_date::text,e.title,e.details FROM event.company_events e
-    JOIN core.company_instruments ci ON ci.company_id=e.company_id
-    WHERE ci.instrument_id=$1 AND e.event_date<=$2::date AND e.title LIKE '%回售%'`, [row.stock_instrument_id,targetDate]);
+  const { rows: putEvents } = await repository.select_event_company_events([row.stock_instrument_id,targetDate]);
   const putOpportunity = putOpportunityState(putEvents.map(e=>({...e.details,title:e.title,event_date:e.event_date})),putPeriod.period_start,putPeriod.period_end);
   return assembleConvertibleBondAnalysis({ tsCode,stockCode,profile,ids:{bondId:row.instrument_id,stockId:row.stock_instrument_id},
     bondDaily,stockDaily,valuations:valuations.filter(v=>isoDate(v.trade_date)<=targetDate),balances,
@@ -120,9 +107,7 @@ async function assembleConvertibleBondAnalysis({ tsCode, stockCode, profile, ids
   const targetPutPeriod = putOpportunity.used ? (nextPutPeriod(putPeriod, profile.maturity_date) || putPeriod) : putPeriod;
   const putStartDate = targetPutPeriod.period_start || targetPutPeriod.eligible_from;
   const putActive = targetPutPeriod.active && !putOpportunity.used;
-  const {rows:revisionRows}=await pool.query(`SELECT trigger_price,matched_days,trigger_required_days,required_days,calculated_status,
-    business_status,data_status,no_revision_valid_until::text,next_eligible_date::text
-    FROM analytics.convertible_bond_revision_latest WHERE instrument_id=$1 AND trade_date=$2::date AND formula_version='reset-v2'`,[ids.bondId,targetDate]);
+  const {rows:revisionRows}=await repository.select_analytics_convertible_bond_revision_latest([ids.bondId,targetDate]);
   const revisionState=revisionRows[0];
   const resetWindow = revisionState ? {active:!revisionState.next_eligible_date||revisionState.next_eligible_date<=targetDate,
     eligible_from:revisionState.next_eligible_date,valid_until:revisionState.no_revision_valid_until} : {active:null,eligible_from:null,valid_until:null};
@@ -304,13 +289,7 @@ async function assembleConvertibleBondAnalysis({ tsCode, stockCode, profile, ids
     analysis_inputs_hash:termsHash(profile.analysis_inputs||null),
   };
   if(!persist)return analysis;
-  await pool.query(
-    `INSERT INTO analytics.analysis_snapshots(instrument_id,as_of_date,snapshot_type,formula_bundle_version,payload,source_watermark)
-     VALUES($1,$2,'convertible_bond_analysis',$3,$4::jsonb,$5::jsonb)
-     ON CONFLICT(instrument_id,as_of_date,snapshot_type,formula_bundle_version) DO UPDATE SET payload=EXCLUDED.payload,
-       source_watermark=EXCLUDED.source_watermark,created_at=now()`,
-    [ids.bondId, analysis.as_of, FORMULA_VERSION, JSON.stringify(analysis), JSON.stringify(watermark)]
-  );
+  await repository.insert_analytics_analysis_snapshots([ids.bondId, analysis.as_of, FORMULA_VERSION, JSON.stringify(analysis), JSON.stringify(watermark)]);
   // 快照刷新成功，该债券历史遗留的转股价错配问题已随之解决，自动恢复闭环
   await resolveQualityIssue({ instrumentId: ids.bondId, datasetCode: 'cb_basic', fieldCode: 'conv_price', issueType: 'snapshot_input_mismatch' });
   return analysis;
@@ -326,15 +305,7 @@ async function assembleConvertibleBondAnalysis({ tsCode, stockCode, profile, ids
 async function buildStandardTermsHash(pool, instrumentId, asOf) {
   if (!instrumentId) return null;
   const asOfDate = isoDate(asOf) || isoDate(new Date());
-  const { rows } = await pool.query(
-    `SELECT DISTINCT ON (term_type) term_type, clause_text
-     FROM fundamental.convertible_bond_terms
-     WHERE instrument_id = $1
-       AND effective_from <= $2::date
-       AND (effective_to IS NULL OR effective_to > $2::date)
-     ORDER BY term_type, effective_from DESC`,
-    [instrumentId, asOfDate]
-  );
+  const { rows } = await repository.select_fundamental_convertible_bond_terms([instrumentId, asOfDate]);
   const textByType = {};
   rows.forEach(r => { textByType[r.term_type] = r.clause_text; });
   return termsHash({
@@ -350,30 +321,13 @@ async function buildStandardTermsHash(pool, instrumentId, asOf) {
 async function getConvertibleBondSnapshot(value) {
   const tsCode = normalizeBondCode(value);
   if (!tsCode) return null;
-  const { rows } = await pool.query(
-    `SELECT s.payload,s.created_at,s.formula_bundle_version,s.source_watermark,
-            p.current_conv_price,p.source_updated_at,p.updated_at AS profile_updated_at,
-            p.stock_instrument_id,p.newest_rating AS profile_rating,p.raw_payload->'analysis_inputs' AS analysis_inputs,
-            i.instrument_id,i.status,i.delist_date
-     FROM core.instruments i JOIN analytics.analysis_snapshots s ON s.instrument_id=i.instrument_id
-     LEFT JOIN fundamental.convertible_bond_profiles p ON p.instrument_id=i.instrument_id
-     WHERE i.canonical_code=$1 AND s.snapshot_type='convertible_bond_analysis'
-     ORDER BY s.as_of_date DESC,s.created_at DESC LIMIT 1`, [tsCode]
-  );
+  const { rows } = await repository.select_core_instruments([tsCode]);
   if (!rows[0]) return null;
   const r = rows[0];
   const payload = r.payload || {};
   const delistDate = isoDate(r.delist_date) || isoDate(payload.delist_date);
   const snapshotAsOf = isoDate(payload.as_of);
-  const latest = await pool.query(
-    `SELECT (SELECT max(trade_date) FROM market.daily_bars WHERE instrument_id=$1) AS bond_date,
-            (SELECT max(change_date) FROM fundamental.convertible_bond_price_changes WHERE instrument_id=$1) AS conv_change_date,
-            (SELECT max(trade_date) FROM market.daily_bars WHERE instrument_id=$2) AS stock_date,
-            (SELECT max(period_end) FROM fundamental.financial_reports fr
-               JOIN core.company_instruments ci ON ci.company_id=fr.company_id
-               WHERE ci.instrument_id=$2) AS report_end_date`,
-    [r.instrument_id, r.stock_instrument_id]
-  );
+  const latest = await repository.select_market_daily_bars([r.instrument_id, r.stock_instrument_id]);
   const latestBondTradeDate = latest.rows[0] && latest.rows[0].bond_date;
   const latestConvPriceChangeDate = latest.rows[0] && latest.rows[0].conv_change_date;
   const latestStockTradeDate = latest.rows[0] && latest.rows[0].stock_date;

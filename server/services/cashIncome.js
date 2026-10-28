@@ -7,6 +7,7 @@ const CoreDate = require('../../public/shared/core-date');
 const { loadHolidays } = require('../config/holidays');
 const { resolveInstrument } = require('./securityIdentity');
 const txControl = require('../repositories/transactionControl');
+const repository = require('../repositories/cashIncomeRepository.js');
 const VERSION = 'cash-income-v1';
 function stable(value) {
   if(value instanceof Date) return value.toJSON();
@@ -125,13 +126,13 @@ function calculateRepo(input, anchor, targetDate, isTradingDay, dividends = [], 
   return { flows:generated, trades:rows,pending,processedThrough };
 }
 async function readInputs(client, username, accountName, targetDate) {
-  const account = (await client.query('SELECT id,cash_income_policy,cash_income_state FROM accounts WHERE username=$1 AND account_name=$2',[username,accountName])).rows[0];
+  const account = (await repository.select_accounts([username,accountName], client)).rows[0];
   if (!account) throw Object.assign(new Error('账户不存在'),{status:404});
   const data = await loadCashInputs(username,accountName,client);
-  data.trades = (await client.query('SELECT * FROM trades WHERE username=$1 AND account_name=$2 ORDER BY id',[username,accountName])).rows;
+  data.trades = (await repository.select_trades([username,accountName], client)).rows;
   // 文本金额保留；PG DATE 通过 ::text 消除宿主时区边界。
-  data.cashFlows = (await client.query('SELECT *,date::text,anchor_date::text FROM cash_flows WHERE username=$1 AND account_name=$2 ORDER BY id',[username,accountName])).rows;
-  const positions = (await client.query('SELECT code,instrument_id,quantity,type,subtype FROM positions WHERE username=$1 AND account_name=$2 ORDER BY id',[username,accountName])).rows;
+  data.cashFlows = (await repository.select_cash_flows([username,accountName], client)).rows;
+  const positions = (await repository.select_positions([username,accountName], client)).rows;
   const codes = [...new Set([...positions.map(p=>p.code),...data.trades.map(t=>t.code)])];
   const identities=[];
   for (const code of codes) {
@@ -139,14 +140,13 @@ async function readInputs(client, username, accountName, targetDate) {
     const identity=await resolveInstrument({canonicalCode:canonical,instrumentId:positions.find(p=>p.code===code)?.instrument_id},client.query.bind(client));
     if(identity) identities.push({code,...identity});
   }
-  const actions = (await client.query(`SELECT *,record_date::text,pay_date::text,ex_date::text FROM fundamental.corporate_actions
-    WHERE action_type='dividend' AND instrument_id=ANY($1::bigint[]) AND pay_date <= $2::date ORDER BY action_id`,[identities.map(i=>i.instrument_id),targetDate])).rows;
+  const actions = (await repository.select_fundamental_corporate_actions([identities.map(i=>i.instrument_id),targetDate], client)).rows;
   const rates=await require('./repoDailyRates').loadRepoRates(client.query.bind(client));
-  const userExcluded=(await client.query("SELECT event_key FROM account_cash_income_pending WHERE account_id=$1 AND state='excluded_by_user' AND event_key IS NOT NULL",[account.id])).rows.map(r=>r.event_key);
-  const coverages=(await client.query("SELECT scope_key,last_success_date::text,cursor_payload FROM ops.sync_cursors WHERE dataset_code='stock_cash_dividend_facts' AND scope_key=ANY($1::text[])",[identities.map(i=>'cash_dividend:'+i.instrument_id)])).rows;
+  const userExcluded=(await repository.select_account_cash_income_pending([account.id], client)).rows.map(r=>r.event_key);
+  const coverages=(await repository.select_ops_sync_cursors([identities.map(i=>'cash_dividend:'+i.instrument_id)], client)).rows;
   const sourceAdmission=await require('./repoSourceAdmission').load(client.query.bind(client));
-  const dividendFx=(await client.query("SELECT base_currency,quote_currency,rate_date::text,rate::text,source_id FROM market.fx_rates WHERE quote_currency='CNY' AND rate_date <= $1 ORDER BY rate_date,source_id",[targetDate])).rows;
-  const hkCalendar=(await client.query("SELECT trade_date::text,is_open,source_code,raw_payload FROM market.trade_calendar WHERE exchange='HKEX'")).rows;
+  const dividendFx=(await repository.select_market_fx_rates([targetDate], client)).rows;
+  const hkCalendar=(await repository.select_market_trade_calendar(client)).rows;
   return {account,data,positions,identities,actions,rates,userExcluded,coverages,sourceAdmission,dividendFx,hkCalendar,unresolvedCodes:codes.filter(code=>!identities.some(i=>i.code===code))};
 }
 async function settleCashIncome(username,accountName,{targetDate=CoreDate.todayInZone('Asia/Shanghai'),enable=false,expectedVersion=null}={}) {
@@ -155,7 +155,7 @@ async function settleCashIncome(username,accountName,{targetDate=CoreDate.todayI
   try {
     await txControl.begin(client, { isolation: 'REPEATABLE READ', readOnly: true });
     const input=await readInputs(client,username,accountName,targetDate);
-    const inputVersion=(await client.query('SELECT version FROM account_data WHERE username=$1 AND account_name=$2',[username,accountName])).rows[0]?.version || 0;
+    const inputVersion=(await repository.select_account_data([username,accountName], client)).rows[0]?.version || 0;
     await txControl.commit(client);
     if(!enable && !input.account.cash_income_policy?.enabled) return {status:'not_enabled'};
     if(expectedVersion!=null && Number(expectedVersion)!==inputVersion) throw Object.assign(new Error('账户已修改，请刷新重算'),{status:409});
@@ -261,9 +261,9 @@ async function settleCashIncome(username,accountName,{targetDate=CoreDate.todayI
     pending.push(...computed.pending);
     for(const trade of computed.trades.filter(r=>r.rateSource==='market_daily_weighted')) resolutions.push({code:'204001.SH',eventKey:'repo:204001.SH:'+trade.tradeDate,reason:'market_daily_rate_available',rateEvidence:trade.rateEvidence});
     await txControl.begin(client);
-    const lockedAccount=await client.query('SELECT id FROM accounts WHERE id=$1 FOR UPDATE',[input.account.id]);
+    const lockedAccount=await repository.select_accounts_1([input.account.id], client);
     if(!lockedAccount.rowCount) throw Object.assign(new Error('账户已删除'),{status:409});
-    const lockedVersion=(await client.query('SELECT version FROM account_data WHERE username=$1 AND account_name=$2 FOR UPDATE',[username,accountName])).rows[0]?.version || 0;
+    const lockedVersion=(await repository.select_account_data_1([username,accountName], client)).rows[0]?.version || 0;
     if(lockedVersion!==inputVersion) throw Object.assign(new Error('账户版本已变化，请重试'),{status:409});
     const fresh=await readInputs(client,username,accountName,targetDate);
     if(hash(input)!==hash(fresh)) throw Object.assign(new Error('收益输入已变化，请重试'),{status:409});
@@ -272,8 +272,7 @@ async function settleCashIncome(username,accountName,{targetDate=CoreDate.todayI
     let changed=0,earliest=null;
     async function writeRevision(old,row,reason) {
       const revision=(old?.revision || 0)+1;
-      await client.query(`INSERT INTO cash_flow_revisions(account_id,flow_id,event_key,revision,before_value,after_value,reason,actor)
-        VALUES($1,$2,$3,$4,$5,$6,$7,$8)`,[input.account.id,row.id,row.event_key,revision,old||null,row,reason,username]);
+      await repository.insert_cash_flow_revisions([input.account.id,row.id,row.event_key,revision,old||null,row,reason,username], client);
       changed++; const affected=old?.date&&old.date<row.date?old.date:row.date;if(!earliest || affected<earliest) earliest=affected;
       return revision;
     }
@@ -284,19 +283,13 @@ async function settleCashIncome(username,accountName,{targetDate=CoreDate.todayI
       if(old && old.status===flow.status && Number(old.amount)===flow.amount && old.date===flow.date && old.anchor_date===anchor.date && hash(old.evidence)===hash(flow.evidence)) continue;
       const id=old?.id || 'income_'+hash([input.account.id,flow.event_key,flow.flow_type]).slice(0,28);
       const revision=await writeRevision(old,{...flow,id},old?'recalculation':'initial_calculation');
-      await client.query(`INSERT INTO cash_flows(id,username,account_name,account_id,date,amount,amount_cny,flow_type,origin,status,event_key,
-        anchor_date,instrument_id,quality_status,calculation_version,evidence,note,revision,created_at)
-        VALUES($1,$2,$3,$4,$5::date,$6,$6,$7,'system',$8,$9,$10::date,$11,$12,$13,$14,$15,$16,to_char(now(),'YYYY-MM-DD HH24:MI:SS'))
-        ON CONFLICT(username,account_name,id) DO UPDATE SET date=EXCLUDED.date,amount=EXCLUDED.amount,amount_cny=EXCLUDED.amount_cny,
-          status=EXCLUDED.status,anchor_date=EXCLUDED.anchor_date,quality_status=EXCLUDED.quality_status,evidence=EXCLUDED.evidence,
-          revision=EXCLUDED.revision,calculation_version=EXCLUDED.calculation_version,note=EXCLUDED.note`,
-        [id,username,accountName,input.account.id,flow.date,flow.amount,flow.flow_type,flow.status,flow.event_key,anchor.date,flow.instrument_id||null,
-          flow.quality_status,VERSION,flow.evidence,flow.note,revision]);
+      await repository.insert_cash_flows([id,username,accountName,input.account.id,flow.date,flow.amount,flow.flow_type,flow.status,flow.event_key,anchor.date,flow.instrument_id||null,
+          flow.quality_status,VERSION,flow.evidence,flow.note,revision], client);
     }
     for(const old of existing.filter(f=>f.date>anchor.date && f.date<=computed.processedThrough && f.status!=='revoked' &&
       f.calculation_version===VERSION && !wanted.has(f.event_key+'|'+f.flow_type) && (f.status==='estimated'||f.quality_status==='calculated_from_implemented_action'))) {
       const revision=await writeRevision(old,{...old,status:'revoked'},'no_longer_eligible');
-      await client.query('UPDATE cash_flows SET status=\'revoked\',revision=$2 WHERE username=$3 AND account_name=$4 AND id=$1',[old.id,revision,username,accountName]);
+      await repository.update_cash_flows([old.id,revision,username,accountName], client);
     }
     const last=computed.trades.at(-1);
     const state={version:VERSION,targetDate,anchorDate:anchor.date,anchorCash:Number(anchor.cashCny),changed,pending,excluded,dividendTaxAssessments,upcomingDividends,repoSourceAdmission:input.sourceAdmission?{...input.sourceAdmission.payload,rawRecordId:input.sourceAdmission.raw_record_id}:{status:'pending_evidence',gaps:['source_admission_not_recorded']},
@@ -309,14 +302,12 @@ async function settleCashIncome(username,accountName,{targetDate=CoreDate.todayI
     state.progress={targetFrom:anchor.date,targetThrough:targetDate,processedThrough:computed.processedThrough,remainingStages:pending.length?['source_or_settlement_evidence']:[],nextAttemptAt:pending.length?new Date(Date.now()+86400000).toISOString():null};
     state.pendingLifecycle=await require('./cashIncomePending').syncPending(client,input.account.id,pending,inputVersion,username,resolutions);
     state.pendingCounts=Object.fromEntries(['pending','resolved','excluded_by_user','source_blocked'].map(s=>[s,state.pendingLifecycle.filter(r=>r.state===s).length]));
-    await client.query('UPDATE accounts SET cash_income_policy=$2,cash_income_state=$3 WHERE id=$1',
-      [input.account.id,{...input.account.cash_income_policy,enabled:true,version:VERSION,authorizedBy:username,scope:'after_latest_imported_cash',calculationBasis:'announcements_and_existing_trades',brokerStatementsRequired:false,enabledAt:input.account.cash_income_policy?.enabledAt||new Date().toISOString()},state]);
+    await repository.update_accounts([input.account.id,{...input.account.cash_income_policy,enabled:true,version:VERSION,authorizedBy:username,scope:'after_latest_imported_cash',calculationBasis:'announcements_and_existing_trades',brokerStatementsRequired:false,enabledAt:input.account.cash_income_policy?.enabledAt||new Date().toISOString()},state], client);
     if(changed) await require('./tradeLedger').markNavDirty(client,username,accountName,earliest,'cashflow');
     // 在原历史资产口径上增量接入收益；不伪造缺失历史价格，保留基准与原始资产值。
     // 每行保存已应用金额，重跑、更正和实际替换均从原值计算，不能再次叠加。
-    const ledger=(await client.query('SELECT *,date::text FROM cash_flows WHERE account_id=$1',[input.account.id])).rows;
-    const navs=(await client.query(`SELECT *,date::text FROM nav_history WHERE username=$1 AND account_name=$2
-      AND date >= $3 ORDER BY date FOR UPDATE`,[username,accountName,anchor.date])).rows;
+    const ledger=(await repository.select_cash_flows_1([input.account.id], client)).rows;
+    const navs=(await repository.select_nav_history([username,accountName,anchor.date], client)).rows;
     // 流水已在本事务更新，直接复用账户同源投影；不再独立按旧资产续算NAV。
     const performance=await require('../db/accounts').loadAccountDataInSession(username,accountName,client);
     const canonicalByDate=new Map(performance.performanceHistory.map(n=>[n.date,n]));
@@ -342,10 +333,8 @@ async function settleCashIncome(username,accountName,{targetDate=CoreDate.todayI
             positions:performance.positions.map(p=>({code:p.code,quantity:p.quantity,price:p.price,subtype:p.subtype})),
             cash:performance.cash,hkRate:performance.hkRate}: {})}}:{}),brokerReconciled:false};
       if(Number(nav.total_asset)!==total || Math.abs(Number(nav.nav)-value)>0.00000001 || hash(nav.diagnostics)!==hash(diagnostics)) {
-        await client.query(`UPDATE nav_history SET total_asset=$4,nav=$5,calc_status='estimated',diagnostics=$6,
-          snapshot_at=CASE WHEN $7::boolean THEN $8 ELSE snapshot_at END
-          WHERE username=$1 AND account_name=$2 AND date=$3`,[username,accountName,nav.date,total,value,diagnostics,
-          Boolean(qualified&&nav.date===CoreDate.todayInZone('Asia/Shanghai')),new Date().toISOString()]);
+        await repository.update_nav_history([username,accountName,nav.date,total,value,diagnostics,
+          Boolean(qualified&&nav.date===CoreDate.todayInZone('Asia/Shanghai')),new Date().toISOString()], client);
         navUpdated++;
       }
       previous={...nav,total_asset:total,nav:value};
@@ -354,9 +343,8 @@ async function settleCashIncome(username,accountName,{targetDate=CoreDate.todayI
     state.historicalNavBasis='homepage_projection_when_qualified';
     state.navBasisPendingDates=navBasisPendingDates;
     // 旧脏日期不清除：本阶段只应用现金收益，历史行情/持仓待办仍由既有重放处理。
-    await client.query('UPDATE accounts SET cash_income_state=$2 WHERE id=$1',[input.account.id,state]);
-    if(navUpdated) await client.query(`UPDATE account_data SET nav_version=COALESCE(nav_version,0)+1,
-      version=COALESCE(version,0)+1 WHERE username=$1 AND account_name=$2`,[username,accountName]);
+    await repository.update_accounts_1([input.account.id,state], client);
+    if(navUpdated) await repository.update_account_data([username,accountName], client);
     await txControl.commit(client);
     return state;
   } catch(e) {await txControl.rollback(client);throw e;} finally {client.release();}

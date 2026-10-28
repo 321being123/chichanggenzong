@@ -12,6 +12,7 @@ const { sendAlert, resolveSourceEndpointAlerts } = require('./jobAlertMailer');
 const { probeCninfoPermission } = require('./sourceEndpointProbe');
 const txControl = require('../repositories/transactionControl');
 const { createIngestionRun, findOpenCase, finishIngestionRun, getCursor, getSourceId, ingestRawRecord, upsertCursor } = require('../repositories/arbitrageAnnouncementSyncRepository.js');
+const repository = require('../repositories/arbitrageAnnouncementSyncRepository.js');
 const {
   cleanSecurityText,
   firstSecurityCode,
@@ -124,18 +125,9 @@ async function searchExchangeArbitrageAnnouncements(scope, { fromDate, toDate, _
 
 async function updateFallbackRuntime(scope, usedFallback) {
   const sourceCode = scope === 'sse' ? 'sse' : 'szse';
-  const { rows } = await pool.query('SELECT source_id FROM ops.data_sources WHERE source_code=$1 LIMIT 1', [sourceCode]);
+  const { rows } = await repository.select_ops_data_sources([sourceCode]);
   if (!rows[0]) return null;
-  const runtime = await pool.query(
-    `INSERT INTO ops.source_endpoint_runtime(source_id,api_name,credential_fingerprint,consecutive_fallback_count,last_fallback_at,last_primary_success_at)
-     VALUES($1,'arbitrage','none',CASE WHEN $2::boolean THEN 1 ELSE 0 END,CASE WHEN $2::boolean THEN now() END,CASE WHEN $2::boolean THEN NULL ELSE now() END)
-     ON CONFLICT(source_id,api_name,credential_fingerprint) DO UPDATE SET
-       consecutive_fallback_count=CASE WHEN $2::boolean THEN ops.source_endpoint_runtime.consecutive_fallback_count+1 ELSE 0 END,
-       last_fallback_at=CASE WHEN $2::boolean THEN now() ELSE ops.source_endpoint_runtime.last_fallback_at END,
-       last_primary_success_at=CASE WHEN $2::boolean THEN ops.source_endpoint_runtime.last_primary_success_at ELSE now() END,
-       updated_at=now()
-     RETURNING consecutive_fallback_count,last_primary_success_at`, [rows[0].source_id, Boolean(usedFallback)]
-  );
+  const runtime = await repository.insert_ops_source_endpoint_runtime([rows[0].source_id, Boolean(usedFallback)]);
   const state = runtime.rows[0] || null;
   if (!usedFallback) {
     await resolveSourceEndpointAlerts(sourceCode, '*').catch(() => {});
@@ -201,18 +193,7 @@ function normalizeCursorDate(value) {
 // 按证券、公告日和规范化标题再比一次，确保后续交易所公告能接回原事件链。
 async function findCaseByAnnouncementMergeKey(client, instrumentId, mergeKey, announcedAt) {
   if (!instrumentId || !mergeKey || !announcedAt) return null;
-  const { rows } = await client.query(`
-    SELECT ac.case_id,ac.review_status,d.title,d.announced_at,i.canonical_code
-    FROM event.arbitrage_case_documents acd
-    JOIN event.arbitrage_cases ac ON ac.case_id=acd.case_id
-    JOIN event.documents d ON d.document_id=acd.document_id
-    JOIN ops.data_sources ds ON ds.source_id=d.source_id
-    JOIN core.instruments i ON i.instrument_id=ac.target_instrument_id
-    WHERE ac.target_instrument_id=$1
-      AND d.announced_at::date=$2::date
-      AND ds.source_code IN ('cninfo_announcements','sse','szse')
-    ORDER BY ac.created_at ASC,ac.case_id ASC,d.document_id ASC
-  `, [instrumentId, announcedAt]);
+  const { rows } = await repository.select_event_arbitrage_case_documents([instrumentId, announcedAt], client);
   return rows.find(row => announcementMergeKey({
     securityCode: row.canonical_code,
     announcedAt: row.announced_at,
@@ -256,11 +237,11 @@ async function standardizeAnnouncement(sourceId, rawRecordId, ann, scope) {
     let instrumentId = null;
     if (ann.stockCode) {
       const code = scope === 'hkex' ? ann.stockCode + '.HK' : ann.stockCode;
-      const { rows: ins } = await client.query('SELECT instrument_id FROM core.instruments WHERE canonical_code=$1', [code]);
+      const { rows: ins } = await repository.select_core_instruments([code], client);
       if (ins.length) {
         instrumentId = ins[0].instrument_id;
         if (ann.stockName && isCleanSecurityName(ann.stockName)) {
-          await client.query('UPDATE core.instruments SET name=$1 WHERE instrument_id=$2 AND name IS DISTINCT FROM $1', [ann.stockName, instrumentId]);
+          await repository.update_core_instruments([ann.stockName, instrumentId], client);
         }
       } else {
         // 自动创建 instrument
@@ -277,12 +258,7 @@ async function standardizeAnnouncement(sourceId, rawRecordId, ann, scope) {
 
     // 查找或创建 document
     const contentHash = require('crypto').createHash('md5').update(ann.fileLink || ann.title || '').digest('hex');
-    const { rows: docRows } = await client.query(`
-      INSERT INTO event.documents(company_id, document_type, title, announced_at, url, source_id, content_hash, raw_record_id, raw_payload)
-      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)
-      ON CONFLICT(source_id, url, content_hash) DO UPDATE SET title=EXCLUDED.title, announced_at=COALESCE(EXCLUDED.announced_at, event.documents.announced_at), raw_payload=EXCLUDED.raw_payload
-      RETURNING document_id
-    `, [null, 'arbitrage_announcement', ann.title, ann.announcedAt, ann.fileLink || '', sourceId, contentHash, rawRecordId, JSON.stringify(ann.rawPayload)]);
+    const { rows: docRows } = await repository.insert_event_documents([null, 'arbitrage_announcement', ann.title, ann.announcedAt, ann.fileLink || '', sourceId, contentHash, rawRecordId, JSON.stringify(ann.rawPayload)], client);
     const documentId = docRows[0].document_id;
     // 后续进程公告（完成/终止/换股实施等）：必须同时命中「套利事件语义」+「终态动作词」，
     // 且只更新「同标的 + 同策略类型」的进行中事件，避免「工商变更登记」「股份回购完成」等无关公告误关有效机会。
@@ -296,57 +272,29 @@ async function standardizeAnnouncement(sourceId, rawRecordId, ann, scope) {
 
     // 风险公告不新建套利案件；按公告证券代码挂到同一证券参与的进行中 A 股事件。
     if (risk && instrumentId) {
-      const { rows: riskCases } = await client.query(`
-        SELECT case_id
-        FROM event.arbitrage_cases
-        WHERE strategy_type IN ('a_cash_offer','a_share_swap')
-          AND event_status NOT IN ('completed','terminated','expired')
-          AND (target_instrument_id=$1 OR reference_instrument_id=$1)
-        ORDER BY announced_at DESC NULLS LAST, created_at DESC
-      `, [instrumentId]);
+      const { rows: riskCases } = await repository.select_event_arbitrage_cases([instrumentId], client);
       for (const riskCase of riskCases) {
-        await client.query(`
-          INSERT INTO event.arbitrage_case_documents(case_id, document_id, relation_type, announced_at, document_role)
-          VALUES($1,$2,'risk_event',$3,'risk')
-          ON CONFLICT(case_id, document_id) DO UPDATE
-            SET relation_type='risk_event', document_role='risk', announced_at=EXCLUDED.announced_at
-        `, [riskCase.case_id, documentId, ann.announcedAt]);
-        await client.query('UPDATE event.arbitrage_cases SET updated_at=now() WHERE case_id=$1', [riskCase.case_id]);
+        await repository.insert_event_arbitrage_case_documents([riskCase.case_id, documentId, ann.announcedAt], client);
+        await repository.update_event_arbitrage_cases([riskCase.case_id], client);
       }
       await txControl.commit(client);
       return;
     }
     const update = detectUpdate(classificationText);
     if (update && update.strategyType && instrumentId) {
-      const { rows: open } = await client.query(`
-        SELECT case_id FROM event.arbitrage_cases
-        WHERE target_instrument_id=$1 AND strategy_type=$2 AND event_status NOT IN ('completed','terminated','expired')
-        ORDER BY created_at DESC LIMIT 1
-      `, [instrumentId, update.strategyType]);
+      const { rows: open } = await repository.select_event_arbitrage_cases_1([instrumentId, update.strategyType], client);
       if (open.length) {
         const caseId = open[0].case_id;
-        await client.query(`
-          INSERT INTO event.arbitrage_case_documents(case_id, document_id, relation_type, announced_at, document_role)
-          VALUES($1,$2,'announcement',$3,$4)
-          ON CONFLICT(case_id, document_id) DO UPDATE SET document_role=EXCLUDED.document_role
-        `, [caseId, documentId, ann.announcedAt, documentRole]);
-        await client.query(`UPDATE event.arbitrage_cases SET event_status=$1, terms_updated_at=now(), updated_at=now() WHERE case_id=$2`, [update.status, caseId]);
+        await repository.insert_event_arbitrage_case_documents_1([caseId, documentId, ann.announcedAt, documentRole], client);
+        await repository.update_event_arbitrage_cases_1([update.status, caseId], client);
         await txControl.commit(client);
         return;
       }
       // 找不到进行中事件时，把终态公告归到最近的同标的同策略案件；绝不反向新建进行中案件。
-      const { rows: latest } = await client.query(`
-        SELECT case_id FROM event.arbitrage_cases
-        WHERE target_instrument_id=$1 AND strategy_type=$2
-        ORDER BY announced_at DESC NULLS LAST,created_at DESC LIMIT 1
-      `, [instrumentId, update.strategyType]);
+      const { rows: latest } = await repository.select_event_arbitrage_cases_2([instrumentId, update.strategyType], client);
       if (latest.length) {
-        await client.query(`
-          INSERT INTO event.arbitrage_case_documents(case_id,document_id,relation_type,announced_at,document_role)
-          VALUES($1,$2,'announcement',$3,$4)
-          ON CONFLICT(case_id,document_id) DO UPDATE SET document_role=EXCLUDED.document_role
-        `, [latest[0].case_id, documentId, ann.announcedAt, documentRole]);
-        await client.query('UPDATE event.arbitrage_cases SET event_status=$1,updated_at=now() WHERE case_id=$2', [update.status, latest[0].case_id]);
+        await repository.insert_event_arbitrage_case_documents_2([latest[0].case_id, documentId, ann.announcedAt, documentRole], client);
+        await repository.update_event_arbitrage_cases_2([update.status, latest[0].case_id], client);
       }
       await txControl.commit(client);
       return;
@@ -357,24 +305,10 @@ async function standardizeAnnouncement(sourceId, rawRecordId, ann, scope) {
     // 只在巨潮公告、已知标的、且明确出现“终止/撤回/取消”与控制权变更语义时处理，
     // 避免把普通工商变更或其他无关公告误关。
     if (scope !== 'hkex' && isGenericControlChangeTermination(classificationText) && instrumentId) {
-      const { rows: broadOpen } = await client.query(`
-        SELECT case_id FROM event.arbitrage_cases
-        WHERE target_instrument_id=$1
-          AND strategy_type IN ('a_cash_offer','a_share_swap')
-          AND event_status NOT IN ('completed','terminated','expired')
-        ORDER BY announced_at DESC NULLS LAST, created_at DESC
-      `, [instrumentId]);
+      const { rows: broadOpen } = await repository.select_event_arbitrage_cases_3([instrumentId], client);
       for (const row of broadOpen) {
-        await client.query(`
-          INSERT INTO event.arbitrage_case_documents(case_id, document_id, relation_type, announced_at, document_role)
-          VALUES($1,$2,'announcement',$3,'terminal')
-          ON CONFLICT(case_id, document_id) DO UPDATE SET document_role='terminal', announced_at=EXCLUDED.announced_at
-        `, [row.case_id, documentId, ann.announcedAt]);
-        await client.query(`
-          UPDATE event.arbitrage_cases
-          SET event_status='terminated', terms_updated_at=COALESCE($1::date, terms_updated_at), updated_at=now()
-          WHERE case_id=$2
-        `, [ann.announcedAt || null, row.case_id]);
+        await repository.insert_event_arbitrage_case_documents_3([row.case_id, documentId, ann.announcedAt], client);
+        await repository.update_event_arbitrage_cases_3([ann.announcedAt || null, row.case_id], client);
       }
       await txControl.commit(client);
       return;
@@ -391,46 +325,23 @@ async function standardizeAnnouncement(sourceId, rawRecordId, ann, scope) {
         existing = await findCaseByAnnouncementMergeKey(client, instrumentId, mergeKey, ann.announcedAt);
       }
       if (!existing && mergeKey) {
-        const { rows: merged } = await client.query(
-          `SELECT ac.case_id,ac.review_status
-             FROM event.documents d
-             JOIN event.arbitrage_case_documents acd ON acd.document_id=d.document_id
-             JOIN event.arbitrage_cases ac ON ac.case_id=acd.case_id
-            WHERE d.raw_payload->>'announcement_merge_key'=$1
-            ORDER BY ac.created_at ASC,ac.case_id ASC LIMIT 1`, [mergeKey]
-        );
+        const { rows: merged } = await repository.select_event_documents([mergeKey], client);
         existing = merged[0] || null;
       }
       if (!existing && instrumentId && ann.announcedAt) {
-        const { rows: terminal } = await client.query(`
-          SELECT c.case_id,max(d.announced_at) AS terminal_date
-          FROM event.arbitrage_cases c
-          JOIN event.arbitrage_case_documents acd ON acd.case_id=c.case_id
-          JOIN event.documents d ON d.document_id=acd.document_id
-          WHERE c.target_instrument_id=$1 AND c.strategy_type=$2
-            AND c.event_status IN ('completed','terminated','expired')
-          GROUP BY c.case_id HAVING max(d.announced_at)>=$3::date
-          ORDER BY terminal_date DESC LIMIT 1
-        `, [instrumentId, strategyType, ann.announcedAt]);
+        const { rows: terminal } = await repository.select_event_arbitrage_cases_4([instrumentId, strategyType, ann.announcedAt], client);
         if (terminal.length) existing = { case_id: terminal[0].case_id, review_status: 'approved', terminal: true };
       }
       if (!existing) {
-        const { rows: byKey } = await client.query(
-          `SELECT case_id, review_status FROM event.arbitrage_cases WHERE source_id=$1 AND source_key=$2`,
-          [sourceId, ann.sourceKey]
-        );
+        const { rows: byKey } = await repository.select_event_arbitrage_cases_5([sourceId, ann.sourceKey], client);
         existing = byKey[0] || null;
       }
 
       if (existing) {
         // 并入已有事件链
         const caseId = existing.case_id;
-        await client.query(`
-          INSERT INTO event.arbitrage_case_documents(case_id, document_id, relation_type, announced_at, document_role)
-          VALUES($1,$2,'announcement',$3,$4)
-          ON CONFLICT(case_id, document_id) DO UPDATE SET document_role=EXCLUDED.document_role
-        `, [caseId, documentId, ann.announcedAt, documentRole]);
-        await client.query(`UPDATE event.arbitrage_cases SET terms_updated_at=now(), updated_at=now() WHERE case_id=$1`, [caseId]);
+        await repository.insert_event_arbitrage_case_documents_1([caseId, documentId, ann.announcedAt, documentRole], client);
+        await repository.update_event_arbitrage_cases_4([caseId], client);
         if (!existing.terminal) {
           touchedCaseId = caseId;
           touchedDocumentId = documentId;
@@ -441,18 +352,9 @@ async function standardizeAnnouncement(sourceId, rawRecordId, ann, scope) {
         const market = scope === 'hkex' ? 'HK' : 'CN';
         const canonicalCode = scope === 'hkex' ? ann.stockCode + '.HK' : ann.stockCode;
         const eventKey = buildEventKey({ market, strategyType, canonicalCode, announcedAt: ann.announcedAt, sourceKey: ann.sourceKey });
-        const { rows: newCase } = await client.query(`
-          INSERT INTO event.arbitrage_cases(market, strategy_type, source_id, source_key, target_instrument_id, primary_document_id,
-            event_status, review_status, announced_at, terms_updated_at, raw_payload,event_key,parse_status)
-          VALUES($1,$2,$3,$4,$5,$6,'proposed','pending',$7,now(),$8,$9,'unparsed')
-          RETURNING case_id
-        `, [market, strategyType, sourceId, ann.sourceKey, instrumentId, documentId, ann.announcedAt, JSON.stringify(ann.rawPayload), eventKey]);
+        const { rows: newCase } = await repository.insert_event_arbitrage_cases([market, strategyType, sourceId, ann.sourceKey, instrumentId, documentId, ann.announcedAt, JSON.stringify(ann.rawPayload), eventKey], client);
 
-        await client.query(`
-          INSERT INTO event.arbitrage_case_documents(case_id, document_id, relation_type, announced_at, document_role)
-          VALUES($1,$2,'announcement',$3,$4)
-          ON CONFLICT(case_id, document_id) DO UPDATE SET document_role=EXCLUDED.document_role
-        `, [newCase[0].case_id, documentId, ann.announcedAt, documentRole]);
+        await repository.insert_event_arbitrage_case_documents_1([newCase[0].case_id, documentId, ann.announcedAt, documentRole], client);
 
         createdNew = true;
         createdCaseId = newCase[0].case_id;
@@ -600,24 +502,7 @@ async function retryPendingDocuments() {
     status: 'probe_error', attempted: 0, recovered: 0,
     error: sanitizeJobError(error.message || error, 240),
   }));
-  const { rows } = await pool.query(`
-    SELECT acd.case_id,acd.document_id,acd.document_role,d.url,i.canonical_code
-    FROM event.arbitrage_case_documents acd
-    JOIN event.arbitrage_cases c ON c.case_id=acd.case_id
-    JOIN event.documents d ON d.document_id=acd.document_id
-    JOIN core.instruments i ON i.instrument_id=c.target_instrument_id
-    WHERE c.event_status NOT IN ('completed','terminated','expired')
-      AND acd.document_role IN ('amendment','terms','summary','proposal')
-      AND (
-        (acd.parser_version IS DISTINCT FROM $1 AND COALESCE(acd.next_parse_attempt_at, now()) <= now())
-        OR (acd.parse_status='failed' AND acd.parse_attempts < $2
-            AND COALESCE(acd.next_parse_attempt_at, now()) <= now())
-        OR (acd.parse_status <> 'failed' AND acd.parsed_payload IS NULL
-            AND COALESCE(acd.next_parse_attempt_at, now()) <= now())
-      )
-      AND d.url ~* '\\.pdf($|\\?)'
-    ORDER BY d.announced_at DESC,acd.document_id DESC
-  `, [PARSER_VERSION, MAX_PARSE_ATTEMPTS]);
+  const { rows } = await repository.select_event_arbitrage_case_documents_1([PARSER_VERSION, MAX_PARSE_ATTEMPTS]);
   const touched = new Set();
   const result = { attempted: 0, parsed: 0, failed: 0, superseded, cninfoProbe };
   const stopCodes = new Set([
@@ -643,28 +528,7 @@ async function retryPendingDocuments() {
     }
   }
   for (const caseId of touched) await parser.rebuildCaseTerms(caseId);
-  const { rows: retryState } = await pool.query(`
-    SELECT
-      COUNT(*) FILTER (WHERE
-        ((acd.parser_version IS DISTINCT FROM $1
-          OR (acd.parse_status='failed' AND acd.parse_attempts < $2)
-          OR (acd.parse_status <> 'failed' AND acd.parsed_payload IS NULL))
-         AND COALESCE(acd.next_parse_attempt_at, now()) <= now())
-      )::int AS pending,
-      COUNT(*) FILTER (WHERE
-        ((acd.parser_version IS DISTINCT FROM $1
-          OR (acd.parse_status='failed' AND acd.parse_attempts < $2)
-          OR (acd.parse_status <> 'failed' AND acd.parsed_payload IS NULL))
-         AND acd.next_parse_attempt_at > now())
-      )::int AS pending_not_due,
-      COUNT(*) FILTER (WHERE acd.parse_status='failed' AND acd.parser_version=$1 AND acd.parse_attempts >= $2)::int AS exhausted
-    FROM event.arbitrage_case_documents acd
-    JOIN event.arbitrage_cases c ON c.case_id=acd.case_id
-    JOIN event.documents d ON d.document_id=acd.document_id
-    WHERE c.event_status NOT IN ('completed','terminated','expired')
-      AND acd.document_role IN ('amendment','terms','summary','proposal')
-      AND d.url ~* '\\.pdf($|\\?)'
-  `, [PARSER_VERSION, MAX_PARSE_ATTEMPTS]);
+  const { rows: retryState } = await repository.select_event_arbitrage_case_documents_2([PARSER_VERSION, MAX_PARSE_ATTEMPTS]);
   result.pending = Number(retryState[0] && retryState[0].pending || 0);
   result.pendingNotDue = Number(retryState[0] && retryState[0].pending_not_due || 0);
   result.exhausted = Number(retryState[0] && retryState[0].exhausted || 0);
@@ -674,27 +538,7 @@ async function retryPendingDocuments() {
 // 交易所原文已经入库后，旧的 CNINFO 同公告只保留审计证据，不再参与解析重试和案件完整性判断。
 // 只按同一事件链内的证券、公告日、规范化标题精确匹配，避免把后续公告误当成替代件。
 async function supersedeLegacyDocumentsWithOfficial() {
-  const { rows } = await pool.query(`
-    SELECT acd.case_id,acd.document_id,
-           legacy.title AS legacy_title,legacy.announced_at AS legacy_announced_at,
-           official.title AS official_title,official.announced_at AS official_announced_at,
-           i.canonical_code
-    FROM event.arbitrage_case_documents acd
-    JOIN event.arbitrage_cases c ON c.case_id=acd.case_id
-    JOIN event.documents legacy ON legacy.document_id=acd.document_id
-    JOIN ops.data_sources legacy_source ON legacy_source.source_id=legacy.source_id
-    JOIN core.instruments i ON i.instrument_id=c.target_instrument_id
-    JOIN event.arbitrage_case_documents official_link ON official_link.case_id=acd.case_id
-    JOIN event.documents official ON official.document_id=official_link.document_id
-    JOIN ops.data_sources official_source ON official_source.source_id=official.source_id
-    WHERE c.event_status NOT IN ('completed','terminated','expired')
-      AND acd.document_role = ANY($1::text[])
-      AND legacy_source.source_code='cninfo_announcements'
-      AND official_source.source_code = ANY($2::text[])
-      AND legacy.announced_at::date=official.announced_at::date
-      AND legacy.url ~* '\\.pdf($|\\?)'
-      AND official.url ~* '\\.pdf($|\\?)'
-  `, [ACTIVE_DOCUMENT_ROLES, PRIMARY_A_SHARE_SOURCES]);
+  const { rows } = await repository.select_event_arbitrage_case_documents_3([ACTIVE_DOCUMENT_ROLES, PRIMARY_A_SHARE_SOURCES]);
 
   let superseded = 0;
   for (const row of rows) {
@@ -711,11 +555,7 @@ async function supersedeLegacyDocumentsWithOfficial() {
       market: 'CN',
     });
     if (!legacyKey || legacyKey !== officialKey) continue;
-    const updated = await pool.query(`
-      UPDATE event.arbitrage_case_documents
-         SET document_role='superseded'
-       WHERE case_id=$1 AND document_id=$2 AND document_role = ANY($3::text[])
-    `, [row.case_id, row.document_id, ACTIVE_DOCUMENT_ROLES]);
+    const updated = await repository.update_event_arbitrage_case_documents([row.case_id, row.document_id, ACTIVE_DOCUMENT_ROLES]);
     superseded += Number(updated.rowCount || 0);
   }
   return superseded;

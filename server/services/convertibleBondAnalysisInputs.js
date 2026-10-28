@@ -11,6 +11,7 @@ const {loadAnalysisUniverse,persistAnalysisProgress,latestAnalysisDate}=require(
 const {tryAnalysisApiFallback,terminalApplies,APIS:FALLBACK_APIS}=require('./convertibleBondAnalysisFallback');
 const txControl = require('../repositories/transactionControl');
 const { persistBondInputs, readDocuments, readRatingHistory } = require('../repositories/convertibleBondAnalysisInputsRepository.js');
+const repository = require('../repositories/convertibleBondAnalysisInputsRepository.js');
 
 const INPUT_VERSION='analysis-input-v4';
 const DOCUMENT_SELECTION_VERSION='bond-doc-selection-2026-10-24-v2';
@@ -100,11 +101,10 @@ async function projectDocument(kind,event,bond) {
 
 async function discoverDocuments(bond,targetDate,state,{repairStart}={}) {
   const scopeKey=`bond_analysis_documents:${bond.stock_code}`;
-  const {rows:coverage}=await pool.query(`SELECT last_success_date::text FROM ops.sync_cursors WHERE scope_key=$1 AND dataset_code='official_documents'`,[scopeKey]);
+  const {rows:coverage}=await repository.select_ops_sync_cursors([scopeKey]);
   const cursor=coverage[0]?.last_success_date||state.coveredThrough;
   if(cursor&&cursor>=targetDate&&!repairStart)return [];
-  const {rows:dates}=await pool.query(`SELECT MIN(p.value_date)::text AS date FROM fundamental.convertible_bond_profiles p
-    JOIN core.instruments s ON s.instrument_id=p.stock_instrument_id WHERE s.canonical_code=$1`,[bond.stock_code]);
+  const {rows:dates}=await repository.select_fundamental_convertible_bond_profiles([bond.stock_code]);
   const firstDate=dates[0]?.date||isoDate(bond.value_date);
   if(!firstDate)throw new Error('发行生效日期缺失，无法确定首次公告范围');
   const from=new Date(`${repairStart||cursor||firstDate}T00:00:00+08:00`);
@@ -121,18 +121,8 @@ async function discoverDocuments(bond,targetDate,state,{repairStart}={}) {
     const sources=await tools.sourceIds(pool);
     const rawRecords=result.events.map(event=>({source_id:sources[event.source],
       source_key:`${event.source}:${event.source_number||event.url}`,payload:{...event,stock_code:bond.stock_code},payload_hash:sha(event.raw||event)}));
-    if(rawRecords.length)await pool.query(`WITH saved AS (
-      INSERT INTO ops.raw_records(source_id,dataset_code,source_key,payload,payload_hash)
-      SELECT source_id,'official_company_announcements',source_key,payload,payload_hash FROM
-      jsonb_to_recordset($1::jsonb) AS r(source_id smallint,source_key text,payload jsonb,payload_hash text)
-      ON CONFLICT(source_id,dataset_code,source_key,payload_hash) DO UPDATE SET payload=EXCLUDED.payload
-      RETURNING raw_record_id,source_id,payload
-    ) UPDATE event.documents d SET raw_record_id=saved.raw_record_id FROM saved
-      WHERE d.source_id=saved.source_id AND d.url=saved.payload->>'url'`,[JSON.stringify(rawRecords)]);
-    await pool.query(`INSERT INTO ops.sync_cursors(scope_key,dataset_code,last_success_date,cursor_payload,last_attempt_at)
-      VALUES($1,'official_documents',$2,$3::jsonb,now()) ON CONFLICT(scope_key,dataset_code) DO UPDATE SET
-      last_success_date=GREATEST(ops.sync_cursors.last_success_date,EXCLUDED.last_success_date),cursor_payload=EXCLUDED.cursor_payload,last_attempt_at=now(),updated_at=now()`,
-      [scopeKey,window.end,JSON.stringify({query_status:result.events.length?'success':'verified_no_change',complete:true,start:window.start,end:window.end,count:result.events.length})]);
+    if(rawRecords.length)await repository.with_ops_raw_records([JSON.stringify(rawRecords)]);
+    await repository.insert_ops_sync_cursors([scopeKey,window.end,JSON.stringify({query_status:result.events.length?'success':'verified_no_change',complete:true,start:window.start,end:window.end,count:result.events.length})]);
   }
   return events;
 }
@@ -154,9 +144,7 @@ async function saveProjection(kind,event,result,bond) {
     const sourceId=sources[event.source];
     if(!sourceId)throw new Error('公告来源未登记');
     if(kind==='rating'&&result.rating_result_notice) {
-      const {rows:existingFacts}=await client.query(`SELECT rating,raw_payload FROM fundamental.convertible_bond_ratings
-        WHERE instrument_id=$1 AND rating_date=$2::date AND rating_company=$3 AND raw_payload->>'rating_date_source'='official_document'`,
-        [bond.instrument_id,result.rating_date,result.rating_com_name]);
+      const {rows:existingFacts}=await repository.select_fundamental_convertible_bond_ratings([bond.instrument_id,result.rating_date,result.rating_com_name], client);
       const priorFacts=existingFacts.filter(row=>row.rating!==result.rating);
       if(priorFacts.some(row=>row.raw_payload.text_method==='pdf_text')||priorFacts.length&&result.text_method!=='pdf_text') {
         throw new Error('官方结果公告与已有原生本次评级结论冲突，保留原事实');
@@ -167,14 +155,8 @@ async function saveProjection(kind,event,result,bond) {
         reason:'explicit_named_native_notice_replaces_previous_ocr'}))];
       if(replacements.length)result.replaced_rating_evidence=[...new Map(replacements.map(row=>[JSON.stringify(row),row])).values()];
     }
-    const record=(await client.query(`INSERT INTO ops.raw_records(source_id,dataset_code,source_key,payload,payload_hash)
-      VALUES($1,'bond_analysis_inputs',$2,$3::jsonb,$4) ON CONFLICT(source_id,dataset_code,source_key,payload_hash)
-      DO UPDATE SET payload=EXCLUDED.payload RETURNING raw_record_id`,
-    [sourceId,`${event.url}:${kind}:${INPUT_VERSION}`,JSON.stringify(result),sha(result)])).rows[0];
-    await client.query(`UPDATE event.documents d SET content_hash=CASE WHEN NOT EXISTS(SELECT 1 FROM event.documents other
-      WHERE other.source_id=d.source_id AND other.url=d.url AND other.content_hash=$2 AND other.document_id<>d.document_id) THEN $2 ELSE d.content_hash END,raw_record_id=$3,
-      raw_payload=raw_payload || jsonb_build_object('analysis_projections',COALESCE(raw_payload->'analysis_projections','{}'::jsonb)||$4::jsonb)
-    WHERE document_id=$1`,[event.document_id,result.document_hash,record.raw_record_id,JSON.stringify({[kind]:{...result,parser_version:INPUT_VERSION}})]);
+    const record=(await repository.insert_ops_raw_records([sourceId,`${event.url}:${kind}:${INPUT_VERSION}`,JSON.stringify(result),sha(result)], client)).rows[0];
+    await repository.update_event_documents([event.document_id,result.document_hash,record.raw_record_id,JSON.stringify({[kind]:{...result,parser_version:INPUT_VERSION}})], client);
     if(kind==='prospectus'||kind==='issuance_terms') {
       if(kind==='prospectus'&&!result.fundraising_purpose)throw new Error('募集用途解析缺失');
       if(!result.coupon_rates?.length && !(kind==='prospectus'&&['not_disclosed','missing'].includes(result.coupon_status)))throw new Error('完整票息解析缺失');
@@ -193,32 +175,21 @@ async function saveProjection(kind,event,result,bond) {
       if(result.identity_binding&&result.identity_binding.validated!==true)throw new Error('初发评级身份未核验，禁止写入事实');
       if(!result.rating||!result.rating_outlook)throw new Error('评级或展望解析缺失');
       if(result.rating_date_source==='announcement_fallback') {
-        const {rows:dates}=await client.query(`SELECT DISTINCT rating_date::text AS date FROM fundamental.convertible_bond_ratings
-          WHERE instrument_id=$1 AND announced_at=$2::date AND rating=$4 AND
-          (source_id=$3 OR (raw_payload->>'ts_code'=$5 AND raw_payload->>'ann_date'=replace($2::text,'-','') AND raw_payload ? 'rating_way'))`,
-          [bond.instrument_id,event.event_date,sources.tushare,result.rating,bond.ts_code]);
+        const {rows:dates}=await repository.select_fundamental_convertible_bond_ratings_1([bond.instrument_id,event.event_date,sources.tushare,result.rating,bond.ts_code], client);
         if(dates.length!==1)throw new Error('评级实际日期未唯一核验，不能把公告日写成评级日');
         result.rating_date=dates[0].date;result.rating_date_source='existing_standard_fact';
       }
       const previous=result.rating_requirement_version===RATING_REQUIREMENT_VERSION?[]:result.rating_result_notice?.previous_ratings||[];
-      if(result.rating_requirement_version!==RATING_REQUIREMENT_VERSION)await client.query(`DELETE FROM fundamental.convertible_bond_ratings WHERE instrument_id=$1
-        AND raw_payload->>'source_url'=$2 AND raw_payload ? 'document_hash' AND NOT(rating_date=ANY($3::date[]))`,
-        [bond.instrument_id,event.url,[result.rating_date,...previous.map(row=>row.rating_date)]]);
+      if(result.rating_requirement_version!==RATING_REQUIREMENT_VERSION)await repository.delete_fundamental_convertible_bond_ratings([bond.instrument_id,event.url,[result.rating_date,...previous.map(row=>row.rating_date)]], client);
       for(const row of previous) {
         // Explicit prior results may fill history, but cannot replace a validated current original.
-        const {rows:current}=await client.query(`SELECT rating FROM fundamental.convertible_bond_ratings WHERE instrument_id=$1
-          AND rating_date=$2::date AND rating_company=$3 AND raw_payload->>'rating_date_source'='official_document'
-          AND raw_payload->>'rating_grade_context_version'='current-grade-v1'
-          AND (raw_payload->>'rating_date_context' IN ('current_explicit_label','current_summary_table','current_report_issuance')
-            OR raw_payload->'identity_binding'->>'validated'='true')`,[bond.instrument_id,row.rating_date,row.rating_com_name||result.rating_com_name||bond.raw_payload.rating_comp||'']);
+        const {rows:current}=await repository.select_fundamental_convertible_bond_ratings_2([bond.instrument_id,row.rating_date,row.rating_com_name||result.rating_com_name||bond.raw_payload.rating_comp||''], client);
         if(current.some(item=>item.rating!==row.rating))throw new Error('结果公告前次评级与已核验本次原文冲突，保留原事实');
         if(!current.length)await tools.saveRatingHistory(client,bond.instrument_id,[{...result,...row,
           outlook_source_url:result.source_url,ann_date:event.event_date,rating_com_name:row.rating_com_name||result.rating_com_name||bond.raw_payload.rating_comp}],sourceId);
       }
       await tools.saveRatingHistory(client,bond.instrument_id,[{...result,ann_date:event.event_date,rating_com_name:result.rating_com_name||bond.raw_payload.rating_comp}],sourceId);
-      if(result.rating_result_notice)await client.query(`UPDATE fundamental.convertible_bond_ratings SET source_id=$3
-        WHERE instrument_id=$1 AND raw_payload->>'source_url'=$2 AND rating_date=ANY($4::date[])`,
-        [bond.instrument_id,event.url,sourceId,[result.rating_date,...previous.map(row=>row.rating_date)]]);
+      if(result.rating_result_notice)await repository.update_fundamental_convertible_bond_ratings([bond.instrument_id,event.url,sourceId,[result.rating_date,...previous.map(row=>row.rating_date)]], client);
       if(result.rating_requirement_version!==RATING_REQUIREMENT_VERSION)await tools.saveRatingOutlooks(client,bond.instrument_id,[result]);
     }
     if(kind==='price_history'&&result.price_changes?.length) await tools.savePriceChanges(client,bond.instrument_id,result.price_changes,sourceId);
@@ -242,16 +213,12 @@ async function markTerminalGap(tsCode,field,{status,reason,evidence,checkedAt}={
   if(!field)throw new Error('资料终态必须指定字段');
   if(!reason)throw new Error('资料终态必须写明原因');
   if(!evidence||typeof evidence!=='object'||!Object.keys(evidence).length)throw new Error('资料终态必须附带证据');
-  const {rows}=await pool.query(`SELECT p.instrument_id,p.raw_payload FROM fundamental.convertible_bond_profiles p
-    JOIN core.instruments i ON i.instrument_id=p.instrument_id WHERE i.canonical_code=$1`,[tsCode]);
+  const {rows}=await repository.select_fundamental_convertible_bond_profiles_1([tsCode]);
   if(!rows.length)throw new Error('未建档的可转债：'+tsCode);
   const payload=rows[0].raw_payload||{};
   const state={...(payload.analysis_inputs||{}),terminal_gaps:{...(payload.analysis_inputs?.terminal_gaps||{}),
     [field]:{status,reason,evidence,checkedAt:checkedAt||new Date().toISOString()}}};
-  await pool.query(`UPDATE fundamental.convertible_bond_profiles SET raw_payload=jsonb_set(raw_payload,'{analysis_inputs}',
-    COALESCE(raw_payload->'analysis_inputs','{}'::jsonb)||jsonb_build_object('terminal_gaps',
-      COALESCE(raw_payload->'analysis_inputs'->'terminal_gaps','{}'::jsonb)||jsonb_build_object($2::text,$3::jsonb)),true),updated_at=now()
-    WHERE instrument_id=$1`,[rows[0].instrument_id,field,JSON.stringify(state.terminal_gaps[field])]);
+  await repository.update_fundamental_convertible_bond_profiles([rows[0].instrument_id,field,JSON.stringify(state.terminal_gaps[field])]);
   return state.terminal_gaps[field];
 }
 
@@ -436,7 +403,7 @@ async function syncConvertibleBondAnalysisInputs({businessDate,targetCodes=[],ma
   let nextRunAt=new Date(Date.now()+15*60000).toISOString();
   const scopeKey=codes.length?`convertible_bond_analysis:targeted:${sha([...new Set(codes)].sort())}`:'convertible_bond_analysis';
   const previous=deps.readProgress?await deps.readProgress():deps.loadUniverse?null:
-    (await pool.query("SELECT cursor_payload FROM ops.sync_cursors WHERE scope_key=$1 AND dataset_code='inputs'",[scopeKey])).rows[0]?.cursor_payload;
+    (await repository.select_ops_sync_cursors_1([scopeKey])).rows[0]?.cursor_payload;
   const attemptedCodes=new Set([...(previous?.attemptedCodes||[]),...rows.filter(b=>b.raw_payload.analysis_inputs?.coveredThrough)
     .map(b=>b.ts_code)]);
   // A failed historical PDF cannot keep every later security behind the same batch boundary.

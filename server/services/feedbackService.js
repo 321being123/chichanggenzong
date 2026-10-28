@@ -10,6 +10,7 @@ const store = require('../db/feedback');
 const notificationService = require('./notificationService');
 const { hasCapability, isAdminIdentity } = require('../middleware/auth');
 const txControl = require('../repositories/transactionControl');
+const repository = require('../repositories/feedbackServiceRepository.js');
 
 // ---------- 常量 ----------
 const TYPES = ['bug', 'improvement', 'feature'];
@@ -162,7 +163,7 @@ function actorFromRequest(req) {
 
 async function nicknameOf(db, username) {
   if (!username) return '已注销用户';
-  const { rows } = await (db || pool).query('SELECT nickname FROM public.users WHERE username = $1', [username]);
+  const { rows } = await repository.select_public_users([username]);
   return (rows[0] && rows[0].nickname) || '';
 }
 
@@ -838,13 +839,7 @@ async function resolveImplementedFields(client, fb, options) {
   const opts = options || {};
   const runId = cleanText(opts.releaseRunId, 20);
   if (!runId) throw createError(400, '标记已实施必须指定已通过专项验收的发布批次');
-  const runQuery = await client.query(
-    `SELECT id::text AS id, release_sha AS "releaseSha", app_version AS "appVersion",
-            verify_status AS "verifyStatus", verify_evidence AS "verifyEvidence",
-            environment, owner
-       FROM ops.feedback_release_runs WHERE id=$1`,
-    [runId]
-  );
+  const runQuery = await repository.select_ops_feedback_release_runs([runId], client);
   const run = runQuery.rows[0];
   if (!run) throw createError(400, '指定的发布批次不存在');
   if (run.environment !== 'production') throw createError(409, '发布批次不是生产环境记录');
@@ -853,11 +848,7 @@ async function resolveImplementedFields(client, fb, options) {
   const evidence = run.verifyEvidence && typeof run.verifyEvidence === 'object' ? run.verifyEvidence : {};
   if (!Object.keys(evidence).length) throw createError(409, '该发布批次没有验收证据，不能标记已实施');
 
-  const itemQuery = await client.query(
-    `SELECT conclusion, apply_status AS "applyStatus", expected_revision::text AS "expectedRevision"
-       FROM ops.feedback_release_items WHERE run_id=$1 AND feedback_id=$2`,
-    [runId, fb.id]
-  );
+  const itemQuery = await repository.select_ops_feedback_release_items([runId, fb.id], client);
   const item = itemQuery.rows[0];
   if (!item) throw createError(400, '该发布批次清单不包含这条反馈');
   if (item.conclusion !== 'solved') throw createError(400, '该发布批次未把这条反馈核对为完整解决');

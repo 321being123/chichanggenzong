@@ -6,6 +6,7 @@ const { getRegisteredJobDefinition } = require('./jobDefinitions');
 const { verifySlotRecoveryEvidence, sameSlotRecoveryScope, slotWaitingState, recoveryScopeFilter } = require('./jobRecoveryEvidence');
 const txControl = require('../repositories/transactionControl');
 const { claimAlertDelivery, claimRecoverySummaryAlerts, loadResolutionCandidates } = require('../repositories/jobAlertMailerRepository.js');
+const repository = require('../repositories/jobAlertMailerRepository.js');
 
 const DELIVERY_RETRY_MINUTES = [1, 5, 15];
 const MAX_DELIVERY_ATTEMPTS = DELIVERY_RETRY_MINUTES.length + 1;
@@ -339,42 +340,16 @@ function sanitizeAlertRecord(alert) {
 async function upsertAlert(input) {
   const key = alertKeyFor(input);
   const scope = alertScope(input);
-  const { rows } = await pool.query(
-    `INSERT INTO ops.alert_notifications(alert_key,alert_type,severity,job_code,slot_id,scope_type,scope_key,subject,summary,next_send_at,next_check_at)
-     VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,now(),now())
-     ON CONFLICT(alert_key) DO UPDATE SET
-       summary=EXCLUDED.summary, subject=EXCLUDED.subject,
-       scope_type=COALESCE(EXCLUDED.scope_type,ops.alert_notifications.scope_type),
-       scope_key=COALESCE(EXCLUDED.scope_key,ops.alert_notifications.scope_key), last_seen_at=now(),
-       occurrence_count=ops.alert_notifications.occurrence_count+1,
-       status=CASE WHEN ops.alert_notifications.status IN ('acknowledged','resolved') THEN 'pending' ELSE ops.alert_notifications.status END,
-       resolved_at=CASE WHEN ops.alert_notifications.status IN ('acknowledged','resolved') THEN NULL ELSE ops.alert_notifications.resolved_at END,
-       acknowledged_at=CASE WHEN ops.alert_notifications.status IN ('acknowledged','resolved') THEN NULL ELSE ops.alert_notifications.acknowledged_at END,
-       send_attempts=CASE WHEN ops.alert_notifications.status IN ('acknowledged','resolved') THEN 0 ELSE ops.alert_notifications.send_attempts END,
-       recovery_attempts=CASE WHEN ops.alert_notifications.status IN ('acknowledged','resolved') THEN 0 ELSE ops.alert_notifications.recovery_attempts END,
-       last_send_error=CASE WHEN ops.alert_notifications.status IN ('acknowledged','resolved') THEN NULL ELSE ops.alert_notifications.last_send_error END,
-       sending_started_at=CASE WHEN ops.alert_notifications.status IN ('acknowledged','resolved') THEN NULL ELSE ops.alert_notifications.sending_started_at END,
-       last_sent_at=CASE WHEN ops.alert_notifications.status IN ('acknowledged','resolved') THEN NULL ELSE ops.alert_notifications.last_sent_at END,
-       next_send_at=CASE WHEN ops.alert_notifications.status IN ('acknowledged','resolved') THEN now() ELSE ops.alert_notifications.next_send_at END,
-       next_check_at=now(),
-       updated_at=now()
-     RETURNING *`,
-    [key, input.alertType || 'failure', input.severity || 'critical', input.jobCode || null, input.slotId || null,
+  const { rows } = await repository.insert_ops_alert_notifications([key, input.alertType || 'failure', input.severity || 'critical', input.jobCode || null, input.slotId || null,
       scope.type, scope.key,
-      sanitizeJobError(input.subject || `后台任务异常：${input.jobCode || '未知任务'}`, 500), sanitizeJobError(input.summary || '', 4000)]
-  );
+      sanitizeJobError(input.subject || `后台任务异常：${input.jobCode || '未知任务'}`, 500), sanitizeJobError(input.summary || '', 4000)]);
   return rows[0];
 }
 
 async function deliverAlert(alert) {
   // 最终邮件出口再做一次生产环境校验，防止测试或本地开发误加载真实 SMTP 后向真实收件人发信。
   if (!productionAlertsEnabled()) {
-    await pool.query(
-      `UPDATE ops.alert_notifications
-          SET status='suppressed', send_attempts=0, recovery_attempts=0,
-              next_send_at=NULL, last_send_error=NULL, sending_started_at=NULL, updated_at=now()
-        WHERE alert_id=$1`, [alert.alert_id]
-    );
+    await repository.update_ops_alert_notifications([alert.alert_id]);
     return { ok: true, suppressed: true, alertId: alert.alert_id, reason: 'non_production_environment' };
   }
   const claimed = await claimAlertDelivery(alert.alert_id);
@@ -385,16 +360,7 @@ async function deliverAlert(alert) {
   if (attempt > MAX_DELIVERY_ATTEMPTS) return { ok: false, alertId: alert.alert_id, exhausted: true };
 
   if (!mailer || !to.length) {
-    await pool.query(
-      `UPDATE ops.alert_notifications
-          SET status='send_failed', last_send_error=$2,
-              recovery_attempts=0,
-              next_send_at=CASE WHEN send_attempts < $3 THEN now()+($4 || ' minutes')::interval ELSE NULL END,
-              sending_started_at=NULL,
-              updated_at=now()
-        WHERE alert_id=$1 AND status='sending'`,
-      [alert.alert_id, '未配置 SMTP 或 ALERT_EMAIL_TO', MAX_DELIVERY_ATTEMPTS, String(delay)]
-    );
+    await repository.update_ops_alert_notifications_1([alert.alert_id, '未配置 SMTP 或 ALERT_EMAIL_TO', MAX_DELIVERY_ATTEMPTS, String(delay)]);
     return { ok: false, alertId: alert.alert_id, error: '未配置 SMTP 或 ALERT_EMAIL_TO' };
   }
 
@@ -405,25 +371,10 @@ async function deliverAlert(alert) {
       subject: `[${process.env.ALERT_ENVIRONMENT || process.env.NODE_ENV || 'development'}] ${sanitizeJobError(alert.subject || '', 500)}`,
       text: `${sanitizeJobError(alert.summary || '', 4000)}\n\n任务：${alert.job_code || '-'}\n告警时间：${new Date().toISOString()}`,
     });
-    await pool.query(
-      `UPDATE ops.alert_notifications
-          SET status='sent', send_attempts=0, recovery_attempts=0, last_sent_at=now(),
-              next_send_at=now()+interval '6 hours', last_send_error=NULL,
-              sending_started_at=NULL, updated_at=now()
-        WHERE alert_id=$1 AND status='sending'`, [alert.alert_id]
-    );
+    await repository.update_ops_alert_notifications_2([alert.alert_id]);
     return { ok: true, alertId: alert.alert_id };
   } catch (error) {
-    await pool.query(
-      `UPDATE ops.alert_notifications
-          SET status='send_failed', last_send_error=$2,
-              recovery_attempts=0,
-              next_send_at=CASE WHEN send_attempts < $3 THEN now()+($4 || ' minutes')::interval ELSE NULL END,
-              sending_started_at=NULL,
-              updated_at=now()
-        WHERE alert_id=$1 AND status='sending'`,
-      [alert.alert_id, sanitizeJobError(error.message || error, 1000), MAX_DELIVERY_ATTEMPTS, String(delay)]
-    );
+    await repository.update_ops_alert_notifications_1([alert.alert_id, sanitizeJobError(error.message || error, 1000), MAX_DELIVERY_ATTEMPTS, String(delay)]);
     return { ok: false, alertId: alert.alert_id, error: sanitizeJobError(error.message || error) };
   }
 }
@@ -446,39 +397,22 @@ async function sendAlert(input, options = {}) {
   }
   // warning 首次只落库并进入每日摘要，不在故障现场即时发邮件；人工重发仍可显式发送。
   if (warning && !manual && !force) {
-    await pool.query(
-      `UPDATE ops.alert_notifications
-          SET status='pending',next_send_at=NULL,next_check_at=now(),sending_started_at=NULL,updated_at=now()
-        WHERE alert_id=$1 AND status <> 'sending'`, [alert.alert_id]
-    );
+    await repository.update_ops_alert_notifications_3([alert.alert_id]);
     return { ok: true, deferred: true, alertId: alert.alert_id, reason: 'warning_daily_summary' };
   }
   if (force) {
-    const { rows } = await pool.query(
-      `UPDATE ops.alert_notifications
-          SET status='pending', send_attempts=0, next_send_at=now(), last_send_error=NULL,
-              recovery_attempts=0, sending_started_at=NULL, updated_at=now()
-        WHERE alert_id=$1 AND status <> 'sending'
-        RETURNING *`, [alert.alert_id]
-    );
+    const { rows } = await repository.update_ops_alert_notifications_4([alert.alert_id]);
     if (rows[0]) alert = rows[0];
   }
   if (!force && Number(alert.occurrence_count || 0) < minOccurrences) {
-    await pool.query(
-      `UPDATE ops.alert_notifications
-          SET status='pending', next_send_at=now()+interval '1 minute', sending_started_at=NULL, updated_at=now()
-        WHERE alert_id=$1 AND status <> 'sending'`, [alert.alert_id]
-    );
+    await repository.update_ops_alert_notifications_5([alert.alert_id]);
     return { ok: true, deferred: true, alertId: alert.alert_id };
   }
   if (!force && alert.next_send_at && new Date(alert.next_send_at).getTime() > Date.now()) {
     return { ok: true, suppressed: true, alertId: alert.alert_id };
   }
   if (!force && !manual && alert.last_sent_at && Date.now() - new Date(alert.last_sent_at).getTime() < repeatWindowMs) {
-    await pool.query(
-      `UPDATE ops.alert_notifications SET status='suppressed', next_send_at=now()+interval '6 hours', sending_started_at=NULL, updated_at=now() WHERE alert_id=$1 AND status <> 'sending'`,
-      [alert.alert_id]
-    );
+    await repository.update_ops_alert_notifications_6([alert.alert_id]);
     return { ok: true, suppressed: true, alertId: alert.alert_id };
   }
   return deliverAlert(alert);
@@ -491,26 +425,11 @@ async function sendDueAlerts(limit = 20) {
     return { ok: true, suppressed: true, count: 0, results: [], reason: 'non_production_environment' };
   }
   const safeLimit = Math.min(Math.max(Number(limit) || 20, 1), 100);
-  await pool.query(
-    `UPDATE ops.alert_notifications
-        SET status=CASE WHEN recovery_attempts > 0 OR send_attempts >= $1 THEN 'send_failed' ELSE 'pending' END,
-            next_send_at=now(), sending_started_at=NULL, updated_at=now()
-      WHERE status='sending'
-        AND COALESCE(sending_started_at, updated_at) < now()-interval '2 minutes'`
-    , [MAX_DELIVERY_ATTEMPTS]
-  );
+  await repository.update_ops_alert_notifications_7([MAX_DELIVERY_ATTEMPTS]);
   const results = [];
   const recovery = await sendRecoverySummary();
   if (recovery) results.push(recovery);
-  const { rows } = await pool.query(
-    `SELECT * FROM ops.alert_notifications
-      WHERE status IN ('pending','send_failed')
-        AND send_attempts < $1
-        AND recovery_attempts=0
-        AND next_send_at IS NOT NULL AND next_send_at <= now()
-      ORDER BY next_send_at ASC, alert_id ASC LIMIT $2`,
-    [MAX_DELIVERY_ATTEMPTS, safeLimit]
-  );
+  const { rows } = await repository.select_ops_alert_notifications([MAX_DELIVERY_ATTEMPTS, safeLimit]);
   for (const alert of rows) results.push(await deliverAlert(alert));
   return { ok: results.every(item => item.ok), count: results.length, results };
 }
@@ -519,7 +438,7 @@ async function sendDueAlerts(limit = 20) {
 
 async function releaseRecoverySummaryClaim(claim) {
   if (!claim || !claim.client) return;
-  await claim.client.query(`SELECT pg_advisory_unlock(hashtext('ops.alert_notifications.recovery_summary'))`).catch(() => {});
+  await repository.select_data(claim.client).catch(() => {});
   claim.client.release();
 }
 
@@ -527,15 +446,7 @@ async function sendRecoverySummary() {
   if (!productionAlertsEnabled()) return null;
   const to = recipients();
   if (!mailer || !to.length) return null;
-  const { rows: dueFailures } = await pool.query(
-    `SELECT alert_id
-       FROM ops.alert_notifications
-      WHERE status='send_failed'
-        AND (send_attempts > 0 OR recovery_attempts > 0)
-        AND recovery_attempts < $1
-        AND (next_send_at IS NULL OR next_send_at <= now())
-      LIMIT 1`
-  , [MAX_RECOVERY_SUMMARY_ATTEMPTS]);
+  const { rows: dueFailures } = await repository.select_ops_alert_notifications_1([MAX_RECOVERY_SUMMARY_ATTEMPTS]);
   if (!dueFailures.length) return null;
   try {
     await mailer.verify();
@@ -550,12 +461,7 @@ async function sendRecoverySummary() {
     return null;
   }
   try {
-    const { rows } = await claim.client.query(
-    `SELECT alert_id,job_code,subject,summary,occurrence_count,last_send_error
-       FROM ops.alert_notifications
-      WHERE alert_id=ANY($1::bigint[])
-      ORDER BY alert_id ASC`, [ids]
-  );
+    const { rows } = await repository.select_ops_alert_notifications_2([ids], claim.client);
     const detailRows = rows.slice(0, 100);
     const lines = detailRows.map(row => `- ${row.job_code || '未知任务'}：${sanitizeJobError(row.subject, 500)}；累计 ${row.occurrence_count || 1} 次；${sanitizeJobError(row.summary, 1000)}`).join('\n');
     const omitted = rows.length > detailRows.length ? `\n- 另有 ${rows.length - detailRows.length} 条告警已合并处理` : '';
@@ -565,25 +471,11 @@ async function sendRecoverySummary() {
       subject: `[${process.env.ALERT_ENVIRONMENT || process.env.NODE_ENV || 'development'}] 后台告警投递已恢复`,
       text: `SMTP 恢复后，系统合并补发 ${rows.length} 条历史告警：\n\n${lines}${omitted}`,
     });
-    await claim.client.query(
-      `UPDATE ops.alert_notifications
-          SET status='sent', send_attempts=0, recovery_attempts=0, last_sent_at=now(),
-              next_send_at=now()+interval '6 hours', last_send_error=NULL,
-              sending_started_at=NULL, updated_at=now()
-        WHERE alert_id=ANY($1::bigint[]) AND status='sending'`, [ids]
-    );
+    await repository.update_ops_alert_notifications_8([ids], claim.client);
     return { ok: true, summary: true, count: rows.length };
   } catch (error) {
-    await claim.client.query(
-      `UPDATE ops.alert_notifications
-          SET status='send_failed', send_attempts=$2,
-              next_send_at=CASE WHEN recovery_attempts < $3
-                THEN now()+($4 || ' minutes')::interval ELSE NULL END,
-              last_send_error=$5, sending_started_at=NULL, updated_at=now()
-        WHERE alert_id=ANY($1::bigint[]) AND status='sending'`,
-      [ids, MAX_DELIVERY_ATTEMPTS, MAX_RECOVERY_SUMMARY_ATTEMPTS,
-        String(RECOVERY_SUMMARY_RETRY_MINUTES), sanitizeJobError(error.message || error, 1000)]
-    );
+    await repository.update_ops_alert_notifications_9([ids, MAX_DELIVERY_ATTEMPTS, MAX_RECOVERY_SUMMARY_ATTEMPTS,
+        String(RECOVERY_SUMMARY_RETRY_MINUTES), sanitizeJobError(error.message || error, 1000)], claim.client);
     return { ok: false, summary: true, count: rows.length, error: sanitizeJobError(error.message || error) };
   } finally {
     await releaseRecoverySummaryClaim(claim);
@@ -625,13 +517,7 @@ async function resolveAlertsByCandidates(candidates, caller) {
   for (const alert of candidates) {
     const verification = await verifyAlertScope(alert);
     if (!verification.recovered) continue;
-    const { rows } = await pool.query(
-      `UPDATE ops.alert_notifications
-          SET status='resolved',resolved_at=now(),sending_started_at=NULL,updated_at=now()
-        WHERE alert_id=$1 AND status NOT IN ('resolved','acknowledged')
-          AND alert_type NOT IN ('recovery','worker_recovered','job_overdue_recovered','external_api_switch','external_api_interface_failover')
-        RETURNING *`, [alert.alert_id]
-    );
+    const { rows } = await repository.update_ops_alert_notifications_10([alert.alert_id]);
     if (rows[0]) resolvedRows.push({ ...rows[0], verification });
   }
   if (resolvedRows.length) {
@@ -695,23 +581,12 @@ async function reconcileRecoveredSourceAlerts(limit = 100) {
   if (!productionAlertsEnabled()) return 0;
   const safeLimit = Math.min(Math.max(Number(limit) || 100, 1), 200);
   try {
-    const { rows: candidates } = await pool.query(
-      `SELECT * FROM ops.alert_notifications
-        WHERE scope_type='source_endpoint'
-          AND status NOT IN ('resolved','acknowledged')
-          AND alert_type NOT IN ('recovery','worker_recovered','job_overdue_recovered','external_api_switch','external_api_interface_failover')
-        ORDER BY last_seen_at ASC, alert_id ASC LIMIT $1`, [safeLimit]
-    );
+    const { rows: candidates } = await repository.select_ops_alert_notifications_3([safeLimit]);
     let resolved = 0;
     for (const alert of candidates) {
       const verification = await verifyAlertScope(alert);
       if (!verification.recovered) continue;
-      const { rows } = await pool.query(
-        `UPDATE ops.alert_notifications
-            SET status='resolved',resolved_at=now(),sending_started_at=NULL,updated_at=now()
-          WHERE alert_id=$1 AND status NOT IN ('resolved','acknowledged')
-          RETURNING *`, [alert.alert_id]
-      );
+      const { rows } = await repository.update_ops_alert_notifications_11([alert.alert_id]);
       if (!rows[0]) continue;
       resolved += 1;
       const scope = parseAlertScope(rows[0]);
@@ -738,15 +613,7 @@ function reconciliationCooldownMinutes(alert) {
 async function reconcileHistoricalAlerts(limit = 100) {
   if (!productionAlertsEnabled()) return { checked: 0, resolved: 0, skipped: true };
   const safeLimit = Math.min(Math.max(Number(limit) || 100, 1), 100);
-  const { rows: candidates } = await pool.query(
-    `SELECT * FROM ops.alert_notifications
-      WHERE status NOT IN ('resolved','acknowledged')
-        AND alert_type NOT IN ('recovery','worker_recovered','job_overdue_recovered','external_api_switch','external_api_interface_failover')
-        AND (last_checked_at IS NULL OR next_check_at IS NULL OR next_check_at <= now())
-      ORDER BY CASE WHEN last_checked_at IS NULL THEN 0 ELSE 1 END,
-               next_check_at ASC NULLS FIRST,last_checked_at ASC NULLS FIRST,last_seen_at ASC,alert_id ASC
-      LIMIT $1`, [safeLimit]
-  );
+  const { rows: candidates } = await repository.select_ops_alert_notifications_4([safeLimit]);
   let resolved = 0;
   for (const alert of candidates) {
     let verification;
@@ -757,19 +624,11 @@ async function reconcileHistoricalAlerts(limit = 100) {
       continue;
     }
     if (verification.recovered) {
-      const { rows } = await pool.query(
-        `UPDATE ops.alert_notifications
-            SET status='resolved',resolved_at=now(),last_checked_at=now(),next_check_at=NULL,sending_started_at=NULL,updated_at=now()
-          WHERE alert_id=$1 AND status NOT IN ('resolved','acknowledged') RETURNING alert_id`, [alert.alert_id]
-      );
+      const { rows } = await repository.update_ops_alert_notifications_12([alert.alert_id]);
       resolved += rows.length;
     } else {
       const cooldown = reconciliationCooldownMinutes(alert);
-      await pool.query(
-        `UPDATE ops.alert_notifications
-            SET last_checked_at=now(),next_check_at=now()+($2 || ' minutes')::interval,updated_at=now()
-          WHERE alert_id=$1 AND status NOT IN ('resolved','acknowledged')`, [alert.alert_id, String(cooldown)]
-      );
+      await repository.update_ops_alert_notifications_13([alert.alert_id, String(cooldown)]);
     }
   }
   return { checked: candidates.length, resolved };
@@ -778,12 +637,7 @@ async function reconcileHistoricalAlerts(limit = 100) {
 async function reconcilePartialDataAlerts(limit = 100) {
   if (!productionAlertsEnabled()) return { checked: 0, created: 0, skipped: true };
   const safeLimit = Math.min(Math.max(Number(limit) || 100, 1), 100);
-  const { rows } = await pool.query(
-    `SELECT dataset_code,scope_key,partition_key::text,diagnostics
-       FROM ops.dataset_partitions
-      WHERE status='partial_published' AND partition_key <= (CURRENT_DATE - INTERVAL '2 days')::date
-      ORDER BY partition_key ASC,dataset_code ASC LIMIT $1`, [safeLimit]
-  );
+  const { rows } = await repository.select_ops_dataset_partitions([safeLimit]);
   let created = 0;
   for (const row of rows) {
     const result = await sendAlert({
@@ -801,18 +655,9 @@ async function reconcilePartialDataAlerts(limit = 100) {
 async function resolveWorkerOfflineAlert(alertId) {
   if (!productionAlertsEnabled()) return 0;
   try {
-    const { rows: workers } = await pool.query(
-      `SELECT worker_id FROM ops.worker_heartbeats
-        WHERE role='worker' AND status='running' AND last_seen_at >= now()-interval '2 minutes'
-        ORDER BY last_seen_at DESC LIMIT 1`
-    );
+    const { rows: workers } = await repository.select_ops_worker_heartbeats();
     if (!workers.length) return 0;
-    const { rows } = await pool.query(
-      `UPDATE ops.alert_notifications
-          SET status='resolved',resolved_at=now(),sending_started_at=NULL,updated_at=now()
-        WHERE alert_id=$1 AND status NOT IN ('resolved','acknowledged')
-        RETURNING *`, [alertId]
-    );
+    const { rows } = await repository.update_ops_alert_notifications_14([alertId]);
     if (rows[0]) {
       await sendRecoveryAlert({
         alertKey: `worker:recovered:${rows[0].alert_id}`, alertType: 'worker_recovered', severity: 'info',
@@ -847,15 +692,9 @@ async function resendAlert(alertId) {
   if (!productionAlertsEnabled()) {
     return { ok: true, suppressed: true, alertId, reason: 'non_production_environment' };
   }
-  const { rows } = await pool.query('SELECT * FROM ops.alert_notifications WHERE alert_id=$1', [alertId]);
+  const { rows } = await repository.select_ops_alert_notifications_5([alertId]);
   if (!rows[0]) return null;
-  const { rows: resetRows } = await pool.query(
-    `UPDATE ops.alert_notifications
-        SET status='pending', send_attempts=0, recovery_attempts=0,
-            next_send_at=now(), last_send_error=NULL, updated_at=now()
-      WHERE alert_id=$1 AND status <> 'sending'
-      RETURNING *`, [alertId]
-  );
+  const { rows: resetRows } = await repository.update_ops_alert_notifications_15([alertId]);
   if (!resetRows[0]) return { ok: true, suppressed: true, alertId };
   const alert = resetRows[0];
   return sendAlert({
@@ -870,10 +709,7 @@ async function resendAlert(alertId) {
 }
 
 async function acknowledgeAlert(alertId) {
-  const { rows } = await pool.query(
-    `UPDATE ops.alert_notifications SET status='acknowledged',acknowledged_at=now(),updated_at=now() WHERE alert_id=$1 RETURNING *`,
-    [alertId]
-  );
+  const { rows } = await repository.update_ops_alert_notifications_16([alertId]);
   return sanitizeAlertRecord(rows[0]);
 }
 

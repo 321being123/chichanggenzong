@@ -19,7 +19,20 @@ function serviceFiles(baseName) {
 }
 
 function readServiceSource(baseName) {
-  return serviceFiles(baseName).map(p => fs.readFileSync(p, 'utf8')).join('\n');
+  const files = serviceFiles(baseName).slice();
+  // 分层整改后，部分 SQL 已下沉到数据层：文本断言需同时覆盖对应仓储，
+  // 否则「服务里必须有某段 SQL」的检查会因为实现搬家而失效。
+  const repoDir = path.join(__dirname, '..', '..', 'repositories');
+  const repoNames = [baseName + 'Repository.js', baseName + 'DataRepository.js'];
+  for (const suffix of SUFFIXES) {
+    repoNames.push(baseName + suffix + 'Repository.js');
+    repoNames.push(baseName + suffix + 'DataRepository.js');
+  }
+  for (const name of repoNames) {
+    const p = path.join(repoDir, name);
+    if (fs.existsSync(p) && !files.includes(p)) files.push(p);
+  }
+  return files.map(p => fs.readFileSync(p, 'utf8')).join('\n');
 }
 
 function readServiceFlatten(baseName) {
@@ -28,8 +41,23 @@ function readServiceFlatten(baseName) {
   const requires = [];
   const bodies = [];
   let exportsBlock = null;
+  // 分层整改后各子模块都可能引入各自的数据层模块（同名变量 repository）；
+  // 拼回单文件形态时必须按来源去重改名，否则 VM 里会 "already declared"。
+  const repoVars = new Map();
   for (const file of serviceFiles(baseName)) {
-    const lines = fs.readFileSync(file, 'utf8').replace(/\r\n/g, '\n').split('\n');
+    let fileText = fs.readFileSync(file, 'utf8').replace(/\r\n/g, '\n');
+    const repoMatch = /^const repository = require\('([^']+)'\);$/m.exec(fileText);
+    if (repoMatch) {
+      const mod = repoMatch[1];
+      if (!repoVars.has(mod)) repoVars.set(mod, repoVars.size === 0 ? 'repository' : `repository${repoVars.size + 1}`);
+      const target = repoVars.get(mod);
+      if (target !== 'repository') {
+        fileText = fileText
+          .replace(/^const repository = require\('[^']+'\);$/m, `const ${target} = require('${mod}');`)
+          .replace(/\brepository\./g, `${target}.`);
+      }
+    }
+    const lines = fileText.split('\n');
     let i = 0;
     while (i < lines.length) {
       const l = lines[i];

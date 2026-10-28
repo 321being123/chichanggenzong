@@ -10,6 +10,7 @@ const { sanitizeJobError } = require('./jobErrorSanitizer');
 const { childProcessEnv, mergeExternalCallStatsFromStderr } = require('./externalCallGuard');
 const txControl = require('../repositories/transactionControl');
 const { acquireDocumentParseLock, resolveInstrumentByCode, resolveParseFailure } = require('../repositories/arbitrageParserRepository.js');
+const repository = require('../repositories/arbitrageParserRepository.js');
 const {
   PARSER_VERSION,
   classifyDocumentRole,
@@ -201,25 +202,13 @@ function selectSwapBundle(docs) {
 async function resolveInstrumentByName(raw) {
   const clean = String(raw || '').replace(/<[^>]+>/g, '').trim();
   if (!clean) return null;
-  const { rows } = await pool.query(
-    `SELECT instrument_id, canonical_code, regexp_replace(name,'<[^>]+>','','g') AS nm
-     FROM core.instruments
-     WHERE length(regexp_replace(name,'<[^>]+>','','g')) >= 2
-       AND (regexp_replace(name,'<[^>]+>','','g') ILIKE '%'||$1||'%'
-            OR $1 ILIKE '%'||regexp_replace(name,'<[^>]+>','','g')||'%')
-     ORDER BY (CASE WHEN regexp_replace(name,'<[^>]+>','','g') = $1 THEN 0 ELSE 1 END), length(regexp_replace(name,'<[^>]+>','','g')) DESC`,
-    [clean]
-  );
+  const { rows } = await repository.select_core_instruments([clean]);
   if (!rows.length) {
     // 基础资料和公告可能分别使用繁体/简体名称；仅在普通模糊查询无结果时
     // 才做一次归一化兜底，避免给每次正常名称回查增加额外查询成本。
     const normalized = normalizeSecurityName(clean);
     if (!normalized) return null;
-    const { rows: candidates } = await pool.query(`
-      SELECT instrument_id, canonical_code, regexp_replace(name,'<[^>]+>','','g') AS nm
-      FROM core.instruments
-      WHERE length(regexp_replace(name,'<[^>]+>','','g')) >= 2
-    `);
+    const { rows: candidates } = await repository.select_core_instruments_1();
     const matched = candidates
       .filter((candidate) => {
         const candidateName = normalizeSecurityName(candidate.nm);
@@ -290,21 +279,14 @@ async function parseAndStoreDocument(caseId, documentId, url, targetCode, role, 
   const releaseLock = await acquireDocumentParseLock(caseId, documentId);
   if (!releaseLock) return null;
   try {
-    const { rows: caseRows } = await pool.query('SELECT strategy_type FROM event.arbitrage_cases WHERE case_id=$1', [caseId]);
+    const { rows: caseRows } = await repository.select_event_arbitrage_cases([caseId]);
     if (!caseRows.length) throw new Error('arbitrage case not found: ' + caseId);
     const strategyType = caseRows[0].strategy_type;
     const documentRole = role || classifyDocumentRole('');
     if (resetRetries) {
-      await pool.query(`
-        UPDATE event.arbitrage_case_documents
-           SET parse_attempts=0,next_parse_attempt_at=NULL,last_parse_error=NULL
-         WHERE case_id=$1 AND document_id=$2
-      `, [caseId, documentId]);
+      await repository.update_event_arbitrage_case_documents([caseId, documentId]);
     }
-    const { rows: existing } = await pool.query(
-      'SELECT parsed_payload,parser_version,parse_status,parse_attempts,next_parse_attempt_at FROM event.arbitrage_case_documents WHERE case_id=$1 AND document_id=$2',
-      [caseId, documentId]
-    );
+    const { rows: existing } = await repository.select_event_arbitrage_case_documents([caseId, documentId]);
     const retryDecision = getParseRetryDecision(existing[0], force);
     if (!retryDecision.shouldParse) return retryDecision.payload || null;
     let payload;
@@ -318,12 +300,7 @@ async function parseAndStoreDocument(caseId, documentId, url, targetCode, role, 
         coreComplete: checked.coreComplete,
         confidence: checked.confidence,
       };
-      await pool.query(`
-        UPDATE event.arbitrage_case_documents
-        SET document_role=$1,parsed_payload=$2,parser_version=$3,parse_status=$4,parsed_at=now(),
-            parse_attempts=0,next_parse_attempt_at=NULL,last_parse_error=NULL
-        WHERE case_id=$5 AND document_id=$6
-      `, [documentRole, JSON.stringify(payload), PARSER_VERSION, checked.parseStatus, caseId, documentId]);
+      await repository.update_event_arbitrage_case_documents_1([documentRole, JSON.stringify(payload), PARSER_VERSION, checked.parseStatus, caseId, documentId]);
     } catch (err) {
       const previous = existing[0];
       const previousAttempts = previous && previous.parser_version === PARSER_VERSION
@@ -335,22 +312,7 @@ async function parseAndStoreDocument(caseId, documentId, url, targetCode, role, 
       const retryMinutes = externalRetryAt
         ? 30
         : PARSE_RETRY_MINUTES[Math.min(attempt - 1, PARSE_RETRY_MINUTES.length - 1)];
-      await pool.query(`
-        WITH failed_document AS (
-          UPDATE event.arbitrage_case_documents
-             SET document_role=$1,parser_version=$2,parse_status='failed',parsed_at=now(),
-                 parse_attempts=$3::integer,
-                 next_parse_attempt_at=CASE WHEN $3::integer < $4::integer
-                    THEN COALESCE($5::timestamptz, now()+($6 || ' minutes')::interval) ELSE NULL END,
-                 last_parse_error=$7
-           WHERE case_id=$8 AND document_id=$9
-           RETURNING case_id
-        )
-        UPDATE event.arbitrage_cases
-           SET parse_status='incomplete',parser_version=$2,updated_at=now()
-         WHERE case_id=$8 AND parse_status NOT IN ('conflict','incomplete')
-           AND EXISTS (SELECT 1 FROM failed_document)
-      `, [documentRole, PARSER_VERSION, attempt, MAX_PARSE_ATTEMPTS, externalRetryAt,
+      await repository.with_event_arbitrage_case_documents([documentRole, PARSER_VERSION, attempt, MAX_PARSE_ATTEMPTS, externalRetryAt,
         String(retryMinutes), sanitizeJobError(err.message || err, 1000), caseId, documentId]);
       await recordParseFailure(caseId, err.message);
       throw err;
@@ -367,18 +329,10 @@ async function parseAndStoreDocument(caseId, documentId, url, targetCode, role, 
 }
 
 async function rebuildCaseTerms(caseId) {
-  const { rows: caseRows } = await pool.query('SELECT strategy_type,review_status FROM event.arbitrage_cases WHERE case_id=$1', [caseId]);
+  const { rows: caseRows } = await repository.select_event_arbitrage_cases_1([caseId]);
   if (!caseRows.length) return { status: 'missing' };
   const strategyType = caseRows[0].strategy_type;
-  const { rows: docs } = await pool.query(`
-    SELECT acd.document_role,acd.parsed_payload,acd.parse_status,d.announced_at
-    FROM event.arbitrage_case_documents acd
-    JOIN event.documents d ON d.document_id=acd.document_id
-    WHERE acd.case_id=$1 AND (
-      (acd.parsed_payload IS NOT NULL AND acd.parse_status IN ('validated','incomplete'))
-      OR (acd.parse_status='failed' AND acd.document_role IN ('amendment','terms','summary','proposal'))
-    )
-  `, [caseId]);
+  const { rows: docs } = await repository.select_event_arbitrage_case_documents_1([caseId]);
   const hasFailedDocument = docs.some(doc => doc.parse_status === 'failed');
   const usableDocs = docs.filter(doc => doc.parsed_payload != null && doc.parse_status !== 'failed');
   // 后续正式文件天然覆盖早期版本；同日多附件再按“修订 > 正式条款 > 摘要”取证。
@@ -412,13 +366,11 @@ async function rebuildCaseTerms(caseId) {
   const checked = validateParsedTerms(strategyType, merged);
   if (merged.clear_offeror) checked.parsed.offeror = null;
   if (hasFailedDocument) {
-    await pool.query(`UPDATE event.arbitrage_cases SET parse_status='incomplete',parser_version=$1,terms_confidence=$2,updated_at=now() WHERE case_id=$3`,
-      [PARSER_VERSION, checked.confidence, caseId]);
+    await repository.update_event_arbitrage_cases([PARSER_VERSION, checked.confidence, caseId]);
     return { status: 'incomplete', confidence: checked.confidence, errors: [...checked.errors, '仍有公告解析失败'] };
   }
   if (!checked.coreComplete || checked.errors.length) {
-    await pool.query(`UPDATE event.arbitrage_cases SET parse_status=$1,parser_version=$2,terms_confidence=$3,updated_at=now() WHERE case_id=$4`,
-      [checked.parseStatus, PARSER_VERSION, checked.confidence, caseId]);
+    await repository.update_event_arbitrage_cases_1([checked.parseStatus, PARSER_VERSION, checked.confidence, caseId]);
     return { status: checked.parseStatus, confidence: checked.confidence, errors: checked.errors };
   }
 
@@ -454,36 +406,20 @@ async function recordParseFailure(caseId, message) {
   const client = await pool.connect();
   try {
     await txControl.begin(client);
-    const { rows } = await client.query('SELECT target_instrument_id FROM event.arbitrage_cases WHERE case_id=$1', [caseId]);
+    const { rows } = await repository.select_event_arbitrage_cases_2([caseId], client);
     const instrumentId = rows.length ? rows[0].target_instrument_id : null;
     const details = JSON.stringify({ case_id: caseId, error: sanitizeJobError(message, 500) });
-    await client.query('SELECT pg_advisory_xact_lock($1,$2)', [
+    await repository.select_data([
       hashString('arbitrage_parse_quality'),
       instrumentId == null ? hashString(`case:${caseId}`) : Number(instrumentId) | 0,
-    ]);
+    ], client);
     if (instrumentId == null) {
-      const updated = await client.query(`
-        UPDATE ops.data_quality_issues SET details=$2::jsonb,detected_at=now()
-         WHERE issue_id=(
-           SELECT issue_id FROM ops.data_quality_issues
-            WHERE instrument_id IS NULL AND dataset_code='arbitrage' AND field_code='pdf_parse'
-              AND issue_type='parse_failed' AND status='open' AND details->>'case_id'=$1::text
-            ORDER BY issue_id DESC LIMIT 1
-         )
-      `, [caseId, details]);
+      const updated = await repository.update_ops_data_quality_issues([caseId, details], client);
       if (!updated.rowCount) {
-        await client.query(`
-          INSERT INTO ops.data_quality_issues(instrument_id,dataset_code,field_code,issue_type,severity,details)
-          VALUES(NULL,'arbitrage','pdf_parse','parse_failed','warning',$1::jsonb)
-        `, [details]);
+        await repository.insert_ops_data_quality_issues([details], client);
       }
     } else {
-      await client.query(`
-        INSERT INTO ops.data_quality_issues(instrument_id,dataset_code,field_code,issue_type,severity,details)
-        VALUES($1,'arbitrage','pdf_parse','parse_failed','warning',$2::jsonb)
-        ON CONFLICT(instrument_id,dataset_code,field_code,issue_type,status)
-        DO UPDATE SET details=EXCLUDED.details,detected_at=now(),resolved_at=NULL
-      `, [instrumentId, details]);
+      await repository.insert_ops_data_quality_issues_1([instrumentId, details], client);
     }
     await txControl.commit(client);
   } catch (e) {

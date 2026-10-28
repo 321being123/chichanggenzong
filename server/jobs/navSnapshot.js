@@ -11,6 +11,7 @@ const { getMarketState, isCnTradingDate, prefetchMarketFacts } = require('../ser
 const { investedAt, chainNav, cashAt, isExternalTransfer } = require('../../public/shared/nav-math.js');
 const CoreDate = require('../../public/shared/core-date.js');
 const classifyCode = require('../../public/js/code-classify');
+const repository = require('../repositories/navSnapshotRepository.js');
 
 // 东八区日期 YYYY-MM-DD
 function cnDate(d) {
@@ -52,20 +53,14 @@ async function recordNavSnapshots(username, accountName, hkRateOverride = null, 
   // 空账户必须由结构化事实和账户现金共同证明，不以零处理天数冒充恢复。
   if (['positions', 'navHistory', 'trades', 'cashFlows', 'positionSnapshots']
     .every(key => Array.isArray(data[key]) && data[key].length === 0) && data.cashBase === 0) {
-    const { rows: cashRows } = await pool.query(
-      'SELECT cash_base::float8 AS cash_base FROM accounts WHERE username=$1 AND account_name=$2',
-      [username, accountName]
-    );
+    const { rows: cashRows } = await repository.select_accounts([username, accountName]);
     if (cashRows.length === 1 && cashRows[0].cash_base === 0) {
       return { ok: true, days: 0, verifiedNoChange: true, usedPriceDates: {}, reason: 'verified_empty_account' };
     }
   }
 
   // daily_prices → map "code|date" → price；同时收集「有收盘价的交易日」
-  const { rows: dpRows } = await pool.query(
-    'SELECT date, code, price::float8 AS price FROM daily_prices WHERE username=$1 AND account_name=$2',
-    [username, accountName]
-  );
+  const { rows: dpRows } = await repository.select_daily_prices([username, accountName]);
   const dpMap = new Map();
   const priceDates = new Set();
   const pricesByCode = new Map();
@@ -186,11 +181,7 @@ async function recordNavSnapshots(username, accountName, hkRateOverride = null, 
   function cashAsOf(date) { return cashAt(data, date); }
 
   const today = targetDate;
-  const { rows: fxRows } = await pool.query(
-    `SELECT rate_date::text AS rate_date, rate::float8 AS rate FROM market.fx_rates
-      WHERE base_currency='HKD' AND quote_currency='CNY' AND rate_date <= $1`,
-    [today]
-  );
+  const { rows: fxRows } = await repository.select_market_fx_rates([today]);
   const fxByDate = buildFxByDate(fxRows);
   const sortedFx = [...fxByDate.entries()].sort((a, b) => a[0].localeCompare(b[0]));
   const fxRateForDate = (date, hkOpen) => {
@@ -356,7 +347,7 @@ async function runNavSnapshotJob({ targetDate = cnDate(new Date()), fromDate = n
   try {
     // 08:00共享采集补历史；收盘净值只通过同一服务补目标日缺口，不另起采集器。
     repoRates=await require('../services/repoDailyRates').ensureNavRepoRate(targetDate);
-    const { rows: accountRows } = await pool.query('SELECT username, account_name FROM accounts ORDER BY username, created_at');
+    const { rows: accountRows } = await repository.select_accounts_1();
     for (const account of accountRows) {
       const accountName = account.account_name;
       try {
@@ -365,8 +356,7 @@ async function runNavSnapshotJob({ targetDate = cnDate(new Date()), fromDate = n
         if (r && r.ok === false) {
           failedAccounts.push({ accountName, missingDates: r.missingDates || [], missingCodes: r.missingCodes || [], diagnostics: r.diagnostics || [] });
         }
-        const { rows: currentRows } = await pool.query('SELECT date::text AS date FROM nav_history WHERE username=$1 AND account_name=$2 AND date=$3::text',
-          [account.username, accountName, targetDate]);
+        const { rows: currentRows } = await repository.select_nav_history([account.username, accountName, targetDate]);
         currentAccounts.push({ accountName, status: currentRows.length && !(r?.missingDates || []).includes(targetDate)
           ? 'complete' : r?.verifiedNoChange && r?.ok === true ? 'verified_no_change' : 'incomplete' });
       } catch (e) {

@@ -5,6 +5,7 @@ const { pool } = require('../db');
 const { withExternalCallGuard } = require('./externalCallGuard');
 const { ALLOWED_HOSTS, requestExternal } = require('./hkIpoMarketSource');
 const { persistRaw } = require('../repositories/hkIpoMarketSignalsRepository.js');
+const repository = require('../repositories/hkIpoMarketSignalsRepository.js');
 
 const LIVERMORE_CURRENT_URL = 'https://trade-info-api.jesselivermore.com/api/info/get-h5-ipo-setting';
 const LIVERMORE_HISTORY_URL = 'https://h5stockserver.huanshoulv.com/aimapp/hkstock/hotNewStock';
@@ -228,11 +229,7 @@ function parseHkIpoXHtml(html) {
 }
 
 async function loadIpoMap(executor = pool) {
-  const { rows } = await executor.query(`
-    SELECT security_code,instrument_id,ipo_status,offer_open_at,offer_close_at,listing_at,listing_date
-      FROM public.ipo_history
-     WHERE market_code='HK'
-  `);
+  const { rows } = await repository.select_public_ipo_history();
   const map = new Map();
   for (const row of rows) {
     const code = normalizeCode(row.security_code);
@@ -328,12 +325,7 @@ function buildSourceRecordHash({
 
 async function persistName(code, name, executor = pool) {
   if (!code || !hasChinese(name)) return false;
-  const result = await executor.query(`
-    UPDATE public.ipo_history
-       SET security_name_cn=$2
-     WHERE market_code='HK' AND regexp_replace(security_code,'\\D','','g')=regexp_replace($1,'\\D','','g')
-       AND security_name_cn IS DISTINCT FROM $2
-  `, [code, String(name).trim()]);
+  const result = await repository.update_public_ipo_history([code, String(name).trim()]);
   return result.rowCount > 0;
 }
 
@@ -368,27 +360,7 @@ async function persistSnapshot({
     greyMarketPrice, greyMarketChangePct,
     collectionPoint,
   });
-  await executor.query(`
-    INSERT INTO analytics.hk_ipo_market_snapshots(
-      security_code,instrument_id,source_code,signal_type,data_date,observed_at,
-      source_observed_at,last_seen_at,subscription_multiple,margin_amount_hkd,margin_multiple,
-      grey_market_price_hkd,grey_market_change_pct,signal_kind,source_record_hash,quality_status,raw_payload
-    ) VALUES($1,$2,$3,$4,$5::date,COALESCE($6::timestamptz,now()),$7::timestamptz,now(),$8,$9,$10,
-      $11,$12,$13,$14,$15,$16::jsonb)
-    ON CONFLICT(security_code,source_code,signal_type,data_date,source_record_hash)
-      WHERE source_record_hash IS NOT NULL DO UPDATE SET
-      instrument_id=COALESCE(EXCLUDED.instrument_id,analytics.hk_ipo_market_snapshots.instrument_id),
-      last_seen_at=now(),
-      subscription_multiple=COALESCE(EXCLUDED.subscription_multiple,analytics.hk_ipo_market_snapshots.subscription_multiple),
-      margin_amount_hkd=COALESCE(EXCLUDED.margin_amount_hkd,analytics.hk_ipo_market_snapshots.margin_amount_hkd),
-      margin_multiple=COALESCE(EXCLUDED.margin_multiple,analytics.hk_ipo_market_snapshots.margin_multiple),
-      grey_market_price_hkd=COALESCE(EXCLUDED.grey_market_price_hkd,analytics.hk_ipo_market_snapshots.grey_market_price_hkd),
-      grey_market_change_pct=COALESCE(EXCLUDED.grey_market_change_pct,analytics.hk_ipo_market_snapshots.grey_market_change_pct),
-      source_observed_at=COALESCE(EXCLUDED.source_observed_at,analytics.hk_ipo_market_snapshots.source_observed_at),
-      quality_status=EXCLUDED.quality_status,
-      raw_payload=EXCLUDED.raw_payload,
-      updated_at=now()
-  `, [code, instrumentId || null, sourceCode, signalType, dataDate, observedAt || null, sourceObservedAt || null,
+  await repository.insert_analytics_hk_ipo_market_snapshots([code, instrumentId || null, sourceCode, signalType, dataDate, observedAt || null, sourceObservedAt || null,
     subscriptionMultiple, marginAmountHkd, normalizedMarginMultiple, greyMarketPrice, greyMarketChangePct,
     normalizedSignalKind, sourceRecordHash, qualityStatus, JSON.stringify(rawPayload || {})]);
   return true;

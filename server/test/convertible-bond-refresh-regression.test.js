@@ -74,7 +74,8 @@ function completeRows(count) {
   assert.ok(analysisSource.includes("pending_no_revision.parser_version = '7'")
     && analysisSource.includes('pending_no_revision.next_eligible_date=maturity_profile.maturity_date'),
     'v7 仍写成债券到期日的旧锁定事实必须进入有界重解析');
-  const refreshSource = fs.readFileSync(path.join(__dirname, '..', 'jobs', 'convertibleBondRefresh.js'), 'utf8');
+  const refreshSource = fs.readFileSync(path.join(__dirname, '..', 'jobs', 'convertibleBondRefresh.js'), 'utf8')
+    + fs.readFileSync(path.join(__dirname, '..', 'repositories', 'convertibleBondRefreshRepository.js'), 'utf8');
   assert.ok(refreshSource.includes("parser_version = '7'")
     && refreshSource.includes('latest_no_revision.next_eligible_date=maturity_profile.maturity_date'),
     '启动补漏必须识别 v7 到期日锁定残留');

@@ -99,8 +99,120 @@ async function loadRevisionResponseHistory(instrumentIds, targetDate) {
   return result;
 }
 
+async function select_market_convertible_bond_daily_metrics(params, client = pool) {
+  return client.query(`SELECT MAX(trade_date)::text AS trade_date FROM market.convertible_bond_daily_metrics`);
+}
+
+async function select_market_trade_calendar(params, client = pool) {
+  return client.query(`SELECT trade_date::text FROM market.trade_calendar
+      WHERE exchange='SSE' AND is_open AND trade_date <= $1::date
+      ORDER BY trade_date DESC LIMIT $2`, params);
+}
+
+async function select_market_daily_bars(params, client = pool) {
+  return client.query(`SELECT instrument_id,trade_date::text,close
+       FROM (
+         SELECT instrument_id,trade_date,close,
+                ROW_NUMBER() OVER (PARTITION BY instrument_id ORDER BY trade_date DESC) AS rn
+           FROM (
+             SELECT instrument_id,trade_date,close,
+                    ROW_NUMBER() OVER (PARTITION BY instrument_id,trade_date ORDER BY source_id DESC) AS source_rn
+               FROM market.daily_bars
+              WHERE instrument_id=ANY($1::bigint[]) AND trade_date <= $2::date
+                AND trade_date >= ($2::date - INTERVAL '365 days') AND close > 0
+           ) daily
+          WHERE source_rn=1
+       ) x
+      WHERE rn <= 180 ORDER BY instrument_id,trade_date DESC`, params);
+}
+
+async function select_market_daily_bars_1(params, client = pool) {
+  return client.query(`SELECT DISTINCT ON (instrument_id) instrument_id,trade_date::text,close
+         FROM market.daily_bars
+        WHERE instrument_id=ANY($1::bigint[]) AND trade_date <= COALESCE($2::date,CURRENT_DATE) AND close > 0
+        ORDER BY instrument_id,trade_date DESC,source_id DESC`, params);
+}
+
+async function select_market_daily_valuations(params, client = pool) {
+  return client.query(`SELECT DISTINCT ON (instrument_id) instrument_id,trade_date::text,pb
+         FROM market.daily_valuations
+        WHERE instrument_id=ANY($1::bigint[]) AND trade_date <= COALESCE($2::date,CURRENT_DATE)
+        ORDER BY instrument_id,trade_date DESC,source_id DESC`, params);
+}
+
+async function select_market_stock_suspend_calendar(params, client = pool) {
+  return client.query(`SELECT instrument_id,trade_date::text FROM market.stock_suspend_calendar
+      WHERE instrument_id=ANY($1::bigint[]) AND trade_date=ANY($2::date[]) AND suspend_type='S'`, params);
+}
+
+async function insert_analytics_convertible_bond_trigger_daily(params, client = pool) {
+  return client.query(`INSERT INTO analytics.convertible_bond_trigger_daily
+         (instrument_id,trade_date,trigger_type,trigger_price,close_price,matched_days,required_days,observation_days,minimum_future_days,status,formula_version,diagnostics,data_status)
+         VALUES($1,$2,'reset',$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12)
+         ON CONFLICT(instrument_id,trade_date,trigger_type,formula_version) DO UPDATE SET
+           trigger_price=EXCLUDED.trigger_price,close_price=EXCLUDED.close_price,matched_days=EXCLUDED.matched_days,
+           required_days=EXCLUDED.required_days,observation_days=EXCLUDED.observation_days,minimum_future_days=EXCLUDED.minimum_future_days,status=EXCLUDED.status,
+           diagnostics=EXCLUDED.diagnostics,data_status=EXCLUDED.data_status,calculated_at=now()`, params);
+}
+
+async function select_analytics_convertible_bond_trigger_daily(params, client = pool) {
+  return client.query(`SELECT MAX(trade_date)::text AS trade_date FROM analytics.convertible_bond_trigger_daily WHERE trigger_type='reset' AND formula_version=$1`, params);
+}
+
+async function with_analytics_convertible_bond_announcement_history(params, client = pool) {
+  return client.query(`WITH latest_no_revision AS (
+                  SELECT DISTINCT ON (h.instrument_id)
+                         h.instrument_id,h.announced_at,h.parser_version,h.next_eligible_date,h.raw_payload
+                    FROM analytics.convertible_bond_announcement_history h
+                    JOIN core.instruments current_i ON current_i.instrument_id=h.instrument_id
+                   WHERE h.fact_type='no_revision' AND current_i.status='listed'
+                   ORDER BY h.instrument_id,h.announced_at DESC,h.fact_id DESC
+                ), latest_revision_event AS (
+                  SELECT DISTINCT ON (instrument_id)
+                         instrument_id,announced_at,event_type
+                    FROM event.convertible_bond_revision_events
+                   ORDER BY instrument_id,announced_at DESC,event_id DESC
+                )
+                SELECT
+                  (SELECT COUNT(*)::int FROM latest_no_revision
+                    WHERE ((parser_version IS DISTINCT FROM '7'
+                            AND (next_eligible_date IS NULL
+                                 OR NOT COALESCE((raw_payload->>'lock_declared')::boolean,false)))
+                           OR (next_eligible_date IS NULL
+                               AND NOT (COALESCE((raw_payload->>'no_revision_evidence')::boolean,false)
+                                        OR COALESCE((raw_payload->>'lock_declared')::boolean,false))))
+                      AND COALESCE(raw_payload->'reparse'->>'status','') <> 'failed') AS pending_no_revision_parse,
+                  (SELECT COUNT(*)::int FROM latest_no_revision
+                    WHERE ((parser_version IS DISTINCT FROM '7'
+                            AND (next_eligible_date IS NULL
+                                 OR NOT COALESCE((raw_payload->>'lock_declared')::boolean,false)))
+                           OR (next_eligible_date IS NULL
+                               AND NOT (COALESCE((raw_payload->>'no_revision_evidence')::boolean,false)
+                                        OR COALESCE((raw_payload->>'lock_declared')::boolean,false))))
+                      AND COALESCE(raw_payload->'reparse'->>'status','') = 'failed') AS terminal_no_revision_parse,
+                  (SELECT COUNT(*)::int
+                     FROM analytics.convertible_bond_revision_latest r
+                     JOIN latest_no_revision nr ON nr.instrument_id=r.instrument_id
+                     LEFT JOIN latest_revision_event ev ON ev.instrument_id=r.instrument_id
+                    WHERE nr.announced_at >= COALESCE(ev.announced_at, DATE '0001-01-01')
+                      AND r.business_status IN ('proposed','meeting_pending','approved','terminated')) AS decision_status_conflicts,
+                  (SELECT COUNT(*)::int FROM ops.sync_cursors
+                    WHERE scope_key='convertible_bond_announcement_history'
+                      AND dataset_code='official_announcements'
+                      AND NULLIF(last_error,'') IS NOT NULL) AS announcement_errors`);
+}
+
 module.exports = {
   loadPriceChanges,
   loadRevisionBonds,
   loadRevisionResponseHistory,
+  select_market_convertible_bond_daily_metrics,
+  select_market_trade_calendar,
+  select_market_daily_bars,
+  select_market_daily_bars_1,
+  select_market_daily_valuations,
+  select_market_stock_suspend_calendar,
+  insert_analytics_convertible_bond_trigger_daily,
+  select_analytics_convertible_bond_trigger_daily,
+  with_analytics_convertible_bond_announcement_history,
 };

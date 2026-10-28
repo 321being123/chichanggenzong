@@ -7,6 +7,7 @@ const store=require('./convertibleBondAnalysisStore');
 const {isoDate,finite}=require('./convertibleBondAnalysisCore');
 const {sanitizeJobError}=require('./jobErrorSanitizer');
 const txControl = require('../repositories/transactionControl');
+const repository = require('../repositories/convertibleBondAnalysisFallbackRepository.js');
 
 const VERSION='tushare-input-fallback-v1';
 const APIS=Object.freeze({
@@ -74,8 +75,8 @@ async function readApiRows(kind,bond,period,deps={}) {
   const client=deps.client||await pool.connect();
   try {
     await txControl.begin(client);
-    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))',[`${api.name}:${key}`]);
-    const cached=await client.query(`SELECT raw_record_id,payload FROM ops.raw_records WHERE dataset_code=$1 AND source_key=$2 ORDER BY raw_record_id DESC LIMIT 1`,[api.name,key]);
+    await repository.select_data([`${api.name}:${key}`], client);
+    const cached=await repository.select_ops_raw_records([api.name,key], client);
     if(cached.rows[0]?.payload?.fetched_on===today) {
       await txControl.commit(client);return {rows:cached.rows[0].payload.rows,rawRecordId:cached.rows[0].raw_record_id,cache:'raw_records'};
     }
@@ -85,9 +86,7 @@ async function readApiRows(kind,bond,period,deps={}) {
     const rows=tsRows(response);
     const payload={ts_code:bond.ts_code,params,fields:response.fields,rows,fetched_on:today,version:VERSION};
     const hash=crypto.createHash('sha256').update(JSON.stringify(payload)).digest('hex');
-    const saved=await client.query(`INSERT INTO ops.raw_records(source_id,dataset_code,source_key,payload,payload_hash)
-      SELECT source_id,$1,$2,$3::jsonb,$4 FROM ops.data_sources WHERE source_code='tushare'
-      ON CONFLICT(source_id,dataset_code,source_key,payload_hash) DO UPDATE SET payload=EXCLUDED.payload RETURNING raw_record_id`,[api.name,key,JSON.stringify(payload),hash]);
+    const saved=await repository.insert_ops_raw_records([api.name,key,JSON.stringify(payload),hash], client);
     if(!saved.rows.length)throw Error('Tushare来源未登记');
     await txControl.commit(client);return {rows,rawRecordId:saved.rows[0].raw_record_id,cache:'api'};
   } catch(error){await txControl.rollback(client);throw error;}
@@ -100,12 +99,12 @@ async function saveFallback(kind,bond,value,evidence) {
     await txControl.begin(client);
     const source=(await store.sourceIds(client)).tushare;
     if(kind==='holders') {
-      const existing=await client.query('SELECT raw_payload FROM fundamental.convertible_bond_fund_holdings WHERE instrument_id=$1 AND report_date=$2::date FOR UPDATE',[bond.instrument_id,value.report_date]);
+      const existing=await repository.select_fundamental_convertible_bond_fund_holdings([bond.instrument_id,value.report_date], client);
       if(existing.rows[0]?.raw_payload?.document_hash)throw Error('已有原文持有人事实，禁止备源覆盖');
       await store.saveReportFundHolding(client,bond.instrument_id,{...value,...evidence},source);
     } else if(kind==='rating') {
       for(const row of value) {
-        const existing=await client.query('SELECT source_id,rating,rating_outlook,announced_at::text,raw_payload FROM fundamental.convertible_bond_ratings WHERE instrument_id=$1 AND rating_date=$2::date AND rating_company=$3 FOR UPDATE',[bond.instrument_id,isoDate(row.rating_date),row.rating_com_name]);
+        const existing=await repository.select_fundamental_convertible_bond_ratings([bond.instrument_id,isoDate(row.rating_date),row.rating_com_name], client);
         const prior=existing.rows[0];
         // 同一Tushare事实的旧空展望需补来源标记；不得借备源重写原文、改等级/公告日或抹掉已有展望。
         const repairApiMetadata=prior&&Number(prior.source_id)===Number(source)&&prior.rating===row.rating&&!prior.rating_outlook&&
@@ -114,17 +113,16 @@ async function saveFallback(kind,bond,value,evidence) {
         if(!prior||repairApiMetadata)await store.saveRatingHistory(client,bond.instrument_id,[{...row,...evidence}],source);
       }
     } else if(kind==='price_history') {
-      const existing=await client.query('SELECT change_date::text,price_before,price_after FROM fundamental.convertible_bond_price_changes WHERE instrument_id=$1',[bond.instrument_id]);
+      const existing=await repository.select_fundamental_convertible_bond_price_changes([bond.instrument_id], client);
       for(const row of value){const prior=existing.rows.find(r=>r.change_date===isoDate(row.change_date));if(prior&&(Math.abs(Number(prior.price_before)-Number(row.convertprice_bef))>1e-6||Math.abs(Number(prior.price_after)-Number(row.convertprice_aft))>1e-6))throw Error('备用转股价与既有事实冲突，保留原值');}
       const dates=new Set(existing.rows.map(r=>r.change_date));
       await store.savePriceChanges(client,bond.instrument_id,value.filter(r=>!dates.has(isoDate(r.change_date))).map(r=>({...r,...evidence})),source);
     } else {
-      const existing=await client.query('SELECT interest_year,coupon_rate FROM fundamental.convertible_bond_coupon_schedule WHERE instrument_id=$1',[bond.instrument_id]);
+      const existing=await repository.select_fundamental_convertible_bond_coupon_schedule([bond.instrument_id], client);
       for(let index=0;index<value.length;index++) {
         const row=value[index],prior=existing.rows.find(r=>Number(r.interest_year)===index+1);
         if(prior&&Math.abs(Number(prior.coupon_rate)-Number(row.coupon_rate))>1e-6)throw Error('备用票息与既有事实冲突，保留原值');
-        await client.query(`INSERT INTO fundamental.convertible_bond_coupon_schedule(instrument_id,interest_year,coupon_rate,pay_date,pre_tax_interest,after_tax_interest,source_id)
-          VALUES($1,$2,$3,$4,$3,$5,$6) ON CONFLICT(instrument_id,interest_year) DO NOTHING`,[bond.instrument_id,index+1,row.coupon_rate,isoDate(row.rate_end_date),Number(row.coupon_rate)*.8,source]);
+        await repository.insert_fundamental_convertible_bond_coupon_schedule([bond.instrument_id,index+1,row.coupon_rate,isoDate(row.rate_end_date),Number(row.coupon_rate)*.8,source], client);
       }
     }
     await txControl.commit(client);

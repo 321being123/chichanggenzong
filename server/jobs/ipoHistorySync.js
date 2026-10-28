@@ -3,6 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const { pool, tryClaimJob, releaseJob, startJobRun, finishJobRun } = require('../db');
 const { getProviderRuntime, notifyTushareFailover } = require('../services/externalApiConfig');
+const repository = require('../repositories/ipoHistorySyncRepository.js');
 
 const PROJECT_ROOT = path.resolve(__dirname, '..', '..');
 const SCRIPT = path.join(PROJECT_ROOT, 'ipo-report', 'ipo_history_sync.py');
@@ -64,10 +65,7 @@ function scheduleMarkerFromReason(reason) {
 async function scheduleMarkerFromSlot(slotId) {
   if (!slotId) return '';
   try {
-    const { rows } = await pool.query(
-      'SELECT scheduled_for FROM ops.job_schedule_slots WHERE slot_id=$1 LIMIT 1',
-      [slotId]
-    );
+    const { rows } = await repository.select_ops_job_schedule_slots([slotId]);
     if (!rows[0] || !rows[0].scheduled_for) return '';
     const p = shanghaiParts(new Date(rows[0].scheduled_for));
     return `${p.hour}:${p.minute}`;
@@ -209,13 +207,7 @@ async function runIpoHistorySync(reason = 'scheduled', businessDate, context = {
     scheduleMarker = scheduleMarkerFromReason(reason)
       || await scheduleMarkerFromSlot(context.slotId)
       || (mode === 'enrichment' ? '19:35' : mode === 'prediction_ready' ? '16:30' : '18:00');
-    const priorRuns = await pool.query(
-      `SELECT id,status,detail FROM job_runs WHERE job=$1
-        AND (started_at AT TIME ZONE 'Asia/Shanghai')::date =
-            (now() AT TIME ZONE 'Asia/Shanghai')::date
-        ORDER BY id DESC LIMIT 20`,
-      [JOB]
-    );
+    const priorRuns = await repository.select_job_runs([JOB]);
     const prior = targeted ? null : priorRuns.rows.find(row => {
       if (!['done', 'failed'].includes(row.status)) return false;
       try {
@@ -231,11 +223,7 @@ async function runIpoHistorySync(reason = 'scheduled', businessDate, context = {
     if (prior && prior.status === 'failed') {
       runId = prior.id;
       retryOf = String(prior.detail || '').slice(0, 1000);
-      await pool.query(
-        `UPDATE job_runs SET status='running', started_at=now(), finished_at=NULL,
-          locked_until=now() + interval '1 hour', detail=$2 WHERE id=$1`,
-        [runId, JSON.stringify({ reason: 'retry-after-failure', previous: retryOf, mode, scheduleMarker, slotId: context.slotId || null })]
-      );
+      await repository.update_job_runs([runId, JSON.stringify({ reason: 'retry-after-failure', previous: retryOf, mode, scheduleMarker, slotId: context.slotId || null })]);
     } else {
       runId = await startJobRun(JOB);
     }
@@ -294,10 +282,7 @@ async function runIpoHistoryStartupCatchup(now = new Date()) {
   const p = shanghaiParts(now);
   const today = `${p.year}-${p.month}-${p.day}`;
   const expected = +p.hour >= 18 ? today : previousWeekday(today);
-  const { rows } = await pool.query(
-    'SELECT last_success_date::text AS d FROM ops.sync_cursors WHERE scope_key=$1 AND dataset_code=$2',
-    ['global:ipo_history', 'new_share']
-  );
+  const { rows } = await repository.select_ops_sync_cursors(['global:ipo_history', 'new_share']);
   const last = rows[0] && rows[0].d ? String(rows[0].d).slice(0, 10) : '';
   if (last >= expected) return { skipped: true, reason: 'fresh', last, expected };
   return runIpoHistorySync('startup-catchup', today, { mode: 'core' });

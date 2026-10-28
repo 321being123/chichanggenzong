@@ -35,7 +35,13 @@ async function saveInstrumentCache(rows) {
   } catch (_) {}
 }
 
+async function select_market_quote_cache(params, client = pool) {
+  return client.query(`SELECT symbol AS ts_code, price, change_pct, quote_time, fetched_at
+         FROM market_quote_cache WHERE source = 'tushare_daily'`);
+}
+
 module.exports = {
   loadInstrumentCache,
   saveInstrumentCache,
+  select_market_quote_cache,
 };

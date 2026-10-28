@@ -6,6 +6,7 @@ const { pool } = require('../db/connection');
 const { redis } = require('../config');
 const { isAdminIdentity } = require('../middleware/auth');
 const { purgeAnalyticsData } = require('../repositories/siteAnalyticsRepository.js');
+const repository = require('../repositories/siteAnalyticsRepository.js');
 
 const VISITOR_COOKIE = 'site_visitor';
 const VISITOR_MAX_AGE = 30 * 24 * 60 * 60;
@@ -366,23 +367,12 @@ function recordEventLoopSample(sample = {}) {
 
 async function writeRuntimeRows(rows, client = pool) {
   for (const row of rows) {
-    await client.query(`INSERT INTO ops.site_runtime_minute
-      (layer, bucket_start, batch_id, process_instance, route_key, request_kind, request_count,
-       status_2xx, status_3xx, status_4xx, status_429, status_5xx, duration_buckets, bytes_sent, error_count,
-       sample_type, coverage_status, event_loop_p50_ms, event_loop_p95_ms, event_loop_max_ms, source_file)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::jsonb,$14,$15,$16,$17,$18,$19,$20,$21)
-      ON CONFLICT (layer, batch_id) DO UPDATE SET
-        request_count=EXCLUDED.request_count, status_2xx=EXCLUDED.status_2xx, status_3xx=EXCLUDED.status_3xx,
-        status_4xx=EXCLUDED.status_4xx, status_429=EXCLUDED.status_429, status_5xx=EXCLUDED.status_5xx, duration_buckets=EXCLUDED.duration_buckets,
-        bytes_sent=EXCLUDED.bytes_sent, error_count=EXCLUDED.error_count, sample_type=EXCLUDED.sample_type,
-        coverage_status=EXCLUDED.coverage_status, event_loop_p50_ms=EXCLUDED.event_loop_p50_ms,
-        event_loop_p95_ms=EXCLUDED.event_loop_p95_ms, event_loop_max_ms=EXCLUDED.event_loop_max_ms,
-        source_file=EXCLUDED.source_file, recorded_at=now()`, [
+    await repository.insert_ops_site_runtime_minute([
       row.layer, row.bucketStart, row.batchId, row.processInstance || APP_PROCESS, row.routeKey || '', row.requestKind || 'unknown',
       row.requestCount || 0, row.status2xx || 0, row.status3xx || 0, row.status4xx || 0, row.status429 || 0, row.status5xx || 0,
       JSON.stringify(row.durationBuckets || {}), row.bytesSent || 0, row.errorCount || 0, row.sampleType || 'request',
       row.coverageStatus || 'complete', row.eventLoopP50Ms, row.eventLoopP95Ms, row.eventLoopMaxMs, row.sourceFile || ''
-    ]);
+    ], client);
   }
 }
 
@@ -499,10 +489,8 @@ async function getOverview(query = {}) {
         GROUP BY page_key ORDER BY pv DESC LIMIT 12`, params),
       pool.query(`SELECT device_type, COUNT(*) FILTER (WHERE event_name='page_view')::int AS pv
         FROM ops.site_events e WHERE ${where} GROUP BY device_type ORDER BY pv DESC`, params),
-      pool.query(`SELECT COUNT(*)::int AS new_registrations FROM users
-        WHERE created_at >= $1 AND created_at < $2`, params),
-      pool.query(`SELECT COUNT(*)::int AS pending_exceptions FROM ops.alert_notifications
-        WHERE status NOT IN ('resolved','acknowledged','suppressed')`, [])
+      repository.select_users(params),
+      repository.select_ops_alert_notifications([])
     ]);
     const summaryRow = numberRows(summary.rows)[0] || {};
     summaryRow.new_registrations = Number(newUsers.rows[0] && newUsers.rows[0].new_registrations || 0);
@@ -584,21 +572,8 @@ async function getRuntime(query = {}) {
   const cacheKey = `runtime:${scope.range}`;
   return cacheGet(cacheKey, RUNTIME_CACHE_TTL, async () => {
     const [detailResult, summaryResult] = await Promise.all([
-      pool.query(`SELECT bucket_start, layer, route_key, request_kind, request_count,
-        status_2xx, status_3xx, status_4xx, status_429, status_5xx, duration_buckets, error_count,
-        sample_type, coverage_status, event_loop_p50_ms, event_loop_p95_ms, event_loop_max_ms, source_file,
-        COUNT(*) OVER() AS total_rows
-        FROM ops.site_runtime_minute WHERE bucket_start >= $1 AND bucket_start < $2
-        ORDER BY bucket_start DESC LIMIT 1000`, [scope.start, scope.end]),
-      pool.query(`SELECT layer, SUM(request_count)::bigint AS request_count,
-        SUM(status_2xx)::bigint AS status_2xx, SUM(status_3xx)::bigint AS status_3xx,
-        SUM(status_4xx)::bigint AS status_4xx, SUM(status_429)::bigint AS status_429,
-        SUM(status_5xx)::bigint AS status_5xx, SUM(error_count)::bigint AS error_count,
-        SUM(COALESCE((duration_buckets->>'lt100')::bigint,0))::bigint AS duration_lt100,
-        SUM(COALESCE((duration_buckets->>'ms100_499')::bigint,0))::bigint AS duration_ms100_499,
-        SUM(COALESCE((duration_buckets->>'ms500_999')::bigint,0))::bigint AS duration_ms500_999,
-        SUM(COALESCE((duration_buckets->>'gte1000')::bigint,0))::bigint AS duration_gte1000
-        FROM ops.site_runtime_minute WHERE bucket_start >= $1 AND bucket_start < $2 GROUP BY layer ORDER BY layer`, [scope.start, scope.end])
+      repository.select_ops_site_runtime_minute([scope.start, scope.end]),
+      repository.select_ops_site_runtime_minute_1([scope.start, scope.end])
     ]);
     const rows = detailResult.rows;
     const enriched = rows.map(row => ({
@@ -632,7 +607,7 @@ async function getRuntime(query = {}) {
 }
 
 async function getConfigStatus() {
-  const { rows } = await pool.query(`SELECT key, value FROM platform_config WHERE key IN ('site_analytics_enabled_at')`);
+  const { rows } = await repository.select_platform_config();
   const values = Object.fromEntries(rows.map(row => [row.key, row.value]));
   return { enabled: isEnabled(), secretConfigured: !!analyticsSecret(), retentionDays: Math.min(Math.max(Number(process.env.SITE_ANALYTICS_RETENTION_DAYS || 30), 7), 365), nginxConfigured: !!process.env.NGINX_ACCESS_LOG_PATH, enabledAt: values.site_analytics_enabled_at || null };
 }
@@ -642,36 +617,16 @@ async function getDataHealth(query = {}) {
   const cacheKey = `health:${scope.range}`;
   return cacheGet(cacheKey, RUNTIME_CACHE_TTL, async () => {
     const [events, runtime, cursor, config, datasets, quality, jobs, alerts, budgets, circuits, dependency] = await Promise.all([
-      pool.query(`SELECT COUNT(*)::int AS count, MIN(received_at) AS first_received_at, MAX(received_at) AS last_received_at,
-        COUNT(*) FILTER (WHERE visitor_key IS NULL)::int AS no_visitor_key,
-        COUNT(*) FILTER (WHERE user_key IS NULL)::int AS guest_events,
-        COUNT(*) FILTER (WHERE is_internal=true)::int AS internal_events
-        FROM ops.site_events WHERE received_at >= $1 AND received_at < $2`, [scope.start, scope.end]),
-      pool.query(`SELECT MAX(bucket_start) AS last_bucket, COUNT(*)::int AS row_count FROM ops.site_runtime_minute WHERE bucket_start >= $1 AND bucket_start < $2`, [scope.start, scope.end]),
-      pool.query(`SELECT last_attempt_at, last_source_update, last_error, cursor_payload FROM ops.sync_cursors WHERE scope_key='site_analytics:nginx' AND dataset_code='access_log' LIMIT 1`),
+      repository.select_ops_site_events([scope.start, scope.end]),
+      repository.select_ops_site_runtime_minute_2([scope.start, scope.end]),
+      repository.select_ops_sync_cursors(),
       getConfigStatus(),
-      pool.query(`SELECT DISTINCT ON (dataset_code, scope_key) dataset_code, scope_key, partition_key::text,
-          data_as_of::text, published_at, is_stale, stale_reason, row_count,
-          (MIN(COALESCE(data_as_of, partition_key)) OVER (PARTITION BY dataset_code, scope_key))::text AS earliest_data_as_of,
-          (MAX(COALESCE(data_as_of, partition_key)) OVER (PARTITION BY dataset_code, scope_key))::text AS latest_data_as_of
-        FROM ops.dataset_partitions WHERE status='published'
-        ORDER BY dataset_code, scope_key, partition_key DESC LIMIT 100`),
-      pool.query(`SELECT dataset_code, status, severity, COUNT(*)::int AS count
-        FROM ops.data_quality_issues GROUP BY dataset_code, status, severity ORDER BY count DESC LIMIT 100`),
-      pool.query(`SELECT status, COUNT(*)::int AS count FROM ops.job_schedule_slots
-        WHERE business_date=(timezone('Asia/Shanghai', now()))::date GROUP BY status ORDER BY status`),
-      pool.query(`SELECT status, severity, COUNT(*)::int AS count FROM ops.alert_notifications
-        WHERE status NOT IN ('resolved','acknowledged','suppressed') GROUP BY status, severity ORDER BY count DESC`),
-      pool.query(`SELECT source, api_name, credential_profile, window_type, window_key, call_count, budget_limit,
-          GREATEST(budget_limit-call_count, 0)::int AS remaining,
-          ROUND(call_count::numeric * 100 / NULLIF(budget_limit, 0), 1) AS usage_percent
-        FROM ops.external_call_budgets WHERE budget_limit IS NOT NULL AND budget_limit > 0
-          AND call_count >= budget_limit * 0.8
-          AND ((window_type='day' AND window_key=to_char(clock_timestamp() AT TIME ZONE 'Asia/Shanghai', 'YYYY-MM-DD'))
-            OR (window_type='minute' AND window_key=floor(extract(epoch FROM clock_timestamp()) / 60)::bigint::text))
-        ORDER BY updated_at DESC LIMIT 100`),
-      pool.query(`SELECT source, api_name, token_fingerprint, state, recover_at, error_code, last_success_at
-        FROM ops.external_circuits WHERE state='open' ORDER BY recover_at NULLS LAST LIMIT 100`),
+      repository.select_ops_dataset_partitions(),
+      repository.select_ops_data_quality_issues(),
+      repository.select_ops_job_schedule_slots(),
+      repository.select_ops_alert_notifications_1(),
+      repository.select_ops_external_call_budgets(),
+      repository.select_ops_external_circuits(),
       getDependencyHealth()
     ]);
     const eventSummary = numberRows(events.rows)[0] || {};
@@ -701,7 +656,7 @@ async function getDependencyHealth() {
   const database = { configured: true, status: 'error', ready: false, reason: '连接失败' };
   try {
     await Promise.race([
-      pool.query('SELECT 1'),
+      repository.select_data(),
       new Promise((_, reject) => { const timer = setTimeout(() => reject(new Error('数据库检查超时')), 1200); if (timer.unref) timer.unref(); })
     ]);
     database.status = 'ok'; database.ready = true; database.reason = '连接正常';
@@ -726,8 +681,7 @@ async function getDependencyHealth() {
   if (process.env.NODE_ENV !== 'production') {
     worker = { status: 'disabled', ready: false, reason: '非生产环境不运行后台调度' };
   } else try {
-    const result = await pool.query(`SELECT DISTINCT ON (role) role, worker_id, pid, app_version, status, last_seen_at
-      FROM ops.worker_heartbeats ORDER BY role, last_seen_at DESC`);
+    const result = await repository.select_ops_worker_heartbeats();
     const row = result.rows.find(item => item.role === 'worker') || result.rows[0];
     if (row) {
       const lastSeen = new Date(row.last_seen_at).getTime();

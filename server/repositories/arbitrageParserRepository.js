@@ -1,4 +1,5 @@
 const { pool } = require('../db/connection');
+
 const txControl = require('./transactionControl');
 const { hashString } = require('../db/util');
 
@@ -105,8 +106,145 @@ async function resolveParseFailure(caseId) {
   }
 }
 
+async function select_core_instruments(params, client = pool) {
+  return client.query(`SELECT instrument_id, canonical_code, regexp_replace(name,'<[^>]+>','','g') AS nm
+     FROM core.instruments
+     WHERE length(regexp_replace(name,'<[^>]+>','','g')) >= 2
+       AND (regexp_replace(name,'<[^>]+>','','g') ILIKE '%'||$1||'%'
+            OR $1 ILIKE '%'||regexp_replace(name,'<[^>]+>','','g')||'%')
+     ORDER BY (CASE WHEN regexp_replace(name,'<[^>]+>','','g') = $1 THEN 0 ELSE 1 END), length(regexp_replace(name,'<[^>]+>','','g')) DESC`, params);
+}
+
+async function select_core_instruments_1(params, client = pool) {
+  return client.query(`
+      SELECT instrument_id, canonical_code, regexp_replace(name,'<[^>]+>','','g') AS nm
+      FROM core.instruments
+      WHERE length(regexp_replace(name,'<[^>]+>','','g')) >= 2
+    `);
+}
+
+async function select_event_arbitrage_cases(params, client = pool) {
+  return client.query(`SELECT strategy_type FROM event.arbitrage_cases WHERE case_id=$1`, params);
+}
+
+async function update_event_arbitrage_case_documents(params, client = pool) {
+  return client.query(`
+        UPDATE event.arbitrage_case_documents
+           SET parse_attempts=0,next_parse_attempt_at=NULL,last_parse_error=NULL
+         WHERE case_id=$1 AND document_id=$2
+      `, params);
+}
+
+async function select_event_arbitrage_case_documents(params, client = pool) {
+  return client.query(`SELECT parsed_payload,parser_version,parse_status,parse_attempts,next_parse_attempt_at FROM event.arbitrage_case_documents WHERE case_id=$1 AND document_id=$2`, params);
+}
+
+async function update_event_arbitrage_case_documents_1(params, client = pool) {
+  return client.query(`
+        UPDATE event.arbitrage_case_documents
+        SET document_role=$1,parsed_payload=$2,parser_version=$3,parse_status=$4,parsed_at=now(),
+            parse_attempts=0,next_parse_attempt_at=NULL,last_parse_error=NULL
+        WHERE case_id=$5 AND document_id=$6
+      `, params);
+}
+
+async function with_event_arbitrage_case_documents(params, client = pool) {
+  return client.query(`
+        WITH failed_document AS (
+          UPDATE event.arbitrage_case_documents
+             SET document_role=$1,parser_version=$2,parse_status='failed',parsed_at=now(),
+                 parse_attempts=$3::integer,
+                 next_parse_attempt_at=CASE WHEN $3::integer < $4::integer
+                    THEN COALESCE($5::timestamptz, now()+($6 || ' minutes')::interval) ELSE NULL END,
+                 last_parse_error=$7
+           WHERE case_id=$8 AND document_id=$9
+           RETURNING case_id
+        )
+        UPDATE event.arbitrage_cases
+           SET parse_status='incomplete',parser_version=$2,updated_at=now()
+         WHERE case_id=$8 AND parse_status NOT IN ('conflict','incomplete')
+           AND EXISTS (SELECT 1 FROM failed_document)
+      `, params);
+}
+
+async function select_event_arbitrage_cases_1(params, client = pool) {
+  return client.query(`SELECT strategy_type,review_status FROM event.arbitrage_cases WHERE case_id=$1`, params);
+}
+
+async function select_event_arbitrage_case_documents_1(params, client = pool) {
+  return client.query(`
+    SELECT acd.document_role,acd.parsed_payload,acd.parse_status,d.announced_at
+    FROM event.arbitrage_case_documents acd
+    JOIN event.documents d ON d.document_id=acd.document_id
+    WHERE acd.case_id=$1 AND (
+      (acd.parsed_payload IS NOT NULL AND acd.parse_status IN ('validated','incomplete'))
+      OR (acd.parse_status='failed' AND acd.document_role IN ('amendment','terms','summary','proposal'))
+    )
+  `, params);
+}
+
+async function update_event_arbitrage_cases(params, client = pool) {
+  return client.query(`UPDATE event.arbitrage_cases SET parse_status='incomplete',parser_version=$1,terms_confidence=$2,updated_at=now() WHERE case_id=$3`, params);
+}
+
+async function update_event_arbitrage_cases_1(params, client = pool) {
+  return client.query(`UPDATE event.arbitrage_cases SET parse_status=$1,parser_version=$2,terms_confidence=$3,updated_at=now() WHERE case_id=$4`, params);
+}
+
+async function select_event_arbitrage_cases_2(params, client = pool) {
+  return client.query(`SELECT target_instrument_id FROM event.arbitrage_cases WHERE case_id=$1`, params);
+}
+
+async function select_data(params, client = pool) {
+  return client.query(`SELECT pg_advisory_xact_lock($1,$2)`, params);
+}
+
+async function update_ops_data_quality_issues(params, client = pool) {
+  return client.query(`
+        UPDATE ops.data_quality_issues SET details=$2::jsonb,detected_at=now()
+         WHERE issue_id=(
+           SELECT issue_id FROM ops.data_quality_issues
+            WHERE instrument_id IS NULL AND dataset_code='arbitrage' AND field_code='pdf_parse'
+              AND issue_type='parse_failed' AND status='open' AND details->>'case_id'=$1::text
+            ORDER BY issue_id DESC LIMIT 1
+         )
+      `, params);
+}
+
+async function insert_ops_data_quality_issues(params, client = pool) {
+  return client.query(`
+          INSERT INTO ops.data_quality_issues(instrument_id,dataset_code,field_code,issue_type,severity,details)
+          VALUES(NULL,'arbitrage','pdf_parse','parse_failed','warning',$1::jsonb)
+        `, params);
+}
+
+async function insert_ops_data_quality_issues_1(params, client = pool) {
+  return client.query(`
+        INSERT INTO ops.data_quality_issues(instrument_id,dataset_code,field_code,issue_type,severity,details)
+        VALUES($1,'arbitrage','pdf_parse','parse_failed','warning',$2::jsonb)
+        ON CONFLICT(instrument_id,dataset_code,field_code,issue_type,status)
+        DO UPDATE SET details=EXCLUDED.details,detected_at=now(),resolved_at=NULL
+      `, params);
+}
+
 module.exports = {
   acquireDocumentParseLock,
   resolveInstrumentByCode,
   resolveParseFailure,
+  select_core_instruments,
+  select_core_instruments_1,
+  select_event_arbitrage_cases,
+  update_event_arbitrage_case_documents,
+  select_event_arbitrage_case_documents,
+  update_event_arbitrage_case_documents_1,
+  with_event_arbitrage_case_documents,
+  select_event_arbitrage_cases_1,
+  select_event_arbitrage_case_documents_1,
+  update_event_arbitrage_cases,
+  update_event_arbitrage_cases_1,
+  select_event_arbitrage_cases_2,
+  select_data,
+  update_ops_data_quality_issues,
+  insert_ops_data_quality_issues,
+  insert_ops_data_quality_issues_1,
 };

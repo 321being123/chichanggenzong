@@ -11,6 +11,7 @@ const notificationService = require('./notificationService');
 const { hasCapability, isAdminIdentity } = require('../middleware/auth');
 const txControl = require('../repositories/transactionControl');
 const { listItems, listRuns, readBack, readCandidates, releaseLock } = require('../repositories/feedbackReleaseRepository.js');
+const repository = require('../repositories/feedbackReleaseRepository.js');
 
 const REVIEW_POLICY_VERSION = '2026-10-23';
 const OPEN_STATUSES = ['new', 'needs_info', 'accepted', 'in_progress'];
@@ -53,9 +54,7 @@ function computeManifestHash(items) {
 async function assertContentManager(username, action) {
   const who = String(username || '').trim();
   if (!who) throw createError(400, '必须提供有效的运行身份');
-  const { rows } = await pool.query(
-    'SELECT username, role, status, permissions FROM public.users WHERE username=$1', [who]
-  );
+  const { rows } = await repository.select_public_users([who]);
   const user = rows[0];
   if (!user) throw createError(403, '运行身份不存在或已注销：' + who);
   if (user.status && user.status !== 'active') throw createError(403, '运行身份已被禁用：' + who);
@@ -129,7 +128,7 @@ async function acquireReleaseLock(client, opts) {
     // 部署已持锁：本会话不再抢同一把 advisory lock，交由持锁进程统一解锁
     return { external: true, held: held };
   }
-  await client.query('SELECT pg_advisory_lock($1)', [RELEASE_LOCK_ID]);
+  await repository.select_data([RELEASE_LOCK_ID], client);
   return { external: false };
 }
 
@@ -163,10 +162,7 @@ async function prepareRun(input) {
   try {
     await txControl.begin(client, { isolation: 'REPEATABLE READ' });
     lockHandle = await acquireReleaseLock(client);
-    const existing = await client.query(
-      'SELECT id::text AS id, manifest_hash AS "manifestHash", prepare_status AS "prepareStatus" FROM ops.feedback_release_runs WHERE environment=$1 AND deployment_id=$2',
-      [environment, deploymentId]
-    );
+    const existing = await repository.select_ops_feedback_release_runs([environment, deploymentId], client);
     if (existing.rows[0]) {
       await txControl.rollback(client);
       return {
@@ -175,45 +171,19 @@ async function prepareRun(input) {
       };
     }
     const snapshotAt = new Date();
-    const run = await client.query(
-      `INSERT INTO ops.feedback_release_runs
-         (deployment_id, environment, release_sha, app_version, base_deployed_sha,
-          review_policy_version, snapshot_at, owner, prepare_status)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'draft') RETURNING id::text AS id`,
-      [deploymentId, environment, releaseSha, appVersion, String(input.baseDeployedSha || ''),
-        REVIEW_POLICY_VERSION, snapshotAt, owner]
-    );
+    const run = await repository.insert_ops_feedback_release_runs([deploymentId, environment, releaseSha, appVersion, String(input.baseDeployedSha || ''),
+        REVIEW_POLICY_VERSION, snapshotAt, owner], client);
     const runId = run.rows[0].id;
-    const candidates = await client.query(
-      `SELECT f.id::text AS id, f.revision::text AS revision, f.status
-         FROM public.feedbacks f
-        WHERE f.withdrawn_at IS NULL AND f.status = ANY($1::text[])
-        ORDER BY f.id ASC`,
-      [OPEN_STATUSES]
-    );
+    const candidates = await repository.select_public_feedbacks([OPEN_STATUSES], client);
     let inserted = 0;
     for (let i = 0; i < candidates.rows.length; i++) {
       const row = candidates.rows[i];
-      await client.query(
-        `INSERT INTO ops.feedback_release_items
-           (run_id, feedback_id, expected_revision, expected_status, input_hash)
-         VALUES ($1,$2,$3,$4,$5)
-         ON CONFLICT (run_id, feedback_id) DO NOTHING`,
-        [runId, row.id, row.revision, row.status, sha256(row.id + ':' + row.revision)]
-      );
+      await repository.insert_ops_feedback_release_items([runId, row.id, row.revision, row.status, sha256(row.id + ':' + row.revision)], client);
       inserted++;
     }
-    const items = await client.query(
-      'SELECT feedback_id::text AS "feedbackId", expected_revision::text AS "expectedRevision", conclusion, implementation_commit AS "implementationCommit", evidence_summary AS "evidenceSummary" FROM ops.feedback_release_items WHERE run_id=$1',
-      [runId]
-    );
+    const items = await repository.select_ops_feedback_release_items([runId], client);
     const manifestHash = computeManifestHash(items.rows);
-    await client.query(
-      `UPDATE ops.feedback_release_runs
-          SET manifest_hash=$1, snapshot_count=$2, snapshot_complete=true, prepare_status='prepared', updated_at=now()
-        WHERE id=$3`,
-      [manifestHash, inserted, runId]
-    );
+    await repository.update_ops_feedback_release_runs([manifestHash, inserted, runId], client);
     await txControl.commit(client);
     return {
       runId: runId, deploymentId: deploymentId, manifestHash: manifestHash,
@@ -238,38 +208,16 @@ async function setItemConclusion(runId, feedbackId, patch) {
   try {
     await txControl.begin(client);
     lockHandle = await acquireReleaseLock(client);
-    const run = await client.query(
-      'SELECT id::text AS id, prepare_status AS "prepareStatus", verify_status AS "verifyStatus" FROM ops.feedback_release_runs WHERE id=$1 FOR UPDATE',
-      [runId]
-    );
+    const run = await repository.select_ops_feedback_release_runs_1([runId], client);
     if (!run.rows[0]) throw createError(404, '发布批次不存在');
-    const { rows } = await client.query(
-      `UPDATE ops.feedback_release_items
-          SET conclusion=$1, implementation_commit=$2, evidence_summary=$3, updated_at=now()
-        WHERE run_id=$4 AND feedback_id=$5
-          AND apply_status='pending'
-        RETURNING id::text AS id, feedback_id::text AS "feedbackId", expected_revision::text AS "expectedRevision",
-                  conclusion, implementation_commit AS "implementationCommit", evidence_summary AS "evidenceSummary"`,
-      [patch.conclusion, String(patch.implementationCommit || '').slice(0, 64),
-        String(patch.evidenceSummary || '').slice(0, 1000), runId, feedbackId]
-    );
+    const { rows } = await repository.update_ops_feedback_release_items([patch.conclusion, String(patch.implementationCommit || '').slice(0, 64),
+        String(patch.evidenceSummary || '').slice(0, 1000), runId, feedbackId], client);
     if (!rows[0]) throw createError(404, '找不到该发布批次中的这条反馈，或该项已应用');
     // 明细变化：冻结的清单要重新冻结，已通过的验收作废
-    const all = await client.query(
-      'SELECT feedback_id::text AS "feedbackId", expected_revision::text AS "expectedRevision", conclusion, implementation_commit AS "implementationCommit", evidence_summary AS "evidenceSummary" FROM ops.feedback_release_items WHERE run_id=$1',
-      [runId]
-    );
+    const all = await repository.select_ops_feedback_release_items([runId], client);
     const manifestHash = computeManifestHash(all.rows);
     const invalidated = run.rows[0].verifyStatus === 'passed';
-    await client.query(
-      `UPDATE ops.feedback_release_runs
-          SET manifest_hash=$1,
-              prepare_status = CASE WHEN prepare_status='frozen' THEN 'prepared' ELSE prepare_status END,
-              verify_status = CASE WHEN verify_status='passed' THEN 'pending' ELSE verify_status END,
-              updated_at=now()
-        WHERE id=$2`,
-      [manifestHash, runId]
-    );
+    await repository.update_ops_feedback_release_runs_1([manifestHash, runId], client);
     await txControl.commit(client);
     return {
       runId: String(runId), feedbackId: String(feedbackId), conclusion: patch.conclusion,
@@ -290,20 +238,10 @@ async function freezeRun(runId) {
   try {
     await txControl.begin(client);
     lockHandle = await acquireReleaseLock(client);
-    const items = await client.query(
-      'SELECT feedback_id::text AS "feedbackId", expected_revision::text AS "expectedRevision", conclusion, implementation_commit AS "implementationCommit", evidence_summary AS "evidenceSummary" FROM ops.feedback_release_items WHERE run_id=$1',
-      [runId]
-    );
+    const items = await repository.select_ops_feedback_release_items([runId], client);
     if (!items.rowCount) throw createError(400, '该发布批次没有核对明细');
     const manifestHash = computeManifestHash(items.rows);
-    const { rows } = await client.query(
-      `UPDATE ops.feedback_release_runs
-          SET manifest_hash=$1, prepare_status='frozen',
-              verify_status = CASE WHEN verify_status='passed' THEN 'pending' ELSE verify_status END,
-              updated_at=now()
-        WHERE id=$2 RETURNING id::text AS id`,
-      [manifestHash, runId]
-    );
+    const { rows } = await repository.update_ops_feedback_release_runs_2([manifestHash, runId], client);
     if (!rows[0]) throw createError(404, '发布批次不存在');
     await txControl.commit(client);
     return { runId: String(runId), manifestHash: manifestHash };
@@ -326,10 +264,7 @@ async function verifyRun(runId, input) {
   try {
     await txControl.begin(client);
     lockHandle = await acquireReleaseLock(client);
-    const { rows } = await client.query(
-      'SELECT id::text AS id, release_sha AS "releaseSha", app_version AS "appVersion", owner, manifest_hash AS "manifestHash", prepare_status AS "prepareStatus" FROM ops.feedback_release_runs WHERE id=$1 FOR UPDATE',
-      [runId]
-    );
+    const { rows } = await repository.select_ops_feedback_release_runs_2([runId], client);
     if (!rows[0]) throw createError(404, '发布批次不存在');
     const run = rows[0];
     // 验收人与发布负责人必须是真实有权账号，不能用任意名字
@@ -338,10 +273,7 @@ async function verifyRun(runId, input) {
       throw createError(409, '验收提交与发布批次绑定的 SHA 不一致');
     }
     if (run.prepareStatus === 'draft') throw createError(409, '该发布批次清单尚未准备完成');
-    const items = await client.query(
-      'SELECT feedback_id::text AS "feedbackId", expected_revision::text AS "expectedRevision", conclusion, implementation_commit AS "implementationCommit", evidence_summary AS "evidenceSummary" FROM ops.feedback_release_items WHERE run_id=$1',
-      [runId]
-    );
+    const items = await repository.select_ops_feedback_release_items([runId], client);
     const manifestHash = computeManifestHash(items.rows);
     if (run.manifestHash && manifestHash !== run.manifestHash) {
       throw createError(409, '核对清单已被修改，请重新冻结后再次验收');
@@ -353,12 +285,7 @@ async function verifyRun(runId, input) {
       });
       if (!keys.length) throw createError(400, '验收通过必须提交验收证据（不能为空）');
     }
-    await client.query(
-      `UPDATE ops.feedback_release_runs
-          SET verify_status=$1, verify_evidence=$2, manifest_hash=$3, updated_at=now()
-        WHERE id=$4`,
-      [passed ? 'passed' : 'failed', JSON.stringify(evidence), manifestHash, runId]
-    );
+    await repository.update_ops_feedback_release_runs_3([passed ? 'passed' : 'failed', JSON.stringify(evidence), manifestHash, runId], client);
     await txControl.commit(client);
     return { runId: String(runId), verifyStatus: passed ? 'passed' : 'failed' };
   } catch (e) {
@@ -390,13 +317,7 @@ async function applyRun(runId, options) {
     lockHandle = await acquireReleaseLock(lockClient, {
       heldLockToken: opts.heldLockToken, heldLockReadyFile: opts.heldLockReadyFile,
     });
-    const runQuery = await lockClient.query(
-      `SELECT id::text AS id, deployment_id::text AS "deploymentId", release_sha AS "releaseSha", app_version AS "appVersion",
-              verify_status AS "verifyStatus", apply_status AS "applyStatus",
-              manifest_hash AS "manifestHash", prepare_status AS "prepareStatus", owner
-         FROM ops.feedback_release_runs WHERE id=$1 FOR UPDATE`,
-      [runId]
-    );
+    const runQuery = await repository.select_ops_feedback_release_runs_3([runId], lockClient);
     const run = runQuery.rows[0];
     if (!run) throw createError(404, '发布批次不存在');
     if (run.verifyStatus !== 'passed') throw createError(409, '该发布批次未通过专项验收，不能回写已实施');
@@ -424,24 +345,13 @@ async function applyRun(runId, options) {
       throw createError(409, '当前运行版本与发布批次不一致，拒绝回写');
     }
 
-    const checked = await lockClient.query(
-      'SELECT feedback_id::text AS "feedbackId", expected_revision::text AS "expectedRevision", conclusion, implementation_commit AS "implementationCommit", evidence_summary AS "evidenceSummary" FROM ops.feedback_release_items WHERE run_id=$1',
-      [runId]
-    );
+    const checked = await repository.select_ops_feedback_release_items([runId], lockClient);
     const manifestHash = computeManifestHash(checked.rows);
     if (run.manifestHash && manifestHash !== run.manifestHash) {
       throw createError(409, '核对清单已被修改，请重新冻结后再次验收');
     }
 
-    const targets = await lockClient.query(
-      `SELECT feedback_id::text AS "feedbackId", expected_revision::text AS "expectedRevision",
-              expected_status AS "expectedStatus", conclusion, implementation_commit AS "implementationCommit",
-              evidence_summary AS "evidenceSummary", apply_status AS "applyStatus"
-         FROM ops.feedback_release_items
-        WHERE run_id=$1 AND conclusion IN ('solved','partial')
-        ORDER BY feedback_id ASC`,
-      [runId]
-    );
+    const targets = await repository.select_ops_feedback_release_items_1([runId], lockClient);
 
     const results = [];
     for (let i = 0; i < targets.rows.length; i++) {
@@ -450,7 +360,7 @@ async function applyRun(runId, options) {
     const applied = results.filter(function (r) { return r.applyStatus === 'applied'; }).length;
     const failed = results.filter(function (r) { return r.applyStatus !== 'applied' && r.applyStatus !== 'skipped'; }).length;
     const overall = failed === 0 ? 'applied' : (applied > 0 ? 'partial' : 'failed');
-    await lockClient.query('UPDATE ops.feedback_release_runs SET apply_status=$1, updated_at=now() WHERE id=$2', [overall, runId]);
+    await repository.update_ops_feedback_release_runs_4([overall, runId], lockClient);
     await txControl.commit(lockClient);
     return { runId: String(runId), applyStatus: overall, applied: applied, failed: failed, items: results };
   } catch (e) {
@@ -466,12 +376,7 @@ async function applyOne(runId, run, item, opts) {
   const client = await pool.connect();
   try {
     await txControl.begin(client);
-    const locked = await client.query(
-      `SELECT id, apply_status AS "applyStatus", revision_after::text AS "revisionAfter"
-         FROM ops.feedback_release_items
-        WHERE run_id=$1 AND feedback_id=$2 FOR UPDATE`,
-      [runId, item.feedbackId]
-    );
+    const locked = await repository.select_ops_feedback_release_items_2([runId, item.feedbackId], client);
     const row = locked.rows[0];
     if (!row) { await txControl.rollback(client); return { feedbackId: item.feedbackId, applyStatus: 'failed', error: '明细不存在' }; }
     if (row.applyStatus === 'applied') {
@@ -531,13 +436,7 @@ async function applyOne(runId, run, item, opts) {
         authorUsername: fb.authorUsername,
       });
     }
-    await client.query(
-      `UPDATE ops.feedback_release_items
-          SET apply_status='applied', apply_error='', revision_before=$1, revision_after=$2,
-              applied_at=now(), updated_at=now()
-        WHERE run_id=$3 AND feedback_id=$4`,
-      [fb.revision, revision, runId, item.feedbackId]
-    );
+    await repository.update_ops_feedback_release_items_1([fb.revision, revision, runId, item.feedbackId], client);
     await txControl.commit(client);
     return { feedbackId: item.feedbackId, applyStatus: 'applied', revisionBefore: fb.revision, revisionAfter: revision };
   } catch (e) {
@@ -562,12 +461,7 @@ async function rollbackRun(runId, options) {
     lockHandle = await acquireReleaseLock(lockClient, {
       heldLockToken: opts.heldLockToken, heldLockReadyFile: opts.heldLockReadyFile,
     });
-    const runQuery = await lockClient.query(
-      `SELECT id::text AS id, deployment_id::text AS "deploymentId", release_sha AS "releaseSha",
-              app_version AS "appVersion", verify_status AS "verifyStatus", apply_status AS "applyStatus"
-         FROM ops.feedback_release_runs WHERE id=$1 FOR UPDATE`,
-      [runId]
-    );
+    const runQuery = await repository.select_ops_feedback_release_runs_4([runId], lockClient);
     const run = runQuery.rows[0];
     if (!run) throw createError(404, '发布批次不存在');
     if (run.applyStatus === 'pending' || run.applyStatus === 'rolled_back') {
@@ -581,14 +475,7 @@ async function rollbackRun(runId, options) {
     if (runtime.sha.toLowerCase() !== String(run.releaseSha).toLowerCase()) {
       throw createError(409, '当前运行提交与发布批次不一致，拒绝回滚');
     }
-    const items = await lockClient.query(
-      `SELECT feedback_id::text AS "feedbackId", expected_revision::text AS "expectedRevision",
-              expected_status AS "expectedStatus", revision_after::text AS "revisionAfter", apply_status AS "applyStatus"
-         FROM ops.feedback_release_items
-        WHERE run_id=$1 AND conclusion='solved' AND apply_status='applied'
-        ORDER BY feedback_id ASC`,
-      [runId]
-    );
+    const items = await repository.select_ops_feedback_release_items_3([runId], lockClient);
     const results = [];
     for (let i = 0; i < items.rows.length; i++) {
       results.push(await rollbackOne(runId, run, items.rows[i], opts));
@@ -599,7 +486,7 @@ async function rollbackRun(runId, options) {
     const failed = results.filter(function (r) { return r.result === 'failed'; }).length;
     const overall = failed > 0 ? 'partial'
       : (restored === 0 ? 'applied' : (kept > 0 ? 'partial' : 'rolled_back'));
-    await lockClient.query('UPDATE ops.feedback_release_runs SET apply_status=$1, updated_at=now() WHERE id=$2', [overall, runId]);
+    await repository.update_ops_feedback_release_runs_4([overall, runId], lockClient);
     await txControl.commit(lockClient);
     return { runId: String(runId), applyStatus: overall, restored: restored, kept: kept, failed: failed, items: results };
   } catch (e) {
@@ -615,10 +502,7 @@ async function rollbackOne(runId, run, item, opts) {
   const client = await pool.connect();
   try {
     await txControl.begin(client);
-    const locked = await client.query(
-      'SELECT id, apply_status AS "applyStatus" FROM ops.feedback_release_items WHERE run_id=$1 AND feedback_id=$2 FOR UPDATE',
-      [runId, item.feedbackId]
-    );
+    const locked = await repository.select_ops_feedback_release_items_4([runId, item.feedbackId], client);
     if (!locked.rows[0] || locked.rows[0].applyStatus !== 'applied') {
       await txControl.rollback(client);
       return { feedbackId: item.feedbackId, result: 'kept_after_modification' };
@@ -653,11 +537,7 @@ async function rollbackOne(runId, run, item, opts) {
       releaseRunId: runId,
       reason: '版本 ' + run.appVersion + ' 已回滚，处理状态已更新',
     });
-    await client.query(
-      `UPDATE ops.feedback_release_items SET apply_status='rolled_back', updated_at=now()
-        WHERE run_id=$1 AND feedback_id=$2`,
-      [runId, item.feedbackId]
-    );
+    await repository.update_ops_feedback_release_items_2([runId, item.feedbackId], client);
     await txControl.commit(client);
     return { feedbackId: item.feedbackId, result: 'restored', revisionAfter: revision };
   } catch (e) {
@@ -669,11 +549,7 @@ async function rollbackOne(runId, run, item, opts) {
 }
 
 async function markItem(feedbackId, runId, status, error) {
-  await pool.query(
-    `UPDATE ops.feedback_release_items SET apply_status=$1, apply_error=$2, updated_at=now()
-      WHERE run_id=$3 AND feedback_id=$4 AND apply_status IN ('pending','conflict','failed')`,
-    [status, String(error || '').slice(0, 300), runId, feedbackId]
-  );
+  await repository.update_ops_feedback_release_items_3([status, String(error || '').slice(0, 300), runId, feedbackId]);
 }
 
 // 回读：确认主记录、版本关联与处理历史
@@ -682,16 +558,7 @@ async function markItem(feedbackId, runId, status, error) {
 /* listRuns 已迁入 server/repositories/feedbackReleaseRepository.js */
 
 async function getRun(runId) {
-  const { rows } = await pool.query(
-    `SELECT id::text AS id, deployment_id::text AS "deploymentId", environment,
-            release_sha AS "releaseSha", app_version AS "appVersion", base_deployed_sha AS "baseDeployedSha",
-            manifest_hash AS "manifestHash", review_policy_version AS "reviewPolicyVersion",
-            snapshot_at AS "snapshotAt", snapshot_count AS "snapshotCount", snapshot_complete AS "snapshotComplete",
-            owner, prepare_status AS "prepareStatus", verify_status AS "verifyStatus", apply_status AS "applyStatus",
-            verify_evidence AS "verifyEvidence", created_at AS "createdAt", updated_at AS "updatedAt"
-       FROM ops.feedback_release_runs WHERE id=$1`,
-    [runId]
-  );
+  const { rows } = await repository.select_ops_feedback_release_runs_5([runId]);
   if (!rows[0]) throw createError(404, '发布批次不存在');
   return rows[0];
 }

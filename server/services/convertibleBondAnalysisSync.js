@@ -4,6 +4,7 @@ const { pool, tryClaimJob, releaseJob, startJobRun, finishJobRun } = require('..
 const { tushareQuery, tsRows, tsDateStr } = require('./market');
 const { TushareRequestError } = require('./tushare');
 const { fetchTencentQuotes, describeTencentCode } = require('./tencentQuote');
+const repository = require('../repositories/convertibleBondAnalysisSyncRepository.js');
 const { fetchCninfoEvents, fetchCninfoEventsByYear, fetchSseLatestReport, fetchSseEvents, fetchSzseEvents, fetchSzseLatestReport,
   fetchSseEventsBatch, fetchSzseEventsBatch, fetchCninfoEventsBatch, fetchTushareAnnouncementBatch } = require('./stockAnalysis');
 const { spawn } = require('child_process');
@@ -166,11 +167,7 @@ async function saveAnnouncementHistories(client, instrumentId, events, profile, 
     .filter(event => announcementMatchesBond(event, profile));
   const periodMap = new Map(noRevisionPeriods.map(row => [isoDate(row.announced_at), row]));
   const priceMap = new Map(priceChangeDetails.map(row => [row.source_url, row]));
-  await client.query(
-    `DELETE FROM fundamental.convertible_bond_price_changes
-     WHERE instrument_id=$1 AND source_id=$2 AND reason ~ '(提议|预计触发|可能触发|提示性)'`,
-    [instrumentId, sourceId]
-  );
+  await repository.delete_fundamental_convertible_bond_price_changes([instrumentId, sourceId], client);
   for (const event of matched) {
     const title = String(event.title || ''), announced = isoDate(event.event_date);
     if (!announced) continue;
@@ -178,11 +175,7 @@ async function saveAnnouncementHistories(client, instrumentId, events, profile, 
     const decision = revisionDecision(title);
     const period = periodMap.get(announced) || {};
     if (decision === 'no_revision' || period.lock_declared) {
-      await client.query(
-        `INSERT INTO fundamental.convertible_bond_no_revision_history(instrument_id,announced_at,valid_until,next_eligible_date,summary,source_id,raw_payload)
-         VALUES($1,$2,$3,$4,$5,$6,$7::jsonb) ON CONFLICT(instrument_id,announced_at) DO UPDATE SET valid_until=EXCLUDED.valid_until,
-           next_eligible_date=EXCLUDED.next_eligible_date,summary=EXCLUDED.summary,raw_payload=EXCLUDED.raw_payload`,
-        [instrumentId, announced, isoDate(period.valid_until), isoDate(period.next_eligible_date), title, eventSourceId,
+      await repository.insert_fundamental_convertible_bond_no_revision_history([instrumentId, announced, isoDate(period.valid_until), isoDate(period.next_eligible_date), title, eventSourceId,
           JSON.stringify(Object.assign({}, event, {
             lock_start_date: period.lock_start_date || null,
             lock_declared: Boolean(period.lock_declared),
@@ -193,41 +186,26 @@ async function saveAnnouncementHistories(client, instrumentId, events, profile, 
             symbolic_report_period: period.symbolic_report_period || null,
             symbolic_check_from: period.symbolic_check_from || null,
             symbolic_resolution_status: period.symbolic_resolution_status || (period.symbolic_reference_type ? 'pending' : null),
-          }))]
-      );
+          }))], client);
     }
     if (decision === 'revised' || decision === 'adjusted') {
       const detail = priceMap.get(event.url) || {};
       if (finite(detail.price_before) == null && finite(detail.price_after) == null) continue;
       const changeDate = isoDate(detail.change_date) || announced;
-      await client.query(
-        `INSERT INTO fundamental.convertible_bond_price_changes(instrument_id,publish_date,change_date,price_before,price_after,reason,source_id,raw_payload)
-         VALUES($1,$2,$3,$4,$5,$6,$7,$8::jsonb) ON CONFLICT(instrument_id,change_date) DO UPDATE SET publish_date=EXCLUDED.publish_date,
-           price_before=COALESCE(EXCLUDED.price_before,fundamental.convertible_bond_price_changes.price_before),
-           price_after=COALESCE(EXCLUDED.price_after,fundamental.convertible_bond_price_changes.price_after),reason=EXCLUDED.reason,raw_payload=EXCLUDED.raw_payload`,
-        [instrumentId, announced, changeDate, finite(detail.price_before), finite(detail.price_after), title, eventSourceId,
+      await repository.insert_fundamental_convertible_bond_price_changes([instrumentId, announced, changeDate, finite(detail.price_before), finite(detail.price_after), title, eventSourceId,
           JSON.stringify(Object.assign({}, event, {
             revision_floor_price: finite(detail.revision_floor_price),
             price_change_parser_version: detail.parser_version || '3',
-          }))]
-      );
+          }))], client);
     }
   }
 }
 
 async function saveTriggerProgress(client, instrumentId, tradeDate, progresses) {
   for (const [type, progress] of Object.entries(progresses)) {
-    await client.query(
-      `INSERT INTO analytics.convertible_bond_trigger_daily
-       (instrument_id,trade_date,trigger_type,trigger_price,close_price,matched_days,required_days,observation_days,status,formula_version,diagnostics)
-       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb)
-       ON CONFLICT(instrument_id,trade_date,trigger_type,formula_version) DO UPDATE SET trigger_price=EXCLUDED.trigger_price,
-         close_price=EXCLUDED.close_price,matched_days=EXCLUDED.matched_days,required_days=EXCLUDED.required_days,
-         observation_days=EXCLUDED.observation_days,status=EXCLUDED.status,diagnostics=EXCLUDED.diagnostics,calculated_at=now()`,
-      [instrumentId, isoDate(tradeDate), type, progress.trigger_price, progress.close_price, progress.matched_days,
+    await repository.insert_analytics_convertible_bond_trigger_daily([instrumentId, isoDate(tradeDate), type, progress.trigger_price, progress.close_price, progress.matched_days,
         progress.required_days, progress.observation_days, progress.active === false ? 'not_active' : (progress.met ? 'met' : 'tracking'),
-        FORMULA_VERSION, JSON.stringify(progress)]
-    );
+        FORMULA_VERSION, JSON.stringify(progress)], client);
   }
 }
 
@@ -388,11 +366,7 @@ function isTencentBondWindow(targetTradeDate, now = new Date(), recordedNextTrad
 }
 
 async function recordedNextBondTradeDate(targetTradeDate) {
-  const { rows } = await pool.query(
-    `SELECT MIN(trade_date)::text AS trade_date
-       FROM market.trade_calendar
-      WHERE exchange='SSE' AND is_open AND trade_date > $1::date`, [isoDate(targetTradeDate)]
-  );
+  const { rows } = await repository.select_market_trade_calendar([isoDate(targetTradeDate)]);
   return rows[0] && rows[0].trade_date ? isoDate(rows[0].trade_date) : null;
 }
 
@@ -409,18 +383,9 @@ async function fetchTargetedBondDaily(codes, targetTradeDate) {
 }
 
 async function updateBondFallbackRuntime(usedFallback, targetTradeDate) {
-  const source = await pool.query("SELECT source_id FROM ops.data_sources WHERE source_code='tushare' LIMIT 1");
+  const source = await repository.select_ops_data_sources();
   if (!source.rows[0]) return null;
-  const result = await pool.query(
-    `INSERT INTO ops.source_endpoint_runtime(source_id,api_name,credential_fingerprint,consecutive_fallback_count,last_fallback_at,last_primary_success_at)
-     VALUES($1,'cb_daily','none',CASE WHEN $2::boolean THEN 1 ELSE 0 END,CASE WHEN $2::boolean THEN now() END,CASE WHEN $2::boolean THEN NULL ELSE now() END)
-     ON CONFLICT(source_id,api_name,credential_fingerprint) DO UPDATE SET
-       consecutive_fallback_count=CASE WHEN $2::boolean THEN ops.source_endpoint_runtime.consecutive_fallback_count+1 ELSE 0 END,
-       last_fallback_at=CASE WHEN $2::boolean THEN now() ELSE ops.source_endpoint_runtime.last_fallback_at END,
-       last_primary_success_at=CASE WHEN $2::boolean THEN ops.source_endpoint_runtime.last_primary_success_at ELSE now() END,
-       updated_at=now()
-     RETURNING consecutive_fallback_count,last_primary_success_at`, [source.rows[0].source_id, Boolean(usedFallback)]
-  );
+  const result = await repository.insert_ops_source_endpoint_runtime([source.rows[0].source_id, Boolean(usedFallback)]);
   const state = result.rows[0] || null;
   if (usedFallback && state && Number(state.consecutive_fallback_count) >= 3) {
     await sendAlert({
@@ -580,23 +545,7 @@ async function backfillBondListingLiquidity(reason = 'scheduled') {
 async function findBondListingLiquidityGaps(listingDate) {
   const targetDate = isoDate(listingDate);
   if (!targetDate) throw new Error('缺少下一交易日，无法核验新债流通规模覆盖');
-  const { rows } = await pool.query(
-    `SELECT DISTINCT ON (i.instrument_id)
-            split_part(i.canonical_code,'.',1) AS code,
-            i.name,
-            e.event_date::text AS listing_date,
-            (l.instrument_id IS NULL) AS missing
-       FROM event.instrument_events e
-       JOIN core.instruments i ON i.instrument_id=e.instrument_id
-       JOIN fundamental.convertible_bond_profiles p ON p.instrument_id=i.instrument_id
-       LEFT JOIN fundamental.convertible_bond_issuance iss ON iss.instrument_id=i.instrument_id
-       LEFT JOIN analytics.convertible_bond_listing_liquidity l ON l.instrument_id=i.instrument_id
-      WHERE e.event_type='listing'
-        AND e.event_date=$1::date
-        AND i.asset_class='convertible_bond'
-        AND (iss.issue_type IS NULL OR iss.issue_type NOT IN ('定向','私募'))
-      ORDER BY i.instrument_id,e.event_date DESC`, [targetDate]
-  );
+  const { rows } = await repository.select_event_instrument_events([targetDate]);
   return {
     targetDate,
     candidateCodes: rows.map(row => row.code),
@@ -781,10 +730,7 @@ async function syncConvertibleBondUniverse(reason = 'scheduled', options = {}) {
 
       // 保存前先记下现有转股价，用来识别本轮发生转股价变动的转债
       const prevConvPrice = new Map();
-      const prevRows = await client.query(
-        `SELECT i.canonical_code AS ts_code, p.current_conv_price
-           FROM fundamental.convertible_bond_profiles p
-           JOIN core.instruments i ON i.instrument_id = p.instrument_id`);
+      const prevRows = await repository.select_fundamental_convertible_bond_profiles(client);
       for (const row of prevRows.rows) prevConvPrice.set(row.ts_code, finite(row.current_conv_price));
 
       const stockInstrumentMap = await ensureStockUniverse(client, stockStatusRows, sources.tushare);
@@ -817,13 +763,7 @@ async function syncConvertibleBondUniverse(reason = 'scheduled', options = {}) {
       if (pendingListingSaved.length) {
         console.log(`[主同步] 待上市新债主档已补全 ${pendingListingSaved.length} 只：${pendingListingSaved.join(',')}`);
       }
-      await client.query(
-        `INSERT INTO ops.sync_cursors(scope_key,dataset_code,last_success_date,last_source_update,last_attempt_at,last_error,retry_count)
-         VALUES('convertible_bond_universe','cb_basic_cb_daily',$1,now(),now(),'',0)
-         ON CONFLICT(scope_key,dataset_code) DO UPDATE SET last_success_date=COALESCE(EXCLUDED.last_success_date,ops.sync_cursors.last_success_date),
-           last_source_update=now(),last_attempt_at=now(),last_error='',retry_count=0,updated_at=now()`,
-        [unresolvedCodes.length ? null : isoDate(daily.tradeDate)]
-      );
+      await repository.insert_ops_sync_cursors([unresolvedCodes.length ? null : isoDate(daily.tradeDate)], client);
       await writeBondGapQueue(client.query.bind(client), gapQueue);
       await txControl.commit(client);
       console.log(`[主同步] 可转债全量同步已提交（${saved} 只，行情日期 ${daily.tradeDate}）`);
@@ -1005,15 +945,7 @@ async function getRecentOpenDays(days = 90, endDate = null) {
     exchange: 'SSE', trade_date: isoDate(row.cal_date), is_open: String(row.is_open) === '1', raw_payload: row,
   })).filter(row => row.trade_date);
   if (rows.length) {
-    await pool.query(
-      `INSERT INTO market.trade_calendar(exchange,trade_date,is_open,source_code,raw_payload)
-       SELECT x.exchange,x.trade_date,x.is_open,'tushare',x.raw_payload
-         FROM jsonb_to_recordset($1::jsonb) AS x(exchange text,trade_date date,is_open boolean,raw_payload jsonb)
-       ON CONFLICT(exchange,trade_date) DO UPDATE SET
-         is_open=EXCLUDED.is_open,source_code=EXCLUDED.source_code,
-         raw_payload=EXCLUDED.raw_payload,ingested_at=now()`,
-      [JSON.stringify(rows)]
-    );
+    await repository.insert_market_trade_calendar([JSON.stringify(rows)]);
   }
   return rows.filter(row => row.is_open).map(row => row.trade_date).sort();
 }
@@ -1032,11 +964,7 @@ async function backfillCycleGaps({ windowDays = 90, targetTradeDate = null } = {
   let gapFilled = 0;
   const client = await pool.connect();
   try {
-    const instrumentRows = await client.query(
-      `SELECT i.canonical_code, i.instrument_id
-         FROM core.instruments i
-         JOIN fundamental.convertible_bond_profiles p ON p.instrument_id=i.instrument_id`
-    );
+    const instrumentRows = await repository.select_core_instruments(client);
     const instrumentMap = new Map(instrumentRows.rows.map(row => [row.canonical_code, row.instrument_id]));
     for (const day of gaps) {
       try {
@@ -1099,13 +1027,7 @@ async function markStockDailyBackfillStale(targetTradeDate, error) {
     query_status: 'failed',
     error: String(error || '正股历史行情补漏失败').slice(0, 500),
   });
-  await pool.query(
-    `UPDATE ops.dataset_partitions
-        SET status='stale',is_stale=true,stale_reason=$2,
-            diagnostics=COALESCE(diagnostics,'{}'::jsonb)||$3::jsonb,updated_at=now()
-      WHERE dataset_code='stock_daily' AND scope_key='CN' AND partition_key=$1::date`,
-    [tradeDate, '正股历史行情补漏失败，强赎计算输入未确认完整', detail]
-  );
+  await repository.update_ops_dataset_partitions([tradeDate, '正股历史行情补漏失败，强赎计算输入未确认完整', detail]);
 }
 
 async function syncConvertibleBondUniverseWithBackfill(reason = 'scheduled', backfillOpts = {}) {
@@ -1284,11 +1206,7 @@ async function syncConvertibleBondAnnouncementHistories({ tsCodes = [], fromDate
   const end = isoDate(toDate) || tsDateStr(new Date());
   const normalizedCodes = (Array.isArray(tsCodes) ? tsCodes : [tsCodes]).map(normalizeBondCode).filter(Boolean);
   const globalSync = !normalizedCodes.length && !fromDate && !cachedOnly;
-  const cursorResult = globalSync ? await pool.query(
-    `SELECT last_success_date::text AS last_success_date,last_error
-       FROM ops.sync_cursors
-      WHERE scope_key='convertible_bond_announcement_history' AND dataset_code='official_announcements'`
-  ) : { rows: [] };
+  const cursorResult = globalSync ? await repository.select_ops_sync_cursors() : { rows: [] };
   const cursorDate = cursorResult.rows[0] && isoDate(cursorResult.rows[0].last_success_date);
   const scanStart = fromDate ? isoDate(fromDate) : (cursorDate
     ? isoDate(addDays(new Date(`${cursorDate}T00:00:00+08:00`), -ANNOUNCEMENT_OVERLAP_DAYS)) : null);
@@ -1448,37 +1366,16 @@ async function syncConvertibleBondAnnouncementHistories({ tsCodes = [], fromDate
         await saveRevisionEvents(client, profile.instrument_id, announcements, priceChangeDetails,
           sources.cninfo || sources.calculated, sources);
         for (const failure of noRevisionPeriods.filter(row => row.reparse_status === 'failed')) {
-          await client.query(
-            `UPDATE fundamental.convertible_bond_no_revision_history
-                SET raw_payload=jsonb_set(COALESCE(raw_payload,'{}'::jsonb),'{reparse}',
-                  COALESCE(raw_payload->'reparse','{}'::jsonb) || jsonb_build_object(
-                    'parser_version','7','status','failed','attempted_at',now(),
-                    'reason',$3::text,'attempts',COALESCE((raw_payload->'reparse'->>'attempts')::int,0)+1))
-              WHERE instrument_id=$1 AND announced_at=$2::date`,
-            [profile.instrument_id, isoDate(failure.announced_at), failure.reparse_reason || 'parser_output_incomplete']
-          );
+          await repository.update_fundamental_convertible_bond_no_revision_history([profile.instrument_id, isoDate(failure.announced_at), failure.reparse_reason || 'parser_output_incomplete'], client);
         }
         if (legacyMaturityCandidate && cachedRow && cachedRow.source_url) {
-          await client.query(
-            `UPDATE fundamental.convertible_bond_no_revision_history
-                SET raw_payload=jsonb_set(COALESCE(raw_payload,'{}'::jsonb),'{reparse}',
-                  COALESCE(raw_payload->'reparse','{}'::jsonb) || jsonb_build_object(
-                    'status','maturity_checked','attempted_at',now(),'reason','legacy_maturity_date_check'))
-              WHERE instrument_id=$1 AND announced_at=$2::date`,
-            [profile.instrument_id, isoDate(cachedRow.announced_at)]
-          );
+          await repository.update_fundamental_convertible_bond_no_revision_history_1([profile.instrument_id, isoDate(cachedRow.announced_at)], client);
         }
         await txControl.commit(client);
       } catch (error) {
         await txControl.rollback(client);
         if (globalSync) {
-          await pool.query(
-            `INSERT INTO ops.sync_cursors(scope_key,dataset_code,last_attempt_at,last_error,retry_count,updated_at)
-             VALUES('convertible_bond_announcement_history','official_announcements',now(),$1,1,now())
-             ON CONFLICT(scope_key,dataset_code) DO UPDATE SET last_attempt_at=now(),last_error=$1,
-               retry_count=ops.sync_cursors.retry_count+1,updated_at=now()`,
-            [String(error.message || error).slice(0, 1000)]
-          );
+          await repository.insert_ops_sync_cursors_1([String(error.message || error).slice(0, 1000)]);
         }
         throw error;
       } finally { client.release(); }
@@ -1490,12 +1387,7 @@ async function syncConvertibleBondAnnouncementHistories({ tsCodes = [], fromDate
   if (sourceFailures.length) {
     const message = `公告源同步失败：${sourceFailures.slice(0, 10).map(item => `${item.ts_code}:${item.messages.join('|')}`).join('; ')}`.slice(0, 1000);
     if (globalSync) {
-      await pool.query(
-        `INSERT INTO ops.sync_cursors(scope_key,dataset_code,last_attempt_at,last_error,retry_count,updated_at)
-         VALUES('convertible_bond_announcement_history','official_announcements',now(),$1,1,now())
-         ON CONFLICT(scope_key,dataset_code) DO UPDATE SET last_attempt_at=now(),last_error=$1,
-           retry_count=ops.sync_cursors.retry_count+1,updated_at=now()`, [message]
-      );
+      await repository.insert_ops_sync_cursors_2([message]);
     }
     throw new Error(message);
   }
@@ -1562,12 +1454,7 @@ async function syncConvertibleBondAnnouncementHistories({ tsCodes = [], fromDate
     });
   }
   if (globalSync && !configuredLimit) {
-    await pool.query(
-      `INSERT INTO ops.sync_cursors(scope_key,dataset_code,last_success_date,last_attempt_at,last_error,retry_count,updated_at)
-       VALUES('convertible_bond_announcement_history','official_announcements',$1,now(),''::text,0,now())
-       ON CONFLICT(scope_key,dataset_code) DO UPDATE SET last_success_date=EXCLUDED.last_success_date,
-         last_attempt_at=now(),last_error='',retry_count=0,updated_at=now()`, [end]
-    );
+    await repository.insert_ops_sync_cursors_3([end]);
   }
   const limited = configuredLimit !== null;
   const liquidityIncomplete = mode === 'calendar' && listingLiquidity && listingLiquidity.ok === false;
@@ -1634,11 +1521,7 @@ function symbolicReportPattern(period) {
 }
 
 async function nextOpenTradeDate(date) {
-  const { rows } = await pool.query(
-    `SELECT MIN(trade_date)::text AS trade_date
-       FROM market.trade_calendar
-      WHERE exchange='SSE' AND is_open AND trade_date>$1::date`, [isoDate(date)]
-  );
+  const { rows } = await repository.select_market_trade_calendar_1([isoDate(date)]);
   return rows[0] && isoDate(rows[0].trade_date);
 }
 
@@ -1651,17 +1534,7 @@ async function resolveConvertibleBondSymbolicLocks({ force = false } = {}) {
   let scanned = 0, resolved = 0, skipped = 0;
   try {
     const today = isoDate(new Date());
-    const { rows } = await pool.query(`
-      SELECT DISTINCT ON (h.instrument_id)
-             h.history_id,h.instrument_id,h.announced_at::text,h.raw_payload,
-             s.canonical_code AS stock_code
-        FROM fundamental.convertible_bond_no_revision_history h
-        JOIN core.instruments i ON i.instrument_id=h.instrument_id
-        JOIN fundamental.convertible_bond_profiles p ON p.instrument_id=h.instrument_id
-        JOIN core.instruments s ON s.instrument_id=p.stock_instrument_id
-       WHERE h.raw_payload->>'symbolic_reference_type'='quarterly_report_board_meeting'
-         AND COALESCE(h.raw_payload->>'symbolic_resolution_status','pending')<>'resolved'
-       ORDER BY h.instrument_id,h.announced_at DESC,h.history_id DESC`);
+    const { rows } = await repository.select_fundamental_convertible_bond_no_revision_history();
     for (const row of rows) {
       const raw = row.raw_payload || {};
       const checkFrom = isoDate(raw.symbolic_check_from);
@@ -1686,19 +1559,7 @@ async function resolveConvertibleBondSymbolicLocks({ force = false } = {}) {
         const meetingDate = isoDate(boardEvent.event_date);
         const nextEligible = await nextOpenTradeDate(meetingDate);
         if (!nextEligible) continue;
-        await pool.query(
-          `UPDATE fundamental.convertible_bond_no_revision_history
-              SET valid_until=$2::date,next_eligible_date=$3::date,
-                  raw_payload=COALESCE(raw_payload,'{}'::jsonb) || jsonb_build_object(
-                    'symbolic_resolution_status','resolved',
-                    'symbolic_report_announced_at',$4::text,
-                    'symbolic_board_meeting_date',$2::text,
-                    'symbolic_board_source_url',$5::text,
-                    'symbolic_board_title',$6::text,
-                    'symbolic_resolved_at',now())
-            WHERE history_id=$1`,
-          [row.history_id, meetingDate, nextEligible, reportDate, boardEvent.url || '', boardEvent.title || '']
-        );
+        await repository.update_fundamental_convertible_bond_no_revision_history_2([row.history_id, meetingDate, nextEligible, reportDate, boardEvent.url || '', boardEvent.title || '']);
         resolved++;
       } catch (error) {
         failures.push({ ts_code: row.stock_code, message: String(error && error.message || error).slice(0, 300) });
@@ -1720,37 +1581,12 @@ async function backfillUnderlyingStockMarket({ windowDays = 500, targetTradeDate
   let emptyDays = 0;
   let repairedBars = 0;
   try {
-    const { rows } = await pool.query(
-      `SELECT DISTINCT s.canonical_code,s.instrument_id
-       FROM fundamental.convertible_bond_profiles p
-       JOIN core.instruments b ON b.instrument_id=p.instrument_id
-       LEFT JOIN fundamental.convertible_bond_issuance iss ON iss.instrument_id=p.instrument_id
-       JOIN core.instruments s ON s.instrument_id=p.stock_instrument_id
-       JOIN public.bond_unified u ON u.instrument_id=b.instrument_id
-       WHERE u.status='listed'
-         AND s.asset_class='stock'
-         AND s.list_date IS NOT NULL
-         AND (s.delist_date IS NULL OR s.delist_date >= $1::date)
-         AND (iss.issue_type IS NULL OR iss.issue_type NOT IN ('定向','私募'))
-         AND (p.maturity_date IS NULL OR p.maturity_date >= $1::date)`,
-      [isoDate(targetTradeDate) || tsDateStr(new Date())]
-    );
+    const { rows } = await repository.select_fundamental_convertible_bond_profiles_1([isoDate(targetTradeDate) || tsDateStr(new Date())]);
     const instrumentMap = new Map(rows.map(row => [row.canonical_code, row.instrument_id]));
     const openDays = await getRecentOpenDays(windowDays, targetTradeDate);
     const source = await sourceIds();
     for (const tradeDate of openDays) {
-      const coverage = await pool.query(
-        `SELECT
-           COUNT(DISTINCT i.instrument_id) FILTER (WHERE sc.instrument_id IS NULL)::int AS expected,
-           COUNT(DISTINCT b.instrument_id) FILTER (WHERE sc.instrument_id IS NULL)::int AS bars,
-           COUNT(DISTINCT v.instrument_id) FILTER (WHERE sc.instrument_id IS NULL)::int AS valuations
-         FROM (SELECT unnest($1::bigint[]) AS instrument_id) i
-         LEFT JOIN market.stock_suspend_calendar sc
-           ON sc.instrument_id=i.instrument_id AND sc.trade_date=$2::date AND sc.source_id=$3
-         LEFT JOIN market.daily_bars b ON b.instrument_id=i.instrument_id AND b.trade_date=$2::date AND b.source_id=$3
-         LEFT JOIN market.daily_valuations v ON v.instrument_id=i.instrument_id AND v.trade_date=$2::date AND v.source_id=$3`,
-        [[...instrumentMap.values()], isoDate(tradeDate), source.tushare]
-      );
+      const coverage = await repository.select_market_stock_suspend_calendar([[...instrumentMap.values()], isoDate(tradeDate), source.tushare]);
       const expectedCount = Number(coverage.rows[0].expected || 0);
       if (!expectedCount || (coverage.rows[0].bars >= expectedCount * 0.9 && coverage.rows[0].valuations >= expectedCount * 0.9)) continue;
       // 补历史时严格串行调用并限速，避免 daily + daily_basic 并发形成请求洪峰；

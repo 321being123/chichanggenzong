@@ -6,6 +6,7 @@ const { httpRequest, ALLOWED_DOMAINS, searchAnnouncements } = require('./hkexAnn
 const { readCachedPdf, writeCachedPdf } = require('./documentPdfCache');
 const { HKEX_ALLOTMENT_DATASET, HKEX_ALLOTMENT_FACTS_PARSER_VERSION, HKEX_ALLOTMENT_PARSER_VERSION, HKEX_LISTING_STATUS_DATASET, HKEX_NON_PUBLIC_DATASET, HKEX_NON_PUBLIC_LISTINGS, HKEX_PROSPECTUS_DATASET, HKEX_PROSPECTUS_NOT_APPLICABLE, allotmentTitleLooksLikeIpo, assertOfficialUrl, canonicalHkCode, fetchHkexNewListingReports, fetchOfficialPdfWithCache, isReparsableAllotmentDocument, isUsableProspectusDocument, mergeSourceDocuments, monthWindows, parseHkexAllotmentPdf, parseHkexProspectusPdf, prospectusSearchWindows, resolveHkexEnglishPdfUrl, shiftIsoDate, shouldPersistAllotmentFacts } = require('./hkexIpoCore.js');
 const { todayShanghai, upsertHkIpoFacts } = require('./hkexIpoFacts.js');
+const repository = require('../repositories/hkexIpoSyncRepository.js');
 
 async function syncHkexPricingFacts({asOfDate,targetCodes=[],executor=pool.query.bind(pool),fetchImpl=httpRequest,searchImpl=searchAnnouncements}={}) {
   if(!/^\d{4}-\d{2}-\d{2}$/.test(asOfDate||''))throw new Error('定价补全必须传入目标日');
@@ -1068,14 +1069,10 @@ async function syncHkexHistoricalReports({
       ...item,
       sourceDocuments: [{ type: 'new_listing_report', url: report.url, title: `${report.board} ${report.year} 官方新上市报表` }],
     })));
-  const source = await pool.query("SELECT source_id FROM ops.data_sources WHERE source_code='hkex_announcements' LIMIT 1");
+  const source = await repository.select_ops_data_sources();
   if (!source.rows[0]) throw new Error('港交所数据源未登记');
   const range = { fromDate, toDate, years, targetCount: reports.length, reportKeys: reports.map(report => report.key) };
-  const run = await pool.query(
-    `INSERT INTO ops.ingestion_runs(source_id,dataset_code,request_range,status)
-     VALUES($1,'hkex_ipo_history_report',$2::jsonb,'running') RETURNING run_id`,
-    [source.rows[0].source_id, JSON.stringify(range)]
-  );
+  const run = await repository.insert_ops_ingestion_runs([source.rows[0].source_id, JSON.stringify(range)]);
   const runId = run.rows[0].run_id;
   try {
     for (const report of reports) {
@@ -1093,24 +1090,16 @@ async function syncHkexHistoricalReports({
         items: report.items || [],
       };
       const payloadText = JSON.stringify(payload);
-      await pool.query(
-        `INSERT INTO ops.raw_records(run_id,source_id,dataset_code,source_key,source_updated_at,payload,payload_hash)
-         VALUES($1,$2,'hkex_ipo_history_report',$3,now(),$4::jsonb,$5)
-         ON CONFLICT(source_id,dataset_code,source_key,payload_hash) DO UPDATE SET run_id=EXCLUDED.run_id,ingested_at=now()`,
-        [runId, source.rows[0].source_id, report.key, payloadText, report.responseSha256 || crypto.createHash('sha256').update(payloadText).digest('hex')]
-      );
+      await repository.insert_ops_raw_records([runId, source.rows[0].source_id, report.key, payloadText, report.responseSha256 || crypto.createHash('sha256').update(payloadText).digest('hex')]);
     }
     const upserted = await upsertHkIpoFacts(rows, { sourceCode: 'hkex_announcements' });
     const failures = reports.filter(report => !report.ok);
     const status = reports.length && !failures.length ? 'succeeded' : rows.length ? 'degraded' : 'failed';
     const errorMessage = failures.map(report => `${report.key}:${report.error || 'failed'}`).join('; ').slice(0, 2000);
-    await pool.query(
-      `UPDATE ops.ingestion_runs SET status=$2,row_count=$3,error_message=$4,finished_at=now() WHERE run_id=$1`,
-      [runId, status, rows.length, errorMessage]
-    );
+    await repository.update_ops_ingestion_runs([runId, status, rows.length, errorMessage]);
     return { ok: status !== 'failed', status, runId, reports: reports.length, rows: rows.length, upserted, failures: failures.length, fromDate, toDate };
   } catch (error) {
-    await pool.query(`UPDATE ops.ingestion_runs SET status='failed',error_message=$2,finished_at=now() WHERE run_id=$1`, [runId, String(error.message || error).slice(0, 2000)]).catch(() => {});
+    await repository.update_ops_ingestion_runs_1([runId, String(error.message || error).slice(0, 2000)]).catch(() => {});
     throw error;
   }
 }

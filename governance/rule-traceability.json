@@ -3007,6 +3007,10 @@
         {
           "file": "server/test/job-due-slot-fairness.test.js",
           "pattern": "超过一页耗尽重试的旧槽不得饿死新任务"
+        },
+        {
+          "file": "server/test/job-due-slot-fairness.test.js",
+          "pattern": "due-slot fairness: exhausted retries, per-job policy, paging and backoff passed"
         }
       ],
       "owner": "Codex",

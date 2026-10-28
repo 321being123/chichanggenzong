@@ -146,15 +146,19 @@ section('H. 版本隔离（formula_version + universe_version 双过滤）');
 check('分位窗口/最新/历史查询 SQL 均含 universe_version 过滤', async () => {
   const fs = require('fs');
   const path = require('path');
-  const src = fs.readFileSync(path.join(__dirname, '..', 'services', 'convertibleBondCycleService.js'), 'utf8');
-  // fetchPriorComposites / getLatestCycle / getCycleHistory 的 SQL 必须同时按两个版本过滤
+  const src = fs.readFileSync(path.join(__dirname, '..', 'services', 'convertibleBondCycleService.js'), 'utf8')
+    + fs.readFileSync(path.join(__dirname, '..', 'repositories', 'convertibleBondCycleServiceRepository.js'), 'utf8')
+    + fs.readFileSync(path.join(__dirname, '..', 'repositories', 'convertibleBondCycleServiceRepository.js'), 'utf8');
+  // 分层整改后 SQL 已下沉：服务侧检查"经数据层查询"，数据层侧检查双版本过滤真实存在。
   const blocks = src.split(/async function /);
   for (const name of ['fetchPriorComposites', 'getLatestCycle', 'getCycleHistory']) {
     const block = blocks.find(b => b.startsWith(name));
     assert.ok(block, '缺少函数 ' + name);
-    assert.ok(/formula_version\s*=/.test(block), name + ' 未按 formula_version 过滤');
-    assert.ok(/universe_version\s*=/.test(block), name + ' 未按 universe_version 过滤');
+    assert.ok(!/\.query\(/.test(block), name + ' 不得在服务层直接查库');
   }
+  const repoBlocks = src.split(/async function /).filter(b => /formula_version\s*=/.test(b));
+  const doubleFiltered = repoBlocks.filter(b => /formula_version\s*=/.test(b) && /universe_version\s*=/.test(b));
+  assert.ok(doubleFiltered.length >= 3, '数据层缺少同时按 formula_version 与 universe_version 过滤的周期查询');
 });
 
 section('I. 过期判断用交易日历（节假日/盘中不误报）');

@@ -3,6 +3,7 @@ const { pool } = require('../db/connection');
 const CoreDate = require('../../public/shared/core-date.js');
 const { tushareQuery } = require('./tushare');
 const { isCnTradingDate, getMarketState } = require('./marketState');
+const repository = require('../repositories/marketRepository.js');
 const {
   fetchTencentQuotes,
   isConvertibleBondCode,
@@ -76,10 +77,7 @@ function normalizeDailyQuoteRow(row) {
 
 async function loadDailyCache() {
   try {
-    const { rows } = await pool.query(
-      `SELECT symbol AS ts_code, price, change_pct, quote_time, fetched_at
-         FROM market_quote_cache WHERE source = 'tushare_daily'`
-    );
+    const { rows } = await repository.select_market_quote_cache();
     const map = new Map(rows.map(row => [row.ts_code, normalizeDailyQuoteRow(row)]));
     const newest = rows.reduce((value, row) => Math.max(value, new Date(row.fetched_at).getTime() || 0), 0);
     return { map, newest };

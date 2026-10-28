@@ -52,8 +52,23 @@ async function markSettledBaseline(username, accountName, indexName, baselineDat
   } catch (e) { console.error('指数基线状态落库失败:', e.message); }
 }
 
+async function select_nav_history(params, client = pool) {
+  return client.query(`SELECT DISTINCT username, account_name FROM nav_history`);
+}
+
+async function select_nav_history_1(params, client = pool) {
+  return client.query(`SELECT MIN(date) AS d FROM nav_history WHERE username=$1 AND account_name=$2`, params);
+}
+
+async function select_index_history(params, client = pool) {
+  return client.query(`SELECT MIN(date) AS d FROM index_history WHERE username=$1 AND account_name=$2 AND name=$3`, params);
+}
+
 module.exports = {
   hasIndexBaselineGap,
   loadSettledBaselines,
   markSettledBaseline,
+  select_nav_history,
+  select_nav_history_1,
+  select_index_history,
 };

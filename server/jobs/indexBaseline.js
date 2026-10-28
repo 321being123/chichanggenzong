@@ -6,6 +6,7 @@ const { tushareQuery, tsRows, tsDateStr, normDate } = require('../services/marke
 const { withExternalCallGuard } = require('../services/externalCallGuard');
 const { isCnHoliday } = require('../config/holidays');
 const { hasIndexBaselineGap, loadSettledBaselines, markSettledBaseline } = require('../repositories/indexBaselineRepository.js');
+const repository = require('../repositories/indexBaselineRepository.js');
 
 const INDEX_BACKFILL_DEFS = [
   { name: '沪深300', ts: '000300.SH', src: 'tushare' },
@@ -68,9 +69,9 @@ async function ensureIndexBaseline(options) {
   const force = !!(options && options.force);
   try {
     const settled = force ? new Map() : await loadSettledBaselines();
-    const accs = await pool.query('SELECT DISTINCT username, account_name FROM nav_history');
+    const accs = await repository.select_nav_history();
     for (const acc of accs.rows) {
-      const base = await pool.query('SELECT MIN(date) AS d FROM nav_history WHERE username=$1 AND account_name=$2', [acc.username, acc.account_name]);
+      const base = await repository.select_nav_history_1([acc.username, acc.account_name]);
       const baseline = base.rows[0] && base.rows[0].d ? String(base.rows[0].d) : null;
       if (!baseline) continue; // 无净值记录则无需补齐
       const startTs = baseline.replace(/-/g, '');
@@ -84,7 +85,7 @@ async function ensureIndexBaseline(options) {
         const settledBase = settled.get(key);
         if (settledBase && settledBase <= baseline) continue;
         // 已覆盖到基线（指数最早日期 <= 净值起点）则跳过，避免重复联网
-        const minR = await pool.query('SELECT MIN(date) AS d FROM index_history WHERE username=$1 AND account_name=$2 AND name=$3', [acc.username, acc.account_name, def.name]);
+        const minR = await repository.select_index_history([acc.username, acc.account_name, def.name]);
         const minD = minR.rows[0] && minR.rows[0].d ? String(minR.rows[0].d) : null;
         if (minD && minD <= baseline) continue;
         let series = [];
@@ -148,7 +149,7 @@ async function runIndexBaselineJob(reason = 'startup-catchup') {
 async function ensureIndexRecent(days) {
   try {
     const n = Math.max(5, Math.min(days || 10, 30));
-    const accs = await pool.query('SELECT DISTINCT username, account_name FROM nav_history');
+    const accs = await repository.select_nav_history();
     const endTs = tsDateStr(new Date());
     const endDash = normDate(endTs);
     const startD = new Date();

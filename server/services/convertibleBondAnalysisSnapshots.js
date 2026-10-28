@@ -3,6 +3,7 @@ const CoreDate = require('../../public/shared/core-date');
 const crypto=require('crypto');
 const { refreshConvertibleBondAnalysis, isoDate } = require('./convertibleBondAnalysis');
 const { latestAnalysisDate, loadAnalysisUniverse, persistAnalysisProgress } = require('../repositories/convertibleBondAnalysisSnapshotsRepository.js');
+const repository = require('../repositories/convertibleBondAnalysisSnapshotsRepository.js');
 
 /* loadAnalysisUniverse 已迁入 server/repositories/convertibleBondAnalysisSnapshotsRepository.js */
 
@@ -13,8 +14,7 @@ async function refreshAllConvertibleBondAnalysis(targetDate, deps = {}) {
   const build = deps.build || ((code,date)=>refreshConvertibleBondAnalysis(code,'daily',{readOnly:true,targetDate:date}));
   const persist = deps.persist || persistAnalysisProgress;
   const rows = await load(targetDate);
-  const prior=deps.loadUniverse ? null : (await pool.query(`SELECT cursor_payload FROM ops.sync_cursors
-    WHERE scope_key='convertible_bond_analysis' AND dataset_code='snapshots'`)).rows[0]?.cursor_payload;
+  const prior=deps.loadUniverse ? null : (await repository.select_ops_sync_cursors()).rows[0]?.cursor_payload;
   const resume=prior?.targetDate===targetDate&&prior.pendingStages?.length ? prior.completed||{} : {};
   const completed={};
   const remaining = [], missingFields = {}, failures = [];

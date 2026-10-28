@@ -10,6 +10,7 @@ const { isAdminIdentity } = require('../middleware/auth');
 const ns = require('./notificationService');
 const txControl = require('../repositories/transactionControl');
 const { lockRequest } = require('../repositories/notificationBatchServiceRepository.js');
+const repository = require('../repositories/notificationBatchServiceRepository.js');
 
 const AUDIENCE_MODES = ['all', 'selected', 'filter'];
 const FILTER_ROLES = ['admin', 'user'];
@@ -66,7 +67,7 @@ function assertAdminIdentityRecord(user) {
 async function assertAdmin(actor, db) {
   if (!actor || !actor.username) throw createError(401, '请先登录');
   const conn = db || pool;
-  const { rows } = await conn.query('SELECT username, role, status FROM public.users WHERE username=$1', [actor.username]);
+  const { rows } = await repository.select_public_users([actor.username], conn);
   assertAdminIdentityRecord(rows[0] ? Object.assign({}, rows[0], { username: actor.username }) : null);
 }
 
@@ -332,9 +333,7 @@ async function retryBatch(actor, batchId, input) {
     if (RETRYABLE.indexOf(batch.status) < 0) throw createError(409, '该批次当前状态不能重试');
     // 已有活动槽位时合并请求，不新增第二个槽位、不重复投递已完成的收件
     if (batch.dispatchSlotId) {
-      const slot = await client.query(
-        'SELECT slot_id, status FROM ops.job_schedule_slots WHERE slot_id=$1', [batch.dispatchSlotId]
-      );
+      const slot = await repository.select_ops_job_schedule_slots([batch.dispatchSlotId], client);
       const current = slot.rows[0];
       if (current && ['pending', 'running', 'waiting_external'].indexOf(current.status) >= 0) {
         const merged = {

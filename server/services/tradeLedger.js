@@ -22,6 +22,7 @@ const classifyCode = require('../../public/js/code-classify');
 const { resolveAmbiguousSecurity } = require('./securityIdentity');
 const txControl = require('../repositories/transactionControl');
 const { heldQuantity } = require('../repositories/tradeLedgerRepository.js');
+const repository = require('../repositories/tradeLedgerRepository.js');
 
 // 业务错误（带 status，路由按 400/409 返回）
 function bizError(msg, status = 400) {
@@ -85,12 +86,7 @@ function validateTrade(t) {
 //    这是正常现象，绝不强制 cost>=0（仅 price/amount/费用约束非负）。
 // ⚠️ strict 模式下若出现"卖出超过可卖数量"（重放遇历史超卖），抛错——避免超卖被静默截断掩盖账本错误
 async function recomputeSecurity(client, username, accountName, code, strict = false) {
-  const { rows: trs } = await client.query(
-    `SELECT id, direction, price, quantity, amount, commission, stamp_tax, transfer_fee, other_fee, trade_date, executed_at, date, created_at
-       FROM trades WHERE username=$1 AND account_name=$2 AND code=$3
-      ORDER BY COALESCE(trade_date, left(date,10)) ASC, COALESCE(executed_at, date, created_at) ASC, created_at ASC, id ASC`,
-    [username, accountName, code]
-  );
+  const { rows: trs } = await repository.select_trades([username, accountName, code], client);
   let qty = 0;
   let cost = 0; // 移动加权单位成本（买入/期初参与加权）
   for (const t of trs) {
@@ -175,10 +171,7 @@ async function checkVersionInTxn(client, username, accountName, expectedVersion)
   if (expectedVersion == null || expectedVersion === '') return;
   const ev = Number(expectedVersion);
   if (!Number.isFinite(ev)) return;
-  const { rows } = await client.query(
-    'SELECT COALESCE(version,0) AS v FROM account_data WHERE username=$1 AND account_name=$2 FOR UPDATE',
-    [username, accountName]
-  );
+  const { rows } = await repository.select_account_data([username, accountName], client);
   const cur = rows[0] ? Number(rows[0].v) : 0;
   if (cur !== ev) throw bizError('数据已在其他窗口被修改，请刷新页面后重试', 409);
 }
@@ -215,10 +208,7 @@ async function applyTrade(username, accountName, trade, externalClient = null, e
     // 放在版本校验之前：双击/网络重试的第二个请求携带同一 id 与同一旧版本号，
     // 若先校验版本会因第一个请求已 +1 而 409，与"幂等不新增"的语义矛盾。
     if (t.id) {
-      const idDup = await client.query(
-        'SELECT id FROM trades WHERE id=$1 AND username=$2 AND account_name=$3',
-        [t.id, username, accountName]
-      );
+      const idDup = await repository.select_trades_1([t.id, username, accountName], client);
       if (idDup.rows[0]) {
         if (ownTxn) await txControl.commit(client);
         return { ok: true, id: t.id, code: t.code, skipped: 'duplicate', cash: null, tradeDate: tradeDate };
@@ -229,20 +219,12 @@ async function applyTrade(username, accountName, trade, externalClient = null, e
     // P0-4（验收修复）：账户级并发锁——同账户的交易写入串行化。
     // 若账户行不存在（新账户首笔交易），INSERT ... ON CONFLICT 兜底建行并锁住；
     // 用 pg_advisory_xact_lock 按 (username,account_name) 哈希串行，保证两笔并发卖出不会同时通过校验。
-    const { rows: lockRows } = await client.query(
-      `SELECT id FROM accounts WHERE username=$1 AND account_name=$2 FOR UPDATE`,
-      [username, accountName]
-    );
+    const { rows: lockRows } = await repository.select_accounts([username, accountName], client);
     let accountId = lockRows.length ? lockRows[0].id : null;
     if (lockRows.length === 0) {
       const acctId = require('crypto').createHash('sha256').update(username + '\n' + accountName).digest('hex');
-      await client.query(
-        `INSERT INTO accounts (id, username, account_name, cash_base, hk_rate, version, updated_at)
-         VALUES ($1,$2,$3,0,0.868,0,to_char(now(),'YYYY-MM-DD HH24:MI:SS'))
-         ON CONFLICT (username, account_name) DO NOTHING`,
-        [acctId, username, accountName]
-      );
-      const re = await client.query(`SELECT id FROM accounts WHERE username=$1 AND account_name=$2 FOR UPDATE`, [username, accountName]);
+      await repository.insert_accounts([acctId, username, accountName], client);
+      const re = await repository.select_accounts([username, accountName], client);
       accountId = re.rows[0].id;
     }
     // 卖出校验：可卖数量 = 当前持仓 + 本笔卖出自身数量（若为替换已有卖出，则 + 被替换卖出量）
@@ -250,10 +232,7 @@ async function applyTrade(username, accountName, trade, externalClient = null, e
       const held = await heldQuantity(client, username, accountName, t.code);
       let avail = held;
       if (t.id) {
-        const old = await client.query(
-          'SELECT direction, quantity FROM trades WHERE username=$1 AND account_name=$2 AND id=$3',
-          [username, accountName, t.id]
-        );
+        const old = await repository.select_trades_2([username, accountName, t.id], client);
         if (old.rows[0]) {
           const o = old.rows[0];
           if (o.direction === 'sell') avail += Number(o.quantity) || 0; // 被替换的旧卖出不算占用
@@ -269,11 +248,7 @@ async function applyTrade(username, accountName, trade, externalClient = null, e
     // P1-4 服务端导入幂等：同账户+同批次+代码+交易日+方向+价格+数量 视为重复导入，跳过（不新增、不重算）
     // 验收修复：查重必须限定 username/account_name，防相同批次号跨账户互相冲突
     if (t.import_batch_id) {
-      const dup = await client.query(
-        `SELECT id FROM trades WHERE username=$1 AND account_name=$2 AND import_batch_id=$3
-           AND code=$4 AND trade_date=$5 AND direction=$6 AND price=$7 AND quantity=$8 LIMIT 1`,
-        [username, accountName, t.import_batch_id, t.code, tradeDate, t.direction, price, quantity]
-      );
+      const dup = await repository.select_trades_3([username, accountName, t.import_batch_id, t.code, tradeDate, t.direction, price, quantity], client);
       if (dup.rows[0]) {
         if (ownTxn) await txControl.commit(client);
         return { ok: true, id: dup.rows[0].id, code: t.code, skipped: 'duplicate', cash: null, tradeDate: tradeDate };
@@ -283,89 +258,43 @@ async function applyTrade(username, accountName, trade, externalClient = null, e
     const quoteCurrency = isHk ? 'HKD' : 'CNY';
     let fxRate = quoteCurrency === 'CNY' ? 1 : Number(t.fx_rate_to_cny || t.fxRateToCny);
     if (quoteCurrency === 'HKD' && !(fxRate > 0)) {
-      const fx = await client.query(
-        `SELECT rate::float8 AS rate FROM market.fx_rates
-          WHERE base_currency='HKD' AND quote_currency='CNY' AND rate_date <= $1
-          ORDER BY rate_date DESC, fetched_at DESC LIMIT 1`, [tradeDate]
-      );
+      const fx = await repository.select_market_fx_rates([tradeDate], client);
       fxRate = fx.rows[0] ? Number(fx.rows[0].rate) : 0;
     }
     if (quoteCurrency === 'HKD' && !(fxRate > 0)) throw bizError('港股交易缺少成交日港币兑人民币汇率，不能入账');
     const amountCny = quoteCurrency === 'CNY' ? amount : round(amount * fxRate, 4);
     const currencyStatus = 'complete';
-    await client.query(
-      `INSERT INTO trades (id, username, account_name, account_id, date, created_at, trade_date, executed_at, import_batch_id,
-                           code, name, direction, price, quantity, amount,
-                           quote_currency, fx_rate_to_cny, amount_cny, currency_status,
-                           commission, stamp_tax, transfer_fee, other_fee, type, subtype, note)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26)
-       ON CONFLICT (id, username, account_name) DO UPDATE SET
-         date=EXCLUDED.date, created_at=EXCLUDED.created_at, trade_date=EXCLUDED.trade_date,
-         executed_at=EXCLUDED.executed_at, import_batch_id=EXCLUDED.import_batch_id,
-         code=EXCLUDED.code, name=EXCLUDED.name, direction=EXCLUDED.direction,
-         price=EXCLUDED.price, quantity=EXCLUDED.quantity, amount=EXCLUDED.amount,
-         quote_currency=EXCLUDED.quote_currency, fx_rate_to_cny=EXCLUDED.fx_rate_to_cny,
-         amount_cny=EXCLUDED.amount_cny, currency_status=EXCLUDED.currency_status,
-         commission=EXCLUDED.commission, stamp_tax=EXCLUDED.stamp_tax, transfer_fee=EXCLUDED.transfer_fee,
-         other_fee=EXCLUDED.other_fee, type=EXCLUDED.type, subtype=EXCLUDED.subtype, note=EXCLUDED.note`,
-      [tradeId, username, accountName, accountId, t.date || '', t.created_at || nowStr(), tradeDate, executedAt,
+    await repository.insert_trades([tradeId, username, accountName, accountId, t.date || '', t.created_at || nowStr(), tradeDate, executedAt,
        t.import_batch_id || null,
        t.code, t.name || '', t.direction, price, quantity, amount, quoteCurrency, fxRate, amountCny, currencyStatus,
        round(Number(t.commission) || 0, 4), round(Number(t.stamp_tax) || 0, 4),
        round(Number(t.transfer_fee) || 0, 4), round(Number(t.other_fee) || 0, 4),
-       t.type || '', t.subtype || '', t.note || '']
-    );
+       t.type || '', t.subtype || '', t.note || ''], client);
     // 重算该证券持仓：数量 + 移动加权成本（写 cost，不写 price）
     const sec = await recomputeSecurity(client, username, accountName, t.code);
     // 更新或新建持仓行（保持现有行的 price=当前行情价不动；仅更新 quantity/cost）
-    const pos = await client.query(
-      'SELECT id FROM positions WHERE username=$1 AND account_name=$2 AND code=$3 LIMIT 1',
-      [username, accountName, t.code]
-    );
+    const pos = await repository.select_positions([username, accountName, t.code], client);
     if (pos.rows[0]) {
       if (sec.quantity > 0) {
         // 2026-08-04 阻断修复：adjust 时同步名称/类型/细类/备注（非空才更新，防覆盖已有值），
         // 否则服务器返回后会把页面上刚改的元数据恢复成旧值
-        await client.query(
-          `UPDATE positions SET quantity=$4, cost=$5,
-             name=CASE WHEN $6<>'' THEN $6 ELSE name END,
-             type=CASE WHEN $7<>'' THEN $7 ELSE type END,
-             subtype=CASE WHEN $8<>'' THEN $8 ELSE subtype END,
-             note=CASE WHEN $9<>'' THEN $9 ELSE note END
-           WHERE username=$1 AND account_name=$2 AND code=$3`,
-          [username, accountName, t.code, sec.quantity, sec.cost,
-           t.name || '', t.type || '', t.subtype || '', t.note || '']
-        );
+        await repository.update_positions([username, accountName, t.code, sec.quantity, sec.cost,
+           t.name || '', t.type || '', t.subtype || '', t.note || ''], client);
       } else {
         // 全部卖出 → 持仓归零删除
-        await client.query(
-          `DELETE FROM positions WHERE username=$1 AND account_name=$2 AND code=$3`,
-          [username, accountName, t.code]
-        );
+        await repository.delete_positions([username, accountName, t.code], client);
       }
       // 多余同 code 行（历史重复）合并删除：保留一行，其余删除
-      await client.query(
-        `DELETE FROM positions WHERE username=$1 AND account_name=$2 AND code=$3
-           AND id <> (SELECT id FROM positions WHERE username=$1 AND account_name=$2 AND code=$3 LIMIT 1)`,
-        [username, accountName, t.code]
-      );
+      await repository.delete_positions_1([username, accountName, t.code], client);
     } else if (sec.quantity > 0) {
       // 首次建仓：cost=移动加权成本；当前价等待交易提交后的行情刷新，不能把成交价当行情价。
       const posId = require('crypto').randomBytes(8).toString('hex');
-      await client.query(
-        `INSERT INTO positions (id, username, account_name, account_id, code, name, price, quantity, cost, type, subtype, note)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'')`,
-        [posId, username, accountName, accountId, t.code, t.name || '', 0, sec.quantity, sec.cost, t.type || '股权', t.subtype || '']
-      );
+      await repository.insert_positions([posId, username, accountName, accountId, t.code, t.name || '', 0, sec.quantity, sec.cost, t.type || '股权', t.subtype || ''], client);
     }
     // 标记净值边界 + 同步提升 account_data 总版本/交易版本（P0-1：防旧页面全量保存覆盖）
     await markNavDirty(client, username, accountName, tradeDate, 'trade');
     // 账户修订号（accounts 表版本，与 account_data 版本各自独立语义）
-    await client.query(
-      `UPDATE accounts SET version=COALESCE(version,0)+1, updated_at=to_char(now(),'YYYY-MM-DD HH24:MI:SS')
-        WHERE username=$1 AND account_name=$2`,
-      [username, accountName]
-    );
+    await repository.update_accounts([username, accountName], client);
     const cash = await recomputeCash(client, username, accountName);
     if (ownTxn) await txControl.commit(client);
     return { ok: true, id: tradeId, code: t.code, cash: cash, tradeDate: tradeDate };
@@ -407,23 +336,12 @@ async function refreshPositionPrices(username, accountName, codes, options = {})
         unavailable.push(code);
         continue;
       }
-      const result = await client.query(
-        `UPDATE positions SET price=$1
-           WHERE username=$2 AND account_name=$3 AND code=$4 AND quantity > 0`,
-        [round(price, 4), username, accountName, code]
-      );
+      const result = await repository.update_positions_1([round(price, 4), username, accountName, code], client);
       if (result.rowCount > 0) refreshed.push({ code, price: round(price, 4), quoteTime: quote.quote_time || null });
       else unavailable.push(code);
     }
     if (refreshed.length > 0) {
-      await client.query(
-        `INSERT INTO account_data (username, account_name, data, version, pos_version)
-         VALUES ($1,$2,'{}',0,0)
-         ON CONFLICT (username, account_name) DO UPDATE SET
-           pos_version=COALESCE(account_data.pos_version,0)+1,
-           version=COALESCE(account_data.version,0)+1`,
-        [username, accountName]
-      );
+      await repository.insert_account_data([username, accountName], client);
     }
     await txControl.commit(client);
     return { ok: true, refreshed, unavailable };
@@ -473,40 +391,24 @@ async function deleteTrade(username, accountName, tradeId, expectedVersion = nul
     await txControl.begin(client);
     await checkVersionInTxn(client, username, accountName, expectedVersion);
     // 账户级并发锁（与 applyTrade 同锁，防删除与新增并发交错）
-    await client.query(`SELECT id FROM accounts WHERE username=$1 AND account_name=$2 FOR UPDATE`, [username, accountName]);
-    const del = await client.query(
-      'DELETE FROM trades WHERE username=$1 AND account_name=$2 AND id=$3 RETURNING code, date, trade_date',
-      [username, accountName, tradeId]
-    );
+    await repository.select_accounts([username, accountName], client);
+    const del = await repository.delete_trades([username, accountName, tradeId], client);
     if (del.rowCount === 0) throw bizError('交易不存在', 404);
     const code = del.rows[0].code;
     // 重放该证券：剩余交易若出现超卖（历史缺口/后续依赖）→ strict 抛错拒绝删除，改用冲正交易
     const sec = await recomputeSecurity(client, username, accountName, code, true);
-    const pos = await client.query(
-      'SELECT id FROM positions WHERE username=$1 AND account_name=$2 AND code=$3 LIMIT 1',
-      [username, accountName, code]
-    );
+    const pos = await repository.select_positions([username, accountName, code], client);
     if (pos.rows[0]) {
       if (sec.quantity > 0) {
-        await client.query(
-          `UPDATE positions SET quantity=$4, cost=$5 WHERE username=$1 AND account_name=$2 AND code=$3`,
-          [username, accountName, code, sec.quantity, sec.cost]
-        );
+        await repository.update_positions_2([username, accountName, code, sec.quantity, sec.cost], client);
       } else {
-        await client.query(
-          `DELETE FROM positions WHERE username=$1 AND account_name=$2 AND code=$3`,
-          [username, accountName, code]
-        );
+        await repository.delete_positions([username, accountName, code], client);
       }
     }
     // 重算现金 + 修订号
     const fromDate = del.rows[0].trade_date || todayCN();
     await markNavDirty(client, username, accountName, fromDate, 'trade');
-    await client.query(
-      `UPDATE accounts SET version=COALESCE(version,0)+1, updated_at=to_char(now(),'YYYY-MM-DD HH24:MI:SS')
-        WHERE username=$1 AND account_name=$2`,
-      [username, accountName]
-    );
+    await repository.update_accounts([username, accountName], client);
     const cash = await recomputeCash(client, username, accountName);
     await txControl.commit(client);
     return { ok: true, cash: cash, fromDate: fromDate };
@@ -532,19 +434,12 @@ async function deleteCashFlow(username, accountName, flowId, expectedVersion = n
     await txControl.begin(client);
     await checkVersionInTxn(client, username, accountName, expectedVersion);
     // 读取被删现金流原日期（验收修复：历史净值须从该日期起重算，而非仅今天）
-    const del = await client.query(
-      'DELETE FROM cash_flows WHERE username=$1 AND account_name=$2 AND id=$3 AND origin=\'manual\' RETURNING id, date::text',
-      [username, accountName, flowId]
-    );
+    const del = await repository.delete_cash_flows([username, accountName, flowId], client);
     if (del.rowCount === 0) throw bizError('现金流记录不存在', 404);
     const fromDate = (del.rows[0].date || '').slice(0, 10) || todayCN();
     // 现金流变更 → 提升 account_data 总版本 + cashflow_version（P0-1）
     await markNavDirty(client, username, accountName, fromDate, 'cashflow');
-    await client.query(
-      `UPDATE accounts SET version=COALESCE(version,0)+1, updated_at=to_char(now(),'YYYY-MM-DD HH24:MI:SS')
-        WHERE username=$1 AND account_name=$2`,
-      [username, accountName]
-    );
+    await repository.update_accounts([username, accountName], client);
     const cash = await recomputeCash(client, username, accountName);
     await txControl.commit(client);
     return { ok: true, cash: cash, fromDate: fromDate };
@@ -577,10 +472,7 @@ async function addCashFlow(username, accountName, cf, expectedVersion = null) {
     // 幂等预检（2026-08-04）：同一 cf.id 已存在 → 直接返回成功，不校验版本
     // （双击/网络重试的第二个请求带同一 id 与同一旧版本号，若先校验版本会 409）
     if (cf.id) {
-      const idDup = await client.query(
-        'SELECT id,origin FROM cash_flows WHERE id=$1 AND username=$2 AND account_name=$3',
-        [cf.id, username, accountName]
-      );
+      const idDup = await repository.select_cash_flows([cf.id, username, accountName], client);
       if (idDup.rows[0]) {
         if (idDup.rows[0].origin !== 'manual') throw bizError('不能覆盖自动或导入流水', 409);
         await txControl.commit(client);
@@ -589,19 +481,11 @@ async function addCashFlow(username, accountName, cf, expectedVersion = null) {
       }
     }
     await checkVersionInTxn(client, username, accountName, expectedVersion);
-    const { rows: aRows } = await client.query(
-      'SELECT id FROM accounts WHERE username=$1 AND account_name=$2 FOR UPDATE',
-      [username, accountName]
-    );
+    const { rows: aRows } = await repository.select_accounts([username, accountName], client);
     const accountId = aRows.length ? aRows[0].id : null;
     const flowId = cf.id || require('crypto').randomBytes(8).toString('hex');
     const createdAt = cf.created_at || nowStr();
-    const ins = await client.query(
-      `INSERT INTO cash_flows (id, username, account_name, account_id, date, created_at, amount, note)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
-       ON CONFLICT (id, username, account_name) DO NOTHING`,
-      [flowId, username, accountName, accountId, date, createdAt, round(cf.amount, 2), cf.note || '']
-    );
+    const ins = await repository.insert_cash_flows([flowId, username, accountName, accountId, date, createdAt, round(cf.amount, 2), cf.note || ''], client);
     if (ins.rowCount === 0) {
       // 幂等命中：同一 id 已存在，不重复新增
       await txControl.commit(client);
@@ -609,11 +493,7 @@ async function addCashFlow(username, accountName, cf, expectedVersion = null) {
       return { ok: true, id: flowId, cash: null, data: result, skipped: 'duplicate' };
     }
     await markNavDirty(client, username, accountName, date, 'cashflow');
-    await client.query(
-      `UPDATE accounts SET version=COALESCE(version,0)+1, updated_at=to_char(now(),'YYYY-MM-DD HH24:MI:SS')
-        WHERE username=$1 AND account_name=$2`,
-      [username, accountName]
-    );
+    await repository.update_accounts([username, accountName], client);
     const cash = await recomputeCash(client, username, accountName);
     await txControl.commit(client);
     const result = await loadLedgerResult(username, accountName);

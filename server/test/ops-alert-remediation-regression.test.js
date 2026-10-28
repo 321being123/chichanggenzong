@@ -62,7 +62,7 @@ const migration = require('./helpers/migration-source').readMigrationSource();
 assert(migration.includes('151_alert_scope_and_cninfo_backoff'));
 assert(migration.includes('scope_type TEXT'));
 assert(migration.includes('consecutive_forbidden_count INTEGER'));
-const mailer = read('server/services/jobAlertMailer.js');
+const mailer = read('server/services/jobAlertMailer.js') + read('server/repositories/jobAlertMailerRepository.js');
 assert(mailer.includes("status === 'history'"));
 assert(mailer.includes("scope_type=\'dataset\'"));
 assert(mailer.includes("scope_type=\'source_endpoint\'"));
@@ -82,7 +82,7 @@ assert.deepStrictEqual(closedCircuitApiNames([{ api_name: '*' }, { api_name: 'to
   assert.strictEqual(isDataAsOfFresh('2026-09-14T12:00:00Z', '2026-09-15', definition, now), false,
     '港币汇率达到24小时必须过期');
 }
-const orchestrator = read('server/services/jobOrchestrator.js');
+const orchestrator = read('server/services/jobOrchestrator.js') + read('server/repositories/jobOrchestratorRepository.js');
 assert(orchestrator.includes('missingRecoverAtCount'));
 assert(orchestrator.includes('scopeType: \'dataset\''));
 const partitionService = read('server/services/datasetPartitions.js');
@@ -90,7 +90,7 @@ const latestFunction = partitionService.slice(partitionService.indexOf('async fu
 assert(!latestFunction.includes('options.diagnostics'));
 // 发布成功→告警恢复的契约改为依赖倒置钩子：数据层按相同参数调用钩子，告警侧注册 resolveDatasetAlerts。
 assert(partitionService.includes('_onDatasetPublished(datasetCode, scopeKey, partitionKey)'));
-const alertMailerSource = read('server/services/jobAlertMailer.js');
+const alertMailerSource = read('server/services/jobAlertMailer.js') + read('server/repositories/jobAlertMailerRepository.js');
 assert(alertMailerSource.includes('setDatasetPublishedHook(resolveDatasetAlerts)'));
 
 const holiday = read('server/config/holidays.js');
@@ -128,7 +128,7 @@ const ipoSyncPy = read('ipo-report/ipo_history_sync.py');
 assert(ipoSyncPy.includes('--target-codes') && ipoSyncPy.includes('--apply-targeted'));
 assert(ipoSyncPy.includes('--confirm-production') && ipoSyncPy.includes('only_codes=target_codes'));
 assert(ipoSyncPy.includes('"credentialProfile"') && ipoSyncPy.includes('"budgetWindow"'));
-const ipoSyncJob = read('server/jobs/ipoHistorySync.js');
+const ipoSyncJob = read('server/jobs/ipoHistorySync.js') + read('server/repositories/ipoHistorySyncRepository.js');
 assert(ipoSyncJob.includes('failure.credentialProfile = structured.credentialProfile'));
 assert(ipoSyncJob.includes('failure.budgetWindow = structured.budgetWindow'));
 

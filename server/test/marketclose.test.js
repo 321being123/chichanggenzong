@@ -64,7 +64,8 @@ check('共享行情缺失时支持按代码读取后续补取结果', () => {
   assert.strictEqual(quoteMap.get('160719.SZ').price, 1.91);
 });
 check('批量行情缺失只允许一次有界补取，不能重复检查同一份空 Map', () => {
-  const source = fs.readFileSync(path.join(__dirname, '..', 'jobs', 'marketClose.js'), 'utf8');
+  const source = fs.readFileSync(path.join(__dirname, '..', 'jobs', 'marketClose.js'), 'utf8')
+    + fs.readFileSync(path.join(__dirname, '..', 'repositories', 'marketCloseRepository.js'), 'utf8');
   assert.ok(source.includes('refreshMissingQuotes'), '收盘任务必须有缺失代码补取入口');
   assert.ok(source.includes('force: true'), '缺失代码补取必须强制刷新腾讯缓存');
   assert.ok(source.includes('const refreshAttempted = new Set()'), '补取必须按代码去重并限制在本次任务一次');

@@ -6,6 +6,7 @@ const { getDatasetMetadata } = require('./datasetPartitions');
 const { getMarketState, shanghaiDateTime } = require('./marketState');
 const txControl = require('../repositories/transactionControl');
 const { loadPriceChanges, loadRevisionBonds, loadRevisionResponseHistory } = require('../repositories/convertibleBondRevisionServiceRepository.js');
+const repository = require('../repositories/convertibleBondRevisionServiceRepository.js');
 
 const FORMULA_VERSION = 'reset-v2';
 const CALCULATION_LOGIC_VERSION = 'reset-logic-20260903-1';
@@ -132,18 +133,12 @@ function isValidTerm(term) {
 }
 
 async function latestRevisionTradeDate() {
-  const { rows } = await pool.query(
-    `SELECT MAX(trade_date)::text AS trade_date FROM market.convertible_bond_daily_metrics`
-  );
+  const { rows } = await repository.select_market_convertible_bond_daily_metrics();
   return dateText(rows[0] && rows[0].trade_date);
 }
 
 async function loadOpenTradeDates(targetDate, limit = 180) {
-  const { rows } = await pool.query(
-    `SELECT trade_date::text FROM market.trade_calendar
-      WHERE exchange='SSE' AND is_open AND trade_date <= $1::date
-      ORDER BY trade_date DESC LIMIT $2`, [targetDate, limit]
-  );
+  const { rows } = await repository.select_market_trade_calendar([targetDate, limit]);
   return rows.map(row => dateText(row.trade_date)).filter(Boolean);
 }
 
@@ -151,22 +146,7 @@ async function loadOpenTradeDates(targetDate, limit = 180) {
 
 async function loadStockBars(stockIds, targetDate) {
   if (!stockIds.length) return new Map();
-  const { rows } = await pool.query(
-    `SELECT instrument_id,trade_date::text,close
-       FROM (
-         SELECT instrument_id,trade_date,close,
-                ROW_NUMBER() OVER (PARTITION BY instrument_id ORDER BY trade_date DESC) AS rn
-           FROM (
-             SELECT instrument_id,trade_date,close,
-                    ROW_NUMBER() OVER (PARTITION BY instrument_id,trade_date ORDER BY source_id DESC) AS source_rn
-               FROM market.daily_bars
-              WHERE instrument_id=ANY($1::bigint[]) AND trade_date <= $2::date
-                AND trade_date >= ($2::date - INTERVAL '365 days') AND close > 0
-           ) daily
-          WHERE source_rn=1
-       ) x
-      WHERE rn <= 180 ORDER BY instrument_id,trade_date DESC`, [stockIds, targetDate]
-  );
+  const { rows } = await repository.select_market_daily_bars([stockIds, targetDate]);
   const result = new Map();
   for (const row of rows) {
     if (!result.has(row.instrument_id)) result.set(row.instrument_id, []);
@@ -181,18 +161,8 @@ async function loadLatestStockMetrics(stockIds, targetDate) {
   const ids = [...new Set((stockIds || []).map(Number).filter(Number.isSafeInteger))];
   if (!ids.length) return new Map();
   const [bars, valuations] = await Promise.all([
-    pool.query(
-      `SELECT DISTINCT ON (instrument_id) instrument_id,trade_date::text,close
-         FROM market.daily_bars
-        WHERE instrument_id=ANY($1::bigint[]) AND trade_date <= COALESCE($2::date,CURRENT_DATE) AND close > 0
-        ORDER BY instrument_id,trade_date DESC,source_id DESC`, [ids, targetDate || null]
-    ),
-    pool.query(
-      `SELECT DISTINCT ON (instrument_id) instrument_id,trade_date::text,pb
-         FROM market.daily_valuations
-        WHERE instrument_id=ANY($1::bigint[]) AND trade_date <= COALESCE($2::date,CURRENT_DATE)
-        ORDER BY instrument_id,trade_date DESC,source_id DESC`, [ids, targetDate || null]
-    ),
+    repository.select_market_daily_bars_1([ids, targetDate || null]),
+    repository.select_market_daily_valuations([ids, targetDate || null]),
   ]);
   const result = new Map();
   for (const row of bars.rows) result.set(String(row.instrument_id), {
@@ -216,11 +186,7 @@ async function loadLatestStockMetrics(stockIds, targetDate) {
 
 async function loadSuspensions(stockIds, openDates) {
   if (!stockIds.length || !openDates.length) return new Map();
-  const { rows } = await pool.query(
-    `SELECT instrument_id,trade_date::text FROM market.stock_suspend_calendar
-      WHERE instrument_id=ANY($1::bigint[]) AND trade_date=ANY($2::date[]) AND suspend_type='S'`,
-    [stockIds, openDates]
-  );
+  const { rows } = await repository.select_market_stock_suspend_calendar([stockIds, openDates]);
   const result = new Map();
   for (const row of rows) {
     if (!result.has(row.instrument_id)) result.set(row.instrument_id, new Set());
@@ -377,17 +343,8 @@ async function calculateConvertibleBondRevisionStatus(tradeDate = null) {
   try {
     await txControl.begin(client);
     for (const row of results) {
-      await client.query(
-        `INSERT INTO analytics.convertible_bond_trigger_daily
-         (instrument_id,trade_date,trigger_type,trigger_price,close_price,matched_days,required_days,observation_days,minimum_future_days,status,formula_version,diagnostics,data_status)
-         VALUES($1,$2,'reset',$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12)
-         ON CONFLICT(instrument_id,trade_date,trigger_type,formula_version) DO UPDATE SET
-           trigger_price=EXCLUDED.trigger_price,close_price=EXCLUDED.close_price,matched_days=EXCLUDED.matched_days,
-           required_days=EXCLUDED.required_days,observation_days=EXCLUDED.observation_days,minimum_future_days=EXCLUDED.minimum_future_days,status=EXCLUDED.status,
-           diagnostics=EXCLUDED.diagnostics,data_status=EXCLUDED.data_status,calculated_at=now()` ,
-        [row.instrumentId,row.tradeDate,row.triggerPrice,row.closePrice,row.matchedDays,row.requiredDays,
-          row.observationDays,row.minimumFutureDays,row.status,FORMULA_VERSION,JSON.stringify(row.diagnostics),row.dataStatus]
-      );
+      await repository.insert_analytics_convertible_bond_trigger_daily([row.instrumentId,row.tradeDate,row.triggerPrice,row.closePrice,row.matchedDays,row.requiredDays,
+          row.observationDays,row.minimumFutureDays,row.status,FORMULA_VERSION,JSON.stringify(row.diagnostics),row.dataStatus], client);
     }
     await txControl.commit(client);
   } catch (error) {
@@ -443,53 +400,14 @@ async function getBondRevisionOverview({ status = '', query = '', near = false, 
     // 视图已按当前交易日行情和单券索引取数，排序与截断交给数据库完成。
     pool.query(`SELECT ${REVISION_SELECT_FIELDS},${MOTIVE_SELECT_FIELDS} ${base} ${order}`, [...filter.values, safeLimit]),
     pool.query(`SELECT r.business_status,count(*)::int AS count ${base} GROUP BY r.business_status`, filter.values),
-    pool.query(`SELECT MAX(trade_date)::text AS trade_date FROM market.convertible_bond_daily_metrics`),
-    pool.query(`SELECT MAX(trade_date)::text AS trade_date FROM analytics.convertible_bond_trigger_daily WHERE trigger_type='reset' AND formula_version=$1`, [FORMULA_VERSION]),
+    repository.select_market_convertible_bond_daily_metrics(),
+    repository.select_analytics_convertible_bond_trigger_daily([FORMULA_VERSION]),
     // 收盘后才要求当日数据；盘中/休市沿用最近已完成交易日属正常（2026-10-21 审查 P-10）
     pool.query(`SELECT MAX(trade_date)::text AS trade_date
                   FROM market.trade_calendar
                  WHERE exchange='SSE' AND is_open
                    AND trade_date ${expectTodayData ? '<=' : '<'} (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai')::date`),
-    pool.query(`WITH latest_no_revision AS (
-                  SELECT DISTINCT ON (h.instrument_id)
-                         h.instrument_id,h.announced_at,h.parser_version,h.next_eligible_date,h.raw_payload
-                    FROM analytics.convertible_bond_announcement_history h
-                    JOIN core.instruments current_i ON current_i.instrument_id=h.instrument_id
-                   WHERE h.fact_type='no_revision' AND current_i.status='listed'
-                   ORDER BY h.instrument_id,h.announced_at DESC,h.fact_id DESC
-                ), latest_revision_event AS (
-                  SELECT DISTINCT ON (instrument_id)
-                         instrument_id,announced_at,event_type
-                    FROM event.convertible_bond_revision_events
-                   ORDER BY instrument_id,announced_at DESC,event_id DESC
-                )
-                SELECT
-                  (SELECT COUNT(*)::int FROM latest_no_revision
-                    WHERE ((parser_version IS DISTINCT FROM '7'
-                            AND (next_eligible_date IS NULL
-                                 OR NOT COALESCE((raw_payload->>'lock_declared')::boolean,false)))
-                           OR (next_eligible_date IS NULL
-                               AND NOT (COALESCE((raw_payload->>'no_revision_evidence')::boolean,false)
-                                        OR COALESCE((raw_payload->>'lock_declared')::boolean,false))))
-                      AND COALESCE(raw_payload->'reparse'->>'status','') <> 'failed') AS pending_no_revision_parse,
-                  (SELECT COUNT(*)::int FROM latest_no_revision
-                    WHERE ((parser_version IS DISTINCT FROM '7'
-                            AND (next_eligible_date IS NULL
-                                 OR NOT COALESCE((raw_payload->>'lock_declared')::boolean,false)))
-                           OR (next_eligible_date IS NULL
-                               AND NOT (COALESCE((raw_payload->>'no_revision_evidence')::boolean,false)
-                                        OR COALESCE((raw_payload->>'lock_declared')::boolean,false))))
-                      AND COALESCE(raw_payload->'reparse'->>'status','') = 'failed') AS terminal_no_revision_parse,
-                  (SELECT COUNT(*)::int
-                     FROM analytics.convertible_bond_revision_latest r
-                     JOIN latest_no_revision nr ON nr.instrument_id=r.instrument_id
-                     LEFT JOIN latest_revision_event ev ON ev.instrument_id=r.instrument_id
-                    WHERE nr.announced_at >= COALESCE(ev.announced_at, DATE '0001-01-01')
-                      AND r.business_status IN ('proposed','meeting_pending','approved','terminated')) AS decision_status_conflicts,
-                  (SELECT COUNT(*)::int FROM ops.sync_cursors
-                    WHERE scope_key='convertible_bond_announcement_history'
-                      AND dataset_code='official_announcements'
-                      AND NULLIF(last_error,'') IS NOT NULL) AS announcement_errors`),
+    repository.with_analytics_convertible_bond_announcement_history(),
   ]);
   const summary = { implemented: 0, approved: 0, meeting_pending: 0, proposed: 0, terminated: 0,
     met_pending: 0, near: 0, locked: 0, floor_blocked: 0, tracking: 0, incomplete: 0 };

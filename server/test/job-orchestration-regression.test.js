@@ -20,7 +20,7 @@ const deployScript = read('deploy/deploy_password.py');
 const config = read('server/config.js');
 const jobsDb = read('server/db/jobs.js');
 const migrations = require('./helpers/migration-source').readMigrationSource();
-const marketClose = read('server/jobs/marketClose.js');
+const marketClose = read('server/jobs/marketClose.js') + read('server/repositories/marketCloseRepository.js');
 const arbitrageJob = read('server/jobs/arbitrageSync.js');
 const arbitrageReparse = read('server/jobs/arbitrageReparse.js');
 const arbitrageSync = read('server/services/arbitrageAnnouncementSync.js') + read('server/repositories/arbitrageAnnouncementSyncRepository.js');
@@ -30,7 +30,7 @@ const arbitrageService = read('server/services/arbitrageService.js') + read('ser
 const sourceEndpointPolicy = read('server/services/sourceEndpointPolicy.js');
 const cninfoAnnouncement = read('server/services/cninfoAnnouncement.js');
 const pythonExternalGuard = read('ipo-report/external_call_guard.py');
-const ipoHistoryJob = read('server/jobs/ipoHistorySync.js');
+const ipoHistoryJob = read('server/jobs/ipoHistorySync.js') + read('server/repositories/ipoHistorySyncRepository.js');
 
 assert(!/runSlot\(slot,\s*'manual-retry'\)/.test(adminRoute), 'Web 路由不应直接执行人工补跑');
 assert(/retryJobSlot\(slotId\)/.test(adminRoute), '人工补跑必须进入计划队列');

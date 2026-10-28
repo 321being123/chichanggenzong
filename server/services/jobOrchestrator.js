@@ -4,6 +4,7 @@ const path = require('path');
 const { sanitizeJobError, sanitizeJobResult } = require('./jobErrorSanitizer');
 const { JOB_DEFINITIONS, getJobDefinition, getRegisteredJobDefinition } = require('./jobDefinitions');
 const { readRunStatus } = require('../repositories/jobOrchestratorRepository.js');
+const repository = require('../repositories/jobOrchestratorRepository.js');
 const {
   WORKER_ID, syncScheduleSlots, recoverExpiredSlots, listDueSlots, sweepStaleSlots,
   claimSlot, completeSlot, deferSlot, waitForExternalSlot, continueSlot, mergeSlotExternalCallSummary, touchSlot, queryDataAsOf, isDataAsOfFresh, expectedDataDate,
@@ -183,14 +184,7 @@ async function applyDatasetFailureBreaker(slot, runId, normalized, failure) {
   if (!blockedDatasets.length) return null;
   const summary = sanitizeJobResult(await mergeSlotExternalCallSummary(slot.slot_id, normalized));
   await finishManagedRun(runId, slot.job_code, false, normalized, failure).catch(() => {});
-  const { rows } = await pool.query(
-    `UPDATE ops.job_schedule_slots
-        SET status='blocked',last_run_id=COALESCE($2,last_run_id),
-            result_summary=$3::jsonb,last_error=$4,next_attempt_at=NULL,
-            lease_owner=NULL,lease_until=NULL,heartbeat_at=now(),updated_at=now()
-      WHERE slot_id=$1 AND status='running' RETURNING *`,
-    [slot.slot_id, runId, JSON.stringify(summary), sanitizeJobError(`数据集 ${blockedDatasets.join(',')} 连续 ${threshold} 次未完成，任务已暂停，等待人工处理`)]
-  );
+  const { rows } = await repository.update_ops_job_schedule_slots([slot.slot_id, runId, JSON.stringify(summary), sanitizeJobError(`数据集 ${blockedDatasets.join(',')} 连续 ${threshold} 次未完成，任务已暂停，等待人工处理`)]);
   const blocked = rows[0] || null;
   if (blocked) {
     const { notifyJobFailure } = require('./jobAlertMailer');
@@ -298,40 +292,20 @@ async function notifyDatasetDiagnostics(slot, result = {}) {
 async function startManagedRun(slot, reason) {
   const runId = await startJobRun(slot.job_code);
   if (!runId) return null;
-  await pool.query(
-    `UPDATE job_runs SET slot_id=$2, attempt_no=$3, trigger_type=$4, worker_id=$5, heartbeat_at=now()
-      WHERE id=$1`,
-    [runId, slot.slot_id, slot.attempt_count, triggerType(reason), WORKER_ID]
-  );
+  await repository.update_job_runs([runId, slot.slot_id, slot.attempt_count, triggerType(reason), WORKER_ID]);
   return runId;
 }
 
 async function finishManagedRun(runId, jobCode, ok, result = {}, failure = null) {
   if (!runId) return;
   const safeResult = sanitizeJobResult(result || {});
-  await pool.query(
-    `UPDATE job_runs SET status=$2, finished_at=now(), detail=$3, result_json=$4::jsonb,
-        external_call_count=$5, external_sources=$6::jsonb, datasets=$7::jsonb,
-        error_code=$8, error_type=$9
-      WHERE id=$1`,
-    [runId, ok ? 'done' : 'failed', sanitizeJobError(failure ? failure.message : safeResult.error || '', 4000),
+  await repository.update_job_runs_1([runId, ok ? 'done' : 'failed', sanitizeJobError(failure ? failure.message : safeResult.error || '', 4000),
       JSON.stringify(safeResult), Number(safeResult.externalCalls || 0),
       JSON.stringify(safeResult.externalSources || getJobDefinition(jobCode).externalSources || []),
       JSON.stringify(safeResult.datasets || []), failure ? failure.code : safeResult.errorCode || null,
-      failure ? failure.type : safeResult.errorType || null]
-  );
+      failure ? failure.type : safeResult.errorType || null]);
   if (ok && runId) {
-    const { rows: duplicateRows } = await pool.query(
-      `SELECT COUNT(*)::int AS count, MAX(current_slot.business_date)::text AS business_date,
-              current_slot.slot_id::text AS slot_id
-        FROM job_runs r
-         JOIN ops.job_schedule_slots current_slot ON current_slot.slot_id=(SELECT slot_id FROM job_runs WHERE id=$1)
-        WHERE r.id<>$1 AND r.job=$2 AND r.status='done' AND r.trigger_type='scheduled'
-          AND (SELECT trigger_type FROM job_runs WHERE id=$1)='scheduled'
-          AND r.slot_id=current_slot.slot_id
-        GROUP BY current_slot.slot_id`,
-      [runId, jobCode]
-    );
+    const { rows: duplicateRows } = await repository.select_job_runs([runId, jobCode]);
     if (Number(duplicateRows[0]?.count || 0) > 0 && duplicateRows[0]?.business_date && duplicateRows[0]?.slot_id) {
       const { notifyJobFailure } = require('./jobAlertMailer');
       await notifyJobFailure({
@@ -348,17 +322,7 @@ async function finishManagedRun(runId, jobCode, ok, result = {}, failure = null)
 }
 
 async function linkLatestRun(slot, startedAt, reason) {
-  const { rows } = await pool.query(
-    `UPDATE job_runs
-        SET slot_id=$1, attempt_no=$2, trigger_type=$3, worker_id=$4, heartbeat_at=now()
-      WHERE id=(
-        SELECT id FROM job_runs
-         WHERE job=$5 AND started_at >= $6::timestamptz - interval '5 seconds'
-         ORDER BY id DESC LIMIT 1
-      )
-      RETURNING id`,
-    [slot.slot_id, slot.attempt_count, triggerType(reason), WORKER_ID, slot.job_code, startedAt]
-  );
+  const { rows } = await repository.update_job_runs_2([slot.slot_id, slot.attempt_count, triggerType(reason), WORKER_ID, slot.job_code, startedAt]);
   return rows[0] ? rows[0].id : null;
 }
 
@@ -450,14 +414,8 @@ function resolveMaxAttempts(definition, failure = {}) {
 
 async function markRunFailed(runId, detail, failure = null, result = {}) {
   if (!runId) return;
-  await pool.query(
-    `UPDATE job_runs SET status='failed', finished_at=now(), detail=$2,
-        error_code=$3, error_type=$4, external_call_count=$5,
-        external_sources=$6::jsonb, datasets=$7::jsonb
-       WHERE id=$1 AND status='running'`,
-    [runId, sanitizeJobError(detail || 'job interrupted'), failure && failure.code || null, failure && failure.type || null,
-      Number(result.externalCalls || result.externalCallCount || 0), JSON.stringify(result.externalSources || {}), JSON.stringify(result.datasets || [])]
-  );
+  await repository.update_job_runs_3([runId, sanitizeJobError(detail || 'job interrupted'), failure && failure.code || null, failure && failure.type || null,
+      Number(result.externalCalls || result.externalCallCount || 0), JSON.stringify(result.externalSources || {}), JSON.stringify(result.datasets || [])]);
 }
 
 async function failOrRetry(slot, error, runId, result = {}, executionToken = null) {
@@ -629,11 +587,7 @@ async function runSlot(slot, reason = reasonForSlot(slot)) {
   activeControllers.add(controller);
   const heartbeatTimer = setInterval(() => {
     touchSlot(claimed.slot_id, WORKER_ID, executionToken).catch(() => {});
-    if (runId) pool.query(
-      `UPDATE job_runs SET heartbeat_at=now(), locked_until=now()+($2::integer * interval '1 minute')
-         WHERE id=$1 AND status='running'`,
-      [runId, Number(getJobDefinition(claimed.job_code).timeoutMinutes || 30) + 10]
-    ).catch(() => {});
+    if (runId) repository.update_job_runs_4([runId, Number(getJobDefinition(claimed.job_code).timeoutMinutes || 30) + 10]).catch(() => {});
   }, 60 * 1000);
   if (heartbeatTimer.unref) heartbeatTimer.unref();
   const runMeta = {

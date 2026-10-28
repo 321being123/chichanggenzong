@@ -105,7 +105,7 @@ function runStaticContracts() {
   assert.ok(mainJob.producesDatasets.length > 0 && mainJob.producesDatasets.every(code => DATASET_PARTITION_REGISTRY[code]),
     '主采集任务 producesDatasets 必须全部进入分区注册白名单');
 
-  const suspension = read('server/services/convertibleBondSuspensionSync.js');
+const suspension = read('server/services/convertibleBondSuspensionSync.js') + read('server/repositories/convertibleBondSuspensionSyncRepository.js');
   assert.ok(/coverage_status: rowCount \? 'suspensions_found' : 'verified_no_suspension'/.test(suspension),
     '停牌接口成功空结果必须登记为已核验无停牌');
   assert.ok(/query_status: 'failed'/.test(suspension) && /status='stale'/.test(suspension),
@@ -118,7 +118,7 @@ function runStaticContracts() {
     && /coverage_status === 'verified_no_suspension'/.test(registry),
     '严格任务必须校验白名单交集，并允许已核验空结果发布');
 
-  const redemption = read('server/services/convertibleBondRedemptionService.js');
+const redemption = read('server/services/convertibleBondRedemptionService.js') + read('server/repositories/convertibleBondRedemptionServiceRepository.js');
   assert.ok(/c\.business_status,c\.data_status,c\.diagnostics/.test(redemption), '强赎接口必须返回逐债诊断信息');
   const frontend = read('public/js/bond-redemption.js');
   assert.ok(/row\.diagnostics\.missing_dates/.test(frontend)

@@ -4,6 +4,7 @@ const { getLatestCycle } = require('./convertibleBondCycleService');
 const { expectedTradeDate } = require('../routes/bondCycle');
 const { getDatasetMetadata } = require('./datasetPartitions');
 const { getActiveModel } = require('../repositories/convertibleBondValuationServiceRepository.js');
+const repository = require('../repositories/convertibleBondValuationServiceRepository.js');
 
 const EVAL_ORDER = { '低估': 0, '偏低估': 1, '合理': 2, '偏高估': 3, '高估': 4, '风险折价': 5, '数据不足': 6 };
 
@@ -32,9 +33,7 @@ function isValuationStale(tradeDate, expectedDate, latestMarketDate) {
 /* getActiveModel 已迁入 server/repositories/convertibleBondValuationServiceRepository.js */
 
 async function getLatestTradeDate() {
-  const { rows } = await pool.query(
-    "SELECT MAX(trade_date) AS d FROM analytics.convertible_bond_valuation_daily"
-  );
+  const { rows } = await repository.select_analytics_convertible_bond_valuation_daily();
   return rows[0] && rows[0].d ? isoDate(rows[0].d) : null;
 }
 
@@ -101,9 +100,7 @@ async function getList(asOf, filters = {}) {
   const model = await getActiveModel();
   const tradeDate = asOf || (await getLatestTradeDate());
   if (!tradeDate) return null;
-  const { rows: [marketDateRow] } = await pool.query(
-    'SELECT MAX(trade_date) AS d FROM market.convertible_bond_daily_metrics'
-  );
+  const { rows: [marketDateRow] } = await repository.select_market_convertible_bond_daily_metrics();
   const latestMarketDate = marketDateRow && marketDateRow.d ? isoDate(marketDateRow.d) : null;
   // 默认列表即使展示的是上一有效快照，也必须按当前预期交易日剔除已退市、
   // 已到期或已停止转股的债券；显式查询历史日期时则按该历史日还原范围。
@@ -154,10 +151,7 @@ async function getList(asOf, filters = {}) {
   const total = data.length;
   const expected = expectedTradeDate();
   const latestModel = model || {};
-  const { rows: [heatRow] } = await pool.query(
-    'SELECT MAX(market_heat_pct) AS market_heat_pct, MAX(calculated_at) AS updated_at FROM analytics.convertible_bond_valuation_daily WHERE trade_date=$1 AND model_version=$2',
-    [tradeDate, latestModel.model_version || '']
-  );
+  const { rows: [heatRow] } = await repository.select_analytics_convertible_bond_valuation_daily_1([tradeDate, latestModel.model_version || '']);
   const cycle = await getLatestCycle();
   const partition = await getDatasetMetadata('bond_valuation', 'CN');
   return {
@@ -213,10 +207,7 @@ async function getBondDetail(code, asOf) {
   // 模型训练截止日期（优先年度子模型，取不到再退回整体训练截止日）
   let trainingEndDate = null;
   try {
-    const { rows: [m] } = await pool.query(
-      'SELECT training_end_date, yearly_metadata FROM analytics.convertible_bond_valuation_models WHERE model_version=$1',
-      [r.model_version]
-    );
+    const { rows: [m] } = await repository.select_analytics_convertible_bond_valuation_models([r.model_version]);
     if (m) {
       const ym = m.yearly_metadata && r.model_year != null ? m.yearly_metadata[String(r.model_year)] : null;
       trainingEndDate = (ym && ym.training_end_date) || (m.training_end_date ? isoDate(m.training_end_date) : null);

@@ -116,7 +116,7 @@ test('迁移注册表把 170 作为最新一步，且按年代模块引入', fun
 });
 
 test('附件目录与图片上限在服务层集中定义', function () {
-  const src = read('server/services/feedbackService.js');
+const src = read('server/services/feedbackService.js') + read('server/repositories/feedbackServiceRepository.js');
   assert.ok(src.indexOf('FEEDBACK_UPLOAD_DIR') >= 0, '附件目录应支持 FEEDBACK_UPLOAD_DIR 配置');
   assert.ok(/MAX_IMAGES = 3/.test(src), '最多 3 张截图');
   assert.ok(/MAX_FILE_BYTES = 2 \* 1024 \* 1024/.test(src), '单张接收上限 2MiB');

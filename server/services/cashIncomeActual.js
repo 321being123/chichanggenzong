@@ -3,6 +3,7 @@ const {pool}=require('../db/connection');
 const crypto=require('crypto');
 const CoreDate=require('../../public/shared/core-date');
 const txControl = require('../repositories/transactionControl');
+const repository = require('../repositories/cashIncomeActualRepository.js');
 const bad=message=>Object.assign(new Error(message),{status:400});
 function validate(records) {
   if(!Array.isArray(records)||!records.length) throw Object.assign(new Error('缺少实际收益记录'),{status:400});
@@ -38,7 +39,7 @@ async function importActual(username,accountName,records,version) {
   const normalized=validate(records),client=await pool.connect();
   try {
     await txControl.begin(client);
-    const account=(await client.query('SELECT id FROM accounts WHERE username=$1 AND account_name=$2 FOR UPDATE',[username,accountName])).rows[0];
+    const account=(await repository.select_accounts([username,accountName], client)).rows[0];
     if(!account) throw Object.assign(new Error('账户不存在'),{status:404});
     await require('./tradeLedger').checkVersionInTxn(client,username,accountName,version);
     const {loadCashInputs}=require('./accountCash');
@@ -46,11 +47,11 @@ async function importActual(username,accountName,records,version) {
     if(!anchor) throw Object.assign(new Error('缺少导入现金基准'),{status:400});
     let changed=0;
     for(const r of normalized) {
-      const old=(await client.query('SELECT *,date::text FROM cash_flows WHERE account_id=$1 AND event_key=$2 AND flow_type=$3 FOR UPDATE',[account.id,r.eventKey,r.flow_type])).rows[0];
-      const known=old||(await client.query('SELECT 1 FROM cash_flows WHERE account_id=$1 AND event_key=$2 UNION ALL SELECT 1 FROM account_cash_income_pending WHERE account_id=$1 AND event_key=$2 LIMIT 1',[account.id,r.eventKey])).rows[0];
+      const old=(await repository.select_cash_flows([account.id,r.eventKey,r.flow_type], client)).rows[0];
+      const known=old||(await repository.select_cash_flows_1([account.id,r.eventKey], client)).rows[0];
       if(!known) throw bad('事件不属于本账户已有收益或待核验范围');
       if(r.eventKey.includes(':tax:')){
-        const obligation=(await client.query('SELECT evidence FROM account_cash_income_pending WHERE account_id=$1 AND event_key=$2',[account.id,r.eventKey])).rows[0];
+        const obligation=(await repository.select_account_cash_income_pending([account.id,r.eventKey], client)).rows[0];
         const notBefore=obligation?.evidence?.notBefore;
         if(notBefore&&r.date<notBefore)throw bad('递延税实际扣款日不能早于对应卖出及分红发放日');
       }
@@ -70,11 +71,8 @@ async function importActual(username,accountName,records,version) {
       const id=old?.id||'income_'+crypto.createHash('sha256').update(JSON.stringify([account.id,r.eventKey,r.flow_type])).digest('hex').slice(0,28);
       const revision=(old?.revision||0)+1;
       const next={id,date:r.date,amount:r.amountCny,flow_type:r.flow_type,event_key:r.eventKey,status:r.status,evidence};
-      await client.query('INSERT INTO cash_flow_revisions(account_id,flow_id,event_key,revision,before_value,after_value,reason,actor) VALUES($1,$2,$3,$4,$5,$6,\'broker_actual_import\',$7)',[account.id,id,r.eventKey,revision,old||null,next,username]);
-      await client.query(`INSERT INTO cash_flows(id,username,account_name,account_id,date,amount,amount_cny,flow_type,origin,status,event_key,anchor_date,quality_status,calculation_version,evidence,source_ref,revision,note,currency,original_amount,settled_at)
-        VALUES($1,$2,$3,$4,$5,$6,$6,$7,'system',$13,$8,$9,'broker_confirmed','cash-income-v1',$10,$11,$12,'券商实际收益补录',$14,$15,$16)
-        ON CONFLICT(username,account_name,id) DO UPDATE SET date=EXCLUDED.date,amount=EXCLUDED.amount,amount_cny=EXCLUDED.amount_cny,status=EXCLUDED.status,quality_status='broker_confirmed',evidence=EXCLUDED.evidence,source_ref=EXCLUDED.source_ref,revision=EXCLUDED.revision,currency=EXCLUDED.currency,original_amount=EXCLUDED.original_amount,settled_at=EXCLUDED.settled_at`,
-        [id,username,accountName,account.id,r.date,r.amountCny,r.flow_type,r.eventKey,anchor.date,evidence,{reference:r.sourceRef},revision,r.status,r.currency,r.originalAmount,r.settledAt||null]);
+      await repository.insert_cash_flow_revisions([account.id,id,r.eventKey,revision,old||null,next,username], client);
+      await repository.insert_cash_flows([id,username,accountName,account.id,r.date,r.amountCny,r.flow_type,r.eventKey,anchor.date,evidence,{reference:r.sourceRef},revision,r.status,r.currency,r.originalAmount,r.settledAt||null], client);
       await require('./tradeLedger').markNavDirty(client,username,accountName,old?.date<r.date?old.date:r.date,'cashflow');changed++;
     }
     await txControl.commit(client);return {ok:true,changed,records:normalized.length};

@@ -111,8 +111,67 @@ async function fetchUniverseRows(tradeDate) {
   return rows;
 }
 
+async function select_market_convertible_bond_daily_metrics(params, client = pool) {
+  return client.query(`
+    SELECT MAX(trade_date)::text AS trade_date
+      FROM market.convertible_bond_daily_metrics
+  `);
+}
+
+async function select_analytics_convertible_bond_list_metrics_daily(params, client = pool) {
+  return client.query(`
+    SELECT MAX(trade_date)::text AS trade_date
+      FROM analytics.convertible_bond_list_metrics_daily
+     WHERE formula_version=$1
+  `, params);
+}
+
+async function select_bond_safety_snapshots(params, client = pool) {
+  return client.query(`
+      SELECT data
+        FROM bond_safety_snapshots
+       ORDER BY id DESC
+       LIMIT 1
+    `);
+}
+
+async function insert_analytics_convertible_bond_list_metrics_daily(params, client = pool) {
+  return client.query(`
+        INSERT INTO analytics.convertible_bond_list_metrics_daily
+          (trade_date,instrument_id,formula_version,theoretical_option_value,theoretical_value,theoretical_deviation_pct,
+           stock_volatility,call_trigger_price,bond_market_cap_ratio,asset_liability_ratio,fund_holding_ratio,
+           turnover_rate,maturity_yield_pre_tax,earliest_put_trigger_date,earliest_put_remaining_years,
+           expected_put_payment_date,put_yield_pre_tax,put_yield_after_tax,double_low,financial_period_end,
+           fund_report_date,input_hash,data_status,diagnostics,calculated_at)
+        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,now())
+        ON CONFLICT(trade_date,instrument_id,formula_version) DO UPDATE SET
+          theoretical_option_value=EXCLUDED.theoretical_option_value,theoretical_value=EXCLUDED.theoretical_value,
+          theoretical_deviation_pct=EXCLUDED.theoretical_deviation_pct,stock_volatility=EXCLUDED.stock_volatility,
+          call_trigger_price=EXCLUDED.call_trigger_price,bond_market_cap_ratio=EXCLUDED.bond_market_cap_ratio,
+          asset_liability_ratio=EXCLUDED.asset_liability_ratio,fund_holding_ratio=EXCLUDED.fund_holding_ratio,
+          turnover_rate=EXCLUDED.turnover_rate,maturity_yield_pre_tax=EXCLUDED.maturity_yield_pre_tax,
+          earliest_put_trigger_date=EXCLUDED.earliest_put_trigger_date,earliest_put_remaining_years=EXCLUDED.earliest_put_remaining_years,
+          expected_put_payment_date=EXCLUDED.expected_put_payment_date,put_yield_pre_tax=EXCLUDED.put_yield_pre_tax,
+          put_yield_after_tax=EXCLUDED.put_yield_after_tax,double_low=EXCLUDED.double_low,
+          financial_period_end=EXCLUDED.financial_period_end,fund_report_date=EXCLUDED.fund_report_date,
+          input_hash=EXCLUDED.input_hash,data_status=EXCLUDED.data_status,diagnostics=EXCLUDED.diagnostics,calculated_at=now()
+      `, params);
+}
+
+async function select_analytics_convertible_bond_list_metrics_daily_1(params, client = pool) {
+  return client.query(`
+      SELECT * FROM analytics.convertible_bond_list_metrics_daily
+       WHERE trade_date=$1::date AND formula_version=$2
+    `, params);
+}
+
 module.exports = {
   fetchCoupons,
   fetchStockHistory,
   fetchUniverseRows,
+  select_market_convertible_bond_daily_metrics,
+  select_analytics_convertible_bond_list_metrics_daily,
+  select_bond_safety_snapshots,
+  insert_analytics_convertible_bond_list_metrics_daily,
+  select_analytics_convertible_bond_list_metrics_daily_1,
 };

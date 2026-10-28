@@ -16,7 +16,8 @@ const { readServiceSource } = require('./helpers/service-source');
 const analysis = readServiceSource('convertibleBondAnalysis');
 const { readMigrationSource } = require('./helpers/migration-source');
 const migration = readMigrationSource();
-const refresh = fs.readFileSync(path.join(root, 'server', 'jobs', 'convertibleBondRefresh.js'), 'utf8');
+const refresh = fs.readFileSync(path.join(root, 'server', 'jobs', 'convertibleBondRefresh.js'), 'utf8')
+  + fs.readFileSync(path.join(root, 'server', 'repositories', 'convertibleBondRefreshRepository.js'), 'utf8');
 const jobs = fs.readFileSync(path.join(root, 'server', 'services', 'jobDefinitions.js'), 'utf8');
 const redemptionSync = fs.readFileSync(path.join(root, 'server', 'services', 'convertibleBondRedemptionSync.js'), 'utf8')
   + fs.readFileSync(path.join(root, 'server', 'repositories', 'convertibleBondRedemptionSyncRepository.js'), 'utf8');

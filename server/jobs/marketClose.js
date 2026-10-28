@@ -8,6 +8,7 @@ const { runHkRateJob } = require('./hkRate');
 const { backfillDailyPrices } = require('./replayNav');
 const { getExternalCallStats } = require('../services/externalCallGuard');
 const classifyCode = require('../../public/js/code-classify');
+const repository = require('../repositories/marketCloseRepository.js');
 const sharedQuotePromises = new Map();
 const legacyFinalTasks = new Map();
 
@@ -134,10 +135,7 @@ async function recordCloseOne(username, accountName, label, matchFn, dateStr, re
   if (positions.length === 0) return { recorded: 0, failed: 0, skipped: 0 };
 
   // 已有价格代码集合（按代码去重，而非「账户当天任意一条」）
-  const { rows: existingRows } = await pool.query(
-    'SELECT code FROM daily_prices WHERE username=$1 AND account_name=$2 AND date=$3',
-    [username, accountName, cnDate]
-  );
+  const { rows: existingRows } = await repository.select_daily_prices([username, accountName, cnDate]);
   const existingCodes = new Set(existingRows.map(r => r.code));
 
   // 仅抓取缺失代码（按代码去重，避免同一代码因多条持仓记录而重复抓取）
@@ -188,7 +186,7 @@ async function getSharedQuoteMap(cnDate) {
   const key = String(cnDate || cnDateStr());
   if (sharedQuotePromises.has(key)) return sharedQuotePromises.get(key);
   const promise = (async () => {
-    const { rows } = await pool.query("SELECT code FROM positions WHERE code IS NOT NULL AND code <> ''");
+    const { rows } = await repository.select_positions();
     const codes = [...new Set(rows.map(row => String(row.code || '').trim()).filter(code =>
       /^(00|30|43|48|50|51|60|68|83|87|92|11|12|15|16|[0-9]{5})/.test(code)
     ))];
@@ -219,7 +217,7 @@ async function recordMarketClose(label, matchFn, dateStr, context = {}) {
     const refreshed = await fetchTencentQuotes(candidates, { businessDate: cnDate, force: true });
     mergeQuoteMaps(quoteMap, refreshed);
   } : null;
-  const { rows: accounts } = await pool.query('SELECT username, account_name FROM accounts ORDER BY username, created_at');
+  const { rows: accounts } = await repository.select_accounts();
   let recorded = 0, failed = 0, skipped = 0;
   for (const account of accounts) {
     const r = await recordCloseOne(account.username, account.account_name, label, matchFn, cnDate, requestBudget, { quoteMap, refreshMissingQuotes })
@@ -269,18 +267,12 @@ function isUncoveredPosition(code, position) {
 // 手动补漏先查询账户已有收盘价的日期范围，再找出其中遗漏的交易日。
 // 不把 daily_prices 首日之前的历史当成“遗漏”，避免在功能启用前的旧数据被误判为待补。
 async function findMissingCloseDates(username, accountName) {
-  const range = await pool.query(
-    'SELECT MIN(date)::text AS first_date FROM daily_prices WHERE username=$1 AND account_name=$2',
-    [username, accountName]
-  );
+  const range = await repository.select_daily_prices_1([username, accountName]);
   const firstDate = range.rows[0] && range.rows[0].first_date;
   const lastDate = (await recentMarketDays(1))[0];
   if (!firstDate || !lastDate || firstDate > lastDate) return [];
 
-  const existing = await pool.query(
-    'SELECT date::text AS date FROM daily_prices WHERE username=$1 AND account_name=$2 AND date BETWEEN $3 AND $4',
-    [username, accountName, firstDate, lastDate]
-  );
+  const existing = await repository.select_daily_prices_2([username, accountName, firstDate, lastDate]);
   const existingDates = new Set(existing.rows.map(row => row.date));
   const missingDates = [];
   const cursor = new Date(firstDate + 'T12:00:00Z');
@@ -301,7 +293,7 @@ async function findMissingCloseDates(username, accountName) {
 async function backfillMissingCloses(options) {
   const scanAllMissingDates = !!(options && options.scanAllMissingDates);
   const recentDays = scanAllMissingDates ? null : await recentMarketDays(6);
-  const { rows: accounts } = await pool.query('SELECT username, account_name FROM accounts ORDER BY username, created_at');
+  const { rows: accounts } = await repository.select_accounts();
   let accountCount = 0, missingDates = 0, recorded = 0, failed = 0, skipped = 0;
   for (const account of accounts) {
     const accountName = account.account_name;

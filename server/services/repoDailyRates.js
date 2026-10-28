@@ -5,6 +5,7 @@ const CoreDate=require('../../public/shared/core-date');
 const {resolveInstrument}=require('./securityIdentity');
 const {loadHolidays}=require('../config/holidays');
 const crypto=require('crypto');
+const repository = require('../repositories/repoDailyRatesRepository.js');
 const CODE='204001.SH', DOC='https://tushare.pro/document/2?doc_id=256';
 function day(value) {const s=String(value||'').replace(/-/g,'');return /^\d{8}$/.test(s)?CoreDate.normalizeBusinessDate(s.slice(0,4)+'-'+s.slice(4,6)+'-'+s.slice(6)):null;}
 function normalize(row) {
@@ -26,8 +27,7 @@ function completedRepoTarget(targetDate,{allowCompletedToday=false,now=new Date(
 }
 async function syncRepoDailyRates({targetDate,startDate,probe=false,allowCompletedToday=false}={}) {
   if(!startDate) {
-    const anchors=(await pool.query(`SELECT MIN(anchor_date)::text AS start_date FROM (SELECT MAX(n.date) AS anchor_date FROM nav_history n JOIN accounts a ON a.username=n.username AND a.account_name=n.account_name
-      WHERE a.cash_income_policy->>'enabled'='true' AND (n.is_locked OR n.snapshot_source='imported') AND n.date <= $1 GROUP BY a.id) anchors`,[targetDate])).rows[0];
+    const anchors=(await repository.select_nav_history([targetDate])).rows[0];
     startDate=anchors?.start_date||targetDate;
   }
   if(!completedRepoTarget(targetDate,{allowCompletedToday})||!CoreDate.normalizeBusinessDate(startDate)||startDate>targetDate) throw new Error('回购采集仅接受已完成交易日区间');
@@ -37,9 +37,9 @@ async function syncRepoDailyRates({targetDate,startDate,probe=false,allowComplet
 const txControl = require('../repositories/transactionControl');
     identity={instrument_id:master.instrumentId};
   }
-  const source=(await pool.query("SELECT source_id FROM ops.data_sources WHERE source_code='tushare'")).rows[0].source_id;
+  const source=(await repository.select_ops_data_sources()).rows[0].source_id;
   const expected=tradingDates(startDate,targetDate);
-  const saved=(await pool.query("SELECT trade_date::text FROM market.repo_daily_rates WHERE instrument_id=$1 AND quality_status='passed' AND trade_date BETWEEN $2 AND $3",[identity.instrument_id,startDate,targetDate])).rows.map(r=>r.trade_date);
+  const saved=(await repository.select_market_repo_daily_rates([identity.instrument_id,startDate,targetDate])).rows.map(r=>r.trade_date);
   const missing=expected.filter(d=>!saved.includes(d));
   const requested=probe?expected:missing;
   const failures=[],samples=[];
@@ -61,19 +61,14 @@ const txControl = require('../repositories/transactionControl');
         const client=await pool.connect();
         try {
           await txControl.begin(client);
-          const raw=(await client.query(`INSERT INTO ops.raw_records(source_id,dataset_code,source_key,payload,payload_hash)
-            VALUES($1,'repo_daily_rates',$2,$3,$4) ON CONFLICT(source_id,dataset_code,source_key,payload_hash)
-            DO UPDATE SET ingested_at=now() RETURNING raw_record_id`,[source,CODE+':'+value.date,row,payloadHash])).rows[0];
-          await client.query(`INSERT INTO market.repo_daily_rates(instrument_id,trade_date,source_id,tenor_days,weighted_annual_rate,close_annual_rate,unit,raw_record_id,quality_status,source_revision)
-            VALUES($1,$2,$3,1,$4,$5,'annual_decimal',$6,'passed',$7)
-            ON CONFLICT(instrument_id,trade_date,source_id) DO UPDATE SET weighted_annual_rate=EXCLUDED.weighted_annual_rate,
-            close_annual_rate=EXCLUDED.close_annual_rate,raw_record_id=EXCLUDED.raw_record_id,source_revision=EXCLUDED.source_revision,ingested_at=now()`,[identity.instrument_id,value.date,source,value.weighted,value.close,raw.raw_record_id,payloadHash]);
+          const raw=(await repository.insert_ops_raw_records([source,CODE+':'+value.date,row,payloadHash], client)).rows[0];
+          await repository.insert_market_repo_daily_rates([identity.instrument_id,value.date,source,value.weighted,value.close,raw.raw_record_id,payloadHash], client);
           await txControl.commit(client);samples.push({...row,weighted_annual_rate:value.weighted});
         } catch(e) {await txControl.rollback(client);throw e;} finally {client.release();}
       }
     } catch(e) {failures.push({year,message:e.message,code:e.code||'DATASET_INCOMPLETE'});}
   }
-  const current=(await pool.query("SELECT trade_date::text FROM market.repo_daily_rates WHERE instrument_id=$1 AND quality_status='passed' AND trade_date BETWEEN $2 AND $3",[identity.instrument_id,startDate,targetDate])).rows.map(r=>r.trade_date);
+  const current=(await repository.select_market_repo_daily_rates([identity.instrument_id,startDate,targetDate])).rows.map(r=>r.trade_date);
   const remaining=expected.filter(d=>!current.includes(d));
   const ok=!remaining.length&&!failures.length;
   const report={ok,stageComplete:ok,mode:'repo_daily',publishDatasetCodes:['repo_daily_rates'],status:ok?'succeeded':'partial',dataAsOf:targetDate,code:CODE,startDate,targetDate,expectedDays:expected.length,remaining,remainingCount:remaining.length,failures,samples,unit:'annual_decimal',conversion:'weight / 100',officialDocumentation:DOC,publishDatasets:false,failedDatasets:ok?[]:['repo_daily_rates'],pendingStages:ok?[]:['repoDailyRates'],nextAttemptInMinutes:remaining.length?15:null};

@@ -40,7 +40,51 @@ async function sourceIdFor(executor = pool, sourceCode = 'tushare') {
   return rows[0].source_id;
 }
 
+async function insert_ops_ingestion_runs(params, client = pool) {
+  return client.query(`INSERT INTO ops.ingestion_runs(source_id,dataset_code,request_range,status)
+       VALUES($1,'hk_daily',$2::jsonb,'running') RETURNING run_id`, params);
+}
+
+async function insert_ops_raw_records(params, client = pool) {
+  return client.query(`INSERT INTO ops.raw_records(run_id,source_id,dataset_code,source_key,source_updated_at,payload,payload_hash)
+         SELECT $1,$2,'hk_daily',x.source_key,now(),x.payload,md5(x.payload::text)
+           FROM jsonb_to_recordset($3::jsonb) AS x(source_key text,payload jsonb)
+         ON CONFLICT(source_id,dataset_code,source_key,payload_hash) DO NOTHING`, params);
+}
+
+async function insert_market_daily_bars(params, client = pool) {
+  return client.query(`INSERT INTO market.daily_bars(instrument_id,trade_date,source_id,open,high,low,close,volume,amount)
+         SELECT x.instrument_id,x.trade_date,$2,x.open,x.high,x.low,x.close,x.volume,x.amount
+           FROM jsonb_to_recordset($1::jsonb) AS x(instrument_id bigint,trade_date date,open numeric,high numeric,low numeric,close numeric,volume numeric,amount numeric)
+         ON CONFLICT(instrument_id,trade_date,source_id) DO UPDATE SET open=EXCLUDED.open,high=EXCLUDED.high,low=EXCLUDED.low,
+           close=EXCLUDED.close,volume=EXCLUDED.volume,amount=EXCLUDED.amount,ingested_at=now()`, params);
+}
+
+async function insert_ops_sync_cursors(params, client = pool) {
+  return client.query(`INSERT INTO ops.sync_cursors(scope_key,dataset_code,last_success_date,last_attempt_at,last_error,retry_count,updated_at)
+       VALUES('HK','hk_daily',$1,now(),$2,CASE WHEN $2='' THEN 0 ELSE 1 END,now())
+       ON CONFLICT(scope_key,dataset_code) DO UPDATE SET
+         last_success_date=CASE WHEN EXCLUDED.last_success_date IS NULL THEN ops.sync_cursors.last_success_date
+           ELSE GREATEST(COALESCE(ops.sync_cursors.last_success_date,'1900-01-01'::date),EXCLUDED.last_success_date) END,
+         last_attempt_at=now(),last_error=EXCLUDED.last_error,
+         retry_count=CASE WHEN EXCLUDED.last_error='' THEN 0 ELSE ops.sync_cursors.retry_count+1 END,updated_at=now()`, params);
+}
+
+async function update_ops_ingestion_runs(params, client = pool) {
+  return client.query(`UPDATE ops.ingestion_runs SET status=$2,row_count=$3,error_message=$4,finished_at=now() WHERE run_id=$1`, params);
+}
+
+async function update_ops_ingestion_runs_1(params, client = pool) {
+  return client.query(`UPDATE ops.ingestion_runs SET status=$2,error_message=$3,finished_at=now() WHERE run_id=$1`, params);
+}
+
 module.exports = {
   loadCandidates,
   sourceIdFor,
+  insert_ops_ingestion_runs,
+  insert_ops_raw_records,
+  insert_market_daily_bars,
+  insert_ops_sync_cursors,
+  update_ops_ingestion_runs,
+  update_ops_ingestion_runs_1,
 };

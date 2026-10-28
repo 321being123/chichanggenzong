@@ -9,6 +9,7 @@ const classifyCode = require('../../public/js/code-classify');
 const { appVersion } = require('../../package.json');
 const txControl = require('../repositories/transactionControl');
 const jobScheduleSlotsRepository = require('../repositories/jobScheduleSlotsRepository');
+const repository = require('../repositories/jobScheduleSlotsRepository.js');
 const { taskDependencyStates } = jobScheduleSlotsRepository;
 
 const HOSTNAME = os.hostname();
@@ -144,20 +145,7 @@ async function ensureSlot(jobCode, scheduledFor, businessDate, triggerType = 'sc
   if (!getRegisteredJobDefinition(jobCode)) {
     throw new Error(`未知任务 jobCode，禁止创建执行槽位：${jobCode}`);
   }
-  const { rows } = await pool.query(
-    `INSERT INTO ops.job_schedule_slots(job_code, scheduled_for, business_date, trigger_type, next_attempt_at,request_payload)
-     VALUES ($1,$2,$3,$4,$2,$5::jsonb)
-     ON CONFLICT(job_code, scheduled_for) DO UPDATE SET
-       request_payload=CASE
-         WHEN ops.job_schedule_slots.trigger_type IN ('manual_retry','auto_retry')
-              AND ops.job_schedule_slots.status IN ('pending','running','failed','waiting_external')
-           THEN ops.job_schedule_slots.request_payload
-         ELSE EXCLUDED.request_payload
-       END,
-       updated_at=now()
-     RETURNING *, updated_at::text AS updated_at_exact`,
-    [jobCode, scheduledFor, businessDate, triggerType, JSON.stringify(requestPayload || {})]
-  );
+  const { rows } = await repository.insert_ops_job_schedule_slots([jobCode, scheduledFor, businessDate, triggerType, JSON.stringify(requestPayload || {})]);
   return rows[0] || null;
 }
 
@@ -186,13 +174,7 @@ async function datasetDependencyState(slot, definition) {
       failures.push(`${requirement.datasetCode}@invalid-business-date`);
       continue;
     }
-    const { rows } = await pool.query(
-      `SELECT status,is_stale,diagnostics
-         FROM ops.dataset_partitions
-        WHERE dataset_code=$1 AND scope_key=$2 AND partition_key=$3::date
-        ORDER BY updated_at DESC LIMIT 1`,
-      [requirement.datasetCode, requirement.scopeKey || '', partitionKey]
-    );
+    const { rows } = await repository.select_ops_dataset_partitions([requirement.datasetCode, requirement.scopeKey || '', partitionKey]);
     const partition = rows[0];
     if (!partition) {
       failures.push(`${requirement.datasetCode}@${partitionKey}=missing`);
@@ -222,24 +204,14 @@ async function enqueueManualJob(jobCode, requestPayload = {}, transactionClient 
   const client = transactionClient || await pool.connect();
   try {
     if(!transactionClient) await txControl.begin(client);
-    await client.query("SELECT pg_advisory_xact_lock(hashtext('manual_job:' || $1 || ':' || $2))", [jobCode, JSON.stringify(safePayload)]);
-    const active = await client.query(`
-      SELECT * FROM ops.job_schedule_slots
-       WHERE job_code=$1
-         AND request_payload @> $3::jsonb
-         AND (status='running' OR (status='pending' AND scheduled_for <= now()
-           AND COALESCE(next_attempt_at,scheduled_for) <= now() AND attempt_count < $2))
-       ORDER BY slot_id DESC LIMIT 1
-    `, [jobCode, Number(definition.maxAttempts || 3), JSON.stringify(safePayload)]);
+    await repository.select_data([jobCode, JSON.stringify(safePayload)], client);
+    const active = await repository.select_ops_job_schedule_slots([jobCode, Number(definition.maxAttempts || 3), JSON.stringify(safePayload)], client);
     if (active.rows[0]) {
       if(!transactionClient) await txControl.commit(client);
       return active.rows[0];
     }
     const scheduledFor = new Date();
-    const { rows } = await client.query(`
-      INSERT INTO ops.job_schedule_slots(job_code,scheduled_for,business_date,trigger_type,next_attempt_at,request_payload)
-      VALUES($1,$2,$3,'manual_retry',$2,$4::jsonb) RETURNING *
-    `, [jobCode, scheduledFor, dateText(scheduledFor), JSON.stringify(safePayload)]);
+    const { rows } = await repository.insert_ops_job_schedule_slots_1([jobCode, scheduledFor, dateText(scheduledFor), JSON.stringify(safePayload)], client);
     if(!transactionClient) await txControl.commit(client);
     return rows[0] || null;
   } catch (error) {
@@ -303,17 +275,7 @@ async function supersedeStaleSlot(slot, recovery, reason) {
     console.warn(`[job-slot] 接管跳过 slot=${slot.slot_id}：缺少数据库精确版本，无法安全核对`);
     return null;
   }
-  const { rows } = await pool.query(
-    `UPDATE ops.job_schedule_slots
-        SET status='skipped', next_attempt_at=NULL, last_error=$2,
-            lease_owner=NULL, lease_until=NULL, updated_at=now()
-      WHERE slot_id=$1 AND status=$3
-        AND updated_at=$4::timestamptz
-        AND ($5::text IS NULL OR trigger_type=$5)
-        AND status <> 'skipped'
-      RETURNING *`,
-    [slot.slot_id, reason, slot.status, version, slot.trigger_type || null]
-  );
+  const { rows } = await repository.update_ops_job_schedule_slots([slot.slot_id, reason, slot.status, version, slot.trigger_type || null]);
   const superseded = rows[0] || null;
   if (!superseded) return null;
   superseded.superseded_by = recovery && recovery.candidate ? recovery.candidate.slot_id : null;
@@ -345,14 +307,7 @@ async function expireContinuationSlot(slot, definition, now) {
     console.warn(`[job-slot] 续批止损跳过 slot=${slot.slot_id}：缺少数据库精确版本，无法安全核对`);
     return null;
   }
-  const { rows } = await pool.query(
-    `UPDATE ops.job_schedule_slots
-        SET status='blocked', next_attempt_at=NULL, last_error=$2, updated_at=now()
-      WHERE slot_id=$1 AND status='pending'
-        AND updated_at=$3::timestamptz
-      RETURNING *`,
-    [slot.slot_id, message, version]
-  );
+  const { rows } = await repository.update_ops_job_schedule_slots_1([slot.slot_id, message, version]);
   if (!rows[0]) return null;
   const { notifyJobFailure } = require('./jobAlertMailer');
   await notifyJobFailure({
@@ -414,12 +369,7 @@ async function reconcileSlot(slot) {
         (sql, params) => pool.query(sql, params)
       );
       if (!evidence.recovered) return slot;
-      const { rows: recoveredRows } = await pool.query(
-        `UPDATE ops.job_schedule_slots
-            SET status='succeeded', data_as_of=$2, last_error=NULL, updated_at=now()
-          WHERE slot_id=$1 AND status IN ('failed','waiting_external') RETURNING *`,
-        [slot.slot_id, actualDataAsOf]
-      );
+      const { rows: recoveredRows } = await repository.update_ops_job_schedule_slots_2([slot.slot_id, actualDataAsOf]);
       if (recoveredRows[0]) {
         const { resolveJobSlotAlerts } = require('./jobAlertMailer');
         await resolveJobSlotAlerts(recoveredRows[0]).catch(error => console.warn('[job-alert] 外部水位恢复告警处理失败:', error.message));
@@ -434,12 +384,7 @@ async function reconcileSlot(slot) {
       const { verifySlotRecoveryEvidence } = require('./jobRecoveryEvidence');
       const evidence = await verifySlotRecoveryEvidence(slot, (sql, params) => pool.query(sql, params), { candidateStatus: 'succeeded' });
       if (!evidence.recovered) return slot;
-      const { rows: recoveredRows } = await pool.query(
-        `UPDATE ops.job_schedule_slots
-            SET status='succeeded', data_as_of=$2, last_error=NULL, updated_at=now()
-          WHERE slot_id=$1 AND status='degraded' RETURNING *`,
-        [slot.slot_id, actualDataAsOf]
-      );
+      const { rows: recoveredRows } = await repository.update_ops_job_schedule_slots_3([slot.slot_id, actualDataAsOf]);
       if (recoveredRows[0]) {
         const { resolveJobSlotAlerts } = require('./jobAlertMailer');
         await resolveJobSlotAlerts(recoveredRows[0]).catch(error => console.warn('[job-alert] 降级状态恢复告警处理失败:', error.message));
@@ -454,34 +399,17 @@ async function reconcileSlot(slot) {
       const states = await taskDependencyStates(slot, dependencies);
       const datasets = await datasetDependencyState(slot, definition);
       if (dependencies.every(code => states.get(code) === 'succeeded') && datasets.ready) {
-        const { rows: releasedRows } = await pool.query(
-          `UPDATE ops.job_schedule_slots
-              SET status='pending', next_attempt_at=now(), last_error=NULL, updated_at=now()
-            WHERE slot_id=$1 AND status='blocked' RETURNING *`, [slot.slot_id]
-        );
+        const { rows: releasedRows } = await repository.update_ops_job_schedule_slots_4([slot.slot_id]);
         return releasedRows[0] || slot;
       }
     }
     return slot;
   }
   if (slot.status === 'failed' && slot.result_summary && slot.result_summary.timed_out) return slot;
-  const { rows } = await pool.query(
-    `SELECT id, status, finished_at, detail, result_json
-       FROM job_runs
-      WHERE slot_id=$1
-      ORDER BY id DESC LIMIT 1`,
-    [slot.slot_id]
-  );
+  const { rows } = await repository.select_job_runs([slot.slot_id]);
   let run = rows[0];
   if (!run) {
-    const legacy = await pool.query(
-      `SELECT id, status, finished_at, detail, result_json
-         FROM job_runs
-       WHERE job=$1 AND started_at >= $2::timestamptz
-         AND started_at < $2::timestamptz + make_interval(mins => $3::integer)
-        ORDER BY id DESC LIMIT 1`,
-    [slot.job_code, slot.scheduled_for, Number(getJobDefinition(slot.job_code).deadlineMinutes || 180)]
-    );
+    const legacy = await repository.select_job_runs_1([slot.job_code, slot.scheduled_for, Number(getJobDefinition(slot.job_code).deadlineMinutes || 180)]);
     run = legacy.rows[0];
   }
   if (!run || !['done', 'failed'].includes(run.status)) return slot;
@@ -510,18 +438,9 @@ async function reconcileSlot(slot) {
     console.warn(`[job-slot] 恢复写入跳过 slot=${slot.slot_id}：缺少数据库精确版本，无法安全核对`);
     return slot;
   }
-  const updated = await pool.query(
-    `UPDATE ops.job_schedule_slots
-        SET status=$2, last_run_id=$3,
-            data_as_of=CASE WHEN $2='succeeded' THEN COALESCE($4, data_as_of) ELSE data_as_of END,
-            last_error=$5, result_summary=$6::jsonb, updated_at=now()
-      WHERE slot_id=$1 AND status NOT IN ('running','succeeded','skipped')
-        AND updated_at=$7::timestamptz
-      RETURNING *`,
-    [slot.slot_id, nextStatus, run.id, dataAsOf,
+  const updated = await repository.update_ops_job_schedule_slots_5([slot.slot_id, nextStatus, run.id, dataAsOf,
       nextStatus === 'failed' ? sanitizeJobError(run.detail || '') : nextStatus === 'degraded' ? '运行记录成功但未形成可确认的数据日期' : null,
-      JSON.stringify(resultSummary), version]
-  );
+      JSON.stringify(resultSummary), version]);
   if (updated.rows[0] && nextStatus === 'degraded') {
     const { notifyJobFailure } = require('./jobAlertMailer');
     await notifyJobFailure({
@@ -596,7 +515,7 @@ async function syncScheduleSlots(now = new Date()) {
 }
 
 async function claimSlot(slotId, workerId = WORKER_ID, triggerType = 'scheduled') {
-  const lookup = await pool.query('SELECT job_code,business_date::text AS business_date,scheduled_for FROM ops.job_schedule_slots WHERE slot_id=$1', [slotId]);
+  const lookup = await repository.select_ops_job_schedule_slots_1([slotId]);
   if (!lookup.rows[0]) return null;
   const definition = getJobDefinition(lookup.rows[0].job_code);
   if (definition.disabled) return null;
@@ -604,13 +523,7 @@ async function claimSlot(slotId, workerId = WORKER_ID, triggerType = 'scheduled'
   if (dependencies.length) {
     const states = await taskDependencyStates(lookup.rows[0], dependencies);
     if (dependencies.some(code => ['failed', 'degraded', 'blocked'].includes(states.get(code)))) {
-      await pool.query(
-        `UPDATE ops.job_schedule_slots
-            SET status='blocked', last_error=$2, next_attempt_at=NULL,
-                lease_owner=NULL, lease_until=NULL, heartbeat_at=now(), updated_at=now()
-          WHERE slot_id=$1 AND status IN ('pending','failed','degraded','waiting_external')`,
-        [slotId, `依赖任务未成功：${dependencies.map(code => `${code}=${states.get(code) || 'missing'}`).join(', ')}`]
-      );
+      await repository.update_ops_job_schedule_slots_6([slotId, `依赖任务未成功：${dependencies.map(code => `${code}=${states.get(code) || 'missing'}`).join(', ')}`]);
       return null;
     }
     if (dependencies.some(code => !states.has(code) || ['pending', 'running', 'waiting_external'].includes(states.get(code)))) return null;
@@ -618,46 +531,20 @@ async function claimSlot(slotId, workerId = WORKER_ID, triggerType = 'scheduled'
   const datasets = await datasetDependencyState(lookup.rows[0], definition);
   if (!datasets.ready) {
     if (datasets.failed) {
-      await pool.query(
-        `UPDATE ops.job_schedule_slots
-            SET status='blocked', last_error=$2, next_attempt_at=NULL,
-                lease_owner=NULL, lease_until=NULL, heartbeat_at=now(), updated_at=now()
-          WHERE slot_id=$1 AND status IN ('pending','failed','degraded','waiting_external')`,
-        [slotId, `依赖数据分区未发布：${datasets.detail}`]
-      );
+      await repository.update_ops_job_schedule_slots_6([slotId, `依赖数据分区未发布：${datasets.detail}`]);
     }
     return null;
   }
   // 执行令牌（2026-10-25）：每次领取生成唯一令牌，接管时必然更换。
   // 旧执行后续的续租/状态写入/收件进度必须因令牌不匹配而影响 0 行，不能写回新执行。
   const executionToken = require('crypto').randomUUID();
-  const { rows } = await pool.query(
-    `UPDATE ops.job_schedule_slots
-        SET status='running', attempt_count=attempt_count+1, lease_owner=$2,
-            lease_until=now()+($5::integer * interval '1 minute'), heartbeat_at=now(),
-            next_attempt_at=NULL, trigger_type=$3, execution_token=$6, updated_at=now()
-      WHERE slot_id=$1 AND status IN ('pending','failed','waiting_external')
-        AND attempt_count < $4 + CASE WHEN job_code='nav_snapshot' AND result_summary ? 'dependencyRecovery' THEN 1 ELSE 0 END
-        AND (next_attempt_at IS NULL OR next_attempt_at<=now())
-      RETURNING *, business_date::text AS business_date`,
-    [slotId, workerId, triggerType, definition.maxAttempts || 3, definition.timeoutMinutes || 30, executionToken]
-  );
+  const { rows } = await repository.update_ops_job_schedule_slots_7([slotId, workerId, triggerType, definition.maxAttempts || 3, definition.timeoutMinutes || 30, executionToken]);
   return rows[0] || null;
 }
 
 async function recoverExpiredSlots() {
-  await pool.query(
-    `UPDATE job_runs
-        SET status='failed', finished_at=COALESCE(finished_at, now()),
-            detail=CASE WHEN COALESCE(detail,'')='' THEN '执行租约已过期，系统已自动回收' ELSE detail END
-      WHERE status='running' AND locked_until IS NOT NULL AND locked_until < now()`
-  );
-  const { rows } = await pool.query(
-    `SELECT slot_id, job_code, attempt_count
-       FROM ops.job_schedule_slots
-      WHERE status='running' AND lease_until IS NOT NULL AND lease_until < now()
-      ORDER BY slot_id`
-  );
+  await repository.update_job_runs();
+  const { rows } = await repository.select_ops_job_schedule_slots_2();
   for (const slot of rows) {
     const definition = getJobDefinition(slot.job_code);
     const nextStatus = Number(slot.attempt_count || 0) < (definition.maxAttempts || 3) ? 'pending' : 'failed';
@@ -665,14 +552,7 @@ async function recoverExpiredSlots() {
     const retryDelay = definition.retryPolicy === 'external'
       ? Number(retryDelays[Math.min(Math.max(Number(slot.attempt_count || 1) - 1, 0), retryDelays.length - 1)] || 15)
       : Number(retryDelays[Math.min(Math.max(Number(slot.attempt_count || 1) - 1, 0), retryDelays.length - 1)] || 5);
-    await pool.query(
-      `UPDATE ops.job_schedule_slots
-          SET status=$2, next_attempt_at=CASE WHEN $2='pending' THEN now()+($3::integer * interval '1 minute') ELSE NULL END,
-              lease_owner=NULL, lease_until=NULL, execution_token=NULL, heartbeat_at=now(),
-              last_error='执行租约已过期，系统已自动接管', updated_at=now()
-        WHERE slot_id=$1 AND status='running'`,
-      [slot.slot_id, nextStatus, retryDelay]
-    );
+    await repository.update_ops_job_schedule_slots_8([slot.slot_id, nextStatus, retryDelay]);
     if (nextStatus === 'failed') {
       const { notifyJobFailure } = require('./jobAlertMailer');
       await notifyJobFailure({
@@ -767,16 +647,7 @@ async function listDueSlots(limit = 20) {
   const retryPolicies = JOB_DEFINITIONS.filter(definition => !definition.disabled).map(definition => ({
     job_code: definition.jobCode, max_attempts: definition.maxAttempts || 3,
   }));
-  const { rows } = await pool.query(
-    `SELECT s.*, s.business_date::text AS business_date FROM ops.job_schedule_slots s
-      JOIN jsonb_to_recordset($2::jsonb) AS policy(job_code text,max_attempts integer)
-        ON policy.job_code=s.job_code
-      WHERE (status='pending' AND (next_attempt_at IS NULL OR next_attempt_at <= now())
-        OR (status IN ('failed','waiting_external') AND next_attempt_at IS NOT NULL AND next_attempt_at <= now()))
-        AND scheduled_for <= now()
-        AND s.attempt_count < policy.max_attempts + CASE WHEN s.job_code='nav_snapshot' AND s.result_summary ? 'dependencyRecovery' THEN 1 ELSE 0 END
-      ORDER BY scheduled_for ASC, slot_id ASC LIMIT $1`, [safeLimit, JSON.stringify(retryPolicies)]
-  );
+  const { rows } = await repository.select_ops_job_schedule_slots_3([safeLimit, JSON.stringify(retryPolicies)]);
   const due = [];
   for (const slot of rows) {
     const definition = getJobDefinition(slot.job_code);
@@ -787,14 +658,7 @@ async function listDueSlots(limit = 20) {
       const dependencyFailed = dependencies.some(code => ['failed', 'degraded', 'blocked'].includes(states.get(code)));
       const dependencyPending = dependencies.some(code => !states.has(code) || ['pending', 'running', 'waiting_external'].includes(states.get(code)));
       if (dependencyFailed) {
-        const blocked = await pool.query(
-          `UPDATE ops.job_schedule_slots
-              SET status='blocked', last_error=$2, next_attempt_at=NULL,
-                  lease_owner=NULL, lease_until=NULL, heartbeat_at=now(), updated_at=now()
-            WHERE slot_id=$1 AND status <> 'blocked'
-            RETURNING *`,
-          [slot.slot_id, `依赖任务未成功：${dependencies.map(code => `${code}=${states.get(code) || 'missing'}`).join(', ')}`]
-        );
+        const blocked = await repository.update_ops_job_schedule_slots_9([slot.slot_id, `依赖任务未成功：${dependencies.map(code => `${code}=${states.get(code) || 'missing'}`).join(', ')}`]);
         if (blocked.rows[0]) {
           const { notifyJobFailure } = require('./jobAlertMailer');
           await notifyJobFailure({
@@ -810,25 +674,14 @@ async function listDueSlots(limit = 20) {
       }
       if (dependencyPending) continue;
       if (slot.status === 'blocked') {
-        await pool.query(
-          `UPDATE ops.job_schedule_slots
-              SET status='pending', next_attempt_at=now(), last_error=NULL, updated_at=now()
-            WHERE slot_id=$1 AND status='blocked'`, [slot.slot_id]
-        );
+        await repository.update_ops_job_schedule_slots_10([slot.slot_id]);
         slot.status = 'pending';
       }
     }
     const datasets = await datasetDependencyState(slot, definition);
     if (!datasets.ready) {
       if (datasets.failed) {
-        const blocked = await pool.query(
-          `UPDATE ops.job_schedule_slots
-              SET status='blocked', last_error=$2, next_attempt_at=NULL,
-                  lease_owner=NULL, lease_until=NULL, heartbeat_at=now(), updated_at=now()
-            WHERE slot_id=$1 AND status <> 'blocked'
-            RETURNING *`,
-          [slot.slot_id, `依赖数据分区未发布：${datasets.detail}`]
-        );
+        const blocked = await repository.update_ops_job_schedule_slots_9([slot.slot_id, `依赖数据分区未发布：${datasets.detail}`]);
         if (blocked.rows[0]) {
           const { notifyJobFailure } = require('./jobAlertMailer');
           await notifyJobFailure({
@@ -959,7 +812,7 @@ async function resolveDataAsOf(jobCode, businessDate, resultSummary = {}) {
 async function completeSlot(slotId, status, resultSummary, errorMessage, runId, expectedToken) {
   const allowed = ['succeeded', 'degraded', 'failed', 'blocked', 'skipped'];
   const requestedStatus = allowed.includes(status) ? status : 'failed';
-  const current = await pool.query('SELECT job_code,business_date::text AS business_date,request_payload FROM ops.job_schedule_slots WHERE slot_id=$1', [slotId]);
+  const current = await repository.select_ops_job_schedule_slots_4([slotId]);
   if (!current.rows[0]) return null;
   const definition = getJobDefinition(current.rows[0].job_code);
   resultSummary = await mergeSlotExternalCallSummary(slotId, resultSummary || {}, expectedToken);
@@ -985,18 +838,8 @@ async function completeSlot(slotId, status, resultSummary, errorMessage, runId, 
   const finalError = nextStatus === 'degraded' && !errorMessage
     ? (dataAsOf ? `任务数据日期过旧：${normalizeBusinessDate(dataAsOf)}，未达到计划要求；请检查受影响证券明细和上游数据` : '任务完成但数据日期缺失，请检查上游返回和入库结果')
     : errorMessage;
-  const { rows } = await pool.query(
-    `UPDATE ops.job_schedule_slots
-        SET status=$2, last_run_id=COALESCE($5,last_run_id), data_as_of=CASE WHEN $2 IN ('succeeded','degraded') THEN COALESCE($6, data_as_of) ELSE data_as_of END,
-            result_summary=$3::jsonb, last_error=$4, lease_owner=NULL, lease_until=NULL,
-            heartbeat_at=now(), updated_at=now()
-      WHERE slot_id=$1 AND status='running'
-        AND ($7::text IS NULL OR (execution_token=$7
-             -- 收尾也必须按实际时间复核：租约已过期就不能标记成功
-             AND lease_until IS NOT NULL AND lease_until > clock_timestamp())) RETURNING *`,
-    [slotId, nextStatus, JSON.stringify(sanitizeJobResult(resultSummary || {})), finalError ? sanitizeJobError(finalError) : null, runId || null, dataAsOf,
-      expectedToken || null]
-  );
+  const { rows } = await repository.update_ops_job_schedule_slots_11([slotId, nextStatus, JSON.stringify(sanitizeJobResult(resultSummary || {})), finalError ? sanitizeJobError(finalError) : null, runId || null, dataAsOf,
+      expectedToken || null]);
   const completed = rows[0] || null;
   // 传了执行令牌却影响 0 行：说明令牌被接管或租约已过期，本次收尾不被承认。
   // 保留 running 让恢复流程回收重跑，绝不在日志之外伪装成成功。
@@ -1023,18 +866,8 @@ async function completeSlot(slotId, status, resultSummary, errorMessage, runId, 
 
 async function deferSlot(slotId, errorMessage, resultSummary, delayMinutes = 5, runId = null, expectedToken = null) {
   resultSummary = await mergeSlotExternalCallSummary(slotId, resultSummary || {}, expectedToken);
-  const { rows } = await pool.query(
-    `UPDATE ops.job_schedule_slots
-        SET status='failed', last_run_id=COALESCE($5,last_run_id), trigger_type='auto_retry',
-            next_attempt_at=now()+($2 || ' minutes')::interval,
-            result_summary=$3::jsonb, last_error=$4, lease_owner=NULL, lease_until=NULL,
-            heartbeat_at=now(), updated_at=now()
-      WHERE slot_id=$1 AND status='running'
-        AND ($6::text IS NULL OR (execution_token=$6
-             AND lease_until IS NOT NULL AND lease_until > clock_timestamp())) RETURNING *`,
-    [slotId, String(Math.max(Number(delayMinutes) || 5, 1)), JSON.stringify(sanitizeJobResult(resultSummary || {})),
-      errorMessage ? sanitizeJobError(errorMessage) : null, runId, expectedToken || null]
-  );
+  const { rows } = await repository.update_ops_job_schedule_slots_12([slotId, String(Math.max(Number(delayMinutes) || 5, 1)), JSON.stringify(sanitizeJobResult(resultSummary || {})),
+      errorMessage ? sanitizeJobError(errorMessage) : null, runId, expectedToken || null]);
   if (!rows[0] && expectedToken) {
     console.warn(`[job-slot] 退避写入被拒绝（执行资格已失效）slot=${slotId}`);
   }
@@ -1051,18 +884,8 @@ async function waitForExternalSlot(slotId, errorMessage, resultSummary, retryAt 
     waitingExternal: true,
     recoverAt: nextAttemptAt.toISOString(),
   });
-  const { rows } = await pool.query(
-    `UPDATE ops.job_schedule_slots
-        SET status='waiting_external', last_run_id=COALESCE($4,last_run_id), trigger_type='auto_retry',
-            next_attempt_at=$2, attempt_count=GREATEST(attempt_count-1,0),
-            result_summary=$3::jsonb, last_error=$5, lease_owner=NULL, lease_until=NULL,
-            heartbeat_at=now(), updated_at=now()
-      WHERE slot_id=$1 AND status='running'
-        AND ($6::text IS NULL OR (execution_token=$6
-             AND lease_until IS NOT NULL AND lease_until > clock_timestamp())) RETURNING *`,
-    [slotId, nextAttemptAt, JSON.stringify(safeSummary), runId,
-      errorMessage ? sanitizeJobError(errorMessage) : null, expectedToken || null]
-  );
+  const { rows } = await repository.update_ops_job_schedule_slots_13([slotId, nextAttemptAt, JSON.stringify(safeSummary), runId,
+      errorMessage ? sanitizeJobError(errorMessage) : null, expectedToken || null]);
   return rows[0] || null;
 }
 
@@ -1072,19 +895,7 @@ async function mergeSlotExternalCallSummary(slotId, resultSummary = {}, expected
   const attemptExternalCalls = Math.max(Number(
     resultSummary.attemptExternalCalls ?? resultSummary.externalCalls ?? resultSummary.externalCallCount ?? 0
   ) || 0, 0);
-  const { rows } = await pool.query(
-    `UPDATE ops.job_schedule_slots
-        SET result_summary = COALESCE(result_summary, '{}'::jsonb) || $2::jsonb ||
-          jsonb_build_object('slotExternalCallsTotal',
-            COALESCE((COALESCE(result_summary, '{}'::jsonb)->>'slotExternalCallsTotal')::integer, 0) + $3::integer,
-            'attemptExternalCalls', $3::integer),
-            updated_at=now()
-      WHERE slot_id=$1 AND status='running'
-        AND ($4::text IS NULL OR (execution_token=$4
-             AND lease_until IS NOT NULL AND lease_until > clock_timestamp()))
-      RETURNING result_summary`,
-    [slotId, JSON.stringify(sanitizeJobResult(resultSummary || {})), attemptExternalCalls, expectedToken || null]
-  );
+  const { rows } = await repository.update_ops_job_schedule_slots_14([slotId, JSON.stringify(sanitizeJobResult(resultSummary || {})), attemptExternalCalls, expectedToken || null]);
   const stored = rows[0] && rows[0].result_summary || {};
   const storedLimit = Number(stored.slotExternalCallsLimit || 0);
   return { ...(resultSummary || {}), attemptExternalCalls, externalCalls: attemptExternalCalls,
@@ -1097,18 +908,8 @@ async function continueSlot(slotId, resultSummary = {}, delayMinutes = 1, runId 
   resultSummary = await mergeSlotExternalCallSummary(slotId, resultSummary || {}, expectedToken);
   const nextAttemptAt = resultSummary.nextAttemptAt ? new Date(resultSummary.nextAttemptAt) : new Date(Date.now() + Math.max(Number(delayMinutes) || 1, 1) * 60000);
   const safeNext = Number.isNaN(nextAttemptAt.getTime()) ? new Date(Date.now() + 60000) : nextAttemptAt;
-  const { rows } = await pool.query(
-    `UPDATE ops.job_schedule_slots
-        SET status='pending', last_run_id=COALESCE($4,last_run_id), trigger_type='auto_retry',
-            attempt_count=GREATEST(attempt_count-1,0), next_attempt_at=$2,
-            result_summary=$3::jsonb, last_error=NULL, lease_owner=NULL, lease_until=NULL,
-            heartbeat_at=now(), updated_at=now()
-      WHERE slot_id=$1 AND status='running'
-        AND ($5::text IS NULL OR (execution_token=$5
-             AND lease_until IS NOT NULL AND lease_until > clock_timestamp())) RETURNING *`,
-    [slotId, safeNext, JSON.stringify(sanitizeJobResult({ ...resultSummary, continuationRequired: true, nextAttemptAt: safeNext.toISOString() })), runId,
-      expectedToken || null]
-  );
+  const { rows } = await repository.update_ops_job_schedule_slots_15([slotId, safeNext, JSON.stringify(sanitizeJobResult({ ...resultSummary, continuationRequired: true, nextAttemptAt: safeNext.toISOString() })), runId,
+      expectedToken || null]);
   if (!rows[0] && expectedToken) {
     console.warn(`[job-slot] 续批写入被拒绝（执行资格已失效）slot=${slotId}`);
   }
@@ -1116,37 +917,21 @@ async function continueSlot(slotId, resultSummary = {}, delayMinutes = 1, runId 
 }
 
 async function touchSlot(slotId, workerId = WORKER_ID, expectedToken = null) {
-  const { rows } = await pool.query('SELECT job_code FROM ops.job_schedule_slots WHERE slot_id=$1', [slotId]);
+  const { rows } = await repository.select_ops_job_schedule_slots_5([slotId]);
   const timeoutMinutes = rows[0] ? Number(getJobDefinition(rows[0].job_code).timeoutMinutes || 30) : 30;
-  await pool.query(
-    `UPDATE ops.job_schedule_slots SET heartbeat_at=now(), lease_until=now()+($3::integer * interval '1 minute'), updated_at=now()
-      WHERE slot_id=$1 AND lease_owner=$2
-        AND ($4::text IS NULL OR (execution_token=$4
-             AND lease_until IS NOT NULL AND lease_until > clock_timestamp()))`, [slotId, workerId, timeoutMinutes, expectedToken || null]
-  );
+  await repository.update_ops_job_schedule_slots_16([slotId, workerId, timeoutMinutes, expectedToken || null]);
 }
 
 async function retryJobSlot(slotId) {
-  const lookup = await pool.query('SELECT job_code FROM ops.job_schedule_slots WHERE slot_id=$1', [slotId]);
+  const lookup = await repository.select_ops_job_schedule_slots_5([slotId]);
   const definition = getJobDefinition(lookup.rows[0]?.job_code);
   if (definition.disabled) throw new Error(definition.disabledReason);
-  const { rows } = await pool.query(
-    `UPDATE ops.job_schedule_slots
-        SET status='pending', attempt_count=0, next_attempt_at=now(), trigger_type='manual_retry',
-            lease_owner=NULL, lease_until=NULL, acknowledged_at=NULL, last_error=NULL,
-            execution_token=NULL,
-            result_summary='{}'::jsonb, request_payload=request_payload - 'force', updated_at=now()
-      WHERE slot_id=$1 AND status IN ('failed','degraded','blocked','skipped','waiting_external')
-      RETURNING *`, [slotId]
-  );
+  const { rows } = await repository.update_ops_job_schedule_slots_17([slotId]);
   return rows[0] || null;
 }
 
 async function acknowledgeSlot(slotId) {
-  const { rows } = await pool.query(
-    `UPDATE ops.job_schedule_slots SET acknowledged_at=now(), updated_at=now()
-      WHERE slot_id=$1 RETURNING *`, [slotId]
-  );
+  const { rows } = await repository.update_ops_job_schedule_slots_18([slotId]);
   return rows[0] ? {
     ...rows[0],
     last_error: rows[0].last_error ? sanitizeJobError(rows[0].last_error, 2000) : null,
@@ -1165,16 +950,7 @@ async function listJobSlots(options = {}) {
   const keywordCodes = keyword
     ? JOB_DEFINITIONS.filter(item => item.jobCode.toLowerCase().includes(keyword.toLowerCase()) || item.label.includes(keyword)).map(item => item.jobCode)
     : null;
-  const { rows } = await pool.query(
-    `SELECT s.*, s.business_date::text AS business_date
-       FROM ops.job_schedule_slots s
-      WHERE s.business_date=$1::date AND ($2::text IS NULL OR s.status=$2)
-        AND ($4::text IS NULL OR s.trigger_type=$4)
-        AND ($5::text IS NULL OR s.job_code ILIKE '%' || $5 || '%' OR s.last_error ILIKE '%' || $5 || '%' OR s.job_code=ANY($7::text[]))
-        AND ($6::text[] IS NULL OR s.job_code=ANY($6::text[]))
-      ORDER BY s.scheduled_for DESC, s.slot_id DESC LIMIT $3`,
-    [businessDate, status, limit, triggerType, keyword, categoryCodes, keywordCodes]
-  );
+  const { rows } = await repository.select_ops_job_schedule_slots_6([businessDate, status, limit, triggerType, keyword, categoryCodes, keywordCodes]);
   const labels = new Map(JOB_DEFINITIONS.map(item => [item.jobCode, item.label]));
   return rows.map(row => {
     const definition = getJobDefinition(row.job_code);
@@ -1195,19 +971,14 @@ async function listJobSlots(options = {}) {
 }
 
 async function getJobSlot(slotId) {
-  const { rows } = await pool.query('SELECT s.*, s.business_date::text AS business_date FROM ops.job_schedule_slots s WHERE slot_id=$1', [slotId]);
+  const { rows } = await repository.select_ops_job_schedule_slots_7([slotId]);
   if (!rows[0]) return null;
   const definition = getJobDefinition(rows[0].job_code);
   const [runs, dependencies, alerts, audits] = await Promise.all([
-    pool.query('SELECT id,job,status,started_at,finished_at,detail,attempt_no,trigger_type,worker_id,heartbeat_at,error_code,error_type,external_call_count,external_sources,datasets FROM job_runs WHERE slot_id=$1 OR id=$2 ORDER BY id DESC LIMIT 20', [slotId, rows[0].last_run_id || 0]),
-    pool.query(`SELECT DISTINCT ON (job_code) job_code,status,scheduled_for,data_as_of,last_error
-                  FROM ops.job_schedule_slots
-                 WHERE business_date=$1::date AND job_code=ANY($2::text[])
-                   AND scheduled_for <= $3::timestamptz
-                 ORDER BY job_code,scheduled_for DESC`,
-      [rows[0].business_date, definition.dependencyCodes || [], rows[0].scheduled_for]),
-    pool.query('SELECT alert_id,alert_key,alert_type,severity,status,subject,summary,send_attempts,last_sent_at,next_send_at,last_send_error FROM ops.alert_notifications WHERE slot_id=$1 ORDER BY alert_id DESC LIMIT 20', [slotId]),
-    pool.query("SELECT id,actor,action,target,detail,result,request_id,metadata,created_at FROM admin_audit_log WHERE target=$1 OR metadata->>'slotId'=$1 ORDER BY id DESC LIMIT 20", [String(slotId)]),
+    repository.select_job_runs_2([slotId, rows[0].last_run_id || 0]),
+    repository.select_ops_job_schedule_slots_8([rows[0].business_date, definition.dependencyCodes || [], rows[0].scheduled_for]),
+    repository.select_ops_alert_notifications([slotId]),
+    repository.select_admin_audit_log([String(slotId)]),
   ]);
   const freshnessRequired = definition.requiresDataWatermark !== false;
   const freshnessValid = !freshnessRequired || (Boolean(rows[0].data_as_of) && isDataAsOfFresh(rows[0].data_as_of, rows[0].business_date, definition));
@@ -1245,40 +1016,17 @@ async function heartbeat(role = 'worker', status = 'running') {
   const workerId = workerIdForRole(role);
   // 兼容旧版本留下的“主机＋进程号＋随机值”记录：同一主机同一角色启动后，
   // 先把旧进程标记为 stopped，避免旧记录继续被误判为多个在线 Worker。
-  await pool.query(
-    `UPDATE ops.worker_heartbeats
-        SET status='stopped', updated_at=now()
-      WHERE role=$1 AND worker_id LIKE $2 AND worker_id<>$3 AND status<>'stopped'`,
-    [role, `${HOSTNAME}:%`, workerId]
-  );
-  await pool.query(
-    `INSERT INTO ops.worker_heartbeats(worker_id,role,pid,app_version,status,started_at,last_seen_at,updated_at)
-     VALUES($1,$2,$3,$4,$5,now(),now(),now())
-     ON CONFLICT(worker_id) DO UPDATE SET role=EXCLUDED.role,pid=EXCLUDED.pid,
-       app_version=EXCLUDED.app_version,
-       started_at=CASE WHEN ops.worker_heartbeats.pid IS DISTINCT FROM EXCLUDED.pid
-                            OR ops.worker_heartbeats.status='stopped'
-                       THEN EXCLUDED.started_at ELSE ops.worker_heartbeats.started_at END,
-       status=EXCLUDED.status,last_seen_at=now(),updated_at=now()`,
-    [workerId, role, String(process.pid), process.env.APP_VERSION || appVersion || '', status]
-  );
+  await repository.update_ops_worker_heartbeats([role, `${HOSTNAME}:%`, workerId]);
+  await repository.insert_ops_worker_heartbeats([workerId, role, String(process.pid), process.env.APP_VERSION || appVersion || '', status]);
 }
 
 async function getJobOverview() {
   const today = dateText();
   const [counts, slots, alerts, workers] = await Promise.all([
-    pool.query(`SELECT status, COUNT(*)::int AS count FROM ops.job_schedule_slots WHERE business_date=$1::date GROUP BY status`, [today]),
-    pool.query(`SELECT job_code, status, scheduled_for, updated_at, last_error FROM ops.job_schedule_slots WHERE business_date=$1::date ORDER BY scheduled_for DESC`, [today]),
+    repository.select_ops_job_schedule_slots_9([today]),
+    repository.select_ops_job_schedule_slots_10([today]),
     pool.query(`SELECT status, COUNT(*)::int AS count FROM ops.alert_notifications WHERE ${ACTIVE_ALERT_WHERE} GROUP BY status`),
-    pool.query(`WITH ranked AS (
-          SELECT worker_id,role,pid,app_version,status,started_at,last_seen_at,
-                 row_number() OVER (PARTITION BY role ORDER BY last_seen_at DESC) AS row_no
-            FROM ops.worker_heartbeats
-        )
-        SELECT worker_id,role,pid,app_version,
-          CASE WHEN last_seen_at < now()-interval '2 minutes' THEN 'stale' ELSE status END AS status,
-          started_at,last_seen_at
-          FROM ranked WHERE row_no=1 ORDER BY last_seen_at DESC`),
+    repository.with_ops_worker_heartbeats(),
   ]);
   return {
     today,
@@ -1298,25 +1046,19 @@ async function getJobOverview() {
 }
 
 async function validateJobSlot(slotId) {
-  const { rows } = await pool.query('SELECT * FROM ops.job_schedule_slots WHERE slot_id=$1', [slotId]);
+  const { rows } = await repository.select_ops_job_schedule_slots_11([slotId]);
   if (!rows[0]) return null;
   const slot = rows[0];
   const definition = getJobDefinition(slot.job_code);
   if (getJobDefinition(slot.job_code).requiresDataWatermark === false) {
     if (slot.status === 'degraded') {
       const runResult = slot.last_run_id
-        ? await pool.query('SELECT status FROM job_runs WHERE id=$1', [slot.last_run_id])
+        ? await repository.select_job_runs_3([slot.last_run_id])
         : { rows: [] };
       const runSucceeded = runResult.rows[0] && runResult.rows[0].status === 'done';
       const summarySucceeded = slot.result_summary && slot.result_summary.ok === true;
       if (runSucceeded || summarySucceeded) {
-        const recovered = await pool.query(
-          `UPDATE ops.job_schedule_slots
-              SET status='succeeded', last_error=NULL, data_as_of=NULL, updated_at=now()
-            WHERE slot_id=$1
-            RETURNING *`,
-          [slotId]
-        );
+        const recovered = await repository.update_ops_job_schedule_slots_19([slotId]);
         const updated = recovered.rows[0] || { ...slot, status: 'succeeded', last_error: null, data_as_of: null };
         const { resolveJobSlotAlerts } = require('./jobAlertMailer');
         await resolveJobSlotAlerts(updated).catch(error => console.warn('[job-alert] 重新校验恢复告警处理失败:', error.message));
@@ -1334,16 +1076,7 @@ async function validateJobSlot(slotId) {
   const valid = canValidate && Boolean(actualDataAsOf) && freshness;
   let updated = slot;
   if (canValidate) {
-    const result = await pool.query(
-      `UPDATE ops.job_schedule_slots
-          SET data_as_of=$2,
-              status=CASE WHEN $3::boolean THEN 'succeeded' ELSE 'degraded' END,
-              last_error=CASE WHEN $3::boolean THEN NULL ELSE '重新校验发现业务数据水位落后' END,
-              updated_at=now()
-        WHERE slot_id=$1
-        RETURNING *`,
-      [slotId, actualDataAsOf, Boolean(actualDataAsOf && freshness)]
-    );
+    const result = await repository.update_ops_job_schedule_slots_20([slotId, actualDataAsOf, Boolean(actualDataAsOf && freshness)]);
     updated = result.rows[0] || { ...slot, status: valid ? 'succeeded' : 'degraded', data_as_of: actualDataAsOf };
     if (valid && slot.status === 'degraded') {
       const { resolveJobSlotAlerts } = require('./jobAlertMailer');

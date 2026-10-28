@@ -1,4 +1,5 @@
 const { pool } = require('../db/connection');
+
 const CoreDate = require('../../public/shared/core-date');
 
 // 自 server/services/convertibleBondAnalysisSnapshots.js 迁入的数据读写函数（只做标准事实读写，业务判定仍留在服务层）。
@@ -41,8 +42,14 @@ async function persistAnalysisProgress(datasetCode, targetDate, state) {
     state.remaining.length || !state.expected?'资料或计算尚未完成':'',state.scopeKey||'convertible_bond_analysis']);
 }
 
+async function select_ops_sync_cursors(params, client = pool) {
+  return client.query(`SELECT cursor_payload FROM ops.sync_cursors
+    WHERE scope_key='convertible_bond_analysis' AND dataset_code='snapshots'`);
+}
+
 module.exports = {
   latestAnalysisDate,
   loadAnalysisUniverse,
   persistAnalysisProgress,
+  select_ops_sync_cursors,
 };

@@ -7,6 +7,7 @@ const { getLatestReadablePartition } = require('./datasetPartitions');
 const { getLatestCallStateMap } = require('./convertibleBondRedemptionService');
 const txControl = require('../repositories/transactionControl');
 const { fetchCoupons, fetchStockHistory, fetchUniverseRows } = require('../repositories/convertibleBondListServiceRepository.js');
+const repository = require('../repositories/convertibleBondListServiceRepository.js');
 const {
   finite, isoDate, normalizeBondCode, remainingYears, annualizedVolatility,
   parseTriggerRatio, earliestPutDate, estimatePutTimeline, futureTradeCalendar,
@@ -119,19 +120,12 @@ function buildWeekdayCalendar(startDate, days = 800) {
 }
 
 async function latestTradeDate() {
-  const { rows } = await pool.query(`
-    SELECT MAX(trade_date)::text AS trade_date
-      FROM market.convertible_bond_daily_metrics
-  `);
+  const { rows } = await repository.select_market_convertible_bond_daily_metrics();
   return rows[0] && rows[0].trade_date ? safeDate(rows[0].trade_date) : null;
 }
 
 async function latestPublishedTradeDate() {
-  const { rows } = await pool.query(`
-    SELECT MAX(trade_date)::text AS trade_date
-      FROM analytics.convertible_bond_list_metrics_daily
-     WHERE formula_version=$1
-  `, [FORMULA_VERSION]);
+  const { rows } = await repository.select_analytics_convertible_bond_list_metrics_daily([FORMULA_VERSION]);
   return rows[0] && rows[0].trade_date ? safeDate(rows[0].trade_date) : null;
 }
 
@@ -142,12 +136,7 @@ async function latestReadableTradeDate() {
 
 async function latestSafetyRatings() {
   try {
-    const { rows } = await pool.query(`
-      SELECT data
-        FROM bond_safety_snapshots
-       ORDER BY id DESC
-       LIMIT 1
-    `);
+    const { rows } = await repository.select_bond_safety_snapshots();
     const snapshot = rows[0] && Array.isArray(rows[0].data) ? rows[0].data : [];
     const ratings = new Map();
     snapshot.forEach(row => {
@@ -323,31 +312,12 @@ async function buildDailyMetrics({ tradeDate = null, reason = 'scheduled' } = {}
   try {
     await txControl.begin(client);
     for (const metric of metrics) {
-      await client.query(`
-        INSERT INTO analytics.convertible_bond_list_metrics_daily
-          (trade_date,instrument_id,formula_version,theoretical_option_value,theoretical_value,theoretical_deviation_pct,
-           stock_volatility,call_trigger_price,bond_market_cap_ratio,asset_liability_ratio,fund_holding_ratio,
-           turnover_rate,maturity_yield_pre_tax,earliest_put_trigger_date,earliest_put_remaining_years,
-           expected_put_payment_date,put_yield_pre_tax,put_yield_after_tax,double_low,financial_period_end,
-           fund_report_date,input_hash,data_status,diagnostics,calculated_at)
-        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,now())
-        ON CONFLICT(trade_date,instrument_id,formula_version) DO UPDATE SET
-          theoretical_option_value=EXCLUDED.theoretical_option_value,theoretical_value=EXCLUDED.theoretical_value,
-          theoretical_deviation_pct=EXCLUDED.theoretical_deviation_pct,stock_volatility=EXCLUDED.stock_volatility,
-          call_trigger_price=EXCLUDED.call_trigger_price,bond_market_cap_ratio=EXCLUDED.bond_market_cap_ratio,
-          asset_liability_ratio=EXCLUDED.asset_liability_ratio,fund_holding_ratio=EXCLUDED.fund_holding_ratio,
-          turnover_rate=EXCLUDED.turnover_rate,maturity_yield_pre_tax=EXCLUDED.maturity_yield_pre_tax,
-          earliest_put_trigger_date=EXCLUDED.earliest_put_trigger_date,earliest_put_remaining_years=EXCLUDED.earliest_put_remaining_years,
-          expected_put_payment_date=EXCLUDED.expected_put_payment_date,put_yield_pre_tax=EXCLUDED.put_yield_pre_tax,
-          put_yield_after_tax=EXCLUDED.put_yield_after_tax,double_low=EXCLUDED.double_low,
-          financial_period_end=EXCLUDED.financial_period_end,fund_report_date=EXCLUDED.fund_report_date,
-          input_hash=EXCLUDED.input_hash,data_status=EXCLUDED.data_status,diagnostics=EXCLUDED.diagnostics,calculated_at=now()
-      `, [metric.trade_date, metric.instrument_id, metric.formula_version, metric.theoretical_option_value,
+      await repository.insert_analytics_convertible_bond_list_metrics_daily([metric.trade_date, metric.instrument_id, metric.formula_version, metric.theoretical_option_value,
         metric.theoretical_value, metric.theoretical_deviation_pct, metric.stock_volatility, metric.call_trigger_price,
         metric.bond_market_cap_ratio, metric.asset_liability_ratio, metric.fund_holding_ratio, metric.turnover_rate,
         metric.maturity_yield_pre_tax, metric.earliest_put_trigger_date, metric.earliest_put_remaining_years,
         metric.expected_put_payment_date, metric.put_yield_pre_tax, metric.put_yield_after_tax, metric.double_low,
-        metric.financial_period_end, metric.fund_report_date, metric.input_hash, metric.data_status, JSON.stringify(metric.diagnostics)]);
+        metric.financial_period_end, metric.fund_report_date, metric.input_hash, metric.data_status, JSON.stringify(metric.diagnostics)], client);
     }
     await txControl.commit(client);
   } catch (error) {
@@ -370,10 +340,7 @@ async function getBondList({ tradeDate = null, query = '', limit = 500, refreshQ
   const date = requestedDate;
   if (!date) return { trade_date: null, updated_at: null, count: 0, data: [] };
   const [{ rows: metricRows }, safetyRatings, universe] = await Promise.all([
-    pool.query(`
-      SELECT * FROM analytics.convertible_bond_list_metrics_daily
-       WHERE trade_date=$1::date AND formula_version=$2
-    `, [date, FORMULA_VERSION]),
+    repository.select_analytics_convertible_bond_list_metrics_daily_1([date, FORMULA_VERSION]),
     latestSafetyRatings(),
     fetchUniverseRows(date).then(attachCallStates),
   ]);

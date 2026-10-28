@@ -175,7 +175,7 @@ const localRepository = codes => ({
   });
 
   await checkAsync('业务真实调用网关：股票分析不再自行外采行情', async () => {
-    const service = read('server/services/stockAnalysis.js');
+const service = read('server/services/stockAnalysis.js') + read('server/repositories/stockAnalysisRepository.js');
     assert(/marketDataGateway\.defaultGateway\.readQuotes/.test(service), '股票分析未接入网关取行情');
     assert(!/fetchTencentQuotes/.test(service), '股票分析仍直接调用行情源，绕过网关');
   });

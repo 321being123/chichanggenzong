@@ -5,6 +5,7 @@
 // 失效只能在 rollbackOne / feedbackService 原事务 client 内写入；本文件所有写函数都接收调用方 client，
 // 禁止自行 pool.connect() 另开事务提交（否则会出现「反馈已回滚但通知仍有效」）。
 const store = require('../db/notifications');
+const repository = require('../repositories/notificationServiceRepository.js');
 
 const CATEGORIES = ['all', 'feedback', 'system'];
 const PAGE_LIMIT_DEFAULT = 20;
@@ -109,11 +110,7 @@ async function createFeedbackImplementedNotice(client, options) {
   });
   if (!created) return null;
   if (created.inserted === false) {
-    const existing = await client.query(
-      `SELECT count(*)::int AS count FROM public.notification_recipients
-        WHERE notification_id=$1 AND recipient_slot_key=$2`,
-      [created.id, FEEDBACK_AUTHOR_SLOT]
-    );
+    const existing = await repository.select_public_notification_recipients([created.id, FEEDBACK_AUTHOR_SLOT], client);
     if (existing.rows[0] && existing.rows[0].count > 0) {
       return { notificationId: created.id, reused: true, authorDeleted: false };
     }

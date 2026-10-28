@@ -134,7 +134,9 @@ check('接口路由在单债动态参数之前注册', () => {
 });
 
 check('列表发布失败时使用事务回滚并保留上一份快照', () => {
-  const source = fs.readFileSync(path.join(__dirname, '..', 'services', 'convertibleBondListService.js'), 'utf8');
+  const source = fs.readFileSync(path.join(__dirname, '..', 'services', 'convertibleBondListService.js'), 'utf8')
+    + fs.readFileSync(path.join(__dirname, '..', 'repositories', 'convertibleBondListServiceRepository.js'), 'utf8')
+    + fs.readFileSync(path.join(__dirname, '..', 'repositories', 'convertibleBondListServiceRepository.js'), 'utf8');
   assert.ok(source.includes('txControl.begin(client)'));
   assert.ok(source.includes('txControl.rollback(client)'));
   assert.ok(source.includes('ON CONFLICT(trade_date,instrument_id,formula_version) DO UPDATE'));
@@ -144,7 +146,9 @@ check('列表发布失败时使用事务回滚并保留上一份快照', () => {
 });
 
 check('上市列表复用安全性快照并保留四档评级', () => {
-  const source = fs.readFileSync(path.join(__dirname, '..', 'services', 'convertibleBondListService.js'), 'utf8');
+  const source = fs.readFileSync(path.join(__dirname, '..', 'services', 'convertibleBondListService.js'), 'utf8')
+    + fs.readFileSync(path.join(__dirname, '..', 'repositories', 'convertibleBondListServiceRepository.js'), 'utf8')
+    + fs.readFileSync(path.join(__dirname, '..', 'repositories', 'convertibleBondListServiceRepository.js'), 'utf8');
   assert.ok(source.includes('latestSafetyRatings') && source.includes('bond_safety_snapshots'), '列表未读取安全性快照');
   assert.ok(source.includes("safety: safetyRatings.get(bondCode)"), '列表未返回安全性字段');
   assert.ok(!source.includes("addMissing('expected_put_payment_date'") && !source.includes("addMissing('put_yield_pre_tax'") && !source.includes("addMissing('put_yield_after_tax'"), '已取消回售列仍影响完整性判定');
@@ -152,7 +156,9 @@ check('上市列表复用安全性快照并保留四档评级', () => {
 });
 
 check('资产负债率缓存缺资产时会进入补拉队列，临期高溢价债券收益率可计算', () => {
-  const tushare = fs.readFileSync(path.join(__dirname, '..', 'services', 'bondSafetyTushare.js'), 'utf8');
+  const tushare = fs.readFileSync(path.join(__dirname, '..', 'services', 'bondSafetyTushare.js'), 'utf8')
+    + fs.readFileSync(path.join(__dirname, '..', 'repositories', 'bondSafetyTushareRepository.js'), 'utf8')
+    + fs.readFileSync(path.join(__dirname, '..', 'repositories', 'bondSafetyTushareRepository.js'), 'utf8');
   assert.ok(tushare.includes('finite(cached.data.total_assets) == null'), '财务缓存缺资产时不会补拉');
   const highPremiumYield = yieldToMaturity(149.25, [{ years: 0.02737850787132101, amount: 108 }]);
   assert.ok(highPremiumYield != null && highPremiumYield < -0.99, '临期高溢价收益率仍返回空值');

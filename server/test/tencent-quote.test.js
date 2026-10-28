@@ -41,7 +41,9 @@ assert.strictEqual(isFundEtfCode('181001'), true);
 assert.strictEqual(isFundEtfCode('520500'), true);
 assert.strictEqual(isFundEtfCode('600519'), false);
 
-const marketServiceSource = fs.readFileSync(path.join(__dirname, '..', 'services', 'market.js'), 'utf8');
+const marketServiceSource = fs.readFileSync(path.join(__dirname, '..', 'services', 'market.js'), 'utf8')
+    + fs.readFileSync(path.join(__dirname, '..', 'repositories', 'marketRepository.js'), 'utf8')
+    + fs.readFileSync(path.join(__dirname, '..', 'repositories', 'marketRepository.js'), 'utf8');
 const marketRouteSource = fs.readFileSync(path.join(__dirname, '..', 'routes', 'market.js'), 'utf8');
 const tencentQuoteSource = fs.readFileSync(path.join(__dirname, '..', 'services', 'tencentQuote.js'), 'utf8');
 assert.ok(marketServiceSource.includes('fetchTencentQuotes(stockCodes.concat(fundCodes, bondCodes, hkCodes), options)'), '批量行情应统一调用腾讯实时行情并透传缓存选项');

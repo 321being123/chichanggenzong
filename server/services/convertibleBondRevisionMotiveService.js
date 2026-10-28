@@ -5,6 +5,7 @@ const { pool } = require('../db');
 const { tushareQuery, tsRows } = require('./market');
 const txControl = require('../repositories/transactionControl');
 const { saveRevisionCycles, saveSyncCursor, saveSyncRawPayload } = require('../repositories/convertibleBondRevisionMotiveServiceRepository.js');
+const repository = require('../repositories/convertibleBondRevisionMotiveServiceRepository.js');
 
 // 评分规则移除无效的“剩余规模低于发行规模”和跨债种市场热度加分，必须升级模型版本，避免旧快照混入新规则。
 const MOTIVE_MODEL_VERSION = 'motive-v1.1';
@@ -287,28 +288,12 @@ async function saveConvertibleBondHolderPositions(client, instrumentId, rows, so
   const prepared = (rows || []).map(row => saveHolderRow(row, instrumentId, sourceId, relatedNames)).filter(Boolean);
   if (!prepared.length) return 0;
   for (const row of prepared) {
-    await client.query(
-      `INSERT INTO fundamental.convertible_bond_holder_positions
-       (instrument_id,report_date,announced_at,holder_rank,holder_name,holder_name_normalized,holder_type,is_controller_related,hold_amount,hold_ratio,source_id,source_key,raw_payload)
-       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::jsonb)
-       ON CONFLICT(source_id,source_key) DO UPDATE SET announced_at=EXCLUDED.announced_at,holder_name=EXCLUDED.holder_name,
-         holder_name_normalized=EXCLUDED.holder_name_normalized,holder_type=EXCLUDED.holder_type,hold_amount=EXCLUDED.hold_amount,
-         hold_ratio=EXCLUDED.hold_ratio,is_controller_related=EXCLUDED.is_controller_related,raw_payload=EXCLUDED.raw_payload,ingested_at=now()` ,
-      [row.instrumentId, row.reportDate, row.announcedAt, row.rank, row.name, row.normalized, row.type, row.isControllerRelated,
-        row.amount, row.ratio, sourceId, row.sourceKey, JSON.stringify(row.raw)]
-    );
+    await repository.insert_fundamental_convertible_bond_holder_positions([row.instrumentId, row.reportDate, row.announcedAt, row.rank, row.name, row.normalized, row.type, row.isControllerRelated,
+        row.amount, row.ratio, sourceId, row.sourceKey, JSON.stringify(row.raw)], client);
   }
-  const { rows: reportDates } = await client.query(
-    `SELECT DISTINCT report_date FROM fundamental.convertible_bond_holder_positions
-      WHERE instrument_id=$1 ORDER BY report_date DESC LIMIT 2`, [instrumentId]
-  );
+  const { rows: reportDates } = await repository.select_fundamental_convertible_bond_holder_positions([instrumentId], client);
   if (reportDates.length === 2) {
-    const { rows: history } = await client.query(
-      `SELECT report_date,announced_at,holder_name,holder_name_normalized,hold_amount,hold_ratio
-         FROM fundamental.convertible_bond_holder_positions
-        WHERE instrument_id=$1 AND report_date IN ($2::date,$3::date)`,
-      [instrumentId, reportDates[0].report_date, reportDates[1].report_date]
-    );
+    const { rows: history } = await repository.select_fundamental_convertible_bond_holder_positions_1([instrumentId, reportDates[0].report_date, reportDates[1].report_date], client);
     const latestDate = dateText(reportDates[0].report_date), previousDate = dateText(reportDates[1].report_date);
     const latest = new Map(history.filter(row => dateText(row.report_date) === latestDate).map(row => [row.holder_name_normalized, row]));
     const previous = new Map(history.filter(row => dateText(row.report_date) === previousDate).map(row => [row.holder_name_normalized, row]));
@@ -318,21 +303,10 @@ async function saveConvertibleBondHolderPositions(client, instrumentId, rows, so
     );
     for (const change of changes) {
       const { name, now, before, amount, ratio, changeType, isCleared, changeStartDate, changeEndDate } = change;
-      await client.query(
-        `INSERT INTO event.convertible_bond_holder_change_events
-         (instrument_id,announced_at,holder_name,holder_name_normalized,change_type,change_amount,change_ratio,
-          before_amount,after_amount,before_ratio,after_ratio,is_cleared,change_start_date,change_end_date,source_id,source_key,raw_payload)
-         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17::jsonb)
-         ON CONFLICT(source_id,source_key) DO UPDATE SET announced_at=EXCLUDED.announced_at,change_type=EXCLUDED.change_type,
-           change_amount=EXCLUDED.change_amount,change_ratio=EXCLUDED.change_ratio,before_amount=EXCLUDED.before_amount,
-           after_amount=EXCLUDED.after_amount,before_ratio=EXCLUDED.before_ratio,after_ratio=EXCLUDED.after_ratio,
-           is_cleared=EXCLUDED.is_cleared,change_start_date=EXCLUDED.change_start_date,change_end_date=EXCLUDED.change_end_date,
-           raw_payload=EXCLUDED.raw_payload`,
-        [instrumentId, dateText(now.announced_at) || latestDate, now.holder_name || before.holder_name || name, name,
+      await repository.insert_event_convertible_bond_holder_change_events([instrumentId, dateText(now.announced_at) || latestDate, now.holder_name || before.holder_name || name, name,
           changeType, amount, ratio, finite(before.hold_amount), finite(now.hold_amount), finite(before.hold_ratio), finite(now.hold_ratio),
           isCleared, changeStartDate, changeEndDate, sourceId,
-          `holder-change:${instrumentId}:${latestDate}:${name}`, JSON.stringify({ latest: now, previous: before })]
-      );
+          `holder-change:${instrumentId}:${latestDate}:${name}`, JSON.stringify({ latest: now, previous: before })], client);
     }
   }
   return prepared.length;
@@ -354,15 +328,7 @@ async function saveCompanyPledgeSnapshots(client, companyId, rows, sourceId) {
     };
   }).filter(Boolean);
   for (const row of prepared) {
-    await client.query(
-      `INSERT INTO fundamental.company_pledge_snapshots
-       (company_id,as_of_date,announced_at,pledge_count,pledge_ratio,pledged_shares,unpledged_shares,total_shares,source_id,source_key,raw_payload)
-       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb)
-       ON CONFLICT(source_id,source_key) DO UPDATE SET announced_at=EXCLUDED.announced_at,pledge_ratio=EXCLUDED.pledge_ratio,
-         pledge_count=EXCLUDED.pledge_count,pledged_shares=EXCLUDED.pledged_shares,unpledged_shares=EXCLUDED.unpledged_shares,
-         total_shares=EXCLUDED.total_shares,raw_payload=EXCLUDED.raw_payload,ingested_at=now()` ,
-      [companyId, row.asOfDate, row.announcedAt, row.pledgeCount, row.ratio, row.pledged, row.unpledged, row.totalShares, sourceId, row.key, JSON.stringify(row.raw)]
-    );
+    await repository.insert_fundamental_company_pledge_snapshots([companyId, row.asOfDate, row.announcedAt, row.pledgeCount, row.ratio, row.pledged, row.unpledged, row.totalShares, sourceId, row.key, JSON.stringify(row.raw)], client);
   }
   return prepared.length;
 }
@@ -726,70 +692,26 @@ function buildFinancial(reports, cache) {
 }
 
 async function loadMotiveInput(tsCode, tradeDate, db = pool) {
-  const { rows } = await db.query(
-    `SELECT i.instrument_id,i.canonical_code AS ts_code,i.name AS bond_name,p.stock_instrument_id,p.bond_short_name,p.par_value,
-            p.issue_size,p.remain_size,p.maturity_date,p.current_conv_price,p.conv_start_date,p.conv_end_date,
-            p.raw_payload,si.canonical_code AS stock_code,si.name AS stock_name,ci.company_id,
-            c.legal_name,(SELECT issue_type FROM fundamental.convertible_bond_issuance iss WHERE iss.instrument_id=i.instrument_id LIMIT 1) AS issue_type,
-            dm.trade_date AS market_trade_date,dm.close AS bond_close,dm.conversion_value,dm.ingested_at AS market_ingested_at,
-            sb.trade_date AS stock_trade_date,sb.close AS stock_close,sb.ingested_at AS stock_ingested_at,
-            sv.trade_date AS valuation_trade_date,sv.pb AS stock_pb,sv.total_market_cap,sv.ingested_at AS valuation_ingested_at,
-            td.status AS revision_status,td.matched_days,td.required_days,td.observation_days,td.minimum_future_days AS rolling_remaining_days,
-            td.calculated_at AS trigger_calculated_at,
-            t.net_asset_floor_applicable,t.term_id
-       FROM core.instruments i
-       JOIN fundamental.convertible_bond_profiles p ON p.instrument_id=i.instrument_id
-       LEFT JOIN core.instruments si ON si.instrument_id=p.stock_instrument_id
-       LEFT JOIN core.company_instruments ci ON ci.instrument_id=p.stock_instrument_id AND ci.relation_type='issued_by'
-       LEFT JOIN core.companies c ON c.company_id=ci.company_id
-       LEFT JOIN LATERAL (SELECT trade_date,close,conversion_value,ingested_at FROM market.convertible_bond_daily_metrics
-                           WHERE instrument_id=i.instrument_id AND trade_date <= $2::date ORDER BY trade_date DESC LIMIT 1) dm ON true
-       LEFT JOIN LATERAL (SELECT trade_date,close,ingested_at FROM market.daily_bars
-                           WHERE instrument_id=p.stock_instrument_id AND trade_date <= $2::date ORDER BY trade_date DESC,source_id DESC LIMIT 1) sb ON true
-       LEFT JOIN LATERAL (SELECT trade_date,pb,total_market_cap,ingested_at FROM market.daily_valuations
-                           WHERE instrument_id=p.stock_instrument_id AND trade_date=sb.trade_date ORDER BY source_id DESC LIMIT 1) sv ON true
-       LEFT JOIN LATERAL (SELECT status,matched_days,required_days,observation_days,minimum_future_days,calculated_at
-                            FROM analytics.convertible_bond_trigger_daily
-                           WHERE instrument_id=i.instrument_id AND trigger_type='reset' AND formula_version='reset-v2' AND trade_date <= $2::date
-                           ORDER BY trade_date DESC LIMIT 1) td ON true
-       LEFT JOIN LATERAL (SELECT term_id,net_asset_floor_applicable FROM fundamental.convertible_bond_terms
-                           WHERE instrument_id=i.instrument_id AND term_type='reset' AND effective_from <= $2::date
-                           ORDER BY effective_from DESC,term_id DESC LIMIT 1) t ON true
-      WHERE i.canonical_code=$1`, [tsCode, tradeDate]
-  );
+  const { rows } = await repository.select_fundamental_convertible_bond_issuance([tsCode, tradeDate]);
   if (!rows.length) return null;
   const base = rows[0];
   const [events, noRevision, holders, pledge, pledgeCursor, controllers, financial, cache, safety, analysisSnapshot, stockBars, bondBars, history, proposal, industry, triggerHistory] = await Promise.all([
-    db.query(`SELECT event_type,announced_at,meeting_date,effective_date,title,summary,source_url,source_number,updated_at FROM event.convertible_bond_revision_events WHERE instrument_id=$1 AND announced_at <= $2 ORDER BY announced_at,event_id`, [base.instrument_id, tradeDate]),
-    db.query(`SELECT announced_at,valid_until,next_eligible_date,summary FROM analytics.convertible_bond_announcement_history WHERE instrument_id=$1 AND fact_type='no_revision' AND announced_at <= $2 ORDER BY announced_at`, [base.instrument_id, tradeDate]),
-    db.query(`SELECT report_date,announced_at,holder_name,holder_name_normalized,holder_type,hold_amount,hold_ratio,ingested_at FROM fundamental.convertible_bond_holder_positions WHERE instrument_id=$1 AND report_date <= $2 ORDER BY report_date DESC,holder_rank`, [base.instrument_id, tradeDate]),
-    base.company_id ? db.query(`SELECT as_of_date,announced_at,pledge_ratio,pledged_shares,unpledged_shares,ingested_at FROM fundamental.company_pledge_snapshots WHERE company_id=$1 AND announced_at IS NOT NULL AND announced_at <= $2 ORDER BY as_of_date DESC,announced_at DESC,pledge_id DESC LIMIT 1`, [base.company_id, tradeDate]) : Promise.resolve({ rows: [] }),
-    base.company_id ? db.query(`SELECT last_success_date,last_attempt_at FROM ops.sync_cursors
-      WHERE company_id=$1 AND scope_key=('company:' || $1::text) AND dataset_code='pledge_stat'
-        AND COALESCE(last_error,'')='' AND last_success_date <= $2::date
-      ORDER BY last_success_date DESC,last_attempt_at DESC LIMIT 1`, [base.company_id, tradeDate]) : Promise.resolve({ rows: [] }),
-    base.company_id ? db.query(`SELECT controller_name,controller_type,control_ratio,announced_at FROM core.company_controllers WHERE company_id=$1 AND (announced_at IS NULL OR announced_at <= $2::date) AND (valid_from IS NULL OR valid_from <= $2::date) AND (valid_to IS NULL OR valid_to >= $2::date) ORDER BY is_current DESC,announced_at DESC,controller_id DESC LIMIT 1`, [base.company_id, tradeDate]) : Promise.resolve({ rows: [] }),
-    base.company_id ? db.query(`SELECT report_kind,period_end,announced_at,raw_payload,ingested_at FROM fundamental.financial_reports WHERE company_id=$1 AND period_end <= $2::date AND announced_at IS NOT NULL AND announced_at <= $2::date ORDER BY period_end DESC,announced_at DESC,report_id DESC LIMIT 20`, [base.company_id, tradeDate]) : Promise.resolve({ rows: [] }),
-    base.stock_code ? db.query('SELECT data,report_end_date,announced_at,fetched_at FROM bond_safety_financial_cache WHERE ts_code=$1 AND announced_at IS NOT NULL AND announced_at::date <= $2::date ORDER BY fetched_at DESC LIMIT 1', [base.stock_code, tradeDate]) : Promise.resolve({ rows: [] }),
-    db.query('SELECT data,source_updated_at,refreshed_at FROM bond_safety_snapshots WHERE COALESCE(source_updated_at,refreshed_at)::date <= $1::date ORDER BY id DESC LIMIT 1', [tradeDate]),
-    base.instrument_id ? db.query(`SELECT payload FROM analytics.analysis_snapshots WHERE instrument_id=$1 AND snapshot_type='convertible_bond_analysis' AND as_of_date <= $2::date ORDER BY as_of_date DESC,created_at DESC LIMIT 1`, [base.instrument_id, tradeDate]) : Promise.resolve({ rows: [] }),
-    base.stock_instrument_id ? db.query(`SELECT trade_date,close,volume,amount,ingested_at FROM market.daily_bars WHERE instrument_id=$1 AND trade_date <= $2 ORDER BY trade_date DESC,source_id DESC LIMIT 220`, [base.stock_instrument_id, tradeDate]) : Promise.resolve({ rows: [] }),
-    db.query(`SELECT trade_date,close FROM market.convertible_bond_daily_metrics WHERE instrument_id=$1 AND trade_date <= $2 ORDER BY trade_date DESC LIMIT 120`, [base.instrument_id, tradeDate]),
-    db.query(`SELECT date_trunc('month',announced_at)::date AS period,count(*)::int AS count FROM event.convertible_bond_revision_events WHERE announced_at BETWEEN ($1::date - interval '3 years') AND $1::date AND event_type='proposal' GROUP BY 1 ORDER BY 1`, [tradeDate]),
-    db.query(`SELECT COUNT(*)::int AS count FROM event.convertible_bond_revision_events WHERE instrument_id=$1 AND announced_at BETWEEN ($2::date - interval '90 days') AND $2::date AND event_type='proposal'`, [base.instrument_id, tradeDate]),
-    base.company_id ? db.query(`SELECT
-        COUNT(*) FILTER (WHERE e.announced_at >= $2::date - interval '90 days')::int AS recent_count,
-        COUNT(*) FILTER (WHERE e.announced_at >= $2::date - interval '360 days')::int AS year_count
-       FROM event.convertible_bond_revision_events e
-        JOIN fundamental.convertible_bond_profiles p2 ON p2.instrument_id=e.instrument_id
-        JOIN core.company_instruments ci2 ON ci2.instrument_id=p2.stock_instrument_id AND ci2.relation_type='issued_by'
-        JOIN core.company_industry_memberships im2 ON im2.company_id=ci2.company_id AND im2.is_current
-       WHERE e.instrument_id<>$1 AND e.event_type='proposal' AND e.announced_at BETWEEN ($2::date - interval '360 days') AND $2::date
-         AND im2.industry_node_id=(SELECT industry_node_id FROM core.company_industry_memberships WHERE company_id=$1 AND is_current ORDER BY valid_from DESC NULLS LAST LIMIT 1)`, [base.company_id, tradeDate]) : Promise.resolve({ rows: [{ recent_count: 0, year_count: 0 }] }),
-    db.query(`SELECT trade_date,status,matched_days,required_days,calculated_at
-                FROM analytics.convertible_bond_trigger_daily
-               WHERE instrument_id=$1 AND trigger_type='reset' AND formula_version='reset-v2' AND data_status='complete' AND trade_date <= $2::date
-               ORDER BY trade_date`, [base.instrument_id, tradeDate]),
+    repository.select_event_convertible_bond_revision_events([base.instrument_id, tradeDate]),
+    repository.select_analytics_convertible_bond_announcement_history([base.instrument_id, tradeDate]),
+    repository.select_fundamental_convertible_bond_holder_positions_2([base.instrument_id, tradeDate]),
+    base.company_id ? repository.select_fundamental_company_pledge_snapshots([base.company_id, tradeDate]) : Promise.resolve({ rows: [] }),
+    base.company_id ? repository.select_ops_sync_cursors([base.company_id, tradeDate]) : Promise.resolve({ rows: [] }),
+    base.company_id ? repository.select_core_company_controllers([base.company_id, tradeDate]) : Promise.resolve({ rows: [] }),
+    base.company_id ? repository.select_fundamental_financial_reports([base.company_id, tradeDate]) : Promise.resolve({ rows: [] }),
+    base.stock_code ? repository.select_bond_safety_financial_cache([base.stock_code, tradeDate]) : Promise.resolve({ rows: [] }),
+    repository.select_bond_safety_snapshots([tradeDate]),
+    base.instrument_id ? repository.select_analytics_analysis_snapshots([base.instrument_id, tradeDate]) : Promise.resolve({ rows: [] }),
+    base.stock_instrument_id ? repository.select_market_daily_bars([base.stock_instrument_id, tradeDate]) : Promise.resolve({ rows: [] }),
+    repository.select_market_convertible_bond_daily_metrics([base.instrument_id, tradeDate]),
+    repository.select_event_convertible_bond_revision_events_1([tradeDate]),
+    repository.select_event_convertible_bond_revision_events_2([base.instrument_id, tradeDate]),
+    base.company_id ? repository.select_event_convertible_bond_revision_events_3([base.company_id, tradeDate]) : Promise.resolve({ rows: [{ recent_count: 0, year_count: 0 }] }),
+    repository.select_analytics_convertible_bond_trigger_daily([base.instrument_id, tradeDate]),
   ]);
   const holderRows = holders.rows.filter(row => {
     const availableAt = holderAvailableDate(row);
@@ -857,61 +779,22 @@ async function calculateBondRevisionMotive(tsCode, tradeDate, client = pool, opt
   const result = { ...score, input, inputSnapshot: snapshot, sourceReferences: refs, inputHash: inputHash(snapshot) };
   // 历史回填只补评分快照，不重建周期表；否则按历史日期逐条回填会把未来周期删掉。
   if (options.persistCycles !== false) await saveRevisionCycles(client, input.instrumentId, input.cycles, input.termId);
-  await client.query(
-    `INSERT INTO analytics.convertible_bond_revision_motive_daily
-     (instrument_id,trade_date,model_version,motive_score,history_score,pressure_score,conversion_score,governance_score,market_score,maturity_score,
-      executability_status,estimated_floor_price,estimated_space,estimated_post_conversion_value,estimated_value_uplift,safety_level,motive_level,classification,
-      core_motives,blockers,components,input_snapshot,source_refs,input_data_date,input_hash,completeness_rate,quality_status)
-     VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19::jsonb,$20::jsonb,$21::jsonb,$22::jsonb,$23::jsonb,$24,$25,$26,$27)
-     ON CONFLICT(instrument_id,trade_date,model_version) DO UPDATE SET motive_score=EXCLUDED.motive_score,history_score=EXCLUDED.history_score,
-       pressure_score=EXCLUDED.pressure_score,conversion_score=EXCLUDED.conversion_score,governance_score=EXCLUDED.governance_score,market_score=EXCLUDED.market_score,
-       maturity_score=EXCLUDED.maturity_score,executability_status=EXCLUDED.executability_status,estimated_floor_price=EXCLUDED.estimated_floor_price,
-       estimated_space=EXCLUDED.estimated_space,estimated_post_conversion_value=EXCLUDED.estimated_post_conversion_value,estimated_value_uplift=EXCLUDED.estimated_value_uplift,
-       safety_level=EXCLUDED.safety_level,motive_level=EXCLUDED.motive_level,classification=EXCLUDED.classification,core_motives=EXCLUDED.core_motives,
-       blockers=EXCLUDED.blockers,components=EXCLUDED.components,input_snapshot=EXCLUDED.input_snapshot,source_refs=EXCLUDED.source_refs,input_data_date=EXCLUDED.input_data_date,
-       input_hash=EXCLUDED.input_hash,completeness_rate=EXCLUDED.completeness_rate,quality_status=EXCLUDED.quality_status,calculated_at=now()` ,
-    [input.instrumentId, tradeDate, MOTIVE_MODEL_VERSION, score.motiveScore, score.dimensions.history, score.dimensions.pressure, score.dimensions.conversion,
+  await repository.insert_analytics_convertible_bond_revision_motive_daily([input.instrumentId, tradeDate, MOTIVE_MODEL_VERSION, score.motiveScore, score.dimensions.history, score.dimensions.pressure, score.dimensions.conversion,
       score.dimensions.governance, score.dimensions.market, score.maturityScore, score.executability.status, score.executability.floorPrice, score.executability.space,
       score.executability.postValue, score.executability.uplift, input.safetyLevel || '', score.motiveLevel, score.classification, JSON.stringify(score.coreMotives), JSON.stringify(score.blockers),
       JSON.stringify({ dimensions: score.dimensions, dimension_items: score.dimensionItems, dimension_calculations: score.dimensionCalculations, market_context: score.marketContext, maturity_score: score.maturityScore, executability: score.executability }),
-      JSON.stringify(snapshot), JSON.stringify(refs), input.tradeDate, result.inputHash, input.qualityRate, input.qualityStatus]
-  );
+      JSON.stringify(snapshot), JSON.stringify(refs), input.tradeDate, result.inputHash, input.qualityRate, input.qualityStatus], client);
   return result;
 }
 
 async function calculateConvertibleBondRevisionMotiveScores(tradeDate) {
   let targetDate = dateText(tradeDate);
   if (!targetDate) {
-    const { rows: dateRows } = await pool.query('SELECT max(trade_date)::text AS trade_date FROM market.convertible_bond_daily_metrics');
+    const { rows: dateRows } = await repository.select_market_convertible_bond_daily_metrics_1();
     targetDate = dateText(dateRows[0] && dateRows[0].trade_date);
   }
   if (!targetDate) return { ok: false, status: 'no_data', tradeDate: null, count: 0, complete: 0, incomplete: 0, failures: [] };
-  const { rows } = await pool.query(
-    `SELECT DISTINCT i.canonical_code AS ts_code
-       FROM market.convertible_bond_daily_metrics md
-       JOIN core.instruments i ON i.instrument_id=md.instrument_id
-       JOIN fundamental.convertible_bond_profiles p ON p.instrument_id=i.instrument_id
-       JOIN public.bond_unified u ON u.instrument_id=i.instrument_id
-       LEFT JOIN fundamental.convertible_bond_issuance iss ON iss.instrument_id=i.instrument_id
-       LEFT JOIN LATERAL (
-         SELECT max(last_trade_date) AS last_trade_date,
-                max(COALESCE(last_conversion_date,last_trade_date)) AS last_conversion_date
-           FROM event.convertible_bond_call_events ce
-          WHERE ce.instrument_id=i.instrument_id
-            AND ce.event_type IN ('exercise','implementation','completion')
-       ) call_stop ON true
-      WHERE md.trade_date=$1::date AND i.asset_class='convertible_bond' AND i.status='listed' AND u.status='listed'
-        AND (p.cb_type IS NULL OR p.cb_type IN ('CB',''))
-        AND (u.issue_type IS NULL OR u.issue_type NOT IN ('定向','私募'))
-        AND (iss.issue_type IS NULL OR iss.issue_type NOT IN ('定向','私募'))
-        AND (i.list_date IS NULL OR i.list_date <= $1::date)
-        AND (i.delist_date IS NULL OR i.delist_date > $1::date)
-        AND (p.maturity_date IS NULL OR p.maturity_date >= $1::date)
-        AND (p.conv_end_date IS NULL OR p.conv_end_date >= $1::date)
-        AND (p.conv_stop_date IS NULL OR p.conv_stop_date > $1::date)
-        AND (COALESCE(call_stop.last_trade_date,call_stop.last_conversion_date) IS NULL OR COALESCE(call_stop.last_trade_date,call_stop.last_conversion_date) > $1::date)
-      ORDER BY i.canonical_code`, [targetDate]
-  );
+  const { rows } = await repository.select_market_convertible_bond_daily_metrics_2([targetDate]);
   const results = [], failures = [];
   const client = await pool.connect();
   for (const row of rows) {
@@ -945,9 +828,7 @@ async function getBondRevisionMotiveDetail({ tsCode, tradeDate = null }) {
       WHERE i.canonical_code=$1 AND m.model_version=$2${dateClause} ORDER BY m.trade_date DESC,m.calculated_at DESC LIMIT 1`, params
   );
   if (!rows.length) {
-    const { rows: bonds } = await pool.query(`SELECT i.canonical_code AS ts_code,i.name AS bond_name,si.canonical_code AS stock_code,si.name AS stock_name
-      FROM core.instruments i JOIN fundamental.convertible_bond_profiles p ON p.instrument_id=i.instrument_id
-      LEFT JOIN core.instruments si ON si.instrument_id=p.stock_instrument_id WHERE i.canonical_code=$1 LIMIT 1`, [code]);
+    const { rows: bonds } = await repository.select_core_instruments([code]);
     if (!bonds.length) return null;
     return {
       bond: bonds[0], score_summary: { motive_score: null, maturity_score: null, motive_level: 'unavailable',
@@ -1030,7 +911,7 @@ async function syncRevisionMotiveInputs({ businessDate = null, limit = null } = 
               CASE WHEN pcur.last_attempt_at IS NULL THEN 0 ELSE 1 END,
               pcur.last_attempt_at ASC NULLS FIRST,
               i.canonical_code${limitClause}`, queryParams);
-  const { rows: sourceRows } = await pool.query("SELECT source_id,source_code FROM ops.data_sources WHERE source_code IN ('tushare','calculated')");
+  const { rows: sourceRows } = await repository.select_ops_data_sources();
   const sourceMap = Object.fromEntries(sourceRows.map(row => [row.source_code, row.source_id]));
   let holderCount = 0, pledgeCount = 0, externalCalls = 0;
   let holderDeferredCount = 0, pledgeDeferredCount = 0;
@@ -1127,9 +1008,7 @@ async function syncRevisionMotiveInputs({ businessDate = null, limit = null } = 
     if (holderRows.length && bond.company_id) {
       try {
         if (!controllerNamesByCompany.has(bond.company_id)) {
-          const { rows: controllerRows } = await pool.query(`SELECT controller_name FROM core.company_controllers
-             WHERE company_id=$1 AND (valid_from IS NULL OR valid_from <= $2::date) AND (valid_to IS NULL OR valid_to >= $2::date)
-             ORDER BY is_current DESC,announced_at DESC,controller_id DESC`, [bond.company_id, date]);
+          const { rows: controllerRows } = await repository.select_core_company_controllers_1([bond.company_id, date]);
           controllerNamesByCompany.set(bond.company_id, controllerRows.map(row => row.controller_name).filter(Boolean));
         }
         relatedNames = controllerNamesByCompany.get(bond.company_id) || [];

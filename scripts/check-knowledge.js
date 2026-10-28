@@ -184,7 +184,18 @@ function collectTaskGovernanceImplementationErrors(rootDir) {
   if (!fs.existsSync(definitionsPath)) return [];
   const read = relativePath => {
     const filePath = path.join(rootDir, relativePath);
-    return fs.existsSync(filePath) ? fs.readFileSync(filePath, 'utf8') : '';
+    if (!fs.existsSync(filePath)) return '';
+    let text = fs.readFileSync(filePath, 'utf8');
+    // 分层整改后部分 SQL/实现已下沉到数据层：跨业务不变量的源码检查需同时覆盖对应仓储，
+    // 否则「服务里必须有某段语句」的门槛会因为实现搬家而误报。
+    const match = /^server\/(?:services|jobs)\/([A-Za-z0-9_]+)\.js$/.exec(relativePath.replace(/\\/g, '/'));
+    if (match) {
+      for (const name of [`${match[1]}Repository.js`, `${match[1]}DataRepository.js`]) {
+        const repoPath = path.join(rootDir, 'server', 'repositories', name);
+        if (fs.existsSync(repoPath)) text += `\n${fs.readFileSync(repoPath, 'utf8')}`;
+      }
+    }
+    return text;
   };
   // R-6 迁移拆分后：migrations.js 只剩注册表，断言需覆盖 ./migrations/ 子模块全文
   const readService = base => {

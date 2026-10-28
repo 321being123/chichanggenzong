@@ -105,7 +105,67 @@ async function upsertTradeRule(client, instrumentId, sourceId, today, lot, rawRe
   return true;
 }
 
+async function select_market_instrument_trade_rules(params, client = pool) {
+  return client.query(`SELECT r.buy_lot_size_shares, r.valid_from, r.source_updated_at, r.raw_record_id,
+            s.source_code, s.priority
+       FROM market.instrument_trade_rules r
+       JOIN ops.data_sources s ON s.source_id = r.source_id
+      WHERE r.instrument_id = $1
+        AND r.valid_from <= $2
+        AND (r.valid_to IS NULL OR r.valid_to >= $2)
+      ORDER BY s.priority ASC, r.valid_from DESC
+      LIMIT 1`, params);
+}
+
+async function select_market_instrument_trade_rules_1(params, client = pool) {
+  return client.query(`SELECT r.instrument_id, r.buy_lot_size_shares, r.valid_from, r.source_updated_at, r.raw_record_id,
+            s.source_code, s.priority
+       FROM market.instrument_trade_rules r
+       JOIN ops.data_sources s ON s.source_id = r.source_id
+      WHERE r.instrument_id = ANY($1::bigint[])
+        AND r.valid_from <= $2
+        AND (r.valid_to IS NULL OR r.valid_to >= $2)`, params);
+}
+
+async function select_ops_data_sources(params, client = pool) {
+  return client.query(`SELECT source_id FROM ops.data_sources WHERE source_code='tushare'`);
+}
+
+async function insert_ops_ingestion_runs(params, client = pool) {
+  return client.query(`INSERT INTO ops.ingestion_runs(source_id,dataset_code,request_range,status)
+       VALUES($1,'hk_basic',$2::jsonb,'running') RETURNING run_id`, params);
+}
+
+async function insert_core_instrument_identifiers(params, client = pool) {
+  return client.query(`INSERT INTO core.instrument_identifiers(instrument_id,source_id,identifier_type,identifier_value,valid_from)
+         VALUES($1,$2,'ts_code',$3,$4) ON CONFLICT(source_id,identifier_type,identifier_value,valid_from) DO NOTHING`, params);
+}
+
+async function insert_ops_raw_records(params, client = pool) {
+  return client.query(`INSERT INTO ops.raw_records(run_id,source_id,dataset_code,source_key,source_updated_at,payload,payload_hash)
+         VALUES($1,$2,'hk_basic',$3,now(),$4::jsonb,$5) ON CONFLICT(source_id,dataset_code,source_key,payload_hash) DO NOTHING
+         RETURNING raw_record_id`, params);
+}
+
+async function insert_ops_sync_cursors(params, client = pool) {
+  return client.query(`INSERT INTO ops.sync_cursors(scope_key,dataset_code,last_success_date,last_attempt_at,last_error)
+       VALUES('hk_basic','hk_basic',$1,now(),'') ON CONFLICT(scope_key,dataset_code)
+       DO UPDATE SET last_success_date=$1,last_attempt_at=now(),last_error='',updated_at=now()`, params);
+}
+
+async function update_ops_ingestion_runs(params, client = pool) {
+  return client.query(`UPDATE ops.ingestion_runs SET status='success',row_count=$2,finished_at=now() WHERE run_id=$1`, params);
+}
+
 module.exports = {
   backfillPositionInstrumentIds,
   upsertTradeRule,
+  select_market_instrument_trade_rules,
+  select_market_instrument_trade_rules_1,
+  select_ops_data_sources,
+  insert_ops_ingestion_runs,
+  insert_core_instrument_identifiers,
+  insert_ops_raw_records,
+  insert_ops_sync_cursors,
+  update_ops_ingestion_runs,
 };

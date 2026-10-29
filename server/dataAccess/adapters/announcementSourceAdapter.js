@@ -236,10 +236,14 @@ async function fetchSseLatestReport(tsCode) {
 
 async function fetchSseEvents(tsCode, startDate, endDate, keyword = '', options = {}) {
   if (!String(tsCode || '').endsWith('.SH')) return options.structured ? { events: [], complete: true, fetched: 0, diagnostics: {} } : [];
-  const pageSize = 100, rows = [], seenPageSignatures = new Set();
+  // 上交所每页会按请求的 pageSize 放大返回（实测请求 1000 实返 5000），提高到 1000 可把
+  // 全市场日窗口的翻页次数降到约十分之一；翻页终止改用「观察到的实际页大小」，避免
+  // 服务端按上限截断时被误判成最后一页。
+  const pageSize = 1000, rows = [], seenPageSignatures = new Set();
   let complete = true;
   let pageCount = 0;
   let pageNo = 1;
+  let observedPageSize = null;
   while (true) {
     const params = new URLSearchParams({ isPagination: 'true', productId: tsCode.slice(0, 6), keyWord: keyword,
       securityType: '0101,120100,020100,020200,120200', beginDate: isoDate(startDate), endDate: isoDate(endDate),
@@ -251,11 +255,13 @@ async function fetchSseEvents(tsCode, startDate, endDate, keyword = '', options 
     if (!payload || !payload.pageHelp || !Array.isArray(payload.pageHelp.data)) throw new Error('上交所公告响应格式异常');
     const pageRows = payload && payload.pageHelp && Array.isArray(payload.pageHelp.data) ? payload.pageHelp.data : [];
     rows.push(...pageRows);
+    if (pageRows.length && observedPageSize === null) observedPageSize = pageRows.length;
     const signature = pageRows.map(row => String(row.INFO_CODE || row.URL || row.TITLE || '')).join('|');
     if (signature && seenPageSignatures.has(signature)) { complete = false; break; }
     if (signature) seenPageSignatures.add(signature);
     const total = Number(payload && payload.pageHelp && (payload.pageHelp.total || payload.pageHelp.totalRecordNum));
-    if (!pageRows.length || pageRows.length < pageSize || (Number.isFinite(total) && total > 0 && rows.length >= total)) {
+    if (!pageRows.length || (observedPageSize && pageRows.length < observedPageSize)
+      || (Number.isFinite(total) && total > 0 && rows.length >= total)) {
       if (Number.isFinite(total) && total > rows.length) complete = false;
       break;
     }
@@ -299,7 +305,7 @@ async function fetchSzseEvents(tsCode, startDate, endDate, keyword = '', options
 }
 
 async function fetchSseEventsBatch(startDate, endDate, keyword = '') {
-  const pageSize = 100, rows = [], seenPageSignatures = new Set();
+  const pageSize = 1000, rows = [], seenPageSignatures = new Set();
   let complete = true;
   let pageNo = 1;
   let observedPageSize = null;

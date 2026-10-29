@@ -198,6 +198,40 @@ async function updateSettlementStatus(settlementId, status, patch = {}, client =
   );
 }
 
+// 最新一条净值里的「首页资产基准」快照（换股后需要同步，否则净值任务对不上持仓）。
+async function selectLatestHomepageBasis(username, accountName, client = pool) {
+  const { rows } = await client.query(
+    `SELECT date::text AS date, diagnostics->'homepageBasis' AS basis
+       FROM nav_history
+      WHERE username=$1 AND account_name=$2
+      ORDER BY date DESC
+      LIMIT 1`,
+    [username, accountName]
+  );
+  return rows[0] || null;
+}
+
+// 回写首页资产基准（只覆盖 homepageBasis 键，其它诊断信息保持不变）。
+async function updateHomepageBasis(username, accountName, date, basis, client = pool) {
+  await client.query(
+    `UPDATE nav_history
+        SET diagnostics = COALESCE(diagnostics, '{}'::jsonb) || jsonb_build_object('homepageBasis', $4::jsonb)
+      WHERE username=$1 AND account_name=$2 AND date=$3`,
+    [username, accountName, date, JSON.stringify(basis)]
+  );
+}
+
+// 某只标的在该账户持仓表里的当前价（用于换股后给基准补价）。
+async function selectPositionPrice(username, accountName, code, client = pool) {
+  const { rows } = await client.query(
+    `SELECT price FROM positions
+      WHERE username=$1 AND account_name=$2 AND code=$3
+      ORDER BY id DESC LIMIT 1`,
+    [username, accountName, code]
+  );
+  return rows[0] || null;
+}
+
 module.exports = {
   selectImplementedSwapCases,
   selectUnlinkedImplementationCandidates,
@@ -210,4 +244,7 @@ module.exports = {
   insertSettlement,
   selectSettlementByScope,
   updateSettlementStatus,
+  selectLatestHomepageBasis,
+  updateHomepageBasis,
+  selectPositionPrice,
 };

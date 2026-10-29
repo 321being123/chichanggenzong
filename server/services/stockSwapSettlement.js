@@ -211,6 +211,49 @@ function buildPlan(caseRow, holding, existingTarget) {
   };
 }
 
+// 换股结算后同步「首页资产基准」里的持仓快照：移除被合并方条目、把换得数量并入合并方。
+// 基准是净值归因的持仓锚点（navAttribution 读 homepageBasis.positions），不同步会与
+// 结算后的实际持仓对不上，净值任务被判 missing_nav_basis。基准缺失或版本不符时跳过，
+// 不做无根据改写。
+async function syncHomepageBasisAfterSwap(plan, client) {
+  const latest = await swapRepository.selectLatestHomepageBasis(plan.username, plan.account_name, client);
+  const basis = latest && latest.basis;
+  if (!basis || basis.version !== 'homepage-v1' || !Array.isArray(basis.positions)) {
+    return { updated: false, reason: 'basis_missing' };
+  }
+  const sourceCode = bareCode(plan.source_code);
+  const targetCode = bareCode(plan.target_code);
+  if (!sourceCode || !targetCode) return { updated: false, reason: 'code_missing' };
+
+  const mergedTargetQty = (toNumber(plan.target_quantity) || 0) + (toNumber(plan.existing_target_quantity) || 0);
+  const kept = [];
+  let sourceRemoved = 0;
+  let targetFound = false;
+  let targetChanged = false;
+  for (const position of basis.positions) {
+    const code = bareCode(position && position.code);
+    if (code === sourceCode) { sourceRemoved += 1; continue; }
+    if (code === targetCode) {
+      targetFound = true;
+      if ((toNumber(position.quantity) || 0) !== mergedTargetQty) targetChanged = true;
+      kept.push({ ...position, quantity: mergedTargetQty });
+      continue;
+    }
+    kept.push({ ...position });
+  }
+  if (!targetFound && mergedTargetQty > 0) {
+    const priceRow = await swapRepository.selectPositionPrice(plan.username, plan.account_name, targetCode, client);
+    const price = toNumber(priceRow && priceRow.price);
+    kept.push({ code: targetCode, quantity: mergedTargetQty, price: price == null ? 0 : price, subtype: aShareSubtype(targetCode) });
+    targetChanged = true;
+  }
+  // 既没有被合并方条目、合并方数量也没变化时不写库，避免无意义改写净值诊断。
+  if (!sourceRemoved && !targetChanged) return { updated: false, reason: 'no_change' };
+
+  await swapRepository.updateHomepageBasis(plan.username, plan.account_name, latest.date, { ...basis, positions: kept }, client);
+  return { updated: true, date: latest.date, source_removed: sourceRemoved, target_quantity: mergedTargetQty };
+}
+
 // 结算单落库（幂等：唯一键冲突时返回既有行，不覆盖已执行结果）。
 async function upsertSettlement(plan) {
   const inserted = await swapRepository.insertSettlement(plan);
@@ -318,9 +361,16 @@ async function settleOne(caseRow, plan, options) {
         throw new Error('账本重放后的持仓成本与换股计划不一致，已回滚');
       }
       await swapRepository.updateSettlementStatus(settlement.settlement_id, 'applied', { tradeIds: ids }, client);
+      // 结算成功后同步首页资产基准；基准同步失败不回滚已落地的持仓，只记录原因。
+      let basisSync = { updated: false, reason: 'not_attempted' };
+      try {
+        basisSync = await syncHomepageBasisAfterSwap(currentPlan, client);
+      } catch (basisError) {
+        basisSync = { updated: false, reason: 'error:' + ((basisError && basisError.message) || String(basisError)) };
+      }
       return { ...preview, source_quantity: currentPlan.source_quantity, target_quantity: currentPlan.target_quantity,
         existing_target_quantity: currentPlan.existing_target_quantity, cost_unit_after: currentPlan.cost_unit_after,
-        settlement_id: settlement.settlement_id, status: 'applied', reason: 'applied', trade_ids: ids };
+        settlement_id: settlement.settlement_id, status: 'applied', reason: 'applied', trade_ids: ids, basis_sync: basisSync };
     });
   } catch (e) {
     return { ...preview, status: 'failed', reason: 'ledger_error', error: (e && e.message) || String(e) };
@@ -428,6 +478,7 @@ module.exports = {
   buildPlan,
   buildLedgerEvents,
   shanghaiDateText,
+  syncHomepageBasisAfterSwap,
   DATASET_CODE,
   IMPLEMENTATION_TITLE_PATTERNS,
 };

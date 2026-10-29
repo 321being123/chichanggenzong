@@ -868,6 +868,13 @@
       "note": "算法/规则与仓储读取混合编排：整体归 application；纯算法下沉 domain_algorithm 留待后续批次"
     },
     {
+      "path": "server/services/stockSwapSettlement.js",
+      "role": "application",
+      "batch": 3,
+      "status": "registered",
+      "note": "换股结算编排案件查询与账本写入；规则计算与编排仍混合，纯算法下沉待后续评估"
+    },
+    {
       "path": "server/services/cashIncome.js",
       "role": "application",
       "batch": 3,

@@ -10,7 +10,7 @@ const {resolvePython}=require('../services/arbitrageParser');
 (async()=>{
   // BOND-ISSUE-QUALITY-RETRY-041：恢复重复幂等保留open快照，业务错误不能换解释器重放外部采集。
   assert.equal(process.env.NODE_ENV,'test');
-  assert(/_test$/.test(process.env.PGDATABASE||''),'只允许独立测试库');
+  assert(/(^|_)(test|migtest)(_|$)/i.test(process.env.PGDATABASE||''),'只允许独立测试库');
   const code=String.raw`
 import sys,json,psycopg2
 sys.path.insert(0,'ipo-report')

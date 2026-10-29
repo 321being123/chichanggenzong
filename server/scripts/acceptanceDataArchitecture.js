@@ -317,6 +317,15 @@ function runStaticChecks(boundaries = readJson(BOUNDARIES_RELATIVE)) {
   return { checks, pending };
 }
 
+function providerMappingEntrypoints({ identityJs, marketRoute, announcementAdapter, tencentQuote, pythonIdentity, pythonQuote }) {
+  return /resolveProviderIdentifier/.test(identityJs) && /resolve_provider_code/.test(pythonIdentity)
+    && /_get_qt_symbol/.test(pythonQuote) && /sourceCode: 'xueqiu'/.test(announcementAdapter)
+    && /sourceCode: 'eastmoney', identifierType: 'guba_code'/.test(announcementAdapter)
+    && /resolveProviderCode/.test(tencentQuote)
+    && !/rawCodes\s*\|\|\s*\[\]\)\s*\.map\(describeTencentCode\)/.test(tencentQuote)
+    && !/sinaSymbol\s*\|\|\s*requestedSecid/.test(marketRoute);
+}
+
 async function runDatabaseChecks() {
   // 连接数据库的依赖只在默认模式里延迟加载，静态模式不触发。
   const { pool } = require('../db/connection');
@@ -335,17 +344,12 @@ async function runDatabaseChecks() {
 
   const identityJs = fs.readFileSync(path.join(__dirname, '..', 'services', 'securityIdentity.js'), 'utf8');
   const marketRoute = fs.readFileSync(path.join(__dirname, '..', 'routes', 'market.js'), 'utf8');
-  const stockAnalysis = fs.readFileSync(path.join(__dirname, '..', 'services', 'stockAnalysis.js'), 'utf8');
+  const announcementAdapter = fs.readFileSync(path.join(__dirname, '..', 'dataAccess', 'adapters', 'announcementSourceAdapter.js'), 'utf8');
   const tencentQuote = fs.readFileSync(path.join(__dirname, '..', 'services', 'tencentQuote.js'), 'utf8');
   const pythonIdentity = fs.readFileSync(path.join(__dirname, '..', '..', 'ipo-report', 'instrument_identity.py'), 'utf8');
   const pythonQuote = fs.readFileSync(path.join(__dirname, '..', '..', 'ipo-report', 'ipo_lib_common.py'), 'utf8');
   addCheck(checks, 'runtime_provider_mapping_entrypoints',
-    /resolveProviderIdentifier/.test(identityJs) && /resolve_provider_code/.test(pythonIdentity)
-      && /_get_qt_symbol/.test(pythonQuote) && /sourceCode: 'xueqiu'/.test(stockAnalysis)
-      && /sourceCode: 'eastmoney', identifierType: 'guba_code'/.test(stockAnalysis)
-      && /resolveProviderCode/.test(tencentQuote)
-      && !/rawCodes\s*\|\|\s*\[\]\)\s*\.map\(describeTencentCode\)/.test(tencentQuote)
-      && !/sinaSymbol\s*\|\|\s*requestedSecid/.test(marketRoute),
+    providerMappingEntrypoints({ identityJs, marketRoute, announcementAdapter, tencentQuote, pythonIdentity, pythonQuote }),
     'Node/Python 供应商代码转换经过统一身份映射入口，腾讯/股吧/雪球/新浪路由不再按前缀猜测');
 
   const migrationRows = await query(
@@ -548,4 +552,5 @@ module.exports = {
   hasSymbolDefinition,
   parsePageScripts,
   runStaticChecks,
+  providerMappingEntrypoints,
 };

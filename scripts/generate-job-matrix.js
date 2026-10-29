@@ -82,7 +82,7 @@ function render() {
   const lines = [
     '# 任务-接口-数据集矩阵（代码生成）',
     '',
-    '> 此文件由 `scripts/generate-job-matrix.js` 从 `server/services/jobDefinitions.js` 生成，禁止手工修改。',
+    '> 此文件由 `scripts/generate-job-matrix.js` 从 `server/services/jobDefinitions.js` 生成，禁止手工修改；校验统一 CRLF 与 LF，内容差异仍报错。',
     `> 生成任务数：${JOB_DEFINITIONS.length}（定时 ${scheduled}，人工 ${manual}）。联网任务不设置内部调用数额度；真实限制只来自已核验官方策略。`,
     `> 数据集分区注册表已纳入任务契约审计，当前登记 ${Object.keys(DATASET_PARTITION_REGISTRY).length} 个数据集。`,
     '',
@@ -105,12 +105,16 @@ function render() {
   return lines.join('\n');
 }
 
+function matrixMatches(actual, expected) {
+  return actual.replace(/\r\n/g, '\n') === expected;
+}
+
 function main() {
   const expected = render();
   const check = process.argv.includes('--check');
   const actual = fs.existsSync(outputPath) ? fs.readFileSync(outputPath, 'utf8') : '';
   if (check) {
-    if (actual !== expected) {
+    if (!matrixMatches(actual, expected)) {
       console.error(`任务矩阵与 JOB_DEFINITIONS 不一致，请运行：node scripts/generate-job-matrix.js\n期望文件：${path.relative(process.cwd(), outputPath)}`);
       process.exit(1);
     }
@@ -121,4 +125,5 @@ function main() {
   console.log(`已生成 ${path.relative(process.cwd(), outputPath)}`);
 }
 
-main();
+if (require.main === module) main();
+module.exports = { matrixMatches };

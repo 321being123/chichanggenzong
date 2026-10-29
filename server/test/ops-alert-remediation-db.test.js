@@ -4,7 +4,7 @@ const path = require('path');
 require('dotenv').config({ path: path.join(__dirname, '..', '..', '.env') });
 
 const database = String(process.env.PGDATABASE || 'portfolio');
-if (process.env.NODE_ENV !== 'test' || !/_test$/i.test(database)) {
+if (process.env.NODE_ENV !== 'test' || !/(^|_)(test|migtest)(_|$)/i.test(database)) {
   console.log('[SKIP] ops-alert-remediation-db 仅允许在独立测试库运行');
   process.exit(0);
 }

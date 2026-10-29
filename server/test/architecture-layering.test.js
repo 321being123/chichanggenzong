@@ -370,6 +370,20 @@ check('性能预算取 20% 与 50ms 中更严者', () => {
   assert.strictEqual(golden.perfBudget(1000, 1051).ok, false);
   assert.strictEqual(golden.perfBudget(0, 10).ok, false, '无效基准必须记待测');
 });
+check('性能证据缺失或无效时不得判定通过', () => {
+  for (const p95 of [null, undefined, NaN, Infinity, 0, -1]) {
+    assert.strictEqual(golden.perfBudget(100, p95).ok, false, '当前 p95 无效不能通过');
+  }
+  const base = { cases: { x: { status: 'ok', p95: 10, statementsPerCall: 1 } } };
+  for (const count of [null, undefined, NaN, Infinity, -1]) {
+    const current = { cases: { x: { status: 'ok', p95: 10, statementsPerCall: count } } };
+    assert.strictEqual(golden.comparePerf(base, current).ok, false, '缺少有效查询次数不能通过');
+    assert.strictEqual(golden.comparePerf(current, base).ok, false, '基线缺少有效查询次数不能通过');
+  }
+  assert.strictEqual(golden.comparePerf({ cases: {} }, { cases: {} }).ok, false, '空性能用例不能通过');
+  assert.strictEqual(golden.comparePerf({ cases: { x: { status: 'ok', p95: 10, statementsPerCall: 0 } } }, { cases: { x: { status: 'ok', p95: 10, statementsPerCall: 0 } } }).ok, true, '真实零查询次数允许通过');
+  assert.strictEqual(golden.compare({ cases: {} }, { cases: {} }).ok, false, '空等价用例不能通过');
+});
 check('查询次数增加同样判失败（不能只靠总耗时过线）', () => {
   const result = golden.comparePerf(
     { cases: { x: { status: 'ok', p95: 100, statementsPerCall: 2 } } },

@@ -204,6 +204,9 @@ function perfBudget(baseP95, currentP95) {
   if (!Number.isFinite(baseP95) || baseP95 <= 0) {
     return { ok: false, reason: '基准 p95 不是有效正数，按待测处理', allowed: null };
   }
+  if (!Number.isFinite(currentP95) || currentP95 <= 0) {
+    return { ok: false, reason: '当前 p95 不是有效正数，按待测处理', allowed: null };
+  }
   const allowed = Math.min(baseP95 * 0.2, 50);
   return { ok: currentP95 <= baseP95 + allowed, allowed, limit: baseP95 + allowed };
 }
@@ -296,6 +299,7 @@ function comparePerf(recorded, current) {
   const diffs = [];
   // 遍历并集：只遍历当前侧会漏掉"基线有、当前被删除"的用例，从而假通过。
   const ids = new Set([...Object.keys(recorded.cases || {}), ...Object.keys(current.cases || {})]);
+  if (ids.size === 0) diffs.push({ case: '(all)', reason: '性能用例为空，未构成验收证据' });
   for (const id of [...ids].sort()) {
     const expected = (recorded.cases || {})[id];
     const actual = (current.cases || {})[id];
@@ -306,12 +310,13 @@ function comparePerf(recorded, current) {
       continue;
     }
     const budget = perfBudget(expected.p95, actual.p95);
-    const statementRegression = Number.isFinite(expected.statementsPerCall) && Number.isFinite(actual.statementsPerCall)
-      && actual.statementsPerCall > expected.statementsPerCall;
-    if (!budget.ok || statementRegression) {
+    const validStatements = Number.isFinite(expected.statementsPerCall) && expected.statementsPerCall >= 0
+      && Number.isFinite(actual.statementsPerCall) && actual.statementsPerCall >= 0;
+    const statementRegression = validStatements && actual.statementsPerCall > expected.statementsPerCall;
+    if (!budget.ok || !validStatements || statementRegression) {
       diffs.push({
         case: id,
-        reason: budget.ok ? '查询次数增加（不能只靠总耗时过线掩盖 N+1）' : '超出默认性能预算',
+        reason: !budget.ok ? (budget.reason || '超出默认性能预算') : !validStatements ? '查询次数无有效数据，按待测处理' : '查询次数增加（不能只靠总耗时过线掩盖 N+1）',
         baseP95: expected.p95,
         currentP95: actual.p95,
         limit: budget.limit,
@@ -357,7 +362,7 @@ async function runPerfMode(options, pool) {
   for (const [id, item] of Object.entries(current.cases)) {
     if (item.status === 'ok') console.log(`  ${id}：p95 ${item.p95?.toFixed(1)}ms（基线 ${recorded.cases[id]?.p95?.toFixed(1)}ms）`);
   }
-  for (const diff of result.diffs) console.log(`  ✗ ${diff.case}：${diff.reason} ${diff.baseP95 ? `基准 ${diff.baseP95.toFixed(1)}ms／当前 ${diff.currentP95.toFixed(1)}ms／上限 ${Number(diff.limit).toFixed(1)}ms` : ''}`);
+  for (const diff of result.diffs) console.log(`  ✗ ${diff.case}：${diff.reason} ${Number.isFinite(diff.baseP95) && Number.isFinite(diff.currentP95) && Number.isFinite(diff.limit) ? `基准 ${diff.baseP95.toFixed(1)}ms／当前 ${diff.currentP95.toFixed(1)}ms／上限 ${diff.limit.toFixed(1)}ms` : ''}`);
   if (!result.ok) process.exitCode = 1;
 }
 
@@ -365,9 +370,10 @@ async function runPerfMode(options, pool) {
 function compare(recorded, current) {
   const diffs = [];
   const ids = new Set([...Object.keys(recorded.cases || {}), ...Object.keys(current.cases || {})]);
+  if (ids.size === 0) diffs.push({ case: '(all)', path: 'case', reason: '等价用例为空，未构成验收证据' });
   for (const id of [...ids].sort()) {
-    const expected = recorded.cases[id];
-    const actual = current.cases[id];
+    const expected = (recorded.cases || {})[id];
+    const actual = (current.cases || {})[id];
     if (!expected) { diffs.push({ case: id, path: 'case', expected: '(未记录)', actual: '新增' }); continue; }
     if (!actual) { diffs.push({ case: id, path: 'case', expected: '已记录', actual: '(缺失)' }); continue; }
     if (expected.status !== actual.status) {

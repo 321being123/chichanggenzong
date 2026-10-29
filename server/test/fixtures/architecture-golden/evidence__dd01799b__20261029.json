@@ -1,0 +1,179 @@
+{
+  "schemaVersion": 1,
+  "kind": "architecture-reconstruction-evidence",
+  "recordedAt": "2026-10-29T04:33:14.308Z",
+  "baselineCommit": "dd01799befe7947627d712bf9925b23df8b0bb11",
+  "currentCommit": "968b49eb7cf7b656fd2b3a94c257bcb7867c54f0",
+  "baselineDirty": true,
+  "baselineDirtyFiles": [
+    "governance/architecture-golden-cases.json",
+    "scripts/record-arch-golden.js"
+  ],
+  "baselineDirtyReason": "仅替换为当前固定用例和同一采集工具；业务源码保持提交原状",
+  "currentDirty": false,
+  "sourceDatabase": "portfolio_market_ready_test",
+  "readonly": true,
+  "schema": {
+    "tables": 149,
+    "latest_migration": "177_lixinger_source"
+  },
+  "caseSet": "batch0-layering-v2",
+  "dataEqual": true,
+  "dataCases": {
+    "bond-rating-distribution": {
+      "baselineStatus": "ok",
+      "currentStatus": "ok",
+      "baselineSha256": "538eeea4a0b7f1e630f28a4e2c439c7d83d6163816a55a8a87cbda9d7d60a0ef",
+      "currentSha256": "538eeea4a0b7f1e630f28a4e2c439c7d83d6163816a55a8a87cbda9d7d60a0ef"
+    },
+    "bond-active-codes": {
+      "baselineStatus": "ok",
+      "currentStatus": "ok",
+      "baselineSha256": "68c3d905bef43d3429aacbb98b971dedbedca02cdd67e790345749c96f27f07e",
+      "currentSha256": "68c3d905bef43d3429aacbb98b971dedbedca02cdd67e790345749c96f27f07e"
+    },
+    "bond-detail-113050": {
+      "baselineStatus": "ok",
+      "currentStatus": "ok",
+      "baselineSha256": "28ad5ed6e8352608f79d1c7a6bcecb21fd13c7c801ea67a5a1f71009a7db3f21",
+      "currentSha256": "28ad5ed6e8352608f79d1c7a6bcecb21fd13c7c801ea67a5a1f71009a7db3f21"
+    },
+    "stock-latest-valuation-600000": {
+      "baselineStatus": "ok",
+      "currentStatus": "ok",
+      "baselineSha256": "fe63503b0ad99a69d9185e8457137abff96c8f2c510ca7010080f506e3e52daa",
+      "currentSha256": "fe63503b0ad99a69d9185e8457137abff96c8f2c510ca7010080f506e3e52daa"
+    },
+    "stock-list-search-600000": {
+      "baselineStatus": "ok",
+      "currentStatus": "ok",
+      "baselineSha256": "3df1aadb52ae7d4ae178e25d49126104a921df13d685dcd1d9208bd5a07eef94",
+      "currentSha256": "3df1aadb52ae7d4ae178e25d49126104a921df13d685dcd1d9208bd5a07eef94"
+    },
+    "account-names-synthetic": {
+      "baselineStatus": "ok",
+      "currentStatus": "ok",
+      "baselineSha256": "084c7f07e1857a72f3c9c88ad6ec495c4d55fe7d6bdcdfd4f13c3f242f5b8104",
+      "currentSha256": "084c7f07e1857a72f3c9c88ad6ec495c4d55fe7d6bdcdfd4f13c3f242f5b8104"
+    },
+    "knowledge-categories-anon": {
+      "baselineStatus": "ok",
+      "currentStatus": "ok",
+      "baselineSha256": "1690fbfd2f1f7be2f3353ee3e541dfcd5482b09e6e7df0f3b2a6545c789d20ec",
+      "currentSha256": "1690fbfd2f1f7be2f3353ee3e541dfcd5482b09e6e7df0f3b2a6545c789d20ec"
+    },
+    "ipo-report-index": {
+      "baselineStatus": "ok",
+      "currentStatus": "ok",
+      "baselineSha256": "2900b75eafeefaac8f98a377d5f78aa4915350207fd1cda9822478af127ccad1",
+      "currentSha256": "2900b75eafeefaac8f98a377d5f78aa4915350207fd1cda9822478af127ccad1"
+    },
+    "ipo-cn-history-total": {
+      "baselineStatus": "ok",
+      "currentStatus": "ok",
+      "baselineSha256": "26d1dfa74a9041aa594e93780fe9bfc952d240c672b504d602cbbfa5ef330668",
+      "currentSha256": "26d1dfa74a9041aa594e93780fe9bfc952d240c672b504d602cbbfa5ef330668"
+    }
+  },
+  "performanceEqual": true,
+  "performanceMeasure": "service_call_ms",
+  "performanceCases": {
+    "bond-rating-distribution": {
+      "baselineP95": 16.968,
+      "currentP95": 16.818,
+      "baselineStatements": 1,
+      "currentStatements": 1,
+      "settings": {
+        "warmup": 5,
+        "groups": 3,
+        "samplesPerGroup": 30
+      },
+      "baselineExplain": {
+        "nodeType": "Sort",
+        "totalCost": 18303.44,
+        "planRows": 6,
+        "sequentialScan": false
+      },
+      "currentExplain": {
+        "nodeType": "Sort",
+        "totalCost": 18303.44,
+        "planRows": 6,
+        "sequentialScan": false
+      }
+    },
+    "bond-active-codes": {
+      "baselineP95": 15.8261,
+      "currentP95": 15.865,
+      "baselineStatements": 1,
+      "currentStatements": 1,
+      "settings": {
+        "warmup": 5,
+        "groups": 3,
+        "samplesPerGroup": 30
+      },
+      "baselineExplain": {
+        "nodeType": "Nested Loop",
+        "totalCost": 18089.72,
+        "planRows": 6,
+        "sequentialScan": false
+      },
+      "currentExplain": {
+        "nodeType": "Nested Loop",
+        "totalCost": 18089.72,
+        "planRows": 6,
+        "sequentialScan": false
+      }
+    },
+    "stock-latest-valuation-600000": {
+      "baselineP95": 0.4439,
+      "currentP95": 0.4854,
+      "baselineStatements": 1,
+      "currentStatements": 1,
+      "settings": {
+        "warmup": 5,
+        "groups": 3,
+        "samplesPerGroup": 30
+      },
+      "baselineExplain": {
+        "nodeType": "Nested Loop",
+        "totalCost": 12.11,
+        "planRows": 1,
+        "sequentialScan": false
+      },
+      "currentExplain": {
+        "nodeType": "Nested Loop",
+        "totalCost": 12.11,
+        "planRows": 1,
+        "sequentialScan": false
+      }
+    },
+    "stock-list-search-600000": {
+      "baselineP95": 21.8251,
+      "currentP95": 21.8915,
+      "baselineStatements": 1,
+      "currentStatements": 1,
+      "settings": {
+        "warmup": 5,
+        "groups": 3,
+        "samplesPerGroup": 30
+      },
+      "baselineExplain": {
+        "nodeType": "Limit",
+        "totalCost": 576.18,
+        "planRows": 2,
+        "sequentialScan": false
+      },
+      "currentExplain": {
+        "nodeType": "Limit",
+        "totalCost": 576.18,
+        "planRows": 2,
+        "sequentialScan": false
+      }
+    }
+  },
+  "limitations": [
+    "覆盖 dd01799b 之后的九项固定只读用例，不能代表更早代码或所有业务",
+    "样本库顺序只读，未证明为可持久冻结快照",
+    "性能只覆盖四个服务调用，不是 HTTP、浏览器或真机性能"
+  ]
+}

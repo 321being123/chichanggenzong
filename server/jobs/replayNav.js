@@ -33,11 +33,37 @@ function historicalApiFor(code, position = {}) {
   return 'daily';
 }
 
+// 港股日线补价：腾讯 web.ifzq 日 K（与 hkDailyCoverage 同源，无需积分）。
+// 返回的每行是 [日期, 开, 收, 高, 低, 量]，收盘取第 3 位。
+async function backfillHkDailyPrices(username, accountName, code, start, end) {
+  const bare = String(code || '').replace(/\.HK$/i, '').padStart(5, '0');
+  const payload = await require('../services/tencentQuote').requestTencentHkKline(bare, start, end);
+  const key = ('hk' + bare).toLowerCase();
+  const node = payload && payload.data && payload.data[key];
+  const dayRows = node && (node.qfqday || node.day);
+  if (!Array.isArray(dayRows)) return false;
+  const byDate = {};
+  for (const item of dayRows) {
+    const date = normDate(item && item[0]);
+    const close = parseFloat(item && item[2]);
+    if (!date || !(close > 0)) continue;
+    (byDate[date] = byDate[date] || []).push({ code, name: '', price: close });
+  }
+  let any = false;
+  for (const date of Object.keys(byDate)) {
+    try { await saveDailyPrices(username, accountName, date, byDate[date]); any = true; } catch (e) { /* 单日失败不阻断其余日期 */ }
+  }
+  return any;
+}
+
 // 用对应证券类型的 Tushare 历史接口拉取 [start, end] 收盘，按日期 upsert 进 daily_prices。
 // 成功返回 true（至少写回一条）；失败/无数据返回 false。
 async function backfillDailyPrices(username, accountName, code, start, end, position = {}) {
   const tsCode = toTsCode(code);
   const api = historicalApiFor(code, position);
+  // 港股日线不走 Tushare（hk_daily 需高积分），改走腾讯 web.ifzq 日 K；
+  // 数据源的选择留在数据层，业务层只说「补某只标的某区间的收盘价」。
+  if (api === 'hk_daily') return backfillHkDailyPrices(username, accountName, code, start, end);
   const sd = String(start).replace(/-/g, '');
   const ed = String(end).replace(/-/g, '');
   let data = null;

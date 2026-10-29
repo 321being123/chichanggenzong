@@ -6,6 +6,7 @@ const {resolveInstrument}=require('./securityIdentity');
 const {loadHolidays}=require('../config/holidays');
 const crypto=require('crypto');
 const repository = require('../repositories/repoDailyRatesRepository.js');
+const txControl = require('../repositories/transactionControl');
 const CODE='204001.SH', DOC='https://tushare.pro/document/2?doc_id=256';
 function day(value) {const s=String(value||'').replace(/-/g,'');return /^\d{8}$/.test(s)?CoreDate.normalizeBusinessDate(s.slice(0,4)+'-'+s.slice(4,6)+'-'+s.slice(6)):null;}
 function normalize(row) {
@@ -34,7 +35,6 @@ async function syncRepoDailyRates({targetDate,startDate,probe=false,allowComplet
   let identity=await resolveInstrument({canonicalCode:CODE});
   if(!identity) {
     const master=await require('./securityIdentity').ensureInstrumentIdentity({canonicalCode:CODE,name:'GC001',assetClass:'repo',market:'CN',exchangeCode:'SSE',currencyCode:'CNY',status:'listed'});
-const txControl = require('../repositories/transactionControl');
     identity={instrument_id:master.instrumentId};
   }
   const source=(await repository.select_ops_data_sources()).rows[0].source_id;

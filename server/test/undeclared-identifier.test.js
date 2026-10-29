@@ -60,8 +60,10 @@ function collectStatementNames(statement, names) {
       if (statement.id) names.add(statement.id.name);
       break;
     case 'IfStatement':
-      collectStatementNames(statement.consequent, names);
-      collectStatementNames(statement.alternate, names);
+      // 分支是块语句时它自建作用域，其中的声明不能算外层可见（否则会把「只在 if 块里定义、
+      // 却在块外引用」的丢变量问题漏掉——repoDailyRates 的 txControl 就是这样被漏掉的）。
+      collectBranchNames(statement.consequent, names);
+      collectBranchNames(statement.alternate, names);
       break;
     case 'ForStatement':
       if (statement.init) collectStatementNames(statement.init, names);
@@ -78,6 +80,13 @@ function collectStatementNames(statement, names) {
       break;
     default: break;
   }
+}
+
+
+// 只把「非块语句」分支里的声明提上来；块语句分支的声明留给它自己的块作用域。
+function collectBranchNames(statement, names) {
+  if (!statement || statement.type === 'BlockStatement') return;
+  collectStatementNames(statement, names);
 }
 
 function scopeDeclares(scopeNode, name) {

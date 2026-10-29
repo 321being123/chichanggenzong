@@ -1,12 +1,6 @@
-// ========== 打新日历前端（读取 /api/ipo/*） ==========
-// 依赖：utils.js 的 api()/escapeHtml()，core-quote.js 的 showToast()
-
-// 标签、请求和内容共用同一状态；请求序号防止旧响应（含同市场分页）覆盖新选择。
-var ipoHistoryType = 'stock';
-var ipoHistoryRequestId = 0;
-var ipoHistoryOffset = 0;
-var ipoCalendarMarket = 'CN';
-var ipoCalendarRequestId = 0;
+// 打新日历 View（批次4：View／Presenter 分离）。
+// 职责：只做渲染、格式化与用户操作上报；取数、状态与响应序号在 presenters/ipo-presenter.js。
+// 依赖：utils.js 的 escapeHtml()
 
 function ipoFmt(v, unit) {
   if (v === null || v === undefined || v === '') return '-';
@@ -411,57 +405,6 @@ function ipoHistoryHeaderCell(label) {
   return '<th>' + escapeHtml(label) + '</th>';
 }
 
-// 主入口
-async function loadIpo() {
-  var initialMarket = ipoCalendarMarket;
-  var initialCalendar = ipoSwitchMarket(initialMarket);
-  ipoLoadHistory(ipoHistoryType);
-  try {
-    var rr = await window.siteApi.get('/api/ipo/report');
-    if (!rr.ok) throw new Error('日报接口返回 ' + rr.status);
-    var rep = rr.payload;
-    var adv = document.getElementById('ipo-advice');
-    var cal;
-    if (initialMarket === 'CN') {
-      cal = await initialCalendar;
-      if (!cal) throw new Error('日历读取失败');
-    } else {
-      var rc = await window.siteApi.get('/api/ipo/calendar?days=90&market=CN');
-      if (!rc.ok) throw new Error('日历接口返回 ' + rc.status);
-      cal = rc.payload;
-    }
-    if (adv) adv.innerHTML = ipoRenderAdvice(rep && rep.md, {
-      reportDate: rep && rep.report_date,
-      summary: rep && rep.summary,
-      calendar: cal && cal.calendar
-    });
-  } catch (e) {
-    var advError = document.getElementById('ipo-advice');
-    if (advError) advError.innerHTML = ipoRenderAdviceStatus('打新建议暂不可用', '日报读取失败，请稍后重试或在后台补跑打新日报。');
-  }
-}
-
-async function ipoSwitchMarket(market) {
-  ipoCalendarMarket = market;
-  var requestId = ++ipoCalendarRequestId;
-  document.querySelectorAll('[data-ipo-market]').forEach(function (b) {
-    b.classList.toggle('active', b.getAttribute('data-ipo-market') === market);
-  });
-  var calendar = document.getElementById('ipo-calendar');
-  if (calendar) calendar.innerHTML = '<div class="empty-state">加载中...</div>';
-  try {
-    var r = await window.siteApi.get('/api/ipo/calendar?days=90&market=' + encodeURIComponent(market));
-    if (!r.ok) throw new Error('日历接口返回 ' + r.status);
-    var d = r.payload;
-    if (requestId !== ipoCalendarRequestId) return d;
-    if (calendar) calendar.innerHTML = ipoRenderCalendar(d.calendar || [], d.pending_hk_stocks || []);
-    return d;
-  } catch (e) {
-    if (requestId !== ipoCalendarRequestId) return;
-    if (calendar) calendar.innerHTML = '<div class="empty-state">加载失败：' + escapeHtml(e.message || String(e)) + '</div>';
-  }
-}
-
 // 打新建议：从日报 md 的「📋 结论」段解析 **上市**/**打新** 两组条目
 function ipoNormalizeDate(value) {
   var text = String(value || '').replace(/-/g, '').slice(0, 8);
@@ -672,63 +615,6 @@ function ipoCalendarRow(label, items, color) {
   return html;
 }
 
-// ========== 打新历史（集思录式列表） ==========
-async function ipoLoadHistory(type) {
-  return ipoLoadHistoryPage(type, 0, '1');
-}
-
-function ipoRefreshHistory() {
-  return ipoLoadHistoryPage(ipoHistoryType, ipoHistoryOffset, 'force');
-}
-
-async function ipoLoadHistoryPage(type, offset, refreshQuotes) {
-  var silent = refreshQuotes === 'force';
-  ipoHistoryType = type;
-  var requestId = ++ipoHistoryRequestId;
-  document.querySelectorAll('[data-ipo-hist]').forEach(function (b) {
-    b.classList.toggle('active', b.getAttribute('data-ipo-hist') === type);
-  });
-  var el = document.getElementById('ipo-history');
-  var oldScroll = el && el.querySelector('.biz-table-scroll');
-  var scrollLeft = oldScroll ? oldScroll.scrollLeft : 0;
-  var refreshButton = document.getElementById('ipo-refresh-history');
-  if (refreshButton) { refreshButton.hidden = type === 'bond'; refreshButton.disabled = true; }
-  if (el && !silent) el.innerHTML = '<div class="empty-state">加载中...</div>';
-  try {
-    var pageSize = 200;
-    var pageOffset = Math.max(Number(offset) || 0, 0);
-    var r = await window.siteApi.get('/api/ipo/history?type=' + type + '&limit=' + pageSize + '&offset=' + pageOffset
-      + (type !== 'bond' && refreshQuotes ? '&refresh_quotes=' + refreshQuotes : ''));
-    if (!r.ok) throw new Error('历史接口返回 ' + r.status);
-    var d = r.payload;
-    if (requestId !== ipoHistoryRequestId) return;
-    if (d.type !== type) throw new Error('历史接口返回的市场与所选市场不一致');
-    ipoHistoryOffset = pageOffset;
-    if (el) {
-      var html = ipoRenderHistory(type, d.rows || []);
-      if ((type === 'hk_stock' || type === 'stock') && Number(d.total) > 0) {
-        var total = Number(d.total);
-        var shownEnd = pageOffset + (d.rows || []).length;
-        html += '<div class="ipo-history-pagination" data-style="display:flex;align-items:center;justify-content:center;gap:12px;padding:12px 0;color:#6e6e6e;font-size:12px;">';
-        html += '<span>共 ' + total + ' 条</span>';
-        if (pageOffset > 0) html += '<button type="button" data-act="ipoLoadHistoryPage" data-arg1="' + escapeHtml(type) + '" data-arg2="' + Math.max(0, pageOffset - pageSize) + '">上一页</button>';
-        if (shownEnd < total) html += '<button type="button" data-act="ipoLoadHistoryPage" data-arg1="' + escapeHtml(type) + '" data-arg2="' + shownEnd + '">加载下一页</button>';
-        html += '</div>';
-      }
-      el.innerHTML = html;
-      if (window.BusinessTable) window.BusinessTable.attach(el, { page: '#main-ipo', top: '.nav' });
-      var newScroll = el.querySelector('.biz-table-scroll');
-      if (silent && newScroll) newScroll.scrollLeft = scrollLeft;
-    }
-  } catch (e) {
-    if (requestId !== ipoHistoryRequestId) return;
-    if (el && !silent) el.innerHTML = '<div class="empty-state">加载失败：' + escapeHtml(e.message || String(e)) + '</div>';
-    if (silent && typeof showToast === 'function') showToast('行情刷新失败，保留原数据');
-  } finally {
-    if (requestId === ipoHistoryRequestId && refreshButton) refreshButton.disabled = false;
-  }
-}
-
 function ipoRenderHistory(type, rows) {
   if (!rows.length) return '<div class="empty-state">暂无打新历史记录</div>';
 
@@ -836,4 +722,80 @@ function ipoRenderHistory(type, rows) {
 function ipoSwitchHist(type) {
   if (window.SiteTelemetry) window.SiteTelemetry.trackEvent('filter_apply', { page_key: 'ipo.calendar', module: 'ipo', entry: 'history', properties: { filter_name: 'history_' + type } });
   return ipoLoadHistory(type);
+}
+
+// View 对外入口（批次4）：Presenter 只调这些函数改界面，自己不碰 DOM。
+function ipoPaintAdviceResult(rep, cal) {
+  var adv = document.getElementById('ipo-advice');
+  if (adv) adv.innerHTML = ipoRenderAdvice(rep && rep.md, {
+    reportDate: rep && rep.report_date,
+    summary: rep && rep.summary,
+    calendar: cal && cal.calendar
+  });
+}
+
+function ipoPaintAdviceError() {
+  var advError = document.getElementById('ipo-advice');
+  if (advError) advError.innerHTML = ipoRenderAdviceStatus('打新建议暂不可用', '日报读取失败，请稍后重试或在后台补跑打新日报。');
+}
+
+function ipoPaintCalendarLoading(market) {
+  document.querySelectorAll('[data-ipo-market]').forEach(function (b) {
+    b.classList.toggle('active', b.getAttribute('data-ipo-market') === market);
+  });
+  var calendar = document.getElementById('ipo-calendar');
+  if (calendar) calendar.innerHTML = '<div class="empty-state">加载中...</div>';
+}
+
+function ipoPaintCalendarResult(d) {
+  var calendar = document.getElementById('ipo-calendar');
+  if (calendar) calendar.innerHTML = ipoRenderCalendar(d.calendar || [], d.pending_hk_stocks || []);
+}
+
+function ipoPaintCalendarError(e) {
+  var calendar = document.getElementById('ipo-calendar');
+  if (calendar) calendar.innerHTML = '<div class="empty-state">加载失败：' + escapeHtml(e.message || String(e)) + '</div>';
+}
+
+function ipoPaintHistoryLoading(type, silent) {
+  document.querySelectorAll('[data-ipo-hist]').forEach(function (b) {
+    b.classList.toggle('active', b.getAttribute('data-ipo-hist') === type);
+  });
+  var el = document.getElementById('ipo-history');
+  var oldScroll = el && el.querySelector('.biz-table-scroll');
+  var scrollLeft = oldScroll ? oldScroll.scrollLeft : 0;
+  var refreshButton = document.getElementById('ipo-refresh-history');
+  if (refreshButton) { refreshButton.hidden = type === 'bond'; refreshButton.disabled = true; }
+  if (el && !silent) el.innerHTML = '<div class="empty-state">加载中...</div>';
+  return scrollLeft;
+}
+
+function ipoPaintHistoryResult(type, d, pageOffset, pageSize, silent, scrollLeft) {
+  var el = document.getElementById('ipo-history');
+  if (el) {
+    var html = ipoRenderHistory(type, d.rows || []);
+    if ((type === 'hk_stock' || type === 'stock') && Number(d.total) > 0) {
+      var total = Number(d.total);
+      var shownEnd = pageOffset + (d.rows || []).length;
+      html += '<div class="ipo-history-pagination" data-style="display:flex;align-items:center;justify-content:center;gap:12px;padding:12px 0;color:#6e6e6e;font-size:12px;">';
+      html += '<span>共 ' + total + ' 条</span>';
+      if (pageOffset > 0) html += '<button type="button" data-act="ipoLoadHistoryPage" data-arg1="' + escapeHtml(type) + '" data-arg2="' + Math.max(0, pageOffset - pageSize) + '">上一页</button>';
+      if (shownEnd < total) html += '<button type="button" data-act="ipoLoadHistoryPage" data-arg1="' + escapeHtml(type) + '" data-arg2="' + shownEnd + '">加载下一页</button>';
+      html += '</div>';
+    }
+    el.innerHTML = html;
+    if (window.BusinessTable) window.BusinessTable.attach(el, { page: '#main-ipo', top: '.nav' });
+    var newScroll = el.querySelector('.biz-table-scroll');
+    if (silent && newScroll) newScroll.scrollLeft = scrollLeft;
+  }
+}
+
+function ipoPaintHistoryError(e, silent) {
+  var el = document.getElementById('ipo-history');
+  if (el && !silent) el.innerHTML = '<div class="empty-state">加载失败：' + escapeHtml(e.message || String(e)) + '</div>';
+}
+
+function ipoPaintHistoryDone() {
+  var refreshButton = document.getElementById('ipo-refresh-history');
+  if (refreshButton) refreshButton.disabled = false;
 }

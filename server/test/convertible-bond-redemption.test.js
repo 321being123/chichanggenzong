@@ -37,6 +37,8 @@ assert.strictEqual(pickInstrument({ title: '关于转债的公告' }, [
 const root = path.join(__dirname, '..', '..');
 const html = fs.readFileSync(path.join(root, 'public', 'index.html'), 'utf8');
 const page = fs.readFileSync(path.join(root, 'public', 'js', 'bond-redemption.js'), 'utf8');
+// 批次4：强赎页已拆为 View（渲染）与 Presenter（状态/取数），取数断言指向 presenter。
+const presenter = fs.readFileSync(path.join(root, 'public', 'js', 'presenters', 'bond-redemption-presenter.js'), 'utf8');
 const redemptionCss = fs.readFileSync(path.join(root, 'public', 'css', 'bond-redemption.css'), 'utf8');
 const safetyCss = fs.readFileSync(path.join(root, 'public', 'css', 'bond-safety.css'), 'utf8');
 const cycle = fs.readFileSync(path.join(root, 'public', 'js', 'bond-cycle.js'), 'utf8');
@@ -59,8 +61,8 @@ assert.ok(html.includes('data-sub="redemption"') && html.includes('id="sub-bond-
 assert.ok(html.includes('js/bond-redemption.js?v=__APP_VERSION__'), '强赎页面脚本必须随发版自动换缓存版本');
 assert.ok(html.includes('value="not_active">暂不适用</option>'), '强赎页必须可筛选转股期前的暂不适用状态');
 assert.ok(html.includes('id="bond-redemption-search" name="bond-redemption-search"') && html.includes('data-autofill-ignore'), '强赎搜索框必须明确为非认证输入');
-assert.ok(page.includes('/api/bond-redemption') && page.includes('biz-table'));
-assert.ok(page.includes('/api/bond-redemption?limit=2000'), '强赎页必须读取完整的在市证券集合');
+assert.ok(presenter.includes('/api/bond-redemption') && page.includes('biz-table'));
+assert.ok(presenter.includes('/api/bond-redemption?limit=2000'), '强赎页必须读取完整的在市证券集合');
 assert.ok(page.includes("'年' +") && page.includes('bondRedemptionDate(data.trade_date)'), '强赎页日期必须统一显示为中文年月日');
 assert.ok(redemptionCss.includes('var(--bond-feature-gradient-start)') && redemptionCss.includes('var(--bond-feature-gradient-end)'), '强赎说明区必须沿用可转债功能页统一颜色');
 assert.ok(/\.bond-list-hero \{[^}]*background:linear-gradient\(135deg,#3f51b5,#5c6bc0\)/.test(safetyCss), '上市转债说明区必须沿用安全性说明区颜色');

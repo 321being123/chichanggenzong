@@ -1,5 +1,7 @@
 // 强赎监控：只读服务端统一状态视图，不在浏览器端重新计算触发条件。
-var bondRedemptionState = { rows: [], filtered: [], loaded: false, loading: false, lastRefreshAt: 0 };
+// 可转债强赎监控 View（批次4：View／Presenter 分离）。
+// 职责：只做渲染、筛选与格式化，并把用户操作上报给全局入口；取数与列表状态在 presenters/bond-redemption-presenter.js。
+// 约定：本文件不直接发请求（静态门禁 frontend_api_client 校验），也不决定何时采集。
 var BOND_REDEMPTION_REFRESH_MS = 15 * 60 * 1000;
 
 function bondRedemptionText(value) { return value === null || value === undefined || value === '' ? '—' : String(value); }
@@ -83,29 +85,17 @@ function bondRedemptionJump(code) {
   switchMain('stock-analysis');
   setTimeout(function () { if (typeof securityAnalysisSelect === 'function') securityAnalysisSelect(code); }, 150);
 }
-async function loadBondRedemption(force) {
-  if (bondRedemptionState.loading) return;
-  if (!force && bondRedemptionState.loaded) { bondRedemptionApplyFilters(); return; }
-  bondRedemptionState.loading = true;
+// View 对外入口（批次4）：Presenter 只调这些函数改界面，自己不碰 DOM。
+function bondRedemptionShowUpdated(data) {
   var updated = document.getElementById('bond-redemption-updated');
-  try {
-    // 批次4：取数统一走 siteApi（View 不直接 fetch）
-    var response = await window.siteApi.get('/api/bond-redemption?limit=2000', { cache: 'no-store' });
-    if (!response.ok) throw new Error('接口返回 ' + response.status);
-    var data = response.payload;
-    bondRedemptionState.rows = Array.isArray(data.data) ? data.data : [];
-    bondRedemptionState.loaded = true;
-    bondRedemptionState.lastRefreshAt = Date.now();
-    bondRedemptionRenderSummary(data.summary);
-    if (updated) updated.textContent = data.trade_date
-      ? '数据日期：' + bondRedemptionDate(data.trade_date) + '（' + bondRedemptionState.rows.length + ' 条）' + (data.stale ? ' · 强赎状态待更新' : '')
-      : '暂无数据';
-    bondRedemptionApplyFilters();
-  } catch (error) {
-    var table = document.getElementById('bond-redemption-table');
-    if (table && !bondRedemptionState.rows.length) table.innerHTML = '<div class="bond-redemption-empty">数据加载失败：' + escapeHtml(error.message || error) + '</div>';
-    if (updated) updated.textContent = '读取失败';
-  } finally {
-    bondRedemptionState.loading = false;
-  }
+  if (updated) updated.textContent = data.trade_date
+    ? '数据日期：' + bondRedemptionDate(data.trade_date) + '（' + bondRedemptionState.rows.length + ' 条）' + (data.stale ? ' · 强赎状态待更新' : '')
+    : '暂无数据';
+}
+
+function bondRedemptionShowError(error) {
+  var updated = document.getElementById('bond-redemption-updated');
+  var table = document.getElementById('bond-redemption-table');
+  if (table && !bondRedemptionState.rows.length) table.innerHTML = '<div class="bond-redemption-empty">数据加载失败：' + escapeHtml(error.message || error) + '</div>';
+  if (updated) updated.textContent = '读取失败';
 }

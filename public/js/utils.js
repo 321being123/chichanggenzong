@@ -194,17 +194,7 @@ function isCnHoliday(dateStr) {
 
 var marketStateSnapshot = null;
 
-async function refreshMarketStateSnapshot() {
-  try {
-    var result = await window.siteApi.requestRaw('/api/market-state', { timeoutMs: 0, headers: {} });
-    if (!result.response) return marketStateSnapshot;
-    var response = result.response;
-    if (!response.ok) return marketStateSnapshot;
-    var snapshot = await response.json();
-    if (snapshot && snapshot.businessDate && snapshot.markets) marketStateSnapshot = snapshot;
-  } catch (e) {}
-  return marketStateSnapshot;
-}
+// 刷新入口已迁至 js/presenters/utils-presenter.js（refreshMarketStateSnapshot，批次4 View／Presenter 分离）
 
 function marketForPosition(position) {
   return position && (position.subtype === '港股' || String(position.quoteCurrency || '').toUpperCase() === 'HKD') ? 'HK' : 'CN';

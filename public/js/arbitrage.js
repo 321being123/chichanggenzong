@@ -2,17 +2,64 @@
 // 3 个页签：A 股套利 / 港股私有化 / 港股供股权
 // 只展示审核通过且未结束的事件，行情缺失时显示 --
 
-var arbState = {
-  type: 'a_stock',
-  data: null,
-  loading: false,
-  detailCaseId: null,
-  detailData: null,
-  markingSeen: {},
-  unreadVersion: 0,
-  unreadLoading: false,
-  unreadTimer: null,
-};
+// 套利机会 View（批次4：View／Presenter 分离）。
+// 职责：只做渲染、格式化与阅读标记的界面反馈，并把用户操作上报给全局入口；取数与页签/已看状态在 presenters/arbitrage-presenter.js。
+// 约定：本文件不直接发请求（静态门禁 frontend_api_client 校验），也不决定何时采集。
+// View 对外入口（批次4）：Presenter 只调这些函数改界面，自己不碰 DOM。
+function arbSetStatus(text) {
+  var statusEl = document.getElementById('arb-status');
+  if (statusEl) statusEl.textContent = text;
+}
+function arbPageHidden() {
+  return document.hidden;
+}
+function arbSetSeenBusy(caseId, busy) {
+  document.querySelectorAll('[data-arb-seen="' + caseId + '"]').forEach(function (el) { el.disabled = !!busy; });
+}
+function arbSyncTabFromUrl() {
+  var requestedType = new URLSearchParams(window.location.search).get('arb_type');
+  if (ARB_TITLES[requestedType]) {
+    arbState.type = requestedType;
+    document.querySelectorAll('[data-arb-tab]').forEach(function (btn) {
+      btn.classList.toggle('active', btn.dataset.arbTab === requestedType);
+    });
+    var requestedTitle = document.getElementById('arb-table-title');
+    if (requestedTitle) requestedTitle.textContent = ARB_TITLES[requestedType];
+  }
+}
+function arbOpenDetailFromUrl() {
+  var detailCaseId = new URLSearchParams(window.location.search).get('case');
+  if (detailCaseId) openArbDetail(detailCaseId, true);
+  else closeArbDetail(true);
+
+}
+function arbDetailUrlState(caseId, skipPush) {
+  if (!skipPush) {
+    var params = new URLSearchParams(window.location.search);
+    params.set('main', 'arbitrage');
+    params.set('arb_type', arbState.type);
+    params.set('case', caseId);
+    history.pushState(null, '', '/?' + params.toString());
+  }
+}
+function arbDetailLoading() {
+  var listView = document.getElementById('arb-list-view');
+  if (listView) listView.hidden = true;
+  var detail = document.getElementById('arb-detail');
+  if (!detail) return false;
+  detail.hidden = false;
+  if (window.SiteTelemetry) window.SiteTelemetry.trackPage('arbitrage.detail', 'arbitrage', 'list');
+  detail.innerHTML = '<div class="u-pad-20 u-c-muted">\u52a0\u8f7d\u4e2d...</div>';
+
+  return true;
+}
+function arbDetailError(e) {
+  var detail = document.getElementById('arb-detail');
+  if (!detail) return;
+  detail.innerHTML = '<div class="u-pad-20 u-c-danger">\u52a0\u8f7d\u5931\u8d25\uff1a' + esc(e.message) + '</div>' +
+    '<button class="btn btn-outline btn-sm" data-act="closeArbDetail">\u2190 \u8fd4\u56de\u5957\u5229\u5217\u8868</button>';
+
+}
 
 var ARB_TITLES = {
   a_stock: 'A 股套利',
@@ -71,19 +118,6 @@ function renderArbUnreadCount(count) {
   badge.style.height = size;
 }
 
-async function loadArbUnreadCount() {
-  if (typeof username === 'undefined' || !username) { renderArbUnreadCount(0); return; }
-  if (document.hidden || arbState.unreadLoading) return;
-  arbState.unreadLoading = true;
-  var version = arbState.unreadVersion;
-  try {
-    var res = await window.siteApi.get('/api/arbitrage/unread-count', { cache: 'no-store' });
-    if (!res.ok) return;
-    if (version === arbState.unreadVersion) renderArbUnreadCount(res.payload.unreadCount);
-  } catch (error) { /* 查询失败保留已确认的计数 */ }
-  finally { arbState.unreadLoading = false; }
-}
-
 function initArbUnreadBadge() {
   if (arbState.unreadTimer) return;
   loadArbUnreadCount();
@@ -95,33 +129,6 @@ function arbSeenControl(row) {
   if (row.is_new !== true) return '';
   var id = Number(row.case_id);
   return '<span class="arb-new-badge">新</span> <button type="button" class="btn btn-outline btn-sm arb-seen-button" data-arb-seen="' + id + '" data-act="markArbSeen" data-arg1="' + id + '"' + (arbState.markingSeen[id] ? ' disabled' : '') + '>标记已看</button>';
-}
-
-async function markArbSeen(caseId) {
-  if (arbState.markingSeen[caseId]) return;
-  arbState.markingSeen[caseId] = true;
-  document.querySelectorAll('[data-arb-seen="' + caseId + '"]').forEach(function (el) { el.disabled = true; });
-  try {
-    var res = await window.siteApi.post('/api/arbitrage/' + caseId + '/seen', {});
-    var result = res.payload || {};
-    if (!res.ok || !result.ok) throw new Error(result.error || '标记失败，请重试');
-    renderArbUnreadCount(result.unreadCount);
-    if (arbState.data) {
-      arbState.data.rows.forEach(function (row) { if (Number(row.case_id) === caseId) row.is_new = false; });
-      renderArbTable(arbState.data);
-    }
-    if (arbState.detailData && Number(arbState.detailCaseId) === caseId) {
-      arbState.detailData.is_new = false;
-      renderArbDetail(arbState.detailData);
-    }
-  } catch (error) {
-    if (typeof showToast === 'function') showToast(error.message || '标记失败，请重试');
-    var status = document.getElementById('arb-status');
-    if (status) status.textContent = error.message || '标记失败，请重试';
-  } finally {
-    delete arbState.markingSeen[caseId];
-    document.querySelectorAll('[data-arb-seen="' + caseId + '"]').forEach(function (el) { el.disabled = false; });
-  }
 }
 
 function stripArbHtml(value) {
@@ -171,39 +178,6 @@ function switchArbTab(type) {
   if (detail) detail.hidden = true;
   if (window.SiteTelemetry) window.SiteTelemetry.trackPage('arbitrage.list', 'arbitrage', 'tab');
   loadArbitrage();
-}
-
-// 加载数据
-async function loadArbitrage() {
-  if (arbState.loading) return;
-  var requestedType = new URLSearchParams(window.location.search).get('arb_type');
-  if (ARB_TITLES[requestedType]) {
-    arbState.type = requestedType;
-    document.querySelectorAll('[data-arb-tab]').forEach(function (btn) {
-      btn.classList.toggle('active', btn.dataset.arbTab === requestedType);
-    });
-    var requestedTitle = document.getElementById('arb-table-title');
-    if (requestedTitle) requestedTitle.textContent = ARB_TITLES[requestedType];
-  }
-  arbState.loading = true;
-  var statusEl = document.getElementById('arb-status');
-  if (statusEl) statusEl.textContent = '\u6b63\u5728\u8bfb\u53d6\u5957\u5229\u6570\u636e...';
-  try {
-    var res = await window.siteApi.get('/api/arbitrage?type=' + arbState.type + '&page=1&page_size=100');
-    if (!res.ok) throw new Error('\u63a5\u53e3\u8fd4\u56de ' + res.status);
-    var json = res.payload;
-    arbState.data = json;
-    renderArbUnreadCount(json.unreadCount);
-    renderArbTable(json);
-    var detailCaseId = new URLSearchParams(window.location.search).get('case');
-    if (detailCaseId) openArbDetail(detailCaseId, true);
-    else closeArbDetail(true);
-    if (statusEl) statusEl.textContent = '';
-  } catch (e) {
-    if (statusEl) statusEl.textContent = '\u6570\u636e\u52a0\u8f7d\u5931\u8d25\uff1a' + (e.message || e);
-  } finally {
-    arbState.loading = false;
-  }
 }
 
 // 渲染表格
@@ -318,38 +292,6 @@ function formatStrategyType(t) {
     hk_rights: '\u4f9b\u80a1\u6743',
   };
   return map[t] || t || '\u2014';
-}
-
-// 详情
-async function openArbDetail(caseId, skipPush) {
-  if (!skipPush) {
-    var params = new URLSearchParams(window.location.search);
-    params.set('main', 'arbitrage');
-    params.set('arb_type', arbState.type);
-    params.set('case', caseId);
-    history.pushState(null, '', '/?' + params.toString());
-  }
-  arbState.detailCaseId = caseId;
-  arbState.detailData = null;
-  var listView = document.getElementById('arb-list-view');
-  if (listView) listView.hidden = true;
-  var detail = document.getElementById('arb-detail');
-  if (!detail) return;
-  detail.hidden = false;
-  if (window.SiteTelemetry) window.SiteTelemetry.trackPage('arbitrage.detail', 'arbitrage', 'list');
-  detail.innerHTML = '<div class="u-pad-20 u-c-muted">\u52a0\u8f7d\u4e2d...</div>';
-
-  try {
-    var res = await window.siteApi.get('/api/arbitrage/' + caseId);
-    if (!res.ok) throw new Error('\u63a5\u53e3\u8fd4\u56de ' + res.status);
-    var d = res.payload;
-    arbState.detailData = d;
-    renderArbDetail(d);
-    if (window.SiteTelemetry && window.SiteTelemetry.trackDetail) window.SiteTelemetry.trackDetail({ page_key: 'arbitrage.detail', module: 'arbitrage', entry: 'list', detail_key: String(caseId), properties: { detail_type: 'arbitrage' } });
-  } catch (e) {
-    detail.innerHTML = '<div class="u-pad-20 u-c-danger">\u52a0\u8f7d\u5931\u8d25\uff1a' + esc(e.message) + '</div>' +
-      '<button class="btn btn-outline btn-sm" data-act="closeArbDetail">\u2190 \u8fd4\u56de\u5957\u5229\u5217\u8868</button>';
-  }
 }
 
 function renderArbDetail(d) {

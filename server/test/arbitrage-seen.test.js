@@ -109,6 +109,8 @@ async function testApi(users, ids) {
 
 async function testFrontend() {
   const script = fs.readFileSync(path.join(__dirname, '../../public/js/arbitrage.js'), 'utf8');
+  // 批次4：取数与页签/已看状态已拆入 Presenter（presenters/arbitrage-presenter.js），按 HTML 待接入的加载顺序补载。
+  const presenterScript = fs.readFileSync(path.join(__dirname, '../../public/js/presenters/arbitrage-presenter.js'), 'utf8');
   // 与 index.html 真实加载顺序一致：utils.js 提供全局 num/pctv 共享格式器（R-17 后 arbitrage 不再自带）
   const utilsScript = fs.readFileSync(path.join(__dirname, '../../public/js/utils.js'), 'utf8');
   // 批次4：页面取数经统一客户端发送，须按真实加载顺序先载入底座，否则站点请求桩拦不到调用。
@@ -118,6 +120,7 @@ async function testFrontend() {
   w.eval(utilsScript);
   w.eval(clientScript);
   w.eval(script);
+  w.eval(presenterScript);
   const badge = w.document.getElementById('arb-unread-count');
   w.renderArbUnreadCount(12);
   assert.strictEqual(badge.textContent, '12');

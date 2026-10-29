@@ -30,6 +30,9 @@ async function adminForm(width) {
   try {
     w.eval(read('public/js/api/client.js'));
     w.eval(read('public/js/admin-notifications.js'));
+    // 批次4：取数与状态（anState）已拆入 Presenter（presenters/admin-notifications-presenter.js），
+    // 按 HTML 待接入的加载顺序补载。
+    w.eval(read('public/js/presenters/admin-notifications-presenter.js'));
     w.renderAdminNotifications();
     const input = (id, value) => { w.document.getElementById(id).value = value; };
     input('an-title', '保留标题');
@@ -86,6 +89,7 @@ async function pendingList() {
   };
   try {
     w.eval(read('public/js/api/client.js'));
+    w.eval(read('public/js/presenters/notifications-presenter.js'));
     w.eval(read('public/js/notifications.js'));
     w.AppNotifications.load(); await tick();
     w.document.querySelector('[data-nt-act="more"]').click();
@@ -120,6 +124,7 @@ async function detailRace(kind) {
   };
   try {
     w.eval(read('public/js/api/client.js'));
+    w.eval(read('public/js/presenters/notifications-presenter.js'));
     w.eval(read('public/js/notifications.js'));
     w.AppNotifications.load();
     await tick();

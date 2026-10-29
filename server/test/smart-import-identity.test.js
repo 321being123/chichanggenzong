@@ -190,13 +190,17 @@ function context() {
   await switching.switchAccount('B'); await switching.switchAccount('A');
   assert.strictEqual(invalidations, 2, '账户 A→B→A 每次切换都必须使旧导入失效');
 
-  const session = fs.readFileSync(path.join(root, 'public/js/session.js'), 'utf8');
+  const sessionPresenter = fs.readFileSync(path.join(root, 'public/js/presenters/session-presenter.js'), 'utf8');
   let identityInvalidations = 0;
   const auth = { username: 'user', accountIdentity: 'old', myProfile: null,
     api: value => value, fetch: async () => ({ json: async () => ({ username: 'user', accountIdentity: 'new' }) }),
-    document: { getElementById: () => null }, window: { invalidateSmartImportScope: () => { identityInvalidations++; } },
-    stopNotificationPolling() {}, clearNotificationCache() {}, renderTopUser() {}, startNotificationPolling() {} };
-  vm.runInNewContext(part(session, 'async function checkAuth()', '// 通知缓存按账号隔离'), auth);
+    document: { getElementById: () => null },
+    window: {
+      invalidateSmartImportScope: () => { identityInvalidations++; },
+      siteApi: { requestRaw: async () => ({ response: { ok: true, status: 200, json: async () => ({ username: 'user', accountIdentity: 'new' }) } }) },
+      stopNotificationPolling() {}, clearNotificationCache() {}, renderTopUser() {}, startNotificationPolling() {}, renderAuthUser() {},
+    } };
+  vm.runInNewContext(part(sessionPresenter, 'async function checkAuth()', 'async function logout()'), auth);
   await auth.checkAuth();
   assert.strictEqual(identityInvalidations, 1, '同名重建账号身份变化必须清除旧导入');
 

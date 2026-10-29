@@ -1,3 +1,6 @@
+// 可转债下修博弈详情 View（批次4：View／Presenter 分离）。
+// 职责：只做格式化与渲染；取数与可转债代码校验在 presenters/bond-revision-motive-presenter.js。
+// 约定：本文件不直接发请求（静态门禁 frontend_api_client 校验），也不决定何时采集。
 (function () {
   function escapeHtml(value) {
     return String(value == null ? '' : value).replace(/[&<>"']/g, function (ch) { return ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' })[ch]; });
@@ -156,16 +159,11 @@
     document.getElementById('motive-content').hidden = false;
     document.getElementById('motive-error').hidden = true;
   }
-  var code = new URLSearchParams(window.location.search).get('code') || '';
-  if (!/^(110|111|113|118|123|127|128)\d{3}\.(SH|SZ)$/i.test(code)) {
-    document.getElementById('motive-error').textContent = '缺少有效的可转债代码';
-    return;
+  // View 对外入口（批次4）：Presenter 只调这两个函数改界面，自己不碰 DOM。
+  function showError(message) {
+    document.getElementById('motive-error').textContent = message;
   }
-  window.siteApi.requestRaw('/api/bond-revision/' + encodeURIComponent(code) + '/motive-detail', { cache: 'no-store', timeoutMs: 0, headers: {} })
-    .then(function (result) { var response = result.response; if (!response) throw new Error(result.error || '读取失败'); if (!response.ok) throw new Error(response.status === 404 ? '尚无评分数据' : '读取失败'); return response.json(); })
-    .then(function (data) {
-      render(data);
-      if (window.SiteTelemetry && window.SiteTelemetry.trackDetail) window.SiteTelemetry.trackDetail({ page_key: 'bond.revision', module: 'bond', entry: 'motive-detail', detail_key: 'motive', properties: { detail_type: 'motive' } });
-    })
-    .catch(function (error) { document.getElementById('motive-error').textContent = error.message || '读取失败'; });
+  window.BondRevisionMotiveView = { render: render, showError: showError };
+  var code = new URLSearchParams(window.location.search).get('code') || '';
+  window.bondRevisionMotiveLoad(code);
 }());

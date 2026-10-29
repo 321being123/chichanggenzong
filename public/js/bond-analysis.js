@@ -1,4 +1,64 @@
-var securityAnalysisState = { type:'', code:'', loading:false, requestToken:0, suggestions:[], suggestionIndex:-1, searchTimer:null, searchSeq:0 };
+// 证券分析（可转债侧）View（批次4：View／Presenter 分离）。
+// 职责：只做联想/表单/渲染与交互绑定，并把用户操作上报给全局入口；取数与请求序号状态在 presenters/bond-analysis-presenter.js。
+// 约定：本文件不直接发请求（静态门禁 frontend_api_client 校验），也不决定何时采集。
+// View 对外入口（批次4）：Presenter 只调这些函数改界面，自己不碰 DOM。
+function securityAnalysisLockListSelects() {
+  var selects = ['security-analysis-select'].map(function(id){return document.getElementById(id);}).filter(Boolean);
+  selects.forEach(function(s){s.disabled=true;s.innerHTML='<option value="">登录后可选择持仓和自选</option>';});
+
+}
+function securityAnalysisFillListSelects(payload) {
+  var selects = ['security-analysis-select'].map(function(id){return document.getElementById(id);}).filter(Boolean);
+  var options='<option value="">选择持仓或自选</option>'+(payload.data||[]).map(function(row){
+    var tags=(row.held?'持仓':'')+(row.watchlisted?(row.held?' / 自选':'自选'):'');
+    return '<option value="'+escapeHtml(row.code)+'">'+escapeHtml((row.name||row.code)+' · '+row.code+'（'+tags+'）')+'</option>';
+  }).join('');
+  selects.forEach(function(s){s.innerHTML=options; s.disabled=false;});
+}
+function securityAnalysisSetCodeInput(value, ctx) {
+  var p = ctx === 'bond' ? 'bond-analysis-' : 'stock-analysis-';
+  var input=document.getElementById(p+'code');
+  if(input) input.value=value;
+}
+function securityAnalysisReadCodeValue(ctx) {
+  var p = ctx === 'bond' ? 'bond-analysis-' : 'stock-analysis-';
+  var input=document.getElementById(p+'code');
+  return input&&input.value;
+}
+function securityAnalysisResetRefreshButtons() {
+  ['stock-analysis-refresh','bond-analysis-refresh'].forEach(function(id){
+    var button=document.getElementById(id); if(button){button.disabled=false;button.textContent='刷新数据';}
+  });
+}
+function securityAnalysisHideBondContent() {
+  var bond=document.getElementById('bond-analysis-content'); if(bond) bond.style.display='none';
+}
+function securityAnalysisHideStockContent() {
+  var stock=document.getElementById('stock-analysis-content'); if(stock) stock.style.display='none';
+}
+function bondAnalysisSetRefreshButton(p, busy, text) {
+  var button=document.getElementById(p+'refresh');
+  if(button){button.disabled=!!busy;button.textContent=text;}
+}
+function bondAnalysisRenderListFallbackView(row, payload, ctx) {
+  stockAnalysisSetMessage('',false,ctx);
+  var stock=document.getElementById('stock-analysis-content'), root=document.getElementById('bond-analysis-content');
+  if(stock) stock.style.display='none'; if(root) root.style.display='block';
+  var summary='详细分析尚未生成，以下展示上市列表中已有资料';
+  bondAnalysisSet('bond-analysis-summary','<strong>'+escapeHtml(row.bond_name||row.ts_code)+'</strong><span>'+escapeHtml(row.ts_code||'')+'</span><span>现价：'+bondAnalysisNumber(row.price,3,' 元')+'</span><span>正股：'+escapeHtml(row.stock_name||'暂无数据')+'</span>');
+  var updated=document.getElementById('bond-analysis-updated');
+  if(updated) updated.textContent=summary+' · 行情日期：'+escapeHtml(payload.trade_date||'未知');
+  bondAnalysisSet('bond-analysis-basic',bondAnalysisTable([
+    ['正股价',bondAnalysisNumber(row.stock_price,3,' 元')],['转股价',bondAnalysisNumber(row.convert_price,3,' 元')],
+    ['转股价值',bondAnalysisNumber(row.conversion_value,3,' 元')],['转股溢价率',bondAnalysisPercent(row.conversion_premium)],
+    ['纯债价值',bondAnalysisNumber(row.bond_value,3,' 元')],['安全性',bondAnalysisText(row.safety)],
+    ['到期时间',bondAnalysisDate(row.maturity_date)],['到期税前收益率',bondAnalysisPercent(row.maturity_yield_pre_tax)]
+  ]));
+  ['triggers','terms','price-history','no-revision','safety','credit','options','coupons'].forEach(function(id){
+    var el=document.getElementById('bond-analysis-'+id);
+    if(el) el.innerHTML='<div class="bond-analysis-empty">详细分析快照尚未生成</div>';
+  });
+}
 
 function securityAnalysisHideSuggestions(ctx) {
   var p = ctx === 'bond' ? 'bond-analysis-' : 'stock-analysis-';
@@ -65,20 +125,6 @@ function securityAnalysisChooseSuggestion(index, ctx) {
   securityAnalysisSubmit(null, ctx);
 }
 
-async function securityAnalysisSearchSuggestions(value, ctx) {
-  var keyword=String(value||'').trim();
-  if(!keyword){securityAnalysisState.suggestions=[];return securityAnalysisHideSuggestions(ctx);}
-  var seq=++securityAnalysisState.searchSeq;
-  try {
-    var res=await window.siteApi.get('/api/bond-analysis/search/securities?q='+encodeURIComponent(keyword));
-    if(seq!==securityAnalysisState.searchSeq) return;
-    if(!res.ok) throw new Error(res.payload.error||'证券搜索失败');
-    securityAnalysisRenderSuggestions(res.payload.data||[], ctx);
-  } catch(_) {
-    if(seq===securityAnalysisState.searchSeq) securityAnalysisHideSuggestions(ctx);
-  }
-}
-
 function securityAnalysisInitSearch(ctx) {
   var p = ctx === 'bond' ? 'bond-analysis-' : 'stock-analysis-';
   var input=document.getElementById(p+'code');
@@ -109,49 +155,12 @@ function securityAnalysisInitSearch(ctx) {
   });
 }
 
-async function securityAnalysisLoadList(force) {
-  var selects = ['security-analysis-select'].map(function(id){return document.getElementById(id);}).filter(Boolean);
-  var user = typeof username === 'string' ? username : '';
-  var identity = typeof accountIdentity === 'string' ? accountIdentity : '';
-  var seq = (securityAnalysisState.listSeq || 0) + 1;
-  securityAnalysisState.listSeq = seq;
-  function current() { return securityAnalysisState.listSeq === seq && user === (typeof username === 'string' ? username : '') && identity === (typeof accountIdentity === 'string' ? accountIdentity : ''); }
-  if(!username){
-    selects.forEach(function(s){s.disabled=true;s.innerHTML='<option value="">登录后可选择持仓和自选</option>';});
-    return;
-  }
-  if (securityAnalysisState.listLoaded && !force) return;
-  try {
-    var res=await window.siteApi.get('/api/bond-analysis/list/securities'), payload=res.payload;
-    if (!current()) return;
-    if(!res.ok) throw new Error(payload.error||'持仓和自选加载失败');
-    var options='<option value="">选择持仓或自选</option>'+(payload.data||[]).map(function(row){
-      var tags=(row.held?'持仓':'')+(row.watchlisted?(row.held?' / 自选':'自选'):'');
-      return '<option value="'+escapeHtml(row.code)+'">'+escapeHtml((row.name||row.code)+' · '+row.code+'（'+tags+'）')+'</option>';
-    }).join('');
-    selects.forEach(function(s){s.innerHTML=options; s.disabled=false;});
-    securityAnalysisState.listLoaded=true;
-  } catch(error) { if (current()) stockAnalysisSetMessage(error.message||String(error),true); }
-}
-
 function securityAnalysisResetAccount() {
   securityAnalysisState.listSeq = (securityAnalysisState.listSeq || 0) + 1;
   securityAnalysisState.listLoaded = false;
   var select = document.getElementById('security-analysis-select');
   if (select) { select.disabled = true; select.innerHTML = '<option value="">登录后可选择持仓和自选</option>'; }
   if (typeof stockAnalysisResetAccount === 'function') stockAnalysisResetAccount();
-}
-
-function securityAnalysisSelect(code, ctx) {
-  if(!code) return;
-  var p = ctx === 'bond' ? 'bond-analysis-' : 'stock-analysis-';
-  clearTimeout(securityAnalysisState.searchTimer);
-  securityAnalysisState.searchTimer=null;
-  securityAnalysisState.searchSeq++;
-  securityAnalysisState.suggestions=[];
-  securityAnalysisHideSuggestions(ctx);
-  var input=document.getElementById(p+'code'); if(input) input.value=code;
-  securityAnalysisSubmit(code, ctx);
 }
 
 function bondAnalysisText(value, suffix) {
@@ -251,126 +260,6 @@ function bondAnalysisListTable(headers, rows) {
 }
 function bondAnalysisSet(id, html) { var el=document.getElementById(id); if(el) { el.innerHTML=html; if(window.BusinessTable) window.BusinessTable.attach(el,{page:'#main-stock-analysis',top:'.nav',sticky:!el.querySelector('.biz-table--detail')}); } }
 function securityAnalysisKind(code) { return /^(110|111|113|118|123|127|128)\d{3}$/.test(code) ? 'bond' : 'stock'; }
-
-async function securityAnalysisResolveName(keyword, ctx) {
-  var query=String(keyword||'').trim(), seq=++securityAnalysisState.searchSeq;
-  clearTimeout(securityAnalysisState.searchTimer);
-  securityAnalysisHideSuggestions(ctx);
-  stockAnalysisSetMessage('正在搜索证券...', false, ctx);
-  try {
-    var res=await window.siteApi.get('/api/bond-analysis/search/securities?q='+encodeURIComponent(query));
-    if(seq!==securityAnalysisState.searchSeq) return;
-    if(!res.ok) throw new Error(res.payload.error||'证券搜索失败');
-    var payload=res.payload;
-    var rows=Array.isArray(payload.data)?payload.data:[];
-    var normalized=query.normalize('NFKC').toLocaleLowerCase();
-    var exact=rows.filter(function(row){return String(row.name||'').normalize('NFKC').toLocaleLowerCase()===normalized;});
-    if(exact.length===1 || (!exact.length && rows.length===1)) {
-      var row=exact[0]||rows[0], input=document.getElementById((ctx==='bond'?'bond-analysis-':'stock-analysis-')+'code');
-      if(input) input.value=row.ts_code||row.code;
-      return securityAnalysisSubmit(row.ts_code||row.code,ctx);
-    }
-    if(rows.length) {
-      securityAnalysisRenderSuggestions(rows,ctx);
-      stockAnalysisSetMessage('找到多个结果，请从联想列表中选择。', false, ctx);
-      return;
-    }
-    stockAnalysisSetMessage('没有找到符合条件的股票或可转债，请检查名称或代码。', true, ctx);
-  } catch(error) {
-    if(seq===securityAnalysisState.searchSeq) stockAnalysisSetMessage(error.message||'证券搜索失败，请稍后重试。',true,ctx);
-  }
-}
-
-async function securityAnalysisSubmit(selectedCode, ctx) {
-  var p = ctx === 'bond' ? 'bond-analysis-' : 'stock-analysis-';
-  var input=document.getElementById(p+'code'), raw=String(selectedCode||(input&&input.value)||'').trim().toUpperCase();
-  var match=raw.match(/^(\d{6})(?:\.(?:SH|SZ|BJ))?$/), code=match&&match[1];
-  if (!code) return securityAnalysisResolveName(raw,ctx);
-  securityAnalysisState.requestToken++;
-  securityAnalysisState.loading=false;
-  ['stock-analysis-refresh','bond-analysis-refresh'].forEach(function(id){
-    var button=document.getElementById(id); if(button){button.disabled=false;button.textContent='刷新数据';}
-  });
-  securityAnalysisState.type=securityAnalysisKind(code); securityAnalysisState.code=code;
-  if (securityAnalysisState.type==='stock') {
-    stockAnalysisState.selected=code;
-    var bond=document.getElementById('bond-analysis-content'); if(bond) bond.style.display='none';
-    if (ctx === 'bond') switchMain('stock-analysis');
-    return stockAnalysisSelect(code);
-  }
-  // 证券分析页已内置可转债分析内容区，输入可转债代码直接在当前页渲染结果
-  if (typeof stockAnalysisCancelSelection === 'function') stockAnalysisCancelSelection();
-  var stock=document.getElementById('stock-analysis-content'); if(stock) stock.style.display='none';
-  return bondAnalysisLoad(false, ctx);
-}
-
-async function securityAnalysisRefresh(ctx) {
-  if (!securityAnalysisState.code) return securityAnalysisSubmit(null, ctx);
-  if (!username) return stockAnalysisSetMessage('登录后可刷新并建立分析数据。', false, ctx);
-  if (securityAnalysisState.type==='stock') return stockAnalysisRefresh();
-  return bondAnalysisLoad(true, ctx);
-}
-
-async function bondAnalysisLoad(refresh, ctx) {
-  if (securityAnalysisState.loading) return;
-  securityAnalysisState.loading=true;
-  var requestToken=securityAnalysisState.requestToken, code=securityAnalysisState.code;
-  function isCurrent(){return securityAnalysisState.requestToken===requestToken && securityAnalysisState.type==='bond' && securityAnalysisState.code===code;}
-  var p = ctx === 'bond' ? 'bond-analysis-' : 'stock-analysis-';
-  var button=document.getElementById(p+'refresh');
-  if(button){button.disabled=true;button.textContent='刷新中...';}
-  stockAnalysisSetMessage(refresh ? '正在更新可转债数据...' : '正在读取可转债分析结果...', false, ctx);
-  try {
-    var path='/api/bond-analysis/'+encodeURIComponent(code)+(refresh?'/refresh':'');
-    var res=await window.siteApi.request(path, refresh?{method:'POST'}:{});
-    if(!isCurrent()) return;
-    if(res.status===404&&!refresh){
-      var shown=await bondAnalysisRenderListFallback(ctx, code, isCurrent);
-      if(!isCurrent()) return;
-      if(shown) return;
-      return stockAnalysisSetMessage(username?'该转债暂无分析快照或上市列表资料，可登录后点击“刷新数据”尝试建立分析。':'该转债暂无详细分析快照，当前也没有可展示的上市行情资料。', false, ctx);
-    }
-    var payload=res.payload, analysis=payload.analysis||payload;
-    if(!res.ok&&!payload.analysis) throw new Error(payload.error||'可转债分析失败');
-    // 缓存版本过旧时只提示，页面读取不自动触发外部采集。
-    if (!refresh && analysis.needs_refresh) {
-      // 页面打开只读本地快照；外部采集必须由用户明确点击“刷新数据”触发。
-      showToast('数据待更新，请点击“刷新数据”进行更新。');
-    }
-    bondAnalysisRender(analysis, ctx);
-    if(payload.queued)showToast('已显示数据库中的分析结果，缺失资料已交后台补采。');
-    if (window.SiteTelemetry && window.SiteTelemetry.trackDetail) window.SiteTelemetry.trackDetail({ page_key: 'bond.analysis', module: 'bond', entry: ctx || 'analysis', detail_key: securityAnalysisState.code || 'bond', properties: { detail_type: 'bond' } });
-    if(!res.ok&&payload.error) showToast('更新失败，已显示上一份有效数据：'+payload.error);
-  } catch(error) { if(isCurrent()) stockAnalysisSetMessage(error.message||String(error),true, ctx); }
-  finally { if(isCurrent()){securityAnalysisState.loading=false;if(button){button.disabled=false;button.textContent='刷新数据';}} }
-}
-
-async function bondAnalysisRenderListFallback(ctx, code, isCurrent) {
-  var res=await window.siteApi.get('/api/bond-analysis/bonds?q='+encodeURIComponent(code));
-  if(!isCurrent()) return false;
-  if(!res.ok) return false;
-  var payload=res.payload, rows=Array.isArray(payload.data)?payload.data:[];
-  var row=rows.find(function(item){return String(item.bond_code||item.ts_code||'').replace(/\D/g,'')===code;});
-  if(!row) return false;
-  stockAnalysisSetMessage('',false,ctx);
-  var stock=document.getElementById('stock-analysis-content'), root=document.getElementById('bond-analysis-content');
-  if(stock) stock.style.display='none'; if(root) root.style.display='block';
-  var summary='详细分析尚未生成，以下展示上市列表中已有资料';
-  bondAnalysisSet('bond-analysis-summary','<strong>'+escapeHtml(row.bond_name||row.ts_code)+'</strong><span>'+escapeHtml(row.ts_code||'')+'</span><span>现价：'+bondAnalysisNumber(row.price,3,' 元')+'</span><span>正股：'+escapeHtml(row.stock_name||'暂无数据')+'</span>');
-  var updated=document.getElementById('bond-analysis-updated');
-  if(updated) updated.textContent=summary+' · 行情日期：'+escapeHtml(payload.trade_date||'未知');
-  bondAnalysisSet('bond-analysis-basic',bondAnalysisTable([
-    ['正股价',bondAnalysisNumber(row.stock_price,3,' 元')],['转股价',bondAnalysisNumber(row.convert_price,3,' 元')],
-    ['转股价值',bondAnalysisNumber(row.conversion_value,3,' 元')],['转股溢价率',bondAnalysisPercent(row.conversion_premium)],
-    ['纯债价值',bondAnalysisNumber(row.bond_value,3,' 元')],['安全性',bondAnalysisText(row.safety)],
-    ['到期时间',bondAnalysisDate(row.maturity_date)],['到期税前收益率',bondAnalysisPercent(row.maturity_yield_pre_tax)]
-  ]));
-  ['triggers','terms','price-history','no-revision','safety','credit','options','coupons'].forEach(function(id){
-    var el=document.getElementById('bond-analysis-'+id);
-    if(el) el.innerHTML='<div class="bond-analysis-empty">详细分析快照尚未生成</div>';
-  });
-  return true;
-}
 
 securityAnalysisInitSearch();
 

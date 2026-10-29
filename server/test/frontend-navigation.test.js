@@ -153,9 +153,10 @@ ok(html.includes("securityAnalysisKind(maybeCode) === 'bond'"), '旧转债深链
 ok(html.includes('class="bond-sub-nav fb-sub-nav"'), '反馈子栏目应复用全站二级标题导航 bond-sub-nav');
 ok(/class="bond-sub-tab active"[^>]*data-fb-sub="versions"/.test(html), '「版本更新」应为默认激活的二级标题');
 // 默认子页＝版本更新（2026-10-25 反馈：点击「反馈」直接看版本改了什么）
-const feedbackJs = fs.readFileSync(path.join(root, 'public/js/feedback.js'), 'utf8');
-ok(/sub:\s*'versions'/.test(feedbackJs), '反馈页初始子页应为版本更新');
-ok(/SUBS\.indexOf\(sub\) >= 0 \? sub : 'versions'/.test(feedbackJs), '无 sub 参数或非法 sub 时应回落到版本更新');
+// 批次4 View／Presenter 分离后，初始子页与非法 sub 回落断言跟随代码位置移至 feedback-presenter.js
+const feedbackPresenterJs = fs.readFileSync(path.join(root, 'public/js/presenters/feedback-presenter.js'), 'utf8');
+ok(/sub:\s*'versions'/.test(feedbackPresenterJs), '反馈页初始子页应为版本更新');
+ok(/SUBS\.indexOf\(sub\) >= 0 \? sub : 'versions'/.test(feedbackPresenterJs), '无 sub 参数或非法 sub 时应回落到版本更新');
 ok(!html.includes('fb-hero'), '反馈页不应再有独立 FEEDBACK hero 卡片');
 // 页面内不再放「提交反馈」按钮：统一由左侧全局悬浮入口（feedback-fab）承担
 ok(!html.includes('data-fb-act="open-form"'), '反馈页不应再有页面内「提交反馈」按钮');
@@ -189,6 +190,8 @@ ok(/\.filter-bar[\s\S]{0,600}?input\[type="date"\][\s\S]{0,120}?width:\s*150px/.
 
 // ===== 站内通知：铃铛常驻 + 通知页三级子栏目 + 登录页保护（2026-10-25） =====
 const sessionJs = fs.readFileSync(path.join(root, 'public/js/session.js'), 'utf8');
+// 批次4 View／Presenter 分离后，取数与响应序号断言跟随代码位置移至 session-presenter.js
+const sessionPresenterJs = fs.readFileSync(path.join(root, 'public/js/presenters/session-presenter.js'), 'utf8');
 ok(/function buildBell\(/.test(sessionJs) && /nav-bell-badge/.test(sessionJs),
   'session.js 应构建常驻铃铛与未读徽标');
 // 铃铛必须在头像按钮之前插入（头像左侧），不能反过来
@@ -198,12 +201,14 @@ ok(sessionJs.indexOf('wrap.appendChild(buildBell())') >= 0
 ok(/total > 99 \? '99\+'/.test(sessionJs), '未读超过 99 应显示 99+');
 ok(/stopNotificationPolling\(\)/.test(sessionJs) && /document\.hidden/.test(sessionJs),
   '隐藏时必须暂停轮询，退出登录必须清理计时器');
-ok(/if \(seq !== notifPoll\.seq \|\| who !== username\) return null;/.test(sessionJs),
+ok(/if \(seq !== notifPoll\.seq \|\| who !== username\) return null;/.test(sessionPresenterJs),
   '旧响应不得覆盖新未读数');
 ok(html.includes('id="main-notifications"'), '缺少站内通知一级页容器');
 ok(/data-nt-sub="all"[\s\S]{0,200}?data-nt-sub="feedback"[\s\S]{0,200}?data-nt-sub="system"/.test(html),
   '通知页应有全部/反馈/系统三个子栏目');
 const notificationsJs = fs.readFileSync(path.join(root, 'public/js/notifications.js'), 'utf8');
+// 批次4 View／Presenter 分离后，归属键（owner 序号）断言跟随代码位置移至 notifications-presenter.js
+const notificationsPresenterJs = fs.readFileSync(path.join(root, 'public/js/presenters/notifications-presenter.js'), 'utf8');
 ok(/params\.set\('sub', state\.sub\)/.test(notificationsJs) && /notification/.test(notificationsJs),
   '通知页应把子栏目与正文编号写进地址栏，支持刷新与返回恢复');
 ok(!/markRead\([^)]*\);\s*render\(\);\s*loadFirst/.test(notificationsJs),
@@ -214,13 +219,13 @@ ok(/data-nt-act="readall"/.test(notificationsJs), '通知页应提供全部已�
 ok(/user:\s*who,\s*identity:\s*identity/.test(notificationsJs), '通知列表快照必须同时记录登录名与账号身份');
 ok(/data\.identity !== identity/.test(notificationsJs) && /clearSnapshot\(\)/.test(notificationsJs),
   '快照的账号身份与当前身份不一致时必须丢弃');
-ok(/function ownerKey\(\)/.test(notificationsJs) && /'u:'\s*\+\s*who\s*\+\s*'\|id:'\s*\+\s*currentIdentity\(\)/.test(notificationsJs),
+ok(/function ownerKey\(\)/.test(notificationsPresenterJs) && /'u:'\s*\+\s*who\s*\+\s*'\|id:'\s*\+\s*currentIdentity\(\)/.test(notificationsPresenterJs),
   '列表归属键必须同时包含用户名与账号身份（只用建号时间会把不同账号判成同一人）');
 ok(/state\.owner/.test(notificationsJs) && /switched/, '换账号（含同名重注册）必须整体丢弃内存列表与详情');
 ok(/firstMount/.test(notificationsJs), '首次挂载不能误判为换账号而丢弃快照');
 ok(/clearCache:\s*clearCache/.test(notificationsJs), '通知模块必须导出 clearCache 供退出登录清理');
-const sessionSrc = fs.readFileSync(path.join(root, 'public/js/session.js'), 'utf8');
-ok(/accountIdentity\s*=\s*String\(d\.accountIdentity/.test(sessionSrc), 'session.js 必须保存 /api/me 返回的账号身份');
+const sessionSrc = fs.readFileSync(path.join(root, 'public/js/presenters/session-presenter.js'), 'utf8');
+ok(/accountIdentity\s*=\s*String\(d\.accountIdentity/.test(sessionSrc), 'session-presenter.js 必须保存 /api/me 返回的账号身份');
 ok(/async function logout\(\)[\s\S]{0,200}?clearNotificationCache\(\)/.test(sessionSrc),
   '退出登录必须清理通知缓存');
 ok(/if \(!d\.username\)[\s\S]{0,200}?clearNotificationCache\(\)/.test(sessionSrc),

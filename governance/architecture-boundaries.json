@@ -775,6 +775,783 @@
       "batch": 6,
       "status": "registered",
       "note": "自然日位移纯函数（Asia/Shanghai 归属日）"
+    },
+    {
+      "path": "server/services/accountCash.js",
+      "role": "application",
+      "batch": 3,
+      "status": "registered",
+      "note": "service_legacy 存量终态归位：按实际职责登记（0 SQL/0 联网/0 DOM，扫描器核验）"
+    },
+    {
+      "path": "server/services/aiModels.js",
+      "role": "config",
+      "batch": 3,
+      "status": "registered",
+      "note": "service_legacy 存量终态归位：按实际职责登记（0 SQL/0 联网/0 DOM，扫描器核验）"
+    },
+    {
+      "path": "server/services/analysisFreshness.js",
+      "role": "domain",
+      "batch": 3,
+      "status": "registered",
+      "note": "service_legacy 存量终态归位：按实际职责登记（0 SQL/0 联网/0 DOM，扫描器核验）"
+    },
+    {
+      "path": "server/services/arbitrageAnnouncementSync.js",
+      "role": "application",
+      "batch": 3,
+      "status": "registered",
+      "note": "service_legacy 存量终态归位：按实际职责登记（0 SQL/0 联网/0 DOM，扫描器核验）"
+    },
+    {
+      "path": "server/services/arbitrageParser.js",
+      "role": "application",
+      "batch": 3,
+      "status": "registered",
+      "note": "service_legacy 存量终态归位：按实际职责登记（0 SQL/0 联网/0 DOM，扫描器核验）"
+    },
+    {
+      "path": "server/services/arbitrageRules.js",
+      "role": "domain",
+      "batch": 3,
+      "status": "registered",
+      "note": "service_legacy 存量终态归位：按实际职责登记（0 SQL/0 联网/0 DOM，扫描器核验）"
+    },
+    {
+      "path": "server/services/arbitrageService.js",
+      "role": "application",
+      "batch": 3,
+      "status": "registered",
+      "note": "service_legacy 存量终态归位：按实际职责登记（0 SQL/0 联网/0 DOM，扫描器核验）"
+    },
+    {
+      "path": "server/services/bondSafety.js",
+      "role": "domain_algorithm",
+      "batch": 3,
+      "status": "registered",
+      "note": "service_legacy 存量终态归位：按实际职责登记（0 SQL/0 联网/0 DOM，扫描器核验）"
+    },
+    {
+      "path": "server/services/bondSafetyExport.js",
+      "role": "shared_pure",
+      "batch": 3,
+      "status": "registered",
+      "note": "service_legacy 存量终态归位：按实际职责登记（0 SQL/0 联网/0 DOM，扫描器核验）"
+    },
+    {
+      "path": "server/services/bondSafetyService.js",
+      "role": "application",
+      "batch": 3,
+      "status": "registered",
+      "note": "service_legacy 存量终态归位：按实际职责登记（0 SQL/0 联网/0 DOM，扫描器核验）"
+    },
+    {
+      "path": "server/services/bondSafetyTushare.js",
+      "role": "infrastructure",
+      "batch": 3,
+      "status": "registered",
+      "note": "service_legacy 存量终态归位：按实际职责登记（0 SQL/0 联网/0 DOM，扫描器核验）"
+    },
+    {
+      "path": "server/services/cashDividendSettlement.js",
+      "role": "domain",
+      "batch": 3,
+      "status": "registered",
+      "note": "service_legacy 存量终态归位：按实际职责登记（0 SQL/0 联网/0 DOM，扫描器核验）"
+    },
+    {
+      "path": "server/services/cashFlowIdentity.js",
+      "role": "application",
+      "batch": 3,
+      "status": "registered",
+      "note": "算法/规则与仓储读取混合编排：整体归 application；纯算法下沉 domain_algorithm 留待后续批次"
+    },
+    {
+      "path": "server/services/cashIncome.js",
+      "role": "application",
+      "batch": 3,
+      "status": "registered",
+      "note": "service_legacy 存量终态归位：按实际职责登记（0 SQL/0 联网/0 DOM，扫描器核验）"
+    },
+    {
+      "path": "server/services/cashIncomeActual.js",
+      "role": "application",
+      "batch": 3,
+      "status": "registered",
+      "note": "service_legacy 存量终态归位：按实际职责登记（0 SQL/0 联网/0 DOM，扫描器核验）"
+    },
+    {
+      "path": "server/services/cashIncomeCoverage.js",
+      "role": "application",
+      "batch": 3,
+      "status": "registered",
+      "note": "service_legacy 存量终态归位：按实际职责登记（0 SQL/0 联网/0 DOM，扫描器核验）"
+    },
+    {
+      "path": "server/services/cashIncomePending.js",
+      "role": "application",
+      "batch": 3,
+      "status": "registered",
+      "note": "service_legacy 存量终态归位：按实际职责登记（0 SQL/0 联网/0 DOM，扫描器核验）"
+    },
+    {
+      "path": "server/services/cashIncomeQueue.js",
+      "role": "application",
+      "batch": 3,
+      "status": "registered",
+      "note": "service_legacy 存量终态归位：按实际职责登记（0 SQL/0 联网/0 DOM，扫描器核验）"
+    },
+    {
+      "path": "server/services/companyFinancialIncrementalSync.js",
+      "role": "application",
+      "batch": 3,
+      "status": "registered",
+      "note": "service_legacy 存量终态归位：按实际职责登记（0 SQL/0 联网/0 DOM，扫描器核验）"
+    },
+    {
+      "path": "server/services/convertibleBondAnalysis.js",
+      "role": "application",
+      "batch": 3,
+      "status": "registered",
+      "note": "service_legacy 存量终态归位：按实际职责登记（0 SQL/0 联网/0 DOM，扫描器核验）"
+    },
+    {
+      "path": "server/services/convertibleBondAnalysisCore.js",
+      "role": "application",
+      "batch": 3,
+      "status": "registered",
+      "note": "算法/规则与仓储读取混合编排：整体归 application；纯算法下沉 domain_algorithm 留待后续批次"
+    },
+    {
+      "path": "server/services/convertibleBondAnalysisFallback.js",
+      "role": "application",
+      "batch": 3,
+      "status": "registered",
+      "note": "service_legacy 存量终态归位：按实际职责登记（0 SQL/0 联网/0 DOM，扫描器核验）"
+    },
+    {
+      "path": "server/services/convertibleBondAnalysisInputs.js",
+      "role": "application",
+      "batch": 3,
+      "status": "registered",
+      "note": "service_legacy 存量终态归位：按实际职责登记（0 SQL/0 联网/0 DOM，扫描器核验）"
+    },
+    {
+      "path": "server/services/convertibleBondAnalysisSnapshots.js",
+      "role": "application",
+      "batch": 3,
+      "status": "registered",
+      "note": "service_legacy 存量终态归位：按实际职责登记（0 SQL/0 联网/0 DOM，扫描器核验）"
+    },
+    {
+      "path": "server/services/convertibleBondAnalysisSync.js",
+      "role": "application",
+      "batch": 3,
+      "status": "registered",
+      "note": "service_legacy 存量终态归位：按实际职责登记（0 SQL/0 联网/0 DOM，扫描器核验）"
+    },
+    {
+      "path": "server/services/convertibleBondCycle.js",
+      "role": "domain_algorithm",
+      "batch": 3,
+      "status": "registered",
+      "note": "service_legacy 存量终态归位：按实际职责登记（0 SQL/0 联网/0 DOM，扫描器核验）"
+    },
+    {
+      "path": "server/services/convertibleBondCycleService.js",
+      "role": "application",
+      "batch": 3,
+      "status": "registered",
+      "note": "service_legacy 存量终态归位：按实际职责登记（0 SQL/0 联网/0 DOM，扫描器核验）"
+    },
+    {
+      "path": "server/services/convertibleBondLifecycleSync.js",
+      "role": "application",
+      "batch": 3,
+      "status": "registered",
+      "note": "service_legacy 存量终态归位：按实际职责登记（0 SQL/0 联网/0 DOM，扫描器核验）"
+    },
+    {
+      "path": "server/services/convertibleBondListService.js",
+      "role": "application",
+      "batch": 3,
+      "status": "registered",
+      "note": "service_legacy 存量终态归位：按实际职责登记（0 SQL/0 联网/0 DOM，扫描器核验）"
+    },
+    {
+      "path": "server/services/convertibleBondRedemptionService.js",
+      "role": "application",
+      "batch": 3,
+      "status": "registered",
+      "note": "service_legacy 存量终态归位：按实际职责登记（0 SQL/0 联网/0 DOM，扫描器核验）"
+    },
+    {
+      "path": "server/services/convertibleBondRedemptionSync.js",
+      "role": "application",
+      "batch": 3,
+      "status": "registered",
+      "note": "service_legacy 存量终态归位：按实际职责登记（0 SQL/0 联网/0 DOM，扫描器核验）"
+    },
+    {
+      "path": "server/services/convertibleBondRevisionMotiveService.js",
+      "role": "application",
+      "batch": 3,
+      "status": "registered",
+      "note": "service_legacy 存量终态归位：按实际职责登记（0 SQL/0 联网/0 DOM，扫描器核验）"
+    },
+    {
+      "path": "server/services/convertibleBondRevisionService.js",
+      "role": "application",
+      "batch": 3,
+      "status": "registered",
+      "note": "service_legacy 存量终态归位：按实际职责登记（0 SQL/0 联网/0 DOM，扫描器核验）"
+    },
+    {
+      "path": "server/services/convertibleBondSuspensionSync.js",
+      "role": "application",
+      "batch": 3,
+      "status": "registered",
+      "note": "service_legacy 存量终态归位：按实际职责登记（0 SQL/0 联网/0 DOM，扫描器核验）"
+    },
+    {
+      "path": "server/services/convertibleBondValuationService.js",
+      "role": "application",
+      "batch": 3,
+      "status": "registered",
+      "note": "service_legacy 存量终态归位：按实际职责登记（0 SQL/0 联网/0 DOM，扫描器核验）"
+    },
+    {
+      "path": "server/services/docxParser.worker.js",
+      "role": "infrastructure",
+      "batch": 3,
+      "status": "registered",
+      "note": "service_legacy 存量终态归位：按实际职责登记（0 SQL/0 联网/0 DOM，扫描器核验）"
+    },
+    {
+      "path": "server/services/docxSafe.js",
+      "role": "infrastructure",
+      "batch": 3,
+      "status": "registered",
+      "note": "service_legacy 存量终态归位：按实际职责登记（0 SQL/0 联网/0 DOM，扫描器核验）"
+    },
+    {
+      "path": "server/services/excelParser.worker.js",
+      "role": "infrastructure",
+      "batch": 3,
+      "status": "registered",
+      "note": "service_legacy 存量终态归位：按实际职责登记（0 SQL/0 联网/0 DOM，扫描器核验）"
+    },
+    {
+      "path": "server/services/excelSafe.js",
+      "role": "infrastructure",
+      "batch": 3,
+      "status": "registered",
+      "note": "service_legacy 存量终态归位：按实际职责登记（0 SQL/0 联网/0 DOM，扫描器核验）"
+    },
+    {
+      "path": "server/services/externalApiConfig.js",
+      "role": "config",
+      "batch": 3,
+      "status": "registered",
+      "note": "service_legacy 存量终态归位：按实际职责登记（0 SQL/0 联网/0 DOM，扫描器核验）"
+    },
+    {
+      "path": "server/services/feedbackRelease.js",
+      "role": "application",
+      "batch": 3,
+      "status": "registered",
+      "note": "service_legacy 存量终态归位：按实际职责登记（0 SQL/0 联网/0 DOM，扫描器核验）"
+    },
+    {
+      "path": "server/services/feedbackService.js",
+      "role": "application",
+      "batch": 3,
+      "status": "registered",
+      "note": "service_legacy 存量终态归位：按实际职责登记（0 SQL/0 联网/0 DOM，扫描器核验）"
+    },
+    {
+      "path": "server/services/financialDataArchitecture.js",
+      "role": "application",
+      "batch": 3,
+      "status": "registered",
+      "note": "service_legacy 存量终态归位：按实际职责登记（0 SQL/0 联网/0 DOM，扫描器核验）"
+    },
+    {
+      "path": "server/services/fxRate.js",
+      "role": "application",
+      "batch": 3,
+      "status": "registered",
+      "note": "service_legacy 存量终态归位：按实际职责登记（0 SQL/0 联网/0 DOM，扫描器核验）"
+    },
+    {
+      "path": "server/services/hkDailyCoverage.js",
+      "role": "application",
+      "batch": 3,
+      "status": "registered",
+      "note": "service_legacy 存量终态归位：按实际职责登记（0 SQL/0 联网/0 DOM，扫描器核验）"
+    },
+    {
+      "path": "server/services/hkIpoBacktest.js",
+      "role": "application",
+      "batch": 3,
+      "status": "registered",
+      "note": "算法/规则与仓储读取混合编排：整体归 application；纯算法下沉 domain_algorithm 留待后续批次"
+    },
+    {
+      "path": "server/services/hkIpoMarketSignals.js",
+      "role": "application",
+      "batch": 3,
+      "status": "registered",
+      "note": "service_legacy 存量终态归位：按实际职责登记（0 SQL/0 联网/0 DOM，扫描器核验）"
+    },
+    {
+      "path": "server/services/hkexIpo.js",
+      "role": "application",
+      "batch": 3,
+      "status": "registered",
+      "note": "service_legacy 存量终态归位：按实际职责登记（0 SQL/0 联网/0 DOM，扫描器核验）"
+    },
+    {
+      "path": "server/services/hkexIpoCore.js",
+      "role": "infrastructure",
+      "batch": 3,
+      "status": "registered",
+      "note": "service_legacy 存量终态归位：按实际职责登记（0 SQL/0 联网/0 DOM，扫描器核验）"
+    },
+    {
+      "path": "server/services/hkexIpoFacts.js",
+      "role": "application",
+      "batch": 3,
+      "status": "registered",
+      "note": "service_legacy 存量终态归位：按实际职责登记（0 SQL/0 联网/0 DOM，扫描器核验）"
+    },
+    {
+      "path": "server/services/hkexIpoSync.js",
+      "role": "application",
+      "batch": 3,
+      "status": "registered",
+      "note": "service_legacy 存量终态归位：按实际职责登记（0 SQL/0 联网/0 DOM，扫描器核验）"
+    },
+    {
+      "path": "server/services/importCleanse.js",
+      "role": "shared_pure",
+      "batch": 3,
+      "status": "registered",
+      "note": "service_legacy 存量终态归位：按实际职责登记（0 SQL/0 联网/0 DOM，扫描器核验）"
+    },
+    {
+      "path": "server/services/ipoIntraday.js",
+      "role": "application",
+      "batch": 3,
+      "status": "registered",
+      "note": "service_legacy 存量终态归位：按实际职责登记（0 SQL/0 联网/0 DOM，扫描器核验）"
+    },
+    {
+      "path": "server/services/jobAlertMailer.js",
+      "role": "application",
+      "batch": 3,
+      "status": "registered",
+      "note": "service_legacy 存量终态归位：按实际职责登记（0 SQL/0 联网/0 DOM，扫描器核验）"
+    },
+    {
+      "path": "server/services/jobOrchestrator.js",
+      "role": "infrastructure",
+      "batch": 3,
+      "status": "registered",
+      "note": "service_legacy 存量终态归位：按实际职责登记（0 SQL/0 联网/0 DOM，扫描器核验）"
+    },
+    {
+      "path": "server/services/jobRecoveryEvidence.js",
+      "role": "application",
+      "batch": 3,
+      "status": "registered",
+      "note": "算法/规则与仓储读取混合编排：整体归 application；纯算法下沉 domain_algorithm 留待后续批次"
+    },
+    {
+      "path": "server/services/jobRunnerProcess.js",
+      "role": "infrastructure",
+      "batch": 3,
+      "status": "registered",
+      "note": "service_legacy 存量终态归位：按实际职责登记（0 SQL/0 联网/0 DOM，扫描器核验）"
+    },
+    {
+      "path": "server/services/jobRunners.js",
+      "role": "application",
+      "batch": 3,
+      "status": "registered",
+      "note": "service_legacy 存量终态归位：按实际职责登记（0 SQL/0 联网/0 DOM，扫描器核验）"
+    },
+    {
+      "path": "server/services/jobScheduleSlots.js",
+      "role": "application",
+      "batch": 3,
+      "status": "registered",
+      "note": "service_legacy 存量终态归位：按实际职责登记（0 SQL/0 联网/0 DOM，扫描器核验）"
+    },
+    {
+      "path": "server/services/market.js",
+      "role": "infrastructure",
+      "batch": 3,
+      "status": "registered",
+      "note": "service_legacy 存量终态归位：按实际职责登记（0 SQL/0 联网/0 DOM，扫描器核验）"
+    },
+    {
+      "path": "server/services/marketCycleMetrics.js",
+      "role": "application",
+      "batch": 3,
+      "status": "registered",
+      "note": "算法/规则与仓储读取混合编排：整体归 application；纯算法下沉 domain_algorithm 留待后续批次"
+    },
+    {
+      "path": "server/services/marketState.js",
+      "role": "application",
+      "batch": 3,
+      "status": "registered",
+      "note": "算法/规则与仓储读取混合编排：整体归 application；纯算法下沉 domain_algorithm 留待后续批次"
+    },
+    {
+      "path": "server/services/marketVolatility.js",
+      "role": "application",
+      "batch": 3,
+      "status": "registered",
+      "note": "算法/规则与仓储读取混合编排：整体归 application；纯算法下沉 domain_algorithm 留待后续批次"
+    },
+    {
+      "path": "server/services/navAttribution.js",
+      "role": "application",
+      "batch": 3,
+      "status": "registered",
+      "note": "算法/规则与仓储读取混合编排：整体归 application；纯算法下沉 domain_algorithm 留待后续批次"
+    },
+    {
+      "path": "server/services/nginxRuntimeCollector.js",
+      "role": "infrastructure",
+      "batch": 3,
+      "status": "registered",
+      "note": "service_legacy 存量终态归位：按实际职责登记（0 SQL/0 联网/0 DOM，扫描器核验）"
+    },
+    {
+      "path": "server/services/notificationBatchService.js",
+      "role": "application",
+      "batch": 3,
+      "status": "registered",
+      "note": "service_legacy 存量终态归位：按实际职责登记（0 SQL/0 联网/0 DOM，扫描器核验）"
+    },
+    {
+      "path": "server/services/notificationService.js",
+      "role": "application",
+      "batch": 3,
+      "status": "registered",
+      "note": "service_legacy 存量终态归位：按实际职责登记（0 SQL/0 联网/0 DOM，扫描器核验）"
+    },
+    {
+      "path": "server/services/positionComparison.js",
+      "role": "application",
+      "batch": 3,
+      "status": "registered",
+      "note": "service_legacy 存量终态归位：按实际职责登记（0 SQL/0 联网/0 DOM，扫描器核验）"
+    },
+    {
+      "path": "server/services/positionReplication.js",
+      "role": "application",
+      "batch": 3,
+      "status": "registered",
+      "note": "整手复制算法依赖 tradeLot（application 混合文件）：同层登记；纯算法下沉留待后续批次"
+    },
+    {
+      "path": "server/services/repoDailyRates.js",
+      "role": "application",
+      "batch": 3,
+      "status": "registered",
+      "note": "service_legacy 存量终态归位：按实际职责登记（0 SQL/0 联网/0 DOM，扫描器核验）"
+    },
+    {
+      "path": "server/services/repoSourceAdmission.js",
+      "role": "application",
+      "batch": 3,
+      "status": "registered",
+      "note": "算法/规则与仓储读取混合编排：整体归 application；纯算法下沉 domain_algorithm 留待后续批次"
+    },
+    {
+      "path": "server/services/shareRegistry.js",
+      "role": "application",
+      "batch": 3,
+      "status": "registered",
+      "note": "算法/规则与仓储读取混合编排：整体归 application；纯算法下沉 domain_algorithm 留待后续批次"
+    },
+    {
+      "path": "server/services/siteAnalytics.js",
+      "role": "infrastructure",
+      "batch": 3,
+      "status": "registered",
+      "note": "service_legacy 存量终态归位：按实际职责登记（0 SQL/0 联网/0 DOM，扫描器核验）"
+    },
+    {
+      "path": "server/services/stockAnalysis.js",
+      "role": "application",
+      "batch": 3,
+      "status": "registered",
+      "note": "service_legacy 存量终态归位：按实际职责登记（0 SQL/0 联网/0 DOM，扫描器核验）"
+    },
+    {
+      "path": "server/services/stockStatements.js",
+      "role": "application",
+      "batch": 3,
+      "status": "registered",
+      "note": "算法/规则与仓储读取混合编排：整体归 application；纯算法下沉 domain_algorithm 留待后续批次"
+    },
+    {
+      "path": "server/services/tradeLedger.js",
+      "role": "application",
+      "batch": 3,
+      "status": "registered",
+      "note": "service_legacy 存量终态归位：按实际职责登记（0 SQL/0 联网/0 DOM，扫描器核验）"
+    },
+    {
+      "path": "server/services/tradeLot.js",
+      "role": "application",
+      "batch": 3,
+      "status": "registered",
+      "note": "算法/规则与仓储读取混合编排：整体归 application；纯算法下沉 domain_algorithm 留待后续批次"
+    },
+    {
+      "path": "server/services/wechatShare.js",
+      "role": "infrastructure",
+      "batch": 3,
+      "status": "registered",
+      "note": "service_legacy 存量终态归位：按实际职责登记（0 SQL/0 联网/0 DOM，扫描器核验）"
+    },
+    {
+      "path": "server/services/zipSafety.js",
+      "role": "infrastructure",
+      "batch": 3,
+      "status": "registered",
+      "note": "service_legacy 存量终态归位：按实际职责登记（0 SQL/0 联网/0 DOM，扫描器核验）"
+    },
+    {
+      "path": "public/js/admin-analytics.js",
+      "role": "view",
+      "batch": 4,
+      "status": "registered",
+      "note": "页面视图：DOM/格式化/交互上报；取数与请求状态已迁对应 presenter"
+    },
+    {
+      "path": "public/js/admin-feedback.js",
+      "role": "view",
+      "batch": 4,
+      "status": "registered",
+      "note": "页面视图：DOM/格式化/交互上报；取数与请求状态已迁对应 presenter"
+    },
+    {
+      "path": "public/js/admin-notifications.js",
+      "role": "view",
+      "batch": 4,
+      "status": "registered",
+      "note": "页面视图：DOM/格式化/交互上报；取数与请求状态已迁对应 presenter"
+    },
+    {
+      "path": "public/js/arbitrage.js",
+      "role": "view",
+      "batch": 4,
+      "status": "registered",
+      "note": "页面视图：DOM/格式化/交互上报；取数与请求状态已迁对应 presenter"
+    },
+    {
+      "path": "public/js/bond-analysis.js",
+      "role": "view",
+      "batch": 4,
+      "status": "registered",
+      "note": "页面视图：DOM/格式化/交互上报；取数与请求状态已迁对应 presenter"
+    },
+    {
+      "path": "public/js/bond-cycle.js",
+      "role": "view",
+      "batch": 4,
+      "status": "registered",
+      "note": "页面视图：DOM/格式化/交互上报；取数与请求状态已迁对应 presenter"
+    },
+    {
+      "path": "public/js/bond-list.js",
+      "role": "view",
+      "batch": 4,
+      "status": "registered",
+      "note": "页面视图：DOM/格式化/交互上报；取数与请求状态已迁对应 presenter"
+    },
+    {
+      "path": "public/js/bond-redemption.js",
+      "role": "view",
+      "batch": 4,
+      "status": "registered",
+      "note": "页面视图：DOM/格式化/交互上报；取数与请求状态已迁对应 presenter"
+    },
+    {
+      "path": "public/js/bond-revision-motive.js",
+      "role": "view",
+      "batch": 4,
+      "status": "registered",
+      "note": "页面视图：DOM/格式化/交互上报；取数与请求状态已迁对应 presenter"
+    },
+    {
+      "path": "public/js/bond-revision.js",
+      "role": "view",
+      "batch": 4,
+      "status": "registered",
+      "note": "页面视图：DOM/格式化/交互上报；取数与请求状态已迁对应 presenter"
+    },
+    {
+      "path": "public/js/bond-safety.js",
+      "role": "view",
+      "batch": 4,
+      "status": "registered",
+      "note": "页面视图：DOM/格式化/交互上报；取数与请求状态已迁对应 presenter"
+    },
+    {
+      "path": "public/js/bond-valuation.js",
+      "role": "view",
+      "batch": 4,
+      "status": "registered",
+      "note": "页面视图：DOM/格式化/交互上报；取数与请求状态已迁对应 presenter"
+    },
+    {
+      "path": "public/js/feedback-fab.js",
+      "role": "view",
+      "batch": 4,
+      "status": "registered",
+      "note": "页面视图：DOM/格式化/交互上报；取数与请求状态已迁对应 presenter"
+    },
+    {
+      "path": "public/js/feedback.js",
+      "role": "view",
+      "batch": 4,
+      "status": "registered",
+      "note": "页面视图：DOM/格式化/交互上报；取数与请求状态已迁对应 presenter"
+    },
+    {
+      "path": "public/js/home-dashboard.js",
+      "role": "view",
+      "batch": 4,
+      "status": "registered",
+      "note": "页面视图：DOM/格式化/交互上报；取数与请求状态已迁对应 presenter"
+    },
+    {
+      "path": "public/js/ipo.js",
+      "role": "view",
+      "batch": 4,
+      "status": "registered",
+      "note": "页面视图：DOM/格式化/交互上报；取数与请求状态已迁对应 presenter"
+    },
+    {
+      "path": "public/js/knowledge.js",
+      "role": "view",
+      "batch": 4,
+      "status": "registered",
+      "note": "页面视图：DOM/格式化/交互上报；取数与请求状态已迁对应 presenter"
+    },
+    {
+      "path": "public/js/market-cycle-metrics.js",
+      "role": "view",
+      "batch": 4,
+      "status": "registered",
+      "note": "页面视图：DOM/格式化/交互上报；取数与请求状态已迁对应 presenter"
+    },
+    {
+      "path": "public/js/market-volatility.js",
+      "role": "view",
+      "batch": 4,
+      "status": "registered",
+      "note": "页面视图：DOM/格式化/交互上报；取数与请求状态已迁对应 presenter"
+    },
+    {
+      "path": "public/js/navigation.js",
+      "role": "view",
+      "batch": 4,
+      "status": "registered",
+      "note": "页面视图：DOM/格式化/交互上报；取数与请求状态已迁对应 presenter"
+    },
+    {
+      "path": "public/js/notifications.js",
+      "role": "view",
+      "batch": 4,
+      "status": "registered",
+      "note": "页面视图：DOM/格式化/交互上报；取数与请求状态已迁对应 presenter"
+    },
+    {
+      "path": "public/js/position-comparison.js",
+      "role": "view",
+      "batch": 4,
+      "status": "registered",
+      "note": "页面视图：DOM/格式化/交互上报；取数与请求状态已迁对应 presenter"
+    },
+    {
+      "path": "public/js/session.js",
+      "role": "view",
+      "batch": 4,
+      "status": "registered",
+      "note": "页面视图：DOM/格式化/交互上报；取数与请求状态已迁对应 presenter"
+    },
+    {
+      "path": "public/js/share-page.js",
+      "role": "view",
+      "batch": 4,
+      "status": "registered",
+      "note": "页面视图：DOM/格式化/交互上报；取数与请求状态已迁对应 presenter"
+    },
+    {
+      "path": "public/js/stock-analysis-chart.js",
+      "role": "view",
+      "batch": 4,
+      "status": "registered",
+      "note": "页面视图：DOM/格式化/交互上报；取数与请求状态已迁对应 presenter"
+    },
+    {
+      "path": "public/js/stock-analysis-statements.js",
+      "role": "view",
+      "batch": 4,
+      "status": "registered",
+      "note": "页面视图：DOM/格式化/交互上报；取数与请求状态已迁对应 presenter"
+    },
+    {
+      "path": "public/js/stock-analysis-valuation-chart.js",
+      "role": "view",
+      "batch": 4,
+      "status": "registered",
+      "note": "页面视图：DOM/格式化/交互上报；取数与请求状态已迁对应 presenter"
+    },
+    {
+      "path": "public/js/stock-analysis.js",
+      "role": "view",
+      "batch": 4,
+      "status": "registered",
+      "note": "页面视图：DOM/格式化/交互上报；取数与请求状态已迁对应 presenter"
+    },
+    {
+      "path": "public/js/utils.js",
+      "role": "view",
+      "batch": 4,
+      "status": "registered",
+      "note": "前端格式化与工具集（含 meta 读取）；取数已迁 utils-presenter"
+    },
+    {
+      "path": "public/js/access-policy.js",
+      "role": "shared_pure",
+      "batch": 4,
+      "status": "registered",
+      "note": "前端纯函数/纯配置：无 DOM 无取数"
+    },
+    {
+      "path": "public/js/code-classify.js",
+      "role": "shared_pure",
+      "batch": 4,
+      "status": "registered",
+      "note": "前端纯函数/纯配置：无 DOM 无取数"
+    },
+    {
+      "path": "public/js/admin.js",
+      "role": "view",
+      "batch": 4,
+      "status": "registered",
+      "note": "管理后台视图：DOM/渲染/交互；全部站内请求已迁 admin-presenter"
     }
   ],
   "globalContracts": {
@@ -813,10 +1590,11 @@
       {
         "symbol": "securityAnalysisLoadList",
         "kind": "function",
-        "file": "public/js/bond-analysis.js",
+        "file": "public/js/presenters/bond-analysis-presenter.js",
         "consumers": [
           "public/js/stock-analysis.js"
-        ]
+        ],
+        "note": "2026-10-29 P/V 拆分后由 presenter 提供"
       },
       {
         "symbol": "loadStockAnalysis",
@@ -854,7 +1632,9 @@
               "public/js/stock-analysis.js",
               "public/js/presenters/stock-analysis-presenter.js",
               "public/js/bond-analysis.js",
+              "public/js/presenters/bond-analysis-presenter.js",
               "public/js/stock-analysis-statements.js",
+              "public/js/presenters/stock-analysis-statements-presenter.js",
               "public/js/stock-analysis-chart.js",
               "public/js/stock-analysis-valuation-chart.js"
             ],
@@ -876,12 +1656,17 @@
           "public/shared/telemetry.js",
           "public/shared/core-date.js",
           "public/js/utils.js",
+          "public/js/presenters/utils-presenter.js",
           "public/js/api/client.js",
           "public/shared/dialog.js",
           "public/shared/business-table.js",
           "public/js/admin-analytics.js",
+          "public/js/presenters/admin-analytics-presenter.js",
           "public/js/admin-feedback.js",
+          "public/js/presenters/admin-feedback-presenter.js",
           "public/js/admin-notifications.js",
+          "public/js/presenters/admin-notifications-presenter.js",
+          "public/js/presenters/admin-presenter.js",
           "public/js/admin.js"
         ],
         "requiredSymbols": [
@@ -900,6 +1685,7 @@
           "public/shared/ui-actions.js",
           "public/shared/core-date.js",
           "public/js/utils.js",
+          "public/js/presenters/utils-presenter.js",
           "public/js/api/client.js"
         ],
         "requiredSymbols": [
@@ -956,6 +1742,7 @@
           "public/shared/ui-actions.js",
           "public/shared/business-table.js",
           "public/js/api/client.js",
+          "public/js/presenters/bond-revision-motive-presenter.js",
           "public/js/bond-revision-motive.js"
         ],
         "requiredSymbols": [

@@ -59,7 +59,7 @@ check('排除规则命中 node_modules/venv/test 前缀，但不误排 dataAcces
 });
 check('角色解析：文件覆盖优先于目录规则', () => {
   assert.strictEqual(scanner.resolveRole('server/services/tushare.js', boundaries).role, 'data_adapter');
-  assert.strictEqual(scanner.resolveRole('server/services/stockAnalysis.js', boundaries).role, 'service_legacy');
+  assert.strictEqual(scanner.resolveRole('server/services/not-yet-registered.js', boundaries).role, 'service_legacy');
   assert.strictEqual(scanner.resolveRole('server/routes/stockAnalysis.js', boundaries).role, 'route');
   assert.strictEqual(scanner.resolveRole('public/js/presenters/x.js', boundaries).role, 'presenter');
   assert.strictEqual(scanner.resolveRole('unknown/place.js', boundaries).role, 'pending_contract');

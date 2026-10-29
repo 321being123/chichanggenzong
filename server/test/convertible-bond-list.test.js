@@ -93,18 +93,20 @@ check('前端含上市转债子页、脚本和只读接口', () => {
   const root = path.join(__dirname, '..', '..');
   const html = fs.readFileSync(path.join(root, 'public', 'index.html'), 'utf8');
   const js = fs.readFileSync(path.join(root, 'public', 'js', 'bond-list.js'), 'utf8');
+  // 批次4：列表已拆为 View（渲染）与 Presenter（状态/取数），取数断言指向 presenter。
+  const presenter = fs.readFileSync(path.join(root, 'public', 'js', 'presenters', 'bond-list-presenter.js'), 'utf8');
   assert.ok(html.includes('data-sub="list"') && html.includes('id="sub-bond-list"'));
   assert.ok(html.indexOf('data-sub="list"') < html.indexOf('data-sub="safety"'), '上市可转债未放在二级导航第一项');
   assert.ok(html.includes('js/bond-list.js'));
   assert.ok(html.includes('id="bond-list-refresh"'), '列表缺少手动刷新按钮');
-  assert.ok(js.includes('/api/bond-analysis/bonds'));
+  assert.ok(presenter.includes('/api/bond-analysis/bonds'));
   assert.ok(js.includes('BOND_LIST_COLUMNS'));
   assert.ok(js.includes("['safety','安全性']") && js.includes('bondListSafety'), '列表缺少债券安全性列');
   assert.ok(js.includes('call_status') && js.includes('bond-lifecycle-mark-call') && js.includes('bond-lifecycle-mark-maturity'), '上市列表转债名称缺少强赎/临近到期标识');
   ['最快回售触发日', '最快回售剩余年限', '预期回售到账日', '回售到账税前收益', '回售到账税后收益'].forEach(function(title) {
     assert.ok(!js.includes("'" + title + "'"), '列表仍展示已取消列：' + title);
   });
-  assert.ok(js.includes('BOND_LIST_REFRESH_MS') && js.includes('refresh=1') && js.includes('setInterval'), '列表缺少15分钟快照重读和手动行情刷新');
+  assert.ok(js.includes('BOND_LIST_REFRESH_MS') && js.includes('setInterval') && presenter.includes('refresh=1'), '列表缺少15分钟快照重读和手动行情刷新');
   assert.ok(js.includes('loadBondList(false)'), '列表定时器必须只重读数据库快照');
   assert.ok(!js.includes('if (!bondListState.loaded) forceRefresh = true'), '列表首开不得强制刷新外部行情');
   assert.ok(js.includes('bondListRefresh'), '列表缺少手动刷新函数');

@@ -1,15 +1,10 @@
 // ============== 仓位对比（公开状态 / 标杆列表 / 对比 / 复制测算） ==============
 // 对应 docs/仓位对比功能_开发文档.md 5 节
 // 依赖：window.api / showToast / projectConfirm / escapeHtml / fmt 等全局函数（utils.js / core-quote.js / dialog.js）
+// 批次4 View／Presenter 分离：取数、提交与状态（state）在 presenters/position-comparison-presenter.js，
+// 本文件只做 DOM/HTML 渲染与事件可达，取数经 window.positionComparisonPresenter 转调。
 (function () {
   if (window.PositionComparison) return;
-  var state = { benchmarks: [], currentBenchmark: null, compareData: null, replicateData: null };
-
-  // 读取当前账户：window.currentAccount 由 index.html/core-account.js 同步维护（顶层 let 不在 window 上，必须经此读取）
-  function getAccount() {
-    return (typeof window.currentAccount === 'string' && window.currentAccount) || '默认账户';
-  }
-
   // 当前用户是否可发布官方标杆（管理员，或拥有 benchmark_publish 能力的受信任人员；普通用户不可自行发布）
   // ⚠️ myProfile 是 index.html 顶层 let（不在 window 上）；同页 script 共享全局词法环境，直接按名引用
   function canPublishBenchmark() {
@@ -24,7 +19,7 @@
   function initPositionControls() {
     var wrap = document.getElementById('position-comp-controls');
     if (!wrap) return;
-    var current = getAccount();
+    var current = window.positionComparisonPresenter.getAccount();
     var visibilityHtml = canPublishBenchmark()
       ? '<span class="pc-label">官方标杆发布：</span>' +
         '<select id="position-visibility-select" class="pc-select" data-act="PositionComparison.changeVisibility" data-use-value>' +
@@ -35,102 +30,13 @@
       : '';
     wrap.innerHTML = visibilityHtml +
       '<button type="button" class="btn btn-outline btn-sm pc-compare-btn" id="pc-open-btn" data-act="PositionComparison.openBenchmarkPicker">仓位对比</button>';
-    if (canPublishBenchmark()) loadVisibility(current);
-    refreshBenchmarkButton();
-  }
-
-  // 读取当前账户公开状态
-  async function loadVisibility(accountName) {
-    var sel = document.getElementById('position-visibility-select');
-    if (!sel) return;
-    try {
-      var res = await window.siteApi.get('/api/position-comparisons/visibility?account=' + encodeURIComponent(accountName));
-      var d = res.payload || {};
-      if (d && VALID_VISIBILITY.indexOf(d.visibility) >= 0) sel.value = d.visibility;
-    } catch (e) { /* 忽略：保持默认 */ }
-  }
-
-  var VALID_VISIBILITY = ['public', 'semi_public', 'private'];
-
-  // 修改发布状态：完整标杆/脱敏标杆二次确认（不发布无需确认）
-  async function changeVisibility(visibility) {
-    var accountName = getAccount();
-    if (visibility !== 'private') {
-      var tip = visibility === 'public' ? '发布为完整标杆后，其他用户可查看你的完整持仓（含数量、市值）。确定发布吗？' : '发布为脱敏标杆后，其他用户可查看你的持仓比例和证券，但看不到数量、市值和总资产。确定发布吗？';
-      var ok = await window.projectConfirm(tip, { title: '发布官方标杆确认', confirmText: '确定发布' });
-      if (!ok) { initPositionControls(); return; }
-    }
-    try {
-      var res = await window.siteApi.put('/api/accounts/' + encodeURIComponent(accountName) + '/position-visibility', { visibility: visibility });
-      var d = res.payload || {};
-      if (!res.ok) { showToast(d.error || '发布失败，请重试'); initPositionControls(); return; }
-      showToast(visibility === 'private' ? '已取消发布（不发布）' : (visibility === 'public' ? '已发布为完整标杆' : '已发布为脱敏标杆'));
-      refreshBenchmarkButton();
-    } catch (e) { showToast('发布失败，请重试'); initPositionControls(); }
-  }
-
-  // 有无可用标杆 → 控制"仓位对比"按钮显示
-  async function refreshBenchmarkButton() {
-    var btn = document.getElementById('pc-open-btn');
-    if (!btn) return;
-    try {
-      var res = await window.siteApi.get('/api/position-comparisons/benchmarks');
-      state.benchmarks = res.ok ? (res.payload || []) : [];
-      btn.classList.remove('js-hidden'); btn.style.display = state.benchmarks.length ? '' : 'none';
-    } catch (e) { btn.style.display = 'none'; }
+    if (canPublishBenchmark()) window.positionComparisonPresenter.loadVisibility(current);
+    window.positionComparisonPresenter.refreshBenchmarkButton();
   }
 
   // ========== 标杆选择弹窗（5.2） ==========
-  async function openBenchmarkPicker() {
-    if (!state.benchmarks.length) {
-      try {
-        var res = await window.siteApi.get('/api/position-comparisons/benchmarks');
-        state.benchmarks = res.ok ? (res.payload || []) : [];
-      } catch (e) {}
-    }
-    if (!state.benchmarks.length) { showToast('暂无可对比的官方标杆'); return; }
-    var rows = state.benchmarks.map(function (b) {
-      return '<tr class="pc-bench-row" data-act="PositionComparison.startCompare" data-arg1="' + b.accountId + '">' +
-        '<td>' + escapeHtml(b.displayName) + '</td>' +
-        '<td>' + (b.visibility === 'public' ? '完整标杆' : '脱敏标杆') + '</td>' +
-        '<td>' + escapeHtml(b.positionUpdatedAt || '--') + '</td>' +
-        '<td>' + b.securityCount + '</td>' +
-        '<td><button type="button" class="btn btn-primary btn-sm">开始对比</button></td>' +
-      '</tr>';
-    }).join('');
-    var html =
-      '<h2>选择对比标杆</h2><button type="button" class="modal-close" aria-label="关闭" data-act="PositionComparison.closeSelf">&times;</button>' +
-      '<p class="u-fs-12 u-c-muted u-mb-12">选择其他用户的完整标杆或脱敏标杆账户，进行仓位对比与复制测算。</p>' +
-      '<div class="table-wrap u-mb-0" ><div class="biz-table-scroll"><table class="biz-table biz-table--compact pc-bench-table">' +
-        '<thead><tr><th>账户</th><th>公开类型</th><th>持仓更新时间</th><th>证券只数</th><th>操作</th></tr></thead>' +
-        '<tbody>' + rows + '</tbody></table></div></div>' +
-        '<div class="modal-actions"><button type="button" class="btn btn-outline" data-act="PositionComparison.closeSelf">关闭</button></div>';
-    openBox('position-comp-modal', html);
-    if (window.BusinessTable) window.BusinessTable.attach(document.getElementById('position-comp-modal-box') || document.getElementById('position-comp-modal'), { sticky: false });
-  }
-
-  // 开始对比：请求 compare 接口 → 跳转到独立对比页并渲染
-  async function startCompare(benchmarkAccountId) {
-    var myAccountName = getAccount();
-    state.currentBenchmark = benchmarkAccountId;
-    closeSelf();
-    showToast('正在计算对比…');
-    try {
-      var res = await window.siteApi.post('/api/position-comparisons/compare', {
-        myAccountName: myAccountName, benchmarkAccountId: benchmarkAccountId
-      });
-      var d = res.payload || {};
-      if (!res.ok) { showToast(d.error || '对比失败，请重试'); return; }
-      if (d.empty) { showToast(d.message || '没有可对比的资产'); return; }
-      state.compareData = d;
-      // 打开独立对比页（非弹框）
-      if (typeof window.switchMain === 'function') window.switchMain('position-compare');
-      renderCompare(d);
-    } catch (e) { showToast('对比失败，请重试'); }
-  }
-
-  // 对比页进入时：有数据则重渲染（刷新/URL 直达场景），无数据保持空态
   function onPageEnter() {
+    var state = window.positionComparisonPresenter.state;
     var body = document.getElementById('position-compare-page-body');
     if (!body) return;
     if (state.compareData) renderCompare(state.compareData);
@@ -143,6 +49,7 @@
 
   // ========== 对比结果渲染（5.3） ==========
   function renderCompare(d) {
+    var state = window.positionComparisonPresenter.state;
     var benchName = (state.benchmarks.find(function (b) { return b.accountId === state.currentBenchmark; }) || {}).displayName || '标杆账户';
     var semi = d.benchmarkAccount.visibility === 'semi_public';
     var sim = fmtPct(d.overview.similarity / 100);
@@ -213,6 +120,7 @@
 
   // ========== 复制测算（7 节，页面内联，不用弹框） ==========
   function openReplicatePanel() {
+    var state = window.positionComparisonPresenter.state;
     if (!state.compareData) { showToast('请先完成对比'); return; }
     var body = document.getElementById('position-compare-page-body');
     if (!body) return;
@@ -241,24 +149,6 @@
   function closeReplicate() {
     var old = document.getElementById('pc-replicate-section');
     if (old) old.remove();
-  }
-
-  async function doReplicate() {
-    var cashInput = document.getElementById('pc-available-cash');
-    var availableCash = cashInput ? Number(cashInput.value) : NaN;
-    if (!Number.isFinite(availableCash) || availableCash <= 0) { showToast('请输入大于 0 的新增资金'); return; }
-    showToast('正在测算…');
-    try {
-      var res = await window.siteApi.post('/api/position-comparisons/replicate', {
-        myAccountName: getAccount(),
-        benchmarkAccountId: state.currentBenchmark,
-        availableCash: availableCash
-      });
-      var d = res.payload || {};
-      if (!res.ok) { showToast(d.error || '测算失败，请重试'); return; }
-      state.replicateData = d;
-      renderReplicate(d);
-    } catch (e) { showToast('测算失败，请重试'); }
   }
 
   function renderReplicate(d) {
@@ -348,17 +238,88 @@
     if (el) el.classList.remove('show');
   }
 
+  // ========== 批次4：Presenter 取数后的 DOM 段下沉入口（presenters/position-comparison-presenter.js 经 window 调用） ==========
+  function pcVisibilitySelectReady() {
+    return !!document.getElementById('position-visibility-select');
+  }
+
+  function pcApplyVisibility(visibility) {
+    var sel = document.getElementById('position-visibility-select');
+    if (sel) sel.value = visibility;
+  }
+
+  function pcCompareButtonReady() {
+    return !!document.getElementById('pc-open-btn');
+  }
+
+  function pcApplyCompareButton() {
+    var state = window.positionComparisonPresenter.state;
+    var btn = document.getElementById('pc-open-btn');
+    if (!btn) return;
+    btn.classList.remove('js-hidden'); btn.style.display = state.benchmarks.length ? '' : 'none';
+  }
+
+  function pcFailCompareButton() {
+    var btn = document.getElementById('pc-open-btn');
+    if (!btn) return;
+    btn.style.display = 'none';
+  }
+
+  function pcShowBenchmarkPicker() {
+    var state = window.positionComparisonPresenter.state;
+    var rows = state.benchmarks.map(function (b) {
+      return '<tr class="pc-bench-row" data-act="PositionComparison.startCompare" data-arg1="' + b.accountId + '">' +
+        '<td>' + escapeHtml(b.displayName) + '</td>' +
+        '<td>' + (b.visibility === 'public' ? '完整标杆' : '脱敏标杆') + '</td>' +
+        '<td>' + escapeHtml(b.positionUpdatedAt || '--') + '</td>' +
+        '<td>' + b.securityCount + '</td>' +
+        '<td><button type="button" class="btn btn-primary btn-sm">开始对比</button></td>' +
+      '</tr>';
+    }).join('');
+    var html =
+      '<h2>选择对比标杆</h2><button type="button" class="modal-close" aria-label="关闭" data-act="PositionComparison.closeSelf">&times;</button>' +
+      '<p class="u-fs-12 u-c-muted u-mb-12">选择其他用户的完整标杆或脱敏标杆账户，进行仓位对比与复制测算。</p>' +
+      '<div class="table-wrap u-mb-0" ><div class="biz-table-scroll"><table class="biz-table biz-table--compact pc-bench-table">' +
+        '<thead><tr><th>账户</th><th>公开类型</th><th>持仓更新时间</th><th>证券只数</th><th>操作</th></tr></thead>' +
+        '<tbody>' + rows + '</tbody></table></div></div>' +
+        '<div class="modal-actions"><button type="button" class="btn btn-outline" data-act="PositionComparison.closeSelf">关闭</button></div>';
+    openBox('position-comp-modal', html);
+    if (window.BusinessTable) window.BusinessTable.attach(document.getElementById('position-comp-modal-box') || document.getElementById('position-comp-modal'), { sticky: false });
+  }
+
+  function pcReadAvailableCash() {
+    var cashInput = document.getElementById('pc-available-cash');
+    return cashInput ? Number(cashInput.value) : NaN;
+  }
+
+  // View 对外入口（批次4）：Presenter 只调这些函数改界面，自己不碰 DOM。
+  window.positionComparisonView = {
+    visibilitySelectReady: pcVisibilitySelectReady,
+    applyVisibility: pcApplyVisibility,
+    initPositionControls: initPositionControls,
+    compareButtonReady: pcCompareButtonReady,
+    applyCompareButton: pcApplyCompareButton,
+    failCompareButton: pcFailCompareButton,
+    showBenchmarkPicker: pcShowBenchmarkPicker,
+    closeSelf: closeSelf,
+    renderCompare: renderCompare,
+    renderReplicate: renderReplicate,
+    readAvailableCash: pcReadAvailableCash,
+  };
+
   // 暴露给全局（HTML 内联事件调用）
+  // 批次4：changeVisibility / openBenchmarkPicker / startCompare / doReplicate 为取数入口，
+  // 实现在 Presenter；对外 API 键名一字不变（data-act="PositionComparison.*" 仍按原名解析）。
   window.PositionComparison = {
     initPositionControls: initPositionControls,
-    changeVisibility: changeVisibility,
-    openBenchmarkPicker: openBenchmarkPicker,
-    startCompare: startCompare,
+    changeVisibility: window.positionComparisonPresenter.changeVisibility,
+    openBenchmarkPicker: window.positionComparisonPresenter.openBenchmarkPicker,
+    startCompare: window.positionComparisonPresenter.startCompare,
     onPageEnter: onPageEnter,
     goBackHoldings: goBackHoldings,
     openReplicatePanel: openReplicatePanel,
     closeReplicate: closeReplicate,
-    doReplicate: doReplicate,
+    doReplicate: window.positionComparisonPresenter.doReplicate,
     closeSelf: closeSelf,
   };
 

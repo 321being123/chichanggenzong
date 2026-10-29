@@ -13,7 +13,9 @@ async function getLatestSnapshot(options = {}) {
       ORDER BY id DESC LIMIT 1`
   );
   if (!rows[0]) return null;
-  const snapshot = await filterInactiveBonds(rows[0]);
+  // 在市口径过滤属业务判定，由服务层 filterInactiveBonds 编排（2026-10-29 修复迁移遗留的跨层调用断裂）；
+  // 本仓储只做标准事实读写。
+  const snapshot = rows[0];
   if (options.includeChangePct === false) return snapshot;
   const data = Array.isArray(snapshot.data) ? snapshot.data : [];
   const missingCodes = [...new Set(data

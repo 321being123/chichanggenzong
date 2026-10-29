@@ -36,6 +36,8 @@ async function fixture(responses) {
   w.showToast = function () {};
   w.eval(read('public/js/utils.js'));
   w.eval(read('public/js/api/client.js'));
+  // 批次4 View／Presenter 分离：取数与状态在 presenter，渲染在 notifications.js
+  w.eval(read('public/js/presenters/notifications-presenter.js'));
   w.eval(read('public/js/notifications.js'));
   await tick();
   return { dom: dom, w: w, fetches: function () { return fetches; } };

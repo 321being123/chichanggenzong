@@ -5,19 +5,26 @@ const vm = require('vm');
 const { JSDOM } = require('jsdom');
 const source = fs.readFileSync(require('path').join(__dirname, '../../public/js/ipo.js'), 'utf8');
 const clientSource = fs.readFileSync(require('path').join(__dirname, '../../public/js/api/client.js'), 'utf8');
+// 批次4：取数/状态/请求序号已拆入 Presenter（presenters/ipo-presenter.js），按 HTML 待接入的加载顺序补载。
+const presenterSource = fs.readFileSync(require('path').join(__dirname, '../../public/js/presenters/ipo-presenter.js'), 'utf8');
 
 function setup() {
   const dom = new JSDOM(`<div id="ipo-advice"></div><div id="ipo-calendar"></div><div id="ipo-history"></div>
     ${['stock', 'hk_stock', 'bond'].map(type => `<button data-ipo-hist="${type}" class="${type === 'stock' ? 'active' : ''}"></button>`).join('')}
     ${['CN', 'HK', 'ALL'].map(market => `<button data-ipo-market="${market}" class="${market === 'CN' ? 'active' : ''}"></button>`).join('')}`);
   const requests = [];
-  const ctx = vm.createContext({ document: dom.window.document, window: dom.window,
+  const sandbox = { document: dom.window.document,
     api: value => value, escapeHtml: value => String(value), console,
     setTimeout, clearTimeout, AbortController,
-    fetch: url => new Promise((resolve, reject) => requests.push({ url, resolve, reject })) });
+    fetch: url => new Promise((resolve, reject) => requests.push({ url, resolve, reject })) };
+  // 批次4：window 指向沙箱全局（浏览器 window===globalThis 语义），P 经 window 调 V 入口可命中测试桩。
+  sandbox.window = sandbox;
+  const ctx = vm.createContext(sandbox);
   // 批次4：页面取数经统一客户端发送，测试加载同一份底座，断言针对真实请求链路。
   vm.runInContext(clientSource, ctx);
   vm.runInContext(source, ctx);
+  // 批次4：取数与请求序号在 Presenter，DOM 落点（ipoPaint*）在 View，两段均入沙箱。
+  vm.runInContext(presenterSource, ctx);
   ctx.ipoRenderHistory = (type, rows) => type + ':' + rows.map(row => row.security_code).join(',');
   ctx.ipoRenderCalendar = rows => rows.map(row => row.code).join(',');
   ctx.ipoRenderAdvice = () => 'advice';

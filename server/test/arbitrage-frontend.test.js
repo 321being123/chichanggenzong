@@ -33,7 +33,8 @@ assert.ok(frontend.includes('arbDetailLink') && frontend.includes('arb-security-
 assert.ok(!frontend.includes('onclick="openArbDetail(' + "' + r.case_id"), '套利整行不得绑定详情点击');
 assert.ok(frontend.includes("params.set('case', caseId)") && frontend.includes("params.delete('case')"), '套利详情必须具有独立URL页面状态');
 assert.ok(frontend.includes("params.set('arb_type', arbState.type)") && frontend.includes("get('arb_type')"), '套利详情必须保留来源页签');
-const tabSwitch = frontend.slice(frontend.indexOf('function switchArbTab(type)'), frontend.indexOf('\n}\n\n// 加载数据'));
+// 批次4：loadArbitrage/openArbDetail 取数段已迁 Presenter，切片终点改锚 renderArbTable 以精确圈定 switchArbTab
+const tabSwitch = frontend.slice(frontend.indexOf('function switchArbTab(type)'), frontend.indexOf('function renderArbTable('));
 assert.ok(tabSwitch.includes("params.set('arb_type', type)") && tabSwitch.includes("params.delete('case')"), '详情中切换套利策略必须更新策略参数并清除详情编号');
 assert.ok(tabSwitch.includes('listView.hidden = false'), '详情中切换套利策略必须恢复列表视图');
 assert.ok(html.includes('id="arb-list-view"') && html.includes('id="arb-detail"'), '套利列表和详情必须是独立视图');

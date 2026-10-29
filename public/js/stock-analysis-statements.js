@@ -1,4 +1,6 @@
-var stockStatementState = { type:'balance', loadedCode:'', cache:{}, requestToken:0 };
+// 财务三表 View（批次4：View／Presenter 分离）。
+// 职责：只做三表渲染与视图切换；取数、缓存与请求序号在 presenters/stock-analysis-statements-presenter.js。
+// 约定：本文件不直接发请求（静态门禁 frontend_api_client 校验），也不决定何时采集。
 
 function stockAnalysisSwitchView(view) {
   var statements = ['balance','income','cashflow'].includes(view);
@@ -17,30 +19,17 @@ function stockAnalysisSwitchView(view) {
   if (statements && stockAnalysisState.selected) stockAnalysisLoadStatements(view);
 }
 
-async function stockAnalysisLoadStatements(type) {
-  type = ['balance','income','cashflow'].includes(type) ? type : 'balance';
-  stockStatementState.type = type;
-  var code = stockAnalysisState.selected;
-  if (!code) return;
-  var requestToken = ++stockStatementState.requestToken;
-  var selectToken = stockAnalysisState.selectToken;
-  var key = code + ':' + type;
-  if (stockStatementState.cache[key]) return stockAnalysisRenderStatements(stockStatementState.cache[key]);
+// View 对外入口（批次4）：Presenter 只调这些函数改界面，自己不碰 DOM。
+function stockAnalysisShowStatementsLoading() {
   var message = document.getElementById('stock-analysis-statements-message');
   var wrap = document.getElementById('stock-analysis-statements-wrap');
   if (message) { message.style.display='block'; message.textContent='正在读取三表数据...'; }
   if (wrap) wrap.style.display='none';
-  try {
-    var response = await stockAnalysisApi.getStatements(code, type);
-    var payload = response.payload;
-    if (requestToken !== stockStatementState.requestToken || selectToken !== stockAnalysisState.selectToken) return;
-    if (!response.ok) throw new Error(payload.error || '三表读取失败');
-    stockStatementState.cache[key] = payload;
-    stockAnalysisRenderStatements(payload);
-  } catch (error) {
-    if (requestToken !== stockStatementState.requestToken || selectToken !== stockAnalysisState.selectToken) return;
-    if (message) { message.style.display='block'; message.textContent=error.message || String(error); }
-  }
+}
+
+function stockAnalysisShowStatementsError(error) {
+  var message = document.getElementById('stock-analysis-statements-message');
+  if (message) { message.style.display='block'; message.textContent=error.message || String(error); }
 }
 
 function stockAnalysisRenderStatements(data) {
@@ -82,11 +71,4 @@ function stockAnalysisRenderStatements(data) {
   wrap.innerHTML = '<table class="biz-table biz-table--matrix stock-analysis-statements-table"><thead><tr><th rowspan="2">默认单位：亿元</th>' + headYears + '</tr><tr>' + subHead + '</tr></thead><tbody>' + rows + '</tbody></table>';
   wrap.style.display='block';
   if (window.BusinessTable) window.BusinessTable.attach(wrap, { page: '#main-stock-analysis', sticky: false });
-}
-
-function stockAnalysisInvalidateStatements(code) {
-  stockStatementState.requestToken++;
-  Object.keys(stockStatementState.cache).forEach(function(key) {
-    if (!code || key.indexOf(code + ':') === 0) delete stockStatementState.cache[key];
-  });
 }

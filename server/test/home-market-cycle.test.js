@@ -5,6 +5,8 @@ const path = require('path');
 const root = path.join(__dirname, '..', '..');
 const html = fs.readFileSync(path.join(root, 'public', 'index.html'), 'utf8');
 const js = fs.readFileSync(path.join(root, 'public', 'js', 'home-dashboard.js'), 'utf8');
+// 批次4 View／Presenter 分离后，取数字面断言跟随代码位置移至 home-dashboard-presenter.js
+const presenterJs = fs.readFileSync(path.join(root, 'public', 'js', 'presenters', 'home-dashboard-presenter.js'), 'utf8');
 const css = fs.readFileSync(path.join(root, 'public', 'shared', 'style.css'), 'utf8');
 const route = fs.readFileSync(path.join(root, 'server', 'routes', 'marketVolatility.js'), 'utf8');
 const { JSDOM } = require('jsdom');
@@ -15,8 +17,8 @@ assert.ok(html.includes('id="home-market-chart"'), '首页缺少可配置的股�
 assert.ok(document.querySelector('#home-section-cycle .home-market-cycle-grid'), '首页应保留市场周期区域');
 const dashboardScript = document.querySelector('script[src^="js/home-dashboard.js?v="]');
 assert.ok(dashboardScript && new URL(dashboardScript.src, 'http://localhost').searchParams.get('v') && dashboardScript.getAttribute('src') !== 'js/home-dashboard.js?v=16', '首页市场周期必须使用更新后的缓存版本');
-assert.ok(js.includes('/api/bond-cycle?range=all'), '首页未读取可转债周期历史数据');
-assert.ok(js.includes('/api/market-volatility/home-cycle?range=20y'), '首页未读取管理员选择的股市周期指标');
+assert.ok(presenterJs.includes('/api/bond-cycle?range=all'), '首页未读取可转债周期历史数据');
+assert.ok(presenterJs.includes('/api/market-volatility/home-cycle?range=20y'), '首页未读取管理员选择的股市周期指标');
 assert.ok(js.includes('renderHomeMarketCycle') && js.includes('homeMarketCycleMetric'), '首页不能根据管理员设置动态绘图');
 assert.ok(js.includes('homeBindCycleTooltip'), '首页市场周期图缺少悬浮提示');
 assert.ok(js.includes("raw === null || raw === undefined || raw === ''"), '首页周期图未跳过历史空值');

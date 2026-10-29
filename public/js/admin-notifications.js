@@ -2,19 +2,8 @@
 // 契约见 docs/意见反馈与版本发布闭环研发方案_20261023.md 第 14.5 节。
 // 首期仅系统管理员；只支持纯文本标题/正文，不接富文本、附件或任意外链。
 // 约定：CSP 已关闭内联脚本属性，所有交互走 data-act 全局委托（shared/ui-actions.js）。
-let anState = {
-  mode: 'all',
-  picked: [],          // 指定多人：已选账号
-  search: { q: '', items: [], total: 0 },
-  preview: null,       // 预览结果（batchId/revision/contentAudienceHash/snapshotCount）
-  draft: {},          // 重绘时保留当前输入，只有清空或发送成功才重置
-  page: 1,
-  pageSize: 20,
-  detailId: null,
-  detail: null,
-  detailItems: [],
-  detailCursor: null,
-};
+// 批次4：View／Presenter 分离——本文件只做渲染、表单读写与 DOM 事件；
+//       取数与状态（anState）在 presenters/admin-notifications-presenter.js，由 P 经 window 调本文件入口。
 
 const AN_STATUS_LABELS = {
   draft: '草稿', queued: '已排队', running: '投递中', partial: '部分完成',
@@ -22,31 +11,6 @@ const AN_STATUS_LABELS = {
 };
 const AN_MODE_LABELS = { all: '全发', selected: '指定多人', filter: '条件筛选' };
 const AN_RECIPIENT_LABELS = { pending: '待处理', delivered: '已投递', skipped: '已跳过', failed: '失败' };
-
-function anUuid() {
-  if (window.crypto && crypto.randomUUID) return crypto.randomUUID();
-  return 'an-' + Date.now() + '-' + Math.random().toString(16).slice(2);
-}
-
-async function anRequest(path, options) {
-  const opt = options || {};
-  const init = { method: opt.method || 'GET', headers: {} };
-  if (opt.body != null) {
-    init.headers['Content-Type'] = 'application/json';
-    init.body = JSON.stringify(opt.body);
-  }
-  const result = await window.siteApi.requestRaw(path, Object.assign({ timeoutMs: 0 }, init));
-  if (!result.response) throw new Error(result.error || '网络异常');
-  const r = result.response;
-  let payload = null;
-  try { payload = await r.json(); } catch (e) { payload = null; }
-  if (!r.ok) {
-    const err = new Error((payload && payload.error) || ('请求失败（' + r.status + '）'));
-    err.status = r.status;
-    throw err;
-  }
-  return payload || {};
-}
 
 function anHost() { return document.getElementById('view-notifications'); }
 
@@ -224,18 +188,12 @@ function anClearPreview() {
   if (preview) preview.remove();
 }
 
-async function loadAnBatches() {
-  try {
-    const data = await anRequest('/api/admin/notifications/batches?page=' + anState.page
-      + '&pageSize=' + anState.pageSize);
-    anState.batches = data.items || [];
-    const tbody = document.querySelector('#view-notifications .an-batches-tbody');
-    if (tbody) tbody.innerHTML = anBatchRowsHtml();
-    const pager = document.getElementById('an-pager');
-    if (pager) pager.innerHTML = anPagerHtml(data.total);
-  } catch (e) {
-    showToast('批次列表加载失败：' + e.message);
-  }
+// 批次4：loadAnBatches 的 DOM 段下沉（P 经 window 调用）
+function anPaintBatches(total) {
+  const tbody = document.querySelector('#view-notifications .an-batches-tbody');
+  if (tbody) tbody.innerHTML = anBatchRowsHtml();
+  const pager = document.getElementById('an-pager');
+  if (pager) pager.innerHTML = anPagerHtml(total);
 }
 
 async function adminNotifMode(v) {
@@ -244,19 +202,10 @@ async function adminNotifMode(v) {
   renderAdminNotifications();
 }
 
-async function adminNotifSearch() {
+// 批次4：adminNotifSearch 的 DOM 段下沉（P 经 window 调用）
+function anReadSearchInput() {
   const input = document.getElementById('an-search');
-  anState.search.q = input ? input.value.trim() : '';
-  if (!anState.search.q) { showToast('请输入用户名或昵称'); return; }
-  try {
-    const data = await anRequest('/api/admin/notifications/recipients?q='
-      + encodeURIComponent(anState.search.q) + '&limit=20');
-    anState.search.items = data.items || [];
-    anState.search.total = data.total || 0;
-    renderAdminNotifications();
-  } catch (e) {
-    showToast('搜索失败：' + e.message);
-  }
+  return input ? input.value.trim() : '';
 }
 
 function adminNotifPick(username) {
@@ -286,55 +235,13 @@ function anReadFilter() {
   };
 }
 
-async function adminNotifPreview() {
+// 批次4：adminNotifPreview 的 DOM 段下沉（P 经 window 调用）
+function anReadComposeForm() {
   const titleEl = document.getElementById('an-title');
   const bodyEl = document.getElementById('an-body');
   const title = titleEl ? titleEl.value.trim() : '';
   const body = bodyEl ? bodyEl.value : '';
-  if (!title) { showToast('请填写通知标题'); return; }
-  try {
-    const result = await anRequest('/api/admin/notifications/preview', {
-      method: 'POST',
-      body: {
-        title: title,
-        body: body,
-        audienceMode: anState.mode,
-        usernames: anState.mode === 'selected' ? anState.picked : undefined,
-        filters: anState.mode === 'filter' ? anReadFilter() : undefined,
-        clientRequestId: anUuid(),
-      },
-    });
-    anState.preview = result;
-    renderAdminNotifications();
-    showToast('预览完成：' + Number(result.snapshotCount || 0) + ' 位收件人');
-  } catch (e) {
-    showToast('预览失败：' + e.message);
-  }
-}
-
-async function adminNotifSend() {
-  if (!anState.preview) { showToast('请先预览名单'); return; }
-  if (!(Number(anState.preview.snapshotCount) > 0)) { showToast('没有符合条件的账号，不能发送'); return; }
-  if (typeof projectConfirm === 'function') {
-    const ok = await projectConfirm('确认向 ' + anState.preview.snapshotCount + ' 位收件人发送这条通知？确认后内容与名单冻结。');
-    if (!ok) return;
-  }
-  try {
-    await anRequest('/api/admin/notifications/batches/' + encodeURIComponent(anState.preview.batchId) + '/send', {
-      method: 'POST',
-      body: {
-        revision: anState.preview.revision,
-        contentAudienceHash: anState.preview.contentAudienceHash,
-        clientRequestId: anUuid(),
-      },
-    });
-    showToast('已进入投递队列，可在批次列表查看进度');
-    anState.preview = null;
-    renderAdminNotifications(true);
-    loadAnBatches();
-  } catch (e) {
-    showToast('发送失败：' + e.message);
-  }
+  return { title: title, body: body };
 }
 
 function adminNotifReset() {
@@ -343,21 +250,6 @@ function adminNotifReset() {
   anState.search = { q: '', items: [], total: 0 };
   anState.preview = null;
   renderAdminNotifications(true);
-}
-
-async function adminNotifDetail(id) {
-  try {
-    const data = await anRequest('/api/admin/notifications/batches/' + encodeURIComponent(id));
-    anState.detailId = String(id);
-    anState.detail = data;
-    anState.detailItems = [];
-    anState.detailCursor = null;
-    openAdminModal('通知批次 #' + id, '<div id="an-detail-body">加载中…</div>', '', { wide: true });
-    renderAnDetail();
-    await loadAnDetailRecipients(true);
-  } catch (e) {
-    showToast('批次详情加载失败：' + e.message);
-  }
 }
 
 function renderAnDetail() {
@@ -395,50 +287,7 @@ function renderAnDetail() {
     + '</div></div>';
 }
 
-async function loadAnDetailRecipients(reset) {
-  if (!anState.detailId) return;
-  if (reset) { anState.detailItems = []; anState.detailCursor = null; }
-  try {
-    const data = await anRequest('/api/admin/notifications/batches/'
-      + encodeURIComponent(anState.detailId) + '/recipients?limit=50'
-      + (anState.detailCursor ? '&cursor=' + encodeURIComponent(anState.detailCursor) : ''));
-    anState.detailItems = anState.detailItems.concat(data.items || []);
-    anState.detailCursor = data.nextCursor || null;
-    renderAnDetail();
-  } catch (e) {
-    showToast('收件记录加载失败：' + e.message);
-  }
-}
-
 function adminNotifDetailMore() { loadAnDetailRecipients(false); }
-
-async function adminNotifRetry(id) {
-  try {
-    const result = await anRequest('/api/admin/notifications/batches/' + encodeURIComponent(id) + '/retry', {
-      method: 'POST', body: { clientRequestId: anUuid() },
-    });
-    showToast(result.merged ? '已有投递任务在执行，已合并请求' : '已重新排队，只处理未完成收件');
-    loadAnBatches();
-  } catch (e) {
-    showToast('重试失败：' + e.message);
-  }
-}
-
-async function adminNotifCancel(id) {
-  if (typeof projectConfirm === 'function') {
-    const ok = await projectConfirm('取消这条通知草稿？取消后不能恢复。');
-    if (!ok) return;
-  }
-  try {
-    await anRequest('/api/admin/notifications/batches/' + encodeURIComponent(id) + '/cancel', {
-      method: 'POST', body: { clientRequestId: anUuid() },
-    });
-    showToast('草稿已取消');
-    loadAnBatches();
-  } catch (e) {
-    showToast('取消失败：' + e.message);
-  }
-}
 
 function adminNotifPrev() { anState.page = Math.max(anState.page - 1, 1); loadAnBatches(); }
 function adminNotifNext() { anState.page += 1; loadAnBatches(); }

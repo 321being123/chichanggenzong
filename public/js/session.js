@@ -39,29 +39,7 @@ function resetBell() {
   paintBell(null);
 }
 
-// 未读数：旧响应不能覆盖新结果（seq 递增作废），换账号后旧响应直接丢弃
-async function refreshUnreadCount() {
-  if (!username) { resetBell(); return null; }
-  var seq = ++notifPoll.seq;
-  var who = username;
-  try {
-    var result = await window.siteApi.requestRaw('/api/notifications/unread-count', { timeoutMs: 0, headers: {} });
-    if (!result.response) throw new Error(result.error || '网络异常');
-    var r = result.response;
-    if (!r.ok) throw new Error('HTTP ' + r.status);
-    var d = await r.json();
-    if (seq !== notifPoll.seq || who !== username) return null;
-    var total = Number(d && d.total);
-    notifPoll.total = Number.isFinite(total) && total > 0 ? total : 0;
-    paintBell(notifPoll.total);
-    return d;
-  } catch (e) {
-    if (seq !== notifPoll.seq || who !== username) return null;
-    // 失败保留旧数并提示重试，绝不伪装成 0
-    paintBell(notifPoll.total);
-    return null;
-  }
-}
+// 未读数轮询取数已迁至 js/presenters/session-presenter.js（refreshUnreadCount，批次4 View／Presenter 分离）
 
 function stopNotificationPolling() {
   if (notifPoll.timer) { clearInterval(notifPoll.timer); notifPoll.timer = null; }
@@ -120,33 +98,7 @@ function buildBell() {
   return bell;
 }
 
-async function checkAuth() {
-  const previousUser = username, previousIdentity = accountIdentity;
-  function invalidateIfChanged() {
-    if ((previousUser !== username || previousIdentity !== accountIdentity) && typeof window.invalidateSmartImportScope === 'function') window.invalidateSmartImportScope();
-    if ((previousUser !== username || previousIdentity !== accountIdentity) && typeof window.securityAnalysisResetAccount === 'function') window.securityAnalysisResetAccount();
-  }
-  try {
-    const result = await window.siteApi.requestRaw('/api/me', { timeoutMs: 0, headers: {} });
-    if (!result.response) throw new Error(result.error || '网络异常');
-    const r = result.response;
-    const d = await r.json();
-    if (!d.username) {
-      username = null; myProfile = null; accountIdentity = ''; invalidateIfChanged(); stopNotificationPolling(); clearNotificationCache(); renderTopUser(null); return false;
-    }
-    username = d.username;
-    myProfile = d;
-    accountIdentity = String(d.accountIdentity || '');
-    invalidateIfChanged();
-    const nu0 = document.getElementById('nav-user');
-    if (nu0) nu0.textContent = d.nickname || username;
-    renderTopUser(d);
-    startNotificationPolling();
-    return true;
-  } catch (e) {
-    username = null; myProfile = null; accountIdentity = ''; invalidateIfChanged(); stopNotificationPolling(); clearNotificationCache(); renderTopUser(null); return false;
-  }
-}
+// 登录态校验流程已迁至 js/presenters/session-presenter.js（checkAuth，批次4 View／Presenter 分离）
 
 // 通知缓存按账号隔离：退出/失效时立即清掉，避免下一个人看到上一个人的私密通知
 function clearNotificationCache() {
@@ -220,14 +172,16 @@ function renderTopUser(p) {
   paintBell(notifPoll.total);
 }
 
-async function logout() {
-  stopNotificationPolling();
-  clearNotificationCache();
-  if (typeof window.invalidateSmartImportScope === 'function') window.invalidateSmartImportScope();
-  if (typeof window.securityAnalysisResetAccount === 'function') window.securityAnalysisResetAccount();
-  accountIdentity = '';
-  const result = await window.siteApi.requestRaw('/api/logout', { method: 'POST', timeoutMs: 0, headers: {} });
-  if (!result.response) throw new Error(result.error || '网络异常');
+// 退出登录流程已迁至 js/presenters/session-presenter.js（logout，批次4 View／Presenter 分离）
+
+// View 对外入口（批次4）：Presenter 只调这些函数改界面，自己不碰 DOM。
+function renderAuthUser(d) {
+  const nu0 = document.getElementById('nav-user');
+  if (nu0) nu0.textContent = d.nickname || username;
+  renderTopUser(d);
+}
+
+function redirectAfterLogout() {
   window.location.href = api('/');
 }
 

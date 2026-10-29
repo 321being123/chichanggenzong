@@ -1,0 +1,66 @@
+// 首页仪表盘 Presenter（批次4：View／Presenter 分离）。
+// 职责：持有首页卡片加载状态、经 siteApi 取数（fetchHomeJson 包装）、决定何时把结果交给 View。
+// 边界：本文件不直接操作 DOM（静态门禁按 role=presenter、allowDom=false 校验），
+//       需要改界面时只调用 View 暴露的入口（window.home*）；View 不取数，只渲染。
+//       渲染段（原 loadHomeDashboard / loadHomeMarketCycles / renderHomeArticles 内的 DOM 行）
+//       下沉到 home-dashboard.js 的 window.home* 新入口，由本文件经 window 调用。
+// 全局保留：loadHomeDashboard / loadHomeMarketCycles / renderHomeArticles / fetchHomeJson
+//       （navigation.js、内联脚本与卡片重试按钮按名调用，函数名不变）。
+var homeDashboardLoading = false;
+var homeMarketCyclesLoading = false;
+var homeMarketCyclesLoaded = false;
+
+async function fetchHomeJson(path) {
+  // 传入站内路径（不含 API 前缀），拼接与发送统一由入口负责。
+  var res = await window.siteApi.get(path);
+  if (!res.ok) return { ok: false, error: new Error(res.error || ('接口返回 ' + res.status)) };
+  return { ok: true, data: res.payload };
+}
+
+async function loadHomeMarketCycles() {
+  if (homeMarketCyclesLoading || homeMarketCyclesLoaded) return;
+  homeMarketCyclesLoading = true;
+  try {
+    // 两张周期卡各自成败，互不拖累（2026-10-21 审查 U-19）
+    var responses = await Promise.all([
+      fetchHomeJson('/api/bond-cycle?range=all&view=home&maxPoints=800'),
+      fetchHomeJson('/api/market-volatility/home-cycle?range=20y')
+    ]);
+    window.homePaintMarketCycles(responses);
+    homeMarketCyclesLoaded = responses[0].ok && responses[1].ok;
+  } catch (error) {
+    console.error('首页市场周期加载失败', error);
+    window.homePaintMarketCyclesError(error);
+  } finally {
+    homeMarketCyclesLoading = false;
+  }
+}
+
+async function loadHomeDashboard() {
+  renderHomeHoldings();
+  window.homeApplyDashboardOrder();
+  // 最新文章独立加载，不等待 IPO/债券接口，避免被大数据接口阻塞
+  renderHomeArticles();
+  loadHomeMarketCycles();
+  if (homeDashboardLoading) return;
+  homeDashboardLoading = true;
+  try {
+    var results = await Promise.all([fetchHomeJson('/api/ipo/calendar?days=90'), fetchHomeJson('/api/bond-safety/bonds?view=summary')]);
+    window.homePaintDashboardResults(results);
+  } catch (error) {
+    console.error('首页数据加载失败', error);
+  } finally { homeDashboardLoading = false; }
+}
+
+async function renderHomeArticles() {
+  if (!window.homeArticlesReady()) return;
+  try {
+    var res = await window.siteApi.get('/api/knowledge/latest?limit=5');
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    var list = res.payload;
+    if (!Array.isArray(list)) throw new Error('返回格式错误');
+    window.homePaintArticles(list);
+  } catch (e) {
+    window.homePaintArticlesError(e);
+  }
+}

@@ -4,6 +4,8 @@ const path = require('path');
 const vm = require('vm');
 const root = path.resolve(__dirname, '../..');
 const bond = fs.readFileSync(path.join(root, 'public/js/bond-analysis.js'), 'utf8');
+// 批次4：securityAnalysisLoadList 取数/请求序号已拆入 Presenter，断言跟随代码分别切片 View 与 Presenter。
+const bondPresenter = fs.readFileSync(path.join(root, 'public/js/presenters/bond-analysis-presenter.js'), 'utf8');
 const stock = fs.readFileSync(path.join(root, 'public/js/presenters/stock-analysis-presenter.js'), 'utf8');
 const slice = (s, start, end) => s.slice(s.indexOf(start), s.indexOf(end));
 (async () => {
@@ -19,7 +21,8 @@ const slice = (s, start, end) => s.slice(s.indexOf(start), s.indexOf(end));
     stockAnalysisApi: { listStocks: () => new Promise(resolve => { resolveStock = resolve; }) },
   };
   vm.createContext(ui);
-  vm.runInContext(slice(bond, 'async function securityAnalysisLoadList(', 'function securityAnalysisSelect('), ui);
+  vm.runInContext(slice(bondPresenter, 'async function securityAnalysisLoadList(', 'function securityAnalysisSelect('), ui);
+  vm.runInContext(slice(bond, 'function securityAnalysisResetAccount(', 'function bondAnalysisText('), ui);
   vm.runInContext(slice(stock, 'async function loadStockAnalysis(', 'async function stockAnalysisSelect('), ui);
   const pendingBond = ui.securityAnalysisLoadList(true);
   const pendingStock = ui.loadStockAnalysis(true);

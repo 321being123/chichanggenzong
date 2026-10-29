@@ -1,10 +1,17 @@
 // 可转债周期：前端展示（只读，不复制后端公式）
 // 交互：二级导航切换、时间范围（1年/3年/5年/全部）、指标切换（周期分位/综合估值/价格中位数/溢价率中位数）、SVG 历史图。
+// 可转债周期 View（批次4：View／Presenter 分离）。
+// 职责：只做渲染、SVG 图表与分页交互，并把用户操作上报给全局入口；取数与数据状态在 presenters/bond-cycle-presenter.js。
+// 约定：本文件不直接发请求（静态门禁 frontend_api_client 校验），也不决定何时采集。
+// View 对外入口（批次4）：Presenter 只调这些函数改界面，自己不碰 DOM。
+function bondCycleSetStatus(text) {
+  var statusEl = document.getElementById('bond-cycle-status');
+  if (statusEl) statusEl.textContent = text;
+}
 var esc = (typeof escapeHtml === 'function') ? escapeHtml : function (s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); };
 // num 统一用 utils.js 全局定义，此处不再重复声明（R-17）
 function pct(v, d) { return (v === null || v === undefined || !Number.isFinite(Number(v))) ? '--' : num(Number(v) * 100, d == null ? 1 : d) + '%'; }
 
-var bondCycleState = { range: 'all', metric: 'percentile', data: null, loading: false, visible: { percentile: true, composite: true, median_price: false, median_conversion_premium_pct: false } };
 var bondCycleTablePage = 1;
 var BC_TABLE_PAGE_SIZE = 50; // 表格每页显示条数（默认展示最近 50 条，可翻页）
 
@@ -85,27 +92,6 @@ function initBondCycleSub() {
   }
   var p2 = new URLSearchParams(window.location.search);
   switchBondSub(p2.get('sub'));
-}
-
-async function loadBondCycle() {
-  if (bondCycleState.loading) return;
-  var statusEl = document.getElementById('bond-cycle-status');
-  if (!bondCycleState.data) {
-    bondCycleState.loading = true;
-    if (statusEl) statusEl.textContent = '正在读取周期数据...';
-    try {
-      // 批次4：取数统一走 siteApi（View 不直接 fetch）
-      var r = await window.siteApi.get('/api/bond-cycle?range=' + encodeURIComponent(bondCycleState.range));
-      if (!r.ok) throw new Error('接口返回 ' + r.status);
-      bondCycleState.data = r.payload;
-    } catch (e) {
-      bondCycleState.loading = false;
-      if (statusEl) statusEl.textContent = '数据加载失败：' + (e.message || e);
-      return;
-    }
-    bondCycleState.loading = false;
-  }
-  renderBondCycle(bondCycleState.data);
 }
 
 function renderBondCycle(data) {

@@ -1,5 +1,30 @@
-var mvcState = { metric: 'pe', market: 'CN', benchmark: 'CSI300', range: '20y', overview: null, history: [], loading: false, ready: false };
-var marketCycleHomeConfig = null;
+// 市场周期指标 View（批次4：View／Presenter 分离）。
+// 职责：只做渲染、拖拽与表单读写，并把用户操作上报给全局入口；取数、加载状态与首页配置在 presenters/market-cycle-metrics-presenter.js。
+// 约定：本文件不直接发请求（静态门禁 frontend_api_client 校验），也不决定何时采集。
+// View 对外入口（批次4）：Presenter 只调这些函数改界面，自己不碰 DOM。
+function mvcSetStatus(text) {
+  var status = document.getElementById('mvc-status');
+  if (!status) return;
+  status.textContent = text;
+}
+function mvcSetLoadError(error) {
+  var status = document.getElementById('mvc-status');
+  if (status) status.textContent = '数据加载失败：' + (error.message || error);
+  document.getElementById('mvc-content').hidden = true;
+}
+function mvcReadBoundaries() {
+  return { lower: Number(document.getElementById('mvc-lower').value), upper: Number(document.getElementById('mvc-upper').value) };
+}
+function mvcSetSaveBusy(busy) {
+  var button = document.getElementById('mvc-save');
+  if (!button) return;
+  button.disabled = !!busy;
+}
+function mvcSetSaveText(text) {
+  var button = document.getElementById('mvc-save');
+  if (!button) return;
+  button.textContent = text;
+}
 var mvcMeta = {
   pe: { label: '市盈率（PE-TTM）', suffix: ' 倍', lowerIsCheaper: true },
   pb: { label: '市净率（PB）', suffix: ' 倍', lowerIsCheaper: true },
@@ -44,25 +69,6 @@ function updateMarketCycleHomeButtons() {
     if(admin){var metricCurrent=marketCycleHomeMatches(mvcState.metric,mvcState.market,mvcState.benchmark);metricButton.disabled=metricCurrent;metricButton.textContent=metricCurrent?'已设为首页':'设为首页';}
   }
 }
-async function loadMarketCycleHomeConfig() {
-  try{
-    var res=await window.siteApi.get('/api/market-volatility/home-cycle/config');
-    if(res.ok)marketCycleHomeConfig=res.payload;
-  }catch(error){}
-  updateMarketCycleHomeButtons();
-}
-async function setMarketCycleHome(metric,market,benchmark) {
-  if(!marketCycleIsAdmin())return;
-  var account=mvcAccount();
-  if(!account){showToast('请先选择账户');return;}
-  try{
-    var response=await window.siteApi.put('/api/market-volatility/home-cycle/config',{
-      metric:metric,market:market,benchmark:benchmark,accountName:account
-    },{credentials:'same-origin'});
-    var json=response.payload||{};if(!response.ok)throw new Error(json.error||response.status);
-    marketCycleHomeConfig=json;updateMarketCycleHomeButtons();showToast('已设为首页');
-  }catch(error){showToast('设置失败：'+(error.message||error));}
-}
 function mvcInit() {
   if(mvcState.ready)return; mvcState.ready=true;
   document.querySelectorAll('[data-mvc-market]').forEach(function(button){button.onclick=function(){mvcState.market=button.dataset.mvcMarket;mvcState.benchmark=mvcState.market==='HK'?'HSI':'CSI300';mvcLoad();updateMarketCycleHomeButtons();};});
@@ -86,21 +92,6 @@ function switchMarketCycleMetric(metric) {
   else if(mvcState.benchmark==='ASHARE'||mvcState.benchmark==='HSI')mvcState.benchmark='CSI300';
   updateMarketCycleHomeButtons();
   mvcLoad();
-}
-async function mvcLoad() {
-  if(mvcState.loading)return; mvcState.loading=true; var status=document.getElementById('mvc-status');status.textContent='正在读取数据...';
-  try{
-    // 同 loadMarketVolatility：等账户列表就绪后再取 mvcAccount()，避免占位账户「默认账户」触发 403
-    if(window.accountDataReady){try{await window.accountDataReady;}catch(err){}}
-    var qs='metric='+encodeURIComponent(mvcState.metric)+'&market='+encodeURIComponent(mvcState.market)+'&benchmark='+encodeURIComponent(mvcState.benchmark);
-    var responses=await Promise.all([
-      window.siteApi.get('/api/market-volatility/overview?'+qs+'&account='+encodeURIComponent(mvcAccount())),
-      window.siteApi.get('/api/market-volatility/history?'+qs+'&range='+encodeURIComponent(mvcState.range))
-    ]);
-    if(!responses[0].ok||!responses[1].ok)throw new Error('接口返回 '+(!responses[0].ok?responses[0].status:responses[1].status));
-    mvcState.overview=responses[0].payload;mvcState.history=(responses[1].payload||{}).history||[];mvcRender();
-  }catch(error){status.textContent='数据加载失败：'+(error.message||error);document.getElementById('mvc-content').hidden=true;}
-  finally{mvcState.loading=false;}
 }
 function mvcRenderControls() {
   var isM2=mvcState.metric==='m2_market_cap',marketBox=document.getElementById('mvc-market-controls'),benchmarkBox=document.getElementById('mvc-benchmark-controls');
@@ -199,25 +190,4 @@ function mvcBeginDrag(event,boundary,min,max){
     if(chart.hasPointerCapture(pointerEvent.pointerId))chart.releasePointerCapture(pointerEvent.pointerId);mvcRenderDraft();
   }
   chart.addEventListener('pointermove',move);chart.addEventListener('pointerup',done);chart.addEventListener('pointercancel',done);move(event);
-}
-async function mvcSave(){
-  var setting=mvcState.overview&&mvcState.overview.setting,lower=Number(document.getElementById('mvc-lower').value),upper=Number(document.getElementById('mvc-upper').value),account=mvcAccount(),button=document.getElementById('mvc-save');
-  if(typeof username!=='string'||!username){
-    window.location.href=api('/login.html?redirect='+encodeURIComponent('/?main=market-volatility&metric='+mvcState.metric));
-    return;
-  }
-  if(!account){showToast('请先选择账户后再保存');return;}
-  if(!(lower>0&&upper>lower)){showToast('边界值无效，请重新拖动');return;}
-  button.disabled=true;button.textContent='保存中...';
-  try{
-    var response=await window.siteApi.put('/api/market-volatility/settings',{
-      metric:mvcState.metric,market:mvcState.market,benchmark:mvcState.benchmark,accountName:account,lowerBoundaryPct:lower,upperBoundaryPct:upper,version:setting?setting.version:0
-    },{credentials:'same-origin'});
-    var json=response.payload||{};if(!response.ok)throw new Error(json.error||response.status);
-    await mvcLoad();button.disabled=true;showToast('边界保存成功');
-  }catch(error){
-    button.disabled=false;showToast('保存失败：'+(error.message||error));
-  }finally{
-    button.textContent='保存边界';
-  }
 }

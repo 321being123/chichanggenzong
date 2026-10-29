@@ -5,8 +5,9 @@ const vm = require('vm');
 
 const root = path.resolve(__dirname, '../..');
 const presenter = fs.readFileSync(path.join(root, 'public/js/presenters/stock-analysis-presenter.js'), 'utf8');
-const statements = fs.readFileSync(path.join(root, 'public/js/stock-analysis-statements.js'), 'utf8');
-const bond = fs.readFileSync(path.join(root, 'public/js/bond-analysis.js'), 'utf8');
+const statements = fs.readFileSync(path.join(root, 'public/js/presenters/stock-analysis-statements-presenter.js'), 'utf8');
+// 批次4：bondAnalysisLoad/bondAnalysisRenderListFallback 的取数与请求序号段已拆入 Presenter，断言跟随代码。
+const bond = fs.readFileSync(path.join(root, 'public/js/presenters/bond-analysis-presenter.js'), 'utf8');
 const extract = (source, start, end) => source.slice(source.indexOf(start), source.indexOf(end));
 
 (async () => {
@@ -44,10 +45,11 @@ const extract = (source, start, end) => source.slice(source.indexOf(start), sour
     stockAnalysisState: { selected: 'A', selectToken: 1 },
     document: { getElementById: () => null },
     stockAnalysisApi: { getStatements: () => new Promise(resolve => pending.push(resolve)) },
+    stockAnalysisShowStatementsLoading() {}, stockAnalysisShowStatementsError() {},
     stockAnalysisRenderStatements: value => statementRendered.push(value.tag),
   };
   vm.runInNewContext('var stockStatementState = { type: "balance", cache: {}, requestToken: 0 };\n' +
-    extract(statements, 'async function stockAnalysisLoadStatements(', 'function stockAnalysisRenderStatements('), statementUi);
+    extract(statements, 'async function stockAnalysisLoadStatements(', 'function stockAnalysisInvalidateStatements('), statementUi);
   const first = statementUi.stockAnalysisLoadStatements('balance');
   const second = statementUi.stockAnalysisLoadStatements('income');
   pending[1]({ ok: true, payload: { tag: 'income' } });
@@ -60,7 +62,7 @@ const extract = (source, start, end) => source.slice(source.indexOf(start), sour
   const bondUi = {
     securityAnalysisState: { type: 'bond', code: '113001', loading: false, requestToken: 1 },
     document: { getElementById: () => null }, username: 'test', showToast() {},
-    stockAnalysisSetMessage() {}, bondAnalysisRender: data => bondRendered.push(data.tag),
+    stockAnalysisSetMessage() {}, bondAnalysisRender: data => bondRendered.push(data.tag), bondAnalysisSetRefreshButton() {},
     window: { siteApi: { request: () => new Promise(resolve => bondPending.push(resolve)) } },
   };
   vm.runInNewContext(extract(bond, 'async function bondAnalysisLoad(', 'async function bondAnalysisRenderListFallback('), bondUi);
@@ -80,7 +82,7 @@ const extract = (source, start, end) => source.slice(source.indexOf(start), sour
     window: { siteApi: { get: () => new Promise(resolve => { finishFallback = resolve; }) } },
     stockAnalysisSetMessage() { throw new Error('旧结果不能渲染'); },
   };
-  vm.runInNewContext(extract(bond, 'async function bondAnalysisRenderListFallback(', 'securityAnalysisInitSearch();'), fallbackUi);
+  vm.runInNewContext(bond.slice(bond.indexOf('async function bondAnalysisRenderListFallback(')), fallbackUi);
   let current = true;
   const fallback = fallbackUi.bondAnalysisRenderListFallback('stock', '113001', () => current);
   current = false;

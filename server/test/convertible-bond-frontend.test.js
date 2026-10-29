@@ -4,6 +4,8 @@ const path = require('path');
 const root = path.join(__dirname, '..', '..');
 const html = fs.readFileSync(path.join(root, 'public', 'index.html'), 'utf8');
 const script = fs.readFileSync(path.join(root, 'public', 'js', 'bond-analysis.js'), 'utf8');
+// 批次4：可转债侧取数已拆入 Presenter，接口接入断言跟随代码指向 Presenter，其余渲染断言仍查 View。
+const bondPresenter = fs.readFileSync(path.join(root, 'public', 'js', 'presenters', 'bond-analysis-presenter.js'), 'utf8');
 const { readServiceSource } = require('./helpers/service-source');
 const service = readServiceSource('convertibleBondAnalysis');
 const priceChangeAudit = fs.readFileSync(path.join(root, 'server', 'scripts', 'auditConvertibleBondPriceChanges.js'), 'utf8');
@@ -22,7 +24,7 @@ assert.ok(script.includes("'security-analysis-select'"), '持仓和自选下拉�
   assert.ok(/await\s+window\.securityAnalysisLoadList\(/.test(stockScript), '加载分析页时必须等待持仓和自选列表填充完成，否则加自选后无法自动回选');
 }
 assert.ok(html.includes('js/bond-analysis.js'), '缺少可转债前端脚本');
-assert.ok(script.includes('/api/bond-analysis/'), '前端未接入可转债分析接口');
+assert.ok(bondPresenter.includes('/api/bond-analysis/'), '前端未接入可转债分析接口');
 for (const field of ['强赎触发价','基金持仓','预估回售触发日','下修天计数','募资用途','转股价调整历史','转股价不下修历史','利息保障倍数','纯债价值','理论偏离度','正股年化波动率','资产负债率']) {
   assert.ok((html+script).includes(field), '可转债页面缺少字段：'+field);
 }

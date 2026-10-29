@@ -1,5 +1,48 @@
 // 可转债安全性页面：纯展示层，所有评级计算均在服务端完成。
-var bondSafetyState = { rows: [], filtered: [], sortKey: 'bond_price', sortDir: 1, loaded: false };
+// 可转债安全性 View（批次4：View／Presenter 分离）。
+// 职责：只做渲染、筛选排序与格式化，并把用户操作上报给全局入口；取数与列表状态在 presenters/bond-safety-presenter.js。
+// 约定：本文件不直接发请求（静态门禁 frontend_api_client 校验），也不决定何时采集。
+// View 对外入口（批次4）：Presenter 只调这些函数改界面，自己不碰 DOM。
+function bondSafetyShowLoading() {
+  var el = document.getElementById('bond-safety-table');
+  if (el) el.innerHTML = '<div class="bond-safety-empty">正在加载安全性数据...</div>';
+}
+function bondSafetyShowEmptySource() {
+  var el = document.getElementById('bond-safety-table');
+  if (el) el.innerHTML = '<div class="bond-safety-empty">数据源尚未配置。管理员完成 API 配置后，系统会自动生成第一份快照。</div>';
+}
+function bondSafetyShowError(error) {
+  var el = document.getElementById('bond-safety-table');
+  if (el) el.innerHTML = '<div class="bond-safety-empty bond-safety-error">加载失败：' + escapeHtml(error.message || String(error)) + '</div>';
+}
+function bondSafetyShowUpdated(d) {
+  var updated = document.getElementById('bond-safety-updated');
+  if (updated) updated.textContent = bondSafetyUpdatedText(d);
+}
+function bondSafetyExportFilters() {
+  var searchEl = document.getElementById('bond-safety-search');
+  var ratingEl = document.getElementById('bond-safety-rating');
+  return {
+    search: searchEl ? searchEl.value.trim() : '',
+    rating: ratingEl ? ratingEl.value : ''
+  };
+}
+function bondSafetySetExportButton(busy, text) {
+  var button = document.getElementById('bond-safety-export');
+  if (!button) return;
+  button.disabled = !!busy;
+  button.textContent = text;
+}
+function bondSafetyDownload(blob) {
+  var url = URL.createObjectURL(blob);
+  var link = document.createElement('a');
+  link.href = url;
+  link.download = '可转债安全性评估_' + new Date().toISOString().slice(0, 10) + '.xlsx';
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
 
 var BOND_SAFETY_COLUMNS = [
   ['bond_code', '债券代码'], ['bond_name', '债券名称'], ['stock_name', '正股名称'],
@@ -153,62 +196,5 @@ function bondSafetyRenderStats(d) {
   if (quality && d.diagnostics) {
     quality.textContent = '未匹配正股 ' + (d.diagnostics.unmatched_stock_count || 0) +
       ' · 财务字段不完整 ' + (d.diagnostics.incomplete_company_count || 0);
-  }
-}
-
-async function exportBondSafety() {
-  var button = document.getElementById('bond-safety-export');
-  var searchEl = document.getElementById('bond-safety-search');
-  var ratingEl = document.getElementById('bond-safety-rating');
-  var params = new URLSearchParams({
-    search: searchEl ? searchEl.value.trim() : '',
-    rating: ratingEl ? ratingEl.value : '',
-    sort: bondSafetyState.sortKey,
-    dir: bondSafetyState.sortDir > 0 ? 'asc' : 'desc'
-  });
-  if (button) { button.disabled = true; button.textContent = '导出中...'; }
-  try {
-    // 导出是二进制下载，走统一入口的"原始响应"分支，超时与网络异常同样归一。
-    var exported = await window.siteApi.getRaw('/api/bond-safety/export?' + params.toString());
-    if (!exported.ok) {
-      var error = exported.response ? await exported.response.json().catch(function() { return {}; }) : {};
-      throw new Error(error.error || exported.error || '导出失败');
-    }
-    var blob = await exported.response.blob();
-    var url = URL.createObjectURL(blob);
-    var link = document.createElement('a');
-    link.href = url;
-    link.download = '可转债安全性评估_' + new Date().toISOString().slice(0, 10) + '.xlsx';
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-    URL.revokeObjectURL(url);
-  } catch (error) {
-    if (typeof showToast === 'function') showToast(error.message || String(error));
-  } finally {
-    if (button) { button.disabled = false; button.textContent = '导出Excel'; }
-  }
-}
-
-async function loadBondSafety(force) {
-  if (bondSafetyState.loaded && !force) return;
-  var el = document.getElementById('bond-safety-table');
-  if (el) el.innerHTML = '<div class="bond-safety-empty">正在加载安全性数据...</div>';
-  try {
-    var res = await window.siteApi.get('/api/bond-safety/bonds');
-    var d = res.payload || {};
-    if (!res.ok) throw new Error(d.error || '加载失败');
-    bondSafetyState.rows = Array.isArray(d.data) ? d.data : [];
-    bondSafetyState.loaded = true;
-    var updated = document.getElementById('bond-safety-updated');
-    if (updated) updated.textContent = bondSafetyUpdatedText(d);
-    bondSafetyRenderStats(d);
-    if (!d.data.length && !d.configured) {
-      if (el) el.innerHTML = '<div class="bond-safety-empty">数据源尚未配置。管理员完成 API 配置后，系统会自动生成第一份快照。</div>';
-      return;
-    }
-    bondSafetyApplyFilters();
-  } catch(error) {
-    if (el) el.innerHTML = '<div class="bond-safety-empty bond-safety-error">加载失败：' + escapeHtml(error.message || String(error)) + '</div>';
   }
 }

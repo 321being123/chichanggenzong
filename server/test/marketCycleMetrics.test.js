@@ -66,7 +66,8 @@ assert.ok(!job.includes('tushare_all_a_aggregate_proxy'), '中证全指PB不应�
 const serviceSource = fs.readFileSync(path.join(__dirname, '..', 'services', 'marketCycleMetrics.js'), 'utf8');
 assert.ok(!serviceSource.includes("metric !== 'm2_market_cap'"), 'PE/PB边界调整被错误禁用');
 assert.ok(serviceSource.includes('indexPoint:'), '接口未返回对应指数点位');
-const frontend = fs.readFileSync(path.join(__dirname, '..', '..', 'public', 'js', 'market-cycle-metrics.js'), 'utf8');
+const frontend = fs.readFileSync(path.join(__dirname, '..', '..', 'public', 'js', 'market-cycle-metrics.js'), 'utf8')
+  + fs.readFileSync(path.join(__dirname, '..', '..', 'public', 'js', 'presenters', 'market-cycle-metrics-presenter.js'), 'utf8');
 assert.ok(frontend.includes('mvcIndexLevel') && frontend.includes('点位</th>'), '前端未展示对应指数点位');
 assert.ok(frontend.includes('mvcBeginDrag') && frontend.includes("addEventListener('pointerdown'"), 'PE/PB/M2边界线未接入鼠标拖拽');
 assert.ok(frontend.includes('setPointerCapture') && frontend.includes('mvcRenderLadder(lower,upper)'), '拖拽未同步仓位阶梯');
@@ -75,7 +76,7 @@ assert.ok(frontend.includes('M2：') && frontend.includes('A股总市值：'), '
 assert.ok(frontend.includes("metric==='pb'&&mvcState.benchmark==='CSIALL')mvcState.benchmark='CSI300'"), 'PB未回退到已支持的沪深300');
 assert.ok(frontend.includes("button.hidden=mvcState.metric==='pb'&&button.dataset.mvcBenchmark==='CSIALL'"), 'PB页面仍显示未支持的中证全指');
 assert.ok(frontend.includes('未提供PB历史数据'), '中证全指PB缺少官网数据说明');
-assert.ok(frontend.includes("button.textContent='保存中...'") && frontend.includes("showToast('边界保存成功')"), 'PE/PB/M2保存边界缺少进度或成功反馈');
+assert.ok(frontend.includes("'保存中...'") && frontend.includes("showToast('边界保存成功')"), 'PE/PB/M2保存边界缺少进度或成功反馈');
 assert.ok(frontend.includes("credentials:'same-origin'"), 'PE/PB/M2保存边界未携带登录凭据');
 assert.ok(frontend.includes("window.location.href=api('/login.html?redirect='") && frontend.includes("metric='+mvcState.metric"), '未登录保存边界未跳转登录并保留指标页');
 assert.ok(frontend.includes("getElementById('mvc-save').disabled=!valid"), '未登录时保存边界按钮仍不可点击');
@@ -88,8 +89,9 @@ assert.ok(frontend.includes('window.siteApi.put(') && frontend.includes('/home-c
 assert.ok(html.includes('id="mvc-boundary-controls" hidden'), 'PE/PB/M2仍显示边界输入框');
 assert.ok(!frontend.includes("getElementById('mvc-boundary-controls').hidden=false"), '边界输入框会被重新显示');
 
-const grahamFrontend = fs.readFileSync(path.join(__dirname, '..', '..', 'public', 'js', 'market-volatility.js'), 'utf8');
-assert.ok(grahamFrontend.includes("button.textContent='保存中...'") && grahamFrontend.includes("showToast('边界保存成功')"), '格雷厄姆指数保存边界缺少进度或成功反馈');
+const grahamFrontend = fs.readFileSync(path.join(__dirname, '..', '..', 'public', 'js', 'market-volatility.js'), 'utf8')
+  + fs.readFileSync(path.join(__dirname, '..', '..', 'public', 'js', 'presenters', 'market-volatility-presenter.js'), 'utf8');
+assert.ok(grahamFrontend.includes("'保存中...'") && grahamFrontend.includes("showToast('边界保存成功')"), '格雷厄姆指数保存边界缺少进度或成功反馈');
 assert.ok(grahamFrontend.includes("credentials:'same-origin'"), '格雷厄姆指数保存边界未携带登录凭据');
 assert.ok(grahamFrontend.includes('metric=graham') && grahamFrontend.includes('window.location.href'), '格雷厄姆指数未登录保存未跳转登录');
 assert.ok(html.includes("['graham','pe','pb','m2_market_cap'].includes(requestedMetric)"), '登录返回后未恢复格雷厄姆指数页');

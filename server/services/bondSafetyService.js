@@ -2,7 +2,7 @@ const { pool, tryClaimJob, releaseJob, startJobRun, finishJobRun } = require('..
 const { evaluateBondSafety } = require('./bondSafety');
 const { fetchBondSafetySource, isConfigured } = require('./bondSafetyFetcher');
 const bondSafetyServiceRepository = require('../repositories/bondSafetyServiceRepository.js');
-const { getLatestSnapshot, getPreviousPublishedSnapshot, saveSnapshot } = bondSafetyServiceRepository;
+const { getLatestSnapshot: getLatestSnapshotBase, getPreviousPublishedSnapshot, saveSnapshot } = bondSafetyServiceRepository;
 
 const JOB_NAME = 'bond_safety_refresh';
 
@@ -58,7 +58,12 @@ async function filterInactiveBonds(snapshot) {
   return Object.assign({}, snapshot, { data: filtered, row_count: filtered.length, diagnostics });
 }
 
-/* getLatestSnapshot 已迁入 server/repositories/bondSafetyServiceRepository.js */
+/* getLatestSnapshot 已迁入 server/repositories/bondSafetyServiceRepository.js；
+   在市口径过滤属业务判定，由本服务包装编排（2026-10-29 修复迁移遗留断裂）。 */
+async function getLatestSnapshot(options = {}) {
+  const snapshot = await getLatestSnapshotBase(options);
+  return snapshot ? filterInactiveBonds(snapshot) : null;
+}
 
 /* getPreviousPublishedSnapshot 已迁入 server/repositories/bondSafetyServiceRepository.js */
 

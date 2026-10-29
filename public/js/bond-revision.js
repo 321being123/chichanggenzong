@@ -1,5 +1,7 @@
 // 可转债下修监控：纯展示层，状态与计算全部来自服务端统一视图。
-var bondRevisionState = { rows: [], filtered: [], loaded: false, loading: false };
+// 可转债下修监控 View（批次4：View／Presenter 分离）。
+// 职责：只做渲染、筛选与格式化，并把用户操作上报给全局入口；取数与列表状态在 presenters/bond-revision-presenter.js。
+// 约定：本文件不直接发请求（静态门禁 frontend_api_client 校验），也不决定何时采集。
 var BOND_REVISION_STATUS = {
   implemented: '已实施', approved: '股东大会通过', meeting_pending: '股东大会待审', proposed: '已提议下修',
   terminated: '未通过/已终止', met_pending: '已满足待公告', near: '接近触发', locked: '不下修锁定期', floor_blocked: '净资产底线限制',
@@ -76,24 +78,15 @@ function bondRevisionRender() {
 function bondRevisionRenderSummary(summary) {
   document.querySelectorAll('[data-revision-status]').forEach(function (el) { el.textContent = String((summary || {})[el.dataset.revisionStatus] || 0); });
 }
-async function loadBondRevision(force) {
-  if (bondRevisionState.loading) return;
-  if (!force && bondRevisionState.loaded) { bondRevisionApplyFilters(); return; }
-  bondRevisionState.loading = true;
+// View 对外入口（批次4）：Presenter 只调这些函数改界面，自己不碰 DOM。
+function bondRevisionShowUpdated(data) {
   var updated = document.getElementById('bond-revision-updated');
-  try {
-    // 批次4：取数统一走 siteApi（View 不直接 fetch）
-    var response = await window.siteApi.get('/api/bond-revision?limit=2000', { cache: 'no-store' });
-    if (!response.ok) throw new Error('接口返回 ' + response.status);
-    var data = response.payload;
-    bondRevisionState.rows = Array.isArray(data.data) ? data.data : [];
-    bondRevisionState.loaded = true;
-    bondRevisionRenderSummary(data.summary);
-    if (updated) updated.textContent = data.trade_date ? '数据日期：' + bondRevisionDate(data.trade_date) + '（' + bondRevisionState.rows.length + ' 条）' + (data.stale ? (data.quality && data.quality.status === 'degraded' ? ' · 公告数据待补齐' : ' · ' + (data.stale_reason || '下修状态待更新')) : (data.quality && data.quality.terminal_no_revision_parse ? ' · 公告解析有例外' : '')) : '暂无数据';
-    bondRevisionApplyFilters();
-  } catch (error) {
-    var table = document.getElementById('bond-revision-table');
-    if (table && !bondRevisionState.rows.length) table.innerHTML = '<div class="bond-revision-empty">数据加载失败：' + escapeHtml(error.message || error) + '</div>';
-    if (updated) updated.textContent = '读取失败';
-  } finally { bondRevisionState.loading = false; }
+  if (updated) updated.textContent = data.trade_date ? '数据日期：' + bondRevisionDate(data.trade_date) + '（' + bondRevisionState.rows.length + ' 条）' + (data.stale ? (data.quality && data.quality.status === 'degraded' ? ' · 公告数据待补齐' : ' · ' + (data.stale_reason || '下修状态待更新')) : (data.quality && data.quality.terminal_no_revision_parse ? ' · 公告解析有例外' : '')) : '暂无数据';
+}
+
+function bondRevisionShowError(error) {
+  var updated = document.getElementById('bond-revision-updated');
+  var table = document.getElementById('bond-revision-table');
+  if (table && !bondRevisionState.rows.length) table.innerHTML = '<div class="bond-revision-empty">数据加载失败：' + escapeHtml(error.message || error) + '</div>';
+  if (updated) updated.textContent = '读取失败';
 }

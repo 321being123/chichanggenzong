@@ -1,6 +1,7 @@
-var homeDashboardLoading = false;
-var homeMarketCyclesLoading = false;
-var homeMarketCyclesLoaded = false;
+// 首页仪表盘 View（批次4：View／Presenter 分离）。
+// 职责：只做渲染、SVG 图表与悬浮提示；取数、加载状态与 fetchHomeJson 在 presenters/home-dashboard-presenter.js。
+// 约定：本文件不直接发请求（静态门禁 frontend_api_client 校验），也不决定何时采集。
+// View 对外入口（批次4）：Presenter 只调 window.home* 这些函数改界面，自己不碰 DOM。
 var homeMarketCycleMetric = 'pe';
 
 function homeSetText(id, value) {
@@ -235,30 +236,6 @@ function renderHomeMarketCycle(payload) {
   });
 }
 
-async function loadHomeMarketCycles() {
-  if (homeMarketCyclesLoading || homeMarketCyclesLoaded) return;
-  homeMarketCyclesLoading = true;
-  try {
-    // 两张周期卡各自成败，互不拖累（2026-10-21 审查 U-19）
-    var responses = await Promise.all([
-      fetchHomeJson('/api/bond-cycle?range=all&view=home&maxPoints=800'),
-      fetchHomeJson('/api/market-volatility/home-cycle?range=20y')
-    ]);
-    if (responses[0].ok) renderHomeBondCycle(responses[0].data);
-    else homeCardError(document.getElementById('home-bond-cycle-chart'), '可转债周期加载失败：' + (responses[0].error.message || ''), loadHomeMarketCycles);
-    if (responses[1].ok) renderHomeMarketCycle(responses[1].data);
-    else homeCardError(document.getElementById('home-market-chart'), '市场周期加载失败：' + (responses[1].error.message || ''), loadHomeMarketCycles);
-    homeMarketCyclesLoaded = responses[0].ok && responses[1].ok;
-  } catch (error) {
-    console.error('首页市场周期加载失败', error);
-    ['home-bond-cycle-chart','home-market-chart'].forEach(function(id) {
-      homeCardError(document.getElementById(id), '数据加载失败：' + (error.message || String(error)), loadHomeMarketCycles);
-    });
-  } finally {
-    homeMarketCyclesLoading = false;
-  }
-}
-
 // HOME-01：首页展示周期、文章和次要内容，游客与登录用户共用顺序。
 var HOME_ORDER_GUEST = ['home-section-cycle', 'home-section-articles', 'home-section-secondary', 'home-section-capabilities'];
 var HOME_ORDER_LOGGED = ['home-section-cycle', 'home-section-articles', 'home-section-secondary', 'home-section-capabilities'];
@@ -281,59 +258,59 @@ function homeCardError(el, message, retry) {
   if (btn && retry) btn.addEventListener('click', retry);
 }
 
-async function fetchHomeJson(path) {
-  // 传入站内路径（不含 API 前缀），拼接与发送统一由入口负责。
-  var res = await window.siteApi.get(path);
-  if (!res.ok) return { ok: false, error: new Error(res.error || ('接口返回 ' + res.status)) };
-  return { ok: true, data: res.payload };
-}
-
 // U-15c：原内联多语句事件抽为具名函数
 function homeOpenArticleById(id) { switchMain('knowledge'); ksOpenArticle(id); }
 
-async function loadHomeDashboard() {
-  renderHomeHoldings();
-  // HOME-01：按登录态重排首页区块顺序
-  applyHomeOrder(document, !!username);
-  // 最新文章独立加载，不等待 IPO/债券接口，避免被大数据接口阻塞
-  renderHomeArticles();
-  loadHomeMarketCycles();
-  if (homeDashboardLoading) return;
-  homeDashboardLoading = true;
-  try {
-    var results = await Promise.all([fetchHomeJson('/api/ipo/calendar?days=90'), fetchHomeJson('/api/bond-safety/bonds?view=summary')]);
-    if (results[0].ok) renderHomeIpo(results[0].data.calendar || []);
-    else homeCardError(document.getElementById('home-ipo-list'), '近期打新安排加载失败：' + (results[0].error.message || ''), loadHomeDashboard);
-    if (results[1].ok) renderHomeBonds(results[1].data);
-    else homeCardError(document.getElementById('home-bond-distribution'), '可转债风险分布加载失败：' + (results[1].error.message || ''), loadHomeDashboard);
-  } catch (error) {
-    console.error('首页数据加载失败', error);
-  } finally { homeDashboardLoading = false; }
+// ---------- 批次4：Presenter 取数后的 DOM 段下沉入口（presenters/home-dashboard-presenter.js 经 window 调用） ----------
+function homeArticlesReady() {
+  return !!document.getElementById('home-hero-articles');
 }
 
-async function renderHomeArticles() {
+function homePaintArticles(list) {
   var heroBox = document.getElementById('home-hero-articles');
   if (!heroBox) return;
-  try {
-    var res = await window.siteApi.get('/api/knowledge/latest?limit=5');
-    if (!res.ok) throw new Error('HTTP ' + res.status);
-    var list = res.payload;
-    if (!Array.isArray(list)) throw new Error('返回格式错误');
-    if (!list.length) {
-      heroBox.innerHTML = '<span class="home-hero-article-loading">暂无已发布文章</span>';
-      return;
-    }
-    heroBox.innerHTML = list.slice(0, 5).map(function (a) {
-      var date = (a.published_at || '').toString().slice(0, 10);
-      var summary = String(a.summary || '').replace(/```[\s\S]*?```/g, ' ').replace(/^\s*\|?[\s:|-]+\|[\s:|-]+\|?\s*$/gm, ' ').replace(/\|/g, ' ').replace(/\[([^\]]+)\]\([^)]*\)/g, '$1').replace(/[#*_`~]/g, '').replace(/\s+/g, ' ').trim().slice(0, 100);
-      return '<button type="button" class="home-hero-article" data-act="homeOpenArticleById" data-arg="' + (a.id || 0) + '">' +
-        '<span>' + escapeHtml(a.category_name || '未分类') + '</span>' +
-        '<strong>' + escapeHtml(a.title || '无标题') + '</strong>' +
-        '<small>' + escapeHtml(summary || '点击阅读文章详情') + '</small>' +
-        '<em>' + date + ' · ' + (a.view_count || 0) + ' 次阅读</em>' +
-      '</button>';
-    }).join('');
-  } catch (e) {
-    homeCardError(heroBox, '最新文章加载失败：' + (e.message || String(e)), renderHomeArticles);
+  if (!list.length) {
+    heroBox.innerHTML = '<span class="home-hero-article-loading">暂无已发布文章</span>';
+    return;
   }
+  heroBox.innerHTML = list.slice(0, 5).map(function (a) {
+    var date = (a.published_at || '').toString().slice(0, 10);
+    var summary = String(a.summary || '').replace(/```[\s\S]*?```/g, ' ').replace(/^\s*\|?[\s:|-]+\|[\s:|-]+\|?\s*$/gm, ' ').replace(/\|/g, ' ').replace(/\[([^\]]+)\]\([^)]*\)/g, '$1').replace(/[#*_`~]/g, '').replace(/\s+/g, ' ').trim().slice(0, 100);
+    return '<button type="button" class="home-hero-article" data-act="homeOpenArticleById" data-arg="' + (a.id || 0) + '">' +
+      '<span>' + escapeHtml(a.category_name || '未分类') + '</span>' +
+      '<strong>' + escapeHtml(a.title || '无标题') + '</strong>' +
+      '<small>' + escapeHtml(summary || '点击阅读文章详情') + '</small>' +
+      '<em>' + date + ' · ' + (a.view_count || 0) + ' 次阅读</em>' +
+    '</button>';
+  }).join('');
+}
+
+function homePaintArticlesError(e) {
+  var heroBox = document.getElementById('home-hero-articles');
+  homeCardError(heroBox, '最新文章加载失败：' + (e.message || String(e)), renderHomeArticles);
+}
+
+function homeApplyDashboardOrder() {
+  // HOME-01：按登录态重排首页区块顺序
+  applyHomeOrder(document, !!username);
+}
+
+function homePaintDashboardResults(results) {
+  if (results[0].ok) renderHomeIpo(results[0].data.calendar || []);
+  else homeCardError(document.getElementById('home-ipo-list'), '近期打新安排加载失败：' + (results[0].error.message || ''), loadHomeDashboard);
+  if (results[1].ok) renderHomeBonds(results[1].data);
+  else homeCardError(document.getElementById('home-bond-distribution'), '可转债风险分布加载失败：' + (results[1].error.message || ''), loadHomeDashboard);
+}
+
+function homePaintMarketCycles(responses) {
+  if (responses[0].ok) renderHomeBondCycle(responses[0].data);
+  else homeCardError(document.getElementById('home-bond-cycle-chart'), '可转债周期加载失败：' + (responses[0].error.message || ''), loadHomeMarketCycles);
+  if (responses[1].ok) renderHomeMarketCycle(responses[1].data);
+  else homeCardError(document.getElementById('home-market-chart'), '市场周期加载失败：' + (responses[1].error.message || ''), loadHomeMarketCycles);
+}
+
+function homePaintMarketCyclesError(error) {
+  ['home-bond-cycle-chart','home-market-chart'].forEach(function(id) {
+    homeCardError(document.getElementById(id), '数据加载失败：' + (error.message || String(error)), loadHomeMarketCycles);
+  });
 }

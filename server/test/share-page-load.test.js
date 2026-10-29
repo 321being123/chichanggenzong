@@ -22,6 +22,13 @@ async function check(kind, code) {
   };
   const scripts = [...html.matchAll(/<script\s+src="([^"?]+)[^"]*"[^>]*><\/script>/g)]
     .map(match => match[1]).filter(src => !src.startsWith('/vendor/'));
+  // 批次4：bond-analysis 取数已拆入 Presenter（presenters/bond-analysis-presenter.js）、
+  // 三表状态已拆入 presenters/stock-analysis-statements-presenter.js；share.html 的 presenter 引用见拆分报告，
+  // 测试先按目标加载顺序（View 之后紧跟 Presenter）补齐，避免拆分让运行时缺全局入口。
+  const presenterAt = scripts.indexOf('/js/bond-analysis.js');
+  scripts.splice(presenterAt + 1, 0, '/js/presenters/bond-analysis-presenter.js');
+  const statementsAt = scripts.indexOf('/js/stock-analysis-statements.js');
+  scripts.splice(statementsAt + 1, 0, '/js/presenters/stock-analysis-statements-presenter.js');
   for (const src of scripts) w.eval(fs.readFileSync(path.join(root, 'public', src.slice(1)), 'utf8'));
   if (w.document.readyState === 'loading') w.document.dispatchEvent(new w.Event('DOMContentLoaded'));
   await new Promise(resolve => setTimeout(resolve, 30));

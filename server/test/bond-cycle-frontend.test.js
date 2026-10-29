@@ -5,7 +5,10 @@ const fs = require('fs');
 const path = require('path');
 const root = path.join(__dirname, '..', '..');
 const html = fs.readFileSync(path.join(root, 'public', 'index.html'), 'utf8');
-const js = fs.readFileSync(path.join(root, 'public', 'js', 'bond-cycle.js'), 'utf8');
+// 批次4：loadBondCycle 取数段已拆入 Presenter（presenters/bond-cycle-presenter.js），
+// 前端脚本断言同时覆盖 View 与 Presenter，避免拆分让检查失效。
+const js = fs.readFileSync(path.join(root, 'public', 'js', 'bond-cycle.js'), 'utf8')
+  + '\n' + fs.readFileSync(path.join(root, 'public', 'js', 'presenters', 'bond-cycle-presenter.js'), 'utf8');
 const css = fs.readFileSync(path.join(root, 'public', 'css', 'bond-cycle.css'), 'utf8');
 
 const results = [];

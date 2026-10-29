@@ -36,12 +36,16 @@ async function main() {
     assert.strictEqual(isValuationStale('2026-08-23', '2026-08-23', '2026-08-24'), true);
   });
   const frontendSource = fs.readFileSync(path.join(__dirname, '..', '..', 'public', 'js', 'bond-valuation.js'), 'utf8');
+  // 批次4：loadBondValuation 取数段已拆入 Presenter（presenters/bond-valuation-presenter.js），断言跟随代码改读 Presenter。
+  const presenterSource = fs.readFileSync(path.join(__dirname, '..', '..', 'public', 'js', 'presenters', 'bond-valuation-presenter.js'), 'utf8');
   check('前端评价筛选使用稳定分类字段', () => {
     assert.ok(frontendSource.includes('r.eval_class !== f.final_evaluation'));
     assert.ok(!frontendSource.includes('r.final_evaluation !== f.final_evaluation'));
   });
   check('估值读取成功后清除加载提示', () => {
-    assert.ok(frontendSource.includes("if (statusEl) statusEl.textContent = '';"));
+    assert.ok(presenterSource.includes("window.bondValSetStatus('')"));
+    assert.ok(frontendSource.includes('function bondValSetStatus(text)')
+      && frontendSource.includes('statusEl.textContent = text'), 'View 缺少状态行入口');
   });
   check('历史曲线已绑定鼠标悬浮数据说明', () => {
     assert.ok(frontendSource.includes('bindBondValChartTips(box)'));

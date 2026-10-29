@@ -62,15 +62,20 @@ function check(fn) { fn(); cases++; }
 
   const dom = new JSDOM('<div id="ipo-history"></div><button id="ipo-refresh-history"></button><button data-ipo-hist="stock"></button>');
   const urls = [];
-  const ctx = vm.createContext({ window: dom.window, document: dom.window.document, console,
+  const sandbox = { document: dom.window.document, console,
     api: value => value, escapeHtml: value => String(value).replace(/&/g,'&amp;').replace(/</g,'&lt;'),
     setTimeout, clearTimeout, AbortController,
     fetch: async url => { urls.push(url); return { ok: true, status: 200, json: async () => ({ type: 'stock', total: 1, rows: [{ ...stock,
-      ...firstDayPerformance(stock, quote, now) }] }) }; } });
+      ...firstDayPerformance(stock, quote, now) }] }) }; } };
+  // 批次4：window 指向沙箱全局（浏览器 window===globalThis 语义），P 经 window 调 V 入口可命中。
+  sandbox.window = sandbox;
+  const ctx = vm.createContext(sandbox);
   // 批次4：页面取数经统一客户端发送，测试必须加载同一份底座，fetch 桩才能拦截到真实请求；
   // 这样断言校验的仍是页面拼出的 URL，不是桩的替代实现。
   vm.runInContext(fs.readFileSync(require('path').join(__dirname, '../../public/js/api/client.js'), 'utf8'), ctx);
   vm.runInContext(fs.readFileSync(require('path').join(__dirname, '../../public/js/ipo.js'), 'utf8'), ctx);
+  // 批次4：取数与请求序号已拆入 Presenter（presenters/ipo-presenter.js），按 HTML 待接入的加载顺序补载。
+  vm.runInContext(fs.readFileSync(require('path').join(__dirname, '../../public/js/presenters/ipo-presenter.js'), 'utf8'), ctx);
   await ctx.ipoLoadHistory('stock');
   check(() => assert.match(urls[0], /refresh_quotes=1$/));
   check(() => { const text = dom.window.document.getElementById('ipo-history').textContent;

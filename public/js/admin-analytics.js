@@ -1,6 +1,6 @@
 // 网站数据看板前端：只负责展示后台接口返回的数据，指标口径由服务端统一计算。
-var analyticsState = { tab: 'overview', range: '30d', internal: false, ready: false };
-var analyticsRequest = 0;
+// 批次4 View／Presenter 分离：取数、看板状态与请求序号在 presenters/admin-analytics-presenter.js，
+// 本文件只做 DOM/HTML 渲染，取数经全局 analyticsLoad（Presenter）转调。
 var analyticsPollTimer = 0;
 var ANALYTICS_EVENT_LABELS = {
   page_view: '页面浏览', engagement: '活跃停留', detail_open: '详情打开', filter_apply: '筛选使用',
@@ -170,25 +170,29 @@ function renderAnalytics() {
   analyticsLoad();
 }
 
-function analyticsLoad() {
+// View 对外入口（批次4）：Presenter 只调这些函数改界面，自己不碰 DOM。
+function analyticsPaintLoading() {
+  var panel = document.getElementById('analytics-panel');
+  if (!panel) return false;
+  panel.innerHTML = '<div class="admin-placeholder"><div class="spinner u-mx-auto-12" ></div>加载中...</div>';
+  return true;
+}
+
+function analyticsPaintResult(result) {
   var panel = document.getElementById('analytics-panel');
   if (!panel) return;
-  var requestId = ++analyticsRequest;
-  panel.innerHTML = '<div class="admin-placeholder"><div class="spinner u-mx-auto-12" ></div>加载中...</div>';
-  var query = '?range=' + encodeURIComponent(analyticsState.range) + (analyticsState.internal ? '&include_internal=1' : '');
-  window.siteApi.requestRaw('/api/admin/analytics/' + analyticsState.tab + query, { timeoutMs: 0, headers: {} }).then(function (result) {
-    if (!result.response) throw new Error(result.error || '网络异常');
-    var response = result.response;
-    return response.json().then(function (data) { return { ok: response.ok, data: data }; });
-  }).then(function (result) {
-    if (requestId !== analyticsRequest) return;
-    if (!result.ok || result.data.ok === false) { panel.innerHTML = '<div class="admin-placeholder"><div class="icon">⚠️</div>' + analyticsEsc(result.data.error || '看板暂不可用') + '</div>'; return; }
-    if (analyticsState.tab === 'overview') panel.innerHTML = analyticsOverviewHtml(result.data);
-    else if (analyticsState.tab === 'traffic') panel.innerHTML = analyticsTrafficHtml(result.data);
-    else if (analyticsState.tab === 'behavior') panel.innerHTML = analyticsBehaviorHtml(result.data);
-    else if (analyticsState.tab === 'runtime') panel.innerHTML = analyticsRuntimeHtml(result.data);
-    else panel.innerHTML = analyticsHealthHtml(result.data);
-  }).catch(function () { if (requestId === analyticsRequest) panel.innerHTML = '<div class="admin-placeholder"><div class="icon">⚠️</div>网络错误，请刷新重试</div>'; });
+  if (!result.ok || result.data.ok === false) { panel.innerHTML = '<div class="admin-placeholder"><div class="icon">⚠️</div>' + analyticsEsc(result.data.error || '看板暂不可用') + '</div>'; return; }
+  if (analyticsState.tab === 'overview') panel.innerHTML = analyticsOverviewHtml(result.data);
+  else if (analyticsState.tab === 'traffic') panel.innerHTML = analyticsTrafficHtml(result.data);
+  else if (analyticsState.tab === 'behavior') panel.innerHTML = analyticsBehaviorHtml(result.data);
+  else if (analyticsState.tab === 'runtime') panel.innerHTML = analyticsRuntimeHtml(result.data);
+  else panel.innerHTML = analyticsHealthHtml(result.data);
+}
+
+function analyticsPaintError() {
+  var panel = document.getElementById('analytics-panel');
+  if (!panel) return;
+  panel.innerHTML = '<div class="admin-placeholder"><div class="icon">⚠️</div>网络错误，请刷新重试</div>';
 }
 
 function analyticsOverviewHtml(data) {

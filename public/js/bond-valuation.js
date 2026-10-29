@@ -1,6 +1,8 @@
 // 可转债估值：前端展示（只读，不复制后端公式）
 // 职责：市场概览、工具栏筛选/排序、估值总表、单券详情（估值拆解/安全性/信用风险/模型说明）、四类历史曲线、预警。
 // 不提供任何买卖、仓位、收益预测文案。
+// 批次4：View／Presenter 分离——本文件只做渲染、筛选/排序与交互；取数与状态（bondValState）
+//       在 presenters/bond-valuation-presenter.js，由 P 经 window 调本文件入口。
 
 var esc = function (s) {
   return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
@@ -18,37 +20,16 @@ function bondValLifecycleMarker(status) {
   return '';
 }
 
-var bondValState = { data: null, loading: false, sortKey: '__default__', sortDir: 'asc', detailCode: null };
-
 var EVAL_CLASS = {
   '低估': 'val-low', '偏低估': 'val-low2', '合理': 'val-mid', '偏高估': 'val-high1',
   '高估': 'val-high', '风险折价': 'val-risk', '数据不足': 'val-none'
 };
 
 // ---------- 加载列表 ----------
-async function loadBondValuation() {
-  if (bondValState.loading) return;
-  bondValState.loading = true;
+// 批次4：loadBondValuation 的状态行 DOM 段下沉（P 经 window 调用）
+function bondValSetStatus(text) {
   var statusEl = document.getElementById('bond-val-status');
-  if (statusEl) statusEl.textContent = '正在读取估值数据...';
-  try {
-    var res = await window.siteApi.get('/api/bond-valuation/bonds');
-    if (!res.ok) throw new Error('接口返回 ' + res.status);
-    var json = res.payload;
-    bondValState.data = json;
-    renderBondValOverview(json);
-    bondValState.loading = false;
-    if (statusEl) statusEl.textContent = '';
-    if (json.detailCode) bondValState.detailCode = json.detailCode;
-    // 直接带 bond 参数进入详情
-    var params = new URLSearchParams(window.location.search);
-    var bond = params.get('bond');
-    if (bond) { openBondValDetail(bond); }
-    else { renderBondValTable(); }
-  } catch (e) {
-    bondValState.loading = false;
-    if (statusEl) statusEl.textContent = '数据加载失败：' + (e.message || e);
-  }
+  if (statusEl) statusEl.textContent = text;
 }
 
 function renderBondValOverview(json) {
@@ -209,13 +190,13 @@ window.addEventListener('popstate', function () {
   else if (bondValState.detailCode) closeBondValDetail(true);
 });
 
-function openBondValDetail(code, skipPush) {
+// 批次4：openBondValDetail 的 pushState 与 DOM 段下沉（P 经 window 调用）
+function bondValEnterDetail(code, skipPush) {
   if (!skipPush) {
     var params = new URLSearchParams(window.location.search);
     params.set('main', 'bond-safety'); params.set('sub', 'valuation'); params.set('bond', code);
     history.pushState(null, '', '/?' + params.toString());
   }
-  bondValState.detailCode = code;
 
   var listWrap = document.getElementById('sub-bond-valuation');
   var detail = document.getElementById('bond-val-detail');
@@ -231,25 +212,12 @@ function openBondValDetail(code, skipPush) {
   var tb = document.getElementById('bond-val-toolbar'); // noop guard
   detail.hidden = false;
   detail.innerHTML = '<div class="bond-val-detail-loading">正在读取 ' + esc(code) + ' 的估值详情...</div>';
+}
 
-  Promise.all([
-    window.siteApi.get('/api/bond-valuation/bonds/' + encodeURIComponent(code)),
-    window.siteApi.get('/api/bond-valuation/bonds/' + encodeURIComponent(code) + '/history?range=all'),
-    window.siteApi.get('/api/bond-valuation/bonds/' + encodeURIComponent(code) + '/alerts')
-  ]).then(function (results) {
-    // 统一检查 HTTP 状态（404 的详情/历史允许继续渲染错误提示）
-    return results.map(function (r) {
-      if (!r.ok && r.status !== 404) throw new Error('接口返回 ' + r.status);
-      return r.payload;
-    });
-  })
-    .then(function (out) {
-      renderBondValDetail(out[0], out[1], out[2]);
-    })
-    .catch(function (e) {
-      detail.innerHTML = '<div class="bond-val-detail-loading">详情加载失败：' + esc(e.message || e) + '</div>' +
-        '<button class="btn btn-outline btn-sm" data-act="closeBondValDetail">返回列表</button>';
-    });
+function bondValShowDetailError(e) {
+  var detail = document.getElementById('bond-val-detail');
+  detail.innerHTML = '<div class="bond-val-detail-loading">详情加载失败：' + esc(e.message || e) + '</div>' +
+    '<button class="btn btn-outline btn-sm" data-act="closeBondValDetail">返回列表</button>';
 }
 
 function closeBondValDetail(skipPush) {
@@ -394,15 +362,18 @@ function renderBondValDetail(d, hist, alerts) {
   drawBondValCharts(hdata, hist && hist.boundaries);
 }
 
-function bondValReloadHistory(code, range, btn) {
+// 批次4：bondValReloadHistory 的 DOM 段下沉（P 经 window 调用）
+function bondValShowHistoryLoading(btn) {
   var tabs = btn.parentNode.querySelectorAll('button');
   for (var i = 0; i < tabs.length; i++) tabs[i].classList.remove('active');
   btn.classList.add('active');
   var box = document.getElementById('bond-val-charts');
   if (box) box.innerHTML = '<div class="bond-val-detail-loading">加载历史...</div>';
-  window.siteApi.get('/api/bond-valuation/bonds/' + encodeURIComponent(code) + '/history?range=' + range)
-    .then(function (r) { return r.payload; }).then(function (h) { drawBondValCharts((h && h.data) || [], h && h.boundaries); })
-    .catch(function (e) { if (box) box.innerHTML = '历史加载失败：' + esc(e.message || e); });
+}
+
+function bondValShowHistoryError(e) {
+  var box = document.getElementById('bond-val-charts');
+  if (box) box.innerHTML = '历史加载失败：' + esc(e.message || e);
 }
 
 // ---------- SVG 历史曲线 ----------

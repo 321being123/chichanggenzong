@@ -1,23 +1,8 @@
-// ========== 知识分享模块前端逻辑 ==========
-let ksState = {
-  categories: [],
-  articles: [],
-  loaded: false,   // 已完成一次进入页面的数据加载；返回本页不再全量重拉（2026-10-21 审查 U-3）
-  readingId: null, // 阅读意图：打开文章时立即置位，防止并行的 loadKnowledge 把用户踢回列表
-  currentCategory: null,
-  currentArticle: null,
-  editingId: null,   // 正在编辑的文章 id（新建为 null）
-  editingStatus: 'draft',
-  vditor: null,
-  vditorReady: null,
-  canWrite: false,   // 当前用户是否有写权限
-  isAdmin: false,
-  categoryActionId: null,
-  categoryActionMode: null,
-  draggedCategoryId: null,
-  draggedArticleId: null,
-  articleDragOriginalOrder: [],
-};
+// ========== 知识分享模块前端逻辑（View） ==========
+// 批次4 View／Presenter 分离：取数、ksState（含 readingId 与请求状态）与写操作编排在
+// presenters/knowledge-presenter.js；本文件只做 DOM/渲染/事件与 Vditor 编辑器，不发请求。
+// 混合函数的取数段留在 Presenter（保留原函数名），DOM 段在本文件以新入口（window.ks*）暴露，
+// 由 Presenter 调用；事件里需要取数时转调 Presenter 的全局入口。
 
 let ksOverflowTooltip = null;
 let ksOverflowTooltipReady = false;
@@ -69,59 +54,30 @@ function ksInitOverflowTooltips() {
   window.addEventListener('resize', ksHideOverflowTooltip);
 }
 
-// 写操作失败的统一友好提示（不回显服务器内部错误）
-function ksWriteErrMsg(status) {
-  if (status === 401) return '请先登录后再操作';
-  if (status === 403) return '你没有权限执行此操作';
-  if (status === 404) return '内容不存在或已被删除';
-  if (status === 413) return '内容过大，请精简后重试';
-  return '操作失败，请稍后重试';
-}
-
-// ---------- 初始化（每次进入知识分享时调用） ----------
-async function loadKnowledge(force) {
-  // 已加载且非强制：保留阅读/编辑上下文，不全量重拉、不强制踢回列表（2026-10-21 审查 U-3）
-  if (ksState.loaded && !force) return;
-  try {
-    const [catRes, listRes, meRes] = await Promise.all([
-      window.siteApi.get('/api/knowledge/categories').then(r => r.payload),
-      window.siteApi.get('/api/knowledge/articles').then(r => r.payload),
-      username ? window.siteApi.get('/api/knowledge/can-write').then(r => r.payload || { canWrite: false }) : Promise.resolve({ canWrite: false }),
-    ]);
-    ksState.categories = Array.isArray(catRes) ? catRes : [];
-    ksState.articles = Array.isArray(listRes) ? listRes : [];
-    ksState.canWrite = !!(meRes && meRes.canWrite);
-    ksState.isAdmin = !!(meRes && meRes.isAdmin);
-    // 无写权限时隐藏写按钮
-    const ksNew = ksEl('ks-new');
-    const ksImportUrl = ksEl('ks-import-url');
-    const ksImportFile = ksEl('ks-import-file');
-    const ksCatAdd = ksEl('ks-cat-add');
-    const ksCatTools = ksEl('ks-cat-tools');
-    const ksFilter = ksEl('ks-filter');
-    if (ksNew) { ksNew.classList.remove('js-hidden'); ksNew.style.display = ksState.canWrite ? '' : 'none'; }
-    if (ksImportUrl) { ksImportUrl.classList.remove('js-hidden'); ksImportUrl.style.display = ksState.canWrite ? '' : 'none'; }
-    if (ksImportFile) { ksImportFile.classList.remove('js-hidden'); ksImportFile.style.display = ksState.canWrite ? '' : 'none'; }
-    if (ksCatAdd) { ksCatAdd.classList.remove('js-hidden'); ksCatAdd.style.display = ksState.canWrite ? '' : 'none'; }
-    if (ksCatTools) { ksCatTools.classList.remove('js-hidden'); ksCatTools.style.display = ksState.canWrite ? '' : 'none'; }
-    if (ksFilter) { ksFilter.classList.remove('js-hidden'); ksFilter.style.display = username ? '' : 'none'; }
-    if (!ksState.canWrite && username) {
-      const act = ksEl('ks-actions');
-      if (act && !ksEl('ks-no-write-tip')) {
-        const tip = document.createElement('div');
-        tip.id = 'ks-no-write-tip';
-        tip.className = 'ks-no-write-tip';
-        tip.textContent = '你暂无写文章权限，可阅读与评论';
-        act.appendChild(tip);
-      }
+// ---------- 初始化：写权限按钮显隐（loadKnowledge 的 DOM 段，取数在 Presenter） ----------
+function ksApplyAccessUI() {
+  // 无写权限时隐藏写按钮
+  const ksNew = ksEl('ks-new');
+  const ksImportUrl = ksEl('ks-import-url');
+  const ksImportFile = ksEl('ks-import-file');
+  const ksCatAdd = ksEl('ks-cat-add');
+  const ksCatTools = ksEl('ks-cat-tools');
+  const ksFilter = ksEl('ks-filter');
+  if (ksNew) { ksNew.classList.remove('js-hidden'); ksNew.style.display = ksState.canWrite ? '' : 'none'; }
+  if (ksImportUrl) { ksImportUrl.classList.remove('js-hidden'); ksImportUrl.style.display = ksState.canWrite ? '' : 'none'; }
+  if (ksImportFile) { ksImportFile.classList.remove('js-hidden'); ksImportFile.style.display = ksState.canWrite ? '' : 'none'; }
+  if (ksCatAdd) { ksCatAdd.classList.remove('js-hidden'); ksCatAdd.style.display = ksState.canWrite ? '' : 'none'; }
+  if (ksCatTools) { ksCatTools.classList.remove('js-hidden'); ksCatTools.style.display = ksState.canWrite ? '' : 'none'; }
+  if (ksFilter) { ksFilter.classList.remove('js-hidden'); ksFilter.style.display = username ? '' : 'none'; }
+  if (!ksState.canWrite && username) {
+    const act = ksEl('ks-actions');
+    if (act && !ksEl('ks-no-write-tip')) {
+      const tip = document.createElement('div');
+      tip.id = 'ks-no-write-tip';
+      tip.className = 'ks-no-write-tip';
+      tip.textContent = '你暂无写文章权限，可阅读与评论';
+      act.appendChild(tip);
     }
-    ksRenderTree();
-    ksRenderList();
-    ksState.loaded = true;
-    if (!ksState.readingId) ksShowView('list');
-    if (window.SiteTelemetry) window.SiteTelemetry.trackPage('knowledge.list', 'knowledge', 'nav');
-  } catch (e) {
-    showToast('投资笔记加载失败: ' + (e.message || e));
   }
 }
 
@@ -173,39 +129,18 @@ function ksRenderNodes(nodes, depth) {
   return html;
 }
 
-async function ksLoadArticles() {
-  let url = '/api/knowledge/articles';
-  const params = [];
-  if (ksState.currentCategory) params.push('category_id=' + ksState.currentCategory);
-  if (username) {
-    const f = ksEl('ks-filter') && ksEl('ks-filter').value;
-    if (f) params.push('status=' + f);
-  }
-  const q = ksEl('ks-search') && ksEl('ks-search').value.trim();
-  if (q) params.push('q=' + encodeURIComponent(q));
-  if (params.length) url += '?' + params.join('&');
-  try {
-    const r = await window.siteApi.get(url);
-    if (!r.ok) throw new Error('接口返回 ' + r.status);
-    const data = r.payload;
-    ksState.articles = Array.isArray(data) ? data : [];
-    ksRenderList();
-  } catch (e) {
-    // 搜索/分类切换分支失败时保留原列表并提示，不再无声卡死（2026-10-21 审查 U-1）
-    showToast('文章列表加载失败: ' + (e.message || e));
-  }
+// 读取搜索/筛选输入（ksLoadArticles 的 DOM 段，取数在 Presenter）
+function ksReadListQuery() {
+  const filter = ksEl('ks-filter');
+  const search = ksEl('ks-search');
+  return {
+    status: filter ? filter.value : '',
+    q: search ? search.value.trim() : '',
+  };
 }
 
 // ---------- 文章列表 ----------
-function ksFindCategory(nodes, id) {
-  for (const node of (nodes || [])) {
-    if (node.id === id) return node;
-    const child = ksFindCategory(node.children, id);
-    if (child) return child;
-  }
-  return null;
-}
-
+// ksFindCategory（分类树纯查询）在 presenters/knowledge-presenter.js
 function ksFindCategoryName(nodes, id) {
   const category = ksFindCategory(nodes, id);
   return category ? category.name : '';
@@ -292,19 +227,10 @@ function ksCanSortArticles() {
     ksState.articles.every(function (article) { return article.can_edit; }));
 }
 
-async function ksSaveArticleOrder() {
+// 读取当前卡片顺序（ksSaveArticleOrder 的 DOM 段，保存在 Presenter）
+function ksReadArticleOrder() {
   const box = ksEl('ks-article-list');
-  const articleIds = Array.from(box.querySelectorAll('.ks-card')).map(function (card) { return parseInt(card.dataset.id, 10); });
-  try {
-    const r = await window.siteApi.put('/api/knowledge/articles/reorder', { category_id: ksState.currentCategory, article_ids: articleIds });
-    if (!r.ok) { showToast((r.payload || {}).error || '排序保存失败'); await ksLoadArticles(); return false; }
-    showToast('排序已保存');
-    return true;
-  } catch (e) {
-    showToast('排序保存失败');
-    await ksLoadArticles();
-    return false;
-  }
+  return Array.from(box.querySelectorAll('.ks-card')).map(function (card) { return parseInt(card.dataset.id, 10); });
 }
 
 function ksBindArticleDrag(box) {
@@ -342,42 +268,13 @@ function ksBindArticleDrag(box) {
   });
 }
 
-async function ksCardOp(act, id) {
-  if (act === 'edit') { ksOpenEditor(id); return; }
-  if (act === 'del') {
-    await ksDeleteArticle(id);
-    return;
-  }
-  try {
-    const path = act === 'publish' ? '/publish' : '/unpublish';
-    const r = await window.siteApi.post('/api/knowledge/articles/' + id + path, {});
-    if (!r.ok) { showToast(r.status ? ksWriteErrMsg(r.status) : '网络异常，请检查后重试'); return; }
-    const d = r.payload || {};
-    showToast(act === 'publish' && d.share_token ? '已发布，分享链接已生成' : '已撤回为草稿');
-    await ksLoadArticles();
-  } catch (e) {
-    showToast('网络异常，请检查后重试');
-  }
-}
-
-// ---------- 阅读视图 ----------
-async function ksOpenArticle(id) {
-  ksState.readingId = id;
-  const r = await window.siteApi.get('/api/knowledge/articles/' + id);
-  if (!r.ok) { ksState.readingId = null; showToast('文章不存在或未发布'); return; }
-  const a = r.payload || {};
-  ksState.currentArticle = a;
-  if (window.SiteTelemetry) {
-    window.SiteTelemetry.trackPage('knowledge.detail', 'knowledge', 'article');
-    window.SiteTelemetry.trackEvent('detail_open', { page_key: 'knowledge.detail', module: 'knowledge', entry: 'list', properties: { detail_type: 'article' } });
-  }
+// ---------- 阅读视图渲染（ksOpenArticle 的 DOM 段，取数在 Presenter） ----------
+function ksPaintArticle(a) {
   ksEl('ks-read-title').textContent = a.title || '无标题';
   const date = (a.published_at || a.updated_at || '').toString().slice(0, 19).replace('T', ' ');
   let meta = '<span>' + escapeHtml(a.category_name || '未分类') + '</span>' +
     '<span>作者：' + escapeHtml(a.author_username || '未知') + '</span>' +
     '<span>' + date + '</span><span>' + (a.view_count || 0) + ' 次阅读</span>';
-  // 阅读量 +1
-  window.siteApi.post('/api/knowledge/articles/' + id + '/view', {});
   ksEl('ks-read-meta').innerHTML = meta;
   // 渲染正文（统一安全渲染：Vditor 优先，marked+DOMPurify 兜底净化）
   const content = ksEl('ks-read-content');
@@ -424,8 +321,6 @@ async function ksOpenArticle(id) {
       if (btn) btn.addEventListener('click', function () { ksSubmitComment(null, ksEl('ks-comment').value); });
     }
   }
-  ksShowView('read');
-  ksLoadComments(id);
 }
 
 function ksCopyShare(token) {
@@ -439,22 +334,14 @@ function ksCopyShare(token) {
   }
 }
 
-async function ksDeleteArticle(id) {
-  if (!await projectConfirm('确定删除这篇文章？', { title: '删除文章', confirmText: '删除', danger: true })) return;
-  // 入口不抛错：网络异常表现为 status 0，提示文案与原来的 catch 一致。
-  const r = await window.siteApi.del('/api/knowledge/articles/' + id);
-  if (!r.ok) { showToast(r.status ? ksWriteErrMsg(r.status) : '网络异常，请检查后重试'); return; }
-  showToast('已删除');
-  ksShowView('list');
-  ksLoadArticles();
+// ---------- 评论（楼中楼嵌套）渲染（ksLoadComments 的 DOM 段，取数在 Presenter） ----------
+function ksPaintCommentsPrepare() {
+  return !!ksEl('ks-comment-list');
 }
 
-// ---------- 评论（楼中楼嵌套） ----------
-async function ksLoadComments(id) {
+function ksPaintComments(list) {
   const box = ksEl('ks-comment-list');
   if (!box) return;
-  const r = await window.siteApi.get('/api/knowledge/articles/' + id + '/comments');
-  const list = r.payload || [];
   if (!list.length) { box.innerHTML = '<div class="ks-comment-empty">暂无评论</div>'; return; }
   box.innerHTML = ksRenderComments(list, 0);
   // 绑定回复按钮与提交
@@ -475,16 +362,10 @@ async function ksLoadComments(id) {
       });
     });
   });
-  // 绑定删除（已登录且有权限时按钮存在）
+  // 绑定删除（已登录且有权限时按钮存在）；删除取数在 Presenter 的 ksDeleteComment
   box.querySelectorAll('.ks-comment-del').forEach(btn => {
-    btn.addEventListener('click', async function () {
-      if (!await projectConfirm('确定删除这条评论？', { title: '删除评论', confirmText: '删除', danger: true })) return;
-      window.siteApi.del('/api/knowledge/comments/' + btn.dataset.id)
-        .then(r => {
-          if (!r.ok) { showToast(r.status ? ksWriteErrMsg(r.status) : '网络异常，请检查后重试'); return; }
-          showToast('已删除'); ksLoadComments(ksState.currentArticle.id);
-        })
-        .catch(() => showToast('网络异常，请检查后重试'));
+    btn.addEventListener('click', function () {
+      ksDeleteComment(btn.dataset.id);
     });
   });
 }
@@ -507,25 +388,10 @@ function ksRenderComments(list, depth) {
   return html;
 }
 
-async function ksSubmitComment(parentId, textInput) {
-  const a = ksState.currentArticle;
-  if (!a) return;
-  const text = (textInput || '').trim();
-  if (!text) { showToast('评论内容不能为空'); return; }
-  const body = { content: text };
-  if (parentId) body.parent_id = parentId;
-  const r = await window.siteApi.post('/api/knowledge/articles/' + a.id + '/comments', body);
-  if (!r.ok) {
-    if (!r.status) { showToast('网络异常，请检查后重试'); return; }
-    if (r.status === 400 || r.status === 429) { const d = r.payload || {}; showToast(d.error || ksWriteErrMsg(r.status)); }
-    else showToast(ksWriteErrMsg(r.status));
-    return;
-  }
-  // 刷新并清空主评论框
+// 主评论框清空（ksSubmitComment 的 DOM 段，提交取数在 Presenter）
+function ksClearCommentInput() {
   const main = ksEl('ks-comment');
   if (main) main.value = '';
-  ksLoadComments(a.id);
-  showToast('评论已发表');
 }
 
 // ---------- 编辑器 ----------
@@ -717,21 +583,8 @@ function ksUploadHandler(files) {
   });
 }
 
-async function ksOpenEditor(id) {
-  if (!ksState.canWrite) { showToast('你暂无写文章权限'); return; }
-  let article = null;
-  if (id) {
-    try {
-      const r = await window.siteApi.get('/api/knowledge/articles/' + id);
-      if (!r.ok) { showToast('无法加载文章'); return; }
-      article = r.payload || {};
-      if (!article.can_edit) { showToast('只能编辑自己创建的文章'); return; }
-    } catch (e) {
-      showToast('网络异常，无法加载文章');
-      return;
-    }
-  }
-
+// ---------- 编辑器填充（ksOpenEditor 的 DOM 段，取数在 Presenter） ----------
+async function ksPaintEditor(article) {
   const sel = ksEl('ks-edit-cat');
   const categoryOptions = ksFlattenCategories(ksState.categories, 0, [])
     .map(function (category) {
@@ -739,8 +592,6 @@ async function ksOpenEditor(id) {
         escapeHtml('　'.repeat(category.depth) + category.name) + '</option>';
     }).join('');
   sel.innerHTML = '<option value="">未分类</option>' + categoryOptions;
-  ksState.editingId = article ? article.id : null;
-  ksState.editingStatus = article ? article.status : 'draft';
   ksEl('ks-edit-title').value = article ? (article.title || '') : '';
   sel.value = article ? (article.category_id || '') : (ksState.currentCategory || '');
   const draftButton = ksEl('ks-save-draft');
@@ -760,37 +611,17 @@ async function ksOpenEditor(id) {
   editor.setValue(article ? (article.content || '') : '');
 }
 
-async function ksSave(status) {
+// 读取编辑表单与编辑器内容（ksSave 的 DOM 段）；返回 null 表示编辑器未就绪
+async function ksReadEditorForm() {
   const title = ksEl('ks-edit-title').value.trim();
   const categoryId = ksEl('ks-edit-cat').value || null;
   let editor;
   try {
     editor = await ksEnsureVditor();
   } catch (e) {
-    showToast('编辑器尚未加载完成，请刷新后重试');
-    return;
+    return null;
   }
-  const content = editor.getValue();
-  const html = editor.getHTML();
-  const summary = content.replace(/[#>*`\-\s]/g, ' ').slice(0, 120).trim();
-  const body = JSON.stringify({ title: title || '无标题', content: content, html_content: html, summary: summary, category_id: categoryId, status: status });
-  // body 已是序列化好的 JSON 串：这里透传，不再二次序列化。
-  const r = ksState.editingId
-    ? await window.siteApi.request('/api/knowledge/articles/' + ksState.editingId, { method: 'PUT', headers: window.siteApi.jsonHeaders(), body: body })
-    : await window.siteApi.request('/api/knowledge/articles', { method: 'POST', headers: window.siteApi.jsonHeaders(), body: body });
-  if (!r.ok) {
-    if (!r.status) { showToast('网络异常，请检查后重试'); return; }
-    if (r.status === 400) { const d = r.payload || {}; showToast(d.error || ksWriteErrMsg(r.status)); }
-    else showToast(ksWriteErrMsg(r.status));
-    return;
-  }
-  const d = r.payload || {};
-  if (status === 'published' && d.share_token) showToast('已发布，分享链接已生成');
-  else showToast(status === 'draft' ? '草稿已保存' : '已保存');
-  ksState.editingId = d.id || ksState.editingId;
-  ksState.editingStatus = status;
-  ksLoadArticles();
-  ksShowView('list');
+  return { title: title, categoryId: categoryId, content: editor.getValue(), html: editor.getHTML() };
 }
 
 // ---------- 导入（链接 / 文件） ----------
@@ -808,50 +639,32 @@ function ksToggleImport(kind) {
   if (st) st.textContent = '';
 }
 
-async function ksImportUrlGo() {
-  const url = ksEl('ks-import-url-input').value.trim();
-  const st = ksEl('ks-import-status');
-  if (!url) { showToast('请先粘贴链接'); return; }
-  if (st) st.textContent = '正在抓取…';
-  const r = await window.siteApi.post('/api/knowledge/import-url', { url: url });
-  if (!r.ok) { const d = r.payload || {}; if (st) st.textContent = '抓取失败：' + (d.error || ''); return; }
-  const d = r.payload || {};
-  if (st) st.textContent = '已抓取，已填入编辑器（请检查后发布）';
-  ksState.editingId = null;
-  let editor;
-  try {
-    editor = await ksEnsureVditor();
-  } catch (e) {
-    if (st) st.textContent = '编辑器加载失败，请刷新后重试';
-    return;
-  }
-  ksEl('ks-edit-title').value = d.title || '';
-  editor.setValue(d.content || '');
-  ksShowView('edit');
+// 导入面板的 DOM 段（ksImportUrlGo / ksImportFileGo 的输入读取与状态回显，取数在 Presenter）
+function ksReadImportUrl() {
+  const input = ksEl('ks-import-url-input');
+  return input ? input.value.trim() : '';
 }
 
-async function ksImportFileGo() {
+function ksReadImportFile() {
   const input = ksEl('ks-import-file-input');
+  return (input && input.files && input.files.length) ? input.files[0] : null;
+}
+
+function ksSetImportStatus(text) {
   const st = ksEl('ks-import-status');
-  if (!input.files || !input.files.length) { showToast('请选择文件'); return; }
-  if (st) st.textContent = '正在解析…';
-  const fd = new FormData();
-  fd.append('file', input.files[0]);
-  // 文件上传走原始请求：不设 JSON 头，浏览器自己带 multipart 边界。
-  const r = await window.siteApi.request('/api/knowledge/import-file', { method: 'POST', body: fd });
-  if (!r.ok) { const d = r.payload || {}; if (st) st.textContent = '解析失败：' + (d.error || ''); return; }
-  const d = r.payload || {};
-  if (st) st.textContent = '已解析，已填入编辑器（请检查后发布）';
-  ksState.editingId = null;
+  if (st) st.textContent = text;
+}
+
+async function ksPaintImportedArticle(title, content) {
   let editor;
   try {
     editor = await ksEnsureVditor();
   } catch (e) {
-    if (st) st.textContent = '编辑器加载失败，请刷新后重试';
+    ksSetImportStatus('编辑器加载失败，请刷新后重试');
     return;
   }
-  ksEl('ks-edit-title').value = d.title || '';
-  editor.setValue(d.content || '');
+  ksEl('ks-edit-title').value = title;
+  editor.setValue(content);
   ksShowView('edit');
 }
 
@@ -876,30 +689,20 @@ function ksToggleCategoryCreate(show) {
   if (input) input.focus();
 }
 
-async function ksAddCategory() {
-  if (!ksState.canWrite) { showToast('你暂无投资笔记的写权限'); return; }
+// 新建分类表单的 DOM 段（ksAddCategory 的输入读取/聚焦/按钮态，取数在 Presenter）
+function ksReadCategoryName() {
   const input = ksEl('ks-cat-name');
+  return input ? input.value.trim() : '';
+}
+
+function ksFocusCategoryName() {
+  const input = ksEl('ks-cat-name');
+  if (input) input.focus();
+}
+
+function ksSetCategoryCreateBusy(busy) {
   const saveButton = ksEl('ks-cat-save');
-  const name = input ? input.value.trim() : '';
-  if (!name) { showToast('请输入分类名称'); if (input) input.focus(); return; }
-  const parentId = ksState.currentCategory || null;
-  if (saveButton) saveButton.disabled = true;
-  try {
-    const r = await window.siteApi.post('/api/knowledge/categories', { name: name, parent_id: parentId });
-    if (!r.ok) {
-      const d = r.payload || {};
-      showToast(d.error || '新建分类失败');
-      return;
-    }
-    ksToggleCategoryCreate(false);
-    ksState.currentCategory = null;
-    await loadKnowledge(true);
-    showToast('分类已创建');
-  } catch (e) {
-    showToast('网络异常，请稍后重试');
-  } finally {
-    if (saveButton) saveButton.disabled = false;
-  }
+  if (saveButton) saveButton.disabled = !!busy;
 }
 
 function ksToggleCategoryEdit(show, categoryId, mode) {
@@ -945,67 +748,24 @@ function ksToggleCategoryEdit(show, categoryId, mode) {
   else if (input) input.focus();
 }
 
-async function ksUpdateCategory() {
-  const category = ksFindCategory(ksState.categories, ksState.categoryActionId);
-  if (!category || !category.can_manage) return;
+// 分类编辑表单的 DOM 段（ksUpdateCategory 的输入读取/聚焦/按钮态，取数在 Presenter）
+function ksReadCategoryEditForm() {
   const input = ksEl('ks-cat-edit-name');
   const parentSelect = ksEl('ks-cat-edit-parent');
-  const saveButton = ksEl('ks-cat-edit-save');
-  const name = input ? input.value.trim() : '';
-  if (ksState.categoryActionMode === 'rename' && !name) {
-    showToast('请输入分类名称');
-    if (input) input.focus();
-    return;
-  }
-  if (saveButton) saveButton.disabled = true;
-  try {
-    const isMove = ksState.categoryActionMode === 'move';
-    const categoryPayload = isMove
-      ? { parent_id: parentSelect && parentSelect.value ? parentSelect.value : null, before_id: null }
-      : { name: name };
-    const r = isMove
-      ? await window.siteApi.post('/api/knowledge/categories/' + category.id + '/move', categoryPayload)
-      : await window.siteApi.put('/api/knowledge/categories/' + category.id, categoryPayload);
-    if (!r.ok) {
-      const d = r.payload || {};
-      showToast(d.error || (isMove ? '移动分类失败' : '重命名分类失败'));
-      return;
-    }
-    ksToggleCategoryEdit(false);
-    await loadKnowledge(true);
-    await ksLoadArticles();
-    showToast(isMove ? '分类已移动' : '分类已重命名');
-  } catch (e) {
-    showToast('网络异常，请稍后重试');
-  } finally {
-    if (saveButton) saveButton.disabled = false;
-  }
+  return {
+    name: input ? input.value.trim() : '',
+    parentId: parentSelect ? (parentSelect.value || null) : null,
+  };
 }
 
-async function ksDeleteCategory(categoryId) {
-  const category = ksFindCategory(ksState.categories, categoryId);
-  if (!category || !category.can_manage) return;
-  const childWarning = category.children && category.children.length
-    ? '，它的子分类会移到一级目录'
-    : '';
-  if (!await projectConfirm(
-    '确定删除分类「' + category.name + '」吗？相关文章将变为未分类' + childWarning + '。',
-    { title: '删除分类', confirmText: '删除', danger: true }
-  )) return;
-  try {
-    const r = await window.siteApi.del('/api/knowledge/categories/' + category.id);
-    if (!r.ok) {
-      const d = r.payload || {};
-      showToast(d.error || '删除分类失败');
-      return;
-    }
-    if (ksState.currentCategory === category.id) ksState.currentCategory = null;
-    ksToggleCategoryEdit(false);
-    await loadKnowledge(true);
-    showToast('分类已删除');
-  } catch (e) {
-    showToast('网络异常，请稍后重试');
-  }
+function ksFocusCategoryEditName() {
+  const input = ksEl('ks-cat-edit-name');
+  if (input) input.focus();
+}
+
+function ksSetCategoryEditBusy(busy) {
+  const saveButton = ksEl('ks-cat-edit-save');
+  if (saveButton) saveButton.disabled = !!busy;
 }
 
 function ksCloseCategoryMenus(except) {
@@ -1055,23 +815,6 @@ function ksSiblingNodes(parentId) {
   if (!parentId) return ksState.categories;
   const parent = ksFindCategory(ksState.categories, parentId);
   return parent && parent.children ? parent.children : [];
-}
-
-async function ksMoveCategory(categoryId, parentId, beforeId) {
-  const category = ksFindCategory(ksState.categories, categoryId);
-  if (!category || !category.can_manage) return;
-  try {
-    const r = await window.siteApi.post('/api/knowledge/categories/' + categoryId + '/move', { parent_id: parentId || null, before_id: beforeId || null });
-    if (!r.ok) {
-      const d = r.payload || {};
-      showToast(d.error || '移动分类失败');
-      return;
-    }
-    await loadKnowledge(true);
-    await ksLoadArticles();
-  } catch (e) {
-    showToast('网络异常，请稍后重试');
-  }
 }
 
 function ksBindCategoryDrag(tree) {

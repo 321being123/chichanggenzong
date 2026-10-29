@@ -1,4 +1,31 @@
-var mvState = { market: 'CN', benchmark: 'CSI300', range: '20y', overview: null, history: [], draft: null, loading: false };
+// 市场波动 View（批次4：View／Presenter 分离）。
+// 职责：只做渲染、拖拽与表单读写，并把用户操作上报给全局入口；取数与加载状态在 presenters/market-volatility-presenter.js。
+// 约定：本文件不直接发请求（静态门禁 frontend_api_client 校验），也不决定何时采集。
+// View 对外入口（批次4）：Presenter 只调这些函数改界面，自己不碰 DOM。
+function mvSetStatus(text) {
+  var status = document.getElementById('mv-status');
+  if (!status) return;
+  status.textContent = text;
+}
+function mvSetLoadError(e) {
+  var status = document.getElementById('mv-status');
+  if (status) status.textContent = '数据加载失败：' + (e.message || e);
+  document.getElementById('mv-content').style.display = 'none';
+}
+function mvSetSaveBusy(busy) {
+  var button = document.getElementById('mv-save');
+  if (!button) return;
+  button.disabled = !!busy;
+}
+function mvSetSaveText(text) {
+  var button = document.getElementById('mv-save');
+  if (!button) return;
+  button.textContent = text;
+}
+function mvHideDraftControls() {
+  document.getElementById('mv-cancel').disabled = true;
+  document.getElementById('mv-draft').hidden = true;
+}
 function mvNum(v, d) { return Number.isFinite(Number(v)) ? Number(v).toFixed(d == null ? 2 : d) : '--'; }
 function mvPct(v) { return Number.isFinite(Number(v)) ? mvNum(v, 2) + '%' : '--'; }
 function mvLadder(lower, upper) { var l=Number(lower),u=Number(upper); if(!Number.isFinite(l)||!Number.isFinite(u)||l<=0||u<=l)return []; var out=[]; for(var i=0;i<7;i++) out.push({value:Number((l+(u-l)*i/6).toFixed(4)),position:20+i*10}); return out; }
@@ -21,27 +48,6 @@ function initMarketVolatility() {
   loadMarketCycleHomeConfig();
 }
 function mvReload() { mvState.overview = null; mvState.history = []; mvState.draft = null; loadMarketVolatility(); }
-async function loadMarketVolatility() {
-  initMarketVolatility(); if (mvState.loading) return;
-  var account = mvAccount(), status = document.getElementById('mv-status');
-  mvState.loading = true; status.textContent = '正在读取数据...';
-  try {
-    // 账户列表后台异步加载；未就绪时 currentAccount 仍是占位值「默认账户」，
-    // 直接发请求会被账户归属校验拒为 403（深链/登录回跳进入本页时必现），须等就绪后重取。
-    if (window.accountDataReady) { try { await window.accountDataReady; } catch (err) {} }
-    account = mvAccount();
-    var qs = 'market=' + encodeURIComponent(mvState.market) + '&benchmark=' + encodeURIComponent(mvState.benchmark);
-    // 仍并发两个请求（互相不依赖，串行会白白多等一个往返），只是发送统一走入口。
-    var both = await Promise.all([
-      window.siteApi.get('/api/market-volatility/overview?' + qs + '&account=' + encodeURIComponent(account)),
-      window.siteApi.get('/api/market-volatility/history?' + qs + '&range=' + encodeURIComponent(mvState.range)),
-    ]);
-    if (!both[0].ok || !both[1].ok) throw new Error('接口返回 ' + (!both[0].ok ? both[0].status : both[1].status));
-    mvState.overview = both[0].payload; mvState.history = (both[1].payload || {}).history || [];
-    mvState.draft = null; mvRender();
-  } catch (e) { status.textContent = '数据加载失败：' + (e.message || e); document.getElementById('mv-content').style.display = 'none'; }
-  finally { mvState.loading = false; }
-}
 function mvRender() {
   var o = mvState.overview, current = o && o.current, status = document.getElementById('mv-status');
   document.querySelectorAll('[data-mv-market]').forEach(function (b) { b.classList.toggle('active', b.dataset.mvMarket === mvState.market); });
@@ -90,26 +96,4 @@ function mvBeginDrag(e, boundary, min, max) {
   function preview(ev) { var box=chart.getBoundingClientRect(), svgY=(ev.clientY-box.top)*320/box.height, ratio=Math.max(0,Math.min(1,(svgY-18)/266)), value=max-ratio*(max-min); if(boundary==='lower')previewLower=Math.min(Math.max(.0001,value),previewUpper-.0001); else previewUpper=Math.max(value,previewLower+.0001); var rows=mvLadder(previewLower,previewUpper); for(var i=0;i<7;i++){var yy=18+(max-rows[i].value)*266/(max-min); chart.querySelector('[data-ladder="'+i+'"]').setAttribute('y1',yy); chart.querySelector('[data-ladder="'+i+'"]').setAttribute('y2',yy); chart.querySelector('[data-ladder-label="'+i+'"]').setAttribute('y',yy-5); } var lowerY=18+(max-previewLower)*266/(max-min),upperY=18+(max-previewUpper)*266/(max-min); chart.querySelector('[data-boundary="lower"]').setAttribute('y1',lowerY); chart.querySelector('[data-boundary="lower"]').setAttribute('y2',lowerY); chart.querySelector('[data-boundary="upper"]').setAttribute('y1',upperY); chart.querySelector('[data-boundary="upper"]').setAttribute('y2',upperY); document.querySelector('#mv-chart .mv-tooltip').hidden=true; document.getElementById('mv-draft').hidden=false; document.getElementById('mv-draft').textContent=(boundary==='upper'?'最高':'最低')+'边界预览：'+mvNum(boundary==='upper'?previewUpper:previewLower,2)+'%'; }
   function done(ev) { chart.removeEventListener('pointermove',preview); chart.removeEventListener('pointerup',done); chart.removeEventListener('pointercancel',done); chart.classList.remove('mv-dragging'); if(Number.isFinite(previewLower)&&Number.isFinite(previewUpper)){mvState.draft={lower:Number(previewLower.toFixed(4)),upper:Number(previewUpper.toFixed(4)),version:(mvState.overview.setting||{version:0}).version}; document.getElementById('mv-cancel').disabled=false; document.getElementById('mv-save').disabled=false; mvRender();} }
   chart.addEventListener('pointermove',preview); chart.addEventListener('pointerup',done); chart.addEventListener('pointercancel',done); preview(e);
-}
-async function mvSaveDraft() {
-  var d=mvState.draft,account=mvAccount(),button=document.getElementById('mv-save');
-  if(!d){showToast('请先拖动边界后再保存');return;}
-  if(!username){
-    window.location.href=api('/login.html?redirect='+encodeURIComponent('/?main=market-volatility&metric=graham'));
-    return;
-  }
-  if(!account){showToast('请先选择账户后再保存');return;}
-  button.disabled=true;button.textContent='保存中...';
-  try {
-    var r=await window.siteApi.put('/api/market-volatility/settings',{
-      market:mvState.market,benchmark:mvState.benchmark,lowerBoundaryPct:d.lower,upperBoundaryPct:d.upper,accountName:account,version:d.version
-    },{credentials:'same-origin'});
-    var json=r.payload||{};if(!r.ok)throw new Error(json.error||r.status);
-    mvState.draft=null;document.getElementById('mv-cancel').disabled=true;document.getElementById('mv-draft').hidden=true;
-    await loadMarketVolatility();showToast('边界保存成功');
-  } catch(e) {
-    button.disabled=false;showToast('保存失败：'+(e.message||e));
-  } finally {
-    button.textContent='保存边界';
-  }
 }

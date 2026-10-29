@@ -3,10 +3,11 @@
 // 契约见 docs/意见反馈与版本发布闭环研发方案_20261023.md 第三、六节。
 // 约定：CSP 已关闭内联脚本属性，所有交互走 data-fb-act 事件委托；
 // 图片在浏览器内先压缩为 WebP（长边≤2048、每张≤1MiB），失败明确提示，不静默上传原图。
+// 批次4 View／Presenter 分离：取数、状态与请求序号在 presenters/feedback-presenter.js，
+// 本文件只做 DOM/HTML 渲染、图片压缩与事件绑定，取数经 window.feedbackPresenter 转调。
 (function () {
   'use strict';
 
-  var SUBS = ['all', 'mine', 'ranking', 'versions'];
   var TYPE_LABELS = { bug: '错误', improvement: '改进', feature: '需求' };
   var STATUS_LABELS = {
     new: '未处理', needs_info: '待补充', accepted: '已采纳', in_progress: '进行中',
@@ -19,16 +20,9 @@
   var MAX_EDGE = 2048;
   var TARGET_BYTES = 1024 * 1024;
 
-  var state = {
-    sub: 'versions',
-    detailId: null,
-    seq: 0,
-    list: { page: 1, pageSize: 20, q: '', type: '', status: '', from: '', to: '', sort: 'created' },
-    mine: { page: 1, pageSize: 20, status: '' },
-    rank: { page: 1, pageSize: 20 },
-    form: null,
-    loaded: {}
-  };
+  // 批次4：状态与请求序号归 Presenter（presenters/feedback-presenter.js）持有，
+  // 这里按引用取同一 state 对象，渲染与事件委托体内的 state.xxx 读写保持不动。
+  var state = window.feedbackPresenter.state;
 
   function esc(v) { return escapeHtml(String(v == null ? '' : v)); }
   // 登录名是经典脚本的顶层变量；window 属性与直接引用都做兼容，避免取不到已登录状态
@@ -58,48 +52,6 @@
   }
   function statusBadge(status) {
     return '<span class="fb-badge fb-badge--' + esc(status) + '">' + esc(STATUS_LABELS[status] || status) + '</span>';
-  }
-
-  // ---------- 地址栏 ----------
-  function syncUrl(push) {
-    var params = new URLSearchParams(window.location.search);
-    params.set('main', 'feedback');
-    params.set('sub', state.sub);
-    if (state.detailId) params.set('feedback', state.detailId);
-    else params.delete('feedback');
-    var url = '/?' + params.toString();
-    if (!push) return;
-    if (window.location.pathname + window.location.search !== url) history.pushState(null, '', url);
-  }
-
-  function readUrl() {
-    var params = new URLSearchParams(window.location.search);
-    var sub = params.get('sub');
-    // 默认落在「版本更新」：只看看版本改了什么，不默认把人丢进反馈列表（2026-10-25 反馈）
-    state.sub = SUBS.indexOf(sub) >= 0 ? sub : 'versions';
-    state.detailId = params.get('feedback') || null;
-  }
-
-  // ---------- 请求 ----------
-  async function requestJson(url, options) {
-    var res = await window.siteApi.request(url, options);
-    if (!res.ok) {
-      var msg = (res.payload && res.payload.error) || ('请求失败（' + res.status + '）');
-      var err = new Error(msg);
-      err.status = res.status;
-      throw err;
-    }
-    return res.payload || {};
-  }
-
-  function buildQuery(base) {
-    var params = [];
-    Object.keys(base).forEach(function (k) {
-      var v = base[k];
-      if (v === '' || v == null) return;
-      params.push(encodeURIComponent(k) + '=' + encodeURIComponent(v));
-    });
-    return params.length ? '?' + params.join('&') : '';
   }
 
   // ---------- 骨架 ----------
@@ -168,72 +120,67 @@
       + '</article>';
   }
 
-  async function loadList() {
+  // View 对外入口（批次4）：Presenter 只调这些函数改界面，自己不碰 DOM。
+  function feedbackPaintListPrepare() {
     var host = ensureShell();
-    if (!host) return;
+    if (!host) return false;
     var isMine = state.sub === 'mine';
     if (isMine && !currentUser()) {
       host.innerHTML = '<div class="fb-panel"><p class="fb-empty">登录后可以查看你提交的全部反馈</p>'
         + '<div class="u-mb-12" data-style="text-align:center">'
         + '<a class="btn btn-primary" href="' + esc(api('/login.html?redirect=' + encodeURIComponent('/?main=feedback&sub=mine'))) + '">去登录</a>'
         + '</div></div>';
-      return;
+      return false;
     }
     renderListShell(host);
-    var st = isMine ? state.mine : state.list;
-    var seq = ++state.seq;
-    try {
-      var filter = isMine
-        ? { status: st.status, page: st.page, pageSize: st.pageSize }
-        : {
-          q: st.q, type: st.type, status: st.status, from: st.from, to: st.to,
-          sort: st.sort, page: st.page, pageSize: st.pageSize
-        };
-      var countFilter = Object.assign({}, filter);
-      delete countFilter.page; delete countFilter.pageSize; delete countFilter.status;
-      var results = await Promise.all([
-        requestJson('/api/feedback' + (isMine ? '/mine' : '') + buildQuery(filter)),
-        requestJson('/api/feedback/counts' + buildQuery(Object.assign({ scope: isMine ? 'mine' : 'public' }, countFilter))),
-      ]);
-      if (seq !== state.seq) return; // 乱序响应不覆盖当前子页
-      renderChips(results[1]);
-      var data = results[0];
-      var listHost = byId('fb-list');
-      if (!data.items || !data.items.length) {
-        listHost.innerHTML = '<p class="fb-empty">还没有符合条件的反馈</p>';
-        return;
-      }
-      listHost.innerHTML = '<div class="fb-list">' + data.items.map(cardHtml).join('') + '</div>';
-      var pageCount = Math.max(1, Math.ceil((data.total || 0) / st.pageSize));
-      if (pageCount > 1) {
-        listHost.innerHTML += '<div class="fb-pager">'
-          + '<button type="button" class="btn btn-outline btn-sm" data-fb-act="page" data-page="' + (st.page - 1) + '"'
-          + (st.page <= 1 ? ' disabled' : '') + '>上一页</button>'
-          + '<span>第 ' + st.page + ' / ' + pageCount + ' 页（共 ' + data.total + ' 条）</span>'
-          + '<button type="button" class="btn btn-outline btn-sm" data-fb-act="page" data-page="' + (st.page + 1) + '"'
-          + (st.page >= pageCount ? ' disabled' : '') + '>下一页</button></div>';
-      }
-    } catch (err) {
-      if (seq !== state.seq) return;
-      renderError(byId('fb-list') || host, err);
+    return true;
+  }
+
+  function feedbackPaintListResults(results, st) {
+    renderChips(results[1]);
+    var data = results[0];
+    var listHost = byId('fb-list');
+    if (!data.items || !data.items.length) {
+      listHost.innerHTML = '<p class="fb-empty">还没有符合条件的反馈</p>';
+      return;
+    }
+    listHost.innerHTML = '<div class="fb-list">' + data.items.map(cardHtml).join('') + '</div>';
+    var pageCount = Math.max(1, Math.ceil((data.total || 0) / st.pageSize));
+    if (pageCount > 1) {
+      listHost.innerHTML += '<div class="fb-pager">'
+        + '<button type="button" class="btn btn-outline btn-sm" data-fb-act="page" data-page="' + (st.page - 1) + '"'
+        + (st.page <= 1 ? ' disabled' : '') + '>上一页</button>'
+        + '<span>第 ' + st.page + ' / ' + pageCount + ' 页（共 ' + data.total + ' 条）</span>'
+        + '<button type="button" class="btn btn-outline btn-sm" data-fb-act="page" data-page="' + (st.page + 1) + '"'
+        + (st.page >= pageCount ? ' disabled' : '') + '>下一页</button></div>';
     }
   }
 
-  // ---------- 详情 ----------
-  async function loadDetail() {
+  function feedbackPaintListError(err) {
     var host = ensureShell();
     if (!host) return;
-    var seq = ++state.seq;
+    renderError(byId('fb-list') || host, err);
+  }
+
+  // ---------- 详情 ----------
+  function feedbackPaintDetailPrepare() {
+    var host = ensureShell();
+    if (!host) return false;
     host.innerHTML = '<div class="fb-panel"><p class="fb-empty">加载中…</p></div>';
-    try {
-      var data = await requestJson('/api/feedback/' + encodeURIComponent(state.detailId));
-      if (seq !== state.seq) return;
-      renderDetail(host, data);
-    } catch (err) {
-      if (seq !== state.seq) return;
-      host.innerHTML = '<div class="fb-panel"><div class="fb-empty">该反馈不存在或无权访问</div>'
-        + '<div class="u-mb-12" data-style="text-align:center"><button type="button" class="btn btn-outline" data-fb-act="back">返回列表</button></div></div>';
-    }
+    return true;
+  }
+
+  function feedbackPaintDetail(data) {
+    var host = ensureShell();
+    if (!host) return;
+    renderDetail(host, data);
+  }
+
+  function feedbackPaintDetailMissing() {
+    var host = ensureShell();
+    if (!host) return;
+    host.innerHTML = '<div class="fb-panel"><div class="fb-empty">该反馈不存在或无权访问</div>'
+      + '<div class="u-mb-12" data-style="text-align:center"><button type="button" class="btn btn-outline" data-fb-act="back">返回列表</button></div></div>';
   }
 
   function renderDetail(host, data) {
@@ -335,42 +282,46 @@
   }
 
   // ---------- 排名 ----------
-  async function loadRanking() {
+  function feedbackPaintRankingPrepare() {
+    var host = ensureShell();
+    if (!host) return false;
+    host.innerHTML = '<div class="fb-panel"><p class="fb-empty">加载中…</p></div>';
+    return true;
+  }
+
+  function feedbackPaintRanking(data) {
     var host = ensureShell();
     if (!host) return;
-    host.innerHTML = '<div class="fb-panel"><p class="fb-empty">加载中…</p></div>';
-    var seq = ++state.seq;
-    try {
-      var data = await requestJson('/api/feedback/ranking' + buildQuery(state.rank));
-      if (seq !== state.seq) return;
-      var html = '<div class="fb-panel"><h3 class="fb-section-title" data-style="margin-top:0">公开反馈数排名</h3>'
-        + '<p class="fb-upload-tip u-mb-12">按公开有效反馈数量排序：私密、已隐藏和已撤回的不计入；重复与不采纳仍算正常提交。</p>';
-      if (!data.items || !data.items.length) {
-        html += '<p class="fb-empty">暂无排名记录</p>';
-      } else {
-        html += '<div class="fb-rank-list">' + data.items.map(function (r) {
-          return '<div class="fb-rank-row">'
-            + '<span class="fb-rank-no">' + r.rank + '</span>'
-            + '<span class="fb-rank-avatar">' + (r.avatar ? '<img src="' + esc(r.avatar) + '" alt="">' : esc(String(r.nickname || '?').charAt(0))) + '</span>'
-            + '<span class="fb-rank-name">' + esc(r.nickname) + '</span>'
-            + '<span class="fb-rank-count">' + r.count + ' 条</span></div>';
-        }).join('') + '</div>';
-      }
-      var pageCount = Math.max(1, Math.ceil((data.total || 0) / state.rank.pageSize));
-      if (pageCount > 1) {
-        html += '<div class="fb-pager">'
-          + '<button type="button" class="btn btn-outline btn-sm" data-fb-act="rank-page" data-page="' + (state.rank.page - 1) + '"' + (state.rank.page <= 1 ? ' disabled' : '') + '>上一页</button>'
-          + '<span>第 ' + state.rank.page + ' / ' + pageCount + ' 页</span>'
-          + '<button type="button" class="btn btn-outline btn-sm" data-fb-act="rank-page" data-page="' + (state.rank.page + 1) + '"' + (state.rank.page >= pageCount ? ' disabled' : '') + '>下一页</button></div>';
-      }
-      html += '<div class="fb-my-rank">我的公开排名：' + (data.mine
-        ? '第 ' + data.mine.rank + ' 名，' + data.mine.count + ' 条公开反馈'
-        : '暂无排名') + '</div></div>';
-      host.innerHTML = html;
-    } catch (err) {
-      if (seq !== state.seq) return;
-      renderError(host, err);
+    var html = '<div class="fb-panel"><h3 class="fb-section-title" data-style="margin-top:0">公开反馈数排名</h3>'
+      + '<p class="fb-upload-tip u-mb-12">按公开有效反馈数量排序：私密、已隐藏和已撤回的不计入；重复与不采纳仍算正常提交。</p>';
+    if (!data.items || !data.items.length) {
+      html += '<p class="fb-empty">暂无排名记录</p>';
+    } else {
+      html += '<div class="fb-rank-list">' + data.items.map(function (r) {
+        return '<div class="fb-rank-row">'
+          + '<span class="fb-rank-no">' + r.rank + '</span>'
+          + '<span class="fb-rank-avatar">' + (r.avatar ? '<img src="' + esc(r.avatar) + '" alt="">' : esc(String(r.nickname || '?').charAt(0))) + '</span>'
+          + '<span class="fb-rank-name">' + esc(r.nickname) + '</span>'
+          + '<span class="fb-rank-count">' + r.count + ' 条</span></div>';
+      }).join('') + '</div>';
     }
+    var pageCount = Math.max(1, Math.ceil((data.total || 0) / state.rank.pageSize));
+    if (pageCount > 1) {
+      html += '<div class="fb-pager">'
+        + '<button type="button" class="btn btn-outline btn-sm" data-fb-act="rank-page" data-page="' + (state.rank.page - 1) + '"' + (state.rank.page <= 1 ? ' disabled' : '') + '>上一页</button>'
+        + '<span>第 ' + state.rank.page + ' / ' + pageCount + ' 页</span>'
+        + '<button type="button" class="btn btn-outline btn-sm" data-fb-act="rank-page" data-page="' + (state.rank.page + 1) + '"' + (state.rank.page >= pageCount ? ' disabled' : '') + '>下一页</button></div>';
+    }
+    html += '<div class="fb-my-rank">我的公开排名：' + (data.mine
+      ? '第 ' + data.mine.rank + ' 名，' + data.mine.count + ' 条公开反馈'
+      : '暂无排名') + '</div></div>';
+    host.innerHTML = html;
+  }
+
+  function feedbackPaintRankingError(err) {
+    var host = ensureShell();
+    if (!host) return;
+    renderError(host, err);
   }
 
   // ---------- 版本更新 ----------
@@ -410,31 +361,16 @@
     host.innerHTML = html;
   }
 
-  async function loadVersions() {
+  function feedbackPaintVersionsPrepare() {
+    var host = ensureShell();
+    if (!host) return false;
+    host.innerHTML = '<div class="fb-panel"><p class="fb-empty">加载中…</p></div>';
+    return true;
+  }
+
+  function feedbackPaintVersions(merged, linkMap, linkNote, loadError) {
     var host = ensureShell();
     if (!host) return;
-    host.innerHTML = '<div class="fb-panel"><p class="fb-empty">加载中…</p></div>';
-    var seq = ++state.seq;
-    var merged = [];
-    var loadError = null;
-    try {
-      var res = await window.siteApi.get('/changelog.json');
-      if (!res.ok) throw new Error('版本记录读取失败');
-      merged = mergeChangelogByDate(res.payload);
-    } catch (err) { loadError = err; }
-    // 版本关联映射失败时不影响版本正文展示
-    var linkMap = {};
-    var linkNote = '';
-    try {
-      var versions = merged.map(function (d) { return d.version; }).filter(Boolean).slice(0, 50);
-      if (versions.length) {
-        var res = await requestJson('/api/feedback/version-links?versions=' + encodeURIComponent(versions.join(',')));
-        linkMap = res.map || {};
-      }
-    } catch (e) {
-      linkNote = '<p class="fb-upload-tip u-mb-12">关联反馈暂不可用，版本内容仍可正常查看。</p>';
-    }
-    if (seq !== state.seq) return;
     if (loadError) { renderError(host, loadError); return; }
     versionsCache = { list: merged, linkMap: linkMap, linkNote: linkNote };
     renderVersions();
@@ -622,176 +558,78 @@
     await addFiles(picked);
   }
 
-  async function submitForm() {
-    if (!state.form || state.form.submitting) return;
-    var form = state.form;
+  function feedbackReadSubmitForm() {
     var title = (byId('fb-form-title-input') || {}).value || '';
     var description = (byId('fb-form-desc') || {}).value || '';
     var type = (byId('fb-form-type') || {}).value || 'bug';
     var pagePath = (byId('fb-form-page') || {}).value || '';
-    if (!title.trim()) { toast('请填写标题'); return; }
-    if (!description.trim()) { toast('请填写描述'); return; }
+    return { title: title, description: description, type: type, pagePath: pagePath };
+  }
+
+  function feedbackBeginSubmit() {
     var btn = byId('fb-form-submit');
     if (btn) { btn.disabled = true; btn.textContent = '提交中…'; }
-    form.submitting = true;
-    try {
-      if (form.mode === 'edit') {
-        var result = await requestJson('/api/feedback/' + encodeURIComponent(form.id), {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ title: title, description: description, type: type, pagePath: pagePath, expectedRevision: form.revision }),
-        });
-        closeForm();
-        toast('已保存');
-        state.detailId = String(form.id);
-        await refreshCurrent();
-        return;
-      }
-      var visibilityEl = document.querySelector('input[name="fb-visibility"]:checked');
-      var body = new FormData();
-      body.append('type', type);
-      body.append('title', title);
-      body.append('description', description);
-      body.append('pagePath', pagePath);
-      body.append('visibility', visibilityEl ? visibilityEl.value : 'public');
-      body.append('clientRequestId', form.requestId);
-      form.files.forEach(function (f) { body.append('images', f); });
-      var created = await requestJson('/api/feedback', { method: 'POST', body: body });
-      var fromFab = form.source === 'fab';
-      closeForm();
-      toast('已提交，感谢反馈');
-      // 全局悬浮入口提交后停留当前页；反馈栏目内提交则落到「全部反馈」并打开新记录
-      if (fromFab) return;
-      // 不走 switchFeedbackSub（那里会清空 detailId）
-      state.sub = 'all';
-      state.detailId = String(created.id);
-      renderSubTabs();
-      syncUrl(true);
-      await loadDetail();
-    } catch (err) {
-      if (btn) { btn.disabled = false; btn.textContent = form.mode === 'edit' ? '保存' : '提交'; }
-      form.submitting = false;
-      toast(err.message || '提交失败，请重试');
-    }
+  }
+
+  function feedbackEndSubmit(form) {
+    var btn = byId('fb-form-submit');
+    if (btn) { btn.disabled = false; btn.textContent = form.mode === 'edit' ? '保存' : '提交'; }
+  }
+
+  function feedbackReadVisibility() {
+    var visibilityEl = document.querySelector('input[name="fb-visibility"]:checked');
+    return visibilityEl ? visibilityEl.value : 'public';
   }
 
   // ---------- 子页切换 ----------
-  async function switchFeedbackSub(sub, noPush) {
-    closeForm();
-    state.sub = SUBS.indexOf(sub) >= 0 ? sub : 'versions';
-    state.detailId = null;
-    if (!noPush) syncUrl(true);
-    renderSubTabs();
-    await refreshCurrent();
-  }
-
   function renderSubTabs() {
     document.querySelectorAll('#main-feedback [data-fb-sub]').forEach(function (tab) {
       tab.classList.toggle('active', tab.getAttribute('data-fb-sub') === state.sub);
     });
   }
 
-  async function refreshCurrent() {
-    if (state.detailId) return loadDetail();
-    if (state.sub === 'all') return loadList();
-    if (state.sub === 'mine') return loadList();
-    if (state.sub === 'ranking') return loadRanking();
-    if (state.sub === 'versions') return loadVersions();
-    return null;
+  // ---------- 详情动作的 DOM 读取（批次4：Presenter 经 window 调用） ----------
+  function feedbackOpenEditForm(data) {
+    openForm('edit', data);
   }
 
-  // ---------- 详情动作 ----------
-  async function detailAction(action, el) {
-    var id = state.detailId;
-    if (!id) return;
-    var data = await requestJson('/api/feedback/' + encodeURIComponent(id));
-    var revision = data.feedback.revision;
-    if (action === 'withdraw') {
-      if (!window.projectConfirm) return;
-      if (!await window.projectConfirm('撤回后不再出现在公开列表和排名中，确定撤回？')) return;
-      await requestJson('/api/feedback/' + encodeURIComponent(id) + '/withdraw', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ expectedRevision: revision }),
-      });
-      toast('已撤回');
-      await loadDetail();
-      return;
-    }
-    if (action === 'visibility') {
-      var to = el.getAttribute('data-to');
-      if (to === 'public' && window.projectConfirm && !await window.projectConfirm('改为公开后所有人可见，确认？')) return;
-      await requestJson('/api/feedback/' + encodeURIComponent(id) + '/visibility', {
-        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ visibility: to, expectedRevision: revision }),
-      });
-      toast(to === 'public' ? '已设为公开' : '已收为私密');
-      await loadDetail();
-      return;
-    }
-    if (action === 'complete-info') {
-      await requestJson('/api/feedback/' + encodeURIComponent(id) + '/complete-info', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ expectedRevision: revision }),
-      });
-      toast('已提交补充，状态回到未处理');
-      await loadDetail();
-      return;
-    }
-    if (action === 'edit') {
-      openForm('edit', data);
-      return;
-    }
-    if (action === 'reply') {
-      var input = byId('fb-reply-input');
-      var content = input ? input.value : '';
-      if (!content.trim()) { toast('请填写回复内容'); return; }
-      var requestId = (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : ('c-' + Date.now());
-      await requestJson('/api/feedback/' + encodeURIComponent(id) + '/comments', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ content: content, clientRequestId: requestId }),
-      });
-      toast('已回复');
-      await loadDetail();
-      return;
-    }
-    if (action === 'del-comment') {
-      var cid = el.getAttribute('data-cid');
-      if (window.projectConfirm && !await window.projectConfirm('删除后该回复正文不再展示，确认删除？')) return;
-      await requestJson('/api/feedback/' + encodeURIComponent(id) + '/comments/' + encodeURIComponent(cid), { method: 'DELETE' });
-      toast('已删除');
-      await loadDetail();
-      return;
-    }
-    if (action === 'del-shot') {
-      var aid = el.getAttribute('data-aid');
-      if (window.projectConfirm && !await window.projectConfirm('移除这张截图？移除后只有你和管理员还能看到。')) return;
-      await requestJson('/api/feedback/' + encodeURIComponent(id) + '/attachments/' + encodeURIComponent(aid)
-        + '?expectedRevision=' + encodeURIComponent(revision), { method: 'DELETE' });
-      toast('截图已移除');
-      await loadDetail();
-      return;
-    }
-    if (action === 'add-shots') {
-      var pick = byId('fb-detail-files');
-      var chosen = pick ? Array.prototype.slice.call(pick.files || []) : [];
-      if (!chosen.length) { toast('请先选择图片'); return; }
-      if (pick) pick.value = '';
-      var form = new FormData();
-      form.append('expectedRevision', revision);
-      form.append('clientRequestId', (window.crypto && crypto.randomUUID)
-        ? crypto.randomUUID() : ('att-' + Date.now() + '-' + Math.random().toString(16).slice(2)));
-      for (var i = 0; i < chosen.length; i++) {
-        try {
-          form.append('images', await compressImage(chosen[i]));
-        } catch (err) {
-          toast(err.message || '图片处理失败，未上传任何图片');
-          return;
-        }
+  function feedbackReadActionTo(el) {
+    return el.getAttribute('data-to');
+  }
+
+  function feedbackReadActionCid(el) {
+    return el.getAttribute('data-cid');
+  }
+
+  function feedbackReadActionAid(el) {
+    return el.getAttribute('data-aid');
+  }
+
+  function feedbackReadReplyContent() {
+    var input = byId('fb-reply-input');
+    var content = input ? input.value : '';
+    if (!content.trim()) { toast('请填写回复内容'); return null; }
+    return content;
+  }
+
+  async function feedbackBuildAttachForm(revision) {
+    var pick = byId('fb-detail-files');
+    var chosen = pick ? Array.prototype.slice.call(pick.files || []) : [];
+    if (!chosen.length) { toast('请先选择图片'); return null; }
+    if (pick) pick.value = '';
+    var form = new FormData();
+    form.append('expectedRevision', revision);
+    form.append('clientRequestId', (window.crypto && crypto.randomUUID)
+      ? crypto.randomUUID() : ('att-' + Date.now() + '-' + Math.random().toString(16).slice(2)));
+    for (var i = 0; i < chosen.length; i++) {
+      try {
+        form.append('images', await compressImage(chosen[i]));
+      } catch (err) {
+        toast(err.message || '图片处理失败，未上传任何图片');
+        return null;
       }
-      await requestJson('/api/feedback/' + encodeURIComponent(id) + '/attachments', { method: 'POST', body: form });
-      toast('截图已追加');
-      await loadDetail();
     }
+    return form;
   }
 
   // ---------- 事件委托 ----------
@@ -923,14 +761,19 @@
   }
 
   // ---------- 对外入口 ----------
-  // navigation.js 在栏目懒加载完成后调用
-  function initFeedbackSub() {
-    readUrl();
-    renderSubTabs();
-    if (state.detailId) return loadDetail();
-    return refreshCurrent();
-  }
+  // 批次4：取数与状态在 presenters/feedback-presenter.js；下列按原名转调 Presenter 桥，
+  // 事件委托体与旧调用点的函数体保持不动（调用方无感）。
+  function loadList() { return window.feedbackPresenter.loadList(); }
+  function loadDetail() { return window.feedbackPresenter.loadDetail(); }
+  function loadRanking() { return window.feedbackPresenter.loadRanking(); }
+  function submitForm() { return window.feedbackPresenter.submitForm(); }
+  function detailAction(action, el) { return window.feedbackPresenter.detailAction(action, el); }
+  function switchFeedbackSub(sub, noPush) { return window.feedbackPresenter.switchFeedbackSub(sub, noPush); }
+  function refreshCurrent() { return window.feedbackPresenter.refreshCurrent(); }
+  function initFeedbackSub() { return window.feedbackPresenter.initFeedbackSub(); }
+  function syncUrl(push) { return window.feedbackPresenter.syncUrl(push); }
 
+  // navigation.js 在栏目懒加载完成后调用
   function loadFeedbackPage() {
     bindEvents();
     return initFeedbackSub();
@@ -941,4 +784,30 @@
   window.switchFeedbackSub = switchFeedbackSub;
   window.openFeedbackForm = function (opts) { openForm('create', null, opts); };
   window.FeedbackPage = { reload: refreshCurrent, sub: function () { return state.sub; } };
+
+  // Presenter 回调入口（批次4）：presenters/feedback-presenter.js 只经这些入口改界面。
+  window.feedbackToast = toast;
+  window.feedbackCloseForm = closeForm;
+  window.feedbackRenderSubTabs = renderSubTabs;
+  window.feedbackPaintListPrepare = feedbackPaintListPrepare;
+  window.feedbackPaintListResults = feedbackPaintListResults;
+  window.feedbackPaintListError = feedbackPaintListError;
+  window.feedbackPaintDetailPrepare = feedbackPaintDetailPrepare;
+  window.feedbackPaintDetail = feedbackPaintDetail;
+  window.feedbackPaintDetailMissing = feedbackPaintDetailMissing;
+  window.feedbackPaintRankingPrepare = feedbackPaintRankingPrepare;
+  window.feedbackPaintRanking = feedbackPaintRanking;
+  window.feedbackPaintRankingError = feedbackPaintRankingError;
+  window.feedbackPaintVersionsPrepare = feedbackPaintVersionsPrepare;
+  window.feedbackPaintVersions = feedbackPaintVersions;
+  window.feedbackReadSubmitForm = feedbackReadSubmitForm;
+  window.feedbackBeginSubmit = feedbackBeginSubmit;
+  window.feedbackEndSubmit = feedbackEndSubmit;
+  window.feedbackReadVisibility = feedbackReadVisibility;
+  window.feedbackOpenEditForm = feedbackOpenEditForm;
+  window.feedbackReadActionTo = feedbackReadActionTo;
+  window.feedbackReadActionCid = feedbackReadActionCid;
+  window.feedbackReadActionAid = feedbackReadActionAid;
+  window.feedbackReadReplyContent = feedbackReadReplyContent;
+  window.feedbackBuildAttachForm = feedbackBuildAttachForm;
 })();

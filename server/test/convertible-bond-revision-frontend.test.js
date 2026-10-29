@@ -5,6 +5,8 @@ const path = require('path');
 const root = path.join(__dirname, '..', '..');
 const html = fs.readFileSync(path.join(root, 'public', 'index.html'), 'utf8');
 const page = fs.readFileSync(path.join(root, 'public', 'js', 'bond-revision.js'), 'utf8');
+// 批次4：下修页已拆为 View（渲染）与 Presenter（状态/取数），取数断言指向 presenter。
+const presenter = fs.readFileSync(path.join(root, 'public', 'js', 'presenters', 'bond-revision-presenter.js'), 'utf8');
 const css = fs.readFileSync(path.join(root, 'public', 'css', 'bond-revision.css'), 'utf8');
 const sharedCss = fs.readFileSync(path.join(root, 'public', 'shared', 'style.css'), 'utf8');
 const cycle = fs.readFileSync(path.join(root, 'public', 'js', 'bond-cycle.js'), 'utf8');
@@ -37,7 +39,7 @@ const stockAnalysisService = fs.readFileSync(path.join(root, 'server', 'services
 assert.ok(html.includes('data-sub="revision"') && html.includes('id="sub-bond-revision"'), '缺少下修二级页');
 assert.ok(html.includes('css/bond-revision.css?v=__APP_VERSION__') && html.includes('js/bond-revision.js?v=__APP_VERSION__'), '下修资源未接入首页');
 assert.ok(fs.existsSync(path.join(root, 'public', 'bond-revision-motive.html')) && fs.existsSync(path.join(root, 'public', 'js', 'bond-revision-motive.js')), '缺少下修动机详情页');
-assert.ok(page.includes('/api/bond-revision?limit=2000') && page.includes('biz-table'), '下修页必须只读统一接口并使用统一表格');
+assert.ok(presenter.includes('/api/bond-revision?limit=2000') && page.includes('biz-table'), '下修页必须只读统一接口并使用统一表格');
 assert.ok(page.includes('target="_blank"') && page.includes('noopener noreferrer'), '下修动机列表应在新页面打开');
 assert.ok(page.includes('bond-revision-near') && page.includes('business_status'), '下修页缺少临近触发筛选和状态展示');
 assert.ok(page.includes('BOND_REVISION_OBSERVED') && page.includes('已提议下修（事实）') && page.includes('BOND_REVISION_RESEARCH_LEVEL'), '已确定下修必须展示公告事实，其他对象只展示非预测性的研究等级');

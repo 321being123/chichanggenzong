@@ -1,6 +1,8 @@
 // 上市可转债列表：只展示服务端每日快照，不在浏览器端访问外部数据源。
+// 上市可转债列表 View（批次4：View／Presenter 分离）。
+// 职责：只做渲染、筛选排序与格式化，并把用户操作上报给全局入口；取数与列表状态在 presenters/bond-list-presenter.js。
+// 约定：本文件不直接发请求（静态门禁 frontend_api_client 校验），也不决定何时采集。
 var BOND_LIST_REFRESH_MS = 15 * 60 * 1000;
-var bondListState = { rows: [], filtered: [], sortKey: 'double_low', sortDir: 1, loaded: false, loading: false, lastRefreshAt: 0, refreshTimer: null };
 // 兼容旧页面调用名：实际表头吸顶和底部滚动条已统一交给 BusinessTable。
 function bondListFloatingHead() { return null; }
 function bondListSyncFloatingHead() { if (window.BusinessTable) window.BusinessTable.sync(); }
@@ -111,41 +113,22 @@ function bondListStartAutoRefresh() {
   }, BOND_LIST_REFRESH_MS);
 }
 function bondListRefresh() { loadBondList(true); }
-async function loadBondList(forceRefresh) {
-  forceRefresh = Boolean(forceRefresh);
-  if (bondListState.loading) return;
-  if (!forceRefresh && bondListState.loaded && Date.now() - bondListState.lastRefreshAt < BOND_LIST_REFRESH_MS) {
-    bondListApplyFilters();
-    return;
-  }
-  bondListState.loading = true;
-  bondListSetRefreshButton(true);
+// View 对外入口（批次4）：Presenter 只调这些函数改界面，自己不碰 DOM。
+function bondListShowUpdated(data, forceRefresh) {
   var status = document.getElementById('bond-list-updated');
-  try {
-    var url = '/api/bond-analysis/bonds?limit=1000' + (forceRefresh ? '&refresh=1' : '');
-    // 批次4：取数统一走 siteApi（View 不直接 fetch），错误与 JSON 解析由客户端归一。
-    var result = await window.siteApi.get(url, { cache: 'no-store' });
-    if (!result.ok) throw new Error('接口返回 ' + result.status);
-    var data = result.payload;
-    bondListState.rows = Array.isArray(data.data) ? data.data : [];
-    bondListState.loaded = true;
-    bondListState.lastRefreshAt = Date.now();
-    var stale = document.getElementById('bond-list-stale');
-    if (stale) { stale.classList.remove('js-hidden'); stale.style.display = data.stale ? '' : 'none'; }
-    var quoteTime = data.quote_time ? String(data.quote_time).slice(0, 16).replace('T', ' ') : null;
-    var quoteText = forceRefresh && data.quote_status === 'partial' ? '行情部分更新' : quoteTime ? '行情：' + quoteTime : '收盘数据';
-    if (status) status.textContent = data.trade_date ? '数据日期：' + data.trade_date + ' · ' + quoteText + '（' + bondListState.rows.length + ' 条）' : '暂无数据';
+  var stale = document.getElementById('bond-list-stale');
+  if (stale) { stale.classList.remove('js-hidden'); stale.style.display = data.stale ? '' : 'none'; }
+  var quoteTime = data.quote_time ? String(data.quote_time).slice(0, 16).replace('T', ' ') : null;
+  var quoteText = forceRefresh && data.quote_status === 'partial' ? '行情部分更新' : quoteTime ? '行情：' + quoteTime : '收盘数据';
+  if (status) status.textContent = data.trade_date ? '数据日期：' + data.trade_date + ' · ' + quoteText + '（' + bondListState.rows.length + ' 条）' : '暂无数据';
+}
+
+function bondListShowError(error) {
+  var status = document.getElementById('bond-list-updated');
+  var table = document.getElementById('bond-list-table');
+  if (bondListState.rows.length) {
     bondListApplyFilters();
-  } catch (error) {
-    var table = document.getElementById('bond-list-table');
-    if (bondListState.rows.length) {
-      bondListApplyFilters();
-      if (status) status.textContent = '刷新失败，继续显示上次行情';
-    } else if (table) table.innerHTML = '<div class="bond-list-empty">数据加载失败：' + escapeHtml(error.message || error) + '</div>';
-    if (status && !bondListState.rows.length) status.textContent = '读取失败';
-  } finally {
-    bondListState.loading = false;
-    bondListSetRefreshButton(false);
-    bondListStartAutoRefresh();
-  }
+    if (status) status.textContent = '刷新失败，继续显示上次行情';
+  } else if (table) table.innerHTML = '<div class="bond-list-empty">数据加载失败：' + escapeHtml(error.message || error) + '</div>';
+  if (status && !bondListState.rows.length) status.textContent = '读取失败';
 }

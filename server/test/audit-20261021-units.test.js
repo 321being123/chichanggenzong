@@ -122,7 +122,9 @@ const { isCleanSecurityName } = require('../services/securityIdentity');
   await check('R-17 全局 num/pctv 唯一定义在 utils.js', () => {
     assert.ok(utils.includes('function num(v, d)') && utils.includes('function pctv(v, d)'), 'utils.js 需提供共享格式器');
     assert.ok(!arbitrage.includes('function num(') && !arbitrage.includes('function pctv('), 'arbitrage 不得再覆盖全局格式器');
-    const valuation = fs.readFileSync(path.join(root, 'public', 'js', 'bond-valuation.js'), 'utf8');
+    // 批次4：bond-valuation 取数已拆入 Presenter（presenters/bond-valuation-presenter.js），断言跟随代码覆盖 View＋Presenter。
+    const valuation = fs.readFileSync(path.join(root, 'public', 'js', 'bond-valuation.js'), 'utf8')
+      + fs.readFileSync(path.join(root, 'public', 'js', 'presenters', 'bond-valuation-presenter.js'), 'utf8');
     const cycle = fs.readFileSync(path.join(root, 'public', 'js', 'bond-cycle.js'), 'utf8');
     assert.ok(!valuation.includes('function num(') && !valuation.includes('function pctv('), 'bond-valuation 不得重复定义');
     assert.ok(!cycle.includes('function num('), 'bond-cycle 不得重复定义 num');

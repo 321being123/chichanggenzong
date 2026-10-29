@@ -1,0 +1,116 @@
+// 仓位对比 Presenter（批次4：View／Presenter 分离）。
+// 职责：持有标杆/对比/复制测算状态（state）、经 siteApi 取数与提交（六处请求）、决定何时把结果交给 View。
+// 边界：本文件不直接操作 DOM（静态门禁按 role=presenter、allowDom=false 校验），
+//       按钮/弹窗/表格渲染在 position-comparison.js（View），经 window.positionComparisonView 回调 View；
+//       View 不取数，只渲染并上报用户操作。
+// 契约：docs/仓位对比功能_开发文档.md 5 节；window.PositionComparison 对外 API（HTML data-act 调用面）
+//       仍由 View 组装，键名一字不变，取数入口转调本文件。
+(function () {
+  if (window.positionComparisonPresenter) return;
+  var state = { benchmarks: [], currentBenchmark: null, compareData: null, replicateData: null };
+
+  // 读取当前账户：window.currentAccount 由 index.html/core-account.js 同步维护（顶层 let 不在 window 上，必须经此读取）
+  function getAccount() {
+    return (typeof window.currentAccount === 'string' && window.currentAccount) || '默认账户';
+  }
+
+  // 读取当前账户公开状态
+  async function loadVisibility(accountName) {
+    if (!window.positionComparisonView.visibilitySelectReady()) return;
+    try {
+      var res = await window.siteApi.get('/api/position-comparisons/visibility?account=' + encodeURIComponent(accountName));
+      var d = res.payload || {};
+      if (d && VALID_VISIBILITY.indexOf(d.visibility) >= 0) window.positionComparisonView.applyVisibility(d.visibility);
+    } catch (e) { /* 忽略：保持默认 */ }
+  }
+
+  var VALID_VISIBILITY = ['public', 'semi_public', 'private'];
+
+  // 修改发布状态：完整标杆/脱敏标杆二次确认（不发布无需确认）
+  async function changeVisibility(visibility) {
+    var accountName = getAccount();
+    if (visibility !== 'private') {
+      var tip = visibility === 'public' ? '发布为完整标杆后，其他用户可查看你的完整持仓（含数量、市值）。确定发布吗？' : '发布为脱敏标杆后，其他用户可查看你的持仓比例和证券，但看不到数量、市值和总资产。确定发布吗？';
+      var ok = await window.projectConfirm(tip, { title: '发布官方标杆确认', confirmText: '确定发布' });
+      if (!ok) { window.positionComparisonView.initPositionControls(); return; }
+    }
+    try {
+      var res = await window.siteApi.put('/api/accounts/' + encodeURIComponent(accountName) + '/position-visibility', { visibility: visibility });
+      var d = res.payload || {};
+      if (!res.ok) { showToast(d.error || '发布失败，请重试'); window.positionComparisonView.initPositionControls(); return; }
+      showToast(visibility === 'private' ? '已取消发布（不发布）' : (visibility === 'public' ? '已发布为完整标杆' : '已发布为脱敏标杆'));
+      refreshBenchmarkButton();
+    } catch (e) { showToast('发布失败，请重试'); window.positionComparisonView.initPositionControls(); }
+  }
+
+  // 有无可用标杆 → 控制"仓位对比"按钮显示
+  async function refreshBenchmarkButton() {
+    if (!window.positionComparisonView.compareButtonReady()) return;
+    try {
+      var res = await window.siteApi.get('/api/position-comparisons/benchmarks');
+      state.benchmarks = res.ok ? (res.payload || []) : [];
+      window.positionComparisonView.applyCompareButton();
+    } catch (e) { window.positionComparisonView.failCompareButton(); }
+  }
+
+  // ========== 标杆选择弹窗（5.2） ==========
+  async function openBenchmarkPicker() {
+    if (!state.benchmarks.length) {
+      try {
+        var res = await window.siteApi.get('/api/position-comparisons/benchmarks');
+        state.benchmarks = res.ok ? (res.payload || []) : [];
+      } catch (e) {}
+    }
+    if (!state.benchmarks.length) { showToast('暂无可对比的官方标杆'); return; }
+    window.positionComparisonView.showBenchmarkPicker();
+  }
+
+  // 开始对比：请求 compare 接口 → 跳转到独立对比页并渲染
+  async function startCompare(benchmarkAccountId) {
+    var myAccountName = getAccount();
+    state.currentBenchmark = benchmarkAccountId;
+    window.positionComparisonView.closeSelf();
+    showToast('正在计算对比…');
+    try {
+      var res = await window.siteApi.post('/api/position-comparisons/compare', {
+        myAccountName: myAccountName, benchmarkAccountId: benchmarkAccountId
+      });
+      var d = res.payload || {};
+      if (!res.ok) { showToast(d.error || '对比失败，请重试'); return; }
+      if (d.empty) { showToast(d.message || '没有可对比的资产'); return; }
+      state.compareData = d;
+      // 打开独立对比页（非弹框）
+      if (typeof window.switchMain === 'function') window.switchMain('position-compare');
+      window.positionComparisonView.renderCompare(d);
+    } catch (e) { showToast('对比失败，请重试'); }
+  }
+
+  async function doReplicate() {
+    var availableCash = window.positionComparisonView.readAvailableCash();
+    if (!Number.isFinite(availableCash) || availableCash <= 0) { showToast('请输入大于 0 的新增资金'); return; }
+    showToast('正在测算…');
+    try {
+      var res = await window.siteApi.post('/api/position-comparisons/replicate', {
+        myAccountName: getAccount(),
+        benchmarkAccountId: state.currentBenchmark,
+        availableCash: availableCash
+      });
+      var d = res.payload || {};
+      if (!res.ok) { showToast(d.error || '测算失败，请重试'); return; }
+      state.replicateData = d;
+      window.positionComparisonView.renderReplicate(d);
+    } catch (e) { showToast('测算失败，请重试'); }
+  }
+
+  // 最小桥：View（含 window.PositionComparison）经此转调取数；state 供 View 读写标杆与对比结果
+  window.positionComparisonPresenter = {
+    state: state,
+    getAccount: getAccount,
+    loadVisibility: loadVisibility,
+    changeVisibility: changeVisibility,
+    refreshBenchmarkButton: refreshBenchmarkButton,
+    openBenchmarkPicker: openBenchmarkPicker,
+    startCompare: startCompare,
+    doReplicate: doReplicate
+  };
+})();

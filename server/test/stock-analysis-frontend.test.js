@@ -13,7 +13,11 @@ const stockPresenter = fs.readFileSync(path.join(root, 'public', 'js', 'presente
 const chartScript = fs.readFileSync(path.join(root, 'public', 'js', 'stock-analysis-chart.js'), 'utf8');
 const valuationChartScript = fs.readFileSync(path.join(root, 'public', 'js', 'stock-analysis-valuation-chart.js'), 'utf8');
 const bondScript = fs.readFileSync(path.join(root, 'public', 'js', 'bond-analysis.js'), 'utf8');
+// 批次4：可转债侧取数/请求序号已拆入 Presenter（presenters/bond-analysis-presenter.js），断言跟随代码按职责覆盖 View＋Presenter。
+const bondPresenter = fs.readFileSync(path.join(root, 'public', 'js', 'presenters', 'bond-analysis-presenter.js'), 'utf8');
 const statementsScript = fs.readFileSync(path.join(root, 'public', 'js', 'stock-analysis-statements.js'), 'utf8');
+// 批次4：三表已拆为 View（渲染）与 Presenter（缓存/请求序号/取数），断言按职责分别校验。
+const statementsPresenter = fs.readFileSync(path.join(root, 'public', 'js', 'presenters', 'stock-analysis-statements-presenter.js'), 'utf8');
 const dateRangeScript = fs.readFileSync(path.join(root, 'public', 'shared', 'date-range-control.js'), 'utf8');
 const analysisCss = fs.readFileSync(path.join(root, 'public', 'css', 'stock-analysis.css'), 'utf8');
 const sharedCss = fs.readFileSync(path.join(root, 'public', 'shared', 'style.css'), 'utf8');
@@ -38,14 +42,14 @@ assert.ok(html.includes('js/stock-analysis-statements.js'), '缺少三表脚本�
 assert.ok(html.indexOf('id="stock-analysis-summary"') < html.indexOf('id="stock-analysis-view-analysis"'), '三表切换必须位于股票名称下方');
 assert.ok(html.indexOf('data-statement-view="balance"') < html.indexOf('股票基本信息'), '财务报表切换必须位于股票基本信息上方');
 for (const type of ['balance','income','cashflow']) assert.ok(html.includes(`data-statement-view="${type}"`), `缺少${type}顶部标签`);
-assert.ok(statementsScript.includes('stockAnalysisApi.getStatements') && statementsScript.includes('同比'), '三表页面未接入年度原值和同比数据');
+assert.ok(statementsPresenter.includes('stockAnalysisApi.getStatements') && statementsScript.includes('同比'), '三表页面未接入年度原值和同比数据');
 assert.ok(statementsScript.includes('statement-section-'), '财务报表缺少分区展示');
 assert.ok(statementsScript.includes('statement-level-') && statementsScript.includes('statement-branch'), '财务科目缺少父子层级展示');
 assert.ok(html.includes('css/stock-analysis.css'), '缺少股票分析样式引用');
 assert.ok(script.includes('PE为负通常代表公司亏损') === false, '分位点固定说明应由后端统一返回');
 // 批次2c：站内 HTTP 已收进 API 客户端；断言指向实际落点，并新增“View 不得直接 fetch”
 const apiClient = fs.readFileSync(path.join(root, 'public', 'js', 'api', 'stock-analysis-api.js'), 'utf8');
-assert.ok(apiClient.includes('/statements?type=') && !/\bfetch\s*\(/.test(statementsScript), '三表请求必须经股票分析客户端');
+assert.ok(apiClient.includes('/statements?type=') && !/\bfetch\s*\(/.test(statementsScript + statementsPresenter), '三表请求必须经股票分析客户端');
 assert.ok(apiClient.includes('/api/stock-analysis/'), 'API 客户端未接入股票分析接口');
 assert.ok(/stockAnalysisApi\./.test(stockPresenter), 'Presenter 未通过 API 客户端取数');
 assert.ok(!/await fetch\(/.test(script + stockPresenter), 'View 与 Presenter 均不得直接 fetch');
@@ -58,12 +62,12 @@ assert.ok(/if \(payload\.needs_refresh\)[\s\S]*?showToast\('数据待更新：'/
 assert.ok(/if \(snapshotResult\.status === 404\)[\s\S]*?暂无分析快照[\s\S]*?刷新数据/.test(stockPresenter)
   && !/if \(snapshotResult\.status === 404\)[\s\S]*?return stockAnalysisRefresh\(\)/.test(stockPresenter),
   '股票分析页面首次打开无快照时不能自动建档');
-assert.ok(/if \(!refresh && analysis\.needs_refresh\)[\s\S]*?showToast\('数据待更新，请点击“刷新数据”进行更新。'\)/.test(bondScript)
-  && !/if \(!refresh && analysis\.needs_refresh\)[\s\S]*?return bondAnalysisLoad\(true/.test(bondScript),
+assert.ok(/if \(!refresh && analysis\.needs_refresh\)[\s\S]*?showToast\('数据待更新，请点击“刷新数据”进行更新。'\)/.test(bondPresenter)
+  && !/if \(!refresh && analysis\.needs_refresh\)[\s\S]*?return bondAnalysisLoad\(true/.test(bondPresenter),
   '可转债分析页面打开只能提示过期，不能自动触发外部刷新');
 // 批次4：取数改走统一客户端后，响应变量名由 response 变为 res；判定语义不变（404 只提示不自动建档）。
-assert.ok(/res\.status===404&&!refresh[\s\S]*?暂无分析快照[\s\S]*?刷新数据/.test(bondScript)
-  && !/res\.status===404&&!refresh[\s\S]*?return bondAnalysisLoad\(true/.test(bondScript),
+assert.ok(/res\.status===404&&!refresh[\s\S]*?暂无分析快照[\s\S]*?刷新数据/.test(bondPresenter)
+  && !/res\.status===404&&!refresh[\s\S]*?return bondAnalysisLoad\(true/.test(bondPresenter),
   '可转债分析页面首次打开无快照时不能自动建档');
 assert.ok(html.includes('js/stock-analysis-chart.js'), '缺少盈利分红图表脚本引用');
 assert.ok(chartScript.includes('dividend_history'), '缺少历史分红记录渲染');
@@ -111,9 +115,9 @@ assert.ok(script.includes('(late-early)/early') && script.includes('近期三年
 assert.ok(script.includes('analysisHelp(label, stockAnalysisLabelHelp(label))'), '股票分析指标缺少算法说明入口');
 assert.ok(bondScript.includes('analysisHelp(row[0],bondAnalysisLabelHelp(row[0]))'), '可转债分析指标缺少算法说明入口');
 assert.ok(html.includes('id="stock-analysis-suggestions"') && html.includes('aria-autocomplete="list"'), '股债分析缺少名称联想下拉框');
-assert.ok(bondScript.includes('/api/bond-analysis/search/securities?q=') && bondScript.includes('securityAnalysisChooseSuggestion'), '股债分析名称联想未接入证券搜索接口');
+assert.ok((bondScript + bondPresenter).includes('/api/bond-analysis/search/securities?q=') && bondScript.includes('securityAnalysisChooseSuggestion'), '股债分析名称联想未接入证券搜索接口');
 assert.ok(/addEventListener\('input',function\(\)\s*\{[\s\S]*?securityAnalysisClearListSelection\(ctx\)/.test(bondScript), '手动输入证券后未清空旧持仓选项');
-assert.ok(bondScript.includes('securityAnalysisState.searchSeq++;') && bondScript.includes('securityAnalysisSubmit(code, ctx);'), '从持仓选择证券时未取消旧搜索并按新代码分析');
+assert.ok(bondPresenter.includes('securityAnalysisState.searchSeq++;') && bondPresenter.includes('securityAnalysisSubmit(code, ctx);'), '从持仓选择证券时未取消旧搜索并按新代码分析');
 assert.ok(analysisCss.includes('.security-analysis-suggestions{') && analysisCss.includes('.security-analysis-suggestion.active'), '证券联想下拉缺少样式或键盘选中状态');
 assert.ok(analysisCss.includes('.analysis-help{') && analysisCss.includes('border-bottom:1px dashed') && analysisCss.includes('.analysis-help-tooltip{'), '算法说明缺少虚线下划线或悬浮弹框样式');
 assert.ok(html.includes('data-help="分位点从所选起始日累计计算') && html.includes('data-help="实际期权价值＝转债市价－纯债价值'), '股债分析模块标题缺少算法说明');

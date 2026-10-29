@@ -3,54 +3,21 @@
 // 契约见 docs/意见反馈与版本发布闭环研发方案_20261023.md 第 14.3 节。
 // 约定：CSP 已关闭内联脚本属性，所有交互走 data-nt-act 事件委托；
 // 打开列表不自动已读，只有真正打开反馈详情或系统正文后才标记已读。
+// 批次4 View／Presenter 分离：取数、列表/详情状态与请求序号（state.seq/owner）在
+// presenters/notifications-presenter.js，本文件只做 DOM/HTML 渲染、地址栏与快照，
+// 取数经 window.appNotificationsPresenter 转调，state 经 window.appNotificationsPresenter.state 读写。
 (function () {
   'use strict';
 
   var SUBS = ['all', 'feedback', 'system'];
   var SUB_LABELS = { all: '全部', feedback: '反馈', system: '系统' };
   var SNAPSHOT_KEY = 'nt-state-v1';
-  var PAGE_SIZE = 20;
-
-  var state = {
-    sub: 'all',
-    unreadOnly: false,
-    items: [],
-    nextCursor: null,
-    complete: false,
-    loading: false,
-    error: '',
-    detailId: null,
-    detail: null,
-    seq: 0,
-    owner: undefined,   // 当前列表属于哪个登录名：首次挂载不视为换人，之后变化即整体丢弃
-  };
 
   function esc(v) { return escapeHtml(String(v == null ? '' : v)); }
   function byId(id) { return document.getElementById(id); }
   function loggedIn() {
     if (typeof username === 'string' && username) return true;
     return !!window.username;
-  }
-  // 当前登录名：列表缓存与快照都必须绑定它，同一浏览器换账号不能复用上一个人的通知
-  function currentUser() {
-    if (typeof username === 'string' && username) return username;
-    if (typeof window.username === 'string' && window.username) return window.username;
-    return null;
-  }
-  // 不可复用账号身份（建号时间摘要）：与用户名一起校验。
-  // 只比用户名时，删号后同名重注册会命中旧缓存，看到上一个人的私密通知。
-  function currentIdentity() {
-    if (typeof accountIdentity === 'string' && accountIdentity) return accountIdentity;
-    if (typeof window.accountIdentity === 'string' && window.accountIdentity) return window.accountIdentity;
-    return '';
-  }
-  // 归属键必须同时含「用户名 + 不可复用身份」：
-  // 只用建号时间时，两个不同账号若建号时间落在同一刻会被判成同一个人，
-  // 切换后不重新请求，直接沿用上一个人的私密列表。
-  function ownerKey() {
-    var who = currentUser();
-    if (!who) return '';
-    return 'u:' + who + '|id:' + currentIdentity();
   }
 
   function fmtTime(iso) {
@@ -69,6 +36,7 @@
 
   // ---------- 地址栏与缓存 ----------
   function readUrl() {
+    var state = window.appNotificationsPresenter.state;
     var params = new URLSearchParams(window.location.search);
     var sub = params.get('sub');
     state.sub = SUBS.indexOf(sub) >= 0 ? sub : 'all';
@@ -78,6 +46,7 @@
 
   function syncUrl(push) {
     if (!push) return;
+    var state = window.appNotificationsPresenter.state;
     var params = new URLSearchParams(window.location.search);
     params.set('main', 'notifications');
     params.set('sub', state.sub);
@@ -91,8 +60,9 @@
   // 快照绑定「登录名 + 不可复用身份」：同名重注册拿到的是新身份，旧快照必须作废。
   // 拿不到身份时宁可不保存，避免下次按用户名误恢复。
   function saveSnapshot() {
-    var who = currentUser();
-    var identity = currentIdentity();
+    var state = window.appNotificationsPresenter.state;
+    var who = window.appNotificationsPresenter.currentUser();
+    var identity = window.appNotificationsPresenter.currentIdentity();
     if (!who || !identity) { clearSnapshot(); return; }
     try {
       sessionStorage.setItem(SNAPSHOT_KEY, JSON.stringify({
@@ -110,8 +80,8 @@
       if (!raw) return null;
       var data = JSON.parse(raw);
       if (!data || SUBS.indexOf(data.sub) < 0 || !Array.isArray(data.items)) return null;
-      var who = currentUser();
-      var identity = currentIdentity();
+      var who = window.appNotificationsPresenter.currentUser();
+      var identity = window.appNotificationsPresenter.currentIdentity();
       // 缺身份、身份不一致（删号后同名重注册）或登录名不一致：一律丢弃，绝不跨账号复用
       if (!who || !identity || !data.identity || data.identity !== identity || data.user !== who) {
         clearSnapshot();
@@ -125,33 +95,9 @@
     try { sessionStorage.removeItem(SNAPSHOT_KEY); } catch (e) { /* 忽略 */ }
   }
 
-  // ---------- 请求 ----------
-  async function requestJson(url, options) {
-    var result = await window.siteApi.requestRaw(url, Object.assign({ timeoutMs: 0, headers: {} }, options || {}));
-    if (!result.response) throw new Error(result.error || '网络异常');
-    var r = result.response;
-    var payload = null;
-    try { payload = await r.json(); } catch (e) { payload = null; }
-    if (!r.ok) {
-      var err = new Error((payload && payload.error) || ('请求失败（' + r.status + '）'));
-      err.status = r.status;
-      throw err;
-    }
-    return payload || {};
-  }
-
-  function buildQuery(base) {
-    var params = [];
-    Object.keys(base).forEach(function (k) {
-      var v = base[k];
-      if (v === '' || v == null || v === false) return;
-      params.push(encodeURIComponent(k) + '=' + encodeURIComponent(v === true ? '1' : v));
-    });
-    return params.length ? '?' + params.join('&') : '';
-  }
-
   // ---------- 渲染 ----------
   function headerHtml() {
+    var state = window.appNotificationsPresenter.state;
     var html = '<div class="nt-toolbar">';
     html += '<label class="nt-toggle"><input type="checkbox" data-nt-act="unread"'
       + (state.unreadOnly ? ' checked' : '') + '> 只看未读</label>';
@@ -188,6 +134,7 @@
   }
 
   function detailHtml() {
+    var state = window.appNotificationsPresenter.state;
     var d = state.detail;
     if (!d) return '<div class="nt-panel"><p class="nt-empty">加载中…</p></div>';
     var html = '<div class="nt-detail">';
@@ -201,6 +148,7 @@
   }
 
   function render() {
+    var state = window.appNotificationsPresenter.state;
     var host = byId('nt-body');
     if (!host) return;
     if (state.detailId) { host.innerHTML = detailHtml(); return; }
@@ -231,77 +179,9 @@
     host.innerHTML = html;
   }
 
-  // ---------- 数据 ----------
-  async function loadFirst() {
-    state.items = [];
-    state.nextCursor = null;
-    state.complete = false;
-    state.error = '';
-    state.loading = true;
-    render();
-    var seq = ++state.seq;
-    try {
-      var data = await requestJson('/api/notifications' + buildQuery({
-        category: state.sub, unreadOnly: state.unreadOnly, limit: PAGE_SIZE,
-      }));
-      if (seq !== state.seq) return;   // 拒绝旧响应覆盖新筛选
-      state.items = data.items || [];
-      state.nextCursor = data.nextCursor || null;
-      state.complete = data.complete !== false;
-    } catch (e) {
-      if (seq !== state.seq) return;
-      state.error = e.message || '网络异常';
-    } finally {
-      if (seq === state.seq) { state.loading = false; render(); }
-    }
-  }
-
-  async function loadMore() {
-    if (state.loading || state.complete || !state.nextCursor) return;
-    state.loading = true;
-    state.error = '';
-    render();
-    var seq = state.seq;
-    try {
-      var data = await requestJson('/api/notifications' + buildQuery({
-        category: state.sub, unreadOnly: state.unreadOnly, limit: PAGE_SIZE, cursor: state.nextCursor,
-      }));
-      if (seq !== state.seq) return;
-      state.items = state.items.concat(data.items || []);
-      state.nextCursor = data.nextCursor || null;
-      state.complete = data.complete !== false;
-    } catch (e) {
-      if (seq !== state.seq) return;
-      state.error = e.message || '网络异常';
-    } finally {
-      if (seq === state.seq) { state.loading = false; render(); }
-    }
-  }
-
-  function markLocalRead(id) {
-    state.items.forEach(function (it) { if (String(it.id) === String(id)) it.read = true; });
-  }
-
-  function currentRequest(seq, owner) {
-    return seq === state.seq && owner === ownerKey();
-  }
-
-  async function markRead(id) {
-    var seq = state.seq;
-    var owner = ownerKey();
-    try {
-      await requestJson('/api/notifications/' + encodeURIComponent(id) + '/read', { method: 'POST' });
-      if (!currentRequest(seq, owner)) return false;
-      markLocalRead(id);
-      if (typeof window.refreshUnreadCount === 'function') window.refreshUnreadCount();
-      return true;
-    } catch (e) {
-      return false;
-    }
-  }
-
   // ---------- 交互 ----------
   async function openItem(id) {
+    var state = window.appNotificationsPresenter.state;
     var item = null;
     for (var i = 0; i < state.items.length; i++) {
       if (String(state.items[i].id) === String(id)) { item = state.items[i]; break; }
@@ -311,9 +191,9 @@
       // 先标记已读再跳回原反馈详情（复用既有详情链路，不另建反馈详情页）；
       // 标记失败不阻断跳转，详情页自身有权限校验，回来可重试
       var seq = state.seq;
-      var owner = ownerKey();
-      var marked = await markRead(item.id);
-      if (!currentRequest(seq, owner)) return;
+      var owner = window.appNotificationsPresenter.ownerKey();
+      var marked = await window.appNotificationsPresenter.markRead(item.id);
+      if (!window.appNotificationsPresenter.currentRequest(seq, owner)) return;
       if (!marked) toast('通知已读状态未同步，稍后可重试');
       saveSnapshot();
       window.location.href = api(item.target.path);
@@ -324,30 +204,11 @@
     state.detail = null;
     syncUrl(true);
     render();
-    await refreshDetail();
-  }
-
-  async function markAllRead() {
-    var seq = state.seq;
-    var owner = ownerKey();
-    try {
-      var res = await requestJson('/api/notifications/read-all', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ category: state.sub }),
-      });
-      if (!currentRequest(seq, owner)) return;
-      state.items.forEach(function (it) { it.read = true; });
-      if (typeof window.refreshUnreadCount === 'function') window.refreshUnreadCount();
-      render();
-      toast(res && res.marked ? ('已标记 ' + res.marked + ' 条为已读') : '没有未读通知');
-    } catch (e) {
-      if (!currentRequest(seq, owner)) return;
-      toast('全部已读失败：' + (e.message || '请重试'));
-    }
+    await window.appNotificationsPresenter.refreshDetail();
   }
 
   function switchSub(sub) {
+    var state = window.appNotificationsPresenter.state;
     if (SUBS.indexOf(sub) < 0 || state.sub === sub) return;
     state.sub = sub;
     state.detailId = null;
@@ -355,10 +216,11 @@
     clearSnapshot();
     syncUrl(true);
     paintSubTabs();
-    loadFirst();
+    window.appNotificationsPresenter.loadFirst();
   }
 
   function paintSubTabs() {
+    var state = window.appNotificationsPresenter.state;
     document.querySelectorAll('#main-notifications [data-nt-sub]').forEach(function (tab) {
       var on = tab.getAttribute('data-nt-sub') === state.sub;
       tab.classList.toggle('active', on);
@@ -367,12 +229,13 @@
   }
 
   function onAction(act, el) {
+    var state = window.appNotificationsPresenter.state;
     if (act === 'sub') { switchSub(el.getAttribute('data-nt-sub')); return; }
-    if (act === 'unread') { state.unreadOnly = !!el.checked; syncUrl(true); loadFirst(); return; }
-    if (act === 'readall') { markAllRead(); return; }
-    if (act === 'refresh') { loadFirst(); return; }
-    if (act === 'retry') { loadFirst(); return; }
-    if (act === 'more') { loadMore(); return; }
+    if (act === 'unread') { state.unreadOnly = !!el.checked; syncUrl(true); window.appNotificationsPresenter.loadFirst(); return; }
+    if (act === 'readall') { window.appNotificationsPresenter.markAllRead(); return; }
+    if (act === 'refresh') { window.appNotificationsPresenter.loadFirst(); return; }
+    if (act === 'retry') { window.appNotificationsPresenter.loadFirst(); return; }
+    if (act === 'more') { window.appNotificationsPresenter.loadMore(); return; }
     if (act === 'item') { openItem(el.getAttribute('data-id')); return; }
     if (act === 'back') {
       state.seq++;
@@ -410,11 +273,12 @@
 
   // 页面入口：切回通知页时复用已加载列表（保留游标与位置），筛选变化才重新拉取
   function loadNotificationsPage() {
+    var state = window.appNotificationsPresenter.state;
     bindEvents();
     // 同一浏览器换账号（含删号后同名重注册）：内存列表、详情与快照全部作废。
     // 归属用不可复用身份判定，仅用户名相同不算同一个人。
     // 首次挂载（owner 未记录）不算换人，此时靠快照里的「登录名+身份」校验决定能否恢复。
-    var owner = ownerKey();
+    var owner = window.appNotificationsPresenter.ownerKey();
     var firstMount = state.owner === undefined;
     var switched = !firstMount && state.owner !== owner;
     state.owner = owner;
@@ -437,7 +301,7 @@
     }
     paintSubTabs();
     if (switched) syncUrl(true);
-    if (state.detailId) { render(); refreshDetail(); return; }
+    if (state.detailId) { render(); window.appNotificationsPresenter.refreshDetail(); return; }
     if (state.items.length && !state.error) { render(); return; }
     var snap = readSnapshot();
     if (snap && snap.sub === state.sub && snap.unreadOnly === state.unreadOnly && snap.items.length) {
@@ -448,33 +312,13 @@
       if (snap.scrollTop) window.scrollTo(0, snap.scrollTop);
       return;
     }
-    loadFirst();
-  }
-
-  async function refreshDetail() {
-    if (!state.detailId) return;
-    var id = state.detailId;
-    var seq = ++state.seq;
-    state.loading = false; // 已作废的列表请求不能让返回后的“加载更多”一直禁用
-    var owner = ownerKey();
-    try {
-      var data = await requestJson('/api/notifications/' + encodeURIComponent(id));
-      if (!currentRequest(seq, owner) || state.detailId !== id) return;
-      state.detail = data;
-      render();
-      markRead(id);
-    } catch (e) {
-      if (!currentRequest(seq, owner) || state.detailId !== id) return;
-      state.detailId = null;
-      syncUrl(true);
-      render();
-      toast('通知正文加载失败：' + (e.message || '请重试'));
-    }
+    window.appNotificationsPresenter.loadFirst();
   }
 
   // 未读数变化后同步本页已读标记（铃铛轮询与列表不互相覆盖）
   // clearCache：退出登录/会话失效时立即清空快照与内存列表（由 session.js 调用）
   function clearCache() {
+    var state = window.appNotificationsPresenter.state;
     clearSnapshot();
     state.items = [];
     state.nextCursor = null;
@@ -488,9 +332,14 @@
     render();
   }
 
+  // View 对外入口（批次4）：Presenter 只调这些函数改界面，自己不碰 DOM。
+  window.appNotificationsRender = render;
+  window.appNotificationsToast = toast;
+  window.appNotificationsSyncUrl = syncUrl;
+
   window.AppNotifications = {
     load: loadNotificationsPage,
-    refresh: function () { return loadFirst(); },
+    refresh: function () { return window.appNotificationsPresenter.loadFirst(); },
     clearCache: clearCache,
   };
 })();

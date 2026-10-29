@@ -444,8 +444,12 @@
   }
 
   // ---------- 提交 / 编辑表单 ----------
-  function closeForm() {
+  function closeForm(discard) {
     var overlay = byId('fb-form-overlay');
+    if (!discard && state.form && state.form.mode === 'create' && overlay) {
+      overlay.hidden = true;
+      return;
+    }
     if (overlay) overlay.remove();
     if (state.form) {
       (state.form.previews || []).forEach(function (p) { URL.revokeObjectURL(p); });
@@ -455,7 +459,14 @@
 
   function openForm(mode, data, opts) {
     bindEvents();
-    closeForm();
+    var existing = byId('fb-form-overlay');
+    if (mode === 'create' && existing && state.form && state.form.mode === 'create' &&
+        state.form.draftPage === currentPagePath() && state.form.draftUser === currentUser()) {
+      existing.hidden = false;
+      return;
+    }
+    if (state.form && state.form.submitting) return;
+    closeForm(true);
     var editing = mode === 'edit';
     var fb = (data && data.feedback) || null;
     state.form = {
@@ -463,6 +474,8 @@
       source: (opts && opts.source) || 'page',
       id: fb ? fb.id : null,
       revision: fb ? fb.revision : null,
+      draftPage: currentPagePath(),
+      draftUser: currentUser(),
       files: [],
       previews: [],
       requestId: (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : ('fb-' + Date.now() + '-' + Math.random().toString(16).slice(2)),
@@ -489,7 +502,7 @@
       + '<div class="fb-field fb-field--row"><span class="fb-label">描述<i>*</i></span>'
       + '<textarea id="fb-form-desc" maxlength="5000" placeholder="请您提供详细的问题描述或需求，这对我们的理解会有很大帮助。">' + esc(fb ? fb.description : '') + '</textarea></div>'
       + (!editing
-        ? '<div class="fb-field fb-field--row"><span class="fb-label">图片</span><div class="fb-img-actions">'
+        ? '<div class="fb-field fb-field--row fb-image-row"><span class="fb-label">图片</span><div class="fb-img-actions">'
         // 用 label 关联文件域：不依赖脚本 click()，手机与内嵌浏览器同样能唤起选择器
         + '<label class="fb-img-btn" for="fb-form-files">选择本地图片</label>'
         + '<button type="button" class="fb-img-btn" data-fb-act="paste-hint">点击这里聚焦，然后粘贴上传图片</button>'
@@ -534,12 +547,14 @@
 
   async function addFiles(picked) {
     if (!state.form || !picked.length) return;
+    var form = state.form;
     var remain = MAX_IMAGES - state.form.files.length;
     if (remain <= 0) { toast('最多 3 张截图'); return; }
     if (picked.length > remain) { toast('最多 3 张截图，已只处理前 ' + remain + ' 张'); picked = picked.slice(0, remain); }
     for (var i = 0; i < picked.length; i++) {
       try {
         var compressed = await compressImage(picked[i]);
+        if (state.form !== form) return;
         state.form.files.push(compressed);
         state.form.previews.push(URL.createObjectURL(compressed));
       } catch (err) {

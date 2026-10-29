@@ -457,6 +457,7 @@ var _visionQueue = [];        // [{ imageId, name, preview, base64, status, item
 var _smartParsed = [];        // 合并后的预览行（每行带 _rowId/_eventId/_imageTags/_v）
 var _smartBatchId = null;
 var _smartSubmitting = false;
+var _visionClearWhenComplete = false;
 var _smartRowSeq = 0;
 var _smartScopeGeneration = 0;
 var _smartBoundScope = '';
@@ -478,6 +479,7 @@ function invalidateSmartImportScope() {
   _smartScopeGeneration++;
   _smartBoundScope = '';
   _visionQueue = [];
+  _visionClearWhenComplete = false;
   _smartParsed = [];
   _smartBatchId = null;
   _smartSubmitting = false;
@@ -570,8 +572,10 @@ function enqueueVisionFiles(files) {
   })).then(function(results) {
     if (!isSmartImportScopeCurrent(scope)) return;
     var dupCount = 0;
+    var fullCount = 0;
     (results || []).forEach(function(r) {
       if (!r) return;
+      if (_visionQueue.length >= VISION_MAX_IMAGES) { fullCount++; return; }
       // 同一张图片不允许重复导入（2026-10-27 反馈）：与队列已有图片内容相同直接跳过
       if (isDuplicateVisionImage(r.base64)) { dupCount++; return; }
       _visionQueue.push({
@@ -585,6 +589,7 @@ function enqueueVisionFiles(files) {
       });
     });
     if (dupCount) showToast(dupCount + ' 张与队列中已有图片相同，未重复导入');
+    if (fullCount) showToast('队列已满，' + fullCount + ' 张图片未加入');
     if (!isSmartImportScopeCurrent(scope)) return;
     renderVisionQueue();
     processVisionQueue();
@@ -649,12 +654,11 @@ async function processVisionQueue() {
   _visionProcessingGeneration = scope.generation;
   _visionProcessing = true;
   try {
-    for (var i = 0; i < _visionQueue.length; i++) {
+    while (true) {
       if (!isSmartImportScopeCurrent(scope)) return;
       if (_visionPaused) break;
-      var job = _visionQueue[i];
-      if (!job) continue; // 处理中删除图片会让数组移位，防索引越界
-      if (job.status !== 'queued') continue;
+      var job = _visionQueue.find(function(candidate) { return candidate.status === 'queued'; });
+      if (!job) break;
       job.status = 'parsing';
       renderVisionQueue();
       try {
@@ -669,6 +673,7 @@ async function processVisionQueue() {
         var d = await r.json().catch(function() { return {}; });
         // 账户已切换：旧响应作废，不恢复旧预览
         if (!isSmartImportScopeCurrent(scope)) return;
+        if (_visionQueue.indexOf(job) < 0) continue;
         if (r.status === 429) {
           // 遇限流按服务端提示暂停，保留队列
           job.status = 'queued';
@@ -687,10 +692,11 @@ async function processVisionQueue() {
           job.status = 'done';
           job.items = d.items || [];
           job.parse = d.parse || null;
-          mergeSmartItems(job.items, job.name);
+          mergeSmartItems(job.items, job.imageId);
         }
       } catch (e) {
         if (!isSmartImportScopeCurrent(scope)) return;
+        if (_visionQueue.indexOf(job) < 0) continue;
         job.status = 'failed';
         job.error = (e && e.message) || '网络错误';
       }
@@ -701,7 +707,7 @@ async function processVisionQueue() {
     if (_visionProcessingGeneration === scope.generation) {
       _visionProcessingGeneration = null;
       _visionProcessing = false;
-      if (isSmartImportScopeCurrent(scope)) { renderVisionQueue(); renderSmartItems(); }
+      if (isSmartImportScopeCurrent(scope)) { clearCompletedVisionBatch(); renderVisionQueue(); renderSmartItems(); }
     }
   }
 }
@@ -730,6 +736,7 @@ function retryVisionImage(imageId) {
 function removeVisionImage(imageId) {
   _visionQueue = _visionQueue.filter(function(j) { return j.imageId !== imageId; });
   removeSmartItemsByImage(imageId);
+  clearCompletedVisionBatch();
   renderVisionQueue();
   renderSmartItems();
 }
@@ -778,12 +785,31 @@ function smartMergeKey(item) {
     item.avg_buy_price == null ? '' : String(item.avg_buy_price)].join('|');
 }
 
+// 保留真实识别日期；仅把明确的年月日格式规范化，不把无法识别的日期猜成今天。
+function normalizeSmartDate(value) {
+  var raw = String(value == null ? '' : value).trim();
+  var m = /^(\d{4})[-\/.年](\d{1,2})[-\/.月](\d{1,2})日?$/.exec(raw);
+  var iso = m ? m[1] + '-' + m[2].padStart(2, '0') + '-' + m[3].padStart(2, '0') : raw;
+  return CoreDate.normalizeBusinessDate(iso) || '';
+}
+
+function updateSmartDateIssue(item, date) {
+  if (!item._v) item._v = { status: 'ok', issues: [] };
+  if (!Array.isArray(item._v.issues)) item._v.issues = [];
+  item._v.issues = item._v.issues.filter(function(issue) { return issue.field !== 'date'; });
+  if (!date) item._v.issues.push({ level: 'error', field: 'date', message: item.kind === 'trade' ? '请补全交易日期' : '请选择快照日期' });
+  item._v.status = item._v.issues.some(function(issue) { return issue.level === 'error'; }) ? 'blocked' :
+    (item._v.issues.length ? 'review' : 'ok');
+}
+
 function mergeSmartItems(items, imageTag) {
   if (!window._smartParsed) window._smartParsed = [];
   (items || []).forEach(function(item) {
     item.code = classifyCode.normalizeCode(item.code || '', item.name || '');
     // 持仓缺快照日期 → 默认今天，用户可在预览里改（2026-10-27 用户裁定；交易缺日期仍要求补全）
-    if (item.kind === 'position' && !item.date) item.date = CoreDate.todayInZone('Asia/Shanghai') || '';
+    var rawDate = String(item.date == null ? '' : item.date).trim();
+    item.date = rawDate ? normalizeSmartDate(rawDate) : (item.kind === 'position' ? CoreDate.todayInZone('Asia/Shanghai') || '' : '');
+    updateSmartDateIssue(item, item.date);
     item._rowId = newSmartRowId();
     item._eventId = item._eventId || uid();          // 幂等键：重试复用同一 id
     item._imageTags = [imageTag || 'image'];
@@ -965,6 +991,16 @@ function renderSmartItems() {
   });
   html += '</tbody></table></div>';
   result.innerHTML = html;
+  result.querySelectorAll('input[id^="s-date-"]').forEach(function(input) {
+    input.addEventListener('change', function() {
+      var found = smartRowById(input.id.slice('s-date-'.length));
+      if (!found) return;
+      found.item.date = input.value;
+      updateSmartDateIssue(found.item, input.value);
+      var status = document.getElementById('s-status-' + found.item._rowId);
+      if (status) status.innerHTML = renderSmartRowStatus(found.item);
+    });
+  });
   if (window.BusinessTable) window.BusinessTable.attach(result, { page: '#page-trades', top: '#main-holdings > .holdings-header', sticky: false });
 }
 
@@ -1146,6 +1182,7 @@ function syncAllSmartRowsFromDom() {
     item.code = row.code;
     item.name = row.name;
     item.date = row.date;
+    updateSmartDateIssue(item, row.date);
     item.price = row.price;
     item.quantity = row.quantity;
     item.quantity_unit = row.quantity_unit;
@@ -1335,11 +1372,21 @@ async function submitPositionRows(rows, operationScope) {
   }
 }
 
-function removeSmartRows(rowIds) {
+function clearCompletedVisionBatch() {
+  if (!_visionClearWhenComplete || _visionProcessing || _smartParsed.length || !_visionQueue.length ||
+      _visionQueue.some(function(job) { return job.status !== 'done'; })) return;
+  _visionQueue = [];
+  _visionClearWhenComplete = false;
+  renderVisionQueue();
+}
+
+function removeSmartRows(rowIds, saved) {
   var removing = {};
   (rowIds || []).forEach(function(id) { removing[id] = true; });
   _smartParsed = (_smartParsed || []).filter(function(it) { return !removing[it._rowId]; });
   if (!_smartParsed.length) window._smartBatchId = null; // 批次在预览清空后重建
+  if (saved && !_smartParsed.length) _visionClearWhenComplete = true;
+  clearCompletedVisionBatch();
   renderSmartItems();
 }
 
@@ -1375,7 +1422,7 @@ async function confirmSmartItem(rowId) {
     var r = row.kind === 'trade' ? await submitTradeRow(row, scope) : await submitPositionRows([row], scope);
     if (!isSmartImportScopeCurrent(scope)) return;
     if (r.status === 'saved' || r.status === 'duplicate') {
-      removeSmartRows([rowId]);
+      removeSmartRows([rowId], true);
       showToast(r.message || '已保存');
       refreshQuotesAfterImport();
     } else {
@@ -1479,7 +1526,7 @@ async function confirmAllSmartItems() {
     if (isSmartImportScopeCurrent(scope)) {
       _smartSubmitting = false;
       setSmartButtonsDisabled(false);
-      if (savedRows.length) removeSmartRows(savedRows);
+      if (savedRows.length) removeSmartRows(savedRows, true);
     }
   }
   var parts = [];

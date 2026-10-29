@@ -166,7 +166,7 @@
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ title: title, description: description, type: type, pagePath: pagePath, expectedRevision: form.revision }),
         });
-        window.feedbackCloseForm();
+        window.feedbackCloseForm(true);
         window.feedbackToast('已保存');
         state.detailId = String(form.id);
         await refreshCurrent();
@@ -182,7 +182,7 @@
       form.files.forEach(function (f) { body.append('images', f); });
       var created = await requestJson('/api/feedback', { method: 'POST', body: body });
       var fromFab = form.source === 'fab';
-      window.feedbackCloseForm();
+      window.feedbackCloseForm(true);
       window.feedbackToast('已提交，感谢反馈');
       // 全局悬浮入口提交后停留当前页；反馈栏目内提交则落到「全部反馈」并打开新记录
       if (fromFab) return;

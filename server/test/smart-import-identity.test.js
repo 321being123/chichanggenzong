@@ -15,7 +15,7 @@ function context() {
     username: 'user', accountIdentity: 'identity-1', currentAccount: '同名账户',
     _qrGeneration: 0, _qrPollTimer: null, _qrToken: null, _visionPaused: false,
     document: { getElementById: () => null, querySelectorAll: () => [], addEventListener: () => {} },
-    renderVisionQueue() {}, renderSmartItems() {}, setSmartButtonsDisabled() {}, clearInterval() {},
+    renderVisionQueue() {}, renderSmartItems() {}, clearCompletedVisionBatch() {}, setSmartButtonsDisabled() {}, clearInterval() {},
   };
   ui.window = ui;
   vm.createContext(ui);
@@ -46,6 +46,26 @@ function context() {
   assert.deepStrictEqual(accepted, ['new'], '同名新账号不得接收旧识别结果');
   assert.strictEqual(ui._visionQueue.length, 1, '旧响应不得清空新队列');
 
+  const removed = context(), requests = [], merged = [];
+  removed.api = x => x;
+  removed.fetch = () => new Promise(resolve => requests.push(resolve));
+  removed.mergeSmartItems = (items, tag) => merged.push([items[0].tag, tag]);
+  removed.showToast = () => {};
+  removed._visionProcessing = false; removed._visionProcessingGeneration = null;
+  vm.runInContext(part(trade, 'async function processVisionQueue()', 'function resumeVisionQueue()'), removed);
+  removed.bindSmartImportScope();
+  const deletedImage = {imageId:'deleted', status:'queued', base64:'one'};
+  const keptImage = {imageId:'kept', status:'queued', base64:'two'};
+  removed._visionQueue.push(deletedImage, keptImage);
+  const running = removed.processVisionQueue();
+  removed._visionQueue.splice(0, 1);
+  requests[0]({ok:true, status:200, json:async()=>({items:[{tag:'deleted'}]})});
+  await flush();
+  assert.strictEqual(requests.length, 2, '删除在途图片不能跳过下一张');
+  requests[1]({ok:true, status:200, json:async()=>({items:[{tag:'kept'}]})});
+  await running;
+  assert.deepStrictEqual(merged, [['kept','kept']], '已删除图片的迟到结果不得进入预览，来源使用 imageId');
+
   const files = context(); let finishFile;
   files.fileToBase64 = () => new Promise(resolve => { finishFile = resolve; });
   files.processVisionQueue = () => {};
@@ -57,6 +77,17 @@ function context() {
   files._visionQueue.push({ name: '新图' });
   finishFile('data:image/png;base64,AA=='); await flush();
   assert.deepStrictEqual(Array.from(files._visionQueue, x => x.name), ['新图'], 'A→B→A 迟到文件读取不得进入新批次');
+
+  const capacity = context(), fileReads = [];
+  capacity.fileToBase64 = () => new Promise(resolve => fileReads.push(resolve));
+  capacity.processVisionQueue = () => {}; capacity.showToast = () => {};
+  vm.runInContext(part(trade, 'function enqueueVisionFiles(', '// 并发固定 1'), capacity);
+  capacity.bindSmartImportScope();
+  capacity.enqueueVisionFiles(Array.from({length: 4}, (_, i) => ({type:'image/png', size:10, name:'a'+i})));
+  capacity.enqueueVisionFiles(Array.from({length: 4}, (_, i) => ({type:'image/png', size:10, name:'b'+i})));
+  fileReads.forEach((resolve, i) => resolve('data:image/png;base64,' + i));
+  await flush();
+  assert.strictEqual(capacity._visionQueue.length, 6, '并发读取完成时仍必须执行六张上限');
 
   const excel = context(); let finishExcel, excelRequests = 0;
   excel.fileToBase64 = () => new Promise(resolve => { finishExcel = resolve; });

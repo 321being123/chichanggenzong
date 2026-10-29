@@ -26,7 +26,7 @@
 
   function onFabClick() {
     // 面板已开：走「取消」按钮的同一收口（含预览 URL 清理），点击即收起
-    var closeBtn = document.querySelector('#fb-form-overlay [data-fb-act="close-form"]');
+    var closeBtn = document.querySelector('#fb-form-overlay:not([hidden]) [data-fb-act="close-form"]');
     if (closeBtn) { closeBtn.click(); return; }
     if (!loggedIn()) { toast('请先登录后再提交反馈'); return; }
     ensureFeedback().then(function () {

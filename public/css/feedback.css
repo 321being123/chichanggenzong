@@ -165,13 +165,17 @@
 
 /* ===== 悬浮提交面板：无遮罩浮层，靠左垂直居中；点击面板外收起 ===== */
 .fb-float { position: fixed; inset: 0; z-index: 1100; pointer-events: none; }
+.fb-float[hidden] { display: none; }
 .fb-float-panel {
   pointer-events: auto;
-  position: absolute; left: 16px; top: 50%; transform: translateY(-50%);
-  width: min(680px, calc(100vw - 32px)); max-height: calc(100vh - 48px); overflow-y: auto;
-  background: #fff; border-radius: 12px; padding: 18px 22px;
+  position: absolute; left: 0; top: 50%; transform: translateY(-50%);
+  width: min(680px, 100vw); max-height: calc(100vh - 48px); overflow-y: auto;
+  background: #fff; border-radius: 0 12px 12px 0; padding: 18px 22px;
   box-shadow: 0 12px 40px rgba(0,0,0,.18);
+  animation: fb-slide-in .2s ease-out;
 }
+@keyframes fb-slide-in { from { transform: translate(-100%, -50%); } to { transform: translate(0, -50%); } }
+@media (prefers-reduced-motion: reduce) { .fb-float-panel { animation: none; } }
 .fb-float-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
 .fb-float-head h2 { font-size: 16px; font-weight: 700; color: #1a1a2e; margin: 0; padding: 0; }
 .fb-float-close {
@@ -188,6 +192,8 @@
 .fb-field--row .fb-label i { color: #c0392b; font-style: normal; margin-left: 2px; }
 .fb-field--row input[type="text"], .fb-field--row textarea { flex: 1; min-width: 0; }
 .fb-field--row textarea { min-height: 96px; }
+.fb-image-row { flex-wrap: wrap; }
+.fb-image-row .fb-thumbs { flex: 0 0 calc(100% - 80px); margin-left: 80px; }
 
 /* 种类三按钮（错误/改进/需求） */
 .fb-type-group { display: flex; border: 1px solid #c9cdd8; border-radius: 6px; overflow: hidden; }
@@ -222,14 +228,17 @@
   .fb-fab { padding: 12px 5px; font-size: 12px; }
   .fb-float-panel {
     left: 0; top: 0; transform: none;
+    animation-name: fb-slide-in-mobile;
     width: 100vw; height: 100vh; height: 100dvh; max-height: none;
     border-radius: 0; padding: 16px 14px calc(20px + env(safe-area-inset-bottom, 0px));
   }
   .fb-field--row { flex-direction: column; gap: 6px; }
+  .fb-image-row .fb-thumbs { flex-basis: auto; width: 100%; margin-left: 0; }
   .fb-field--row .fb-label { width: auto; padding-top: 0; }
   .fb-type-btn { flex: 1; min-height: 44px; padding: 10px 8px; }
   .fb-img-btn { flex: 1 1 100%; min-height: 44px; font-size: 14px; }
 }
+@keyframes fb-slide-in-mobile { from { transform: translateX(-100%); } to { transform: translateX(0); } }
 
 @media (max-width: 760px) {
   .fb-toolbar { flex-direction: column; align-items: stretch; }

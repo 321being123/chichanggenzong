@@ -22,7 +22,7 @@
     var current = window.positionComparisonPresenter.getAccount();
     var visibilityHtml = canPublishBenchmark()
       ? '<span class="pc-label">官方标杆发布：</span>' +
-        '<select id="position-visibility-select" class="pc-select" data-act="PositionComparison.changeVisibility" data-use-value>' +
+        '<select id="position-visibility-select" class="pc-select">' +
           '<option value="private">不发布</option>' +
           '<option value="semi_public">脱敏标杆</option>' +
           '<option value="public">完整标杆</option>' +
@@ -30,7 +30,12 @@
       : '';
     wrap.innerHTML = visibilityHtml +
       '<button type="button" class="btn btn-outline btn-sm pc-compare-btn" id="pc-open-btn" data-act="PositionComparison.openBenchmarkPicker">仓位对比</button>';
-    if (canPublishBenchmark()) window.positionComparisonPresenter.loadVisibility(current);
+    if (canPublishBenchmark()) {
+      document.getElementById('position-visibility-select').addEventListener('change', function (event) {
+        window.positionComparisonPresenter.changeVisibility(event.target.value);
+      });
+      window.positionComparisonPresenter.loadVisibility(current);
+    }
     window.positionComparisonPresenter.refreshBenchmarkButton();
   }
 

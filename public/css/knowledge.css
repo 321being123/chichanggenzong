@@ -1019,6 +1019,9 @@
   margin: 0 0 1.15em;
 }
 
+/* 全局重置移除了列表内边距；恢复正文列表的标记及层级缩进。 */
+.ks-content ul, .ks-content ol { padding-inline-start: 2em; }
+
 .ks-content img {
   display: block;
   max-width: 100%;

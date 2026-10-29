@@ -238,29 +238,7 @@ async function listPendingCallEvents(params, client = pool) {
             OR (e.event_type = 'waive' AND e.no_call_until IS NOT NULL AND e.decision_date IS NOT NULL
                 AND e.no_call_until <= e.decision_date)
             OR (e.event_type IN ('waive','exercise') AND NOT (COALESCE(e.details,'{}'::jsonb)->'evidence' ? 'decision_date'))
-            OR CASE WHEN e.raw_payload->>'announcementTime' ~ '^[0-9]+
-  loadDocumentCache,
-  reconcileCallQuality,
-  recordCallQuality,
-  resolveCallQuality,
-  insert_event_documents,
-  select_ops_data_sources,
-  select_fundamental_convertible_bond_profiles,
-  select_core_instruments,
-  insert_ops_ingestion_runs,
-  insert_ops_raw_records,
-  select_event_convertible_bond_call_events,
-  insert_event_convertible_bond_call_events,
-  update_event_convertible_bond_call_events,
-  update_event_convertible_bond_call_events_1,
-  select_event_convertible_bond_call_events_1,
-  select_ops_data_quality_issues,
-  insert_ops_sync_cursors,
-  insert_ops_sync_cursors_1,
-  update_ops_ingestion_runs,
-  update_ops_ingestion_runs_1,
-};
-
+            OR CASE WHEN e.raw_payload->>'announcementTime' ~ '^[0-9]+'
                     THEN e.announced_at IS DISTINCT FROM to_timestamp((e.raw_payload->>'announcementTime')::double precision / 1000)::date
                     ELSE false END
             OR (e.source_url ~ '/20[0-9]{2}-[0-9]{2}-[0-9]{2}/'

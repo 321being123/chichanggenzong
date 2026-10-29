@@ -212,20 +212,9 @@ const FOLLOW_UP_WINDOW_DAYS = 365;
 
 async function findFollowUpCaseId(client, instrumentId, strategyType, announcedAt) {
   if (!instrumentId || !strategyType || !announcedAt) return null;
-  const { rows } = await client.query(`
-    SELECT c.case_id, c.review_status, max(d.announced_at) AS last_date
-      FROM event.arbitrage_cases c
-      JOIN event.arbitrage_case_documents acd ON acd.case_id=c.case_id
-      JOIN event.documents d ON d.document_id=acd.document_id
-     WHERE c.target_instrument_id=$1 AND c.strategy_type=$2
-       AND c.event_status IN ('completed','terminated','expired')
-     GROUP BY c.case_id, c.review_status
-    HAVING max(d.announced_at) < $3::date
-       AND max(d.announced_at) >= $3::date - ($4::int * INTERVAL '1 day')
-     ORDER BY last_date DESC, c.case_id DESC
-     LIMIT 1
-  `, [instrumentId, strategyType, announcedAt, FOLLOW_UP_WINDOW_DAYS]);
-  return rows[0] || null;
+  return repository.selectTerminalFollowUpCase(
+    [instrumentId, strategyType, announcedAt, FOLLOW_UP_WINDOW_DAYS], client
+  );
 }
 
 // 标准化公告 -> event.documents + event.arbitrage_cases（按标的+策略合并成事件链）

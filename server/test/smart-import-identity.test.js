@@ -14,7 +14,7 @@ function context() {
   const ui = {
     username: 'user', accountIdentity: 'identity-1', currentAccount: '同名账户',
     _qrGeneration: 0, _qrPollTimer: null, _qrToken: null, _visionPaused: false,
-    document: { getElementById: () => null, querySelectorAll: () => [] },
+    document: { getElementById: () => null, querySelectorAll: () => [], addEventListener: () => {} },
     renderVisionQueue() {}, renderSmartItems() {}, setSmartButtonsDisabled() {}, clearInterval() {},
   };
   ui.window = ui;

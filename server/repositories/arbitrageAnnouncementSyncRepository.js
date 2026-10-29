@@ -325,6 +325,24 @@ async function update_event_arbitrage_case_documents(params, client = pool) {
     `, params);
 }
 
+// 终态事件（completed/terminated/expired）之后发布的进程公告续接目标：同标的 + 同策略 + 最近终态案件 + 窗口内。
+async function selectTerminalFollowUpCase(params, client = pool) {
+  const { rows } = await client.query(`
+    SELECT c.case_id, c.review_status, max(d.announced_at) AS last_date
+      FROM event.arbitrage_cases c
+      JOIN event.arbitrage_case_documents acd ON acd.case_id=c.case_id
+      JOIN event.documents d ON d.document_id=acd.document_id
+     WHERE c.target_instrument_id=$1 AND c.strategy_type=$2
+       AND c.event_status IN ('completed','terminated','expired')
+     GROUP BY c.case_id, c.review_status
+    HAVING max(d.announced_at) < $3::date
+       AND max(d.announced_at) >= $3::date - ($4::int * INTERVAL '1 day')
+     ORDER BY last_date DESC, c.case_id DESC
+     LIMIT 1
+  `, params);
+  return rows[0] || null;
+}
+
 module.exports = {
   createIngestionRun,
   findOpenCase,
@@ -360,4 +378,5 @@ module.exports = {
   select_event_arbitrage_case_documents_2,
   select_event_arbitrage_case_documents_3,
   update_event_arbitrage_case_documents,
+  selectTerminalFollowUpCase,
 };

@@ -137,8 +137,8 @@ async function recordNav() {
       // 避免带着旧版本号连环失败导致净值一直写不进
       if (response.status === 409) {
         try {
-          const rr = await fetch(api('/api/data/' + encodeURIComponent(currentAccount)));
-          const jj = await rr.json().catch(function () { return {}; });
+          const rr = await window.siteApi.requestRaw('/api/data/' + encodeURIComponent(currentAccount));
+          const jj = rr && rr.response ? await rr.response.json().catch(function () { return {}; }) : {};
           if (jj.data && typeof jj.data.version === 'number') dataVersion = jj.data.version;
         } catch (e2) {}
       }

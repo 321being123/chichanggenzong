@@ -13,9 +13,9 @@
 // 券商实际到账若多一股，由用户在交易记录里补一笔 adjust 即可，不在本服务里猜。
 'use strict';
 
-const { pool } = require('../db');
 const CoreDate = require('../../public/shared/core-date.js');
 const tradeLedger = require('./tradeLedger');
+const swapRepository = require('../repositories/stockSwapSettlementRepository');
 
 const DATASET_CODE = 'stock_swap_settlements';
 
@@ -79,58 +79,11 @@ async function findSettleableCases(options = {}) {
   const now = options.now == null ? new Date() : options.now;
   const today = todayShanghai(now);
   const patterns = IMPLEMENTATION_TITLE_PATTERNS.map(p => '%' + p + '%');
-  const { rows: implemented } = await pool.query(
-    `SELECT c.case_id,
-            c.event_status,
-            c.target_instrument_id,
-            c.reference_instrument_id,
-            c.swap_ratio,
-            c.target_swap_price,
-            c.reference_swap_price,
-            si.canonical_code AS source_code,
-            si.name           AS source_name,
-            si.status         AS source_status,
-            si.delist_date::text AS source_delist_date,
-            ev.document_id    AS evidence_document_id,
-            ev.title          AS evidence_title,
-            ev.announced_at   AS evidence_announced_at
-       FROM event.arbitrage_cases c
-       JOIN core.instruments si ON si.instrument_id = c.target_instrument_id
-       JOIN LATERAL (
-         SELECT doc.document_id, doc.title, doc.announced_at
-           FROM event.arbitrage_case_documents ad
-           JOIN event.documents doc ON doc.document_id = ad.document_id
-          WHERE ad.case_id = c.case_id
-            AND doc.title LIKE ANY($1::text[])
-          ORDER BY doc.announced_at ASC, doc.document_id ASC
-          LIMIT 1
-       ) ev ON TRUE
-      WHERE c.strategy_type = 'a_share_swap'
-        AND COALESCE(c.swap_ratio, 0) > 0
-        AND c.target_instrument_id IS NOT NULL
-      ORDER BY ev.announced_at ASC, c.case_id ASC`,
-    [patterns]
-  );
+  const implemented = await swapRepository.selectImplementedSwapCases(patterns);
   if (!implemented.length) return [];
 
   // 同一被合并方在任一同策略案件里出现过的有效合并方（用于补齐 reference 为空的实施案）。
-  const { rows: pairs } = await pool.query(
-    `SELECT c.case_id,
-            c.target_instrument_id,
-            c.reference_instrument_id,
-            c.swap_ratio,
-            ri.canonical_code AS reference_code,
-            ri.name           AS reference_name,
-            ri.status         AS reference_status,
-            ri.delist_date::text AS reference_delist_date
-       FROM event.arbitrage_cases c
-       JOIN core.instruments ri ON ri.instrument_id = c.reference_instrument_id
-      WHERE c.strategy_type = 'a_share_swap'
-        AND c.reference_instrument_id IS NOT NULL
-        AND c.reference_instrument_id <> c.target_instrument_id
-        AND COALESCE(c.swap_ratio, 0) > 0
-      ORDER BY c.case_id`
-  );
+  const pairs = await swapRepository.selectSwapPairs();
   return resolveSwapCases(implemented, pairs, today);
 }
 
@@ -195,51 +148,20 @@ function resolveSwapCases(implemented, pairs, today) {
 // 该案件涉及的、当前仍持有被合并方证券的账户持仓。
 async function findSourceHoldings(caseRow) {
   const code = bareCode(caseRow.source_code);
-  const { rows } = await pool.query(
-    `SELECT username,
-            account_name,
-            MAX(account_id)              AS account_id,
-            MAX(type)                    AS type,
-            MAX(subtype)                 AS subtype,
-            SUM(quantity)                AS quantity,
-            SUM(quantity * cost)         AS cost_total
-       FROM positions
-      WHERE quantity > 0
-        AND (instrument_id = $1 OR code = $2)
-      GROUP BY username, account_name
-      ORDER BY username, account_name`,
-    [caseRow.source_instrument_id, code]
-  );
-  return rows;
+  return swapRepository.selectSourceHoldings(caseRow.source_instrument_id, code);
 }
 
 // 当前剩余的被合并方持仓数量（用于幂等对账：已被本服务清零则不再重复执行）。
 async function currentSourceQuantity(username, accountName, caseRow) {
   const code = bareCode(caseRow.source_code);
-  const { rows } = await pool.query(
-    `SELECT COALESCE(SUM(quantity), 0) AS quantity
-       FROM positions
-      WHERE username = $1 AND account_name = $2
-        AND (instrument_id = $3 OR code = $4)`,
-    [username, accountName, caseRow.source_instrument_id, code]
-  );
-  return toNumber(rows[0] && rows[0].quantity) || 0;
+  const row = await swapRepository.selectCurrentSourceQuantity(username, accountName, caseRow.source_instrument_id, code);
+  return toNumber(row && row.quantity) || 0;
 }
 
 // 账户原本已持有的合并方持仓（换股所得要与之合并，不能直接把数量设成换得股数）。
 async function existingTargetHolding(username, accountName, caseRow) {
   const code = bareCode(caseRow.target_code);
-  const { rows } = await pool.query(
-    `SELECT COALESCE(SUM(quantity), 0)            AS quantity,
-            COALESCE(SUM(quantity * cost), 0)     AS cost_total,
-            MAX(type)                             AS type,
-            MAX(subtype)                          AS subtype
-       FROM positions
-      WHERE username = $1 AND account_name = $2
-        AND (instrument_id = $3 OR code = $4)`,
-    [username, accountName, caseRow.target_instrument_id, code]
-  );
-  const row = rows[0] || {};
+  const row = (await swapRepository.selectExistingTargetHolding(username, accountName, caseRow.target_instrument_id, code)) || {};
   return {
     quantity: toNumber(row.quantity) || 0,
     costTotal: toNumber(row.cost_total) || 0,
@@ -291,41 +213,15 @@ function buildPlan(caseRow, holding, existingTarget) {
 
 // 结算单落库（幂等：唯一键冲突时返回既有行，不覆盖已执行结果）。
 async function upsertSettlement(plan) {
-  const { rows } = await pool.query(
-    `INSERT INTO event.stock_swap_settlements
-       (case_id, username, account_name, account_id, source_instrument_id, target_instrument_id,
-        settlement_date, ratio_applied, source_quantity, target_quantity, existing_target_quantity,
-        cost_total_before, cost_unit_after, status, evidence_document_id)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'pending',$14)
-     ON CONFLICT (case_id, username, account_name, source_instrument_id) DO NOTHING
-     RETURNING *`,
-    [plan.case_id, plan.username, plan.account_name, plan.account_id,
-     plan.source_instrument_id, plan.target_instrument_id, plan.settlement_date,
-     plan.ratio_applied, plan.source_quantity, plan.target_quantity, plan.existing_target_quantity,
-     plan.cost_total_before, plan.cost_unit_after, plan.evidence_document_id]
+  const inserted = await swapRepository.insertSettlement(plan);
+  if (inserted) return inserted;
+  return swapRepository.selectSettlementByScope(
+    plan.case_id, plan.username, plan.account_name, plan.source_instrument_id
   );
-  if (rows[0]) return rows[0];
-  const existing = await pool.query(
-    `SELECT * FROM event.stock_swap_settlements
-      WHERE case_id=$1 AND username=$2 AND account_name=$3 AND source_instrument_id=$4`,
-    [plan.case_id, plan.username, plan.account_name, plan.source_instrument_id]
-  );
-  return existing.rows[0] || null;
 }
 
 async function markSettlement(settlementId, status, patch = {}) {
-  await pool.query(
-    `UPDATE event.stock_swap_settlements
-        SET status = $2,
-            applied_trade_ids = COALESCE($3::jsonb, applied_trade_ids),
-            error_message = $4,
-            applied_at = CASE WHEN $2 = 'applied' THEN now() ELSE applied_at END,
-            updated_at = now()
-      WHERE settlement_id = $1`,
-    [settlementId, status,
-     patch.tradeIds ? JSON.stringify(patch.tradeIds) : null,
-     patch.error ? String(patch.error).slice(0, 1000) : null]
-  );
+  await swapRepository.updateSettlementStatus(settlementId, status, patch);
 }
 
 // 换股结算的账本事件：先清零被合并方，再把换得股数并入合并方（同账户已有持仓时合并成本）。

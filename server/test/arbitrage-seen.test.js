@@ -8,6 +8,12 @@ require('../services/tencentQuote').fetchTencentQuotes = async () => new Map();
 const service = require('../services/arbitrageService');
 
 async function main() {
+  // 路由层：非法机会编号必须先被拦下，不能带着 NaN 打到数据库（否则 500 而非 404）
+  const arbitrageRoutes = fs.readFileSync(path.join(__dirname, '..', 'routes', 'arbitrage.js'), 'utf8');
+  const detailStart = arbitrageRoutes.indexOf("router.get('/:caseId'");
+  const detailBlock = detailStart >= 0 ? arbitrageRoutes.slice(detailStart, detailStart + 400) : '';
+  assert.ok(/\/\^\[1-9\]\\d\*\$\/\.test\(req\.params\.caseId\)/.test(detailBlock),
+    '套利详情路由缺少机会编号格式校验（非法编号会打到数据库并返回 500）');
   await require('../db').runMigrations();
   const prefix = 'test_arb_seen_' + Date.now();
   const users = [prefix + '_a', prefix + '_b'];

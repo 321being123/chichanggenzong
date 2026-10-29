@@ -266,7 +266,7 @@ async function selectAnnouncementHistoryTargets({ end, codes = [], cachedOnly = 
       ORDER BY i.canonical_code${limitClause}`,
     params
   );
-  return rows;
+  return { rows };
 }
 
 // 最近若干开市日里，指定正股中仍存在行情缺口的清单（扣掉停牌日）

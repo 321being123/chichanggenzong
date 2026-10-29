@@ -31,7 +31,11 @@ router.post('/:caseId/seen', requireLogin, asyncHandler(async (req, res) => {
 }));
 
 router.get('/:caseId', optionalLogin, asyncHandler(async (req, res) => {
-  const detail = await svc.getArbitrageDetail(parseInt(req.params.caseId), req.authUser && req.authUser.username);
+  const caseId = Number(req.params.caseId);
+  if (!/^[1-9]\d*$/.test(req.params.caseId) || !Number.isSafeInteger(caseId)) {
+    return res.status(404).json({ error: '未找到该套利事件或尚未审核通过' });
+  }
+  const detail = await svc.getArbitrageDetail(caseId, req.authUser && req.authUser.username);
   if (!detail) return res.status(404).json({ error: '未找到该套利事件或尚未审核通过' });
   res.set('Cache-Control', 'private, no-store');
   res.json(detail);

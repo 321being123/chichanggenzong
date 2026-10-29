@@ -33,6 +33,11 @@ async function cleanup(){
   assert.equal(mismatch.status,'failed');assert.match(mismatch.error,/账本重放后的持仓/);
   assert.equal(Number((await pool.query('SELECT count(*) AS n FROM trades WHERE username=$1',[U])).rows[0].n),0,'重放后数量不符必须回滚账本');
   assert.equal(Number((await pool.query('SELECT count(*) AS n FROM event.stock_swap_settlements WHERE case_id=$1',[caseId])).rows[0].n),0,'重放后数量不符不得留下结算单');
+  const originalTarget=repo.selectExistingTargetHolding;let targetCalls=0;
+  repo.selectExistingTargetHolding=async(...args)=>{const r=await originalTarget(...args);targetCalls++;return targetCalls===2?{...r,cost_total:Number(r.cost_total)+500}:r};
+  const costMismatch=await svc.settleOne(caseRow,plan,{});repo.selectExistingTargetHolding=originalTarget;
+  assert.equal(costMismatch.status,'failed');assert.match(costMismatch.error,/持仓成本/);
+  assert.equal(Number((await pool.query('SELECT count(*) AS n FROM trades WHERE username=$1',[U])).rows[0].n),0,'重放后成本不符必须回滚账本');
   const lock=await pool.connect();await lock.query('BEGIN');await lock.query('SELECT version FROM account_data WHERE username=$1 AND account_name=$2 FOR UPDATE',[U,A]);
   const pending=svc.settleOne(caseRow,plan,{});
   await lock.query("UPDATE positions SET quantity=200 WHERE username=$1 AND account_name=$2 AND code='601198'",[U,A]);

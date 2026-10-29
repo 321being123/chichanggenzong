@@ -311,6 +311,13 @@ async function settleOne(caseRow, plan, options) {
           Math.abs((toNumber(targetAfter && targetAfter.quantity) || 0) - (currentPlan.target_quantity + currentPlan.existing_target_quantity)) > 0.00001) {
         throw new Error('账本重放后的持仓与换股计划不一致，已回滚');
       }
+      const targetQtyAfter = toNumber(targetAfter && targetAfter.quantity) || 0;
+      const expectedCostTotal = currentPlan.target_quantity > 0
+        ? currentPlan.cost_unit_after * targetQtyAfter : (toNumber(existing.cost_total) || 0);
+      const actualCostTotal = toNumber(targetAfter && targetAfter.cost_total) || 0;
+      if (Math.abs(actualCostTotal - expectedCostTotal) > Math.max(0.0001, targetQtyAfter * 0.00005)) {
+        throw new Error('账本重放后的持仓成本与换股计划不一致，已回滚');
+      }
       await swapRepository.updateSettlementStatus(settlement.settlement_id, 'applied', { tradeIds: ids }, client);
       return { ...preview, source_quantity: currentPlan.source_quantity, target_quantity: currentPlan.target_quantity,
         existing_target_quantity: currentPlan.existing_target_quantity, cost_unit_after: currentPlan.cost_unit_after,

@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "lastReviewed": "2026-10-28",
+  "lastReviewed": "2026-10-29",
   "rules": [
     {
       "id": "BOND-PROSPECTUS-SELECTION-059",
@@ -4267,6 +4267,38 @@
         {
           "file": "server/test/stock-swap-job-execution.test.js",
           "pattern": "STOCK-SWAP-SETTLE-067"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "local_verified"
+    },
+    {
+      "id": "REPO-CONTRACT-01",
+      "title": "仓储函数返回形态必须与调用方一致：按 {rows} 解构的必须返回 Result，按数组使用的不访问 .rows（0.9.0.2 生产启动报错根因）",
+      "implementation": {
+        "file": "server/repositories/convertibleBondAnalysisSyncRepository.js",
+        "symbol": "selectAnnouncementHistoryTargets"
+      },
+      "tests": [
+        {
+          "file": "server/test/repository-layer-contract.test.js",
+          "pattern": "REPO-CONTRACT-01"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "local_verified"
+    },
+    {
+      "id": "UNDEF-01",
+      "title": "后端代码不得引用未声明标识符：按作用域链静态检查 server/ 与 scripts/（避免重构搬移丢变量只在生产启动暴露）",
+      "implementation": {
+        "file": "server/test/undeclared-identifier.test.js",
+        "symbol": "scopeDeclares"
+      },
+      "tests": [
+        {
+          "file": "server/test/undeclared-identifier.test.js",
+          "pattern": "UNDEF-01"
         }
       ],
       "owner": "WorkBuddy",

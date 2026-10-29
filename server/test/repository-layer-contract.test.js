@@ -7,6 +7,7 @@ const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
 
+const RULE_ID = 'REPO-CONTRACT-01';
 const serverDir = path.join(__dirname, '..');
 const repoDir = path.join(serverDir, 'repositories');
 
@@ -82,5 +83,5 @@ for (const file of walk(serverDir).filter(p => !p.includes(`${path.sep}repositor
 
 assert.ok(returnTypes.size > 100, `仓储函数解析数量异常：${returnTypes.size}`);
 assert.deepStrictEqual(problems, [], '仓储层返回契约冲突：\n' + problems.join('\n'));
-console.log(`OK repository-layer-contract: 扫描 ${returnTypes.size} 个仓储函数，调用方返回值契约一致`);
+console.log(`OK ${RULE_ID} repository-layer-contract: 扫描 ${returnTypes.size} 个仓储函数，调用方返回值契约一致`);
 process.exit(0);

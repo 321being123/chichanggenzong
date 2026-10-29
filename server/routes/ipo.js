@@ -508,6 +508,7 @@ router.get('/report', asyncHandler(async (req, res) => {
   try {
     const date = req.query.date;
     let row;
+    let total = null;
     if (date) {
       const r = await ipoRepository.reportByDate({ date: String(date) });
       row = r.rows[0];

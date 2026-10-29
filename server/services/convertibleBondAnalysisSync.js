@@ -1196,6 +1196,8 @@ async function syncConvertibleBondUniverseMarketWithBackfill(reason = 'scheduled
 // 公告事实入库链：只负责抓取并解析“不下修/转股价格调整”公告，分析接口不再直接访问公告源。
 async function syncConvertibleBondAnnouncementHistories({ tsCodes = [], fromDate = null, toDate = null, limit = null, cachedOnly = false, retryFailed = false, mode = 'core' } = {}) {
   const end = isoDate(toDate) || tsDateStr(new Date());
+  // 显式批次上限：仅归一化为正整数，未传时表示不限批（续跑语义由 continuationRequired 表达）。
+  const configuredLimit = Number.isInteger(Number(limit)) && Number(limit) > 0 ? Number(limit) : null;
   const normalizedCodes = (Array.isArray(tsCodes) ? tsCodes : [tsCodes]).map(normalizeBondCode).filter(Boolean);
   const globalSync = !normalizedCodes.length && !fromDate && !cachedOnly;
   const cursorResult = globalSync ? await repository.select_ops_sync_cursors() : { rows: [] };
@@ -1203,7 +1205,7 @@ async function syncConvertibleBondAnnouncementHistories({ tsCodes = [], fromDate
   const scanStart = fromDate ? isoDate(fromDate) : (cursorDate
     ? isoDate(addDays(new Date(`${cursorDate}T00:00:00+08:00`), -ANNOUNCEMENT_OVERLAP_DAYS)) : null);
   const { rows: profiles } = await repository.selectAnnouncementHistoryTargets({
-    end, codes: normalizedCodes, cachedOnly, limit,
+    end, codes: normalizedCodes, cachedOnly, limit: configuredLimit,
   });
   const results = [];
   const sourceFailures = [];

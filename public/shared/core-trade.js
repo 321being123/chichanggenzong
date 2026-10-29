@@ -503,6 +503,8 @@ function smartRowById(rowId) {
 }
 
 async function handleVisionFile(event) {
+  // 只处理 change：input/click 代理事件也会命中本入口，重复入队会让同批图片识别两次
+  if (event && event.type && event.type !== 'change') return;
   var files = Array.prototype.slice.call(event.target.files || []);
   event.target.value = '';
   if (!files.length) return;
@@ -531,6 +533,7 @@ function enqueueVisionFiles(files) {
   }
   var added = 0;
   var pending = [];
+  var overCount = 0;
   for (var i = 0; i < files.length; i++) {
     var file = files[i];
     if (!file || (file.type && file.type.indexOf('image') !== 0)) continue;
@@ -539,30 +542,92 @@ function enqueueVisionFiles(files) {
       break;
     }
     if (file.size > VISION_MAX_IMAGE_BYTES) {
-      showToast('「' + (file.name || '图片') + '」超过 6MB，请重新截图');
+      overCount++;
       continue;
     }
     added++;
     pending.push(file);
   }
+  // 超限合并为一条提示：多选时逐张弹提示会被冲掉，用户看不出有几张没进来
+  if (overCount) showToast(overCount + ' 张图片超过 6MB 未加入，请重新截图或分批上传');
   if (!pending.length) return;
   Promise.all(pending.map(function(file) {
     return fileToBase64(file).then(function(base64) {
+      return { file: file, base64: base64 };
+    }, function() {
+      // 单张读取失败只跳过该张，不拖垮整批（原 Promise.all 一张失败整批静默卡死）
+      showToast('「' + (file.name || '图片') + '」读取失败，已跳过');
+      return null;
+    });
+  })).then(function(results) {
+    var dupCount = 0;
+    (results || []).forEach(function(r) {
+      if (!r) return;
+      // 同一张图片不允许重复导入（2026-10-27 反馈）：与队列已有图片内容相同直接跳过
+      if (isDuplicateVisionImage(r.base64)) { dupCount++; return; }
       _visionQueue.push({
         imageId: 'img_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8),
-        name: file.name || '截图',
-        preview: base64,
-        base64: base64,
+        name: r.file.name || '截图',
+        preview: r.base64,
+        base64: r.base64,
         status: 'queued',
         items: null,
         error: null
       });
     });
-  })).then(function() {
+    if (dupCount) showToast(dupCount + ' 张与队列中已有图片相同，未重复导入');
     renderVisionQueue();
     processVisionQueue();
   });
 }
+
+// 图片内容去重：队列最多 6 张，直接比对 base64 内容即可（同一图片同一编码必相等）
+function isDuplicateVisionImage(base64) {
+  for (var i = 0; i < _visionQueue.length; i++) {
+    if (_visionQueue[i].base64 === base64) return true;
+  }
+  return false;
+}
+
+// 拖拽/粘贴图片统一进队列（方案 4.3 统一入口）：多图队列重构时旧的拖拽/粘贴初始化被删，
+// 2026-10-27 反馈"拖拽没生效、浏览器直接打开图片"后补回，统一走 enqueueVisionFiles
+(function initVisionDropPaste() {
+  var section = document.getElementById('trade-smart-section');
+  var zone = document.getElementById('vision-zone');
+  if (section) {
+    section.addEventListener('dragover', function(e) {
+      e.preventDefault(); // 不阻止默认行为时松手浏览器会直接打开图片
+      if (zone) zone.classList.add('dragover');
+    });
+    section.addEventListener('dragleave', function() {
+      if (zone) zone.classList.remove('dragover');
+    });
+    section.addEventListener('drop', function(e) {
+      e.preventDefault();
+      if (zone) zone.classList.remove('dragover');
+      var files = Array.prototype.slice.call((e.dataTransfer && e.dataTransfer.files) || []);
+      if (files.length) enqueueVisionFiles(files); // 非图片/超限在入队校验里统一过滤提示
+    });
+  }
+  document.addEventListener('paste', function(e) {
+    if (tradeMode !== 'smart') return;
+    var tradesPage = document.getElementById('page-trades');
+    if (!tradesPage || !tradesPage.classList.contains('active')) return;
+    var items = e.clipboardData && e.clipboardData.items;
+    if (!items) return;
+    var images = [];
+    for (var i = 0; i < items.length; i++) {
+      if (items[i].type && items[i].type.indexOf('image') === 0) {
+        var blob = items[i].getAsFile();
+        if (blob) images.push(blob);
+      }
+    }
+    if (images.length) {
+      e.preventDefault();
+      enqueueVisionFiles(images);
+    }
+  });
+})();
 
 // 并发固定 1，逐图独立识别；成功结果本次会话复用，不重新调用模型；只重试失败图
 var _visionProcessing = false;
@@ -574,6 +639,7 @@ async function processVisionQueue() {
     for (var i = 0; i < _visionQueue.length; i++) {
       if (_visionPaused) break;
       var job = _visionQueue[i];
+      if (!job) continue; // 处理中删除图片会让数组移位，防索引越界
       if (job.status !== 'queued') continue;
       job.status = 'parsing';
       renderVisionQueue();
@@ -670,9 +736,12 @@ function renderVisionQueue() {
   _visionQueue.forEach(function(job) {
     var label = job.status === 'queued' ? '待识别' : job.status === 'parsing' ? '识别中…' : job.status === 'done' ? '已完成' : '失败';
     var color = job.status === 'failed' ? '#d93025' : job.status === 'done' ? '#137333' : '#6e6e6e';
+    var errText = job.status === 'failed' && job.error ? String(job.error) : '';
     html += '<div data-style="width:96px;text-align:center;">' +
       '<img src="' + job.preview + '" data-style="width:96px;height:72px;object-fit:cover;border-radius:6px;border:1px solid #e0e0e0;" alt="">' +
-      '<div data-style="font-size:11px;color:' + color + ';">' + label + '</div>' +
+      '<div data-style="font-size:11px;color:' + color + ';"' + (errText ? ' title="' + escapeHtml(errText) + '"' : '') + '>' + label + '</div>' +
+      // 失败原因直接显示（2026-10-27 反馈：只显示“失败”看不出为什么），悬停看完整原因
+      (errText ? '<div data-style="font-size:10px;color:#d93025;max-height:30px;overflow:hidden;" title="' + escapeHtml(errText) + '">' + escapeHtml(errText) + '</div>' : '') +
       '<div data-style="display:flex;gap:4px;justify-content:center;">' +
       (job.status === 'failed' ? '<button class="btn btn-outline btn-sm" data-act="retryVisionImage" data-arg1="' + job.imageId + '">重试</button>' : '') +
       '<button class="btn btn-outline btn-sm" data-act="removeVisionImage" data-arg1="' + job.imageId + '">删除</button>' +
@@ -700,6 +769,8 @@ function mergeSmartItems(items, imageTag) {
   if (!window._smartParsed) window._smartParsed = [];
   (items || []).forEach(function(item) {
     item.code = classifyCode.normalizeCode(item.code || '', item.name || '');
+    // 持仓缺快照日期 → 默认今天，用户可在预览里改（2026-10-27 用户裁定；交易缺日期仍要求补全）
+    if (item.kind === 'position' && !item.date) item.date = CoreDate.todayInZone('Asia/Shanghai') || '';
     item._rowId = newSmartRowId();
     item._eventId = item._eventId || uid();          // 幂等键：重试复用同一 id
     item._imageTags = [imageTag || 'image'];
@@ -727,8 +798,10 @@ function mergeSmartItems(items, imageTag) {
 
 // 手机扫码传来的图片批量入队（与本地选图同一队列）
 function enqueueBase64Images(images, namePrefix) {
+  var dupCount = 0;
   (images || []).forEach(function(base64, i) {
     if (_visionQueue.length >= VISION_MAX_IMAGES) return;
+    if (isDuplicateVisionImage(base64)) { dupCount++; return; }
     _visionQueue.push({
       imageId: 'img_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8),
       name: (namePrefix || '手机上传') + (i + 1),
@@ -739,6 +812,7 @@ function enqueueBase64Images(images, namePrefix) {
       error: null
     });
   });
+  if (dupCount) showToast(dupCount + ' 张与队列中已有图片相同，未重复导入');
   renderVisionQueue();
   processVisionQueue();
 }
@@ -804,6 +878,8 @@ function renderSmartEmptyHint(message) {
 function renderSmartItems() {
   var result = document.getElementById('smart-result');
   if (!result) return;
+  // 重渲染前先把所有行的编辑值写回状态（2026-10-27 反馈：单行确认后其他行改过的日期被刷没）
+  syncAllSmartRowsFromDom();
   var items = window._smartParsed || [];
   if (items.length === 0) { result.innerHTML = ''; return; }
 
@@ -1046,6 +1122,8 @@ function readSmartRow(rowId) {
 // 把所有行的编辑值同步回状态（删行重渲染前保存，方案 4.4 第 4 条）
 function syncAllSmartRowsFromDom() {
   (window._smartParsed || []).forEach(function(item) {
+    // 该行 DOM 还没渲染过（如刚识别完待首次渲染的新行）时跳过，避免用空值覆盖识别结果
+    if (!document.getElementById('s-date-' + item._rowId)) return;
     var row = readSmartRow(item._rowId);
     if (!row) return;
     item.code = row.code;
@@ -1100,7 +1178,7 @@ function revalidateSmartRow(rowId) {
     if (row.price === null || !isFinite(row.price)) {
       issues.push({ level: 'error', field: 'cost', message: '请补填成本价（可为 0 或负数）' });
     }
-    if (!row.date) issues.push({ level: 'error', field: 'date', message: '请选择快照日期（不默认今天）' });
+    if (!row.date) issues.push({ level: 'error', field: 'date', message: '请选择快照日期' });
     if (row.quantity === 0) issues.push({ level: 'warn', field: 'quantity', message: '数量为 0 将生成清仓调整' });
     // 防叠加守卫：行日期不得早于该证券已有 open/adjust 事件，
     // 否则按日期重放时较晚的期初事件会叠加到目标数量上（2026-10-26 验收 E2E 实证）
@@ -1197,7 +1275,7 @@ async function submitPositionRows(rows) {
       price: row.price, quantity: row.quantity,
       type: rec.type, subtype: rec.subtype,
       quote_currency: row.currency || undefined,
-      date: row.date, // 快照日期必须显式确认（缺失行已被重校验阻止，不默认今天）
+      date: row.date, // 快照日期：缺省已在预览默认今天并可改；清空则被重校验阻止，不带空日期提交
       import_batch_id: window._smartBatchId || null
     };
   });
@@ -1246,6 +1324,13 @@ function excludeSmartRow(rowId) {
   removeSmartRows([rowId]);
 }
 
+// 导入保存成功后立即刷一次行情，持仓列表当场显示今日涨跌/今日盈亏（2026-10-27 反馈）；
+// 与手动"刷新行情"同链路，失败不影响已保存结果
+function refreshQuotesAfterImport() {
+  if (typeof doRefresh !== 'function') return;
+  Promise.resolve(doRefresh()).catch(function() {});
+}
+
 async function confirmSmartItem(rowId) {
   if (_smartSubmitting) return;
   var found = smartRowById(rowId);
@@ -1265,6 +1350,7 @@ async function confirmSmartItem(rowId) {
     if (r.status === 'saved' || r.status === 'duplicate') {
       removeSmartRows([rowId]);
       showToast(r.message || '已保存');
+      refreshQuotesAfterImport();
     } else {
       showToast(r.message || '提交失败，行已保留');
       revalidateSmartRow(rowId);
@@ -1369,6 +1455,7 @@ async function confirmAllSmartItems() {
   if (tradeFailed) parts.push(tradeFailed + ' 条失败保留');
   if (blockedCount) parts.push(blockedCount + ' 条需先处理（见状态列）');
   if (sameDateConflict) parts.push(sameDateConflict + ' 行同证券同日快照对不上，已保留待你选择（逐行确认或移除）');
+  if (posSaved + tradeSaved > 0) refreshQuotesAfterImport();
   showToast('完成：' + parts.join('，'));
 }
 

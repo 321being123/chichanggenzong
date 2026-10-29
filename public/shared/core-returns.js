@@ -126,7 +126,22 @@ async function recordNav() {
       body: JSON.stringify({ account: currentAccount, calculationMode: 'system' })
     });
     const _j2 = await response.json().catch(function () { return {}; });
-    if (!response.ok) { showToast(_j2.error || '净值基准不完整，未保存'); return; }
+    if (!response.ok) {
+      // 2026-10-27 修复：409（版本冲突/资产基准不完整/并发）后同步一次最新版本号，
+      // 避免带着旧版本号连环失败导致净值一直写不进
+      if (response.status === 409) {
+        try {
+          const rr = await fetch(api('/api/data/' + encodeURIComponent(currentAccount)));
+          const jj = await rr.json().catch(function () { return {}; });
+          if (jj.data && typeof jj.data.version === 'number') dataVersion = jj.data.version;
+        } catch (e2) {}
+      }
+      const msg = _j2.error || '净值基准不完整，未保存';
+      showToast(msg.indexOf('基准不完整') >= 0
+        ? '今日净值未自动记录：' + msg + '（补齐初始净值或等持仓取得行情后，再点「刷新行情」即可补记）'
+        : msg);
+      return;
+    }
     if (_j2.data) {
       syncDataVersions(_j2.data);
       data.navHistory = _j2.data.navHistory;

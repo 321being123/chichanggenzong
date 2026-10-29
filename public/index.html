@@ -220,12 +220,12 @@
     <div class="u-pad-20">
       <!-- 录入方式切换 -->
       <div class="u-mb-16">
-        <button class="btn trade-mode-btn u-trade-mode-first" id="mode-smart" data-act="switchTradeMode" data-arg="smart" >智能导入</button>
-        <button class="btn trade-mode-btn active u-trade-mode-last" id="mode-manual" data-act="switchTradeMode" data-arg="manual" >手动录入</button>
+        <button class="btn trade-mode-btn active u-trade-mode-first" id="mode-smart" data-act="switchTradeMode" data-arg="smart" >智能导入</button>
+        <button class="btn trade-mode-btn u-trade-mode-last" id="mode-manual" data-act="switchTradeMode" data-arg="manual" >手动录入</button>
       </div>
 
       <!-- 手动录入表单 -->
-      <div id="trade-manual-section">
+      <div class="js-hidden" id="trade-manual-section">
       <div class="form-row">
         <div class="form-group"><label>日期</label><input type="date" id="trade-date"></div>
         <div class="form-group"><label>时间</label><input type="time" id="trade-time" value="09:30"></div>
@@ -258,7 +258,7 @@
       </div>
 
       <!-- 智能导入区域（图片 + Excel，自动识别交易/持仓） -->
-      <div class="js-hidden" id="trade-smart-section">
+      <div id="trade-smart-section">
         <div class="vision-row">
           <div class="vision-zone" id="vision-zone" data-act="__click" data-target="vision-input">
             <div class="icon">📷</div>

@@ -755,6 +755,47 @@ async function migration052NavHistoryHkRate() {
   `);
 }
 
+// ========== 177：套利换股结算（套利事件 → 持仓账本自动转换） ==========
+// 换股吸收合并完成后，被合并方退市、持仓失去行情；按公告换股比例把持仓转为合并方证券。
+// 该表保存每个账户的结算计划与执行结果，唯一键保证同一案件/账户/来源证券只结算一次。
+async function migration177StockSwapSettlement() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS event.stock_swap_settlements (
+      settlement_id BIGSERIAL PRIMARY KEY,
+      case_id INTEGER NOT NULL REFERENCES event.arbitrage_cases(case_id) ON DELETE CASCADE,
+      username TEXT NOT NULL,
+      account_name TEXT NOT NULL,
+      account_id TEXT,
+      source_instrument_id BIGINT NOT NULL,
+      target_instrument_id BIGINT NOT NULL,
+      settlement_date DATE NOT NULL,
+      ratio_applied NUMERIC(20,6) NOT NULL,
+      source_quantity NUMERIC(20,4) NOT NULL,
+      target_quantity NUMERIC(20,4) NOT NULL,
+      existing_target_quantity NUMERIC(20,4) NOT NULL DEFAULT 0,
+      cost_total_before NUMERIC(20,4) NOT NULL,
+      cost_unit_after NUMERIC(20,6) NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      applied_trade_ids JSONB,
+      evidence_document_id BIGINT,
+      error_message TEXT,
+      applied_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      CONSTRAINT chk_stock_swap_settlement_status
+        CHECK (status IN ('pending','applied','failed','skipped'))
+    )
+  `);
+  await pool.query(`
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_stock_swap_settlement_scope
+      ON event.stock_swap_settlements(case_id, username, account_name, source_instrument_id)
+  `);
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS idx_stock_swap_settlement_status
+      ON event.stock_swap_settlements(status, settlement_date DESC, settlement_id DESC)
+  `);
+}
+
 module.exports = {
   migration049SessionRevocation,
   migration050CapabilityPermissions,
@@ -783,5 +824,6 @@ module.exports = {
   migration054ArbitrageCases,
   migration055ArbitrageParserAccuracy,
   migration056GlobalFxRateSource,
+  migration177StockSwapSettlement,
   migration052NavHistoryHkRate,
 };

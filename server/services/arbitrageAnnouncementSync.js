@@ -274,6 +274,32 @@ async function findCaseByAnnouncementMergeKey(client, instrumentId, mergeKey, an
   }) === mergeKey) || null;
 }
 
+// 已终态事件的后续进程公告（换股实施、终止上市、实施结果、股份变动等）必须续接原事件链。
+// 2026-10-27 根因：中金换股吸收合并的实施公告出现在案件已 completed 之后，原逻辑只在
+// 「已有案件的最后公告不早于新公告」时归档，晚于它的一律新建，于是同一合并案被拆成
+// 208/209（有合并方、无实施公告）与 294/295/296（有实施公告、合并方为空或反向）多条平行案件，
+// 换股比例与合并方散落各处，持仓换股无法可靠判定。
+// 这里按「同标的 + 同策略 + 最近终态案件 + 365 天窗口」续接，只挂公告、不改事件状态、不重解析条款。
+const FOLLOW_UP_WINDOW_DAYS = 365;
+
+async function findFollowUpCaseId(client, instrumentId, strategyType, announcedAt) {
+  if (!instrumentId || !strategyType || !announcedAt) return null;
+  const { rows } = await client.query(`
+    SELECT c.case_id, c.review_status, max(d.announced_at) AS last_date
+      FROM event.arbitrage_cases c
+      JOIN event.arbitrage_case_documents acd ON acd.case_id=c.case_id
+      JOIN event.documents d ON d.document_id=acd.document_id
+     WHERE c.target_instrument_id=$1 AND c.strategy_type=$2
+       AND c.event_status IN ('completed','terminated','expired')
+     GROUP BY c.case_id, c.review_status
+    HAVING max(d.announced_at) < $3::date
+       AND max(d.announced_at) >= $3::date - ($4::int * INTERVAL '1 day')
+     ORDER BY last_date DESC, c.case_id DESC
+     LIMIT 1
+  `, [instrumentId, strategyType, announcedAt, FOLLOW_UP_WINDOW_DAYS]);
+  return rows[0] || null;
+}
+
 // 标准化公告 -> event.documents + event.arbitrage_cases（按标的+策略合并成事件链）
 async function standardizeAnnouncement(sourceId, rawRecordId, ann, scope) {
   ann = {
@@ -466,6 +492,11 @@ async function standardizeAnnouncement(sourceId, rawRecordId, ann, scope) {
           ORDER BY terminal_date DESC LIMIT 1
         `, [instrumentId, strategyType, ann.announcedAt]);
         if (terminal.length) existing = { case_id: terminal[0].case_id, review_status: 'approved', terminal: true };
+      }
+      // 终态之后才发布的进程公告（实施、退市、结果）续接原事件，不新建平行案件。
+      if (!existing) {
+        const followUp = await findFollowUpCaseId(client, instrumentId, strategyType, ann.announcedAt);
+        if (followUp) existing = { case_id: followUp.case_id, review_status: followUp.review_status, terminal: true };
       }
       if (!existing) {
         const { rows: byKey } = await client.query(
@@ -867,6 +898,8 @@ module.exports = {
   detectUpdate,
   isGenericControlChangeTermination,
   classifyRiskAnnouncement,
+  findFollowUpCaseId,
+  FOLLOW_UP_WINDOW_DAYS,
   todayShanghaiDate,
   normalizeCursorDate,
   normalizeAnnouncementDate,

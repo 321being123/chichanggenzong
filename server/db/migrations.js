@@ -194,7 +194,8 @@ const MIGRATIONS = [
   { version: '174_trades_amount_guard_trigger', up: () => require('./migrations/era02bTradesAmountGuard').migration174TradesAmountGuard(pool) },
   { version: '175_trades_open_cost_sign', up: () => require('./migrations/era02bTradesAmountGuard').migration175TradesOpenCostSign(pool) },
   { version: '176_account_id_completion', up: () => require('./migrations/era09AccountIdentity').migration176AccountIdCompletion(pool) },
-  { version: '177_lixinger_source', up: () => require('./migrations/lixingerSource').migration177LixingerSource(pool) },
+  { version: '177_stock_swap_settlement', up: M.migration177StockSwapSettlement },
+  { version: '178_lixinger_source', up: () => require('./migrations/lixingerSource').migration178LixingerSource(pool) },
 ];
 
 async function ensureMigrationsTable() {

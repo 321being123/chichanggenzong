@@ -29,6 +29,20 @@ async function runArbitrageSync(reason = 'scheduled', context = {}) {
       await finishJobRun(runId,result.ok,JSON.stringify({remainingCount:result.remainingCount,codes:result.codes}));
       return result;
     }
+    // 换股结算：把已实施换股案件按公告比例写入持仓账本（adjust），不产生现金、不伪造成交。
+    if (context.mode === 'stock_swap_settle') {
+      const result = await require('../services/stockSwapSettlement').runStockSwapSettlement();
+      const detail = `cases:${result.caseCount} settlements:${result.settlementCount} applied:${result.appliedCount}`
+        + ` pending:${result.pendingCount} failed:${result.failedCount} errors:${result.errors.length}`;
+      if (!result.ok) {
+        const error = `换股结算未完整完成：失败 ${result.failedCount}，错误 ${result.errors.length}`
+          + (result.failureDetail && result.failureDetail.length ? `；${result.failureDetail.join(' | ')}` : '');
+        await finishJobRun(runId, false, sanitizeJobError(error, 1000));
+        return { ok: false, error, detail, result };
+      }
+      await finishJobRun(runId, true, detail);
+      return { ok: true, detail, result };
+    }
     const result = await sync.runIncrementalSync();
     const sourceResults = Object.keys(sync.SCOPES).map(scope => result[scope] || { total: 0, errors: [], failureDetails: [] });
     const errors = sourceResults.flatMap(source => source.errors || []);

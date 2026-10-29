@@ -1,5 +1,5 @@
 // 独立来源登记；没有凭据，不改变现有主源优先级和历史业务数据。
-async function migration177LixingerSource(pool) {
+async function migration178LixingerSource(pool) {
   await pool.query(`INSERT INTO ops.data_sources(source_code,source_name,source_type,priority)
     VALUES('geoscope_lixinger','GeoScope／理杏仁','api',80)
     ON CONFLICT(source_code) DO NOTHING`);
@@ -20,4 +20,4 @@ async function migration177LixingerSource(pool) {
     ON CONFLICT(source_id,api_name,credential_profile) DO NOTHING`);
 }
 
-module.exports = { migration177LixingerSource };
+module.exports = { migration178LixingerSource };

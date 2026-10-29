@@ -11,6 +11,7 @@ const DATE_TEXT = (column) => `MAX(CASE WHEN ${column}::text ~ '^(\\d{4}-\\d{2}-
 const DATASET_PARTITION_REGISTRY = Object.freeze({
   account_cash_income:{scopeKey:null,scopeType:'account',table:'public.cash_flows'},
   stock_cash_dividend_facts:{scopeKey:'GLOBAL',table:'fundamental.corporate_actions',countSql:"SELECT COUNT(*)::int AS row_count",whereSql:"WHERE action_type='dividend'",dataAsOfSql:'SELECT MAX(announced_at)::text AS data_as_of'},
+  stock_swap_settlements:{scopeKey:'GLOBAL',table:'event.stock_swap_settlements',countSql:'SELECT COUNT(*)::int AS row_count',dataAsOfSql:'SELECT MAX(settlement_date)::text AS data_as_of'},
   repo_daily_rates:{scopeKey:'CN',table:'market.repo_daily_rates',partitionedCountSql:"SELECT COUNT(*)::int AS row_count FROM market.repo_daily_rates WHERE trade_date=$1::date AND quality_status='passed'",partitionedDataAsOfSql:"SELECT MAX(trade_date)::text AS data_as_of FROM market.repo_daily_rates WHERE trade_date=$1::date AND quality_status='passed'"},
   account_daily_prices: { scopeKey: 'GLOBAL', table: 'public.daily_prices', countSql: 'SELECT COUNT(*)::int AS row_count', dataAsOfSql: `SELECT ${DATE_TEXT('date')} AS data_as_of` },
   hk_fx_rate: { scopeKey: 'GLOBAL', table: 'market.fx_rates', countSql: 'SELECT COUNT(*)::int AS row_count', dataAsOfSql: 'SELECT MAX(rate_date)::text AS data_as_of' },
@@ -250,7 +251,7 @@ async function areDatasetPartitionsPublished(datasetCodes, businessDate,context=
     const scopeKey = resolveDatasetScope(code,context);
     const row = byCodeAndScope.get(`${code}:${scopeKey}`);
     if (!row || row.status !== 'published' || row.is_stale) return false;
-    if (code === 'ipo_history' || code === 'hk_ipo_facts' || code === 'bond_redemption_events' || code === 'bond_listing_liquidity' || code==='account_cash_income' || code==='repo_daily_rates' || code==='stock_cash_dividend_facts') {
+    if (code === 'ipo_history' || code === 'hk_ipo_facts' || code === 'bond_redemption_events' || code === 'bond_listing_liquidity' || code==='account_cash_income' || code==='repo_daily_rates' || code==='stock_cash_dividend_facts' || code==='stock_swap_settlements') {
       return row.diagnostics && row.diagnostics.quality_status === 'passed';
     }
     if (code === 'stock_suspend_calendar') return row.diagnostics && row.diagnostics.query_status === 'success';

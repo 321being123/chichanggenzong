@@ -21,8 +21,11 @@ function initNav() {
         if (tab.dataset.page === 'changelog') loadChangelog();
         // 收益页图表在隐藏 tab 中初始尺寸为 0，切到该 tab 时重绘
         if (tab.dataset.page === 'earnings') renderEarnings();
-        // 交易页：初始化日期时间为当前
-        if (tab.dataset.page === 'trades' && typeof initTradeDateTime === 'function') initTradeDateTime();
+        // 交易页：默认智能导入（2026-10-27 用户裁定），并初始化日期时间为当前
+        if (tab.dataset.page === 'trades') {
+          if (typeof switchTradeMode === 'function' && tradeMode !== 'smart') switchTradeMode('smart');
+          if (typeof initTradeDateTime === 'function') initTradeDateTime();
+        }
         // 总览页：切回时重绘收益走势对比图（导入新数据后切回能立即显示，无需再点周期切换）
         if (tab.dataset.page === 'dashboard' && typeof renderReturnsChart === 'function') renderReturnsChart();
       }

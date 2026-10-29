@@ -1696,7 +1696,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC'
   .mobile-nav-panel .admin-link { display: inline-flex; align-items: center; min-height: 44px; }
 }
 @media (max-width: 760px) {
-  .filter-bar .position-refresh-btn { min-height: 44px; }
+  .filter-bar .filter-bar-btn { min-height: 44px; }
   /* 手机端筛选栏控件：触控区 ≥44px、字号 16px 防 iOS 缩放 */
   .filter-bar input:not([type=checkbox]):not([type=radio]),
   .filter-bar select { min-height: 44px; font-size: 16px; }

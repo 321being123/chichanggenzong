@@ -275,6 +275,11 @@ async function applyTrade(username, accountName, trade, externalClient = null, e
     }
     // 标记净值边界 + 同步提升 account_data 总版本/交易版本（P0-1：防旧页面全量保存覆盖）
     await markNavDirty(client, username, accountName, tradeDate, 'trade');
+    // open/adjust 直接改写 positions 的数量与成本（期初建仓、清仓、换股结算等），
+    // 只升 trade_version 不升 pos_version 会让旧页面带着旧持仓版本通过校验，把账本写入覆盖掉。
+    if (t.direction === 'adjust' || t.direction === 'open') {
+      await markNavDirty(client, username, accountName, tradeDate, 'position');
+    }
     // 账户修订号（accounts 表版本，与 account_data 版本各自独立语义）
     await repository.update_accounts([username, accountName], client);
     const cash = await recomputeCash(client, username, accountName);

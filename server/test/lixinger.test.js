@@ -3,12 +3,12 @@ const assert = require('assert');
 require('dotenv').config();
 const { pool } = require('../db/connection');
 const { SOURCE, ENDPOINTS, extractLixingerData, extractWithLixingerBackup, fetchLixingerIndustry, unwrapResponse, validateRequest } = require('../services/lixinger');
-const { migration177LixingerSource } = require('../db/migrations/lixingerSource');
+const { migration178LixingerSource } = require('../db/migrations/lixingerSource');
 const { getProviderRuntime, getExternalApiSettings, saveProviderSettings } = require('../services/externalApiConfig');
 
 (async () => {
-  await migration177LixingerSource(pool);
-  await migration177LixingerSource(pool);
+  await migration178LixingerSource(pool);
+  await migration178LixingerSource(pool);
   assert.strictEqual((await pool.query('SELECT count(*)::int n FROM ops.data_sources WHERE source_code=$1', [SOURCE])).rows[0].n, 1);
   const policies = await pool.query(`SELECT p.* FROM ops.source_endpoint_policies p JOIN ops.data_sources s USING(source_id) WHERE s.source_code=$1`, [SOURCE]);
   assert.strictEqual(policies.rows.length, 8);

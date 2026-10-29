@@ -2,6 +2,16 @@
 // 职责：只做渲染、格式化与用户操作上报；取数、状态与响应序号在 presenters/ipo-presenter.js。
 // 依赖：utils.js 的 escapeHtml()
 
+// 时间戳统一转上海时区显示（避免直接截 ISO 串导致差 8 小时）。
+function ipoTimeText(v) {
+  if (!v) return '';
+  if (window.CoreDate && CoreDate.dateTimeInZone) {
+    var t = CoreDate.dateTimeInZone(v, 'Asia/Shanghai');
+    if (t) return t;
+  }
+  return String(v).replace('T', ' ').slice(0, 16);
+}
+
 function ipoFmt(v, unit) {
   if (v === null || v === undefined || v === '') return '-';
   if (typeof v === 'string' && (/^nan$/i.test(v.trim()) || /^NaN$/i.test(v.trim()))) return '-';
@@ -159,8 +169,8 @@ function ipoHkSignalCell(it, field, label) {
   var values = [];
   if (hasMultiple) values.push(Number(multiple).toFixed(2) + '倍');
   if (hasAmount) values.push('金额 ' + Number(amount).toLocaleString('zh-CN') + '港元');
-  var sourceTime = signal.source_observed_at ? String(signal.source_observed_at).slice(0, 16).replace('T', ' ') : '';
-  var collectedTime = signal.collected_at ? String(signal.collected_at).slice(0, 16).replace('T', ' ') : '';
+  var sourceTime = ipoTimeText(signal.source_observed_at);
+  var collectedTime = ipoTimeText(signal.collected_at);
   var timeLines = [];
   if (sourceTime) timeLines.push('来源时间 ' + escapeHtml(sourceTime));
   if (collectedTime) timeLines.push('本地采集 ' + escapeHtml(collectedTime));

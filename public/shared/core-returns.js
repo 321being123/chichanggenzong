@@ -85,6 +85,7 @@ async function addCashFlow() {
       }),
       timeoutMs: 0
     });
+    if (!isCurrent()) return;
     if (!result.response) { showToast(result.error || '网络异常'); return; }
     var r = result.response;
     var j = await r.json().catch(function(){ return {}; });
@@ -120,29 +121,47 @@ let indexVisibility = {
  *   （含今天、不含上次净值日，避免漏算未开 App 那几天的出入金，也不重复计入已结算日）
  * - 现金流的金额同时累加到 data.cash 上，确保总资产正确
  */
-async function recordNav() {
+async function recordNav(retried) {
+  const scope = typeof captureSmartImportScope === 'function' ? captureSmartImportScope() : null;
+  const account = currentAccount;
+  const accountData = data;
+  const user = typeof username === 'string' ? username : '';
+  const identity = typeof accountIdentity === 'string' ? accountIdentity : '';
+  const isCurrent = () => currentAccount === account && data === accountData &&
+    user === (typeof username === 'string' ? username : '') &&
+    identity === (typeof accountIdentity === 'string' ? accountIdentity : '') &&
+    (!scope || (typeof isSmartImportScopeCurrent === 'function' && isSmartImportScopeCurrent(scope)));
   const today = todayCN();
   // 自动净值只提交意图，由服务端在账户锁内按首页资产基准计算；浏览器不写自算NAV。
   try {
     const result = await window.siteApi.requestRaw('/api/nav/' + today + '?version=' + (dataVersion != null ? dataVersion : ''), {
       method: 'PUT', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ account: currentAccount, calculationMode: 'system' }),
+      body: JSON.stringify({ account, calculationMode: 'system' }),
       timeoutMs: 0
     });
+    if (!isCurrent()) return;
     if (!result.response) { showToast(result.error || '网络异常'); return; }
     const response = result.response;
     const _j2 = await response.json().catch(function () { return {}; });
+    if (!isCurrent()) return;
     if (!response.ok) {
       // 2026-10-27 修复：409（版本冲突/资产基准不完整/并发）后同步一次最新版本号，
       // 避免带着旧版本号连环失败导致净值一直写不进
+      const msg = _j2.error || '净值基准不完整，未保存';
       if (response.status === 409) {
         try {
-          const rr = await window.siteApi.requestRaw('/api/data/' + encodeURIComponent(currentAccount));
+          const rr = await window.siteApi.requestRaw('/api/data/' + encodeURIComponent(account));
           const jj = rr && rr.response ? await rr.response.json().catch(function () { return {}; }) : {};
-          if (jj.data && typeof jj.data.version === 'number') dataVersion = jj.data.version;
+          if (!isCurrent()) return;
+          // /api/data/<账户> 是扁平结构（version 在顶层）；旧代码读 jj.data.version 永远取不到，版本同步实际没生效。
+          const freshVersion = (jj && typeof jj.version === 'number') ? jj.version
+            : (jj && jj.data && typeof jj.data.version === 'number' ? jj.data.version : null);
+          if (freshVersion != null) dataVersion = freshVersion;
         } catch (e2) {}
+        // 版本冲突（不是资产基准不完整）时，用最新版本号补记一次；仍失败再如实提示。
+        if (!isCurrent()) return;
+        if (!retried && msg.indexOf('其他窗口') >= 0) return recordNav(true);
       }
-      const msg = _j2.error || '净值基准不完整，未保存';
       showToast(msg.indexOf('基准不完整') >= 0
         ? '今日净值未自动记录：' + msg + '（补齐初始净值或等持仓取得行情后，再点「刷新行情」即可补记）'
         : msg);

@@ -106,7 +106,7 @@ global.Date = class extends RealDate {
   } finally { pool.query=originalQuery;marketState.invalidateMarketStateCache(); }
   const auto = fs.readFileSync(path.resolve(__dirname, '../../public/shared/core-returns.js'), 'utf8');
   assert(fs.readFileSync(path.resolve(__dirname, '../../public/index.html'), 'utf8').includes('shared/core-returns.js?v=__APP_VERSION__'), '净值脚本必须随应用版本失效旧缓存');
-  const body = auto.slice(auto.indexOf('async function recordNav()'), auto.indexOf('function renderReturnsStats()'));
+  const body = auto.slice(auto.indexOf('async function recordNav('), auto.indexOf('function renderReturnsStats()'));
   assert(body.includes("calculationMode: 'system'") && !body.includes('chainNav('), '浏览器自动记录只提交意图，不再自算NAV');
   context.data.positions=[{code:'600000',quantity:10,price:12}];context.data.cash=1;
   const localPositions=context.data.positions;

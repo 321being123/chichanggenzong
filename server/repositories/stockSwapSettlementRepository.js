@@ -82,6 +82,26 @@ async function selectSourceHoldings(sourceInstrumentId, code, client = pool) {
   return rows;
 }
 
+// 与账本及快照导入共享账户版本行锁，读持仓之前取得，缺失时失败关闭。
+async function lockAccountVersion(username, accountName, client) {
+  const { rows } = await client.query(
+    'SELECT version FROM account_data WHERE username=$1 AND account_name=$2 FOR UPDATE',
+    [username, accountName]
+  );
+  return rows[0] || null;
+}
+
+async function selectAccountSourceHolding(username, accountName, sourceInstrumentId, code, client) {
+  const { rows } = await client.query(
+    `SELECT MAX(account_id) AS account_id, MAX(type) AS type, MAX(subtype) AS subtype,
+            COALESCE(SUM(quantity),0) AS quantity, COALESCE(SUM(quantity*cost),0) AS cost_total
+       FROM positions WHERE username=$1 AND account_name=$2 AND quantity>0
+        AND (instrument_id=$3 OR code=$4)`,
+    [username, accountName, sourceInstrumentId, code]
+  );
+  return rows[0] || null;
+}
+
 // 当前剩余的被合并方持仓数量（用于幂等对账）。
 async function selectCurrentSourceQuantity(username, accountName, sourceInstrumentId, code, client = pool) {
   const { rows } = await client.query(
@@ -158,6 +178,8 @@ module.exports = {
   selectSwapPairs,
   selectSourceHoldings,
   selectCurrentSourceQuantity,
+  lockAccountVersion,
+  selectAccountSourceHolding,
   selectExistingTargetHolding,
   insertSettlement,
   selectSettlementByScope,

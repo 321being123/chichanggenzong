@@ -13,8 +13,22 @@ const {
 const { sanitizeJobError } = require('./jobErrorSanitizer');
 const { enqueueManualJob } = require('./jobScheduleSlots');
 const { getCandidates, getCaseDetail } = require('../repositories/arbitrageServiceRepository.js');
+const CoreDate = require('../../public/shared/core-date.js');
 
 const FORMULA_VERSION = 'v2.0';
+
+// 时间戳（Date 或 ISO 串）统一转成上海时区 'YYYY-MM-DD HH:mm:ss'，页面按前 16 位显示。
+// 取值按时间先后比较：旧写法把 Date 转字符串再排序，顺序实际是按星期几字母排的，"最新"并不准。
+function latestDateTimeText(values) {
+  let latest = null;
+  (values || []).forEach((value) => {
+    if (value == null) return;
+    const ms = new Date(value).getTime();
+    if (!Number.isFinite(ms)) return;
+    if (latest == null || ms > latest) latest = ms;
+  });
+  return latest == null ? null : CoreDate.dateTimeInZone(new Date(latest), 'Asia/Shanghai');
+}
 
 function deduplicateArbitrageDocuments(documents) {
   const seen = new Set();
@@ -99,16 +113,14 @@ async function getArbitrageList(type, page = 1, pageSize = 50, username = null) 
     };
   });
 
-  const quoteTimes = enrichedRows.map(r => r.quoteTime).filter(Boolean).sort();
-  const quoteAsOf = quoteTimes.length ? quoteTimes[quoteTimes.length - 1] : null;
-  const termsTimes = enrichedRows.map(r => r.terms_updated_at).filter(Boolean).map(String).sort();
+  const quoteAsOf = latestDateTimeText(enrichedRows.map(r => r.quoteTime));
 
   return {
     rows: enrichedRows,
     total: parseInt(countRows[0].total),
     page,
     pageSize,
-    dataAsOf: termsTimes.length ? termsTimes[termsTimes.length - 1] : null,
+    dataAsOf: latestDateTimeText(enrichedRows.map(r => r.terms_updated_at)),
     quoteAsOf,
     stale: enrichedRows.some(r => r.stale),
     formulaVersion: FORMULA_VERSION,
@@ -177,8 +189,8 @@ async function getArbitrageDetail(caseId, username = null) {
     fixedSwapPremium: calcPricePremium(c.target_swap_price, currentPrice),
     liveSwapReturn: swapEligible ? calc.arbitrageSpace : null,
     formulaVersion: FORMULA_VERSION,
-    dataAsOf: c.terms_updated_at || null,
-    quoteAsOf: targetQuote ? targetQuote.quote_time : null,
+    dataAsOf: c.terms_updated_at ? CoreDate.dateTimeInZone(c.terms_updated_at, 'Asia/Shanghai') : null,
+    quoteAsOf: targetQuote && targetQuote.quote_time ? CoreDate.dateTimeInZone(targetQuote.quote_time, 'Asia/Shanghai') : null,
   };
 }
 

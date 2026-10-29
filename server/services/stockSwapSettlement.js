@@ -15,6 +15,7 @@
 
 const CoreDate = require('../../public/shared/core-date.js');
 const tradeLedger = require('./tradeLedger');
+const { withTransaction } = require('../db/transaction');
 const swapRepository = require('../repositories/stockSwapSettlementRepository');
 
 const DATASET_CODE = 'stock_swap_settlements';
@@ -274,37 +275,49 @@ async function settleOne(caseRow, plan, options) {
     return Object.assign({}, preview, { status: 'preview', reason, current_quantity: remainingQty });
   }
 
-  const settlement = await upsertSettlement(plan);
-  if (!settlement) return Object.assign({}, preview, { status: 'skipped', reason: '结算单写入失败' });
-  const record = Object.assign({ settlement_id: settlement.settlement_id }, preview);
-
-  if (settlement.status === 'applied') {
-    return { ...record, status: 'applied', reason: 'already_applied' };
-  }
-
-  const remaining = await currentSourceQuantity(plan.username, plan.account_name, caseRow);
-  if (remaining <= 0) {
-    await markSettlement(settlement.settlement_id, 'applied', { tradeIds: null });
-    return { ...record, status: 'applied', reason: 'reconciled_already_zero' };
-  }
-  if (remaining !== plan.source_quantity) {
-    // 持仓数量与结算计划不一致（中间有买卖）：不自动执行，留待下一轮按最新持仓重建。
-    return { ...record, status: 'pending', reason: 'quantity_changed', current_quantity: remaining };
-  }
-  if (!plan.settlement_date) {
-    await markSettlement(settlement.settlement_id, 'failed', { error: '证据公告缺少可用的上海业务日' });
-    return { ...record, status: 'failed', reason: 'missing_settlement_date' };
-  }
-
   try {
-    const events = buildLedgerEvents(plan);
-    const result = await tradeLedger.applyTradesBatch(plan.username, plan.account_name, events, null);
-    await markSettlement(settlement.settlement_id, 'applied', { tradeIds: result.ids || [] });
-    return { ...record, status: 'applied', reason: 'applied', trade_ids: result.ids || [] };
+    return await withTransaction(async client => {
+      // 对所有已接入的版本化账户写入口先持同一行锁，再读取持仓和生成计划。
+      const account = await swapRepository.lockAccountVersion(plan.username, plan.account_name, client);
+      if (!account) throw new Error('账户版本记录缺失，拒绝自动换股结算');
+      const source = await swapRepository.selectAccountSourceHolding(plan.username, plan.account_name,
+        caseRow.source_instrument_id, bareCode(caseRow.source_code), client);
+      const existing = await swapRepository.selectExistingTargetHolding(plan.username, plan.account_name,
+        caseRow.target_instrument_id, bareCode(caseRow.target_code), client) || {};
+      const currentPlan = buildPlan(caseRow, { ...source, username: plan.username, account_name: plan.account_name }, {
+        quantity: toNumber(existing.quantity) || 0, costTotal: toNumber(existing.cost_total) || 0,
+        type: existing.type || '', subtype: existing.subtype || '',
+      });
+      if (!currentPlan) return { ...preview, status: 'skipped', reason: 'source_no_longer_held' };
+      if (!currentPlan.settlement_date) throw new Error('证据公告缺少可用的上海业务日');
+      const inserted = await swapRepository.insertSettlement(currentPlan, client);
+      const settlement = inserted || await swapRepository.selectSettlementByScope(
+        currentPlan.case_id, currentPlan.username, currentPlan.account_name, currentPlan.source_instrument_id, client);
+      if (!settlement) throw new Error('结算单写入失败');
+      if (settlement.status === 'applied') return { ...preview, settlement_id: settlement.settlement_id, status: 'applied', reason: 'already_applied' };
+      // 历史 pending/failed 计划可能与当前持仓不一致，禁止使用其旧快照冒充本次结果。
+      if (!inserted) throw new Error('已有未完成结算单，需要核查后处理');
+      const ids = [];
+      for (const event of buildLedgerEvents(currentPlan)) {
+        const result = await tradeLedger.applyTrade(currentPlan.username, currentPlan.account_name, event, client);
+        ids.push(result.id);
+      }
+      // 历史交易重放可能覆盖 adjust 的目标数量；核对实际持仓后才能提交结算。
+      const sourceAfter = await swapRepository.selectCurrentSourceQuantity(currentPlan.username, currentPlan.account_name,
+        currentPlan.source_instrument_id, currentPlan.source_code, client);
+      const targetAfter = await swapRepository.selectExistingTargetHolding(currentPlan.username, currentPlan.account_name,
+        currentPlan.target_instrument_id, currentPlan.target_code, client);
+      if (Math.abs(toNumber(sourceAfter && sourceAfter.quantity) || 0) > 0.00001 ||
+          Math.abs((toNumber(targetAfter && targetAfter.quantity) || 0) - (currentPlan.target_quantity + currentPlan.existing_target_quantity)) > 0.00001) {
+        throw new Error('账本重放后的持仓与换股计划不一致，已回滚');
+      }
+      await swapRepository.updateSettlementStatus(settlement.settlement_id, 'applied', { tradeIds: ids }, client);
+      return { ...preview, source_quantity: currentPlan.source_quantity, target_quantity: currentPlan.target_quantity,
+        existing_target_quantity: currentPlan.existing_target_quantity, cost_unit_after: currentPlan.cost_unit_after,
+        settlement_id: settlement.settlement_id, status: 'applied', reason: 'applied', trade_ids: ids };
+    });
   } catch (e) {
-    const message = (e && e.message) || String(e);
-    await markSettlement(settlement.settlement_id, 'failed', { error: message });
-    return { ...record, status: 'failed', reason: 'ledger_error', error: message };
+    return { ...preview, status: 'failed', reason: 'ledger_error', error: (e && e.message) || String(e) };
   }
 }
 
@@ -397,6 +410,7 @@ module.exports = {
   findSettleableCases,
   resolveSwapCases,
   findSourceHoldings,
+  settleOne,
   buildPlan,
   buildLedgerEvents,
   shanghaiDateText,

@@ -326,7 +326,7 @@ async function saveAccountData(username, accountName, data, expectedVersion = nu
     const { rows: vrows } = await client.query(
       `SELECT COALESCE(pos_version,0) AS pv, COALESCE(trade_version,0) AS tv,
               COALESCE(nav_version,0) AS nv, COALESCE(cashflow_version,0) AS cv
-         FROM account_data WHERE username=$1 AND account_name=$2`,
+         FROM account_data WHERE username=$1 AND account_name=$2 FOR UPDATE`,
       [username, accountName]
     );
     const base = vrows[0] || { pv: 0, tv: 0, nv: 0, cv: 0 };

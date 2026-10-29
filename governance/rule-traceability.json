@@ -4246,7 +4246,7 @@
     },
     {
       "id": "STOCK-SWAP-SETTLE-067",
-      "title": "换股吸收合并只按官方实施/登记类公告标题触发，不从终止上市或风险公告推断；比例取公告4位值并向下取整、尾数不预测；结算走账本adjust（清零被合并方、并入合并方、不动现金），唯一键加对账式幂等不得重复写入或翻倍",
+      "title": "换股吸收合并只按官方实施/登记类公告标题触发，不从终止上市或风险公告推断；比例取公告4位值并向下取整、尾数不预测；结算走账本adjust（清零被合并方、并入合并方、不动现金），唯一键加对账式幂等不得重复写入或翻倍；账户持仓重读、账本与结算状态须同事务，快照导入按同一账户版本锁串行",
       "implementation": {
         "file": "server/services/stockSwapSettlement.js",
         "symbol": "runStockSwapSettlement"
@@ -4254,6 +4254,10 @@
       "tests": [
         {
           "file": "server/test/stock-swap-settlement.test.js",
+          "pattern": "STOCK-SWAP-SETTLE-067"
+        },
+        {
+          "file": "server/test/stock-swap-atomic.test.js",
           "pattern": "STOCK-SWAP-SETTLE-067"
         }
       ],

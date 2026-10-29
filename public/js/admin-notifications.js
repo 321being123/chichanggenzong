@@ -264,8 +264,8 @@ function renderAnDetail() {
       + '<td>' + escapeHtml(r.recipientUsername || '（已注销）') + '</td>'
       + '<td>' + escapeHtml(AN_RECIPIENT_LABELS[r.status] || r.status) + '</td>'
       + '<td>' + escapeHtml(r.skipReason || r.lastError || '') + '</td>'
-      + '<td>' + escapeHtml(r.deliveredAt ? String(r.deliveredAt).slice(0, 16) : '') + '</td>'
-      + '<td>' + escapeHtml(r.readAt ? String(r.readAt).slice(0, 16) : '未读') + '</td></tr>';
+      + '<td>' + escapeHtml(anTimeText(r.deliveredAt)) + '</td>'
+      + '<td>' + escapeHtml(r.readAt ? anTimeText(r.readAt) : '未读') + '</td></tr>';
   }).join('') || '<tr><td colspan="6" class="biz-table-state-cell">暂无收件记录</td></tr>';
   host.innerHTML = '<div class="an-detail">'
     + '<div class="an-detail-line"><strong>' + escapeHtml(b.title) + '</strong>（'

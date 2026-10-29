@@ -98,7 +98,24 @@ async function fetchUnifiedHKRate() {
   return unifiedHkRatePromise;
 }
 
-async function refreshAllPrices(marketsToRefresh) {
+// 行情与净值异步链路绑定账户、登录身份及切换代次，丢弃迟到响应。
+function captureHoldingsRefreshScope() {
+  return { account: currentAccount, dataRef: data,
+    user: typeof username === 'string' ? username : '',
+    identity: typeof accountIdentity === 'string' ? accountIdentity : '',
+    generation: typeof captureSmartImportScope === 'function' ? captureSmartImportScope() : null };
+}
+function isHoldingsRefreshScopeCurrent(scope) {
+  return !!scope && scope.account === currentAccount && scope.dataRef === data &&
+    scope.user === (typeof username === 'string' ? username : '') &&
+    scope.identity === (typeof accountIdentity === 'string' ? accountIdentity : '') &&
+    (!scope.generation || (typeof isSmartImportScopeCurrent === 'function' && isSmartImportScopeCurrent(scope.generation)));
+}
+
+async function refreshAllPrices(marketsToRefresh, operationScope) {
+  const scope = operationScope || captureHoldingsRefreshScope();
+  const current = () => isHoldingsRefreshScopeCurrent(scope);
+  if (!current()) return { ok: false, stale: true };
   window._priceSaveError = null;
   var allowedMarkets = Array.isArray(marketsToRefresh) ? new Set(marketsToRefresh) : null;
   const requestedPositions = data.positions.filter(function (position) {
@@ -107,6 +124,7 @@ async function refreshAllPrices(marketsToRefresh) {
   const codes = [...new Set(requestedPositions.map(p => p.code).filter(Boolean))];
   if (codes.length === 0) { showToast('没有持仓需要刷新'); return; }
   if (typeof refreshMarketStateSnapshot === 'function') await refreshMarketStateSnapshot();
+  if (!current()) return { ok: false, stale: true };
   var today = todayCN();
   showToast('正在获取 ' + codes.length + ' 只行情...');
   let ok = 0, reused = 0, fail = 0;
@@ -126,18 +144,21 @@ async function refreshAllPrices(marketsToRefresh) {
     return {};
   };
   let allQuotes = await fetchQuoteBatch(codes);
+  if (!current()) return { ok: false, stale: true };
   const retryCodes = codes.filter(function (code) {
     // 搜特退债是已知退市标的，无实时价格，不应触发无意义的二次请求。
     return code !== '404002' && (!allQuotes[code] || !(Number(allQuotes[code].price) > 0));
   });
   if (retryCodes.length) {
     const retryQuotes = await fetchQuoteBatch(retryCodes);
+    if (!current()) return { ok: false, stale: true };
     Object.keys(retryQuotes).forEach(function (code) { allQuotes[code] = retryQuotes[code]; });
   }
 
   // 港股交易时段请求实时汇率；非交易时段只读最近一次已落库值。
   var hasHK = requestedPositions.some(function (p) { return marketForPosition(p) === 'HK'; });
   var hkRate = await fetchHKRate(hasHK && typeof isHkRealtimeRefreshAllowed === 'function' && isHkRealtimeRefreshAllowed());
+  if (!current()) return { ok: false, stale: true };
   if (!hkRate || hkRate <= 0) hkRate = (Number(data.hkRate) > 0 ? Number(data.hkRate) : 0.868);
   unifiedHkRate = hkRate;
   unifiedHkRatePromise = Promise.resolve(hkRate);
@@ -151,6 +172,7 @@ async function refreshAllPrices(marketsToRefresh) {
     const results = await Promise.all(batch.map(async (c) => {
       return allQuotes[c] || null;
     }));
+    if (!current()) return { ok: false, stale: true };
     results.forEach((result, idx) => {
       const c = batch[idx];
       const matchingPositions = data.positions.filter(p => p.code === c);
@@ -214,7 +236,8 @@ async function refreshAllPrices(marketsToRefresh) {
     .map(function(p) { return { code: p.code, price: p.price }; }).filter(function(p) { return p.code && p.price != null; });
   var pricesSaved = false;
   try {
-    var pr = await window.holdingsQuoteApi.savePrices(currentAccount, dataVersion, pricesToSave);
+    var pr = await window.holdingsQuoteApi.savePrices(scope.account, dataVersion, pricesToSave);
+    if (!current()) return { ok: false, stale: true };
     var pj = pr.payload;
     // 2026-08-04 阻断修复：必须检查保存状态，否则 400/500 时仍提示"刷新完成"，下次打开价格回退旧值
     if (!pr.ok) {
@@ -230,6 +253,7 @@ async function refreshAllPrices(marketsToRefresh) {
       pricesSaved = true;
     }
   } catch(e) {
+    if (!current()) return { ok: false, stale: true };
     console.warn('[refreshAllPrices] 价格保存异常', e);
       var saveError = '行情已获取，但价格保存失败（' + (e.message || e) + '）';
       showToast(saveError);
@@ -237,6 +261,7 @@ async function refreshAllPrices(marketsToRefresh) {
   }
   // 净值必须在新价格成功落库后记录，防止保存旧持仓价对应的新总资产。
   if (pricesSaved) await recordNav();
+  if (!current()) return { ok: false, stale: true };
   // recordNav 会返回最新归因；重新绑定总资产浮框，使首次口径切换说明立即生效。
   if (pricesSaved && typeof renderStats === 'function') renderStats();
   renderReturnsChart();
@@ -253,7 +278,7 @@ async function refreshAllPrices(marketsToRefresh) {
     showToast('行情刷新完成: ' + ok + ' 只已取得当日行情');
   }
   // 记录每日收盘价
-  saveDailyPricesToDB(validatedPriceQuotes);
+  saveDailyPricesToDB(validatedPriceQuotes, scope);
 }
 
 /**
@@ -261,18 +286,17 @@ async function refreshAllPrices(marketsToRefresh) {
  * 供"刷新按钮/F5/自动刷新"统一调用
  */
 var _priceRefreshInFlight = null;
+var _priceRefreshScope = null;
 
 async function doRefresh(marketsToRefresh) {
-  if (_priceRefreshInFlight) return _priceRefreshInFlight;
-  _priceRefreshInFlight = (async function () {
-  // 手动刷新即使休市也使用最近交易日收盘价；自动刷新由 doAutoRefresh 统一控制。
-  // refreshAllPrices 内部统一即时渲染、保存价格、记录净值和刷新收益图。
-    await refreshAllPrices(marketsToRefresh);
-  })();
-  try {
-    return await _priceRefreshInFlight;
-  } finally {
-    _priceRefreshInFlight = null;
+  if (_priceRefreshInFlight && isHoldingsRefreshScopeCurrent(_priceRefreshScope)) return _priceRefreshInFlight;
+  const scope = captureHoldingsRefreshScope();
+  const run = refreshAllPrices(marketsToRefresh, scope);
+  _priceRefreshScope = scope;
+  _priceRefreshInFlight = run;
+  try { return await run; }
+  finally {
+    if (_priceRefreshInFlight === run) { _priceRefreshInFlight = null; _priceRefreshScope = null; }
   }
 }
 
@@ -319,10 +343,12 @@ function markAutoQuoteRefreshDoneToday(markets) {
 
 // 自动行情规则：交易时段允许刷新；最终收盘后当天只刷新一次；周末/节假日不刷新。
 async function doAutoRefresh() {
+  const scope = captureHoldingsRefreshScope();
   if (!data || !Array.isArray(data.positions) || !data.positions.length) {
     return { ok: true, skipped: true, reason: 'market_closed' };
   }
   if (typeof refreshMarketStateSnapshot === 'function') await refreshMarketStateSnapshot();
+  if (!isHoldingsRefreshScopeCurrent(scope)) return { ok: false, stale: true };
   var states = holdingMarketStates();
   var markets = Object.keys(states);
   var today = todayCN();
@@ -349,14 +375,17 @@ async function doAutoRefresh() {
   }
   var refreshMarkets = marketOpen ? tradingMarkets : afterCloseMarkets;
   var result = await doRefresh(refreshMarkets);
+  if (!isHoldingsRefreshScopeCurrent(scope)) return { ok: false, stale: true };
   if (afterClose) markAutoQuoteRefreshDoneToday(refreshMarkets);
   return result;
 }
 
-async function saveDailyPricesToDB(validatedQuotes) {
+async function saveDailyPricesToDB(validatedQuotes, operationScope) {
+  const scope = operationScope || captureHoldingsRefreshScope();
   try {
     // 按每只证券所属市场判断是否已收盘，只保存当天有效行情。
     if (typeof refreshMarketStateSnapshot === 'function') await refreshMarketStateSnapshot();
+    if (!isHoldingsRefreshScopeCurrent(scope)) return;
     var writeDate = todayCN();
     if (!validatedQuotes || validatedQuotes.size === 0) return;
     var pricesByMarket = { CN: [], HK: [] };
@@ -375,7 +404,8 @@ async function saveDailyPricesToDB(validatedQuotes) {
     });
     for (var market of ['CN', 'HK']) {
       if (!pricesByMarket[market].length) continue;
-      var response = await window.holdingsQuoteApi.saveDailyPrices(currentAccount, writeDate, pricesByMarket[market]);
+      var response = await window.holdingsQuoteApi.saveDailyPrices(scope.account, writeDate, pricesByMarket[market]);
+      if (!isHoldingsRefreshScopeCurrent(scope)) return;
       if (!response.ok) throw new Error('收盘价保存失败：HTTP ' + response.status);
       try { localStorage.setItem('_dailyPricesSaved_' + currentAccount + '_' + market, writeDate); } catch(e) {}
     }

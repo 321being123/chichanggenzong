@@ -345,7 +345,12 @@ async function settleOne(caseRow, plan, options) {
       // 历史 pending/failed 计划可能与当前持仓不一致，禁止使用其旧快照冒充本次结果。
       if (!inserted) throw new Error('已有未完成结算单，需要核查后处理');
       const ids = [];
-      for (const event of buildLedgerEvents(currentPlan)) {
+      // 同一事务内写入的多条账本事件 created_at 相同、id 是随机串，同日重放顺序会退化成随机；
+      // 而 adjust 是绝对设置，顺序错就会互相覆盖。这里显式写入带时刻的记账时间
+      // （trade_date 仍取前 10 位），按案件号定序，保证同账户多笔换股顺序稳定。
+      const orderSecond = String(Math.min(58, Math.abs(Number(currentPlan.case_id) || 0) % 59)).padStart(2, '0');
+      for (const rawEvent of buildLedgerEvents(currentPlan)) {
+        const event = { ...rawEvent, date: `${currentPlan.ledger_date} 23:59:${orderSecond}` };
         const result = await tradeLedger.applyTrade(currentPlan.username, currentPlan.account_name, event, client);
         ids.push(result.id);
       }

@@ -388,6 +388,10 @@ async function doImportSnapshot(username, accountName, body) {
   const currentVersion = await accountsRepository.readAccountVersion({ username, accountName });
   try {
     const r = await saveAccountData(username, accountName, body, currentVersion, null, null);
+    // 导入/保存后异步补当日行情：当天新导入的持仓没有当日价格会让净值算不出来。
+    // 不等待、不影响保存结果，失败只记日志。
+    require('../services/accountPriceBackfill').backfillMissingTodayPrices(username, accountName)
+      .catch(error => console.error('[accounts] 导入后补当日行情失败:', error && error.message));
     return {
       status: 200,
       body: {

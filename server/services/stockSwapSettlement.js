@@ -268,8 +268,11 @@ async function markSettlement(settlementId, status, patch = {}) {
 }
 
 // 换股结算的账本事件：先清零被合并方，再把换得股数并入合并方（同账户已有持仓时合并成本）。
+// 账本事件按「实际执行日」记账：公告日只用于结算单对账。
+// 若按公告日记账，晚于实施日才建仓的账户（如当日导入的 being）重放时会先换股后建仓，
+// 被合并方又被加回来导致校验失败；也会把公告日到执行日之间的历史持仓改写掉，净值算不出来。
 function buildLedgerEvents(plan) {
-  const date = plan.settlement_date;
+  const date = plan.ledger_date || plan.settlement_date;
   const noteSource = `套利换股结算：${plan.source_name}按1:${plan.ratio_applied}转为${plan.target_name}，本行清零（案件${plan.case_id}）`;
   const noteTarget = `套利换股结算：${plan.source_quantity}股×${plan.ratio_applied}=${plan.target_quantity}股，` +
     (plan.existing_target_quantity > 0 ? `与原持有${plan.existing_target_quantity}股合并，` : '') +
@@ -332,6 +335,8 @@ async function settleOne(caseRow, plan, options) {
       });
       if (!currentPlan) return { ...preview, status: 'skipped', reason: 'source_no_longer_held' };
       if (!currentPlan.settlement_date) throw new Error('证据公告缺少可用的上海业务日');
+      // 账本记账日=实际执行日（见 buildLedgerEvents 注释），结算单 settlement_date 仍用公告日。
+      currentPlan.ledger_date = todayShanghai(options.now);
       const inserted = await swapRepository.insertSettlement(currentPlan, client);
       const settlement = inserted || await swapRepository.selectSettlementByScope(
         currentPlan.case_id, currentPlan.username, currentPlan.account_name, currentPlan.source_instrument_id, client);

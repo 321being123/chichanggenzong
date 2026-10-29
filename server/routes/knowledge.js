@@ -222,7 +222,7 @@ router.post('/categories/:id/move', requireLogin, requireCategoryOwner, asyncHan
       }
     }
 
-    const all = await knowledgeRepository.listCategories(client);
+    const all = await knowledgeRepository.listCategoryTree(client);
     const parentMap = new Map(all.rows.map(row => [row.id, row.parent_id]));
     let cursor = parentId;
     while (cursor !== null) {

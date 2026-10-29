@@ -323,7 +323,7 @@ async function findCategoryForOwner(params, client = pool) {
   );
 }
 
-async function listCategories(client = pool) {
+async function listCategoryTree(client = pool) {
   return client.query('SELECT id, parent_id FROM article_categories');
 }
 
@@ -396,6 +396,7 @@ module.exports = {
   insertComment,
   listArticles,
   listCategories,
+  listCategoryTree,
   listComments,
   listLatestArticles,
   publishArticle,

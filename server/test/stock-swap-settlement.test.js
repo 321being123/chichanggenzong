@@ -30,7 +30,7 @@ function caseRow(overrides) {
     target_code: '601995.SH',
     target_name: '中金公司',
     evidence_document_id: 1,
-    evidence_title: '关于公司换股吸收合并的A股换股实施公告',
+    evidence_title: '关于公司换股吸收合并的A股换股实施结果公告',
     evidence_announced_at: '2026-10-16T00:00:00+08:00',
   }, overrides || {});
 }
@@ -126,7 +126,8 @@ function holdingRow(overrides) {
     // ---------- 8. 只认实施/登记类公告标题，不从终止上市或风险公告推断 ----------
     const patterns = svc.IMPLEMENTATION_TITLE_PATTERNS;
     const hit = title => patterns.some(p => String(title).includes(p));
-    assert.ok(hit('中国国际金融股份有限公司关于公司换股吸收合并东兴证券股份有限公司、信达证券股份有限公司的A股换股实施公告'));
+    assert.ok(!hit('中国国际金融股份有限公司关于公司换股吸收合并东兴证券股份有限公司、信达证券股份有限公司的A股换股实施公告'), '计划实施公告不得作为已完成证据');
+    assert.ok(hit('中国国际金融股份有限公司换股吸收合并东兴证券股份有限公司、信达证券股份有限公司之A股换股实施结果、股份变动暨新增A股股份上市公告'));
     assert.ok(hit('换股吸收合并东兴证券股份有限公司、信达证券股份有限公司之实施情况暨新增股份上市公告书'));
     assert.ok(!hit('东兴证券股份有限公司关于股票终止上市的公告'), '终止上市不等于换股实施完成');
     assert.ok(!hit('关于换股吸收合并事项的进展公告'), '一般进展公告不得触发结算');
@@ -140,7 +141,7 @@ function holdingRow(overrides) {
       swap_ratio: '0.521000', target_swap_price: '19.110000', reference_swap_price: null,
       source_code: '601059.SH', source_name: '信达证券',
       source_status: 'delisted', source_delist_date: '2026-10-19',
-      evidence_document_id: 489075, evidence_title: 'A股换股实施公告',
+      evidence_document_id: 495046, evidence_title: 'A股换股实施结果公告',
       evidence_announced_at: '2026-10-16T00:00:00+08:00',
     }, o || {});
     const pairRow = o => Object.assign({

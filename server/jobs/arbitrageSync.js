@@ -31,17 +31,17 @@ async function runArbitrageSync(reason = 'scheduled', context = {}) {
     }
     // 换股结算：把已实施换股案件按公告比例写入持仓账本（adjust），不产生现金、不伪造成交。
     if (context.mode === 'stock_swap_settle') {
-      const result = await require('../services/stockSwapSettlement').runStockSwapSettlement();
+      const result = await require('../services/stockSwapSettlement').runStockSwapSettlement({ targetDate: context.targetDate });
       const detail = `cases:${result.caseCount} settlements:${result.settlementCount} applied:${result.appliedCount}`
         + ` pending:${result.pendingCount} failed:${result.failedCount} errors:${result.errors.length}`;
       if (!result.ok) {
         const error = `换股结算未完整完成：失败 ${result.failedCount}，错误 ${result.errors.length}`
           + (result.failureDetail && result.failureDetail.length ? `；${result.failureDetail.join(' | ')}` : '');
         await finishJobRun(runId, false, sanitizeJobError(error, 1000));
-        return { ok: false, error, detail, result };
+        return { ok: false, error, detail, result, dataAsOf: result.ranAt, publishDatasets: false, stageComplete: false };
       }
       await finishJobRun(runId, true, detail);
-      return { ok: true, detail, result };
+      return { ok: true, detail, result, dataAsOf: result.ranAt, publishDatasets: false, stageComplete: true };
     }
     const result = await sync.runIncrementalSync();
     const sourceResults = Object.keys(sync.SCOPES).map(scope => result[scope] || { total: 0, errors: [], failureDetails: [] });

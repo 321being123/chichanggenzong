@@ -4,9 +4,11 @@ const { pool } = require('../db/connection');
 const repo = require('../repositories/stockSwapSettlementRepository');
 const svc = require('../services/stockSwapSettlement');
 const U='stock_swap_atomic_test', A='原子换股测试', ID='stock_swap_atomic_test_id';
-let caseId;
+let caseId, acqCaseId, evidenceId;
 async function cleanup(){
   if(caseId) await pool.query('DELETE FROM event.arbitrage_cases WHERE case_id=$1',[caseId]);
+  if(acqCaseId) await pool.query('DELETE FROM event.arbitrage_cases WHERE case_id=$1',[acqCaseId]);
+  if(evidenceId) await pool.query('DELETE FROM event.documents WHERE document_id=$1',[evidenceId]);
   for(const table of ['positions','trades','nav_history','cash_flows','nav_position_snapshots','account_data','accounts']) await pool.query(`DELETE FROM ${table} WHERE username=$1`,[U]);
   await pool.query('DELETE FROM users WHERE username=$1',[U]);
 }
@@ -23,6 +25,18 @@ async function cleanup(){
   const caseRow={case_id:caseId,source_instrument_id:src.instrument_id,target_instrument_id:dst.instrument_id,source_code:'601198.SH',target_code:'601995.SH',source_name:'东兴证券',target_name:'中金公司',swap_ratio:'0.5',evidence_announced_at:'2026-10-16T00:00:00+08:00'};
   await pool.query("INSERT INTO positions(id,username,account_name,account_id,code,name,price,quantity,cost,type,subtype,instrument_id) VALUES ('atomic_src',$1,$2,$3,'601198','东兴证券',0,100,10,'股权','沪市',$4),('atomic_dst',$1,$2,$3,'601995','中金公司',0,20,20,'股权','沪市',$5)",[U,A,ID,src.instrument_id,dst.instrument_id]);
   const plan=svc.buildPlan(caseRow,{username:U,account_name:A,account_id:ID,quantity:100,cost_total:1000,type:'股权',subtype:'沪市'},{quantity:20,costTotal:400,type:'股权',subtype:'沪市'});
+  const acq=await pool.query("INSERT INTO event.arbitrage_cases(market,strategy_type,source_id,source_key,swap_ratio,target_instrument_id,reference_instrument_id) SELECT 'CN','a_share_swap',source_id,$1,0.5,$2,$2 FROM ops.data_sources ORDER BY source_id LIMIT 1 RETURNING case_id",['atomic-acq-'+Date.now(),dst.instrument_id]);acqCaseId=acq.rows[0].case_id;
+  const doc=await pool.query("INSERT INTO event.documents(document_type,title,announced_at,url,source_id) SELECT 'announcement','中金公司换股吸收合并东兴证券之A股换股实施结果公告','2026-10-27',$1,source_id FROM ops.data_sources WHERE source_code='sse' RETURNING document_id",['atomic-doc-'+Date.now()]);assert(doc.rows.length,'测试库需 sse 来源');evidenceId=doc.rows[0].document_id;
+  await pool.query('INSERT INTO event.arbitrage_case_documents(case_id,document_id) VALUES($1,$2)',[acqCaseId,evidenceId]);
+  let missing=await repo.selectUnlinkedImplementationCandidates('2026-10-26');assert(!missing.some(x=>String(x.case_id)===String(caseId)),'未来公告不得进入历史目标日');
+  missing=await repo.selectUnlinkedImplementationCandidates('2026-10-27');assert(missing.some(x=>String(x.case_id)===String(caseId)),'合并方案件有完成公告但被合并方案件未关联时须报告缺口');
+  await pool.query('INSERT INTO event.arbitrage_case_documents(case_id,document_id) VALUES($1,$2)',[caseId,evidenceId]);
+  missing=await repo.selectUnlinkedImplementationCandidates('2026-10-27');assert(!missing.some(x=>String(x.case_id)===String(caseId)),'已关联完成公告不得继续报告缺口');
+  const patterns=svc.IMPLEMENTATION_TITLE_PATTERNS.map(x=>'%'+x+'%');
+  let completed=await repo.selectImplementedSwapCases(patterns,'2026-10-26');assert(!completed.some(x=>String(x.case_id)===String(caseId)),'未披露的完成公告不得用于历史目标日');
+  completed=await repo.selectImplementedSwapCases(patterns,'2026-10-27');assert(completed.some(x=>String(x.case_id)===String(caseId)),'有效完成公告应被识别');
+  await pool.query('DELETE FROM event.arbitrage_case_documents WHERE case_id=$1 AND document_id=$2',[caseId,evidenceId]);
+
   const original=repo.updateSettlementStatus; repo.updateSettlementStatus=async()=>{throw Error('injected status failure')};
   const failed=await svc.settleOne(caseRow,plan,{});repo.updateSettlementStatus=original;
   assert.equal(failed.status,'failed');assert.match(failed.error,/injected/);

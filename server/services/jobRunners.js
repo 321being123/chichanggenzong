@@ -53,7 +53,9 @@ async function runJobByCode(jobCode, reason = 'manual-retry', businessDate, cont
       return require('../jobs/hkIpoSync').runHkIpoSync('enrichment', reason, { ...context, targetDate: context.targetDate || businessDate });
     case 'arbitrage_sync':
       {const result=await require('../jobs/arbitrageSync').runArbitrageSync(reason, {...context,targetDate:context.targetDate||businessDate});
-      return {...result,mode:context.mode==='cash_dividends'?'cash_dividends':'core',publishDatasetCodes:context.mode==='cash_dividends'?['stock_cash_dividend_facts']:['arbitrage_cases']};}
+      const mode=context.mode==='cash_dividends'?'cash_dividends':context.mode==='stock_swap_settle'?'stock_swap_settle':'core';
+      const publishDatasetCodes=mode==='cash_dividends'?['stock_cash_dividend_facts']:mode==='stock_swap_settle'?['stock_swap_settlements']:['arbitrage_cases'];
+      return {...result,mode,publishDatasetCodes};}
     case 'arbitrage_reparse': {
       const requestPayload = await require('../repositories/jobScheduleSlotsRepository').readSlotRequestPayload(context.slotId);
       const caseId = Number(requestPayload && requestPayload.caseId);

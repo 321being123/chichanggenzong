@@ -4,7 +4,7 @@ const { pool } = require('../db/connection');
 // 业务判定（标题筛选口径、比例校验、取整、幂等对账）仍在 stockSwapSettlement 服务内。
 
 // 挂着「换股实施/登记类」公告的换股案件（含证据公告信息）。
-async function selectImplementedSwapCases(patterns, client = pool) {
+async function selectImplementedSwapCases(patterns, targetDate, client = pool) {
   const { rows } = await client.query(
     `SELECT c.case_id,
             c.event_status,
@@ -27,7 +27,7 @@ async function selectImplementedSwapCases(patterns, client = pool) {
            FROM event.arbitrage_case_documents ad
            JOIN event.documents doc ON doc.document_id = ad.document_id
           WHERE ad.case_id = c.case_id
-            AND doc.title LIKE ANY($1::text[])
+            AND doc.title LIKE ANY($1::text[]) AND doc.announced_at <= $2::date
           ORDER BY doc.announced_at ASC, doc.document_id ASC
           LIMIT 1
        ) ev ON TRUE
@@ -35,8 +35,33 @@ async function selectImplementedSwapCases(patterns, client = pool) {
         AND COALESCE(c.swap_ratio, 0) > 0
         AND c.target_instrument_id IS NOT NULL
       ORDER BY ev.announced_at ASC, c.case_id ASC`,
-    [patterns]
+    [patterns, targetDate]
   );
+  return rows;
+}
+
+// 已入库的官方实施结果若只关联合并方、未关联被合并方案件，必须标记证据缺口。
+// 该查询只发现待核查对象，不推断条款、不改写关联或生成持仓结算。
+async function selectUnlinkedImplementationCandidates(targetDate, client = pool) {
+  const { rows } = await client.query(
+    `SELECT c.case_id, MIN(d.document_id) AS document_id
+       FROM event.arbitrage_cases c
+       JOIN core.instruments si ON si.instrument_id=c.target_instrument_id
+       JOIN event.arbitrage_cases ac ON ac.target_instrument_id=c.reference_instrument_id AND ac.strategy_type='a_share_swap'
+       JOIN event.arbitrage_case_documents ad ON ad.case_id=ac.case_id
+       JOIN event.documents d ON d.document_id=ad.document_id
+       JOIN ops.data_sources ds ON ds.source_id=d.source_id
+      WHERE c.strategy_type='a_share_swap' AND c.reference_instrument_id IS NOT NULL
+        AND c.target_instrument_id<>c.reference_instrument_id AND c.swap_ratio>0
+        AND ds.source_code IN ('sse','szse') AND d.announced_at <= $1::date
+        AND (d.title LIKE '%换股实施结果%' OR d.title LIKE '%实施情况暨新增股份上市%')
+        AND d.title LIKE '%换股吸收合并%' AND LENGTH(TRIM(si.name))>=2 AND POSITION(si.name IN d.title)>0
+        AND EXISTS (SELECT 1 FROM positions p WHERE p.quantity>0 AND (p.instrument_id=c.target_instrument_id OR p.code=split_part(si.canonical_code,'.',1)))
+        AND NOT EXISTS (SELECT 1 FROM event.arbitrage_case_documents linked
+          JOIN event.documents ld ON ld.document_id=linked.document_id
+          WHERE linked.case_id=c.case_id AND ld.announced_at <= $1::date
+            AND (ld.title LIKE '%换股实施结果%' OR ld.title LIKE '%实施情况暨新增股份上市%' OR ld.title LIKE '%证券变更登记完成%'))
+      GROUP BY c.case_id ORDER BY c.case_id`, [targetDate]);
   return rows;
 }
 
@@ -175,6 +200,7 @@ async function updateSettlementStatus(settlementId, status, patch = {}, client =
 
 module.exports = {
   selectImplementedSwapCases,
+  selectUnlinkedImplementationCandidates,
   selectSwapPairs,
   selectSourceHoldings,
   selectCurrentSourceQuantity,

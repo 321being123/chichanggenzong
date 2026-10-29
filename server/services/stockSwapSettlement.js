@@ -5,7 +5,7 @@
 //
 // 判定口径：
 // - 只处理 strategy_type='a_share_swap' 且换股条款完整（swap_ratio>0、合并方=reference_instrument_id）；
-// - 「已实施」只认官方实施/登记类公告标题（换股实施公告、实施情况暨新增股份上市、证券变更登记），
+// - 「已实施」只认官方完成类公告标题（换股实施结果、实施情况暨新增股份上市、证券变更登记完成），
 //   不从「终止上市」或风险公告推断，也不依赖 event_status 是否已被分类为 completed；
 // - 结算业务日取证据公告的上海自然日，作为账本 adjust 的交易日，可回溯到具体公告。
 //
@@ -22,10 +22,9 @@ const DATASET_CODE = 'stock_swap_settlements';
 
 // 换股实施类公告标题特征：只认"已经进入实施/登记阶段"的官方公告。
 const IMPLEMENTATION_TITLE_PATTERNS = [
-  '换股实施公告',
   '换股实施结果',
   '实施情况暨新增股份上市',
-  '证券变更登记',
+  '证券变更登记完成',
 ];
 
 // 浮点容差：qty*ratio 恰为整数时不能被浮点误差截成少一股。
@@ -78,9 +77,9 @@ function aShareSubtype(code) {
 // 反向案与尚未退市的标的自然被排除。
 async function findSettleableCases(options = {}) {
   const now = options.now == null ? new Date() : options.now;
-  const today = todayShanghai(now);
+  const today = options.targetDate || todayShanghai(now);
   const patterns = IMPLEMENTATION_TITLE_PATTERNS.map(p => '%' + p + '%');
-  const implemented = await swapRepository.selectImplementedSwapCases(patterns);
+  const implemented = await swapRepository.selectImplementedSwapCases(patterns, today);
   if (!implemented.length) return [];
 
   // 同一被合并方在任一同策略案件里出现过的有效合并方（用于补齐 reference 为空的实施案）。
@@ -342,8 +341,13 @@ async function settleCase(caseRow, options, settlements) {
 // 主入口：供 arbitrage_sync 的 stock_swap_settle 模式调用。
 async function runStockSwapSettlement(options = {}) {
   const startedAt = new Date();
+  const targetDate = options.targetDate == null ? todayShanghai(options.now || startedAt)
+    : options.targetDate instanceof Date ? CoreDate.dateInZone(options.targetDate, 'Asia/Shanghai')
+    : CoreDate.normalizeBusinessDate(String(options.targetDate));
+  if (!targetDate) throw new Error('换股结算目标业务日无效');
   const dryRun = Boolean(options.dryRun);
-  const cases = await findSettleableCases({ now: options.now });
+  const cases = await findSettleableCases({ targetDate });
+  const unlinked = await swapRepository.selectUnlinkedImplementationCandidates(targetDate);
   const settlements = [];
   const errors = [];
 
@@ -360,13 +364,14 @@ async function runStockSwapSettlement(options = {}) {
   const pending = settlements.filter(s => s.status === 'pending');
   const previewed = settlements.filter(s => s.status === 'preview');
   const result = {
-    ok: errors.length === 0 && failed.length === 0 && pending.length === 0,
+    ok: errors.length === 0 && failed.length === 0 && pending.length === 0 && unlinked.length === 0,
     dryRun,
-    ranAt: todayShanghai(startedAt),
+    ranAt: targetDate,
+    unlinkedEvidenceCount: unlinked.length,
     caseCount: cases.length,
     settlementCount: settlements.length,
     appliedCount: applied.length,
-    pendingCount: pending.length,
+    pendingCount: pending.length + unlinked.length,
     previewCount: previewed.length,
     failedCount: failed.length,
     settlements,
@@ -390,7 +395,8 @@ async function runStockSwapSettlement(options = {}) {
           verified_no_change: result.ok && settlements.length === 0,
           caseCount: cases.length,
           appliedCount: applied.length,
-          pendingCount: pending.length,
+          pendingCount: pending.length + unlinked.length,
+          unlinkedEvidenceCount: unlinked.length,
           failedCount: failed.length,
           errorCount: errors.length,
         },
@@ -406,6 +412,7 @@ async function runStockSwapSettlement(options = {}) {
     result.failureDetail = failed.map(s => `${s.username}/${s.account_name}:${s.error || s.reason}`)
       .concat(errors.map(e => `case${e.case_id}:${e.message}`))
       .concat(pending.map(s => `${s.username}/${s.account_name}:${s.reason}`))
+      .concat(unlinked.map(s => `case${s.case_id}:官方实施结果未关联，待核查`))
       .concat(result.datasetPublishError ? [`数据集发布失败:${result.datasetPublishError}`] : [])
       .slice(0, 5);
   }

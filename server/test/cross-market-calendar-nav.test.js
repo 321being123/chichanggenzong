@@ -97,9 +97,10 @@ async function main() {
       ['market_close:港股', { marketCalendarPolicy: 'hk-close', hour: 16, minute: 30 }, '2026-12-24', [12, 30]],
       ['market_close:港股', { marketCalendarPolicy: 'hk-close', hour: 16, minute: 30 }, '2026-09-25', [16, 30]],
       ['hk_rate', { marketCalendarPolicy: 'hk-rate', hour: 16, minute: 15 }, '2026-09-25', [16, 35]],
-      ['nav_snapshot', { marketCalendarPolicy: 'nav-snapshot', hour: 16, minute: 20 }, '2026-12-24', [15, 20]],
-      ['nav_snapshot', { marketCalendarPolicy: 'nav-snapshot', hour: 16, minute: 20 }, '2026-07-01', [16, 20]],
-      ['nav_snapshot', { marketCalendarPolicy: 'nav-snapshot', hour: 16, minute: 20 }, '2026-09-25', [16, 40]],
+      // 净值快照统一 18:30（要等当日回购利率落地），三种日历组合都必须落在这个时点
+      ['nav_snapshot', { marketCalendarPolicy: 'nav-snapshot', hour: 16, minute: 20 }, '2026-12-24', [18, 30]],
+      ['nav_snapshot', { marketCalendarPolicy: 'nav-snapshot', hour: 16, minute: 20 }, '2026-07-01', [18, 30]],
+      ['nav_snapshot', { marketCalendarPolicy: 'nav-snapshot', hour: 16, minute: 20 }, '2026-09-25', [18, 30]],
     ];
     for (const [jobCode, definition, date, [hour, minute]] of scheduleCases) {
       marketState.invalidateMarketStateCache({ market: 'HK', businessDate: date });

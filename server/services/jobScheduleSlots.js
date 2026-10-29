@@ -100,13 +100,9 @@ async function resolveScheduleForDate(definition, schedule, businessDate) {
     return null;
   }
   if (policy === 'nav-snapshot') {
-    if (hk.status === 'open' && hk.closeQuoteTime) {
-      const hkReadyMinute = parseClock(hk.closeQuoteTime) + 10;
-      const cnReadyMinute = cn.status === 'open' ? 15 * 60 + 20 : 0;
-      const minute = Math.max(hkReadyMinute, cnReadyMinute);
-      return { ...schedule, hour: Math.floor(minute / 60), minute: minute % 60 };
-    }
-    if (cn.status === 'open') return { ...schedule, hour: 16, minute: 20 };
+    // 净值快照依赖当日回购利率（Tushare repo_daily 收盘清算后傍晚才发布，实测 16:40 为空、18:00 后可得），
+    // 因此不再跟着收盘就绪时间走，统一安排到 18:30；休市日（两市都不开）仍不生成槽位。
+    if (hk.status === 'open' || cn.status === 'open') return { ...schedule, hour: 18, minute: 30 };
     return null;
   }
   throw new Error(`未知市场日历调度策略：${policy}`);

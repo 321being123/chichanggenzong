@@ -395,6 +395,8 @@ async function runLegacyPostCloseCycle(marketRule, date, result) {
   if (marketRule.market === 'HK') {
     const fx = await runLegacyFinalTaskOnce(date, 'hk-rate', () => runHkRateJob({ final: true, targetDate: date }));
     if (fx && fx.ok && shouldRunLegacyNavAfterHkClose(cn.status, hk.closeQuoteTime)) {
+      // 净值依赖当日回购利率，统一等 18:30（早于该时点跑会因 Tushare repo_daily 当日未出而缺利率）。
+      await waitUntilBusinessTime(date, '18:30');
       await runLegacyFinalTaskOnce(date, 'nav-snapshot', () => runNavSnapshotJob({ targetDate: date }));
       await runLegacyFinalTaskOnce(date, 'index-recent', () => runIndexRecentJob());
     }
@@ -405,7 +407,8 @@ async function runLegacyPostCloseCycle(marketRule, date, result) {
     await waitUntilBusinessTime(date, hk.status === 'closed' ? '16:15' : '15:20');
     const fx = await runLegacyFinalTaskOnce(date, 'hk-rate', () => runHkRateJob({ final: true, targetDate: date }));
     if (!fx || !fx.ok) return;
-    if (hk.status === 'closed') await waitUntilBusinessTime(date, '16:20');
+    // 净值统一等 18:30（当日回购利率发布后），不再跟 16:20 收盘就绪时间。
+    await waitUntilBusinessTime(date, '18:30');
     await runLegacyFinalTaskOnce(date, 'nav-snapshot', () => runNavSnapshotJob({ targetDate: date }));
     await runLegacyFinalTaskOnce(date, 'index-recent', () => runIndexRecentJob());
   }

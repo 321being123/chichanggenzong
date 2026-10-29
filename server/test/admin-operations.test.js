@@ -22,6 +22,7 @@ function readSrc(rel) { return fs.readFileSync(path.join(ROOT, rel), 'utf8'); }
   // ===== 静态断言（不依赖数据库）=====
   const adminHtmlSrc = readSrc('public/admin.html');
   const adminJsSrc = readSrc('public/js/admin.js');
+  const adminPresenterSrc = readSrc('public/js/presenters/admin-presenter.js');
   const indexHtmlSrc = readSrc('public/index.html');
   const bondSafetyJsSrc = readSrc('public/js/bond-safety.js');
 
@@ -40,7 +41,7 @@ function readSrc(rel) { return fs.readFileSync(path.join(ROOT, rel), 'utf8'); }
     assert.ok(bondSafetyJsSrc.indexOf('function refreshBondSafety') === -1, 'bond-safety.js 仍定义 refreshBondSafety');
   });
   await check('后台 API 测试后保留当前设置 tab', () => {
-    assert.ok(/let settingsTab = 'site'/.test(adminJsSrc), '缺少设置 tab 状态');
+    assert.ok(/var settingsTab = 'site'/.test(adminPresenterSrc), '缺少设置 tab 状态');
     assert.ok(/function switchSettingsTab\(tab\) \{\s*settingsTab = tab;/.test(adminJsSrc), '切换设置 tab 时未保存状态');
     assert.ok(/switchSettingsTab\(settingsTab\);/.test(adminJsSrc), '设置重新渲染后未恢复当前 tab');
   });

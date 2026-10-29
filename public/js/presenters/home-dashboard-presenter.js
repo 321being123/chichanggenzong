@@ -9,6 +9,24 @@
 var homeDashboardLoading = false;
 var homeMarketCyclesLoading = false;
 var homeMarketCyclesLoaded = false;
+// 账户切换守卫（2026-10-29 验收反例修复）：身份（登录名＋账户实体）变化即作废在途请求、
+// 清 loading/loaded 保证切换后能发起新请求，旧响应不得写入新身份页面。
+var homeDash = { epoch: 0 };
+function homeBegin() {
+  var user = typeof username === 'string' ? username : '';
+  var identity = typeof accountIdentity === 'string' ? accountIdentity : '';
+  if (homeDash.ownerUser !== user || homeDash.ownerIdentity !== identity) {
+    homeDash.ownerUser = user; homeDash.ownerIdentity = identity;
+    homeDash.epoch = (homeDash.epoch || 0) + 1;
+    homeDashboardLoading = false; homeMarketCyclesLoading = false; homeMarketCyclesLoaded = false;
+  }
+  var epoch = homeDash.epoch;
+  return function current() {
+    return homeDash.epoch === epoch
+      && user === (typeof username === 'string' ? username : '')
+      && identity === (typeof accountIdentity === 'string' ? accountIdentity : '');
+  };
+}
 
 async function fetchHomeJson(path) {
   // 传入站内路径（不含 API 前缀），拼接与发送统一由入口负责。
@@ -18,6 +36,7 @@ async function fetchHomeJson(path) {
 }
 
 async function loadHomeMarketCycles() {
+  var current = homeBegin();
   if (homeMarketCyclesLoading || homeMarketCyclesLoaded) return;
   homeMarketCyclesLoading = true;
   try {
@@ -26,17 +45,20 @@ async function loadHomeMarketCycles() {
       fetchHomeJson('/api/bond-cycle?range=all&view=home&maxPoints=800'),
       fetchHomeJson('/api/market-volatility/home-cycle?range=20y')
     ]);
+    if (!current()) return;
     window.homePaintMarketCycles(responses);
     homeMarketCyclesLoaded = responses[0].ok && responses[1].ok;
   } catch (error) {
+    if (!current()) return;
     console.error('首页市场周期加载失败', error);
     window.homePaintMarketCyclesError(error);
   } finally {
-    homeMarketCyclesLoading = false;
+    if (current()) homeMarketCyclesLoading = false;
   }
 }
 
 async function loadHomeDashboard() {
+  var current = homeBegin();
   renderHomeHoldings();
   window.homeApplyDashboardOrder();
   // 最新文章独立加载，不等待 IPO/债券接口，避免被大数据接口阻塞
@@ -46,21 +68,26 @@ async function loadHomeDashboard() {
   homeDashboardLoading = true;
   try {
     var results = await Promise.all([fetchHomeJson('/api/ipo/calendar?days=90'), fetchHomeJson('/api/bond-safety/bonds?view=summary')]);
+    if (!current()) return;
     window.homePaintDashboardResults(results);
   } catch (error) {
+    if (!current()) return;
     console.error('首页数据加载失败', error);
-  } finally { homeDashboardLoading = false; }
+  } finally { if (current()) homeDashboardLoading = false; }
 }
 
 async function renderHomeArticles() {
+  var current = homeBegin();
   if (!window.homeArticlesReady()) return;
   try {
     var res = await window.siteApi.get('/api/knowledge/latest?limit=5');
+    if (!current()) return;
     if (!res.ok) throw new Error('HTTP ' + res.status);
     var list = res.payload;
     if (!Array.isArray(list)) throw new Error('返回格式错误');
     window.homePaintArticles(list);
   } catch (e) {
+    if (!current()) return;
     window.homePaintArticlesError(e);
   }
 }

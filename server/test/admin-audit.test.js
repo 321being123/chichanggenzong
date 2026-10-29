@@ -26,6 +26,7 @@ function readSrc(rel) { return fs.readFileSync(path.join(ROOT, rel), 'utf8'); }
   const marketVolatilitySrc = readSrc('server/routes/marketVolatility.js');
   const positionComparisonSrc = readSrc('server/routes/positionComparison.js');
   const adminJsSrc = readSrc('public/js/admin.js');
+  const adminPresenterSrc = readSrc('public/js/presenters/admin-presenter.js');
   const adminHtmlSrc = readSrc('public/admin.html');
   const auditDbSrc = readSrc('server/db/config.js');
 
@@ -74,7 +75,7 @@ function readSrc(rel) { return fs.readFileSync(path.join(ROOT, rel), 'utf8'); }
   });
   await check('后台审计页提供模块/操作者/结果筛选', () => {
     assert.ok(/audit-filter-module|auditFilter/.test(adminJsSrc + adminHtmlSrc), '审计页缺少筛选控件');
-    assert.ok(adminJsSrc.includes('module=') && adminJsSrc.includes('result='), '审计列表未按模块/结果查询');
+    assert.ok(adminPresenterSrc.includes('module=') && adminPresenterSrc.includes('result=') && adminJsSrc.includes('adminLoadAuditData'), '审计列表未按模块/结果查询');
   });
 
   // ===== 运行态（需要数据库）=====

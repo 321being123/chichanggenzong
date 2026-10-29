@@ -36,10 +36,11 @@
 
   // ========== 标杆选择弹窗（5.2） ==========
   function onPageEnter() {
-    var state = window.positionComparisonPresenter.state;
     var body = document.getElementById('position-compare-page-body');
     if (!body) return;
-    if (state.compareData) renderCompare(state.compareData);
+    var compareData = window.positionComparisonPresenter.getCompareData();
+    if (compareData) renderCompare(compareData);
+    else body.textContent = '请先选择标杆进行对比';
   }
 
   // 返回持仓页

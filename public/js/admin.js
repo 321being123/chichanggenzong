@@ -1,13 +1,8 @@
 // ========== 管理后台前端逻辑 ==========
-let adminProfile = null;
 let jobsPollTimer = null;
 let jobsVisibilityBound = false;
-let settingsTab = 'site';
 
 // 用户管理状态
-let usersSearch = '';
-let usersOffset = 0;
-const usersLimit = 20;
 
 const VIEW_TITLES = {
   overview: '概览仪表盘',
@@ -69,28 +64,13 @@ function closeAdminModal() {
 }
 
 // ====== 鉴权 ======
-async function checkAuth() {
-  try {
-    const r = await window.adminFetchMe();
-    const d = r.payload;
-    if (!d.username) { window.location.href = api('/login.html?redirect=' + encodeURIComponent('/admin.html')); return false; }
-    adminProfile = d;
-    const caps = d.capabilities || {};
-    const hasAny = d.role === 'admin' || Object.keys(caps).some(function (k) { return caps[k]; });
-    if (!hasAny) { adminProfile = null; window.location.href = api('/'); return false; }
-    const u = document.getElementById('admin-user');
-    if (u) u.textContent = '当前账号：' + (d.nickname || d.username);
-    return true;
-  } catch (e) {
-    window.location.href = api('/login.html?redirect=' + encodeURIComponent('/admin.html'));
-    return false;
-  }
+function adminShowIdentity(profile) {
+  const user = document.getElementById('admin-user');
+  if (user) user.textContent = '当前账号：' + (profile.nickname || profile.username);
 }
-
-async function adminLogout() {
-  await window.adminPostLogout();
-  window.location.href = api('/login.html');
-}
+function adminNavigateLogin() { window.location.href = api('/login.html?redirect=' + encodeURIComponent('/admin.html')); }
+function adminNavigateHome() { window.location.href = api('/'); }
+function adminNavigateLoggedOut() { window.location.href = api('/login.html'); }
 
 // ====== 菜单切换 ======
 function setupMenu() {
@@ -139,26 +119,21 @@ function switchView(view) {
 
 
 // ===== U-15c：原内联多语句事件抽为具名函数（data-act 委托调用） =====
-function adminUsersSearch() { usersSearch = document.getElementById('users-search').value; usersOffset = 0; renderUsers(); }
-function adminUsersReset() { usersSearch = ''; usersOffset = 0; renderUsers(); }
-function adminUsersPrev() { usersOffset = Math.max(0, usersOffset - usersLimit); renderUsers(); }
-function adminUsersNext() { usersOffset += usersLimit; renderUsers(); }
-function adminBrokersMarketChange(v) { brokersMarket = v; renderBrokers(); }
-function adminBrokersSearch() { brokersSearch = document.getElementById('brokers-search').value; renderBrokers(); }
-function adminBrokersReset() { brokersSearch = ''; brokersMarket = ''; renderBrokers(); }
-function adminHolidayYearChange(v) { holidayYear = v; renderHolidays(); }
+function adminUsersSearch() { window.adminUsersSearchApply(document.getElementById('users-search').value); }
+// adminUsersReset/adminUsersPrev/adminUsersNext 已迁 admin-presenter.js（搜索/分页状态＋加载编排归 Presenter）
+function adminBrokersSearch() { window.adminBrokersSearchApply(document.getElementById('brokers-search').value); }
 function adminArbReviewApproved(id) { adminArbReview(id, 'approved'); }
 function adminArbReviewRejected(id) { adminArbReview(id, 'rejected'); }
 
 // ====== 概览仪表盘 ======
-async function renderOverview() {
+function renderOverview() {
   const el = document.getElementById('view-overview');
   if (!el) return;
   el.innerHTML = '<div class="admin-placeholder"><div class="spinner u-mx-auto-12" ></div>加载中...</div>';
-  try {
-    const r = await window.adminFetchOverview();
-    if (!r.ok) { el.innerHTML = '<div class="admin-placeholder"><div class="icon">⚠️</div>无权限或加载失败</div>'; return; }
-    const d = r.payload;
+  window.adminLoadOverview();
+}
+function adminPaintOverview(d) {
+  const el = document.getElementById('view-overview'); if (!el) return;
     const cards = [
       { label: '平台总用户', value: d.totalUsers, icon: '👥', bg: 'icon-bg-blue', sub: '含管理员' },
       { label: '管理员', value: d.adminUsers, icon: '🛡️', bg: 'icon-bg-red', sub: 'role=admin' },
@@ -174,9 +149,10 @@ async function renderOverview() {
         '<div class="stat-icon ' + c.bg + '">' + c.icon + '</div></div>' +
         '<div class="sub">' + c.sub + '</div></div>';
     }).join('') + '</div>';
-  } catch (e) {
-    el.innerHTML = '<div class="admin-placeholder"><div class="icon">⚠️</div>加载失败，请刷新</div>';
-  }
+}
+function adminPaintOverviewError(network) {
+  const el = document.getElementById('view-overview'); if (!el) return;
+  el.innerHTML = '<div class="admin-placeholder"><div class="icon">⚠️</div>' + (network ? '加载失败，请刷新' : '无权限或加载失败') + '</div>';
 }
 
 // ====== 用户管理 ======
@@ -185,9 +161,9 @@ function renderUsers() {
   if (!el) return;
   el.innerHTML =
     '<div class="filter-bar">' +
-      '<input id="users-search" placeholder="搜索账号" value="' + escapeHtml(usersSearch) + '" ' +
+      '<input id="users-search" placeholder="搜索账号" value="' + escapeHtml(window.adminUsersState.search) + '" ' +
         'data-style="padding:5px 9px;border:1px solid #e0e0e0;border-radius:6px;font-size:13px;min-width:180px;" ' +
-        'onkeydown="if(event.key===\'Enter\'){usersSearch=this.value;usersOffset=0;renderUsers();}">' +
+        'onkeydown="if(event.key===\'Enter\'){adminUsersSearchApply(this.value);}">' +
       '<button class="btn btn-primary btn-sm" data-act="adminUsersSearch">搜索</button>' +
       '<button class="btn btn-outline btn-sm" data-act="adminUsersReset">重置</button>' +
     '</div>' +
@@ -213,72 +189,56 @@ function renderUsers() {
   loadUsersData();
 }
 
-async function loadUsersData() {
+function adminSetUsersSearch(value) {
+  const input = document.getElementById('users-search'); if (input) input.value = value;
+}
+
+// 用户列表渲染（View）：加载编排与搜索/分页状态在 admin-presenter.js，本入口只做展示。
+function adminPaintUsers(d, offset) {
+  const limit = window.adminUsersState.limit;
   const tbody = document.getElementById('users-tbody');
   const pager = document.getElementById('users-pager');
-  try {
-    const r = await window.adminFetchUsers(usersSearch, usersLimit, usersOffset);
-    if (!r.ok) { tbody.innerHTML = '<tr><td colspan="6" class="biz-table-state-cell biz-table-error">加载失败</td></tr>'; return; }
-    const d = r.payload;
-    if (!d.list.length) {
-      tbody.innerHTML = '<tr><td colspan="6" class="biz-table-state-cell">暂无用户</td></tr>';
-    } else {
-      tbody.innerHTML = d.list.map(function (u) {
-        const isAdmin = u.role === 'admin';
-        const disabled = u.status && u.status !== 'active';
-        const roleTag = isAdmin ? '<span class="tag tag-a">管理员</span>' : '<span class="tag">普通用户</span>';
-        const statusTag = disabled ? '<span class="tag tag-over">已禁用</span>' : '<span class="tag tag-ok">正常</span>';
-        const created = u.created_at ? String(u.created_at).replace('T', ' ').slice(0, 19) : '—';
-        const self = u.username === (adminProfile && adminProfile.username);
-        return '<tr>' +
-          '<td>' + escapeHtml(u.username) + (self ? ' <span class="tag tag-ok">我</span>' : '') + '</td>' +
-          '<td>' + roleTag + '</td>' +
-          '<td>' + statusTag + '</td>' +
-          '<td>' + (u.account_count || 0) + '</td>' +
-          '<td>' + created + '</td>' +
-          '<td class="biz-table-nowrap">' +
-            '<button class="btn btn-sm btn-outline" data-action="detail" data-username="' + escapeHtml(u.username) + '">详情</button> ' +
-            '<button class="btn btn-sm ' + (disabled ? 'btn-success' : 'btn-warning') + '" data-action="status" data-username="' + escapeHtml(u.username) + '" data-cur="' + (disabled ? 'disabled' : 'active') + '">' + (disabled ? '启用' : '禁用') + '</button> ' +
-            '<button class="btn btn-sm ' + (isAdmin ? 'btn-outline' : 'btn-info') + '" data-action="role" data-username="' + escapeHtml(u.username) + '" data-cur="' + u.role + '"' + (self ? ' disabled title="不能修改自己"' : '') + '>' + (isAdmin ? '取消管理员' : '设管理员') + '</button> ' +
-            '<button class="btn btn-sm btn-ghost" data-action="pwd" data-username="' + escapeHtml(u.username) + '">重置密码</button> ' +
-            '<button class="btn btn-sm btn-danger" data-action="del" data-username="' + escapeHtml(u.username) + '"' + (self ? ' disabled title="不能删除自己"' : '') + '>删除</button>' +
-          '</td>' +
-        '</tr>';
-      }).join('');
-    }
-    // 分页
-    const start = d.total === 0 ? 0 : usersOffset + 1;
-    const end = Math.min(usersOffset + usersLimit, d.total);
-    pager.innerHTML =
-      '<span class="pager-info">共 ' + d.total + ' 条，当前 ' + start + '-' + end + '</span>' +
-      '<button class="btn btn-sm btn-outline" ' + (usersOffset <= 0 ? 'disabled' : 'data-act="adminUsersPrev"') + '>上一页</button>' +
-      '<button class="btn btn-sm btn-outline" ' + (end >= d.total ? 'disabled' : 'data-act="adminUsersNext"') + '>下一页</button>';
-  } catch (e) {
-    tbody.innerHTML = '<tr><td colspan="6" class="biz-table-state-cell biz-table-error">网络错误，请重试</td></tr>';
+  if (!d.list.length) {
+    tbody.innerHTML = '<tr><td colspan="6" class="biz-table-state-cell">暂无用户</td></tr>';
+  } else {
+    tbody.innerHTML = d.list.map(function (u) {
+      const isAdmin = u.role === 'admin';
+      const disabled = u.status && u.status !== 'active';
+      const roleTag = isAdmin ? '<span class="tag tag-a">管理员</span>' : '<span class="tag">普通用户</span>';
+      const statusTag = disabled ? '<span class="tag tag-over">已禁用</span>' : '<span class="tag tag-ok">正常</span>';
+      const created = u.created_at ? String(u.created_at).replace('T', ' ').slice(0, 19) : '—';
+      const self = u.username === (adminProfile && adminProfile.username);
+      return '<tr>' +
+        '<td>' + escapeHtml(u.username) + (self ? ' <span class="tag tag-ok">我</span>' : '') + '</td>' +
+        '<td>' + roleTag + '</td>' +
+        '<td>' + statusTag + '</td>' +
+        '<td>' + (u.account_count || 0) + '</td>' +
+        '<td>' + created + '</td>' +
+        '<td class="biz-table-nowrap">' +
+          '<button class="btn btn-sm btn-outline" data-action="detail" data-username="' + escapeHtml(u.username) + '">详情</button> ' +
+          '<button class="btn btn-sm ' + (disabled ? 'btn-success' : 'btn-warning') + '" data-action="status" data-username="' + escapeHtml(u.username) + '" data-cur="' + (disabled ? 'disabled' : 'active') + '">' + (disabled ? '启用' : '禁用') + '</button> ' +
+          '<button class="btn btn-sm ' + (isAdmin ? 'btn-outline' : 'btn-info') + '" data-action="role" data-username="' + escapeHtml(u.username) + '" data-cur="' + u.role + '"' + (self ? ' disabled title="不能修改自己"' : '') + '>' + (isAdmin ? '取消管理员' : '设管理员') + '</button> ' +
+          '<button class="btn btn-sm btn-ghost" data-action="pwd" data-username="' + escapeHtml(u.username) + '">重置密码</button> ' +
+          '<button class="btn btn-sm btn-danger" data-action="del" data-username="' + escapeHtml(u.username) + '"' + (self ? ' disabled title="不能删除自己"' : '') + '>删除</button> ' +
+        '</td>' +
+      '</tr>';
+    }).join('');
   }
+  // 分页
+  const start = d.total === 0 ? 0 : offset + 1;
+  const end = Math.min(offset + limit, d.total);
+  pager.innerHTML =
+    '<span class="pager-info">共 ' + d.total + ' 条，当前 ' + start + '-' + end + '</span>' +
+    '<button class="btn btn-sm btn-outline" ' + (offset <= 0 ? 'disabled' : 'data-act="adminUsersPrev"') + '>上一页</button>' +
+    '<button class="btn btn-sm btn-outline" ' + (end >= d.total ? 'disabled' : 'data-act="adminUsersNext"') + '>下一页</button>';
+}
+function adminPaintUsersError(network) {
+  const tbody = document.getElementById('users-tbody');
+  tbody.innerHTML = network
+    ? '<tr><td colspan="6" class="biz-table-state-cell biz-table-error">网络错误，请重试</td></tr>'
+    : '<tr><td colspan="6" class="biz-table-state-cell biz-table-error">加载失败</td></tr>';
 }
 
-async function adminToggleStatus(username, cur) {
-  const next = cur === 'active' ? 'disabled' : 'active';
-  try {
-    const r = await window.adminPostUserStatus(username, next);
-    const d = r.payload;
-    if (!r.ok) { showToast(d.error || '操作失败'); return; }
-    showToast(next === 'active' ? '已启用' : '已禁用');
-    loadUsersData();
-  } catch (e) { showToast('网络错误'); }
-}
-
-async function adminToggleRole(username, cur) {
-  const next = cur === 'admin' ? 'user' : 'admin';
-  try {
-    const r = await window.adminPostUserRole(username, next);
-    const d = r.payload;
-    if (!r.ok) { showToast(d.error || '操作失败'); return; }
-    showToast(next === 'admin' ? '已设为管理员' : '已取消管理员');
-    loadUsersData();
-  } catch (e) { showToast('网络错误'); }
-}
 
 function adminResetPwd(username) {
   openAdminModal('重置密码 - ' + username,
@@ -287,16 +247,9 @@ function adminResetPwd(username) {
     '<button class="btn btn-primary" data-act="doAdminResetPwd" data-arg1="' + escapeHtml(username) + '">确定重置</button>'
   );
 }
-async function doAdminResetPwd(username) {
-  const pwd = document.getElementById('admin-pwd-input').value;
-  if (!pwd || pwd.length < 6) { showToast('密码至少6位'); return; }
-  try {
-    const r = await window.adminPostUserPassword(username, pwd);
-    const d = r.payload;
-    if (!r.ok) { showToast(d.error || '重置失败'); return; }
-    showToast('密码已重置');
-    closeAdminModal();
-  } catch (e) { showToast('网络错误'); }
+function doAdminResetPwd(username) {
+  const input = document.getElementById('admin-pwd-input');
+  return window.adminResetUserPassword(username, input ? input.value : '');
 }
 
 function adminDeleteUser(username) {
@@ -306,22 +259,7 @@ function adminDeleteUser(username) {
     '<button class="btn btn-danger" data-act="doAdminDeleteUser" data-arg1="' + escapeHtml(username) + '">确认删除</button>'
   );
 }
-async function doAdminDeleteUser(username) {
-  try {
-    const r = await window.adminDelUser(username);
-    const d = r.payload;
-    if (!r.ok) { showToast(d.error || '删除失败'); return; }
-    showToast('已删除');
-    closeAdminModal();
-    loadUsersData();
-  } catch (e) { showToast('网络错误'); }
-}
-
-async function adminShowDetail(username) {
-  try {
-    const r = await window.adminFetchUserDetail(username);
-    if (!r.ok) { showToast('加载失败'); return; }
-    const d = r.payload;
+function adminPaintUserDetail(username, d) {
     const accts = (d.accounts || []).map(function (a) {
       return '<div class="profile-acct">' + escapeHtml(a.account_name) + ' <span class="tag">' + escapeHtml(a.broker || 'other') + '</span></div>';
     }).join('') || '<div class="acct-empty">暂无账户</div>';
@@ -336,7 +274,6 @@ async function adminShowDetail(username) {
       '<div class="info-row"><span>最后登录</span><span>' + last + '</span></div>' +
       '<div class="acct-section-title u-mt-16" >券商账户</div>' + accts
     );
-  } catch (e) { showToast('网络错误'); }
 }
 
 // ====== 占位（模块后续任务填充）======
@@ -348,8 +285,6 @@ function renderPlaceholder(view) {
 }
 
 // ====== 券商管理 ======
-let brokersSearch = '';
-let brokersMarket = '';
 const MARKET_TEXT = { A: '中国A股', H: '中国港股', U: '美股' };
 const MARKET_OPTS = '<option value="A">中国A股</option><option value="H">中国港股</option><option value="U">美股</option>';
 
@@ -360,7 +295,7 @@ function renderBrokers() {
     '<div class="filter-bar">' +
       '<input id="brokers-search" placeholder="搜索券商名/代码" value="' + escapeHtml(brokersSearch) + '" ' +
         'data-style="padding:5px 9px;border:1px solid #e0e0e0;border-radius:6px;font-size:13px;min-width:160px;" ' +
-        'onkeydown="if(event.key===\'Enter\'){brokersSearch=this.value;renderBrokers();}">' +
+        'onkeydown="if(event.key===\'Enter\'){adminBrokersSearch();}">' +
       '<select id="brokers-market" data-act="adminBrokersMarketChange" data-use-value class="u-input-sm">' +
         '<option value="">全部市场</option>' + MARKET_OPTS + '</select>' +
       '<button class="btn btn-primary btn-sm" data-act="adminBrokersSearch">搜索</button>' +
@@ -383,13 +318,8 @@ function renderBrokers() {
   loadBrokersData();
 }
 
-async function loadBrokersData() {
-  const tbody = document.getElementById('brokers-tbody');
-  try {
-    const qs = 'search=' + encodeURIComponent(brokersSearch) + '&market=' + encodeURIComponent(brokersMarket);
-    const r = await window.adminFetchBrokers(qs);
-    if (!r.ok) { tbody.innerHTML = '<tr><td colspan="6" class="biz-table-state-cell biz-table-error">加载失败</td></tr>'; return; }
-    const d = r.payload;
+function adminPaintBrokers(d) {
+  const tbody = document.getElementById('brokers-tbody'); if (!tbody) return;
     if (!d.list.length) {
       tbody.innerHTML = '<tr><td colspan="6" class="biz-table-state-cell">暂无券商</td></tr>';
     } else {
@@ -407,12 +337,14 @@ async function loadBrokersData() {
         '</tr>';
       }).join('');
     }
-  } catch (e) {
-    tbody.innerHTML = '<tr><td colspan="6" class="biz-table-state-cell biz-table-error">网络错误，请重试</td></tr>';
-  }
+}
+function adminPaintBrokersError(network) {
+  const tbody = document.getElementById('brokers-tbody'); if (!tbody) return;
+  tbody.innerHTML = '<tr><td colspan="6" class="biz-table-state-cell biz-table-error">' + (network ? '网络错误，请重试' : '加载失败') + '</td></tr>';
 }
 
 function openBrokerForm(code) {
+  window.adminInvalidateBrokerDetail();
   const isEdit = !!code;
   let body = '<input type="hidden" id="broker-code-old" value="' + (isEdit ? escapeHtml(code) : '') + '">' +
     '<div class="form-group"><label>券商代码（唯一，如 huatai）</label><input id="broker-code" ' + (isEdit ? 'value="' + escapeHtml(code) + '" disabled' : '') + ' placeholder="英文代码" class="u-input"></div>' +
@@ -424,14 +356,14 @@ function openBrokerForm(code) {
     '<button class="btn btn-outline" data-act="closeAdminModal">取消</button>' +
     '<button class="btn btn-primary" data-act="submitBroker">保存</button>'
   );
-  if (isEdit) {
-  window.adminFetchBrokerDetail(code).then(function (r) { return r.payload; }).then(function (b) {
-      const n = document.getElementById('broker-name'); if (n) n.value = b.name || '';
-      const m = document.getElementById('broker-market'); if (m) m.value = b.market || 'A';
-      const u = document.getElementById('broker-unit'); if (u) u.value = b.import_unit || 'sheet';
-      const s = document.getElementById('broker-sort'); if (s) s.value = b.sort_order || 0;
-    }).catch(function () {});
-  }
+  if (isEdit) window.adminLoadBrokerDetail(code);
+}
+function adminPaintBrokerDetail(b) {
+  const n = document.getElementById('broker-name'); if (n) n.value = b.name || '';
+  const m = document.getElementById('broker-market'); if (m) m.value = b.market || 'A';
+  const u = document.getElementById('broker-unit'); if (u) u.value = b.import_unit || 'sheet';
+  const order = document.getElementById('broker-sort'); if (order) order.value = b.sort_order || 0;
+
 }
 
 async function submitBroker() {
@@ -442,18 +374,7 @@ async function submitBroker() {
   const market = document.getElementById('broker-market').value;
   const import_unit = document.getElementById('broker-unit').value || 'sheet';
   const sort_order = parseInt(document.getElementById('broker-sort').value, 10) || 0;
-  if (!code || !name) { showToast('代码和名称均必填'); return; }
-  const url = isEdit ? '/api/admin/brokers/' + encodeURIComponent(code) : '/api/admin/brokers';
-  const method = isEdit ? 'PUT' : 'POST';
-  const body = isEdit ? { name, market, import_unit, sort_order } : { code, name, market, import_unit, sort_order };
-  try {
-    const r = await window.adminSaveBrokerReq(url, method, body);
-    const d = r.payload;
-    if (!r.ok) { showToast(d.error || '保存失败'); return; }
-    showToast('已保存');
-    closeAdminModal();
-    loadBrokersData();
-  } catch (e) { showToast('网络错误'); }
+  return window.adminSubmitBroker({ isEdit, code, name, market, import_unit, sort_order });
 }
 
 function deleteBrokerConfirm(code) {
@@ -462,16 +383,6 @@ function deleteBrokerConfirm(code) {
     '<button class="btn btn-outline" data-act="closeAdminModal">取消</button>' +
     '<button class="btn btn-danger" data-act="doDeleteBroker" data-arg1="' + escapeHtml(code) + '">确认删除</button>'
   );
-}
-async function doDeleteBroker(code) {
-  try {
-    const r = await window.adminDeleteBrokerReq(code);
-    const d = r.payload;
-    if (!r.ok) { showToast(d.error || '删除失败'); return; }
-    showToast('已删除');
-    closeAdminModal();
-    loadBrokersData();
-  } catch (e) { showToast('网络错误'); }
 }
 
 // ====== 定时任务监控 ======
@@ -684,24 +595,22 @@ function renderJobsLegacy() {
   loadJobsData();
 }
 
-async function importFederalFunds() {
+function importFederalFunds() {
   const input = document.getElementById('set-fed-file'), file = input && input.files && input.files[0];
-  if (!file) return showToast('请选择 CSV 或 XLSX 文件');
-  const button = document.getElementById('set-btn-fed'), form = new FormData(); form.append('file', file); button.disabled = true;
-  try {
-    const r = await window.adminImportFed(form), d = r.payload;
-    if (!r.ok) throw new Error(d.error || r.status); input.value = ''; showToast('已导入 ' + d.imported + ' 条日频利率数据');
-  } catch (e) { showToast('导入失败：' + (e.message || e)); }
-  finally { button.disabled = false; }
+  const button = document.getElementById('set-btn-fed');
+  const form = file ? new FormData() : null;
+  if (form) { form.append('file', file); if (button) button.disabled = true; }
+  return window.adminImportFederalFunds(form);
+}
+function adminFinishFederalFunds(success) {
+  const input = document.getElementById('set-fed-file'), button = document.getElementById('set-btn-fed');
+  if (success && input) input.value = '';
+  if (button) button.disabled = false;
 }
 
-async function loadJobsDataLegacy() {
-  const tbody = document.getElementById('jobs-tbody');
-  const summary = document.getElementById('jobs-summary');
-  try {
-    const r = await window.adminFetchJobs(50);
-    if (!r.ok) { tbody.innerHTML = '<tr><td colspan="6" class="biz-table-state-cell biz-table-error">加载失败</td></tr>'; return; }
-    const d = r.payload;
+function adminPaintJobsLegacy(d) {
+  const tbody = document.getElementById('jobs-tbody'), summary = document.getElementById('jobs-summary');
+  if (!tbody) return;
     // 各任务最近状态卡片
     if (summary) {
       summary.innerHTML = (d.summary && d.summary.length)
@@ -729,9 +638,10 @@ async function loadJobsDataLegacy() {
         '</tr>';
       }).join('');
     }
-  } catch (e) {
-    tbody.innerHTML = '<tr><td colspan="6" class="biz-table-state-cell biz-table-error">网络错误，请重试</td></tr>';
-  }
+}
+function adminPaintJobsLegacyError(network) {
+  const tbody = document.getElementById('jobs-tbody'); if (!tbody) return;
+  tbody.innerHTML = '<tr><td colspan="6" class="biz-table-state-cell biz-table-error">' + (network ? '网络错误，请重试' : '加载失败') + '</td></tr>';
 }
 
 function jobSlotStatusTag(status, late, waiting) {
@@ -783,67 +693,21 @@ function renderJobs() {
   }
 }
 
-async function retryJobSlotFromUi(slotId) {
-  try {
-    const detailResponse = await window.adminFetchJobSlot(slotId);
-    const detail = detailResponse.payload;
-    if (!detailResponse.ok) return showToast(detail.error || '读取任务信息失败');
-    const label = detail.definition && detail.definition.label || detail.job_code || '该任务';
-    const targetDate = detail.business_date ? String(detail.business_date).slice(0, 10) : '-';
-    const source = detail.definition && detail.definition.sourceDescription || '本地数据库与该任务已配置的数据源';
-    const cost = detail.definition && detail.definition.mayConsumeQuota ? '可能消耗接口额度' : '通常不产生额外接口费用';
-    if (!(await projectConfirm('确认补跑“' + label + '”？\n目标业务日期：' + targetDate + '\n访问数据源：' + source + '\n成本提示：' + cost + '。', { danger: true, title: '确认补跑' }))) return;
-    const r = await window.adminRetryJobSlot(slotId);
-    const d = r.payload;
-    showToast(r.ok ? (d.queued ? '已加入补跑队列' : '补跑完成') : (d.error || '补跑失败'));
-  } catch (e) { showToast('网络错误'); }
-  loadJobsData();
+function adminConfirmJobRetry(label, targetDate, source, cost) {
+  return projectConfirm('确认补跑“' + label + '”？\n目标业务日期：' + targetDate + '\n访问数据源：' + source + '\n成本提示：' + cost + '。', { danger: true, title: '确认补跑' });
 }
 
-async function validateJobSlotFromUi(slotId) {
-  try {
-    const r = await window.adminValidateJobSlot(slotId);
-    const d = r.payload;
-    showToast(d.message || (r.ok ? '重新校验通过' : '重新校验未通过'));
-  } catch (e) { showToast('网络错误'); }
-  loadJobsData();
+function loadJobsData() {
+  ensureJobMonitorControls();
+  ensureJobMonitorAdvancedControls();
+  return window.adminLoadJobsData(jobSlotQuery());
 }
-
-async function acknowledgeJobSlot(slotId) {
-  try {
-    const r = await window.adminAckJobSlot(slotId);
-    const d = r.payload;
-    showToast(r.ok ? '已确认并接管' : (d.error || '操作失败'));
-  } catch (e) { showToast('网络错误'); }
-  loadJobsData();
-}
-
-async function testJobAlertEmail() {
-  try {
-    const r = await window.adminTestAlertEmail();
-    const d = r.payload;
-    showToast(r.ok ? '测试邮件已发送' : (d.error || '邮件测试失败'));
-  } catch (e) { showToast('网络错误'); }
-}
-
-async function loadJobsData() {
+function adminPaintJobs(data) {
   const slotBody = document.getElementById('jobs-slots-tbody');
   const runBody = document.getElementById('jobs-tbody');
   const alertBody = document.getElementById('jobs-alerts-tbody');
   const alertHistoryBody = document.getElementById('jobs-alert-history-tbody');
   const summary = document.getElementById('jobs-summary');
-  ensureJobMonitorControls();
-  ensureJobMonitorAdvancedControls();
-  try {
-    const responses = await Promise.all([
-      window.adminFetchJobsOverview(),
-      window.adminFetchJobSlots(jobSlotQuery()),
-      window.adminFetchJobs(50),
-      window.adminFetchJobNotices(30),
-      window.adminFetchJobNoticeHistory(30),
-    ]);
-    const data = await Promise.all(responses.map(r => r.payload));
-    if (responses.some(r => !r.ok)) throw new Error('load failed');
     const overview = data[0], slots = data[1].list || [], runs = data[2], alerts = data[3].list || [], alertHistory = data[4].list || [];
     if (summary) {
       const counts = (overview.counts || []).reduce((map, item) => { map[item.status] = item.count; return map; }, {});
@@ -875,12 +739,18 @@ async function loadJobsData() {
     if (alertHistoryBody) alertHistoryBody.innerHTML = alertHistory.length ? alertHistory.map(function (alert) {
       return '<tr><td>' + fmtTime(alert.last_seen_at) + '</td><td>' + escapeHtml(jobLabel(alert.job_code)) + '</td><td class="biz-table-note-cell biz-table-note-cell--320 biz-table-break-word">' + escapeHtml(jobDisplayText(alert.summary || alert.subject || '', 300)) + '</td><td>' + escapeHtml(jobStatusLabel(alert.status)) + '</td></tr>';
     }).join('') : '<tr><td colspan="4" class="biz-table-state-cell">暂无历史告警</td></tr>';
-  } catch (e) {
+}
+function adminPaintJobsError() {
+  const slotBody = document.getElementById('jobs-slots-tbody');
+  const runBody = document.getElementById('jobs-tbody');
+  const alertBody = document.getElementById('jobs-alerts-tbody');
+  const alertHistoryBody = document.getElementById('jobs-alert-history-tbody');
+  const summary = document.getElementById('jobs-summary');
+
     if (slotBody) slotBody.innerHTML = '<tr><td colspan="6" class="biz-table-state-cell biz-table-error">加载失败，请刷新重试</td></tr>';
     if (runBody) runBody.innerHTML = '<tr><td colspan="6" class="biz-table-state-cell biz-table-error">加载失败，请刷新重试</td></tr>';
     if (alertBody) alertBody.innerHTML = '<tr><td colspan="5" class="biz-table-state-cell biz-table-error">加载失败，请刷新重试</td></tr>';
     if (alertHistoryBody) alertHistoryBody.innerHTML = '<tr><td colspan="4" class="biz-table-state-cell biz-table-error">加载失败，请刷新重试</td></tr>';
-  }
 }
 
 function ensureJobMonitorControls() {
@@ -955,39 +825,13 @@ function renderJobSlotRow(slot) {
   return '<tr><td>' + escapeHtml(jobLabel(slot.job_code)) + '</td><td>' + fmtTime(slot.scheduled_for) + '</td><td>' + jobSlotStatusTag(slot.status, slot.is_late, Boolean(waitingState)) + '</td><td>' + Number(slot.attempt_count || 0) + '/' + Number(slot.max_attempts || 4) + '</td><td>' + escapeHtml(watermark) + '</td><td class="biz-table-note-cell biz-table-note-cell--260 biz-table-break-word">' + escapeHtml(jobDisplayText(resultText, 300)) + '</td><td>' + detail + validate + retry + '</td></tr>';
 }
 
-async function resendJobAlert(alertId) {
-  try {
-    const r = await window.adminResendJobAlert(alertId);
-    const d = r.payload;
-    showToast(r.ok ? '告警邮件已重新投递' : (d.error || '邮件投递失败'));
-  } catch (e) { showToast('网络错误'); }
-  loadJobsData();
-}
 
-async function acknowledgeJobAlert(alertId) {
-  try {
-    const r = await window.adminAckJobAlert(alertId);
-    const d = r.payload;
-    showToast(r.ok ? '告警已确认' : (d.error || '确认失败'));
-  } catch (e) { showToast('网络错误'); }
-  loadJobsData();
-}
-
-async function openJobSlotDetailLegacy(slotId) {
-  try {
-    const r = await window.adminFetchJobSlot(slotId);
-    const d = r.payload;
-    if (!r.ok) return showToast(d.error || '读取详情失败');
+function adminPaintJobSlotDetailLegacy(d) {
     openAdminModal('任务详情', '<div class="job-detail"><p><b>任务：</b>' + escapeHtml(jobLabel(d.job_code)) + '</p><p><b>状态：</b>' + jobSlotStatusTag(d.status) + '</p><p><b>计划时间：</b>' + fmtTime(d.scheduled_for) + '</p><p><b>最近错误：</b>' + escapeHtml(jobDisplayText(d.last_error || '无', 1000)) + '</p><p><b>结果：</b><br>' + escapeHtml(jobDisplayText(d.result_summary || {}, 4000)) + '</p></div>', '<button class="btn btn-outline" data-act="closeAdminModal">关闭</button>');
-  } catch (e) { showToast('网络错误'); }
 }
 
 // 任务详情包含执行尝试、数据水位、依赖、邮件告警和人工审计，便于直接定位异常。
-async function openJobSlotDetail(slotId) {
-  try {
-    const r = await window.adminFetchJobSlot(slotId);
-    const d = r.payload;
-    if (!r.ok) return showToast(d.error || '读取详情失败');
+function adminPaintJobSlotDetail(d) {
     const list = function (items, mapper, empty) {
       return (items || []).map(mapper).join('') || '<li>' + empty + '</li>';
     };
@@ -1007,50 +851,28 @@ async function openJobSlotDetail(slotId) {
     const waitingState = d.waiting_state && d.waiting_state.waiting ? d.waiting_state : null;
     const html = '<div class="job-detail"><p><b>任务：</b>' + escapeHtml(jobLabel(d.job_code)) + '</p><p><b>计划时间：</b>' + fmtTime(d.scheduled_for) + '</p><p><b>业务执行结果：</b><br>' + escapeHtml(jobDisplayText(d.business_execution || d.result_summary || {}, 4000)) + '</p><p><b>续批与止损：</b>' + escapeHtml(continuation) + '</p><p><b>等待复查：</b>' + escapeHtml(waitingState ? (waitingState.label || '等待中') + (waitingState.waitReason ? '（原因 ' + waitingState.waitReason + '）' : '') : '当前不是等待状态') + '</p><p><b>数据新鲜度校验：</b>' + escapeHtml(freshness.status === 'passed' ? '通过' : freshness.status === 'not_required' ? '不需要水位校验' : freshness.status === 'degraded' ? '未达到目标日期' : '待校验') + '；数据日期 ' + escapeHtml(freshness.dataAsOf ? String(freshness.dataAsOf).slice(0, 10) : '-') + '；业务日期 ' + escapeHtml(freshness.businessDate || '-') + '</p><p><b>计划状态：</b>' + jobSlotStatusTag(d.status, false, Boolean(waitingState)) + '</p><p><b>最近错误：</b>' + escapeHtml(jobDisplayText(d.last_error || '无', 1000)) + '</p><p><b>执行尝试：</b></p><ul>' + runs + '</ul><p><b>依赖：</b></p><ul>' + deps + '</ul><p><b>邮件告警：</b></p><ul>' + alerts + '</ul><p><b>人工审计：</b></p><ul>' + audits + '</ul></div>';
     openAdminModal('任务详情', html, '<button class="btn btn-outline" data-act="closeAdminModal">关闭</button>');
-  } catch (e) { showToast('网络错误'); }
 }
 
-async function runJobBackfill() {
-  const btn = document.getElementById('job-btn-backfill');
-  if (btn) { btn.disabled = true; btn.textContent = '补漏中...'; }
-  try {
-    const r = await window.adminPostBackfill();
-    const d = r.payload;
-    showToast(r.ok ? '补漏完成' : (d.error || '补漏失败'));
-  } catch (e) { showToast('网络错误'); }
-  if (btn) { btn.disabled = false; btn.textContent = '手动补漏收盘数据'; }
-  loadJobsData();
-}
-
-async function runJobHolidaySync() {
-  const btn = document.getElementById('holiday-btn-sync');
-  if (btn) { btn.disabled = true; btn.textContent = '核对中...'; }
-  try {
-    const r = await window.adminPostHolidaySync();
-    const d = r.payload;
-    showToast(r.ok ? '休市日历已核对' : (d.error || '核对失败'));
-  } catch (e) { showToast('网络错误'); }
-  if (btn) { btn.disabled = false; btn.textContent = '从交易所核对本年休市日'; }
-  renderHolidays();
+function adminSetManualJobBusy(id, busy) {
+  const button = document.getElementById(id); if (!button) return;
+  button.disabled = !!busy;
+  button.textContent = busy ? (id === 'job-btn-backfill' ? '补漏中...' : '核对中...')
+    : (id === 'job-btn-backfill' ? '手动补漏收盘数据' : '从交易所核对本年休市日');
 }
 
 // ====== 全局参数 ======
 function renderSettings() {
   const el = document.getElementById('view-settings'); if (!el) return;
   el.innerHTML = '<div class="admin-placeholder"><div class="spinner u-mx-auto-12" ></div>加载中...</div>';
-  window.adminFetchSettings().then(function (r) { return r.ok ? r.payload : null; }).then(function (s) {
-    if (!s) { el.innerHTML = '<div class="admin-placeholder"><div class="icon">⚠️</div>加载失败</div>'; return; }
-    renderSettingsTabs(el, s); return;
-    const o = s.register_open === '1' ? 'checked' : '';
-    const e = s.require_email === '1' ? 'checked' : '';
-    el.innerHTML = '<div data-style="background:#fff;border:1px solid #e8e8e8;border-radius:10px;padding:24px 28px;max-width:560px;">' +
-      '<div class="u-flex-center u-mb-16"><input type="checkbox" id="set-register-open" ' + o + ' class="u-check-box"><label for="set-register-open" class="u-check-label">开放注册（关闭后任何人无法注册）</label></div>' +
-      '<div class="u-mb-16"><div class="u-note55 u-mb-6">邀请码</div><input id="set-register-code" value="' + escapeHtml(s.register_code || '') + '" placeholder="留空则无需；填写后注册必须匹配，如 abc123" class="u-input-lg"></div>' +
-      '<div class="u-flex-center u-mb-20"><input type="checkbox" id="set-require-email" ' + e + ' class="u-check-box"><label for="set-require-email" class="u-check-label">注册强制邮箱验证（需服务端已配置邮件服务）</label></div>' +
-      '<button class="btn btn-primary" data-act="submitSettings" data-style="padding:9px 22px;">保存设置</button>' +
-      '<div class="u-fs-12 u-c-muted u-mt-10">设置即时生效，无需重启。</div></div>';
-  }).catch(function () { el.innerHTML = '<div class="admin-placeholder"><div class="icon">⚠️</div>加载失败</div>'; });
+  window.adminLoadSettings();
 }
+function adminPaintSettings(data) {
+  const el = document.getElementById('view-settings'); if (el) renderSettingsTabs(el, data);
+}
+function adminPaintSettingsError() {
+  const el = document.getElementById('view-settings'); if (el) el.innerHTML = '<div class="admin-placeholder"><div class="icon">⚠️</div>加载失败</div>';
+}
+
 function renderSettingsTabs(el, s) {
   const o = s.register_open === '1' ? 'checked' : '', e = s.require_email === '1' ? 'checked' : '';
   const apiSettings = s.external_apis && s.external_apis.tushare || {};
@@ -1162,13 +984,9 @@ async function saveEndpointPolicies() {
     });
     return copy;
   });
-  try {
-    const r = await window.adminPutPolicies(policies);
-    const d = r.payload;
-    if (!r.ok) { showToast(d.error || '保存接口策略失败'); return; }
-    showToast('接口策略已保存'); renderSettings();
-  } catch (e) { showToast('网络错误'); }
+  return window.adminSaveEndpointPolicies(policies);
 }
+
 function switchSettingsTab(tab) {
   settingsTab = tab;
   document.querySelectorAll('.settings-tab').forEach(function (button) { const active = button.dataset.tab === tab; button.classList.toggle('btn-primary', active); button.classList.toggle('btn-outline', !active); });
@@ -1184,23 +1002,17 @@ function switchSettingsTab(tab) {
 }
 async function saveExternalApiSettings() {
   const body = { external_api: { provider: 'tushare', primary_token: document.getElementById('set-tushare-primary').value || '', backup_token: document.getElementById('set-tushare-backup').value || '', mode: document.getElementById('set-tushare-mode').value, notify_on_switch: document.getElementById('set-tushare-notify').checked } };
-  try {
-    const r = await window.adminPutSettings(body);
-    const d = r.payload;
-    if (!r.ok) { showToast(d.error || '保存失败'); return; }
-    showToast('外部 API 参数已保存');
-    renderSettings();
-  } catch (e) { showToast('网络错误'); }
+  return window.adminSaveExternalApiSettings(body);
 }
+
 async function switchExternalApiMode(provider) {
   const mode = document.getElementById('set-tushare-mode').value;
-  try {
-    const r = await window.adminSwitchExternal(provider, mode);
-    const d = r.payload;
-    if (!r.ok) { showToast(d.error || '切换失败'); return; }
-    showToast('已手动应用' + (mode === 'auto' ? '自动故障转移' : mode === 'primary' ? '主 Token' : '备用 Token'));
-    renderSettings();
-  } catch (e) { showToast('网络错误'); }
+  return window.adminApplyExternalApiMode(provider, mode);
+}
+
+function adminRestoreExternalTestButton(provider, role, text) {
+  const button = document.getElementById('test-' + provider + '-' + role);
+  if (button) { button.disabled = false; button.textContent = text; }
 }
 async function testExternalApiAvailability(provider, role) {
   const button = document.getElementById('test-' + provider + '-' + role);
@@ -1208,40 +1020,26 @@ async function testExternalApiAvailability(provider, role) {
   if (button) { button.disabled = true; button.textContent = '测试中...'; }
   const label = role === 'primary' ? '主' : role === 'backup' ? '备用' : '当前';
   const apiName = provider === 'geoscope_lixinger' ? 'cn.company' : (document.getElementById('set-tushare-test-api') || {}).value || 'trade_cal';
-  try {
-    const r = await window.adminTestExternal(provider, role, apiName);
-    const d = r.payload;
-    if (!r.ok) { showToast(d.error || '测试失败'); if (button) { button.disabled = false; button.textContent = originalText; } return; }
-    showToast((d.result && d.result.ok ? label + ' API 可用' : label + ' API 不可用：' + ((d.result && d.result.message) || '请检查配置')));
-    renderSettings();
-  } catch (e) { showToast('网络错误'); }
-  if (button) { button.disabled = false; button.textContent = originalText; }
+  return window.adminTestExternalAvailability(provider, role, apiName, originalText);
 }
+
 async function submitSettings() {
   const body = { register_open: document.getElementById('set-register-open').checked, register_code: document.getElementById('set-register-code').value || '', require_email: document.getElementById('set-require-email').checked };
-  try {
-    const r = await window.adminPutSettings(body);
-    const d = r.payload;
-    if (!r.ok) { showToast(d.error || '保存失败'); return; }
-    showToast('设置已保存（即时生效）');
-  } catch (e) { showToast('网络错误'); }
+  return window.adminSubmitSettings(body);
 }
 
 // ====== 休市日历（日历视图）======
-let holidayYear = String(new Date().getFullYear());
-let holidayEditSet = null; // 当前年份可编辑的休市日集合(Set of 'YYYY-MM-DD')
 function pad2(n) { return String(n).padStart(2, '0'); }
 function fmtDate(y, m, d) { return y + '-' + pad2(m) + '-' + pad2(d); }
 
 function renderHolidays() {
   const el = document.getElementById('view-holidays'); if (!el) return;
   el.innerHTML = '<div class="admin-placeholder"><div class="spinner u-mx-auto-12" ></div>加载中...</div>';
-  window.adminFetchHolidays().then(function (r) { return r.ok ? r.payload : null; }).then(function (d) {
-    if (!d) { el.innerHTML = '<div class="admin-placeholder"><div class="icon">⚠️</div>加载失败</div>'; return; }
-    const years = Object.keys(d.years || {}).sort();
-    if (!years.length) { el.innerHTML = '<div class="admin-placeholder">暂无休市数据</div>'; return; }
-    if (years.indexOf(holidayYear) < 0) holidayYear = years[years.length - 1];
-    holidayEditSet = new Set((d.years[holidayYear] || []).slice().sort());
+  window.adminLoadHolidays();
+}
+function adminPaintHolidays(years) {
+  const el = document.getElementById('view-holidays'); if (!el) return;
+  if (!years.length) { el.innerHTML = '<div class="admin-placeholder">暂无休市数据</div>'; return; }
     let opts = ''; years.forEach(function (y) { opts += '<option value="' + y + '"' + (y === holidayYear ? ' selected' : '') + '>' + y + '年</option>'; });
     el.innerHTML =
       '<div class="filter-bar">' +
@@ -1255,7 +1053,9 @@ function renderHolidays() {
        '<div class="u-tip-box">休市日（法定节假日，不含周末）影响收盘数据抓取与交易日判断；修改即时生效，无需部署。可点击「从交易所核对本年休市日」立即同步，也可<b>点击日历格手动增删</b>：橙色=休市日（点它移除），空白格（点它添加），灰色=周末。</div>' +
       '<div id="holiday-calendar" class="holiday-calendar"></div>';
     renderHolidayCalendar();
-  }).catch(function () { el.innerHTML = '<div class="admin-placeholder"><div class="icon">⚠️</div>加载失败</div>'; });
+}
+function adminPaintHolidaysError() {
+  const el = document.getElementById('view-holidays'); if (el) el.innerHTML = '<div class="admin-placeholder"><div class="icon">⚠️</div>加载失败</div>';
 }
 
 function renderHolidayCalendar() {
@@ -1286,36 +1086,13 @@ function renderHolidayCalendar() {
   box.innerHTML = html;
 }
 
-function addHoliday(ds) {
-  if (!holidayEditSet) return;
-  if (holidayEditSet.has(ds)) { showToast('该日期已是休市日'); return; }
-  holidayEditSet.add(ds);
-  renderHolidayCalendar();
-  showToast('已标记 ' + ds + '（点「保存」后生效）');
-}
-function removeHoliday(ds) {
-  if (!holidayEditSet) return;
-  holidayEditSet.delete(ds);
-  renderHolidayCalendar();
-  showToast('已移除 ' + ds + '（点「保存」后生效）');
-}
+
 function addHolidayByInput() {
   const inp = document.getElementById('holiday-new');
   const v = inp && inp.value;
   if (!v) { showToast('请选择日期'); return; }
   addHoliday(v);
   if (inp) inp.value = '';
-}
-async function saveHolidays() {
-  if (!holidayEditSet) return;
-  const dates = Array.from(holidayEditSet).sort();
-  try {
-    const r = await window.adminPutHolidays(holidayYear, dates);
-    const d = r.payload;
-    if (!r.ok) { showToast(d.error || '保存失败'); return; }
-    showToast('已保存 ' + holidayYear + ' 年休市日（' + dates.length + '天）');
-    renderHolidays();
-  } catch (e) { showToast('网络错误'); }
 }
 
 // ====== 操作审计 ======
@@ -1338,19 +1115,16 @@ function renderAudit() {
     '<tbody id="audit-tbody"><tr><td colspan="6" class="biz-table-state-cell">加载中...</td></tr></tbody></table></div>';
   loadAuditData();
 }
-async function loadAuditData() {
-  const tb = document.getElementById('audit-tbody'); if (!tb) return;
+function loadAuditData() {
+  if (!document.getElementById('audit-tbody')) return;
   const moduleSel = document.getElementById('audit-filter-module');
   const actorInp = document.getElementById('audit-filter-actor');
   const resultSel = document.getElementById('audit-filter-result');
-  const m = moduleSel ? moduleSel.value : '';
-  const a = actorInp ? actorInp.value.trim() : '';
-  const r = resultSel ? resultSel.value : '';
-  const qs = 'limit=100' + (m ? '&module=' + encodeURIComponent(m) : '') + (a ? '&actor=' + encodeURIComponent(a) : '') + (r ? '&result=' + encodeURIComponent(r) : '');
-  try {
-    const resp = await window.adminFetchAudit(qs);
-    if (!resp.ok) { tb.innerHTML = '<tr><td colspan="6" class="biz-table-state-cell biz-table-error">加载失败</td></tr>'; return; }
-    const d = resp.payload;
+  return window.adminLoadAuditData({ module: moduleSel ? moduleSel.value : '', actor: actorInp ? actorInp.value.trim() : '', result: resultSel ? resultSel.value : '' });
+}
+function adminPaintAudit(d) {
+  const tb = document.getElementById('audit-tbody'); if (!tb) return;
+  const moduleSel = document.getElementById('audit-filter-module');
     if (moduleSel && d.modules) {
       d.modules.forEach(function (k) {
         if (!moduleSel.querySelector('option[value="' + k + '"]')) {
@@ -1365,7 +1139,10 @@ async function loadAuditData() {
       const rt = isFail ? '失败' : '成功';
       return '<tr><td>' + escapeHtml(x.created_at || '') + '</td><td>' + escapeHtml(x.actor || '') + '</td><td><span class="tag">' + escapeHtml(x.action || '') + '</span></td><td>' + escapeHtml(x.target || '') + '</td><td><span class="tag ' + rc + '">' + rt + '</span></td><td class="biz-table-note-cell biz-table-note-cell--360 biz-table-break-all">' + escapeHtml(x.detail || '') + '</td></tr>';
     }).join('');
-  } catch (e) { tb.innerHTML = '<tr><td colspan="6" class="biz-table-state-cell biz-table-error">网络错误</td></tr>'; }
+}
+function adminPaintAuditError(network) {
+  const tb = document.getElementById('audit-tbody'); if (!tb) return;
+  tb.innerHTML = '<tr><td colspan="6" class="biz-table-state-cell biz-table-error">' + (network ? '网络错误' : '加载失败') + '</td></tr>';
 }
 
 // ====== 数据运维（OPS-01：共享数据刷新/导入统一迁入后台，前台按钮已移除）======
@@ -1388,53 +1165,30 @@ function renderOps() {
 function opsCard(title, desc, actionHtml) {
   return '<div class="ops-card"><div class="ops-card-title">' + title + '</div><div class="ops-card-desc">' + desc + '</div><div class="ops-card-action">' + actionHtml + '</div></div>';
 }
-async function opsRefreshBondSafety() {
-  const btn = document.getElementById('ops-bond-safety-refresh'); if (btn) { btn.disabled = true; btn.textContent = '刷新中...'; }
-  try {
-    const r = await window.adminPostBondSafetyRefresh();
-    const d = (r.payload || {});
-    if (!r.ok) showToast(d.error || '刷新失败');
-    else showToast('可转债安全性数据已刷新');
-  } catch (e) { showToast('网络错误'); }
-  finally { if (btn) { btn.disabled = false; btn.textContent = '立即刷新'; } opsLoadJobs(); }
+function adminSetOpsBusy(id, busy) {
+  const btn = document.getElementById(id); if (!btn) return;
+  btn.disabled = !!busy;
+  btn.textContent = busy ? (id === 'ops-fed-import' ? '导入中...' : '刷新中...') : (id === 'ops-fed-import' ? '导入文件' : '立即刷新');
 }
-async function opsRefreshBondValuation() {
-  const btn = document.getElementById('ops-bond-valuation-refresh'); if (btn) { btn.disabled = true; btn.textContent = '刷新中...'; }
-  try {
-    const r = await window.adminPostBondValuationRefresh();
-    const d = (r.payload || {});
-    if (!r.ok) showToast(d.error || '刷新失败');
-    else showToast('可转债估值已刷新');
-  } catch (e) { showToast('网络错误'); }
-  finally { if (btn) { btn.disabled = false; btn.textContent = '立即刷新'; } opsLoadJobs(); }
+function opsImportFederalFunds() {
+  const input = document.getElementById('ops-fed-file');
+  const file = input && input.files && input.files[0];
+  const form = file ? new FormData() : null;
+  if (form) form.append('file', file);
+  return window.adminOpsImportFederalFunds(form);
 }
-async function opsImportFederalFunds() {
-  const fileEl = document.getElementById('ops-fed-file');
-  const btn = document.getElementById('ops-fed-import');
-  if (!fileEl || !fileEl.files || !fileEl.files.length) { showToast('请先选择利率文件'); return; }
-  if (btn) { btn.disabled = true; btn.textContent = '导入中...'; }
-  try {
-    const fd = new FormData();
-    fd.append('file', fileEl.files[0]);
-    const r = await window.adminImportFed(fd);
-    const d = (r.payload || {});
-    if (!r.ok) showToast(d.error || '导入失败');
-    else showToast('已导入 ' + (d.imported || 0) + ' 条利率数据');
-  } catch (e) { showToast('网络错误'); }
-  finally { if (btn) { btn.disabled = false; btn.textContent = '导入文件'; } opsLoadJobs(); }
-}
-async function opsLoadJobs() {
+function adminPaintOpsJobs(payload) {
   const tb = document.getElementById('ops-jobs-tbody'); if (!tb) return;
-  try {
-    const r = await window.adminFetchJobs(20);
-    if (!r.ok) { tb.innerHTML = '<tr><td colspan="5" class="biz-table-state-cell biz-table-error">加载失败</td></tr>'; return; }
-    const list = (r.payload).list || [];
+  const list = payload.list || [];
     if (!list.length) { tb.innerHTML = '<tr><td colspan="5" class="biz-table-state-cell">暂无任务记录</td></tr>'; return; }
     tb.innerHTML = list.map(function (j) {
       const st = j.status === 'done' ? '<span class="tag tag-ok">成功</span>' : (j.status === 'failed' ? '<span class="tag tag-over">失败</span>' : (j.status === 'running' ? '<span class="tag tag-a">运行中</span>' : '<span class="tag">' + escapeHtml(j.status || '—') + '</span>'));
       return '<tr><td>' + escapeHtml(jobLabel(j.job)) + '</td><td>' + st + '</td><td>' + fmtTime(j.started_at) + '</td><td>' + fmtTime(j.finished_at) + '</td><td class="biz-table-note-cell biz-table-note-cell--320 biz-table-break-all">' + escapeHtml(jobDisplayText(j.detail || '', 500)) + '</td></tr>';
     }).join('');
-  } catch (e) { tb.innerHTML = '<tr><td colspan="5" class="biz-table-state-cell biz-table-error">网络错误</td></tr>'; }
+}
+function adminPaintOpsJobsError(network) {
+  const tb = document.getElementById('ops-jobs-tbody'); if (!tb) return;
+  tb.innerHTML = '<tr><td colspan="5" class="biz-table-state-cell biz-table-error">' + (network ? '网络错误' : '加载失败') + '</td></tr>';
 }
 
 // ====== 大模型配置 ======
@@ -1457,7 +1211,7 @@ function renderAimodels(target) {
     const action = btn.dataset.action;
     if (action === 'edit') openModelForm(id);
     else if (action === 'del') deleteModelConfirm(id);
-    else if (action === 'test') testModel(id, btn);
+    else if (action === 'test') testModel(id);
     else if (action === 'default') setDefaultModel(id);
     else if (action === 'up') moveModel(id, 'up');
     else if (action === 'down') moveModel(id, 'down');
@@ -1473,12 +1227,8 @@ function aimodelStatusHtml(st) {
   return '<div data-style="font-size:12px;line-height:1.5;">' + dot + (st.ok ? '正常' : '异常') + '<div class="u-c-muted">' + time + ' · ' + detail + '</div></div>';
 }
 
-async function loadAimodelsData() {
+function adminPaintAimodels(d) {
   const tb = document.getElementById('aimodels-tbody'); if (!tb) return;
-  try {
-    const r = await window.adminFetchModels();
-    if (!r.ok) { tb.innerHTML = '<tr><td colspan="6" class="biz-table-state-cell biz-table-error">加载失败</td></tr>'; return; }
-    const d = r.payload;
     const list = d.list || [];
     if (!list.length) { tb.innerHTML = '<tr><td colspan="6" class="biz-table-state-cell">暂无模型，点击右上角「新增模型」</td></tr>'; return; }
     const minOrder = Math.min.apply(null, list.map(function (m) { return m.order || 0; }));
@@ -1502,15 +1252,14 @@ async function loadAimodelsData() {
         '</td>' +
       '</tr>';
     }).join('');
-  } catch (e) { tb.innerHTML = '<tr><td colspan="6" class="biz-table-state-cell biz-table-error">网络错误，请重试</td></tr>'; }
 }
-
-// 在全部模型里找出指定 id 的记录（含打码 Key，用于编辑回显；后端遇打码串保留原值）
-function findModel(list, id) {
-  return (list || []).find(function (m) { return m.id === id; }) || null;
+function adminPaintAimodelsError(network) {
+  const tb = document.getElementById('aimodels-tbody'); if (!tb) return;
+  tb.innerHTML = '<tr><td colspan="6" class="biz-table-state-cell biz-table-error">' + (network ? '网络错误，请重试' : '加载失败') + '</td></tr>';
 }
 
 function openModelForm(id) {
+  window.adminInvalidateModelDetail();
   const isEdit = !!id;
   let body = '<input type="hidden" id="model-id" value="' + (isEdit ? escapeHtml(id) : '') + '">' +
     '<div class="form-group"><label>名称（便于区分，如「默认模型」）</label><input id="model-name" placeholder="如 默认模型" class="u-input"></div>' +
@@ -1522,16 +1271,15 @@ function openModelForm(id) {
     '<button class="btn btn-outline" data-act="closeAdminModal">取消</button>' +
     '<button class="btn btn-primary" data-act="submitModel">保存</button>'
   );
-  if (isEdit) {
-  window.adminFetchModels().then(function (r) { return r.ok ? r.payload : null; }).then(function (d) {
-      const m = findModel(d && d.list, id); if (!m) return;
-      const n = document.getElementById('model-name'); if (n) n.value = m.name || '';
-      const md = document.getElementById('model-model'); if (md) md.value = m.model || '';
-      const u = document.getElementById('model-url'); if (u) u.value = m.apiUrl || '';
-      const k = document.getElementById('model-key'); if (k) k.value = m.apiKey || ''; // 打码串回显，留空即不修改
-      const en = document.getElementById('model-enabled'); if (en) en.checked = m.enabled !== false;
-    }).catch(function () {});
-  }
+  if (isEdit) window.adminLoadModelDetail(id);
+}
+function adminPaintModelDetail(m) {
+  const n = document.getElementById('model-name'); if (n) n.value = m.name || '';
+  const md = document.getElementById('model-model'); if (md) md.value = m.model || '';
+  const u = document.getElementById('model-url'); if (u) u.value = m.apiUrl || '';
+  const k = document.getElementById('model-key'); if (k) k.value = m.apiKey || '';
+  const en = document.getElementById('model-enabled'); if (en) en.checked = m.enabled !== false;
+
 }
 
 async function submitModel() {
@@ -1542,17 +1290,7 @@ async function submitModel() {
   const apiUrl = (document.getElementById('model-url').value || '').trim();
   const apiKey = (document.getElementById('model-key').value || '').trim();
   const enabled = document.getElementById('model-enabled').checked;
-  if (!name || !model || !apiUrl) { showToast('名称、模型名、API 地址均必填'); return; }
-  if (!isEdit && !apiKey) { showToast('新增时 API Key 必填'); return; }
-  const url = isEdit ? '/api/admin/models/' + encodeURIComponent(id) : '/api/admin/models';
-  const method = isEdit ? 'PUT' : 'POST';
-  const body = { name: name, model: model, apiUrl: apiUrl, apiKey: apiKey, enabled: enabled };
-  try {
-    const r = await window.adminSaveModelReq(url, method, body);
-    const d = r.payload;
-    if (!r.ok) { showToast(d.error || '保存失败'); return; }
-    showToast('已保存'); closeAdminModal(); loadAimodelsData();
-  } catch (e) { showToast('网络错误'); }
+  return window.adminSubmitModel({ id, isEdit, name, model, apiUrl, apiKey, enabled });
 }
 
 function deleteModelConfirm(id) {
@@ -1561,44 +1299,10 @@ function deleteModelConfirm(id) {
     '<button class="btn btn-danger" data-act="doDeleteModel" data-arg1="' + escapeHtml(id) + '">确认删除</button>'
   );
 }
-async function doDeleteModel(id) {
-  try {
-    const r = await window.adminDelModel(id);
-    const d = r.payload;
-    if (!r.ok) { showToast(d.error || '删除失败'); return; }
-    showToast('已删除'); closeAdminModal(); loadAimodelsData();
-  } catch (e) { showToast('网络错误'); }
-}
-
-async function testModel(id, btn) {
-  if (btn) { btn.disabled = true; btn.textContent = '测试中...'; }
-  try {
-    const r = await window.adminTestModel(id);
-    const d = r.payload;
-    if (!r.ok) { showToast(d.error || '测试失败'); }
-    else if (d.ok) { showToast('测试成功（耗时 ' + (d.ms || 0) + 'ms）'); }
-    else { showToast('测试失败：' + (d.error || '未知错误')); }
-  } catch (e) { showToast('网络错误'); }
-  if (btn) { btn.disabled = false; btn.textContent = '测试'; }
-  loadAimodelsData();
-}
-
-async function setDefaultModel(id) {
-  try {
-    const r = await window.adminSetDefaultModelReq(id);
-    const d = r.payload;
-    if (!r.ok) { showToast(d.error || '操作失败'); return; }
-    showToast('已设为默认模型'); loadAimodelsData();
-  } catch (e) { showToast('网络错误'); }
-}
-
-async function moveModel(id, dir) {
-  try {
-    const r = await window.adminMoveModelReq(id, dir);
-    const d = r.payload;
-    if (!r.ok) { showToast(d.error || '操作失败'); return; }
-    loadAimodelsData();
-  } catch (e) { showToast('网络错误'); }
+function adminSetModelTestBusy(id, busy) {
+  document.querySelectorAll('#aimodels-tbody button[data-action="test"]').forEach(function (button) {
+    if (button.dataset.id === String(id)) { button.disabled = !!busy; button.textContent = busy ? '测试中...' : '测试'; }
+  });
 }
 
 // ====== 知识分享管理 ======
@@ -1640,12 +1344,9 @@ async function ksRenderKsArticles() {
   ksLoadKsArticles('');
 }
 
-async function ksLoadKsArticles(status) {
-  const tbody = document.getElementById('ks-ad-tbody');
+function adminPaintKsArticles(d) {
+  const tbody = document.getElementById('ks-ad-tbody'); if (!tbody) return;
   const count = document.getElementById('ks-ad-count');
-  try {
-    const r = await window.adminFetchKsArticles(status);
-    const d = r.payload;
     if (count) count.textContent = '共 ' + d.total + ' 篇';
   if (!d.list.length) { tbody.innerHTML = '<tr><td colspan="8" class="biz-table-state-cell">暂无文章</td></tr>'; return; }
     tbody.innerHTML = d.list.map(function (a) {
@@ -1669,16 +1370,16 @@ async function ksLoadKsArticles(status) {
         const id = btn.dataset.id, act = btn.dataset.act;
         if (act === 'del') {
           if (!await projectConfirm('确定删除这篇文章？', { title: '删除文章', confirmText: '删除', danger: true })) return;
-          await window.adminDelKsArticle(id);
-          showToast('已删除'); ksLoadKsArticles(document.getElementById('ks-ad-status').value);
+          await window.adminDeleteKsArticle(id);
         } else if (act === 'status') {
-          const next = btn.dataset.cur === 'draft' ? 'published' : 'draft';
-          await window.adminSetKsArticleStatus(id, next);
-          showToast(next === 'published' ? '已发布' : '已撤回'); ksLoadKsArticles(document.getElementById('ks-ad-status').value);
+          await window.adminToggleKsArticleStatus(id, btn.dataset.cur);
         }
       });
     });
-  } catch (e) { tbody.innerHTML = '<tr><td colspan="8" class="biz-table-state-cell biz-table-error">加载失败</td></tr>'; }
+}
+function adminPaintKsArticlesError() {
+  const tbody = document.getElementById('ks-ad-tbody'); if (!tbody) return;
+  tbody.innerHTML = '<tr><td colspan="8" class="biz-table-state-cell biz-table-error">加载失败</td></tr>';
 }
 
 async function ksRenderKsComments() {
@@ -1696,12 +1397,9 @@ async function ksRenderKsComments() {
   ksLoadKsComments('');
 }
 
-async function ksLoadKsComments(articleId) {
-  const tbody = document.getElementById('ks-cm-tbody');
+function adminPaintKsComments(d) {
+  const tbody = document.getElementById('ks-cm-tbody'); if (!tbody) return;
   const count = document.getElementById('ks-cm-count');
-  try {
-    const r = await window.adminFetchKsComments(articleId);
-    const d = r.payload;
     if (count) count.textContent = '共 ' + d.total + ' 条';
   if (!d.list.length) { tbody.innerHTML = '<tr><td colspan="7" class="biz-table-state-cell">暂无评论</td></tr>'; return; }
     tbody.innerHTML = d.list.map(function (c) {
@@ -1719,11 +1417,13 @@ async function ksLoadKsComments(articleId) {
     tbody.querySelectorAll('button[data-id]').forEach(function (btn) {
       btn.addEventListener('click', async function () {
         if (!await projectConfirm('确定删除这条评论？', { title: '删除评论', confirmText: '删除', danger: true })) return;
-        await window.adminDelKsComment(btn.dataset.id);
-        showToast('已删除'); ksLoadKsComments(document.getElementById('ks-cm-article').value.trim());
+        await window.adminDeleteKsComment(btn.dataset.id);
       });
     });
-  } catch (e) { tbody.innerHTML = '<tr><td colspan="7" class="biz-table-state-cell biz-table-error">加载失败</td></tr>'; }
+}
+function adminPaintKsCommentsError() {
+  const tbody = document.getElementById('ks-cm-tbody'); if (!tbody) return;
+  tbody.innerHTML = '<tr><td colspan="7" class="biz-table-state-cell biz-table-error">加载失败</td></tr>';
 }
 
 async function ksRenderKsPermissions() {
@@ -1741,11 +1441,8 @@ async function ksRenderKsPermissions() {
   ksLoadKsPermissions('');
 }
 
-async function ksLoadKsPermissions(search) {
-  const tbody = document.getElementById('ks-per-tbody');
-  try {
-    const r = await window.adminFetchKsUsers(search);
-    const d = r.payload;
+function adminPaintKsPermissions(d) {
+  const tbody = document.getElementById('ks-per-tbody'); if (!tbody) return;
   if (!d.list.length) { tbody.innerHTML = '<tr><td colspan="5" class="biz-table-state-cell">暂无用户</td></tr>'; return; }
     tbody.innerHTML = d.list.map(function (u) {
       const isAdmin = u.role === 'admin';
@@ -1765,13 +1462,13 @@ async function ksLoadKsPermissions(search) {
     }).join('');
     tbody.querySelectorAll('button[data-act="toggle"]').forEach(function (btn) {
       btn.addEventListener('click', async function () {
-        const next = btn.dataset.cur !== '1';
-        await window.adminSetKsUserPerm(btn.dataset.username, next);
-        showToast(next ? '已开启写权限' : '已关闭写权限');
-        ksLoadKsPermissions(document.getElementById('ks-per-search').value.trim());
+        await window.adminToggleKsUserPermission(btn.dataset.username, btn.dataset.cur);
       });
     });
-  } catch (e) { tbody.innerHTML = '<tr><td colspan="5" class="biz-table-state-cell biz-table-error">加载失败</td></tr>'; }
+}
+function adminPaintKsPermissionsError() {
+  const tbody = document.getElementById('ks-per-tbody'); if (!tbody) return;
+  tbody.innerHTML = '<tr><td colspan="5" class="biz-table-state-cell biz-table-error">加载失败</td></tr>';
 }
 
 // ====== 套利审核 ======
@@ -1789,13 +1486,8 @@ async function renderArbitrage() {
   loadArbCandidates();
 }
 
-async function loadArbCandidates() {
-  const tb = document.getElementById('arb-admin-tbody');
-  if (!tb) return;
-  try {
-    const r = await window.adminFetchArbCandidates();
-    if (!r.ok) throw new Error('HTTP ' + r.status);
-    const d = r.payload;
+function adminPaintArbCandidates(d) {
+  const tb = document.getElementById('arb-admin-tbody'); if (!tb) return;
     const meta = document.getElementById('arb-admin-meta');
     if (meta) meta.textContent = '共 ' + (d.total || 0) + ' 条事件';
     if (!d.rows || !d.rows.length) {
@@ -1806,10 +1498,10 @@ async function loadArbCandidates() {
       return '<tr>' +
         '<td>' + c.case_id + '</td>' +
         '<td>' + (c.market || '') + '</td>' +
-        '<td>' + esc(c.strategy_type || '') + '</td>' +
-        '<td>' + esc(c.canonical_code || '') + ' ' + esc(c.name || '') + '</td>' +
-        '<td>' + esc(c.event_status || '') + '</td>' +
-        '<td>' + esc(c.review_status || '') + '</td>' +
+        '<td>' + escapeHtml(c.strategy_type || '') + '</td>' +
+        '<td>' + escapeHtml(c.canonical_code || '') + ' ' + escapeHtml(c.name || '') + '</td>' +
+        '<td>' + escapeHtml(c.event_status || '') + '</td>' +
+        '<td>' + escapeHtml(c.review_status || '') + '</td>' +
         '<td>' + (c.announced_at ? String(c.announced_at).slice(0, 10) : '') + '</td>' +
         '<td>' +
           '<button class="btn btn-sm btn-success" data-act="adminArbReview" data-arg1="' + c.case_id + '" data-arg2="approved">通过</button> ' +
@@ -1818,67 +1510,34 @@ async function loadArbCandidates() {
         '</td>' +
       '</tr>';
     }).join('');
-  } catch (e) {
-    tb.innerHTML = '<tr><td colspan="8" class="biz-table-state-cell biz-table-error">加载失败: ' + esc(e.message) + '</td></tr>';
-  }
+}
+function adminPaintArbCandidatesError(error) {
+  const tb = document.getElementById('arb-admin-tbody'); if (!tb) return;
+  tb.innerHTML = '<tr><td colspan="8" class="biz-table-state-cell biz-table-error">加载失败: ' + escapeHtml(error.message) + '</td></tr>';
 }
 
-async function adminArbReview(caseId, status) {
-  try {
-    const r = await window.adminPatchArbCase(caseId, status);
-    if (!r.ok) throw new Error('HTTP ' + r.status);
-    showToast(status === 'approved' ? '已通过审核' : '已驳回');
-    loadArbCandidates();
-  } catch (e) {
-    showToast('操作失败: ' + e.message);
-  }
-}
-
-async function adminArbDetail(caseId) {
-  try {
-    const r = await window.adminFetchArbCase(caseId);
-    if (!r.ok) throw new Error('HTTP ' + r.status);
-    const d = r.payload;
+function adminPaintArbDetail(caseId, d) {
     var docs = (d.documents || []).map(function (doc) {
       return '<div data-style="padding:4px 0;border-bottom:1px solid #eee;font-size:13px;">' +
         '<span class="u-c-dim">' + (doc.announced_at ? String(doc.announced_at).slice(0, 10) : '') + '</span> ' +
-        esc(doc.title || '') + '</div>';
+        escapeHtml(doc.title || '') + '</div>';
     }).join('');
     openAdminModal('套利事件 #' + caseId,
       '<div data-style="max-height:400px;overflow-y:auto;">' +
-      '<p><b>证券:</b> ' + esc(d.canonical_code || '') + ' ' + esc(d.name || '') + '</p>' +
-      '<p><b>类型:</b> ' + esc(d.strategy_type || '') + '</p>' +
-      '<p><b>状态:</b> ' + esc(d.event_status || '') + ' / ' + esc(d.review_status || '') + '</p>' +
-      '<p><b>描述:</b> ' + esc(d.description || '') + '</p>' +
+      '<p><b>证券:</b> ' + escapeHtml(d.canonical_code || '') + ' ' + escapeHtml(d.name || '') + '</p>' +
+      '<p><b>类型:</b> ' + escapeHtml(d.strategy_type || '') + '</p>' +
+      '<p><b>状态:</b> ' + escapeHtml(d.event_status || '') + ' / ' + escapeHtml(d.review_status || '') + '</p>' +
+      '<p><b>描述:</b> ' + escapeHtml(d.description || '') + '</p>' +
       '<h4 data-style="margin:12px 0 4px;">公告链</h4>' + (docs || '<p class="u-c-muted">无</p>') +
       '</div>',
       '<button class="btn btn-sm btn-primary" data-act="openArbEditForm" data-arg1="' + caseId + '">编辑条款</button>' +
       '<button class="btn btn-sm btn-ghost" data-act="closeAdminModal">关闭</button>'
     );
-  } catch (e) {
-    showToast('加载失败: ' + e.message);
-  }
 }
 
-async function adminArbSync() {
-  try {
-    const r = await window.adminPostArbSync();
-    if (!r.ok) throw new Error('HTTP ' + r.status);
-    const d = r.payload;
-    showToast(d.message || '同步已启动');
-  } catch (e) {
-    showToast('同步失败: ' + e.message);
-  }
-}
 
 // 编辑套利事件条款（证券 / 价格 / 比例 / 日期），保存时 PATCH 到后端
-async function openArbEditForm(caseId) {
-  let d;
-  try {
-    const r = await window.adminFetchArbCase(caseId);
-    if (!r.ok) throw new Error('HTTP ' + r.status);
-    d = r.payload;
-  } catch (e) { showToast('加载失败: ' + e.message); return; }
+function adminPaintArbEditForm(caseId, d) {
   const v = function (x) { return x == null ? '' : x; };
   const g = function (label, id, type, step) {
     const t = type || 'text';
@@ -1966,14 +1625,7 @@ async function submitArbEdit(caseId) {
     listing_date: dateOrNull('arb-edit-listing_date'),
     description: strOrNull('arb-edit-description'),
   };
-  try {
-    const r = await window.adminPatchArbEdit(caseId, body);
-    const d = r.payload;
-    if (!r.ok) { showToast(d.error || '保存失败'); return; }
-    showToast('条款已保存');
-    closeAdminModal();
-    loadArbCandidates();
-  } catch (e) { showToast('网络错误'); }
+  return window.adminSubmitArbEdit(caseId, body);
 }
 
 // ====== 启动 ======

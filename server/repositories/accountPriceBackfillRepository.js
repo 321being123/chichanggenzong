@@ -27,4 +27,47 @@ async function selectPositionCodesMissingPrice(params, client = pool) {
   return { rows };
 }
 
-module.exports = { selectPositionCodesMissingPrice };
+// 该账户是否已有持仓基准快照（净值续链需要「某日持有哪些股」这一事实）。
+async function countPositionSnapshots(params, client = pool) {
+  const [username, accountName] = params;
+  const { rows } = await client.query(
+    'SELECT count(*)::int AS n FROM nav_position_snapshots WHERE username=$1 AND account_name=$2',
+    [username, accountName]
+  );
+  return (rows[0] && rows[0].n) || 0;
+}
+
+// 按当前持仓写一条持仓基准快照：价格优先用当日账户价格、缺失回退持仓价，港股按当日汇率折算。
+// 用 gen_random_uuid 生成 snapshot_id，与 system_daily_price 快照同结构。
+async function insertBasisSnapshotsFromPositions(params, client = pool) {
+  const [username, accountName, date] = params;
+  return client.query(
+    `INSERT INTO nav_position_snapshots(snapshot_id, username, account_name, snapshot_date, instrument_code,
+                                        quantity, price, quote_currency, fx_rate_to_cny, market_value_cny, source, account_id)
+     SELECT gen_random_uuid()::text, p.username, p.account_name, $3::date, p.code, p.quantity,
+            px.price,
+            CASE WHEN coalesce(p.subtype,'') LIKE '%港股%' THEN 'HKD' ELSE 'CNY' END,
+            CASE WHEN coalesce(p.subtype,'') LIKE '%港股%' THEN fx.rate ELSE 1 END,
+            round(p.quantity * px.price * (CASE WHEN coalesce(p.subtype,'') LIKE '%港股%' THEN fx.rate ELSE 1 END), 2),
+            'manual_reconciliation', p.account_id
+       FROM positions p
+       CROSS JOIN LATERAL (
+         SELECT (SELECT rate::float8 FROM market.fx_rates
+                  WHERE base_currency='HKD' AND quote_currency='CNY' AND rate_date <= $3::date
+                  ORDER BY rate_date DESC, fetched_at DESC LIMIT 1) AS rate
+       ) fx
+       CROSS JOIN LATERAL (
+         SELECT coalesce(
+                  (SELECT d.price::float8 FROM daily_prices d
+                    WHERE d.username=p.username AND d.account_name=p.account_name
+                      AND d.code=p.code AND d.date::text=$3 ORDER BY d.date DESC LIMIT 1),
+                  p.price::float8) AS price
+       ) px
+      WHERE p.username=$1 AND p.account_name=$2 AND p.quantity > 0
+        AND px.price > 0
+        AND NOT (coalesce(p.subtype,'') LIKE '%港股%' AND fx.rate IS NULL)`,
+    [username, accountName, date]
+  );
+}
+
+module.exports = { selectPositionCodesMissingPrice, countPositionSnapshots, insertBasisSnapshotsFromPositions };

@@ -388,8 +388,13 @@ async function doImportSnapshot(username, accountName, body) {
   const currentVersion = await accountsRepository.readAccountVersion({ username, accountName });
   try {
     const r = await saveAccountData(username, accountName, body, currentVersion, null, null);
-    // 导入/保存后异步补当日行情：当天新导入的持仓没有当日价格会让净值算不出来。
-    // 不等待、不影响保存结果，失败只记日志。
+    // 导入后先补「持仓基准快照」（净值续链的锚点，两条 SQL 很快，失败不影响保存结果）；
+    // 再异步补当日/区间行情——当天新导入的持仓没有当日价格会让净值算不出来。
+    try {
+      await require('../services/accountPositionBasis').ensurePositionBasis(username, accountName);
+    } catch (error) {
+      console.error('[accounts] 导入后补持仓基准快照失败:', error && error.message);
+    }
     require('../services/accountPriceBackfill').backfillMissingTodayPrices(username, accountName)
       .catch(error => console.error('[accounts] 导入后补当日行情失败:', error && error.message));
     return {

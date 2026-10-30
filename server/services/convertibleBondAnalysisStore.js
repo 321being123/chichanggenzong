@@ -1,6 +1,8 @@
 // 数据读写与 Python 提取器
 // R-10 拆分自 ./convertibleBondAnalysis.js（2026-10-21）：本文件只放数据读写与 Python 提取器；对外入口仍是 ./convertibleBondAnalysis.js。
 const { pool, tryClaimJob, releaseJob, startJobRun, finishJobRun } = require('../db');
+// 文档选择纯判定已下沉到 domain 层（2026-10-30 S5 提取），本文件保留数据读写职责并继续转出同名函数。
+const { reportPeriod, isFullReport, latestFullReport, latestProspectus } = require('../domain/convertibleBondAnalysisRules');
 const { tushareQuery } = require('./tushare');
 const { tsRows, tsDateStr } = require('./tushareFormat');
 const { fetchTencentQuotes, describeTencentCode } = require('./tencentQuote');
@@ -407,23 +409,6 @@ async function saveFundHolding(client, instrumentId, rows, sourceId) {
   );
 }
 
-function reportPeriod(title) {
-  const match = String(title || '').match(/(20\d{2})\s*年\s*(半年度|年度)报告/);
-  if (!match) return null;
-  return `${match[1]}-${match[2] === '半年度' ? '06-30' : '12-31'}`;
-}
-
-function isFullReport(event) {
-  return Boolean(reportPeriod(event.title) && event.url && !/摘要|英文|取消/.test(String(event.title || '')) &&
-    /20\d{2}年(?:半年度|年度)报告(?:全文)?(?:[（(](?:修订|更新|更正)(?:版|稿|后)?[）)])?$/.test(String(event.title || '').replace(/\s+/g, '')));
-}
-
-function latestFullReport(events) {
-  return (events || []).filter(isFullReport)
-    .sort((a, b) => reportPeriod(b.title).localeCompare(reportPeriod(a.title)) ||
-      String(isoDate(b.event_date || b.announced_at) || '').localeCompare(String(isoDate(a.event_date || a.announced_at) || '')))[0] || null;
-}
-
 function pythonCandidates() {
   const root = path.resolve(__dirname, '..', '..');
   const venvs = process.platform === 'win32'
@@ -588,18 +573,6 @@ async function saveReportFundHolding(client, instrumentId, holding, sourceId) {
     [instrumentId, holding.report_date, holding.fund_count, holding.holding_quantity, holding.holding_market_value,
       holding.remain_size_ratio, sourceId, JSON.stringify(holding)]
   );
-}
-
-function latestProspectus(events, { allowGeneric = false, preferUrl = null } = {}) {
-  const correctionRank = event => (/更正版|修订版|更新版|更正后/.test(String(event.title || '')) ? 0 : 1);
-  const candidates = (events || [])
-    .filter(event => (/(?:可转换公司债(?:券)?|可转债).{0,20}募集说明书/.test(String(event.title || ''))
-      || allowGeneric && /募集说明书/.test(String(event.title || '')) && !/发行.*股票|公司债券(?!.*可转换)/.test(event.title)) && event.url
-      && !/摘要|申报稿|上会稿|反馈|补充法律意见|更正公告|提示(?:性)?公告/.test(event.title));
-  // 同一发行常有旧版/更正版同名文件：已核验文件优先保留，未绑定时按 日期新→更正版→网址 确定性择优，禁止随机换绑。
-  const preferred = preferUrl ? candidates.find(event => event.url === preferUrl) : null;
-  return preferred || candidates.sort((a, b) => String(b.event_date).localeCompare(String(a.event_date))
-    || correctionRank(a) - correctionRank(b) || String(a.url).localeCompare(String(b.url)))[0] || null;
 }
 
 function runProspectusExtractor(executable, url) {

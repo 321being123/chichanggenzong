@@ -28,7 +28,7 @@ const STOCK_STATUS_FIELDS = 'ts_code,symbol,name,area,industry,market,exchange,l
 
 const FORMULA_VERSION = '4';
 
-const CN_OFFSET_MS = 8 * 3600 * 1000;
+const { CN_OFFSET_MS, isoDate } = require('../domain/convertibleBondAnalysisRules');
 
 const ANNOUNCEMENT_OVERLAP_DAYS = 3;
 
@@ -85,15 +85,6 @@ function normalizePriceChanges(rows) {
 function yuanToHundredMillion(value) {
   const number = finite(value);
   return number == null ? null : number / 100000000;
-}
-
-function isoDate(value) {
-  if (value instanceof Date && !Number.isNaN(value.getTime())) {
-    const cn = new Date(value.getTime() + CN_OFFSET_MS);
-    return `${cn.getUTCFullYear()}-${String(cn.getUTCMonth()+1).padStart(2,'0')}-${String(cn.getUTCDate()).padStart(2,'0')}`;
-  }
-  const text = String(value || '').replace(/-/g, '').slice(0, 8);
-  return /^\d{8}$/.test(text) ? `${text.slice(0,4)}-${text.slice(4,6)}-${text.slice(6,8)}` : null;
 }
 
 function normalizeBondCode(value) {

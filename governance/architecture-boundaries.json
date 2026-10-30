@@ -1559,6 +1559,20 @@
       "batch": 4,
       "status": "registered",
       "note": "管理后台视图：DOM/渲染/交互；全部站内请求已迁 admin-presenter"
+    },
+    {
+      "path": "server/services/accountPriceBackfill.js",
+      "role": "application",
+      "batch": 2,
+      "status": "registered",
+      "note": "导入后区间补行情：缺口查询走仓储，采集复用原回放路径，无 SQL/HTTP 直连"
+    },
+    {
+      "path": "server/services/accountPositionBasis.js",
+      "role": "application",
+      "batch": 2,
+      "status": "registered",
+      "note": "导入后补持仓基准快照：判定与写入均经仓储，无 SQL/HTTP 直连"
     }
   ],
   "globalContracts": {

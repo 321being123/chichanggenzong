@@ -469,11 +469,11 @@
       "note": "批次1中立入口与适配边界"
     },
     {
-      "path": "server/services/lixinger.js",
+      "path": "server/services/lixingerOfficial.js",
       "role": "data_adapter",
       "batch": 1,
       "status": "registered",
-      "note": "批次1中立入口与适配边界"
+      "note": "理杏仁官方开放平台唯一外采入口：协议、Guard、原始留证；接口白名单在 dataAccess/lixingerCatalog"
     },
     {
       "path": "server/services/tencentQuote.js",

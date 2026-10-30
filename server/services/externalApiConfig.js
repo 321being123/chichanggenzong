@@ -12,9 +12,6 @@ const PROVIDERS = {
     label: 'Tushare Pro',
     env: { primary: 'TUSHARE_TOKEN', backup: 'TUSHARE_BACKUP_TOKEN' },
   },
-  geoscope_lixinger: {
-    label: 'GeoScope／理杏仁', env: { primary: 'GEOSCOPE_API_KEY' }, envOnly: true,
-  },
 };
 
 function normalizeMode(value) {
@@ -236,19 +233,6 @@ async function testProviderAvailability(provider = 'tushare', role = 'current', 
         api_name: requestedApi,
       };
     }
-  } else if (provider === 'geoscope_lixinger') {
-    try {
-      const extracted = await require('./lixinger').extractLixingerData('cn/company', { stockCodes: ['600519'] });
-      const fields = ['stockCode', 'name', 'exchange', 'fsTableType'];
-      result = { ok: true, status: 'available', provider, role: targetRole, api_name: requestedApi,
-        message: extracted.cached ? '读取已落库样本成功（缓存命中，未请求上游）' : '连接成功，样本已落库',
-        checked_at: checkedAt, latency_ms: Date.now() - Date.parse(checkedAt), data_count: extracted.rows.length,
-        returned_data: normalizeReturnedData({ fields, items: extracted.rows.map(row => fields.map(field => row[field])) }) };
-    } catch (error) {
-      result = { ok: false, status: error.code === 'NOT_CONFIGURED' ? 'not_configured' : probeStatus(error), provider,
-        role: targetRole, api_name: requestedApi, message: safeTestMessage(error.message, token), checked_at: checkedAt,
-        latency_ms: Date.now() - Date.parse(checkedAt), data_count: null };
-    }
   } else {
     result = {
       ok: false,
@@ -297,7 +281,6 @@ async function getExternalApiSettings() {
 
 async function saveProviderSettings(provider, input = {}) {
   if (!PROVIDERS[provider]) throw new Error('不支持的外部 API');
-  if (PROVIDERS[provider].envOnly) throw new Error('理杏仁密钥只允许在 .env 的 GEOSCOPE_API_KEY 配置');
   const store = await readStore();
   store.providers = store.providers || {};
   const current = store.providers[provider] || {};

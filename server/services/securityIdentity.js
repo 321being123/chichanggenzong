@@ -223,12 +223,12 @@ function deriveProviderIdentifier(canonicalCode, sourceCode, identifierType) {
   if (!match) return null;
   const bare = match[1];
   const exchange = match[2].toUpperCase();
-  if (source === 'geoscope_lixinger' && type === 'stock_code' && ['SH', 'SZ', 'BJ'].includes(exchange)) return bare;
   if (source === 'tencent' && type === 'quote_symbol') {
     const { describeTencentCode } = require('./tencentQuote');
     return describeTencentCode(canonical)?.symbol || null;
   }
   if (source === 'eastmoney' && type === 'f10_code') return `${exchange}${bare}`;
+  if (source === 'lixinger_official' && type === 'stock_code' && ['SH', 'SZ', 'BJ'].includes(exchange)) return bare;
   if (source === 'eastmoney' && type === 'guba_code') return bare;
   if (source === 'sina' && type === 'symbol') return `${exchange.toLowerCase()}${bare}`;
   if (source === 'xueqiu' && type === 'symbol') return `${exchange}${bare}`;

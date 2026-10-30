@@ -51,7 +51,35 @@ async function fetchRequired(apiName, params, fields) {
   return tsRows(data);
 }
 
+// 行业分类：理杏仁官方（申万2021）优先，Tushare 作为已验证备源，都取不到就保留上一轮结论。
+// 官方接口一次返回 sw/sw_2021/cni 多套体系，选体系与判级由 domain/lixingerIndustry 负责；
+// 层级歧义直接返回 null，不猜分类。
+const INDUSTRY_CACHE_MS = 7 * 86400000;
+
+async function fetchOfficialIndustry(tsCode) {
+  if (!process.env.LIXINGER_TOKEN) return null;
+  try {
+    const { resolveProviderIdentifier } = require('./securityIdentity');
+    const stockCode = await resolveProviderIdentifier({
+      canonicalCode: tsCode, sourceCode: 'lixinger_official', identifierType: 'stock_code',
+    });
+    if (!stockCode) return null;
+    const { callEndpoint } = require('./lixingerOfficial');
+    const { selectIndustryPath } = require('../domain/lixingerIndustry');
+    const result = await callEndpoint('cn/company/industries', { stockCode },
+      { dataset: 'stock_analysis_industry', maxAgeMs: INDUSTRY_CACHE_MS });
+    return selectIndustryPath(result.rows, { system: 'sw_2021', areaCode: 'cn' });
+  } catch (error) {
+    // 行业缺失不阻塞股票分析主流程，但必须留下可诊断痕迹，不静默吞掉。
+    if (['JOB_BUDGET_EXCEEDED', 'POLICY_NOT_CONFIGURED', 'DATASET_LOCKED'].includes(error.code)) throw error;
+    console.warn(`理杏仁行业分类不可用，回退 Tushare：${String(error.message).slice(0, 160)}`);
+    return null;
+  }
+}
+
 async function fetchIndustry(tsCode) {
+  const official = await fetchOfficialIndustry(tsCode);
+  if (official) return official;
   try {
     const rows = await fetchRequired('index_member_all', { ts_code: tsCode, is_new: 'Y' }, 'ts_code,l1_code,l1_name,l2_code,l2_name,l3_code,l3_name,is_new');
     const row = rows.find(item => item.l3_name) || rows[0];
@@ -59,10 +87,7 @@ async function fetchIndustry(tsCode) {
   } catch (error) {
     if (error.code === 'JOB_BUDGET_EXCEEDED') throw error;
   }
-  if (!process.env.GEOSCOPE_API_KEY) return null;
-  try {
-    return await require('./lixinger').fetchLixingerIndustry(tsCode);
-  } catch (_) { return null; }
+  return null;
 }
 
 function ranges(startDate, endDate, years = 8) {

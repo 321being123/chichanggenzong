@@ -16,6 +16,26 @@ const INDEX_BACKFILL_DEFS = [
   { name: '恒生指数', src: 'tencent' } // 恒生无 Tushare 权限，沿用腾讯策略
 ];
 
+// 指数日线取数：理杏仁官方优先，取不到再回退 Tushare。
+// 官方 `cn/index/candlestick` 只返回日期与收盘价序列，正好是 index_history 需要的形状；
+// 中证全指(000985.CSI)不在官方 A股指数代码范围，走原有 Tushare 路径。
+async function fetchIndexCloseSeries(def, startTs, endTs) {
+  if (def.src === 'tushare') {
+    try {
+      const { resolveIndexDaily } = require('../services/lixingerDatasetSources');
+      const series = await resolveIndexDaily({ tsCode: def.ts, startDate: startTs, endDate: endTs });
+      if (series && series.length) return series;
+    } catch (error) {
+      if (['JOB_BUDGET_EXCEEDED', 'POLICY_NOT_CONFIGURED', 'DATASET_LOCKED'].includes(error.code)) throw error;
+      console.warn(`理杏仁指数不可用，回退 Tushare：${String(error.message).slice(0, 160)}`);
+    }
+    const rows = await tushareQuery('index_daily', { ts_code: def.ts, start_date: startTs, end_date: endTs }, 'trade_date,close');
+    if (rows) return tsRows(rows).map(function (r) { return { date: normDate(r.trade_date), close: parseFloat(r.close) }; }).filter(function (p) { return p.date && !isNaN(p.close) && p.close > 0; });
+    return [];
+  }
+  return fetchHsiHistory(startTs, endTs);
+}
+
 function chinaDateText(value = new Date()) {
   const parts = new Intl.DateTimeFormat('en-CA', {
     timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit'
@@ -88,13 +108,7 @@ async function ensureIndexBaseline(options) {
         const minR = await repository.select_index_history([acc.username, acc.account_name, def.name]);
         const minD = minR.rows[0] && minR.rows[0].d ? String(minR.rows[0].d) : null;
         if (minD && minD <= baseline) continue;
-        let series = [];
-        if (def.src === 'tushare') {
-          const rows = await tushareQuery('index_daily', { ts_code: def.ts, start_date: startTs, end_date: endTs }, 'trade_date,close');
-          if (rows) series = tsRows(rows).map(function (r) { return { date: normDate(r.trade_date), close: parseFloat(r.close) }; }).filter(function (p) { return p.date && !isNaN(p.close) && p.close > 0; });
-        } else {
-          series = await fetchHsiHistory(baseline, endDash);
-        }
+        const series = await fetchIndexCloseSeries(def, startTs, endTs);
         // 取到了数据但最早日并未早于已有最早日 → 说明数据源最早只能拉到这，记录以避免重复拉取
         if (series.length) {
           const earliest = series.reduce(function (a, b) { return a.date < b.date ? a : b; }).date;
@@ -160,13 +174,7 @@ async function ensureIndexRecent(days) {
     for (const acc of accs.rows) {
       const points = [];
       for (const def of INDEX_BACKFILL_DEFS) {
-        let series = [];
-        if (def.src === 'tushare') {
-          const rows = await tushareQuery('index_daily', { ts_code: def.ts, start_date: startTs, end_date: endTs }, 'trade_date,close');
-          if (rows) series = tsRows(rows).map(function (r) { return { date: normDate(r.trade_date), close: parseFloat(r.close) }; }).filter(function (p) { return p.date && !isNaN(p.close) && p.close > 0; });
-        } else {
-          series = await fetchHsiHistory(startDash, endDash);
-        }
+        const series = await fetchIndexCloseSeries(def, startTs, endTs);
         series.forEach(function (p) { points.push({ date: p.date, name: def.name, close: p.close }); });
       }
       if (points.length) {

@@ -47,7 +47,18 @@ const REPORT_METRICS = {
     n_cashflow_act: 'cfs.ncffoa',
     c_pay_acq_const_fiolta: 'cfs.cpfpfiaolta',
   },
+  // 指标表：官方比率是小数（m.roe 0.1784 = 17.84%），落库口径是百分数点 → ×100。
+  // 利息保障倍数官方没有对应指标，留空（不使用推导值冒充供应商口径）。
+  indicator: {
+    profit_dedt: 'ps.npadnrpatoshaopc',
+    roe: 'm.roe',
+    roa: 'm.roa',
+    interestdebt: 'bs.lwi',
+  },
 };
+
+// 需要小数 → 百分数点换算的指标字段。
+const PERCENT_FIELDS = new Set(['roe', 'roa']);
 
 // 官方分红状态 → 现有 div_proc 口径。
 const DIVIDEND_STATUS = {
@@ -92,7 +103,9 @@ function flattenMetrics(node, prefix = '', out = {}) {
 }
 
 function stockCodeOf(tsCode) {
-  const match = String(tsCode || '').match(/^(\d{5,6})\.(SH|SZ|BJ)$/i);
+  const text = String(tsCode || '').trim();
+  if (/^\d{6}$/.test(text)) return text;
+  const match = text.match(/^(\d{5,6})\.(SH|SZ|BJ|CSI)$/i);
   return match ? match[1] : null;
 }
 
@@ -143,7 +156,7 @@ async function resolveValuationRows({ codes = [], tradeDate, options = {} } = {}
 }
 
 // 财务三表：官方 cn/company/fs/non_financial。指标表（ROE/ROA 等）口径与 Tushare 不同，不在此映射。
-async function resolveFinancialReports({ tsCode, startDate, endDate, kinds = ['income', 'balance', 'cashflow'], options = {} } = {}) {
+async function resolveFinancialReports({ tsCode, startDate, endDate, kinds = ['income', 'balance', 'cashflow', 'indicator'], options = {} } = {}) {
   const code = stockCodeOf(tsCode);
   const start = dashDate(startDate), end = dashDate(endDate);
   if (!code || !start || !end) return null;
@@ -155,7 +168,7 @@ async function resolveFinancialReports({ tsCode, startDate, endDate, kinds = ['i
   const result = await callEndpoint('cn/company/fs/non_financial', {
     stockCodes: [code], startDate: start, endDate: end, metricsList: metrics,
   }, { dataset: 'stock_financial_reports', targetDate: end, ...options });
-  const out = { income: [], balance: [], cashflow: [] };
+  const out = { income: [], balance: [], cashflow: [], indicator: [] };
   for (const item of result.rows) {
     const flat = flattenMetrics(item.q || {});
     const periodEnd = isoDate(item.standardDate) || isoDate(item.date);
@@ -175,7 +188,8 @@ async function resolveFinancialReports({ tsCode, startDate, endDate, kinds = ['i
       const row = { ...base };
       let filled = 0;
       for (const [field, official] of Object.entries(REPORT_METRICS[kind] || {})) {
-        const value = numberOrNull(flat[`${official}.t`]);
+        const raw = numberOrNull(flat[`${official}.t`]);
+        const value = raw !== null && PERCENT_FIELDS.has(field) ? raw * 100 : raw;
         row[field] = value;
         if (value !== null) filled += 1;
       }

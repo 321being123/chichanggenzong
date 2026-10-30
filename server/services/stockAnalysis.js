@@ -162,12 +162,43 @@ async function refreshDividends(tsCode, today) {
   const scope = datasetScope('stock', tsCode);
   const cursors = await getDatasetCursors(scope, ['stock_dividend']);
   if (isDatasetFresh(cursors.get('stock_dividend'), 'stock_dividend')) return;
-  const rows = tsRows(await tushareQuery('dividend', { ts_code: tsCode },
+  // 分红：理杏仁官方优先（cn/company/dividend），取不到回退 Tushare。
+  let rows = null;
+  if (process.env.LIXINGER_TOKEN) {
+    try {
+      const { resolveDividendRows } = require('./lixingerDatasetSources');
+      const meta0 = await stockAnalysisRepository.readInstrumentMeta({ tsCode });
+      const startDate = (meta0 && meta0.list_date) || '2000-01-01';
+      const official = await resolveDividendRows({ tsCode, startDate, endDate: today });
+      if (official && official.length) rows = official;
+    } catch (error) {
+      if (['JOB_BUDGET_EXCEEDED', 'POLICY_NOT_CONFIGURED', 'DATASET_LOCKED'].includes(error.code)) throw error;
+      console.warn(`理杏仁分红不可用，回退 Tushare：${String(error.message).slice(0, 160)}`);
+    }
+  }
+  const officialUsed = Boolean(rows);
+  if (!rows) rows = tsRows(await tushareQuery('dividend', { ts_code: tsCode },
     'ts_code,end_date,ann_date,div_proc,stk_div,stk_bo_rate,stk_co_rate,cash_div,cash_div_tax,record_date,ex_date,pay_date,imp_ann_date,base_date,base_share', { allowEmpty: true }));
   if (rows.length >= 2000 || rows.some(row => row.ts_code !== tsCode)) throw new Error('分红历史响应不完整或证券身份不一致，保留旧数据');
   const meta = await stockAnalysisRepository.readInstrumentMeta({ tsCode });
   if (!meta) throw new Error('缺少分红采集对应的证券档案');
   await persistCollectedData({ ...meta.raw_data, ts_code: tsCode, name: meta.name, market: meta.market, list_date: meta.list_date }, { dividends: rows });
+  // 官方行另外写进标准分红事实，来源记 lixinger_official；现金收益按「公告原文 > 理杏仁 > 其他」择一，不会重复计息。
+  if (officialUsed) {
+    try {
+      const { syncOfficialDividends } = require('../repositories/stockProjectionRepository');
+      const { pool } = require('../db/connection');
+      const [inst, source] = await Promise.all([
+        pool.query('SELECT instrument_id FROM core.instruments WHERE canonical_code=$1', [tsCode]),
+        pool.query("SELECT source_id FROM ops.data_sources WHERE source_code='lixinger_official'"),
+      ]);
+      if (inst.rows[0] && source.rows[0]) {
+        await syncOfficialDividends(pool, inst.rows[0].instrument_id, source.rows[0].source_id, rows);
+      }
+    } catch (error) {
+      console.warn(`理杏仁分红事实写入失败（不影响主流程）：${String(error.message).slice(0, 160)}`);
+    }
+  }
   await markDatasetSuccess(scope, 'stock_dividend', { lastSuccessDate: isoDate(today) });
 }
 

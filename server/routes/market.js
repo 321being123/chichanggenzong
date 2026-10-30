@@ -109,6 +109,14 @@ router.get('/kline', requireLogin, asyncHandler(async (req, res) => {
       const end = tsDateStr(new Date());
       const dt = new Date(); dt.setDate(dt.getDate() - daysN);
       const start = tsDateStr(dt);
+      // 理杏仁官方优先：指数 K 线只取收盘价序列，与页面需要一致；取不到再回退 Tushare。
+      try {
+        const { resolveIndexDaily } = require('../services/lixingerDatasetSources');
+        const official = await resolveIndexDaily({ tsCode, startDate: start, endDate: end });
+        if (official && official.length) return res.json(official);
+      } catch (error) {
+        console.warn(`理杏仁指数K线不可用，回退 Tushare：${String(error.message).slice(0, 160)}`);
+      }
       const data = await tushareQuery('index_daily', { ts_code: tsCode, start_date: start, end_date: end }, 'trade_date,close');
       const rows = tsRows(data).map(r => ({ date: normDate(r.trade_date), close: parseFloat(r.close) }))
         .filter(r => r.date && !isNaN(r.close) && r.close > 0);

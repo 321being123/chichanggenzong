@@ -206,9 +206,9 @@ async function fetchCompanyReports(target, options = {}) {
     const apiName = preferVip ? spec.vipApi : spec.api;
     try {
       const params = requestParams(spec, target, options);
-      // 理杏仁官方优先（三表）：官方按报告期返回累计值，与 Tushare 同口径，已用 600519 对过真值。
-      // 指标表（ROE/ROA 等）官方口径不同，不在此切换。
-      if (!options.query && ['income', 'balance', 'cashflow'].includes(kind) && process.env.LIXINGER_TOKEN) {
+      // 理杏仁官方优先（三表 + 指标表）：官方按报告期返回累计值，与 Tushare 同口径，已用 600519 对过真值。
+      // 指标表 ROE/ROA 按小数→百分数点换算；利息保障倍数官方无对应指标，留空。
+      if (!options.query && ['income', 'balance', 'cashflow', 'indicator'].includes(kind) && process.env.LIXINGER_TOKEN) {
         try {
           const { resolveFinancialReports } = require('./lixingerDatasetSources');
           const official = await resolveFinancialReports({

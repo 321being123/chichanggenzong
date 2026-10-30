@@ -27,7 +27,7 @@ async function backfillMissingTodayPrices(username, accountName, options = {}) {
   const today = options.today || todayShanghai(options.now);
   const fromDate = options.fromDate || shiftDays(today, -LOOKBACK_DAYS);
   const limit = Number(options.limit) > 0 ? Math.min(Number(options.limit), MAX_CODES) : MAX_CODES;
-  const { rows } = await repository.selectPositionCodesMissingPrice([username, accountName, fromDate, limit]);
+  const { rows } = await repository.selectPositionCodesMissingPrice([username, accountName, fromDate, limit, today]);
   if (!rows.length) return { checked: 0, filled: 0, today, fromDate };
   const backfill = options.backfill || require('../jobs/replayNav').backfillDailyPrices;
   const failed = [];

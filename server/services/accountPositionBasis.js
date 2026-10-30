@@ -10,7 +10,14 @@ async function ensurePositionBasis(username, accountName, options = {}) {
   const existing = await repository.countPositionSnapshots([username, accountName]);
   if (existing > 0) return { created: 0, reason: 'already_has_snapshots', existing };
   const result = await repository.insertBasisSnapshotsFromPositions([username, accountName, date]);
-  return { created: result.rowCount || 0, date };
+  const created = result.rowCount || 0;
+  // 无有效价格或港股缺汇率的持仓会被写入条件过滤掉；如实报出剩余缺口，
+  // 避免"写了 0 条"或"写了一部分"都显示成同一件事（2026-10-30 复现）。
+  const skipped = await repository.selectUncoveredPositionCodes([username, accountName, date]);
+  if (skipped.length) {
+    return { created, date, skipped, reason: created ? 'partial_coverage' : 'no_writable_positions' };
+  }
+  return { created, date };
 }
 
 module.exports = { ensurePositionBasis };

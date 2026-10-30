@@ -1,15 +1,18 @@
 // 账户导入/保存后补行情：找出「账户需要的日期里有持仓、却缺当日价格」的标的及最早缺口日（数据层）。
-// 「需要的日期」= 该账户 nav_history 里已有的日期（净值计算必须用到这些日期的收盘价），
-// 这样导入自带历史净值的账户也能一次性补齐前几天，而不是只补今天。
+// 「需要的日期」= 该账户 nav_history 里已有的日期 ∪ 目标业务日。
+// 并入目标业务日是因为新导入账户的 nav_history 还是空表，只按已有日期算会一只都选不出来，
+// 当天导入的持仓就永远等不到当日价格（2026-10-30 复现，见 server/test/account-recovery-journey.test.js）。
 const pool = require('../db/connection').pool;
 
 async function selectPositionCodesMissingPrice(params, client = pool) {
-  const [username, accountName, fromDate, limit] = params;
+  const [username, accountName, fromDate, limit, targetDate] = params;
   const { rows } = await client.query(
     `WITH need_dates AS (
        SELECT DISTINCT date::text AS d
          FROM nav_history
         WHERE username = $1 AND account_name = $2 AND date::text >= $3
+       UNION
+       SELECT $5::text
      )
      SELECT p.code, min(nd.d) AS first_missing
        FROM positions p
@@ -22,7 +25,7 @@ async function selectPositionCodesMissingPrice(params, client = pool) {
       GROUP BY p.code
       ORDER BY p.code
       LIMIT $4`,
-    [username, accountName, fromDate, limit]
+    [username, accountName, fromDate, limit, targetDate]
   );
   return { rows };
 }
@@ -48,7 +51,7 @@ async function insertBasisSnapshotsFromPositions(params, client = pool) {
             px.price,
             CASE WHEN coalesce(p.subtype,'') LIKE '%港股%' THEN 'HKD' ELSE 'CNY' END,
             CASE WHEN coalesce(p.subtype,'') LIKE '%港股%' THEN fx.rate ELSE 1 END,
-            round(p.quantity * px.price * (CASE WHEN coalesce(p.subtype,'') LIKE '%港股%' THEN fx.rate ELSE 1 END), 2),
+            round((p.quantity * px.price * (CASE WHEN coalesce(p.subtype,'') LIKE '%港股%' THEN fx.rate ELSE 1 END))::numeric, 2),
             'manual_reconciliation', p.account_id
        FROM positions p
        CROSS JOIN LATERAL (
@@ -60,7 +63,7 @@ async function insertBasisSnapshotsFromPositions(params, client = pool) {
          SELECT coalesce(
                   (SELECT d.price::float8 FROM daily_prices d
                     WHERE d.username=p.username AND d.account_name=p.account_name
-                      AND d.code=p.code AND d.date::text=$3 ORDER BY d.date DESC LIMIT 1),
+                      AND d.code=p.code AND d.date=$3::text ORDER BY d.date DESC LIMIT 1),
                   p.price::float8) AS price
        ) px
       WHERE p.username=$1 AND p.account_name=$2 AND p.quantity > 0
@@ -70,4 +73,27 @@ async function insertBasisSnapshotsFromPositions(params, client = pool) {
   );
 }
 
-module.exports = { selectPositionCodesMissingPrice, countPositionSnapshots, insertBasisSnapshotsFromPositions };
+// 该业务日仍没有基准快照的持仓代码：用于如实报告「哪些持仓没写成、为什么」，
+// 不用它去补写别人的原始事实（写入口径不变，只让缺口可追踪）。
+async function selectUncoveredPositionCodes(params, client = pool) {
+  const [username, accountName, date] = params;
+  const { rows } = await client.query(
+    `SELECT p.code
+       FROM positions p
+      WHERE p.username=$1 AND p.account_name=$2 AND p.quantity > 0
+        AND NOT EXISTS (
+              SELECT 1 FROM nav_position_snapshots s
+               WHERE s.username=p.username AND s.account_name=p.account_name
+                 AND s.instrument_code=p.code AND s.snapshot_date=$3::date)
+      ORDER BY p.code`,
+    [username, accountName, date]
+  );
+  return rows.map(row => row.code);
+}
+
+module.exports = {
+  selectPositionCodesMissingPrice,
+  countPositionSnapshots,
+  selectUncoveredPositionCodes,
+  insertBasisSnapshotsFromPositions
+};

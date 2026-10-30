@@ -4355,6 +4355,22 @@
       ],
       "owner": "WorkBuddy",
       "status": "local_verified"
+    },
+    {
+      "id": "NAV-JOURNEY-CHAIN-003",
+      "title": "交易与换股经账本落库后，净值按当时持仓基准锚点续链；卖出费用必须从现金扣除，缺锚点的日期不得倒推",
+      "implementation": {
+        "file": "server/jobs/navSnapshot.js",
+        "symbol": "recordNavSnapshots"
+      },
+      "tests": [
+        {
+          "file": "server/test/nav-journey-regression.test.js",
+          "pattern": "NAV-JOURNEY-CHAIN-003"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "local_verified"
     }
   ]
 }

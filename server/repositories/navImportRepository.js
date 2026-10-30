@@ -171,6 +171,45 @@ async function deletePositionSnapshotsByBatch({ snapshotId }, client = pool) {
   return client.query('DELETE FROM nav_position_snapshots WHERE snapshot_id=$1', [snapshotId]);
 }
 
+// 该账户下「已经没有任何导航历史引用」的导入批次编号（2026-10-30，方案 A2）。
+//
+// 为什么需要它：`upsertImportedNav` 在 (username, account_name, date) 冲突时把 import_batch_id
+// 改指向新批次，而导入前只按本次批次删快照，上一批次整套行就留下没人引用。
+// 为什么按「谁在引用」判定而不是按 source：基准行（source='manual_reconciliation'）的
+// snapshot_id 是 `basis-…`，天生不会被 import_batch_id 引用，按引用一刀切会把净值锚点删掉
+// （2026-10-30 生产事故，已按备份还原）。
+// 为什么只删「调用之前就已孤儿」的：本次导入刚取代的上一批次必须留着——回滚是按
+// backup_payload 恢复 nav 行（含旧 import_batch_id），那时还要用这套锚点。
+async function selectUnreferencedSnapshotBatches({ username, accountName }, client = pool) {
+  const { rows } = await client.query(
+    `SELECT DISTINCT s.snapshot_id
+       FROM nav_position_snapshots s
+      WHERE s.username=$1 AND s.account_name=$2
+        AND s.source <> 'manual_reconciliation'
+        AND NOT EXISTS (
+              SELECT 1 FROM nav_history h
+               WHERE h.username=s.username AND h.account_name=s.account_name
+                 AND h.import_batch_id = s.snapshot_id)
+      ORDER BY 1`,
+    [username, accountName]
+  );
+  return rows.map(row => String(row.snapshot_id));
+}
+
+// 按批次编号删除快照行；空数组直接返回，不做全表删除。
+// 这里再挡一次 source：即使调用方把基准行的编号传进来（或将来有人改了取名单的逻辑），
+// 也不会把净值锚点删掉。
+async function deletePositionSnapshotsByIds({ snapshotIds }, client = pool) {
+  const ids = Array.isArray(snapshotIds) ? snapshotIds.filter(Boolean).map(String) : [];
+  if (!ids.length) return { rowCount: 0 };
+  return client.query(
+    `DELETE FROM nav_position_snapshots
+      WHERE snapshot_id = ANY($1::text[])
+        AND source <> 'manual_reconciliation'`,
+    [ids]
+  );
+}
+
 async function deletePositionSnapshotsByAccountBatch({ username, accountName, batchId }, client = pool) {
   return client.query('DELETE FROM nav_position_snapshots WHERE username=$1 AND account_name=$2 AND snapshot_id=$3', [username, accountName, batchId]);
 }
@@ -228,6 +267,8 @@ module.exports = {
   deleteNavByDate,
   deletePositionSnapshotsByAccountBatch,
   deletePositionSnapshotsByBatch,
+  selectUnreferencedSnapshotBatches,
+  deletePositionSnapshotsByIds,
   findImportBatch,
   insertImportBatch,
   insertPositionSnapshot,

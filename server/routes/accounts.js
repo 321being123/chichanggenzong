@@ -892,6 +892,10 @@ router.post('/nav/import', requireLogin, asyncHandler(assertOwnership), requireV
     }, 0);
     const priorLatestCash = currentNav.length && currentNav[currentNav.length - 1].cashCny != null
       ? Number(currentNav[currentNav.length - 1].cashCny) : null;
+    // 导入会把这批日期上的 nav 行改指向新批次，上一批次随之失去引用。
+    // 但必须留着它：回滚按 backup_payload 恢复 nav 行（含旧 import_batch_id），那时还要用这套锚点。
+    // 所以这里只记下「本次导入之前就已经没人引用」的批次，写完后清这批（方案 A2）。
+    const staleSnapshotBatches = await navImportRepository.selectUnreferencedSnapshotBatches({ username, accountName }, client);
     await navImportRepository.insertImportBatch(
       [importBatchId, username, accountName, minImportDate, maxImportDate, normalizedRecords.length, inputHash,
         JSON.stringify(currentNav), JSON.stringify({ systemRate, systemMarketValue, preservedAnchorDate: preserveExistingAnchor ? latestExistingAnchor : null })],
@@ -946,11 +950,22 @@ router.post('/nav/import', requireLogin, asyncHandler(assertOwnership), requireV
         }
       }
     }
+    // 清理历史孤儿批次：同一份文件反复导入时，以前每一轮都会留下整套没人引用的快照。
+    // 判定与删除都排除基准行（source='manual_reconciliation'），它们的编号是 basis-…，
+    // 天生不会被 import_batch_id 引用，按引用一刀切会删掉净值锚点。
+    let deletedStaleSnapshots = 0;
+    if (staleSnapshotBatches.length) {
+      const removedStale = await navImportRepository.deletePositionSnapshotsByIds({ snapshotIds: staleSnapshotBatches }, client);
+      deletedStaleSnapshots = removedStale.rowCount || 0;
+      if (deletedStaleSnapshots > 0) {
+        console.log('[accounts] 导入清理历史孤儿快照批次', staleSnapshotBatches.length, '个 /', deletedStaleSnapshots, '行');
+      }
+    }
     // 导入成功后，导入批次的最新日期之前只保留导入数据；清理旧的系统/手工快照，
     // 避免它们继续混入历史曲线或在后续刷新时被误当成有效历史。
     const { rowCount: deletedLegacyRows } = await navImportRepository.deleteLegacyNavRows({ username, accountName }, client);
     await navImportRepository.bumpNavVersion({ username, accountName }, client);
-    return { deletedLegacyRows };
+    return { deletedLegacyRows, deletedStaleSnapshots };
     });
   } catch (e) {
     return res.status(e.status || 500).json({ error: e.message });

@@ -234,14 +234,18 @@ async function verifyReconciliationEvidence() {
 
   // 正常等待（官方未披露/字段复查冷却）不是故障：不自动关闭，并归入“正常等待”处置分类。
   const { classifyAlertDisposition } = require('../services/jobAlertMailer');
+  // 2026-10-30 修正：样本原先写死 nextAttemptAt=2026-10-30T02:00:00Z，过了这个时点它就变成"已到期"，
+  // 断言 waiting_evidence_not_due 会随真实时钟失效（全量测试唯一失败即此）。改为相对当前时刻的固定偏移，
+  // 保持"未到复查时间"的语义在任意日期都成立；判定逻辑本身未改。
+  const waitingUntil = new Date(Date.now() + 6 * 3600 * 1000).toISOString();
   const waitingSlot = {
     slot_id: 30, job_code: 'ipo_history_sync', business_date: '2026-10-23', status: 'pending',
     scheduled_for: '2026-10-23T11:35:00.000Z', request_payload: { mode: 'enrichment' },
     result_summary: {
       continuationRequired: true, waitReason: 'field_recheck_cooldown', pendingStages: ['enrichment'], remaining: 1,
-      nextAttemptAt: '2026-10-30T02:00:00.000Z',
+      nextAttemptAt: waitingUntil,
     },
-    next_attempt_at: '2026-10-30T02:00:00.000Z',
+    next_attempt_at: waitingUntil,
   };
   const waitingVerification = await verifyScope(
     { alert_type: 'failure', scope_type: 'slot', scope_key: '30', job_code: 'ipo_history_sync', alert_type: 'failure' },

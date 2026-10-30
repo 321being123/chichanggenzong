@@ -388,27 +388,23 @@ async function doImportSnapshot(username, accountName, body) {
   const currentVersion = await accountsRepository.readAccountVersion({ username, accountName });
   try {
     const r = await saveAccountData(username, accountName, body, currentVersion, null, null);
-    // 导入后先补「持仓基准快照」（净值续链的锚点，两条 SQL 很快，失败不影响保存结果）；
-    // 再异步补当日/区间行情——当天新导入的持仓没有当日价格会让净值算不出来。
+    // 导入后补齐「持仓基准快照 + 缺失行情」：入队受管任务，由统一 Runner 执行与续批。
+    // 2026-10-30 复查修复两处：①以前直接在请求里同步补基准，SQL 报错被 catch 吞成一行日志，
+    // 功能等于没生效；②补价 fire-and-forget，超过批次上限的证券被静默丢弃，没有剩余记录
+    // 也没有下次执行时间。改走任务后，剩余、失败阶段和下次时间都持久化在槽位里，
+    // 导入响应仍然不受影响（入队失败只记日志，不阻塞保存结果）。
+    let queued = null;
     try {
-      const basis = await require('../services/accountPositionBasis').ensurePositionBasis(username, accountName);
-      if (basis && basis.skipped && basis.skipped.length) {
-        console.warn('[accounts] 导入后基准快照未覆盖的持仓:', basis.reason, basis.skipped.join(','));
-      }
+      const slot = await require('../services/jobScheduleSlots').enqueueManualJob('account_price_backfill', {
+        username,
+        accountName,
+        targetDate: require('../services/accountPriceBackfill').todayShanghai(),
+      });
+      queued = slot ? { slotId: slot.slot_id, jobCode: 'account_price_backfill' } : null;
+      if (!queued) console.warn('[accounts] 导入后补齐任务未入队（job 定义不可用）');
     } catch (error) {
-      console.error('[accounts] 导入后补持仓基准快照失败:', error && error.message);
+      console.error('[accounts] 导入后补齐任务入队失败:', error && error.message);
     }
-    require('../services/accountPriceBackfill').backfillMissingTodayPrices(username, accountName)
-      .then(result => {
-        if (result && result.failed && result.failed.length) {
-          console.warn(
-            '[accounts] 导入后补行情部分失败:',
-            String(result.failed.length) + '/' + String(result.checked),
-            result.failed.join(',')
-          );
-        }
-      })
-      .catch(error => console.error('[accounts] 导入后补当日行情失败:', error && error.message));
     return {
       status: 200,
       body: {
@@ -418,7 +414,8 @@ async function doImportSnapshot(username, accountName, body) {
         tradeVersion: r.tradeVersion,
         navVersion: r.navVersion,
         cashflowVersion: r.cashflowVersion,
-        skipped: r.skipped || []
+        skipped: r.skipped || [],
+        backfillQueued: queued
       }
     };
   } catch (e) {

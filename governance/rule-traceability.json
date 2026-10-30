@@ -4323,6 +4323,38 @@
       ],
       "owner": "WorkBuddy",
       "status": "local_verified"
+    },
+    {
+      "id": "ACCOUNT-BASIS-BACKFILL-001",
+      "title": "导入后持仓基准按业务日核缺口补齐：只补缺的证券，已有快照不覆盖不改写；补后重读，用实际状态出结论",
+      "implementation": {
+        "file": "server/services/accountPositionBasis.js",
+        "symbol": "ensurePositionBasis"
+      },
+      "tests": [
+        {
+          "file": "server/test/account-recovery-journey.test.js",
+          "pattern": "ACCOUNT-BASIS-BACKFILL-001"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "local_verified"
+    },
+    {
+      "id": "ACCOUNT-PRICE-CONTINUATION-002",
+      "title": "导入后补价超过单批上限的剩余必须持久化并可续跑，缺口清空前不得宣告完成，连续无批复无进展转人工",
+      "implementation": {
+        "file": "server/jobs/accountPriceBackfill.js",
+        "symbol": "runAccountPriceBackfill"
+      },
+      "tests": [
+        {
+          "file": "server/test/account-recovery-journey.test.js",
+          "pattern": "ACCOUNT-PRICE-CONTINUATION-002"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "local_verified"
     }
   ]
 }

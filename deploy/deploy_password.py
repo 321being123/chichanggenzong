@@ -33,7 +33,8 @@ FEEDBACK_SCRIPT = "server/scripts/reconcileFeedbackRelease.js"
 
 def parse_deploy_args(argv):
     """解析反馈发布相关参数；不改变既有 --confirm-production 的必需性。"""
-    opts = {"feedback_run_id": None, "deployment_id": None, "operator": os.environ.get("DEPLOY_OPERATOR")}
+    opts = {"feedback_run_id": None, "deployment_id": None, "operator": os.environ.get("DEPLOY_OPERATOR"),
+            "feedback_none_evidence": os.environ.get("DEPLOY_FEEDBACK_NONE_EVIDENCE")}
     index = 0
     while index < len(argv):
         token = argv[index]
@@ -48,6 +49,10 @@ def parse_deploy_args(argv):
             continue
         if token == "--deploy-operator" and value:
             opts["operator"] = value
+            index += 2
+            continue
+        if token == "--feedback-none-evidence" and value:
+            opts["feedback_none_evidence"] = value
             index += 2
             continue
         index += 1
@@ -94,7 +99,137 @@ def run_local(args):
     return result.stdout.strip()
 
 
-def verify_release_ready():
+# 「确认无相关反馈」的证据要求：查询必须完整、结论必须逐条显式、时效与提交都要对得上。
+# 只有两种可接受的核对依据，缺一不可（2026-10-30 复查 P1：此前缺依据也照样完成生产变更）。
+FEEDBACK_EVIDENCE_MAX_AGE_HOURS = 48
+
+
+def verify_none_evidence(evidence, commit, now=None):
+    """校验「已完整查询、确认无相关反馈」的证据内容；返回问题清单（空 = 通过）。
+
+    纯函数，反例测试直接调用，不依赖 SSH 或数据库。
+    """
+    problems = []
+    if not isinstance(evidence, dict):
+        return ["证据必须是 JSON 对象"]
+    if evidence.get("complete") is not True:
+        problems.append("查询未完整（complete 必须为 true，列表分页没读完不能作为证据）")
+    if not str(evidence.get("operator") or "").strip():
+        problems.append("缺少核对人（operator）")
+    candidates = evidence.get("candidates")
+    if not isinstance(candidates, list):
+        problems.append("缺少 candidates 列表（即使是空列表也要显式给出）")
+    else:
+        for position, candidate in enumerate(candidates, start=1):
+            if not isinstance(candidate, dict):
+                problems.append(f"第 {position} 条候选格式不正确")
+                continue
+            conclusion = candidate.get("conclusion")
+            if conclusion != "unrelated":
+                problems.append(
+                    f"第 {position} 条候选结论为 {conclusion or '空'}，只有 unrelated 且写明理由才可视为无相关反馈"
+                )
+            elif not str(candidate.get("reason") or "").strip():
+                problems.append(f"第 {position} 条候选缺少不相关理由")
+    queried_at = str(evidence.get("queriedAt") or "").strip()
+    if not queried_at:
+        problems.append("缺少查询时间（queriedAt）")
+    else:
+        try:
+            from datetime import datetime, timedelta, timezone
+
+            moment = datetime.fromisoformat(queried_at.replace("Z", "+00:00"))
+            if moment.tzinfo is None:
+                moment = moment.replace(tzinfo=timezone.utc)
+            reference = now or datetime.now(timezone.utc)
+            if reference - moment > timedelta(hours=FEEDBACK_EVIDENCE_MAX_AGE_HOURS):
+                problems.append(
+                    f"查询时间 {queried_at} 已超过 {FEEDBACK_EVIDENCE_MAX_AGE_HOURS} 小时，需重新查询后再发布"
+                )
+        except ValueError:
+            problems.append(f"查询时间无法解析：{queried_at}")
+    evidence_sha = str(evidence.get("releaseSha") or "").strip()
+    if not evidence_sha:
+        problems.append("缺少本次发布的提交（releaseSha）")
+    elif commit and not _same_commit(evidence_sha, commit):
+        problems.append(f"证据对应提交 {evidence_sha} 与本次发布 {commit} 不一致")
+    return problems
+
+
+def verify_feedback_requirement(opts, commit):
+    """发布前防漏：必须带本批反馈核对依据，缺失或不合格一律在变更前阻止。"""
+    if opts.get("feedback_run_id"):
+        return
+    evidence_path = opts.get("feedback_none_evidence")
+    if not evidence_path:
+        raise SystemExit(
+            "发布前置校验失败：缺少本批反馈核对依据。\n"
+            "请提供 --feedback-run-id（已冻结并通过专项验收的批次），"
+            "或确认本次没有相关反馈后提供 --feedback-none-evidence <证据文件>。\n"
+            "说明：代码可以照常发布，但必须先有核对依据，不能部署完再补说明。"
+        )
+    path = Path(evidence_path)
+    if not path.exists():
+        raise SystemExit(f"发布前置校验失败：反馈查询证据文件不存在：{evidence_path}")
+    try:
+        evidence = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise SystemExit(f"发布前置校验失败：反馈查询证据无法解析（{exc}）") from exc
+    problems = verify_none_evidence(evidence, commit)
+    if problems:
+        raise SystemExit("发布前置校验失败：无相关反馈的证据不合格：\n- " + "\n- ".join(problems))
+
+
+def verify_feedback_run_ready(client, run_id, commit):
+    """部署前只读核查批次是否已冻结并通过验收；不合格则阻止生产变更。
+
+    只读执行 --mode status，不写库、不改批次状态。核查项对应发布规范：
+    批次必须已冻结、专项验收已通过、明细读取完整且非空、目标提交与本次一致。
+    """
+    command = (
+        "cd /opt/portfolio && sudo -u portfolio-app env FEEDBACK_ENV_FILE=/opt/portfolio/.env "
+        f"/usr/bin/node {FEEDBACK_SCRIPT} --mode status --run-id {int(run_id)}"
+    )
+    try:
+        stdin, stdout, stderr = client.exec_command("sudo bash -c " + shlex.quote(command), timeout=120)
+        output = stdout.read().decode("utf-8", "replace")
+        error = stderr.read().decode("utf-8", "replace")
+        exit_code = stdout.channel.recv_exit_status()
+    except Exception as exc:
+        raise SystemExit(f"发布前置校验失败：无法读取反馈批次 {run_id} 状态（{exc}），已中止部署") from exc
+    if exit_code != 0:
+        raise SystemExit(
+            f"发布前置校验失败：读取反馈批次 {run_id} 失败（退出码 {exit_code}）："
+            f"{(error or output or '无输出').strip()[:400]}"
+        )
+    try:
+        payload = json.loads(output)
+    except Exception as exc:
+        raise SystemExit(f"发布前置校验失败：反馈批次状态不是合法 JSON（{exc}）") from exc
+    run = payload.get("run") or {}
+    items = payload.get("items") or []
+    problems = []
+    if payload.get("complete") is not True:
+        problems.append("明细未读取完整（complete 不为 true）")
+    if not items:
+        problems.append("批次里没有任何反馈明细")
+    if run.get("prepareStatus") != "frozen":
+        problems.append(f"批次未冻结（prepareStatus={run.get('prepareStatus') or '空'}）")
+    if run.get("verifyStatus") != "passed":
+        problems.append(f"专项验收未通过（verifyStatus={run.get('verifyStatus') or '空'}）")
+    if run.get("applyStatus") == "applied":
+        problems.append("该批次已应用过，重复应用会把上一批结果套到本次发布")
+    run_sha = run.get("releaseSha")
+    if commit and run_sha and not _same_commit(run_sha, commit):
+        problems.append(f"批次目标提交 {run_sha} 与本次发布 {commit} 不一致")
+    if problems:
+        raise SystemExit(
+            f"发布前置校验失败：反馈批次 {run_id} 不满足发布条件：\n- " + "\n- ".join(problems)
+        )
+    print(f"反馈核对依据已核查：批次 {run_id}（{len(items)} 条明细，已冻结并通过验收）。")
+
+
+def verify_release_ready(opts):
     if '--confirm-production' not in sys.argv[1:]:
         raise SystemExit('拒绝部署：必须显式传入 --confirm-production，且取得用户线上部署授权。')
     if run_local(['git', 'status', '--porcelain']):
@@ -107,7 +242,169 @@ def verify_release_ready():
     if local_commit != remote_commit:
         raise SystemExit('发布前置校验失败：本地 HEAD 必须与 origin/master 完全一致。')
     run_local(['npm.cmd', 'run', 'check:knowledge'])
+    # 反馈核对依据的本地部分（参数存在性 + 证据内容）在连服务器之前就拦，失败即不发起任何变更。
+    verify_feedback_requirement(opts, local_commit)
     return local_commit
+
+
+# 反馈闭环判定：只有「整体应用成功 + 明细齐全无待续办 + 真实回读一致」同时成立才算已核验。
+# 2026-10-30 复查实测到两种误报（旧实现只看 items 里有没有 pending）：
+#   ① applyStatus=failed 且 items=[] → 仍落 applied_verified（布尔值恰好是 False，状态却是已核验）；
+#   ② applyStatus=applied 但 readBack 为空、主状态还是 new、没有版本/提交/事件 → 仍报 applied_verified。
+# 因此判定必须同时看整体状态、目标明细和真实回读，任何一环缺失或不符都不得报已核验。
+FEEDBACK_STATUS_VERIFIED = "applied_verified"
+# 本批明细全部是「不相关」（skipped）时使用：闭环已完成，但没有需要实施的反馈，
+# 不能与「确有实施且已回读核验」混为同一个状态。
+FEEDBACK_STATUS_VERIFIED_NO_IMPLEMENTATION = "applied_verified_no_implementation"
+
+
+def _same_commit(left, right):
+    """提交号比较：允许一方是另一方的前缀（短 SHA 与全 SHA 混用时仍能判定一致）。"""
+    left = str(left or "").strip().lower()
+    right = str(right or "").strip().lower()
+    if not left or not right:
+        return False
+    width = min(len(left), len(right))
+    return left[:width] == right[:width]
+
+
+def _verify_read_back_row(row, expected_sha, expected_version):
+    """核对单条真实回读：状态、实施版本、实施提交、修订号、发布事件都要对得上。"""
+    problems = []
+    if row.get("status") != "implemented":
+        problems.append(f"主状态仍为 {row.get('status') or '空'}")
+    if not row.get("implementedVersion"):
+        problems.append("没有实施版本")
+    if not row.get("implementedReleaseSha"):
+        problems.append("没有实施提交")
+    elif expected_sha and not _same_commit(row.get("implementedReleaseSha"), expected_sha):
+        problems.append(f"实施提交 {row.get('implementedReleaseSha')} 与本次部署 {expected_sha} 不一致")
+    if expected_version and row.get("implementedVersion") and str(row.get("implementedVersion")) != str(expected_version):
+        problems.append(f"实施版本 {row.get('implementedVersion')} 与本次部署 {expected_version} 不一致")
+    revision = row.get("revision")
+    if revision is None or str(revision).strip() == "":
+        problems.append("没有修订号")
+    try:
+        event_count = int(row.get("eventCount") or 0)
+    except (TypeError, ValueError):
+        event_count = 0
+    if event_count < 1:
+        problems.append("没有发布事件留痕")
+    return problems
+
+
+def evaluate_feedback_release(payload, expected_sha=None, expected_version=None):
+    """按回写结果与真实回读判定本批反馈是否闭环（纯函数，反例测试直接调用）。
+
+    返回结构固定：feedback_applied / status / reason / pending / unverified /
+    apply_status / applied / failed / items。
+    """
+    if not isinstance(payload, dict) or not payload:
+        return {
+            "feedback_applied": False,
+            "status": "read_failed",
+            "reason": "反馈回写没有返回可解析结果",
+            "pending": [],
+            "unverified": [],
+            "items": [],
+        }
+    items = payload.get("items")
+    if not isinstance(items, list):
+        items = []
+    apply_status = payload.get("applyStatus")
+    base = {
+        "apply_status": apply_status,
+        "applied": payload.get("applied", 0),
+        "failed": payload.get("failed", 0),
+        "items": items,
+    }
+    # 1) 整体应用状态：不是 applied 就是没闭环，明细再怎么"看起来正常"也不能翻转结论。
+    if apply_status != "applied":
+        return {
+            **base,
+            "feedback_applied": False,
+            "status": "apply_status_rejected",
+            "reason": f"服务端整体应用状态为 {apply_status or '空'}，不是 applied，不能视为已闭环",
+            "pending": [item.get("feedbackId") for item in items if isinstance(item, dict)],
+            "unverified": [],
+        }
+    # 2) 明细必须存在：空清单无从证明实施或核对过。
+    if not items:
+        return {
+            **base,
+            "feedback_applied": False,
+            "status": "no_items",
+            "reason": "本批没有返回任何反馈明细，无法证明有反馈被应用或核对",
+            "pending": [],
+            "unverified": [],
+        }
+    # 3) 待续办：任何一条既不是 applied 也不是 skipped 都算未完成。
+    pending = [
+        item.get("feedbackId")
+        for item in items
+        if isinstance(item, dict) and item.get("applyStatus") not in ("applied", "skipped")
+    ]
+    if pending:
+        return {
+            **base,
+            "feedback_applied": False,
+            "status": "applied_with_pending",
+            "reason": f"还有 {len(pending)} 条未应用完成",
+            "pending": pending,
+            "unverified": [],
+        }
+    # 4) 真实回读：只对声明已应用的条目要求，逐项核对状态/版本/提交/修订/事件。
+    read_back = payload.get("readBack")
+    if not isinstance(read_back, list):
+        read_back = []
+    index = {
+        str(row.get("feedbackId")): row
+        for row in read_back
+        if isinstance(row, dict) and row.get("feedbackId") is not None
+    }
+    implemented = [
+        item for item in items
+        if isinstance(item, dict) and item.get("applyStatus") == "applied"
+    ]
+    unverified = []
+    for item in implemented:
+        feedback_id = str(item.get("feedbackId"))
+        row = index.get(feedback_id)
+        if row is None:
+            unverified.append({"feedbackId": feedback_id, "reason": "回读里没有这一条"})
+            continue
+        problems = _verify_read_back_row(row, expected_sha, expected_version)
+        if problems:
+            unverified.append({"feedbackId": feedback_id, "reason": "；".join(problems)})
+    if unverified:
+        return {
+            **base,
+            "feedback_applied": False,
+            "status": "readback_mismatch",
+            "reason": "真实回读与预期不符：" + "；".join(
+                f"{item['feedbackId']}（{item['reason']}）" for item in unverified[:5]
+            ),
+            "pending": [],
+            "unverified": unverified,
+        }
+    if not implemented:
+        # 全部为不相关项：闭环成立，但没有实施任何反馈，不能记成「已核验实施」。
+        return {
+            **base,
+            "feedback_applied": True,
+            "status": FEEDBACK_STATUS_VERIFIED_NO_IMPLEMENTATION,
+            "reason": f"本批 {len(items)} 条全部为不相关项，已核对无待实施反馈",
+            "pending": [],
+            "unverified": [],
+        }
+    return {
+        **base,
+        "feedback_applied": True,
+        "status": FEEDBACK_STATUS_VERIFIED,
+        "reason": None,
+        "pending": [],
+        "unverified": [],
+    }
 
 
 def apply_feedback_release(client, run_id, operator, deployment_id, current_sha, current_version, lock_token):
@@ -169,21 +466,16 @@ def apply_feedback_release(client, run_id, operator, deployment_id, current_sha,
         payload = None
     if exit_code != 0 or not payload:
         reason = (error or output or "未返回结果").strip()[:500]
-        return {"feedback_applied": False, "status": "apply_failed", "reason": f"反馈回写失败（退出码 {exit_code}）：{reason}", "items": []}
-    pending = [
-        item.get("feedbackId")
-        for item in payload.get("items", [])
-        if item.get("applyStatus") not in ("applied", "skipped")
-    ]
-    return {
-        "feedback_applied": payload.get("applyStatus") == "applied" and not pending,
-        "status": "applied_with_pending" if pending else "applied_verified",
-        "apply_status": payload.get("applyStatus"),
-        "applied": payload.get("applied", 0),
-        "failed": payload.get("failed", 0),
-        "pending": pending,
-        "items": payload.get("items", []),
-    }
+        return {
+            "feedback_applied": False,
+            "status": "apply_failed",
+            "reason": f"反馈回写失败（退出码 {exit_code}）：{reason}",
+            "pending": [],
+            "unverified": [],
+            "items": [],
+        }
+    # 判定统一走 evaluate_feedback_release：整体状态、明细和真实回读三者一致才算已核验。
+    return evaluate_feedback_release(payload, expected_sha=current_sha, expected_version=current_version)
 
 
 def lock_ready_path(lock_token):
@@ -220,7 +512,7 @@ def main():
     opts = parse_deploy_args(sys.argv[1:])
     # C-02/C-03：一次部署一个随机令牌，写入 ready 文件；反馈第二段与 release-lock 凭此证明同一次部署
     lock_token = uuid.uuid4().hex
-    local_commit = verify_release_ready()
+    local_commit = verify_release_ready(opts)
     local_version = json.loads((ROOT / "package.json").read_text(encoding="utf-8"))["appVersion"]
     client = paramiko.SSHClient()
     client.load_system_host_keys()
@@ -241,6 +533,11 @@ def main():
         )
         # Worker 排空可能长时间没有 SSH 输出；连接保活不改变任务运行/停机时限。
         client.get_transport().set_keepalive(30)
+        # 发布前防漏（2026-10-30 复查 P1）：带 --feedback-run-id 时，先在只读状态查询里
+        # 确认批次已冻结、验收通过、明细完整且目标提交一致；不合格直接中止，
+        # 不进入任何生产变更（此前是部署完才记 not_crosschecked）。
+        if opts["feedback_run_id"]:
+            verify_feedback_run_ready(client, opts["feedback_run_id"], local_commit)
         result = run_sudo(
             client,
             "set -Eeuo pipefail; cd /opt/portfolio; "

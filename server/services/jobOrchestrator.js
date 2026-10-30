@@ -610,6 +610,9 @@ async function runSlot(slot, reason = reasonForSlot(slot)) {
       ? { targetCodes: claimed.request_payload.targetCodes } : {}),
     ...(claimed.job_code==='nav_snapshot'&&claimed.request_payload?.mode==='cash_income'
       ? {username:claimed.request_payload.username,accountName:claimed.request_payload.accountName,enabled:claimed.request_payload.enabled===true}:{}),
+    // 导入后补齐任务按账户执行：目标日取请求里固定的业务日，避免跨天续批时把基准写到新的一天。
+    ...(claimed.job_code==='account_price_backfill'&&claimed.request_payload
+      ? {username:claimed.request_payload.username,accountName:claimed.request_payload.accountName,basisDate:claimed.request_payload.targetDate}:{}),
     ...(claimed.job_code==='nav_snapshot'&&(!claimed.request_payload?.mode||claimed.request_payload.mode==='core')
       ? {fromDate:claimed.request_payload?.fromDate,throughDate:claimed.request_payload?.throughDate}:{}),
     failedDatasets: claimed.result_summary && Array.isArray(claimed.result_summary.failedDatasets)

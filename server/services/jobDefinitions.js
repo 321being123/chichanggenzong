@@ -63,6 +63,10 @@ const JOB_DEFINITION_SOURCE = [
   { jobCode: 'site_analytics_retention', label: '网站统计数据保留清理', hour: 2, minute: 0, weekdays: false, deadlineMinutes: 120, catchupWindowMinutes: 360, catchupMode: 'latest_only', requiresDataWatermark: false, category: 'system', importance: 'normal', sourceDescription: '本地网站统计事实表与运行采样表', mayConsumeQuota: false, externalSources: [], externalApis: [], retryPolicy: 'local', retryDelaysMinutes: [15, 60], maxAttempts: 3 },
   // 站内通知群发投递：只在后台确认后由任务框架执行，无外部数据源，不发布金融数据集
   { jobCode: 'notification_dispatch', label: '站内通知投递', manualOnly: true, dataDatePolicy: 'none', requiresDataWatermark: false, strictDatasetPublication: false, timeoutMinutes: 15, deadlineMinutes: 60, category: 'system', importance: 'normal', sourceDescription: '预览时已固定的本地收件名单；投递前重验账号，不调用任何外部接口', mayConsumeQuota: false, externalSources: [], externalApis: [], maxExternalCallsPerRun: 0, retryPolicy: 'local', retryDelaysMinutes: [1, 5, 15], maxAttempts: 3 },
+  // 导入/建仓后补齐账户持仓基准与缺失行情。由导入路由入队，批次上限之外的剩余
+  // 由槽位续批机制持久化（result_summary.remaining + next_attempt_at），
+  // 缺口清空前不宣告完成；行情来源复用既有回放路径，不新增第二套采集。
+  { jobCode: 'account_price_backfill', label: '账户持仓基准与缺失行情补齐', manualOnly: true, dataDatePolicy: 'none', requiresDataWatermark: false, strictDatasetPublication: false, timeoutMinutes: 60, deadlineMinutes: 120, category: 'data_sync', importance: 'normal', sourceDescription: '导入账户后按固定业务日补齐持仓基准快照与缺失收盘价，行情走既有 Tushare/腾讯回放路径', mayConsumeQuota: true, externalSources: ['tushare', 'tencent'], retryPolicy: 'external', retryDelaysMinutes: [5, 15, 45], maxAttempts: 4 },
 ];
 
 // 任务→接口→数据集契约是生成矩阵和预算门禁的唯一输入；没有外部接口的计算任务必须显式保持空数组。
@@ -130,6 +134,9 @@ const JOB_CONTRACTS = {
   'holiday_sync': { externalApis: ['trade_cal'], producesDatasets: ['trade_calendar'], consumesDatasets: [], maxExternalCallsPerRun: null },
   'site_analytics_retention': { externalApis: [], producesDatasets: ['site_events', 'site_runtime_minute'], consumesDatasets: [], maxExternalCallsPerRun: 0 },
   'notification_dispatch': { externalApis: [], producesDatasets: [], consumesDatasets: [], maxExternalCallsPerRun: 0 },
+  // 补价写的是账户私有行情（account_daily_prices 由 market_close 任务发布分区），
+  // 本任务不发布金融数据集，只读持仓、补缺失价格与基准快照。
+  'account_price_backfill': { externalApis: ['tushare', 'tencent_quote'], producesDatasets: [], consumesDatasets: ['account_positions'], maxExternalCallsPerRun: null },
 };
 
 const DATA_DATE_POLICIES = Object.freeze(['none', 'same_day', 'previous_trading_day', 'latest_available']);

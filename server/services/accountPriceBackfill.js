@@ -28,7 +28,7 @@ async function backfillMissingTodayPrices(username, accountName, options = {}) {
   const fromDate = options.fromDate || shiftDays(today, -LOOKBACK_DAYS);
   const limit = Number(options.limit) > 0 ? Math.min(Number(options.limit), MAX_CODES) : MAX_CODES;
   const { rows } = await repository.selectPositionCodesMissingPrice([username, accountName, fromDate, limit, today]);
-  if (!rows.length) return { checked: 0, filled: 0, today, fromDate };
+  if (!rows.length) return { checked: 0, filled: 0, failed: [], remaining: 0, today, fromDate };
   const backfill = options.backfill || require('../jobs/replayNav').backfillDailyPrices;
   const failed = [];
   let filled = 0;
@@ -42,7 +42,10 @@ async function backfillMissingTodayPrices(username, accountName, options = {}) {
       failed.push(row.code);
     }
   }
-  return { checked: rows.length, filled, failed, today, fromDate };
+  // 补完后按同一口径重查一次缺口总数：剩余必须由数据库实际状态得出，
+  // 不能拿「上限 - 本次条数」去猜（2026-10-30 复查：81 只只处理 80 只，返回值里没有任何剩余信息）。
+  const remaining = await repository.countPositionCodesMissingPrice([username, accountName, fromDate, today]);
+  return { checked: rows.length, filled, failed, remaining, today, fromDate };
 }
 
 module.exports = { backfillMissingTodayPrices, todayShanghai };

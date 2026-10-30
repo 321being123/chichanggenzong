@@ -5,7 +5,11 @@ const svc = require('../services/accountPriceBackfill');
 
 (async () => {
   const origin = repo.selectPositionCodesMissingPrice;
+  const originCount = repo.countPositionCodesMissingPrice;
   try {
+    // 0) 剩余数：补完按同口径重查缺口，不能拿「上限 - 本次条数」猜
+    let countArgs = null;
+    repo.countPositionCodesMissingPrice = async args => { countArgs = args; return 3; };
     // 1) 正常补齐：每只按自己的最早缺口日拉区间，两只里一只成功一只失败
     let argsSeen = null;
     repo.selectPositionCodesMissingPrice = async args => {
@@ -25,6 +29,8 @@ const svc = require('../services/accountPriceBackfill');
     assert.strictEqual(r.checked, 2);
     assert.strictEqual(r.filled, 1);
     assert.deepStrictEqual(r.failed, ['00546'], '失败的代码要如实返回');
+    assert.strictEqual(r.remaining, 3, '剩余数来自数据库重查，而不是本次条数');
+    assert.deepStrictEqual(countArgs, ['u1', 'A', '2026-10-20', '2026-10-29'], '重查口径必须与补价查询一致');
 
     // 2) 没有缺价代码时不调用采集
     let touched = false;
@@ -33,6 +39,7 @@ const svc = require('../services/accountPriceBackfill');
       today: '2026-10-29', backfill: async () => { touched = true; return true; },
     });
     assert.strictEqual(r.checked, 0);
+    assert.strictEqual(r.remaining, 0, '没有缺口时剩余为 0');
     assert.strictEqual(touched, false, '无缺失时不得发起外部请求');
 
     // 3) 采集抛错必须被吞掉，不能影响保存流程
@@ -42,6 +49,7 @@ const svc = require('../services/accountPriceBackfill');
     });
     assert.strictEqual(r.filled, 0);
     assert.deepStrictEqual(r.failed, ['601995'], '异常也要计入失败而不是抛出');
+    assert.strictEqual(r.remaining, 3, '失败后缺口仍在，剩余数如实反映');
 
     // 4) 缺少账户范围直接返回，不查库
     let queried = false;
@@ -51,6 +59,7 @@ const svc = require('../services/accountPriceBackfill');
     assert.strictEqual(queried, false);
   } finally {
     repo.selectPositionCodesMissingPrice = origin;
+    repo.countPositionCodesMissingPrice = originCount;
   }
   console.log('导入后补行情（区间）回归通过');
 })().catch(e => { console.error(e); process.exitCode = 1; });

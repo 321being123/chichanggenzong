@@ -66,6 +66,8 @@ async function runJobByCode(jobCode, reason = 'manual-retry', businessDate, cont
     }
     case 'holiday_sync':
       return require('../jobs/holidaySync').ensureHolidaysCurrent({ businessDate });
+    case 'account_price_backfill':
+      return require('../jobs/accountPriceBackfill').runAccountPriceBackfill(reason, context);
     case 'site_analytics_retention':
       return require('./siteAnalytics').purgeAnalyticsData();
     case 'notification_dispatch':

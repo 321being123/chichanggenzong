@@ -796,6 +796,43 @@ async function migration177StockSwapSettlement() {
   `);
 }
 
+// ========== 179：持仓基准快照「同账户同日同证券唯一」（2026-10-30，并发重复写入的防线二）==========
+// 背景：基准补齐原先在同一条 INSERT 的 CTE 里取 advisory lock，READ COMMITTED 下等待者仍用旧快照，
+// 并发两次调用会给同一证券写两条（隔离库复现）。代码侧已改为「独立语句取锁 + 同事务写入」，
+// 本迁移再加一道库级约束：同一账户同一业务日同一证券只允许一条【基准】行。
+// 只约束 source='manual_reconciliation'：券商导入允许同日期多批次并存（各有 batch_id，
+// 读取侧按 nav_history.import_batch_id 过滤），不能被这条约束挡住。
+// 建索引前清理该子集已有的重复行（只可能来自修复前的并发写）：同一事实的重复写入，
+// 保留 snapshot_id 最小的一条，删除条数写日志；生产核对时该子集 0 组重复，此清理通常为空跑。
+async function migration179NavBasisUniqueness() {
+  // 注意：数据修改语句只能放在 WITH 里，不能写成 FROM (DELETE ... RETURNING)。
+  const { rows } = await pool.query(`
+    WITH deleted AS (
+      DELETE FROM nav_position_snapshots s
+       USING (
+         SELECT ctid, row_number() OVER (
+                  PARTITION BY username, account_name, snapshot_date, instrument_code
+                  ORDER BY snapshot_id
+                ) AS rn
+           FROM nav_position_snapshots
+          WHERE source = 'manual_reconciliation'
+       ) d
+       WHERE s.ctid = d.ctid AND d.rn > 1
+      RETURNING 1
+    )
+    SELECT count(*)::int AS deleted FROM deleted
+  `);
+  const deleted = (rows[0] && rows[0].deleted) || 0;
+  if (deleted > 0) {
+    console.warn('[migrate] 179 清理持仓基准重复行', deleted, '条（同一账户同日同证券，保留 snapshot_id 最小的一条）');
+  }
+  await pool.query(`
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_nav_position_basis_scope
+      ON nav_position_snapshots(username, account_name, snapshot_date, instrument_code)
+      WHERE source = 'manual_reconciliation'
+  `);
+}
+
 module.exports = {
   migration049SessionRevocation,
   migration050CapabilityPermissions,
@@ -825,5 +862,6 @@ module.exports = {
   migration055ArbitrageParserAccuracy,
   migration056GlobalFxRateSource,
   migration177StockSwapSettlement,
+  migration179NavBasisUniqueness,
   migration052NavHistoryHkRate,
 };

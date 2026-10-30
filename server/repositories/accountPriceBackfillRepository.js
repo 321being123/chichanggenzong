@@ -3,6 +3,7 @@
 // 并入目标业务日是因为新导入账户的 nav_history 还是空表，只按已有日期算会一只都选不出来，
 // 当天导入的持仓就永远等不到当日价格（2026-10-30 复现，见 server/test/account-recovery-journey.test.js）。
 const pool = require('../db/connection').pool;
+const { withTransaction } = require('../db/transaction');
 
 async function selectPositionCodesMissingPrice(params, client = pool) {
   const [username, accountName, fromDate, limit, targetDate] = params;
@@ -65,22 +66,42 @@ async function countPositionSnapshots(params, client = pool) {
   return (rows[0] && rows[0].n) || 0;
 }
 
+// 账户级写锁：把同一账户的「读缺口 → 写入基准」串行化。
+//
+// 必须在【独立语句】里先拿锁，再执行写入，且两条语句在同一个显式事务/同一连接上：
+//   - 放在同一条 INSERT 的 CTE 里无效。READ COMMITTED 下快照在【语句开始】时取得，
+//     后到的请求即使阻塞在锁上，拿到锁后仍然用「等待之前」的快照，看不见前一个事务刚提交的行，
+//     NOT EXISTS 判定照旧成立，于是同一证券写两条（2026-10-30 隔离库复现）。
+//   - 拆成两条语句后，拿锁（第 1 条）结束、INSERT（第 2 条）开始时才取新快照，
+//     此时前一个事务已提交，缺口判定能看到对方的行。
+//   - 锁是 xact 级：随所在事务提交/回滚自动释放，不需要手工解锁，也不会泄漏。
+// 表上的唯一索引（migration 179，仅 source='manual_reconciliation'）是防线二；
+// 正确性不依赖它，它只在逻辑再被改坏时把「静默重复」变成「直接报错」。
+async function withAccountBasisLock(params, fn, options = {}) {
+  const [username, accountName] = params;
+  return withTransaction(async client => {
+    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [
+      'account_position_basis:' + String(username) + '|' + String(accountName),
+    ]);
+    return fn(client);
+  }, options);
+}
+
 // 补齐某业务日的持仓基准快照：只写该日【尚无快照】的证券，已有快照保持原事实不动。
 //
 // 2026-10-30 复现的缺陷：旧实现只在「账户一条快照都没有」时整批写一次，首次因缺价被过滤掉
 // 的证券此后永远补不上（再调用直接返回 already_has_snapshots）。改为按业务日逐证券核缺口后，
 // 价格/汇率恢复后再次调用即可补齐，且不覆盖任何已存在的行。
 //
-// 并发：同一账户的两个并发调用会各自都看不到对方未提交的行，可能重复写同一证券。
-// 用账户级 advisory xact lock 把同账户的补齐串行化（随语句结束自动释放），
-// 表自身没有唯一约束可依赖，不能只靠 NOT EXISTS。
-async function insertBasisSnapshotsFromPositions(params, client = pool) {
+// 调用约束：必须传入 withAccountBasisLock 给出的 client（同一事务内），否则并发下会重复写。
+// 这里不再默认落到连接池——池上的两条语句会走不同连接，锁等于没用（这正是本次缺陷的成因）。
+async function insertBasisSnapshotsFromPositions(params, client) {
+  if (!client || typeof client.query !== 'function') {
+    throw new Error('insertBasisSnapshotsFromPositions 必须在 withAccountBasisLock 事务内调用，不允许直接用连接池');
+  }
   const [username, accountName, date] = params;
   return client.query(
-    `WITH guard AS (
-       SELECT pg_advisory_xact_lock(hashtext($1 || '|' || $2)) AS locked
-     )
-     INSERT INTO nav_position_snapshots(snapshot_id, username, account_name, snapshot_date, instrument_code,
+    `INSERT INTO nav_position_snapshots(snapshot_id, username, account_name, snapshot_date, instrument_code,
                                         quantity, price, quote_currency, fx_rate_to_cny, market_value_cny, source, account_id)
      SELECT gen_random_uuid()::text, p.username, p.account_name, $3::date, p.code, p.quantity,
             px.price,
@@ -89,7 +110,6 @@ async function insertBasisSnapshotsFromPositions(params, client = pool) {
             round((p.quantity * px.price * (CASE WHEN coalesce(p.subtype,'') LIKE '%港股%' THEN fx.rate ELSE 1 END))::numeric, 2),
             'manual_reconciliation', p.account_id
        FROM positions p
-       CROSS JOIN guard
        CROSS JOIN LATERAL (
          SELECT (SELECT rate::float8 FROM market.fx_rates
                   WHERE base_currency='HKD' AND quote_currency='CNY' AND rate_date <= $3::date
@@ -157,5 +177,6 @@ module.exports = {
   countPositionSnapshots,
   selectUncoveredPositionDetails,
   selectUncoveredPositionCodes,
+  withAccountBasisLock,
   insertBasisSnapshotsFromPositions
 };

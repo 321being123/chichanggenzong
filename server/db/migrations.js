@@ -196,6 +196,7 @@ const MIGRATIONS = [
   { version: '176_account_id_completion', up: () => require('./migrations/era09AccountIdentity').migration176AccountIdCompletion(pool) },
   { version: '177_stock_swap_settlement', up: M.migration177StockSwapSettlement },
   { version: '178_lixinger_source', up: () => require('./migrations/lixingerSource').migration178LixingerSource(pool) },
+  { version: '179_nav_basis_uniqueness', up: M.migration179NavBasisUniqueness },
 ];
 
 async function ensureMigrationsTable() {

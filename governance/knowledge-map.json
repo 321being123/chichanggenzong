@@ -171,6 +171,61 @@
       }
     },
     {
+      "id": "maintenance-remediation",
+      "risk": "high",
+      "paths": [
+        "docs/项目可持续维护与交付闭环整改方案_20261030.md",
+        ".agents/skills/site-doc-handoff/**",
+        ".agents/skills/site-release-closeout/**",
+        ".agents/skills/site-monthly-review/**"
+      ],
+      "keywords": [
+        "项目可持续维护与交付闭环整改",
+        "文档技能化整改",
+        "规范执行与发布收尾整改"
+      ],
+      "read": [
+        "AGENTS.md",
+        "docs/知识库公共规则.md",
+        "docs/知识索引.md",
+        "docs/技术架构.md",
+        "docs/项目可持续维护与交付闭环整改方案_20261030.md"
+      ],
+      "update": [
+        "docs/项目可持续维护与交付闭环整改方案_20261030.md",
+        "docs/技术架构.md",
+        "docs/知识索引.md"
+      ],
+      "checks": [
+        "npm.cmd run check:knowledge"
+      ],
+      "expandOn": [
+        "具体业务与实际变更路径",
+        "原发布批次与当前反馈revision",
+        "Skill实际发现与其他Agent支持",
+        "脚本或部署行为变更",
+        "原金融口径及数据恢复任务"
+      ],
+      "readSections": {
+        "docs/知识库公共规则.md": [
+          "## 0. 每次任务的最小必读",
+          "## 6. 多Agent写入与整合顺序",
+          "## 9. 收尾核对清单",
+          "## 11. 持续更新与周期复核"
+        ],
+        "docs/技术架构.md": [
+          "## 2.1 项目知识治理",
+          "## 6. 后端分层"
+        ],
+        "docs/项目可持续维护与交付闭环整改方案_20261030.md": [
+          "## 2. 已有能力、可复用能力与真正缺口",
+          "## 3. 当前交付状态与边界",
+          "## 5. 分阶段实施与退出条件",
+          "## 7. 总体验收与成功指标"
+        ]
+      }
+    },
+    {
       "id": "monthly-project-review",
       "risk": "high",
       "paths": [

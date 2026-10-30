@@ -123,12 +123,14 @@ def apply_feedback_release(client, run_id, operator, deployment_id, current_sha,
     if not operator:
         return {
             "feedback_applied": False,
+            "status": "skipped_missing_operator",
             "reason": "缺少 --deploy-operator（必须是网站上的内容管理员账号），反馈闭环未执行",
             "items": [],
         }
     if not deployment_id:
         return {
             "feedback_applied": False,
+            "status": "skipped_missing_deployment_id",
             "reason": "缺少 --deployment-id（发布批次必须与本次部署一一对应），反馈闭环未执行",
             "items": [],
         }
@@ -159,7 +161,7 @@ def apply_feedback_release(client, run_id, operator, deployment_id, current_sha,
         error = stderr.read().decode("utf-8", "replace")
         exit_code = stdout.channel.recv_exit_status()
     except Exception as exc:  # 通道异常也要如实报告未闭环
-        return {"feedback_applied": False, "reason": f"反馈回写调用失败：{exc}", "items": []}
+        return {"feedback_applied": False, "status": "read_failed", "reason": f"反馈回写调用失败：{exc}", "items": []}
     payload = None
     try:
         payload = json.loads(output)
@@ -167,7 +169,7 @@ def apply_feedback_release(client, run_id, operator, deployment_id, current_sha,
         payload = None
     if exit_code != 0 or not payload:
         reason = (error or output or "未返回结果").strip()[:500]
-        return {"feedback_applied": False, "reason": f"反馈回写失败（退出码 {exit_code}）：{reason}", "items": []}
+        return {"feedback_applied": False, "status": "apply_failed", "reason": f"反馈回写失败（退出码 {exit_code}）：{reason}", "items": []}
     pending = [
         item.get("feedbackId")
         for item in payload.get("items", [])
@@ -175,6 +177,7 @@ def apply_feedback_release(client, run_id, operator, deployment_id, current_sha,
     ]
     return {
         "feedback_applied": payload.get("applyStatus") == "applied" and not pending,
+        "status": "applied_with_pending" if pending else "applied_verified",
         "apply_status": payload.get("applyStatus"),
         "applied": payload.get("applied", 0),
         "failed": payload.get("failed", 0),
@@ -368,7 +371,13 @@ def main():
             raise SystemExit(f"部署后版本校验失败，期望 {local_version}。")
         print("部署完成。")
         # 第二段：反馈回写。必须在代码部署成功边界之后独立执行与独立报告。
-        feedback_result = {"feedback_applied": False, "reason": "未提供发布核对记录，反馈闭环未执行", "items": []}
+        # C-04：未取到本批核对依据时记 not_crosschecked（未核对），不得冒充“确认没有反馈”。
+        feedback_result = {
+            "feedback_applied": False,
+            "status": "not_crosschecked",
+            "reason": "未提供 --feedback-run-id，本次没有本批反馈核对依据，反馈闭环未执行",
+            "items": [],
+        }
         if opts["feedback_run_id"]:
             print(f"开始反馈回写：发布批次 {opts['feedback_run_id']}")
             feedback_result = apply_feedback_release(
@@ -387,12 +396,18 @@ def main():
             "deployment_id": opts["deployment_id"],
             "feedback_run_id": opts["feedback_run_id"],
             "feedback_applied": bool(feedback_result.get("feedback_applied")),
+            "feedback_status": feedback_result.get("status", "unknown"),
             "feedback_reason": feedback_result.get("reason"),
             "feedback_pending": feedback_result.get("pending", []),
         }
         print("DEPLOY_RESULT=" + json.dumps(summary, ensure_ascii=False))
         if not summary["feedback_applied"]:
-            print("注意：代码已部署成功，但反馈闭环未完成（不触发代码回滚），请按上述待续办编号继续处理。", file=sys.stderr)
+            print(
+                "注意：代码已部署成功，但反馈闭环未完成（状态 "
+                + str(summary["feedback_status"])
+                + "，不触发代码回滚），请按上述待续办编号继续处理。",
+                file=sys.stderr,
+            )
     finally:
         # C-03：发布锁【最后】释放——必须覆盖代码更新、失败回滚与反馈第二段全程。
         # release-lock 幂等；拿不到就记录告警，不改变部署退出语义。

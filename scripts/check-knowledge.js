@@ -8,6 +8,12 @@ function normalize(filePath) {
 }
 
 const RELEASE_METADATA_FILES = new Set(['package.json', 'package-lock.json', 'CHANGELOG.md', 'public/changelog.json']);
+// 专项 Skill 入口：仓库内版本化维护，缺失时不报错（旧分支/旧工作区仍可用），存在则严格校验。
+const SKILL_ROOT = '.agents/skills';
+const MIN_SKILL_DESCRIPTION = 12;
+// 正文中以反引号标注的仓库文档路径才检查存在性；含占位符的模板路径跳过。
+const SKILL_REFERENCE_PATTERN = /`((?:docs|governance|deploy|\.agents)\/[^`\s]*?\.(?:md|json)|AGENTS\.md)`/g;
+const SKILL_REFERENCE_PLACEHOLDER = /(YYYY|MM|<|>|\*|\{|\})/;
 
 function readGitFile(rootDir, relativePath) {
   const result = childProcess.spawnSync('git', ['show', `HEAD:${relativePath}`], {
@@ -136,6 +142,32 @@ function collectReadSectionErrors(rootDir, map) {
     }
   }
   return errors;
+}
+
+function parseFrontmatter(text) {
+  const match = /^---\r?\n([\s\S]*?)\r?\n---/.exec(text);
+  if (!match) return null;
+  const fields = {};
+  for (const line of match[1].split(/\r?\n/)) {
+    const field = /^([A-Za-z0-9_-]+)\s*:\s*(.*)$/.exec(line);
+    if (!field) continue;
+    let value = field[2].trim();
+    if (value.length >= 2 && (value[0] === '"' || value[0] === "'") && value[value.length - 1] === value[0]) {
+      value = value.slice(1, -1);
+    }
+    fields[field[1]] = value;
+  }
+  return fields;
+}
+
+function collectSkillReferences(text) {
+  const references = new Set();
+  for (const match of text.matchAll(SKILL_REFERENCE_PATTERN)) {
+    const reference = normalize(match[1]);
+    if (SKILL_REFERENCE_PLACEHOLDER.test(reference)) continue;
+    references.add(reference);
+  }
+  return [...references];
 }
 
 function collectVersionErrors(rootDir) {
@@ -348,6 +380,7 @@ function runCheck({ rootDir = path.resolve(__dirname, '..'), changedFiles = [] }
   errors.push(...collectGeneratedMatrixErrors(rootDir));
   errors.push(...collectTaskGovernanceImplementationErrors(rootDir));
   errors.push(...collectJobContractErrors(rootDir));
+  errors.push(...collectSkillEntryErrors(rootDir));
   errors.push(...collectReadSectionErrors(rootDir, map));
   const files = [...new Set(changedFiles.map(normalize).filter(Boolean))];
   const releaseMetadataOnly = isReleaseMetadataOnly(rootDir, files);
@@ -451,8 +484,46 @@ function main() {
 
 if (require.main === module) main();
 
+function collectSkillEntryErrors(rootDir) {
+  const errors = [];
+  const skillRoot = path.join(rootDir, SKILL_ROOT);
+  if (!fs.existsSync(skillRoot)) return errors;
+  const entries = fs.readdirSync(skillRoot, { withFileTypes: true })
+    .filter(entry => entry.isDirectory())
+    .map(entry => entry.name)
+    .sort();
+  for (const name of entries) {
+    const relative = `${SKILL_ROOT}/${name}/SKILL.md`;
+    const filePath = path.join(skillRoot, name, 'SKILL.md');
+    if (!fs.existsSync(filePath)) {
+      errors.push(`Skill 目录缺少 SKILL.md：${relative}`);
+      continue;
+    }
+    const text = fs.readFileSync(filePath, 'utf8');
+    const frontmatter = parseFrontmatter(text);
+    if (!frontmatter) {
+      errors.push(`Skill 缺少 frontmatter：${relative}`);
+      continue;
+    }
+    if (!frontmatter.name) errors.push(`Skill 缺少 name：${relative}`);
+    else if (frontmatter.name !== name) {
+      errors.push(`Skill 的 name 必须与目录同名：${relative} → ${frontmatter.name}`);
+    }
+    if (!frontmatter.description || frontmatter.description.length < MIN_SKILL_DESCRIPTION) {
+      errors.push(`Skill 必须有可匹配的 description（至少 ${MIN_SKILL_DESCRIPTION} 字）：${relative}`);
+    }
+    for (const reference of collectSkillReferences(text)) {
+      if (!fs.existsSync(path.join(rootDir, reference))) {
+        errors.push(`Skill 引用了不存在的仓库文档：${relative} → ${reference}`);
+      }
+    }
+  }
+  return errors;
+}
+
 module.exports = {
   collectReadSectionErrors,
+  collectSkillEntryErrors,
   collectVersionErrors,
   collectGeneratedMatrixErrors,
   extractHeadings,

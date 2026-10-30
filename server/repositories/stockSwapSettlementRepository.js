@@ -47,12 +47,16 @@ async function selectUnlinkedImplementationCandidates(targetDate, client = pool)
     `SELECT c.case_id, MIN(d.document_id) AS document_id
        FROM event.arbitrage_cases c
        JOIN core.instruments si ON si.instrument_id=c.target_instrument_id
+       JOIN core.instruments ri ON ri.instrument_id=c.reference_instrument_id
        JOIN event.arbitrage_cases ac ON ac.target_instrument_id=c.reference_instrument_id AND ac.strategy_type='a_share_swap'
        JOIN event.arbitrage_case_documents ad ON ad.case_id=ac.case_id
        JOIN event.documents d ON d.document_id=ad.document_id
        JOIN ops.data_sources ds ON ds.source_id=d.source_id
       WHERE c.strategy_type='a_share_swap' AND c.reference_instrument_id IS NOT NULL
         AND c.target_instrument_id<>c.reference_instrument_id AND c.swap_ratio>0
+        -- 已知仍在市的目标、已退市的参考证券构成反向案件，不能把合并方当成待换股的被合并方。
+        AND NOT (COALESCE(si.status,'')='listed' AND COALESCE(ri.status,'')='delisted'
+          AND ri.delist_date IS NOT NULL AND ri.delist_date <= $1::date)
         AND ds.source_code IN ('sse','szse') AND d.announced_at <= $1::date
         AND (d.title LIKE '%换股实施结果%' OR d.title LIKE '%实施情况暨新增股份上市%')
         AND d.title LIKE '%换股吸收合并%' AND LENGTH(TRIM(si.name))>=2 AND POSITION(si.name IN d.title)>0

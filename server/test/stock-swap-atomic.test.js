@@ -32,6 +32,20 @@ async function cleanup(){
   missing=await repo.selectUnlinkedImplementationCandidates('2026-10-27');assert(missing.some(x=>String(x.case_id)===String(caseId)),'合并方案件有完成公告但被合并方案件未关联时须报告缺口');
   await pool.query('INSERT INTO event.arbitrage_case_documents(case_id,document_id) VALUES($1,$2)',[caseId,evidenceId]);
   missing=await repo.selectUnlinkedImplementationCandidates('2026-10-27');assert(!missing.some(x=>String(x.case_id)===String(caseId)),'已关联完成公告不得继续报告缺口');
+  // 生产存在合并方持仓和一条方向反转的历史案件；只在生命周期证据明确时排除。
+  const reverseClient=await pool.connect();
+  try {
+    await reverseClient.query('BEGIN');
+    await reverseClient.query("UPDATE core.instruments SET status='listed',delist_date=NULL WHERE instrument_id=$1",[dst.instrument_id]);
+    await reverseClient.query("UPDATE core.instruments SET status='delisted',delist_date=NULL WHERE instrument_id=$1",[src.instrument_id]);
+    const reverse=await reverseClient.query("INSERT INTO event.arbitrage_cases(market,strategy_type,source_id,source_key,swap_ratio,target_instrument_id,reference_instrument_id) SELECT 'CN','a_share_swap',source_id,$1,2,$2,$3 FROM ops.data_sources ORDER BY source_id LIMIT 1 RETURNING case_id",['atomic-reverse-'+Date.now(),dst.instrument_id,src.instrument_id]);
+    const reverseId=String(reverse.rows[0].case_id);
+    missing=await repo.selectUnlinkedImplementationCandidates('2026-10-27',reverseClient);
+    assert(missing.some(x=>String(x.case_id)===reverseId),'退市日期未知时不得排除待核查案件');
+    await reverseClient.query("UPDATE core.instruments SET delist_date='2026-10-19' WHERE instrument_id=$1",[src.instrument_id]);
+    missing=await repo.selectUnlinkedImplementationCandidates('2026-10-27',reverseClient);
+    assert(!missing.some(x=>String(x.case_id)===reverseId),'在市合并方与已退市参考对象的反向案件不得告警');
+  } finally { await reverseClient.query('ROLLBACK'); reverseClient.release(); }
   const patterns=svc.IMPLEMENTATION_TITLE_PATTERNS.map(x=>'%'+x+'%');
   let completed=await repo.selectImplementedSwapCases(patterns,'2026-10-26');assert(!completed.some(x=>String(x.case_id)===String(caseId)),'未披露的完成公告不得用于历史目标日');
   completed=await repo.selectImplementedSwapCases(patterns,'2026-10-27');assert(completed.some(x=>String(x.case_id)===String(caseId)),'有效完成公告应被识别');

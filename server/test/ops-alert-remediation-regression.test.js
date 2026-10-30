@@ -234,14 +234,15 @@ async function verifyReconciliationEvidence() {
 
   // 正常等待（官方未披露/字段复查冷却）不是故障：不自动关闭，并归入“正常等待”处置分类。
   const { classifyAlertDisposition } = require('../services/jobAlertMailer');
+  const pendingRecheckAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
   const waitingSlot = {
     slot_id: 30, job_code: 'ipo_history_sync', business_date: '2026-10-23', status: 'pending',
     scheduled_for: '2026-10-23T11:35:00.000Z', request_payload: { mode: 'enrichment' },
     result_summary: {
       continuationRequired: true, waitReason: 'field_recheck_cooldown', pendingStages: ['enrichment'], remaining: 1,
-      nextAttemptAt: '2026-10-30T02:00:00.000Z',
+      nextAttemptAt: pendingRecheckAt,
     },
-    next_attempt_at: '2026-10-30T02:00:00.000Z',
+    next_attempt_at: pendingRecheckAt,
   };
   const waitingVerification = await verifyScope(
     { alert_type: 'failure', scope_type: 'slot', scope_key: '30', job_code: 'ipo_history_sync', alert_type: 'failure' },

@@ -397,7 +397,9 @@ async function saveAccountData(username, accountName, data, expectedVersion = nu
       const lockedDates = lockedNav.map((n) => n.date);
       if (lockedDates.length) {
         await client.query(
-          'DELETE FROM nav_history WHERE username=$1 AND account_name=$2 AND NOT (date = ANY($3::date[]))',
+          // nav_history.date 是 TEXT 列：参数写成 ::date[] 会变成 text = date，PG 没有这个操作符，
+          // 只有「存在锁定净值」时才走到这条分支，属于潜伏到那一刻才炸的写法（2026-10-30 扫描发现）。
+          'DELETE FROM nav_history WHERE username=$1 AND account_name=$2 AND NOT (date = ANY($3::text[]))',
           [username, accountName, lockedDates]
         );
       } else {

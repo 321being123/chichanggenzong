@@ -1,0 +1,176 @@
+{
+  "说明": "数据层 SQL 在隔离库 PREPARE 时已知会失败的条目。新增失败即视为回归；某条修好后必须同步删除这里的登记，否则 acceptanceRepositorySql 会报 stale。",
+  "维护方式": "node server/scripts/acceptanceRepositorySql.js --json <报告> 后按报告更新；不要为了变绿而随意加条目。",
+  "items": [
+    {
+      "file": "server/repositories/stockAnalysisRepository.js",
+      "line": 27,
+      "fn": "saveMetadata",
+      "code": "42P01",
+      "table": "stock_analysis_stocks",
+      "status": "dead-path",
+      "reason": "引用 migration008 已删除的旧表；该写入函数在当前代码里没有路由/任务调用（历史迁移半成品），改动留独立批次",
+      "foundAt": "2026-10-30"
+    },
+    {
+      "file": "server/repositories/stockAnalysisRepository.js",
+      "line": 63,
+      "fn": "saveAux",
+      "code": "42P01",
+      "table": "stock_dividends",
+      "status": "dead-path",
+      "reason": "引用 migration008 已删除的旧表；该写入函数在当前代码里没有路由/任务调用（历史迁移半成品），改动留独立批次",
+      "foundAt": "2026-10-30"
+    },
+    {
+      "file": "server/repositories/stockAnalysisRepository.js",
+      "line": 88,
+      "fn": "saveValuations",
+      "code": "42P01",
+      "table": "stock_daily_valuations",
+      "status": "dead-path",
+      "reason": "引用 migration008 已删除的旧表；该写入函数在当前代码里没有路由/任务调用（历史迁移半成品），改动留独立批次",
+      "foundAt": "2026-10-30"
+    },
+    {
+      "file": "server/repositories/stockAnalysisRepository.js",
+      "line": 109,
+      "fn": "setSyncState",
+      "code": "42P01",
+      "table": "stock_data_sync_state",
+      "status": "dead-path",
+      "reason": "引用 migration008 已删除的旧表；该写入函数在当前代码里没有路由/任务调用（历史迁移半成品），改动留独立批次",
+      "foundAt": "2026-10-30"
+    },
+    {
+      "file": "server/repositories/stockAnalysisRepository.js",
+      "line": 191,
+      "fn": "latestDividendEndDate",
+      "code": "42P01",
+      "table": "stock_dividends",
+      "status": "dead-path",
+      "reason": "引用 migration008 已删除的旧表；该写入函数在当前代码里没有路由/任务调用（历史迁移半成品），改动留独立批次",
+      "foundAt": "2026-10-30"
+    },
+    {
+      "file": "server/repositories/stockAnalysisRepository.js",
+      "line": 197,
+      "fn": "latestForecastAnnDate",
+      "code": "42P01",
+      "table": "stock_forecasts",
+      "status": "dead-path",
+      "reason": "引用 migration008 已删除的旧表；该写入函数在当前代码里没有路由/任务调用（历史迁移半成品），改动留独立批次",
+      "foundAt": "2026-10-30"
+    },
+    {
+      "file": "server/repositories/stockProjectionRepository.js",
+      "line": 27,
+      "fn": "syncRawRecords",
+      "code": "42P01",
+      "table": "stock_daily_valuations",
+      "status": "dead-path",
+      "reason": "引用 migration008 已删除的旧表；该写入函数在当前代码里没有路由/任务调用（历史迁移半成品），改动留独立批次",
+      "foundAt": "2026-10-30"
+    },
+    {
+      "file": "server/repositories/stockProjectionRepository.js",
+      "line": 68,
+      "fn": "syncMarket",
+      "code": "42P01",
+      "table": "stock_daily_valuations",
+      "status": "dead-path",
+      "reason": "引用 migration008 已删除的旧表；该写入函数在当前代码里没有路由/任务调用（历史迁移半成品），改动留独立批次",
+      "foundAt": "2026-10-30"
+    },
+    {
+      "file": "server/repositories/stockProjectionRepository.js",
+      "line": 71,
+      "fn": "syncMarket",
+      "code": "42P01",
+      "table": "stock_daily_valuations",
+      "status": "dead-path",
+      "reason": "引用 migration008 已删除的旧表；该写入函数在当前代码里没有路由/任务调用（历史迁移半成品），改动留独立批次",
+      "foundAt": "2026-10-30"
+    },
+    {
+      "file": "server/repositories/stockProjectionRepository.js",
+      "line": 74,
+      "fn": "syncMarket",
+      "code": "42P01",
+      "table": "stock_daily_valuations",
+      "status": "dead-path",
+      "reason": "引用 migration008 已删除的旧表；该写入函数在当前代码里没有路由/任务调用（历史迁移半成品），改动留独立批次",
+      "foundAt": "2026-10-30"
+    },
+    {
+      "file": "server/repositories/stockProjectionRepository.js",
+      "line": 81,
+      "fn": "syncMarket",
+      "code": "42P01",
+      "table": "stock_daily_valuations",
+      "status": "dead-path",
+      "reason": "引用 migration008 已删除的旧表；该写入函数在当前代码里没有路由/任务调用（历史迁移半成品），改动留独立批次",
+      "foundAt": "2026-10-30"
+    },
+    {
+      "file": "server/repositories/stockProjectionRepository.js",
+      "line": 155,
+      "fn": "syncFundamentals",
+      "code": "42P01",
+      "table": "stock_dividends",
+      "status": "dead-path",
+      "reason": "引用 migration008 已删除的旧表；该写入函数在当前代码里没有路由/任务调用（历史迁移半成品），改动留独立批次",
+      "foundAt": "2026-10-30"
+    },
+    {
+      "file": "server/repositories/stockProjectionRepository.js",
+      "line": 164,
+      "fn": "syncFundamentals",
+      "code": "42P01",
+      "table": "stock_forecasts",
+      "status": "dead-path",
+      "reason": "引用 migration008 已删除的旧表；该写入函数在当前代码里没有路由/任务调用（历史迁移半成品），改动留独立批次",
+      "foundAt": "2026-10-30"
+    },
+    {
+      "file": "server/repositories/stockProjectionRepository.js",
+      "line": 175,
+      "fn": "syncEvents",
+      "code": "42P01",
+      "table": "stock_events",
+      "status": "dead-path",
+      "reason": "引用 migration008 已删除的旧表；该写入函数在当前代码里没有路由/任务调用（历史迁移半成品），改动留独立批次",
+      "foundAt": "2026-10-30"
+    },
+    {
+      "file": "server/repositories/stockProjectionRepository.js",
+      "line": 238,
+      "fn": "syncCursors",
+      "code": "42P01",
+      "table": "stock_data_sync_state",
+      "status": "dead-path",
+      "reason": "引用 migration008 已删除的旧表；该写入函数在当前代码里没有路由/任务调用（历史迁移半成品），改动留独立批次",
+      "foundAt": "2026-10-30"
+    },
+    {
+      "file": "server/repositories/stockProjectionRepository.js",
+      "line": 260,
+      "fn": "listLegacyStockCodes",
+      "code": "42P01",
+      "table": "stock_analysis_stocks",
+      "status": "dead-path",
+      "reason": "引用 migration008 已删除的旧表；该写入函数在当前代码里没有路由/任务调用（历史迁移半成品），改动留独立批次",
+      "foundAt": "2026-10-30"
+    },
+    {
+      "file": "server/repositories/stockProjectionRepository.js",
+      "line": 265,
+      "fn": "readLegacySnapshot",
+      "code": "42P01",
+      "table": "stock_analysis_snapshots",
+      "status": "dead-path",
+      "reason": "引用 migration008 已删除的旧表；该写入函数在当前代码里没有路由/任务调用（历史迁移半成品），改动留独立批次",
+      "foundAt": "2026-10-30"
+    }
+  ]
+}

@@ -20,7 +20,8 @@
     "backtest:motive": "node server/scripts/backtestConvertibleBondMotive.js --apply --backfill-scores",
     "audit:instrument-merges": "node server/scripts/auditInstrumentMerges.js --json",
     "probe:tushare-permissions": "node server/scripts/probeTusharePermissions.js",
-    "check:data-architecture": "node server/scripts/acceptanceDataArchitecture.js"
+    "check:data-architecture": "node server/scripts/acceptanceDataArchitecture.js",
+    "acceptance:repo-sql": "node server/scripts/acceptanceRepositorySql.js"
   },
   "dependencies": {
     "@mozilla/readability": "0.6.0",

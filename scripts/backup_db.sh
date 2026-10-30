@@ -11,7 +11,7 @@
 #   - 本地 pg_dump + gzip 导出
 #   - 设置了 BACKUP_PASSPHRASE 则额外做 AES256 对称加密并删除明文（生产数据不外泄）
 #   - 对【最终产物】生成 SHA256（加密后为 .gpg，未加密为 .sql.gz）；恢复时先校验密文再解密
-#   - 按"备份组"保留最近 14 组（一组 = 同时间戳的全部产物），超出整组删除
+#   - 按"备份组"保留最近 N 组（一组 = 同时间戳的全部产物），默认 3 组；可用 BACKUP_KEEP_GROUPS 覆盖
 #   - 生产建议 REQUIRE_ENCRYPTION=1 强制加密；普通本地/受控环境可不加密
 #
 # 反馈附件（2026-10-23）:
@@ -53,8 +53,17 @@ ATTACH_DIR="${FEEDBACK_UPLOAD_DIR:-${DATA_DIR:-$ROOT_DIR/data}/feedback-uploads}
 # ---------- 辅助函数 ----------
 
 # 从产物文件名反推"备份组基名"（去掉类型后缀与压缩/加密后缀）
+# 2026-10-30 修：原来只剥一层后缀，`X.sql.gz.gpg.sha256` 会被剥成 `X.sql.gz.gpg`，
+# 同一组因此算出多个基名，导致「保留 14 组」实际只留下约 3—4 组（按 mtime 排序时
+# 同组文件占掉多个名额），清理脚本也容易把同组的 .sha256 当成另一组删掉。
+# 改成循环剥离，直到剥不动为止。
 group_base() {
-  printf '%s' "$1" | sed -E 's/\.(manifest\.sha256|attachments\.tar\.gz(\.gpg)?|sql\.gz(\.gpg)?|sha256|gpg)$//'
+  local name="$1" prev=""
+  while [ "$name" != "$prev" ]; do
+    prev="$name"
+    name="$(printf '%s' "$name" | sed -E 's/\.(manifest\.sha256|attachments\.tar\.gz(\.gpg)?|sql\.gz(\.gpg)?|sha256|gpg)$//')"
+  done
+  printf '%s' "$name"
 }
 
 # 按"备份组基名"保留最近 N 组（一组 = 同时间戳的数据库/附件/清单产物），超出整组删除
@@ -63,6 +72,11 @@ prune_backups() {
   allfiles=$(ls -1t "$BACKUP_DIR"/*"${PGDATABASE}"_* 2>/dev/null) || true
   [ -z "$allfiles" ] && return 0
   local keep=() seen="" cnt=0
+  # 保留组数可配：默认 3（2026-10-30 用户要求"最多 3 组"）。一次部署就会触发一组备份，
+  # 14 组意味着半个月内可积压十几份近似的全量快照，磁盘占用不划算。
+  local keep_groups="${BACKUP_KEEP_GROUPS:-3}"
+  case "$keep_groups" in ''|*[!0-9]*) keep_groups=3;; esac
+  [ "$keep_groups" -lt 1 ] && keep_groups=1
   while IFS= read -r f; do
     [ -e "$f" ] || continue
     base="$(group_base "$f")"
@@ -70,7 +84,7 @@ prune_backups() {
     seen="$seen|$base|"
     keep+=("$base")
     cnt=$((cnt + 1))
-    [ "$cnt" -ge 14 ] && break
+    [ "$cnt" -ge "$keep_groups" ] && break
   done <<< "$allfiles"
   while IFS= read -r f; do
     [ -e "$f" ] || continue

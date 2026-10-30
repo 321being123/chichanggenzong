@@ -126,34 +126,13 @@ async function saveAnalysisResults(tsCode, analysis) {
   });
 }
 
-// externalClient 存在时复用外层事务：不 BEGIN/COMMIT，也不释放连接。
-async function syncStockToArchitecture(tsCode, analysis, externalClient) {
-  return withTransaction(async client => {
-    const sources = await projection.sourceIds(client);
-    const master = await projection.ensureMaster(client, tsCode, sources);
-    const runId = await projection.createIngestionRun({
-      sourceId: sources.calculated, datasetCode: 'stock_analysis_architecture', requestRange: { ts_code: tsCode },
-    }, client);
-    const rawCount = await projection.syncRawRecords(client, tsCode, runId, sources.tushare);
-    await projection.syncMarket(client, tsCode, master.instrumentId, sources, master.currency);
-    await projection.syncFundamentals(client, tsCode, master.companyId, master.instrumentId, sources);
-    await projection.syncEvents(client, tsCode, master.companyId, sources);
-    let currentAnalysis = analysis;
-    if (!currentAnalysis) currentAnalysis = await projection.readLegacySnapshot(client, tsCode);
-    await projection.syncAnalytics(client, master.instrumentId, currentAnalysis, sources, STOCK_FORMULA_VERSION);
-    await projection.syncCursors(client, tsCode, master.instrumentId, master.companyId);
-    await projection.syncQualityIssues(client, master.instrumentId, master.companyId, currentAnalysis);
-    await projection.finishIngestionRun({ runId, rowCount: rawCount }, client);
-    return { ts_code: tsCode, instrument_id: master.instrumentId, company_id: master.companyId };
-  }, externalClient ? { tx: externalClient } : {});
-}
-
-async function backfillLegacyFinancialData() {
-  const codes = await withTransaction(client => projection.listLegacyStockCodes(client));
-  const results = [];
-  for (const code of codes) results.push(await syncStockToArchitecture(code));
-  return results;
-}
+// 2026-10-30 删除：syncStockToArchitecture 与 backfillLegacyFinancialData。
+// 这两条是「股票分析 → 标准化层」迁移的半成品：内部读写 stock_daily_valuations / stock_dividends /
+// stock_forecasts / stock_events / stock_data_sync_state / stock_analysis_* 七张旧表，而它们在
+// migration008 已删除，所以一旦调用必然整事务报错。核查确认无任何路由/任务/脚本调用（只有测试里
+// 断言过导出名），且同类事实已由 persistCollectedData（原文/主档）、saveCollectedEvents（公告事件）、
+// saveAnalysisResults（指标与质量）三条活路径承担。删除后不再保留这两条死入口，避免有人"复用"后
+// 在生产事务里踩雷。
 
 module.exports = {
   // 兼容出口：纯函数仍从本模块可导入，实现只有 domain/stockFacts 一份
@@ -168,6 +147,4 @@ module.exports = {
   persistCollectedData,
   saveCollectedEvents,
   saveAnalysisResults,
-  syncStockToArchitecture,
-  backfillLegacyFinancialData,
 };

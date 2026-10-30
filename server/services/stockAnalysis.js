@@ -94,25 +94,11 @@ async function repairZeroValuations(tsCode, rows, fields) {
   return {rows:repaired,issues};
 }
 
-async function saveMetadata(row) {
-  await stockAnalysisRepository.saveMetadata({ row });
-}
 
 async function saveReports(kind, tsCode, rows) {
   await stockAnalysisRepository.saveReports({ kind, tsCode, rows });
 }
 
-async function saveAux(table, tsCode, rows) {
-  await stockAnalysisRepository.saveAux({ table, tsCode, rows });
-}
-
-async function saveValuations(tsCode, dailyRows, basicRows, factorRows) {
-  await stockAnalysisRepository.saveValuations({ tsCode, dailyRows, basicRows, factorRows });
-}
-
-async function setSyncState(tsCode, dataset, successDate, error) {
-  await stockAnalysisRepository.setSyncState({ tsCode, dataset, successDate, error });
-}
 
 // 交易所字段用于公告接口的栏目选择，不作为外部供应商证券标识；供应商代码统一走 securityIdentity。
 // 三家官方公告返回的编号字段不完全一致，统一保留原始公告来源编号；
@@ -308,7 +294,8 @@ async function refreshStockAnalysis(rawCode, reason = 'manual', options = {}) {
   const [indicators, dividends, forecasts] = await Promise.all([
     fetchPartitioned('fina_indicator', tsCode, indicatorStart, today, 'ts_code,ann_date,end_date,roe,roa,ebit,ebit_to_interest,interestdebt,profit_dedt,dt_netprofit_yoy'),
     // dividend 官方仅支持 ts_code（无 start_date/end_date 范围）：传 ts_code 拉该只全量，内存过滤只保留本地最新分红报告期往前一年的重叠窗口，
-    // 由 saveAux 按唯一键幂等 upsert，只写新增/修订行（首次无水位则保留全量）。重叠窗口仅在此计算一次（latestDividendEndDate 只提供原始水位）。
+    // 由 persistCollectedData 落原文并按唯一键幂等 upsert 到 fundamental.corporate_actions（首次无水位则保留全量）。
+    // 重叠窗口仅在此计算一次（latestDividendEndDate 只提供原始水位）。
     gate('stock_dividend', async () => {
       const all = await fetchRequired('dividend', { ts_code: tsCode }, 'ts_code,end_date,ann_date,div_proc,stk_div,stk_bo_rate,stk_co_rate,cash_div,cash_div_tax,record_date,ex_date,pay_date,imp_ann_date,base_date,base_share');
       if (!dividendStart) return all;

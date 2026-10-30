@@ -21,19 +21,6 @@ function finite(value) {
 
 // ---- 写入：采集落库 ----
 
-async function saveMetadata(params, tx) {
-  const runner = tx || pool;
-  const row = params.row || {};
-  await runner.query(
-    `INSERT INTO stock_analysis_stocks (ts_code,symbol,name,industry,market,list_date,data)
-     VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb)
-     ON CONFLICT (ts_code) DO UPDATE SET symbol=EXCLUDED.symbol,name=EXCLUDED.name,
-       industry=EXCLUDED.industry,market=EXCLUDED.market,list_date=EXCLUDED.list_date,
-       data=EXCLUDED.data,fetched_at=now()`,
-    [row.ts_code, row.symbol || String(row.ts_code || '').slice(0, 6), row.name || '', row.industry || '', row.market || '', row.list_date || null, JSON.stringify(row)],
-  );
-}
-
 async function saveReports(params, tx) {
   const runner = tx || pool;
   const table = REPORT_TABLES[params.kind];
@@ -50,73 +37,6 @@ async function saveReports(params, tx) {
     );
   }
 }
-
-async function saveAux(params, tx) {
-  const runner = tx || pool;
-  const table = params.table;
-  const allowed = new Set(['stock_financial_indicators', 'stock_dividends', 'stock_forecasts']);
-  if (!allowed.has(table)) throw new Error('未知辅助数据表');
-  for (const row of params.rows || []) {
-    if (table === 'stock_financial_indicators' && !row.end_date) continue;
-    const common = [params.tsCode, versionKey(row), row.end_date || null, row.ann_date || null];
-    if (table === 'stock_dividends') {
-      await runner.query(
-        `INSERT INTO stock_dividends (ts_code,version_key,end_date,ann_date,ex_date,pay_date,div_proc,data)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb)
-         ON CONFLICT (ts_code,version_key) DO UPDATE SET data=EXCLUDED.data,fetched_at=now()`,
-        [...common, row.ex_date || null, row.pay_date || null, row.div_proc || null, JSON.stringify(row)],
-      );
-    } else {
-      await runner.query(
-        `INSERT INTO ${table} (ts_code,version_key,end_date,ann_date,data)
-         VALUES ($1,$2,$3,$4,$5::jsonb)
-         ON CONFLICT (ts_code,version_key) DO UPDATE SET data=EXCLUDED.data,fetched_at=now()`,
-        [...common, JSON.stringify(row)],
-      );
-    }
-  }
-}
-
-async function saveValuations(params, tx) {
-  const runner = tx || pool;
-  const daily = new Map((params.dailyRows || []).map(r => [r.trade_date, r]));
-  const basic = new Map((params.basicRows || []).map(r => [r.trade_date, r]));
-  const factors = new Map((params.factorRows || []).map(r => [r.trade_date, r]));
-  const dates = new Set([...daily.keys(), ...basic.keys(), ...factors.keys()]);
-  for (const tradeDate of dates) {
-    const d = daily.get(tradeDate) || {}, b = basic.get(tradeDate) || {}, a = factors.get(tradeDate) || {};
-    await runner.query(
-      `INSERT INTO stock_daily_valuations
-       (ts_code,trade_date,close,adj_factor,pe,pe_ttm,pb,dv_ttm,total_share,total_mv,float_share,free_share,circ_mv)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
-       ON CONFLICT (ts_code,trade_date) DO UPDATE SET
-       close=COALESCE(EXCLUDED.close,stock_daily_valuations.close),
-       adj_factor=COALESCE(EXCLUDED.adj_factor,stock_daily_valuations.adj_factor),
-       pe=EXCLUDED.pe,pe_ttm=EXCLUDED.pe_ttm,pb=EXCLUDED.pb,dv_ttm=EXCLUDED.dv_ttm,
-       total_share=COALESCE(EXCLUDED.total_share,stock_daily_valuations.total_share),
-       total_mv=COALESCE(EXCLUDED.total_mv,stock_daily_valuations.total_mv),
-       float_share=COALESCE(EXCLUDED.float_share,stock_daily_valuations.float_share),
-       free_share=COALESCE(EXCLUDED.free_share,stock_daily_valuations.free_share),
-       circ_mv=COALESCE(EXCLUDED.circ_mv,stock_daily_valuations.circ_mv),fetched_at=now()`,
-      [params.tsCode, tradeDate, finite(d.close), finite(a.adj_factor), finite(b.pe), finite(b.pe_ttm), finite(b.pb),
-        finite(b.dv_ttm), finite(b.total_share), finite(b.total_mv), finite(b.float_share), finite(b.free_share), finite(b.circ_mv)],
-    );
-  }
-}
-
-async function setSyncState(params, tx) {
-  const runner = tx || pool;
-  await runner.query(
-    `INSERT INTO stock_data_sync_state (ts_code,dataset,last_success_date,last_attempt_at,last_error)
-     VALUES ($1,$2,$3,now(),$4)
-     ON CONFLICT (ts_code,dataset) DO UPDATE SET
-       last_success_date=COALESCE(EXCLUDED.last_success_date,stock_data_sync_state.last_success_date),
-       last_attempt_at=now(),last_error=EXCLUDED.last_error,updated_at=now()`,
-    [params.tsCode, params.dataset, params.successDate || null, params.error || ''],
-  );
-}
-
-// ---- 读取：分析输入、增量水位 ----
 
 async function readInstrumentMeta(params, tx) {
   const runner = tx || pool;
@@ -186,16 +106,33 @@ async function loadAnalysisInputs(params, tx) {
   };
 }
 
+// 增量水位（2026-10-30 修）：原来查 stock_dividends / stock_forecasts，这两张表在 migration008 已删除，
+// 查询必然报错、被上层 catch 吞成「没有本地数据」，导致每次都按首发全量重拉。分红与业绩预告的事实
+// 早已迁到 fundamental.corporate_actions / fundamental.earnings_guidance（loadAnalysisInputs 用的就是它们），
+// 这里只是水位查询没跟着改。返回值仍是 YYYYMMDD 字符串，查不到给空串，调用方无需改动。
 async function latestDividendEndDate(params, tx) {
   const runner = tx || pool;
-  const { rows } = await runner.query('SELECT MAX(end_date) AS d FROM stock_dividends WHERE ts_code=$1', [params.tsCode]);
-  return rows[0] && rows[0].d ? String(rows[0].d).replace(/-/g, '') : '';
+  const { rows } = await runner.query(
+    `SELECT to_char(MAX(a.fiscal_period_end), 'YYYYMMDD') AS d
+       FROM fundamental.corporate_actions a
+       JOIN core.instruments i ON i.instrument_id=a.instrument_id
+      WHERE i.canonical_code=$1 AND a.action_type='dividend'`,
+    [params.tsCode],
+  );
+  return rows[0] && rows[0].d ? String(rows[0].d) : '';
 }
 
 async function latestForecastAnnDate(params, tx) {
   const runner = tx || pool;
-  const { rows } = await runner.query('SELECT MAX(ann_date) AS d FROM stock_forecasts WHERE ts_code=$1', [params.tsCode]);
-  return rows[0] && rows[0].d ? String(rows[0].d).replace(/-/g, '') : '';
+  const { rows } = await runner.query(
+    `SELECT to_char(MAX(g.announced_at), 'YYYYMMDD') AS d
+       FROM fundamental.earnings_guidance g
+       JOIN core.company_instruments ci ON ci.company_id=g.company_id
+       JOIN core.instruments i ON i.instrument_id=ci.instrument_id
+      WHERE i.canonical_code=$1`,
+    [params.tsCode],
+  );
+  return rows[0] && rows[0].d ? String(rows[0].d) : '';
 }
 
 // ---- 自选股（routes/stockAnalysis 原 SQL） ----
@@ -313,11 +250,7 @@ module.exports = {
   readLatestSnapshot,
   readSnapshotFreshnessInputs,
   readUnifiedSummary,
-  saveAux,
-  saveMetadata,
   saveReports,
-  saveValuations,
-  setSyncState,
   updateWatchlistName,
   upsertEventCursor,
 };

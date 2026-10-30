@@ -11,25 +11,6 @@ async function sourceIds(client) {
   return Object.fromEntries(rows.map(row => [row.source_code, row.source_id]));
 }
 
-async function syncRawRecords(client, tsCode, runId, sourceId) {
-  const datasets = [
-    ['stock_income_statements', 'income'], ['stock_balance_sheets', 'balancesheet'],
-    ['stock_cashflow_statements', 'cashflow'], ['stock_financial_indicators', 'fina_indicator'],
-    ['stock_dividends', 'dividend'], ['stock_forecasts', 'forecast'],
-  ];
-  let rowCount = 0;
-  for (const [table, dataset] of datasets) {
-    const result = await client.query(`INSERT INTO ops.raw_records(run_id,source_id,dataset_code,source_key,payload,payload_hash)
-      SELECT $2,$3,$4,version_key,data,md5(data::text) FROM ${table} WHERE ts_code=$1
-      ON CONFLICT(source_id,dataset_code,source_key,payload_hash) DO NOTHING`, [tsCode, runId, sourceId, dataset]);
-    rowCount += result.rowCount;
-  }
-  const valuationResult = await client.query(`INSERT INTO ops.raw_records(run_id,source_id,dataset_code,source_key,payload,payload_hash)
-    SELECT $2,$3,'daily_basic',trade_date,to_jsonb(v),md5(to_jsonb(v)::text) FROM stock_daily_valuations v WHERE ts_code=$1
-    ON CONFLICT(source_id,dataset_code,source_key,payload_hash) DO NOTHING`, [tsCode, runId, sourceId]);
-  return rowCount + valuationResult.rowCount;
-}
-
 async function ensureMaster(client, tsCode, sources, metadata) {
   let legacy = metadata ? { ...metadata, data: metadata } : null;
   if (!legacy) {
@@ -62,32 +43,6 @@ async function ensureMaster(client, tsCode, sources, metadata) {
       [company.company_id, controller.name, controller.type || 'other', finite(controller.hold_ratio), sources.eastmoney, asDate(legacy.list_date), controller.name ? 0.8 : null, JSON.stringify(controller)]);
   }
   return { companyId: company.company_id, instrumentId: instrument.instrument_id, legacy, currency };
-}
-
-async function syncMarket(client, tsCode, instrumentId, sources, currency) {
-  await client.query(`INSERT INTO market.daily_bars(instrument_id,trade_date,source_id,close)
-    SELECT $2,to_date(trade_date,'YYYYMMDD'),$3,close FROM stock_daily_valuations WHERE ts_code=$1 AND close IS NOT NULL
-    ON CONFLICT(instrument_id,trade_date,source_id) DO UPDATE SET close=EXCLUDED.close,ingested_at=now()`, [tsCode, instrumentId, sources.tushare]);
-  await client.query(`INSERT INTO market.adjustment_factors(instrument_id,trade_date,source_id,adj_factor)
-    SELECT $2,to_date(trade_date,'YYYYMMDD'),$3,adj_factor FROM stock_daily_valuations WHERE ts_code=$1 AND adj_factor IS NOT NULL
-    ON CONFLICT(instrument_id,trade_date,source_id) DO UPDATE SET adj_factor=EXCLUDED.adj_factor,ingested_at=now()`, [tsCode, instrumentId, sources.tushare]);
-  await client.query(`INSERT INTO market.daily_valuations(instrument_id,trade_date,source_id,pe_static,pe_ttm,pb,dividend_yield_ttm,total_market_cap,circulating_market_cap,free_float_market_cap,currency_code)
-    SELECT $2,to_date(trade_date,'YYYYMMDD'),$3,pe,pe_ttm,pb,CASE WHEN dv_ttm IS NULL THEN NULL ELSE dv_ttm/100 END,
-      total_mv*10000,circ_mv*10000,CASE WHEN close IS NULL OR free_share IS NULL THEN NULL ELSE close*free_share*10000 END,$4
-    FROM stock_daily_valuations WHERE ts_code=$1
-    ON CONFLICT(instrument_id,trade_date,source_id) DO UPDATE SET pe_static=EXCLUDED.pe_static,pe_ttm=EXCLUDED.pe_ttm,pb=EXCLUDED.pb,
-      dividend_yield_ttm=EXCLUDED.dividend_yield_ttm,total_market_cap=EXCLUDED.total_market_cap,circulating_market_cap=EXCLUDED.circulating_market_cap,
-      free_float_market_cap=EXCLUDED.free_float_market_cap,currency_code=EXCLUDED.currency_code,ingested_at=now()`, [tsCode, instrumentId, sources.tushare, currency]);
-  await client.query(`WITH capital AS (
-      SELECT to_date(trade_date,'YYYYMMDD') effective_date,total_share*10000 total_shares,float_share*10000 circulating_shares,free_share*10000 free_float_shares,
-        lag(total_share) OVER(ORDER BY trade_date) previous_total,lag(float_share) OVER(ORDER BY trade_date) previous_float,
-        lag(free_share) OVER(ORDER BY trade_date) previous_free
-      FROM stock_daily_valuations WHERE ts_code=$1 AND (total_share IS NOT NULL OR float_share IS NOT NULL OR free_share IS NOT NULL)
-    ) INSERT INTO market.share_capital_history(instrument_id,effective_date,source_id,total_shares,a_shares,circulating_shares,free_float_shares)
-      SELECT $2,effective_date,$3,total_shares,total_shares,circulating_shares,free_float_shares FROM capital
-      WHERE previous_total IS NULL OR total_shares/10000 IS DISTINCT FROM previous_total
-        OR circulating_shares/10000 IS DISTINCT FROM previous_float OR free_float_shares/10000 IS DISTINCT FROM previous_free
-      ON CONFLICT(instrument_id,effective_date,source_id) DO UPDATE SET total_shares=EXCLUDED.total_shares,a_shares=EXCLUDED.a_shares,circulating_shares=EXCLUDED.circulating_shares,free_float_shares=EXCLUDED.free_float_shares,ingested_at=now()`, [tsCode, instrumentId, sources.tushare]);
 }
 
 async function syncReportRows(client, rows, kind, companyId, sourceId, options = {}) {
@@ -130,56 +85,6 @@ async function syncReportRows(client, rows, kind, companyId, sourceId, options =
     }
   }
   await client.query(`WITH ranked AS (SELECT report_id,row_number() OVER(PARTITION BY company_id,report_kind,period_end ORDER BY CASE WHEN report_type='1' THEN 0 ELSE 1 END,announced_at DESC NULLS LAST,ingested_at DESC,report_id DESC) rn FROM fundamental.financial_reports WHERE company_id=$1 AND report_kind=$2) UPDATE fundamental.financial_reports r SET is_current_version=(ranked.rn=1) FROM ranked WHERE r.report_id=ranked.report_id`, [companyId, kind]);
-}
-
-async function syncReportTable(client, table, kind, tsCode, companyId, sourceId) {
-  const { rows } = await client.query(`SELECT version_key,end_date,ann_date,data FROM ${table} WHERE ts_code=$1`, [tsCode]);
-  await syncReportRows(client, rows.map(row => row.data || {}), kind, companyId, sourceId);
-}
-
-async function syncFundamentals(client, tsCode, companyId, instrumentId, sources) {
-  await syncReportTable(client, 'stock_income_statements', 'income', tsCode, companyId, sources.tushare);
-  await syncReportTable(client, 'stock_balance_sheets', 'balance', tsCode, companyId, sources.tushare);
-  await syncReportTable(client, 'stock_cashflow_statements', 'cashflow', tsCode, companyId, sources.tushare);
-  await syncReportTable(client, 'stock_financial_indicators', 'indicator', tsCode, companyId, sources.tushare);
-  await client.query(`INSERT INTO fundamental.financial_period_summary(company_id,period_end,announced_at,net_profit_parent,net_profit_deducted,total_assets,equity_parent,operating_cashflow,goodwill,interest_expense,roe,roa,source_report_ids)
-    SELECT $1,r.period_end,max(r.announced_at),max(f.numeric_value) FILTER(WHERE f.metric_code='net_profit_parent'),max(f.numeric_value) FILTER(WHERE f.metric_code='net_profit_deducted'),
-      max(f.numeric_value) FILTER(WHERE f.metric_code='total_assets'),max(f.numeric_value) FILTER(WHERE f.metric_code='equity_parent'),max(f.numeric_value) FILTER(WHERE f.metric_code='operating_cashflow'),
-      max(f.numeric_value) FILTER(WHERE f.metric_code='goodwill'),max(f.numeric_value) FILTER(WHERE f.metric_code='interest_expense'),max(f.numeric_value) FILTER(WHERE f.metric_code='roe'),max(f.numeric_value) FILTER(WHERE f.metric_code='roa'),array_agg(DISTINCT r.report_id)
-    FROM fundamental.financial_reports r JOIN fundamental.financial_facts f ON f.report_id=r.report_id WHERE r.company_id=$1 AND r.is_current_version GROUP BY r.period_end
-    ON CONFLICT(company_id,period_end) DO UPDATE SET announced_at=EXCLUDED.announced_at,net_profit_parent=EXCLUDED.net_profit_parent,net_profit_deducted=EXCLUDED.net_profit_deducted,
-      total_assets=EXCLUDED.total_assets,equity_parent=EXCLUDED.equity_parent,operating_cashflow=EXCLUDED.operating_cashflow,goodwill=EXCLUDED.goodwill,interest_expense=EXCLUDED.interest_expense,
-      roe=EXCLUDED.roe,roa=EXCLUDED.roa,source_report_ids=EXCLUDED.source_report_ids,updated_at=now()`, [companyId]);
-  await client.query(`UPDATE fundamental.corporate_actions SET source_key=$2||':'||source_key
-    WHERE instrument_id=$1 AND source_id=$3 AND source_key NOT LIKE $2||':%'`, [instrumentId, tsCode, sources.tushare]);
-  const dividends = (await client.query('SELECT version_key,data FROM stock_dividends WHERE ts_code=$1', [tsCode])).rows;
-  for (const item of dividends) {
-    const r = item.data || {}, cashPre = finite(r.cash_div_tax), base = finite(r.base_share), amount = cashPre != null && base != null ? cashPre * base * 10000 : null;
-    await client.query(`INSERT INTO fundamental.corporate_actions(instrument_id,action_type,fiscal_period_end,announced_at,record_date,ex_date,pay_date,status,cash_per_share_pre_tax,cash_per_share_after_tax,stock_dividend_ratio,capitalization_ratio,base_shares,total_cash_amount,currency_code,source_id,source_key,raw_payload)
-      VALUES($1,'dividend',$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'CNY',$14,$15,$16::jsonb) ON CONFLICT(source_id,source_key) DO UPDATE SET status=EXCLUDED.status,record_date=EXCLUDED.record_date,ex_date=EXCLUDED.ex_date,pay_date=EXCLUDED.pay_date,total_cash_amount=EXCLUDED.total_cash_amount,raw_payload=EXCLUDED.raw_payload,ingested_at=now()`,
-    [instrumentId, asDate(r.end_date), asDate(r.ann_date || r.imp_ann_date), asDate(r.record_date), asDate(r.ex_date), asDate(r.pay_date), r.div_proc || '', cashPre, finite(r.cash_div), finite(r.stk_bo_rate), finite(r.stk_co_rate), base == null ? null : base * 10000, amount, sources.tushare, `${tsCode}:${item.version_key}`, JSON.stringify(r)]);
-  }
-  await client.query(`UPDATE fundamental.earnings_guidance SET source_key=$2||':'||source_key
-    WHERE company_id=$1 AND source_id=$3 AND source_key NOT LIKE $2||':%'`, [companyId, tsCode, sources.tushare]);
-  const guidance = (await client.query('SELECT version_key,data FROM stock_forecasts WHERE ts_code=$1', [tsCode])).rows;
-  for (const item of guidance) {
-    const r = item.data || {};
-    if (!asDate(r.end_date)) continue;
-    await client.query(`INSERT INTO fundamental.earnings_guidance(company_id,period_end,guidance_type,announced_at,profit_min,profit_max,change_min,change_max,summary,change_reason,currency_code,source_id,source_key,raw_payload)
-      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'CNY',$11,$12,$13::jsonb) ON CONFLICT(source_id,source_key) DO UPDATE SET guidance_type=EXCLUDED.guidance_type,profit_min=EXCLUDED.profit_min,profit_max=EXCLUDED.profit_max,change_min=EXCLUDED.change_min,change_max=EXCLUDED.change_max,summary=EXCLUDED.summary,change_reason=EXCLUDED.change_reason,raw_payload=EXCLUDED.raw_payload,ingested_at=now()`,
-    [companyId, asDate(r.end_date), r.type || 'forecast', asDate(r.ann_date), finite(r.net_profit_min) == null ? null : finite(r.net_profit_min) * 10000, finite(r.net_profit_max) == null ? null : finite(r.net_profit_max) * 10000, finite(r.p_change_min), finite(r.p_change_max), r.summary || '', r.change_reason || '', sources.tushare, `${tsCode}:${item.version_key}`, JSON.stringify(r)]);
-  }
-}
-
-async function syncEvents(client, tsCode, companyId, sources) {
-  const { rows } = await client.query('SELECT * FROM stock_events WHERE ts_code=$1', [tsCode]);
-  for (const r of rows) {
-    const source = sources[r.source] || sources.calculated, key = r.event_key || hash(`${r.source}|${r.url}|${r.title}`);
-    const documentId = r.is_official ? (await client.query(`INSERT INTO event.documents(company_id,document_type,title,announced_at,url,source_id,content_hash,raw_payload)
-      VALUES($1,$2,$3,$4,$5,$6,$7,$8::jsonb) ON CONFLICT(source_id,url,content_hash) DO UPDATE SET title=EXCLUDED.title,raw_payload=EXCLUDED.raw_payload RETURNING document_id`, [companyId, r.category || 'announcement', r.title, asDate(r.event_date), r.url || '', source, hash(r.title), JSON.stringify(r.data || {})])).rows[0]?.document_id : null;
-    await client.query(`INSERT INTO event.company_events(company_id,event_type,event_date,title,importance,is_official,source_id,document_id,source_key,details)
-      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb) ON CONFLICT(source_id,source_key) DO UPDATE SET title=EXCLUDED.title,event_type=EXCLUDED.event_type,details=EXCLUDED.details`, [companyId, r.category || 'other', asDate(r.event_date), r.title, r.is_official ? 10 : 1, r.is_official, source, documentId, key, JSON.stringify(r.data || {})]);
-  }
 }
 
 // formulaVersion 由编排层传入，仓储不依赖 services 常量模块。
@@ -234,14 +139,6 @@ async function syncAnalytics(client, instrumentId, analysis, sources, formulaVer
   [instrumentId, asOf, analysis.name || analysis.ts_code, analysis.ts_code, (analysis.industry_info && analysis.industry_info.name) || analysis.industry || '', quote.currency || 'CNY', finite(quote.price), finite(valuation.market_cap), finite(valuation.a_share_market_cap), finite(valuation.circulating_market_cap), finite(valuation.free_float_market_cap), controller.name || '', controller.type || '', asDate(report.end_date), asDate(report.ann_date), guidance.summary || guidance.type || '', JSON.stringify(valuation)]);
 }
 
-async function syncCursors(client, tsCode, instrumentId, companyId) {
-  const { rows } = await client.query('SELECT * FROM stock_data_sync_state WHERE ts_code=$1', [tsCode]);
-  for (const row of rows) {
-    await client.query(`INSERT INTO ops.sync_cursors(instrument_id,company_id,scope_key,dataset_code,last_success_date,last_attempt_at,last_error)
-      VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(scope_key,dataset_code) DO UPDATE SET last_success_date=EXCLUDED.last_success_date,last_attempt_at=EXCLUDED.last_attempt_at,last_error=EXCLUDED.last_error,updated_at=now()`, [instrumentId, companyId, `${instrumentId}:${companyId}`, row.dataset, asDate(row.last_success_date), row.last_attempt_at, row.last_error || '']);
-  }
-}
-
 async function syncQualityIssues(client, instrumentId, companyId, analysis) {
   if (!analysis) return;
   const valuation = analysis.valuation || {};
@@ -254,16 +151,6 @@ async function syncQualityIssues(client, instrumentId, companyId, analysis) {
       VALUES($1,$2,$3,$4,$5,$6::jsonb) ON CONFLICT(instrument_id,dataset_code,field_code,issue_type,status)
       DO UPDATE SET details=EXCLUDED.details,detected_at=now(),resolved_at=NULL`, [instrumentId, companyId, dataset, field, type, JSON.stringify({ ts_code: analysis.ts_code || '' })]);
   }
-}
-
-async function listLegacyStockCodes(client) {
-  const { rows } = await client.query('SELECT ts_code FROM stock_analysis_stocks ORDER BY ts_code');
-  return rows.map(row => row.ts_code);
-}
-
-async function readLegacySnapshot(client, tsCode) {
-  const { rows } = await client.query('SELECT data FROM stock_analysis_snapshots WHERE ts_code=$1', [tsCode]);
-  return rows[0] ? rows[0].data : null;
 }
 
 // ---- 以下为批次1按 method(params, tx) 登记的新仓储方法 ----
@@ -392,18 +279,10 @@ module.exports = {
   finishIngestionRun,
   insertQualityIssue,
   insertRawRecord,
-  listLegacyStockCodes,
-  readLegacySnapshot,
   sourceIds,
   syncAnalytics,
-  syncCursors,
-  syncEvents,
-  syncFundamentals,
-  syncMarket,
   syncQualityIssues,
-  syncRawRecords,
   syncReportRows,
-  syncReportTable,
   upsertAdjustmentFactor,
   upsertCompanyEvent,
   upsertCorporateAction,

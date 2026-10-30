@@ -60,8 +60,7 @@ check('仓储层不自行开启事务', () => {
 });
 check('financialDataArchitecture 导出签名保持兼容', () => {
   for (const name of ['asDate', 'finite', 'analysisMetricValues', 'hash', 'rowVersion', 'stablePayload',
-    'syncReportRows', 'persistCollectedData', 'saveCollectedEvents', 'saveAnalysisResults',
-    'syncStockToArchitecture', 'backfillLegacyFinancialData']) {
+    'syncReportRows', 'persistCollectedData', 'saveCollectedEvents', 'saveAnalysisResults']) {
     assert.strictEqual(typeof financialDataArchitecture[name], 'function', `缺少导出 ${name}`);
   }
 });

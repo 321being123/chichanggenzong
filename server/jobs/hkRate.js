@@ -176,7 +176,8 @@ async function runHkRateJob({ final = false, targetDate } = {}) {
       // Web/Worker 启动补漏只沿用 24 小时门禁，不在交易时段额外触发收盘抓取。
       r = await ensureHkRate();
     }
-    result = r;
+    // 仅返回实际入库的汇率日期；失败、跳过或没有日期时不能伪造任务水位。
+    result = { ...r, dataAsOf: rateResultWatermark(r) };
     await finishJobRun(runId, !!r.ok, r.ok ? ('汇率 ' + r.rate) : (r.error || r.reason || '抓取失败'));
   } catch (e) {
     await finishJobRun(runId, false, e.message || String(e));
@@ -192,7 +193,13 @@ async function runHkRateJob({ final = false, targetDate } = {}) {
   return result;
 }
 
+function rateResultWatermark(result) {
+  if (!result || !result.ok || result.skipped) return null;
+  return CoreDate.normalizeBusinessDate(result.rateDate) || null;
+}
+
 module.exports = {
+  rateResultWatermark,
   fetchHkRate,
   fetchRealtimeHkRate,
   parseRealtimeHkRateHtml,

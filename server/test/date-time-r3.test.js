@@ -79,6 +79,10 @@ const requestedDates = [];
   assert.strictEqual(missing.ok, false);
   assert.strictEqual(missing.reason, 'historical_rate_missing');
   assert.strictEqual(missing.externalCalls, 0, '缺少历史汇率不得转成当前汇率外部抓取');
+  assert.strictEqual(hkRate.rateResultWatermark({ ok: true, rateDate: '2026-10-29' }), '2026-10-29');
+  assert.strictEqual(hkRate.rateResultWatermark({ ok: true }), null);
+  assert.strictEqual(hkRate.rateResultWatermark({ ok: true, skipped: true, rateDate: '2026-10-29' }), null);
+  assert.strictEqual(hkRate.rateResultWatermark({ ok: false, rateDate: '2026-10-29' }), null);
 
   for (const timeZone of ['UTC', 'Asia/Shanghai', 'America/New_York']) {
     const child = spawnSync(process.execPath, ['-e', [

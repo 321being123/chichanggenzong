@@ -42,14 +42,13 @@ async function select_market_quote_cache(params, client = pool) {
 
 // 批量写入日线行情缓存：每 300 行一批，占位符与参数在此层拼装
 async function saveDailyQuoteCache(rows, client = pool) {
-  const { tushareTradeTime } = require('../domain/marketPure');
   for (let start = 0; start < rows.length; start += 300) {
     const chunk = rows.slice(start, start + 300);
     const params = [];
     const values = chunk.map((row, index) => {
       const base = index * 8;
-      params.push(row.ts_code, 'tushare_daily', row.ts_code, String(row.ts_code).split('.')[1].toLowerCase(), '', row.close, row.pct_chg, tushareTradeTime(row.trade_date));
-      return `(${base + 1},${base + 2},${base + 3},${base + 4},${base + 5},${base + 6},${base + 7},${base + 8})`;
+      params.push(row.ts_code, 'tushare_daily', row.ts_code, String(row.ts_code).split('.')[1].toLowerCase(), '', row.close, row.pct_chg, row.quote_time);
+      return `(${Array.from({ length: 8 }, (_, i) => '$' + (base + i + 1)).join(',')})`;
     });
     await client.query(
       `INSERT INTO market_quote_cache

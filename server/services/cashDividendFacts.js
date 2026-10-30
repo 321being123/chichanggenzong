@@ -6,7 +6,9 @@ const crypto=require('crypto');
 const txControl = require('../repositories/transactionControl');
 const {shiftDay: shiftBusinessDay} = require('./tradingDayShift');
 const {fetchSseEvents, fetchSzseEvents} = require('../dataAccess/adapters/announcementSourceAdapter');
-const PARSER='cash-dividend-v6';
+const PARSER='cash-dividend-v7';
+// v7 只扩展此前未解析的上交所表格，不改变 v6 已通过事实的口径。
+const COMPATIBLE_DOCUMENT_PARSERS=new Set([PARSER,'cash-dividend-v6']);
 const BOND_INTEREST_PARSER='bond-interest-v2';
 function normalizeChineseDates(text){
   const digits={'零':0,'〇':0,'一':1,'二':2,'三':3,'四':4,'五':5,'六':6,'七':7,'八':8,'九':9};
@@ -71,6 +73,13 @@ function parseDividend(text,identity) {
     // 上交所固定表头后仅接受A股行，不能抓全篇最后一个日期。
     const table=compact.match(/股份类别股权登记日最后交易日除权[（(]息[）)]日现金红利发放日[ＡA]股(20\d{2}\/\d{1,2}\/\d{1,2})[－—-](20\d{2}\/\d{1,2}\/\d{1,2})(20\d{2}\/\d{1,2}\/\d{1,2})/);
     if(table) {recordDate=recordDate||dateValue(table[1]);exDate=exDate||dateValue(table[2]);payDate=payDate||dateValue(table[3]);}
+    // 部分上交所公告没有「最后交易日」列；只读取完整表头之后的 A 股行。
+    const simpleTables=[...compact.matchAll(/股份类别股权登记日除权[（(]息[）)]日现金红利发放日[ＡA]股(20\d{2}\/\d{1,2}\/\d{1,2})(20\d{2}\/\d{1,2}\/\d{1,2})(20\d{2}\/\d{1,2}\/\d{1,2})/g)]
+      .map(m=>m.slice(1,4).map(dateValue));
+    const distinct=[...new Set(simpleTables.map(dates=>JSON.stringify(dates)))];
+    if(distinct.length===1 && simpleTables[0].every(Boolean)) {
+      recordDate=recordDate||simpleTables[0][0]; exDate=exDate||simpleTables[0][1]; payDate=payDate||simpleTables[0][2];
+    }
   }
   let currency=null,amount=null;
   if(identity.market==='HK') {
@@ -126,7 +135,7 @@ async function storeDocument(identity,ann,sourceId) {
   const {runPythonExtraction}=require('./arbitrageDocumentSource');
   const url=ann.fileLink||ann.url,sourceKey=ann.sourceKey||ann.source_number||url;
   const cached=(await pool.query(`SELECT document_id,raw_payload FROM event.documents WHERE source_id=$1 AND url=$2 ORDER BY document_id DESC LIMIT 1`,[sourceId,url])).rows[0];
-  if(cached?.raw_payload?.cashDividend?.parserVersion===PARSER && cached.raw_payload.cashDividend.quality==='passed'
+  if(COMPATIBLE_DOCUMENT_PARSERS.has(cached?.raw_payload?.cashDividend?.parserVersion) && cached.raw_payload.cashDividend.quality==='passed'
     &&(identity.asset_class!=='convertible_bond'||cached.raw_payload.cashDividend.bondParserVersion===BOND_INTEREST_PARSER)) return {ok:true,cached:true,fact:cached.raw_payload.cashDividend,url,code:identity.code};
   const body=cached?.raw_payload?.text?{text:cached.raw_payload.text}:await runPythonExtraction(url,String(identity.canonical_code).split('.')[0],{rawText:true});
   let fact=parseDividend(body.text,identity);

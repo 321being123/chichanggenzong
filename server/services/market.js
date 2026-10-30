@@ -94,7 +94,7 @@ function tushareTradeTime(tradeDate) {
 
 async function saveDailyCache(rows) {
   try {
-    await repository.saveDailyQuoteCache(rows);
+    await repository.saveDailyQuoteCache(rows.map(row => ({ ...row, quote_time: tushareTradeTime(row.trade_date) })));
   } catch (_) {}
 }
 

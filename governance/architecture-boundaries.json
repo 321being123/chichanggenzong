@@ -777,6 +777,20 @@
       "note": "自然日位移纯函数（Asia/Shanghai 归属日）"
     },
     {
+      "path": "server/services/accountPositionBasis.js",
+      "role": "application",
+      "batch": 3,
+      "status": "registered",
+      "note": "导入后持仓基准范围校验和仓储编排"
+    },
+    {
+      "path": "server/services/accountPriceBackfill.js",
+      "role": "application",
+      "batch": 3,
+      "status": "registered",
+      "note": "账户缺价范围和现有补价入口编排"
+    },
+    {
       "path": "server/services/accountCash.js",
       "role": "application",
       "batch": 3,

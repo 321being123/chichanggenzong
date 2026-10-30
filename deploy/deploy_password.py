@@ -668,11 +668,13 @@ def main():
             raise SystemExit(f"部署后版本校验失败，期望 {local_version}。")
         print("部署完成。")
         # 第二段：反馈回写。必须在代码部署成功边界之后独立执行与独立报告。
-        # C-04：未取到本批核对依据时记 not_crosschecked（未核对），不得冒充“确认没有反馈”。
+        # 两种核对依据分别报告，不能混：带批次编号走真实回写与回读；
+        # 只有「已完整查询、确认无相关反馈」的证据时，闭环同样成立，但状态必须写成
+        # crosschecked_no_related_feedback —— 不能落成 not_crosschecked（未核对）。
         feedback_result = {
             "feedback_applied": False,
             "status": "not_crosschecked",
-            "reason": "未提供 --feedback-run-id，本次没有本批反馈核对依据，反馈闭环未执行",
+            "reason": "既没有批次编号也没有查询证据，本次没有本批反馈核对依据",
             "items": [],
         }
         if opts["feedback_run_id"]:
@@ -686,6 +688,19 @@ def main():
                 local_version,
                 lock_token,
             )
+        elif opts["feedback_none_evidence"]:
+            feedback_result = {
+                "feedback_applied": True,
+                "status": "crosschecked_no_related_feedback",
+                "reason": (
+                    "已完整查询未闭环反馈并确认本批无相关项（证据文件 "
+                    + str(opts["feedback_none_evidence"])
+                    + "，发布前校验已通过）"
+                ),
+                "pending": [],
+                "unverified": [],
+                "items": [],
+            }
         summary = {
             "code_deployed": True,
             "commit": local_commit[:8],
@@ -696,6 +711,7 @@ def main():
             "feedback_status": feedback_result.get("status", "unknown"),
             "feedback_reason": feedback_result.get("reason"),
             "feedback_pending": feedback_result.get("pending", []),
+            "feedback_evidence": opts["feedback_none_evidence"],
         }
         print("DEPLOY_RESULT=" + json.dumps(summary, ensure_ascii=False))
         if not summary["feedback_applied"]:

@@ -3,6 +3,12 @@ const {parseDividend,sameDividendPeriod}=require('../services/cashDividendFacts'
 const cn={canonical_code:'600219.SH',market:'CN'},hk={canonical_code:'00358.HK',market:'HK'};
 const sse='证券代码：600219\n股份类别 股权登记日 最后交易日 除权（息）日 现金红利发放日 Ａ股 2026/10/14 － 2026/10/15 2026/10/15\n二、分配方案 每股派发现金红利0.265元（含税）\n每股现金红利=0.263元';
 assert.deepStrictEqual([parseDividend(sse,cn).recordDate,parseDividend(sse,cn).payDate,parseDividend(sse,cn).amount],['2026-10-14','2026-10-15',0.265]);
+const shortTable='证券代码：601995\n股份类别\n股权登记日\n除权（息）日\n现金红利发放日\nＡ股\n2026/8/21\n2026/8/24\n2026/8/24\n每股派发现金红利人民币0.23元';
+const shortFact=parseDividend(shortTable,{canonical_code:'601995.SH',market:'CN'});
+assert.deepStrictEqual([shortFact.recordDate,shortFact.exDate,shortFact.payDate,shortFact.amount],['2026-08-21','2026-08-24','2026-08-24',0.23]);
+const conflict=shortTable+'\n股份类别 股权登记日 除权（息）日 现金红利发放日 A股 2026/8/20 2026/8/24 2026/8/24';
+assert.strictEqual(parseDividend(conflict,{canonical_code:'601995.SH',market:'CN'}).reason,'incomplete_dividend_terms');
+assert.strictEqual(parseDividend(shortTable,{canonical_code:'601996.SH',market:'CN'}).reason,'document_security_not_verified');
 const sz='证券代码：000719\n二、权益分派方案 每10股派发6.6元人民币现金（含税）\n股权登记日为：2026年6月30日\n现金红利将于2026年7月1日直接划入资金账户';
 assert(Math.abs(parseDividend(sz,{market:'CN',canonical_code:'000719.SZ'}).amount-0.66)<1e-12);
 assert.strictEqual(parseDividend(sz,{market:'CN',canonical_code:'000719.SZ'}).payDate,'2026-07-01');

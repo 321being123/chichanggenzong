@@ -110,10 +110,10 @@ async function upsertDailyFacts(params, client = pool) {
   for (const r of rows) {
     let n = mParams.length;
     mParams.push(r.id, params.date, params.sourceId, r.close, r.cbValue, r.cbOverRate, r.bondValue, r.bondOverRate, r.raw);
-    mVals.push(`(${n + 1},${n + 2},${n + 3},${n + 4},${n + 5},${n + 6},${n + 7},${n + 8},${n + 9})`);
+    mVals.push(`(${Array.from({ length: 9 }, (_, i) => '$' + (n + i + 1)).join(',')})`);
     let m = bParams.length;
     bParams.push(r.id, params.date, params.sourceId, r.open, r.high, r.low, r.close, r.vol, r.amount);
-    bVals.push(`(${m + 1},${m + 2},${m + 3},${m + 4},${m + 5},${m + 6},${m + 7},${m + 8},${m + 9})`);
+    bVals.push(`(${Array.from({ length: 9 }, (_, i) => '$' + (m + i + 1)).join(',')})`);
   }
   if (mVals.length) {
     await client.query(

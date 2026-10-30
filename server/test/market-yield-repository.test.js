@@ -8,7 +8,12 @@ pool.query = async (sql, params) => { calls.push({ sql, params }); return { rows
   try {
     const sample = { workTime: '2026-10-27', tenYear: 2.5 };
     await repo.saveChinaYield(sample);
-    assert.deepStrictEqual(calls[0].params, [sample.workTime, sample.tenYear, JSON.stringify(sample)]);
+    // 来源由取数方传入：默认仍写 chinabond，理杏仁官方优先时写 lixinger_official。
+    assert.deepStrictEqual(calls[0].params, [sample.workTime, sample.tenYear, JSON.stringify(sample), 'chinabond']);
+    await repo.saveChinaYield(sample, 'lixinger_official');
+    assert.strictEqual(calls[1].params[3], 'lixinger_official');
+    calls.length = 0;
+    await repo.saveChinaYield(sample);
     await repo.saveHsiMarketValuation('2026-10-27', 12, sample);
     await repo.saveHsiIndexHistory('2026-10-27', 12, sample);
     assert.match(calls[1].sql, /market\.market_valuation_daily/);
@@ -38,7 +43,7 @@ pool.query = async (sql, params) => { calls.push({ sql, params }); return { rows
     const codes = ['cn_yield', 'csi300_pe', 'csi_all_pe', 'hsi_pe', 'us_treasury_yield', 'm2', 'a_share_market_cap', 'm2_market_cap', 'graham_csi300', 'graham_csi_all'];
     for (const code of codes) await repo.readSubdatasetFreshness(code);
     assert.strictEqual(calls.length, 19);
-    assert.match(calls[9].sql, /source_code='chinabond'/);
+    assert.match(calls[9].sql, /source_code IN \('chinabond','lixinger_official'\)/);
     assert.match(calls[13].sql, /source_code='tushare_us_tycr'/);
     assert.match(calls[16].sql, /data_status='normal'/);
     await assert.rejects(repo.readSubdatasetFreshness('unknown'), /未知市场周期数据集/);

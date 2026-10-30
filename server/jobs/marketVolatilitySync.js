@@ -29,7 +29,23 @@ async function parseHsiWorkbook(buffer) {
   child.on('close', n => { if (n !== 0) return reject(new Error('恒指 PE 文件解析失败（退出码 ' + n + '）：' + err)); try { resolve(JSON.parse(out)); } catch(e) { reject(e); } }); child.stdin.end(buffer);
 }); }
 async function syncChinaYield(start, end) {
-
+  // 理杏仁官方优先：macro/national-debt 的 tcm_y10（十年期收益率，小数→百分数点）。
+  try {
+    const { resolveSovereignYield10y } = require('../services/lixingerDatasetSources');
+    const official = await resolveSovereignYield10y({ startDate: start, endDate: end });
+    if (official && official.length) {
+      let saved = 0;
+      for (const row of official) {
+        await marketYieldRepository.saveChinaYield(row, 'lixinger_official');
+        saved += 1;
+      }
+      console.log(`[市场周期] 中国10年国债 来源=理杏仁官方 写入=${saved}条`);
+      return saved;
+    }
+  } catch (error) {
+    if (['JOB_BUDGET_EXCEEDED', 'POLICY_NOT_CONFIGURED', 'DATASET_LOCKED'].includes(error.code)) throw error;
+    console.warn(`理杏仁10年国债不可用，回退 chinabond：${String(error.message).slice(0, 160)}`);
+  }
   let count = 0, cursor = new Date(start + 'T00:00:00Z'), last = new Date(end + 'T00:00:00Z');
   while (cursor <= last) {
     const rangeEnd = new Date(Date.UTC(cursor.getUTCFullYear() + 1, cursor.getUTCMonth(), cursor.getUTCDate() - 1));
@@ -173,6 +189,24 @@ async function syncCsi300Valuation(full) {
 }
 
 async function syncMoneySupply() {
+  // 理杏仁官方优先：macro/money-supply 的 m.m2.t（元→亿元）。
+  try {
+    const { resolveMoneySupply } = require('../services/lixingerDatasetSources');
+    const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+    const official = await resolveMoneySupply({ startDate: '1990-01-01', endDate: today });
+    if (official && official.length) {
+      const wm0 = await marketYieldRepository.readMoneyWatermark();
+      const maxMonth0 = wm0.rows[0].mx;
+      const since0 = maxMonth0 ? (new Date(maxMonth0).getUTCFullYear() - 2) + '-' + String(new Date(maxMonth0).getUTCMonth() + 1).padStart(2, '0') + '-01' : '1990-01-01';
+      const kept0 = official.filter(row => !maxMonth0 || row.month >= since0).map(row => ({ month: `${row.month}-01`, m2: row.m2, row }));
+      if (kept0.length) await marketYieldRepository.saveMoneySupply(kept0, 'lixinger_official');
+      console.log(`[市场周期] 货币供应量 来源=理杏仁官方 返回=${official.length}条, 重叠窗口保留=${kept0.length}条`);
+      return kept0.length;
+    }
+  } catch (error) {
+    if (['JOB_BUDGET_EXCEEDED', 'POLICY_NOT_CONFIGURED', 'DATASET_LOCKED'].includes(error.code)) throw error;
+    console.warn(`理杏仁货币供应不可用，回退 Tushare：${String(error.message).slice(0, 160)}`);
+  }
   const data = await tushareQuery('cn_m', {}, 'month,m2,m2_yoy');
   if (!data) return 0;
   // 水位：本地最新月份；只保留最近 24 个月重叠窗口（首次空表则全量）

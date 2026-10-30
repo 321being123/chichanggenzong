@@ -1,8 +1,10 @@
 const { pool } = require('../db/connection');
 
-async function saveChinaYield(row) {
+// sourceCode 由取数方决定：理杏仁官方优先时写 lixinger_official，回退时仍写 chinabond。
+async function saveChinaYield(row, sourceCode = 'chinabond') {
+  if (!row || !row.workTime || !Number.isFinite(Number(row.tenYear))) return { rowCount: 0, rows: [] };
   return pool.query(`INSERT INTO market.sovereign_yield_daily(market_code,tenor_years,trade_date,yield_pct,source_code,source_date,raw_payload)
-    VALUES('CN',10,$1,$2,'chinabond',$1,$3) ON CONFLICT(market_code,tenor_years,trade_date,source_code) DO UPDATE SET yield_pct=EXCLUDED.yield_pct,raw_payload=EXCLUDED.raw_payload,ingested_at=now()`, [row.workTime, row.tenYear, JSON.stringify(row)]);
+    VALUES('CN',10,$1,$2,$4,$1,$3) ON CONFLICT(market_code,tenor_years,trade_date,source_code) DO UPDATE SET yield_pct=EXCLUDED.yield_pct,raw_payload=EXCLUDED.raw_payload,ingested_at=now()`, [row.workTime, row.tenYear, JSON.stringify(row), sourceCode]);
 }
 
 async function saveHsiMarketValuation(day, pe, row) {
@@ -59,10 +61,10 @@ async function readMoneyWatermark() {
   return pool.query(`SELECT max(month)::text AS mx FROM market.money_supply_monthly WHERE market_code='CN'`);
 }
 
-async function saveMoneySupply(kept) {
+async function saveMoneySupply(kept, sourceCode = 'nbs_via_tushare') {
   const values = [], params = []; let p = 1;
   for (const k of kept) {
-    values.push(`('CN',$${p},$${p+1},'nbs_via_tushare',$${p+2})`);
+    values.push(`('CN',$${p},$${p+1},'${sourceCode}',$${p+2})`);
     params.push(k.month, k.m2, JSON.stringify({
       ...k.row,
       source: 'https://data.stats.gov.cn/',
@@ -146,7 +148,7 @@ async function saveMarketCap({ day, totalYi, securityCount, fromUnified }) {
 }
 
 const SUBDATASET_QUERIES = Object.freeze({
-  cn_yield: "SELECT max(trade_date)::text AS data_as_of FROM market.sovereign_yield_daily WHERE market_code='CN' AND tenor_years=10 AND source_code='chinabond'",
+  cn_yield: "SELECT max(trade_date)::text AS data_as_of FROM market.sovereign_yield_daily WHERE market_code='CN' AND tenor_years=10 AND source_code IN ('chinabond','lixinger_official')",
   csi300_pe: "SELECT max(trade_date)::text AS data_as_of FROM market.market_valuation_daily WHERE market_code='CN' AND benchmark_code='CSI300' AND source_code='csindex'",
   csi_all_pe: "SELECT max(trade_date)::text AS data_as_of FROM market.market_valuation_daily WHERE market_code='CN' AND benchmark_code='CSIALL' AND source_code='csindex'",
   hsi_pe: "SELECT max(trade_date)::text AS data_as_of FROM market.market_valuation_daily WHERE market_code='HK' AND benchmark_code='HSI' AND source_code='hsi_official'",

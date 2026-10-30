@@ -137,6 +137,26 @@ async function syncReportTable(client, table, kind, tsCode, companyId, sourceId)
   await syncReportRows(client, rows.map(row => row.data || {}), kind, companyId, sourceId);
 }
 
+// 理杏仁官方分红 → 标准分红事实（fundamental.corporate_actions），来源写 lixinger_official。
+// 只写事实、不动 legacy stock_dividends；同一事件与 Tushare 行并存，由现金收益按来源层级与事件键去重择一。
+async function syncOfficialDividends(client, instrumentId, sourceId, rows) {
+  let written = 0;
+  for (const row of rows || []) {
+    if (!row || !row.end_date) continue;
+    const cashPre = finite(row.cash_div_tax);
+    const base = finite(row.base_share);
+    const amount = cashPre != null && base != null ? cashPre * base * 10000 : null;
+    await client.query(`INSERT INTO fundamental.corporate_actions(instrument_id,action_type,fiscal_period_end,announced_at,record_date,ex_date,pay_date,status,cash_per_share_pre_tax,cash_per_share_after_tax,stock_dividend_ratio,capitalization_ratio,base_shares,total_cash_amount,currency_code,source_id,source_key,raw_payload)
+      VALUES($1,'dividend',$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'CNY',$14,$15,$16::jsonb)
+      ON CONFLICT(source_id,source_key) DO UPDATE SET status=EXCLUDED.status,record_date=EXCLUDED.record_date,ex_date=EXCLUDED.ex_date,pay_date=EXCLUDED.pay_date,total_cash_amount=EXCLUDED.total_cash_amount,raw_payload=EXCLUDED.raw_payload,ingested_at=now()`,
+    [instrumentId, asDate(row.end_date), asDate(row.ann_date), asDate(row.record_date), asDate(row.ex_date), asDate(row.pay_date),
+      row.div_proc || '', cashPre, null, finite(row.stk_bo_rate), finite(row.stk_co_rate), base == null ? null : base * 10000, amount,
+      sourceId, `${row.ts_code || instrumentId}:${row.end_date}:${row.ann_date || ''}`, JSON.stringify(row)]);
+    written += 1;
+  }
+  return written;
+}
+
 async function syncFundamentals(client, tsCode, companyId, instrumentId, sources) {
   await syncReportTable(client, 'stock_income_statements', 'income', tsCode, companyId, sources.tushare);
   await syncReportTable(client, 'stock_balance_sheets', 'balance', tsCode, companyId, sources.tushare);
@@ -399,6 +419,7 @@ module.exports = {
   syncCursors,
   syncEvents,
   syncFundamentals,
+  syncOfficialDividends,
   syncMarket,
   syncQualityIssues,
   syncRawRecords,

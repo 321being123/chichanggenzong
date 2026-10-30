@@ -660,7 +660,25 @@ async function syncConvertibleBondUniverse(reason = 'scheduled', options = {}) {
       tushareQuery('adj_factor', { trade_date: targetTradeDate.replace(/-/g, '') }, 'ts_code,trade_date,adj_factor', { allowEmpty: true }),
     ]);
     const stockDailyRows = tsRows(stockDailyData);
-    const stockValuationRows = tsRows(stockValuationData);
+    const tushareValuationRows = tsRows(stockValuationData);
+    // 官方优先：同一证券同一交易日只落一个来源。官方覆盖到的证券从 Tushare 批次里剔除，
+    // 避免同一 (instrument_id, trade_date) 出现两行来源导致读取端重复。
+    let officialValuationRows = [];
+    try {
+      const { resolveValuationRows } = require('./lixingerDatasetSources');
+      officialValuationRows = (await resolveValuationRows({
+        codes: stockDailyRows.map(row => row.ts_code), tradeDate: targetTradeDate,
+      })) || [];
+    } catch (error) {
+      if (['JOB_BUDGET_EXCEEDED', 'POLICY_NOT_CONFIGURED', 'DATASET_LOCKED'].includes(error.code)) throw error;
+      console.warn(`理杏仁估值不可用，整批回退 Tushare：${String(error.message).slice(0, 160)}`);
+      officialValuationRows = [];
+    }
+    const officialCodeSet = new Set(officialValuationRows.map(row => row.ts_code));
+    const stockValuationRows = tushareValuationRows.filter(row => !officialCodeSet.has(row.ts_code));
+    if (officialValuationRows.length) {
+      console.log(`[可转债分析] 估值来源=理杏仁官方 ${officialValuationRows.length} 只，Tushare 补 ${stockValuationRows.length} 只`);
+    }
     const stockAdjustmentRows = tsRows(stockAdjustmentData);
     const profileByCode = new Map(profiles.map(row => [row.ts_code, row]));
     const stockCloseByCode = new Map(stockDailyRows.map(row => [row.ts_code, finite(row.close)]));
@@ -739,6 +757,9 @@ async function syncConvertibleBondUniverse(reason = 'scheduled', options = {}) {
           convPriceChanges.push({ ts_code: profile.ts_code, instrument_id: ids.bondId, before, after });
         }
         saved += 1;
+      }
+      if (officialValuationRows.length && sources.lixinger_official) {
+        await saveFullStockMarketPartition(client, stockInstrumentMap, [], officialValuationRows, sources.lixinger_official);
       }
       await saveFullStockMarketPartition(client, stockInstrumentMap, stockDailyRows, stockValuationRows, sources.tushare, stockAdjustmentRows);
       // 待上市新债主档补全：isActiveBond 只收已上市债，导致新债在上市前一直是

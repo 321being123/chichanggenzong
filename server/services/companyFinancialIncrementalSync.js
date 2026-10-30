@@ -206,6 +206,23 @@ async function fetchCompanyReports(target, options = {}) {
     const apiName = preferVip ? spec.vipApi : spec.api;
     try {
       const params = requestParams(spec, target, options);
+      // 理杏仁官方优先（三表）：官方按报告期返回累计值，与 Tushare 同口径，已用 600519 对过真值。
+      // 指标表（ROE/ROA 等）官方口径不同，不在此切换。
+      if (!options.query && ['income', 'balance', 'cashflow'].includes(kind) && process.env.LIXINGER_TOKEN) {
+        try {
+          const { resolveFinancialReports } = require('./lixingerDatasetSources');
+          const official = await resolveFinancialReports({
+            tsCode: target.tsCode, startDate: params.start_date, endDate: params.end_date, kinds: [kind],
+          });
+          if (official && Array.isArray(official[kind]) && official[kind].length) {
+            results[kind] = official[kind];
+            continue;
+          }
+        } catch (error) {
+          if (shouldAbortFinancialBatch(error)) throw error;
+          console.warn(`理杏仁财报不可用，回退 Tushare ${kind}：${String(error.message).slice(0, 160)}`);
+        }
+      }
       let rows;
       if (options.historyFull) {
         rows = [];
@@ -254,7 +271,19 @@ async function persistCompanyReports(target, reportResult, options = {}) {
       const error = reportResult.errors[kind];
       const scope = `company:${target.companyId}:${kind}`;
       if (rows.length) {
-        await syncReportRows(client, rows, kind, target.companyId, source.source_id, { runId: ingestionRunId, reportTypeOnly: '1' });
+        // 按行上的来源分组落库：官方行写 lixinger_official，其余仍归 Tushare，避免把官方数据记到 Tushare 名下。
+        const officialRows = rows.filter(row => row && row.source_code === 'lixinger_official');
+        const tushareRows = rows.filter(row => !row || row.source_code !== 'lixinger_official');
+        if (officialRows.length) {
+          const officialSource = await client.query("SELECT source_id FROM ops.data_sources WHERE source_code='lixinger_official'");
+          const officialSourceId = officialSource.rows[0] && officialSource.rows[0].source_id;
+          if (!officialSourceId) throw new Error('未找到理杏仁官方数据源登记');
+          await syncReportRows(client, officialRows, kind, target.companyId, officialSourceId, { runId: ingestionRunId, reportTypeOnly: '1' });
+        }
+        const rows_ = tushareRows;
+        if (rows_.length) {
+        await syncReportRows(client, rows_, kind, target.companyId, source.source_id, { runId: ingestionRunId, reportTypeOnly: '1' });
+        }
         const latestPeriod = rows.map(row => row.end_date).sort().pop();
         const latestAnnouncement = rows.map(row => row.f_ann_date || row.ann_date).filter(Boolean).sort().pop();
         await markDatasetSuccess(scope, 'financial', { client, companyId: target.companyId, instrumentId: target.instrumentId,

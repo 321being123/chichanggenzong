@@ -14,7 +14,7 @@ const { childProcessEnv, mergeExternalCallStatsFromStderr } = require('./externa
 const { STOCK_STATUS_FIELDS, addDays, addYears, finite, hasNetAssetFloorClause, instrumentStatus, isoDate, normalizePriceChange, normalizePriceChanges, parseTriggerRatio, parseWindow, revisionDecision } = require('./convertibleBondAnalysisTerms.js');
 
 async function sourceIds(client = pool) {
-  const { rows } = await client.query(`SELECT source_id,source_code FROM ops.data_sources WHERE source_code IN ('tushare','tencent','cninfo','sse','szse','calculated')`);
+  const { rows } = await client.query(`SELECT source_id,source_code FROM ops.data_sources WHERE source_code IN ('tushare','tencent','cninfo','sse','szse','calculated','lixinger_official')`);
   return Object.fromEntries(rows.map(row => [row.source_code, row.source_id]));
 }
 

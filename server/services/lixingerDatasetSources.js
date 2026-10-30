@@ -229,6 +229,36 @@ async function resolveIndexDaily({ tsCode, startDate, endDate, type = 'normal' }
     .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
 }
 
+
+// 宏观：M2 货币供应。官方 `macro/money-supply` 的 `m.m2.t`（月·累积）单位是元，
+// 站内 `market.money_supply_monthly.m2_100m_yuan` 是亿元 → /1e8。
+// 2026-09 官方 359,628,970,000,000 元 = 3,596,289.7 亿元，与央行口径一致。
+async function resolveMoneySupply({ startDate, endDate, areaCode = 'cn' } = {}) {
+  const start = dashDate(startDate), end = dashDate(endDate);
+  if (!start || !end) return null;
+  const result = await callEndpoint('macro/money-supply', { areaCode, startDate: start, endDate: end, metricsList: ['m.m2.t'] },
+    { dataset: 'market_money_supply', targetDate: end });
+  return result.rows.map(row => {
+    const value = numberOrNull(row.m && row.m.m2 && row.m.m2.t);
+    const date = dashDate(row.date);
+    return value === null || !date ? null : { month: date.slice(0, 7), m2: value / 1e8 };
+  }).filter(Boolean);
+}
+
+// 宏观：中国 10 年期国债收益率。官方 `macro/national-debt` 的 `tcm_y10` 是小数（0.0165 = 1.65%），
+// 站内 `market.sovereign_yield_daily.yield_pct` 是百分数点 → ×100。
+async function resolveSovereignYield10y({ startDate, endDate, areaCode = 'cn' } = {}) {
+  const start = dashDate(startDate), end = dashDate(endDate);
+  if (!start || !end) return null;
+  const result = await callEndpoint('macro/national-debt', { areaCode, startDate: start, endDate: end, metricsList: ['tcm_y10'] },
+    { dataset: 'market_sovereign_yield', targetDate: end });
+  return result.rows.map(row => {
+    const value = numberOrNull(row.tcm_y10);
+    const date = dashDate(row.date);
+    return value === null || !date ? null : { workTime: date, tenYear: value * 100 };
+  }).filter(Boolean);
+}
+
 // 官方证券代码走统一身份映射，业务不得自己拼后缀。
 async function officialStockCode(canonicalCode) {
   return resolveProviderIdentifier({ canonicalCode, sourceCode: SOURCE, identifierType: 'stock_code' });
@@ -242,5 +272,7 @@ module.exports = {
   resolveDividendRows,
   resolveFinancialReports,
   resolveIndexDaily,
+  resolveMoneySupply,
+  resolveSovereignYield10y,
   resolveValuationRows,
 };

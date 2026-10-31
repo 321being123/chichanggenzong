@@ -298,8 +298,11 @@ async function resolveDividendRows({ tsCode, startDate, endDate, options = {} } 
   const result = await callEndpoint('cn/company/dividend', { stockCode: code, startDate: start, endDate: end },
     { dataset: 'stock_cash_dividend_facts', targetDate: end, ...options });
   return result.rows.map(row => {
-    const cash = numberOrNull(row.dividend);
+    const cashRaw = numberOrNull(row.dividend);
     const amount = numberOrNull(row.dividendAmount);
+    // 预案阶段（board_director_plan）官方只给 dividend=0、dividendAmount=null，即"金额未定"。
+    // 不能当成"每股派 0 元"落库：0 会被当成已定金额，在现金收益里按权威等级压过备源的真实金额。
+    const cash = cashRaw === 0 && amount === null ? null : cashRaw;
     // 现有落库口径是 cash_div_tax(每股) × base_share(万股) × 10000 = 总现金，这里反推 base_share。
     const baseShare = cash && amount ? Number((amount / (cash * 10000)).toFixed(4)) : null;
     return {

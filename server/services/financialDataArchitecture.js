@@ -89,12 +89,18 @@ async function persistCollectedData(metadata, bundle) {
     }
     for (const r of bundle.dividends || []) {
       const cash = finite(r.cash_div_tax), base = finite(r.base_share);
+      // 官方（非默认来源）行改按自己的来源落库，不再记在备源名下。键必须与
+      // stockProjectionRepository.syncOfficialDividends 用的一致（同一来源、同一事件、同一行），
+      // 否则 refreshDividends 里那条「另写标准分红事实」会再插一条同源副本，现金收益择一时出现并列。
+      const sourceKey = r.is_default_source === false
+        ? `${r.ts_code || tsCode}:${r.end_date}:${r.ann_date || ''}`
+        : `${tsCode}:${rowVersion(r)}`;
       await projection.upsertCorporateAction({
         instrumentId: master.instrumentId, fiscalPeriodEnd: asDate(r.end_date), announcedAt: asDate(r.ann_date || r.imp_ann_date),
         recordDate: asDate(r.record_date), exDate: asDate(r.ex_date), payDate: asDate(r.pay_date), status: r.div_proc || '',
         cashPerSharePreTax: cash, cashPerShareAfterTax: finite(r.cash_div), stockDividendRatio: finite(r.stk_bo_rate), capitalizationRatio: finite(r.stk_co_rate),
         baseShares: base == null ? null : base * 10000, totalCashAmount: cash == null || base == null ? null : cash * base * 10000,
-        sourceId: sources.tushare, sourceKey: `${tsCode}:${rowVersion(r)}`, rawPayload: r,
+        sourceId: sourceIdOf(r), sourceKey, rawPayload: r,
       }, client);
     }
     for (const r of bundle.forecasts || []) {

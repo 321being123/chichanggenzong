@@ -18,7 +18,8 @@ pool.query = async (sql, params) => { calls.push({ sql, params }); return { rows
     await repo.saveHsiIndexHistory('2026-10-27', 12, sample);
     assert.match(calls[1].sql, /market\.market_valuation_daily/);
     assert.match(calls[2].sql, /market\.index_valuation_history/);
-    assert.deepStrictEqual(calls[2].params, ['2026-10-27', 12, JSON.stringify(sample)]);
+    // 恒指估值同样按来源入参：默认 hsi_official，理杏仁官方优先时写 lixinger_official。
+    assert.deepStrictEqual(calls[2].params, ['2026-10-27', 12, JSON.stringify(sample), 'hsi_official']);
     await repo.saveCsiValuations('CSI', [
       { day: '2026-10-27', pe: 14, raw: { peg: 14 } },
       { day: '2026-10-28', pe: 15, raw: { peg: 15 } },

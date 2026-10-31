@@ -82,6 +82,31 @@ async function syncCsiIndexPe(benchmark, indexCode) {
   return written;
 }
 async function syncHsiPe() {
+  // 理杏仁官方优先：hk/index/fundamental 的 pe_ttm.mcw（总市值加权）。
+  // 对比（2026-07-30）：官方 mcw 12.26 / ew 14.76，站内 hsi_official 14.33（等权特征）、
+  // 用户导入的加权 CSV 12.04 —— 与加权口径一致的是 mcw，故取 mcw；取不到再回退官网文件。
+  try {
+    const { resolveIndexValuation } = require('../services/lixingerDatasetSources');
+    const end = dateStr(new Date());
+    const start = dateStr(new Date(Date.now() - 400 * 86400000));
+    const rows = await resolveIndexValuation({ indexCode: 'HSI', market: 'hk', startDate: start, endDate: end });
+    if (rows && rows.length) {
+      let saved = 0;
+      for (const row of rows) {
+        if (!(row.pe > 0)) continue;
+        await marketYieldRepository.saveHsiMarketValuation(row.day, row.pe, row.raw, 'lixinger_official');
+        await marketYieldRepository.saveHsiIndexHistory(row.day, row.pe, row.raw, 'lixinger_official');
+        saved += 1;
+      }
+      if (saved) {
+        console.log(`[市场周期] 恒指估值 来源=理杏仁官方(mcw) 写入=${saved}条`);
+        return saved;
+      }
+    }
+  } catch (error) {
+    if (['JOB_BUDGET_EXCEEDED', 'POLICY_NOT_CONFIGURED', 'DATASET_LOCKED'].includes(error.code)) throw error;
+    console.warn(`理杏仁恒指估值不可用，回退官网文件：${String(error.message).slice(0, 160)}`);
+  }
   const b = await marketSource.fetchHsiPe();
   const data = await parseHsiWorkbook(b); let count=0;
   for (const r of data.slice(3)) { const d = new Date(String(r[0])); const pe = Number(r[1]); if (Number.isNaN(d.getTime()) || !(pe > 0)) continue; const day = dateStr(d);

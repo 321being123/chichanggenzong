@@ -7,16 +7,16 @@ async function saveChinaYield(row, sourceCode = 'chinabond') {
     VALUES('CN',10,$1,$2,$4,$1,$3) ON CONFLICT(market_code,tenor_years,trade_date,source_code) DO UPDATE SET yield_pct=EXCLUDED.yield_pct,raw_payload=EXCLUDED.raw_payload,ingested_at=now()`, [row.workTime, row.tenYear, JSON.stringify(row), sourceCode]);
 }
 
-async function saveHsiMarketValuation(day, pe, row) {
+async function saveHsiMarketValuation(day, pe, row, sourceCode = 'hsi_official') {
   return pool.query(`INSERT INTO market.market_valuation_daily(market_code,benchmark_code,trade_date,pe,source_code,source_date,raw_payload)
-      VALUES('HK','HSI',$1,$2,'hsi_official',$1,$3) ON CONFLICT(market_code,benchmark_code,trade_date,source_code) DO UPDATE SET pe=EXCLUDED.pe,raw_payload=EXCLUDED.raw_payload,ingested_at=now()`, [day, pe, JSON.stringify(row)]);
+      VALUES('HK','HSI',$1,$2,$4,$1,$3) ON CONFLICT(market_code,benchmark_code,trade_date,source_code) DO UPDATE SET pe=EXCLUDED.pe,raw_payload=EXCLUDED.raw_payload,ingested_at=now()`, [day, pe, JSON.stringify(row), sourceCode]);
 }
 
-async function saveHsiIndexHistory(day, pe, row) {
+async function saveHsiIndexHistory(day, pe, row, sourceCode = 'hsi_official') {
   return pool.query(`INSERT INTO market.index_valuation_history(index_code,valuation_method,trade_date,pe_ttm,source_code,raw_payload)
-      VALUES('HSI','market_cap_weighted',$1,$2,'hsi_official',$3)
+      VALUES('HSI','market_cap_weighted',$1,$2,$4,$3)
       ON CONFLICT(index_code,valuation_method,trade_date,source_code) DO UPDATE SET
-        pe_ttm=EXCLUDED.pe_ttm,raw_payload=EXCLUDED.raw_payload,ingested_at=now()`, [day, pe, JSON.stringify(row)]);
+        pe_ttm=EXCLUDED.pe_ttm,raw_payload=EXCLUDED.raw_payload,ingested_at=now()`, [day, pe, JSON.stringify(row), sourceCode]);
 }
 
 async function readCsiWatermark(benchmark) {
@@ -152,7 +152,7 @@ const SUBDATASET_QUERIES = Object.freeze({
   cn_yield: "SELECT max(trade_date)::text AS data_as_of FROM market.sovereign_yield_daily WHERE market_code='CN' AND tenor_years=10 AND source_code IN ('chinabond','lixinger_official')",
   csi300_pe: "SELECT max(trade_date)::text AS data_as_of FROM market.market_valuation_daily WHERE market_code='CN' AND benchmark_code='CSI300' AND source_code IN ('csindex','lixinger_official','tushare_index_dailybasic')",
   csi_all_pe: "SELECT max(trade_date)::text AS data_as_of FROM market.market_valuation_daily WHERE market_code='CN' AND benchmark_code='CSIALL' AND source_code='csindex'",
-  hsi_pe: "SELECT max(trade_date)::text AS data_as_of FROM market.market_valuation_daily WHERE market_code='HK' AND benchmark_code='HSI' AND source_code='hsi_official'",
+  hsi_pe: "SELECT max(trade_date)::text AS data_as_of FROM market.market_valuation_daily WHERE market_code='HK' AND benchmark_code='HSI' AND source_code IN ('hsi_official','lixinger_official')",
   us_treasury_yield: "SELECT max(trade_date)::text AS data_as_of FROM market.sovereign_yield_daily WHERE market_code='US' AND tenor_years=10 AND source_code='tushare_us_tycr'",
   m2: "SELECT max(month)::text AS data_as_of FROM market.money_supply_monthly WHERE market_code='CN'",
   a_share_market_cap: "SELECT max(trade_date)::text AS data_as_of FROM market.a_share_market_cap_daily WHERE source_code IN ('tushare_daily_basic','lixinger_official')",

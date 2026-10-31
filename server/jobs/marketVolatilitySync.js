@@ -47,6 +47,7 @@ async function syncChinaYield(start, end) {
 // 不写另一种口径的值冒充。中证全指的中证官网历史行也已按一次性脚本清理（scripts/backfillCsiAllPeOfficial.js）。
 const CSI_OFFICIAL_PE_SINCE = Object.freeze({ CSIALL: '2011-08-01' });
 const CSI_OFFICIAL_PE_CHUNK_YEARS = 5; // 官方单次区间过长会返回空（实测 15 年返回 0 行，5 年正常）
+const CSI_OFFICIAL_SOURCE = 'lixinger_official';
 
 function csiPeChunks(since, end, years = CSI_OFFICIAL_PE_CHUNK_YEARS) {
   const chunks = [];
@@ -78,12 +79,24 @@ async function syncCsiPeFromOfficial(benchmark, indexCode, options = {}) {
   const { readIndexValuationSeries } = require('../dataAccess/marketDatasets');
   let written = 0;
   for (const [start, end] of csiPeChunks(from, today)) {
-    const rows = await readIndexValuationSeries({ indexCode, startDate: start, endDate: end });
-    const kept = (rows || [])
-      .map(row => ({ day: row.day, pe: Number(row.pe), raw: row.raw }))
-      .filter(row => row.day && row.pe > 0);
+    // allowFallback=false：只回官方数据。数据层的指数估值入口默认还会回退 Tushare index_dailybasic，
+    // 那是另一种算法（整体法），若被这里按官方名义落库就是来源误标（复核样本：官方返空、Tushare=77，
+    // 结果写成「理杏仁 77」）。回退关掉后官方没有就是空，走下面的失败分支。
+    const rows = await readIndexValuationSeries({ indexCode, startDate: start, endDate: end, allowFallback: false });
+    const kept = [];
+    const foreignSources = new Set();
+    for (const row of rows || []) {
+      if (row.source_code && row.source_code !== CSI_OFFICIAL_SOURCE) { foreignSources.add(String(row.source_code)); continue; }
+      const pe = Number(row.pe);
+      if (!row.day || !(pe > 0)) continue;
+      kept.push({ day: row.day, pe, raw: row.raw });
+    }
+    // 万一数据层以后又把回退打开，这里也不许把别家口径写成官方：直接失败，不静默落库。
+    if (foreignSources.size) {
+      throw new Error(`全市场PE(${benchmark}) 数据层返回非官方来源（${[...foreignSources].join(',')}），拒绝按官方口径落库`);
+    }
     if (!kept.length) continue;
-    await marketYieldRepository.saveCsiValuations(benchmark, kept, 'lixinger_official');
+    await marketYieldRepository.saveCsiValuations(benchmark, kept, CSI_OFFICIAL_SOURCE);
     written += kept.length;
   }
   if (written) console.log(`[市场周期] 全市场PE(${benchmark}) 官方口径 区间(${from}起) 写入=${written}条（总市值加权 pe_ttm.mcw）`);

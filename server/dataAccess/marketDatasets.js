@@ -227,11 +227,15 @@ async function parseHsiWorkbook(buffer) {
 
 // 指数估值序列：官方总市值加权口径优先；A股备源 Tushare index_dailybasic，恒指备源官网文件。
 // 返回 [{ day, pe, pb, marketCap, raw, source_code }]。
-async function readIndexValuationSeries({ indexCode, startDate, endDate, market = 'cn' } = {}) {
+// allowFallback=false 时**不换源**：只回官方数据，官方没有就返回空。给「只认官方口径」的调用方用——
+// 不同来源的算法可能不同（如全市场 PE：理杏仁总市值加权 vs Tushare/中证整体法），
+// 换源后的值若被调用方按官方名义落库，就成了来源误标，所以由调用方显式关掉回退。
+async function readIndexValuationSeries({ indexCode, startDate, endDate, market = 'cn', allowFallback = true } = {}) {
   const primary = await safeOfficial(() => official.resolveIndexValuation({ indexCode, startDate, endDate, market }), 'index_valuation');
   if (primary.value && primary.value.length) {
     return primary.value.map(row => ({ ...row, source_code: official.SOURCE }));
   }
+  if (!allowFallback) return [];
   if (market === 'hk') {
     const buffer = await marketSource.fetchHsiPe();
     const data = await parseHsiWorkbook(buffer);

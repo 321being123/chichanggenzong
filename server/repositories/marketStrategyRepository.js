@@ -14,7 +14,7 @@ async function metricRows(metric, market, benchmark) {
     const { rows } = await pool.query(`SELECT DISTINCT ON (trade_date) trade_date::text AS date, pe::float8 AS value,
       'normal'::text AS data_status FROM market.market_valuation_daily
       WHERE market_code='CN' AND benchmark_code='CSIALL' AND pe > 0
-      ORDER BY trade_date, CASE WHEN source_code='csindex' THEN 0 ELSE 1 END`);
+      ORDER BY trade_date, CASE WHEN source_code='lixinger_official' THEN 0 WHEN source_code='csindex' THEN 1 ELSE 2 END`);
     return rows;
   }
   const { rows } = await pool.query(`SELECT DISTINCT ON (trade_date) trade_date::text AS date,

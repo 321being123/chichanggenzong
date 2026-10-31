@@ -20,12 +20,19 @@ pool.query = async (sql, params) => { calls.push({ sql, params }); return { rows
     assert.match(calls[2].sql, /market\.index_valuation_history/);
     // 恒指估值同样按来源入参：默认 hsi_official，理杏仁官方优先时写 lixinger_official。
     assert.deepStrictEqual(calls[2].params, ['2026-10-27', 12, JSON.stringify(sample), 'hsi_official']);
+    // 中证官网（csindex）与理杏仁官方（lixinger_official）共用同一张表，来源由取数方传入：
+    // 默认 csindex，换源时传 lixinger_official；source_date 与 trade_date 复用同一个参数（$2）。
     await repo.saveCsiValuations('CSI', [
       { day: '2026-10-27', pe: 14, raw: { peg: 14 } },
       { day: '2026-10-28', pe: 15, raw: { peg: 15 } },
     ]);
-    assert.match(calls[3].sql, /\(\$1,\$2,\$3,\$4,'csindex',\$3,\$5\),\(\$6,\$7,\$8,\$9,'csindex',\$8,\$10\)/);
-    assert.deepStrictEqual(calls[3].params, ['CN', 'CSI', '2026-10-27', 14, '{"peg":14}', 'CN', 'CSI', '2026-10-28', 15, '{"peg":15}']);
+    assert.match(calls[3].sql, /\('CN',\$1,\$2,\$3,\$4,\$2,\$5\),\('CN',\$6,\$7,\$8,\$9,\$7,\$10\)/);
+    assert.deepStrictEqual(calls[3].params, ['CSI', '2026-10-27', 14, 'csindex', '{"peg":14}', 'CSI', '2026-10-28', 15, 'csindex', '{"peg":15}']);
+    // 换源场景：理杏仁官方口径写入同一张表。用 pop + 重写保持调用条数不变，后面按固定下标的断言不受影响。
+    calls.pop();
+    await repo.saveCsiValuations('CSIALL', [{ day: '2011-08-02', pe: 16.38, raw: { mcw: 16.38 } }], 'lixinger_official');
+    assert.deepStrictEqual(calls[3].params, ['CSIALL', '2011-08-02', 16.38, 'lixinger_official', '{"mcw":16.38}']);
+    assert.match(calls[3].sql, /\('CN',\$1,\$2,\$3,\$4,\$2,\$5\)/);
     await repo.saveUsYieldBatch([{ day: '2026-10-27', yieldPct: 4.1, raw: { date: '20261027' } }], 'tushare_us_tycr');
     assert.match(calls[4].sql, /VALUES \('US',10,\$1,\$2,'tushare_us_tycr',\$1,\$3\)/);
     assert.deepStrictEqual(calls[4].params, ['2026-10-27', 4.1, '{\"date\":\"20261027\"}']);

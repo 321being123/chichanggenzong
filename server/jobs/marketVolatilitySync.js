@@ -40,9 +40,68 @@ async function syncChinaYield(start, end) {
   if (saved) console.log(`[市场周期] 中国10年国债 写入=${saved}条（来源=${rows[0].source_code}）`);
   return saved;
 }
+// 「A股全市场 PE」改用理杏仁官方：`cn/index/fundamental` 的 `pe_ttm.mcw`＝站内页面「总市值加权」口径，
+// 中证全指 000985 自 2011-08-02 起连续（指数上线日 2011-08-02，2011-08-01 无值）。
+// 与中证官网（整体法：Σ总市值 ÷ Σ净利润）不是同一算法，同一天数值不同且差距随时间变化，
+// 因此换源必须整段替换、并按新序列重算格雷厄姆指数（脚本 scripts/backfillCsiAllPeOfficial.js）。
+// 中证官网保留为回退：官方取不到数据或报错时仍走原有 csindex 路径，行上按来源区分，读取端优先官方。
+const CSI_OFFICIAL_PE_SINCE = Object.freeze({ CSIALL: '2011-08-01' });
+const CSI_OFFICIAL_PE_CHUNK_YEARS = 5; // 官方单次区间过长会返回空（实测 15 年返回 0 行，5 年正常）
+
+function csiPeChunks(since, end, years = CSI_OFFICIAL_PE_CHUNK_YEARS) {
+  const chunks = [];
+  let startYear = Number(String(since).slice(0, 4));
+  const endYear = Number(String(end).slice(0, 4));
+  let cursor = since; // 首段用真实起点（可能不是 01-01），后续段从年初开始
+  while (startYear <= endYear) {
+    const lastYear = Math.min(endYear, startYear + years - 1);
+    const endOfChunk = lastYear === endYear ? end : `${lastYear}-12-31`;
+    chunks.push([cursor, endOfChunk]);
+    startYear = lastYear + 1;
+    cursor = `${startYear}-01-01`;
+  }
+  return chunks;
+}
+
+// 返回写入条数；0 表示官方这条链路没有产出（调用方回退中证官网）。
+async function syncCsiPeFromOfficial(benchmark, indexCode, options = {}) {
+  const since = options.fullSince || CSI_OFFICIAL_PE_SINCE[benchmark];
+  if (!since) return 0;
+  const today = dateStr(new Date());
+  let from = since;
+  if (!options.fullSince) {
+    // 水位按来源看：官方还没有过数据就从指数上线日全量回填，否则往前 45 天重叠窗口。
+    const wm = await marketYieldRepository.readCsiWatermark(benchmark, 'lixinger_official');
+    const maxDate = wm.rows[0] && wm.rows[0].mx;
+    if (maxDate) from = dateStr(new Date(new Date(maxDate).getTime() - 45 * 86400000));
+  }
+  const { readIndexValuationSeries } = require('../dataAccess/marketDatasets');
+  let written = 0;
+  for (const [start, end] of csiPeChunks(from, today)) {
+    const rows = await readIndexValuationSeries({ indexCode, startDate: start, endDate: end });
+    const kept = (rows || [])
+      .map(row => ({ day: row.day, pe: Number(row.pe), raw: row.raw }))
+      .filter(row => row.day && row.pe > 0);
+    if (!kept.length) continue;
+    await marketYieldRepository.saveCsiValuations(benchmark, kept, 'lixinger_official');
+    written += kept.length;
+  }
+  if (written) console.log(`[市场周期] 全市场PE(${benchmark}) 官方口径 区间(${from}起) 写入=${written}条（总市值加权 pe_ttm.mcw）`);
+  return written;
+}
+
 async function syncCsiIndexPe(benchmark, indexCode) {
+  if (CSI_OFFICIAL_PE_SINCE[benchmark]) {
+    try {
+      const written = await syncCsiPeFromOfficial(benchmark, indexCode);
+      if (written) return written;
+      console.warn(`[市场周期] 全市场PE(${benchmark}) 官方无数据，回落中证官网口径`);
+    } catch (error) {
+      console.warn(`[市场周期] 全市场PE(${benchmark}) 官方取数失败，回落中证官网口径：${String(error && error.message).slice(0, 160)}`);
+    }
+  }
   // 水位：本地该基准最新日期往前 45 天重叠窗口（首次空表则全量）
-  const wm = await marketYieldRepository.readCsiWatermark(benchmark);
+  const wm = await marketYieldRepository.readCsiWatermark(benchmark, 'csindex');
   const maxDate = wm.rows[0].mx;
   const since = maxDate ? dateStr(new Date(new Date(maxDate).getTime() - 45 * 86400000)) : '2005-01-01';
   // 中证 PE 专用接口只能返回全部历史，下载后在内存过滤只保留重叠窗口
@@ -59,7 +118,7 @@ async function syncCsiIndexPe(benchmark, indexCode) {
   }
   let written = 0;
   if (kept.length) {
-    await marketYieldRepository.saveCsiValuations(benchmark, kept);
+    await marketYieldRepository.saveCsiValuations(benchmark, kept, 'csindex');
     written = kept.length;
   }
   console.log(`[市场周期] 中证PE(${benchmark}) 接口返回=${rows.length}条, 重叠窗口(${since}起)保留=${kept.length}条, 写入=${written}条`);
@@ -368,6 +427,6 @@ async function runMarketVolatilitySync(context = {}) {
   } finally { await releaseJob('market_volatility_sync'); }
 }
 function scheduleMarketVolatilitySync() { runMarketVolatilitySync().catch(e => console.error('股市波动首次同步失败:', e.message)); const now=new Date(), next=new Date(); next.setHours(18,45,0,0); if(next<=now) next.setDate(next.getDate()+1); const first=setTimeout(function(){ runMarketVolatilitySync().catch(e=>console.error('股市波动同步失败:',e.message)); const timer=setInterval(()=>runMarketVolatilitySync().catch(e=>console.error('股市波动同步失败:',e.message)),86400000); if(timer.unref) timer.unref(); }, next-now); if(first.unref) first.unref(); }
-module.exports = { syncChinaYield, syncCsiIndexPe, syncHsiPe, syncUsTreasuryYield, calculateGraham, parseHsiWorkbook,
+module.exports = { syncChinaYield, syncCsiIndexPe, syncCsiPeFromOfficial, CSI_OFFICIAL_PE_SINCE, syncHsiPe, syncUsTreasuryYield, calculateGraham, parseHsiWorkbook,
   syncCsi300Valuation, syncMoneySupply, tradeMonthEnds, syncAShareMarketCap, calculateM2MarketCap,
   syncMarketCycleMetrics, runMarketVolatilitySync, scheduleMarketVolatilitySync };

@@ -439,9 +439,20 @@ async function readStockValuationHistory({ tsCode, startDate, endDate, fields = 
     return official.fillStaticPe(rows, annuals);
   }, 'stock_valuation');
   const officialByDate = new Map(((primary.value || [])).map(row => [String(row.trade_date), row]));
-  const data = await tushareQuery('daily_basic', { ts_code: tsCode, start_date: from, end_date: to }, fields, { allowEmpty: true });
+  // 备源只负责收盘价与股本骨架：它失败（凭据失效/接口异常）不能把已经拿到的官方估值一起丢掉。
+  // 中止类错误（预算/策略/锁）仍然上抛，其余一律降级为「备源不可用」，缺的字段按缺失标出来。
+  let skeleton = [];
+  let backupUnavailable = false;
+  try {
+    const data = await tushareQuery('daily_basic', { ts_code: tsCode, start_date: from, end_date: to }, fields, { allowEmpty: true });
+    skeleton = tsRows(data);
+  } catch (error) {
+    if (isAbort(error)) throw error;
+    backupUnavailable = true;
+    console.warn(`[数据层] stock_valuation 收盘价/股本备源不可用，本次只返回官方估值（相关字段标缺失）：${String(error && error.message).slice(0, 160)}`);
+  }
   const rows = [];
-  for (const row of tsRows(data)) {
+  for (const row of skeleton) {
     const day = String(row.trade_date);
     const officialRow = officialByDate.get(day);
     if (!officialRow) {
@@ -466,9 +477,13 @@ async function readStockValuationHistory({ tsCode, startDate, endDate, fields = 
     if (carried.length) merged.carried_fields = carried;
     rows.push(merged);
   }
-  // 官方有、备源骨架没有的交易日（备源区间缺行）直接给官方行，不因为备源缺行把官方数据丢掉。
+  // 官方有、备源骨架没有的交易日直接给官方行：备源缺行或备源整体不可用时，官方数据照常返回，
+  // 由备源负责的字段（收盘价/股本）明确标成缺失，而不是让整次读取失败或悄悄补 0。
+  const backupFields = ['close', 'total_share', 'float_share', 'free_share'];
   for (const [day, officialRow] of officialByDate) {
-    rows.push({ ...officialRow, close: null, total_share: null, float_share: null, free_share: null, share_source_code: 'tushare' });
+    const row = { ...officialRow, close: null, total_share: null, float_share: null, free_share: null, share_source_code: null, missing_fields: backupFields.slice() };
+    if (backupUnavailable) row.backup_unavailable = true;
+    rows.push(row);
   }
   rows.sort((a, b) => (String(a.trade_date) < String(b.trade_date) ? -1 : String(a.trade_date) > String(b.trade_date) ? 1 : 0));
   return rows;

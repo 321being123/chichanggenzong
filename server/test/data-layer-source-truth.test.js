@@ -31,9 +31,12 @@ function tsTable(fields, rows) {
   return { fields: list, items: rows.map(row => list.map(field => (row[field] === undefined ? null : row[field]))) };
 }
 
+// 备源故障开关：复核样本「官方六项齐全、Tushare 凭据失效」用它复现。
+let tushareFailure = null;
 const tushareStub = {
   tushareQuery: async (apiName, params, fields) => {
     tushareCalls.push({ apiName, params });
+    if (tushareFailure) throw tushareFailure;
     const rows = TUSHARE_ROWS[apiName] || [];
     return tsTable(fields || 'trade_date', rows);
   },
@@ -103,6 +106,23 @@ adapter.resolveAnnualNetProfits = async () => ([
   assert.strictEqual(Number(d02.pb), 6, '官方有值的字段仍取官方');
   assert.strictEqual(Number(d02.pe_ttm), 10, '官方缺项时保留备源数值');
   assert.deepStrictEqual(d02.carried_fields, ['pe_ttm'], '沿用备源的字段必须显式标出，不允许静默混源');
+
+  // ---------- 三之二、备源故障不得拖垮主来源 ----------
+  // 复核样本：官方六项齐全、Tushare 凭据失效 → 官方数据照常返回，备源负责的字段明确标缺失。
+  tushareFailure = Object.assign(new Error('Tushare 凭据失效'), { code: 'AUTH_ERROR' });
+  const degraded = await datasets.readStockValuationHistory({
+    tsCode: '600519.SH', startDate: '2026-10-29', endDate: '2026-11-02',
+    fields: 'ts_code,trade_date,close,pe,pe_ttm,pb,dv_ttm,total_share,float_share,free_share,total_mv,circ_mv',
+  });
+  tushareFailure = null;
+  assert.strictEqual(degraded.length, 4, '备源故障时官方覆盖的 4 个交易日必须照常返回');
+  const g29 = degraded.find(row => String(row.trade_date) === '20261029');
+  assert.strictEqual(Number(g29.pe_ttm), 99, '官方数值不受备源故障影响');
+  assert.strictEqual(g29.source_code, 'lixinger_official', '来源仍标官方');
+  assert.strictEqual(g29.close, null, '备源故障时收盘价为空，不补假数');
+  assert.strictEqual(g29.share_source_code, null, '没有股本数据就不声称股本来源');
+  assert.deepStrictEqual(g29.missing_fields, ['close', 'total_share', 'float_share', 'free_share'], '备源负责的字段要明确标缺失');
+  assert.strictEqual(g29.backup_unavailable, true, '要能区分「备源整体不可用」和「这天备源没有数据」');
 
   // ---------- 四、历史收盘（净值回补入口）：正股走官方优先 ----------
   adapter.resolveStockDaily = async () => ([

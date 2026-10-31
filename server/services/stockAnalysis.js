@@ -130,13 +130,10 @@ async function setSyncState(tsCode, dataset, successDate, error) {
 // 交易所公告支持按市场/日期批量查询。分页由接口总数、短页或重复页结束；
 // 真正的任务止损交给统一 Runner/Guard，不能在业务函数内写死页数。
 async function fetchTushareAnnouncementBatch(startDate, endDate) {
-  const data = await tushareQuery('anns_d', { start_date: dateText(startDate), end_date: dateText(endDate) }, 'ts_code,ann_date,title,url', { allowEmpty: true });
-  const rows = tsRows(data);
-  const events = rows.map(row => ({ source: 'tushare', source_number: `${row.ts_code || ''}:${row.ann_date || ''}:${row.title || ''}`,
-    stock_code: announcementStockCode(row, String(row.ts_code || '').endsWith('.SH') ? 'SH' : 'SZ'), event_date: dateText(row.ann_date),
-    title: String(row.title || ''), url: String(row.url || ''), category: eventCategory(row.title || ''), is_official: false, raw: row }))
-    .filter(event => event.event_date && event.title && event.url);
-  return { events: dedupeAnnouncementEvents(events), complete: true, fetched: rows.length };
+  // 按日期的聚合层补漏也走数据层，函数名保留给既有调用方（转债公告回补的窗口合并）。
+  const { readAggregateAnnouncementBatch } = require('../dataAccess/announcementDatasets');
+  const events = await readAggregateAnnouncementBatch({ startDate: dateText(startDate), endDate: dateText(endDate) });
+  return { events: dedupeAnnouncementEvents(events), complete: true, fetched: events.length };
 }
 
 async function saveEvents(tsCode, events) {
@@ -195,19 +192,10 @@ async function refreshEvents(tsCode, today) {
   if (last === today && !state.last_error) return;
   const start = eventRefreshStart(last, today);
   try {
-    const completeEvents = async fetcher => {
-      const result = await fetcher(tsCode, start, today, '', { structured: true });
-      if (!result || !result.complete || !Array.isArray(result.events)
-        || result.diagnostics?.reason === 'org_id_not_found') throw new Error('公告采集未完成，保留已有公告和成功水位');
-      return result.events.filter(event => event.is_official);
-    };
-    const exchange = tsCode.endsWith('.SH') ? fetchSseEvents : tsCode.endsWith('.SZ') ? fetchSzseEvents : null;
-    let unique;
-    if (exchange) {
-      try { unique = await completeEvents(exchange); }
-      catch (_) { unique = await completeEvents(fetchCninfoEvents); }
-    } else unique = await completeEvents(fetchCninfoEvents);
-    await saveEvents(tsCode, unique);
+    // 公告属于「公告数据集」：只向数据层要，交易所原文优先与巨潮兜底由数据层决定。
+    const { readAnnouncementEvents } = require('../dataAccess/announcementDatasets');
+    const collected = await readAnnouncementEvents({ tsCode, startDate: start, endDate: today, structured: true });
+    await saveEvents(tsCode, collected.events);
     await stockAnalysisRepository.upsertEventCursor({ tsCode, isoToday: isoDate(today) });
   } catch (error) {
     console.warn(`[stock-analysis] 公司事件刷新失败 ${tsCode}:`,error.message);

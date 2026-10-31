@@ -41,6 +41,56 @@ async function safeOfficial(fn, dataset) {
   }
 }
 
+// ---------- 证券主档 ----------
+
+// 证券主档（上下市清单）：当前来源是 Tushare stock_basic，官方 `cn/company` 只含在市公司、
+// 没有退市日期与行业分类，无法承担"保留退市证券做历史归属"的合同，所以要换源必须先补这两项，
+// 在补上之前这里保持单一来源，但上层只调本函数，不再自己拼 tushareQuery。
+async function readSecurityMaster({ exchange = '', listStatuses = ['L'], fields } = {}) {
+  const statuses = Array.isArray(listStatuses) ? listStatuses : [listStatuses];
+  const columns = fields || 'ts_code,symbol,name,area,industry,market,list_date,delist_date,is_hs,list_status';
+  const rows = [];
+  for (const status of statuses) {
+    const data = await tushareQuery('stock_basic', { exchange, list_status: status }, columns, { allowEmpty: true });
+    rows.push(...tsRows(data).map(row => ({ ...row, source_code: 'tushare' })));
+  }
+  return rows;
+}
+
+// ---------- 可转债行情与实时报价 ----------
+
+// 可转债日行情：官方目录没有可转债个券接口，这里固定使用 Tushare cb_daily（单一来源，口径不变）。
+// 上层只表达"要哪天的转债行情/哪几只"，不表达来源。
+async function readConvertibleBondQuotes({ tradeDate, codes = null, fields } = {}) {
+  const columns = fields || 'ts_code,trade_date,open,high,low,close,pre_close,vol,amount,cb_value,cb_over_rate';
+  const trade = tradeDate ? String(tradeDate).replace(/-/g, '') : null;
+  if (!trade) return [];
+  if (!codes || !codes.length) {
+    const data = await tushareQuery('cb_daily', { trade_date: trade }, columns, { allowEmpty: true });
+    return tsRows(data).map(row => ({ ...row, source_code: 'tushare' }));
+  }
+  const rows = [];
+  const list = [...new Set(codes.filter(Boolean))];
+  for (const group of chunk(list, 200)) {
+    const data = await tushareQuery('cb_daily', { ts_code: group.join(','), trade_date: trade }, columns, { allowEmpty: true });
+    rows.push(...tsRows(data).map(row => ({ ...row, source_code: 'tushare' })));
+  }
+  return rows;
+}
+
+// 实时/t+0 报价（收盘时点、盘中兜底、港股 IPO 定价共用）：腾讯行情，返回 Map<code, quote>。
+// 官方 candlestick 是日终数据，无法保证收盘瞬间已有当日行，因此这里保留实时来源，
+// 但"用谁"的判断不再散落在各服务/任务里。
+async function readRealtimeQuotes({ codes = [], businessDate = null, force = false, ttlMs = null } = {}) {
+  const list = [...new Set((codes || []).map(code => String(code || '').trim()).filter(Boolean))];
+  if (!list.length) return new Map();
+  const options = {};
+  if (businessDate) options.businessDate = businessDate;
+  if (force) options.force = true;
+  if (ttlMs) options.ttlMs = ttlMs;
+  return require('../services/tencentQuote').fetchTencentQuotes(list, options);
+}
+
 // ---------- 股票行业分类 ----------
 
 // 行业分类：官方申万 2021 优先，Tushare 申万成分表备源；都取不到返回 null（调用方保留上一轮结论）。
@@ -334,12 +384,15 @@ async function readDividendRows({ tsCode, startDate, endDate } = {}) {
 }
 
 module.exports = {
+  readConvertibleBondQuotes,
   readDividendRows,
   readFinancialReportRows,
   readIndexCloseSeries,
   readIndexValuationSeries,
   readIndustryClassification,
   readMoneySupplySeries,
+  readRealtimeQuotes,
+  readSecurityMaster,
   readSovereignYieldSeries,
   readStockDailyBatch,
   readStockDailySeries,

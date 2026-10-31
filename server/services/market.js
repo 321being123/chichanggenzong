@@ -143,7 +143,7 @@ function ensureTsNames() {
   return withSingleFlight(TS_NAMES, 30 * 24 * 3600 * 1000, async () => {
     const cached = await loadInstrumentCache();
     if (cached.map.size && Date.now() - cached.newest < 30 * 24 * 3600 * 1000) return cached.map;
-    const d = await tushareQuery('stock_basic', { exchange: '', list_status: 'L' }, 'ts_code,name');
+    const d = await require('../dataAccess/marketDatasets').readSecurityMaster({ listStatuses: ['L'], fields: 'ts_code,name' });
     const rows = tsRows(d);
     if (!rows.length) return cached.map;
     const m = new Map();

@@ -382,15 +382,9 @@ async function recordedNextBondTradeDate(targetTradeDate) {
 }
 
 async function fetchTargetedBondDaily(codes, targetTradeDate) {
-  const rows = [];
-  const values = [...new Set(codes || [])];
-  for (let start = 0; start < values.length; start += 200) {
-    const data = await tushareQuery('cb_daily', {
-      ts_code: values.slice(start, start + 200).join(','), trade_date: String(targetTradeDate).replace(/-/g, ''),
-    }, DAILY_FIELDS, { allowEmpty: true });
-    rows.push(...tsRows(data));
-  }
-  return rows;
+  // 转债行情属于「行情数据集」：官方目录没有可转债个券接口，来源选择与分批由数据层负责。
+  const { readConvertibleBondQuotes } = require('../dataAccess/marketDatasets');
+  return readConvertibleBondQuotes({ codes, tradeDate: targetTradeDate, fields: DAILY_FIELDS });
 }
 
 async function updateBondFallbackRuntime(usedFallback, targetTradeDate) {
@@ -587,7 +581,8 @@ async function syncConvertibleBondUniverse(reason = 'scheduled', options = {}) {
     const targetTradeDate = isoDate(options.targetTradeDate) || defaultBondTargetTradeDate();
     const [basicData, stockStatusData, dates] = await Promise.all([
       tushareQuery('cb_basic', {}, PROFILE_FIELDS),
-      tushareQuery('stock_basic', { list_status: 'L' }, STOCK_STATUS_FIELDS),
+      // 证券主档属于「参考数据集」：只向数据层要，来源选择由数据层负责。
+      (await require('../dataAccess/marketDatasets').readSecurityMaster({ listStatuses: ['L'], fields: STOCK_STATUS_FIELDS })),
       latestTradeDates(targetTradeDate),
     ]);
     const allBasicRows = tsRows(basicData);
@@ -640,7 +635,8 @@ async function syncConvertibleBondUniverse(reason = 'scheduled', options = {}) {
     const recordedNextTradeDate = missingBeforeTencent.length
       ? await recordedNextBondTradeDate(targetTradeDate).catch(() => null) : null;
     if (missingBeforeTencent.length && isTencentBondWindow(targetTradeDate, new Date(), recordedNextTradeDate)) {
-      const quotes = await fetchTencentQuotes(missingBeforeTencent, { businessDate: targetTradeDate });
+      const { readRealtimeQuotes } = require('../dataAccess/marketDatasets');
+      const quotes = await readRealtimeQuotes({ codes: missingBeforeTencent, businessDate: targetTradeDate });
       for (const profile of profiles) {
         if (!missingBeforeTencent.includes(profile.ts_code)) continue;
         const quote = quotes.get(profile.ts_code) || quotes.get(profile.ts_code.slice(0, 6));
@@ -1026,8 +1022,8 @@ async function backfillCycleGaps({ windowDays = 90, targetTradeDate = null } = {
     const instrumentMap = new Map(instrumentRows.rows.map(row => [row.canonical_code, row.instrument_id]));
     for (const day of gaps) {
       try {
-        const data = await tushareQuery('cb_daily', { trade_date: day }, DAILY_FIELDS, { allowEmpty: true });
-        const rows = tsRows(data);
+        const { readConvertibleBondQuotes } = require('../dataAccess/marketDatasets');
+        const rows = await readConvertibleBondQuotes({ tradeDate: day, fields: DAILY_FIELDS });
         if (!rows.length) continue;
         // 行情事实与周期结果分开提交：周期字段不完整时仍保留完整的日行情分区。
         await txControl.begin(client);

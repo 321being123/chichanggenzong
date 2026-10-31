@@ -314,7 +314,7 @@ async function fetchTushareBondSafetySource(env = process.env, targetTradeDate =
   const strictTargetDate = Boolean(normalizeTradeDate(targetTradeDate));
   const [basicData, stockData, dates] = await Promise.all([
     tushareQuery('cb_basic', {}, 'ts_code,bond_short_name,stk_code,stk_short_name,list_date,delist_date,maturity_date,conv_end_date,conv_stop_date,conv_price'),
-    tushareQuery('stock_basic', { exchange: '', list_status: 'L' }, 'ts_code,name,industry'),
+    require('../dataAccess/marketDatasets').readSecurityMaster({ listStatuses: ['L'], fields: 'ts_code,name,industry' }),
     latestOpenDates(asOfDate),
   ]);
   const stockRows = tsRows(stockData);

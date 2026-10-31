@@ -15,7 +15,11 @@ const context = { module: { exports: {} }, console: { warn() {} }, process, Date
         upsertEventCursor: async () => { writes++; return { rows: [] }; },
       };
     }
-    // 批次4：采集函数已迁入数据接入层，主/备源桩改在该模块注入；断言仍是服务层的选源、完整性与保留语义。
+    // 批次4：采集函数已迁入数据接入层；2026-10-31 选源也收进数据层，
+    // 这里用「真实选源逻辑 + 桩采集口」构造 reader，断言仍是选源、完整性与保留语义。
+    if (name === '../dataAccess/announcementDatasets') {
+      return originalRequire('../dataAccess/announcementDatasets').createAnnouncementReader({ adapter: adapterStub });
+    }
     if (name === '../dataAccess/adapters/announcementSourceAdapter') return adapterStub;
     return originalRequire(name);
   },

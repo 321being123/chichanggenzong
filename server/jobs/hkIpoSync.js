@@ -73,7 +73,9 @@ async function syncHkIpoTencentNames(seedCodes = [], { batchSize = null, targetC
       continuationRequired: limited, requested: 0, quoted: 0, named: 0, persisted: 0, source: 'tencent',
     };
   }
-  const quotes = await fetchTencentQuotes(codes, { businessDate, ttlMs });
+  // 实时报价属于「行情数据集」：只向数据层要，来源选择（当前为实时源）由数据层负责。
+  const { readRealtimeQuotes } = require('../dataAccess/marketDatasets');
+  const quotes = await readRealtimeQuotes({ codes, businessDate, ttlMs });
   const named = new Set();
   for (const quote of quotes.values()) if (quote && hasChineseName(quote.name)) named.add(canonicalHkCode(quote.code || quote.symbol));
   const persisted = await persistTencentNames(quotes, { executor });

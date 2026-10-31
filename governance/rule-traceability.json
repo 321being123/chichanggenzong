@@ -643,7 +643,8 @@
       "title": "动态信号必须覆盖本轮活跃 IPO 代码，部分采集不得判完整",
       "implementation": {
         "file": "server/jobs/hkIpoSync.js",
-        "symbol": "marketSignalDiagnostics"
+        "symbol": "marketSignalDiagnostics",
+        "via": "dataAccess/marketDatasets.readRealtimeQuotes（2026-10-31 数据层收口：报价取数统一入口，来源与口径未变）"
       },
       "tests": [
         {
@@ -787,7 +788,8 @@
       "title": "港股 IPO 实时申购快照只写入上海当天，历史与未来目标阻断",
       "implementation": {
         "file": "server/jobs/hkIpoSync.js",
-        "symbol": "liveSignalTargetDateStatus"
+        "symbol": "liveSignalTargetDateStatus",
+        "via": "dataAccess/marketDatasets.readRealtimeQuotes（2026-10-31 数据层收口：报价取数统一入口，来源与口径未变）"
       },
       "tests": [
         {
@@ -1753,7 +1755,8 @@
       "title": "定向中文名只处理原证券且完成后不误判批次未完",
       "implementation": {
         "file": "server/jobs/hkIpoSync.js",
-        "symbol": "syncHkIpoTencentNames"
+        "symbol": "syncHkIpoTencentNames",
+        "via": "dataAccess/marketDatasets.readRealtimeQuotes（2026-10-31 数据层收口：报价取数统一入口，来源与口径未变）"
       },
       "tests": [
         {
@@ -2949,7 +2952,8 @@
       "title": "港股历史补跑全部日期窗口子阶段以原任务目标日截止，发行状态默认重叠起点也绑定原日",
       "implementation": {
         "file": "server/jobs/hkIpoSync.js",
-        "symbol": "runHkIpoSync"
+        "symbol": "runHkIpoSync",
+        "via": "dataAccess/marketDatasets.readRealtimeQuotes（2026-10-31 数据层收口：报价取数统一入口，来源与口径未变）"
       },
       "tests": [
         {

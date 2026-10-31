@@ -177,7 +177,7 @@ async function syncCashDividends({targetDate=CoreDate.todayInZone('Asia/Shanghai
         AND ((raw_payload->'announcement'->>'stockCode')=ANY($2::text[]) OR (raw_payload->'announcement'->>'stock_code')=ANY($2::text[]) OR raw_payload->'cashDividend'->>'instrumentId'=$3)
         AND announced_at::date <= $4::date`,[sourceId,[identity.code,identity.canonical_code,String(identity.canonical_code).split('.')[0]],String(identity.instrument_id),targetDate])).rows.map(r=>r.announcement);
       let announcements=local.concat(cursor?.cursor_payload?.announcementQueue||[]);
-      if(!localOnly&&from<=targetDate&&sourceCode==='hkex') announcements=announcements.concat(await require('./hkexAnnouncement').searchAnnouncements({fromDate:from,toDate:targetDate,stockCode:String(identity.canonical_code).split('.')[0]}));
+      if(!localOnly&&from<=targetDate&&sourceCode==='hkex') announcements=announcements.concat(await require('../dataAccess/announcementDatasets').readHkexAnnouncements({fromDate:from,toDate:targetDate,stockCode:String(identity.canonical_code).split('.')[0]}));
       else if(!localOnly&&from<=targetDate) {
         let announcementCode=identity.canonical_code;
         if(identity.asset_class==='convertible_bond'){

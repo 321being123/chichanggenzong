@@ -104,7 +104,14 @@ function createAnnouncementReader({ adapter = defaultAdapter } = {}) {
 
 const defaultReader = createAnnouncementReader();
 
+// 港股公告发现（港交所披露易）：参数形态与 A 股不同（按日期区间 + 证券代码检索），
+// 单独一个入口，上层只说"要某只港股某区间的公告"。
+async function readHkexAnnouncements({ fromDate, toDate, stockCode } = {}) {
+  return require('../services/hkexAnnouncement').searchAnnouncements({ fromDate, toDate, stockCode });
+}
+
 module.exports = {
   createAnnouncementReader,
+  readHkexAnnouncements,
   ...defaultReader,
 };

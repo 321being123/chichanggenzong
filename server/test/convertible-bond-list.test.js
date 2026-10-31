@@ -143,7 +143,9 @@ check('列表发布失败时使用事务回滚并保留上一份快照', () => {
   assert.ok(source.includes('txControl.rollback(client)'));
   assert.ok(source.includes('ON CONFLICT(trade_date,instrument_id,formula_version) DO UPDATE'));
   assert.ok(source.includes('latestPublishedTradeDate'));
-  assert.ok(source.includes('fetchTencentQuotes') && source.includes('refreshQuotes'));
+  // 2026-10-31 直连清零：报价取数改经数据层 readRealtimeQuotes（供应商适配在数据层之后）；
+  // 断言仍是"列表行情会刷新且可强制刷新"。
+  assert.ok(source.includes('readRealtimeQuotes') && source.includes('refreshQuotes'));
   assert.ok(source.includes('stale'));
 });
 

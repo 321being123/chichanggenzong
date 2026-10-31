@@ -5,7 +5,7 @@ const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
 const mc = require('../jobs/marketClose');
-const { historicalApiFor } = require('../jobs/replayNav');
+const { historicalKindFor } = require('../jobs/replayNav');
 
 const results = [];
 function check(name, fn) {
@@ -77,10 +77,11 @@ check('非标准证券显式进入覆盖检查，不再静默漏掉', () => {
   assert.strictEqual(mc.isUncoveredPosition('404002', { name: '搜特退债', quantity: 0 }), false);
 });
 check('历史回补按证券类型路由，禁止统一走股票日线', () => {
-  assert.strictEqual(historicalApiFor('00762', { subtype: '港股' }), 'hk_daily');
-  assert.strictEqual(historicalApiFor('113575', { subtype: '可转债' }), 'cb_daily');
-  assert.strictEqual(historicalApiFor('510900', { subtype: '基金/ETF' }), 'fund_daily');
-  assert.strictEqual(historicalApiFor('600000', { subtype: '沪市' }), 'daily');
+  // 2026-10-31 数据层收口：改判业务类型（供应商接口名在数据层内决定）。
+  assert.strictEqual(historicalKindFor('00762', { subtype: '港股' }), 'hk_stock');
+  assert.strictEqual(historicalKindFor('113575', { subtype: '可转债' }), 'bond');
+  assert.strictEqual(historicalKindFor('510900', { subtype: '基金/ETF' }), 'fund');
+  assert.strictEqual(historicalKindFor('600000', { subtype: '沪市' }), 'stock');
 });
 
 console.log('B. 时区辅助函数 —— P0-4：显式东八区，不受容器本地时区影响');

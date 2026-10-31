@@ -1,6 +1,6 @@
 const crypto = require('crypto');
 const stockAnalysisRepository = require('../repositories/stockAnalysisRepository');
-const { tushareQuery, tsRows, toTsCode, tsDateStr } = require('./market');
+const { toTsCode, tsDateStr } = require('./market');
 const marketDataGateway = require('../dataAccess/marketDataGateway');
 // 采集函数（巨潮／交易所／东财／雪球／股吧）已迁入数据接入层，服务侧保持同名引用与导出不变。
 const {
@@ -45,10 +45,20 @@ function versionKey(row) {
   return [row.end_date || '', row.report_type || '', row.f_ann_date || row.ann_date || '', row.update_flag || '', row.div_proc || '', row.ex_date || row.pay_date || ''].join('|');
 }
 
-async function fetchRequired(apiName, params, fields) {
-  const data = await tushareQuery(apiName, params, fields);
-  if (!data || !Array.isArray(data.items)) throw new Error(`${apiName} 数据获取失败`);
-  return tsRows(data);
+// 取数一律经数据层：这里只把"业务类型"翻译成数据层的中立需求接口，
+// 供应商接口名、参数格式与日期转换都不在服务里出现。
+const marketDatasets = require('../dataAccess/marketDatasets');
+
+// 三表与指标表：报表类型 → 数据层 kind。
+const STATEMENT_KINDS = Object.freeze({
+  income: 'income', balancesheet: 'balancesheet', balance: 'balance',
+  cashflow: 'cashflow', fina_indicator: 'fina_indicator',
+});
+
+async function readStatementSeries(apiName, tsCode, startDate, endDate, fields) {
+  const kind = STATEMENT_KINDS[apiName];
+  if (!kind) throw new Error(`未登记的三表类型：${apiName}`);
+  return marketDatasets.readFinancialStatementSeries({ tsCode, kind, startDate, endDate, fields });
 }
 
 // 行业分类：向数据层要「行业分类」这一个需求，供应商与体系选择由数据层完成；
@@ -80,18 +90,17 @@ function ranges(startDate, endDate, years = 8) {
 
 async function fetchPartitioned(apiName, tsCode, startDate, endDate, fields) {
   const result = [];
-  // 日线属于「行情数据集」，只向数据层要；主备来源与单位换算都在数据层完成。
-  if (apiName === 'daily') {
-    const { readStockDailySeries } = require('../dataAccess/marketDatasets');
-    for (const [start, end] of ranges(startDate, endDate)) {
-      const rows = await readStockDailySeries({ tsCode, startDate: start, endDate: end });
-      result.push(...rows);
-    }
-    return result;
-  }
   for (const [start, end] of ranges(startDate, endDate)) {
-    const rows = await fetchRequired(apiName, { ts_code: tsCode, start_date: start, end_date: end }, fields);
-    result.push(...rows);
+    // 日线、复权因子、估值、三表各自属于一个数据集，主备来源与单位换算都在数据层完成。
+    if (apiName === 'daily') {
+      result.push(...await marketDatasets.readStockDailySeries({ tsCode, startDate: start, endDate: end }));
+    } else if (apiName === 'adj_factor') {
+      result.push(...await marketDatasets.readAdjustmentFactorSeries({ tsCode, startDate: start, endDate: end, fields }));
+    } else if (apiName === 'daily_basic') {
+      result.push(...await marketDatasets.readStockValuationHistory({ tsCode, startDate: start, endDate: end, fields }));
+    } else {
+      result.push(...await readStatementSeries(apiName, tsCode, start, end, fields));
+    }
   }
   return result;
 }
@@ -99,7 +108,7 @@ async function fetchPartitioned(apiName, tsCode, startDate, endDate, fields) {
 async function repairZeroValuations(tsCode, rows, fields) {
   const affected=rows.filter(row=>['pe','pe_ttm','pb'].some(field=>finite(row[field])===0));
   if(!affected.length)return {rows,issues:[]};
-  const dates=affected.map(row=>row.trade_date).sort(),retry=await fetchRequired('daily_basic',{ts_code:tsCode,start_date:dates[0],end_date:dates[dates.length-1]},fields),retryMap=new Map(retry.map(row=>[row.trade_date,row])),issues=[];
+  const dates=affected.map(row=>row.trade_date).sort(),retry=await marketDatasets.readStockValuationHistory({tsCode,startDate:dates[0],endDate:dates[dates.length-1],fields}),retryMap=new Map(retry.map(row=>[row.trade_date,row])),issues=[];
   const repaired=rows.map(row=>{const next=Object.assign({},row),again=retryMap.get(row.trade_date)||{};['pe','pe_ttm','pb'].forEach(field=>{if(finite(row[field])!==0)return;const value=finite(again[field]);if(value!==null&&value!==0)next[field]=value;else{next[field]=null;issues.push({trade_date:row.trade_date,field:field,reason:'接口重拉后仍为0，按缺失值处理'});}});return next;});
   return {rows:repaired,issues};
 }
@@ -281,7 +290,7 @@ async function refreshStockAnalysis(rawCode, reason = 'manual', options = {}) {
   }
 
   if (!meta) {
-    const metadataRows = await fetchRequired('stock_basic', { ts_code: tsCode }, 'ts_code,symbol,name,area,industry,market,exchange,list_status,list_date');
+    const metadataRows = await marketDatasets.readSecurityMaster({ tsCode, fields: 'ts_code,symbol,name,area,industry,market,exchange,list_status,list_date' });
     meta = metadataRows[0];
   }
   if (!meta) throw new Error('未找到股票基础信息');
@@ -322,14 +331,14 @@ async function refreshStockAnalysis(rawCode, reason = 'manual', options = {}) {
     // dividend 官方仅支持 ts_code（无 start_date/end_date 范围）：传 ts_code 拉该只全量，内存过滤只保留本地最新分红报告期往前一年的重叠窗口，
     // 由 saveAux 按唯一键幂等 upsert，只写新增/修订行（首次无水位则保留全量）。重叠窗口仅在此计算一次（latestDividendEndDate 只提供原始水位）。
     gate('stock_dividend', async () => {
-      const all = await fetchRequired('dividend', { ts_code: tsCode }, 'ts_code,end_date,ann_date,div_proc,stk_div,stk_bo_rate,stk_co_rate,cash_div,cash_div_tax,record_date,ex_date,pay_date,imp_ann_date,base_date,base_share');
+      const all = await marketDatasets.readDividendRows({ tsCode, startDate: '1990-01-01', endDate: today });
       if (!dividendStart) return all;
       const dt = new Date(Date.UTC(+dividendStart.slice(0, 4), +dividendStart.slice(4, 6) - 1, +dividendStart.slice(6, 8)));
       dt.setUTCDate(dt.getUTCDate() - 365);
       const floor = tsDateStr(dt);
       return (all || []).filter(r => (String(r.end_date || r.ann_date || '').replace(/-/g, '')) >= floor);
     }, []),
-    gate('stock_forecast', () => fetchRequired('forecast', Object.assign({ ts_code: tsCode }, forecastStart ? { start_date: forecastStart } : {}), 'ts_code,ann_date,end_date,type,p_change_min,p_change_max,net_profit_min,net_profit_max,last_parent_net,summary,change_reason'), [])
+    gate('stock_forecast', () => marketDatasets.readForecast({ tsCode, startDate: forecastStart || null }), [])
   ]);
   const lastTenYears = yearsAgo(3653), listDate = meta.list_date || lastTenYears;
   const incrementalStart = yearsAgo(14);

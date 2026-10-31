@@ -4,7 +4,7 @@ const layerSql = require('../repositories/convertibleBondAnalysisSyncRepository'
 const { pool, tryClaimJob, releaseJob, startJobRun, finishJobRun } = require('../db');
 const { tushareQuery, tsRows, tsDateStr } = require('./market');
 const { TushareRequestError } = require('./tushare');
-const { fetchTencentQuotes, describeTencentCode } = require('./tencentQuote');
+const { describeTencentCode } = require('./tencentQuote');
 const repository = require('../repositories/convertibleBondAnalysisSyncRepository.js');
 const { fetchCninfoEvents, fetchCninfoEventsByYear, fetchSseLatestReport, fetchSseEvents, fetchSzseEvents, fetchSzseLatestReport,
   fetchSseEventsBatch, fetchSzseEventsBatch, fetchCninfoEventsBatch, fetchTushareAnnouncementBatch } = require('./stockAnalysis');

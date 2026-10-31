@@ -2537,7 +2537,8 @@
       "implementation": {
         "file": "server/repositories/hkDailyCoverageRepository.js",
         "symbol": "loadCandidates",
-        "via": "dataAccess/referenceDatasets.readHkDailyQuotes（2026-10-31 数据层收口：日期转换下沉，口径未变）"
+        "via": "dataAccess/referenceDatasets.readHkDailyQuotes（2026-10-31 第三轮：日期转换下沉）；services/hkDailyCoverage 的腾讯历史日 K 已改经 dataAccess/marketDatasets.readHkDailyByTencent（第四轮：供应商调用下沉，日期形态与覆盖窗口未变）",
+        "changedAt": "2026-10-31"
       },
       "tests": [
         {

@@ -35,14 +35,16 @@ const complete = response([{ ts_code: '000001.SZ', trade_date: '20260824', close
     query: async (apiName, params, fields, options) => {
       assert.strictEqual(options.allowEmpty, true, `${apiName} 必须允许空分区继续回查`);
       queried.push(`${apiName}:${params.trade_date}`);
-      if (params.trade_date === '20260825' && apiName === 'daily') return response([]);
+      if (params.trade_date === '20260825' && apiName === 'stock_daily') return response([]);
       return params.trade_date === '20260824' ? complete : response([{ ts_code: '000001.SZ', trade_date: params.trade_date, close: 10 }]);
     },
   });
   assert.strictEqual(selected.tradeDate, '20260824', '任一行情分区为空时必须回查上一共同交易日');
+  // 2026-10-31 数据层收口：三个数据集按业务语义命名（可转债日行情/股票估值/股票日行情），
+  // 断言仍然是"三类行情都取、任一为空就回查上一共同交易日"。
   assert.deepStrictEqual(queried, [
-    'cb_daily:20260825', 'daily_basic:20260825', 'daily:20260825',
-    'cb_daily:20260824', 'daily_basic:20260824', 'daily:20260824',
+    'bond_daily:20260825', 'stock_valuation:20260825', 'stock_daily:20260825',
+    'bond_daily:20260824', 'stock_valuation:20260824', 'stock_daily:20260824',
   ]);
 
   const lowCoverage = await latestMarketPartition(['20260825'], {

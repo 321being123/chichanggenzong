@@ -46,9 +46,14 @@ async function safeOfficial(fn, dataset) {
 // 证券主档（上下市清单）：当前来源是 Tushare stock_basic，官方 `cn/company` 只含在市公司、
 // 没有退市日期与行业分类，无法承担"保留退市证券做历史归属"的合同，所以要换源必须先补这两项，
 // 在补上之前这里保持单一来源，但上层只调本函数，不再自己拼 tushareQuery。
-async function readSecurityMaster({ exchange = '', listStatuses = ['L'], fields } = {}) {
-  const statuses = Array.isArray(listStatuses) ? listStatuses : [listStatuses];
+async function readSecurityMaster({ tsCode = '', exchange = '', listStatuses = ['L'], fields } = {}) {
   const columns = fields || 'ts_code,symbol,name,area,industry,market,list_date,delist_date,is_hs,list_status';
+  // 单只查询：按代码取档案（业绩预告、财务同步等按证券跑的链路用），不遍历上市状态。
+  if (tsCode) {
+    const data = await tushareQuery('stock_basic', { ts_code: tsCode }, columns, { allowEmpty: true });
+    return tsRows(data).map(row => ({ ...row, source_code: 'tushare' }));
+  }
+  const statuses = Array.isArray(listStatuses) ? listStatuses : [listStatuses];
   const rows = [];
   for (const status of statuses) {
     const data = await tushareQuery('stock_basic', { exchange, list_status: status }, columns, { allowEmpty: true });
@@ -109,14 +114,19 @@ async function readConvertibleBondQuotes({ tradeDate, codes = null, fields } = {
 // 实时/t+0 报价（收盘时点、盘中兜底、港股 IPO 定价共用）：腾讯行情，返回 Map<code, quote>。
 // 官方 candlestick 是日终数据，无法保证收盘瞬间已有当日行，因此这里保留实时来源，
 // 但"用谁"的判断不再散落在各服务/任务里。
-async function readRealtimeQuotes({ codes = [], businessDate = null, force = false, ttlMs = null } = {}) {
+async function readRealtimeQuotes({ codes = [], businessDate = null, force = false, ttlMs = null, options = {} } = {}) {
   const list = [...new Set((codes || []).map(code => String(code || '').trim()).filter(Boolean))];
   if (!list.length) return new Map();
-  const options = {};
-  if (businessDate) options.businessDate = businessDate;
-  if (force) options.force = true;
-  if (ttlMs) options.ttlMs = ttlMs;
-  return require('../services/tencentQuote').fetchTencentQuotes(list, options);
+  const merged = { ...options };
+  if (businessDate) merged.businessDate = businessDate;
+  if (force) merged.force = true;
+  if (ttlMs) merged.ttlMs = ttlMs;
+  return require('../services/tencentQuote').fetchTencentQuotes(list, merged);
+}
+
+// 港股日线（腾讯备源）：官方 hk_daily 需要高积分时的历史日 K，同样只表达"要哪只标的哪段收盘"。
+async function readHkDailyByTencent({ canonicalCode, startDate, endDate } = {}) {
+  return require('../services/tencentQuote').requestTencentHkKline(canonicalCode, startDate, endDate);
 }
 
 // ---------- 股票行业分类 ----------
@@ -389,6 +399,86 @@ async function readStockValuationRows({ tradeDate } = {}) {
   return [...officialRows, ...fallbackRows];
 }
 
+// 复权因子（按代码区间）：官方无因子接口，复权仍以本来源计算。
+async function readAdjustmentFactorSeries({ tsCode, startDate, endDate, fields = 'ts_code,trade_date,adj_factor' } = {}) {
+  const data = await tushareQuery('adj_factor', {
+    ts_code: tsCode,
+    start_date: String(startDate).replace(/-/g, ''),
+    end_date: String(endDate).replace(/-/g, ''),
+  }, fields, { allowEmpty: true });
+  return tsRows(data).map(row => ({ ...row, source_code: 'tushare' }));
+}
+
+// 估值历史（按代码区间）：单只证券的每日估值，用于分析页与异常修复。
+// 官方按 (证券, 日期区间) 可取，覆盖到的行标官方来源，其余由原来源补齐。
+async function readStockValuationHistory({ tsCode, startDate, endDate, fields = 'ts_code,trade_date,pe,pe_ttm,pb,dv_ttm,total_mv,circ_mv' } = {}) {
+  const from = String(startDate).replace(/-/g, '');
+  const to = String(endDate).replace(/-/g, '');
+  const data = await tushareQuery('daily_basic', { ts_code: tsCode, start_date: from, end_date: to }, fields, { allowEmpty: true });
+  const rows = tsRows(data);
+  if (!rows.length) return [];
+  const primary = await safeOfficial(
+    () => official.resolveValuationRows({ codes: [tsCode], tradeDate: to }),
+    'stock_valuation'
+  );
+  const officialByDate = new Map(((primary.value || [])).map(row => [String(row.trade_date), row]));
+  return rows.map(row => {
+    const officialRow = officialByDate.get(String(row.trade_date));
+    return { ...row, source_code: officialRow ? official.SOURCE : 'tushare' };
+  });
+}
+
+// 业绩预告：官方目录无业绩预告接口，单一来源，但调用方只表达需求。
+async function readForecast({ tsCode, startDate = null, fields = 'ts_code,ann_date,end_date,type,p_change_min,p_change_max,net_profit_min,net_profit_max,last_parent_net,summary,change_reason' } = {}) {
+  const params = { ts_code: tsCode };
+  if (startDate) params.start_date = String(startDate).replace(/-/g, '');
+  const data = await tushareQuery('forecast', params, fields, { allowEmpty: true });
+  return tsRows(data).map(row => ({ ...row, source_code: 'tushare' }));
+}
+
+// 历史收盘序列（按标的类型）：晚录入净值回补用，只返回日期与收盘价。
+// kind 是业务类型（stock/bond/fund/index），到底调哪个供应商接口由这一层决定。
+const HISTORICAL_CLOSE_APIS = Object.freeze({
+  stock: 'daily',
+  bond: 'cb_daily',
+  fund: 'fund_daily',
+  index: 'index_daily',
+});
+
+async function readHistoricalCloseSeries({ tsCode, kind = 'stock', startDate, endDate } = {}) {
+  const apiName = HISTORICAL_CLOSE_APIS[kind];
+  if (!apiName) throw new Error(`未登记的历史收盘类型：${kind}`);
+  const data = await tushareQuery(apiName, {
+    ts_code: tsCode,
+    start_date: String(startDate).replace(/-/g, ''),
+    end_date: String(endDate).replace(/-/g, ''),
+  }, 'trade_date,close', { allowEmpty: true });
+  return tsRows(data).map(row => ({ ...row, source_code: 'tushare' }));
+}
+
+// 财务报表全字段序列（分析页用）：官方指标字典目前只映射到收入 7 项、资产 6 项、现金流 2 项、指标 4 项，
+// 而分析页要的是三表完整字段（收入 53、资产 89、现金流 51），缺口会导致大量指标无法回填，
+// 因此这一条仍是单一来源，但调用方只表达"要哪张表、哪段时间"，接口与参数在数据层内决定。
+const STATEMENT_APIS = Object.freeze({
+  income: 'income',
+  balancesheet: 'balancesheet',
+  balance: 'balancesheet',
+  cashflow: 'cashflow',
+  fina_indicator: 'fina_indicator',
+});
+
+async function readFinancialStatementSeries({ tsCode, kind, startDate, endDate, fields } = {}) {
+  const apiName = STATEMENT_APIS[kind];
+  if (!apiName) throw new Error(`未登记的三表类型：${kind}`);
+  const data = await tushareQuery(apiName, {
+    ts_code: tsCode,
+    start_date: String(startDate).replace(/-/g, ''),
+    end_date: String(endDate).replace(/-/g, ''),
+  }, fields);
+  if (!data || !Array.isArray(data.items)) throw new Error(`${kind} 数据获取失败`);
+  return tsRows(data).map(row => ({ ...row, source_code: 'tushare' }));
+}
+
 // ---------- 财报与分红 ----------
 
 // 财报（按报表类型）：官方优先；官方无数据时返回 null，由调用方沿用既有批量取数链路。
@@ -411,13 +501,72 @@ async function readDividendRows({ tsCode, startDate, endDate } = {}) {
   return rows.map(row => ({ ...row, source_code: 'tushare' }));
 }
 
+// 债券安全性用财报：官方能给三表与大部分指标，但**没有利息保障倍数**（ebit_to_interest），
+// 而该项是安全性的核心判据；混用会让分子分母来自不同口径，因此官方缺该项时整份沿用原来源。
+// 返回结构与原来 selectFinancialReport 的输入一致（三份原始行 + 实际来源标记）。
+async function readBondSafetyFinancials({ tsCode, startDate = null } = {}) {
+  const from = startDate ? String(startDate).replace(/-/g, '') : '';
+  // 官方指标字典对「利息保障倍数」没有对应指标（REPORT_METRICS.indicator 无 ebit_to_interest），
+  // 而该项是债券安全性的核心判据；明知道会缺就不要先花掉一次外采额度，整份直接沿用原来源。
+  // 若日后官方补齐该指标，只需在适配层加映射，这里会自动切到官方。
+  const officialCanCoverInterest = Boolean(official.REPORT_METRICS
+    && official.REPORT_METRICS.indicator
+    && official.REPORT_METRICS.indicator.ebit_to_interest);
+  const officialRows = officialCanCoverInterest ? await safeOfficial(
+    () => official.resolveFinancialReports({
+      tsCode, startDate: from ? `${from.slice(0, 4)}-${from.slice(4, 6)}-${from.slice(6, 8)}` : null, endDate: null,
+      kinds: ['balance', 'income', 'indicator'],
+    }),
+    'bond_safety_financials'
+  ) : { value: null };
+  const payload = officialRows.value || {};
+  const indicatorRows = payload.indicator || [];
+  const hasInterestCoverage = indicatorRows.some(row => Number.isFinite(Number(row.ebit_to_interest)));
+  if (hasInterestCoverage) {
+    return {
+      sourceCode: official.SOURCE,
+      indicator: indicatorRows,
+      balance: payload.balance || [],
+      income: payload.income || [],
+    };
+  }
+  const dateParams = from ? { start_date: from } : {};
+  const [fiData, bsData, incomeData] = await Promise.all([
+    tushareQuery('fina_indicator', Object.assign({ ts_code: tsCode }, dateParams),
+      'ts_code,ann_date,end_date,report_type,ebit,ebit_to_interest,interestdebt'),
+    tushareQuery('balancesheet', Object.assign({ ts_code: tsCode }, dateParams),
+      'ts_code,f_ann_date,end_date,report_type,money_cap,trad_asset,total_assets,total_cur_liab,total_liab,total_hldr_eqy_exc_min_int'),
+    tushareQuery('income', Object.assign({ ts_code: tsCode }, dateParams),
+      'ts_code,ann_date,f_ann_date,end_date,report_type,fin_exp_int_exp,int_exp'),
+  ]);
+  return {
+    sourceCode: 'tushare',
+    indicator: tsRows(fiData),
+    balance: tsRows(bsData),
+    income: tsRows(incomeData),
+  };
+}
+
+// 补权益用的单表读取（只取归母权益）：按代码整段取，避免调用方自己拼参数。
+async function readEquitySeries({ tsCode, fields = 'ts_code,f_ann_date,end_date,report_type,total_hldr_eqy_exc_min_int' } = {}) {
+  const data = await tushareQuery('balancesheet', { ts_code: tsCode }, fields, { allowEmpty: true });
+  return tsRows(data).map(row => ({ ...row, source_code: 'tushare' }));
+}
+
 module.exports = {
   readAdjustmentFactors,
+  readAdjustmentFactorSeries,
+  readBondSafetyFinancials,
+  readEquitySeries,
+  readForecast,
+  readHistoricalCloseSeries,
   readConvertibleBondQuotes,
   readDividendRows,
   readFinancialReportRows,
+  readFinancialStatementSeries,
   readIndexCloseSeries,
   readIndexValuationSeries,
+  readHkDailyByTencent,
   readIndustryClassification,
   readMinuteQuotes,
   readMoneySupplySeries,
@@ -427,6 +576,7 @@ module.exports = {
   readStockDailyBatch,
   readStockDailyByDate,
   readStockDailySeries,
+  readStockValuationHistory,
   readStockValuationRows,
   readTotalAShareMarketCap,
 };

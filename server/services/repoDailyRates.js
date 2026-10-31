@@ -1,6 +1,5 @@
 // GC001 市场日加权利率唯一采集入口；计算和页面只读标准事实。
 const {pool}=require('../db/connection');
-const {tushareQuery}=require('./tushare');
 const CoreDate=require('../../public/shared/core-date');
 const {resolveInstrument}=require('./securityIdentity');
 const {loadHolidays}=require('../config/holidays');

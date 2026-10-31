@@ -80,7 +80,22 @@ async function readUsTreasuryYield({ startDate, endDate, fields = 'date,y10' } =
   return tsRows(data).map(row => ({ ...row, source_code: 'tushare' }));
 }
 
+// 港股交易日历：接口名与交易所由配置决定（默认 hk_tradecal），
+// 调用方只说"要港股日历的哪段"，不关心具体接口名与字段差异。
+async function readHkTradingCalendar({ startDate, endDate, apiName = null, exchange = null, fields = null } = {}) {
+  const name = String(apiName || process.env.TUSHARE_HK_TRADE_CAL_API || 'hk_tradecal').trim();
+  const params = {
+    start_date: String(startDate).replace(/-/g, ''),
+    end_date: String(endDate).replace(/-/g, ''),
+  };
+  if (name !== 'hk_tradecal') params.exchange = exchange || process.env.TUSHARE_HK_TRADE_CAL_EXCHANGE || 'HKEX';
+  const columns = fields || (name === 'hk_tradecal' ? 'cal_date,is_open,pretrade_date' : 'cal_date,trade_date,is_open,pretrade_date');
+  const data = await tushareQuery(name, params, columns, { allowEmpty: true });
+  return tsRows(data).map(row => ({ ...row, source_code: 'tushare' }));
+}
+
 module.exports = {
+  readHkTradingCalendar,
   readHkDailyQuotes,
   readHkSecurityMaster,
   readPledgeStats,

@@ -5,7 +5,8 @@
 // Tushare 拉不到的缺口日 → 跳过那天（保留原快照），不近似。
 const { loadAccountData, saveDailyPrices, upsertNav } = require('../db');
 const accountsRepository = require('../repositories/accountsRepository');
-const { tushareQuery, tsRows, toTsCode, normDate } = require('../services/market');
+const { toTsCode, normDate } = require('../services/market');
+const marketDatasets = require('../dataAccess/marketDatasets');
 const classifyCode = require('../../public/js/code-classify');
 const { isCnHoliday } = require('../config/holidays');
 const { investedAt, chainNav, cashAt, isExternalTransfer } = require('../../public/shared/nav-math.js');
@@ -22,15 +23,15 @@ function isTradingDay(d) {
   return !isCnHoliday(cnDate(d || new Date()));
 }
 
-function historicalApiFor(code, position = {}) {
+function historicalKindFor(code, position = {}) {
   const rawCode = String(code || '').trim().toUpperCase();
   const info = classifyCode(rawCode, position.name || '');
   const subtype = String(position.subtype || (info && info.subtype) || '');
   const type = String(position.type || (info && info.type) || '');
-  if (subtype === '港股' || /^\d{5}$/.test(rawCode)) return 'hk_daily';
-  if (subtype === '可转债' || type === '债权' || /债/.test(String(position.name || '')) || /^(11|12)\d{4}$/.test(rawCode)) return 'cb_daily';
-  if (subtype.indexOf('基金') >= 0 || subtype.indexOf('ETF') >= 0 || type === '基金') return 'fund_daily';
-  return 'daily';
+  if (subtype === '港股' || /^\d{5}$/.test(rawCode)) return 'hk_stock';
+  if (subtype === '可转债' || type === '债权' || /债/.test(String(position.name || '')) || /^(11|12)\d{4}$/.test(rawCode)) return 'bond';
+  if (subtype.indexOf('基金') >= 0 || subtype.indexOf('ETF') >= 0 || type === '基金') return 'fund';
+  return 'stock';
 }
 
 // 港股日线补价：腾讯 web.ifzq 日 K（与 hkDailyCoverage 同源，无需积分）。
@@ -59,17 +60,14 @@ async function backfillHkDailyPrices(username, accountName, code, start, end) {
 // 成功返回 true（至少写回一条）；失败/无数据返回 false。
 async function backfillDailyPrices(username, accountName, code, start, end, position = {}) {
   const tsCode = toTsCode(code);
-  const api = historicalApiFor(code, position);
+  const kind = historicalKindFor(code, position);
   // 港股日线不走 Tushare（hk_daily 需高积分），改走腾讯 web.ifzq 日 K；
   // 数据源的选择留在数据层，业务层只说「补某只标的某区间的收盘价」。
-  if (api === 'hk_daily') return backfillHkDailyPrices(username, accountName, code, start, end);
-  const sd = String(start).replace(/-/g, '');
-  const ed = String(end).replace(/-/g, '');
-  let data = null;
+  if (kind === 'hk_stock') return backfillHkDailyPrices(username, accountName, code, start, end);
+  let rows = [];
   try {
-    data = await tushareQuery(api, { ts_code: tsCode, start_date: sd, end_date: ed }, 'trade_date,close');
+    rows = await marketDatasets.readHistoricalCloseSeries({ tsCode, kind, startDate: start, endDate: end });
   } catch (e) { return false; }
-  const rows = tsRows(data);
   if (!rows.length) return false;
   // 按日期分组（saveDailyPrices 按单日期批量写）
   const byDate = {};
@@ -245,4 +243,4 @@ async function recomputeNav(username, accountName, fromDate) {
   return { ok: missingDates.length === 0, status: missingDates.length ? 'partial' : 'succeeded', days: affected, missingDates: [...new Set(missingDates)] };
 }
 
-module.exports = { recomputeNav, backfillDailyPrices, historicalApiFor, isTradingDay, cnDate };
+module.exports = { recomputeNav, backfillDailyPrices, historicalKindFor, isTradingDay, cnDate };

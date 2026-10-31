@@ -3,7 +3,8 @@
 const { pool, tryClaimJob, releaseJob, startJobRun, finishJobRun } = require('../db');
 // 文档选择纯判定已下沉到 domain 层（2026-10-30 S5 提取），本文件保留数据读写职责并继续转出同名函数。
 const { reportPeriod, isFullReport, latestFullReport, latestProspectus } = require('../domain/convertibleBondAnalysisRules');
-const { tushareQuery } = require('./tushare');
+// 证券主档与实时报价经数据层中立需求接口取。
+const marketDatasets = require('../dataAccess/marketDatasets');
 const { tsRows, tsDateStr } = require('./tushareFormat');
 const { fetchTencentQuotes, describeTencentCode } = require('./tencentQuote');
 const { spawn } = require('child_process');
@@ -41,7 +42,10 @@ async function ensureInstrument(client, tsCode, name, assetClass, listDate, deli
 async function loadTrackedDelistedStocks(listedRows, targetCodes = [], deps = {}) {
   if (!listedRows.length && !targetCodes.length) return [];
   const query = deps.query || pool.query.bind(pool);
-  const querySource = deps.fetch || tushareQuery;
+  // 退市股档案：经数据层主档接口取（可注入 deps.fetch 供测试）。
+  const readDelistedMaster = deps.fetch
+    ? async (tsCode, fields) => tsRows(await deps.fetch('stock_basic', { ts_code: tsCode, list_status: 'D' }, fields, { allowEmpty: true }))
+    : (tsCode, fields) => marketDatasets.readSecurityMaster({ tsCode, listStatuses: ['D'], fields });
   const { rows } = await query(`SELECT i.canonical_code FROM core.instruments i
     WHERE i.asset_class='stock' AND i.status='listed'
       AND NOT (i.canonical_code=ANY($1::text[]))
@@ -51,8 +55,8 @@ async function loadTrackedDelistedStocks(listedRows, targetCodes = [], deps = {}
   [listedRows.map(row => row.ts_code), targetCodes]);
   const confirmed = [];
   for (const { canonical_code: code } of rows) {
-    const data = await querySource('stock_basic', { ts_code: code, list_status: 'D' }, STOCK_STATUS_FIELDS, { allowEmpty: true });
-    const matches = tsRows(data).filter(row => row.ts_code === code && row.list_status === 'D' && isoDate(row.delist_date));
+    const masterRows = await readDelistedMaster(code, STOCK_STATUS_FIELDS);
+    const matches = masterRows.filter(row => row.ts_code === code && row.list_status === 'D' && isoDate(row.delist_date));
     if (matches.length === 1) confirmed.push(matches[0]);
   }
   return confirmed;

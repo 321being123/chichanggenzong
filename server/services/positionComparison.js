@@ -7,7 +7,8 @@ const { loadCashState } = require('./accountCash');
 //   - 6.4/6.5/6.6 证券 / 资产类型(type) / 持仓细类(subtype) 对比
 //   - 4.2 半公开服务端脱敏（数量/市值/盈亏/总资产删除）
 const { pool } = require('../db/connection');
-const { fetchTencentQuotes } = require('./tencentQuote');
+// 实时报价属于「行情数据集」：经数据层中立需求接口取，服务不直接依赖供应商适配层。
+const { readRealtimeQuotes } = require('../dataAccess/marketDatasets');
 const { todayCN } = require('./market');
 const positionComparisonRepository = require('../repositories/positionComparisonDataRepository.js');
 const { listBenchmarks, loadEffectivePositions } = positionComparisonRepository;
@@ -66,7 +67,7 @@ async function loadAccountCash(username, accountName) {
 // 未传时各自独立拉取/用账户汇率（兼容单边场景）。
 async function estimatePositions(positions, cashInfo, quotes, hkRate) {
   const codes = [...new Set(positions.map(p => String(p.code || '').trim()).filter(Boolean))];
-  const quoteMap = quotes || (codes.length ? await fetchTencentQuotes(codes) : new Map());
+  const quoteMap = quotes || (codes.length ? await readRealtimeQuotes({ codes }) : new Map());
   const rate = (hkRate != null && hkRate > 0) ? hkRate : (cashInfo.hkRate || 0.868);
   const enriched = positions.map(p => {
     const c = String(p.code || '').trim();

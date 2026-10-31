@@ -2,9 +2,9 @@
 // 官方 Tushare 路径保留兼容；IPO enrichment 使用腾讯港股 K 线免 Token 补漏路径。
 const crypto = require('crypto');
 const { pool } = require('../db');
-const { tushareQuery } = require('./tushare');
+// 港股日线经数据层中立需求接口取，供应商与备源顺序由数据层决定。
+const marketDatasets = require('../dataAccess/marketDatasets');
 const { withExternalCallGuard } = require('./externalCallGuard');
-const { requestTencentHkKline } = require('./tencentQuote');
 const txControl = require('../repositories/transactionControl');
 const { loadCandidates, sourceIdFor } = require('../repositories/hkDailyCoverageRepository.js');
 const repository = require('../repositories/hkDailyCoverageRepository.js');
@@ -45,7 +45,7 @@ async function fetchTencentHkDaily(candidate, toDate, fetchImpl) {
     const body = fetchImpl
       ? await fetchImpl(candidate.canonical_code, startDate, endDate)
       : await withExternalCallGuard('tencent', `hk_daily_history:${candidate.canonical_code}:${startDate}:${endDate}`, toDate,
-        () => requestTencentHkKline(candidate.canonical_code, startDate, endDate));
+        () => marketDatasets.readHkDailyByTencent({ canonicalCode: candidate.canonical_code, startDate, endDate }));
     const rows = normalizeRows(rowsFromTencentHkKline(body, candidate.canonical_code), candidate.canonical_code);
     return { candidate, startDate, endDate, rows, coverage: coverageForCandidate(candidate, rows), source: 'tencent' };
   } catch (error) {

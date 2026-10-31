@@ -21,7 +21,7 @@ async function metricRows(metric, market, benchmark) {
     ${field}::float8 AS value, close::float8 AS close, market_cap::float8 AS market_cap, 'normal'::text AS data_status
     FROM market.index_valuation_history
     WHERE index_code=$1 AND valuation_method='market_cap_weighted' AND ${field} > 0
-    ORDER BY trade_date, CASE WHEN source_code='tushare_index_dailybasic' THEN 0 WHEN source_code='user_supplied_weighted_csv' THEN 1 ELSE 2 END`,
+    ORDER BY trade_date, CASE WHEN source_code='lixinger_official' THEN 0 WHEN source_code='tushare_index_dailybasic' THEN 1 WHEN source_code='user_supplied_weighted_csv' THEN 2 ELSE 3 END`,
   [benchmark]);
   return rows;
 }

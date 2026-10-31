@@ -171,6 +171,25 @@ async function syncCsi300Valuation(full) {
     ? [['20040101', '20151231'], ['20160101', end]]
     : [[tsDate(dateStr(new Date(Date.now() - 45 * 86400000))), end]];
   let count = 0;
+  // 理杏仁官方优先：cn/index/fundamental 的 pe_ttm.mcw/pb.mcw 是总市值加权口径，与既有 CSI300 加权 PE 同口径。
+  try {
+    const { resolveIndexValuation } = require('../services/lixingerDatasetSources');
+    let officialCount = 0;
+    for (const [startDate, endDate] of ranges) {
+      const rows = await resolveIndexValuation({ indexCode: '000300', startDate, endDate });
+      if (rows && rows.length) {
+        await marketYieldRepository.saveCsi300Valuations(rows, 'lixinger_official');
+        officialCount += rows.length;
+      }
+    }
+    if (officialCount) {
+      console.log(`[市场周期] 沪深300估值 来源=理杏仁官方 写入=${officialCount}条`);
+      return officialCount;
+    }
+  } catch (error) {
+    if (['JOB_BUDGET_EXCEEDED', 'POLICY_NOT_CONFIGURED', 'DATASET_LOCKED'].includes(error.code)) throw error;
+    console.warn(`理杏仁沪深300估值不可用，回退 Tushare：${String(error.message).slice(0, 160)}`);
+  }
   for (const [startDate, endDate] of ranges) {
     const data = await tushareQuery('index_dailybasic', { ts_code: '000300.SH', start_date: startDate, end_date: endDate },
       'ts_code,trade_date,total_mv,pe_ttm,pb');
@@ -267,6 +286,7 @@ async function syncAShareMarketCap(full) {
     let totalYi = 0;   // 统一为亿元
     let securityCount = 0;
     let fromUnified = false;
+    let officialSource = null;
     try {
       const { getTotalMarketCap } = require('../services/stockDataService');
       const cap = await getTotalMarketCap(normDate(day));
@@ -277,7 +297,24 @@ async function syncAShareMarketCap(full) {
       }
     } catch (_) { /* 统一层异常则走 Tushare 回退 */ }
 
-    // 2) 统一层覆盖不足或异常：回退 Tushare daily_basic（total_mv 单位：万元 → 亿元 = /10000）
+    // 2) 统一层覆盖不足或异常：先用理杏仁官方中证全指 A股市值（mc_om，元→亿元）补齐，
+    //    中证全指覆盖全部 A 股；官方也取不到才回退 Tushare daily_basic 汇总。
+    if (!(totalYi > 0)) {
+      try {
+        const { resolveIndexValuation } = require('../services/lixingerDatasetSources');
+        const official = await resolveIndexValuation({ indexCode: '000985', startDate: day, endDate: day });
+        const row = (official || [])[0];
+        if (row && Number(row.raw && row.raw.mc_om) > 0) {
+          totalYi = Number(row.raw.mc_om) / YUAN_TO_100M;
+          officialSource = 'lixinger_official';
+        }
+      } catch (error) {
+        if (['JOB_BUDGET_EXCEEDED', 'POLICY_NOT_CONFIGURED', 'DATASET_LOCKED'].includes(error.code)) throw error;
+        console.warn(`理杏仁A股市值不可用，回退 Tushare：${String(error.message).slice(0, 160)}`);
+      }
+    }
+
+    // 3) 官方也取不到：回退 Tushare daily_basic（total_mv 单位：万元 → 亿元 = /10000）
     //    回退数据同样验证交易日、数量、有效市值占比；异常时保留上一份有效数据（不写库）。
     if (!(totalYi > 0)) {
       const data = await tushareQuery('daily_basic', { trade_date: day }, 'ts_code,trade_date,total_mv', { failoverOnEmpty: true });
@@ -289,7 +326,8 @@ async function syncAShareMarketCap(full) {
       totalYi = valid.reduce((sum, row) => sum + Number(row.total_mv), 0) / 10000;
     }
     if (!(totalYi > 0)) continue;
-    await marketYieldRepository.saveMarketCap({ day: normDate(day), totalYi, securityCount, fromUnified });
+    await marketYieldRepository.saveMarketCap({ day: normDate(day), totalYi, securityCount, fromUnified,
+      sourceCode: officialSource || undefined });
     count++;
     if (!fromUnified) await wait(350);  // 只有回退 Tushare 才需要限流
   }

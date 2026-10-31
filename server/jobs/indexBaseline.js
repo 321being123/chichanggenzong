@@ -33,6 +33,15 @@ async function fetchIndexCloseSeries(def, startTs, endTs) {
     if (rows) return tsRows(rows).map(function (r) { return { date: normDate(r.trade_date), close: parseFloat(r.close) }; }).filter(function (p) { return p.date && !isNaN(p.close) && p.close > 0; });
     return [];
   }
+  // 恒指：官方 hk/index/candlestick（type=normal）优先，取不到回退腾讯。
+  try {
+    const { resolveIndexDaily } = require('../services/lixingerDatasetSources');
+    const series = await resolveIndexDaily({ tsCode: 'HSI', startDate: startTs, endDate: endTs, market: 'hk' });
+    if (series && series.length) return series;
+  } catch (error) {
+    if (['JOB_BUDGET_EXCEEDED', 'POLICY_NOT_CONFIGURED', 'DATASET_LOCKED'].includes(error.code)) throw error;
+    console.warn(`理杏仁恒指不可用，回退腾讯：${String(error.message).slice(0, 160)}`);
+  }
   return fetchHsiHistory(startTs, endTs);
 }
 

@@ -86,12 +86,12 @@ async function readCsi300Watermark() {
   return pool.query(`SELECT max(trade_date)::text AS mx FROM market.index_valuation_history WHERE index_code='CSI300' AND source_code='tushare_index_dailybasic'`);
 }
 
-async function saveCsi300Valuations(kept) {
+async function saveCsi300Valuations(kept, sourceCode = 'tushare_index_dailybasic') {
   const values = [], params = []; let p = 1;
   for (const row of kept) {
     const { day, pe, pb } = row;
-    values.push(`('CSI300','market_cap_weighted',$${p},$${p+1},$${p+2},$${p+3},'tushare_index_dailybasic',$${p+4})`);
-    params.push(day, Number(row.raw.total_mv) || null, pe > 0 ? pe : null, pb > 0 ? pb : null, JSON.stringify(row.raw));
+    values.push(`('CSI300','market_cap_weighted',$${p},$${p+1},$${p+2},$${p+3},'${sourceCode}',$${p+4})`);
+    params.push(day, Number((row.raw && (row.raw.total_mv ?? row.raw.mc)) || row.marketCap) || null, pe > 0 ? pe : null, pb > 0 ? pb : null, JSON.stringify(row.raw));
     p += 5;
   }
   await pool.query(`INSERT INTO market.index_valuation_history
@@ -133,28 +133,29 @@ async function listMarketCapDates() {
     FROM market.a_share_market_cap_daily WHERE source_code='tushare_daily_basic'`);
 }
 
-async function saveMarketCap({ day, totalYi, securityCount, fromUnified }) {
+async function saveMarketCap({ day, totalYi, securityCount, fromUnified, sourceCode = 'tushare_daily_basic' }) {
   return pool.query(`INSERT INTO market.a_share_market_cap_daily
       (trade_date,total_market_cap_100m_yuan,security_count,source_code,raw_payload)
-      VALUES($1,$2,$3,'tushare_daily_basic',$4)
+      VALUES($1,$2,$3,$5,$4)
       ON CONFLICT(trade_date,source_code) DO UPDATE SET
         total_market_cap_100m_yuan=EXCLUDED.total_market_cap_100m_yuan,
         security_count=EXCLUDED.security_count,raw_payload=EXCLUDED.raw_payload,ingested_at=now()`, [day, totalYi, securityCount, JSON.stringify({
     upstreamUnit: fromUnified ? 'CNY' : '10000 CNY',
     storedUnit: '100m CNY',
+    sourceCode,
     securityCount,
-    source: fromUnified ? 'unified_daily_valuations' : 'tushare_daily_basic',
-  })]);
+    source: fromUnified ? 'unified_daily_valuations' : sourceCode,
+  }), sourceCode]);
 }
 
 const SUBDATASET_QUERIES = Object.freeze({
   cn_yield: "SELECT max(trade_date)::text AS data_as_of FROM market.sovereign_yield_daily WHERE market_code='CN' AND tenor_years=10 AND source_code IN ('chinabond','lixinger_official')",
-  csi300_pe: "SELECT max(trade_date)::text AS data_as_of FROM market.market_valuation_daily WHERE market_code='CN' AND benchmark_code='CSI300' AND source_code='csindex'",
+  csi300_pe: "SELECT max(trade_date)::text AS data_as_of FROM market.market_valuation_daily WHERE market_code='CN' AND benchmark_code='CSI300' AND source_code IN ('csindex','lixinger_official','tushare_index_dailybasic')",
   csi_all_pe: "SELECT max(trade_date)::text AS data_as_of FROM market.market_valuation_daily WHERE market_code='CN' AND benchmark_code='CSIALL' AND source_code='csindex'",
   hsi_pe: "SELECT max(trade_date)::text AS data_as_of FROM market.market_valuation_daily WHERE market_code='HK' AND benchmark_code='HSI' AND source_code='hsi_official'",
   us_treasury_yield: "SELECT max(trade_date)::text AS data_as_of FROM market.sovereign_yield_daily WHERE market_code='US' AND tenor_years=10 AND source_code='tushare_us_tycr'",
   m2: "SELECT max(month)::text AS data_as_of FROM market.money_supply_monthly WHERE market_code='CN'",
-  a_share_market_cap: "SELECT max(trade_date)::text AS data_as_of FROM market.a_share_market_cap_daily WHERE source_code='tushare_daily_basic'",
+  a_share_market_cap: "SELECT max(trade_date)::text AS data_as_of FROM market.a_share_market_cap_daily WHERE source_code IN ('tushare_daily_basic','lixinger_official')",
   m2_market_cap: "SELECT max(trade_date)::text AS data_as_of FROM analytics.m2_market_cap_daily WHERE data_status='normal'",
   graham_csi300: "SELECT max(trade_date)::text AS data_as_of FROM analytics.graham_index_daily WHERE market_code='CN' AND benchmark_code='CSI300'",
   graham_csi_all: "SELECT max(trade_date)::text AS data_as_of FROM analytics.graham_index_daily WHERE market_code='CN' AND benchmark_code='CSIALL'",

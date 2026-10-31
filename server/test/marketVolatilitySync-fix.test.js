@@ -31,7 +31,7 @@ assert.ok(job.includes('MIN_UNIFIED_MARKET_COUNT'), '统一表覆盖门禁常量
 assert.ok(job.includes('cap.stock_count >= MIN_UNIFIED_MARKET_COUNT'), '统一表未按门禁校验证券数量');
 
 // P0-1-④：写库统一使用 securityCount，禁止引用分支局部变量 rows
-assert.ok(job.includes('saveMarketCap({ day: normDate(day), totalYi, securityCount, fromUnified })'), '写库未统一使用 securityCount');
+assert.ok(job.includes('saveMarketCap({ day: normDate(day), totalYi, securityCount, fromUnified'), '写库未统一使用 securityCount');
 assert.ok(marketRepo.includes('[day, totalYi, securityCount,'), '仓储参数未使用 securityCount');
 assert.ok(!/\brows\.length\b/.test(marketRepo.split('INSERT INTO market.a_share_market_cap_daily')[1] || ''), '写库参数仍引用 rows.length');
 

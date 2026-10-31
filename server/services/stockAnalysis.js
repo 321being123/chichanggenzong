@@ -105,6 +105,18 @@ function ranges(startDate, endDate, years = 8) {
 async function fetchPartitioned(apiName, tsCode, startDate, endDate, fields) {
   const result = [];
   for (const [start, end] of ranges(startDate, endDate)) {
+    // 日线：理杏仁官方「不复权」优先（cn/company/candlestick type=ex_rights），
+    // 官方 volume 股→手、amount 元→千元已由适配层换算，取不到整段回退 Tushare。
+    if (apiName === 'daily' && process.env.LIXINGER_TOKEN) {
+      try {
+        const { resolveStockDaily } = require('./lixingerDatasetSources');
+        const official = await resolveStockDaily({ tsCode, startDate: start, endDate: end });
+        if (official && official.length) { result.push(...official); continue; }
+      } catch (error) {
+        if (['JOB_BUDGET_EXCEEDED', 'POLICY_NOT_CONFIGURED', 'DATASET_LOCKED'].includes(error.code)) throw error;
+        console.warn(`理杏仁日线不可用，回退 Tushare：${String(error.message).slice(0, 160)}`);
+      }
+    }
     const rows = await fetchRequired(apiName, { ts_code: tsCode, start_date: start, end_date: end }, fields);
     result.push(...rows);
   }

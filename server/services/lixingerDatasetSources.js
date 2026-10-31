@@ -231,11 +231,14 @@ async function resolveDividendRows({ tsCode, startDate, endDate, options = {} } 
 }
 
 // 指数日线：官方 cn/index/candlestick。现有 index_history 只存日期与收盘价。
-async function resolveIndexDaily({ tsCode, startDate, endDate, type = 'normal' } = {}) {
-  const code = stockCodeOf(tsCode);
+async function resolveIndexDaily({ tsCode, startDate, endDate, type = 'normal', market = 'cn' } = {}) {
+  // 指数 K 线 type 只接受 normal / total_return；恒指代码是字母（HSI），不按数字代码规则处理。
+  const raw = String(tsCode || '').trim();
+  const code = /^[A-Za-z]/.test(raw) ? raw.toUpperCase() : stockCodeOf(raw);
   const start = dashDate(startDate), end = dashDate(endDate);
   if (!code || !start || !end) return null;
-  const result = await callEndpoint('cn/index/candlestick', { stockCode: code, type, startDate: start, endDate: end },
+  const endpoint = market === 'hk' ? 'hk/index/candlestick' : 'cn/index/candlestick';
+  const result = await callEndpoint(endpoint, { stockCode: code, type, startDate: start, endDate: end },
     { dataset: 'index_daily', targetDate: end });
   return result.rows
     .map(row => ({ date: dashDate(row.date), close: numberOrNull(row.close) }))
@@ -243,6 +246,50 @@ async function resolveIndexDaily({ tsCode, startDate, endDate, type = 'normal' }
     .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
 }
 
+
+
+// 指数估值：官方 `cn/index/fundamental` 的 `pe_ttm.mcw` / `pb.mcw` 是总市值加权口径，
+// 与站内既有 CSI300 加权 PE 同一口径（2026-10-30 CSI300 = 12.86，等权 ew 是 20.10，不能混用）。
+async function resolveIndexValuation({ indexCode, startDate, endDate, market = 'cn', areaCode = 'cn' } = {}) {
+  const start = dashDate(startDate), end = dashDate(endDate);
+  const code = String(indexCode || '').trim();
+  if (!code || !start || !end) return null;
+  const endpoint = market === 'hk' ? 'hk/index/fundamental' : 'cn/index/fundamental';
+  // cn 额外取 mc_om（A股市值），港股没有该指标。
+  const metrics = market === 'hk' ? ['pe_ttm.mcw', 'pb.mcw', 'mc'] : ['pe_ttm.mcw', 'pb.mcw', 'mc', 'mc_om'];
+  const result = await callEndpoint(endpoint, { stockCodes: [code], startDate: start, endDate: end, metricsList: metrics },
+    { dataset: 'market_index_valuation', targetDate: end });
+  return result.rows.map(row => {
+    const day = dashDate(row.date);
+    const pe = numberOrNull(row['pe_ttm.mcw']);
+    const pb = numberOrNull(row['pb.mcw']);
+    const mc = numberOrNull(row.mc);
+    if (!day || (pe === null && pb === null)) return null;
+    return { day, pe, pb, marketCap: mc, raw: row };
+  }).filter(Boolean);
+}
+
+// 股票/港股日线（不复权）：官方 `cn|hk/company/candlestick`，type=ex_rights。
+// 单位换算回 Tushare 口径：官方 volume 是股 → 手(/100)，amount 是元 → 千元(/1000)。
+async function resolveStockDaily({ tsCode, startDate, endDate, market = 'cn' } = {}) {
+  const code = await officialStockCode(tsCode).catch(() => null) || stockCodeOf(tsCode);
+  const start = dashDate(startDate), end = dashDate(endDate);
+  if (!code || !start || !end) return null;
+  const endpoint = market === 'hk' ? 'hk/company/candlestick' : 'cn/company/candlestick';
+  const result = await callEndpoint(endpoint, { stockCode: code, type: 'ex_rights', startDate: start, endDate: end },
+    { dataset: 'market_daily_bars', targetDate: end });
+  return result.rows.map(row => ({
+    ts_code: tsCode,
+    trade_date: isoDate(row.date),
+    open: numberOrNull(row.open),
+    high: numberOrNull(row.high),
+    low: numberOrNull(row.low),
+    close: numberOrNull(row.close),
+    vol: numberOrNull(row.volume) === null ? null : numberOrNull(row.volume) / 100,
+    amount: numberOrNull(row.amount) === null ? null : numberOrNull(row.amount) / 1000,
+    source_code: SOURCE,
+  })).filter(row => row.trade_date && row.close !== null);
+}
 
 // 宏观：M2 货币供应。官方 `macro/money-supply` 的 `m.m2.t`（月·累积）单位是元，
 // 站内 `market.money_supply_monthly.m2_100m_yuan` 是亿元 → /1e8。
@@ -286,7 +333,9 @@ module.exports = {
   resolveDividendRows,
   resolveFinancialReports,
   resolveIndexDaily,
+  resolveIndexValuation,
   resolveMoneySupply,
   resolveSovereignYield10y,
+  resolveStockDaily,
   resolveValuationRows,
 };

@@ -83,7 +83,17 @@ router.get('/kline', requireLogin, asyncHandler(async (req, res) => {
     : null;
   try {
     if (requestedSecid === 'hkHSI' || tencentSymbol === 'hkHSI') {
-      // 恒生指数：腾讯 web.ifzq hkfqkline 历史日K（服务器实测可用，替代原 qt.gtimg 实时单点）
+      // 恒生指数：理杏仁官方 hk/index/candlestick 优先（type=normal），取不到回退腾讯 web.ifzq 历史日K。
+      try {
+        const { resolveIndexDaily } = require('../services/lixingerDatasetSources');
+        const lim = Math.min(Math.max(parseInt(days) || 365, 250), 1500);
+        const endHs = normDate(new Date());
+        const startHs = normDate(new Date(Date.now() - lim * 1.6 * 86400000));
+        const officialHs = await resolveIndexDaily({ tsCode: 'HSI', market: 'hk', startDate: startHs, endDate: endHs });
+        if (officialHs && officialHs.length) return res.json(officialHs.slice(-lim));
+      } catch (error) {
+        console.warn(`理杏仁恒指K线不可用，回退腾讯：${String(error.message).slice(0, 160)}`);
+      }
       // 返回 data.hkHSI.day：每条 [日期,开,收,高,低,...]，收盘价在 index 2
       const lim = Math.min(Math.max(parseInt(days) || 365, 250), 1500);
       const hkText = await guardedTextGet('tencent', `hsi-kline:${lim}`,

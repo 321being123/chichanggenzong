@@ -105,6 +105,9 @@ function flattenMetrics(node, prefix = '', out = {}) {
 function stockCodeOf(tsCode) {
   const text = String(tsCode || '').trim();
   if (/^\d{6}$/.test(text)) return text;
+  // 港股标准代码是 5 位（如 00700.HK），官方 hk 接口同样收 5 位，不足补零。
+  const hk = text.match(/^(\d{1,5})\.HK$/i);
+  if (hk) return hk[1].padStart(5, '0');
   const match = text.match(/^(\d{5,6})\.(SH|SZ|BJ|CSI)$/i);
   return match ? match[1] : null;
 }

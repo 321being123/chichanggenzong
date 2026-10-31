@@ -148,8 +148,10 @@ async function tryAnalysisApiFallback({kind,bond,targetDate,period,documentUrls=
 }
 
 function coversDocument(fallback,kind,url,targetDate,period,tsCode) {
+  // 备源快照的可用性判定：只问"是不是备源产物"（来源归属由数据层定义），不写死供应商名。
+  const { isFallbackSource } = require('../dataAccess/sourceAuthority');
   return fallback?.version===VERSION&&fallback.status==='complete'&&fallback.api_source===APIS[kind]?.name&&
-    fallback.source==='tushare'&&fallback.ts_code===tsCode&&fallback.target_date===targetDate&&fallback.report_period===period&&fallback.document_urls?.includes(url);
+    isFallbackSource(fallback.source)&&fallback.ts_code===tsCode&&fallback.target_date===targetDate&&fallback.report_period===period&&fallback.document_urls?.includes(url);
 }
 function terminalApplies(entry,url,period) {
   return Boolean(entry&&['source_unavailable','not_disclosed','conflict'].includes(entry.status)&&url&&entry.evidence?.url===url&&

@@ -155,7 +155,8 @@ async function syncConvertibleBondLifecycleFacts({ toDate, officialEvents = [], 
   const window = lifecycleSyncWindow(cursor.rows[0] && cursor.rows[0].last_success_date, endDate);
   const params = window.incremental ? { start_date: window.startDate.replace(/-/g, ''), end_date: window.endDate.replace(/-/g, '') } : {};
   const issueRows = includeTushare
-    ? tsRows(await tushareQuery('cb_issue', params, ISSUE_FIELDS, { allowEmpty: window.incremental }))
+    ? await require('../dataAccess/bondDatasets')
+      .readBondIssuance({ startDate: window.incremental ? window.startDate : null, endDate: window.incremental ? window.endDate : null, fields: ISSUE_FIELDS, allowEmpty: window.incremental })
     : [];
   const officialRows = await parseLifecycleDocuments(officialEvents);
   if (!includeTushare && !officialRows.length) {

@@ -1,7 +1,7 @@
 // ========== 港交所交易日历同步 ==========
 // 港股日历与 SSE 日历分开保存；若上游权限/入口尚未确认，任务安全跳过并保留上一份数据。
 const calendarRepository = require('../repositories/tradeCalendarRepository');
-const { tushareQuery } = require('../services/tushare');
+const referenceDatasets = require('../dataAccess/referenceDatasets');
 const { scheduleForDate, supportedScheduleYears } = require('../config/hkexAnnualSchedules');
 const { invalidateMarketStateCache } = require('../services/marketState');
 
@@ -44,15 +44,9 @@ function normalizeCalendarRows(rows) {
 }
 
 async function fetchConfiguredHkCalendar(fromDate, toDate) {
-  const apiName = String(process.env.TUSHARE_HK_TRADE_CAL_API || 'hk_tradecal').trim();
-  const params = {
-    start_date: String(fromDate).replace(/-/g, ''),
-    end_date: String(toDate).replace(/-/g, ''),
-  };
-  if (apiName !== 'hk_tradecal') params.exchange = process.env.TUSHARE_HK_TRADE_CAL_EXCHANGE || 'HKEX';
-  const fields = apiName === 'hk_tradecal' ? 'cal_date,is_open,pretrade_date' : 'cal_date,trade_date,is_open,pretrade_date';
-  const data = await tushareQuery(apiName, params, fields);
-  return normalizeCalendarRows(rowsFromPayload(data));
+  // 港股日历属于「交易日历数据集」：接口名与交易所的配置差异留在数据层。
+  const rows = await referenceDatasets.readHkTradingCalendar({ startDate: fromDate, endDate: toDate });
+  return normalizeCalendarRows(rows);
 }
 
 function validateManualCorrection(input = {}) {

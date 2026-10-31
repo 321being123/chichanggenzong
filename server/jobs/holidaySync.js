@@ -16,8 +16,10 @@ function daysSince(obj) {
 async function fetchTradeCal(year) {
   const sd = year + '0101';
   const ed = year + '1231';
-  const data = await tushareQuery('trade_cal', { exchange: 'SSE', start_date: sd, end_date: ed }, 'cal_date,is_open');
-  if (!data) return null;
+  const calendarRows = await require('../dataAccess/referenceDatasets')
+    .readTradingCalendar({ exchange: 'SSE', startDate: sd, endDate: ed });
+  const data = { fields: ['cal_date', 'is_open'], items: calendarRows.map(row => [row.cal_date, row.is_open]) };
+  if (!calendarRows.length) return null;
   const fields = data.fields || [];
   const rows = (data.items || []).map(it => {
     const o = {};
@@ -119,8 +121,9 @@ async function ensureHolidaysCurrent({ businessDate = CoreDate.todayInZone('Asia
     // 有未补窗口时只取缺失范围；月度复核仍查询完整年度以发现官方更正。
     const requestedDates = stale || !missing.length ? expectedDates
       : expectedDates.filter(date => date >= missing[0] && date <= missing[missing.length - 1]);
-    const data = await tushareQuery('trade_cal', { exchange: 'SSE',
-      start_date: requestedDates[0].replace(/-/g, ''), end_date: requestedDates[requestedDates.length - 1].replace(/-/g, '') }, 'cal_date,is_open');
+    const calendarRows = await require('../dataAccess/referenceDatasets')
+      .readTradingCalendar({ exchange: 'SSE', startDate: requestedDates[0], endDate: requestedDates[requestedDates.length - 1] });
+    const data = { fields: ['cal_date', 'is_open'], items: calendarRows.map(row => [row.cal_date, row.is_open]) };
     const fetched = validateCalendarRows(data, requestedDates);
     const merged = new Map(rows.map(row => [row.trade_date, row]));
     fetched.forEach(row => merged.set(row.trade_date, row));

@@ -1,20 +1,35 @@
 // ========== 自动补齐指数基线（启动后自动拉取“基准日期”的数据） ==========
-// 基准日期 = 该账户净值最早日期；确保五指数（A股走Tushare，恒生走腾讯）都覆盖到该日期。
+// 基准日期 = 该账户净值最早日期；确保五个指数（A 股四个 + 港股恒生）都覆盖到该日期。
 // 幂等：已覆盖到基线的指数跳过，仅在缺失时联网补齐；可随 deploy 自动自愈指数缺口。
 const { pool, upsertIndexPoints, tryClaimJob, releaseJob, startJobRun, finishJobRun } = require('../db');
-const { tushareQuery, tsRows, tsDateStr, normDate } = require('../services/market');
+const { tsDateStr, normDate } = require('../services/market');
 const { withExternalCallGuard } = require('../services/externalCallGuard');
 const { isCnHoliday } = require('../config/holidays');
 const { hasIndexBaselineGap, loadSettledBaselines, markSettledBaseline } = require('../repositories/indexBaselineRepository.js');
 const repository = require('../repositories/indexBaselineRepository.js');
 
+// 只声明"哪个市场的哪个指数"，用哪家数据源由数据层决定（这里不出现供应商名）。
 const INDEX_BACKFILL_DEFS = [
-  { name: '沪深300', ts: '000300.SH', src: 'tushare' },
-  { name: '中证全指', ts: '000985.CSI', src: 'tushare' },
-  { name: '上证指数', ts: '000001.SH', src: 'tushare' },
-  { name: '中证500', ts: '000905.SH', src: 'tushare' },
-  { name: '恒生指数', src: 'tencent' } // 恒生无 Tushare 权限，沿用腾讯策略
+  { name: '沪深300', ts: '000300.SH', market: 'cn' },
+  { name: '中证全指', ts: '000985.CSI', market: 'cn' },
+  { name: '上证指数', ts: '000001.SH', market: 'cn' },
+  { name: '中证500', ts: '000905.SH', market: 'cn' },
+  { name: '恒生指数', ts: 'HSI', market: 'hk' },
 ];
+
+// 指数日线取数：理杏仁官方优先，取不到再回退 Tushare。
+// 官方 `cn/index/candlestick` 只返回日期与收盘价序列，正好是 index_history 需要的形状；
+// 中证全指(000985.CSI)不在官方 A股指数代码范围，走原有 Tushare 路径。
+async function fetchIndexCloseSeries(def, startTs, endTs) {
+  // 指数收盘序列属于「指数行情数据集」：只向数据层要序列，主备来源由数据层决定。
+  const { readIndexCloseSeries } = require('../dataAccess/marketDatasets');
+  return readIndexCloseSeries({
+    tsCode: def.ts,
+    market: def.market,
+    startDate: startTs,
+    endDate: endTs,
+  });
+}
 
 function chinaDateText(value = new Date()) {
   const parts = new Intl.DateTimeFormat('en-CA', {
@@ -48,22 +63,6 @@ function triggerTypeForReason(reason) {
 /* hasIndexBaselineGap 已迁入 server/repositories/indexBaselineRepository.js */
 
 // 恒生历史日K：腾讯 web.ifzq hkfqkline（日期范围，结束日期须<=今天，否则返回空）
-async function fetchHsiHistory(fromDate, toDate) {
-  const url = `https://web.ifzq.gtimg.cn/appstock/app/hkfqkline/get?param=hkHSI,day,${fromDate},${toDate},4000,qfq`;
-  try {
-    const txt = await withExternalCallGuard('tencent', `hsi-history:${fromDate}:${toDate}`, process.env.JOB_BUSINESS_DATE, () => require('../services/marketHttpSource').getText('tencent', url, { timeout: 10000 }));
-    const json = JSON.parse(txt);
-    const dayArr = json && json.data && json.data.hkHSI && json.data.hkHSI.day;
-    if (!Array.isArray(dayArr)) return [];
-    return dayArr
-      .map(function (it) { return { date: normDate(it[0]), close: parseFloat(it[2]) }; })
-      .filter(function (p) { return p.date && !isNaN(p.close) && p.close > 0; });
-  } catch (e) {
-    if (e && e.code) throw e;
-    return [];
-  }
-}
-
 // options.force = true 时忽略"已确认"记录，强制重查（供用户主动补历史使用）
 async function ensureIndexBaseline(options) {
   const force = !!(options && options.force);
@@ -88,13 +87,7 @@ async function ensureIndexBaseline(options) {
         const minR = await repository.select_index_history([acc.username, acc.account_name, def.name]);
         const minD = minR.rows[0] && minR.rows[0].d ? String(minR.rows[0].d) : null;
         if (minD && minD <= baseline) continue;
-        let series = [];
-        if (def.src === 'tushare') {
-          const rows = await tushareQuery('index_daily', { ts_code: def.ts, start_date: startTs, end_date: endTs }, 'trade_date,close');
-          if (rows) series = tsRows(rows).map(function (r) { return { date: normDate(r.trade_date), close: parseFloat(r.close) }; }).filter(function (p) { return p.date && !isNaN(p.close) && p.close > 0; });
-        } else {
-          series = await fetchHsiHistory(baseline, endDash);
-        }
+        const series = await fetchIndexCloseSeries(def, startTs, endTs);
         // 取到了数据但最早日并未早于已有最早日 → 说明数据源最早只能拉到这，记录以避免重复拉取
         if (series.length) {
           const earliest = series.reduce(function (a, b) { return a.date < b.date ? a : b; }).date;
@@ -160,13 +153,7 @@ async function ensureIndexRecent(days) {
     for (const acc of accs.rows) {
       const points = [];
       for (const def of INDEX_BACKFILL_DEFS) {
-        let series = [];
-        if (def.src === 'tushare') {
-          const rows = await tushareQuery('index_daily', { ts_code: def.ts, start_date: startTs, end_date: endTs }, 'trade_date,close');
-          if (rows) series = tsRows(rows).map(function (r) { return { date: normDate(r.trade_date), close: parseFloat(r.close) }; }).filter(function (p) { return p.date && !isNaN(p.close) && p.close > 0; });
-        } else {
-          series = await fetchHsiHistory(startDash, endDash);
-        }
+        const series = await fetchIndexCloseSeries(def, startTs, endTs);
         series.forEach(function (p) { points.push({ date: p.date, name: def.name, close: p.close }); });
       }
       if (points.length) {

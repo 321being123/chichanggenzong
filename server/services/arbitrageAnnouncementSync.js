@@ -5,7 +5,8 @@ const hkex = require('./hkexAnnouncement');
 const cninfo = require('./cninfoAnnouncement');
 const parser = require('./arbitrageParser');
 const { sanitizeJobError } = require('./jobErrorSanitizer');
-const { fetchTencentQuotes } = require('./tencentQuote');
+// 实时报价属于「行情数据集」：经数据层中立需求接口取，服务不直接依赖供应商适配层。
+const { readRealtimeQuotes } = require('../dataAccess/marketDatasets');
 const { ensureInstrumentIdentity, isCleanSecurityName } = require('./securityIdentity');
 const { fetchSseEventsBatch, fetchSzseEventsBatch } = require('./stockAnalysis');
 const { sendAlert, resolveSourceEndpointAlerts } = require('./jobAlertMailer');
@@ -230,7 +231,7 @@ async function standardizeAnnouncement(sourceId, rawRecordId, ann, scope) {
   if (scope !== 'hkex' && /境内上市外资股转换上市地|B股转H股|B转H/.test(ann.title || '')
       && /^0\d{5}$/.test(String(ann.stockCode || ''))) {
     const bCode = '2' + String(ann.stockCode).slice(1);
-    const quoteMap = await fetchTencentQuotes([bCode]);
+    const quoteMap = await readRealtimeQuotes({ codes: [bCode] });
     const quote = quoteMap.get(bCode);
     ann = {
       ...ann,

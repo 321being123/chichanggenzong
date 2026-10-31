@@ -63,8 +63,7 @@ async function syncConvertibleBondSuspensions({ startDate, endDate, targetCodes 
   const [{ rows: stocks }, sourceResult, data] = await Promise.all([
     repository.select_fundamental_convertible_bond_profiles(),
     repository.select_ops_data_sources(),
-    tushareQuery('suspend_d', { start_date: from, end_date: to },
-      'ts_code,trade_date,suspend_type,suspend_reason', { allowEmpty: true }),
+    require('../dataAccess/referenceDatasets').readSuspensions({ startDate: from, endDate: to }),
   ]);
   const sourceId = sourceResult.rows[0] && sourceResult.rows[0].source_id;
   if (!sourceId) return { ok: false, status: 'source_missing', count: 0, queryStatus: 'not_run' };
@@ -76,7 +75,8 @@ async function syncConvertibleBondSuspensions({ startDate, endDate, targetCodes 
   // suspend_d 可能同日返回“复牌(R)”和“停牌(S)”两条记录；表的唯一键按证券+日期，
   // 先去重并优先保留停牌事实，避免 PostgreSQL ON CONFLICT 同一批次重复更新报错。
   const rowMap = new Map();
-  for (const row of tsRows(data)) {
+  // 数据层读函数返回行数组；兼容 Tushare 信封（fields/items）以外的形状。
+  for (const row of (Array.isArray(data) ? data : tsRows(data))) {
     const mapped = {
       instrument_id: instrumentMap.get(row.ts_code),
       trade_date: isoDate(row.trade_date),

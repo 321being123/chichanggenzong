@@ -29,20 +29,89 @@ async function parseHsiWorkbook(buffer) {
   child.on('close', n => { if (n !== 0) return reject(new Error('恒指 PE 文件解析失败（退出码 ' + n + '）：' + err)); try { resolve(JSON.parse(out)); } catch(e) { reject(e); } }); child.stdin.end(buffer);
 }); }
 async function syncChinaYield(start, end) {
-
-  let count = 0, cursor = new Date(start + 'T00:00:00Z'), last = new Date(end + 'T00:00:00Z');
-  while (cursor <= last) {
-    const rangeEnd = new Date(Date.UTC(cursor.getUTCFullYear() + 1, cursor.getUTCMonth(), cursor.getUTCDate() - 1));
-    const to = rangeEnd < last ? rangeEnd : last; const rows = await marketSource.fetchChinaYield(dateStr(cursor), dateStr(to));
-    for (const r of rows) if (Number(r.tenYear) > 0) { await marketYieldRepository.saveChinaYield(r);
-      count++; }
-    cursor = new Date(to.getTime() + 86400000);
+  // 10 年国债属于「宏观数据集」：只向数据层要序列，主备来源与单位换算由数据层完成。
+  const { readSovereignYieldSeries } = require('../dataAccess/marketDatasets');
+  const rows = await readSovereignYieldSeries({ startDate: start, endDate: end });
+  let saved = 0;
+  for (const row of rows) {
+    await marketYieldRepository.saveChinaYield(row, row.source_code || undefined);
+    saved += 1;
   }
-  return count;
+  if (saved) console.log(`[市场周期] 中国10年国债 写入=${saved}条（来源=${rows[0].source_code}）`);
+  return saved;
 }
+// 「A股全市场 PE」只认理杏仁官方：`cn/index/fundamental` 的 `pe_ttm.mcw`＝站内页面「总市值加权」口径。
+// 中证全指 000985 自 2011-08-02 起连续（指数上线日 2011-08-02，2011-08-01 无值）。
+// 中证指数官网是**另一种算法**（整体法：Σ总市值 ÷ Σ净利润），与官方口径同日差 −17.6%～+18.7% 且随时间变化，
+// 掺在同一条序列里会让格雷厄姆指数失真，因此这里不再回落中证官网：官方取不到就是本次失败（任务记 failed），
+// 不写另一种口径的值冒充。中证全指的中证官网历史行也已按一次性脚本清理（scripts/backfillCsiAllPeOfficial.js）。
+const CSI_OFFICIAL_PE_SINCE = Object.freeze({ CSIALL: '2011-08-01' });
+const CSI_OFFICIAL_PE_CHUNK_YEARS = 5; // 官方单次区间过长会返回空（实测 15 年返回 0 行，5 年正常）
+const CSI_OFFICIAL_SOURCE = 'lixinger_official';
+
+function csiPeChunks(since, end, years = CSI_OFFICIAL_PE_CHUNK_YEARS) {
+  const chunks = [];
+  let startYear = Number(String(since).slice(0, 4));
+  const endYear = Number(String(end).slice(0, 4));
+  let cursor = since; // 首段用真实起点（可能不是 01-01），后续段从年初开始
+  while (startYear <= endYear) {
+    const lastYear = Math.min(endYear, startYear + years - 1);
+    const endOfChunk = lastYear === endYear ? end : `${lastYear}-12-31`;
+    chunks.push([cursor, endOfChunk]);
+    startYear = lastYear + 1;
+    cursor = `${startYear}-01-01`;
+  }
+  return chunks;
+}
+
+// 返回写入条数；0 表示官方这条链路没有产出（调用方回退中证官网）。
+async function syncCsiPeFromOfficial(benchmark, indexCode, options = {}) {
+  const since = options.fullSince || CSI_OFFICIAL_PE_SINCE[benchmark];
+  if (!since) return 0;
+  const today = dateStr(new Date());
+  let from = since;
+  if (!options.fullSince) {
+    // 水位按来源看：官方还没有过数据就从指数上线日全量回填，否则往前 45 天重叠窗口。
+    const wm = await marketYieldRepository.readCsiWatermark(benchmark, 'lixinger_official');
+    const maxDate = wm.rows[0] && wm.rows[0].mx;
+    if (maxDate) from = dateStr(new Date(new Date(maxDate).getTime() - 45 * 86400000));
+  }
+  const { readIndexValuationSeries } = require('../dataAccess/marketDatasets');
+  let written = 0;
+  for (const [start, end] of csiPeChunks(from, today)) {
+    // allowFallback=false：只回官方数据。数据层的指数估值入口默认还会回退 Tushare index_dailybasic，
+    // 那是另一种算法（整体法），若被这里按官方名义落库就是来源误标（复核样本：官方返空、Tushare=77，
+    // 结果写成「理杏仁 77」）。回退关掉后官方没有就是空，走下面的失败分支。
+    const rows = await readIndexValuationSeries({ indexCode, startDate: start, endDate: end, allowFallback: false });
+    const kept = [];
+    const foreignSources = new Set();
+    for (const row of rows || []) {
+      if (row.source_code && row.source_code !== CSI_OFFICIAL_SOURCE) { foreignSources.add(String(row.source_code)); continue; }
+      const pe = Number(row.pe);
+      if (!row.day || !(pe > 0)) continue;
+      kept.push({ day: row.day, pe, raw: row.raw });
+    }
+    // 万一数据层以后又把回退打开，这里也不许把别家口径写成官方：直接失败，不静默落库。
+    if (foreignSources.size) {
+      throw new Error(`全市场PE(${benchmark}) 数据层返回非官方来源（${[...foreignSources].join(',')}），拒绝按官方口径落库`);
+    }
+    if (!kept.length) continue;
+    await marketYieldRepository.saveCsiValuations(benchmark, kept, CSI_OFFICIAL_SOURCE);
+    written += kept.length;
+  }
+  if (written) console.log(`[市场周期] 全市场PE(${benchmark}) 官方口径 区间(${from}起) 写入=${written}条（总市值加权 pe_ttm.mcw）`);
+  return written;
+}
+
 async function syncCsiIndexPe(benchmark, indexCode) {
-  // 水位：本地该基准最新日期往前 45 天重叠窗口（首次空表则全量）
-  const wm = await marketYieldRepository.readCsiWatermark(benchmark);
+  // 官方专属基准（全市场 PE）：只走理杏仁，取不到就抛错让任务记失败，绝不回落另一种算法。
+  if (CSI_OFFICIAL_PE_SINCE[benchmark]) {
+    const written = await syncCsiPeFromOfficial(benchmark, indexCode);
+    if (!written) throw new Error(`全市场PE(${benchmark}) 官方口径本次无数据写入`);
+    return written;
+  }
+  // 其余基准（沪深300）仍走中证官网：水位往前 45 天重叠窗口，首次空表则全量。
+  const wm = await marketYieldRepository.readCsiWatermark(benchmark, 'csindex');
   const maxDate = wm.rows[0].mx;
   const since = maxDate ? dateStr(new Date(new Date(maxDate).getTime() - 45 * 86400000)) : '2005-01-01';
   // 中证 PE 专用接口只能返回全部历史，下载后在内存过滤只保留重叠窗口
@@ -59,20 +128,27 @@ async function syncCsiIndexPe(benchmark, indexCode) {
   }
   let written = 0;
   if (kept.length) {
-    await marketYieldRepository.saveCsiValuations(benchmark, kept);
+    await marketYieldRepository.saveCsiValuations(benchmark, kept, 'csindex');
     written = kept.length;
   }
   console.log(`[市场周期] 中证PE(${benchmark}) 接口返回=${rows.length}条, 重叠窗口(${since}起)保留=${kept.length}条, 写入=${written}条`);
   return written;
 }
 async function syncHsiPe() {
-  const b = await marketSource.fetchHsiPe();
-  const data = await parseHsiWorkbook(b); let count=0;
-  for (const r of data.slice(3)) { const d = new Date(String(r[0])); const pe = Number(r[1]); if (Number.isNaN(d.getTime()) || !(pe > 0)) continue; const day = dateStr(d);
-    await marketYieldRepository.saveHsiMarketValuation(day, pe, r);
-    await marketYieldRepository.saveHsiIndexHistory(day, pe, r);
-    count++; }
-  return count;
+  // 恒指估值属于「指数估值数据集」：官方市值加权优先、官网文件备源，均由数据层决定。
+  const { readIndexValuationSeries } = require('../dataAccess/marketDatasets');
+  const end = dateStr(new Date());
+  const start = dateStr(new Date(Date.now() - 400 * 86400000));
+  const rows = await readIndexValuationSeries({ indexCode: 'HSI', market: 'hk', startDate: start, endDate: end });
+  let saved = 0;
+  for (const row of rows) {
+    if (!(row.pe > 0)) continue;
+    await marketYieldRepository.saveHsiMarketValuation(row.day, row.pe, row.raw, row.source_code);
+    await marketYieldRepository.saveHsiIndexHistory(row.day, row.pe, row.raw, row.source_code);
+    saved += 1;
+  }
+  if (saved) console.log(`[市场周期] 恒指估值 写入=${saved}条（来源=${rows[0].source_code}）`);
+  return saved;
 }
 const US_TREASURY_YIELD_SOURCE = 'tushare_us_tycr';
 
@@ -92,9 +168,10 @@ async function syncUsTreasuryYield(end = dateStr(new Date())) {
     const to = rangeEnd < last ? rangeEnd : last;
     const fromTs = tsDate(dateStr(cursor));
     const toTs = tsDate(dateStr(to));
-    const data = await tushareQuery('us_tycr', { start_date: fromTs, end_date: toTs }, 'date,y10');
-    if (!data) throw new Error(`Tushare us_tycr 查询失败（${fromTs}-${toTs}）`);
-    const rows = tsRows(data).map(row => ({
+    // 美债收益率属于「宏观数据集」：只向数据层要，来源与窗口拼装在数据层。
+    const yieldRows = await require('../dataAccess/referenceDatasets')
+      .readUsTreasuryYield({ startDate: fromTs, endDate: toTs });
+    const rows = yieldRows.map(row => ({
       day: normDate(row.date),
       yieldPct: Number(row.y10),
       raw: row,
@@ -154,54 +231,39 @@ async function syncCsi300Valuation(full) {
   const ranges = needFull
     ? [['20040101', '20151231'], ['20160101', end]]
     : [[tsDate(dateStr(new Date(Date.now() - 45 * 86400000))), end]];
+  const { readIndexValuationSeries } = require('../dataAccess/marketDatasets');
   let count = 0;
   for (const [startDate, endDate] of ranges) {
-    const data = await tushareQuery('index_dailybasic', { ts_code: '000300.SH', start_date: startDate, end_date: endDate },
-      'ts_code,trade_date,total_mv,pe_ttm,pb');
-    if (!data) continue;
-    const kept = tsRows(data).filter(row => {
-      const day = normDate(row.trade_date), pe = Number(row.pe_ttm), pb = Number(row.pb);
-      return day && ((pe > 0) || (pb > 0));
-    });
-    if (!kept.length) continue;
-    const prepared = kept.map(row => ({ day: normDate(row.trade_date), pe: Number(row.pe_ttm), pb: Number(row.pb), raw: row }));
-    await marketYieldRepository.saveCsi300Valuations(prepared);
-    count += kept.length;
+    const rows = await readIndexValuationSeries({ indexCode: '000300', startDate, endDate });
+    if (!rows.length) continue;
+    await marketYieldRepository.saveCsi300Valuations(rows, rows[0].source_code);
+    count += rows.length;
   }
   console.log(`[市场周期] 沪深300估值 ${needFull ? '全量' : '增量(45天)'} 写入=${count}条`);
   return count;
 }
 
 async function syncMoneySupply() {
-  const data = await tushareQuery('cn_m', {}, 'month,m2,m2_yoy');
-  if (!data) return 0;
-  // 水位：本地最新月份；只保留最近 24 个月重叠窗口（首次空表则全量）
+  // 货币供应属于「宏观数据集」：官方优先、备源由数据层决定，这里只做水位与重叠窗口。
+  const { readMoneySupplySeries } = require('../dataAccess/marketDatasets');
+  const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+  const rows = await readMoneySupplySeries({ startDate: '1990-01-01', endDate: today });
+  if (!rows.length) return 0;
   const wm = await marketYieldRepository.readMoneyWatermark();
   const maxMonth = wm.rows[0].mx;
   const since = maxMonth ? (new Date(maxMonth).getUTCFullYear() - 2) + '-' + String(new Date(maxMonth).getUTCMonth() + 1).padStart(2, '0') + '-01' : '1990-01-01';
-  const kept = [];
-  for (const row of tsRows(data)) {
-    const month = monthDate(row.month), m2 = Number(row.m2);
-    if (!month || !(m2 > 0)) continue;
-    if (maxMonth && month < since) continue;
-    kept.push({ month, m2, row });
-  }
-  let written = 0;
-  if (kept.length) {
-    await marketYieldRepository.saveMoneySupply(kept);
-    written = kept.length;
-  }
-  console.log(`[市场周期] 货币供应量 接口返回=${tsRows(data).length}条, 重叠窗口(近24月)保留=${kept.length}条, 写入=${written}条`);
-  return written;
+  const kept = rows.filter(row => !maxMonth || row.month >= since).map(row => ({ month: `${row.month}-01`, m2: row.m2, row }));
+  if (kept.length) await marketYieldRepository.saveMoneySupply(kept, rows[0].source_code);
+  console.log(`[市场周期] 货币供应量 来源=${rows[0].source_code} 返回=${rows.length}条, 重叠窗口保留=${kept.length}条`);
+  return kept.length;
 }
-
 async function tradeMonthEnds(startYear, endYear) {
   // daily_basic 是收盘后数据；盘中不能把当天“已开市但尚未发布”的空结果当成接口故障。
   const result = [], today = tsDate(expectedTradeDate());
   for (let year = startYear; year <= endYear; year++) {
-    const data = await tushareQuery('trade_cal',
-      { exchange: 'SSE', start_date: year + '0101', end_date: year + '1231', is_open: '1' },
-      'cal_date,is_open');
+    const calendarRows = await require('../dataAccess/referenceDatasets')
+      .readTradingCalendar({ exchange: 'SSE', startDate: year + '0101', endDate: year + '1231', openOnly: true });
+    const data = { fields: ['cal_date', 'is_open'], items: calendarRows.map(row => [row.cal_date, row.is_open]) };
     if (!data) continue;
     const latest = new Map();
     for (const row of tsRows(data)) {
@@ -229,33 +291,13 @@ async function syncAShareMarketCap(full) {
   const targets = full ? dates.filter(day => !seen.has(day)) : [dates.at(-1)].filter(day => day && !seen.has(day));
   let count = 0;
   for (const day of targets) {
-    // 1) 优先用统一数据层按【目标交易日】完整分区聚合（daily_valuations.total_market_cap 单位：元）
-    let totalYi = 0;   // 统一为亿元
-    let securityCount = 0;
-    let fromUnified = false;
-    try {
-      const { getTotalMarketCap } = require('../services/stockDataService');
-      const cap = await getTotalMarketCap(normDate(day));
-      if (cap && cap.total_cap > 0 && cap.stock_count >= MIN_UNIFIED_MARKET_COUNT) {
-        totalYi = Number(cap.total_cap) / YUAN_TO_100M;
-        securityCount = cap.stock_count;
-        fromUnified = true;
-      }
-    } catch (_) { /* 统一层异常则走 Tushare 回退 */ }
-
-    // 2) 统一层覆盖不足或异常：回退 Tushare daily_basic（total_mv 单位：万元 → 亿元 = /10000）
-    //    回退数据同样验证交易日、数量、有效市值占比；异常时保留上一份有效数据（不写库）。
-    if (!(totalYi > 0)) {
-      const data = await tushareQuery('daily_basic', { trade_date: day }, 'ts_code,trade_date,total_mv', { failoverOnEmpty: true });
-      const rows = tsRows(data);
-      if (rows.length < 1000) continue;
-      const valid = rows.filter(row => Number.isFinite(Number(row.total_mv)) && Number(row.total_mv) > 0);
-      if (valid.length / rows.length < 0.8) continue;
-      securityCount = rows.length;
-      totalYi = valid.reduce((sum, row) => sum + Number(row.total_mv), 0) / 10000;
-    }
-    if (!(totalYi > 0)) continue;
-    await marketYieldRepository.saveMarketCap({ day: normDate(day), totalYi, securityCount, fromUnified });
+    // A 股总市值属于「市场总量数据集」：统一分区 → 官方中证全指 → 备源，全部由数据层决定。
+    const { readTotalAShareMarketCap } = require('../dataAccess/marketDatasets');
+    const cap = await readTotalAShareMarketCap({ day: normDate(day), minUnifiedCount: MIN_UNIFIED_MARKET_COUNT });
+    if (!cap) continue;
+    const { totalYi, securityCount, fromUnified, sourceCode: capSource } = cap;
+    await marketYieldRepository.saveMarketCap({ day: normDate(day), totalYi, securityCount, fromUnified,
+      sourceCode: capSource || undefined });
     count++;
     if (!fromUnified) await wait(350);  // 只有回退 Tushare 才需要限流
   }
@@ -395,6 +437,6 @@ async function runMarketVolatilitySync(context = {}) {
   } finally { await releaseJob('market_volatility_sync'); }
 }
 function scheduleMarketVolatilitySync() { runMarketVolatilitySync().catch(e => console.error('股市波动首次同步失败:', e.message)); const now=new Date(), next=new Date(); next.setHours(18,45,0,0); if(next<=now) next.setDate(next.getDate()+1); const first=setTimeout(function(){ runMarketVolatilitySync().catch(e=>console.error('股市波动同步失败:',e.message)); const timer=setInterval(()=>runMarketVolatilitySync().catch(e=>console.error('股市波动同步失败:',e.message)),86400000); if(timer.unref) timer.unref(); }, next-now); if(first.unref) first.unref(); }
-module.exports = { syncChinaYield, syncCsiIndexPe, syncHsiPe, syncUsTreasuryYield, calculateGraham, parseHsiWorkbook,
+module.exports = { syncChinaYield, syncCsiIndexPe, syncCsiPeFromOfficial, CSI_OFFICIAL_PE_SINCE, syncHsiPe, syncUsTreasuryYield, calculateGraham, parseHsiWorkbook,
   syncCsi300Valuation, syncMoneySupply, tradeMonthEnds, syncAShareMarketCap, calculateM2MarketCap,
   syncMarketCycleMetrics, runMarketVolatilitySync, scheduleMarketVolatilitySync };

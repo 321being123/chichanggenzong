@@ -197,6 +197,7 @@ const MIGRATIONS = [
   { version: '177_stock_swap_settlement', up: M.migration177StockSwapSettlement },
   { version: '178_lixinger_source', up: () => require('./migrations/lixingerSource').migration178LixingerSource(pool) },
   { version: '179_nav_basis_uniqueness', up: M.migration179NavBasisUniqueness },
+  { version: '180_lixinger_official_source', up: () => require('./migrations/lixingerOfficialSource').migration180LixingerOfficialSource(pool) },
 ];
 
 async function ensureMigrationsTable() {

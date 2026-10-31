@@ -206,6 +206,18 @@ async function fetchCompanyReports(target, options = {}) {
     const apiName = preferVip ? spec.vipApi : spec.api;
     try {
       const params = requestParams(spec, target, options);
+      // 财报属于「财务报表数据集」：只向数据层要，主备来源与口径换算由数据层完成；
+      // 数据层取不到时返回 null，本函数继续走既有的批量取数链路。
+      if (!options.query && ['income', 'balance', 'cashflow', 'indicator'].includes(kind)) {
+        const { readFinancialReportRows } = require('../dataAccess/marketDatasets');
+        const primary = await readFinancialReportRows({
+          tsCode: target.tsCode, kinds: [kind], startDate: params.start_date, endDate: params.end_date,
+        });
+        if (primary && Array.isArray(primary[kind]) && primary[kind].length) {
+          results[kind] = primary[kind];
+          continue;
+        }
+      }
       let rows;
       if (options.historyFull) {
         rows = [];
@@ -254,7 +266,20 @@ async function persistCompanyReports(target, reportResult, options = {}) {
       const error = reportResult.errors[kind];
       const scope = `company:${target.companyId}:${kind}`;
       if (rows.length) {
-        await syncReportRows(client, rows, kind, target.companyId, source.source_id, { runId: ingestionRunId, reportTypeOnly: '1' });
+        // 按行自带的来源分组落库：每组只写自己的来源，避免把某家数据记到别人名下。
+        const groups = new Map();
+        for (const row of rows) {
+          const code = (row && row.source_code) || 'tushare';
+          if (!groups.has(code)) groups.set(code, []);
+          groups.get(code).push(row);
+        }
+        const sourceIdByCode = await financialRepository.readSourceIds(client);
+        for (const [code, group] of groups) {
+          // 来源 id 一律按登记表解析；缺登记就报错，不再按来源名做特殊兜底。
+          const sourceId = sourceIdByCode.get(code);
+          if (!sourceId) throw new Error(`未找到数据源登记：${code}`);
+          await syncReportRows(client, group, kind, target.companyId, sourceId, { runId: ingestionRunId, reportTypeOnly: '1' });
+        }
         const latestPeriod = rows.map(row => row.end_date).sort().pop();
         const latestAnnouncement = rows.map(row => row.f_ann_date || row.ann_date).filter(Boolean).sort().pop();
         await markDatasetSuccess(scope, 'financial', { client, companyId: target.companyId, instrumentId: target.instrumentId,

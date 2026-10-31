@@ -163,8 +163,11 @@ async function settleCashIncome(username,accountName,{targetDate=CoreDate.todayI
     if(!anchor) return {status:'missing_cash_anchor'};
     const pending=[],dividends=[],excluded=[],resolutions=[],seen=new Set(),dividendTaxAssessments=[],taxSeen=new Set(),upcomingDividends=[];
     const calendar=loadHolidays(),hkCalendar=hkDividendCalendar(calendar.years,input.hkCalendar);
-    // 同一资格/派息事件优先官方新版本，不能让旧供应商行先占事件键。
-    const orderedActions=input.actions.slice().sort((a,b)=>Number(!!b.raw_payload?.documentId)-Number(!!a.raw_payload?.documentId)||String(b.announced_at||'').localeCompare(String(a.announced_at||''))||Number(b.action_id)-Number(a.action_id));
+    // 同一资格/派息事件择一：只表达"按来源权威等级排序"，等级怎么定义在数据层，
+    // 这里不出现具体供应商名。等级相同再看公告日与写入顺序，避免供应商行先占事件键。
+    const { rankDividendSource } = require('../dataAccess/sourceAuthority');
+    const sourceRank = rankDividendSource;
+    const orderedActions=input.actions.slice().sort((a,b)=>sourceRank(a)-sourceRank(b)||String(b.announced_at||'').localeCompare(String(a.announced_at||''))||Number(b.action_id)-Number(a.action_id));
     for(const action of orderedActions) {
       const identity=input.identities.find(i=>String(i.instrument_id)===String(action.instrument_id));
       const key='dividend:'+action.instrument_id+':'+action.record_date+':'+action.pay_date;

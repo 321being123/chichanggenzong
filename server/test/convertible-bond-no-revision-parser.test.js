@@ -2,9 +2,15 @@ const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
+// 指定 .env 绝对路径：测试可能以不同的工作目录被拉起（统一入口从项目根运行）。
+require('dotenv').config({ path: require('path').join(__dirname, '..', '..', '.env') });
+// 解释器优先级：IPO_PYTHON_PATH / PYTHON（本地 .env）→ 项目 venv → 找不到则跳过。
 
 const root = path.join(__dirname, '..', '..');
-const pythonCandidates = process.platform === 'win32'
+const pythonCandidates = [
+  process.env.IPO_PYTHON_PATH,
+  process.env.PYTHON,
+].filter(Boolean).concat(process.platform === 'win32'
   ? [
       path.join(root, 'ipo-report', 'venv', 'Scripts', 'python.exe'),
       path.join(root, 'venv', 'Scripts', 'python.exe'),
@@ -12,7 +18,7 @@ const pythonCandidates = process.platform === 'win32'
   : [
       path.join(root, 'ipo-report', 'venv', 'bin', 'python'),
       path.join(root, 'venv', 'bin', 'python'),
-    ];
+    ]);
 const python = pythonCandidates.find(file => fs.existsSync(file));
 if (!python) {
   console.log('[SKIP] 未找到项目 Python，跳过不下修公告解析测试');

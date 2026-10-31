@@ -8,7 +8,7 @@ async function listInputs(pg, since) {
     (SELECT y.trade_date FROM market.sovereign_yield_daily y WHERE y.market_code=CASE WHEN v.market_code='HK' THEN 'US' ELSE v.market_code END AND y.tenor_years=10 AND (v.market_code<>'HK' OR y.source_code='tushare_us_tycr') AND y.trade_date<=v.trade_date AND y.trade_date>=v.trade_date-CASE WHEN v.market_code='HK' THEN 10 ELSE 5 END ORDER BY y.trade_date DESC LIMIT 1) AS yield_date
     FROM (SELECT DISTINCT ON (market_code,benchmark_code,trade_date) market_code,benchmark_code,trade_date,pe
       FROM market.market_valuation_daily WHERE pe>0
-      ORDER BY market_code,benchmark_code,trade_date,CASE WHEN source_code='hsi_weighted_manual' THEN 0 WHEN source_code='hsi_official' THEN 1 ELSE 2 END) v
+      ORDER BY market_code,benchmark_code,trade_date,CASE WHEN source_code='lixinger_official' THEN 0 WHEN source_code='hsi_weighted_manual' THEN 1 WHEN source_code='hsi_official' THEN 2 ELSE 3 END) v
     WHERE v.trade_date >= $1`, [since]);
 }
 

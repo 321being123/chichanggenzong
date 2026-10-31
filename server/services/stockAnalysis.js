@@ -1,6 +1,6 @@
 const crypto = require('crypto');
 const stockAnalysisRepository = require('../repositories/stockAnalysisRepository');
-const { tushareQuery, tsRows, toTsCode, tsDateStr } = require('./market');
+const { toTsCode, tsDateStr } = require('./market');
 const marketDataGateway = require('../dataAccess/marketDataGateway');
 // 采集函数（巨潮／交易所／东财／雪球／股吧）已迁入数据接入层，服务侧保持同名引用与导出不变。
 const {
@@ -45,24 +45,35 @@ function versionKey(row) {
   return [row.end_date || '', row.report_type || '', row.f_ann_date || row.ann_date || '', row.update_flag || '', row.div_proc || '', row.ex_date || row.pay_date || ''].join('|');
 }
 
-async function fetchRequired(apiName, params, fields) {
-  const data = await tushareQuery(apiName, params, fields);
-  if (!data || !Array.isArray(data.items)) throw new Error(`${apiName} 数据获取失败`);
-  return tsRows(data);
+// 取数一律经数据层：这里只把"业务类型"翻译成数据层的中立需求接口，
+// 供应商接口名、参数格式与日期转换都不在服务里出现。
+const marketDatasets = require('../dataAccess/marketDatasets');
+
+// 三表与指标表：报表类型 → 数据层 kind。
+const STATEMENT_KINDS = Object.freeze({
+  income: 'income', balancesheet: 'balancesheet', balance: 'balance',
+  cashflow: 'cashflow', fina_indicator: 'fina_indicator',
+});
+
+async function readStatementSeries(apiName, tsCode, startDate, endDate, fields) {
+  const kind = STATEMENT_KINDS[apiName];
+  if (!kind) throw new Error(`未登记的三表类型：${apiName}`);
+  return marketDatasets.readFinancialStatementSeries({ tsCode, kind, startDate, endDate, fields });
 }
+
+// 行业分类：向数据层要「行业分类」这一个需求，供应商与体系选择由数据层完成；
+// 取不到返回 null，调用方保留上一轮结论，不猜分类。
+const INDUSTRY_CACHE_MS = 7 * 86400000;
 
 async function fetchIndustry(tsCode) {
   try {
-    const rows = await fetchRequired('index_member_all', { ts_code: tsCode, is_new: 'Y' }, 'ts_code,l1_code,l1_name,l2_code,l2_name,l3_code,l3_name,is_new');
-    const row = rows.find(item => item.l3_name) || rows[0];
-    if (row) return { industry: row.l3_name || row.l2_name || row.l1_name || '', industry_system: '申万2021', industry_level: row.l3_name ? '三级' : (row.l2_name ? '二级' : '一级'), industry_path: [row.l1_name,row.l2_name,row.l3_name].filter(Boolean) };
+    const { readIndustryClassification } = require('../dataAccess/marketDatasets');
+    return await readIndustryClassification({ tsCode, cacheMs: INDUSTRY_CACHE_MS });
   } catch (error) {
     if (error.code === 'JOB_BUDGET_EXCEEDED') throw error;
+    console.warn(`行业分类取数不可用：${String(error.message).slice(0, 160)}`);
+    return null;
   }
-  if (!process.env.GEOSCOPE_API_KEY) return null;
-  try {
-    return await require('./lixinger').fetchLixingerIndustry(tsCode);
-  } catch (_) { return null; }
 }
 
 function ranges(startDate, endDate, years = 8) {
@@ -80,8 +91,16 @@ function ranges(startDate, endDate, years = 8) {
 async function fetchPartitioned(apiName, tsCode, startDate, endDate, fields) {
   const result = [];
   for (const [start, end] of ranges(startDate, endDate)) {
-    const rows = await fetchRequired(apiName, { ts_code: tsCode, start_date: start, end_date: end }, fields);
-    result.push(...rows);
+    // 日线、复权因子、估值、三表各自属于一个数据集，主备来源与单位换算都在数据层完成。
+    if (apiName === 'daily') {
+      result.push(...await marketDatasets.readStockDailySeries({ tsCode, startDate: start, endDate: end }));
+    } else if (apiName === 'adj_factor') {
+      result.push(...await marketDatasets.readAdjustmentFactorSeries({ tsCode, startDate: start, endDate: end, fields }));
+    } else if (apiName === 'daily_basic') {
+      result.push(...await marketDatasets.readStockValuationHistory({ tsCode, startDate: start, endDate: end, fields }));
+    } else {
+      result.push(...await readStatementSeries(apiName, tsCode, start, end, fields));
+    }
   }
   return result;
 }
@@ -89,7 +108,7 @@ async function fetchPartitioned(apiName, tsCode, startDate, endDate, fields) {
 async function repairZeroValuations(tsCode, rows, fields) {
   const affected=rows.filter(row=>['pe','pe_ttm','pb'].some(field=>finite(row[field])===0));
   if(!affected.length)return {rows,issues:[]};
-  const dates=affected.map(row=>row.trade_date).sort(),retry=await fetchRequired('daily_basic',{ts_code:tsCode,start_date:dates[0],end_date:dates[dates.length-1]},fields),retryMap=new Map(retry.map(row=>[row.trade_date,row])),issues=[];
+  const dates=affected.map(row=>row.trade_date).sort(),retry=await marketDatasets.readStockValuationHistory({tsCode,startDate:dates[0],endDate:dates[dates.length-1],fields}),retryMap=new Map(retry.map(row=>[row.trade_date,row])),issues=[];
   const repaired=rows.map(row=>{const next=Object.assign({},row),again=retryMap.get(row.trade_date)||{};['pe','pe_ttm','pb'].forEach(field=>{if(finite(row[field])!==0)return;const value=finite(again[field]);if(value!==null&&value!==0)next[field]=value;else{next[field]=null;issues.push({trade_date:row.trade_date,field:field,reason:'接口重拉后仍为0，按缺失值处理'});}});return next;});
   return {rows:repaired,issues};
 }
@@ -106,13 +125,10 @@ async function saveReports(kind, tsCode, rows) {
 // 交易所公告支持按市场/日期批量查询。分页由接口总数、短页或重复页结束；
 // 真正的任务止损交给统一 Runner/Guard，不能在业务函数内写死页数。
 async function fetchTushareAnnouncementBatch(startDate, endDate) {
-  const data = await tushareQuery('anns_d', { start_date: dateText(startDate), end_date: dateText(endDate) }, 'ts_code,ann_date,title,url', { allowEmpty: true });
-  const rows = tsRows(data);
-  const events = rows.map(row => ({ source: 'tushare', source_number: `${row.ts_code || ''}:${row.ann_date || ''}:${row.title || ''}`,
-    stock_code: announcementStockCode(row, String(row.ts_code || '').endsWith('.SH') ? 'SH' : 'SZ'), event_date: dateText(row.ann_date),
-    title: String(row.title || ''), url: String(row.url || ''), category: eventCategory(row.title || ''), is_official: false, raw: row }))
-    .filter(event => event.event_date && event.title && event.url);
-  return { events: dedupeAnnouncementEvents(events), complete: true, fetched: rows.length };
+  // 按日期的聚合层补漏也走数据层，函数名保留给既有调用方（转债公告回补的窗口合并）。
+  const { readAggregateAnnouncementBatch } = require('../dataAccess/announcementDatasets');
+  const events = await readAggregateAnnouncementBatch({ startDate: dateText(startDate), endDate: dateText(endDate) });
+  return { events: dedupeAnnouncementEvents(events), complete: true, fetched: events.length };
 }
 
 async function saveEvents(tsCode, events) {
@@ -123,12 +139,27 @@ async function refreshDividends(tsCode, today) {
   const scope = datasetScope('stock', tsCode);
   const cursors = await getDatasetCursors(scope, ['stock_dividend']);
   if (isDatasetFresh(cursors.get('stock_dividend'), 'stock_dividend')) return;
-  const rows = tsRows(await tushareQuery('dividend', { ts_code: tsCode },
-    'ts_code,end_date,ann_date,div_proc,stk_div,stk_bo_rate,stk_co_rate,cash_div,cash_div_tax,record_date,ex_date,pay_date,imp_ann_date,base_date,base_share', { allowEmpty: true }));
+  // 分红：向数据层要「分红事实」，主备来源由数据层决定，行上自带 source_code。
+  const metaForRange = await stockAnalysisRepository.readInstrumentMeta({ tsCode });
+  const { readDividendRows } = require('../dataAccess/marketDatasets');
+  const rows = await readDividendRows({
+    tsCode, startDate: (metaForRange && metaForRange.list_date) || '2000-01-01', endDate: today,
+  });
   if (rows.length >= 2000 || rows.some(row => row.ts_code !== tsCode)) throw new Error('分红历史响应不完整或证券身份不一致，保留旧数据');
   const meta = await stockAnalysisRepository.readInstrumentMeta({ tsCode });
   if (!meta) throw new Error('缺少分红采集对应的证券档案');
   await persistCollectedData({ ...meta.raw_data, ts_code: tsCode, name: meta.name, market: meta.market, list_date: meta.list_date }, { dividends: rows });
+  // 非默认来源的分红行另写一份标准事实（带自己的来源），现金收益按「公告原文 > 官方 > 其他」择一，不会重复计息。
+  // 是否"默认来源"由数据层标记（is_default_source），这里不判断具体是哪家。
+  const primaryRows = rows.filter(row => row.source_code && !row.is_default_source);
+  if (primaryRows.length) {
+    try {
+      const { syncSourcedDividendFacts } = require('../repositories/stockProjectionRepository');
+      await syncSourcedDividendFacts(tsCode, primaryRows);
+    } catch (error) {
+      console.warn(`分红标准事实写入失败（不影响主流程）：${String(error.message).slice(0, 160)}`);
+    }
+  }
   await markDatasetSuccess(scope, 'stock_dividend', { lastSuccessDate: isoDate(today) });
 }
 
@@ -157,19 +188,10 @@ async function refreshEvents(tsCode, today) {
   if (last === today && !state.last_error) return;
   const start = eventRefreshStart(last, today);
   try {
-    const completeEvents = async fetcher => {
-      const result = await fetcher(tsCode, start, today, '', { structured: true });
-      if (!result || !result.complete || !Array.isArray(result.events)
-        || result.diagnostics?.reason === 'org_id_not_found') throw new Error('公告采集未完成，保留已有公告和成功水位');
-      return result.events.filter(event => event.is_official);
-    };
-    const exchange = tsCode.endsWith('.SH') ? fetchSseEvents : tsCode.endsWith('.SZ') ? fetchSzseEvents : null;
-    let unique;
-    if (exchange) {
-      try { unique = await completeEvents(exchange); }
-      catch (_) { unique = await completeEvents(fetchCninfoEvents); }
-    } else unique = await completeEvents(fetchCninfoEvents);
-    await saveEvents(tsCode, unique);
+    // 公告属于「公告数据集」：只向数据层要，交易所原文优先与巨潮兜底由数据层决定。
+    const { readAnnouncementEvents } = require('../dataAccess/announcementDatasets');
+    const collected = await readAnnouncementEvents({ tsCode, startDate: start, endDate: today, structured: true });
+    await saveEvents(tsCode, collected.events);
     await stockAnalysisRepository.upsertEventCursor({ tsCode, isoToday: isoDate(today) });
   } catch (error) {
     console.warn(`[stock-analysis] 公司事件刷新失败 ${tsCode}:`,error.message);
@@ -255,7 +277,7 @@ async function refreshStockAnalysis(rawCode, reason = 'manual', options = {}) {
   }
 
   if (!meta) {
-    const metadataRows = await fetchRequired('stock_basic', { ts_code: tsCode }, 'ts_code,symbol,name,area,industry,market,exchange,list_status,list_date');
+    const metadataRows = await marketDatasets.readSecurityMaster({ tsCode, fields: 'ts_code,symbol,name,area,industry,market,exchange,list_status,list_date' });
     meta = metadataRows[0];
   }
   if (!meta) throw new Error('未找到股票基础信息');
@@ -297,14 +319,14 @@ async function refreshStockAnalysis(rawCode, reason = 'manual', options = {}) {
     // 由 persistCollectedData 落原文并按唯一键幂等 upsert 到 fundamental.corporate_actions（首次无水位则保留全量）。
     // 重叠窗口仅在此计算一次（latestDividendEndDate 只提供原始水位）。
     gate('stock_dividend', async () => {
-      const all = await fetchRequired('dividend', { ts_code: tsCode }, 'ts_code,end_date,ann_date,div_proc,stk_div,stk_bo_rate,stk_co_rate,cash_div,cash_div_tax,record_date,ex_date,pay_date,imp_ann_date,base_date,base_share');
+      const all = await marketDatasets.readDividendRows({ tsCode, startDate: '1990-01-01', endDate: today });
       if (!dividendStart) return all;
       const dt = new Date(Date.UTC(+dividendStart.slice(0, 4), +dividendStart.slice(4, 6) - 1, +dividendStart.slice(6, 8)));
       dt.setUTCDate(dt.getUTCDate() - 365);
       const floor = tsDateStr(dt);
       return (all || []).filter(r => (String(r.end_date || r.ann_date || '').replace(/-/g, '')) >= floor);
     }, []),
-    gate('stock_forecast', () => fetchRequired('forecast', Object.assign({ ts_code: tsCode }, forecastStart ? { start_date: forecastStart } : {}), 'ts_code,ann_date,end_date,type,p_change_min,p_change_max,net_profit_min,net_profit_max,last_parent_net,summary,change_reason'), [])
+    gate('stock_forecast', () => marketDatasets.readForecast({ tsCode, startDate: forecastStart || null }), [])
   ]);
   const lastTenYears = yearsAgo(3653), listDate = meta.list_date || lastTenYears;
   const incrementalStart = yearsAgo(14);

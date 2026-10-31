@@ -1,13 +1,20 @@
 const assert = require('assert');
 const { spawnSync } = require('child_process');
+// 指定 .env 绝对路径：测试可能以不同的工作目录被拉起（统一入口从项目根运行）。
+require('dotenv').config({ path: require('path').join(__dirname, '..', '..', '.env') });
+// 解释器优先级：IPO_PYTHON_PATH / PYTHON（本地 .env）→ 项目 venv → 找不到则跳过。
 const fs = require('fs');
 const path = require('path');
 
 const root = path.resolve(__dirname, '..', '..');
-const python = (process.platform === 'win32'
-  ? [path.join(root, 'venv', 'Scripts', 'python.exe'), path.join(root, 'ipo-report', 'venv', 'Scripts', 'python.exe')]
-  : [path.join(root, 'venv', 'bin', 'python'), path.join(root, 'ipo-report', 'venv', 'bin', 'python')])
-  .find(candidate => fs.existsSync(candidate));
+// 解释器候选：本地 .env 的显式配置优先（worktree 不含 venv），其次项目内 venv。
+const python = [
+  process.env.IPO_PYTHON_PATH,
+  process.env.PYTHON,
+  ...(process.platform === 'win32'
+    ? [path.join(root, 'venv', 'Scripts', 'python.exe'), path.join(root, 'ipo-report', 'venv', 'Scripts', 'python.exe')]
+    : [path.join(root, 'venv', 'bin', 'python'), path.join(root, 'ipo-report', 'venv', 'bin', 'python')]),
+].filter(Boolean).find(candidate => fs.existsSync(candidate));
 if (!python) {
   console.log('[SKIP] convertible bond report parser: Python venv 不存在');
   process.exit(0);

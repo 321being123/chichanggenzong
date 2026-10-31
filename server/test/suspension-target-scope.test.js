@@ -1,13 +1,13 @@
 const assert = require('assert');
 const { pool } = require('../db/connection');
-const market = require('../services/market');
+// 2026-10-31 数据层收口：停牌取数已收到 dataAccess/referenceDatasets，
+// 这里桩替换数据层的读函数，断言仍是"只写范围内证券 + 身份缺失不冒充空结果"。
+const referenceDatasets = require('../dataAccess/referenceDatasets');
 let calls = 0;
 let saved;
-market.tushareQuery = async () => {
+referenceDatasets.readSuspensions = async () => {
   calls++;
-  return { fields: ['ts_code', 'trade_date', 'suspend_type'], items: [
-    ['601198.SH', '20260915', 'S'], ['601059.SH', '20260915', 'S'], ['600000.SH', '20260915', 'S'],
-  ] };
+  return ['601198.SH', '601059.SH', '600000.SH'].map(ts_code => ({ ts_code, trade_date: '20260915', suspend_type: 'S', source_code: 'tushare' }));
 };
 pool.query = async sql => ({ rows: sql.includes('SELECT source_id') ? [{ source_id: 1 }] : [
   { canonical_code: '601198.SH', instrument_id: 1 }, { canonical_code: '601059.SH', instrument_id: 2 },

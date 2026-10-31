@@ -183,7 +183,8 @@ async function instrumentHints(events) {
 
 async function historicalIdentityHints(events) {
   if (!events.length) return { events: [], repairs: [] };
-  const authoritative = tsRows(await tushareQuery('cb_basic', {}, HISTORICAL_IDENTITY_FIELDS));
+  // 转债主档属于「债券数据集」：经数据层读，脚本不自己调供应商接口。
+  const authoritative = await require('../dataAccess/bondDatasets').readBondMaster({ fields: HISTORICAL_IDENTITY_FIELDS });
   if (!authoritative.length) throw new Error('Tushare cb_basic 历史证券身份快照为空');
   const { rows: identities } = await pool.query(`
     SELECT i.instrument_id,i.canonical_code,x.identifier_value AS tushare_code

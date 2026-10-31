@@ -3,6 +3,11 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
+// 指定 .env 绝对路径：测试可能以不同的工作目录被拉起（统一入口从项目根运行）。
+require('dotenv').config({ path: require('path').join(__dirname, '..', '..', '.env') });
+// 解释器统一走项目已有的解析逻辑：PYTHON/IPO_PYTHON_PATH → 项目 venv → PATH，
+// 不再硬拼 worktree 内的 venv 路径（worktree 默认不含 venv）。
+const { resolvePython } = require('../services/arbitrageDocumentSource');
 
 const root = path.join(__dirname, '..', '..');
 const fixture = JSON.parse(fs.readFileSync(path.join(__dirname, 'fixtures', 'convertible-bond-call-v3.json'), 'utf8'));
@@ -19,7 +24,7 @@ try {
   const metadataFile = path.join(tempDir, 'metadata.json');
   fs.writeFileSync(textFile, JSON.stringify(texts), 'utf8');
   fs.writeFileSync(metadataFile, JSON.stringify(metadata), 'utf8');
-  const python = process.env.IPO_PYTHON_PATH || path.join(root, 'venv', 'Scripts', 'python.exe');
+  const python = process.env.IPO_PYTHON_PATH || resolvePython();
   const script = path.join(root, 'server', 'scripts', 'extractConvertibleBondCallEvent.py');
   const result = spawnSync(python, [script, '--text-json', textFile, '--metadata-json', metadataFile], { cwd: root, encoding: 'utf8' });
   assert.strictEqual(result.status, 0, result.stderr || '解析器进程失败');

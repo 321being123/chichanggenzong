@@ -1,6 +1,8 @@
 const { pool } = require('../db/connection');
-const { tushareQuery, tsRows, tsDateStr } = require('./market');
-const { fetchTencentQuotes } = require('./tencentQuote');
+const { tsDateStr } = require('./market');
+const { tsRows } = require('./tushareFormat');
+// 行情与财报都经数据层中立需求接口取数，服务只表达"要哪只标的的什么数据"。
+const marketDatasets = require('../dataAccess/marketDatasets');
 const bondSafetyTushareRepository = require('../repositories/bondSafetyTushareRepository.js');
 const { loadFinancialCache, saveFinancialCache } = bondSafetyTushareRepository;
 
@@ -126,13 +128,9 @@ function financialWindowStart(cached) {
 }
 
 async function fetchOneFinancial(stock, today, startDate) {
-  const dateParams = startDate ? { start_date: startDate } : {};
-  const [fiData, bsData, incomeData] = await Promise.all([
-    tushareQuery('fina_indicator', Object.assign({ ts_code: stock.stk_code }, dateParams), 'ts_code,ann_date,end_date,report_type,ebit,ebit_to_interest,interestdebt'),
-      tushareQuery('balancesheet', Object.assign({ ts_code: stock.stk_code }, dateParams), 'ts_code,f_ann_date,end_date,report_type,money_cap,trad_asset,total_assets,total_cur_liab,total_liab,total_hldr_eqy_exc_min_int'),
-    tushareQuery('income', Object.assign({ ts_code: stock.stk_code }, dateParams), 'ts_code,ann_date,f_ann_date,end_date,report_type,fin_exp_int_exp,int_exp'),
-  ]);
-  return selectFinancialReport(tsRows(fiData), tsRows(bsData), tsRows(incomeData), today);
+  // 财报属于「财务报表数据集」：官方优先；官方缺利息保障倍数时由数据层整份回退原来源，口径不混用。
+  const report = await marketDatasets.readBondSafetyFinancials({ tsCode: stock.stk_code, startDate });
+  return selectFinancialReport(report.indicator, report.balance, report.income, today);
 }
 
 function derivePb(totalMvWan, shareholderEquity) {
@@ -171,9 +169,8 @@ async function backfillMissingEquity(stocks, valuations, cache, today) {
     const batch = pending.slice(offset, offset + FINANCIAL_REFRESH_BATCH_SIZE);
     for (const stock of batch) {
       try {
-        const data = await tushareQuery('balancesheet', { ts_code: stock.stk_code },
-          'ts_code,f_ann_date,end_date,report_type,total_hldr_eqy_exc_min_int');
-        const latest = tsRows(data)
+        const equityRows = await marketDatasets.readEquitySeries({ tsCode: stock.stk_code });
+        const latest = equityRows
           .filter(row => row.end_date && (!row.f_ann_date || row.f_ann_date <= today) && String(row.report_type) === '1')
           .sort((a, b) => String(b.f_ann_date || '').localeCompare(String(a.f_ann_date || '')))[0];
         if (!latest || finite(latest.total_hldr_eqy_exc_min_int) == null) continue;
@@ -241,37 +238,56 @@ function normalizeTradeDate(value) {
 async function latestOpenDates(endDate) {
   const end = normalizeTradeDate(endDate) || tsDateStr(new Date());
   const start = new Date(`${end}T00:00:00+08:00`); start.setDate(start.getDate() - 20);
-  const data = await tushareQuery('trade_cal', { exchange: 'SSE', start_date: tsDateStr(start), end_date: end.replace(/-/g, ''), is_open: '1' }, 'cal_date,is_open');
-  return tsRows(data).filter(row => String(row.is_open) === '1').map(row => row.cal_date).sort().reverse();
+  // 交易日历属于「参考数据集」：只向数据层要开市日，来源与参数拼装在数据层。
+  const rows = await require('../dataAccess/referenceDatasets')
+    .readTradingCalendar({ exchange: 'SSE', startDate: tsDateStr(start), endDate: end.replace(/-/g, ''), openOnly: true });
+  return rows.filter(row => String(row.is_open) === '1').map(row => row.cal_date).sort().reverse();
 }
 
-async function latestMarketRows(apiName, dates, fields, options = {}) {
-  const query = options.query || tushareQuery;
+// 行情数据集读取器：这里只声明"要哪个业务数据集"，具体接口与备源由数据层决定。
+const MARKET_DATASET_READERS = Object.freeze({
+  bond_daily: ({ tradeDate, fields }) => require('../dataAccess/marketDatasets')
+    .readConvertibleBondQuotes({ tradeDate, fields }),
+  stock_valuation: ({ tradeDate }) => require('../dataAccess/marketDatasets')
+    .readStockValuationRows({ tradeDate }),
+  stock_daily: ({ tradeDate, fields }) => require('../dataAccess/marketDatasets')
+    .readStockDailyByDate({ tradeDate, fields }),
+});
+
+async function latestMarketRows(kind, dates, fields, options = {}) {
+  const reader = options.query
+    ? (tradeDate) => options.query(kind, { trade_date: tradeDate }, fields, { allowEmpty: true })
+    : (tradeDate) => {
+      const handler = MARKET_DATASET_READERS[kind];
+      if (!handler) throw new Error(`未登记的行情数据集：${kind}`);
+      return handler({ tradeDate, fields });
+    };
   const diagnostics = [];
   for (const tradeDate of dates.slice(0, 5)) {
     let data;
     try {
       // 空数据表示该分区尚未发布，允许继续回查；权限、限流、网络错误必须继续抛出。
-      data = await query(apiName, { trade_date: tradeDate }, fields, { allowEmpty: true });
+      data = await reader(tradeDate);
     } catch (error) {
       if (error && (error.code === 'EMPTY_DATA' || error.errorType === 'empty_data')) {
-        diagnostics.push({ apiName, tradeDate, status: 'empty', rows: 0 });
+        diagnostics.push({ apiName: kind, tradeDate, status: 'empty', rows: 0 });
         continue;
       }
       throw error;
     }
-    const rows = tsRows(data);
+    const rows = Array.isArray(data) ? data : tsRows(data);
     if (rows.length) return { tradeDate, rows, diagnostics };
-    diagnostics.push({ apiName, tradeDate, status: 'empty', rows: 0 });
+    diagnostics.push({ apiName: kind, tradeDate, status: 'empty', rows: 0 });
   }
   return { tradeDate: null, rows: [], diagnostics };
 }
 
 async function latestMarketPartition(dates, options = {}) {
+  // 数据集语义：可转债日行情、股票估值、股票日行情。
   const specs = [
-    ['bondDaily', 'cb_daily', 'ts_code,trade_date,close,pct_chg'],
-    ['stockDaily', 'daily_basic', 'ts_code,trade_date,pe_ttm,pe,pb,dv_ttm,total_mv'],
-    ['stockPrices', 'daily', 'ts_code,trade_date,close,pct_chg'],
+    ['bondDaily', 'bond_daily', 'ts_code,trade_date,close,pct_chg'],
+    ['stockDaily', 'stock_valuation', 'ts_code,trade_date,pe_ttm,pe,pb,dv_ttm,total_mv'],
+    ['stockPrices', 'stock_daily', 'ts_code,trade_date,close,pct_chg'],
   ];
   const diagnostics = [];
   const expectedBondCount = Math.max(Number(options.expectedBondCount) || 0, 0);
@@ -313,19 +329,21 @@ async function fetchTushareBondSafetySource(env = process.env, targetTradeDate =
   const asOfDate = normalizeTradeDate(targetTradeDate) || tsDateStr(new Date());
   const strictTargetDate = Boolean(normalizeTradeDate(targetTradeDate));
   const [basicData, stockData, dates] = await Promise.all([
-    tushareQuery('cb_basic', {}, 'ts_code,bond_short_name,stk_code,stk_short_name,list_date,delist_date,maturity_date,conv_end_date,conv_stop_date,conv_price'),
-    tushareQuery('stock_basic', { exchange: '', list_status: 'L' }, 'ts_code,name,industry'),
+    require('../dataAccess/bondDatasets').readBondMaster({}),
+    require('../dataAccess/marketDatasets').readSecurityMaster({ listStatuses: ['L'], fields: 'ts_code,name,industry' }),
     latestOpenDates(asOfDate),
   ]);
-  const stockRows = tsRows(stockData);
+  // 数据层读函数返回行数组，不再套 tsRows（它只认 fields/items 信封）。
+  const stockRows = Array.isArray(stockData) ? stockData : tsRows(stockData);
   const listedStocks = new Set(stockRows.map(row => row.ts_code));
-  const activeBasics = tsRows(basicData).filter(row => isActiveBond(row, asOfDate, listedStocks));
+  const basicRows = Array.isArray(basicData) ? basicData : tsRows(basicData);
+  const activeBasics = basicRows.filter(row => isActiveBond(row, asOfDate, listedStocks));
   const basics = await filterPublicBonds(activeBasics);
   if (!basics.length || !dates.length) throw new Error('Tushare 未返回在市可转债或交易日数据');
 
   const [market, tencent] = await Promise.all([
     latestMarketPartition(dates, { expectedBondCount: basics.length }),
-    fetchTencentQuotes(basics.flatMap(row => [row.ts_code, row.stk_code])),
+    marketDatasets.readRealtimeQuotes({ codes: basics.flatMap(row => [row.ts_code, row.stk_code]) }),
   ]);
   const { bondDaily, stockDaily, stockPrices } = market;
   if (!bondDaily.rows.length || !stockDaily.rows.length || !stockPrices.rows.length) {

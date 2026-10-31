@@ -213,26 +213,39 @@ async function resolveInstrument({ instrumentId = null, canonicalCode = null, so
   return writeIdentifierCache(key, result.rows[0] || null);
 }
 
+// 供应商代码派生规则表：每家供应商需要什么形态的代码，在这里声明一次。
+// 派生函数只查表，不再按供应商名写 if 链——新增一家供应商只需加一条规则。
+const PROVIDER_IDENTIFIER_RULES = [
+  { source: 'tushare', type: 'ts_code', derive: ({ canonical }) => canonical },
+  { source: 'tencent', type: 'quote_symbol', needsCode: true, derive: ({ canonical }) => {
+    const { describeTencentCode } = require('./tencentQuote');
+    return describeTencentCode(canonical)?.symbol || null;
+  } },
+  { source: 'eastmoney', type: 'f10_code', needsCode: true, derive: ({ exchange, bare }) => `${exchange}${bare}` },
+  { source: 'eastmoney', type: 'guba_code', needsCode: true, derive: ({ bare }) => bare },
+  { source: 'lixinger_official', type: 'stock_code', needsCode: true,
+    derive: ({ exchange, bare }) => (['SH', 'SZ', 'BJ'].includes(exchange) ? bare : null) },
+  { source: 'sina', type: 'symbol', needsCode: true, derive: ({ exchange, bare }) => `${exchange.toLowerCase()}${bare}` },
+  { source: 'xueqiu', type: 'symbol', needsCode: true, derive: ({ exchange, bare }) => `${exchange}${bare}` },
+];
+
+const PROVIDER_IDENTIFIER_RULE_INDEX = new Map(
+  PROVIDER_IDENTIFIER_RULES.map(rule => [`${rule.source}:${rule.type}`, rule])
+);
+
 function deriveProviderIdentifier(canonicalCode, sourceCode, identifierType) {
   const canonical = normalizedCanonicalCode(canonicalCode);
   const source = String(sourceCode || '').trim().toLowerCase();
   const type = String(identifierType || '').trim();
   if (!canonical) return null;
-  if (source === 'tushare' && type === 'ts_code') return canonical;
+  const rule = PROVIDER_IDENTIFIER_RULE_INDEX.get(`${source}:${type}`);
+  if (!rule) return null;
   const match = canonical.match(/^(\d{5,6})\.(SH|SZ|BJ|HK)$/i);
-  if (!match) return null;
-  const bare = match[1];
-  const exchange = match[2].toUpperCase();
-  if (source === 'geoscope_lixinger' && type === 'stock_code' && ['SH', 'SZ', 'BJ'].includes(exchange)) return bare;
-  if (source === 'tencent' && type === 'quote_symbol') {
-    const { describeTencentCode } = require('./tencentQuote');
-    return describeTencentCode(canonical)?.symbol || null;
-  }
-  if (source === 'eastmoney' && type === 'f10_code') return `${exchange}${bare}`;
-  if (source === 'eastmoney' && type === 'guba_code') return bare;
-  if (source === 'sina' && type === 'symbol') return `${exchange.toLowerCase()}${bare}`;
-  if (source === 'xueqiu' && type === 'symbol') return `${exchange}${bare}`;
-  return null;
+  const bare = match ? match[1] : null;
+  const exchange = match ? match[2].toUpperCase() : null;
+  // 需要拆前缀的规则：标准代码不带交易所后缀时无法派生，不猜。
+  if (rule.needsCode && !bare) return null;
+  return rule.derive({ canonical, bare, exchange }) || null;
 }
 
 async function resolveProviderIdentifier({ instrumentId = null, canonicalCode = null, sourceCode, identifierType, identifierValue = null } = {}, executor) {

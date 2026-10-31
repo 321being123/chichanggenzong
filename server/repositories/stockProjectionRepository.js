@@ -87,6 +87,103 @@ async function syncReportRows(client, rows, kind, companyId, sourceId, options =
   await client.query(`WITH ranked AS (SELECT report_id,row_number() OVER(PARTITION BY company_id,report_kind,period_end ORDER BY CASE WHEN report_type='1' THEN 0 ELSE 1 END,announced_at DESC NULLS LAST,ingested_at DESC,report_id DESC) rn FROM fundamental.financial_reports WHERE company_id=$1 AND report_kind=$2) UPDATE fundamental.financial_reports r SET is_current_version=(ranked.rn=1) FROM ranked WHERE r.report_id=ranked.report_id`, [companyId, kind]);
 }
 
+async function syncReportTable(client, table, kind, tsCode, companyId, sourceId) {
+  const { rows } = await client.query(`SELECT version_key,end_date,ann_date,data FROM ${table} WHERE ts_code=$1`, [tsCode]);
+  await syncReportRows(client, rows.map(row => row.data || {}), kind, companyId, sourceId);
+}
+
+// 理杏仁官方分红 → 标准分红事实（fundamental.corporate_actions），来源写 lixinger_official。
+// 只写事实、不动 legacy stock_dividends；同一事件与 Tushare 行并存，由现金收益按来源层级与事件键去重择一。
+async function syncOfficialDividends(client, instrumentId, sourceId, rows) {
+  let written = 0;
+  for (const row of rows || []) {
+    if (!row || !row.end_date) continue;
+    const cashPre = finite(row.cash_div_tax);
+    const base = finite(row.base_share);
+    const amount = cashPre != null && base != null ? cashPre * base * 10000 : null;
+    await client.query(`INSERT INTO fundamental.corporate_actions(instrument_id,action_type,fiscal_period_end,announced_at,record_date,ex_date,pay_date,status,cash_per_share_pre_tax,cash_per_share_after_tax,stock_dividend_ratio,capitalization_ratio,base_shares,total_cash_amount,currency_code,source_id,source_key,raw_payload)
+      VALUES($1,'dividend',$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'CNY',$14,$15,$16::jsonb)
+      ON CONFLICT(source_id,source_key) DO UPDATE SET status=EXCLUDED.status,record_date=EXCLUDED.record_date,ex_date=EXCLUDED.ex_date,pay_date=EXCLUDED.pay_date,total_cash_amount=EXCLUDED.total_cash_amount,raw_payload=EXCLUDED.raw_payload,ingested_at=now()`,
+    [instrumentId, asDate(row.end_date), asDate(row.ann_date), asDate(row.record_date), asDate(row.ex_date), asDate(row.pay_date),
+      row.div_proc || '', cashPre, null, finite(row.stk_bo_rate), finite(row.stk_co_rate), base == null ? null : base * 10000, amount,
+      sourceId, `${row.ts_code || instrumentId}:${row.end_date}:${row.ann_date || ''}`, JSON.stringify(row)]);
+    written += 1;
+  }
+  return written;
+}
+
+// 按行自带的 source_code 写标准分红事实：服务层只给证券代码和行，
+// 证券标识与来源标识的解析都留在这里，服务不需要知道来源是谁。
+async function syncSourcedDividendFacts(tsCode, rows, client = null) {
+  if (!rows || !rows.length) return 0;
+  const db = client || require('../db/connection').pool;
+  const [inst, sources] = await Promise.all([
+    db.query('SELECT instrument_id FROM core.instruments WHERE canonical_code=$1', [tsCode]),
+    db.query('SELECT source_code,source_id FROM ops.data_sources'),
+  ]);
+  const instrumentId = inst.rows[0] && inst.rows[0].instrument_id;
+  if (!instrumentId) return 0;
+  const sourceIdByCode = new Map(sources.rows.map(row => [row.source_code, row.source_id]));
+  const groups = new Map();
+  for (const row of rows) {
+    const code = row.source_code || 'tushare';
+    if (!groups.has(code)) groups.set(code, []);
+    groups.get(code).push(row);
+  }
+  let written = 0;
+  for (const [code, group] of groups) {
+    const sourceId = sourceIdByCode.get(code);
+    if (!sourceId) continue;
+    written += await syncOfficialDividends(db, instrumentId, sourceId, group);
+  }
+  return written;
+}
+
+async function syncFundamentals(client, tsCode, companyId, instrumentId, sources) {
+  await syncReportTable(client, 'stock_income_statements', 'income', tsCode, companyId, sources.tushare);
+  await syncReportTable(client, 'stock_balance_sheets', 'balance', tsCode, companyId, sources.tushare);
+  await syncReportTable(client, 'stock_cashflow_statements', 'cashflow', tsCode, companyId, sources.tushare);
+  await syncReportTable(client, 'stock_financial_indicators', 'indicator', tsCode, companyId, sources.tushare);
+  await client.query(`INSERT INTO fundamental.financial_period_summary(company_id,period_end,announced_at,net_profit_parent,net_profit_deducted,total_assets,equity_parent,operating_cashflow,goodwill,interest_expense,roe,roa,source_report_ids)
+    SELECT $1,r.period_end,max(r.announced_at),max(f.numeric_value) FILTER(WHERE f.metric_code='net_profit_parent'),max(f.numeric_value) FILTER(WHERE f.metric_code='net_profit_deducted'),
+      max(f.numeric_value) FILTER(WHERE f.metric_code='total_assets'),max(f.numeric_value) FILTER(WHERE f.metric_code='equity_parent'),max(f.numeric_value) FILTER(WHERE f.metric_code='operating_cashflow'),
+      max(f.numeric_value) FILTER(WHERE f.metric_code='goodwill'),max(f.numeric_value) FILTER(WHERE f.metric_code='interest_expense'),max(f.numeric_value) FILTER(WHERE f.metric_code='roe'),max(f.numeric_value) FILTER(WHERE f.metric_code='roa'),array_agg(DISTINCT r.report_id)
+    FROM fundamental.financial_reports r JOIN fundamental.financial_facts f ON f.report_id=r.report_id WHERE r.company_id=$1 AND r.is_current_version GROUP BY r.period_end
+    ON CONFLICT(company_id,period_end) DO UPDATE SET announced_at=EXCLUDED.announced_at,net_profit_parent=EXCLUDED.net_profit_parent,net_profit_deducted=EXCLUDED.net_profit_deducted,
+      total_assets=EXCLUDED.total_assets,equity_parent=EXCLUDED.equity_parent,operating_cashflow=EXCLUDED.operating_cashflow,goodwill=EXCLUDED.goodwill,interest_expense=EXCLUDED.interest_expense,
+      roe=EXCLUDED.roe,roa=EXCLUDED.roa,source_report_ids=EXCLUDED.source_report_ids,updated_at=now()`, [companyId]);
+  await client.query(`UPDATE fundamental.corporate_actions SET source_key=$2||':'||source_key
+    WHERE instrument_id=$1 AND source_id=$3 AND source_key NOT LIKE $2||':%'`, [instrumentId, tsCode, sources.tushare]);
+  const dividends = (await client.query('SELECT version_key,data FROM stock_dividends WHERE ts_code=$1', [tsCode])).rows;
+  for (const item of dividends) {
+    const r = item.data || {}, cashPre = finite(r.cash_div_tax), base = finite(r.base_share), amount = cashPre != null && base != null ? cashPre * base * 10000 : null;
+    await client.query(`INSERT INTO fundamental.corporate_actions(instrument_id,action_type,fiscal_period_end,announced_at,record_date,ex_date,pay_date,status,cash_per_share_pre_tax,cash_per_share_after_tax,stock_dividend_ratio,capitalization_ratio,base_shares,total_cash_amount,currency_code,source_id,source_key,raw_payload)
+      VALUES($1,'dividend',$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'CNY',$14,$15,$16::jsonb) ON CONFLICT(source_id,source_key) DO UPDATE SET status=EXCLUDED.status,record_date=EXCLUDED.record_date,ex_date=EXCLUDED.ex_date,pay_date=EXCLUDED.pay_date,total_cash_amount=EXCLUDED.total_cash_amount,raw_payload=EXCLUDED.raw_payload,ingested_at=now()`,
+    [instrumentId, asDate(r.end_date), asDate(r.ann_date || r.imp_ann_date), asDate(r.record_date), asDate(r.ex_date), asDate(r.pay_date), r.div_proc || '', cashPre, finite(r.cash_div), finite(r.stk_bo_rate), finite(r.stk_co_rate), base == null ? null : base * 10000, amount, sources.tushare, `${tsCode}:${item.version_key}`, JSON.stringify(r)]);
+  }
+  await client.query(`UPDATE fundamental.earnings_guidance SET source_key=$2||':'||source_key
+    WHERE company_id=$1 AND source_id=$3 AND source_key NOT LIKE $2||':%'`, [companyId, tsCode, sources.tushare]);
+  const guidance = (await client.query('SELECT version_key,data FROM stock_forecasts WHERE ts_code=$1', [tsCode])).rows;
+  for (const item of guidance) {
+    const r = item.data || {};
+    if (!asDate(r.end_date)) continue;
+    await client.query(`INSERT INTO fundamental.earnings_guidance(company_id,period_end,guidance_type,announced_at,profit_min,profit_max,change_min,change_max,summary,change_reason,currency_code,source_id,source_key,raw_payload)
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'CNY',$11,$12,$13::jsonb) ON CONFLICT(source_id,source_key) DO UPDATE SET guidance_type=EXCLUDED.guidance_type,profit_min=EXCLUDED.profit_min,profit_max=EXCLUDED.profit_max,change_min=EXCLUDED.change_min,change_max=EXCLUDED.change_max,summary=EXCLUDED.summary,change_reason=EXCLUDED.change_reason,raw_payload=EXCLUDED.raw_payload,ingested_at=now()`,
+    [companyId, asDate(r.end_date), r.type || 'forecast', asDate(r.ann_date), finite(r.net_profit_min) == null ? null : finite(r.net_profit_min) * 10000, finite(r.net_profit_max) == null ? null : finite(r.net_profit_max) * 10000, finite(r.p_change_min), finite(r.p_change_max), r.summary || '', r.change_reason || '', sources.tushare, `${tsCode}:${item.version_key}`, JSON.stringify(r)]);
+  }
+}
+
+async function syncEvents(client, tsCode, companyId, sources) {
+  const { rows } = await client.query('SELECT * FROM stock_events WHERE ts_code=$1', [tsCode]);
+  for (const r of rows) {
+    const source = sources[r.source] || sources.calculated, key = r.event_key || hash(`${r.source}|${r.url}|${r.title}`);
+    const documentId = r.is_official ? (await client.query(`INSERT INTO event.documents(company_id,document_type,title,announced_at,url,source_id,content_hash,raw_payload)
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8::jsonb) ON CONFLICT(source_id,url,content_hash) DO UPDATE SET title=EXCLUDED.title,raw_payload=EXCLUDED.raw_payload RETURNING document_id`, [companyId, r.category || 'announcement', r.title, asDate(r.event_date), r.url || '', source, hash(r.title), JSON.stringify(r.data || {})])).rows[0]?.document_id : null;
+    await client.query(`INSERT INTO event.company_events(company_id,event_type,event_date,title,importance,is_official,source_id,document_id,source_key,details)
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb) ON CONFLICT(source_id,source_key) DO UPDATE SET title=EXCLUDED.title,event_type=EXCLUDED.event_type,details=EXCLUDED.details`, [companyId, r.category || 'other', asDate(r.event_date), r.title, r.is_official ? 10 : 1, r.is_official, source, documentId, key, JSON.stringify(r.data || {})]);
+  }
+}
+
 // formulaVersion 由编排层传入，仓储不依赖 services 常量模块。
 async function syncAnalytics(client, instrumentId, analysis, sources, formulaVersion) {
   if (!analysis) return;
@@ -281,6 +378,12 @@ module.exports = {
   insertRawRecord,
   sourceIds,
   syncAnalytics,
+  syncCursors,
+  syncEvents,
+  syncFundamentals,
+  syncOfficialDividends,
+  syncSourcedDividendFacts,
+  syncMarket,
   syncQualityIssues,
   syncReportRows,
   upsertAdjustmentFactor,

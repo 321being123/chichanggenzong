@@ -29,7 +29,10 @@ assert.match(rebuild, /交易所历史公告未完整/);
 assert.match(rebuild, /hasExplicitConvertibleEvidence/);
 assert.match(rebuild, /existingByKey/);
 assert.match(rebuild, /historical_identity_repair_count/);
-assert.match(rebuild, /tushareQuery\('cb_basic'/);
+// 2026-10-31 直连清零：脚本不再直接调供应商接口，改经数据层读转债主档；
+// 断言仍是"历史身份以转债主档为权威"，只是取值入口变了。
+assert.match(rebuild, /readBondMaster\(\{ fields: HISTORICAL_IDENTITY_FIELDS \}\)/);
+assert.ok(!/tushareQuery\(/.test(rebuild), '回填脚本不得直接调用供应商接口');
 assert.match(rebuild, /fetchSseEvents/);
 assert.match(rebuild, /fetchSzseEvents/);
 assert.doesNotMatch(rebuild, /fetchSzseEventsBatch/);

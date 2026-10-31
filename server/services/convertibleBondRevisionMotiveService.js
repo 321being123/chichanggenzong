@@ -882,7 +882,8 @@ async function syncRevisionMotiveInputs({ businessDate = null, limit = null } = 
     const batchResult = await fetchTop10CbHolderRowsBatched({
       bonds: holderGroup,
       businessDate: date,
-      query: async params => tsRows(await tushareQuery('top10_cb_holders', params, TOP10_CB_HOLDERS_FIELDS, { allowEmpty: true })),
+      query: async params => require('../dataAccess/bondDatasets')
+        .readBondTopHolders({ params, fields: TOP10_CB_HOLDERS_FIELDS }),
       rowLimit: TOP10_CB_HOLDERS_ROW_LIMIT,
       stopOnError: isEndpointStopError,
       isBudgetBoundary: isRunBudgetBoundaryError,
@@ -922,7 +923,8 @@ async function syncRevisionMotiveInputs({ businessDate = null, limit = null } = 
         pledgeAttempted = true;
         try {
           const pledgeParams = { ts_code: bond.stock_code, end_date: date.replace(/-/g, '') };
-          pledgeRows = tsRows(await tushareQuery('pledge_stat', pledgeParams, 'ts_code,end_date,pledge_count,unrest_pledge,rest_pledge,total_share,pledge_ratio', { allowEmpty: true }));
+          pledgeRows = await require('../dataAccess/referenceDatasets')
+            .readPledgeStats({ tsCode: pledgeParams.ts_code, endDate: pledgeParams.end_date });
           externalCalls += 1;
           pledgeByCompany.set(bond.company_id, { rows: pledgeRows });
         } catch (error) {

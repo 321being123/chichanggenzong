@@ -1,7 +1,8 @@
 // ========== 套利机会服务 ==========
 // 查询、事件合并、审核、统一计算（3 类公式）
 const { pool } = require('../db');
-const { fetchTencentQuotes } = require('./tencentQuote');
+// 实时报价属于「行情数据集」：经数据层中立需求接口取，服务不直接依赖供应商适配层。
+const { readRealtimeQuotes } = require('../dataAccess/marketDatasets');
 const parser = require('./arbitrageParser');
 const repository = require('../repositories/arbitrageServiceRepository.js');
 const {
@@ -68,7 +69,7 @@ async function getArbitrageList(type, page = 1, pageSize = 50, username = null) 
   rows.forEach(r => {
     [r.canonical_code, r.ref_code, r.rights_code].forEach(c => { if (c) codeSet.add(c); });
   });
-  const quoteMap = codeSet.size ? await fetchTencentQuotes([...codeSet]) : new Map();
+  const quoteMap = codeSet.size ? await readRealtimeQuotes({ codes: [...codeSet] }) : new Map();
 
   // 计算套利空间
   const enrichedRows = rows.map(r => {
@@ -138,7 +139,7 @@ async function getArbitrageDetail(caseId, username = null) {
 
   // 批量查行情
   const codes = [c.canonical_code, c.ref_code, c.rights_code].filter(Boolean);
-  const quoteMap = codes.length ? await fetchTencentQuotes(codes) : new Map();
+  const quoteMap = codes.length ? await readRealtimeQuotes({ codes }) : new Map();
 
   const targetQuote = c.canonical_code ? quoteMap.get(c.canonical_code) : null;
   const refQuote = c.ref_code ? quoteMap.get(c.ref_code) : null;

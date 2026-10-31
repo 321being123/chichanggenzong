@@ -45,6 +45,16 @@ const response = (code, period = '20251231') => ({ fields: ['ts_code', 'ann_date
       apiCalls++; assert.strictEqual(api, 'dividend'); assert.deepStrictEqual(Object.keys(params), ['ts_code']);
       return { fields: ['ts_code', 'end_date', 'cash_div_tax'], items: [[wrongStock ? '600763.SH' : '600370.SH', '20221231', 0.1]] };
     } } : name === './financialDataArchitecture' ? { ...native(name), persistCollectedData: async (metadata, bundle) => saved.push({ metadata, bundle }) }
+      // 2026-10-31 数据层收口：分红取数已收口到 dataAccess/marketDatasets，
+      // 这里注入同语义实现，断言仍校验身份一致性、TTL 复用与落库字段。
+      : name === '../dataAccess/marketDatasets' ? {
+        readDividendRows: async () => {
+          apiCalls += 1;
+          return [{ ts_code: wrongStock ? '600763.SH' : '600370.SH', end_date: '20221231', cash_div_tax: 0.1,
+            source_code: 'tushare', is_default_source: true }];
+        },
+        readIndustryClassification: async () => ({ industry: '化工', industry_system: '申万2021', industry_level: '三级', industry_path: ['化工'], sourceCode: 'tushare' }),
+      }
       : name === './datasetCursors' ? { ...native(name), getDatasetCursors: async () => new Map(),
       isDatasetFresh: () => fresh, markDatasetSuccess: async (scope, code) => {
         assert.strictEqual(code, 'stock_dividend'); fresh = true;
@@ -67,6 +77,7 @@ const response = (code, period = '20251231') => ({ fields: ['ts_code', 'ann_date
   let statements = [], failHistoryWrite = false;
   const client = { query: async (sql, args) => {
     statements.push({ sql, args });
+    if (sql.includes('SELECT source_code,source_id')) return { rows: [{ source_code: 'tushare', source_id: 1 }] };
     if (sql.includes('SELECT source_id')) return { rows: [{ source_id: 1 }] };
     if (sql.includes('RETURNING run_id')) return { rows: [{ run_id: 123 }] };
     if (failHistoryWrite && sql.includes("'financial_history'")) throw new Error('历史标记写入失败');

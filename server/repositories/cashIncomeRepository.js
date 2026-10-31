@@ -18,8 +18,9 @@ async function select_positions(params, client = pool) {
 }
 
 async function select_fundamental_corporate_actions(params, client = pool) {
-  return client.query(`SELECT *,record_date::text,pay_date::text,ex_date::text FROM fundamental.corporate_actions
-    WHERE action_type='dividend' AND instrument_id=ANY($1::bigint[]) AND pay_date <= $2::date ORDER BY action_id`, params);
+  return client.query(`SELECT a.*,d.source_code,record_date::text,pay_date::text,ex_date::text
+    FROM fundamental.corporate_actions a JOIN ops.data_sources d USING(source_id)
+    WHERE a.action_type='dividend' AND a.instrument_id=ANY($1::bigint[]) AND a.pay_date <= $2::date ORDER BY a.action_id`, params);
 }
 
 async function select_account_cash_income_pending(params, client = pool) {

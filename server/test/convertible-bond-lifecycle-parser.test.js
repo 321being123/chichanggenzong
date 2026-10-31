@@ -1,9 +1,14 @@
 const assert = require('assert');
 const path = require('path');
 const { spawnSync } = require('child_process');
+// 指定 .env 绝对路径：测试可能以不同的工作目录被拉起（统一入口从项目根运行）。
+require('dotenv').config({ path: require('path').join(__dirname, '..', '..', '.env') });
+// 解释器统一走项目已有的解析逻辑：PYTHON/IPO_PYTHON_PATH → 项目 venv → PATH，
+// 不再硬拼 worktree 内的 venv 路径（worktree 默认不含 venv）。
+const { resolvePython } = require('../services/arbitrageDocumentSource');
 
 const root = path.resolve(__dirname, '..', '..');
-const python = process.env.IPO_PYTHON_PATH || path.join(root, 'venv', 'Scripts', 'python.exe');
+const python = process.env.IPO_PYTHON_PATH || resolvePython();
 const script = path.join(root, 'server', 'scripts', 'extractConvertibleBondLifecycle.py');
 const sample = [
   '股票代码：301459 股票简称：丰茂股份',

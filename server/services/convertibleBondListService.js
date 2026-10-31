@@ -2,7 +2,8 @@
 // 页面行情刷新只通过本服务复用统一腾讯行情缓存，依赖指标在服务端重算。
 const crypto = require('crypto');
 const { pool } = require('../db');
-const { fetchTencentQuotes } = require('./tencentQuote');
+// 实时报价属于「行情数据集」：经数据层中立需求接口取，服务不直接依赖供应商适配层。
+const { readRealtimeQuotes } = require('../dataAccess/marketDatasets');
 const { getLatestReadablePartition } = require('./datasetPartitions');
 const { getLatestCallStateMap } = require('./convertibleBondRedemptionService');
 const txControl = require('../repositories/transactionControl');
@@ -82,10 +83,7 @@ async function loadIntradayContext(universe, force = false) {
   let quotes = new Map();
   let error = null;
   try {
-    quotes = await fetchTencentQuotes([...new Set(codes)], {
-      ttlMs: LIST_QUOTE_TTL_MS,
-      force,
-    });
+    quotes = await readRealtimeQuotes({ codes: [...new Set(codes)], ttlMs: LIST_QUOTE_TTL_MS, force });
   } catch (cause) {
     error = cause;
   }

@@ -51,16 +51,21 @@ assert.ok(grahamService.includes('cycleMetrics.rangeCutoff(range)') && grahamRep
 const job = fs.readFileSync(path.join(__dirname, '..', 'jobs', 'marketVolatilitySync.js'), 'utf8');
 const marketRepo = fs.readFileSync(path.join(__dirname, '..', 'repositories', 'marketYieldRepository.js'), 'utf8');
 const marketSource = fs.readFileSync(path.join(__dirname, '..', 'services', 'marketVolatilitySource.js'), 'utf8');
-assert.ok(job.includes("tushareQuery('index_dailybasic'"), '未接入指数 PE/PB');
-assert.ok(job.includes("tushareQuery('cn_m'"), '未接入 M2');
-assert.ok(job.includes('tushareQuery(\'daily_basic\''), '未接入A股总市值');
-assert.ok(job.includes('/ 10000'), 'daily_basic.total_mv 未从万元换算为亿元');
-assert.ok(job.includes('/ YUAN_TO_100M'), '统一层 total_market_cap 未从元换算为亿元');
-assert.ok(job.includes('getTotalMarketCap(normDate(day))'), '统一层总市值未按目标交易日聚合');
+// 2026-10-31 数据层收口：指数估值 / M2 / 总市值的取数与换算已下沉到 dataAccess/marketDatasets，
+// 断言指向实际实现位置；任务只保留水位、窗口与落库（检查意义不变）。
+const datasets = fs.readFileSync(path.join(__dirname, '..', 'dataAccess', 'marketDatasets.js'), 'utf8');
+assert.ok(datasets.includes("tushareQuery('index_dailybasic'"), '未接入指数 PE/PB');
+assert.ok(datasets.includes("tushareQuery('cn_m'"), '未接入 M2');
+assert.ok(datasets.includes("tushareQuery('daily_basic'"), '未接入A股总市值');
+assert.ok(datasets.includes('/ 10000'), 'daily_basic.total_mv 未从万元换算为亿元');
+assert.ok(datasets.includes('/ YUAN_TO_100M'), '统一层 total_market_cap 未从元换算为亿元');
+assert.ok(datasets.includes('getTotalMarketCap(date)'), '统一层总市值未按目标交易日聚合');
+assert.ok(job.includes('readTotalAShareMarketCap({ day: normDate(day)'), '任务必须经数据层取总市值');
 assert.ok(marketRepo.includes('ON CONFLICT(trade_date,formula_version)') && job.includes('marketYieldRepository.calculateM2MarketCap'), 'M2/市值比写入必须幂等');
 assert.ok(marketRepo.includes("'nbs_via_tushare'") && job.includes('marketYieldRepository.saveMoneySupply'), 'M2未记录国家统计局来源');
 assert.ok(job.includes('day > previous'), '月末交易日选择未处理上游倒序返回');
 assert.ok(marketSource.includes('/perf/indexCsiDsPe?indexCode=') && job.includes('marketSource.fetchCsiPe'), '中证全指PE未使用中证指数官网历史接口');
+assert.ok(job.includes('readIndexValuationSeries({ indexCode: \'000300\''), '沪深300估值必须经数据层');
 assert.ok(!job.includes('tushare_all_a_aggregate_proxy'), '中证全指PB不应使用估算数据');
 
 const serviceSource = fs.readFileSync(path.join(__dirname, '..', 'services', 'marketCycleMetrics.js'), 'utf8');

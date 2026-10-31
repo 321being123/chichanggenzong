@@ -131,12 +131,15 @@ function runExtraNode() {
 
 function findPython() {
   // 优先项目内 venv（Windows: Scripts/python.exe；类 Unix: bin/python）
+  // 本地 .env 里的解释器覆盖优先（worktree 默认不含 venv，配置指向本机已有环境）。
   const candidates = [
+    process.env.IPO_PYTHON_PATH,
+    process.env.PYTHON,
     path.join(rootDir, 'ipo-report', 'venv', 'Scripts', 'python.exe'),
     path.join(rootDir, 'ipo-report', 'venv', 'bin', 'python'),
     path.join(rootDir, 'venv', 'Scripts', 'python.exe'),
     path.join(rootDir, 'venv', 'bin', 'python'),
-  ];
+  ].filter(Boolean);
   for (const c of candidates) if (fs.existsSync(c)) return c;
   // 退回 PATH 上的 python / python3
   for (const cmd of ['python', 'python3']) {

@@ -18,7 +18,11 @@ const pythonFetch = fs.readFileSync(require.resolve('../../ipo-report/ipo_lib_fe
 const pythonHistory = fs.readFileSync(require.resolve('../../ipo-report/ipo_history_sync.py'), 'utf8');
 
 assert.match(source, /const STOCK_STATUS_FIELDS = 'ts_code,symbol,name,area,industry,market,exchange,list_date,list_status,delist_date'/);
-assert.match(source, /tushareQuery\('adj_factor', \{ trade_date: (?:daily\.tradeDate|targetTradeDate)(?:\.replace\([^)]*\))?/, '共享批次必须按目标交易日采集复权因子');
+// 2026-10-31 数据层收口：复权因子取数收到 dataAccess，共享批次改调中立接口；
+// 日期拼装（YYYYMMDD）随之下沉，这里分别断言"按目标交易日采集"与"数据层转日期格式"。
+assert.match(source, /readAdjustmentFactors\(\{ tradeDate: (?:daily\.tradeDate|targetTradeDate)/, '共享批次必须按目标交易日采集复权因子');
+const marketDatasetsSource = fs.readFileSync(require.resolve('../dataAccess/marketDatasets'), 'utf8');
+assert.match(marketDatasetsSource, /tushareQuery\('adj_factor', \{ trade_date: String\(tradeDate\)/, '数据层必须把业务日转成接口要求的 YYYYMMDD');
 assert.match(source, /async function ensureStockUniverse\(/, '共享批次必须先建立全市场股票主档');
 assert.match(source, /market\.adjustment_factors/, '复权因子必须进入标准行情层');
 assert.match(source, /stock_adj_factor/, '复权因子必须发布数据分区');
@@ -27,7 +31,8 @@ assert.match(migrations, /118_instrument_merge_candidates/, '历史 ID 合并必
 assert.match(audit, /默认只读|--write-candidates/, '历史 ID 工具必须支持只读审计');
 assert.doesNotMatch(audit, /DELETE\s+FROM\s+core\.instruments/i, '审计工具不得删除旧证券 ID');
 assert.match(audit, /source_rel\.relname='instrument_merge_candidates'/, '历史 ID 影响量不得把候选审计表自身引用重复计入');
-assert.match(identity, /source === 'xueqiu' && type === 'symbol'/, '雪球代码必须纳入统一供应商映射');
+// 供应商映射第七轮改成规则表（PROVIDER_IDENTIFIER_RULES），这里核对表内确有这条登记。
+assert.match(identity, /source: 'xueqiu', type: 'symbol'/, '雪球代码必须纳入统一供应商映射');
 assert.match(stockAnalysis, /sourceCode: 'xueqiu'/, '股票分析雪球请求必须读取统一映射');
 assert.match(stockAnalysis, /sourceCode: 'eastmoney', identifierType: 'guba_code'/, '股吧请求必须读取统一映射');
 assert.match(tencentQuote, /resolveProviderCode/, '腾讯行情请求必须读取统一供应商映射');

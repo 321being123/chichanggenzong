@@ -202,8 +202,10 @@ async function select_market_stock_suspend_calendar(params, client = pool) {
          FROM (SELECT unnest($1::bigint[]) AS instrument_id) i
          LEFT JOIN market.stock_suspend_calendar sc
            ON sc.instrument_id=i.instrument_id AND sc.trade_date=$2::date AND sc.source_id=$3
-         LEFT JOIN market.daily_bars b ON b.instrument_id=i.instrument_id AND b.trade_date=$2::date AND b.source_id=$3
-         LEFT JOIN market.daily_valuations v ON v.instrument_id=i.instrument_id AND v.trade_date=$2::date AND v.source_id=$3`, params);
+         LEFT JOIN market.daily_bars b ON b.instrument_id=i.instrument_id AND b.trade_date=$2::date
+           AND b.source_id IN (SELECT source_id FROM ops.data_sources WHERE source_code IN ('tushare','lixinger_official'))
+         LEFT JOIN market.daily_valuations v ON v.instrument_id=i.instrument_id AND v.trade_date=$2::date
+           AND v.source_id IN (SELECT source_id FROM ops.data_sources WHERE source_code IN ('tushare','lixinger_official'))`, params);
 }
 
 // 公告历史回补目标清单：在市口径 + 可选代码范围 + 「仍有待解析积压」筛选（含解析版本与到期日残留判定）
@@ -270,6 +272,16 @@ async function selectAnnouncementHistoryTargets({ end, codes = [], cachedOnly = 
 }
 
 // 最近若干开市日里，指定正股中仍存在行情缺口的清单（扣掉停牌日）
+// 需要正股日线的证券来源代码：持仓股票 ∪ 自选股票。
+// 转债正股由调用方从已加载的主档带出，这里只负责库内两类用户自选范围。
+async function selectNeededDailyStockSourceCodes(client = pool) {
+  return client.query(
+    `SELECT code FROM positions WHERE code IS NOT NULL AND code <> ''
+     UNION
+     SELECT ts_code FROM stock_watchlist WHERE ts_code IS NOT NULL AND ts_code <> ''`
+  );
+}
+
 async function selectMissingStockBars(params, client = pool) {
   return client.query(
     `SELECT s.canonical_code,s.instrument_id
@@ -285,7 +297,7 @@ async function selectMissingStockBars(params, client = pool) {
                FROM market.daily_bars b
               WHERE b.instrument_id=s.instrument_id
                 AND b.trade_date=ANY($2::date[])
-                AND b.source_id=$3)
+                AND b.source_id IN (SELECT source_id FROM ops.data_sources WHERE source_code IN ('tushare','lixinger_official')))
             < (SELECT COUNT(*)
                  FROM unnest($2::date[]) AS d(trade_date)
                  WHERE NOT EXISTS (
@@ -310,6 +322,7 @@ function writeBondGapQueueQuery1(executor, ...args) { return executor(`INSERT IN
 module.exports = {
   readBondGapQueueQuery1, writeBondGapQueueQuery1,
   selectMissingStockBars,
+  selectNeededDailyStockSourceCodes,
   selectAnnouncementHistoryTargets,
   delete_fundamental_convertible_bond_price_changes,
   insert_fundamental_convertible_bond_no_revision_history,

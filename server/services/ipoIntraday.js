@@ -1,7 +1,7 @@
 const layerSql = require('../repositories/ipoRepository');
 const { pool } = require('../db/connection');
 const CoreDate = require('../../public/shared/core-date');
-const { fetchTencentQuotes } = require('./tencentQuote');
+const { readRealtimeQuotes } = require('../dataAccess/marketDatasets');
 const { resolveProviderCode } = require('./securityIdentity');
 
 // 只在用户打开历史栏目或主动刷新时复用统一行情入口。
@@ -41,7 +41,8 @@ function firstDayPerformance(row, quote, now = new Date()) {
 }
 
 async function attachFirstDayPerformance(rows, market, { now = null, query = pool.query.bind(pool), resolve = resolveProviderCode,
-  refresh = false, force = false, fetchQuotes = fetchTencentQuotes } = {}) {
+  refresh = false, force = false, fetchQuotes = null } = {}) {
+  const quoteFetcher = fetchQuotes || (codes => readRealtimeQuotes({ codes }));
   const today = CoreDate.todayInZone('Asia/Shanghai', now || new Date());
   const symbols = new Map();
   for (const row of rows) {

@@ -5,17 +5,24 @@ const path = require('path');
 const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'portfolio-calendar-test-'));
 process.env.HOLIDAY_CONFIG_PATH = path.join(temporary, 'holidays.json');
 const { pool } = require('../db/connection');
-const market = require('../services/market');
-const realQuery = market.tushareQuery;
+// 数据层第七轮收口后直连 `services/tushare`（不再经 `services/market`），桩必须打在它上面，
+// 并且要在其它模块加载前替换。只改 `market.tushareQuery` 拦不住数据层，测试会真的发起外采；
+// 本测试又把 `Date.now` 冻结在 2026-09-30，守卫的节流等待永远等不到，整个进程会挂住（2026-10-31 定位）。
+const tusharePath = require.resolve('../services/tushare');
+const realTushare = require(tusharePath);
 let calls = [];
 let responseKind = 'complete';
-market.tushareQuery = async (api, params) => {
+const fakeTushareQuery = async (api, params) => {
   calls.push({ api, params });
+  const calendar = require('../jobs/holidaySync');
   const dates = calendar.datesForYear(Number(params.start_date.slice(0, 4))).filter(date => date.replace(/-/g, '') >= params.start_date && date.replace(/-/g, '') <= params.end_date);
   if (responseKind === 'empty') return { fields: ['cal_date', 'is_open'], items: [] };
   return { fields: ['cal_date', 'is_open'], items: dates.map(date => [date.replace(/-/g, ''),
     date === '2026-10-01' || [0, 6].includes(new Date(`${date}T00:00:00Z`).getUTCDay()) ? '0' : '1']) };
 };
+require.cache[tusharePath].exports = Object.assign({}, realTushare, { tushareQuery: fakeTushareQuery });
+const market = require('../services/market');
+const realQuery = realTushare.tushareQuery;
 const calendar = require('../jobs/holidaySync');
 const { getJobDefinition, stageCompletionEvidence } = require('../services/jobDefinitions');
 const analysisSchedule = getJobDefinition('stock_analysis_refresh');

@@ -190,7 +190,8 @@ async function getSharedQuoteMap(cnDate) {
     const codes = [...new Set(rows.map(row => String(row.code || '').trim()).filter(code =>
       /^(00|30|43|48|50|51|60|68|83|87|92|11|12|15|16|[0-9]{5})/.test(code)
     ))];
-    return require('../services/tencentQuote').fetchTencentQuotes(codes, { businessDate: key });
+    const { readRealtimeQuotes } = require('../dataAccess/marketDatasets');
+    return readRealtimeQuotes({ codes, businessDate: key });
   })().catch(error => { sharedQuotePromises.delete(key); throw error; });
   sharedQuotePromises.set(key, promise);
   return promise;
@@ -213,8 +214,8 @@ async function recordMarketClose(label, matchFn, dateStr, context = {}) {
       .filter(code => !refreshAttempted.has(code) && !isUsableQuote(quoteForCode(quoteMap, code), cnDate));
     candidates.forEach(code => refreshAttempted.add(code));
     if (!candidates.length) return;
-    const { fetchTencentQuotes } = require('../services/tencentQuote');
-    const refreshed = await fetchTencentQuotes(candidates, { businessDate: cnDate, force: true });
+    const { readRealtimeQuotes } = require('../dataAccess/marketDatasets');
+    const refreshed = await readRealtimeQuotes({ codes: candidates, businessDate: cnDate, force: true });
     mergeQuoteMaps(quoteMap, refreshed);
   } : null;
   const { rows: accounts } = await repository.select_accounts();

@@ -77,6 +77,14 @@ async function summary(label) {
   const recalculated = await marketVolatilitySync.calculateGraham(pool, SINCE);
   console.log(`格雷厄姆重算（${SINCE} 起）：${recalculated} 条`);
 
+  // 格雷厄姆序列必须与官方 PE 一一对应：旧口径时代有些日期（含休市日）中证有值、理杏仁没有，
+  // 重算窗口不会删掉这些行，会留下带着旧口径数值的孤立点，这里一并清掉。
+  const orphan = await pool.query(`DELETE FROM analytics.graham_index_daily g
+    WHERE g.market_code='CN' AND g.benchmark_code='CSIALL'
+      AND NOT EXISTS (SELECT 1 FROM market.market_valuation_daily v
+        WHERE v.benchmark_code='CSIALL' AND v.source_code='lixinger_official' AND v.trade_date=g.trade_date)`);
+  console.log(`\n清理无官方 PE 对应的格雷厄姆孤立行：${orphan.rowCount || 0} 条`);
+
   await summary('切换后');
   await pool.end();
 })().catch(async error => {

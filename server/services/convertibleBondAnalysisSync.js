@@ -164,20 +164,15 @@ function eventsForAnnouncementProfile(events, profile, startDate) {
 }
 
 // 需要正股日线的证券集合：转债正股 ∪ 持仓股票 ∪ 自选股票。
-// 官方 candlestick 是单只接口，没有"按交易日取全市场"的批量接口（2026-10-31 逐条核对 261 条目录），
-// 全市场 5600 只等于 5600 次调用，日终扛不住；而这张表在业务上的用途就是给转债看正股收盘价，
-// 因此改为按需取这批证券，不再每日全市场刷新。
+// 数据量远小于全市场（几百只），因此日终按需取而不做全市场刷新；
+// 库内两类范围的 SQL 在仓储，代码归一走统一身份映射。
 async function selectNeededDailyStockCodes(profiles, profileStockCodes) {
   const codes = new Set();
   for (const profile of profiles || []) {
     const code = profileStockCodes.get(profile.ts_code) || profile.stk_code;
     if (code) codes.add(String(code).trim().toUpperCase());
   }
-  const { rows } = await pool.query(
-    `SELECT code FROM positions WHERE code IS NOT NULL AND code <> ''
-     UNION
-     SELECT ts_code FROM stock_watchlist WHERE ts_code IS NOT NULL AND ts_code <> ''`
-  );
+  const { rows } = await repository.selectNeededDailyStockSourceCodes();
   for (const row of rows) {
     const raw = String(row.code || '').trim();
     if (!raw) continue;
@@ -185,26 +180,6 @@ async function selectNeededDailyStockCodes(profiles, profileStockCodes) {
   }
   codes.delete('');
   return [...codes];
-}
-
-// 官方没覆盖到的「需要」证券由 Tushare 补，按代码分批（Tushare 单次 ts_code 列表不宜过长）。
-// 官方整体不可用时，退回原来的「按交易日取全市场」批量，保证日终不因新来源故障中断。
-const FALLBACK_DAILY_CHUNK = 40;
-async function fetchTushareDailyFallback(officialUsable, missingCodes, targetTradeDate) {
-  const fields = 'ts_code,trade_date,open,high,low,close,vol,amount';
-  const tradeDate = String(targetTradeDate).replace(/-/g, '');
-  if (officialUsable && (!missingCodes || !missingCodes.length)) return [];
-  if (!officialUsable) {
-    const data = await tushareQuery('daily', { trade_date: tradeDate }, fields);
-    return tsRows(data);
-  }
-  const rows = [];
-  for (let i = 0; i < missingCodes.length; i += FALLBACK_DAILY_CHUNK) {
-    const group = missingCodes.slice(i, i + FALLBACK_DAILY_CHUNK);
-    const data = await tushareQuery('daily', { ts_code: group.join(','), trade_date: tradeDate }, fields, { allowEmpty: true });
-    rows.push(...tsRows(data));
-  }
-  return rows;
 }
 
 async function saveAnnouncementHistories(client, instrumentId, events, profile, sourceId, noRevisionPeriods = [], priceChangeDetails = [], sources = null) {
@@ -698,58 +673,30 @@ async function syncConvertibleBondUniverse(reason = 'scheduled', options = {}) {
     daily.rows = [...targetRows.values()];
     daily.coverage = { ...(daily.coverage || {}), targetTradeDate, unresolvedCount: unresolvedCodes.length, tencentFallbackCount,
       objectStatusCounts: bondStatusCounts };
-    // 正股日线：理杏仁官方按需取（转债正股 ∪ 持仓 ∪ 自选），取不到的由 Tushare 按代码补；
-    // 估值仍取全市场（官方支持 stockCodes 一次 100 只，全市场约 56 次调用）。
+    // 正股日线与估值都属于「行情/估值数据集」：只向数据层要，主备来源与口径换算在数据层完成，
+    // 返回的每一行自带 source_code，落库时按来源分组写，服务不需要知道来源是谁。
     const neededStockCodes = await selectNeededDailyStockCodes(profiles, profileStockCodes);
-    let officialDailyRows = [];
-    let dailyMissingCodes = neededStockCodes;
-    let officialDailyUsable = false;
-    if (process.env.LIXINGER_TOKEN && neededStockCodes.length) {
-      try {
-        const { resolveStockDailyBatch } = require('./lixingerDatasetSources');
-        const batch = await resolveStockDailyBatch({ tsCodes: neededStockCodes, tradeDate: targetTradeDate });
-        officialDailyRows = batch.rows || [];
-        dailyMissingCodes = batch.missing || [];
-        officialDailyUsable = true;
-      } catch (error) {
-        if (['JOB_BUDGET_EXCEEDED', 'POLICY_NOT_CONFIGURED', 'DATASET_LOCKED'].includes(error.code)) throw error;
-        console.warn(`理杏仁正股日线不可用，回退 Tushare：${String(error.message).slice(0, 160)}`);
-      }
-    }
-    const [tushareDailyRows, stockValuationData, stockAdjustmentData] = await Promise.all([
-      fetchTushareDailyFallback(officialDailyUsable, dailyMissingCodes, targetTradeDate),
-      tushareQuery('daily_basic', { trade_date: targetTradeDate.replace(/-/g, '') }, 'ts_code,trade_date,pe,pe_ttm,pb,dv_ttm,total_mv,circ_mv', { failoverOnEmpty: true }),
+    const { readStockDailyBatch, readStockValuationRows } = require('../dataAccess/marketDatasets');
+    const [stockDailyRows, stockValuationRows, stockAdjustmentData] = await Promise.all([
+      readStockDailyBatch({ tsCodes: neededStockCodes, tradeDate: targetTradeDate }),
+      readStockValuationRows({ tradeDate: targetTradeDate }),
       tushareQuery('adj_factor', { trade_date: targetTradeDate.replace(/-/g, '') }, 'ts_code,trade_date,adj_factor', { allowEmpty: true }),
     ]);
-    // 正股覆盖集合 = 需要的证券；官方行优先，Tushare 只补官方没给的代码。
-    const stockDailyRows = [...officialDailyRows, ...tushareDailyRows];
-    if (officialDailyRows.length) {
-      console.log(`[主同步] 正股日线 来源=理杏仁官方 ${officialDailyRows.length} 只，Tushare 补 ${tushareDailyRows.length} 只（需要 ${neededStockCodes.length} 只）`);
-    }
-    const tushareValuationRows = tsRows(stockValuationData);
-    // 官方优先：同一证券同一交易日只落一个来源。官方覆盖到的证券从 Tushare 批次里剔除，
-    // 避免同一 (instrument_id, trade_date) 出现两行来源导致读取端重复。
-    let officialValuationRows = [];
-    try {
-      const { resolveValuationRows } = require('./lixingerDatasetSources');
-      // 估值宇宙取全市场（Tushare daily_basic 的代码清单），不随日线按需收窄。
-      const valuationUniverse = tushareValuationRows.length
-        ? tushareValuationRows.map(row => row.ts_code)
-        : neededStockCodes;
-      officialValuationRows = (await resolveValuationRows({
-        codes: valuationUniverse, tradeDate: targetTradeDate,
-      })) || [];
-    } catch (error) {
-      if (['JOB_BUDGET_EXCEEDED', 'POLICY_NOT_CONFIGURED', 'DATASET_LOCKED'].includes(error.code)) throw error;
-      console.warn(`理杏仁估值不可用，整批回退 Tushare：${String(error.message).slice(0, 160)}`);
-      officialValuationRows = [];
-    }
-    const officialCodeSet = new Set(officialValuationRows.map(row => row.ts_code));
-    const stockValuationRows = tushareValuationRows.filter(row => !officialCodeSet.has(row.ts_code));
-    if (officialValuationRows.length) {
-      console.log(`[可转债分析] 估值来源=理杏仁官方 ${officialValuationRows.length} 只，Tushare 补 ${stockValuationRows.length} 只`);
-    }
+    // 复权因子仍只有单一来源（官方无因子接口），因此单独按原链路取、按原来源落库。
     const stockAdjustmentRows = tsRows(stockAdjustmentData);
+    const rowsBySource = list => {
+      const map = new Map();
+      for (const row of list || []) {
+        const code = row.source_code || 'tushare';
+        if (!map.has(code)) map.set(code, []);
+        map.get(code).push(row);
+      }
+      return map;
+    };
+    const dailyBySource = rowsBySource(stockDailyRows);
+    const valuationBySource = rowsBySource(stockValuationRows);
+    console.log(`[主同步] 正股日线 需要=${neededStockCodes.length} 只，按来源：${[...dailyBySource].map(([code, rows]) => `${code}=${rows.length}`).join('，') || '无'}`);
+    console.log(`[可转债分析] 估值 按来源：${[...valuationBySource].map(([code, rows]) => `${code}=${rows.length}`).join('，') || '无'}`);
     const profileByCode = new Map(profiles.map(row => [row.ts_code, row]));
     const stockCloseByCode = new Map(stockDailyRows.map(row => [row.ts_code, finite(row.close)]));
     // Tushare cb_daily 偶发只返回价格、不返回转股价值/溢价率；用同日正股收盘价和转股价补齐，
@@ -828,11 +775,20 @@ async function syncConvertibleBondUniverse(reason = 'scheduled', options = {}) {
         }
         saved += 1;
       }
-      if (sources.lixinger_official && (officialDailyRows.length || officialValuationRows.length)) {
-        // 复权因子只有 Tushare 一个来源，不能挂到官方名下，故官方这批不写因子。
-        await saveFullStockMarketPartition(client, stockInstrumentMap, officialDailyRows, officialValuationRows, sources.lixinger_official, []);
+      // 按行自带的来源分组落库：每个来源只写自己的行，审计不会串来源；
+      // 复权因子只有单一来源，因此只在最后随原来源写一次。
+      const writeSourceCodes = new Set([...dailyBySource.keys(), ...valuationBySource.keys()]);
+      for (const code of writeSourceCodes) {
+        const bars = dailyBySource.get(code) || [];
+        const valuations = valuationBySource.get(code) || [];
+        const sourceId = sources[code];
+        if (!sourceId || (!bars.length && !valuations.length)) continue;
+        await saveFullStockMarketPartition(client, stockInstrumentMap, bars, valuations, sourceId, []);
       }
-      await saveFullStockMarketPartition(client, stockInstrumentMap, tushareDailyRows, stockValuationRows, sources.tushare, stockAdjustmentRows);
+      const adjustmentSourceId = sources.tushare;
+      if (adjustmentSourceId && stockAdjustmentRows.length) {
+        await saveFullStockMarketPartition(client, stockInstrumentMap, [], [], adjustmentSourceId, stockAdjustmentRows);
+      }
       // 待上市新债主档补全：isActiveBond 只收已上市债，导致新债在上市前一直是
       // 「有占位档、无正股/无转股价」的状态，日报（上市前一交易日生成）只能降级为
       // 「数据不足无法精确预估」。这里只补主档字段，不写行情、不进行情缺口队列。
@@ -900,14 +856,15 @@ async function syncConvertibleBondUniverse(reason = 'scheduled', options = {}) {
         }),
         publishDatasetPartition('stock_daily', 'CN', {
           dataAsOf: daily.tradeDate, rowCount: stockDailyRows.length,
-          sourceId: officialDailyRows.length ? sources.lixinger_official : tushareSourceId,
-          diagnostics: { targetTradeDate, needed_count: neededStockCodes.length, official_count: officialDailyRows.length,
-            tushare_fallback_count: tushareDailyRows.length, scope: 'demand:underlying+positions+watchlist' },
+          sourceId: tushareSourceId,
+          diagnostics: { targetTradeDate, needed_count: neededStockCodes.length,
+            by_source: Object.fromEntries([...dailyBySource].map(([code, rows]) => [code, rows.length])),
+            scope: 'demand:underlying+positions+watchlist' },
         }),
         publishDatasetPartition('stock_valuation', 'CN', {
-          dataAsOf: daily.tradeDate, rowCount: officialValuationRows.length + stockValuationRows.length,
-          sourceId: officialValuationRows.length ? sources.lixinger_official : tushareSourceId,
-          diagnostics: { targetTradeDate, official_count: officialValuationRows.length, tushare_count: stockValuationRows.length },
+          dataAsOf: daily.tradeDate, rowCount: stockValuationRows.length,
+          sourceId: tushareSourceId,
+          diagnostics: { targetTradeDate, by_source: Object.fromEntries([...valuationBySource].map(([code, rows]) => [code, rows.length])) },
         }),
         publishDatasetPartition('stock_adj_factor', 'CN', { dataAsOf: daily.tradeDate, rowCount: stockAdjustmentRows.length, sourceId: tushareSourceId, diagnostics: { targetTradeDate } }),
       ]);
@@ -1010,12 +967,13 @@ async function syncConvertibleBondUniverse(reason = 'scheduled', options = {}) {
         },
         stock_daily: {
           partition_row_count: stockDailyRows.length, dataAsOf: isoDate(daily.tradeDate),
-          needed_count: neededStockCodes.length, official_count: officialDailyRows.length,
-          tushare_fallback_count: tushareDailyRows.length, scope: 'demand:underlying+positions+watchlist',
+          needed_count: neededStockCodes.length,
+          by_source: Object.fromEntries([...dailyBySource].map(([code, rows]) => [code, rows.length])),
+          scope: 'demand:underlying+positions+watchlist',
         },
         stock_valuation: {
-          partition_row_count: officialValuationRows.length + stockValuationRows.length, dataAsOf: isoDate(daily.tradeDate),
-          official_count: officialValuationRows.length, tushare_count: stockValuationRows.length,
+          partition_row_count: stockValuationRows.length, dataAsOf: isoDate(daily.tradeDate),
+          by_source: Object.fromEntries([...valuationBySource].map(([code, rows]) => [code, rows.length])),
         },
         stock_adj_factor: { partition_row_count: stockAdjustmentRows.length, dataAsOf: isoDate(daily.tradeDate) },
         stock_suspend_calendar: {
@@ -1632,13 +1590,12 @@ async function backfillUnderlyingStockMarket({ windowDays = 500, targetTradeDate
     const instrumentMap = new Map(rows.map(row => [row.canonical_code, row.instrument_id]));
     const openDays = await getRecentOpenDays(windowDays, targetTradeDate);
     const source = await sourceIds();
-    // 官方没有「按交易日取全市场」的接口，但支持按代码取日期区间：
-    // 先按代码整段补一次（每只 1 次调用），能填掉绝大多数历史缺口，
-    // 剩下仍然缺的日子再走原来的按交易日批量回退。
+    // 按代码整段补历史（每只 1 次调用）比按交易日全市场更省调用：
+    // 先按代码补一遍，能填掉绝大多数缺口，剩下仍然缺的日子再走按交易日批量回退。
     let prefilledBars = 0;
-    if (process.env.LIXINGER_TOKEN && openDays.length && instrumentMap.size) {
+    if (openDays.length && instrumentMap.size) {
       try {
-        const { resolveStockDaily } = require('./lixingerDatasetSources');
+        const { readStockDailySeries } = require('../dataAccess/marketDatasets');
         // openDays 按日期升序（getRecentOpenDays 结尾 sort()），起点取首日、终点取末日。
         const startDate = isoDate(openDays[0]);
         const endDate = isoDate(openDays[openDays.length - 1]);
@@ -1648,22 +1605,33 @@ async function backfillUnderlyingStockMarket({ windowDays = 500, targetTradeDate
         for (const stock of targets) {
           const client = await pool.connect();
           try {
-            const wide = await resolveStockDaily({ tsCode: stock.canonical_code, startDate, endDate });
+            const wide = await readStockDailySeries({ tsCode: stock.canonical_code, startDate, endDate });
             if (!wide || !wide.length) continue;
+            const bySource = new Map();
+            for (const row of wide) {
+              const code = row.source_code || 'tushare';
+              if (!bySource.has(code)) bySource.set(code, []);
+              bySource.get(code).push(row);
+            }
             await txControl.begin(client);
-            const saved = await saveFullStockMarketPartition(client, instrumentMap, wide, [], source.lixinger_official || source.tushare);
+            let saved = { bars: 0 };
+            for (const [code, rows] of bySource) {
+              if (!source[code]) continue;
+              const part = await saveFullStockMarketPartition(client, instrumentMap, rows, [], source[code]);
+              saved = { bars: saved.bars + part.bars };
+            }
             await txControl.commit(client);
             prefilledBars += saved.bars;
           } catch (error) {
             await txControl.rollback(client);
             if (['JOB_BUDGET_EXCEEDED', 'POLICY_NOT_CONFIGURED', 'DATASET_LOCKED'].includes(error.code)) throw error;
-            console.warn(`理杏仁正股历史预补失败（${stock.canonical_code}）：${String(error.message).slice(0, 120)}`);
+            console.warn(`正股历史预补失败（${stock.canonical_code}）：${String(error.message).slice(0, 120)}`);
           } finally { client.release(); }
         }
-        if (prefilledBars) console.log(`[股债分析缓存] 官方按代码预补 ${prefilledBars} 条日线（${targets.length} 只）`);
+        if (prefilledBars) console.log(`[股债分析缓存] 按代码预补 ${prefilledBars} 条日线（${targets.length} 只）`);
       } catch (error) {
         if (['JOB_BUDGET_EXCEEDED', 'POLICY_NOT_CONFIGURED', 'DATASET_LOCKED'].includes(error.code)) throw error;
-        console.warn(`理杏仁正股历史预补不可用，整段回退 Tushare：${String(error.message).slice(0, 160)}`);
+        console.warn(`正股历史按代码预补不可用，按交易日批量回退：${String(error.message).slice(0, 160)}`);
       }
     }
     for (const tradeDate of openDays) {
@@ -1703,40 +1671,29 @@ async function backfillUnderlyingStockMarket({ windowDays = 500, targetTradeDate
       const repairLimit = Math.max(Number(process.env.CONVERTIBLE_BOND_STOCK_REPAIR_LIMIT) || 80, 1);
       const repairTargets = missingStocks.slice(0, repairLimit);
       for (const stock of repairTargets) {
-        // 按代码整段补齐：官方 candlestick 支持日期区间，正股缺口先取官方，取不到再回退 Tushare。
-        let bars = null;
-        let barSource = source.tushare;
-        if (process.env.LIXINGER_TOKEN) {
-          try {
-            const { resolveStockDaily } = require('./lixingerDatasetSources');
-            const official = await resolveStockDaily({
-              tsCode: stock.canonical_code,
-              startDate: isoDate(recentDays[0]),
-              endDate: isoDate(recentDays[recentDays.length - 1]),
-            });
-            if (official && official.length) {
-              bars = official;
-              barSource = source.lixinger_official || source.tushare;
-            }
-          } catch (error) {
-            if (['JOB_BUDGET_EXCEEDED', 'POLICY_NOT_CONFIGURED', 'DATASET_LOCKED'].includes(error.code)) throw error;
-            console.warn(`理杏仁正股历史不可用，回退 Tushare：${String(error.message).slice(0, 160)}`);
-          }
-        }
-        if (!bars) {
-          const daily = await tushareQuery('daily', {
-            ts_code: stock.canonical_code,
-            start_date: recentDays[0].replace(/-/g, ''),
-            end_date: recentDays[recentDays.length - 1].replace(/-/g, ''),
-          }, 'ts_code,trade_date,open,high,low,close,vol,amount', { allowEmpty: true });
-          bars = tsRows(daily);
+        // 按代码整段补齐属于「行情数据集」：只向数据层要序列，主备来源由数据层决定。
+        const { readStockDailySeries } = require('../dataAccess/marketDatasets');
+        const bars = await readStockDailySeries({
+          tsCode: stock.canonical_code,
+          startDate: isoDate(recentDays[0]),
+          endDate: isoDate(recentDays[recentDays.length - 1]),
+        });
+        if (!bars || !bars.length) continue;
+        const barsBySource = new Map();
+        for (const row of bars) {
+          const code = row.source_code || 'tushare';
+          if (!barsBySource.has(code)) barsBySource.set(code, []);
+          barsBySource.get(code).push(row);
         }
         const client = await pool.connect();
         try {
           await txControl.begin(client);
-          const saved = await saveFullStockMarketPartition(client, instrumentMap, bars, [], barSource);
+          for (const [code, rows] of barsBySource) {
+            if (!source[code]) continue;
+            const part = await saveFullStockMarketPartition(client, instrumentMap, rows, [], source[code]);
+            repairedBars += part.bars;
+          }
           await txControl.commit(client);
-          repairedBars += saved.bars;
         } catch (error) {
           await txControl.rollback(client);
           throw error;

@@ -51,43 +51,19 @@ async function fetchRequired(apiName, params, fields) {
   return tsRows(data);
 }
 
-// 行业分类：理杏仁官方（申万2021）优先，Tushare 作为已验证备源，都取不到就保留上一轮结论。
-// 官方接口一次返回 sw/sw_2021/cni 多套体系，选体系与判级由 domain/lixingerIndustry 负责；
-// 层级歧义直接返回 null，不猜分类。
+// 行业分类：向数据层要「行业分类」这一个需求，供应商与体系选择由数据层完成；
+// 取不到返回 null，调用方保留上一轮结论，不猜分类。
 const INDUSTRY_CACHE_MS = 7 * 86400000;
 
-async function fetchOfficialIndustry(tsCode) {
-  if (!process.env.LIXINGER_TOKEN) return null;
-  try {
-    const { resolveProviderIdentifier } = require('./securityIdentity');
-    const stockCode = await resolveProviderIdentifier({
-      canonicalCode: tsCode, sourceCode: 'lixinger_official', identifierType: 'stock_code',
-    });
-    if (!stockCode) return null;
-    const { callEndpoint } = require('./lixingerOfficial');
-    const { selectIndustryPath } = require('../domain/lixingerIndustry');
-    const result = await callEndpoint('cn/company/industries', { stockCode },
-      { dataset: 'stock_analysis_industry', maxAgeMs: INDUSTRY_CACHE_MS });
-    return selectIndustryPath(result.rows, { system: 'sw_2021', areaCode: 'cn' });
-  } catch (error) {
-    // 行业缺失不阻塞股票分析主流程，但必须留下可诊断痕迹，不静默吞掉。
-    if (['JOB_BUDGET_EXCEEDED', 'POLICY_NOT_CONFIGURED', 'DATASET_LOCKED'].includes(error.code)) throw error;
-    console.warn(`理杏仁行业分类不可用，回退 Tushare：${String(error.message).slice(0, 160)}`);
-    return null;
-  }
-}
-
 async function fetchIndustry(tsCode) {
-  const official = await fetchOfficialIndustry(tsCode);
-  if (official) return official;
   try {
-    const rows = await fetchRequired('index_member_all', { ts_code: tsCode, is_new: 'Y' }, 'ts_code,l1_code,l1_name,l2_code,l2_name,l3_code,l3_name,is_new');
-    const row = rows.find(item => item.l3_name) || rows[0];
-    if (row) return { industry: row.l3_name || row.l2_name || row.l1_name || '', industry_system: '申万2021', industry_level: row.l3_name ? '三级' : (row.l2_name ? '二级' : '一级'), industry_path: [row.l1_name,row.l2_name,row.l3_name].filter(Boolean) };
+    const { readIndustryClassification } = require('../dataAccess/marketDatasets');
+    return await readIndustryClassification({ tsCode, cacheMs: INDUSTRY_CACHE_MS });
   } catch (error) {
     if (error.code === 'JOB_BUDGET_EXCEEDED') throw error;
+    console.warn(`行业分类取数不可用：${String(error.message).slice(0, 160)}`);
+    return null;
   }
-  return null;
 }
 
 function ranges(startDate, endDate, years = 8) {
@@ -104,19 +80,16 @@ function ranges(startDate, endDate, years = 8) {
 
 async function fetchPartitioned(apiName, tsCode, startDate, endDate, fields) {
   const result = [];
-  for (const [start, end] of ranges(startDate, endDate)) {
-    // 日线：理杏仁官方「不复权」优先（cn/company/candlestick type=ex_rights），
-    // 官方 volume 股→手、amount 元→千元已由适配层换算，取不到整段回退 Tushare。
-    if (apiName === 'daily' && process.env.LIXINGER_TOKEN) {
-      try {
-        const { resolveStockDaily } = require('./lixingerDatasetSources');
-        const official = await resolveStockDaily({ tsCode, startDate: start, endDate: end });
-        if (official && official.length) { result.push(...official); continue; }
-      } catch (error) {
-        if (['JOB_BUDGET_EXCEEDED', 'POLICY_NOT_CONFIGURED', 'DATASET_LOCKED'].includes(error.code)) throw error;
-        console.warn(`理杏仁日线不可用，回退 Tushare：${String(error.message).slice(0, 160)}`);
-      }
+  // 日线属于「行情数据集」，只向数据层要；主备来源与单位换算都在数据层完成。
+  if (apiName === 'daily') {
+    const { readStockDailySeries } = require('../dataAccess/marketDatasets');
+    for (const [start, end] of ranges(startDate, endDate)) {
+      const rows = await readStockDailySeries({ tsCode, startDate: start, endDate: end });
+      result.push(...rows);
     }
+    return result;
+  }
+  for (const [start, end] of ranges(startDate, endDate)) {
     const rows = await fetchRequired(apiName, { ts_code: tsCode, start_date: start, end_date: end }, fields);
     result.push(...rows);
   }
@@ -174,41 +147,24 @@ async function refreshDividends(tsCode, today) {
   const scope = datasetScope('stock', tsCode);
   const cursors = await getDatasetCursors(scope, ['stock_dividend']);
   if (isDatasetFresh(cursors.get('stock_dividend'), 'stock_dividend')) return;
-  // 分红：理杏仁官方优先（cn/company/dividend），取不到回退 Tushare。
-  let rows = null;
-  if (process.env.LIXINGER_TOKEN) {
-    try {
-      const { resolveDividendRows } = require('./lixingerDatasetSources');
-      const meta0 = await stockAnalysisRepository.readInstrumentMeta({ tsCode });
-      const startDate = (meta0 && meta0.list_date) || '2000-01-01';
-      const official = await resolveDividendRows({ tsCode, startDate, endDate: today });
-      if (official && official.length) rows = official;
-    } catch (error) {
-      if (['JOB_BUDGET_EXCEEDED', 'POLICY_NOT_CONFIGURED', 'DATASET_LOCKED'].includes(error.code)) throw error;
-      console.warn(`理杏仁分红不可用，回退 Tushare：${String(error.message).slice(0, 160)}`);
-    }
-  }
-  const officialUsed = Boolean(rows);
-  if (!rows) rows = tsRows(await tushareQuery('dividend', { ts_code: tsCode },
-    'ts_code,end_date,ann_date,div_proc,stk_div,stk_bo_rate,stk_co_rate,cash_div,cash_div_tax,record_date,ex_date,pay_date,imp_ann_date,base_date,base_share', { allowEmpty: true }));
+  // 分红：向数据层要「分红事实」，主备来源由数据层决定，行上自带 source_code。
+  const metaForRange = await stockAnalysisRepository.readInstrumentMeta({ tsCode });
+  const { readDividendRows } = require('../dataAccess/marketDatasets');
+  const rows = await readDividendRows({
+    tsCode, startDate: (metaForRange && metaForRange.list_date) || '2000-01-01', endDate: today,
+  });
   if (rows.length >= 2000 || rows.some(row => row.ts_code !== tsCode)) throw new Error('分红历史响应不完整或证券身份不一致，保留旧数据');
   const meta = await stockAnalysisRepository.readInstrumentMeta({ tsCode });
   if (!meta) throw new Error('缺少分红采集对应的证券档案');
   await persistCollectedData({ ...meta.raw_data, ts_code: tsCode, name: meta.name, market: meta.market, list_date: meta.list_date }, { dividends: rows });
-  // 官方行另外写进标准分红事实，来源记 lixinger_official；现金收益按「公告原文 > 理杏仁 > 其他」择一，不会重复计息。
-  if (officialUsed) {
+  // 非默认来源的分红行另写一份标准事实（带自己的来源），现金收益按「公告原文 > 官方 > 其他」择一，不会重复计息。
+  const primaryRows = rows.filter(row => row.source_code && row.source_code !== 'tushare');
+  if (primaryRows.length) {
     try {
-      const { syncOfficialDividends } = require('../repositories/stockProjectionRepository');
-      const { pool } = require('../db/connection');
-      const [inst, source] = await Promise.all([
-        pool.query('SELECT instrument_id FROM core.instruments WHERE canonical_code=$1', [tsCode]),
-        pool.query("SELECT source_id FROM ops.data_sources WHERE source_code='lixinger_official'"),
-      ]);
-      if (inst.rows[0] && source.rows[0]) {
-        await syncOfficialDividends(pool, inst.rows[0].instrument_id, source.rows[0].source_id, rows);
-      }
+      const { syncSourcedDividendFacts } = require('../repositories/stockProjectionRepository');
+      await syncSourcedDividendFacts(tsCode, primaryRows);
     } catch (error) {
-      console.warn(`理杏仁分红事实写入失败（不影响主流程）：${String(error.message).slice(0, 160)}`);
+      console.warn(`分红标准事实写入失败（不影响主流程）：${String(error.message).slice(0, 160)}`);
     }
   }
   await markDatasetSuccess(scope, 'stock_dividend', { lastSuccessDate: isoDate(today) });

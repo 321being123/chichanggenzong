@@ -1,60 +1,70 @@
-// 正股日终行情改为「按需取官方」的契约测试（2026-10-31）。
-// 背景：理杏仁官方 candlestick 只接受单只 stockCode，没有「按交易日取全市场」的批量接口
-// （261 条目录里返回 OHLC 的接口全部是单只参数）。因此日终不再全市场刷新，
-// 改为「转债正股 ∪ 持仓 ∪ 自选」按需取，缺的由 Tushare 按代码补，官方整体不可用时退回全市场批量。
+// 正股日终行情「按需取 + 数据层收口」的契约测试（2026-10-31）。
+//
+// 两条铁律：
+//   1) 官方没有「按交易日取全市场」的批量行情接口（261 条目录里返回 OHLC 的接口全部只接受单值 stockCode），
+//      所以日终只取「转债正股 ∪ 持仓 ∪ 自选」，不再全市场刷新。
+//   2) 上层（服务/任务/路由）只向数据层要数据集，不知道来源是谁；主备回退与口径换算都在数据层。
 const assert = require('assert');
+const fs = require('fs');
+const path = require('path');
 const { readServiceSource } = require('./helpers/service-source');
-const { resolveValuationRows, resolveStockDaily, VALUATION_METRICS } = require('../services/lixingerDatasetSources');
+const { VALUATION_METRICS } = require('../dataAccess/adapters/lixingerDatasetAdapter');
 
-const source = readServiceSource('convertibleBondAnalysis');
+const read = rel => fs.readFileSync(path.join(__dirname, '..', rel), 'utf8');
+const syncSource = readServiceSource('convertibleBondAnalysis');
+const datasets = read('dataAccess/marketDatasets.js');
+const adapter = read('dataAccess/adapters/lixingerDatasetAdapter.js');
+const syncRepo = read('repositories/convertibleBondAnalysisSyncRepository.js');
+const store = read('services/convertibleBondAnalysisStore.js');
 
-// 1) 需求集合必须由三类来源拼出来，缺任何一类都会让业务读到空行情。
-assert.ok(source.includes('async function selectNeededDailyStockCodes'),
+// ---------- 一、需求集合 ----------
+assert.ok(syncSource.includes('async function selectNeededDailyStockCodes'),
   '必须显式定义「需要日线的证券」集合');
-assert.ok(source.includes('SELECT code FROM positions'),
-  '需求集合必须包含持仓');
-assert.ok(source.includes('SELECT ts_code FROM stock_watchlist'),
-  '需求集合必须包含自选');
-assert.ok(source.includes('profileStockCodes.get(profile.ts_code) || profile.stk_code'),
+assert.ok(syncSource.includes('profileStockCodes.get(profile.ts_code) || profile.stk_code'),
   '需求集合必须包含转债正股');
+assert.ok(syncSource.includes('repository.selectNeededDailyStockSourceCodes'),
+  '持仓与自选范围必须经仓储读取，不得在服务里写 SQL');
+assert.ok(syncRepo.includes('SELECT code FROM positions'), '仓储必须提供持仓范围');
+assert.ok(syncRepo.includes('SELECT ts_code FROM stock_watchlist'), '仓储必须提供自选范围');
+// 只查服务自身文件（helpers 会把同名仓储拼进来，不能据此判断服务里有没有 SQL）
+const serviceFiles = ['services/convertibleBondAnalysis.js', 'services/convertibleBondAnalysisSync.js']
+  .filter(rel => fs.existsSync(path.join(__dirname, '..', rel)))
+  .map(read);
+assert.ok(serviceFiles.every(text => !/FROM\s+positions/i.test(text)), '服务层不得出现取持仓的 SQL');
 
-// 2) 主同步走官方按需批量，且不再以全市场按交易日批量为主路径。
-assert.ok(source.includes('resolveStockDailyBatch({ tsCodes: neededStockCodes, tradeDate: targetTradeDate })'),
-  '主同步必须按需求集合向官方批量取日线');
-assert.ok(source.includes('fetchTushareDailyFallback(officialDailyUsable, dailyMissingCodes, targetTradeDate)'),
-  '官方取不到的代码必须由 Tushare 按代码补');
-assert.ok(source.includes('if (officialUsable && (!missingCodes || !missingCodes.length)) return [];'),
-  '官方全部覆盖时不得再发起全市场 Tushare 批量请求');
+// ---------- 二、上层只调中立需求接口 ----------
+assert.ok(syncSource.includes('readStockDailyBatch({ tsCodes: neededStockCodes, tradeDate: targetTradeDate })'),
+  '主同步必须经数据层取正股日线');
+assert.ok(syncSource.includes('readStockValuationRows({ tradeDate: targetTradeDate })'),
+  '主同步必须经数据层取估值');
+assert.ok(syncSource.includes('readStockDailySeries('), '历史补齐必须经数据层取序列');
+// 供应商中立（本次切换引入的来源）：服务不得 require 理杏仁适配层，也不得越过数据层直接调适配目录。
+// 转债自身的 Tushare/腾讯历史直连属存量（见技术架构"其余待迁"），不在本条断言范围。
+assert.ok(!/require\('\.\/lixinger/.test(syncSource), '服务层不得直接引用理杏仁适配层');
+assert.ok(!/require\('\.\.\/dataAccess\/adapters\//.test(syncSource), '服务层不得直接引用数据适配层');
 
-// 3) 落库按来源拆开：官方行写官方来源，复权因子不能挂到官方名下。
-assert.ok(source.includes('saveFullStockMarketPartition(client, stockInstrumentMap, officialDailyRows, officialValuationRows, sources.lixinger_official, [])'),
-  '官方日线与估值必须按官方来源落库，且不写复权因子');
-assert.ok(source.includes('saveFullStockMarketPartition(client, stockInstrumentMap, tushareDailyRows, stockValuationRows, sources.tushare, stockAdjustmentRows)'),
-  '回退批次必须仍归 Tushare 名下并保留复权因子');
+// ---------- 三、数据层内部的主备与换算 ----------
+assert.ok(datasets.includes('resolveStockDailyBatch'), '数据层必须调用适配层的批量日线接口');
+assert.ok(datasets.includes("ts_code: group.join(','), trade_date: trade"), '数据层必须按代码批量回退');
+assert.ok(datasets.includes('const covered = new Set(officialRows.map(row => row.ts_code))'),
+  '估值必须剔除主来源已覆盖的证券，避免同一证券同一天两行来源');
+assert.ok(datasets.includes("source_code: 'tushare'"), '回退行必须自带来源标签');
+assert.ok(adapter.includes("type: 'ex_rights'"), '官方日线必须显式取不复权序列');
+assert.ok(adapter.includes('/ 100'), '成交量股→手换算缺失');
+assert.ok(adapter.includes('/ 1000'), '成交额元→千元换算缺失');
 
-// 4) 估值宇宙不随日线收窄：仍取全市场（官方支持一次 100 只）。
-assert.ok(source.includes('const valuationUniverse = tushareValuationRows.length'),
-  '估值宇宙必须取全市场，不能跟着日线按需收窄');
+// ---------- 四、落库按行自带来源分组 ----------
+assert.ok(syncSource.includes('const rowsBySource = list =>'), '落库前必须按来源分组');
+assert.ok(syncSource.includes('const sourceId = sources[code];'), '每组必须写自己的来源 id');
+assert.ok(syncSource.includes('by_source: Object.fromEntries'), '分区诊断必须按来源留痕');
 
-// 5) 缓存读取与缺口判定必须接受官方来源，否则官方日线读不到、缺口永远判定为缺失。
-assert.ok(source.includes("ds.source_code IN ('tushare','lixinger_official')"),
-  '缓存读取必须接受官方来源');
-assert.ok(source.includes("source_code IN ('tushare','lixinger_official')"),
-  '缺口判定必须按两个行情来源统计');
+// ---------- 五、缓存读取与缺口判定接受多来源 ----------
+assert.ok(store.includes("ds.source_code IN ('tushare','lixinger_official')"), '缓存读取必须接受行情来源集合');
+assert.ok(syncRepo.includes("source_code IN ('tushare','lixinger_official')"), '缺口判定必须按来源集合统计');
 
-// 6) 历史补齐：按代码走官方区间接口，按交易日批量仅作残余回退。
-assert.ok(source.includes('官方没有「按交易日取全市场」的接口，但支持按代码取日期区间'),
-  '历史补齐必须先按代码走官方区间');
-assert.ok(source.includes('CONVERTIBLE_BOND_STOCK_PREFILL_LIMIT'),
-  '按代码预补必须有可配置上限，避免一次拉爆额度');
-
-// 7) 估值指标口径仍覆盖站内需要的全部字段（防止切源时被裁掉）。
+// ---------- 六、估值指标口径不被裁掉 ----------
 for (const metric of ['pe_ttm', 'pb', 'dyr', 'mc', 'cmc']) {
   assert.ok(VALUATION_METRICS.includes(metric), `估值指标必须保留 ${metric}`);
 }
-
-// 8) 单只日线换算口径：官方 volume 是股→手，amount 是元→千元。
-assert.strictEqual(typeof resolveStockDaily, 'function');
-assert.strictEqual(typeof resolveValuationRows, 'function');
 
 console.log('convertible-bond-stock-daily-scope.test.js 通过');

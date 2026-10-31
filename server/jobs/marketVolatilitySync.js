@@ -29,32 +29,16 @@ async function parseHsiWorkbook(buffer) {
   child.on('close', n => { if (n !== 0) return reject(new Error('恒指 PE 文件解析失败（退出码 ' + n + '）：' + err)); try { resolve(JSON.parse(out)); } catch(e) { reject(e); } }); child.stdin.end(buffer);
 }); }
 async function syncChinaYield(start, end) {
-  // 理杏仁官方优先：macro/national-debt 的 tcm_y10（十年期收益率，小数→百分数点）。
-  try {
-    const { resolveSovereignYield10y } = require('../services/lixingerDatasetSources');
-    const official = await resolveSovereignYield10y({ startDate: start, endDate: end });
-    if (official && official.length) {
-      let saved = 0;
-      for (const row of official) {
-        await marketYieldRepository.saveChinaYield(row, 'lixinger_official');
-        saved += 1;
-      }
-      console.log(`[市场周期] 中国10年国债 来源=理杏仁官方 写入=${saved}条`);
-      return saved;
-    }
-  } catch (error) {
-    if (['JOB_BUDGET_EXCEEDED', 'POLICY_NOT_CONFIGURED', 'DATASET_LOCKED'].includes(error.code)) throw error;
-    console.warn(`理杏仁10年国债不可用，回退 chinabond：${String(error.message).slice(0, 160)}`);
+  // 10 年国债属于「宏观数据集」：只向数据层要序列，主备来源与单位换算由数据层完成。
+  const { readSovereignYieldSeries } = require('../dataAccess/marketDatasets');
+  const rows = await readSovereignYieldSeries({ startDate: start, endDate: end });
+  let saved = 0;
+  for (const row of rows) {
+    await marketYieldRepository.saveChinaYield(row, row.source_code || undefined);
+    saved += 1;
   }
-  let count = 0, cursor = new Date(start + 'T00:00:00Z'), last = new Date(end + 'T00:00:00Z');
-  while (cursor <= last) {
-    const rangeEnd = new Date(Date.UTC(cursor.getUTCFullYear() + 1, cursor.getUTCMonth(), cursor.getUTCDate() - 1));
-    const to = rangeEnd < last ? rangeEnd : last; const rows = await marketSource.fetchChinaYield(dateStr(cursor), dateStr(to));
-    for (const r of rows) if (Number(r.tenYear) > 0) { await marketYieldRepository.saveChinaYield(r);
-      count++; }
-    cursor = new Date(to.getTime() + 86400000);
-  }
-  return count;
+  if (saved) console.log(`[市场周期] 中国10年国债 写入=${saved}条（来源=${rows[0].source_code}）`);
+  return saved;
 }
 async function syncCsiIndexPe(benchmark, indexCode) {
   // 水位：本地该基准最新日期往前 45 天重叠窗口（首次空表则全量）
@@ -82,38 +66,20 @@ async function syncCsiIndexPe(benchmark, indexCode) {
   return written;
 }
 async function syncHsiPe() {
-  // 理杏仁官方优先：hk/index/fundamental 的 pe_ttm.mcw（总市值加权）。
-  // 对比（2026-07-30）：官方 mcw 12.26 / ew 14.76，站内 hsi_official 14.33（等权特征）、
-  // 用户导入的加权 CSV 12.04 —— 与加权口径一致的是 mcw，故取 mcw；取不到再回退官网文件。
-  try {
-    const { resolveIndexValuation } = require('../services/lixingerDatasetSources');
-    const end = dateStr(new Date());
-    const start = dateStr(new Date(Date.now() - 400 * 86400000));
-    const rows = await resolveIndexValuation({ indexCode: 'HSI', market: 'hk', startDate: start, endDate: end });
-    if (rows && rows.length) {
-      let saved = 0;
-      for (const row of rows) {
-        if (!(row.pe > 0)) continue;
-        await marketYieldRepository.saveHsiMarketValuation(row.day, row.pe, row.raw, 'lixinger_official');
-        await marketYieldRepository.saveHsiIndexHistory(row.day, row.pe, row.raw, 'lixinger_official');
-        saved += 1;
-      }
-      if (saved) {
-        console.log(`[市场周期] 恒指估值 来源=理杏仁官方(mcw) 写入=${saved}条`);
-        return saved;
-      }
-    }
-  } catch (error) {
-    if (['JOB_BUDGET_EXCEEDED', 'POLICY_NOT_CONFIGURED', 'DATASET_LOCKED'].includes(error.code)) throw error;
-    console.warn(`理杏仁恒指估值不可用，回退官网文件：${String(error.message).slice(0, 160)}`);
+  // 恒指估值属于「指数估值数据集」：官方市值加权优先、官网文件备源，均由数据层决定。
+  const { readIndexValuationSeries } = require('../dataAccess/marketDatasets');
+  const end = dateStr(new Date());
+  const start = dateStr(new Date(Date.now() - 400 * 86400000));
+  const rows = await readIndexValuationSeries({ indexCode: 'HSI', market: 'hk', startDate: start, endDate: end });
+  let saved = 0;
+  for (const row of rows) {
+    if (!(row.pe > 0)) continue;
+    await marketYieldRepository.saveHsiMarketValuation(row.day, row.pe, row.raw, row.source_code);
+    await marketYieldRepository.saveHsiIndexHistory(row.day, row.pe, row.raw, row.source_code);
+    saved += 1;
   }
-  const b = await marketSource.fetchHsiPe();
-  const data = await parseHsiWorkbook(b); let count=0;
-  for (const r of data.slice(3)) { const d = new Date(String(r[0])); const pe = Number(r[1]); if (Number.isNaN(d.getTime()) || !(pe > 0)) continue; const day = dateStr(d);
-    await marketYieldRepository.saveHsiMarketValuation(day, pe, r);
-    await marketYieldRepository.saveHsiIndexHistory(day, pe, r);
-    count++; }
-  return count;
+  if (saved) console.log(`[市场周期] 恒指估值 写入=${saved}条（来源=${rows[0].source_code}）`);
+  return saved;
 }
 const US_TREASURY_YIELD_SOURCE = 'tushare_us_tycr';
 
@@ -195,84 +161,32 @@ async function syncCsi300Valuation(full) {
   const ranges = needFull
     ? [['20040101', '20151231'], ['20160101', end]]
     : [[tsDate(dateStr(new Date(Date.now() - 45 * 86400000))), end]];
+  const { readIndexValuationSeries } = require('../dataAccess/marketDatasets');
   let count = 0;
-  // 理杏仁官方优先：cn/index/fundamental 的 pe_ttm.mcw/pb.mcw 是总市值加权口径，与既有 CSI300 加权 PE 同口径。
-  try {
-    const { resolveIndexValuation } = require('../services/lixingerDatasetSources');
-    let officialCount = 0;
-    for (const [startDate, endDate] of ranges) {
-      const rows = await resolveIndexValuation({ indexCode: '000300', startDate, endDate });
-      if (rows && rows.length) {
-        await marketYieldRepository.saveCsi300Valuations(rows, 'lixinger_official');
-        officialCount += rows.length;
-      }
-    }
-    if (officialCount) {
-      console.log(`[市场周期] 沪深300估值 来源=理杏仁官方 写入=${officialCount}条`);
-      return officialCount;
-    }
-  } catch (error) {
-    if (['JOB_BUDGET_EXCEEDED', 'POLICY_NOT_CONFIGURED', 'DATASET_LOCKED'].includes(error.code)) throw error;
-    console.warn(`理杏仁沪深300估值不可用，回退 Tushare：${String(error.message).slice(0, 160)}`);
-  }
   for (const [startDate, endDate] of ranges) {
-    const data = await tushareQuery('index_dailybasic', { ts_code: '000300.SH', start_date: startDate, end_date: endDate },
-      'ts_code,trade_date,total_mv,pe_ttm,pb');
-    if (!data) continue;
-    const kept = tsRows(data).filter(row => {
-      const day = normDate(row.trade_date), pe = Number(row.pe_ttm), pb = Number(row.pb);
-      return day && ((pe > 0) || (pb > 0));
-    });
-    if (!kept.length) continue;
-    const prepared = kept.map(row => ({ day: normDate(row.trade_date), pe: Number(row.pe_ttm), pb: Number(row.pb), raw: row }));
-    await marketYieldRepository.saveCsi300Valuations(prepared);
-    count += kept.length;
+    const rows = await readIndexValuationSeries({ indexCode: '000300', startDate, endDate });
+    if (!rows.length) continue;
+    await marketYieldRepository.saveCsi300Valuations(rows, rows[0].source_code);
+    count += rows.length;
   }
   console.log(`[市场周期] 沪深300估值 ${needFull ? '全量' : '增量(45天)'} 写入=${count}条`);
   return count;
 }
 
 async function syncMoneySupply() {
-  // 理杏仁官方优先：macro/money-supply 的 m.m2.t（元→亿元）。
-  try {
-    const { resolveMoneySupply } = require('../services/lixingerDatasetSources');
-    const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
-    const official = await resolveMoneySupply({ startDate: '1990-01-01', endDate: today });
-    if (official && official.length) {
-      const wm0 = await marketYieldRepository.readMoneyWatermark();
-      const maxMonth0 = wm0.rows[0].mx;
-      const since0 = maxMonth0 ? (new Date(maxMonth0).getUTCFullYear() - 2) + '-' + String(new Date(maxMonth0).getUTCMonth() + 1).padStart(2, '0') + '-01' : '1990-01-01';
-      const kept0 = official.filter(row => !maxMonth0 || row.month >= since0).map(row => ({ month: `${row.month}-01`, m2: row.m2, row }));
-      if (kept0.length) await marketYieldRepository.saveMoneySupply(kept0, 'lixinger_official');
-      console.log(`[市场周期] 货币供应量 来源=理杏仁官方 返回=${official.length}条, 重叠窗口保留=${kept0.length}条`);
-      return kept0.length;
-    }
-  } catch (error) {
-    if (['JOB_BUDGET_EXCEEDED', 'POLICY_NOT_CONFIGURED', 'DATASET_LOCKED'].includes(error.code)) throw error;
-    console.warn(`理杏仁货币供应不可用，回退 Tushare：${String(error.message).slice(0, 160)}`);
-  }
-  const data = await tushareQuery('cn_m', {}, 'month,m2,m2_yoy');
-  if (!data) return 0;
-  // 水位：本地最新月份；只保留最近 24 个月重叠窗口（首次空表则全量）
+  // 货币供应属于「宏观数据集」：官方优先、备源由数据层决定，这里只做水位与重叠窗口。
+  const { readMoneySupplySeries } = require('../dataAccess/marketDatasets');
+  const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+  const rows = await readMoneySupplySeries({ startDate: '1990-01-01', endDate: today });
+  if (!rows.length) return 0;
   const wm = await marketYieldRepository.readMoneyWatermark();
   const maxMonth = wm.rows[0].mx;
   const since = maxMonth ? (new Date(maxMonth).getUTCFullYear() - 2) + '-' + String(new Date(maxMonth).getUTCMonth() + 1).padStart(2, '0') + '-01' : '1990-01-01';
-  const kept = [];
-  for (const row of tsRows(data)) {
-    const month = monthDate(row.month), m2 = Number(row.m2);
-    if (!month || !(m2 > 0)) continue;
-    if (maxMonth && month < since) continue;
-    kept.push({ month, m2, row });
-  }
-  let written = 0;
-  if (kept.length) {
-    await marketYieldRepository.saveMoneySupply(kept);
-    written = kept.length;
-  }
-  console.log(`[市场周期] 货币供应量 接口返回=${tsRows(data).length}条, 重叠窗口(近24月)保留=${kept.length}条, 写入=${written}条`);
-  return written;
+  const kept = rows.filter(row => !maxMonth || row.month >= since).map(row => ({ month: `${row.month}-01`, m2: row.m2, row }));
+  if (kept.length) await marketYieldRepository.saveMoneySupply(kept, rows[0].source_code);
+  console.log(`[市场周期] 货币供应量 来源=${rows[0].source_code} 返回=${rows.length}条, 重叠窗口保留=${kept.length}条`);
+  return kept.length;
 }
-
 async function tradeMonthEnds(startYear, endYear) {
   // daily_basic 是收盘后数据；盘中不能把当天“已开市但尚未发布”的空结果当成接口故障。
   const result = [], today = tsDate(expectedTradeDate());
@@ -307,52 +221,13 @@ async function syncAShareMarketCap(full) {
   const targets = full ? dates.filter(day => !seen.has(day)) : [dates.at(-1)].filter(day => day && !seen.has(day));
   let count = 0;
   for (const day of targets) {
-    // 1) 优先用统一数据层按【目标交易日】完整分区聚合（daily_valuations.total_market_cap 单位：元）
-    let totalYi = 0;   // 统一为亿元
-    let securityCount = 0;
-    let fromUnified = false;
-    let officialSource = null;
-    try {
-      const { getTotalMarketCap } = require('../services/stockDataService');
-      const cap = await getTotalMarketCap(normDate(day));
-      if (cap && cap.total_cap > 0 && cap.stock_count >= MIN_UNIFIED_MARKET_COUNT) {
-        totalYi = Number(cap.total_cap) / YUAN_TO_100M;
-        securityCount = cap.stock_count;
-        fromUnified = true;
-      }
-    } catch (_) { /* 统一层异常则走 Tushare 回退 */ }
-
-    // 2) 统一层覆盖不足或异常：先用理杏仁官方中证全指 A股市值（mc_om，元→亿元）补齐，
-    //    中证全指覆盖全部 A 股；官方也取不到才回退 Tushare daily_basic 汇总。
-    if (!(totalYi > 0)) {
-      try {
-        const { resolveIndexValuation } = require('../services/lixingerDatasetSources');
-        const official = await resolveIndexValuation({ indexCode: '000985', startDate: day, endDate: day });
-        const row = (official || [])[0];
-        if (row && Number(row.raw && row.raw.mc_om) > 0) {
-          totalYi = Number(row.raw.mc_om) / YUAN_TO_100M;
-          officialSource = 'lixinger_official';
-        }
-      } catch (error) {
-        if (['JOB_BUDGET_EXCEEDED', 'POLICY_NOT_CONFIGURED', 'DATASET_LOCKED'].includes(error.code)) throw error;
-        console.warn(`理杏仁A股市值不可用，回退 Tushare：${String(error.message).slice(0, 160)}`);
-      }
-    }
-
-    // 3) 官方也取不到：回退 Tushare daily_basic（total_mv 单位：万元 → 亿元 = /10000）
-    //    回退数据同样验证交易日、数量、有效市值占比；异常时保留上一份有效数据（不写库）。
-    if (!(totalYi > 0)) {
-      const data = await tushareQuery('daily_basic', { trade_date: day }, 'ts_code,trade_date,total_mv', { failoverOnEmpty: true });
-      const rows = tsRows(data);
-      if (rows.length < 1000) continue;
-      const valid = rows.filter(row => Number.isFinite(Number(row.total_mv)) && Number(row.total_mv) > 0);
-      if (valid.length / rows.length < 0.8) continue;
-      securityCount = rows.length;
-      totalYi = valid.reduce((sum, row) => sum + Number(row.total_mv), 0) / 10000;
-    }
-    if (!(totalYi > 0)) continue;
+    // A 股总市值属于「市场总量数据集」：统一分区 → 官方中证全指 → 备源，全部由数据层决定。
+    const { readTotalAShareMarketCap } = require('../dataAccess/marketDatasets');
+    const cap = await readTotalAShareMarketCap({ day: normDate(day), minUnifiedCount: MIN_UNIFIED_MARKET_COUNT });
+    if (!cap) continue;
+    const { totalYi, securityCount, fromUnified, sourceCode: capSource } = cap;
     await marketYieldRepository.saveMarketCap({ day: normDate(day), totalYi, securityCount, fromUnified,
-      sourceCode: officialSource || undefined });
+      sourceCode: capSource || undefined });
     count++;
     if (!fromUnified) await wait(350);  // 只有回退 Tushare 才需要限流
   }

@@ -206,21 +206,16 @@ async function fetchCompanyReports(target, options = {}) {
     const apiName = preferVip ? spec.vipApi : spec.api;
     try {
       const params = requestParams(spec, target, options);
-      // 理杏仁官方优先（三表 + 指标表）：官方按报告期返回累计值，与 Tushare 同口径，已用 600519 对过真值。
-      // 指标表 ROE/ROA 按小数→百分数点换算；利息保障倍数官方无对应指标，留空。
-      if (!options.query && ['income', 'balance', 'cashflow', 'indicator'].includes(kind) && process.env.LIXINGER_TOKEN) {
-        try {
-          const { resolveFinancialReports } = require('./lixingerDatasetSources');
-          const official = await resolveFinancialReports({
-            tsCode: target.tsCode, startDate: params.start_date, endDate: params.end_date, kinds: [kind],
-          });
-          if (official && Array.isArray(official[kind]) && official[kind].length) {
-            results[kind] = official[kind];
-            continue;
-          }
-        } catch (error) {
-          if (shouldAbortFinancialBatch(error)) throw error;
-          console.warn(`理杏仁财报不可用，回退 Tushare ${kind}：${String(error.message).slice(0, 160)}`);
+      // 财报属于「财务报表数据集」：只向数据层要，主备来源与口径换算由数据层完成；
+      // 数据层取不到时返回 null，本函数继续走既有的批量取数链路。
+      if (!options.query && ['income', 'balance', 'cashflow', 'indicator'].includes(kind)) {
+        const { readFinancialReportRows } = require('../dataAccess/marketDatasets');
+        const primary = await readFinancialReportRows({
+          tsCode: target.tsCode, kinds: [kind], startDate: params.start_date, endDate: params.end_date,
+        });
+        if (primary && Array.isArray(primary[kind]) && primary[kind].length) {
+          results[kind] = primary[kind];
+          continue;
         }
       }
       let rows;
@@ -271,18 +266,18 @@ async function persistCompanyReports(target, reportResult, options = {}) {
       const error = reportResult.errors[kind];
       const scope = `company:${target.companyId}:${kind}`;
       if (rows.length) {
-        // 按行上的来源分组落库：官方行写 lixinger_official，其余仍归 Tushare，避免把官方数据记到 Tushare 名下。
-        const officialRows = rows.filter(row => row && row.source_code === 'lixinger_official');
-        const tushareRows = rows.filter(row => !row || row.source_code !== 'lixinger_official');
-        if (officialRows.length) {
-          const officialSource = await client.query("SELECT source_id FROM ops.data_sources WHERE source_code='lixinger_official'");
-          const officialSourceId = officialSource.rows[0] && officialSource.rows[0].source_id;
-          if (!officialSourceId) throw new Error('未找到理杏仁官方数据源登记');
-          await syncReportRows(client, officialRows, kind, target.companyId, officialSourceId, { runId: ingestionRunId, reportTypeOnly: '1' });
+        // 按行自带的来源分组落库：每组只写自己的来源，避免把某家数据记到别人名下。
+        const groups = new Map();
+        for (const row of rows) {
+          const code = (row && row.source_code) || 'tushare';
+          if (!groups.has(code)) groups.set(code, []);
+          groups.get(code).push(row);
         }
-        const rows_ = tushareRows;
-        if (rows_.length) {
-        await syncReportRows(client, rows_, kind, target.companyId, source.source_id, { runId: ingestionRunId, reportTypeOnly: '1' });
+        const sourceIdByCode = await financialRepository.readSourceIds(client);
+        for (const [code, group] of groups) {
+          const sourceId = sourceIdByCode.get(code) || (code === 'tushare' ? source.source_id : null);
+          if (!sourceId) throw new Error(`未找到数据源登记：${code}`);
+          await syncReportRows(client, group, kind, target.companyId, sourceId, { runId: ingestionRunId, reportTypeOnly: '1' });
         }
         const latestPeriod = rows.map(row => row.end_date).sort().pop();
         const latestAnnouncement = rows.map(row => row.f_ann_date || row.ann_date).filter(Boolean).sort().pop();

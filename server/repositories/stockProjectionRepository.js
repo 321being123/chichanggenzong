@@ -157,6 +157,33 @@ async function syncOfficialDividends(client, instrumentId, sourceId, rows) {
   return written;
 }
 
+// 按行自带的 source_code 写标准分红事实：服务层只给证券代码和行，
+// 证券标识与来源标识的解析都留在这里，服务不需要知道来源是谁。
+async function syncSourcedDividendFacts(tsCode, rows, client = null) {
+  if (!rows || !rows.length) return 0;
+  const db = client || require('../db/connection').pool;
+  const [inst, sources] = await Promise.all([
+    db.query('SELECT instrument_id FROM core.instruments WHERE canonical_code=$1', [tsCode]),
+    db.query('SELECT source_code,source_id FROM ops.data_sources'),
+  ]);
+  const instrumentId = inst.rows[0] && inst.rows[0].instrument_id;
+  if (!instrumentId) return 0;
+  const sourceIdByCode = new Map(sources.rows.map(row => [row.source_code, row.source_id]));
+  const groups = new Map();
+  for (const row of rows) {
+    const code = row.source_code || 'tushare';
+    if (!groups.has(code)) groups.set(code, []);
+    groups.get(code).push(row);
+  }
+  let written = 0;
+  for (const [code, group] of groups) {
+    const sourceId = sourceIdByCode.get(code);
+    if (!sourceId) continue;
+    written += await syncOfficialDividends(db, instrumentId, sourceId, group);
+  }
+  return written;
+}
+
 async function syncFundamentals(client, tsCode, companyId, instrumentId, sources) {
   await syncReportTable(client, 'stock_income_statements', 'income', tsCode, companyId, sources.tushare);
   await syncReportTable(client, 'stock_balance_sheets', 'balance', tsCode, companyId, sources.tushare);
@@ -420,6 +447,7 @@ module.exports = {
   syncEvents,
   syncFundamentals,
   syncOfficialDividends,
+  syncSourcedDividendFacts,
   syncMarket,
   syncQualityIssues,
   syncRawRecords,

@@ -36,37 +36,15 @@ function historicalApiFor(code, position = {}) {
 // 港股日线补价：腾讯 web.ifzq 日 K（与 hkDailyCoverage 同源，无需积分）。
 // 返回的每行是 [日期, 开, 收, 高, 低, 量]，收盘取第 3 位。
 async function backfillHkDailyPrices(username, accountName, code, start, end) {
+  // 港股日线属于「行情数据集」：只向数据层要序列，主备来源由数据层决定。
+  const { readStockDailySeries } = require('../dataAccess/marketDatasets');
   const bare = String(code || '').replace(/\.HK$/i, '').padStart(5, '0');
-  // 理杏仁官方 hk/company/candlestick 优先（不复权收盘），取不到回退腾讯日K。
-  try {
-    const { resolveStockDaily } = require('../services/lixingerDatasetSources');
-    const official = await resolveStockDaily({ tsCode: `${bare}.HK`, market: 'hk', startDate: start, endDate: end });
-    if (official && official.length) {
-      const byDate = {};
-      for (const row of official) {
-        const date = normDate(row.trade_date);
-        const close = Number(row.close);
-        if (!date || !(close > 0)) continue;
-        (byDate[date] = byDate[date] || []).push({ code, name: '', price: close });
-      }
-      let anyOfficial = false;
-      for (const date of Object.keys(byDate)) {
-        try { await saveDailyPrices(username, accountName, date, byDate[date]); anyOfficial = true; } catch (e) { /* 单日失败不阻断其余日期 */ }
-      }
-      if (anyOfficial) return true;
-    }
-  } catch (error) {
-    console.warn(`理杏仁港股日线不可用，回退腾讯：${String(error.message).slice(0, 160)}`);
-  }
-  const payload = await require('../services/tencentQuote').requestTencentHkKline(bare, start, end);
-  const key = ('hk' + bare).toLowerCase();
-  const node = payload && payload.data && payload.data[key];
-  const dayRows = node && (node.qfqday || node.day);
-  if (!Array.isArray(dayRows)) return false;
+  const rows = await readStockDailySeries({ tsCode: `${bare}.HK`, market: 'hk', startDate: start, endDate: end });
+  if (!rows.length) return false;
   const byDate = {};
-  for (const item of dayRows) {
-    const date = normDate(item && item[0]);
-    const close = parseFloat(item && item[2]);
+  for (const row of rows) {
+    const date = normDate(row.trade_date);
+    const close = Number(row.close);
     if (!date || !(close > 0)) continue;
     (byDate[date] = byDate[date] || []).push({ code, name: '', price: close });
   }

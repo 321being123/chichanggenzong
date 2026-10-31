@@ -2,7 +2,7 @@
 // 基准日期 = 该账户净值最早日期；确保五指数（A股走Tushare，恒生走腾讯）都覆盖到该日期。
 // 幂等：已覆盖到基线的指数跳过，仅在缺失时联网补齐；可随 deploy 自动自愈指数缺口。
 const { pool, upsertIndexPoints, tryClaimJob, releaseJob, startJobRun, finishJobRun } = require('../db');
-const { tushareQuery, tsRows, tsDateStr, normDate } = require('../services/market');
+const { tsDateStr, normDate } = require('../services/market');
 const { withExternalCallGuard } = require('../services/externalCallGuard');
 const { isCnHoliday } = require('../config/holidays');
 const { hasIndexBaselineGap, loadSettledBaselines, markSettledBaseline } = require('../repositories/indexBaselineRepository.js');
@@ -20,29 +20,15 @@ const INDEX_BACKFILL_DEFS = [
 // 官方 `cn/index/candlestick` 只返回日期与收盘价序列，正好是 index_history 需要的形状；
 // 中证全指(000985.CSI)不在官方 A股指数代码范围，走原有 Tushare 路径。
 async function fetchIndexCloseSeries(def, startTs, endTs) {
-  if (def.src === 'tushare') {
-    try {
-      const { resolveIndexDaily } = require('../services/lixingerDatasetSources');
-      const series = await resolveIndexDaily({ tsCode: def.ts, startDate: startTs, endDate: endTs });
-      if (series && series.length) return series;
-    } catch (error) {
-      if (['JOB_BUDGET_EXCEEDED', 'POLICY_NOT_CONFIGURED', 'DATASET_LOCKED'].includes(error.code)) throw error;
-      console.warn(`理杏仁指数不可用，回退 Tushare：${String(error.message).slice(0, 160)}`);
-    }
-    const rows = await tushareQuery('index_daily', { ts_code: def.ts, start_date: startTs, end_date: endTs }, 'trade_date,close');
-    if (rows) return tsRows(rows).map(function (r) { return { date: normDate(r.trade_date), close: parseFloat(r.close) }; }).filter(function (p) { return p.date && !isNaN(p.close) && p.close > 0; });
-    return [];
-  }
-  // 恒指：官方 hk/index/candlestick（type=normal）优先，取不到回退腾讯。
-  try {
-    const { resolveIndexDaily } = require('../services/lixingerDatasetSources');
-    const series = await resolveIndexDaily({ tsCode: 'HSI', startDate: startTs, endDate: endTs, market: 'hk' });
-    if (series && series.length) return series;
-  } catch (error) {
-    if (['JOB_BUDGET_EXCEEDED', 'POLICY_NOT_CONFIGURED', 'DATASET_LOCKED'].includes(error.code)) throw error;
-    console.warn(`理杏仁恒指不可用，回退腾讯：${String(error.message).slice(0, 160)}`);
-  }
-  return fetchHsiHistory(startTs, endTs);
+  // 指数收盘序列属于「指数行情数据集」：只向数据层要序列，主备来源由数据层决定。
+  const { readIndexCloseSeries } = require('../dataAccess/marketDatasets');
+  const isCn = def.src === 'tushare';
+  return readIndexCloseSeries({
+    tsCode: isCn ? def.ts : 'HSI',
+    market: isCn ? 'cn' : 'hk',
+    startDate: startTs,
+    endDate: endTs,
+  });
 }
 
 function chinaDateText(value = new Date()) {
@@ -77,22 +63,6 @@ function triggerTypeForReason(reason) {
 /* hasIndexBaselineGap 已迁入 server/repositories/indexBaselineRepository.js */
 
 // 恒生历史日K：腾讯 web.ifzq hkfqkline（日期范围，结束日期须<=今天，否则返回空）
-async function fetchHsiHistory(fromDate, toDate) {
-  const url = `https://web.ifzq.gtimg.cn/appstock/app/hkfqkline/get?param=hkHSI,day,${fromDate},${toDate},4000,qfq`;
-  try {
-    const txt = await withExternalCallGuard('tencent', `hsi-history:${fromDate}:${toDate}`, process.env.JOB_BUSINESS_DATE, () => require('../services/marketHttpSource').getText('tencent', url, { timeout: 10000 }));
-    const json = JSON.parse(txt);
-    const dayArr = json && json.data && json.data.hkHSI && json.data.hkHSI.day;
-    if (!Array.isArray(dayArr)) return [];
-    return dayArr
-      .map(function (it) { return { date: normDate(it[0]), close: parseFloat(it[2]) }; })
-      .filter(function (p) { return p.date && !isNaN(p.close) && p.close > 0; });
-  } catch (e) {
-    if (e && e.code) throw e;
-    return [];
-  }
-}
-
 // options.force = true 时忽略"已确认"记录，强制重查（供用户主动补历史使用）
 async function ensureIndexBaseline(options) {
   const force = !!(options && options.force);

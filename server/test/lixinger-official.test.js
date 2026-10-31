@@ -63,14 +63,21 @@ assert.throws(() => unwrapPayload({ code: 0, error: { name: 'UnauthorizedError',
 assert.throws(() => unwrapPayload({ code: 1, data: {} }, company), /缺少 data 数组/);
 assert.throws(() => unwrapPayload([], company), /响应格式异常/);
 
-// 业务收口静态断言：行业分类必须走"官方优先 + Tushare 备源"，身份映射必须登记官方来源。
+// 业务收口静态断言（2026-10-31 数据层收口后）：
+// 上层只调中立的数据需求接口，供应商选择与口径换算在 dataAccess 内完成；
+// 行业分类的"官方优先 + 备源"逻辑属于数据层，不在服务里。
 const fs = require('fs');
 const path = require('path');
-const stockAnalysisSource = fs.readFileSync(path.join(__dirname, '..', 'services', 'stockAnalysis.js'), 'utf8');
-assert.match(stockAnalysisSource, /fetchOfficialIndustry/, '股票分析未接入理杏仁行业');
-assert.match(stockAnalysisSource, /lixinger_official/, '行业取数未经统一身份映射');
-assert.match(stockAnalysisSource, /index_member_all/, 'Tushare 行业备源被删除');
-const identitySource = fs.readFileSync(path.join(__dirname, '..', 'services', 'securityIdentity.js'), 'utf8');
+const readSource = rel => fs.readFileSync(path.join(__dirname, '..', rel), 'utf8');
+const stockAnalysisSource = readSource('services/stockAnalysis.js');
+const datasetsSource = readSource('dataAccess/marketDatasets.js');
+const adapterSource = readSource('dataAccess/adapters/lixingerDatasetAdapter.js');
+assert.match(stockAnalysisSource, /readIndustryClassification/, '股票分析必须经数据层行业需求接口');
+assert.ok(!/lixinger/i.test(stockAnalysisSource), '服务层不得直接知道具体供应商');
+assert.match(datasetsSource, /resolveIndustryRows/, '数据层必须调用适配层的行业接口');
+assert.match(datasetsSource, /index_member_all/, '行业备源被删除');
+assert.match(adapterSource, /cn\/company\/industries/, '适配层未接入官方行业接口');
+const identitySource = readSource('services/securityIdentity.js');
 assert.match(identitySource, /lixinger_official' && type === 'stock_code'/, '未登记理杏仁证券代码映射');
 
 // ---------- 二、守卫、协议与落库（替代传输 + 测试库） ----------
@@ -215,7 +222,7 @@ async function resetState() {
   process.env.LIXINGER_TOKEN = token;
 
   // ---------- 四、正股日线按需批量（官方无按交易日全市场接口） ----------
-  const { resolveStockDailyBatch } = require('../services/lixingerDatasetSources');
+  const { resolveStockDailyBatch } = require('../dataAccess/adapters/lixingerDatasetAdapter');
   const okBody = () => jsonResponse({ code: 1, data: [{
     date: '2026-10-30', open: 1380, high: 1400, low: 1375, close: 1392.05, volume: 5992700, amount: 8257000000,
   }] });

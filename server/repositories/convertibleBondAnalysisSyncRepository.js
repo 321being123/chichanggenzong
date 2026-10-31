@@ -272,6 +272,16 @@ async function selectAnnouncementHistoryTargets({ end, codes = [], cachedOnly = 
 }
 
 // 最近若干开市日里，指定正股中仍存在行情缺口的清单（扣掉停牌日）
+// 需要正股日线的证券来源代码：持仓股票 ∪ 自选股票。
+// 转债正股由调用方从已加载的主档带出，这里只负责库内两类用户自选范围。
+async function selectNeededDailyStockSourceCodes(client = pool) {
+  return client.query(
+    `SELECT code FROM positions WHERE code IS NOT NULL AND code <> ''
+     UNION
+     SELECT ts_code FROM stock_watchlist WHERE ts_code IS NOT NULL AND ts_code <> ''`
+  );
+}
+
 async function selectMissingStockBars(params, client = pool) {
   return client.query(
     `SELECT s.canonical_code,s.instrument_id
@@ -312,6 +322,7 @@ function writeBondGapQueueQuery1(executor, ...args) { return executor(`INSERT IN
 module.exports = {
   readBondGapQueueQuery1, writeBondGapQueueQuery1,
   selectMissingStockBars,
+  selectNeededDailyStockSourceCodes,
   selectAnnouncementHistoryTargets,
   delete_fundamental_convertible_bond_price_changes,
   insert_fundamental_convertible_bond_no_revision_history,

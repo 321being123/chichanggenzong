@@ -10,8 +10,8 @@
 //   q.cfs.ncffoa.t = 经营活动现金流量净额（70,690,750,119 = Tushare n_cashflow_act）
 //   q.ps.npadnrpatoshaopc.t = 扣非归母净利润（44,464,207,646 = Tushare profit_dedt）
 // 后缀 `.t` 是"报告期累计"，与 Tushare 累计口径一致；`.c` 是单季，本项目不用。
-const { callEndpoint } = require('./lixingerOfficial');
-const { resolveProviderIdentifier } = require('./securityIdentity');
+const { callEndpoint } = require('../../services/lixingerOfficial');
+const { resolveProviderIdentifier } = require('../../services/securityIdentity');
 
 const SOURCE = 'lixinger_official';
 const VALUATION_CHUNK = 100; // 官方限制：stockCodes 一次最多 100 个
@@ -358,6 +358,17 @@ async function resolveSovereignYield10y({ startDate, endDate, areaCode = 'cn' } 
   }).filter(Boolean);
 }
 
+// 股票行业分类（官方一次返回 sw / sw_2021 / cni 多套体系）：只回原始行，
+// 选哪套体系、怎么判级属于领域规则，不在适配层决定。
+async function resolveIndustryRows({ tsCode, cacheMs } = {}) {
+  const resolved = await officialStockCode(tsCode).catch(() => null);
+  const code = (typeof resolved === 'string' && resolved) || stockCodeOf(tsCode);
+  if (!code) return null;
+  const result = await callEndpoint('cn/company/industries', { stockCode: code },
+    { dataset: 'stock_analysis_industry', ...(cacheMs ? { maxAgeMs: cacheMs } : {}) });
+  return result.rows;
+}
+
 // 官方证券代码走统一身份映射，业务不得自己拼后缀。
 // 官方供应商代码：标识层可能返回标识行对象，也可能是字符串；
 // 这里统一收敛成纯代码，避免把对象塞进请求体（会被上游判为 400 ValidationError）。
@@ -377,6 +388,7 @@ module.exports = {
   resolveDividendRows,
   resolveFinancialReports,
   resolveIndexDaily,
+  resolveIndustryRows,
   resolveIndexValuation,
   resolveMoneySupply,
   resolveSovereignYield10y,

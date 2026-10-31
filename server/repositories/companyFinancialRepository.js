@@ -53,6 +53,12 @@ async function listFinancialCursors(params, tx) {
   return rows;
 }
 
+// 来源代码 → 来源 id：落库方按行自带的来源分组写，不需要自己拼 SQL。
+async function readSourceIds(tx = null) {
+  const { rows } = await (tx || pool).query('SELECT source_code,source_id FROM ops.data_sources');
+  return new Map(rows.map(row => [row.source_code, row.source_id]));
+}
+
 async function readTushareSource(_params, tx) {
   const { rows } = await (tx || pool).query("SELECT source_id FROM ops.data_sources WHERE source_code='tushare' LIMIT 1");
   return rows[0];
@@ -96,5 +102,6 @@ async function findStockTargetRows(params, tx) {
   return rows;
 }
 
-module.exports = { listBondUnderlyingRows, listCompanyReportRows, listFinancialCursors, readTushareSource,
+module.exports = {
+  readSourceIds, listBondUnderlyingRows, listCompanyReportRows, listFinancialCursors, readTushareSource,
   writeFinancialHistoryCursor, finishFinancialIngestion, readLatestFinancialData, markFinancialSyncPending, findStockTargetRows };

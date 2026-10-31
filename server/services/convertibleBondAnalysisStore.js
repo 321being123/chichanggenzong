@@ -975,7 +975,7 @@ async function loadCachedStockBars(stockCode, startDate) {
        FROM market.daily_bars b
        JOIN core.instruments i ON i.instrument_id=b.instrument_id
        JOIN ops.data_sources ds ON ds.source_id=b.source_id
-      WHERE i.canonical_code=$1 AND b.trade_date >= $2::date AND ds.source_code='tushare'
+      WHERE i.canonical_code=$1 AND b.trade_date >= $2::date AND ds.source_code IN ('tushare','lixinger_official')
       ORDER BY b.trade_date DESC,b.ingested_at DESC`,
     [stockCode, startDate]
   );
@@ -991,7 +991,7 @@ async function loadCachedStockValuations(stockCode, startDate) {
        FROM market.daily_valuations v
        JOIN core.instruments i ON i.instrument_id=v.instrument_id
        JOIN ops.data_sources ds ON ds.source_id=v.source_id
-      WHERE i.canonical_code=$1 AND v.trade_date >= $2::date AND ds.source_code='tushare'
+      WHERE i.canonical_code=$1 AND v.trade_date >= $2::date AND ds.source_code IN ('tushare','lixinger_official')
       ORDER BY v.trade_date DESC,v.ingested_at DESC`,
     [stockCode, startDate]
   );

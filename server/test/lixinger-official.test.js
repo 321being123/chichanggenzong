@@ -214,6 +214,48 @@ async function resetState() {
   }), error => error.code === 'NOT_CONFIGURED');
   process.env.LIXINGER_TOKEN = token;
 
+  // ---------- 四、正股日线按需批量（官方无按交易日全市场接口） ----------
+  const { resolveStockDailyBatch } = require('../services/lixingerDatasetSources');
+  const okBody = () => jsonResponse({ code: 1, data: [{
+    date: '2026-10-30', open: 1380, high: 1400, low: 1375, close: 1392.05, volume: 5992700, amount: 8257000000,
+  }] });
+  const batchOk = await resolveStockDailyBatch({
+    tsCodes: ['600519.SH', '000001.SZ'], tradeDate: '2026-10-30',
+    options: { fetch: async () => okBody() },
+  });
+  assert.strictEqual(batchOk.rows.length, 2, '按需批量应逐只取回全部请求到的证券');
+  assert.strictEqual(batchOk.missing.length, 0, '全部成功时不应记缺失');
+  assert.strictEqual(batchOk.rows[0].vol, 59927, '成交量股→手（÷100）');
+  assert.strictEqual(batchOk.rows[0].amount, 8257000, '成交额元→千元（÷1000）');
+  assert.strictEqual(batchOk.rows[0].source_code, SOURCE);
+
+  // 单只空结果只记缺失，不打断整批（调用方按代码回退原来源）。
+  let perCodeCalls = 0;
+  const batchMissing = await resolveStockDailyBatch({
+    tsCodes: ['600519.SH', '000001.SZ'], tradeDate: '2026-10-30',
+    options: {
+      fetch: async () => {
+        perCodeCalls += 1;
+        if (perCodeCalls === 1) return jsonResponse({ code: 1, data: [] });
+        return okBody();
+      },
+    },
+  });
+  assert.strictEqual(batchMissing.rows.length, 1, '一只空结果不应影响另一只');
+  assert.deepStrictEqual(batchMissing.missing.length, 1, '空结果必须记为缺失以便回退');
+
+  // 官方无「按交易日取全市场」的批量接口：白名单里所有返回 OHLC 的接口都只接受单值 stockCode。
+  const ohlcEndpoints = cat.endpoints.filter(e => {
+    const names = (e.responseFields || []).map(f => f.name);
+    return ['open', 'high', 'low', 'close'].every(name => names.includes(name));
+  });
+  assert.ok(ohlcEndpoints.length > 0, '应能识别行情类接口');
+  for (const endpoint of ohlcEndpoints) {
+    const paramNames = (endpoint.params || []).map(p => p.name);
+    assert.ok(paramNames.includes('stockCode'), `行情接口必须是单只参数：${endpoint.key}`);
+    assert.ok(!paramNames.includes('tradeDate'), `行情接口不得声明按交易日全市场取数：${endpoint.key}`);
+  }
+
   await resetState();
   console.log('lixinger-official.test.js 通过');
   await pool.end();

@@ -271,13 +271,14 @@ async function resolveIndexValuation({ indexCode, startDate, endDate, market = '
 
 // 股票/港股日线（不复权）：官方 `cn|hk/company/candlestick`，type=ex_rights。
 // 单位换算回 Tushare 口径：官方 volume 是股 → 手(/100)，amount 是元 → 千元(/1000)。
-async function resolveStockDaily({ tsCode, startDate, endDate, market = 'cn' } = {}) {
-  const code = await officialStockCode(tsCode).catch(() => null) || stockCodeOf(tsCode);
+async function resolveStockDaily({ tsCode, startDate, endDate, market = 'cn', options = {} } = {}) {
+  const resolved = await officialStockCode(tsCode).catch(() => null);
+  const code = (typeof resolved === 'string' && resolved) || stockCodeOf(tsCode);
   const start = dashDate(startDate), end = dashDate(endDate);
   if (!code || !start || !end) return null;
   const endpoint = market === 'hk' ? 'hk/company/candlestick' : 'cn/company/candlestick';
   const result = await callEndpoint(endpoint, { stockCode: code, type: 'ex_rights', startDate: start, endDate: end },
-    { dataset: 'market_daily_bars', targetDate: end });
+    { dataset: 'market_daily_bars', targetDate: end, ...options });
   return result.rows.map(row => ({
     ts_code: tsCode,
     trade_date: isoDate(row.date),
@@ -289,6 +290,40 @@ async function resolveStockDaily({ tsCode, startDate, endDate, market = 'cn' } =
     amount: numberOrNull(row.amount) === null ? null : numberOrNull(row.amount) / 1000,
     source_code: SOURCE,
   })).filter(row => row.trade_date && row.close !== null);
+}
+
+
+// 按需批量日线：官方 candlestick 是单只接口，没有"按交易日取全市场"的批量接口
+// （2026-10-31 逐条核对 261 条目录：返回 OHLC 的 6 个接口全部只接受单值 stockCode，
+//  带 stockCodes 复数的接口都不返回开高低收）。因此只对"确实需要日线"的证券逐个取，
+// 并发受限、失败按只记缺失，交由调用方用原来源补，不把整批打断。
+// 串行取数：统一 Guard 对「来源+数据集+业务日」持有咨询锁，同一数据集并发请求会被判为
+// DATASET_LOCKED 直接拒绝，这是既有设计（额度记账按数据集分区）。因此这里逐只串行，
+// 节奏由 Guard 的最小间隔（官方 28ms/次）控制，不在这里另外并发。
+const DAILY_BATCH_CONCURRENCY = 1;
+const ABORT_CODES = new Set(['JOB_BUDGET_EXCEEDED', 'POLICY_NOT_CONFIGURED', 'DATASET_LOCKED']);
+
+async function resolveStockDailyBatch({ tsCodes = [], tradeDate, market = 'cn', options = {} } = {}) {
+  const list = Array.from(new Set((tsCodes || []).filter(Boolean)));
+  const rows = [];
+  const missing = [];
+  if (!list.length || !tradeDate) return { rows, missing: list };
+  for (const group of chunk(list, DAILY_BATCH_CONCURRENCY)) {
+    const settled = await Promise.all(group.map(async tsCode => {
+      try {
+        const got = await resolveStockDaily({ tsCode, startDate: tradeDate, endDate: tradeDate, market, options });
+        return { tsCode, rows: got || [] };
+      } catch (error) {
+        if (ABORT_CODES.has(error.code)) throw error;
+        return { tsCode, rows: [], error };
+      }
+    }));
+    for (const item of settled) {
+      if (item.rows.length) rows.push(...item.rows);
+      else missing.push(item.tsCode);
+    }
+  }
+  return { rows, missing };
 }
 
 // 宏观：M2 货币供应。官方 `macro/money-supply` 的 `m.m2.t`（月·累积）单位是元，
@@ -321,8 +356,14 @@ async function resolveSovereignYield10y({ startDate, endDate, areaCode = 'cn' } 
 }
 
 // 官方证券代码走统一身份映射，业务不得自己拼后缀。
+// 官方供应商代码：标识层可能返回标识行对象，也可能是字符串；
+// 这里统一收敛成纯代码，避免把对象塞进请求体（会被上游判为 400 ValidationError）。
 async function officialStockCode(canonicalCode) {
-  return resolveProviderIdentifier({ canonicalCode, sourceCode: SOURCE, identifierType: 'stock_code' });
+  const resolved = await resolveProviderIdentifier({ canonicalCode, sourceCode: SOURCE, identifierType: 'stock_code' });
+  if (resolved && typeof resolved === 'object') {
+    return resolved.identifier_value || resolved.identifierValue || null;
+  }
+  return resolved || null;
 }
 
 module.exports = {
@@ -337,5 +378,6 @@ module.exports = {
   resolveMoneySupply,
   resolveSovereignYield10y,
   resolveStockDaily,
+  resolveStockDailyBatch,
   resolveValuationRows,
 };

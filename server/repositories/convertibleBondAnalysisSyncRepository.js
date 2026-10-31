@@ -202,8 +202,10 @@ async function select_market_stock_suspend_calendar(params, client = pool) {
          FROM (SELECT unnest($1::bigint[]) AS instrument_id) i
          LEFT JOIN market.stock_suspend_calendar sc
            ON sc.instrument_id=i.instrument_id AND sc.trade_date=$2::date AND sc.source_id=$3
-         LEFT JOIN market.daily_bars b ON b.instrument_id=i.instrument_id AND b.trade_date=$2::date AND b.source_id=$3
-         LEFT JOIN market.daily_valuations v ON v.instrument_id=i.instrument_id AND v.trade_date=$2::date AND v.source_id=$3`, params);
+         LEFT JOIN market.daily_bars b ON b.instrument_id=i.instrument_id AND b.trade_date=$2::date
+           AND b.source_id IN (SELECT source_id FROM ops.data_sources WHERE source_code IN ('tushare','lixinger_official'))
+         LEFT JOIN market.daily_valuations v ON v.instrument_id=i.instrument_id AND v.trade_date=$2::date
+           AND v.source_id IN (SELECT source_id FROM ops.data_sources WHERE source_code IN ('tushare','lixinger_official'))`, params);
 }
 
 // 公告历史回补目标清单：在市口径 + 可选代码范围 + 「仍有待解析积压」筛选（含解析版本与到期日残留判定）
@@ -285,7 +287,7 @@ async function selectMissingStockBars(params, client = pool) {
                FROM market.daily_bars b
               WHERE b.instrument_id=s.instrument_id
                 AND b.trade_date=ANY($2::date[])
-                AND b.source_id=$3)
+                AND b.source_id IN (SELECT source_id FROM ops.data_sources WHERE source_code IN ('tushare','lixinger_official')))
             < (SELECT COUNT(*)
                  FROM unnest($2::date[]) AS d(trade_date)
                  WHERE NOT EXISTS (

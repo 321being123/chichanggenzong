@@ -7,10 +7,20 @@ const { withExternalCallGuard, tokenFingerprint } = require('./externalCallGuard
 const { listSourceEndpointPolicies, syncCredentialFingerprint, recordEndpointPermission } = require('./sourceEndpointPolicy');
 
 const CONFIG_KEY = 'external_api_configs';
+// 供应商注册表：这家支持什么测试、凭据变更要同步什么，都由这一条描述决定。
+// 主流程只查表，不按供应商名写分支——新增一家只需加一条描述。
 const PROVIDERS = {
   tushare: {
     label: 'Tushare Pro',
     env: { primary: 'TUSHARE_TOKEN', backup: 'TUSHARE_BACKUP_TOKEN' },
+    test: {
+      apiName: value => normalizeTestApi(value),
+      defaultApi: 'trade_cal',
+      probe: (token, apiName) => readTushareHealth(token, apiName),
+      guardSource: role => (role === 'backup' ? 'tushare_backup' : 'tushare'),
+      recordEndpointPermission: true,
+    },
+    credentialSync: { primaryGuardSource: 'tushare', backupGuardSource: 'tushare_backup' },
   },
 };
 
@@ -178,8 +188,9 @@ async function getProviderRuntime(provider = 'tushare') {
 async function testProviderAvailability(provider = 'tushare', role = 'current', apiName = 'trade_cal') {
   if (!PROVIDERS[provider]) throw new Error('不支持的外部 API');
   const runtime = await getProviderRuntime(provider);
+  const capability = PROVIDERS[provider].test || null;
   const requestedRole = normalizeTestRole(role);
-  const requestedApi = provider === 'tushare' ? normalizeTestApi(apiName) : 'cn.company';
+  const requestedApi = capability ? capability.apiName(apiName) : '';
   const targetRole = requestedRole === 'current'
     ? (runtime.mode === 'backup' ? 'backup' : 'primary')
     : requestedRole;
@@ -198,16 +209,16 @@ async function testProviderAvailability(provider = 'tushare', role = 'current', 
       checked_at: checkedAt,
       api_name: requestedApi,
     };
-  } else if (provider === 'tushare') {
+  } else if (capability && capability.probe) {
     try {
       // 权限探测也是一次真实上游调用，必须经过与业务请求相同的预算、
       // 熔断和数据集锁；否则管理员点一次测试就能绕过限速。
-      const guardSource = targetRole === 'backup' ? 'tushare_backup' : 'tushare';
+      const guardSource = capability.guardSource(targetRole);
       const health = await withExternalCallGuard(
         guardSource,
         `permission_probe:${requestedApi}`,
         null,
-        () => readTushareHealth(token, requestedApi),
+        () => capability.probe(token, requestedApi),
         { circuitSource: guardSource, apiName: requestedApi, tokenFingerprint: tokenFingerprint(token) }
       );
       result = {
@@ -247,7 +258,7 @@ async function testProviderAvailability(provider = 'tushare', role = 'current', 
     };
   }
   await recordProviderTestResult(provider, targetRole, requestedApi, result);
-  if (provider === 'tushare' && requestedApi) {
+  if (capability && capability.recordEndpointPermission && requestedApi) {
     await recordEndpointPermission(provider, targetRole, requestedApi, token ? tokenFingerprint(token) : 'none', result);
   }
   return result;
@@ -297,10 +308,11 @@ async function saveProviderSettings(provider, input = {}) {
   current.updatedAt = new Date().toISOString();
   store.providers[provider] = current;
   await writeStore(store);
-  if (provider === 'tushare' && (primaryChanged || backupChanged)) {
+  const credentialSync = PROVIDERS[provider].credentialSync || null;
+  if (credentialSync && (primaryChanged || backupChanged)) {
     const { invalidateExternalCircuits, tokenFingerprint } = require('./externalCallGuard');
-    if (primaryChanged && previousPrimary) await invalidateExternalCircuits(provider, tokenFingerprint(previousPrimary));
-    if (backupChanged && previousBackup) await invalidateExternalCircuits(`${provider}_backup`, tokenFingerprint(previousBackup));
+    if (primaryChanged && previousPrimary) await invalidateExternalCircuits(credentialSync.primaryGuardSource, tokenFingerprint(previousPrimary));
+    if (backupChanged && previousBackup) await invalidateExternalCircuits(credentialSync.backupGuardSource, tokenFingerprint(previousBackup));
     const updated = await getProviderRuntime(provider);
     await syncCredentialFingerprint(provider, 'primary', tokenFingerprint(updated.primary));
     await syncCredentialFingerprint(provider, 'backup', tokenFingerprint(updated.backup));

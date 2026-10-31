@@ -3,7 +3,9 @@
 // 官方目录没有可转债个券接口（261 条里与债券相关的只有两条宏观国债），所以这四个数据集
 // 固定使用 Tushare 单一来源；但「用哪个接口、怎么分批、字段怎么给」由本层决定，
 // 上层只表达"要哪只债、哪个窗口"，不再自己拼 tushareQuery。
-const { tushareQuery, tsRows } = require('../services/market');
+// 直连底层：查询走 services/tushare，格式化走 services/tushareFormat。
+const { tushareQuery } = require('../services/tushare');
+const { tsRows } = require('../services/tushareFormat');
 
 const BOND_MASTER_FIELDS = 'ts_code,bond_short_name,stk_code,stk_short_name,list_date,delist_date,maturity_date,conv_end_date,conv_stop_date,conv_price';
 const BOND_RATING_FIELDS = 'ts_code,ann_date,rating_date,rating_com_name,rating_way,rating_type,rating,rating_outlook';

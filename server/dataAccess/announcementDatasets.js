@@ -4,7 +4,9 @@
 // 现有合同：交易所原文优先（沪→上交所、深→深交所、其余→巨潮），聚合层（Tushare anns_d）只做按日期批量兜底；
 // 理杏仁也有公告接口（cn/company/announcement），但它返回的就是交易所原文 PDF 链接，经它反而多一跳，
 // 因此发现层仍直连原文来源，这条口径写在技术架构里。
-const { tushareQuery, tsRows } = require('../services/market');
+// 直连底层：查询走 services/tushare，格式化走 services/tushareFormat（零 I/O 纯工具）。
+const { tushareQuery } = require('../services/tushare');
+const { tsRows } = require('../services/tushareFormat');
 const defaultAdapter = require('./adapters/announcementSourceAdapter');
 
 const ABORT_CODES = new Set(['JOB_BUDGET_EXCEEDED', 'POLICY_NOT_CONFIGURED', 'DATASET_LOCKED']);

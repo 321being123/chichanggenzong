@@ -86,14 +86,37 @@ function sourceKey(source) {
   return key;
 }
 
+// 多凭据来源的记账结构：哪个来源有主/备两套凭据、各自记到哪个源名、清理时覆盖哪些凭据档位。
+// 记账逻辑只查这张表，不再按供应商名写分支；新增一家多凭据供应商只需加一条。
+const CREDENTIAL_SOURCES = Object.freeze({
+  tushare: { base: 'tushare', profile: 'primary', clearProfiles: ['primary', 'legacy'], clearLegacySourceNames: [] },
+  tushare_backup: { base: 'tushare', profile: 'backup', clearProfiles: ['backup'], clearLegacySourceNames: ['tushare_backup'] },
+});
+
+const CREDENTIAL_SOURCE_BY_BASE_ROLE = new Map(
+  Object.entries(CREDENTIAL_SOURCES).map(([name, item]) => [`${item.base}:${item.profile}`, name])
+);
+
+function credentialLayout(source) {
+  return CREDENTIAL_SOURCES[String(source || '').trim().toLowerCase()] || null;
+}
+
+// 同一供应商的主/备凭据共用一份预算行，记在基础源名下。
 function budgetSourceKey(source) {
   const key = sourceKey(source);
-  return key.toLowerCase() === 'tushare_backup' ? 'tushare' : key;
+  const layout = credentialLayout(key);
+  return layout ? layout.base : key;
 }
 
 function defaultCredentialProfile(source) {
-  const key = sourceKey(source).toLowerCase();
-  return key === 'tushare_backup' ? 'backup' : key === 'tushare' ? 'primary' : 'anonymous';
+  const layout = credentialLayout(sourceKey(source));
+  return layout ? layout.profile : 'anonymous';
+}
+
+// 凭据档位 → 实际记账用的源名（主备两套凭据各记各的熔断状态）。
+function credentialSourceName(baseSource, role) {
+  const base = String(baseSource || '').trim().toLowerCase();
+  return CREDENTIAL_SOURCE_BY_BASE_ROLE.get(`${base}:${String(role || '').trim()}`) || base;
 }
 
 // 运行时不再按来源或凭据猜测预算；可用的接口限制只由
@@ -514,11 +537,13 @@ async function invalidateExternalCircuits(source, fingerprint) {
   );
 }
 
-async function getExternalCircuitStatuses(source = 'tushare', tokens = {}) {
+// source 必传：不再给某个供应商做默认值（默认值会让"没传来源"悄悄记到某家名下）。
+async function getExternalCircuitStatuses(source, tokens = {}) {
+  if (!source) throw new Error('查询熔断状态必须指定来源');
   const sourceKeyName = sourceKey(source);
   const roles = Object.entries(tokens || {}).filter(([, token]) => token).map(([role, token]) => ({
     role,
-    source: sourceKeyName === 'tushare' && role === 'backup' ? 'tushare_backup' : sourceKeyName,
+    source: credentialSourceName(sourceKeyName, role),
     fingerprint: tokenFingerprint(token),
   }));
   if (!roles.length) return [];
@@ -604,19 +629,18 @@ async function resetExternalCallGuardPersistence(source = null) {
   const { day } = nowParts();
   if (source) {
     const sourceName = sourceKey(source);
-    const budgetSource = budgetSourceKey(sourceName);
-    if (sourceName.toLowerCase() === 'tushare_backup') {
+    const layout = credentialLayout(sourceName);
+    if (layout) {
+      // 多凭据来源：预算按「基础源名 + 本次要清的凭据档位」清，历史遗留源名也一并纳入。
+      const legacyNames = layout.clearLegacySourceNames || [];
+      const params = [day, layout.base, layout.clearProfiles];
+      const legacyClause = legacyNames.length ? ` OR source = ANY($${params.length + 1}::text[])` : '';
+      if (legacyNames.length) params.push(legacyNames);
       await getPool().query(
-        "DELETE FROM ops.external_call_budgets WHERE window_key=$1 AND (source='tushare_backup' OR (source='tushare' AND credential_profile='backup'))",
-        [day]
+        `DELETE FROM ops.external_call_budgets WHERE window_key=$1 AND ((source=$2 AND credential_profile = ANY($3::text[]))${legacyClause})`,
+        params
       );
-      await getPool().query("DELETE FROM ops.external_circuits WHERE source='tushare_backup' OR source LIKE 'tushare_backup:%'", []);
-    } else if (sourceName.toLowerCase() === 'tushare') {
-      await getPool().query(
-        "DELETE FROM ops.external_call_budgets WHERE window_key=$1 AND (source='tushare' AND credential_profile IN ('primary','legacy'))",
-        [day]
-      );
-      await getPool().query("DELETE FROM ops.external_circuits WHERE source='tushare' OR source LIKE 'tushare:%'", []);
+      await getPool().query('DELETE FROM ops.external_circuits WHERE source=$1 OR source LIKE $1 || \':%\'', [sourceName]);
     } else {
       await getPool().query(
         'DELETE FROM ops.external_call_budgets WHERE window_key=$1 AND (source=$2 OR source LIKE $2 || \':%\')',

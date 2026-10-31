@@ -5,10 +5,14 @@ const { tushareQuery } = require('./tushare');
 const { isCnTradingDate, getMarketState } = require('./marketState');
 const repository = require('../repositories/marketRepository.js');
 const {
-  fetchTencentQuotes,
   isConvertibleBondCode,
   normalizeCode,
 } = require('./tencentQuote');
+// 实时报价属于「行情数据集」：经数据层中立入口取，缓存与来源策略在数据层内决定。
+// 这里只保留行情门面的业务导出（按代码取价、批量报价、日期校验等）。
+function fetchQuotes(codes, options = {}) {
+  return require('../dataAccess/marketDatasets').readRealtimeQuotes({ codes, options });
+}
 const { canonicalizeSecurityCode } = require('./securityIdentity');
 const classifyCode = require('../../public/js/code-classify');
 
@@ -18,12 +22,10 @@ const { loadInstrumentCache, saveInstrumentCache } = require('../repositories/ma
 
 // ===================== Tushare 数据层（A股优先数据源） =====================
 // 港股实时 / 恒生指数 / 汇率：Tushare 2000积分无权限，仍走腾讯。
-// Tushare items 二维数组 → 行对象数组
-function tsRows(data) {
-  if (!data || !Array.isArray(data.items)) return [];
-  const fields = data.fields || [];
-  return data.items.map((it) => { const o = {}; fields.forEach((f, i) => o[f] = it[i]); return o; });
-}
+// 响应格式化与日期归一放在 services/tushareFormat（零 I/O 的底层工具），这里只转出，
+// 避免数据层为了拿这几个纯函数而反向依赖行情服务（曾因此挡住行情门面的收口）。
+const tushareFormat = require('./tushareFormat');
+const { tsRows, tsDateStr, normDate } = tushareFormat;
 
 // 行情时间统一换算为北京时间日期，供收盘价落库前做事实日期校验。
 function quoteDateCN(value) {
@@ -192,7 +194,7 @@ async function fetchQuoteByCode(code) {
   const tsCode = toTsCode(c);
   if (tsCode.endsWith('.HK') || isConvertibleBondCode(c) || classifyCode.isFundEtfCode(c)) {
     try {
-      const quotes = await fetchTencentQuotes([c]);
+      const quotes = await fetchQuotes([c]);
       const quote = quotes.get(normalizeCode(c));
       return quote ? { price: quote.price, name: quote.name || normalizeCode(c), code: normalizeCode(c), change: quote.change, quote_time: quote.quote_time, source: quote.source } : null;
     } catch (_) {
@@ -203,7 +205,7 @@ async function fetchQuoteByCode(code) {
   // A股实时价格和涨跌幅必须来自同一条腾讯行情，避免用盘中价搭配旧日线 pre_close 算错方向。
   let liveQuote = null;
   try {
-    const liveQuotes = await fetchTencentQuotes([c]);
+    const liveQuotes = await fetchQuotes([c]);
     liveQuote = liveQuotes.get(normalizeCode(c)) || null;
   } catch (_) {
     // 腾讯限流、熔断或临时网络失败时继续走 Tushare 日线回退。
@@ -226,7 +228,7 @@ async function fetchQuoteByCode(code) {
   // 有名称但无价格（停牌/数据延迟）：尝试腾讯 fallback
   if (name) {
     try {
-      const quotes = await fetchTencentQuotes([c]);
+      const quotes = await fetchQuotes([c]);
       const quote = quotes.get(normalizeCode(c));
       if (quote) return { price: quote.price, name: name || quote.name || c, code: normalizeCode(c), change: quote.change, quote_time: quote.quote_time, source: quote.source };
     } catch (_) {}
@@ -235,7 +237,7 @@ async function fetchQuoteByCode(code) {
   }
   // 无数据（如新股）：fallback 腾讯实时
   try {
-    const quotes = await fetchTencentQuotes([c]);
+    const quotes = await fetchQuotes([c]);
     const quote = quotes.get(normalizeCode(c));
     if (quote) return { price: quote.price, name: quote.name || c, code: normalizeCode(c), change: quote.change, quote_time: quote.quote_time, source: quote.source };
   } catch (_) {}
@@ -257,7 +259,7 @@ async function fetchQuotesByCodes(codes, options = {}) {
   const [names, daily, tencent] = await Promise.all([
     stockCodes.length ? ensureTsNames().catch(() => new Map()) : Promise.resolve(new Map()),
     stockCodes.length ? ensureTsDaily().catch(() => new Map()) : Promise.resolve(new Map()),
-    fetchTencentQuotes(stockCodes.concat(fundCodes, bondCodes, hkCodes), options).catch(() => new Map()),
+    fetchQuotes(stockCodes.concat(fundCodes, bondCodes, hkCodes), options).catch(() => new Map()),
   ]);
   stockCodes.forEach(c => {
     const ts = toTsCode(c);
@@ -285,20 +287,6 @@ async function fetchQuotesByCodes(codes, options = {}) {
 }
 
 // 东八区日期 YYYYMMDD（Tushare 参数专用，避免服务器非东八区时差一天）
-function tsDateStr(d) {
-  const cn = new Date(d.getTime() + 8 * 3600 * 1000);
-  const p = n => String(n).padStart(2, '0');
-  return '' + cn.getUTCFullYear() + p(cn.getUTCMonth() + 1) + p(cn.getUTCDate());
-}
-
-// 统一日期格式为 YYYY-MM-DD：Tushare 的 trade_date 为 20230101(8位无横线)，
-// 新浪/腾讯已是横线格式。净值日期为 YYYY-MM-DD，必须统一否则索引线整条匹配失败。
-function normDate(s) {
-  s = String(s == null ? '' : s);
-  if (/^\d{8}$/.test(s)) return s.slice(0, 4) + '-' + s.slice(4, 6) + '-' + s.slice(6, 8);
-  return s;
-}
-
 // 东八区（北京时间）日期 YYYY-MM-DD
 // 避免服务器时区非东八区时，净值日期 / 交易日期差一天（尤其凌晨）
 // 与原前端 public/js/utils.js 的 todayCN 保持一致（修复原 server.js 调用未定义 todayCN 的缺陷）

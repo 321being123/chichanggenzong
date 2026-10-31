@@ -4,7 +4,9 @@
 // 质押式回购利率（repo_daily）、股权质押统计（pledge_stat）、美债收益率（us_tycr）。
 // 这些数据集官方目录都没有等价接口，来源固定为 Tushare；本层负责"用哪个接口、怎么分批、字段怎么给"，
 // 上层只表达需求，不再自己拼 tushareQuery。
-const { tushareQuery, tsRows } = require('../services/market');
+// 直连底层：查询走 services/tushare，格式化走 services/tushareFormat。
+const { tushareQuery } = require('../services/tushare');
+const { tsRows } = require('../services/tushareFormat');
 
 // 交易日历：openOnly=true 只取开市日（is_open=1）。
 async function readTradingCalendar({ exchange = 'SSE', startDate, endDate, openOnly = false, fields = 'cal_date,is_open' } = {}) {

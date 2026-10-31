@@ -8,7 +8,9 @@
 //   - 理杏仁官方：行业分类、指数收盘、指数估值（市值加权）、正股日线、估值、财报、分红、M2、10 年国债
 //   - 备源：Tushare（指数日线/估值、估值、财报、分红、M2）、腾讯（恒指与港股日线）、
 //           恒指官网文件（恒指 PE）、中债（10 年国债）
-const { tushareQuery, tsRows, normDate } = require('../services/market');
+// 直连底层：查询走 services/tushare，格式化与日期归一走 services/tushareFormat。
+const { tushareQuery } = require('../services/tushare');
+const { tsRows, normDate } = require('../services/tushareFormat');
 const marketSource = require('../services/marketVolatilitySource');
 const official = require('./adapters/lixingerDatasetAdapter');
 

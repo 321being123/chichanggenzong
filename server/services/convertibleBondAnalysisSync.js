@@ -646,7 +646,9 @@ async function syncConvertibleBondUniverse(reason = 'scheduled', options = {}) {
         const quoteRow = {
           ts_code: profile.ts_code, trade_date: targetTradeDate.replace(/-/g, ''), close: quote.price,
           pre_close: null, open: quote.price, high: quote.price, low: quote.price,
-          source: 'tencent', quote_time: quote.quote_time || null,
+          // 来源与「是否实时报价补的」都由数据层给，服务只转述，不写死来源名。
+          source: quote.source_code || null, source_code: quote.source_code || null,
+          is_realtime_quote: true, quote_time: quote.quote_time || null,
         };
         rawTargetRows.set(profile.ts_code, quoteRow);
         targetRows.set(profile.ts_code, quoteRow);
@@ -728,7 +730,7 @@ async function syncConvertibleBondUniverse(reason = 'scheduled', options = {}) {
     });
     for (const code of unresolvedCodes) {
       const row = dailyMap.get(code);
-      if (row && row.source === 'tencent' && gapQueue.items[code]) {
+      if (row && row.is_realtime_quote && gapQueue.items[code]) {
         gapQueue.items[code].sources = Array.from(new Set([...(gapQueue.items[code].sources || []), 'tencent_recent_window']));
         gapQueue.items[code].last_reason = 'tencent_recent_window_unverified_target_close';
       }
@@ -765,7 +767,11 @@ async function syncConvertibleBondUniverse(reason = 'scheduled', options = {}) {
         const stockCode = profileStockCodes.get(profile.ts_code) || profile.stk_code;
         if (stockCode && ids.stockId) stockInstrumentMap.set(stockCode, ids.stockId);
         const quote = dailyMap.get(profile.ts_code);
-        if (quote) await saveDailyBar(client, ids.bondId, quote, quote.source === 'tencent' ? (sources.tencent || sources.tushare) : sources.tushare);
+        if (quote) {
+          // 来源 id 按行上的 source_code 查表；查不到再退回该数据集默认来源，服务不判断具体是谁。
+          const quoteSourceId = sources[quote.source_code] || sources.tushare;
+          await saveDailyBar(client, ids.bondId, quote, quoteSourceId);
+        }
         const before = prevConvPrice.get(profile.ts_code);
         const after = finite(profile.conv_price);
         if (before != null && after != null && Math.abs(before - after) > CONV_PRICE_EPS) {

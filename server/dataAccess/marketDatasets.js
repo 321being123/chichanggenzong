@@ -121,7 +121,12 @@ async function readRealtimeQuotes({ codes = [], businessDate = null, force = fal
   if (businessDate) merged.businessDate = businessDate;
   if (force) merged.force = true;
   if (ttlMs) merged.ttlMs = ttlMs;
-  return require('../services/tencentQuote').fetchTencentQuotes(list, merged);
+  const quotes = await require('../services/tencentQuote').fetchTencentQuotes(list, merged);
+  // 统一给每个报价打来源标记：上层按来源落库时用它查来源 id，不再自己写死来源名。
+  for (const [key, value] of quotes) {
+    if (value && !value.source_code) quotes.set(key, { ...value, source_code: value.source || 'tencent' });
+  }
+  return quotes;
 }
 
 // 港股日线（腾讯备源）：官方 hk_daily 需要高积分时的历史日 K，同样只表达"要哪只标的哪段收盘"。
@@ -490,15 +495,24 @@ async function readFinancialReportRows({ tsCode, kinds, startDate, endDate } = {
   return primary.value;
 }
 
-// 分红：官方优先，Tushare 备源；返回 Tushare 形状的行（含 source_code）。
+// 分红：官方优先，原来源备源。返回行带 source_code，并用 is_default_source 标出「默认来源」的行——
+// 默认来源的行由调用方走原有落库路径，非默认来源的行另写一份标准事实；
+// 上层只看这个标记，不需要知道默认来源具体是谁。
+const DEFAULT_DIVIDEND_SOURCE = 'tushare';
+
 async function readDividendRows({ tsCode, startDate, endDate } = {}) {
   const primary = await safeOfficial(() => official.resolveDividendRows({ tsCode, startDate, endDate }), 'stock_dividend');
+  const tag = rows => rows.map(row => ({
+    ...row,
+    source_code: row.source_code,
+    is_default_source: row.source_code === DEFAULT_DIVIDEND_SOURCE,
+  }));
   if (primary.value && primary.value.length) {
-    return primary.value.map(row => ({ ...row, source_code: official.SOURCE }));
+    return tag(primary.value.map(row => ({ ...row, source_code: official.SOURCE })));
   }
   const rows = tsRows(await tushareQuery('dividend', { ts_code: tsCode },
     'ts_code,end_date,ann_date,div_proc,stk_div,stk_bo_rate,stk_co_rate,cash_div,cash_div_tax,record_date,ex_date,pay_date,imp_ann_date,base_date,base_share', { allowEmpty: true }));
-  return rows.map(row => ({ ...row, source_code: 'tushare' }));
+  return tag(rows.map(row => ({ ...row, source_code: DEFAULT_DIVIDEND_SOURCE })));
 }
 
 // 债券安全性用财报：官方能给三表与大部分指标，但**没有利息保障倍数**（ebit_to_interest），

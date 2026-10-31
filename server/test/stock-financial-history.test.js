@@ -50,7 +50,8 @@ const response = (code, period = '20251231') => ({ fields: ['ts_code', 'ann_date
       : name === '../dataAccess/marketDatasets' ? {
         readDividendRows: async () => {
           apiCalls += 1;
-          return [{ ts_code: wrongStock ? '600763.SH' : '600370.SH', end_date: '20221231', cash_div_tax: 0.1, source_code: 'tushare' }];
+          return [{ ts_code: wrongStock ? '600763.SH' : '600370.SH', end_date: '20221231', cash_div_tax: 0.1,
+            source_code: 'tushare', is_default_source: true }];
         },
         readIndustryClassification: async () => ({ industry: '化工', industry_system: '申万2021', industry_level: '三级', industry_path: ['化工'], sourceCode: 'tushare' }),
       }
@@ -76,6 +77,7 @@ const response = (code, period = '20251231') => ({ fields: ['ts_code', 'ann_date
   let statements = [], failHistoryWrite = false;
   const client = { query: async (sql, args) => {
     statements.push({ sql, args });
+    if (sql.includes('SELECT source_code,source_id')) return { rows: [{ source_code: 'tushare', source_id: 1 }] };
     if (sql.includes('SELECT source_id')) return { rows: [{ source_id: 1 }] };
     if (sql.includes('RETURNING run_id')) return { rows: [{ run_id: 123 }] };
     if (failHistoryWrite && sql.includes("'financial_history'")) throw new Error('历史标记写入失败');

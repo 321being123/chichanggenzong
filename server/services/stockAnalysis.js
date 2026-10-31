@@ -164,7 +164,8 @@ async function refreshDividends(tsCode, today) {
   if (!meta) throw new Error('缺少分红采集对应的证券档案');
   await persistCollectedData({ ...meta.raw_data, ts_code: tsCode, name: meta.name, market: meta.market, list_date: meta.list_date }, { dividends: rows });
   // 非默认来源的分红行另写一份标准事实（带自己的来源），现金收益按「公告原文 > 官方 > 其他」择一，不会重复计息。
-  const primaryRows = rows.filter(row => row.source_code && row.source_code !== 'tushare');
+  // 是否"默认来源"由数据层标记（is_default_source），这里不判断具体是哪家。
+  const primaryRows = rows.filter(row => row.source_code && !row.is_default_source);
   if (primaryRows.length) {
     try {
       const { syncSourcedDividendFacts } = require('../repositories/stockProjectionRepository');

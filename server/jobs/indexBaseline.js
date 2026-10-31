@@ -1,5 +1,5 @@
 // ========== 自动补齐指数基线（启动后自动拉取“基准日期”的数据） ==========
-// 基准日期 = 该账户净值最早日期；确保五指数（A股走Tushare，恒生走腾讯）都覆盖到该日期。
+// 基准日期 = 该账户净值最早日期；确保五个指数（A 股四个 + 港股恒生）都覆盖到该日期。
 // 幂等：已覆盖到基线的指数跳过，仅在缺失时联网补齐；可随 deploy 自动自愈指数缺口。
 const { pool, upsertIndexPoints, tryClaimJob, releaseJob, startJobRun, finishJobRun } = require('../db');
 const { tsDateStr, normDate } = require('../services/market');
@@ -8,12 +8,13 @@ const { isCnHoliday } = require('../config/holidays');
 const { hasIndexBaselineGap, loadSettledBaselines, markSettledBaseline } = require('../repositories/indexBaselineRepository.js');
 const repository = require('../repositories/indexBaselineRepository.js');
 
+// 只声明"哪个市场的哪个指数"，用哪家数据源由数据层决定（这里不出现供应商名）。
 const INDEX_BACKFILL_DEFS = [
-  { name: '沪深300', ts: '000300.SH', src: 'tushare' },
-  { name: '中证全指', ts: '000985.CSI', src: 'tushare' },
-  { name: '上证指数', ts: '000001.SH', src: 'tushare' },
-  { name: '中证500', ts: '000905.SH', src: 'tushare' },
-  { name: '恒生指数', src: 'tencent' } // 恒生无 Tushare 权限，沿用腾讯策略
+  { name: '沪深300', ts: '000300.SH', market: 'cn' },
+  { name: '中证全指', ts: '000985.CSI', market: 'cn' },
+  { name: '上证指数', ts: '000001.SH', market: 'cn' },
+  { name: '中证500', ts: '000905.SH', market: 'cn' },
+  { name: '恒生指数', ts: 'HSI', market: 'hk' },
 ];
 
 // 指数日线取数：理杏仁官方优先，取不到再回退 Tushare。
@@ -22,10 +23,9 @@ const INDEX_BACKFILL_DEFS = [
 async function fetchIndexCloseSeries(def, startTs, endTs) {
   // 指数收盘序列属于「指数行情数据集」：只向数据层要序列，主备来源由数据层决定。
   const { readIndexCloseSeries } = require('../dataAccess/marketDatasets');
-  const isCn = def.src === 'tushare';
   return readIndexCloseSeries({
-    tsCode: isCn ? def.ts : 'HSI',
-    market: isCn ? 'cn' : 'hk',
+    tsCode: def.ts,
+    market: def.market,
     startDate: startTs,
     endDate: endTs,
   });

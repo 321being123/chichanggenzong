@@ -40,11 +40,11 @@ async function syncChinaYield(start, end) {
   if (saved) console.log(`[市场周期] 中国10年国债 写入=${saved}条（来源=${rows[0].source_code}）`);
   return saved;
 }
-// 「A股全市场 PE」改用理杏仁官方：`cn/index/fundamental` 的 `pe_ttm.mcw`＝站内页面「总市值加权」口径，
+// 「A股全市场 PE」只认理杏仁官方：`cn/index/fundamental` 的 `pe_ttm.mcw`＝站内页面「总市值加权」口径。
 // 中证全指 000985 自 2011-08-02 起连续（指数上线日 2011-08-02，2011-08-01 无值）。
-// 与中证官网（整体法：Σ总市值 ÷ Σ净利润）不是同一算法，同一天数值不同且差距随时间变化，
-// 因此换源必须整段替换、并按新序列重算格雷厄姆指数（脚本 scripts/backfillCsiAllPeOfficial.js）。
-// 中证官网保留为回退：官方取不到数据或报错时仍走原有 csindex 路径，行上按来源区分，读取端优先官方。
+// 中证指数官网是**另一种算法**（整体法：Σ总市值 ÷ Σ净利润），与官方口径同日差 −17.6%～+18.7% 且随时间变化，
+// 掺在同一条序列里会让格雷厄姆指数失真，因此这里不再回落中证官网：官方取不到就是本次失败（任务记 failed），
+// 不写另一种口径的值冒充。中证全指的中证官网历史行也已按一次性脚本清理（scripts/backfillCsiAllPeOfficial.js）。
 const CSI_OFFICIAL_PE_SINCE = Object.freeze({ CSIALL: '2011-08-01' });
 const CSI_OFFICIAL_PE_CHUNK_YEARS = 5; // 官方单次区间过长会返回空（实测 15 年返回 0 行，5 年正常）
 
@@ -91,16 +91,13 @@ async function syncCsiPeFromOfficial(benchmark, indexCode, options = {}) {
 }
 
 async function syncCsiIndexPe(benchmark, indexCode) {
+  // 官方专属基准（全市场 PE）：只走理杏仁，取不到就抛错让任务记失败，绝不回落另一种算法。
   if (CSI_OFFICIAL_PE_SINCE[benchmark]) {
-    try {
-      const written = await syncCsiPeFromOfficial(benchmark, indexCode);
-      if (written) return written;
-      console.warn(`[市场周期] 全市场PE(${benchmark}) 官方无数据，回落中证官网口径`);
-    } catch (error) {
-      console.warn(`[市场周期] 全市场PE(${benchmark}) 官方取数失败，回落中证官网口径：${String(error && error.message).slice(0, 160)}`);
-    }
+    const written = await syncCsiPeFromOfficial(benchmark, indexCode);
+    if (!written) throw new Error(`全市场PE(${benchmark}) 官方口径本次无数据写入`);
+    return written;
   }
-  // 水位：本地该基准最新日期往前 45 天重叠窗口（首次空表则全量）
+  // 其余基准（沪深300）仍走中证官网：水位往前 45 天重叠窗口，首次空表则全量。
   const wm = await marketYieldRepository.readCsiWatermark(benchmark, 'csindex');
   const maxDate = wm.rows[0].mx;
   const since = maxDate ? dateStr(new Date(new Date(maxDate).getTime() - 45 * 86400000)) : '2005-01-01';

@@ -40,10 +40,10 @@ async function summary(label) {
 
   if (!APPLY) {
     const pre = await pool.query(`SELECT count(*)::int AS n FROM market.market_valuation_daily
-      WHERE market_code='CN' AND benchmark_code='CSIALL' AND source_code='csindex' AND trade_date < $1::date`, [SINCE]);
+      WHERE market_code='CN' AND benchmark_code='CSIALL' AND source_code='csindex'`);
     const preGraham = await pool.query(`SELECT count(*)::int AS n FROM analytics.graham_index_daily
       WHERE market_code='CN' AND benchmark_code='CSIALL' AND trade_date < $1::date`, [SINCE]);
-    console.log(`\n起点(${SINCE})前的中证旧行：${pre.rows[0].n} 条、格雷厄姆旧行：${preGraham.rows[0].n} 条（预演，未删除）`);
+    console.log(`\nCSIALL 的中证(csindex)旧行：${pre.rows[0].n} 条（预演：会被全部删除）、起点前格雷厄姆旧行：${preGraham.rows[0].n} 条`);
     console.log('\n预演结束：未调用外部接口、未写库。');
     await pool.end();
     return;
@@ -59,18 +59,18 @@ async function summary(label) {
   const written = await marketVolatilitySync.syncCsiPeFromOfficial('CSIALL', '000985', { fullSince: SINCE });
   console.log(`\n官方口径写入：${written} 条`);
 
-  // 官方首日（中证全指上线 2011-08-02）之前只有中证旧口径：删掉旧 PE 行与对应的格雷厄姆行，
-  // 让这条序列从官方口径第一天开始，避免开头几天混着另一种算法。
+  // 中证（整体法）与官方（总市值加权）不是同一算法，掺在一条序列里会失真：
+  // CSIALL 的中证旧行全部删除，只留官方；官方首日之前的格雷厄姆行同时清掉，序列从官方首日算起。
   if (!KEEP_BEFORE) {
     const firstOfficial = await pool.query(`SELECT min(trade_date)::text AS d FROM market.market_valuation_daily
       WHERE market_code='CN' AND benchmark_code='CSIALL' AND source_code='lixinger_official'`);
     const firstDay = firstOfficial.rows[0] && firstOfficial.rows[0].d;
     if (firstDay) {
       const droppedPe = await pool.query(`DELETE FROM market.market_valuation_daily
-        WHERE market_code='CN' AND benchmark_code='CSIALL' AND source_code='csindex' AND trade_date < $1::date`, [firstDay]);
+        WHERE market_code='CN' AND benchmark_code='CSIALL' AND source_code='csindex'`);
       const droppedGraham = await pool.query(`DELETE FROM analytics.graham_index_daily
         WHERE market_code='CN' AND benchmark_code='CSIALL' AND trade_date < $1::date`, [firstDay]);
-      console.log(`\n官方首日 ${firstDay}：删除更早的中证旧行 ${droppedPe.rowCount || 0} 条、格雷厄姆旧行 ${droppedGraham.rowCount || 0} 条`);
+      console.log(`\n删除 CSIALL 中证旧行 ${droppedPe.rowCount || 0} 条；官方首日 ${firstDay} 之前的格雷厄姆旧行 ${droppedGraham.rowCount || 0} 条`);
     }
   }
 

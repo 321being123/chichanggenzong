@@ -13,8 +13,8 @@ async function metricRows(metric, market, benchmark) {
     if (metric === 'pb') return [];
     const { rows } = await pool.query(`SELECT DISTINCT ON (trade_date) trade_date::text AS date, pe::float8 AS value,
       'normal'::text AS data_status FROM market.market_valuation_daily
-      WHERE market_code='CN' AND benchmark_code='CSIALL' AND pe > 0
-      ORDER BY trade_date, CASE WHEN source_code='lixinger_official' THEN 0 WHEN source_code='csindex' THEN 1 ELSE 2 END`);
+      WHERE market_code='CN' AND benchmark_code='CSIALL' AND pe > 0 AND source_code='lixinger_official'
+      ORDER BY trade_date`);
     return rows;
   }
   const { rows } = await pool.query(`SELECT DISTINCT ON (trade_date) trade_date::text AS date,

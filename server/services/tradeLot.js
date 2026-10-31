@@ -104,8 +104,8 @@ async function getTradeUnit(code, instrumentId, asOfDate) {
 
 // 调 Tushare hk_basic（一次返回全部在交易港股），返回行数组
 async function fetchHkBasic() {
-  const data = await tushareQuery('hk_basic', { list_status: 'L' }, 'ts_code,name,market,list_date,trade_unit,curr_type');
-  return tsRows(data);
+  // 港股主档属于「参考数据集」：只向数据层要，来源与字段由数据层负责。
+  return require('../dataAccess/referenceDatasets').readHkSecurityMaster({ listStatuses: ['L'] });
 }
 
 // 幂等落库：ops.ingestion_runs + ops.raw_records + core.instruments（缺失则补主档）

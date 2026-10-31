@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "lastReviewed": "2026-10-30",
+  "lastReviewed": "2026-10-31",
   "rules": [
     {
       "id": "BOND-PROSPECTUS-SELECTION-059",
@@ -2536,7 +2536,8 @@
       "title": "定向港股日线不得绕过实际上市日期和目标日",
       "implementation": {
         "file": "server/repositories/hkDailyCoverageRepository.js",
-        "symbol": "loadCandidates"
+        "symbol": "loadCandidates",
+        "via": "dataAccess/referenceDatasets.readHkDailyQuotes（2026-10-31 数据层收口：日期转换下沉，口径未变）"
       },
       "tests": [
         {

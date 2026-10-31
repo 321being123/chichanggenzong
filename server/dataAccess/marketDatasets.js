@@ -57,6 +57,34 @@ async function readSecurityMaster({ exchange = '', listStatuses = ['L'], fields 
   return rows;
 }
 
+// ---------- 全市场日行情 / 复权因子 / 分钟线 ----------
+
+// 按交易日取全市场收盘行情（历史回补与行情缓存用）：官方无「按交易日列全市场」接口，
+// 因此仍是单一来源，但调用方只表达"要哪一天的行情"。
+async function readStockDailyByDate({ tradeDate, fields = 'ts_code,trade_date,open,high,low,close,vol,amount', allowEmpty = true } = {}) {
+  const data = await tushareQuery('daily', { trade_date: String(tradeDate).replace(/-/g, '') }, fields, { allowEmpty });
+  return tsRows(data).map(row => ({ ...row, source_code: 'tushare' }));
+}
+
+// 复权因子：官方无因子接口（只有不复权/前复权序列），复权仍以本来源计算。
+async function readAdjustmentFactors({ tradeDate, fields = 'ts_code,trade_date,adj_factor', allowEmpty = true } = {}) {
+  const data = await tushareQuery('adj_factor', { trade_date: String(tradeDate).replace(/-/g, '') }, fields, { allowEmpty });
+  return tsRows(data).map(row => ({ ...row, source_code: 'tushare' }));
+}
+
+// 分钟级实时价（A 股，按 ts_code 批量）：只给需要分钟数据的专项任务/页面兜底用，
+// 普通页面行情走 readRealtimeQuotes，避免触发该接口频率限制。
+async function readMinuteQuotes({ codes = [], freq = '1MIN', fields = 'ts_code,close' } = {}) {
+  const list = [...new Set((codes || []).filter(Boolean))];
+  if (!list.length) return new Map();
+  const data = await tushareQuery('rt_min', { ts_code: list.join(','), freq }, fields);
+  const map = new Map();
+  tsRows(data).forEach(row => {
+    if (row.ts_code && row.close != null) map.set(row.ts_code, parseFloat(row.close));
+  });
+  return map;
+}
+
 // ---------- 可转债行情与实时报价 ----------
 
 // 可转债日行情：官方目录没有可转债个券接口，这里固定使用 Tushare cb_daily（单一来源，口径不变）。
@@ -384,17 +412,20 @@ async function readDividendRows({ tsCode, startDate, endDate } = {}) {
 }
 
 module.exports = {
+  readAdjustmentFactors,
   readConvertibleBondQuotes,
   readDividendRows,
   readFinancialReportRows,
   readIndexCloseSeries,
   readIndexValuationSeries,
   readIndustryClassification,
+  readMinuteQuotes,
   readMoneySupplySeries,
   readRealtimeQuotes,
   readSecurityMaster,
   readSovereignYieldSeries,
   readStockDailyBatch,
+  readStockDailyByDate,
   readStockDailySeries,
   readStockValuationRows,
   readTotalAShareMarketCap,

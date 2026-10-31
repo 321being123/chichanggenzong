@@ -6,11 +6,17 @@ const root = path.join(__dirname, '..', '..');
 const service = fs.readFileSync(path.join(root, 'server', 'services', 'convertibleBondRevisionMotiveService.js'), 'utf8')
   + fs.readFileSync(path.join(root, 'server', 'repositories', 'convertibleBondRevisionMotiveServiceRepository.js'), 'utf8')
   + fs.readFileSync(path.join(root, 'server', 'repositories', 'convertibleBondRevisionMotiveServiceRepository.js'), 'utf8');
+// 2026-10-31 数据层收口：持有人与质押的取数（含字段契约与 allowEmpty）收到 dataAccess，
+// 断言同时覆盖服务与数据层，检查意义不变。
+const datasetsSource = fs.readFileSync(path.join(root, 'server', 'dataAccess', 'bondDatasets.js'), 'utf8')
+  + fs.readFileSync(path.join(root, 'server', 'dataAccess', 'referenceDatasets.js'), 'utf8');
 const html = fs.readFileSync(path.join(root, 'public', 'bond-revision-motive.html'), 'utf8');
 const script = fs.readFileSync(path.join(root, 'public', 'js', 'bond-revision-motive.js'), 'utf8');
 const css = fs.readFileSync(path.join(root, 'public', 'css', 'bond-revision-motive.css'), 'utf8');
 
-assert.ok(service.includes("tushareQuery('top10_cb_holders'") && service.includes("tushareQuery('pledge_stat'"), '持有人和质押同步接口缺失');
+// 2026-10-31 数据层收口：持有人与质押的取数收到 dataAccess，服务只调中立需求接口。
+assert.ok(service.includes('readBondTopHolders') && service.includes('readPledgeStats'), '持有人和质押同步接口缺失');
+assert.ok(!/tushareQuery\('(top10_cb_holders|pledge_stat)'/.test(service), '服务层不得直接调用持有人/质押供应商接口');
 assert.ok(!service.includes('TUSHARE_ENABLE_5000_ENDPOINTS') && service.includes("dataset: 'top10_cb_holders'") && service.includes("dataset: 'pledge_stat'"), '持有人和质押同步不应被同一个权限开关整体拦截');
 assert.ok(service.includes('holderStopError') && service.includes('pledgeStopError') && service.includes('RATE_LIMIT') && service.includes('CIRCUIT_OPEN') && service.includes('md.trade_date'), '同步任务应区分单对象空结果与接口限速并只处理当前行情候选');
 assert.ok(service.includes('hcur.last_attempt_at') && service.includes('pcur.last_attempt_at'), '单对象空结果应按最近尝试时间后置，避免补数批次反复卡在同一批');
@@ -18,9 +24,10 @@ assert.ok(service.includes('holderAttempted && !holderError') && service.include
 assert.ok(!service.includes('MAX_HOLDER_CALLS_PER_RUN') && !service.includes('holderCallsThisRun'), '不得用业务代码自设持有人接口批次数量上限');
 assert.ok(service.includes('const configuredLimit') && service.includes('limitClause') && service.includes('continuationRequired'), '显式调试批次必须走统一限流并保留续跑语义');
 assert.ok(service.includes('holderAttempted && !holderError') && service.includes('pledgeAttempted && !pledgeError'), '未实际请求的对象不得被误记为空结果成功');
-assert.ok((service.match(/allowEmpty: true/g) || []).length >= 2, '持有人和质押接口的正常空结果不得被误记为失败');
+assert.ok((datasetsSource.match(/allowEmpty/g) || []).length >= 2, '持有人和质押接口的正常空结果不得被误记为失败（口径落在数据层）');
 assert.ok(service.includes('raw_records') && service.includes('sync_cursors'), '同步任务缺少原始响应或游标留痕');
-assert.ok(service.includes('hold_amount,hold_ratio') && service.includes('pledge_count,unrest_pledge,rest_pledge,total_share,pledge_ratio'), 'Tushare字段契约未锁定');
+assert.ok((service + datasetsSource).includes('hold_amount,hold_ratio')
+  && (service + datasetsSource).includes('pledge_count,unrest_pledge,rest_pledge,total_share,pledge_ratio'), 'Tushare字段契约未锁定');
 assert.ok(!service.includes("top10_cb_holders', holderParams, 'ts_code,end_date,ann_date") && !service.includes("pledge_stat', pledgeParams, 'ts_code,end_date,pledge_amount"), '不得请求接口不支持的字段');
 assert.ok(service.includes('announced_at IS NOT NULL AND announced_at <= $2'), '历史评分必须按公告可见日隔离');
 assert.ok(service.includes('same report period') || service.includes('同一报告期'), '财务指标应锁定同一报告期');

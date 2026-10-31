@@ -18,7 +18,11 @@ const pythonFetch = fs.readFileSync(require.resolve('../../ipo-report/ipo_lib_fe
 const pythonHistory = fs.readFileSync(require.resolve('../../ipo-report/ipo_history_sync.py'), 'utf8');
 
 assert.match(source, /const STOCK_STATUS_FIELDS = 'ts_code,symbol,name,area,industry,market,exchange,list_date,list_status,delist_date'/);
-assert.match(source, /tushareQuery\('adj_factor', \{ trade_date: (?:daily\.tradeDate|targetTradeDate)(?:\.replace\([^)]*\))?/, '共享批次必须按目标交易日采集复权因子');
+// 2026-10-31 数据层收口：复权因子取数收到 dataAccess，共享批次改调中立接口；
+// 日期拼装（YYYYMMDD）随之下沉，这里分别断言"按目标交易日采集"与"数据层转日期格式"。
+assert.match(source, /readAdjustmentFactors\(\{ tradeDate: (?:daily\.tradeDate|targetTradeDate)/, '共享批次必须按目标交易日采集复权因子');
+const marketDatasetsSource = fs.readFileSync(require.resolve('../dataAccess/marketDatasets'), 'utf8');
+assert.match(marketDatasetsSource, /tushareQuery\('adj_factor', \{ trade_date: String\(tradeDate\)/, '数据层必须把业务日转成接口要求的 YYYYMMDD');
 assert.match(source, /async function ensureStockUniverse\(/, '共享批次必须先建立全市场股票主档');
 assert.match(source, /market\.adjustment_factors/, '复权因子必须进入标准行情层');
 assert.match(source, /stock_adj_factor/, '复权因子必须发布数据分区');

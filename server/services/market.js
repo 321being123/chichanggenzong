@@ -160,8 +160,8 @@ function ensureTsDaily() {
     const cached = await loadDailyCache();
     if (cached.map.size && Date.now() - cached.newest < 12 * 3600 * 1000) return cached.map;
     const td = tsDateStr(new Date());
-    const d = await tushareQuery('daily', { trade_date: td }, 'ts_code,trade_date,close,pre_close,pct_chg');
-    const rows = tsRows(d);
+    const rows = await require('../dataAccess/marketDatasets')
+      .readStockDailyByDate({ tradeDate: td, fields: 'ts_code,trade_date,close,pre_close,pct_chg' });
     if (!rows.length) return cached.map;
     const map = new Map();
     rows.forEach(r => { if (r.ts_code) map.set(r.ts_code, normalizeDailyQuoteRow(r)); });
@@ -178,10 +178,8 @@ function ensureTsRealtime(codes) {
     const aShare = [...new Set((codes || []).map(toTsCode))]
       .filter(c => c.endsWith('.SH') || c.endsWith('.SZ') || c.endsWith('.BJ'));
     if (!aShare.length) return TS_RT.map || new Map();
-    const d = await tushareQuery('rt_min', { ts_code: aShare.join(','), freq: '1MIN' }, 'ts_code,close');
-    const map = new Map();
-    tsRows(d).forEach(r => { if (r.ts_code && r.close != null) map.set(r.ts_code, parseFloat(r.close)); });
-    return map;
+    // 分钟线属于「行情数据集」：只向数据层要，来源与请求形状由数据层负责。
+    return require('../dataAccess/marketDatasets').readMinuteQuotes({ codes: aShare, freq: '1MIN' });
   });
 }
 

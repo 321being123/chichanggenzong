@@ -339,9 +339,7 @@ async function backfillMissingRatings(reason = 'scheduled') {
     await client.query('BEGIN');
     for (const bond of missing) {
       try {
-        const data = await tushareQuery('cb_rating', { ts_code: bond.canonical_code },
-          'ts_code,ann_date,rating_date,rating_com_name,rating_way,rating_type,rating,rating_outlook');
-        const rows = tsRows(data);
+        const rows = await require('../dataAccess/bondDatasets').readBondRatings({ tsCode: bond.canonical_code });
         if (!rows.length) { failed += 1; continue; }
         await saveRatingHistory(client, bond.instrument_id, rows, sources.tushare);
         filled += 1;

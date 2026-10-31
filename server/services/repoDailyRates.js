@@ -47,9 +47,9 @@ async function syncRepoDailyRates({targetDate,startDate,probe=false,allowComplet
   for(const year of [...new Set(requested.map(d=>d.slice(0,4)))]) {
     const dates=requested.filter(d=>d.startsWith(year));
     try {
-      const response=await tushareQuery('repo_daily',{ts_code:CODE,start_date:dates[0].replace(/-/g,''),end_date:dates.at(-1).replace(/-/g,'')},'ts_code,trade_date,repo_maturity,weight,close');
-      const data=response.data||response;
-      const rows=(data.items||[]).map(r=>Object.fromEntries(data.fields.map((f,i)=>[f,r[i]])));
+      // 回购利率属于「资金数据集」：只向数据层要，来源与请求形状由数据层负责。
+      const rows=await require('../dataAccess/referenceDatasets')
+        .readRepoRates({ tsCode: CODE, startDate: dates[0], endDate: dates.at(-1) });
       if(rows.length>=2000) throw new Error('回购响应可能截断');
       const seen=new Set();
       for(const row of rows) {

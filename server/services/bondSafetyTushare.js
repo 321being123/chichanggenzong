@@ -241,8 +241,10 @@ function normalizeTradeDate(value) {
 async function latestOpenDates(endDate) {
   const end = normalizeTradeDate(endDate) || tsDateStr(new Date());
   const start = new Date(`${end}T00:00:00+08:00`); start.setDate(start.getDate() - 20);
-  const data = await tushareQuery('trade_cal', { exchange: 'SSE', start_date: tsDateStr(start), end_date: end.replace(/-/g, ''), is_open: '1' }, 'cal_date,is_open');
-  return tsRows(data).filter(row => String(row.is_open) === '1').map(row => row.cal_date).sort().reverse();
+  // 交易日历属于「参考数据集」：只向数据层要开市日，来源与参数拼装在数据层。
+  const rows = await require('../dataAccess/referenceDatasets')
+    .readTradingCalendar({ exchange: 'SSE', startDate: tsDateStr(start), endDate: end.replace(/-/g, ''), openOnly: true });
+  return rows.filter(row => String(row.is_open) === '1').map(row => row.cal_date).sort().reverse();
 }
 
 async function latestMarketRows(apiName, dates, fields, options = {}) {
@@ -313,13 +315,15 @@ async function fetchTushareBondSafetySource(env = process.env, targetTradeDate =
   const asOfDate = normalizeTradeDate(targetTradeDate) || tsDateStr(new Date());
   const strictTargetDate = Boolean(normalizeTradeDate(targetTradeDate));
   const [basicData, stockData, dates] = await Promise.all([
-    tushareQuery('cb_basic', {}, 'ts_code,bond_short_name,stk_code,stk_short_name,list_date,delist_date,maturity_date,conv_end_date,conv_stop_date,conv_price'),
+    require('../dataAccess/bondDatasets').readBondMaster({}),
     require('../dataAccess/marketDatasets').readSecurityMaster({ listStatuses: ['L'], fields: 'ts_code,name,industry' }),
     latestOpenDates(asOfDate),
   ]);
-  const stockRows = tsRows(stockData);
+  // 数据层读函数返回行数组，不再套 tsRows（它只认 fields/items 信封）。
+  const stockRows = Array.isArray(stockData) ? stockData : tsRows(stockData);
   const listedStocks = new Set(stockRows.map(row => row.ts_code));
-  const activeBasics = tsRows(basicData).filter(row => isActiveBond(row, asOfDate, listedStocks));
+  const basicRows = Array.isArray(basicData) ? basicData : tsRows(basicData);
+  const activeBasics = basicRows.filter(row => isActiveBond(row, asOfDate, listedStocks));
   const basics = await filterPublicBonds(activeBasics);
   if (!basics.length || !dates.length) throw new Error('Tushare 未返回在市可转债或交易日数据');
 

@@ -99,9 +99,10 @@ async function syncUsTreasuryYield(end = dateStr(new Date())) {
     const to = rangeEnd < last ? rangeEnd : last;
     const fromTs = tsDate(dateStr(cursor));
     const toTs = tsDate(dateStr(to));
-    const data = await tushareQuery('us_tycr', { start_date: fromTs, end_date: toTs }, 'date,y10');
-    if (!data) throw new Error(`Tushare us_tycr 查询失败（${fromTs}-${toTs}）`);
-    const rows = tsRows(data).map(row => ({
+    // 美债收益率属于「宏观数据集」：只向数据层要，来源与窗口拼装在数据层。
+    const yieldRows = await require('../dataAccess/referenceDatasets')
+      .readUsTreasuryYield({ startDate: fromTs, endDate: toTs });
+    const rows = yieldRows.map(row => ({
       day: normDate(row.date),
       yieldPct: Number(row.y10),
       raw: row,
@@ -191,9 +192,9 @@ async function tradeMonthEnds(startYear, endYear) {
   // daily_basic 是收盘后数据；盘中不能把当天“已开市但尚未发布”的空结果当成接口故障。
   const result = [], today = tsDate(expectedTradeDate());
   for (let year = startYear; year <= endYear; year++) {
-    const data = await tushareQuery('trade_cal',
-      { exchange: 'SSE', start_date: year + '0101', end_date: year + '1231', is_open: '1' },
-      'cal_date,is_open');
+    const calendarRows = await require('../dataAccess/referenceDatasets')
+      .readTradingCalendar({ exchange: 'SSE', startDate: year + '0101', endDate: year + '1231', openOnly: true });
+    const data = { fields: ['cal_date', 'is_open'], items: calendarRows.map(row => [row.cal_date, row.is_open]) };
     if (!data) continue;
     const latest = new Map();
     for (const row of tsRows(data)) {

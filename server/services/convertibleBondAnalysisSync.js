@@ -233,8 +233,9 @@ async function latestTradeDates(endTradeDate = defaultBondTargetTradeDate()) {
   const normalizedEnd = isoDate(endTradeDate) || defaultBondTargetTradeDate();
   const end = normalizedEnd.replace(/-/g, '');
   const start = addDays(new Date(`${normalizedEnd}T00:00:00+08:00`), -20);
-  const data = await tushareQuery('trade_cal', { exchange: 'SSE', start_date: tsDateStr(start), end_date: end, is_open: '1' }, 'cal_date,is_open');
-  return tsRows(data).filter(row => String(row.is_open) === '1').map(row => row.cal_date).sort().reverse();
+  const rows = await require('../dataAccess/referenceDatasets')
+    .readTradingCalendar({ exchange: 'SSE', startDate: tsDateStr(start), endDate: end, openOnly: true });
+  return rows.filter(row => String(row.is_open) === '1').map(row => row.cal_date).sort().reverse();
 }
 
 async function latestFullBondDaily(dates, options = {}) {
@@ -580,13 +581,14 @@ async function syncConvertibleBondUniverse(reason = 'scheduled', options = {}) {
   try {
     const targetTradeDate = isoDate(options.targetTradeDate) || defaultBondTargetTradeDate();
     const [basicData, stockStatusData, dates] = await Promise.all([
-      tushareQuery('cb_basic', {}, PROFILE_FIELDS),
+      require('../dataAccess/bondDatasets').readBondMaster({ fields: PROFILE_FIELDS }),
       // 证券主档属于「参考数据集」：只向数据层要，来源选择由数据层负责。
       (await require('../dataAccess/marketDatasets').readSecurityMaster({ listStatuses: ['L'], fields: STOCK_STATUS_FIELDS })),
       latestTradeDates(targetTradeDate),
     ]);
-    const allBasicRows = tsRows(basicData);
-    const stockStatusRows = tsRows(stockStatusData);
+    // 数据层读函数返回行数组，不再套 tsRows（它只认 fields/items 信封）。
+    const allBasicRows = Array.isArray(basicData) ? basicData : tsRows(basicData);
+    const stockStatusRows = Array.isArray(stockStatusData) ? stockStatusData : tsRows(stockStatusData);
     const trackedDelistedRows = await loadTrackedDelistedStocks(stockStatusRows);
     const listedStockCodes = new Set(stockStatusRows
       .map(row => String(row.ts_code || '').trim().toUpperCase())
@@ -676,7 +678,7 @@ async function syncConvertibleBondUniverse(reason = 'scheduled', options = {}) {
     const [stockDailyRows, stockValuationRows, stockAdjustmentData] = await Promise.all([
       readStockDailyBatch({ tsCodes: neededStockCodes, tradeDate: targetTradeDate }),
       readStockValuationRows({ tradeDate: targetTradeDate }),
-      tushareQuery('adj_factor', { trade_date: targetTradeDate.replace(/-/g, '') }, 'ts_code,trade_date,adj_factor', { allowEmpty: true }),
+      require('../dataAccess/marketDatasets').readAdjustmentFactors({ tradeDate: targetTradeDate }),
     ]);
     // 复权因子仍只有单一来源（官方无因子接口），因此单独按原链路取、按原来源落库。
     const stockAdjustmentRows = tsRows(stockAdjustmentData);
@@ -994,8 +996,9 @@ async function getRecentOpenDays(days = 90, endDate = null) {
   const endValue = endDate ? new Date(`${String(endDate).slice(0, 10)}T00:00:00+08:00`) : new Date();
   const end = tsDateStr(endValue);
   const start = tsDateStr(addDays(endValue, -days));
-  const data = await tushareQuery('trade_cal', { exchange: 'SSE', start_date: start, end_date: end }, 'cal_date,is_open');
-  const rows = tsRows(data).filter(row => row.cal_date).map(row => ({
+  const calendarRows = await require('../dataAccess/referenceDatasets')
+    .readTradingCalendar({ exchange: 'SSE', startDate: start, endDate: end });
+  const rows = calendarRows.filter(row => row.cal_date).map(row => ({
     exchange: 'SSE', trade_date: isoDate(row.cal_date), is_open: String(row.is_open) === '1', raw_payload: row,
   })).filter(row => row.trade_date);
   if (rows.length) {
@@ -1636,14 +1639,36 @@ async function backfillUnderlyingStockMarket({ windowDays = 500, targetTradeDate
       if (!expectedCount || (coverage.rows[0].bars >= expectedCount * 0.9 && coverage.rows[0].valuations >= expectedCount * 0.9)) continue;
       // 补历史时严格串行调用并限速，避免 daily + daily_basic 并发形成请求洪峰；
       // 日期参数统一使用 Tushare 的 YYYYMMDD。
-      const dailyData = await tushareQuery('daily', { trade_date: tradeDate.replace(/-/g, '') }, 'ts_code,trade_date,open,high,low,close,vol,amount', { allowEmpty: true });
+      // 行情与估值都属于数据层数据集：只表达"要哪一天"，来源与回退由数据层决定；
+      // 回补仍按来源分组落库，避免把官方行记到别的来源名下。
+      const { readStockDailyByDate, readStockValuationRows } = require('../dataAccess/marketDatasets');
+      const dailyRowsFromDate = await readStockDailyByDate({ tradeDate });
       await new Promise(resolve => setTimeout(resolve, 1200));
-      const valuationData = await tushareQuery('daily_basic', { trade_date: tradeDate.replace(/-/g, '') }, 'ts_code,trade_date,pe,pe_ttm,pb,dv_ttm,total_mv,circ_mv', { allowEmpty: true });
+      const valuationRowsFromDate = await readStockValuationRows({ tradeDate });
       await new Promise(resolve => setTimeout(resolve, 1200));
+      const groupBySource = list => {
+        const map = new Map();
+        for (const row of list || []) {
+          const code = row.source_code || 'tushare';
+          if (!map.has(code)) map.set(code, []);
+          map.get(code).push(row);
+        }
+        return map;
+      };
+      const barsBySource = groupBySource(dailyRowsFromDate);
+      const valuationsBySource = groupBySource(valuationRowsFromDate);
       const client = await pool.connect();
       try {
         await txControl.begin(client);
-        const saved = await saveFullStockMarketPartition(client, instrumentMap, tsRows(dailyData), tsRows(valuationData), source.tushare);
+        const saved = { bars: 0, valuations: 0 };
+        for (const code of new Set([...barsBySource.keys(), ...valuationsBySource.keys()])) {
+          const sourceId = source[code];
+          if (!sourceId) continue;
+          const part = await saveFullStockMarketPartition(client, instrumentMap,
+            barsBySource.get(code) || [], valuationsBySource.get(code) || [], sourceId);
+          saved.bars += part.bars;
+          saved.valuations += part.valuations;
+        }
         await txControl.commit(client);
         savedBars += saved.bars;
         savedValuations += saved.valuations;

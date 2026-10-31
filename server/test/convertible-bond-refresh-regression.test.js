@@ -68,8 +68,12 @@ function completeRows(count) {
     '可转债行情状态统计不得把普通对象再次当作可迭代 entries');
   assert.ok(analysisSource.includes('const basics = await filterPublicBonds(lifecycleCandidates)'),
     '可转债行情预期集合必须排除定向和私募债券');
-  assert.ok(analysisSource.includes("tushareQuery('daily', { trade_date: tradeDate.replace(/-/g, '') }"), '正股日行情补齐必须使用 Tushare 要求的 YYYYMMDD 日期');
-  assert.ok(analysisSource.includes("tushareQuery('daily_basic', { trade_date: tradeDate.replace(/-/g, '') }"), '正股估值补齐必须使用 Tushare 要求的 YYYYMMDD 日期');
+  // 2026-10-31 数据层收口：补历史整段改为经数据层取数；YYYYMMDD 的日期拼装随之下沉到数据层，
+  // 断言拆成"服务只表达业务日" + "数据层负责转成接口要求的 YYYYMMDD"。
+  assert.ok(analysisSource.includes('readStockDailyByDate({ tradeDate })'), '正股日行情补齐必须经数据层取数');
+  assert.ok(analysisSource.includes('readStockValuationRows({ tradeDate })'), '正股估值补齐必须经数据层取数');
+  const datasetsSource = fs.readFileSync(path.join(__dirname, '..', 'dataAccess', 'marketDatasets.js'), 'utf8');
+  assert.ok(datasetsSource.includes("String(tradeDate).replace(/-/g, '')"), '数据层必须把业务日转成接口要求的 YYYYMMDD');
   assert.ok(analysisSource.includes('setTimeout(resolve, 1200)'), '正股历史补齐必须在外部调用之间限速');
   assert.ok(analysisSource.includes("pending_no_revision.parser_version = '7'")
     && analysisSource.includes('pending_no_revision.next_eligible_date=maturity_profile.maturity_date'),

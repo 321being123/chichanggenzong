@@ -170,8 +170,12 @@ async function loadAnalysisInputs(params, tx) {
     runner.query(`SELECT to_char(v.trade_date,'YYYYMMDD') trade_date,b.close,a.adj_factor,v.pe_static pe,v.pe_ttm,v.pb,v.dividend_yield_ttm*100 dv_ttm,
       s.total_shares/10000 total_share,v.total_market_cap/10000 total_mv,s.circulating_shares/10000 float_share,s.free_float_shares/10000 free_share,v.circulating_market_cap/10000 circ_mv
       FROM market.daily_valuations v JOIN core.instruments i ON i.instrument_id=v.instrument_id
-      LEFT JOIN market.daily_bars b ON b.instrument_id=v.instrument_id AND b.trade_date=v.trade_date AND b.source_id=v.source_id
-      LEFT JOIN market.adjustment_factors a ON a.instrument_id=v.instrument_id AND a.trade_date=v.trade_date AND a.source_id=v.source_id
+      LEFT JOIN LATERAL (SELECT close FROM market.daily_bars x
+        WHERE x.instrument_id=v.instrument_id AND x.trade_date=v.trade_date
+        ORDER BY (x.source_id=v.source_id) DESC,x.source_id LIMIT 1) b ON true
+      LEFT JOIN LATERAL (SELECT adj_factor FROM market.adjustment_factors x
+        WHERE x.instrument_id=v.instrument_id AND x.trade_date=v.trade_date
+        ORDER BY (x.source_id=v.source_id) DESC,x.source_id LIMIT 1) a ON true
       LEFT JOIN LATERAL (SELECT * FROM market.share_capital_history s WHERE s.instrument_id=v.instrument_id AND s.effective_date<=v.trade_date ORDER BY s.effective_date DESC LIMIT 1) s ON true
       WHERE i.canonical_code=$1 ORDER BY v.trade_date`, [tsCode]),
     runner.query(`SELECT ds.source_code source,to_char(e.event_date,'YYYYMMDD') event_date,e.title,d.url,e.event_type category,e.is_official

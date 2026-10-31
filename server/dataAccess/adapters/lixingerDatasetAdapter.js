@@ -112,6 +112,29 @@ function stockCodeOf(tsCode) {
   return match ? match[1] : null;
 }
 
+// 官方估值行 → 现有链路字段（Tushare 口径：市值万元、股息率为百分数点）。
+// 官方没有静态市盈率指标（实测 metricsList 报 "(pe,pe_static) are invalid price metrics"），
+// pe 这里恒为 null，需要静态市盈率时由 fillStaticPe 用官方市值与官方年报归母净利派生。
+function valuationRow(rawRow, tsCode, fallbackDate) {
+  const peTtm = numberOrNull(rawRow.pe_ttm);
+  const pb = numberOrNull(rawRow.pb);
+  const dyr = numberOrNull(rawRow.dyr);
+  const mc = numberOrNull(rawRow.mc);
+  const cmc = numberOrNull(rawRow.cmc);
+  if ([peTtm, pb, dyr, mc, cmc].every(value => value === null)) return null;
+  return {
+    ts_code: tsCode,
+    trade_date: isoDate(rawRow.date) || isoDate(fallbackDate),
+    pe: null,
+    pe_ttm: peTtm,
+    pb,
+    dv_ttm: dyr === null ? null : dyr * 100,
+    total_mv: mc === null ? null : mc / 10000,
+    circ_mv: cmc === null ? null : cmc / 10000,
+    source_code: SOURCE,
+  };
+}
+
 /**
  * 估值快照：官方 cn/company/fundamental/non_financial 优先。
  * @returns {Promise<object[]|null>} 返回 Tushare 形状的行（万元/百分数点），失败返回 null 由调用方回退。
@@ -132,23 +155,8 @@ async function resolveValuationRows({ codes = [], tradeDate, options = {} } = {}
       for (const row of result.rows) {
         const tsCode = byCode.get(String(row.stockCode));
         if (!tsCode) continue;
-        const peTtm = numberOrNull(row.pe_ttm);
-        const pb = numberOrNull(row.pb);
-        const dyr = numberOrNull(row.dyr);
-        const mc = numberOrNull(row.mc);
-        const cmc = numberOrNull(row.cmc);
-        if ([peTtm, pb, dyr, mc, cmc].every(value => value === null)) continue;
-        rows.push({
-          ts_code: tsCode,
-          trade_date: isoDate(row.date) || isoDate(tradeDate),
-          pe: null,
-          pe_ttm: peTtm,
-          pb,
-          dv_ttm: dyr === null ? null : dyr * 100,
-          total_mv: mc === null ? null : mc / 10000,
-          circ_mv: cmc === null ? null : cmc / 10000,
-          source_code: SOURCE,
-        });
+        const mapped = valuationRow(row, tsCode, tradeDate);
+        if (mapped) rows.push(mapped);
       }
     } catch (error) {
       failed += 1;
@@ -156,6 +164,86 @@ async function resolveValuationRows({ codes = [], tradeDate, options = {} } = {}
     }
   }
   return rows;
+}
+
+/**
+ * 估值序列：同接口的区间用法（startDate/endDate），单只证券的每日估值。
+ * 官方按区间返回，不再出现「只取结束日、其余日期沿用备源数值」的情况。
+ * @returns {Promise<object[]|null>} Tushare 形状的行（pe 待 fillStaticPe 派生）
+ */
+async function resolveValuationSeries({ codes = [], startDate, endDate, options = {} } = {}) {
+  const list = (codes || []).map(code => ({ tsCode: String(code), code: stockCodeOf(code) })).filter(item => item.code);
+  const start = dashDate(startDate), end = dashDate(endDate);
+  if (!list.length || !start || !end) return null;
+  const rows = [];
+  let failed = 0;
+  for (const batch of chunk(list, VALUATION_CHUNK)) {
+    try {
+      const result = await callEndpoint('cn/company/fundamental/non_financial', {
+        stockCodes: batch.map(item => item.code), startDate: start, endDate: end, metricsList: VALUATION_METRICS,
+      }, { dataset: 'stock_valuation', targetDate: end, ...options });
+      const byCode = new Map(batch.map(item => [item.code, item.tsCode]));
+      for (const row of result.rows) {
+        const tsCode = byCode.get(String(row.stockCode));
+        if (!tsCode) continue;
+        const mapped = valuationRow(row, tsCode, end);
+        if (mapped) rows.push(mapped);
+      }
+    } catch (error) {
+      failed += 1;
+      if (failed >= 3) throw error;
+    }
+  }
+  return rows;
+}
+
+/**
+ * 年报归母净利润（元）：静态市盈率唯一缺的输入。
+ * 官方 fs 接口按 reportType=annual_report 过滤，非年报（季报/中报）一律不参与静态市盈率。
+ */
+async function resolveAnnualNetProfits({ tsCode, startDate, endDate } = {}) {
+  const code = stockCodeOf(tsCode);
+  const start = dashDate(startDate), end = dashDate(endDate);
+  if (!code || !start || !end) return null;
+  const result = await callEndpoint('cn/company/fs/non_financial', {
+    stockCodes: [code], startDate: start, endDate: end, metricsList: ['q.ps.npatshaoehopc.t'],
+  }, { dataset: 'stock_financial_reports', targetDate: end });
+  return result.rows.map(item => {
+    const periodEnd = isoDate(item.standardDate) || isoDate(item.date);
+    const node = item.q && item.q.ps && item.q.ps.npatshaoehopc;
+    const netProfit = numberOrNull(node && node.t);
+    if (!periodEnd || netProfit === null) return null;
+    return {
+      periodEnd,
+      announcedAt: isoDate(item.reportDate) || periodEnd,
+      reportType: String(item.reportType || ''),
+      netProfit,
+    };
+  }).filter(Boolean)
+    .filter(item => item.reportType === 'annual_report' || /1231$/.test(item.periodEnd))
+    .sort((a, b) => (a.periodEnd < b.periodEnd ? -1 : a.periodEnd > b.periodEnd ? 1 : 0));
+}
+
+// 静态市盈率：站内页面字典就是「当前总市值 ÷ 最新完整年报归母净利润」，两个输入都在官方。
+// 2026-10-30 用 600519 校验口径：官方 mc 1,740,176,092,672 ÷ 2025 年报归母 82,320,067,102 = 21.1391，
+// 与 Tushare daily_basic.pe 21.1391 完全一致 —— 说明这是同一口径的定义式计算，不是估算兜底。
+// 归母净利润缺失或为 0 时该日 pe 保持 null，不猜。
+function fillStaticPe(rows, annuals) {
+  const usable = (annuals || []).filter(item => item && Number.isFinite(item.netProfit) && item.netProfit !== 0);
+  if (!usable.length) return rows;
+  return (rows || []).map(row => {
+    const day = String(row.trade_date || '');
+    const marketCap = numberOrNull(row.total_mv);
+    if (!day || marketCap === null) return row;
+    let hit = null;
+    for (const annual of usable) {
+      const available = annual.announcedAt || annual.periodEnd;
+      if (available && available <= day) hit = annual; // usable 已按报告期升序，最后一个命中的就是最近一期
+    }
+    if (!hit) return row;
+    const pe = (marketCap * 10000) / hit.netProfit;
+    return Number.isFinite(pe) ? { ...row, pe } : row;
+  });
 }
 
 // 财务三表：官方 cn/company/fs/non_financial。指标表（ROE/ROA 等）口径与 Tushare 不同，不在此映射。
@@ -384,7 +472,9 @@ module.exports = {
   SOURCE,
   REPORT_METRICS,
   VALUATION_METRICS,
+  fillStaticPe,
   officialStockCode,
+  resolveAnnualNetProfits,
   resolveDividendRows,
   resolveFinancialReports,
   resolveIndexDaily,
@@ -395,4 +485,5 @@ module.exports = {
   resolveStockDaily,
   resolveStockDailyBatch,
   resolveValuationRows,
+  resolveValuationSeries,
 };

@@ -46,7 +46,9 @@ const marketServiceSource = fs.readFileSync(path.join(__dirname, '..', 'services
     + fs.readFileSync(path.join(__dirname, '..', 'repositories', 'marketRepository.js'), 'utf8');
 const marketRouteSource = fs.readFileSync(path.join(__dirname, '..', 'routes', 'market.js'), 'utf8');
 const tencentQuoteSource = fs.readFileSync(path.join(__dirname, '..', 'services', 'tencentQuote.js'), 'utf8');
-assert.ok(marketServiceSource.includes('fetchTencentQuotes(stockCodes.concat(fundCodes, bondCodes, hkCodes), options)'), '批量行情应统一调用腾讯实时行情并透传缓存选项');
+// 第七轮把腾讯报价收进数据层：行情门面只剩业务导出，批量入口经 fetchQuotes → readRealtimeQuotes。
+assert.ok(marketServiceSource.includes('fetchQuotes(stockCodes.concat(fundCodes, bondCodes, hkCodes), options)'), '批量行情应统一调用实时行情入口并透传缓存选项');
+assert.ok(marketServiceSource.includes("readRealtimeQuotes({ codes, options })"), '实时报价必须经数据层中立入口，不再直连腾讯');
 assert.ok(marketServiceSource.includes('async function fetchQuotesByCodes'), '行情服务必须提供统一批量入口');
 assert.ok(marketRouteSource.includes('fetchQuotesByCodes(codes, { force: true })'), '手动刷新必须调用统一批量入口并绕过腾讯行情缓存');
 assert.ok(!marketRouteSource.includes('ensureTsRealtime(stockCodes)'), '页面批量行情不得调用 Tushare rt_min');

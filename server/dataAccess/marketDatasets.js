@@ -172,10 +172,10 @@ async function readIndustryClassification({ tsCode, cacheMs } = {}) {
 
 // ---------- 指数：收盘序列与估值 ----------
 
-// 指数收盘序列（页面 K 线与净值基准共用同一形状：{ date, close }）。
+// 指数收盘序列（页面 K 线与净值基准共用同一形状：{ date, close, source_code }）。
 async function readIndexCloseSeries({ tsCode, startDate, endDate, market = 'cn' } = {}) {
   const primary = await safeOfficial(() => official.resolveIndexDaily({ tsCode, startDate, endDate, market }), 'index_close');
-  if (primary.value && primary.value.length) return primary.value;
+  if (primary.value && primary.value.length) return primary.value.map(point => ({ ...point, source_code: official.SOURCE }));
 
   if (market === 'hk') {
     // 港股指数（恒指）备源：腾讯历史日 K。
@@ -186,7 +186,7 @@ async function readIndexCloseSeries({ tsCode, startDate, endDate, market = 'cn' 
       const json = JSON.parse(txt);
       const dayArr = json && json.data && json.data.hkHSI && json.data.hkHSI.day;
       if (!Array.isArray(dayArr)) return [];
-      return dayArr.map(it => ({ date: normDate(it[0]), close: parseFloat(it[2]) }))
+      return dayArr.map(it => ({ date: normDate(it[0]), close: parseFloat(it[2]), source_code: 'tencent' }))
         .filter(item => item.date && !isNaN(item.close) && item.close > 0);
     } catch (error) {
       if (error && error.code) throw error;
@@ -196,7 +196,7 @@ async function readIndexCloseSeries({ tsCode, startDate, endDate, market = 'cn' 
   const rows = tsRows(await tushareQuery('index_daily',
     { ts_code: tsCode, start_date: String(startDate).replace(/-/g, ''), end_date: String(endDate).replace(/-/g, '') },
     'trade_date,close'));
-  const series = rows.map(row => ({ date: normDate(row.trade_date), close: parseFloat(row.close) }))
+  const series = rows.map(row => ({ date: normDate(row.trade_date), close: parseFloat(row.close), source_code: 'tushare' }))
     .filter(item => item.date && !isNaN(item.close) && item.close > 0);
   if (series.length) return series;
   // 最后一层备源（仅 A 股指数）：新浪历史 K 线，避免页面指数线整段空白。
@@ -209,7 +209,7 @@ async function readIndexCloseSeries({ tsCode, startDate, endDate, market = 'cn' 
     const txt = await require('../services/marketHttpSource').getText('sina', url, { timeout: 10000 });
     const arr = JSON.parse(txt);
     if (!Array.isArray(arr)) return [];
-    return arr.map(item => ({ date: normDate(item.day), close: parseFloat(item.close) }))
+    return arr.map(item => ({ date: normDate(item.day), close: parseFloat(item.close), source_code: 'sina' }))
       .filter(item => item.date && !isNaN(item.close) && item.close > 0);
   } catch (error) {
     if (error && error.code) throw error;
@@ -417,22 +417,57 @@ async function readAdjustmentFactorSeries({ tsCode, startDate, endDate, fields =
 }
 
 // 估值历史（按代码区间）：单只证券的每日估值，用于分析页与异常修复。
-// 官方按 (证券, 日期区间) 可取，覆盖到的行标官方来源，其余由原来源补齐。
+// 官方按 (证券, 日期区间) 整段取数；官方覆盖到的日期，六项估值一律取官方数值（不是只换标签），
+// 官方没有的日期才沿用备源数值并标回备源来源。静态市盈率由官方市值 ÷ 官方年报归母净利派生。
+// 备源仍要取：官方估值接口不提供收盘价与股本（total_share/float_share/free_share），
+// 这份区间骨架同时兜住官方没覆盖的日期；股本单独标 share_source_code，不与估值来源混为一谈。
+const VALUATION_VALUE_FIELDS = ['pe', 'pe_ttm', 'pb', 'dv_ttm', 'total_mv', 'circ_mv'];
+
 async function readStockValuationHistory({ tsCode, startDate, endDate, fields = 'ts_code,trade_date,pe,pe_ttm,pb,dv_ttm,total_mv,circ_mv' } = {}) {
   const from = String(startDate).replace(/-/g, '');
   const to = String(endDate).replace(/-/g, '');
-  const data = await tushareQuery('daily_basic', { ts_code: tsCode, start_date: from, end_date: to }, fields, { allowEmpty: true });
-  const rows = tsRows(data);
-  if (!rows.length) return [];
-  const primary = await safeOfficial(
-    () => official.resolveValuationRows({ codes: [tsCode], tradeDate: to }),
-    'stock_valuation'
-  );
+  const primary = await safeOfficial(async () => {
+    const rows = await official.resolveValuationSeries({ codes: [tsCode], startDate: from, endDate: to });
+    if (!rows || !rows.length) return rows;
+    // 区间起点前两年的年报也要拿到，否则区间第一天没有「最近一期年报」可算静态市盈率。
+    const annualStart = `${Number(from.slice(0, 4)) - 2}${from.slice(4)}`;
+    const annuals = await official.resolveAnnualNetProfits({ tsCode, startDate: annualStart, endDate: to });
+    return official.fillStaticPe(rows, annuals);
+  }, 'stock_valuation');
   const officialByDate = new Map(((primary.value || [])).map(row => [String(row.trade_date), row]));
-  return rows.map(row => {
-    const officialRow = officialByDate.get(String(row.trade_date));
-    return { ...row, source_code: officialRow ? official.SOURCE : 'tushare' };
-  });
+  const data = await tushareQuery('daily_basic', { ts_code: tsCode, start_date: from, end_date: to }, fields, { allowEmpty: true });
+  const rows = [];
+  for (const row of tsRows(data)) {
+    const day = String(row.trade_date);
+    const officialRow = officialByDate.get(day);
+    if (!officialRow) {
+      rows.push({ ...row, source_code: 'tushare', share_source_code: 'tushare' });
+      continue;
+    }
+    officialByDate.delete(day);
+    const merged = { ...row };
+    const carried = [];
+    for (const field of VALUATION_VALUE_FIELDS) {
+      const value = officialRow[field];
+      if (value === null || value === undefined) {
+        // 官方这一天该项为空（如未披露年报算不出静态市盈率）：保留备源数值，
+        // 但把字段记进 carried_fields，页面上不会出现「数值来自备源、标签写着官方」而无人知情。
+        if (Number.isFinite(Number(row[field])) && row[field] !== null && row[field] !== '') carried.push(field);
+        continue;
+      }
+      merged[field] = value;
+    }
+    merged.source_code = official.SOURCE;
+    merged.share_source_code = 'tushare';
+    if (carried.length) merged.carried_fields = carried;
+    rows.push(merged);
+  }
+  // 官方有、备源骨架没有的交易日（备源区间缺行）直接给官方行，不因为备源缺行把官方数据丢掉。
+  for (const [day, officialRow] of officialByDate) {
+    rows.push({ ...officialRow, close: null, total_share: null, float_share: null, free_share: null, share_source_code: 'tushare' });
+  }
+  rows.sort((a, b) => (String(a.trade_date) < String(b.trade_date) ? -1 : String(a.trade_date) > String(b.trade_date) ? 1 : 0));
+  return rows;
 }
 
 // 业绩预告：官方目录无业绩预告接口，单一来源，但调用方只表达需求。
@@ -443,22 +478,39 @@ async function readForecast({ tsCode, startDate = null, fields = 'ts_code,ann_da
   return tsRows(data).map(row => ({ ...row, source_code: 'tushare' }));
 }
 
-// 历史收盘序列（按标的类型）：晚录入净值回补用，只返回日期与收盘价。
-// kind 是业务类型（stock/bond/fund/index），到底调哪个供应商接口由这一层决定。
+// 历史收盘序列（按标的类型）：晚录入净值回补用，只返回日期与收盘价（统一 YYYYMMDD）。
+// kind 是业务类型（stock/index/bond/fund），到底调哪个供应商接口由这一层决定。
+// 正股与指数走各自数据集的主备链路（官方优先），债券与基金官方目录未准入，仍为单一来源。
 const HISTORICAL_CLOSE_APIS = Object.freeze({
-  stock: 'daily',
   bond: 'cb_daily',
   fund: 'fund_daily',
-  index: 'index_daily',
 });
 
 async function readHistoricalCloseSeries({ tsCode, kind = 'stock', startDate, endDate } = {}) {
+  const from = String(startDate).replace(/-/g, '');
+  const to = String(endDate).replace(/-/g, '');
+  // 正股：与行情数据集同一入口（官方不复权优先，官方没覆盖的区间由备源补并标回来源）。
+  if (kind === 'stock') {
+    const rows = await readStockDailySeries({ tsCode, startDate: from, endDate: to });
+    return rows
+      .map(row => ({ trade_date: String(row.trade_date || '').replace(/-/g, ''), close: row.close, source_code: row.source_code || 'tushare' }))
+      .filter(row => row.trade_date && Number(row.close) > 0);
+  }
+  // 指数：与页面指数线同一入口（官方优先 → 备源）。
+  if (kind === 'index') {
+    const series = await readIndexCloseSeries({ tsCode, startDate: from, endDate: to });
+    return series
+      .map(point => ({ trade_date: String(point.date || '').replace(/-/g, ''), close: point.close, source_code: point.source_code || 'tushare' }))
+      .filter(row => row.trade_date && Number(row.close) > 0);
+  }
+  // 债券（可转债个券）与基金：官方目录里没有可用的个券 K 线接口，
+  // 可转债个券官方无接口；基金 K 线在目录中是 excluded（见 catalog 的 statusReason），故仍为单一来源。
   const apiName = HISTORICAL_CLOSE_APIS[kind];
   if (!apiName) throw new Error(`未登记的历史收盘类型：${kind}`);
   const data = await tushareQuery(apiName, {
     ts_code: tsCode,
-    start_date: String(startDate).replace(/-/g, ''),
-    end_date: String(endDate).replace(/-/g, ''),
+    start_date: from,
+    end_date: to,
   }, 'trade_date,close', { allowEmpty: true });
   return tsRows(data).map(row => ({ ...row, source_code: 'tushare' }));
 }

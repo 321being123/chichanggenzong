@@ -31,7 +31,8 @@ assert.match(migrations, /118_instrument_merge_candidates/, '历史 ID 合并必
 assert.match(audit, /默认只读|--write-candidates/, '历史 ID 工具必须支持只读审计');
 assert.doesNotMatch(audit, /DELETE\s+FROM\s+core\.instruments/i, '审计工具不得删除旧证券 ID');
 assert.match(audit, /source_rel\.relname='instrument_merge_candidates'/, '历史 ID 影响量不得把候选审计表自身引用重复计入');
-assert.match(identity, /source === 'xueqiu' && type === 'symbol'/, '雪球代码必须纳入统一供应商映射');
+// 供应商映射第七轮改成规则表（PROVIDER_IDENTIFIER_RULES），这里核对表内确有这条登记。
+assert.match(identity, /source: 'xueqiu', type: 'symbol'/, '雪球代码必须纳入统一供应商映射');
 assert.match(stockAnalysis, /sourceCode: 'xueqiu'/, '股票分析雪球请求必须读取统一映射');
 assert.match(stockAnalysis, /sourceCode: 'eastmoney', identifierType: 'guba_code'/, '股吧请求必须读取统一映射');
 assert.match(tencentQuote, /resolveProviderCode/, '腾讯行情请求必须读取统一供应商映射');

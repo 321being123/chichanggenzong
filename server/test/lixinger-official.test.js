@@ -78,7 +78,8 @@ assert.match(datasetsSource, /resolveIndustryRows/, '数据层必须调用适配
 assert.match(datasetsSource, /index_member_all/, '行业备源被删除');
 assert.match(adapterSource, /cn\/company\/industries/, '适配层未接入官方行业接口');
 const identitySource = readSource('services/securityIdentity.js');
-assert.match(identitySource, /lixinger_official' && type === 'stock_code'/, '未登记理杏仁证券代码映射');
+// 规则统一收在 PROVIDER_IDENTIFIER_RULES 表里（第七轮改动），这里核对表内确有这条登记。
+assert.match(identitySource, /source: 'lixinger_official', type: 'stock_code'/, '未登记理杏仁证券代码映射');
 
 // ---------- 二、守卫、协议与落库（替代传输 + 测试库） ----------
 function jsonResponse(body, status = 200) {

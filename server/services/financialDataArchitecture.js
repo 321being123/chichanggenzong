@@ -13,6 +13,23 @@ async function persistCollectedData(metadata, bundle) {
   return withTransaction(async client => {
     const sources = await projection.sourceIds(client);
     const master = await projection.ensureMaster(client, tsCode, sources, metadata);
+    // 行里自带 source_code：写标准事实时按行取来源，不再一律记在 tushare 名下
+    // （否则官方数值会以 tushare 名义落库，来源记录失真）。缺登记直接报错，不静默改来源。
+    const sourceIdOf = row => {
+      const code = (row && row.source_code) || 'tushare';
+      const sourceId = sources[code];
+      if (!sourceId) throw new Error(`未找到数据源登记：${code}`);
+      return sourceId;
+    };
+    const groupBySource = rows => {
+      const groups = new Map();
+      for (const row of rows || []) {
+        const code = (row && row.source_code) || 'tushare';
+        if (!groups.has(code)) groups.set(code, []);
+        groups.get(code).push(row);
+      }
+      return groups;
+    };
     const runId = await projection.createIngestionRun({
       sourceId: sources.tushare, datasetCode: 'stock_analysis_direct', requestRange: { ts_code: tsCode },
     }, client);
@@ -21,16 +38,19 @@ async function persistCollectedData(metadata, bundle) {
       if (dataset === 'valuationIssues' || !Array.isArray(rows)) continue;
       for (const row of rows) {
         await projection.insertRawRecord({
-          runId, sourceId: sources.tushare, datasetCode: dataset,
+          runId, sourceId: sourceIdOf(row), datasetCode: dataset,
           sourceKey: `${tsCode}:${rowVersion(row)}`, payload: row, payloadHash: hash(JSON.stringify(row)),
         }, client);
         count += 1;
       }
     }
-    await projection.syncReportRows(client, bundle.income || [], 'income', master.companyId, sources.tushare);
-    await projection.syncReportRows(client, bundle.balance || [], 'balance', master.companyId, sources.tushare);
-    await projection.syncReportRows(client, bundle.cashflow || [], 'cashflow', master.companyId, sources.tushare);
-    await projection.syncReportRows(client, bundle.indicators || [], 'indicator', master.companyId, sources.tushare);
+    for (const [kind, rows] of [['income', bundle.income], ['balance', bundle.balance], ['cashflow', bundle.cashflow], ['indicator', bundle.indicators]]) {
+      for (const [code, group] of groupBySource(rows)) {
+        const sourceId = sources[code];
+        if (!sourceId) throw new Error(`未找到数据源登记：${code}`);
+        await projection.syncReportRows(client, group, kind, master.companyId, sourceId);
+      }
+    }
     const daily = new Map((bundle.daily || []).map(x => [x.trade_date, x]));
     const basic = new Map((bundle.basics || []).map(x => [x.trade_date, x]));
     const factors = new Map((bundle.factors || []).map(x => [x.trade_date, x]));
@@ -38,14 +58,14 @@ async function persistCollectedData(metadata, bundle) {
       const d = daily.get(date) || {}, b = basic.get(date) || {}, a = factors.get(date) || {}, day = asDate(date);
       if (!day) continue;
       if (finite(d.close) !== null) {
-        await projection.upsertDailyBar({ instrumentId: master.instrumentId, tradeDate: day, sourceId: sources.tushare, close: finite(d.close) }, client);
+        await projection.upsertDailyBar({ instrumentId: master.instrumentId, tradeDate: day, sourceId: sourceIdOf(d), close: finite(d.close) }, client);
       }
       if (finite(a.adj_factor) !== null) {
-        await projection.upsertAdjustmentFactor({ instrumentId: master.instrumentId, tradeDate: day, sourceId: sources.tushare, adjFactor: finite(a.adj_factor) }, client);
+        await projection.upsertAdjustmentFactor({ instrumentId: master.instrumentId, tradeDate: day, sourceId: sourceIdOf(a), adjFactor: finite(a.adj_factor) }, client);
       }
       if (basic.has(date)) {
         await projection.upsertDailyValuation({
-          instrumentId: master.instrumentId, tradeDate: day, sourceId: sources.tushare,
+          instrumentId: master.instrumentId, tradeDate: day, sourceId: sourceIdOf(b),
           peStatic: marketMultiple(b.pe), peTtm: marketMultiple(b.pe_ttm), pb: marketMultiple(b.pb),
           dividendYield: finite(b.dv_ttm) == null ? null : finite(b.dv_ttm) / 100,
           totalMarketCap: finite(b.total_mv) == null ? null : finite(b.total_mv) * 10000,
@@ -55,8 +75,12 @@ async function persistCollectedData(metadata, bundle) {
         }, client);
       }
       if ([b.total_share, b.float_share, b.free_share].some(x => finite(x) !== null)) {
+        // 股本字段来自备源（官方估值接口不提供股本），来源按 share_source_code 单独取。
+        const shareCode = b.share_source_code || b.source_code || 'tushare';
+        const shareSourceId = sources[shareCode];
+        if (!shareSourceId) throw new Error(`未找到数据源登记：${shareCode}`);
         await projection.upsertShareCapital({
-          instrumentId: master.instrumentId, effectiveDate: day, sourceId: sources.tushare,
+          instrumentId: master.instrumentId, effectiveDate: day, sourceId: shareSourceId,
           totalShares: finite(b.total_share) == null ? null : finite(b.total_share) * 10000,
           circulatingShares: finite(b.float_share) == null ? null : finite(b.float_share) * 10000,
           freeFloatShares: finite(b.free_share) == null ? null : finite(b.free_share) * 10000,

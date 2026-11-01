@@ -1,5 +1,31 @@
 // shared/core-returns.js – 现金流/基金净值/收益对比图（原 core.js 拆分，全局作用域不变）
 // ===================== 现金流管理（NAV 修正） =====================
+var cashFlowInFlight = false;
+var cashFlowPending = Object.create(null);
+
+function cashFlowScopeKey() {
+  return JSON.stringify([typeof username === 'string' ? username : '',
+    typeof accountIdentity === 'string' ? accountIdentity : '', currentAccount]);
+}
+
+// 仅在当前标签页保存未确认请求；刷新后同一账户仍可用原 ID 安全重试。
+function readPendingCashFlow(key) {
+  if (cashFlowPending[key]) return cashFlowPending[key];
+  try {
+    var value = JSON.parse(sessionStorage.getItem('cash-flow-pending:' + key) || 'null');
+    if (value && typeof value.id === 'string' && typeof value.date === 'string' &&
+        Number.isFinite(value.amount) && typeof value.note === 'string') return cashFlowPending[key] = value;
+  } catch (e) { /* 存储不可用时保留内存保护 */ }
+  return null;
+}
+function savePendingCashFlow(key, pending) {
+  cashFlowPending[key] = pending;
+  try { sessionStorage.setItem('cash-flow-pending:' + key, JSON.stringify(pending)); } catch (e) {}
+}
+function clearPendingCashFlow(key) {
+  delete cashFlowPending[key];
+  try { sessionStorage.removeItem('cash-flow-pending:' + key); } catch (e) {}
+}
 
 /**
  * 显示入金/出金弹窗
@@ -26,7 +52,7 @@ function showCashFlowModal() {
     '</div>' +
     '<div class="modal-actions">' +
     '<button class="btn btn-outline" data-act="closeCashFlowModal">取消</button>' +
-    '<button class="btn btn-primary" data-act="addCashFlow">确认</button>' +
+    '<button class="btn btn-primary" id="cf-confirm" data-act="addCashFlow">确认</button>' +
     '</div>' +
     '</div>' +
     '</div>';
@@ -36,6 +62,13 @@ function showCashFlowModal() {
   div.innerHTML = html;
   document.body.appendChild(div);
   setCfDir('in');
+  var pending = readPendingCashFlow(cashFlowScopeKey());
+  if (pending) {
+    setCfDir(pending.amount > 0 ? 'in' : 'out');
+    document.getElementById('cf-amount').value = Math.abs(pending.amount);
+    document.getElementById('cf-note').value = pending.note;
+    showToast('上次提交结果待确认；请核对流水，或保持原内容重试');
+  }
 }
 
 // 切换 入金/出金（不再用正负数，改用按钮）
@@ -60,41 +93,83 @@ function closeCashFlowModal() {
 }
 
 async function addCashFlow() {
+  if (cashFlowInFlight) return;
   var amountInput = document.getElementById('cf-amount');
   var noteInput = document.getElementById('cf-note');
   var abs = parseFloat(amountInput ? amountInput.value : 0);
-  if (!abs || isNaN(abs) || abs <= 0) {
+  if (!Number.isFinite(abs) || abs <= 0) {
     showToast('请输入有效金额');
     return;
   }
   var dir = window.__cfDir || 'in';
   var cfAmount = dir === 'in' ? abs : -abs;
-  // 幂等键：前端生成唯一 id，重复点击/网络重试不会新增第二条（2026-08-04 修复）
-  var cfId = uid();
+  var account = currentAccount;
+  var accountData = data;
+  var user = typeof username === 'string' ? username : '';
+  var identity = typeof accountIdentity === 'string' ? accountIdentity : '';
+  var scope = typeof captureSmartImportScope === 'function' ? captureSmartImportScope() : null;
+  var key = cashFlowScopeKey();
+  var isCurrent = function() {
+    return currentAccount === account && data === accountData &&
+      user === (typeof username === 'string' ? username : '') &&
+      identity === (typeof accountIdentity === 'string' ? accountIdentity : '') &&
+      (!scope || (typeof isSmartImportScopeCurrent === 'function' && isSmartImportScopeCurrent(scope)));
+  };
+  var note = noteInput ? noteInput.value.trim() : '';
+  var pending = readPendingCashFlow(key);
+  var retryingPending = !!pending;
+  if (pending && (pending.amount !== cfAmount || pending.note !== note)) {
+    showToast('上次提交结果待确认，请先核对流水；重试时保持原金额和备注');
+    return;
+  }
+  if (!pending) {
+    pending = { id: uid(), date: todayCN(), amount: cfAmount, note: note };
+    savePendingCashFlow(key, pending);
+  }
+  cashFlowInFlight = true;
+  var button = document.getElementById('cf-confirm');
+  if (button) button.disabled = true;
   try {
-    var result = await window.siteApi.requestRaw('/api/accounts/' + encodeURIComponent(currentAccount) + '/ledger/cash-flows?version=' + (dataVersion != null ? dataVersion : ''), {
+    var result = await window.siteApi.requestRaw('/api/accounts/' + encodeURIComponent(account) + '/ledger/cash-flows?version=' + (dataVersion != null ? dataVersion : ''), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         cashFlow: {
-          id: cfId,
-          date: todayCN(),
-          amount: cfAmount,
-          note: noteInput ? noteInput.value.trim() : ''
+          id: pending.id,
+          date: pending.date,
+          amount: pending.amount,
+          note: pending.note
         }
       }),
       timeoutMs: 0
     });
     if (!isCurrent()) return;
-    if (!result.response) { showToast(result.error || '网络异常'); return; }
+    if (!result.response) { showToast('提交结果待确认，请先核对流水；重试将使用原记录'); return; }
     var r = result.response;
     var j = await r.json().catch(function(){ return {}; });
-    if (!r.ok) { showToast(j.error || '记录失败'); return; }
-    if (j.data) refreshDataFromServer(j.data);
-    closeCashFlowModal();
-    renderAll();
-    showToast((cfAmount > 0 ? '入金' : '出金') + ' ' + fmt(Math.abs(cfAmount)) + ' 已记录');
-  } catch(e) { showToast('记录失败：' + (e.message || e)); }
+    if (!isCurrent()) return;
+    if (!r.ok) {
+      if (!retryingPending && r.status >= 400 && r.status < 500) {
+        clearPendingCashFlow(key);
+        showToast(j.error || '记录失败');
+      } else showToast('提交结果待确认，请先核对流水；重试将使用原记录');
+      return;
+    }
+    if (j.ok !== true) { showToast('提交结果待确认，请先核对流水；重试将使用原记录'); return; }
+    clearPendingCashFlow(key);
+    try {
+      if (!j.data) { showToast('流水已记录，请重新加载查看'); return; }
+      refreshDataFromServer(j.data);
+      closeCashFlowModal();
+      renderAll();
+      showToast((cfAmount > 0 ? '入金' : '出金') + ' ' + fmt(Math.abs(cfAmount)) + ' 已记录');
+    } catch (e) { showToast('流水已记录，页面刷新失败，请重新加载'); }
+  } catch(e) { if (isCurrent()) showToast('提交结果待确认，请先核对流水；重试将使用原记录'); }
+  finally {
+    cashFlowInFlight = false;
+    var currentButton = document.getElementById('cf-confirm');
+    if (currentButton) currentButton.disabled = false;
+  }
 }
 
 // ===================== 基金净值法收益（已修正现金流） =====================

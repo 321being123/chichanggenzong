@@ -13,9 +13,10 @@
 //   4. 官方区间接口有 ≤10 年跨度限制，适配层已按段自动拆分，本脚本传整段即可。
 //
 // 用法：
-//   node server/scripts/backfillStockValuationsOfficial.js                     预演（1 批抽样实取，其余只统计）
-//   node server/scripts/backfillStockValuationsOfficial.js --apply             全量写入
-//   node server/scripts/backfillStockValuationsOfficial.js --since=2025-01-01  只处理该区间
+//   node server/scripts/backfillStockValuationsOfficial.js                     预演（按需范围，抽样 1 批实取）
+//   node server/scripts/backfillStockValuationsOfficial.js --apply             按需范围全量写入
+//   node server/scripts/backfillStockValuationsOfficial.js --scope=all --apply  全市场（谨慎：59.7 万行）
+//   node server/scripts/backfillStockValuationsOfficial.js --since=2025-06-19  只处理该区间（转债分析回看 500 天）
 //   node server/scripts/backfillStockValuationsOfficial.js --offset=200 --limit-codes=200   断点续跑/分批
 'use strict';
 
@@ -33,7 +34,38 @@ const UNTIL = withDefault('until', '2099-12-31');
 const OFFSET = Math.max(Number(withDefault('offset', '0')) || 0, 0);
 const LIMIT_CODES = Math.max(Number(withDefault('limit-codes', '0')) || 0, 0);
 const SAMPLE_BATCHES = Math.max(Number(withDefault('sample', '1')) || 0, 0);
+// 默认只补「有人看的」证券：上市中可转债的正股 ∪ 持仓 ∪ 自选 ∪ 已分析过。全市场要显式 --scope=all。
+// 理由：daily_valuations 的历史行只有两处按天回看——个股分析（读全部历史）与转债分析（回看 500 天）；
+// 其余消费方（债券安全性、转债列表、下修服务、全市场总市值）只要当日或最近一条，补历史对它们没有增量。
+// 转债只取 status='listed' 的（用户要求：已退市/非上市的转债不管）。
+const SCOPE = withDefault('scope', 'watched');
 const CHUNK = 100; // 官方 stockCodes 一次最多 100 个
+
+const WATCHED_SCOPE_SQL = `
+  WITH scope AS (
+    SELECT code AS c FROM public.positions WHERE code IS NOT NULL
+    UNION SELECT ts_code FROM public.stock_watchlist
+    UNION SELECT i.canonical_code FROM fundamental.convertible_bond_profiles p
+            JOIN core.instruments b ON b.instrument_id = p.instrument_id AND b.status = 'listed'
+            JOIN core.instruments i ON i.instrument_id = p.stock_instrument_id
+    UNION SELECT i.canonical_code FROM analytics.stock_overview_latest l
+            JOIN core.instruments i ON i.instrument_id = l.instrument_id
+  )
+  SELECT DISTINCT v.instrument_id, i.canonical_code
+    FROM market.daily_valuations v
+    JOIN core.instruments i ON i.instrument_id = v.instrument_id
+    JOIN ops.data_sources s ON s.source_id = v.source_id
+    JOIN scope ON scope.c = i.canonical_code
+   WHERE s.source_code = 'tushare' AND v.trade_date BETWEEN $1::date AND $2::date
+   ORDER BY v.instrument_id`;
+
+const ALL_SCOPE_SQL = `
+  SELECT DISTINCT v.instrument_id, i.canonical_code
+    FROM market.daily_valuations v
+    JOIN core.instruments i ON i.instrument_id = v.instrument_id
+    JOIN ops.data_sources s ON s.source_id = v.source_id
+   WHERE s.source_code = 'tushare' AND v.trade_date BETWEEN $1::date AND $2::date
+   ORDER BY v.instrument_id`;
 
 const chunk = (list, size) => {
   const out = [];
@@ -49,16 +81,13 @@ async function officialSourceId() {
 }
 
 // 候选：在目标区间内仍有 Tushare 行的证券（官方行已存在也无妨，写库是 upsert 幂等）。
+// scope=watched（默认）只取「转债正股 ∪ 持仓 ∪ 自选 ∪ 已分析过」；scope=all 取全市场。
 async function listTargets() {
-  const { rows } = await pool.query(
-    `SELECT DISTINCT v.instrument_id, i.canonical_code
-       FROM market.daily_valuations v
-       JOIN core.instruments i ON i.instrument_id = v.instrument_id
-       JOIN ops.data_sources s ON s.source_id = v.source_id
-      WHERE s.source_code = 'tushare' AND v.trade_date BETWEEN $1::date AND $2::date
-      ORDER BY v.instrument_id`,
-    [SINCE, UNTIL],
-  );
+  if (SCOPE !== 'watched' && SCOPE !== 'all') {
+    throw new Error(`未知 scope：${SCOPE}（可选 watched / all）`);
+  }
+  const sql = SCOPE === 'watched' ? WATCHED_SCOPE_SQL : ALL_SCOPE_SQL;
+  const { rows } = await pool.query(sql, [SINCE, UNTIL]);
   return rows;
 }
 
@@ -91,7 +120,7 @@ async function main() {
   const sourceId = await officialSourceId();
   const all = await listTargets();
   const sliced = LIMIT_CODES ? all.slice(OFFSET, OFFSET + LIMIT_CODES) : all.slice(OFFSET);
-  console.log(`${APPLY ? '实际写入' : '只读预演'}；区间 ${SINCE} ~ ${UNTIL}；候选证券 ${all.length} 只，本次处理 ${sliced.length} 只（offset=${OFFSET}${LIMIT_CODES ? `, limit=${LIMIT_CODES}` : ''}）`);
+  console.log(`${APPLY ? '实际写入' : '只读预演'}；范围 ${SCOPE === 'watched' ? '按需（上市转债正股∪持仓∪自选∪已分析）' : '全市场'}；区间 ${SINCE} ~ ${UNTIL}；候选证券 ${all.length} 只，本次处理 ${sliced.length} 只（offset=${OFFSET}${LIMIT_CODES ? `, limit=${LIMIT_CODES}` : ''}）`);
 
   const batches = chunk(sliced, CHUNK);
   console.log(`分批 ${batches.length} 批（每批 ${CHUNK} 只）；预计官方请求 ${batches.length} 批 × 每批按 ≤10 年分段数`);

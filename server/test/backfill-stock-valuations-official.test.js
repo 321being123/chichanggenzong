@@ -1,7 +1,9 @@
 // 全市场逐只估值回填（官方口径）的不变式：
-//   1. 回填只补「现有分区已有 (证券, 交易日)」，不新增日期分区（新增日期会改下游口径）；
-//   2. 只回官方、官方失败不得回落 Tushare（否则会把别家数值写成官方）；
-//   3. 已有官方行跳过、不删旧行。
+//   1. 回填「能补就补」：官方有值的 (证券, 交易日) 一律写入，不再以旧来源分区作白名单
+//      （2026-11-01 用户决定；实测新增 65 万行全部落在当日证券数 < 4500 的稀疏日期，不影响按日总市值与 M2）；
+//   2. 候选集不得依赖旧来源行：清理后 320/327 只已无 tushare 行，按旧来源筛会塌成 7 只；
+//   3. 只回官方、官方失败不得回落 Tushare（否则会把别家数值写成官方）；
+//   4. 已有官方行跳过、不删旧行。
 // 数据层入口用替代适配器验证（不连外部），脚本约束用静态断言钉住。
 process.env.NODE_ENV = 'test';
 
@@ -79,10 +81,17 @@ const datasets = require('../dataAccess/marketDatasets');
   assert.deepStrictEqual(await datasets.readStockValuationSeriesBatch({ codes: [] }), [], '无代码不发请求');
   assert.strictEqual(seriesCalls, 0, '无代码时不应调用官方接口');
 
-  // 四、脚本约束（静态）：只写现有分区、不新增日期、不回落备源、空批次不算成功
+  // 四、脚本约束（静态）：能补就补、候选集不依赖旧来源、不回落备源、空批次不算成功
   const script = fs.readFileSync(path.join(__dirname, '..', 'scripts', 'backfillStockValuationsOfficial.js'), 'utf8');
-  assert.ok(/targets\.has\(key\(instrumentId, day\)\)/.test(script), '必须只写入现有分区已有的 (证券, 交易日)');
-  assert.ok(/covered\.has\(key\(instrumentId, day\)\)/.test(script), '已有官方行要跳过，避免重复写');
+  assert.ok(!/targets\.has\(key\(instrumentId, day\)\)/.test(script),
+    '不得再以「旧来源已有该日」作写入白名单：官方有值就要写（2026-11-01 起能补就补）');
+  assert.ok(!/source_code = 'tushare' AND v\.trade_date BETWEEN/.test(script),
+    '候选集不得按旧来源行筛：清理旧行后大量证券已无 tushare 行，按它筛会把候选集算塌');
+  assert.ok(/EXISTS \(SELECT 1 FROM market\.daily_valuations/.test(script),
+    '候选集应取「scope 内且估值表里有任何一行」的证券，与来源无关');
+  assert.ok(/covered\.has\(k\)/.test(script), '已有官方行要跳过，避免重复写');
+  assert.ok(/newDayRows/.test(script) && /!allKeys\.has\(k\)/.test(script),
+    '要能报出「原本没有该股数据的日子」有多少行，供预演核对');
   assert.ok(!/DELETE\s+FROM\s+market\.daily_valuations/i.test(script), '回填不得删除旧来源行');
   assert.ok(!/tushareQuery/.test(script), '脚本不得直接调 Tushare（回填只认官方）');
   assert.ok(/emptyBatches/.test(script) && /process\.exit\(2\)/.test(script), '官方返回 0 行必须当异常处理并返回非零退出码');
@@ -90,7 +99,7 @@ const datasets = require('../dataAccess/marketDatasets');
   assert.ok(/replace\(\/-\/g, ''\)\.slice\(0, 8\)/.test(script) && /trade_date: day/.test(script),
     '官方 8 位日期必须先归一成 YYYY-MM-DD 再和分区键比对');
 
-  console.log('backfill-stock-valuations-official：只回官方、不回落备源、只写现有分区，通过');
+  console.log('backfill-stock-valuations-official：只回官方、能补就补、候选集不依赖旧来源，通过');
 })().catch(error => {
   console.error(String(error && error.stack ? error.stack : error));
   process.exit(1);

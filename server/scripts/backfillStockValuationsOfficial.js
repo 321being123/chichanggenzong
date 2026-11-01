@@ -6,16 +6,21 @@
 // 本脚本按证券把官方区间估值补进来，让历史日期也有官方行。
 //
 // 关键约束（不能省）：
-//   1. **只补现有分区已有 (证券, 交易日)**：不新增日期分区。加了日期会连带改变
-//      「全市场总市值按日聚合」「M2 市值比月末采样」等下游口径，那是另一件事。
+//   1. **能补就补**：官方有值的 (证券, 交易日) 一律写入，包括库里原本没有该股数据的日期
+//      （2026-11-01 用户决定，推翻上一版「只补现有分区」）。实测放开后生产新增 652,577 行，
+//      **全部落在当日库中已有证券数 < 4500 的稀疏日期**上：`totalMarketCap` /
+//      `readTotalAShareMarketCap` / `a_share_market_cap_daily` 都带 `minUnifiedCount`（生产 4500）
+//      门槛，稀疏日期本来就走官方中证全指或 Tushare 兜底，因此按日聚合与 M2 市值比不受影响。
 //   2. **只回官方、不回落备源**：官方没数据就是没数据，不得把 Tushare 的值按官方名义写入。
 //   3. **不删旧行**：读取端已按「官方优先」择一，旧行保留可回溯；要清理另立任务。
 //   4. 官方区间接口有 ≤10 年跨度限制，适配层已按段自动拆分，本脚本传整段即可。
+//   5. **候选集不得依赖旧来源行**：按 scope 从 core.instruments 取，再加「估值表里有任何一行」。
+//      上一版按「还有 tushare 行」筛，清理旧行后 320/327 只已无 tushare 行，候选集塌成 7 只。
 //
 // 用法：
 //   node server/scripts/backfillStockValuationsOfficial.js                     预演（按需范围，抽样 1 批实取）
 //   node server/scripts/backfillStockValuationsOfficial.js --apply             按需范围全量写入
-//   node server/scripts/backfillStockValuationsOfficial.js --scope=all --apply  全市场（谨慎：59.7 万行）
+//   node server/scripts/backfillStockValuationsOfficial.js --scope=all --apply  全市场（谨慎：上百万行）
 //   node server/scripts/backfillStockValuationsOfficial.js --since=2025-06-19  只处理该区间（转债分析回看 500 天）
 //   node server/scripts/backfillStockValuationsOfficial.js --offset=200 --limit-codes=200   断点续跑/分批
 'use strict';
@@ -32,6 +37,9 @@ const withDefault = (name, fallback) => {
 };
 const SINCE = withDefault('since', '1991-01-01');
 const UNTIL = withDefault('until', '2099-12-31');
+// 官方不会给未来日期：实际取数的结束日取「UNTIL 与今天」的较小值。
+const TODAY = new Date().toISOString().slice(0, 10);
+const FETCH_UNTIL = UNTIL > TODAY ? TODAY : UNTIL;
 const OFFSET = Math.max(Number(withDefault('offset', '0')) || 0, 0);
 const LIMIT_CODES = Math.max(Number(withDefault('limit-codes', '0')) || 0, 0);
 const SAMPLE_BATCHES = Math.max(Number(withDefault('sample', '1')) || 0, 0);
@@ -63,6 +71,8 @@ async function watchedCodes() {
   return out;
 }
 
+// 候选集**不按旧来源行筛**：清理旧行后大量证券已无 tushare 行（生产 320/327），
+// 按旧来源筛会让候选集塌成个位数、漏掉真正要补的股票。改为「scope 内的证券，且估值表里有任何一行」。
 const WATCHED_SCOPE_SQL = `
   WITH active_cb AS (
     SELECT DISTINCT b.instrument_id
@@ -78,23 +88,19 @@ const WATCHED_SCOPE_SQL = `
       JOIN core.instruments si ON si.instrument_id = p.stock_instrument_id
     UNION SELECT i.canonical_code FROM analytics.stock_overview_latest l
             JOIN core.instruments i ON i.instrument_id = l.instrument_id
-    UNION SELECT unnest($3::text[])
+    UNION SELECT unnest($1::text[])
   )
-  SELECT DISTINCT v.instrument_id, i.canonical_code
-    FROM market.daily_valuations v
-    JOIN core.instruments i ON i.instrument_id = v.instrument_id
-    JOIN ops.data_sources s ON s.source_id = v.source_id
+  SELECT DISTINCT i.instrument_id, i.canonical_code
+    FROM core.instruments i
     JOIN scope ON scope.c = i.canonical_code
-   WHERE s.source_code = 'tushare' AND v.trade_date BETWEEN $1::date AND $2::date
-   ORDER BY v.instrument_id`;
+   WHERE EXISTS (SELECT 1 FROM market.daily_valuations v WHERE v.instrument_id = i.instrument_id)
+   ORDER BY i.instrument_id`;
 
 const ALL_SCOPE_SQL = `
-  SELECT DISTINCT v.instrument_id, i.canonical_code
-    FROM market.daily_valuations v
-    JOIN core.instruments i ON i.instrument_id = v.instrument_id
-    JOIN ops.data_sources s ON s.source_id = v.source_id
-   WHERE s.source_code = 'tushare' AND v.trade_date BETWEEN $1::date AND $2::date
-   ORDER BY v.instrument_id`;
+  SELECT DISTINCT i.instrument_id, i.canonical_code
+    FROM core.instruments i
+   WHERE EXISTS (SELECT 1 FROM market.daily_valuations v WHERE v.instrument_id = i.instrument_id)
+   ORDER BY i.instrument_id`;
 
 const chunk = (list, size) => {
   const out = [];
@@ -116,35 +122,31 @@ async function listTargets() {
     throw new Error(`未知 scope：${SCOPE}（可选 watched / all）`);
   }
   const sql = SCOPE === 'watched' ? WATCHED_SCOPE_SQL : ALL_SCOPE_SQL;
-  const params = [SINCE, UNTIL];
-  if (SCOPE === 'watched') params.push(await watchedCodes());
+  const params = SCOPE === 'watched' ? [await watchedCodes()] : [];
   const { rows } = await pool.query(sql, params);
   return rows;
 }
 
-// 该批已有的分区键与日期范围：只保留落在其中的 (证券, 交易日)，不扩日期。
-async function loadExistingPartitions(instrumentIds) {
+// 该批已有的键。写入本身是 upsert 幂等，跳过已有官方行只为省写入量、让统计能对上。
+// `allKeys` 用来在预演里区分「补上原本就有的日子」与「新增该股本没有的日子」——
+// 2026-11-01 起「能补就补」，两者都要写，只是报数要分开看。
+// 这里**不再收集旧来源的分区键当白名单**：官方有值就写。
+async function loadExistingKeys(instrumentIds) {
   const { rows } = await pool.query(
     `SELECT v.instrument_id, v.trade_date::text AS day, s.source_code
        FROM market.daily_valuations v
        JOIN ops.data_sources s ON s.source_id = v.source_id
       WHERE v.instrument_id = ANY($1::bigint[]) AND v.trade_date BETWEEN $2::date AND $3::date`,
-    [instrumentIds, SINCE, UNTIL],
+    [instrumentIds, SINCE, FETCH_UNTIL],
   );
-  const targets = new Set();
   const covered = new Set();
-  let first = null;
-  let last = null;
+  const allKeys = new Set();
   for (const row of rows) {
-    if (row.source_code === 'tushare') {
-      targets.add(key(row.instrument_id, row.day));
-      if (!first || row.day < first) first = row.day;
-      if (!last || row.day > last) last = row.day;
-    } else if (row.source_code === 'lixinger_official') {
-      covered.add(key(row.instrument_id, row.day));
-    }
+    const k = key(row.instrument_id, row.day);
+    allKeys.add(k);
+    if (row.source_code === 'lixinger_official') covered.add(k);
   }
-  return { targets, covered, first, last };
+  return { covered, allKeys };
 }
 
 async function main() {
@@ -161,47 +163,48 @@ async function main() {
   let fetchedRows = 0;
   let processedBatches = 0;
   let emptyBatches = 0;
+  let newDayRows = 0;
   const startedAt = Date.now();
 
   for (let index = 0; index < batches.length; index += 1) {
     const batch = batches[index];
     const ids = batch.map(item => item.instrument_id);
-    const { targets, covered, first, last } = await loadExistingPartitions(ids);
-    if (!targets.size) {
-      console.log(`[${index + 1}/${batches.length}] 无 Tushare 分区，跳过`);
-      continue;
-    }
+    const { covered, allKeys } = await loadExistingKeys(ids);
     // 预演只抽样前 N 批真正发请求，其余仅统计，避免为了看一眼花掉整轮额度。
     if (!APPLY && processedBatches >= SAMPLE_BATCHES) continue;
 
     const instrumentMap = new Map(batch.map(item => [item.canonical_code, item.instrument_id]));
     const rows = await readStockValuationSeriesBatch({
       codes: batch.map(item => item.canonical_code),
-      startDate: first,
-      endDate: last,
+      startDate: SINCE,
+      endDate: FETCH_UNTIL,
     });
     fetchedRows += rows.length;
-    // 官方返回空但该批确实有目标分区：不能当成「没有数据」静默过去（数据层包装会吞异常），
+    // 官方返回空但该批确实在范围里：不能当成「没有数据」静默过去（数据层包装会吞异常），
     // 记为可疑批次，最后汇总时非零退出，交给人工判断是权限、额度还是真实无值。
     if (!rows.length) emptyBatches += 1;
 
     const keep = [];
     let coveredHit = 0;
+    let newDays = 0;
     for (const row of rows) {
       const instrumentId = instrumentMap.get(row.ts_code);
       // 适配层返回的日期是 YYYYMMDD（无横线），分区键是 YYYY-MM-DD：不归一化会一条都对不上，
       // 表现成「官方有数据但命中 0 行」（2026-11-01 生产预演实测）。
       const digits = String(row.trade_date || '').replace(/-/g, '').slice(0, 8);
       const day = /^\d{8}$/.test(digits) ? `${digits.slice(0, 4)}-${digits.slice(4, 6)}-${digits.slice(6, 8)}` : null;
-      if (!instrumentId || !day || !targets.has(key(instrumentId, day))) continue;
-      if (covered.has(key(instrumentId, day))) { coveredHit += 1; continue; }
+      if (!instrumentId || !day) continue;
+      const k = key(instrumentId, day);
+      if (covered.has(k)) { coveredHit += 1; continue; }
+      if (!allKeys.has(k)) newDays += 1;
       keep.push({ ...row, trade_date: day });
     }
     skippedCovered += coveredHit;
+    newDayRows += newDays;
 
     if (!APPLY) {
       const sample = keep.slice(0, 3).map(row => `${row.ts_code} ${row.trade_date} pe_ttm=${row.pe_ttm} total_mv=${row.total_mv}`);
-      console.log(`[${index + 1}/${batches.length}] 抽样：官方返回 ${rows.length} 行，命中现有分区 ${keep.length} 行（已有官方 ${coveredHit} 行跳过）`);
+      console.log(`[${index + 1}/${batches.length}] 抽样：官方返回 ${rows.length} 行，将写入 ${keep.length} 行（其中原本没有该股数据的日子 ${newDays} 行；已有官方 ${coveredHit} 行跳过）`);
       sample.forEach(line => console.log(`    ${line}`));
       processedBatches += 1;
       continue;
@@ -226,8 +229,8 @@ async function main() {
     console.log(`[${index + 1}/${batches.length}] 官方 ${rows.length} 行 → 写入 ${keep.length} 行（跳过已有官方 ${coveredHit}）累计 ${writtenRows} 行，用时 ${elapsed}s`);
   }
 
-  console.log(`\n汇总：处理批次 ${processedBatches}/${batches.length}，官方返回 ${fetchedRows} 行，${APPLY ? `写入 ${writtenRows} 行` : '未写库（预演）'}，已有官方跳过 ${skippedCovered} 行`);
-  if (emptyBatches) console.warn(`⚠️ 有 ${emptyBatches} 批官方返回 0 行（该批存在目标分区），可能是权限/额度或区间无效，需人工核对，不能当作「本来就没有数据」`);
+  console.log(`\n汇总：处理批次 ${processedBatches}/${batches.length}，官方返回 ${fetchedRows} 行，${APPLY ? `写入 ${writtenRows} 行` : '未写库（预演）'}，其中原本没有该股数据的日子 ${newDayRows} 行；已有官方跳过 ${skippedCovered} 行`);
+  if (emptyBatches) console.warn(`⚠️ 有 ${emptyBatches} 批官方返回 0 行（该批在补数范围内），可能是权限/额度或区间无效，需人工核对，不能当作「本来就没有数据」`);
   if (!APPLY) console.log('预演结束：只抽样实取了前若干批，未写库。加 --apply 才全量写入。');
   await pool.end();
   if (APPLY && emptyBatches) process.exit(2);

@@ -212,17 +212,18 @@ async function resolveValuationSeries({ codes = [], startDate, endDate, options 
   if (!list.length || !start || !end) return null;
   const rows = [];
   let failed = 0;
-  for (const batch of chunk(list, VALUATION_CHUNK)) {
+  // 官方「区间」模式只接受单个 stockCodes：一次传多只直接 400 ValidationError
+  // （2026-11-01 生产实测 n=1 正常、n=10/30/50/100 全部失败）。所以这里按单只循环，
+  // 不能像按日快照 resolveValuationRows 那样按 100 只批量；批量调用方要自己承担逐只请求的成本。
+  for (const item of list) {
     try {
       for (const [from, to] of rangeChunks(start, end)) {
         const result = await callEndpoint('cn/company/fundamental/non_financial', {
-          stockCodes: batch.map(item => item.code), startDate: from, endDate: to, metricsList: VALUATION_METRICS,
+          stockCodes: [item.code], startDate: from, endDate: to, metricsList: VALUATION_METRICS,
         }, { dataset: 'stock_valuation', targetDate: end, ...options });
-        const byCode = new Map(batch.map(item => [item.code, item.tsCode]));
         for (const row of result.rows) {
-          const tsCode = byCode.get(String(row.stockCode));
-          if (!tsCode) continue;
-          const mapped = valuationRow(row, tsCode, to);
+          if (String(row.stockCode) !== String(item.code)) continue;
+          const mapped = valuationRow(row, item.tsCode, to);
           if (mapped) rows.push(mapped);
         }
       }

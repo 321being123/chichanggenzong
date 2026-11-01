@@ -222,6 +222,68 @@ async function resetState() {
   }), error => error.code === 'NOT_CONFIGURED');
   process.env.LIXINGER_TOKEN = token;
 
+  // ---------- 三·五、单次HTTP截止时间与取消（审查 R2-005） ----------
+  // 截止时间必须覆盖"等响应头"和"读响应体"两段：原来 timer 在 fetch 返回后就被清掉，
+  // 响应头先到、读体停滞的请求会无限挂起，读体失败还被 catch 吞成空字符串（当成成功空结果）。
+  // 模拟"响应头已到、读体停滞"：text() 只在请求被 abort 时失败，与真实 fetch 行为一致。
+  const slowBodyFetch = async (url, options) => ({
+    ok: true, status: 200,
+    text: () => new Promise((resolve, reject) => {
+      options.signal.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })), { once: true });
+    }),
+  });
+  await assert.rejects(
+    callEndpoint('cn/company', { stockCodes: ['600519'] }, { fetch: slowBodyFetch, sleep: async () => {}, timeoutMs: 60 }),
+    error => error.code === 'NETWORK_TIMEOUT',
+    '读体停滞必须在同一截止时间内超时，且分类为超时而不是空结果',
+  );
+
+  // 读体断流/连接重置：保留网络错误分类，不能变成空数据。
+  const brokenBodyFetch = async () => ({ ok: true, status: 200, text: async () => { throw Object.assign(new Error('stream reset'), { code: 'ECONNRESET' }); } });
+  await assert.rejects(
+    callEndpoint('cn/company', { stockCodes: ['600519'] }, { fetch: brokenBodyFetch, sleep: async () => {}, timeoutMs: 2000 }),
+    error => error.code === 'NETWORK_ERROR',
+    '读体失败必须保留网络错误分类，不能吞成空字符串',
+  );
+
+  // 响应头正常但内容是非法 JSON：仍按 INVALID_RESPONSE 处理，不落有效原始记录。
+  await assert.rejects(
+    callEndpoint('cn/company', { stockCodes: ['600519'] }, {
+      fetch: async () => ({ ok: true, status: 200, text: async () => '<html>not json</html>' }),
+      sleep: async () => {},
+    }),
+    error => error.code === 'INVALID_RESPONSE',
+  );
+
+  // 调用方取消：立即上抛 CANCELLED，且不重试（只发一次真实请求）。
+  let cancelCalls = 0;
+  const controller = new AbortController();
+  const hangingFetch = async (url, options) => {
+    cancelCalls += 1;
+    return new Promise((resolve, reject) => {
+      // 请求真实发出去之后再取消，才能证明"取消后不再重试"。
+      setTimeout(() => controller.abort(), 10);
+      options.signal.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })), { once: true });
+    });
+  };
+  const cancelTask = callEndpoint('cn/company', { stockCodes: ['600519'] }, {
+    fetch: hangingFetch, sleep: async () => {}, signal: controller.signal, timeoutMs: 5000,
+  });
+  await assert.rejects(cancelTask, error => error.code === 'CANCELLED', '调用方取消必须保留 CANCELLED 分类');
+  assert.strictEqual(cancelCalls, 1, '取消后不得重试');
+
+  // 父任务截止时间已过：不再发起真实请求，剩余范围交回上层续跑。
+  let deadlineCalls = 0;
+  await assert.rejects(
+    callEndpoint('cn/company', { stockCodes: ['600519'] }, {
+      fetch: async () => { deadlineCalls += 1; return jsonResponse({ code: 1, data: [] }); },
+      sleep: async () => {},
+      deadlineAt: Date.now() - 1000,
+    }),
+    error => error.code === 'DEADLINE_EXCEEDED',
+  );
+  assert.strictEqual(deadlineCalls, 0, '截止时间已过不得再发请求');
+
   // ---------- 四、正股日线按需批量（官方无按交易日全市场接口） ----------
   const { resolveStockDailyBatch } = require('../dataAccess/adapters/lixingerDatasetAdapter');
   const okBody = () => jsonResponse({ code: 1, data: [{

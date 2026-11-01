@@ -140,17 +140,81 @@ function valuationRow(rawRow, tsCode, fallbackDate) {
  * @returns {Promise<object[]|null>} 返回 Tushare 形状的行（万元/百分数点），失败返回 null 由调用方回退。
  */
 async function resolveValuationRows({ codes = [], tradeDate, options = {} } = {}) {
+  const detail = await resolveValuationRowsDetailed({ codes, tradeDate, options });
+  if (!detail) return null;
+  if (!detail.complete) {
+    // 有批次失败时不再静默返回部分数组（R2-001）：上层要么按详细结果补备源，要么整段回退。
+    throw partialResultError('估值快照', detail);
+  }
+  return detail.rows;
+}
+
+// ---------- 估值批次完整性（R2-001）----------
+// 计划在请求前冻结：快照按「代码批」，历史按「单证券 × 日期段」。
+// 返回 rows 与 planned/succeeded/failed/notAttempted、逐批诊断；
+// complete 只证明"计划内的请求全部成功"，不证明业务覆盖（某个证券/交易日有没有值要上层裁决）。
+// 控制类与权限/凭据错误立即上抛，不再被"累计三次失败"的门槛吞掉。
+const CONTROL_ERROR_CODES = new Set([
+  'POLICY_NOT_CONFIGURED', 'JOB_BUDGET_EXCEEDED', 'DATASET_LOCKED',
+  'CANCELLED', 'INVALID_CREDENTIAL', 'PERMISSION_DENIED', 'ENDPOINT_DISABLED', 'NOT_CONFIGURED', 'DEADLINE_EXCEEDED',
+]);
+
+function isControlError(error) {
+  return Boolean(error && CONTROL_ERROR_CODES.has(error.code));
+}
+
+function batchDiagnostic(error, extra) {
+  return {
+    ...extra,
+    code: (error && error.code) || 'ERROR',
+    retryable: Boolean(error && error.retryable),
+    message: String((error && error.message) || '').slice(0, 160),
+  };
+}
+
+function summarizeBatches({ rows, planned, attempted, failures, emptyBatches, scope }) {
+  return {
+    rows,
+    planned,
+    attempted,
+    succeeded: attempted - failures.length,
+    failed: failures.length,
+    notAttempted: planned - attempted,
+    emptyBatches,
+    // complete = 计划内没有被跳过的段、也没有失败段；不等于业务覆盖完整。
+    complete: failures.length === 0 && planned === attempted,
+    failures,
+    scope,
+  };
+}
+
+function partialResultError(label, detail) {
+  const error = new Error(`理杏仁${label}未取全：计划 ${detail.planned} 段，成功 ${detail.succeeded} 段，失败 ${detail.failed} 段，未执行 ${detail.notAttempted} 段`);
+  error.code = 'PARTIAL_RESULT';
+  error.retryable = false;
+  // 已取到的行随错误带回，调用方可据此保留成功部分，不把失败当成"没有数据"。
+  error.partialRows = detail.rows;
+  error.failures = detail.failures;
+  return error;
+}
+
+async function resolveValuationRowsDetailed({ codes = [], tradeDate, options = {} } = {}) {
   const list = (codes || []).map(code => ({ tsCode: String(code), code: stockCodeOf(code) })).filter(item => item.code);
   if (!list.length || !tradeDate) return null;
   const date = dashDate(tradeDate);
   if (!date) return null;
+  const batches = chunk(list, VALUATION_CHUNK);
   const rows = [];
-  let failed = 0;
-  for (const batch of chunk(list, VALUATION_CHUNK)) {
+  const failures = [];
+  let attempted = 0;
+  let emptyBatches = 0;
+  for (const batch of batches) {
+    attempted += 1;
     try {
       const result = await callEndpoint('cn/company/fundamental/non_financial', {
         stockCodes: batch.map(item => item.code), date, metricsList: VALUATION_METRICS,
       }, { dataset: 'stock_valuation', targetDate: date, ...options });
+      if (!result.rows.length) emptyBatches += 1;
       const byCode = new Map(batch.map(item => [item.code, item.tsCode]));
       for (const row of result.rows) {
         const tsCode = byCode.get(String(row.stockCode));
@@ -159,11 +223,12 @@ async function resolveValuationRows({ codes = [], tradeDate, options = {} } = {}
         if (mapped) rows.push(mapped);
       }
     } catch (error) {
-      failed += 1;
-      if (failed >= 3) throw error;
+      if (isControlError(error)) throw error;
+      failures.push(batchDiagnostic(error, { stockCodes: batch.map(item => item.code), tradeDate: date }));
     }
   }
-  return rows;
+  return summarizeBatches({ rows, planned: batches.length, attempted, failures, emptyBatches,
+    scope: { kind: 'snapshot', tradeDate: date, codes: list.length } });
 }
 
 /**
@@ -207,32 +272,56 @@ async function callEndpointRange(endpoint, params, startDate, endDate, options =
  * @returns {Promise<object[]|null>} Tushare 形状的行（pe 待 fillStaticPe 派生）
  */
 async function resolveValuationSeries({ codes = [], startDate, endDate, options = {} } = {}) {
+  const detail = await resolveValuationSeriesDetailed({ codes, startDate, endDate, options });
+  if (!detail) return null;
+  // R2-001：任一证券的任一日期段失败，都不能把剩下的部分当成完整序列返回。
+  if (!detail.complete) throw partialResultError('估值历史', detail);
+  return detail.rows;
+}
+
+/**
+ * 估值序列的详细结果（R2-001）。
+ * 计划按「单证券 × 日期段」冻结；某段失败只记录该段，不跳过该证券余下区间，
+ * 也不再用"累计三次失败"的门槛吞掉控制错误。调用方据此决定续跑/回退与是否发布质量分区。
+ */
+async function resolveValuationSeriesDetailed({ codes = [], startDate, endDate, options = {} } = {}) {
   const list = (codes || []).map(code => ({ tsCode: String(code), code: stockCodeOf(code) })).filter(item => item.code);
   const start = dashDate(startDate), end = dashDate(endDate);
   if (!list.length || !start || !end) return null;
   const rows = [];
-  let failed = 0;
+  const failures = [];
+  let attempted = 0;
+  let emptyBatches = 0;
   // 官方「区间」模式只接受单个 stockCodes：一次传多只直接 400 ValidationError
   // （2026-11-01 生产实测 n=1 正常、n=10/30/50/100 全部失败）。所以这里按单只循环，
   // 不能像按日快照 resolveValuationRows 那样按 100 只批量；批量调用方要自己承担逐只请求的成本。
   for (const item of list) {
-    try {
-      for (const [from, to] of rangeChunks(start, end)) {
+    for (const [from, to] of rangeChunks(start, end)) {
+      attempted += 1;
+      try {
         const result = await callEndpoint('cn/company/fundamental/non_financial', {
           stockCodes: [item.code], startDate: from, endDate: to, metricsList: VALUATION_METRICS,
         }, { dataset: 'stock_valuation', targetDate: end, ...options });
+        if (!result.rows.length) emptyBatches += 1;
         for (const row of result.rows) {
           if (String(row.stockCode) !== String(item.code)) continue;
           const mapped = valuationRow(row, item.tsCode, to);
           if (mapped) rows.push(mapped);
         }
+      } catch (error) {
+        // 控制/凭据类错误立即上抛：既不重试、也不当作"这一段没数据"继续跑。
+        if (isControlError(error)) throw error;
+        failures.push(batchDiagnostic(error, { tsCode: item.tsCode, from, to }));
       }
-    } catch (error) {
-      failed += 1;
-      if (failed >= 3) throw error;
     }
   }
-  return rows;
+  return summarizeBatches({ rows, planned: buildSeriesPlanSize(list, start, end), attempted, failures, emptyBatches,
+    scope: { kind: 'series', startDate: start, endDate: end, codes: list.length } });
+}
+
+// 计划段数在请求前就可冻结：证券数 × 该区间的十年段数。
+function buildSeriesPlanSize(list, start, end) {
+  return list.length * rangeChunks(start, end).length;
 }
 
 /**
@@ -549,5 +638,7 @@ module.exports = {
   resolveStockDaily,
   resolveStockDailyBatch,
   resolveValuationRows,
+  resolveValuationRowsDetailed,
   resolveValuationSeries,
+  resolveValuationSeriesDetailed,
 };

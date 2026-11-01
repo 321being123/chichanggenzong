@@ -63,7 +63,15 @@ const OFFICIAL_VALUATION = [
   { ts_code: '600519.SH', trade_date: '20261102', pe: null, pe_ttm: null, pb: 6, dv_ttm: 6, total_mv: 174017609.267205, circ_mv: 170000000, source_code: OFFICIAL },
 ];
 let officialValuationCalled = 0;
-adapter.resolveValuationSeries = async () => { officialValuationCalled += 1; return OFFICIAL_VALUATION; };
+// R2-001 后估值历史走详细结果入口：给出 rows 与"计划段全部成功"的完整性信息，
+// 断言仍是"数值必须来自官方"，不只是换标签。
+adapter.resolveValuationSeriesDetailed = async () => {
+  officialValuationCalled += 1;
+  return {
+    rows: OFFICIAL_VALUATION, planned: 1, attempted: 1, succeeded: 1, failed: 0,
+    notAttempted: 0, emptyBatches: 0, complete: true, failures: [], scope: { kind: 'series' },
+  };
+};
 adapter.resolveAnnualNetProfits = async () => ([
   { periodEnd: '20241231', announcedAt: '20250425', reportType: 'annual_report', netProfit: 80000000000 },
   { periodEnd: '20251231', announcedAt: '20260417', reportType: 'annual_report', netProfit: 82320067102 },

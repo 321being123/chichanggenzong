@@ -660,7 +660,19 @@ def main():
             "&& systemctl is-enabled --quiet portfolio-server.service portfolio-worker.service portfolio-worker-health.timer "
             "&& health_json=$(curl -fsS http://127.0.0.1:3000/health) "
             "&& printf '%s' \"$health_json\" | grep -Fq '\"version\":\"" + local_version + "\"' "
-            "&& printf 'commit=%s webpid=%s health=%s\\n' \"$(git rev-parse --short HEAD)\" \"$(systemctl show -p MainPID --value portfolio-server.service)\" \"$health_json\" "
+            # 发布身份证据（审查 S-001）：同一行固定「目标提交 + Web/Worker 的 MainPID 与启动时刻 +
+            # /health 自述的提交与版本 + 本次提交携带的迁移尾部」。
+            # 只做采集与打印，不因某项缺失让部署失败（.git 不可读等情况不能冒充代码回滚理由），
+            # 缺项由发布回执按实际值人工核对，不用服务 active 或版本号相同代替提交一致性。
+            "&& release_head=$(git rev-parse HEAD) "
+            "&& web_pid=$(systemctl show -p MainPID --value portfolio-server.service) "
+            "&& worker_pid=$(systemctl show -p MainPID --value portfolio-worker.service) "
+            "&& web_started=$(systemctl show -p ActiveEnterTimestamp --value portfolio-server.service) "
+            "&& worker_started=$(systemctl show -p ActiveEnterTimestamp --value portfolio-worker.service) "
+            "&& health_commit=$(printf '%s' \"$health_json\" | sed -n 's/.*\"commit\":\"\\([^\"]*\\)\".*/\\1/p') "
+            "&& migrations_head=$(ls server/db/migrations 2>/dev/null | sort | tail -1) "
+            "&& printf 'release_identity head=%s version=%s health_version=%s health_commit=%s web_pid=%s web_started=%s worker_pid=%s worker_started=%s migrations_head=%s\\n' "
+            "\"$release_head\" \"" + local_version + "\" \"$(printf '%s' \"$health_json\" | sed -n 's/.*\"version\":\"\\([^\"]*\\)\".*/\\1/p')\" \"$health_commit\" \"$web_pid\" \"$web_started\" \"$worker_pid\" \"$worker_started\" \"$migrations_head\" "
             "&& deploy_complete=1",
             timeout=3600,
         )

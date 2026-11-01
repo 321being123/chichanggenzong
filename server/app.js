@@ -1,6 +1,7 @@
 // ========== 应用组装与启动（原 server.js 的入口职责集中于此） ==========
 const express = require('express');
 const { appVersion } = require('../package.json');
+const buildIdentity = require('./services/buildIdentity');
 const session = require('express-session');
 const path = require('path');
 const { SECRET, PORT, redis, initRedis } = require('./config');
@@ -66,6 +67,15 @@ app.use(express.json({ limit: '1mb', verify: function (req, res, buffer) {
 } }));
 app.use(requestId);
 app.use(accessLog);
+
+// 停机期不再接受新的业务请求（S-005）：只在进入停机后生效，
+// /health 与 /ready 仍可探测，用来对外报告"正在停机"而不是冒充可用。
+app.use(function rejectWhileShuttingDown(req, res, next) {
+  if (!shuttingDown) return next();
+  if (req.path === '/health' || req.path === '/ready') return next();
+  res.set('Connection', 'close');
+  return res.status(503).json({ error: '服务正在重启，请稍后重试' });
+});
 
 // ========== 启动：先初始化数据库与 Redis，再注册会话/路由并监听端口 ==========
 // 说明：会话 Store 依赖异步初始化的 Redis（initRedis 确认连接后才创建 Store）。
@@ -158,8 +168,12 @@ async function start() {
   app.use('/', shareRouter);      // 通用分享：公开证券分析页 /s/security/:kind/:code、二维码与微信签名配置
 
   // 健康检查（无需登录）：liveness 与 readiness 供反向代理/编排探测
-  app.get('/health', (req, res) => res.json({ status: 'ok', version: appVersion, ts: Date.now() }));
+  // 健康检查同时自述启动构建身份（S-001）：版本、提交、启动时刻与进程号，
+  // 让"这个进程加载的是哪个提交"可以由进程自己回答，而不是只看磁盘 Git HEAD。
+  app.get('/health', (req, res) => res.json(Object.assign({ status: 'ok', ts: Date.now() }, buildIdentity.describe())));
   app.get('/ready', async (req, res) => {
+    // 停机中一律 not_ready：负载均衡与编排据此停止转发，再等在途请求自然结束。
+    if (shuttingDown) return res.status(503).json({ status: 'shutting_down', checks: {}, ts: Date.now() });
     const dependency = await getDependencyHealth();
     const checks = { db: dependency.database.ready, dbStatus: dependency.database.status, redis: dependency.redis.ready, redisStatus: dependency.redis.status };
     const redisRequired = dependency.redis.required;
@@ -194,21 +208,81 @@ async function start() {
   }
 }
 
-// 优雅停机：停止接收新请求并关闭 DB/Redis 连接池（P2-2）
+// 优雅停机（S-005，2026-11-01 整改）：
+// 顺序必须是「停止接收新请求 → 等待 HTTP 监听真正关闭（在途请求、事务与 Session 写回完成）
+// → 关闭 DB/Redis 并等待结果 → 退出」。原实现发完 close() 就去 pool.end/redis.quit，
+// 依赖先完成时立即 exit(0)，在途请求会拿不到连接或丢掉 Session 写回。
+const DRAIN_TIMEOUT_MS = Math.max(Number(process.env.WEB_DRAIN_TIMEOUT_MS) || 3000, 0);
+let shuttingDown = false;
+let shutdownPromise = null;
+
+// 单个监听的关闭 Promise：未启动/已关闭都安全返回。
+// keep-alive 空闲连接不会自己断开，会让 close 回调永远等下去，所以关闭后立刻只断开空闲连接；
+// 在途请求仍由 close 回调等它们自然结束。
+function closeListener(srv) {
+  if (!srv || typeof srv.close !== 'function') return Promise.resolve();
+  return new Promise(resolve => {
+    let settled = false;
+    const done = () => { if (!settled) { settled = true; resolve(); } };
+    try {
+      srv.close(done);
+      if (typeof srv.closeIdleConnections === 'function') setTimeout(() => srv.closeIdleConnections(), 0);
+    } catch (_) { done(); }
+  });
+}
+
+// 排空编排（可注入依赖，供回归测试用受控屏障验证顺序与退出码）。
+// 返回 'drained'（正常排空）、'degraded'（排空完成但依赖关闭失败）、'timeout'（硬截止到点）。
+async function drainHttpAndDeps({ servers = [], closeDeps = async () => [], timeoutMs = DRAIN_TIMEOUT_MS } = {}) {
+  let timer = null;
+  const deadline = new Promise(resolve => {
+    timer = setTimeout(() => resolve('timeout'), Math.max(Number(timeoutMs) || 0, 0));
+    if (timer.unref) timer.unref();
+  });
+  const work = (async () => {
+    await Promise.allSettled(servers.map(closeListener));
+    let results = [];
+    try {
+      const gotten = await closeDeps();
+      results = Array.isArray(gotten) ? gotten : [gotten];
+    } catch (error) {
+      results = [{ status: 'rejected', reason: error }];
+    }
+    const failed = results.filter(item => item && item.status === 'rejected');
+    failed.forEach(item => console.warn('[shutdown] 依赖关闭失败:', String(item.reason && item.reason.message).slice(0, 160)));
+    return failed.length ? 'degraded' : 'drained';
+  })();
+  const outcome = await Promise.race([work, deadline]);
+  if (timer) clearTimeout(timer);
+  return outcome;
+}
+
 function shutdown(signal) {
-  console.log(`[shutdown] 收到 ${signal}，停止接收新请求并释放连接...`);
-  if (server) server.close();
-  if (server6) server6.close();
-  const finish = () => process.exit(0); // 优雅停机一律以 0 退出，便于编排器识别
-  // 兜底：3 秒后强制退出，避免连接池久久不释放导致进程悬挂
-  const hardStop = setTimeout(finish, 3000);
-  hardStop.unref();
-  Promise.allSettled([
-    pool.end().catch(() => {}),
-    redis.client ? redis.client.quit().catch(() => {}) : Promise.resolve()
-  ]).then(finish);
+  // 重复信号（systemd stop 与手工 SIGTERM、连续 Ctrl+C）不重复关闭依赖，也不重置截止时间。
+  if (shutdownPromise) return shutdownPromise;
+  shuttingDown = true;
+  console.log(`[shutdown] 收到 ${signal}，停止接收新请求并等待在途请求完成...`);
+  shutdownPromise = (async () => {
+    const outcome = await drainHttpAndDeps({
+      servers: [server, server6],
+      closeDeps: () => Promise.allSettled([
+        pool.end(),
+        redis.client ? redis.client.quit() : Promise.resolve(),
+      ]),
+    });
+    if (outcome === 'drained') process.exit(0); // 正常排空才以 0 退出
+    if (outcome === 'degraded') {
+      console.error('[shutdown] 请求已排空，但 DB/Redis 释放不完整，以非零退出标记');
+      process.exit(1);
+    }
+    console.error(`[shutdown] 排空超时（${DRAIN_TIMEOUT_MS}ms 未完成），强制断开残存连接并非优雅退出`);
+    try { if (server && server.closeAllConnections) server.closeAllConnections(); } catch (_) { /* 忽略 */ }
+    try { if (server6 && server6.closeAllConnections) server6.closeAllConnections(); } catch (_) { /* 忽略 */ }
+    process.exit(1);
+  })();
+  return shutdownPromise;
 }
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 process.on('SIGINT', () => shutdown('SIGINT'));
 
-module.exports = { app, start, shutdown };
+module.exports = { app, start, shutdown, drainHttpAndDeps, closeListener, isShuttingDown: () => shuttingDown };

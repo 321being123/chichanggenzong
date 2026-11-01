@@ -245,8 +245,14 @@ async function upsertDailyValuation(params, tx) {
   await tx.query(
     `INSERT INTO market.daily_valuations(instrument_id,trade_date,source_id,pe_static,pe_ttm,pb,dividend_yield_ttm,total_market_cap,circulating_market_cap,free_float_market_cap,currency_code)
      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) ON CONFLICT(instrument_id,trade_date,source_id)
-     DO UPDATE SET pe_static=EXCLUDED.pe_static,pe_ttm=EXCLUDED.pe_ttm,pb=EXCLUDED.pb,dividend_yield_ttm=EXCLUDED.dividend_yield_ttm,
-       total_market_cap=EXCLUDED.total_market_cap,circulating_market_cap=EXCLUDED.circulating_market_cap,free_float_market_cap=EXCLUDED.free_float_market_cap,ingested_at=now()`,
+     DO UPDATE SET pe_static=COALESCE(EXCLUDED.pe_static,market.daily_valuations.pe_static),
+       pe_ttm=COALESCE(EXCLUDED.pe_ttm,market.daily_valuations.pe_ttm),
+       pb=COALESCE(EXCLUDED.pb,market.daily_valuations.pb),
+       dividend_yield_ttm=COALESCE(EXCLUDED.dividend_yield_ttm,market.daily_valuations.dividend_yield_ttm),
+       total_market_cap=COALESCE(EXCLUDED.total_market_cap,market.daily_valuations.total_market_cap),
+       circulating_market_cap=COALESCE(EXCLUDED.circulating_market_cap,market.daily_valuations.circulating_market_cap),
+       free_float_market_cap=COALESCE(EXCLUDED.free_float_market_cap,market.daily_valuations.free_float_market_cap),
+       ingested_at=now()`,
     [params.instrumentId, params.tradeDate, params.sourceId, params.peStatic, params.peTtm, params.pb, params.dividendYield,
       params.totalMarketCap, params.circulatingMarketCap, params.freeFloatMarketCap, params.currencyCode],
   );

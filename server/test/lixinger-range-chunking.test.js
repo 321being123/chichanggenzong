@@ -42,7 +42,8 @@ assert.deepStrictEqual(adapter.rangeChunks('2026-11-01', '2026-01-01'), [], '反
 
 // ---------- 二、区间函数确实走分段入口（静态钉住，避免以后改回直连） ----------
 const source = fs.readFileSync(path.join(__dirname, '../dataAccess/adapters/lixingerDatasetAdapter.js'), 'utf8');
-const rangeFunctions = ['resolveValuationSeries', 'resolveAnnualNetProfits', 'resolveFinancialReports',
+// R2-001 后分段实现落在详细结果入口，数组入口委托给它；两条都要钉住。
+const rangeFunctions = ['resolveValuationSeriesDetailed', 'resolveAnnualNetProfits', 'resolveFinancialReports',
   'resolveDividendRows', 'resolveIndexDaily', 'resolveIndexValuation', 'resolveStockDaily',
   'resolveMoneySupply', 'resolveSovereignYield10y'];
 for (const name of rangeFunctions) {
@@ -52,6 +53,13 @@ for (const name of rangeFunctions) {
   const body = source.slice(bodyStart, bodyEnd > 0 ? bodyEnd : source.length);
   assert.ok(body.includes('callEndpointRange(') || body.includes('rangeChunks('),
     `${name} 是区间接口，必须经分段取数（否则超过 10 年直接 403）`);
+}
+
+{
+  const bodyStart = source.indexOf('async function resolveValuationSeries(');
+  const body = source.slice(bodyStart, source.indexOf('\nasync function ', bodyStart + 10));
+  assert.ok(body.includes('resolveValuationSeriesDetailed('),
+    '数组入口必须委托详细结果入口，不能在两处各写一套分段与失败处理（R2-001）');
 }
 
 (async () => {

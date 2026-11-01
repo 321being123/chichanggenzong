@@ -23,13 +23,23 @@ let mode = 'ok';
 // 官方适配器：正常返回一行 Tushare 形状（total_mv 万元、dv_ttm 百分数点）
 stub('../dataAccess/adapters/lixingerDatasetAdapter', {
   SOURCE: 'lixinger_official',
-  resolveValuationSeries: async ({ codes, startDate, endDate }) => {
+  // R2-001 后回填链路消费"详细结果"：同时拿到成功行、计划/失败段数与逐段诊断。
+  resolveValuationSeriesDetailed: async ({ codes }) => {
     seriesCalls += 1;
-    if (mode === 'throw') throw new Error('官方 403 时间跨度不能超过10年');
-    return [{
+    const row = {
       ts_code: codes[0], trade_date: '2026-10-28',
       pe: null, pe_ttm: 12.5, pb: 1.2, dv_ttm: 3.5, total_mv: 123456, circ_mv: 100000,
-    }];
+    };
+    if (mode === 'throw') {
+      return { rows: [], planned: 1, attempted: 1, succeeded: 0, failed: 1, notAttempted: 0, emptyBatches: 0,
+        complete: false, failures: [{ tsCode: codes[0], code: 'FORBIDDEN_ERROR', retryable: false }], scope: {} };
+    }
+    if (mode === 'partial') {
+      return { rows: [row], planned: 2, attempted: 2, succeeded: 1, failed: 1, notAttempted: 0, emptyBatches: 0,
+        complete: false, failures: [{ tsCode: codes[0], from: '2016-01-01', to: '2026-10-30', code: 'UPSTREAM_5XX', retryable: true }], scope: {} };
+    }
+    return { rows: [row], planned: 1, attempted: 1, succeeded: 1, failed: 0, notAttempted: 0, emptyBatches: 0,
+      complete: true, failures: [], scope: {} };
   },
   resolveValuationRows: async () => [],
   resolveIndexValuation: async () => [],
@@ -67,14 +77,23 @@ const datasets = require('../dataAccess/marketDatasets');
   assert.strictEqual(rows[0].source_code, 'lixinger_official', '返回行必须标官方来源');
   assert.strictEqual(Number(rows[0].total_mv), 123456, '总市值保持万元口径，由写入方换算');
 
-  // 二、官方失败：返回空数组且绝不回落 Tushare
+  // 二、官方失败：抛 PARTIAL_RESULT 表示未取全，绝不回落 Tushare，也不假装"本来没数据"
   mode = 'throw';
   tushareCalls = 0;
-  const failed = await datasets.readStockValuationSeriesBatch({
-    codes: ['600519.SH'], startDate: '2026-10-01', endDate: '2026-10-30',
-  });
-  assert.deepStrictEqual(failed, [], '官方失败时返回空数组，不能假装有数据');
+  await assert.rejects(
+    datasets.readStockValuationSeriesBatch({ codes: ['600519.SH'], startDate: '2026-10-01', endDate: '2026-10-30' }),
+    error => error.code === 'PARTIAL_RESULT' && Array.isArray(error.partialRows) && error.partialRows.length === 0,
+    '官方失败必须显式报未取全，不能返回空数组冒充成功',
+  );
   assert.strictEqual(tushareCalls, 0, '回填链路不得回退 Tushare（否则会把别家数值标成官方）');
+
+  // 二之二、部分失败：成功段的行必须带回来（失败保留），失败的段单独留证
+  mode = 'partial';
+  await assert.rejects(
+    datasets.readStockValuationSeriesBatch({ codes: ['600519.SH'], startDate: '2016-01-01', endDate: '2026-10-30' }),
+    error => error.code === 'PARTIAL_RESULT' && error.partialRows.length === 1 && error.failures.length === 1,
+    '部分失败要保留成功行并给出失败段诊断',
+  );
 
   // 三、参数缺失时不发请求
   seriesCalls = 0;
@@ -95,6 +114,10 @@ const datasets = require('../dataAccess/marketDatasets');
   assert.ok(!/DELETE\s+FROM\s+market\.daily_valuations/i.test(script), '回填不得删除旧来源行');
   assert.ok(!/tushareQuery/.test(script), '脚本不得直接调 Tushare（回填只认官方）');
   assert.ok(/emptyBatches/.test(script) && /process\.exit\(2\)/.test(script), '官方返回 0 行必须当异常处理并返回非零退出码');
+  // R2-001：脚本必须消费详细结果——失败段单独计数并让整轮非零退出，不能只看整批是否为空。
+  assert.ok(/readStockValuationSeriesDetailed/.test(script), '回填脚本必须拿详细结果而不是看起来完整的数组');
+  assert.ok(/failedSegments/.test(script) && /detail\.failed \+ detail\.notAttempted/.test(script),
+    '失败/未执行的段必须单独累计，供续跑与完成判定使用');
   // 官方适配层返回的 trade_date 是 YYYYMMDD，分区键是 YYYY-MM-DD；不归一化会「有数据但命中 0 行」。
   assert.ok(/replace\(\/-\/g, ''\)\.slice\(0, 8\)/.test(script) && /trade_date: day/.test(script),
     '官方 8 位日期必须先归一成 YYYY-MM-DD 再和分区键比对');

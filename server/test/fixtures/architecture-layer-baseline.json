@@ -44,8 +44,6 @@
       ".githooks/pre-commit",
       ".github/workflows/ci.yml",
       ".gitignore",
-      ".tmp-actions.json",
-      "=",
       "AGENTS.md",
       "CHANGELOG.md",
       "README.md",

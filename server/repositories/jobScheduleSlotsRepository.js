@@ -190,15 +190,19 @@ async function update_ops_job_schedule_slots_8(params, client = pool) {
         WHERE slot_id=$1 AND status='running'`, params);
 }
 
+// 候选查询（R2-006）：按执行分类在 LIMIT 之前排序与过滤。
+// policy 里带 tier（0=核心、1=普通、2=历史/补全），避免"前 20 条全是历史回填"把核心任务挡在候选之外；
+// $3 为 null 时不过滤分类，保持旧调用可用。
 async function select_ops_job_schedule_slots_3(params, client = pool) {
   return client.query(`SELECT s.*, s.business_date::text AS business_date FROM ops.job_schedule_slots s
-      JOIN jsonb_to_recordset($2::jsonb) AS policy(job_code text,max_attempts integer)
+      JOIN jsonb_to_recordset($2::jsonb) AS policy(job_code text,max_attempts integer,tier integer)
         ON policy.job_code=s.job_code
       WHERE (status='pending' AND (next_attempt_at IS NULL OR next_attempt_at <= now())
         OR (status IN ('failed','waiting_external') AND next_attempt_at IS NOT NULL AND next_attempt_at <= now()))
         AND scheduled_for <= now()
+        AND ($3::int[] IS NULL OR policy.tier = ANY($3))
         AND s.attempt_count < policy.max_attempts + CASE WHEN s.job_code='nav_snapshot' AND s.result_summary ? 'dependencyRecovery' THEN 1 ELSE 0 END
-      ORDER BY scheduled_for ASC, slot_id ASC LIMIT $1`, params);
+      ORDER BY policy.tier ASC, scheduled_for ASC, slot_id ASC LIMIT $1`, params);
 }
 
 async function update_ops_job_schedule_slots_9(params, client = pool) {

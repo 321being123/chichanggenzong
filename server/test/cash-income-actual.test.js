@@ -9,6 +9,25 @@ const record={eventKey:key,date:'2026-09-03',flow_type:'repo_interest',amountCny
 async function cleanup(){await pool.query('DELETE FROM accounts WHERE username=$1',[U]);for(const t of ['cash_flows','nav_history','account_data'])await pool.query(`DELETE FROM ${t} WHERE username=$1`,[U]);await pool.query('DELETE FROM users WHERE username=$1',[U]);}
 (async()=>{try{
   for(const r of [null,{...record,amountCny:1.23},{...record,amountCny:'-1'},{...record,date:'2026-02-30'},{...record,eventKey:'repo:204001.SH:bad'},{...record,currency:'HKD'},{...record,originalAmount:'2'},{...record,settledAt:'2026-09-02T23:00:00+08:00'}])assert.throws(()=>validate([r]));
+  // R2-008：字段类型与结构必须先于内容判断——对象事件键原来会走到 .match 抛 TypeError（不是 400），
+  // sourceRef 对象会被 String() 成 "[object Object]" 落库，settlement 传数组还能绕过形状校验。
+  for(const bad of [
+    {...record,eventKey:{a:1}},
+    {...record,eventKey:123},
+    {...record,eventKey:['repo:204001.SH:2026-09-02']},
+    {...record,sourceRef:{}},
+    {...record,sourceRef:123},
+    {...record,settlement:[]},
+    {...record,settlement:'gross'},
+    {...record,settlement:{amountBasis:'net',layers:'not-array'}},
+    {...record,settlement:{amountBasis:'weird'}},
+  ]) {
+    let thrown=null;
+    try{validate([bad]);}catch(e){thrown=e;}
+    assert.ok(thrown,'非法类型/结构必须被拒绝：'+JSON.stringify(bad));
+    assert.strictEqual(thrown.status,400,'必须是约定的 400，不能抛 TypeError：'+JSON.stringify(bad));
+  }
+  assert.strictEqual(validate([{...record,sourceRef:'  v-1  '}])[0].sourceRef,'v-1','合法文本凭证引用要去掉首尾空白后保留原值');
   assert.throws(()=>validate([record,record]),/重复/);
   assert.strictEqual(validate([{...record,currency:'HKD',originalAmount:'1.40',settledAt:'2026-09-02T17:00:00Z'}])[0].currency,'HKD');
   await cleanup();await pool.query("INSERT INTO users(username,password,accounts,status,auth_version) VALUES($1,'x',$2,'active',1)",[U,JSON.stringify([A])]);

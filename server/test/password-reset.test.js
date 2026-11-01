@@ -30,7 +30,9 @@ require.cache[configPath] = {
         sentMail = message;
       }
     },
-    redis: { ready: false, client: null }
+    redis: { ready: false, client: null },
+    // 非必需环境：敏感入口不应因为缺共享存储被挡成 503（与生产必要条件显式区分）。
+    isRedisRequired: () => false
   }
 };
 

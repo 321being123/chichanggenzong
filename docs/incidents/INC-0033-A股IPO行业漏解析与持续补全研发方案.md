@@ -445,3 +445,5 @@ v10 修复代码前后格式、代码标签、大类与子类拼接和标准号�
 2026-10-27 路由核对（套利换股结算任务接入）：`jobDefinitions.js` 仅新增 `stock_swap_settle` 模式与 `stock_swap_settlements` 数据集声明；A 股 IPO 行业漏解析补全流程、目标字段、定向范围、原文证据与生产状态均无改动。
 
 2026-10-30 路由核对（账户导入后补齐任务接入）：`jobDefinitions.js` / `jobOrchestrator.js` 仅新增人工任务 `account_price_backfill`；A 股 IPO 行业漏解析的补全流程、目标字段、定向范围、原文证据与生产状态均无改动。
+
+2026-11-01 路由核对（第二轮审查整改，执行器调度）：`services/jobOrchestrator.js` 与 `services/jobScheduleSlots.js` 本轮只改执行容量、候选分类排序与补位，不改变 IPO 行业补全的目标代码范围、原文证据要求与字段准入；`ipo_history_sync` 的定义、模式与数据集声明均未修改。

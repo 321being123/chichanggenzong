@@ -128,7 +128,9 @@ assert(/if \(stopping\)/.test(orchestrator) && /workerStopping/.test(orchestrato
 assert(/trap rollback_deploy EXIT/.test(deployScript) && /previous_commit/.test(deployScript) && /deploy_complete/.test(deployScript), '部署失败必须恢复部署前版本并重新启动服务');
 assert(/send_attempts > 0/.test(alertMailer + alertMailerSql) && !/claimRecoverySummaryAlerts\(limit/.test(alertMailer + alertMailerSql), 'SMTP 任意重试阶段恢复都必须合并全部到期历史告警');
 assert(/sanitizeJobError/.test(alertMailer + alertMailerSql) && /sanitizeJobError/.test(orchestrator) && /sanitizeJobError/.test(read('server/services/jobRunnerProcess.js')), '任务错误进入数据库和邮件前必须统一脱敏');
-assert(/activeRuns === 0 && !executing/.test(orchestrator) && /notifyStopWaiters/.test(orchestrator) && /waitForStartupTasks/.test(read('server/worker.js')), 'Worker 停机必须等待完整执行器轮次和启动任务');
+// 2026-11-01 R2-006：整轮 executing 改为 dispatching（只挡扫描/派发重入），
+// 停机仍必须等运行集合清空（activeRuns === 0）且不遗留派发中的轮次。
+assert(/activeRuns === 0 && !dispatching/.test(orchestrator) && /notifyStopWaiters/.test(orchestrator) && /waitForStartupTasks/.test(read('server/worker.js')), 'Worker 停机必须等待完整执行器轮次和启动任务');
 assert(/executorTimer = setInterval\(tick, 60 \* 1000\)/.test(orchestrator) && !/executorTimer\.unref/.test(orchestrator), '持久化执行器必须作为独立 Worker 保活句柄，不能在启动任务结束后自动退出');
 assert(/seq 1 30/.test(deployScript) && /health_json=/.test(deployScript) && !/time\.sleep\(5\)/.test(deployScript), '最终健康与版本检查必须在可回滚部署事务内完成');
 assert(/pg_try_advisory_lock\(hashtext\('ops\.alert_notifications\.recovery_summary'\)\)/.test(alertMailer + alertMailerSql) && /pg_advisory_unlock/.test(alertMailer + alertMailerSql), 'SMTP 恢复摘要必须使用跨进程全局锁');

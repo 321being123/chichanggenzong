@@ -81,3 +81,8 @@ _tmp*
 
 # 端到端验收截图等证据产物只留本地，不入库
 outputs/e2e-acceptance-*/
+
+# 根目录临时产物（2026-11-01 审查 S-006：GitHub Actions 接口返回与误创建的 "=" 文件）
+# 只加根路径忽略，不泛化忽略 JSON 或清空工作目录。
+/.tmp-actions.json
+/=

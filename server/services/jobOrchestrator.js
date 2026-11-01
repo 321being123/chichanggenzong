@@ -11,7 +11,8 @@ const {
 } = require('./jobScheduleSlots');
 
 let executorStarted = false;
-let executing = false;
+// dispatching 只防止"扫描/派发"重入（R2-006）；长任务在运行集合里，不再让整轮执行把下一 tick 卡成 busy。
+let dispatching = false;
 let stopping = false;
 let executorTimer = null;
 let activeRuns = 0;
@@ -20,8 +21,120 @@ const activeRunMeta = new Set();
 const stopWaiters = [];
 const DEFAULT_DATASET_FAILURE_THRESHOLD = 3;
 
+// ---------- 执行容量与候选公平（R2-006）----------
+// 分类只决定"谁先占执行槽"，不改变任务定义、依赖和数据集契约：
+//   0 = 核心（当日必须完成）、1 = 普通、2 = 历史/补全（可延后）。
+// 未知模式一律按普通处理（保守，不冒充核心也不放进低优先级冷宫）。
+const TIER_CORE = 0;
+const TIER_NORMAL = 1;
+const TIER_HISTORY = 2;
+const TIER_NAMES = { 0: 'core', 1: 'normal', 2: 'history' };
+const HISTORY_MODES = new Set(['enrichment', 'backfill', 'history']);
+
+function executionTier(definition = {}) {
+  const mode = String(definition.mode || '').toLowerCase();
+  if (HISTORY_MODES.has(mode)) return TIER_HISTORY;
+  if (definition.importance === 'high') return TIER_CORE;
+  return TIER_NORMAL;
+}
+
+function slotTier(slot) {
+  const definition = getJobDefinition(slot && slot.job_code) || {};
+  const payloadMode = String((slot && slot.request_payload && slot.request_payload.mode) || '').toLowerCase();
+  // 请求里显式声明补全/历史模式的槽同样按历史处理（同一任务可能既有核心模式又有补全模式）。
+  if (HISTORY_MODES.has(payloadMode)) return TIER_HISTORY;
+  return executionTier(definition);
+}
+
+function tierOfDefinition(definition) {
+  return executionTier(definition);
+}
+
+// 本进程可同时执行的任务数；历史类最多占 historyCapacity，保证核心任务始终留得住槽位。
+const EXECUTOR_CAPACITY = Math.max(Number(process.env.JOB_EXECUTOR_CAPACITY) || 2, 1);
+const HISTORY_CAPACITY = Math.max(Math.min(Number(process.env.JOB_EXECUTOR_HISTORY_CAPACITY) || 1, EXECUTOR_CAPACITY - 1), 0);
+const CORE_CANDIDATE_LIMIT = 20;
+const HISTORY_CANDIDATE_LIMIT = 5;
+
+// 有界执行 + 补位调度（纯逻辑，便于受控屏障测试）：
+//   - 容量满时新候选进 pending，任一任务结束立刻 pump 补位，不等整轮候选全部完成；
+//   - 同一 job_code 在本进程内串行（跨进程互斥仍由原 claimSlot 原子领取保证）；
+//   - 历史类占满 historyCapacity 时不再开始历史任务，把槽位留给核心/普通。
+function createDispatchScheduler({ capacity, historyCapacity, launch }) {
+  const runningJobs = new Map();
+  const runningByTier = { core: 0, normal: 0, history: 0 };
+  const pending = [];
+  const totalRunning = () => runningByTier.core + runningByTier.normal + runningByTier.history;
+
+  function canStart(tier, jobCode) {
+    if (totalRunning() >= capacity) return false;
+    if (jobCode && runningJobs.get(jobCode)) return false;
+    if (tier === 'history' && runningByTier.history >= historyCapacity) return false;
+    return true;
+  }
+
+  function idle() {
+    if (totalRunning() === 0) notifyStopWaiters();
+  }
+
+  function start(slot, tier) {
+    const jobCode = slot && slot.job_code;
+    if (jobCode) runningJobs.set(jobCode, (runningJobs.get(jobCode) || 0) + 1);
+    runningByTier[tier] = (runningByTier[tier] || 0) + 1;
+    // 同步发起（async 函数的同步前缀会立刻累加 activeRuns），避免"已派发但看起来空闲"的误判。
+    let task;
+    try { task = Promise.resolve(launch(slot, tier)); } catch (error) { task = Promise.reject(error); }
+    task
+      .catch(error => console.warn('[job-orchestration] 任务派发失败:', String(error && error.message).slice(0, 160)))
+      .finally(() => {
+        if (jobCode) {
+          const left = (runningJobs.get(jobCode) || 1) - 1;
+          if (left > 0) runningJobs.set(jobCode, left); else runningJobs.delete(jobCode);
+        }
+        runningByTier[tier] = Math.max((runningByTier[tier] || 1) - 1, 0);
+        pump();
+        idle();
+      });
+  }
+
+  function pump() {
+    for (let i = 0; i < pending.length;) {
+      const item = pending[i];
+      if (!canStart(item.tier, item.slot && item.slot.job_code)) { i += 1; continue; }
+      pending.splice(i, 1);
+      start(item.slot, item.tier);
+    }
+    return pending.length;
+  }
+
+  function enqueue(slot, tier) { pending.push({ slot, tier }); }
+
+  return {
+    enqueue, pump, start,
+    pendingCount: () => pending.length,
+    running: () => totalRunning(),
+    runningByTier: () => ({ ...runningByTier }),
+    isRunning: jobCode => Boolean(runningJobs.get(jobCode)),
+    clearPending: () => pending.splice(0).length,
+  };
+}
+
+let dispatchScheduler = null;
+
+function ensureScheduler() {
+  if (!dispatchScheduler) {
+    dispatchScheduler = createDispatchScheduler({
+      capacity: EXECUTOR_CAPACITY,
+      historyCapacity: HISTORY_CAPACITY,
+      // 派发出去的每个任务自己维护 activeRuns/控制器/心跳；这里只负责容量与补位。
+      launch: slot => runSlot(slot, reasonForSlot(slot)),
+    });
+  }
+  return dispatchScheduler;
+}
+
 function notifyStopWaiters() {
-  if (activeRuns === 0 && !executing) stopWaiters.splice(0).forEach(resolve => resolve());
+  if (activeRuns === 0 && !dispatching) stopWaiters.splice(0).forEach(resolve => resolve());
 }
 
 function triggerType(reason) {
@@ -780,8 +893,10 @@ async function runSlot(slot, reason = reasonForSlot(slot)) {
 
 async function runDueSlots() {
   if (stopping) return { ok: false, skipped: true, reason: 'executor_stopping' };
-  if (executing) return { ok: true, skipped: true, reason: 'executor_busy' };
-  executing = true;
+  // 只挡"扫描/派发"重入：长任务已经在运行集合里，本 tick 仍能扫描并补位，
+  // 不再因为上一轮长任务没跑完就把新到期的核心任务拖到下一轮（R2-006）。
+  if (dispatching) return { ok: true, skipped: true, reason: 'executor_dispatching' };
+  dispatching = true;
   try {
     const { sendDueAlerts } = require('./jobAlertMailer');
     await sendDueAlerts(20).catch(error => console.warn('[job-alert] 到期告警投递失败:', error.message));
@@ -789,15 +904,32 @@ async function runDueSlots() {
     await syncScheduleSlots();
     // 存量旧槽核对必须在领取之前：它只做证据收敛，不会领取或重跑任务。
     await sweepStaleSlots(20).catch(error => console.warn('[job-slot] 存量旧槽核对失败:', error.message));
-    const due = await listDueSlots(20);
-    const results = [];
-    for (const slot of due) {
-      if (stopping) break;
-      results.push(await runSlot(slot, reasonForSlot(slot)));
+    // 分类取候选：核心/普通与历史分开取，避免历史补全占满前 20 条把核心挡在 LIMIT 之外。
+    const priorityDue = await listDueSlots(CORE_CANDIDATE_LIMIT, { tierOf: tierOfDefinition, tiers: [TIER_CORE, TIER_NORMAL] });
+    const historyDue = await listDueSlots(HISTORY_CANDIDATE_LIMIT, { tierOf: tierOfDefinition, tiers: [TIER_HISTORY] });
+    const seen = new Set();
+    const candidates = [];
+    for (const slot of [...priorityDue, ...historyDue]) {
+      const key = String(slot.slot_id);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      candidates.push(slot);
     }
-    return { ok: true, count: results.length, results };
+    const scheduler = ensureScheduler();
+    let queued = 0;
+    for (const slot of candidates) {
+      if (stopping) break;
+      scheduler.enqueue(slot, TIER_NAMES[slotTier(slot)]);
+      queued += 1;
+    }
+    scheduler.pump();
+    return {
+      ok: true, candidates: candidates.length, queued,
+      running: scheduler.running(), pending: scheduler.pendingCount(),
+      runningByTier: scheduler.runningByTier(),
+    };
   } finally {
-    executing = false;
+    dispatching = false;
     notifyStopWaiters();
   }
 }
@@ -815,7 +947,9 @@ function startDurableExecutor() {
 async function stopDurableExecutor(timeoutMs = 5000) {
   stopping = true;
   if (executorTimer) clearInterval(executorTimer);
-  if (activeRuns === 0 && !executing) return;
+  // 停机先停止新领取：清空尚未派发的候选，再按既有截止时间排空运行集合（R2-006）。
+  if (dispatchScheduler) dispatchScheduler.clearPending();
+  if (activeRuns === 0 && !dispatching) return;
   const configuredWaitMs = Math.max(Number(timeoutMs) || 0, 0);
   const taskWaitMs = Array.from(activeRunMeta).reduce((max, item) => {
     const remaining = Math.max(item.timeoutMs - (Date.now() - item.startedAt), 0);
@@ -834,7 +968,7 @@ async function stopDurableExecutor(timeoutMs = 5000) {
       new Promise(resolve => setTimeout(resolve, 5000)),
     ]);
   }
-  if (executing) {
+  if (dispatching) {
     await Promise.race([
       new Promise(resolve => stopWaiters.push(resolve)),
       new Promise(resolve => setTimeout(resolve, 5000)),
@@ -842,4 +976,4 @@ async function stopDurableExecutor(timeoutMs = 5000) {
   }
 }
 
-module.exports = { startDurableExecutor, stopDurableExecutor, runDueSlots, runSlot, JOB_DEFINITIONS, touchSlot, runJobInIsolatedProcess, childErrorFromMessage, classifyFailure, recoverySchedule, resolveMaxAttempts, hasSkippedSignal, datasetPartitionKeyForSlot, buildDatasetDiagnosticAlerts };
+module.exports = { startDurableExecutor, stopDurableExecutor, runDueSlots, runSlot, JOB_DEFINITIONS, touchSlot, runJobInIsolatedProcess, childErrorFromMessage, classifyFailure, recoverySchedule, resolveMaxAttempts, hasSkippedSignal, datasetPartitionKeyForSlot, buildDatasetDiagnosticAlerts, createDispatchScheduler, executionTier, slotTier, EXECUTOR_CAPACITY, HISTORY_CAPACITY };

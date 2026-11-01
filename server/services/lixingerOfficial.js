@@ -114,42 +114,75 @@ async function assertEndpointPermitted({ endpoint, apiName, fingerprint, client 
   if (blocked) throw sourceError(code, message, { apiName });
 }
 
-async function requestOnce({ endpoint, body, token, timeoutMs, fetcher }) {
+// 单个 HTTP 请求（一次真实上游调用）。
+// 截止时间必须同时覆盖「等响应头」和「读响应体」：官方大响应体先回头再慢慢传，
+// 只在 fetch 上计时会让读体无限挂起（2026-11-01 审查 R2-005）。因此 timer 在整个
+// 请求—读体—解析期间有效，读到结果或失败后才清理。
+// 外部取消（父任务止损/进程停机）通过 signal 组合进来：取消不重试，deadline 到期按超时分类。
+async function requestOnce({ endpoint, body, token, timeoutMs, fetcher, signal }) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), Math.max(Number(timeoutMs) || 30000, 1000));
-  let response;
-  try {
-    response = await fetcher(endpointUrl(endpoint), {
-      method: 'POST',
-      redirect: 'error',
-      signal: controller.signal,
-      headers: {
-        // 官方接口强制要求声明 gzip，否则直接返回非 JSON 的 400 提示。
-        'Accept-Encoding': 'gzip, deflate, br, zstd',
-        Accept: 'application/json',
-        'Content-Type': 'application/json',
-        'User-Agent': REQUEST_UA,
-      },
-      body: JSON.stringify({ ...body, token }),
-    });
-  } catch (error) {
-    if (error && (error.name === 'AbortError' || controller.signal.aborted)) {
-      throw sourceError('NETWORK_TIMEOUT', `理杏仁 ${endpoint.key} 请求超时`);
+  const cancelled = () => Boolean(signal && signal.aborted);
+  const onAbort = () => controller.abort();
+  if (signal) {
+    if (signal.aborted) {
+      clearTimeout(timer);
+      throw sourceError('CANCELLED', `理杏仁 ${endpoint.key} 请求已被调用方取消`);
     }
-    throw sourceError('NETWORK_ERROR', redact(`理杏仁 ${endpoint.key} 网络请求失败：${error && error.message}`, token));
+    signal.addEventListener('abort', onAbort, { once: true });
+  }
+  try {
+    let response;
+    try {
+      response = await fetcher(endpointUrl(endpoint), {
+        method: 'POST',
+        redirect: 'error',
+        signal: controller.signal,
+        headers: {
+          // 官方接口强制要求声明 gzip，否则直接返回非 JSON 的 400 提示。
+          'Accept-Encoding': 'gzip, deflate, br, zstd',
+          Accept: 'application/json',
+          'Content-Type': 'application/json',
+          'User-Agent': REQUEST_UA,
+        },
+        body: JSON.stringify({ ...body, token }),
+      });
+    } catch (error) {
+      if (controller.signal.aborted || cancelled()) {
+        throw cancelled()
+          ? sourceError('CANCELLED', `理杏仁 ${endpoint.key} 请求已被调用方取消`)
+          : sourceError('NETWORK_TIMEOUT', `理杏仁 ${endpoint.key} 请求超时`);
+      }
+      throw sourceError('NETWORK_ERROR', redact(`理杏仁 ${endpoint.key} 网络请求失败：${error && error.message}`, token));
+    }
+
+    // 读体仍在同一截止时间内，失败必须保留超时/断流分类，不能吞成空字符串
+    // （否则上层会把"读体失败"当成"成功空结果"，进而推进覆盖水位）。
+    let text;
+    try {
+      text = await response.text();
+    } catch (error) {
+      if (cancelled()) throw sourceError('CANCELLED', `理杏仁 ${endpoint.key} 请求已被调用方取消`);
+      if (controller.signal.aborted) throw sourceError('NETWORK_TIMEOUT', `理杏仁 ${endpoint.key} 读取响应体超时`);
+      throw sourceError('NETWORK_ERROR', redact(`理杏仁 ${endpoint.key} 读取响应体失败：${error && error.message}`, token));
+    }
+
+    let payload = null;
+    if (text) {
+      // JSON.parse 是同步调用，不会被事件循环里的定时器抢占；
+      // 这里只保证读体受截止时间约束，不宣称解析阶段有硬中断。
+      try {
+        payload = JSON.parse(text);
+      } catch (_) {
+        if (response.ok) throw sourceError('INVALID_RESPONSE', `理杏仁 ${endpoint.key} 响应不是有效 JSON，保留旧数据`);
+      }
+    }
+    if (!response.ok) throw mapHttpFailure(response.status, payload, endpoint, token);
+    return payload;
   } finally {
     clearTimeout(timer);
+    if (signal) signal.removeEventListener('abort', onAbort);
   }
-
-  const text = await response.text().catch(() => '');
-  let payload = null;
-  try {
-    payload = text ? JSON.parse(text) : null;
-  } catch (_) {
-    if (response.ok) throw sourceError('INVALID_RESPONSE', `理杏仁 ${endpoint.key} 响应不是有效 JSON，保留旧数据`);
-  }
-  if (!response.ok) throw mapHttpFailure(response.status, payload, endpoint, token);
-  return payload;
 }
 
 /**
@@ -211,8 +244,17 @@ async function runWithRetry(ctx) {
   for (;;) {
     try {
       return await withExternalCallGuard(SOURCE, dataset, options.targetDate || null, async (client, guard) => {
-        const timeoutMs = guard && guard.timeoutMs ? guard.timeoutMs : 30000;
-        const payload = await requestOnce({ endpoint, body, token, timeoutMs, fetcher });
+        const policyTimeoutMs = guard && guard.timeoutMs ? Number(guard.timeoutMs) : 30000;
+        // 调用方只能收紧单次超时（例如剩余时间不多时），不能放大策略时限。
+        const timeoutMs = options.timeoutMs
+          ? Math.min(Math.max(Number(options.timeoutMs) || 0, 1), policyTimeoutMs)
+          : policyTimeoutMs;
+        // 单次 HTTP 超时与父任务剩余时间分开：父任务 deadlineAt 已到就不再发起真实请求，
+        // 重试之间的等待也不能突破它（2026-11-01 审查 R2-005）。
+        if (options.deadlineAt && Date.now() >= Number(options.deadlineAt)) {
+          throw sourceError('DEADLINE_EXCEEDED', `理杏仁 ${endpoint.key} 未在父任务截止时间内完成，剩余范围留待续跑`);
+        }
+        const payload = await requestOnce({ endpoint, body, token, timeoutMs, fetcher, signal: options.signal });
         const parsed = unwrapPayload(payload, endpoint);
         const payloadJson = JSON.stringify(payload);
         const payloadHash = sha256(payloadJson);
@@ -251,6 +293,13 @@ async function runWithRetry(ctx) {
         throw error;
       }
       if (!RETRYABLE_CODES.has(code) || retryIndex >= RETRY_DELAYS_MS.length) throw error;
+      // 重试前的等待也不得突破父任务剩余时间：剩余不足以完成这次退避时直接交回上层续跑。
+      if (options.deadlineAt) {
+        const remaining = Number(options.deadlineAt) - Date.now();
+        if (remaining <= RETRY_DELAYS_MS[retryIndex]) {
+          throw sourceError('DEADLINE_EXCEEDED', `理杏仁 ${endpoint.key} 剩余时间不足以重试，剩余范围留待续跑`);
+        }
+      }
       await sleep(RETRY_DELAYS_MS[retryIndex]);
       retryIndex += 1;
     }

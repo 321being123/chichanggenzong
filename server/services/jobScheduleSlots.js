@@ -624,13 +624,18 @@ async function sweepStaleSlots(limit = 20) {
   return { ok: true, scanned: rows.length, changed: changes.length, changes, cursor: sweepCursor };
 }
 
-async function listDueSlots(limit = 20) {
+async function listDueSlots(limit = 20, options = {}) {
   await recoverNavDependencies();
   const safeLimit = Math.min(Math.max(Number(limit) || 20, 1), 100);
+  // R2-006：分类（tier）由编排层按任务定义算出，SQL 只按它排序/过滤，
+  // 这样"核心候选"和"历史候选"可以分别取，不会让历史积压把核心挤到 LIMIT 之外。
   const retryPolicies = JOB_DEFINITIONS.filter(definition => !definition.disabled).map(definition => ({
-    job_code: definition.jobCode, max_attempts: definition.maxAttempts || 3,
+    job_code: definition.jobCode,
+    max_attempts: definition.maxAttempts || 3,
+    tier: typeof options.tierOf === 'function' ? options.tierOf(definition) : 1,
   }));
-  const { rows } = await repository.select_ops_job_schedule_slots_3([safeLimit, JSON.stringify(retryPolicies)]);
+  const tierFilter = Array.isArray(options.tiers) && options.tiers.length ? options.tiers : null;
+  const { rows } = await repository.select_ops_job_schedule_slots_3([safeLimit, JSON.stringify(retryPolicies), tierFilter]);
   const due = [];
   for (const slot of rows) {
     const definition = getJobDefinition(slot.job_code);

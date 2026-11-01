@@ -26,7 +26,7 @@
 'use strict';
 
 const { pool } = require('../db/connection');
-const { readStockValuationSeriesBatch } = require('../dataAccess/marketDatasets');
+const { readStockValuationSeriesDetailed } = require('../dataAccess/marketDatasets');
 const store = require('../services/convertibleBondAnalysisStore');
 const { resolveCanonicalCode } = require('../services/securityIdentity');
 
@@ -163,6 +163,7 @@ async function main() {
   let fetchedRows = 0;
   let processedBatches = 0;
   let emptyBatches = 0;
+  let failedSegments = 0;
   let newDayRows = 0;
   const startedAt = Date.now();
 
@@ -174,11 +175,19 @@ async function main() {
     if (!APPLY && processedBatches >= SAMPLE_BATCHES) continue;
 
     const instrumentMap = new Map(batch.map(item => [item.canonical_code, item.instrument_id]));
-    const rows = await readStockValuationSeriesBatch({
+    // R2-001：拿详细结果而不是"看起来完整"的数组。失败段单独计数并保留诊断，
+    // 成功段照常幂等写入；失败段不删旧行、不计入完成，最后汇总时非零退出。
+    const detail = await readStockValuationSeriesDetailed({
       codes: batch.map(item => item.canonical_code),
       startDate: SINCE,
       endDate: FETCH_UNTIL,
     });
+    const rows = (detail && detail.rows) || [];
+    if (detail && !detail.complete) {
+      failedSegments += detail.failed + detail.notAttempted;
+      console.warn(`[${index + 1}/${batches.length}] 官方未取全：计划 ${detail.planned} 段，成功 ${detail.succeeded} 段，失败 ${detail.failed} 段，未执行 ${detail.notAttempted} 段；本批已取到的 ${rows.length} 行照常写入，失败区间留待续跑`);
+      detail.failures.slice(0, 3).forEach(item => console.warn(`    ${item.tsCode || ''} ${item.from || ''}~${item.to || ''} ${item.code}${item.retryable ? '(可重试)' : ''}`));
+    }
     fetchedRows += rows.length;
     // 官方返回空但该批确实在范围里：不能当成「没有数据」静默过去（数据层包装会吞异常），
     // 记为可疑批次，最后汇总时非零退出，交给人工判断是权限、额度还是真实无值。
@@ -231,9 +240,10 @@ async function main() {
 
   console.log(`\n汇总：处理批次 ${processedBatches}/${batches.length}，官方返回 ${fetchedRows} 行，${APPLY ? `写入 ${writtenRows} 行` : '未写库（预演）'}，其中原本没有该股数据的日子 ${newDayRows} 行；已有官方跳过 ${skippedCovered} 行`);
   if (emptyBatches) console.warn(`⚠️ 有 ${emptyBatches} 批官方返回 0 行（该批在补数范围内），可能是权限/额度或区间无效，需人工核对，不能当作「本来就没有数据」`);
+  if (failedSegments) console.warn(`⚠️ 有 ${failedSegments} 个证券×日期段未取到（失败或未执行），已写入的是成功部分，这些区间需重跑续补，不能当整段完成`);
   if (!APPLY) console.log('预演结束：只抽样实取了前若干批，未写库。加 --apply 才全量写入。');
   await pool.end();
-  if (APPLY && emptyBatches) process.exit(2);
+  if (APPLY && (emptyBatches || failedSegments)) process.exit(2);
 }
 
 main().catch(async error => {

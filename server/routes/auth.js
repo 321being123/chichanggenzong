@@ -4,7 +4,7 @@ const crypto = require('crypto');
 const router = express.Router();
 const asyncHandler = require('../middleware/async');
 const rateLimit = require('../middleware/rateLimit');
-const { requireLogin, checkLocked, recordFail, clearFail, checkRegLimit, isAdminIdentity, hasCapability, CAPABILITY_WHITELIST } = require('../middleware/auth');
+const { requireLogin, checkLocked, recordFail, clearFail, checkRegLimit, requireSessionStore, isAdminIdentity, hasCapability, CAPABILITY_WHITELIST } = require('../middleware/auth');
 const { mailer, REGISTER_CODE } = require('../config');
 const { registerUser, hashPwd, verifyPwd, isLegacyHash, changePassword, upgradePasswordHash, syncUserAccounts, getUserProfile, getUserAuth, getUserForPasswordReset, updateUserProfile, updateLastLogin, getConfig } = require('../db');
 const { recordServerEvent } = require('../services/siteAnalytics');
@@ -51,7 +51,32 @@ function codeMatches(actual, expected) {
   return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
 
-router.post('/register', registerIpLimit, asyncHandler(async (req, res) => {
+// 统一身份建立（R2-002）：注册与登录共用「轮换 SID → 写入当前身份与版本 → 保存成功 → 再响应」。
+// 不复制旧会话内容：已消费的邮箱验证码/重置码不能借会话轮换复活。
+// SID 轮换或保存失败一律 reject，且清掉可能已带身份的新会话，不遗留"半登录"状态；
+// 失败时调用方不得返回登录成功。
+function establishSession(req, username, authVersion) {
+  const apply = () => {
+    req.session.user = username;
+    req.session.authVersion = (authVersion === undefined || authVersion === null) ? 1 : authVersion;
+  };
+  const discard = () => { try { if (req.session && typeof req.session.destroy === 'function') req.session.destroy(() => {}); } catch (_) { /* 忽略销毁异常 */ } };
+  // 兼容桩 session（没有真实 Store 的调用方）：只设置身份。
+  if (!req.session || typeof req.session.regenerate !== 'function') { apply(); return Promise.resolve(); }
+  return new Promise((resolve, reject) => {
+    req.session.regenerate((err) => {
+      if (err) { discard(); return reject(err); }
+      apply();
+      if (typeof req.session.save !== 'function') return resolve();
+      req.session.save((saveErr) => {
+        if (saveErr) { discard(); return reject(saveErr); }
+        resolve();
+      });
+    });
+  });
+}
+
+router.post('/register', requireSessionStore, registerIpLimit, asyncHandler(async (req, res) => {
   const username = (req.body && req.body.username || '').normalize('NFC').trim();
   const password = (req.body && req.body.password || '').normalize('NFC');
   const { code, email, emailCode } = req.body || {};
@@ -87,15 +112,24 @@ router.post('/register', registerIpLimit, asyncHandler(async (req, res) => {
   if (email) await updateUserProfile(username, { email }).catch(() => {});
   // P2-3：同步结构化 accounts 表，新用户即拥有账户元数据行（cash_base/hk_rate 用默认）
   await syncUserAccounts(username, ['默认账户']).catch(() => {});
-  req.session.user = username;
-  req.session.authVersion = 1; // 新用户会话版本（DEFAULT 1）
+  // R2-002：账号建好后走与登录相同的身份建立链路，版本取数据库真实值（不把默认 1 当永久合同）。
+  // 会话建立失败不代表账号回滚：不回滚账号、不重放已消费的验证码，明确提示直接登录。
+  const created = await getUserAuth(username);
+  try {
+    await establishSession(req, username, created && created.auth_version);
+  } catch (e) {
+    console.error('[auth] 注册后会话建立失败（账号已创建）:', String(e && e.message).slice(0, 160));
+    return res.status(503).json({ error: '账号已创建，但登录会话未能建立，请用刚才的账号直接登录' });
+  }
   recordServerEvent('register_success', { pageKey: 'register', module: 'auth' }, {
     req, username, dedupeKey: 'register:' + username
   }).catch(() => {});
   res.json({ ok: true, username });
 }));
 
-router.post('/login', loginIpLimit, asyncHandler(async (req, res, next) => {
+// 会话固定防护（P1-1）：登录成功后重建会话，丢弃旧会话ID，防会话固定攻击；
+// R2-002：与注册共用 establishSession，轮换或保存失败不得返回登录成功。
+router.post('/login', requireSessionStore, loginIpLimit, asyncHandler(async (req, res, next) => {
   const username = (req.body && req.body.username || '').normalize('NFC').trim();
   const password = (req.body && req.body.password || '').normalize('NFC');
   if (!username || !password) return res.status(400).json({ error: '请填写账号和密码' });
@@ -117,13 +151,13 @@ router.post('/login', loginIpLimit, asyncHandler(async (req, res, next) => {
     upgradePasswordHash(username, hashPwd(password)).catch(() => {});
   }
   // 会话固定防护（P1-1）：登录成功后重建会话，丢弃旧会话ID，防会话固定攻击
-  req.session.regenerate((err) => {
-    if (err) return next(err);
-    req.session.user = username;
-    req.session.authVersion = user.auth_version; // 写入会话版本，供后续请求校验（AUTH-01）
-    updateLastLogin(username).catch(() => {});
-    res.json({ ok: true, username, role: isAdminIdentity(username, user.role) ? 'admin' : (user.role || 'user') });
-  });
+  try {
+    await establishSession(req, username, user.auth_version); // 写入会话版本，供后续请求校验（AUTH-01）
+  } catch (e) {
+    return next(e);
+  }
+  updateLastLogin(username).catch(() => {});
+  res.json({ ok: true, username, role: isAdminIdentity(username, user.role) ? 'admin' : (user.role || 'user') });
 }));
 
 router.post('/logout', (req, res) => {
@@ -157,6 +191,7 @@ router.get('/config', asyncHandler(async (req, res) => {
 
 // 发送邮箱验证码（IP+邮箱 联合限流，复用现有内存/Redis 限流中间件）
 router.post('/send-code',
+  requireSessionStore,
   emailIpLimit,
   rateLimit({
     prefix: 'emailcode',
@@ -186,6 +221,7 @@ router.post('/send-code',
 }));
 
 router.post('/forgot-password/send-code',
+  requireSessionStore,
   passwordResetEmailIpLimit,
   rateLimit({
     prefix: 'password-reset-code',
@@ -244,6 +280,7 @@ router.post('/forgot-password/send-code',
 );
 
 router.post('/forgot-password/reset',
+  requireSessionStore,
   rateLimit({
     prefix: 'password-reset',
     windowMs: 60000,

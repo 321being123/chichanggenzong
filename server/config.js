@@ -49,16 +49,28 @@ const REGISTER_CODE = process.env.REGISTER_CODE;
 // 用可变对象持有状态，供限流中间件实时读取（避免 let 导出被快照为初始值）
 const redis = { client: null, store: undefined, ready: false };
 
+// 必需的共享存储：生产环境显式声明 REDIS_REQUIRED=1。
+// 判定只在启动入口做一次；运行期是否可用由 redis.ready 决定，两者不能混为一谈。
+function isRedisRequired() {
+  return process.env.NODE_ENV === 'production' && process.env.REDIS_REQUIRED === '1';
+}
+
 // 异步初始化 Redis（P1-5）：必须先「等待连接确认」再创建 Session Store，
 // 避免连接尚未成功就把不可用的 Store 挂到会话、造成静默降级。
-// 生产环境若设 REDIS_REQUIRED=1，连接失败直接启动失败，拒绝带病上线。
+// R2-007（2026-11-01）：必需条件在入口先算，URL 缺失或只有空白同样阻断启动——
+// 原来的 `if (!process.env.REDIS_URL) return` 会让"要求 Redis 但压根没配"绕过强制检查。
 async function initRedis() {
-  if (!process.env.REDIS_URL) return;
+  const url = String(process.env.REDIS_URL || '').trim();
+  const required = isRedisRequired();
+  if (!url) {
+    if (required) throw new Error('[Redis] 生产环境要求 Redis（REDIS_REQUIRED=1），但 REDIS_URL 缺失或为空，已中止启动');
+    return;
+  }
   try {
     const { createClient } = require('redis');
     const connectRedis = require('connect-redis');
     const RedisStore = connectRedis.default || connectRedis;
-    const client = createClient({ url: process.env.REDIS_URL });
+    const client = createClient({ url });
     client.on('error', (e) => console.warn('[Redis] 连接错误:', e.message));
     await client.connect(); // 阻塞直到连接确认
     redis.client = client;
@@ -67,17 +79,17 @@ async function initRedis() {
     console.log('[Redis] 会话存储已启用');
   } catch (e) {
     redis.client = null; redis.store = undefined; redis.ready = false;
-    if (process.env.NODE_ENV === 'production' && process.env.REDIS_REQUIRED === '1') {
-      throw new Error('[Redis] 生产环境要求 Redis 但连接失败：' + e.message);
+    if (required) {
+      throw new Error('[Redis] 生产环境要求 Redis 但连接失败，已中止启动：' + e.message);
     }
-    console.warn('[Redis] 连接失败，退回内存存储:', e.message);
+    console.warn('[Redis] 连接失败，退回内存存储（仅单进程、重启后登录态与限流计数会丢失）:', e.message);
   }
 }
 
 // 生产环境但未配置 Redis：会话/限流退回内存，多实例与重启会丢状态，并发可能相互覆盖。
 // 不静默默认，明确告警，提醒运维配置 REDIS_URL。
-if (process.env.NODE_ENV === 'production' && !process.env.REDIS_URL) {
-  console.warn('[Redis][告警] 生产环境未配置 REDIS_URL：会话与限流将使用内存存储，多实例部署/重启会丢失登录态与限流计数，多用户并发保存可能相互覆盖。请配置 Redis 以启用共享会话与限流。');
+if (process.env.NODE_ENV === 'production' && !String(process.env.REDIS_URL || '').trim()) {
+  console.warn('[Redis][告警] 生产环境未配置 REDIS_URL：会话与限流将使用内存存储（仅单进程有效），重启会丢失登录态与限流计数，多用户并发保存可能相互覆盖。请配置 Redis 以启用共享会话与限流。');
 }
 
 // 邮箱验证码（nodemailer）
@@ -98,5 +110,5 @@ if (process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS) {
 module.exports = {
   PORT, SECRET, ALLOWED_HOSTS, AI_ALLOWED_HOSTS, ALLOWED_VISION_MODELS,
   DEFAULT_VISION_MODEL, isVisionModelAllowed, getConfiguredVisionModel,
-  REGISTER_CODE, redis, mailer, initRedis
+  REGISTER_CODE, redis, mailer, initRedis, isRedisRequired
 };

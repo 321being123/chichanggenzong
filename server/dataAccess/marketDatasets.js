@@ -394,6 +394,8 @@ async function readStockDailyBatch({ tsCodes, tradeDate } = {}) {
 
 // 全市场估值（某交易日）：官方逐批（一次 100 只）优先，官方没覆盖的代码由 Tushare daily_basic 补。
 // 宇宙由 Tushare daily_basic 的当日代码清单确定（官方没有"按交易日列全市场"的清单接口）。
+// 业务覆盖裁决（R2-001）：官方批次部分失败时，保留已经取到的官方行，缺的代码按同口径备源补齐并标来源；
+// 官方失败证据写入日志，不能因此声称"官方采集完整"。
 async function readStockValuationRows({ tradeDate } = {}) {
   if (!tradeDate) return [];
   const universeData = await tushareQuery('daily_basic', { trade_date: String(tradeDate).replace(/-/g, '') },
@@ -402,8 +404,17 @@ async function readStockValuationRows({ tradeDate } = {}) {
   const codes = universeRows.map(row => row.ts_code);
   let officialRows = [];
   if (codes.length) {
-    const primary = await safeOfficial(() => official.resolveValuationRows({ codes, tradeDate }), 'stock_valuation');
-    officialRows = primary.value || [];
+    try {
+      const detail = await official.resolveValuationRowsDetailed({ codes, tradeDate });
+      officialRows = (detail && detail.rows) || [];
+      if (detail && !detail.complete) {
+        console.warn(`[数据层] stock_valuation 官方快照未取全（计划 ${detail.planned} 批，失败 ${detail.failed} 批，空 ${detail.emptyBatches} 批），缺失代码按备源补齐`);
+      }
+    } catch (error) {
+      if (isAbort(error)) throw error;
+      logFallback('stock_valuation', error);
+      officialRows = [];
+    }
   }
   const covered = new Set(officialRows.map(row => row.ts_code));
   const fallbackRows = universeRows.filter(row => !covered.has(row.ts_code)).map(row => ({ ...row, source_code: 'tushare' }));
@@ -415,14 +426,33 @@ async function readStockValuationRows({ tradeDate } = {}) {
 // 本入口一次取一批代码的整段，适配层内部按官方 ≤10 年跨度限制自动分段。
 // 返回 Tushare 形状（total_mv 万元、dv_ttm 百分数点），source_code 固定官方；
 // 官方无数据时返回空数组，由调用方决定是否重试，不得在此回退 Tushare（会把 77 写成官方）。
+// 完整性（R2-001）：官方计划段有失败时不再返回"看起来完整"的数组——
+// 抛 PARTIAL_RESULT，错误对象带 partialRows（已取到的官方行）与 failures（逐段诊断），
+// 调用方可以保留成功部分，但必须自己决定是否续跑，不能把非空结果当成整段成功。
 async function readStockValuationSeriesBatch({ codes = [], startDate, endDate } = {}) {
+  const detail = await readStockValuationSeriesDetailed({ codes, startDate, endDate });
+  if (!detail) return [];
+  if (!detail.complete) {
+    const error = new Error(`官方估值历史未取全：计划 ${detail.planned} 段，成功 ${detail.succeeded} 段，失败 ${detail.failed} 段`);
+    error.code = 'PARTIAL_RESULT';
+    error.partialRows = detail.rows;
+    error.failures = detail.failures;
+    throw error;
+  }
+  return detail.rows;
+}
+
+// 逐只估值区间批量的详细结果（R2-001）：回填脚本用它同时拿到成功行与失败区间，
+// 成功行照常幂等写入，失败区间不删旧行、不推进完整水位。
+async function readStockValuationSeriesDetailed({ codes = [], startDate, endDate } = {}) {
   const list = (codes || []).filter(Boolean);
-  if (!list.length || !startDate || !endDate) return [];
+  if (!list.length || !startDate || !endDate) return null;
   const primary = await safeOfficial(
-    () => official.resolveValuationSeries({ codes: list, startDate, endDate }),
+    () => official.resolveValuationSeriesDetailed({ codes: list, startDate, endDate }),
     'stock_valuation_series',
   );
-  return (primary.value || []).map(row => ({ ...row, source_code: official.SOURCE }));
+  if (!primary.value) return null;
+  return { ...primary.value, rows: primary.value.rows.map(row => ({ ...row, source_code: official.SOURCE })) };
 }
 
 // 复权因子（按代码区间）：官方无因子接口，复权仍以本来源计算。
@@ -445,8 +475,15 @@ async function readStockValuationHistory({ tsCode, startDate, endDate, fields = 
   const from = String(startDate).replace(/-/g, '');
   const to = String(endDate).replace(/-/g, '');
   const primary = await safeOfficial(async () => {
-    const rows = await official.resolveValuationSeries({ codes: [tsCode], startDate: from, endDate: to });
-    if (!rows || !rows.length) return rows;
+    // R2-001：用详细结果，部分日期段失败时保留已取到的官方行（不整段丢掉），
+    // 并把失败区间记进日志；缺的日期仍由下面的备源骨架兜住，不会被当成"官方没有数据"。
+    const detail = await official.resolveValuationSeriesDetailed({ codes: [tsCode], startDate: from, endDate: to });
+    if (!detail) return [];
+    if (!detail.complete) {
+      console.warn(`[数据层] stock_valuation 官方历史未取全 ${tsCode}：计划 ${detail.planned} 段，成功 ${detail.succeeded} 段，失败 ${detail.failed} 段；已取到的官方日期照常使用，其余日期沿用备源`);
+    }
+    const rows = detail.rows;
+    if (!rows.length) return rows;
     // 区间起点前两年的年报也要拿到，否则区间第一天没有「最近一期年报」可算静态市盈率。
     const annualStart = `${Number(from.slice(0, 4)) - 2}${from.slice(4)}`;
     const annuals = await official.resolveAnnualNetProfits({ tsCode, startDate: annualStart, endDate: to });
@@ -680,5 +717,6 @@ module.exports = {
   readStockValuationHistory,
   readStockValuationRows,
   readStockValuationSeriesBatch,
+  readStockValuationSeriesDetailed,
   readTotalAShareMarketCap,
 };

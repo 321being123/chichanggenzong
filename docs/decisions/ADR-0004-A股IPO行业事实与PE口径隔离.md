@@ -214,3 +214,5 @@ Tushare 官方文档只把 `stock_basic.industry` 定义为“所属行业”，
 2026-10-27 路由核对（套利换股结算任务接入）：`jobDefinitions.js` 仅新增 `stock_swap_settle` 模式与对应数据集声明，A 股 IPO 行业、行业 PE、产业链字段口径、定向补全 `targetCodes` 范围与原文证据要求均无改动，生产状态不变。
 
 2026-10-30 路由核对（账户导入后补齐任务接入）：`jobDefinitions.js` / `jobOrchestrator.js` 的改动仅涉及新增人工任务 `account_price_backfill` 与账户标识透传；A 股 IPO 行业、行业 PE、产业链字段口径、定向补全范围与原文证据要求均无改动。
+
+2026-11-01 路由核对（第二轮审查整改，执行器调度）：`jobOrchestrator.js` 的改动只涉及执行容量、候选分类与补位（见 ADR-0003 同日记录），不读取、不写入 IPO 行业事实、行业 PE 或产业链字段，也不改变 `industry`/`industry_pe` 的准入与回退顺序。ADR-0004 的隔离口径不变。

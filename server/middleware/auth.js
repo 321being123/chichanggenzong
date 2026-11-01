@@ -1,6 +1,7 @@
 // ========== 鉴权与账户归属校验中间件 ==========
 const asyncHandler = require('./async');
 const { loadUser, pool } = require('../db');
+const { redis, isRedisRequired } = require('../config');
 
 // 安全销毁会话：兼容测试中的桩 session（无 destroy 方法时不崩溃）
 function destroySession(req) {
@@ -60,9 +61,14 @@ function checkLocked(key) {
   if (f.lockedUntil && Date.now() >= f.lockedUntil) failMap.delete(key);
   return false;
 }
-function recordFail(key) {
-  const failure = failMap.get(key) || { count: 0, at: Date.now() };
-  if (++failure.count >= 5) { failure.lockedUntil = Date.now() + 15 * 60 * 1000; failure.count = 0; }
+// now 可注入：让回归测试能用虚拟时钟验证"活动时间随失败前移"，不必真的等一小时。
+function recordFail(key, now = Date.now()) {
+  const failure = failMap.get(key) || { count: 0, at: now };
+  failure.count += 1;
+  // R2-004：at 必须是"最后一次失败"的活动时间，否则普通失败的 TTL 一直按首次失败算，
+  // 持续攻击中的键会被提前当成陈旧记录清掉。锁定状态另行由 lockedUntil 表达。
+  failure.at = now;
+  if (failure.count >= 5) { failure.lockedUntil = now + 15 * 60 * 1000; failure.count = 0; }
   failMap.set(key, failure);
 }
 function clearFail(key) { failMap.delete(key); }
@@ -77,12 +83,39 @@ function checkRegLimit(ip) {
 // TTL 清理（P1-6）：登录失败 / 注册 IP 的限流 Map 长期不清理会无限增长，定期清除陈旧记录
 const MAP_TTL_MS = 60 * 60 * 1000; // 1 小时
 function sweepAuthMaps(now = Date.now()) {
-  for (const [k, v] of failMap) if (!v.lockedUntil && now - (v.at || 0) > MAP_TTL_MS) failMap.delete(k);
-  for (const [k, t] of regIpMap) if (now - t > MAP_TTL_MS) regIpMap.delete(k);
+  for (const [k, v] of failMap) {
+    // R2-004：锁定期内的记录一律保留。容量保护只能淘汰过期项，
+    // 一旦淘汰"仍有效的锁定"，攻击者只要制造大量新键就能把自己的锁定挤掉。
+    if (v.lockedUntil && now < v.lockedUntil) continue;
+    // 锁定期已过：主动回收，让该键重新开始计数（原来这里被排除在清理之外，过期锁定永久驻留）。
+    if (v.lockedUntil) { failMap.delete(k); continue; }
+    if (now - (v.at || 0) > MAP_TTL_MS) failMap.delete(k);
+  }
+  for (const [k, t] of regIpMap) if (now - Number(t || 0) > MAP_TTL_MS) regIpMap.delete(k);
 }
 if (typeof setInterval === 'function') {
   const sweep = setInterval(sweepAuthMaps, 10 * 60 * 1000);
   if (sweep.unref) sweep.unref();
+}
+
+// 供回归测试观察实际键数与锁定状态（只读快照，不暴露可变结构）。
+function inspectAuthMaps(now = Date.now()) {
+  return {
+    failKeys: [...failMap.keys()],
+    regIpKeys: [...regIpMap.keys()],
+    lockedKeys: [...failMap.entries()].filter(([, v]) => v.lockedUntil && now < v.lockedUntil).map(([k]) => k),
+  };
+}
+
+// ========== 敏感入口的共享存储前置检查（R2-007）==========
+// 生产显式要求 Redis 时，登录/注册/验证码/重置这类同时依赖"会话写回 + 跨进程限流"的入口，
+// 必须在共享存储就绪时才接受请求：否则会话写不进共享存储、限流退化成各进程各算，
+// 故障期间等于没有防护。这里返回 503（存储故障），与超限 429 分开。
+function requireSessionStore(req, res, next) {
+  // 兼容注入替身：拿不到判定函数时按"非必需"处理，绝不因此让请求崩成 500。
+  if (typeof isRedisRequired !== 'function' || !isRedisRequired()) return next();
+  if (redis.ready && redis.client) return next();
+  return res.status(503).json({ error: '登录服务暂时不可用，请稍后再试' });
 }
 
 // ========== 账户归属校验：确保被访问的账户属于当前登录用户 ==========
@@ -177,4 +210,4 @@ function requireStaff(req, res, next) {
   });
 }
 
-module.exports = { requireLogin, optionalLogin, checkLocked, recordFail, clearFail, checkRegLimit, assertOwnership, requireAdmin, isAdminIdentity, sweepAuthMaps, CAPABILITY_WHITELIST, hasCapability, requireCapability, requireStaff };
+module.exports = { requireLogin, optionalLogin, checkLocked, recordFail, clearFail, checkRegLimit, assertOwnership, requireAdmin, isAdminIdentity, sweepAuthMaps, inspectAuthMaps, requireSessionStore, CAPABILITY_WHITELIST, hasCapability, requireCapability, requireStaff };

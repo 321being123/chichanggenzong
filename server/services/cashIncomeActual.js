@@ -8,11 +8,21 @@ const bad=message=>Object.assign(new Error(message),{status:400});
 function validate(records) {
   if(!Array.isArray(records)||!records.length) throw Object.assign(new Error('缺少实际收益记录'),{status:400});
   const seen=new Set();
+  const missingFields=()=>Object.assign(new Error('实际记录须含事件键、到账日、人民币金额文本及券商原始凭证引用'),{status:400});
   return records.map(r=>{
     if(!r||typeof r!=='object'||Array.isArray(r)) throw bad('实际记录格式无效');
+    // R2-008（2026-11-01）：字段类型必须先在内容之前判断。
+    // 原实现直接 String(r.eventKey)/String(r.sourceRef)：对象会被转成 "[object Object]" 落库，
+    // 数字或对象事件键进到 .match 时抛 TypeError（不是约定的 400），settlement 传数组也能绕过形状校验。
+    if(typeof r.eventKey!=='string'||!r.eventKey.trim()) throw missingFields();
+    if(typeof r.sourceRef!=='string'||!r.sourceRef.trim()) throw missingFields();
+    if(r.settlement!=null){
+      if(typeof r.settlement!=='object'||Array.isArray(r.settlement)) throw bad('结算/扣税证据格式无效');
+      if(r.settlement.layers!=null&&!Array.isArray(r.settlement.layers)) throw bad('分层扣税证据必须是数组');
+      if(r.settlement.amountBasis!=null&&!['gross','net'].includes(r.settlement.amountBasis)) throw bad('结算口径只能是毛额或净额');
+    }
     if(!CoreDate.normalizeBusinessDate(r.date)||r.date>CoreDate.todayInZone('Asia/Shanghai')||!['dividend','dividend_tax','repo_interest','repo_fee'].includes(r.flow_type)
-      || typeof r.amountCny!=='string'||!/^[-+]?\d+(\.\d{1,6})?$/.test(r.amountCny)||!Number.isFinite(Number(r.amountCny))
-      || !String(r.eventKey||'').trim()||!String(r.sourceRef||'').trim()) throw Object.assign(new Error('实际记录须含事件键、到账日、人民币金额文本及券商原始凭证引用'),{status:400});
+      || typeof r.amountCny!=='string'||!/^[-+]?\d+(\.\d{1,6})?$/.test(r.amountCny)||!Number.isFinite(Number(r.amountCny))) throw missingFields();
     if((r.flow_type==='dividend_tax'||r.flow_type==='repo_fee')&&Number(r.amountCny)>0 || ['dividend','repo_interest'].includes(r.flow_type)&&Number(r.amountCny)<0) throw bad('收益/费用方向不正确');
     const repo=r.eventKey.match(/^repo:204001\.SH:(\d{4}-\d{2}-\d{2})$/);
     const dividend=r.eventKey.match(/^dividend:([1-9]\d*):(\d{4}-\d{2}-\d{2}):(\d{4}-\d{2}-\d{2})(?::tax:([A-Za-z0-9_-]+))?$/);

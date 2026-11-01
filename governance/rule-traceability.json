@@ -732,7 +732,8 @@
       "title": "业务日期、明确时刻和年份区间必须经共享工具并阻止已修错误复发",
       "implementation": {
         "file": "public/shared/core-date.js",
-        "symbol": "normalizeBusinessDate"
+        "symbol": "normalizeBusinessDate",
+        "via": "2026-11-02覆盖边界复核：verified仅限原共享工具及所列测试；4403b2ea的deployIdentityProbe.toTime对systemctl CST文本解析仍未覆盖，待修复与新增反例，见docs/第二轮代码审查核查与整改开发清单_20261101.md第11节RR-01；不作为新脚本或生产通过证据。"
       },
       "tests": [
         {

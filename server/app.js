@@ -9,6 +9,7 @@ const { initSchema, migrateFromJson, ensureAdmin, DATA_DIR, pool } = require('./
 const { ensureAiModelsInit } = require('./services/aiModels');
 const { redirectUnauthenticated, csrfMiddleware, securityHeaders } = require('./middleware/security');
 const { requestId, accessLog, errorHandler } = require('./middleware/errorHandler');
+const { guardSensitiveSession } = require('./middleware/sessionStoreGuard');
 const { versionedStaticPages } = require('./middleware/versionedStaticPages');
 const { getDependencyHealth } = require('./services/siteAnalytics');
 const authRouter = require('./routes/auth');
@@ -104,6 +105,11 @@ async function start() {
     console.error('Redis 初始化失败导致启动中止:', e.message);
     process.exit(1);
   }
+
+  // 敏感入口的存储守卫必须在 session 之前（复验 RV-02）：必需 Redis 断连时，
+  // express-session 会先去 Store 取会话并抛 ClientOfflineError，导致带旧 Cookie 的请求拿到 500。
+  // 提前拦截后，登录/注册/发码/重置一律按约定 503，既不读会话也不排队等重连。
+  app.use(guardSensitiveSession);
 
   // 会话中间件依赖异步初始化的 redis.store（无 Redis 时为 undefined → 内存存储，与现状一致）
   app.use(session({

@@ -353,6 +353,25 @@ function verifyAlertScopeLayerQuery4(executor, parts, ...args) { return executor
            JOIN ops.data_sources ds ON ds.source_id=r.source_id
           WHERE ds.source_code=$1 AND r.api_name=$2`, ...args); }
 
+// 实源合同验证留证（迁移 183 / 复验 RV-04）：恢复判定只认 `contract_ok=true` 的记录，
+// 普通 HTTP 200 只刷新熔断表的 last_success_at，不能顶替合同复验。
+function insert_ops_source_contract_verifications(params, client = pool) {
+  return client.query(`INSERT INTO ops.source_contract_verifications(source,api_name,status,contract_ok,detail,sample,checked_at)
+     VALUES($1,$2,$3,$4,$5,$6::jsonb,now())
+     RETURNING verification_id, checked_at`, params);
+}
+
+function loadSourceContractVerifications(executor, allApis, params) {
+  const sql = allApis
+    ? `SELECT verification_id,source,api_name,status,contract_ok,detail,checked_at
+         FROM ops.source_contract_verifications WHERE source=$1
+        ORDER BY checked_at DESC LIMIT $2`
+    : `SELECT verification_id,source,api_name,status,contract_ok,detail,checked_at
+         FROM ops.source_contract_verifications WHERE source=$1 AND api_name=$2
+        ORDER BY checked_at DESC LIMIT $3`;
+  return executor(sql, params);
+}
+
 function loadScopedCircuits(executor, allApis, params) {
   const sql = allApis
     ? `SELECT source,api_name,state,recover_at,last_success_at,updated_at
@@ -364,6 +383,8 @@ function loadScopedCircuits(executor, allApis, params) {
 
 module.exports = {
   loadScopedCircuits,
+  insert_ops_source_contract_verifications,
+  loadSourceContractVerifications,
   loadRecentRecoverySequenceLayerQuery1, verifyAlertScopeLayerQuery1, verifyAlertScopeLayerQuery2, verifyAlertScopeLayerQuery3, verifyAlertScopeLayerQuery4,
   runQuery,
   ACTIVE_ALERT_WHERE,

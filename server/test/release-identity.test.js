@@ -98,41 +98,68 @@ function check(name, fn) {
   const { evaluateIdentity } = require('../scripts/deployIdentityProbe');
   const head = 'a'.repeat(40);
 
+  const baseFacts = {
+    expectHead: head, expectVersion: '0.9.1.21',
+    appliedVersions: ['001_init', '183_source_contract_verifications'],
+    requiredVersions: ['001_init', '183_source_contract_verifications'],
+  };
+  const goodHealth = { version: '0.9.1.21', commit: head, pid: 111, startedAt: new Date().toISOString() };
+  const goodWorker = {
+    worker_id: 'h:1', pid: '222', app_version: '0.9.1.21', status: 'running', commit_sha: head,
+    started_at: new Date().toISOString(), last_seen_at: new Date().toISOString(),
+  };
+
   await check('四类事实一致时判 IDENTITY_OK；任一不一致必须指出原因', async () => {
-    const ok = evaluateIdentity({
-      expectHead: head, expectVersion: '0.9.1.21',
-      health: { version: '0.9.1.21', commit: head, pid: 1 },
-      worker: { worker_id: 'h:1', pid: '1', app_version: '0.9.1.21', status: 'running', commit_sha: head, last_seen_at: new Date().toISOString() },
-      appliedVersions: ['001_init', '182_worker_heartbeat_commit'],
-      requiredVersions: ['001_init', '182_worker_heartbeat_commit'],
-    });
-    assert.strictEqual(ok.ok, true, ok.line);
+    const ok = evaluateIdentity({ ...baseFacts, health: goodHealth, worker: goodWorker, expectWebPid: '111', expectWorkerPid: '222' });
+    assert.strictEqual(ok.status, 'ok', ok.line);
     assert.match(ok.line, /^IDENTITY_OK/);
 
     const bad = evaluateIdentity({
-      expectHead: head, expectVersion: '0.9.1.21',
-      health: { version: '0.9.1.20', commit: 'b'.repeat(40), pid: 1 },
-      worker: { worker_id: 'h:1', pid: '1', app_version: '0.9.1.20', status: 'stopped', commit_sha: 'c'.repeat(40), last_seen_at: new Date(Date.now() - 600000).toISOString() },
+      ...baseFacts,
+      health: { version: '0.9.1.20', commit: 'b'.repeat(40), pid: 111 },
+      worker: { worker_id: 'h:1', pid: '222', app_version: '0.9.1.20', status: 'stopped', commit_sha: 'c'.repeat(40), last_seen_at: new Date(Date.now() - 600000).toISOString() },
       appliedVersions: ['001_init'],
-      requiredVersions: ['001_init', '182_worker_heartbeat_commit'],
     });
-    assert.strictEqual(bad.ok, false);
+    assert.strictEqual(bad.status, 'mismatch', bad.line);
     for (const reason of ['web_version_mismatch', 'web_commit_mismatch', 'worker_commit_mismatch', 'worker_not_running', 'worker_heartbeat_stale']) {
-      assert.ok(bad.reasons.includes(reason), `缺少原因 ${reason}：${bad.reasons.join(',')}`);
+      assert.ok(bad.mismatch.includes(reason), '缺少原因 ' + reason + '：' + bad.mismatch.join(','));
     }
-    assert.ok(bad.reasons.some(item => item.startsWith('migrations_missing=')), '迁移缺失要单独指出');
+    assert.ok(bad.mismatch.some(item => item.startsWith('migrations_missing=')), '迁移缺失要单独指出');
   });
 
-  await check('心跳还没承载提交号时记 unknown，而不是伪造一致', async () => {
-    const verdict = evaluateIdentity({
-      expectHead: head, expectVersion: '0.9.1.21',
-      health: { version: '0.9.1.21', commit: head, pid: 1 },
-      worker: { worker_id: 'h:1', pid: '1', app_version: '0.9.1.21', status: 'running', commit_sha: null, last_seen_at: new Date().toISOString() },
-      appliedVersions: ['001_init', '182_worker_heartbeat_commit'],
-      requiredVersions: ['001_init', '182_worker_heartbeat_commit'],
+  // 复验 RV-03：缺 Worker 提交号以前输出 IDENTITY_OK（假通过）。现在必须是"无法核实"。
+  await check('Worker 提交号为空时是「无法核实」，不能称同提交通过', async () => {
+    const verdict = evaluateIdentity({ ...baseFacts, health: goodHealth, worker: { ...goodWorker, commit_sha: null }, expectWebPid: '111', expectWorkerPid: '222' });
+    assert.strictEqual(verdict.status, 'unknown', verdict.line);
+    assert.strictEqual(verdict.ok, false, '未核实不能算通过');
+    assert.match(verdict.line, /^IDENTITY_UNKNOWN/);
+    assert.ok(verdict.unknown.includes('worker_commit_unknown'));
+  });
+
+  await check('心跳缺失、/health 不可达同样按「无法核实」处理', async () => {
+    const noWorker = evaluateIdentity({ ...baseFacts, health: goodHealth, worker: null });
+    assert.strictEqual(noWorker.status, 'unknown');
+    assert.ok(noWorker.unknown.includes('worker_heartbeat_missing'));
+    const noHealth = evaluateIdentity({ ...baseFacts, health: null, worker: goodWorker });
+    assert.strictEqual(noHealth.status, 'unknown');
+    assert.ok(noHealth.unknown.includes('health_unreachable'));
+  });
+
+  await check('心跳与 unit 的 PID/启动时刻必须绑定：错误 PID、旧进程心跳都要判不一致', async () => {
+    const wrongPid = evaluateIdentity({ ...baseFacts, health: goodHealth, worker: { ...goodWorker, pid: '999' }, expectWebPid: '111', expectWorkerPid: '222' });
+    assert.strictEqual(wrongPid.status, 'mismatch');
+    assert.ok(wrongPid.mismatch.includes('worker_pid_mismatch'), wrongPid.line);
+
+    const oldProcess = evaluateIdentity({
+      ...baseFacts, health: goodHealth,
+      worker: { ...goodWorker, started_at: new Date(Date.now() - 3600 * 1000).toISOString() },
+      expectWebPid: '111', expectWorkerPid: '222', expectWorkerStarted: new Date().toISOString(),
     });
-    assert.strictEqual(verdict.ok, true, '空提交号只记未知，不阻断（旧进程/迁移未跑）');
-    assert.ok(verdict.facts.includes('worker_commit=unknown'));
+    assert.strictEqual(oldProcess.status, 'mismatch');
+    assert.ok(oldProcess.mismatch.includes('worker_process_older_than_unit'), oldProcess.line);
+
+    const wrongWebPid = evaluateIdentity({ ...baseFacts, health: { ...goodHealth, pid: 333 }, worker: goodWorker, expectWebPid: '111', expectWorkerPid: '222' });
+    assert.ok(wrongWebPid.mismatch.includes('web_pid_mismatch'), wrongWebPid.line);
   });
 
   console.log('D. 部署脚本接线（静态）');
@@ -141,6 +168,10 @@ function check(name, fn) {
   await check('部署脚本调用身份探针并对不一致判失败', async () => {
     assert.match(deploy, /deployIdentityProbe\.js --expect-head/, '必须在同一提交下调用探针');
     assert.match(deploy, /IDENTITY_MISMATCH/, '必须识别身份不一致');
+    assert.match(deploy, /--expect-worker-pid=/, '必须把当前 unit 的 MainPID 交给探针');
+    assert.match(deploy, /--expect-worker-started=/, '必须把 unit 启动时刻交给探针');
+    assert.match(deploy, /IDENTITY_UNKNOWN/, '无法核实要单独识别，不能当成通过');
+    assert.match(deploy, /发布身份无法核实/, '无法核实要在输出里明说');
     assert.match(deploy, /发布身份不一致，部署判为失败/, '不一致要明确失败并进入回滚');
     assert.ok(!/migrations_head=\$\(ls server\/db\/migrations/.test(deploy), '不得再用迁移目录字母序末文件冒充已应用迁移');
     assert.match(deploy, /release_identity head=%s/, '仍要打印一行发布身份证据');

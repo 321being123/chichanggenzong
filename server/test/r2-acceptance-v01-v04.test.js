@@ -96,34 +96,115 @@ function valuationRows(params, count = 1) {
     assert.strictEqual(rows[0].source_code, 'tushare');
   });
 
-  await check('部分失败写入可查询的质量缺口，完整成功后再置为已恢复', async () => {
-    // 必须是能解析成供应商代码的格式，否则适配层会直接返回 null，测不到"部分失败"。
-    const code = '600519.SH';
-    await pool.query("DELETE FROM ops.data_quality_issues WHERE dataset_code='stock_valuation' AND field_code LIKE $1", [`history:${code}`]);
-    officialHandler = async (endpointKey, params) => {
-      if (String(params.startDate) === '2001-01-01' || String(params.startDate) === '1990-01-01') {
-        throw sourceError('UPSTREAM_5XX', '某段失败');
-      }
-      return { rows: valuationRows(params) };
-    };
-    tushareHandler = async () => ({ fields: ['ts_code', 'trade_date', 'close'], items: [[code, '20261030', 10]] });
-    await datasets.readStockValuationHistory({ tsCode: code, startDate: '1990-01-01', endDate: '2026-10-30' });
-    const openGaps = await quality.listOpenGaps();
-    const gap = openGaps.find(item => String(item.field_code) === `history:${code}`);
-    assert.ok(gap, '部分失败必须留下可查询的 open 缺口，而不是只打一条 warn');
-    assert.strictEqual(gap.status, 'open');
-    assert.ok(gap.details && gap.details.failed >= 1, '缺口证据里要有失败段数');
-    assert.ok(Array.isArray(gap.details.failures) && gap.details.failures.length >= 1, '缺口证据里要有逐段诊断');
+  // 复验 RV-01：缺口身份必须带「证券 + 区间」，恢复只能由被完整覆盖的单元触发。
+  // 旧断言「长期失败 + 补一个月就 resolved」本身就是错误预期，已删除。
+  const cleanupValuationGaps = () => pool.query(
+    "DELETE FROM ops.data_quality_issues WHERE dataset_code='stock_valuation' AND issue_type='partial_fetch'",
+  );
+  const openGapUnits = async () => (await quality.listOpenGaps())
+    .map(item => item.details && item.details.unit).filter(Boolean);
+  // 只清快照单元：不能让快照用例把前面留下的序列单元一起删掉（那会让后续用例空转）。
+  const cleanupSnapshotGaps = () => pool.query(
+    "DELETE FROM ops.data_quality_issues WHERE dataset_code='stock_valuation' AND issue_type='partial_fetch' AND details->>'scope'='snapshot'",
+  );
 
-    // 同一作用域完整成功后必须自行恢复，不能靠人工清表。
-    officialHandler = async (endpointKey, params) => ({ rows: valuationRows(params) });
+  // 只对估值接口生效：年报接口返回空（静态市盈率不参与本用例），避免替身把整段打回备源。
+  const valuationStub = failWhen => async (endpointKey, params) => {
+    if (!String(endpointKey || '').includes('fundamental')) return { rows: [] };
+    if (failWhen(params)) throw sourceError('UPSTREAM_5XX', '某段失败');
+    return { rows: valuationRows(params) };
+  };
+
+  await check('部分失败按失败单元留证（证券 + 区间），不是一条粗粒度的读取记录', async () => {
+    await cleanupValuationGaps();
+    const code = '600519.SH';
+    officialHandler = valuationStub(params => String(params.startDate) !== '2026-01-01');
+    tushareHandler = async () => ({ fields: ['ts_code', 'trade_date'], items: [[code, '20261030']] });
+    await datasets.readStockValuationHistory({ tsCode: code, startDate: '1990-01-01', endDate: '2026-10-30' });
+
+    const units = (await openGapUnits()).filter(unit => unit.tsCode === code);
+    assert.ok(units.length >= 1, '部分失败必须留下可查询的 open 缺口');
+    assert.ok(units.every(unit => unit.from && unit.to), '缺口单元必须带区间，才能查出续跑范围');
+    const row = (await quality.listOpenGaps()).find(item => item.details && item.details.unit && item.details.unit.tsCode === code);
+    assert.strictEqual(row.status, 'open');
+    assert.ok(row.details.failures.length >= 1, '缺口证据里要有该单元的诊断');
+    assert.ok(!units.some(unit => unit.from === '2026-01-01'), '成功的段不应记为缺口');
+  });
+
+  await check('只补一个月不能关闭长期失败记录', async () => {
+    const code = '600519.SH';
+    const before = (await openGapUnits()).filter(unit => unit.tsCode === code);
+    officialHandler = valuationStub(() => false);
     await datasets.readStockValuationHistory({ tsCode: code, startDate: '2026-10-01', endDate: '2026-10-30' });
-    const after = (await pool.query(
-      "SELECT status FROM ops.data_quality_issues WHERE dataset_code='stock_valuation' AND field_code=$1 ORDER BY issue_id DESC LIMIT 1",
-      [`history:${code}`],
-    )).rows[0];
-    assert.strictEqual(after && after.status, 'resolved', '完整成功必须把同一作用域的缺口置为已恢复');
-    await pool.query("DELETE FROM ops.data_quality_issues WHERE dataset_code='stock_valuation' AND field_code LIKE $1", [`history:${code}`]);
+    const after = (await openGapUnits()).filter(unit => unit.tsCode === code);
+    assert.strictEqual(after.length, before.length, '短区间成功不得关闭原失败单元');
+    assert.ok(after.length > 0, '原缺口必须仍是 open');
+  });
+
+  await check('换一只证券成功也不能关闭别人的缺口', async () => {
+    const code = '600519.SH';
+    const other = '000001.SZ';
+    const before = (await openGapUnits()).filter(unit => unit.tsCode === code);
+    officialHandler = valuationStub(() => false);
+    tushareHandler = async () => ({ fields: ['ts_code', 'trade_date'], items: [[other, '20261030']] });
+    await datasets.readStockValuationHistory({ tsCode: other, startDate: '2020-01-01', endDate: '2026-10-30' });
+    const after = (await openGapUnits()).filter(unit => unit.tsCode === code);
+    assert.strictEqual(after.length, before.length, '另一只证券成功不能把这只证券的缺口标成已恢复');
+    assert.ok(after.length > 0);
+  });
+
+  // 快照是另一类单元（交易日 + 代码集合）：别的代码成功不能关掉这一批的缺口。
+  await check('快照缺口按「交易日 + 代码集合」身份记录与恢复', async () => {
+    await cleanupSnapshotGaps();
+    // 宇宙来自备源清单；官方只对 600519 那一批失败。
+    tushareHandler = async () => ({ fields: ['ts_code', 'trade_date'], items: [['600519.SH', '20261030'], ['000001.SZ', '20261030']] });
+    officialHandler = async (endpointKey, params) => {
+      if (!String(endpointKey || '').includes('fundamental')) return { rows: [] };
+      const codes = (params.stockCodes || []).map(String);
+      if (codes.includes('600519')) throw sourceError('UPSTREAM_5XX', '该批失败');
+      return { rows: params.date ? [{ stockCode: codes[0], date: params.date, pe_ttm: 10, pb: 1, dyr: 0.01, mc: 1e11, cmc: 9e10 }] : [] };
+    };
+    await datasets.readStockValuationRows({ tradeDate: '2026-10-30' });
+    const snapUnits = (await openGapUnits()).filter(unit => unit.kind === 'snapshot');
+    assert.ok(snapUnits.length >= 1, '快照部分失败要留下快照单元');
+    assert.ok(snapUnits.some(unit => (unit.codes || []).includes('600519.SH')), '单元身份要用站内代码，否则恢复判定永远匹配不上');
+
+    // 只让另一只证券成功：600519 的缺口必须仍然 open。
+    officialHandler = async (endpointKey, params) => {
+      if (!String(endpointKey || '').includes('fundamental')) return { rows: [] };
+      return { rows: [] }; // 成功空批（合法），但不覆盖 600519 那一批
+    };
+    tushareHandler = async () => ({ fields: ['ts_code', 'trade_date'], items: [['000001.SZ', '20261030']] });
+    await datasets.readStockValuationRows({ tradeDate: '2026-10-30' });
+    assert.ok((await openGapUnits()).some(unit => (unit.codes || []).includes('600519.SH')), '别的代码成功不能关闭该批缺口');
+
+    // 同一交易日、同一批代码都成功后才关闭。
+    tushareHandler = async () => ({ fields: ['ts_code', 'trade_date'], items: [['600519.SH', '20261030'], ['000001.SZ', '20261030']] });
+    officialHandler = async (endpointKey, params) => {
+      if (!String(endpointKey || '').includes('fundamental')) return { rows: [] };
+      const codes = (params.stockCodes || []).map(String);
+      return { rows: [{ stockCode: codes[0], date: params.date, pe_ttm: 20, pb: 2, dyr: 0.02, mc: 1e12, cmc: 9e11 }] };
+    };
+    await datasets.readStockValuationRows({ tradeDate: '2026-10-30' });
+    assert.strictEqual((await openGapUnits()).filter(unit => unit.kind === 'snapshot').length, 0, '同批次都成功后快照缺口必须关闭');
+    await cleanupSnapshotGaps();
+  });
+
+  await check('真正补齐后（同一证券覆盖原区间）才关闭缺口', async () => {
+    const code = '600519.SH';
+    officialHandler = valuationStub(() => false);
+    tushareHandler = async () => ({ fields: ['ts_code', 'trade_date'], items: [[code, '20261030']] });
+    await datasets.readStockValuationHistory({ tsCode: code, startDate: '1990-01-01', endDate: '2026-10-30' });
+    const left = (await openGapUnits()).filter(unit => unit.tsCode === code);
+    assert.strictEqual(left.length, 0, '原区间补齐后该证券的缺口必须全部关闭');
+    const resolved = (await pool.query(
+      `SELECT count(*)::int n FROM ops.data_quality_issues
+        WHERE dataset_code='stock_valuation' AND issue_type='partial_fetch' AND status='resolved'
+          AND details->'unit'->>'tsCode'=$1`,
+      [code],
+    )).rows[0].n;
+    assert.ok(resolved >= 1, '关闭要留恢复证据（resolved 行带 resolvedBy）');
+    await cleanupValuationGaps();
   });
 
   console.log('V-02 积压队列必须按最新优先级选择并去重');

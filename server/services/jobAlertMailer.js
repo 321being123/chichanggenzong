@@ -58,6 +58,9 @@ const ALERT_EVIDENCE_POLICIES = Object.freeze({
   dependency_blocked: { autoResolve: true, verifier: 'slot_recovery_evidence', evidenceVersion: 1, scopes: ['slot', 'job'] },
   data_quality: { autoResolve: true, verifier: 'dataset_partition', evidenceVersion: 1, scopes: ['dataset', 'slot', 'job'] },
   source_fallback_degraded: { autoResolve: true, verifier: 'source_and_runtime', evidenceVersion: 1, scopes: ['source_endpoint'] },
+  // 合同异常（接口返回结构/单位变化）：恢复必须由「同来源 + 同接口」的一次合同复验成功支持，
+  // 普通 HTTP 200 只刷新熔断表 last_success_at，不能作为合同恢复证据（复验 RV-04）。
+  source_contract: { autoResolve: true, verifier: 'source_contract_reverify', evidenceVersion: 1, scopes: ['source_endpoint'] },
   duplicate_success: { autoResolve: false, verifier: 'manual', evidenceVersion: 1, scopes: ['slot', 'job'] },
   worker_offline: { autoResolve: false, verifier: 'manual_worker_health', evidenceVersion: 1, scopes: ['job'] },
   ...Object.fromEntries([...NOTIFICATION_ONLY_ALERT_TYPES].map(type => [type, { autoResolve: false, verifier: 'notification', evidenceVersion: 1, notificationOnly: true, scopes: [] }])),
@@ -248,6 +251,26 @@ async function verifyAlertScope(alert, query = (sql, params) => repository.runQu
       ? queriedRows
       : queriedRows.filter(row => String(row.api_name || '') === apiName);
     const lastSeen = alert.last_seen_at ? new Date(alert.last_seen_at).getTime() : NaN;
+    // 合同类告警单独走「合同复验」证据：同一来源+接口在告警之后有一次 contract_ok=true 的抽样。
+    // 熔断关闭与 last_success_at 都不能替代它，否则一次普通 200 就把"接口结构变了"的告警关掉。
+    if (alertType === 'source_contract') {
+      const limit = 5;
+      const { rows: verifications } = await layerSql.loadSourceContractVerifications(
+        query, apiName === '*', apiName === '*' ? [source, limit] : [source, apiName, limit],
+      );
+      const scoped = apiName === '*'
+        ? verifications
+        : verifications.filter(item => String(item.api_name || '') === apiName);
+      const reverified = scoped.find(item => item.contract_ok === true
+        && (!Number.isFinite(lastSeen) || new Date(item.checked_at).getTime() > lastSeen));
+      return {
+        recovered: Boolean(reverified),
+        evidence: { circuits: rows, verifications: scoped },
+        ...(reverified ? {} : {
+          reason: scoped.length ? 'contract_reverify_not_newer_or_failed' : 'contract_reverify_evidence_missing',
+        }),
+      };
+    }
     const hasNewProbeSuccess = rows.some(row => {
       const successAt = row.last_success_at && new Date(row.last_success_at).getTime();
       return Number.isFinite(successAt) && (!Number.isFinite(lastSeen) || successAt > lastSeen);

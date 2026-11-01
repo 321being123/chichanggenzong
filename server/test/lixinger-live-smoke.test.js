@@ -82,6 +82,36 @@ function sourceError(code) {
     assert.strictEqual(noMetric.status, 'CONTRACT_CHANGED', '估值指标全缺不能算 OK');
   });
 
+  // 复验 RV-05：Number(null)=0、Number('')=0、Number(true)=1 让"五项全空"也能判 OK。
+  await check('指标为空/空串/布尔/结构异常都不得判 OK，合法零要保留', async () => {
+    const base = { stockCode: '600519', pe_ttm: 21, pb: 5, dyr: 0.02, mc: 1e12, cmc: 9e11 };
+    const allNull = { stockCode: '600519', pe_ttm: null, pb: null, dyr: null, mc: null, cmc: null };
+    assert.strictEqual(smoke.classifySmokeResult([allNull]).status, 'CONTRACT_CHANGED', '五项全 null 不能算 OK');
+
+    const allEmpty = { stockCode: '600519', pe_ttm: '', pb: '', dyr: '', mc: '', cmc: '' };
+    assert.strictEqual(smoke.classifySmokeResult([allEmpty]).status, 'CONTRACT_CHANGED', '空串不能被 Number() 成 0');
+
+    const bools = { ...base, pe_ttm: true, pb: false };
+    assert.strictEqual(smoke.classifySmokeResult([bools]).status, 'CONTRACT_CHANGED', '布尔值不是数值');
+
+    const objects = { ...base, mc: { value: 1e12 } };
+    assert.strictEqual(smoke.classifySmokeResult([objects]).status, 'CONTRACT_CHANGED', '对象不是数值');
+
+    const missingMc = { stockCode: '600519', pe_ttm: 21, pb: 5, dyr: 0.02 };
+    assert.strictEqual(smoke.classifySmokeResult([missingMc]).status, 'CONTRACT_CHANGED', '缺市值无法证明口径');
+
+    const onlyRatioMissing = { stockCode: '600519', mc: 1e12, cmc: 9e11 };
+    assert.strictEqual(smoke.classifySmokeResult([onlyRatioMissing]).status, 'CONTRACT_CHANGED', '估值比率全缺不能算 OK');
+
+    // 合法零：不分红、pb/pe 为 0 也要认。
+    assert.strictEqual(smoke.classifySmokeResult([{ ...base, dyr: 0 }]).status, 'OK', '股息率 0 是合法值');
+    assert.strictEqual(smoke.classifySmokeResult([{ ...base, pe_ttm: 0 }]).status, 'OK', 'pe_ttm 为 0 是合法数值（不猜语义）');
+    assert.strictEqual(smoke.classifySmokeResult([{ ...base, mc: '1740176092672' }]).status, 'OK', '纯数字文本按数值接受');
+
+    const array = smoke.classifySmokeResult([['600519']]);
+    assert.strictEqual(array.status, 'CONTRACT_CHANGED', '行不是对象属于结构异常');
+  });
+
   await check('权限/限流/网络/阻断分别归类，不混成一个"失败"', async () => {
     const mapped = [
       ['INVALID_CREDENTIAL', 'PERMISSION'],
@@ -113,11 +143,16 @@ function sourceError(code) {
     mailer.notifyJobFailure = async input => { notified.push(input); };
     mailer.resolveSourceEndpointAlerts = async (source, apiName) => { resolved.push(`${source}:${apiName}`); return 1; };
     try {
+      // 注入仓储替身：本用例只验证接线与落库内容，真实持久化恢复在 RV-04 专项里做。
+      const recorded = [];
+      const repository = {
+        insert_ops_source_contract_verifications: async params => { recorded.push(params); return { rows: [{ verification_id: 1 }] }; },
+      };
       const failed = await smoke.runSmoke({
         callEndpoint: async () => { throw sourceError('ACCESS_FORBIDDEN'); },
         env: { LIXINGER_LIVE_SMOKE: '1', LIXINGER_TOKEN: 'x' },
       });
-      const exitCode = await smoke.reportResult(failed, { env: {} });
+      const exitCode = await smoke.reportResult(failed, { env: {}, repository });
       assert.strictEqual(exitCode, 1, '失败必须非零退出，不能只变黄');
       assert.strictEqual(notified.length, 1, '失败必须走既有告警入口');
       assert.match(notified[0].alertKey, /^source:lixinger_official:/, '告警要绑定来源+接口作用域');
@@ -127,9 +162,15 @@ function sourceError(code) {
         callEndpoint: async () => ({ rows: [{ stockCode: '600519', pe_ttm: 21, mc: 1e12 }] }),
         env: { LIXINGER_LIVE_SMOKE: '1', LIXINGER_TOKEN: 'x' },
       });
-      const okCode = await smoke.reportResult(ok, { env: {} });
+      const okCode = await smoke.reportResult(ok, { env: {}, repository });
       assert.strictEqual(okCode, 0);
       assert.strictEqual(resolved.length, 1, '成功要用恢复证据关闭来源告警，而不是手工改状态');
+      // 合同证据（RV-04）：只有真的跑过合同判定才落库；OK 的 contract_ok 必须是 true。
+      const verdicts = recorded.filter(item => item[2] === 'OK');
+      assert.strictEqual(verdicts.length, 1, '成功抽样必须留下一条合同验证记录');
+      assert.strictEqual(verdicts[0][3], true, 'OK 的 contract_ok 必须为 true');
+      assert.strictEqual(verdicts[0][0], 'lixinger_official', '来源要与告警作用域一致');
+      assert.ok(recorded.every(item => item[2] !== 'PERMISSION'), '权限失败不是合同判定，不应写入合同证据');
     } finally {
       mailer.notifyJobFailure = original.notify;
       mailer.resolveSourceEndpointAlerts = original.resolve;

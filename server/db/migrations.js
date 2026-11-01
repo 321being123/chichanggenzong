@@ -200,6 +200,7 @@ const MIGRATIONS = [
   { version: '180_lixinger_official_source', up: () => require('./migrations/lixingerOfficialSource').migration180LixingerOfficialSource(pool) },
   { version: '181_lixinger_official_priority', up: () => require('./migrations/lixingerOfficialSource').migration181LixingerOfficialPriority(pool) },
   { version: '182_worker_heartbeat_commit', up: () => require('./migrations/releaseIdentity').migration182WorkerHeartbeatCommit(pool) },
+  { version: '183_source_contract_verifications', up: () => require('./migrations/releaseIdentity').migration183SourceContractVerifications(pool) },
 ];
 
 async function ensureMigrationsTable() {

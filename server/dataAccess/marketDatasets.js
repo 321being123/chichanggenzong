@@ -27,26 +27,58 @@ function isAbort(error) {
   return Boolean(error && ABORT_CODES.has(error.code));
 }
 
-// 取数缺口的可查询留证（验收 V-01）：只在失败时写，成功时关闭同作用域旧缺口。
+// 取数缺口的可查询留证（验收 V-01，复验 RV-01 修正）：只在失败时按「失败单元」写，
+// 成功时只关闭被本次成功完整覆盖的单元（证券 + 区间 / 交易日 + 代码集合）。
+// 之前按读取请求整片关闭，导致「只补一个月」或「换一只股票成功」都能把长期缺口误标恢复。
 // 懒加载，避免数据层在正常路径就绑定数据库连接。
 function valuationQuality() {
   return require('../services/valuationFetchQuality');
 }
 
-async function recordValuationGap(params) {
+async function recordValuationGaps({ kind, stage, detail }) {
   try {
-    await valuationQuality().recordGap(params);
+    await valuationQuality().recordGaps({ kind, stage, detail });
   } catch (error) {
     console.warn(`[数据层] 估值取数缺口留证失败：${String(error && error.message).slice(0, 160)}`);
   }
 }
 
-async function clearValuationGap(params) {
+async function resolveValuationGaps(params) {
   try {
-    await valuationQuality().clearGap(params);
+    return await valuationQuality().resolveGaps(params);
   } catch (error) {
     console.warn(`[数据层] 估值取数缺口恢复留证失败：${String(error && error.message).slice(0, 160)}`);
+    return { resolved: 0 };
   }
+}
+
+// 失败批次涉及的证券（快照按批，序列按单只）。
+function failedCodesOf(detail) {
+  const failed = new Set();
+  for (const failure of (detail && detail.failures) || []) {
+    if (failure.tsCode) failed.add(String(failure.tsCode));
+    // 快照失败按批：tsCodes 是站内代码（恢复判定用），stockCodes 是供应商代码（一起排除更稳）。
+    for (const code of failure.tsCodes || []) failed.add(String(code));
+    for (const code of failure.stockCodes || []) failed.add(String(code));
+  }
+  return failed;
+}
+
+// 快照：成功批次覆盖的代码 = 请求代码 − 失败批次代码（空批次也算成功，不能只取返回行）。
+function succeededCodes(codes, detail) {
+  const failed = failedCodesOf(detail);
+  return (codes || []).map(String).filter(code => !failed.has(code));
+}
+
+// 序列：只有「这只证券这次一段都没失败」才把整个请求区间算作它的成功覆盖。
+// 同一请求里别的段失败时，这只证券就不能声称覆盖了原失败单元（否则又会假恢复）。
+function seriesCoverage(list, detail) {
+  const startDate = (detail && detail.scope && detail.scope.startDate) || null;
+  const endDate = (detail && detail.scope && detail.scope.endDate) || null;
+  if (!startDate || !endDate) return [];
+  const failed = failedCodesOf(detail);
+  return (list || []).map(String).filter(code => !failed.has(code))
+    .map(code => ({ tsCode: code, from: startDate, to: endDate }));
 }
 
 // 主来源失败时的统一痕迹：数据层自己记原因，上层只看到「本次用了备源」。
@@ -437,13 +469,14 @@ async function readStockValuationRows({ tradeDate } = {}) {
       officialRows = (detail && detail.rows) || [];
       if (detail && !detail.complete) {
         console.warn(`[数据层] stock_valuation 官方快照未取全（计划 ${detail.planned} 批，失败 ${detail.failed} 批，空 ${detail.emptyBatches} 批），缺失代码按备源补齐`);
-        await recordValuationGap({
-          scope: 'snapshot', key: String(tradeDate), targetDate: String(tradeDate),
-          planned: detail.planned, succeeded: detail.succeeded, failed: detail.failed,
-          notAttempted: detail.notAttempted, failures: detail.failures,
+        await recordValuationGaps({ kind: 'snapshot', stage: 'snapshot', detail });
+      }
+      if (detail) {
+        // 成功批次覆盖的代码逐批确认：只有同一交易日、同一批代码这次都成功，才算该单元恢复。
+        await resolveValuationGaps({
+          kind: 'snapshot', stage: 'snapshot', tradeDate: String(tradeDate),
+          securities: succeededCodes(codes, detail),
         });
-      } else if (detail) {
-        await clearValuationGap({ scope: 'snapshot', key: String(tradeDate) });
       }
     } catch (error) {
       if (isAbort(error)) throw error;
@@ -488,16 +521,14 @@ async function readStockValuationSeriesDetailed({ codes = [], startDate, endDate
   );
   if (!primary.value) return null;
   const detail = primary.value;
-  const key = `${detail.scope && detail.scope.startDate || startDate}~${detail.scope && detail.scope.endDate || endDate}:${list.length}只`;
   if (!detail.complete) {
-    await recordValuationGap({
-      scope: 'series', key, startDate: String(startDate), endDate: String(endDate),
-      planned: detail.planned, succeeded: detail.succeeded, failed: detail.failed,
-      notAttempted: detail.notAttempted, failures: detail.failures,
-    });
-  } else {
-    await clearValuationGap({ scope: 'series', key });
+    await recordValuationGaps({ kind: 'series', stage: 'series_backfill', detail });
   }
+  // 恢复按「证券 × 被覆盖区间」判定：其他证券成功、或只补了其中一段，都不能关掉本单元的缺口。
+  await resolveValuationGaps({
+    kind: 'series', stage: 'series_backfill',
+    coverage: seriesCoverage(list, detail),
+  });
   return { ...detail, rows: detail.rows.map(row => ({ ...row, source_code: official.SOURCE })) };
 }
 
@@ -527,14 +558,13 @@ async function readStockValuationHistory({ tsCode, startDate, endDate, fields = 
     if (!detail) return [];
     if (!detail.complete) {
       console.warn(`[数据层] stock_valuation 官方历史未取全 ${tsCode}：计划 ${detail.planned} 段，成功 ${detail.succeeded} 段，失败 ${detail.failed} 段；已取到的官方日期照常使用，其余日期沿用备源`);
-      await recordValuationGap({
-        scope: 'history', key: String(tsCode), startDate: from, endDate: to,
-        planned: detail.planned, succeeded: detail.succeeded, failed: detail.failed,
-        notAttempted: detail.notAttempted, failures: detail.failures,
-      });
-    } else {
-      await clearValuationGap({ scope: 'history', key: String(tsCode) });
+      await recordValuationGaps({ kind: 'series', stage: 'history', detail });
     }
+    // 只有本次成功读取的区间覆盖了原失败段、且是同一证券，才关闭该段缺口。
+    await resolveValuationGaps({
+      kind: 'series', stage: 'history',
+      coverage: seriesCoverage([tsCode], detail),
+    });
     const rows = detail.rows;
     if (!rows.length) return rows;
     // 区间起点前两年的年报也要拿到，否则区间第一天没有「最近一期年报」可算静态市盈率。

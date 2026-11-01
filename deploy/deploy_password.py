@@ -674,11 +674,15 @@ def main():
             # 改为探针读 /health 自述提交、Worker 心跳的 commit_sha 与 schema_migrations 实际集合。
             # 只有明确的身份不一致（IDENTITY_MISMATCH）才让部署失败进入回滚；
             # 探针自身不可用（IDENTITY_UNAVAILABLE，如迁移 env 缺失）只记录，不阻断代码发布。
-            "&& identity_out=$(MIGRATION_ENV_FILE=/etc/portfolio/migration.env /usr/bin/node server/scripts/deployIdentityProbe.js --expect-head=\"$release_head\" --expect-version=" + local_version + " 2>&1 || true) "
+            # 复验 RV-03：把当前 unit 的 MainPID 与启动时刻一并交给探针，让心跳必须绑定本次进程；
+            # 缺 Worker 提交号/缺心跳属于「无法核实」，输出 IDENTITY_UNKNOWN（不是通过），但不阻断代码发布。
+            "&& identity_out=$(MIGRATION_ENV_FILE=/etc/portfolio/migration.env /usr/bin/node server/scripts/deployIdentityProbe.js --expect-head=\"$release_head\" --expect-version=" + local_version + " --expect-web-pid=\"$web_pid\" --expect-worker-pid=\"$worker_pid\" --expect-web-started=\"$web_started\" --expect-worker-started=\"$worker_started\" 2>&1 || true) "
             "&& identity_mismatch=$(printf '%s' \"$identity_out\" | grep -c '^IDENTITY_MISMATCH' || true) "
+            "&& identity_unknown=$(printf '%s' \"$identity_out\" | grep -c '^IDENTITY_UNKNOWN' || true) "
             "&& printf 'release_identity head=%s version=%s health_version=%s health_commit=%s web_pid=%s web_started=%s worker_pid=%s worker_started=%s identity=%s\\n' "
             "\"$release_head\" \"" + local_version + "\" \"$(printf '%s' \"$health_json\" | sed -n 's/.*\"version\":\"\\([^\"]*\\)\".*/\\1/p')\" \"$health_commit\" \"$web_pid\" \"$web_started\" \"$worker_pid\" \"$worker_started\" \"$identity_out\" "
             "&& if [ \"$identity_mismatch\" != \"0\" ]; then echo \"发布身份不一致，部署判为失败：$identity_out\"; exit 1; fi "
+            "&& if [ \"$identity_unknown\" != \"0\" ]; then echo \"发布身份无法核实（不视为通过，需回执人工确认）：$identity_out\"; fi "
             "&& deploy_complete=1",
             timeout=3600,
         )

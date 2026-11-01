@@ -224,7 +224,9 @@ async function resolveValuationRowsDetailed({ codes = [], tradeDate, options = {
       }
     } catch (error) {
       if (isControlError(error)) throw error;
-      failures.push(batchDiagnostic(error, { stockCodes: batch.map(item => item.code), tradeDate: date }));
+      // tsCodes 是站内代码（如 600519.SH），stockCodes 是供应商代码（如 600519）：缺口恢复按站内代码对齐，
+      // 否则会出现"按供应商代码记、按站内代码查"永远匹配不上、快照缺口永不恢复。
+      failures.push(batchDiagnostic(error, { stockCodes: batch.map(item => item.code), tsCodes: batch.map(item => item.tsCode), tradeDate: date }));
     }
   }
   return summarizeBatches({ rows, planned: batches.length, attempted, failures, emptyBatches,

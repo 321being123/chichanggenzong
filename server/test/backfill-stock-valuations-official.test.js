@@ -86,6 +86,9 @@ const datasets = require('../dataAccess/marketDatasets');
   assert.ok(!/DELETE\s+FROM\s+market\.daily_valuations/i.test(script), '回填不得删除旧来源行');
   assert.ok(!/tushareQuery/.test(script), '脚本不得直接调 Tushare（回填只认官方）');
   assert.ok(/emptyBatches/.test(script) && /process\.exit\(2\)/.test(script), '官方返回 0 行必须当异常处理并返回非零退出码');
+  // 官方适配层返回的 trade_date 是 YYYYMMDD，分区键是 YYYY-MM-DD；不归一化会「有数据但命中 0 行」。
+  assert.ok(/replace\(\/-\/g, ''\)\.slice\(0, 8\)/.test(script) && /trade_date: day/.test(script),
+    '官方 8 位日期必须先归一成 YYYY-MM-DD 再和分区键比对');
 
   console.log('backfill-stock-valuations-official：只回官方、不回落备源、只写现有分区，通过');
 })().catch(error => {

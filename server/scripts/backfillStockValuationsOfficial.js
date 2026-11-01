@@ -189,10 +189,13 @@ async function main() {
     let coveredHit = 0;
     for (const row of rows) {
       const instrumentId = instrumentMap.get(row.ts_code);
-      const day = String(row.trade_date || '').slice(0, 10);
-      if (!instrumentId || !targets.has(key(instrumentId, day))) continue;
+      // 适配层返回的日期是 YYYYMMDD（无横线），分区键是 YYYY-MM-DD：不归一化会一条都对不上，
+      // 表现成「官方有数据但命中 0 行」（2026-11-01 生产预演实测）。
+      const digits = String(row.trade_date || '').replace(/-/g, '').slice(0, 8);
+      const day = /^\d{8}$/.test(digits) ? `${digits.slice(0, 4)}-${digits.slice(4, 6)}-${digits.slice(6, 8)}` : null;
+      if (!instrumentId || !day || !targets.has(key(instrumentId, day))) continue;
       if (covered.has(key(instrumentId, day))) { coveredHit += 1; continue; }
-      keep.push(row);
+      keep.push({ ...row, trade_date: day });
     }
     skippedCovered += coveredHit;
 

@@ -20,7 +20,30 @@ const DATASET_PARTITION_REGISTRY = Object.freeze({
     partitionedDataAsOfSql: 'SELECT MAX(date)::text AS data_as_of FROM public.nav_history WHERE date=$1::text' },
   index_daily: { scopeKey: 'GLOBAL', table: 'public.index_history', countSql: 'SELECT COUNT(*)::int AS row_count', dataAsOfSql: `SELECT ${DATE_TEXT('date')} AS data_as_of` },
   ipo_calendar: { scopeKey: 'GLOBAL', table: 'public.ipo_reports', countSql: 'SELECT COUNT(*)::int AS row_count', dataAsOfSql: `SELECT ${DATE_TEXT('report_date')} AS data_as_of` },
-  bond_master: { scopeKey: 'CN', table: 'public.bond_unified', whereSql: "WHERE status='listed'", countSql: 'SELECT COUNT(*)::int AS row_count', dataAsOfStandaloneSql: "SELECT MAX(last_success_date)::text AS data_as_of FROM ops.sync_cursors WHERE scope_key='convertible_bond_universe' AND dataset_code='cb_basic_cb_daily'" },
+  // 只数与「上市可转债列表」同口径（2026-11-01 统一）：该交易日有行情、在市、公募、生命周期可判定的转债。
+  // 旧口径 COUNT(bond_unified WHERE status='listed') = 433、甚至含 731 只已退市老债与 46 只定向/私募，
+  // 与列表（同期 307）对不上；而列表必须排除行情源给已摘牌债返回的冻结行（成交量 0），
+  // 所以只数只能从当日行情分区派生，不能直接从主档表数。回填脚本不传分区日期，会按
+  // partition_key_required 跳过，不会再用旧口径写出一个虚高数字。
+  bond_master: {
+    scopeKey: 'CN',
+    table: 'public.bond_unified',
+    partitionedCountSql: `SELECT COUNT(DISTINCT m.instrument_id)::int AS row_count
+        FROM market.convertible_bond_daily_metrics m
+        JOIN fundamental.convertible_bond_profiles p ON p.instrument_id=m.instrument_id
+        JOIN core.instruments b ON b.instrument_id=m.instrument_id
+        JOIN public.bond_unified u ON u.instrument_id=m.instrument_id
+       WHERE m.trade_date=$1::date
+         AND u.status='listed'
+         AND (u.issue_type IS NULL OR u.issue_type NOT IN ('定向','私募'))
+         AND (b.list_date IS NULL OR b.list_date <= $1::date)
+         AND (b.delist_date IS NULL OR b.delist_date > $1::date)
+         AND (p.maturity_date IS NULL OR p.maturity_date >= $1::date)
+         AND (p.conv_end_date IS NULL OR p.conv_end_date >= $1::date)
+         AND (u.conv_stop_date IS NULL OR u.conv_stop_date > $1::date)
+         AND (p.maturity_date IS NOT NULL OR p.conv_end_date IS NOT NULL OR b.delist_date IS NOT NULL)`,
+    partitionedDataAsOfSql: 'SELECT $1::text AS data_as_of',
+  },
   bond_daily: { scopeKey: 'CN', table: 'market.convertible_bond_daily_metrics', countSql: 'SELECT COUNT(*)::int AS row_count', dataAsOfSql: 'SELECT MAX(trade_date)::text AS data_as_of' },
   stock_daily: { scopeKey: 'CN', table: 'market.daily_bars', countSql: 'SELECT COUNT(*)::int AS row_count', dataAsOfSql: 'SELECT MAX(trade_date)::text AS data_as_of' },
   stock_valuation: { scopeKey: 'CN', table: 'market.daily_valuations', countSql: 'SELECT COUNT(*)::int AS row_count', dataAsOfSql: 'SELECT MAX(trade_date)::text AS data_as_of' },

@@ -17,6 +17,7 @@ const { evaluateConvertibleBondFreshness, CONV_PRICE_EPS } = require('./analysis
 const { datasetScope, getDatasetCursors, isDatasetFresh, markDatasetSuccess,
   recordQualityIssue, resolveQualityIssue } = require('./datasetCursors');
 const { publishDatasetPartition } = require('./datasetPartitions');
+const { readSnapshot } = require('./datasetPartitionRegistry');
 const {
   mergeDateRanges,
   findSuspensionCoverageGaps,
@@ -27,7 +28,7 @@ const {
 const { resolveCanonicalCode, ensureInstrumentIdentity } = require('./securityIdentity');
 const { childProcessEnv, mergeExternalCallStatsFromStderr } = require('./externalCallGuard');
 const { sendAlert } = require('./jobAlertMailer');
-const { isActiveBond, isPendingListingBond, filterPublicBonds } = require('./bondSafetyTushare');
+const { isActiveBond, isPendingListingBond, isDelistedBond, filterPublicBonds } = require('./bondSafetyTushare');
 const { ANNOUNCEMENT_OVERLAP_DAYS, BOND_FIRSTDAY_SCRIPT, BOND_GAP_QUEUE_SCHEMA_VERSION, BOND_ISSUE_RESULT_SCRIPT, BOND_LIQUIDITY_SCRIPT, CN_OFFSET_MS, DAILY_FIELDS, FORMULA_VERSION, PROFILE_FIELDS, STOCK_STATUS_FIELDS, UNIFIED_ANNOUNCEMENT_KEYWORDS, addDays, defaultBondTargetTradeDate, finite, isoDate, normalizeBondCode, revisionDecision } = require('./convertibleBondAnalysisCore.js');
 const { announcementSourceId, announcementSourceKey, backfillMissingRatings, ensureStockUniverse, extractNoRevisionPeriods, extractPriceChangeDetails, loadNoRevisionCache, loadPriceChangeCache, loadRevisionEventCache, loadTrackedDelistedStocks, pythonCandidates, saveDailyBar, saveFullStockMarketPartition, saveProfile, saveRevisionEvents, sourceIds } = require('./convertibleBondAnalysisStore.js');
 const txControl = require('../repositories/transactionControl');
@@ -807,6 +808,23 @@ async function syncConvertibleBondUniverse(reason = 'scheduled', options = {}) {
       if (pendingListingSaved.length) {
         console.log(`[主同步] 待上市新债主档已补全 ${pendingListingSaved.length} 只：${pendingListingSaved.join(',')}`);
       }
+      // 已退市/已到期债的生命周期回写（2026-10-31 反馈 #17）：
+      // isActiveBond 只收目标日仍有效的债，已退市债的主档从来没写过到期日与摘牌日，
+      // core.instruments 长期停在 status='listed'；行情源一旦给出冻结价行（成交量 0）就会混进上市列表。
+      // 注意不能加 isUnderlyingStockListed：转债退市往往伴随正股退市（如 128044 的 *ST 岭南），
+      // 正股已不在 stock_basic(L) 里，加了这一条会把最该修的债全部漏掉。
+      const delistedProfiles = await filterPublicBonds(allBasicRows.filter(row => isDelistedBond(row, targetTradeDate)));
+      if (delistedProfiles.length) {
+        const lifecycleFacts = delistedProfiles.map(row => ({
+          ts_code: String(row.ts_code || '').trim().toUpperCase(),
+          delist_date: isoDate(row.delist_date),
+          maturity_date: isoDate(row.maturity_date),
+          conv_end_date: isoDate(row.conv_end_date),
+          conv_stop_date: isoDate(row.conv_stop_date),
+        })).filter(item => item.ts_code);
+        const lifecycleFixed = await repository.updateBondLifecycleFacts([JSON.stringify(lifecycleFacts), targetTradeDate], client);
+        console.log(`[主同步] 已退市债生命周期回写 ${lifecycleFixed.rowCount || 0} 只（候选 ${lifecycleFacts.length} 只）`);
+      }
       await repository.insert_ops_sync_cursors([unresolvedCodes.length ? null : isoDate(daily.tradeDate)], client);
       await writeBondGapQueue(client.query.bind(client), gapQueue);
       await txControl.commit(client);
@@ -842,9 +860,20 @@ async function syncConvertibleBondUniverse(reason = 'scheduled', options = {}) {
       console.warn('[主同步] 正股停牌日同步失败，保留上一份停牌日缓存：', suspensionError.message);
     }
     let partitionPublicationError = null;
+    // 主档只数与「上市可转债列表」同口径（2026-11-01）：从当日行情分区派生，不再用 profiles.length。
+    // profiles.length 是本次写主档的只数，含行情源给已摘牌债返回的冻结行（2026-10-30 为 311，
+    // 列表实为 307），直接发布会让数据健康页的「可转债主档」比上市列表多 4 只。
+    // 只数只影响展示与对账，读取失败不阻断当天主同步，回退本次处理只数并告警。
+    let bondMasterRowCount = profiles.length;
+    try {
+      const masterCountSnapshot = await readSnapshot('bond_master', { partitionKey: daily.tradeDate });
+      if (masterCountSnapshot.rowCount > 0) bondMasterRowCount = masterCountSnapshot.rowCount;
+    } catch (countError) {
+      console.warn('[主同步] 主档只数快照读取失败，暂按本次处理只数发布：', countError.message);
+    }
     try {
       await Promise.all([
-        publishDatasetPartition('bond_master', 'CN', { dataAsOf: daily.tradeDate, partitionKey: daily.tradeDate, rowCount: profiles.length, sourceId: tushareSourceId, diagnostics: { targetTradeDate } }),
+        publishDatasetPartition('bond_master', 'CN', { dataAsOf: daily.tradeDate, partitionKey: daily.tradeDate, rowCount: bondMasterRowCount, sourceId: tushareSourceId, diagnostics: { targetTradeDate, processed_count: profiles.length } }),
         publishDatasetPartition('bond_daily', 'CN', {
           dataAsOf: targetTradeDate, partitionKey: targetTradeDate, rowCount: activeDailyRows.length,
           status: unresolvedCodes.length ? 'partial_published' : 'published', sourceId: tushareSourceId,
@@ -959,7 +988,7 @@ async function syncConvertibleBondUniverse(reason = 'scheduled', options = {}) {
       missingDates: suspensionResult.ok ? (suspensionResult.missingDates || []) : [isoDate(daily.tradeDate)],
       publishDatasets: false,
       datasetDiagnostics: {
-        bond_master: { partition_row_count: profiles.length, dataAsOf: isoDate(daily.tradeDate) },
+        bond_master: { partition_row_count: bondMasterRowCount, processed_count: profiles.length, dataAsOf: isoDate(daily.tradeDate) },
         bond_daily: {
           partition_row_count: activeDailyRows.length, dataAsOf: targetTradeDate,
           status: unresolvedCodes.length ? 'partial_published' : 'published', unresolved_count: unresolvedCodes.length,

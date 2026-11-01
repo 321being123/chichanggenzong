@@ -20,4 +20,21 @@ async function readCallStateWatermark(params, tx) {
   return rows[0] || null;
 }
 
-module.exports = { readCallStateWatermark };
+// 到期日：安全性快照本身不含到期日，列表名称旁的到期提醒按证券代码批量读标准主档，
+// 不为此扩建快照结构（快照是物化产物，加字段要重建，代价与风险都不成比例）。
+async function selectMaturityDatesByCodes(params, tx) {
+  const codes = [...new Set(((params && params.codes) || [])
+    .map(value => String(value || '').trim().toUpperCase().replace(/\.(SH|SZ|BJ|HK)$/, ''))
+    .filter(Boolean))];
+  if (!codes.length) return new Map();
+  const runner = tx || pool;
+  const { rows } = await runner.query(`
+    SELECT UPPER(split_part(i.canonical_code, '.', 1)) AS bond_code,
+           p.maturity_date::text AS maturity_date
+      FROM core.instruments i
+      JOIN fundamental.convertible_bond_profiles p ON p.instrument_id = i.instrument_id
+     WHERE UPPER(split_part(i.canonical_code, '.', 1)) = ANY($1::text[])`, [codes]);
+  return new Map(rows.map(row => [String(row.bond_code || '').toUpperCase(), row.maturity_date]));
+}
+
+module.exports = { readCallStateWatermark, selectMaturityDatesByCodes };

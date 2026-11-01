@@ -60,15 +60,6 @@ function bondSafetyText(value) {
   return String(value);
 }
 
-function bondSafetyLifecycleMarker(status) {
-  if (status === 'announced') return '<span class="bond-lifecycle-mark bond-lifecycle-mark-call" role="img" aria-label="已公告强赎" title="已公告强赎">!</span>';
-  if (status === 'maturity_redeem') return '<span class="bond-lifecycle-mark bond-lifecycle-mark-maturity" role="img" aria-label="已公告到期兑付" title="已公告到期兑付">!</span>';
-  if (status === 'redemption_unconfirmed') return '<span class="bond-lifecycle-mark bond-lifecycle-mark-maturity" role="img" aria-label="赎回方式待确认" title="赎回方式待确认">!</span>';
-  if (status === 'completed') return '<span class="bond-lifecycle-mark bond-lifecycle-mark-call" role="img" aria-label="赎回已完成" title="赎回已完成">!</span>';
-  if (status === 'maturity_near') return '<span class="bond-lifecycle-mark bond-lifecycle-mark-maturity" role="img" aria-label="临近到期" title="临近到期">!</span>';
-  return '';
-}
-
 function bondSafetyFixed(value, digits) {
   var number = Number(value);
   return isFinite(number) ? number.toFixed(digits) : bondSafetyText(value);
@@ -106,7 +97,7 @@ function bondSafetyIndicator(value) {
 
 function bondSafetyCell(row, key) {
   if (key === 'bond_code' || key === 'bond_name') {
-    return '<span class="bond-safety-link" data-act="bondSafetyJump" data-arg1="' + row.bond_code + '" title="点击查看证券分析">' + escapeHtml(bondSafetyText(row[key])) + '</span>' + (key === 'bond_name' ? bondSafetyLifecycleMarker(row.call_status) : '');
+    return '<span class="bond-safety-link" data-act="bondSafetyJump" data-arg1="' + row.bond_code + '" title="点击查看证券分析">' + escapeHtml(bondSafetyText(row[key])) + '</span>' + (key === 'bond_name' ? bondLifecycleMark(row) : '');
   }
   if (key === 'safety') return bondSafetyRating(row[key]);
   if (key.indexOf('indicator_') === 0) return bondSafetyIndicator(row[key]);

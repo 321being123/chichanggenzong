@@ -54,6 +54,21 @@
   }
 
   // ========== 对比结果渲染（5.3） ==========
+  // 缺行情证券提示（反馈 #18）：无有效行情的持仓不参与对比表，不提示会被误读成“对方没有这只”。
+  function missingQuoteNotice(d) {
+    function line(label, list) {
+      if (!list || !list.length) return '';
+      return label + '：' + list.map(function (m) {
+        return escapeHtml(m.code) + (m.name ? ' ' + escapeHtml(m.name) : '');
+      }).join('、');
+    }
+    var my = line('我的账户', (d.myAccount && d.myAccount.missingQuotes) || []);
+    var bench = line('标杆账户', (d.benchmarkAccount && d.benchmarkAccount.missingQuotes) || []);
+    if (!my && !bench) return '';
+    return '<div class="pc-meta u-fs-11 u-c-muted">以下证券缺少有效行情，暂不可参与对比 — ' +
+      [my, bench].filter(Boolean).join('；') + '</div>';
+  }
+
   function renderCompare(d) {
     var state = window.positionComparisonPresenter.state;
     var benchName = (state.benchmarks.find(function (b) { return b.accountId === state.currentBenchmark; }) || {}).displayName || '标杆账户';
@@ -89,6 +104,7 @@
       '<div class="pc-meta">标杆：<b>' + escapeHtml(benchName) + '</b>（' + (semi ? '脱敏标杆' : '完整标杆') + '）<br>' +
       '<span class="u-fs-11 u-c-muted">我的持仓更新：' + escapeHtml(d.overview.myUpdatedAt || '--') + '　标杆持仓更新：' + escapeHtml(d.overview.benchmarkUpdatedAt || '--') + '<br>' +
       '本次估值时间：' + escapeHtml(d.overview.valuationTime || '--') + '　港币汇率：' + (d.overview.hkRate || '--') + '</span></div>' +
+      missingQuoteNotice(d) +
       '<div class="pc-overview">' +
         '<div class="pc-ov-item"><span>仓位相似度</span><b>' + sim + '</b></div>' +
         '<div class="pc-ov-item"><span>共同持有</span><b>' + d.overview.commonCount + ' 只</b></div>' +

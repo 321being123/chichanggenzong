@@ -86,7 +86,8 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC'
 .btn-account-add:hover { background: rgba(255,255,255,.25); }
 
 /* 刷新按钮 */
-.btn-refresh { padding: 4px 12px; background: rgba(255,255,255,.12); color: #fff; border: 1px solid rgba(255,255,255,.36); border-radius: 6px; cursor: pointer; font-size: 12px; transition: .2s; white-space: nowrap; flex-shrink: 0; }
+/* 与同栏账户下拉、筛选栏按钮同一字号与内边距（2026-10-31 反馈 #7） */
+.btn-refresh { padding: 5px 14px; background: rgba(255,255,255,.12); color: #fff; border: 1px solid rgba(255,255,255,.36); border-radius: 6px; cursor: pointer; font-size: 13px; transition: .2s; white-space: nowrap; flex-shrink: 0; }
 .btn-refresh:hover { background: rgba(255,255,255,.24); }
 
 /* 用户信息 */
@@ -488,6 +489,16 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC'
 .filter-bar select:focus { border-color: var(--bond-feature-focus); box-shadow: 0 0 0 2px rgba(26,35,126,.08); }
 .filter-bar input:not([type=checkbox]):not([type=radio])::placeholder { color: var(--bond-feature-muted); }
 .filter-bar .filter-label { color: #6e6e6e; }
+
+/* 筛选栏按钮与同栏输入框/下拉统一尺寸（2026-10-31 反馈 #7）。
+   此前栏内只有带 .filter-bar-btn 的按钮被设为 44px，其余仍按 .btn-sm 渲染（约 24px），
+   同一行出现两种高度；现在统一由 .filter-bar .btn 控制，类名差异不再影响尺寸。 */
+.filter-bar .btn {
+  min-height: 36px;
+  padding: 0 14px;
+  font-size: 13px;
+  border-radius: 7px;
+}
 
 .confirm-box { background: #fff8e1; border: 1px solid #ffd54f; border-radius: 6px; padding: 12px; margin-bottom: 12px; font-size: 13px; color: #795548; }
 
@@ -1696,7 +1707,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC'
   .mobile-nav-panel .admin-link { display: inline-flex; align-items: center; min-height: 44px; }
 }
 @media (max-width: 760px) {
-  .filter-bar .filter-bar-btn { min-height: 44px; }
+  .filter-bar .btn, .filter-bar .filter-bar-btn { min-height: 44px; }
   /* 手机端筛选栏控件：触控区 ≥44px、字号 16px 防 iOS 缩放 */
   .filter-bar input:not([type=checkbox]):not([type=radio]),
   .filter-bar select { min-height: 44px; font-size: 16px; }

@@ -104,9 +104,35 @@ async function fetchUniverseRows(tradeDate) {
          AND (p.maturity_date IS NULL OR p.maturity_date >= $1::date)
          AND (p.conv_end_date IS NULL OR p.conv_end_date >= $1::date)
          AND (u.conv_stop_date IS NULL OR u.conv_stop_date > $1::date)
+         -- 生命周期必须可判定（2026-10-31 反馈 #17）：到期日、转股截止日、退市日全空的债券无法证明目标日仍在市，
+         -- 而行情源对已到期僵尸债仍会返回当日冻结价（成交量 0），单靠“当日有行情”会把它混进上市列表。
+         -- 缺字段的债券由 fetchLifecycleUndetermined 登记数据质量问题，主档补齐后自动回到列表。
+         AND (p.maturity_date IS NOT NULL OR p.conv_end_date IS NOT NULL OR b.delist_date IS NOT NULL)
        ORDER BY m.instrument_id,m.source_id DESC
     )
     SELECT * FROM bond_rows ORDER BY canonical_code
+  `, [tradeDate]);
+  return rows;
+}
+
+// 目标日有行情、但生命周期（到期日/转股截止日/退市日）全空而被排除的债券。
+// 用于登记可追溯的数据质量问题（反馈 #17：不能在页面上按名称隐藏）。
+async function fetchLifecycleUndetermined(tradeDate) {
+  const { rows } = await pool.query(`
+    SELECT DISTINCT m.instrument_id, b.canonical_code AS bond_code, b.name AS bond_name,
+           m.close, m.raw_payload->>'vol' AS vol, m.raw_payload->>'amount' AS amount
+      FROM market.convertible_bond_daily_metrics m
+      JOIN fundamental.convertible_bond_profiles p ON p.instrument_id=m.instrument_id
+      JOIN core.instruments b ON b.instrument_id=m.instrument_id
+      JOIN public.bond_unified u ON u.instrument_id=m.instrument_id
+     WHERE m.trade_date=$1::date
+       AND u.status='listed'
+       AND (u.issue_type IS NULL OR u.issue_type NOT IN ('定向','私募'))
+       AND (b.list_date IS NULL OR b.list_date <= $1::date)
+       AND b.delist_date IS NULL
+       AND p.maturity_date IS NULL
+       AND p.conv_end_date IS NULL
+     ORDER BY b.canonical_code
   `, [tradeDate]);
   return rows;
 }
@@ -169,6 +195,7 @@ module.exports = {
   fetchCoupons,
   fetchStockHistory,
   fetchUniverseRows,
+  fetchLifecycleUndetermined,
   select_market_convertible_bond_daily_metrics,
   select_analytics_convertible_bond_list_metrics_daily,
   select_bond_safety_snapshots,

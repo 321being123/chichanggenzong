@@ -966,6 +966,19 @@
   border-bottom: 1px solid #eceef2;
 }
 
+/* 阅读视图标题吸顶（2026-10-31 反馈 #8）：长文向上滚动时标题跟随顶部导航停留，避免失去当前文章上下文。
+   top 统一取 --site-nav-height（桌面 52px，手机由 mobile-ui.js 写入含安全区的真实高度）；
+   背景必须不透明，否则正文会从标题下方穿出。 */
+.ks-page[data-view="read"] .ks-article-header {
+  position: sticky;
+  top: var(--site-nav-height);
+  z-index: 90;
+  padding-top: 8px;
+  padding-bottom: 16px;
+  margin-bottom: 24px;
+  background: var(--ks-surface);
+}
+
 .ks-article h1 {
   max-width: 780px;
   margin: 0 0 16px;

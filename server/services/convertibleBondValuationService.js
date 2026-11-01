@@ -63,6 +63,7 @@ function mapListRow(r) {
     eval_class: r.eval_class || '',
     alert_level: r.alert_level || '无',
     quote_date: isoDate(r.quote_date),
+    maturity_date: r.maturity_date ? isoDate(r.maturity_date) : null,
     data_status: r.data_status || '完整',
     // 只表示行情/计算输入；风险资料与价格数据分开判断（2026-10-21 审查 P-1）
     confidence_level: r.confidence_level || '',

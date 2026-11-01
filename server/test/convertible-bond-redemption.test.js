@@ -114,9 +114,9 @@ assert.ok(page.includes("['last_trade_date','停止交易日']") && page.include
 assert.ok(callEventParser.includes('PARTIAL_DATE') && callEventParser.includes('停止交易日') && callEventParser.includes('停止转股日') && callEventParser.includes('call-event-v4') && callEventParser.includes('content_hash'), '强赎公告解析必须支持不重复年份的停止交易/停止转股日期并保留正文哈希');
 assert.ok(list.includes('getLatestCallStateMap') && list.includes('JOIN public.bond_unified u'));
 assert.ok(analysis.includes('getLatestCallState') && analysis.includes('call_status'));
-assert.ok(list.includes('call_status') && fs.readFileSync(path.join(root, 'public', 'js', 'bond-list.js'), 'utf8').includes('bondListLifecycleMarker'), '上市列表必须复用统一强赎状态并展示名称标识');
-assert.ok(fs.readFileSync(path.join(root, 'public', 'js', 'bond-safety.js'), 'utf8').includes('bondSafetyLifecycleMarker'), '安全性列表必须展示名称标识');
-assert.ok(valuation.includes('call_status') && fs.readFileSync(path.join(root, 'public', 'js', 'bond-valuation.js'), 'utf8').includes('bondValLifecycleMarker'), '估值列表必须复用统一强赎状态并展示名称标识');
+assert.ok(list.includes('call_status') && fs.readFileSync(path.join(root, 'public', 'js', 'bond-list.js'), 'utf8').includes('bondLifecycleMark(row)'), '上市列表必须复用统一强赎状态并展示名称标识');
+assert.ok(fs.readFileSync(path.join(root, 'public', 'js', 'bond-safety.js'), 'utf8').includes('bondLifecycleMark(row)'), '安全性列表必须展示名称标识');
+assert.ok(valuation.includes('call_status') && fs.readFileSync(path.join(root, 'public', 'js', 'bond-valuation.js'), 'utf8').includes('bondLifecycleMark('), '估值列表必须复用统一强赎状态并展示名称标识');
 assert.ok(analysis.includes('callDelisted') && analysis.includes('effectiveDelistDate'), '股债分析必须识别已强赎且已停止交易的历史转债');
 assert.ok(runner.includes("convertible_bond_announcement_history_sync")
   && analysis.includes("require('./convertibleBondRedemptionSync').syncConvertibleBondCallAnnouncements"),

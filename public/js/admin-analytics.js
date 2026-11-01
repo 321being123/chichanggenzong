@@ -47,7 +47,7 @@ var ANALYTICS_ERROR_LABELS = {
   TIMEOUT: '请求超时', BUDGET_WAIT: '预算等待'
 };
 var ANALYTICS_DATASET_LABELS = {
-  bond_daily: '可转债日行情', bond_safety_snapshot: '可转债安全性快照', bond_valuation: '可转债估值',
+  bond_daily: '可转债日行情', bond_master: '可转债主档', bond_safety_snapshot: '可转债安全性快照', bond_valuation: '可转债估值',
   stock_adj_factor: '股票复权因子', stock_daily: '股票日行情', stock_valuation: '股票估值', daily_basic: '股票每日指标',
   financial: '财务数据', financial_statements: '财务报表', company_events: '公司事件', cb_basic: '可转债基础资料',
   cb_daily: '可转债日行情', conversion_price_announcements: '转股价公告', arbitrage: '套利数据', positions: '持仓数据'
@@ -272,6 +272,7 @@ function analyticsHealthHtml(data) {
       ['采样行数', '选定时间范围内保存的应用层和边缘层分钟运行采样行数。'],
       ['最早日期/最新日期', '表示该数据集已发布数据分区覆盖的时间范围；最新日期不是今天日期。'],
       ['最新分区行数', '对应数据集最新发布分区中的记录数量，不代表全库总行数。'],
+      ['可转债主档只数', '与「上市可转债列表」同一口径：该交易日有行情、仍在市、公募、生命周期可判定的转债只数；不含定向/私募、已退市老债，也不含行情源给已摘牌债返回的冻结行（成交量 0）。'],
       ['质量问题/告警数量', '当前仍记录的异常或待处理事项数量，不是访问量。'],
       ['预算调用/上限', '当前周期已使用的外部接口调用次数与保护上限。'],
       ['P50/P95', 'P50 是一半请求不超过的耗时；P95 是 95% 请求不超过的耗时，单位为毫秒。'],

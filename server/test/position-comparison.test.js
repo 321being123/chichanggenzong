@@ -48,6 +48,13 @@ check('脚本自带首次渲染兜底（renderAll 早于脚本注入时不空白
   assert(/function bootstrapControls/.test(src), 'position-comparison.js 应有注入后主动渲染的兜底');
   assert(/getElementById\('position-comp-controls'\)/.test(src), '兜底应检查真实存在的控件容器');
 });
+// 回归（反馈 #18）：缺行情持仓不进对比表，若无提示会被误读成“对方没有这只”。
+check('#18 缺行情证券在对比页明确提示，不静默消失', () => {
+  const src = fs.readFileSync(path.join(PUBLIC_DIR, 'js', 'position-comparison.js'), 'utf8');
+  assert(/function missingQuoteNotice/.test(src), '对比页应渲染缺行情提示');
+  assert(/暂不可参与对比/.test(src), '提示文案应说明未参与对比');
+  assert(/missingQuotes/.test(src), '提示应读取接口返回的 missingQuotes');
+});
 
 console.log('A. 证券代码与身份归一化（12.2 合并规则）');
 check('A股 6 位代码补后缀（0/3→SZ，6/9→SH，4/8→BJ）', () => {
@@ -65,9 +72,27 @@ check('带后缀代码原样保留', () => {
   assert.strictEqual(normalizeSecCode('600519.SH'), '600519.SH');
   assert.strictEqual(normalizeSecCode('00700.HK'), '00700.HK');
 });
-check('身份键优先 instrument_id，其次 市场+代码', () => {
-  assert.strictEqual(secKey({ instrument_id: 42, code: '600519' }), 'I42');
+check('身份键按 市场+标准化代码，instrument_id 只在代码缺失时兜底', () => {
+  assert.strictEqual(secKey({ instrument_id: 42, code: '600519' }), '600519.SH');
   assert.strictEqual(secKey({ code: '600519' }), '600519.SH');
+  assert.strictEqual(secKey({ instrument_id: 42, code: '' }), 'I42');
+  assert.strictEqual(secKey({ code: '' }), '');
+});
+// 回归（2026-10-31 反馈 #18）：标杆持有平安银行却显示标杆占比 0%。
+// 根因是身份键曾以 instrument_id 优先：我的持仓 instrument_id 为空（历史导入未补）、标杆有值，
+// 同一只 000001 被拆成 '000001.SZ' 与 'I30' 两行，各自缺另一方的占比。
+check('#18 一方 instrument_id 缺失时同一证券不得拆成两行', () => {
+  const my = { positions: [{ instrument_id: '', code: '000001', name: '平安银行', ratio: 0.0123 }], cashRatio: 0 };
+  const benchmark = { positions: [{ instrument_id: 30, code: '000001', name: '平安银行', ratio: 0.0089 }], cashRatio: 0 };
+  const rows = compareSecurities(my, benchmark);
+  assert.strictEqual(rows.length, 1, '同一只证券应合并为一行');
+  assert.strictEqual(rows[0].status, 'both');
+  assert.strictEqual(rows[0].benchmarkRatio, 0.0089);
+  assert(rows[0].benchmarkRatio > 0, '标杆持有该证券时占比不能为 0');
+  // 相似度也随之修正：占比完全一致时相似度为 100%
+  const same = { positions: [{ instrument_id: null, code: '000001', ratio: 0.5 }], cashRatio: 0.5 };
+  const other = { positions: [{ instrument_id: 30, code: '000001', ratio: 0.5 }], cashRatio: 0.5 };
+  assert(Math.abs(similarity(same, other) - 100) < 1e-9);
 });
 
 console.log('B. 相似度与证券对比（6.3 / 6.4）');

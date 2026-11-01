@@ -13,6 +13,13 @@ import fitz
 
 DATE = r"(20\d{2})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日?"
 
+# 概览条目里的下一个字段名：紧跟在条目序号之后出现，用来识别被并入简称的章节序号。
+SECTION_FIELD = (
+    r"(?:可转换公司债券|可转债|债券|股票|证券)?"
+    r"(?:代码|简称|交易代码|交易简称|发行量|上市量|上市地点|上市时间|上市日期|"
+    r"发行规模|发行总额|存续|转股|付息|登记|托管|担保|信用级别|信用评级|评级)"
+)
+
 
 def iso(match):
     return f"{int(match.group(1)):04d}-{int(match.group(2)):02d}-{int(match.group(3)):02d}" if match else None
@@ -34,26 +41,45 @@ def first_text(text, patterns):
     return None
 
 
+def strip_section_counter(name, text):
+    """剥掉被并进简称的章节条目序号。
+
+    上市公告书「第二节 概览」逐条书写，去掉空白后会连成
+    「一、可转换公司债券简称：中科转债二、可转换公司债券代码：123289」，
+    名称正则只看到「、」就收尾，把条目序号「二」并进简称（2026-11-01 中科转债）。
+    只有「名称＋、」后面紧跟的确实是下一个概览字段时才剥离，避免误伤
+    真二期简称（如「常青转债二、可转换公司债券将于2026年11月上市」）。
+    """
+    if not name:
+        return name
+    match = re.match(r"^(.*\S)([一二三四五六七八九十])$", name)
+    if not match:
+        return name
+    if re.search(re.escape(name) + r"、" + SECTION_FIELD, text):
+        return match.group(1)
+    return name
+
+
 def parse_text(raw_text):
     text = re.sub(r"\s+", "", raw_text or "")
     bond_code = first_text(text, [
         r"(?:债券|可转债)(?:代码|交易代码)[：:]?(\d{6})",
         r"(?:代码|债券代码)[：:]?(1(?:10|11|13|18|23|27|28)\d{3})",
     ])
-    bond_name = first_text(text, [
+    bond_name = strip_section_counter(first_text(text, [
         # 只捕获简称字符集（汉字/字母/数字/*），引号、顿号、"可转换公司"等体裁残留天然进不来；
         # 允许「简称：/简称为/简称为"」等分隔写法（2026-10-21 审查 P-7：脏名「为"航亚转债」）。
         # 惰性截断：遇到字段边界（股票简称/代码等）或标点即停，避免吞掉后续字段。
         r"(?:债券|可转债)(?:简称|交易简称)[：:为是]?[“”\"']?([\u4e00-\u9fa5A-Za-z0-9*]{2,12}?)"
         r"(?=[“”\"'。、，,;；]|(?:股票|证券|债券|可转债)(?:代码|简称|交易代码|交易简称)[：:为是]?|"
         r"(?:上市时间|上市日期|上市交易日|发行总额|发行规模|网上申购日|申购日|原股东优先配售股权登记日|股权登记日)[：:]?|$)",
-    ])
+    ]), text)
     stock_code = first_text(text, [r"(?:股票|证券)代码[：:]?(\d{6})"])
-    stock_name = first_text(text, [
+    stock_name = strip_section_counter(first_text(text, [
         r"(?:股票|证券)简称[：:为是]?[“”\"']?([\u4e00-\u9fa5A-Za-z0-9*]{2,12}?)"
         r"(?=[“”\"'。、，,;；]|(?:股票|证券|债券|可转债)(?:代码|简称|交易代码|交易简称)[：:为是]?|"
         r"(?:上市时间|上市日期|上市交易日|发行总额|发行规模|网上申购日|申购日|原股东优先配售股权登记日|股权登记日)[：:]?|$)",
-    ])
+    ]), text)
     listing_date = first_date(text, [
         r"(?:上市时间|上市日期|上市交易日)[：:]?" + DATE,
         r"(?:将于|于)" + DATE + r"起?在[^\n]{0,30}上市交易",

@@ -168,6 +168,31 @@ check('资产负债率缓存缺资产时会进入补拉队列，临期高溢价�
   assert.ok(highPremiumYield != null && highPremiumYield < -0.99, '临期高溢价收益率仍返回空值');
 });
 
+// 2026-10-31 反馈 #17：岭南发债（128044.SZ）已到期，但主档到期日/转股截止日/退市日全空，status 仍为 listed，
+// 行情源对僵尸债仍返回当日冻结价（open/high/low=0、vol=0），列表只按“当日有行情”判定，于是混入上市列表。
+check('列表 universe 排除生命周期不可判定的债券（反馈 #17）', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'repositories', 'convertibleBondListServiceRepository.js'), 'utf8');
+  assert.ok(/p\.maturity_date IS NOT NULL OR p\.conv_end_date IS NOT NULL OR b\.delist_date IS NOT NULL/.test(source),
+    'fetchUniverseRows 必须要求到期日/转股截止日/退市日至少一项存在，否则生命周期缺失的僵尸债会凭当日行情混入');
+  assert.ok(/async function fetchLifecycleUndetermined/.test(source), '需提供被排除债券清单查询，供质量登记追溯');
+});
+
+check('被排除债券登记为可追溯的数据质量问题，而不是页面按名称隐藏（反馈 #17）', () => {
+  const service = fs.readFileSync(path.join(__dirname, '..', 'services', 'convertibleBondListService.js'), 'utf8');
+  assert.ok(/recordLifecycleIssues\(date\)/.test(service), 'buildDailyMetrics 应登记生命周期缺失问题');
+  assert.ok(/issueType: 'lifecycle_missing'/.test(service), '质量问题类型必须固定可查询');
+  assert.ok(/fetchLifecycleUndetermined/.test(service), '登记范围应来自同一守门查询');
+});
+
+check('主同步回写已退市债生命周期，不靠人工补公告（反馈 #17 根治）', () => {
+  const sync = fs.readFileSync(path.join(__dirname, '..', 'services', 'convertibleBondAnalysisSync.js'), 'utf8');
+  const repo = fs.readFileSync(path.join(__dirname, '..', 'repositories', 'convertibleBondAnalysisSyncRepository.js'), 'utf8');
+  assert.ok(/isDelistedBond\(row, targetTradeDate\)/.test(sync), '主同步必须用 cb_basic 挑出已退市债');
+  assert.ok(/updateBondLifecycleFacts/.test(sync) && /updateBondLifecycleFacts/.test(repo), '已退市债的生命周期事实必须回写主档');
+  assert.ok(/status=CASE WHEN f\.delist_date IS NOT NULL AND f\.delist_date <= \$2::date THEN 'delisted'/.test(repo),
+    '摘牌日已过的债券状态应落成 delisted');
+});
+
 const pass = tests.filter(item => item[0] === 'PASS').length;
 const fail = tests.filter(item => item[0] === 'FAIL').length;
 console.log('\n===== convertible-bond-list 测试汇总 =====');

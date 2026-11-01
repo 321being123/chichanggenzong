@@ -1,5 +1,34 @@
 const { pool } = require('../db/connection');
 
+// 已退市/已到期转债的生命周期事实回写（2026-10-31 反馈 #17）。
+// 主同步只把"目标日仍有效"的 cb_basic 行写进 profiles，已退市债的主档因此从未补过退休日期，
+// status 长期停在 listed。这里用同一份 cb_basic 数据回写事实字段，空值不覆盖已有值。
+// 返回 rowCount = 被回写的 core.instruments 行数。
+async function updateBondLifecycleFacts(params, client = pool) {
+  return client.query(`
+    WITH facts AS (
+      SELECT * FROM jsonb_to_recordset($1::jsonb)
+        AS x(ts_code text, delist_date date, maturity_date date, conv_end_date date, conv_stop_date date)
+    ), prof AS (
+      UPDATE fundamental.convertible_bond_profiles p
+         SET maturity_date=COALESCE(p.maturity_date,f.maturity_date),
+             conv_end_date=COALESCE(p.conv_end_date,f.conv_end_date),
+             conv_stop_date=COALESCE(p.conv_stop_date,f.conv_stop_date),
+             updated_at=now()
+        FROM facts f
+        JOIN core.instruments i ON i.canonical_code=upper(f.ts_code)
+       WHERE p.instrument_id=i.instrument_id
+       RETURNING p.instrument_id
+    )
+    UPDATE core.instruments i
+       SET delist_date=COALESCE(i.delist_date,f.delist_date),
+           status=CASE WHEN f.delist_date IS NOT NULL AND f.delist_date <= $2::date THEN 'delisted' ELSE i.status END,
+           updated_at=now()
+      FROM facts f
+     WHERE i.canonical_code=upper(f.ts_code)
+  `, params);
+}
+
 // 自 server/services/convertibleBondAnalysisSync.js 抽取的 SQL 执行函数：语句原样搬迁，返回 pg 原始结果（rows/rowCount），调用方零改动。
 async function delete_fundamental_convertible_bond_price_changes(params, client = pool) {
   return client.query(`DELETE FROM fundamental.convertible_bond_price_changes
@@ -321,6 +350,7 @@ function writeBondGapQueueQuery1(executor, ...args) { return executor(`INSERT IN
 
 module.exports = {
   readBondGapQueueQuery1, writeBondGapQueueQuery1,
+  updateBondLifecycleFacts,
   selectMissingStockBars,
   selectNeededDailyStockSourceCodes,
   selectAnnouncementHistoryTargets,

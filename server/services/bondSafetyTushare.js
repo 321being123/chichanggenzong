@@ -66,6 +66,23 @@ function isPendingListingBond(row, today) {
     (!convStopDate || convStopDate > targetDate);
 }
 
+// 已摘牌/已到期：目标日之后不再交易。
+// isActiveBond 只收仍在市的债，导致已退市债的主档长期停在 status='listed'、到期日与摘牌日为空
+// （2026-10-31 反馈 #17：岭南发债 128044 就是这样凭一条冻结行情混进上市列表的）。
+function isDelistedBond(row, today) {
+  const targetDate = normalizeTradeDate(today) || String(today || '').trim();
+  if (!targetDate) return false;
+  if (!CONVERTIBLE_PREFIX.test(String(row && row.ts_code || ''))) return false;
+  const listDate = normalizeTradeDate(row && row.list_date);
+  if (!listDate || listDate > targetDate) return false; // 未上市归 isPendingListingBond
+  const delistDate = normalizeTradeDate(row && row.delist_date);
+  const maturityDate = normalizeTradeDate(row && row.maturity_date);
+  const convEndDate = normalizeTradeDate(row && row.conv_end_date);
+  return Boolean((delistDate && delistDate <= targetDate)
+    || (maturityDate && maturityDate < targetDate)
+    || (convEndDate && convEndDate < targetDate));
+}
+
 async function filterPublicBonds(rows, client = pool) {
   const candidates = Array.from(new Set((rows || [])
     .map(row => String(row && row.ts_code || '').trim().toUpperCase())
@@ -479,6 +496,7 @@ module.exports = {
   derivePb,
   isActiveBond,
   isPendingListingBond,
+  isDelistedBond,
   CONVERTIBLE_PREFIX,
   filterPublicBonds,
   preferredSecurityName,

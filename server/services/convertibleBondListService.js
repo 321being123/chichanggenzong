@@ -9,6 +9,7 @@ const { getLatestCallStateMap } = require('./convertibleBondRedemptionService');
 const txControl = require('../repositories/transactionControl');
 const { fetchCoupons, fetchStockHistory, fetchUniverseRows } = require('../repositories/convertibleBondListServiceRepository.js');
 const repository = require('../repositories/convertibleBondListServiceRepository.js');
+const { recordQualityIssue } = require('./datasetCursors');
 const {
   finite, isoDate, normalizeBondCode, remainingYears, annualizedVolatility,
   parseTriggerRatio, earliestPutDate, estimatePutTimeline, futureTradeCalendar,
@@ -298,6 +299,34 @@ function calculateRow(row, stockRows, coupons) {
   };
 }
 
+// 生命周期（到期日/转股截止日/退市日）全空、被列表排除的债券，登记为可追溯的数据质量问题。
+// 反馈 #17：页面按名称隐藏不算修复，必须留下原因和证据，主档补齐后自动回到列表。
+async function recordLifecycleIssues(tradeDate) {
+  try {
+    const rows = await repository.fetchLifecycleUndetermined(tradeDate);
+    for (const row of rows) {
+      await recordQualityIssue({
+        instrumentId: row.instrument_id,
+        datasetCode: 'cb_basic',
+        fieldCode: 'lifecycle',
+        issueType: 'lifecycle_missing',
+        severity: 'warning',
+        details: {
+          tradeDate,
+          bondCode: row.bond_code,
+          bondName: row.bond_name,
+          close: numberOrNull(row.close),
+          volume: numberOrNull(row.vol),
+          amount: numberOrNull(row.amount),
+          reason: '到期日、转股截止日、退市日均为空，无法判定目标日是否仍在市，已从上市可转债列表排除',
+        },
+      });
+    }
+  } catch (_) {
+    // 质量登记失败不得影响列表主流程
+  }
+}
+
 async function buildDailyMetrics({ tradeDate = null, reason = 'scheduled' } = {}) {
   const date = tradeDate || await latestTradeDate();
   if (!date) throw new Error('暂无可转债行情分区，无法生成列表指标');
@@ -324,6 +353,7 @@ async function buildDailyMetrics({ tradeDate = null, reason = 'scheduled' } = {}
   } finally {
     client.release();
   }
+  await recordLifecycleIssues(date);
   return { trade_date: date, count: metrics.length, reason, complete: metrics.filter(row => row.data_status === 'complete').length };
 }
 

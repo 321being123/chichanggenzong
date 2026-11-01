@@ -31,9 +31,15 @@ function normalizeSecCode(rawCode) {
 }
 
 // 同一证券身份键：优先 instrument_id，回退 市场+标准化代码
+// 同一证券身份键：统一按 市场+标准化代码，instrument_id 只在代码缺失时兜底。
+// 2026-10-31 反馈 #18：此前 instrument_id 优先，双方任一账户的历史持仓没补 instrument_id 时，
+// 同一只证券会生成两个不同键（'I30' 与 '000001.SZ'），对比页拆成“仅我持有”与“我未持有”两行，
+// 标杆占比显示 0%。证券代码是双方都必然存在的稳定身份，instrument_id 在导入/历史数据里可缺失，不能作为主键。
 function secKey(pos) {
+  const code = normalizeSecCode(pos.code);
+  if (code) return code;
   if (pos.instrument_id) return 'I' + pos.instrument_id;
-  return normalizeSecCode(pos.code);
+  return '';
 }
 
 // ========== 标杆列表（4.1 / 5.2） ==========

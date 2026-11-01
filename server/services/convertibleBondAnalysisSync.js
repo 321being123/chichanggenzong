@@ -27,7 +27,7 @@ const {
 const { resolveCanonicalCode, ensureInstrumentIdentity } = require('./securityIdentity');
 const { childProcessEnv, mergeExternalCallStatsFromStderr } = require('./externalCallGuard');
 const { sendAlert } = require('./jobAlertMailer');
-const { isActiveBond, isPendingListingBond, filterPublicBonds } = require('./bondSafetyTushare');
+const { isActiveBond, isPendingListingBond, isDelistedBond, filterPublicBonds } = require('./bondSafetyTushare');
 const { ANNOUNCEMENT_OVERLAP_DAYS, BOND_FIRSTDAY_SCRIPT, BOND_GAP_QUEUE_SCHEMA_VERSION, BOND_ISSUE_RESULT_SCRIPT, BOND_LIQUIDITY_SCRIPT, CN_OFFSET_MS, DAILY_FIELDS, FORMULA_VERSION, PROFILE_FIELDS, STOCK_STATUS_FIELDS, UNIFIED_ANNOUNCEMENT_KEYWORDS, addDays, defaultBondTargetTradeDate, finite, isoDate, normalizeBondCode, revisionDecision } = require('./convertibleBondAnalysisCore.js');
 const { announcementSourceId, announcementSourceKey, backfillMissingRatings, ensureStockUniverse, extractNoRevisionPeriods, extractPriceChangeDetails, loadNoRevisionCache, loadPriceChangeCache, loadRevisionEventCache, loadTrackedDelistedStocks, pythonCandidates, saveDailyBar, saveFullStockMarketPartition, saveProfile, saveRevisionEvents, sourceIds } = require('./convertibleBondAnalysisStore.js');
 const txControl = require('../repositories/transactionControl');
@@ -806,6 +806,23 @@ async function syncConvertibleBondUniverse(reason = 'scheduled', options = {}) {
       }
       if (pendingListingSaved.length) {
         console.log(`[主同步] 待上市新债主档已补全 ${pendingListingSaved.length} 只：${pendingListingSaved.join(',')}`);
+      }
+      // 已退市/已到期债的生命周期回写（2026-10-31 反馈 #17）：
+      // isActiveBond 只收目标日仍有效的债，已退市债的主档从来没写过到期日与摘牌日，
+      // core.instruments 长期停在 status='listed'；行情源一旦给出冻结价行（成交量 0）就会混进上市列表。
+      // 注意不能加 isUnderlyingStockListed：转债退市往往伴随正股退市（如 128044 的 *ST 岭南），
+      // 正股已不在 stock_basic(L) 里，加了这一条会把最该修的债全部漏掉。
+      const delistedProfiles = await filterPublicBonds(allBasicRows.filter(row => isDelistedBond(row, targetTradeDate)));
+      if (delistedProfiles.length) {
+        const lifecycleFacts = delistedProfiles.map(row => ({
+          ts_code: String(row.ts_code || '').trim().toUpperCase(),
+          delist_date: isoDate(row.delist_date),
+          maturity_date: isoDate(row.maturity_date),
+          conv_end_date: isoDate(row.conv_end_date),
+          conv_stop_date: isoDate(row.conv_stop_date),
+        })).filter(item => item.ts_code);
+        const lifecycleFixed = await repository.updateBondLifecycleFacts([JSON.stringify(lifecycleFacts), targetTradeDate], client);
+        console.log(`[主同步] 已退市债生命周期回写 ${lifecycleFixed.rowCount || 0} 只（候选 ${lifecycleFacts.length} 只）`);
       }
       await repository.insert_ops_sync_cursors([unresolvedCodes.length ? null : isoDate(daily.tradeDate)], client);
       await writeBondGapQueue(client.query.bind(client), gapQueue);

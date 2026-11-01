@@ -31,6 +31,11 @@ const testEnv = { ...process.env, NODE_ENV: 'test', EXTERNAL_CALL_GUARD: '0', AL
   PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8' };
 if (!testEnv.PYTHON && resolvedPython) testEnv.PYTHON = resolvedPython;
 const TEST_DATABASE = String(process.env.PGTESTDATABASE || 'portfolio_test').replace(/[^a-zA-Z0-9_]/g, '_');
+// 单文件超时：spawnSync 不设超时，卡住的用例会把整轮门禁永久挂起（2026-11-01 实测：
+// backup-retention 的 bash 子进程在本机被 shell 运行时垫片卡住，全量测试停住 40 分钟无任何输出，
+// 而数据库连接是空闲的，从日志完全看不出卡在哪个文件）。超时按失败处理并打印最后一行输出。
+const NODE_TEST_TIMEOUT_MS = 5 * 60 * 1000;
+const PY_TEST_TIMEOUT_MS = 5 * 60 * 1000;
 
 function testDatabaseConfig() {
   const configured = process.env.DATABASE_URL;
@@ -96,10 +101,17 @@ async function ensureTestDatabase() {
 }
 
 function runNode(file) {
-  const r = spawnSync(process.execPath, [file], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], env: testEnv });
+  const r = spawnSync(process.execPath, [file], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], env: testEnv, timeout: NODE_TEST_TIMEOUT_MS });
   const out = (r.stdout || '') + (r.stderr || '');
   const lines = out.split('\n').map(s => s.trim()).filter(Boolean);
   const last = lines[lines.length - 1] || '(无输出)';
+  const timedOut = Boolean(r.error && r.error.code === 'ETIMEDOUT');
+  if (timedOut) {
+    fail++; failed.push(file);
+    console.log('  ✗ ' + file + '  (超时 ' + Math.round(NODE_TEST_TIMEOUT_MS / 1000) + 's 未结束，已终止)  ——  ' + last);
+    console.log(out);
+    return;
+  }
   // 识别测试自身标记的跳过（如空库迁移在无 PG 时打印 [SKIP]），不计入通过
   if (/\[SKIP\]|SKIP-/.test(out)) {
     skip++; console.log('  ⊘ ' + file + '  (跳过)  ——  ' + last);
@@ -166,10 +178,16 @@ function runPython() {
   ].filter(f => fs.existsSync(f));
   if (pyFiles.length === 0) { skip++; console.log('  ⊘ 未找到 Python 测试文件，跳过'); return; }
   for (const file of pyFiles) {
-    const r = spawnSync(py, [file], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], env: testEnv });
+    const r = spawnSync(py, [file], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], env: testEnv, timeout: PY_TEST_TIMEOUT_MS });
     const out = (r.stdout || '') + (r.stderr || '');
     const lines = out.split('\n').map(s => s.trim()).filter(Boolean);
     const last = lines[lines.length - 1] || '(无输出)';
+    if (r.error && r.error.code === 'ETIMEDOUT') {
+      fail++; failed.push(path.basename(file));
+      console.log('  ✗ ' + path.basename(file) + '  (超时 ' + Math.round(PY_TEST_TIMEOUT_MS / 1000) + 's 未结束，已终止)  ——  ' + last);
+      console.log(out);
+      continue;
+    }
     // 缺依赖/解释器环境异常：本地标 SKIP；CI 模式下视为失败（不允许关键测试跳过）
     const envErr = /ModuleNotFoundError|No module named|ImportError|Can't open file/.test(out);
     if (envErr) {

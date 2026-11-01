@@ -167,6 +167,41 @@ async function resolveValuationRows({ codes = [], tradeDate, options = {} } = {}
 }
 
 /**
+ * 官方区间接口有硬限制：起止**年份差不能超过 10 年**。
+ * 实测 `cn/company/fs/non_financial`：2001-01-01~2011-12-31 通过，2001-01-01~2012-01-01 返回
+ * ForbiddenError「时间跨度不能超过10年。」。业务侧常要「上市以来」二十多年
+ * （财报、分红、估值序列、宏观、指数估值、个股日线都是区间接口），所以在这里统一分段取数、
+ * 合并结果，调用方不必自己关心这个限制——否则请求会整体失败并静默回退备源，等于没切源。
+ */
+const MAX_RANGE_YEARS = 10;
+
+function rangeChunks(startDate, endDate, years = MAX_RANGE_YEARS) {
+  const from = dashDate(startDate), to = dashDate(endDate);
+  if (!from || !to || from > to) return [];
+  const chunks = [];
+  const endYear = Number(to.slice(0, 4));
+  let year = Number(from.slice(0, 4));
+  let cursor = from;
+  while (year <= endYear) {
+    const lastYear = Math.min(endYear, year + years);
+    chunks.push([cursor, lastYear === endYear ? to : `${lastYear}-12-31`]);
+    year = lastYear + 1;
+    cursor = `${year}-01-01`;
+  }
+  return chunks;
+}
+
+// 区间取数：按 ≤10 年分段请求并拼接原始行（分段首尾不重叠，不需要去重）。
+async function callEndpointRange(endpoint, params, startDate, endDate, options = {}) {
+  const rows = [];
+  for (const [from, to] of rangeChunks(startDate, endDate)) {
+    const result = await callEndpoint(endpoint, { ...params, startDate: from, endDate: to }, options);
+    rows.push(...(result.rows || []));
+  }
+  return { rows };
+}
+
+/**
  * 估值序列：同接口的区间用法（startDate/endDate），单只证券的每日估值。
  * 官方按区间返回，不再出现「只取结束日、其余日期沿用备源数值」的情况。
  * @returns {Promise<object[]|null>} Tushare 形状的行（pe 待 fillStaticPe 派生）
@@ -179,15 +214,17 @@ async function resolveValuationSeries({ codes = [], startDate, endDate, options 
   let failed = 0;
   for (const batch of chunk(list, VALUATION_CHUNK)) {
     try {
-      const result = await callEndpoint('cn/company/fundamental/non_financial', {
-        stockCodes: batch.map(item => item.code), startDate: start, endDate: end, metricsList: VALUATION_METRICS,
-      }, { dataset: 'stock_valuation', targetDate: end, ...options });
-      const byCode = new Map(batch.map(item => [item.code, item.tsCode]));
-      for (const row of result.rows) {
-        const tsCode = byCode.get(String(row.stockCode));
-        if (!tsCode) continue;
-        const mapped = valuationRow(row, tsCode, end);
-        if (mapped) rows.push(mapped);
+      for (const [from, to] of rangeChunks(start, end)) {
+        const result = await callEndpoint('cn/company/fundamental/non_financial', {
+          stockCodes: batch.map(item => item.code), startDate: from, endDate: to, metricsList: VALUATION_METRICS,
+        }, { dataset: 'stock_valuation', targetDate: end, ...options });
+        const byCode = new Map(batch.map(item => [item.code, item.tsCode]));
+        for (const row of result.rows) {
+          const tsCode = byCode.get(String(row.stockCode));
+          if (!tsCode) continue;
+          const mapped = valuationRow(row, tsCode, to);
+          if (mapped) rows.push(mapped);
+        }
       }
     } catch (error) {
       failed += 1;
@@ -205,10 +242,10 @@ async function resolveAnnualNetProfits({ tsCode, startDate, endDate } = {}) {
   const code = stockCodeOf(tsCode);
   const start = dashDate(startDate), end = dashDate(endDate);
   if (!code || !start || !end) return null;
-  const result = await callEndpoint('cn/company/fs/non_financial', {
-    stockCodes: [code], startDate: start, endDate: end, metricsList: ['q.ps.npatshaoehopc.t'],
-  }, { dataset: 'stock_financial_reports', targetDate: end });
-  return result.rows.map(item => {
+  const { rows } = await callEndpointRange('cn/company/fs/non_financial',
+    { stockCodes: [code], metricsList: ['q.ps.npatshaoehopc.t'] }, start, end,
+    { dataset: 'stock_financial_reports', targetDate: end });
+  return rows.map(item => {
     const periodEnd = isoDate(item.standardDate) || isoDate(item.date);
     const node = item.q && item.q.ps && item.q.ps.npatshaoehopc;
     const netProfit = numberOrNull(node && node.t);
@@ -256,11 +293,11 @@ async function resolveFinancialReports({ tsCode, startDate, endDate, kinds = ['i
     for (const base of Object.values(REPORT_METRICS[kind] || {})) metrics.push(`q.${base}.t`);
   }
   if (!metrics.length) return null;
-  const result = await callEndpoint('cn/company/fs/non_financial', {
-    stockCodes: [code], startDate: start, endDate: end, metricsList: metrics,
-  }, { dataset: 'stock_financial_reports', targetDate: end, ...options });
+  const { rows } = await callEndpointRange('cn/company/fs/non_financial',
+    { stockCodes: [code], metricsList: metrics }, start, end,
+    { dataset: 'stock_financial_reports', targetDate: end, ...options });
   const out = { income: [], balance: [], cashflow: [], indicator: [] };
-  for (const item of result.rows) {
+  for (const item of rows) {
     const flat = flattenMetrics(item.q || {});
     const periodEnd = isoDate(item.standardDate) || isoDate(item.date);
     if (!periodEnd) continue;
@@ -295,9 +332,9 @@ async function resolveDividendRows({ tsCode, startDate, endDate, options = {} } 
   const code = stockCodeOf(tsCode);
   const start = dashDate(startDate), end = dashDate(endDate);
   if (!code || !start || !end) return null;
-  const result = await callEndpoint('cn/company/dividend', { stockCode: code, startDate: start, endDate: end },
+  const result = await callEndpointRange('cn/company/dividend', { stockCode: code }, start, end,
     { dataset: 'stock_cash_dividend_facts', targetDate: end, ...options });
-  return result.rows.map(row => {
+  const mapped = result.rows.map(row => {
     const cashRaw = numberOrNull(row.dividend);
     const amount = numberOrNull(row.dividendAmount);
     // 预案阶段（board_director_plan）官方只给 dividend=0、dividendAmount=null，即"金额未定"。
@@ -322,6 +359,10 @@ async function resolveDividendRows({ tsCode, startDate, endDate, options = {} } 
       source_code: SOURCE,
     };
   }).filter(row => row.end_date);
+  // 分段拼接后同一事件可能重复出现（预案与实施跨报告期/跨年），按「报告期+公告日+进度」保留一条。
+  const unique = new Map();
+  for (const row of mapped) unique.set(`${row.end_date}:${row.ann_date || ''}:${row.div_proc || ''}`, row);
+  return [...unique.values()];
 }
 
 // 指数日线：官方 cn/index/candlestick。现有 index_history 只存日期与收盘价。
@@ -332,12 +373,14 @@ async function resolveIndexDaily({ tsCode, startDate, endDate, type = 'normal', 
   const start = dashDate(startDate), end = dashDate(endDate);
   if (!code || !start || !end) return null;
   const endpoint = market === 'hk' ? 'hk/index/candlestick' : 'cn/index/candlestick';
-  const result = await callEndpoint(endpoint, { stockCode: code, type, startDate: start, endDate: end },
+  const result = await callEndpointRange(endpoint, { stockCode: code, type }, start, end,
     { dataset: 'index_daily', targetDate: end });
-  return result.rows
-    .map(row => ({ date: dashDate(row.date), close: numberOrNull(row.close) }))
-    .filter(point => point.date && point.close !== null && point.close > 0)
-    .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+  const points = new Map();
+  for (const row of result.rows) {
+    const date = dashDate(row.date), close = numberOrNull(row.close);
+    if (date && close !== null && close > 0) points.set(date, { date, close });
+  }
+  return [...points.values()].sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
 }
 
 
@@ -351,16 +394,18 @@ async function resolveIndexValuation({ indexCode, startDate, endDate, market = '
   const endpoint = market === 'hk' ? 'hk/index/fundamental' : 'cn/index/fundamental';
   // cn 额外取 mc_om（A股市值），港股没有该指标。
   const metrics = market === 'hk' ? ['pe_ttm.mcw', 'pb.mcw', 'mc'] : ['pe_ttm.mcw', 'pb.mcw', 'mc', 'mc_om'];
-  const result = await callEndpoint(endpoint, { stockCodes: [code], startDate: start, endDate: end, metricsList: metrics },
+  const result = await callEndpointRange(endpoint, { stockCodes: [code], metricsList: metrics }, start, end,
     { dataset: 'market_index_valuation', targetDate: end });
-  return result.rows.map(row => {
+  const byDay = new Map();
+  for (const row of result.rows) {
     const day = dashDate(row.date);
     const pe = numberOrNull(row['pe_ttm.mcw']);
     const pb = numberOrNull(row['pb.mcw']);
     const mc = numberOrNull(row.mc);
-    if (!day || (pe === null && pb === null)) return null;
-    return { day, pe, pb, marketCap: mc, raw: row };
-  }).filter(Boolean);
+    if (!day || (pe === null && pb === null)) continue;
+    byDay.set(day, { day, pe, pb, marketCap: mc, raw: row });
+  }
+  return [...byDay.values()].sort((a, b) => (a.day < b.day ? -1 : a.day > b.day ? 1 : 0));
 }
 
 // 股票/港股日线（不复权）：官方 `cn|hk/company/candlestick`，type=ex_rights。
@@ -371,19 +416,26 @@ async function resolveStockDaily({ tsCode, startDate, endDate, market = 'cn', op
   const start = dashDate(startDate), end = dashDate(endDate);
   if (!code || !start || !end) return null;
   const endpoint = market === 'hk' ? 'hk/company/candlestick' : 'cn/company/candlestick';
-  const result = await callEndpoint(endpoint, { stockCode: code, type: 'ex_rights', startDate: start, endDate: end },
+  const result = await callEndpointRange(endpoint, { stockCode: code, type: 'ex_rights' }, start, end,
     { dataset: 'market_daily_bars', targetDate: end, ...options });
-  return result.rows.map(row => ({
-    ts_code: tsCode,
-    trade_date: isoDate(row.date),
-    open: numberOrNull(row.open),
-    high: numberOrNull(row.high),
-    low: numberOrNull(row.low),
-    close: numberOrNull(row.close),
-    vol: numberOrNull(row.volume) === null ? null : numberOrNull(row.volume) / 100,
-    amount: numberOrNull(row.amount) === null ? null : numberOrNull(row.amount) / 1000,
-    source_code: SOURCE,
-  })).filter(row => row.trade_date && row.close !== null);
+  const byDay = new Map();
+  for (const row of result.rows) {
+    const tradeDate = isoDate(row.date);
+    const close = numberOrNull(row.close);
+    if (!tradeDate || close === null) continue;
+    byDay.set(tradeDate, {
+      ts_code: tsCode,
+      trade_date: tradeDate,
+      open: numberOrNull(row.open),
+      high: numberOrNull(row.high),
+      low: numberOrNull(row.low),
+      close,
+      vol: numberOrNull(row.volume) === null ? null : numberOrNull(row.volume) / 100,
+      amount: numberOrNull(row.amount) === null ? null : numberOrNull(row.amount) / 1000,
+      source_code: SOURCE,
+    });
+  }
+  return [...byDay.values()].sort((a, b) => (a.trade_date < b.trade_date ? -1 : a.trade_date > b.trade_date ? 1 : 0));
 }
 
 
@@ -426,13 +478,16 @@ async function resolveStockDailyBatch({ tsCodes = [], tradeDate, market = 'cn', 
 async function resolveMoneySupply({ startDate, endDate, areaCode = 'cn' } = {}) {
   const start = dashDate(startDate), end = dashDate(endDate);
   if (!start || !end) return null;
-  const result = await callEndpoint('macro/money-supply', { areaCode, startDate: start, endDate: end, metricsList: ['m.m2.t'] },
+  const result = await callEndpointRange('macro/money-supply', { areaCode, metricsList: ['m.m2.t'] }, start, end,
     { dataset: 'market_money_supply', targetDate: end });
-  return result.rows.map(row => {
+  const byMonth = new Map();
+  for (const row of result.rows) {
     const value = numberOrNull(row.m && row.m.m2 && row.m.m2.t);
     const date = dashDate(row.date);
-    return value === null || !date ? null : { month: date.slice(0, 7), m2: value / 1e8 };
-  }).filter(Boolean);
+    if (value === null || !date) continue;
+    byMonth.set(date.slice(0, 7), { month: date.slice(0, 7), m2: value / 1e8 });
+  }
+  return [...byMonth.values()].sort((a, b) => (a.month < b.month ? -1 : a.month > b.month ? 1 : 0));
 }
 
 // 宏观：中国 10 年期国债收益率。官方 `macro/national-debt` 的 `tcm_y10` 是小数（0.0165 = 1.65%），
@@ -440,13 +495,16 @@ async function resolveMoneySupply({ startDate, endDate, areaCode = 'cn' } = {}) 
 async function resolveSovereignYield10y({ startDate, endDate, areaCode = 'cn' } = {}) {
   const start = dashDate(startDate), end = dashDate(endDate);
   if (!start || !end) return null;
-  const result = await callEndpoint('macro/national-debt', { areaCode, startDate: start, endDate: end, metricsList: ['tcm_y10'] },
+  const result = await callEndpointRange('macro/national-debt', { areaCode, metricsList: ['tcm_y10'] }, start, end,
     { dataset: 'market_sovereign_yield', targetDate: end });
-  return result.rows.map(row => {
+  const byDay = new Map();
+  for (const row of result.rows) {
     const value = numberOrNull(row.tcm_y10);
     const date = dashDate(row.date);
-    return value === null || !date ? null : { workTime: date, tenYear: value * 100 };
-  }).filter(Boolean);
+    if (value === null || !date) continue;
+    byDay.set(date, { workTime: date, tenYear: value * 100 });
+  }
+  return [...byDay.values()].sort((a, b) => (a.workTime < b.workTime ? -1 : a.workTime > b.workTime ? 1 : 0));
 }
 
 // 股票行业分类（官方一次返回 sw / sw_2021 / cni 多套体系）：只回原始行，
@@ -473,6 +531,8 @@ async function officialStockCode(canonicalCode) {
 
 module.exports = {
   SOURCE,
+  MAX_RANGE_YEARS,
+  rangeChunks,
   REPORT_METRICS,
   VALUATION_METRICS,
   fillStaticPe,

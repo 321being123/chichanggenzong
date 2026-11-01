@@ -23,6 +23,7 @@
 const { pool } = require('../db/connection');
 const { readStockValuationSeriesBatch } = require('../dataAccess/marketDatasets');
 const store = require('../services/convertibleBondAnalysisStore');
+const { resolveCanonicalCode } = require('../services/securityIdentity');
 
 const APPLY = process.argv.includes('--apply');
 const withDefault = (name, fallback) => {
@@ -34,22 +35,50 @@ const UNTIL = withDefault('until', '2099-12-31');
 const OFFSET = Math.max(Number(withDefault('offset', '0')) || 0, 0);
 const LIMIT_CODES = Math.max(Number(withDefault('limit-codes', '0')) || 0, 0);
 const SAMPLE_BATCHES = Math.max(Number(withDefault('sample', '1')) || 0, 0);
-// 默认只补「有人看的」证券：上市中可转债的正股 ∪ 持仓 ∪ 自选 ∪ 已分析过。全市场要显式 --scope=all。
+// 默认只补「有人看的」证券：当前仍在交易的上市可转债正股 ∪ 持仓 ∪ 自选 ∪ 已分析过。全市场要显式 --scope=all。
 // 理由：daily_valuations 的历史行只有两处按天回看——个股分析（读全部历史）与转债分析（回看 500 天）；
 // 其余消费方（债券安全性、转债列表、下修服务、全市场总市值）只要当日或最近一条，补历史对它们没有增量。
-// 转债只取 status='listed' 的（用户要求：已退市/非上市的转债不管）。
+// 转债口径：`bond_unified.status='listed'` 不可靠（生产列出 1080 只，历史摘牌的没更新状态），
+// 用户要求只算「当前上市的」——以最近交易日仍有转债行情为准（生产 2026-10-30 实测 311 只）。
 const SCOPE = withDefault('scope', 'watched');
 const CHUNK = 100; // 官方 stockCodes 一次最多 100 个
 
+// 持仓/自选的代码是无后缀格式（生产实测 105 行持仓全部如此，且混着 5 位港股代码），
+// 直接和 canonical_code 做字符串匹配会 0 命中或跨市场误配（000001 既像 A 股也像港股）。
+// 统一走 securityIdentity 归一，再把结果作为参数传进 SQL，不猜后缀。
+async function watchedCodes() {
+  const { rows } = await pool.query(`
+    SELECT DISTINCT code FROM public.positions WHERE code IS NOT NULL
+    UNION SELECT DISTINCT ts_code FROM public.stock_watchlist WHERE ts_code IS NOT NULL`);
+  const out = [];
+  let unresolved = 0;
+  for (const row of rows) {
+    const raw = row.code || row.ts_code;
+    try {
+      const canonical = await resolveCanonicalCode(raw, 'stock');
+      if (canonical) out.push(canonical); else unresolved += 1;
+    } catch (_) { unresolved += 1; }
+  }
+  if (unresolved) console.log(`持仓/自选中 ${unresolved} 个代码未能解析成标准代码（多为港股或无对应证券），已跳过`);
+  return out;
+}
+
 const WATCHED_SCOPE_SQL = `
-  WITH scope AS (
-    SELECT code AS c FROM public.positions WHERE code IS NOT NULL
-    UNION SELECT ts_code FROM public.stock_watchlist
-    UNION SELECT i.canonical_code FROM fundamental.convertible_bond_profiles p
-            JOIN core.instruments b ON b.instrument_id = p.instrument_id AND b.status = 'listed'
-            JOIN core.instruments i ON i.instrument_id = p.stock_instrument_id
+  WITH active_cb AS (
+    SELECT DISTINCT b.instrument_id
+      FROM market.daily_bars b
+      JOIN core.instruments i ON i.instrument_id = b.instrument_id AND i.asset_class = 'convertible_bond'
+     WHERE b.trade_date = (
+       SELECT max(v.trade_date) FROM market.daily_bars v
+         JOIN core.instruments j ON j.instrument_id = v.instrument_id AND j.asset_class = 'convertible_bond')
+  ), scope AS (
+    SELECT si.canonical_code AS c
+      FROM active_cb a
+      JOIN fundamental.convertible_bond_profiles p ON p.instrument_id = a.instrument_id
+      JOIN core.instruments si ON si.instrument_id = p.stock_instrument_id
     UNION SELECT i.canonical_code FROM analytics.stock_overview_latest l
             JOIN core.instruments i ON i.instrument_id = l.instrument_id
+    UNION SELECT unnest($3::text[])
   )
   SELECT DISTINCT v.instrument_id, i.canonical_code
     FROM market.daily_valuations v
@@ -87,7 +116,9 @@ async function listTargets() {
     throw new Error(`未知 scope：${SCOPE}（可选 watched / all）`);
   }
   const sql = SCOPE === 'watched' ? WATCHED_SCOPE_SQL : ALL_SCOPE_SQL;
-  const { rows } = await pool.query(sql, [SINCE, UNTIL]);
+  const params = [SINCE, UNTIL];
+  if (SCOPE === 'watched') params.push(await watchedCodes());
+  const { rows } = await pool.query(sql, params);
   return rows;
 }
 

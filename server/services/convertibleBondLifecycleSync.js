@@ -5,6 +5,7 @@ const { spawn } = require('child_process');
 const { pool } = require('../db/connection');
 const { tushareQuery, tsRows, tsDateStr } = require('./market');
 const { ensureInstrumentIdentity, resolveCanonicalCode } = require('./securityIdentity');
+const { pickAuthoritativeName } = require('../domain/convertibleBondNameRules');
 const { childProcessEnv, mergeExternalCallStatsFromStderr } = require('./externalCallGuard');
 const txControl = require('../repositories/transactionControl');
 const { sourceIds } = require('../repositories/convertibleBondLifecycleSyncRepository.js');
@@ -93,9 +94,20 @@ async function parseLifecycleDocuments(events) {
 
 /* sourceIds 已迁入 server/repositories/convertibleBondLifecycleSyncRepository.js */
 
+// 名称裁决：cb_basic 官方简称（由主同步写入 fundamental.convertible_bond_profiles）优先，
+// 公告解析名只作兜底。公告正文残留（如「中科转债」被并成「中科转债二」）不得覆盖主档，
+// 否则会经 core.instruments.name 流入打新日历与日报（2026-11-01 中科转债事故）。
+async function authoritativeBondName(client, canonicalCode, candidate) {
+  const { rows } = await client.query(
+    `SELECT p.bond_short_name FROM core.instruments i
+       LEFT JOIN fundamental.convertible_bond_profiles p ON p.instrument_id=i.instrument_id
+      WHERE i.canonical_code=$1`, [canonicalCode]);
+  return pickAuthoritativeName(rows[0] && rows[0].bond_short_name, candidate);
+}
+
 async function ensureMinimalProfile(client, row, sources) {
   const canonicalCode = await resolveCanonicalCode(row.ts_code || row.bond_code, 'convertible_bond', client.query.bind(client));
-  const name = row.bond_name || row.onl_name || canonicalCode;
+  const name = await authoritativeBondName(client, canonicalCode, row.bond_name || row.onl_name) || canonicalCode;
   const listDate = isoDate(row.listing_date);
   const subscriptionDate = isoDate(row.onl_date || row.online_date);
   const identity = await ensureInstrumentIdentity({

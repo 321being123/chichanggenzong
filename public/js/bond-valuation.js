@@ -11,14 +11,6 @@ var esc = function (s) {
 };
 // num/pctv 统一用 utils.js 全局定义，此处不再重复声明（R-17）
 function api(p) { return (typeof BASE_URL !== 'undefined' && BASE_URL) ? BASE_URL + p : p; }
-function bondValLifecycleMarker(status) {
-  if (status === 'announced') return '<span class="bond-lifecycle-mark bond-lifecycle-mark-call" role="img" aria-label="已公告强赎" title="已公告强赎">!</span>';
-  if (status === 'maturity_redeem') return '<span class="bond-lifecycle-mark bond-lifecycle-mark-maturity" role="img" aria-label="已公告到期兑付" title="已公告到期兑付">!</span>';
-  if (status === 'redemption_unconfirmed') return '<span class="bond-lifecycle-mark bond-lifecycle-mark-maturity" role="img" aria-label="赎回方式待确认" title="赎回方式待确认">!</span>';
-  if (status === 'completed') return '<span class="bond-lifecycle-mark bond-lifecycle-mark-call" role="img" aria-label="赎回已完成" title="赎回已完成">!</span>';
-  if (status === 'maturity_near') return '<span class="bond-lifecycle-mark bond-lifecycle-mark-maturity" role="img" aria-label="临近到期" title="临近到期">!</span>';
-  return '';
-}
 
 var EVAL_CLASS = {
   '低估': 'val-low', '偏低估': 'val-low2', '合理': 'val-mid', '偏高估': 'val-high1',
@@ -161,7 +153,7 @@ function renderBondValTable() {
       if (col.k === 'fair_range') txt = r.fair_price_low != null ? (num(r.fair_price_low, 1) + '～' + num(r.fair_price_high, 1)) : '—';
       else if (col.p) txt = pctv(v);
       else if (col.n) txt = num(v, 1);
-      else if (col.k === 'bond_name') txt = esc(v) + bondValLifecycleMarker(r.call_status) + (r.data_status === '新上市观察期' ? '<span class="bond-val-new-listing" title="上市满 40 个交易日后自动进入正式估值">新上市</span>' : '');
+      else if (col.k === 'bond_name') txt = esc(v) + bondLifecycleMark(r) + (r.data_status === '新上市观察期' ? '<span class="bond-val-new-listing" title="上市满 40 个交易日后自动进入正式估值">新上市</span>' : '');
       else if (col.k === 'alert_level') txt = (v && v !== '无') ? '<span class="val-alert ' + (v === '重要' ? 'val-alert-imp' : 'val-alert-att') + '">' + esc(v) + '</span>' : '—';
       else if (col.k === 'final_evaluation') txt = '<span class="' + (EVAL_CLASS[v] || '') + '">' + esc(v || '—') + '</span>';
       else txt = (v == null || v === '') ? '—' : esc(v);
@@ -247,7 +239,7 @@ function renderBondValDetail(d, hist, alerts) {
   var b = d.breakdown;
   var html = '';
   html += '<div class="bond-val-detail-bar"><button class="btn btn-outline btn-sm" data-act="closeBondValDetail">← 返回列表</button>' +
-    '<span class="bond-val-detail-title">' + esc(d.bond_name) + bondValLifecycleMarker(cur.call_status) + '（' + esc(d.bond_code) + '）</span>' +
+    '<span class="bond-val-detail-title">' + esc(d.bond_name) + bondLifecycleMark(cur) + '（' + esc(d.bond_code) + '）</span>' +
     '<button class="btn btn-outline btn-sm" data-act="switchMain" data-arg1="\'stock-analysis\');setTimeout(function(){securityAnalysisSelect(\'' + esc(d.bond_code) + '\')}" data-arg2="150" title="查看完整债券分析（条款、评级、正股财务等）">📊 完整分析</button>' +
     '<span class="val-alert-tag ' + (EVAL_CLASS[cur.eval_class] || '') + '">' + esc(cur.final_evaluation) + '</span></div>';
 

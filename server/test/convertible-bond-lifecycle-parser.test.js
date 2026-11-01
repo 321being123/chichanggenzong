@@ -36,4 +36,16 @@ assert.strictEqual(parsed.listing_date, '2026-09-09');
 assert.strictEqual(parsed.online_date, '2026-09-08');
 assert.strictEqual(parsed.shareholder_record_date, '2026-09-07');
 assert.strictEqual(parsed.issue_scale, 6.075);
+
+// 深交所上市公告书「第二节 概览」逐条书写，去空白后简称与下一个条目序号连在一起：
+// 「一、可转换公司债券简称：中科转债二、可转换公司债券代码：123289」→ 不得取成「中科转债二」。
+const overview = '第二节概览一、可转换公司债券简称：中科转债二、可转换公司债券代码：123289三、可转换公司债券发行量：100,000.00万元';
+const sectionResult = spawnSync(python, ['-c', code, script], {
+  cwd: root, input: overview, encoding: 'utf8', env: { ...process.env, PYTHONUTF8: '1' },
+});
+assert.strictEqual(sectionResult.status, 0, sectionResult.stderr || '生命周期解析器执行失败');
+const sectionParsed = JSON.parse(sectionResult.stdout);
+assert.strictEqual(sectionParsed.bond_name, '中科转债');
+assert.strictEqual(sectionParsed.bond_code, '123289');
+
 console.log('convertible bond lifecycle parser tests passed');

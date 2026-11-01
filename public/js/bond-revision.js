@@ -41,7 +41,7 @@ function bondRevisionCell(row, key) {
     return '<a class="bond-revision-motive-link" href="/bond-revision-motive.html?code=' + code + '" target="_blank" rel="noopener noreferrer">' + escapeHtml(label) + '</a>';
   }
   if (key === 'security_code' || key === 'bond_name') {
-    return '<span class="bond-revision-link" data-act="bondRevisionJump" data-arg1="' + escapeHtml(row.ts_code || row.security_code) + '">' + escapeHtml(bondRevisionText(row[key])) + '</span>';
+    return '<span class="bond-revision-link" data-act="bondRevisionJump" data-arg1="' + escapeHtml(row.ts_code || row.security_code) + '">' + escapeHtml(bondRevisionText(row[key])) + '</span>' + (key === 'bond_name' ? bondLifecycleMark(row) : '');
   }
   if (key === 'official_source_url') return row[key] ? '<a href="' + escapeHtml(row[key]) + '" target="_blank" rel="noreferrer">查看</a>' : '—';
   if (key === 'matched_days') return row.required_days == null || row.matched_days == null ? '—' : escapeHtml(String(row.matched_days) + ' / ' + String(row.required_days) + ' | ' + String(row.observation_days || '—'));

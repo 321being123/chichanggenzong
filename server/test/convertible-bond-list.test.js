@@ -102,7 +102,8 @@ check('前端含上市转债子页、脚本和只读接口', () => {
   assert.ok(presenter.includes('/api/bond-analysis/bonds'));
   assert.ok(js.includes('BOND_LIST_COLUMNS'));
   assert.ok(js.includes("['safety','安全性']") && js.includes('bondListSafety'), '列表缺少债券安全性列');
-  assert.ok(js.includes('call_status') && js.includes('bond-lifecycle-mark-call') && js.includes('bond-lifecycle-mark-maturity'), '上市列表转债名称缺少强赎/临近到期标识');
+  const sharedMarks = fs.readFileSync(path.join(root, 'public', 'shared', 'bond-marks.js'), 'utf8');
+  assert.ok(js.includes('bondLifecycleMark(row)') && sharedMarks.includes('call_status') && sharedMarks.includes('bond-lifecycle-mark-call') && sharedMarks.includes('bond-lifecycle-mark-maturity'), '上市列表转债名称缺少强赎/临近到期标识');
   ['最快回售触发日', '最快回售剩余年限', '预期回售到账日', '回售到账税前收益', '回售到账税后收益'].forEach(function(title) {
     assert.ok(!js.includes("'" + title + "'"), '列表仍展示已取消列：' + title);
   });

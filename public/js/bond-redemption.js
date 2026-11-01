@@ -47,7 +47,9 @@ function bondRedemptionApplyFilters() {
 }
 function bondRedemptionCell(row, key) {
   if (key === 'security_code' || key === 'bond_name') {
-    return '<span class="bond-redemption-link" data-act="bondRedemptionJump" data-arg1="' + escapeHtml(row.ts_code || row.security_code) + '">' + escapeHtml(bondRedemptionText(row[key])) + '</span>';
+    // 强赎监控的 business_status 就是强赎业务状态，与上市列表同源；名称旁用它出同一个红叹号，便于扫视。
+    var lifecycle = key === 'bond_name' ? bondLifecycleMark({ call_status: row.business_status, maturity_date: row.maturity_date }) : '';
+    return '<span class="bond-redemption-link" data-act="bondRedemptionJump" data-arg1="' + escapeHtml(row.ts_code || row.security_code) + '">' + escapeHtml(bondRedemptionText(row[key])) + '</span>' + lifecycle;
   }
   if (key === 'business_status') return bondRedemptionStatus(row[key], row);
   if (key === 'distance_to_trigger_pct') return escapeHtml(bondRedemptionPct(row[key]));

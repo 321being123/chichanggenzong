@@ -13,7 +13,7 @@ const LIST_SELECT = `
          v.safety_level, v.credit_warning, v.final_evaluation, v.eval_class, v.data_status,
          v.neutral_market_extra, v.predicted_relative_extra, v.diagnostics, v.calculated_at,
          v.model_year, v.quote_lag_days, v.historical_safety, v.confidence_level,
-         i.canonical_code AS bond_code, i.name AS bond_name,
+         i.canonical_code AS bond_code, i.name AS bond_name, p.maturity_date,
          c.business_status AS call_status,
          s.name AS stock_name,
          CASE COALESCE(al.alert_rank, 0) WHEN 2 THEN '重要' WHEN 1 THEN '关注' ELSE '无' END AS alert_level

@@ -48,6 +48,8 @@
 .bond-list-link:hover { text-decoration:underline; }
 .bond-lifecycle-mark { display:inline-block; margin-left:4px; color:#d93025; font-size:16px; font-weight:700; line-height:1; cursor:help; vertical-align:-1px; }
 .bond-lifecycle-mark-call,.bond-lifecycle-mark-maturity { color:#d93025; }
+.bond-lifecycle-mark-expiry-6m { color:#e8710a; }
+.bond-lifecycle-mark-expiry-1y { color:#e8ac00; }
 .bond-list-up { color:#d93025; font-weight:600; }
 .bond-list-down { color:#137333; font-weight:600; }
 .bond-list-empty { padding:70px 20px; text-align:center; color:#7a8495; line-height:1.8; }

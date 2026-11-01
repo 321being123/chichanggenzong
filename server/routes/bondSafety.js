@@ -38,7 +38,7 @@ router.get('/bonds', asyncHandler(async (req, res) => {
   const currentDateCN = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(new Date());
   const cacheVersion = [snapshot && snapshot.refreshed_at, snapshot && snapshot.source_updated_at,
     partition.data_as_of, partition.published_at, requestedRating || 'all', summaryView ? 'summary' : 'full',
-    currentDateCN, callStateVersion, 'safety-change-pct-v1'].join('|');
+    currentDateCN, callStateVersion, 'safety-change-pct-v1', 'safety-maturity-v1'].join('|');
   if (applyPublicCache(req, res, cacheVersion)) return;
   if (!snapshot) {
     return res.json({
@@ -80,10 +80,17 @@ router.get('/bonds', asyncHandler(async (req, res) => {
     });
   }
   const callStates = await getLatestCallStateBySecurityCodes(allData.map(row => row.bond_code));
+  // 名称旁的到期提醒按证券代码批量读到期日；快照不扩建字段，失败时只少一个到期标记。
+  let maturityByCode = new Map();
+  try {
+    maturityByCode = await bondSafetyRepository.selectMaturityDatesByCodes({ codes: allData.map(row => row.bond_code) });
+  } catch (e) {
+    maturityByCode = new Map();
+  }
   const enriched = allData.map(row => {
     const code = String(row.bond_code || '').trim().toUpperCase().replace(/\.(SH|SZ|BJ|HK)$/, '');
     const callState = callStates.get(code);
-    return { ...row, call_status: callState ? callState.business_status : 'incomplete' };
+    return { ...row, call_status: callState ? callState.business_status : 'incomplete', maturity_date: maturityByCode.get(code) || null };
   });
   const data = requestedRating ? enriched.filter(row => row.safety === requestedRating) : enriched;
   res.json({

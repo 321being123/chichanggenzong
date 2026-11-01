@@ -3,7 +3,7 @@
 const crypto = require('crypto');
 const os = require('os');
 const { pool } = require('../db/connection');
-const { redis } = require('../config');
+const { redis, redisUsable } = require('../config');
 const { isAdminIdentity } = require('../middleware/auth');
 const { purgeAnalyticsData } = require('../repositories/siteAnalyticsRepository.js');
 const repository = require('../repositories/siteAnalyticsRepository.js');
@@ -602,7 +602,8 @@ async function getDependencyHealth() {
   let redisStatus = configured ? 'error' : 'not_configured';
   const required = process.env.REDIS_REQUIRED === '1';
   let redisReason = configured ? '未连接' : (required ? '环境要求 Redis 但未配置' : '未配置（可选依赖）');
-  if (configured && redis.ready && redis.client) {
+  const redisHealthy = typeof redisUsable === 'function' ? redisUsable() : (redis.ready && redis.client);
+  if (configured && redisHealthy) {
     try {
       await Promise.race([
         redis.client.ping(),

@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "lastReviewed": "2026-11-01",
+  "lastReviewed": "2026-11-02",
   "rules": [
     {
       "id": "BOND-PROSPECTUS-SELECTION-059",
@@ -4380,7 +4380,7 @@
     },
     {
       "id": "TASK-EXECUTOR-TIER-004",
-      "title": "统一执行器有界容量与候选分类：长任务结束即补位，核心任务不被历史积压饿死，派发失败也释放容量",
+      "title": "统一执行器有界容量与候选分类：未领取候选按槽去重、每次补位按分类重选、历史有饥饿保护，核心任务不被历史积压饿死",
       "implementation": {
         "file": "server/services/jobOrchestrator.js",
         "symbol": "createDispatchScheduler"
@@ -4397,6 +4397,14 @@
         {
           "file": "server/test/job-executor-backlog.test.js",
           "pattern": "候选 SQL 按分类排序并支持分类过滤"
+        },
+        {
+          "file": "server/test/r2-acceptance-v01-v04.test.js",
+          "pattern": "历史先排队也不能把后来的核心任务压在后面"
+        },
+        {
+          "file": "server/test/r2-acceptance-v01-v04.test.js",
+          "pattern": "同一槽位重复入队只保留一条"
         }
       ],
       "owner": "Codex",

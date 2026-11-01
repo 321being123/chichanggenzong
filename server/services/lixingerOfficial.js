@@ -121,7 +121,8 @@ async function assertEndpointPermitted({ endpoint, apiName, fingerprint, client 
 // 外部取消（父任务止损/进程停机）通过 signal 组合进来：取消不重试，deadline 到期按超时分类。
 async function requestOnce({ endpoint, body, token, timeoutMs, fetcher, signal }) {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), Math.max(Number(timeoutMs) || 30000, 1000));
+  // 下限只保留 1ms：父任务只剩几十毫秒时，这里若放大到 1 秒，请求会越过父截止继续跑（验收 V-03）。
+  const timer = setTimeout(() => controller.abort(), Math.max(Number(timeoutMs) || 30000, 1));
   const cancelled = () => Boolean(signal && signal.aborted);
   const onAbort = () => controller.abort();
   if (signal) {
@@ -245,16 +246,20 @@ async function runWithRetry(ctx) {
     try {
       return await withExternalCallGuard(SOURCE, dataset, options.targetDate || null, async (client, guard) => {
         const policyTimeoutMs = guard && guard.timeoutMs ? Number(guard.timeoutMs) : 30000;
-        // 调用方只能收紧单次超时（例如剩余时间不多时），不能放大策略时限。
-        const timeoutMs = options.timeoutMs
-          ? Math.min(Math.max(Number(options.timeoutMs) || 0, 1), policyTimeoutMs)
-          : policyTimeoutMs;
-        // 单次 HTTP 超时与父任务剩余时间分开：父任务 deadlineAt 已到就不再发起真实请求，
-        // 重试之间的等待也不能突破它（2026-11-01 审查 R2-005）。
-        if (options.deadlineAt && Date.now() >= Number(options.deadlineAt)) {
+        // 单次 HTTP 超时 = min(接口策略, 调用方要求, 父任务剩余时间)。
+        // 任何一项都不能被其它项放大：剩余 40ms 就必须按 40ms 计时（验收 V-03）。
+        const deadlineAt = Number(options.deadlineAt) || 0;
+        const remainingMs = deadlineAt ? deadlineAt - Date.now() : Infinity;
+        if (remainingMs <= 0) {
           throw sourceError('DEADLINE_EXCEEDED', `理杏仁 ${endpoint.key} 未在父任务截止时间内完成，剩余范围留待续跑`);
         }
+        const callerTimeoutMs = options.timeoutMs ? Math.max(Number(options.timeoutMs) || 0, 1) : Infinity;
+        const timeoutMs = Math.min(policyTimeoutMs, callerTimeoutMs, remainingMs);
         const payload = await requestOnce({ endpoint, body, token, timeoutMs, fetcher, signal: options.signal });
+        // 请求即使成功，只要父截止已过就不能留下"成功原始记录"，否则会伪造一次按时完成。
+        if (deadlineAt && Date.now() >= deadlineAt) {
+          throw sourceError('DEADLINE_EXCEEDED', `理杏仁 ${endpoint.key} 在父任务截止后才返回，结果不落库、留待续跑`);
+        }
         const parsed = unwrapPayload(payload, endpoint);
         const payloadJson = JSON.stringify(payload);
         const payloadHash = sha256(payloadJson);
@@ -286,6 +291,10 @@ async function runWithRetry(ctx) {
       if (code === 'RATE_LIMIT') {
         if (!rateLimitTried) {
           rateLimitTried = true;
+          // 429 的等待也是父任务时间的一部分：剩余时间不够就别再等。
+          if (options.deadlineAt && Number(options.deadlineAt) - Date.now() <= RATE_LIMIT_DELAY_MS) {
+            throw sourceError('DEADLINE_EXCEEDED', `理杏仁 ${endpoint.key} 剩余时间不足以等待限流重试，剩余范围留待续跑`);
+          }
           await sleep(RATE_LIMIT_DELAY_MS);
           continue;
         }

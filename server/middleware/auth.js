@@ -1,7 +1,7 @@
 // ========== 鉴权与账户归属校验中间件 ==========
 const asyncHandler = require('./async');
 const { loadUser, pool } = require('../db');
-const { redis, isRedisRequired } = require('../config');
+const { redis, isRedisRequired, redisUsable } = require('../config');
 
 // 安全销毁会话：兼容测试中的桩 session（无 destroy 方法时不崩溃）
 function destroySession(req) {
@@ -114,7 +114,9 @@ function inspectAuthMaps(now = Date.now()) {
 function requireSessionStore(req, res, next) {
   // 兼容注入替身：拿不到判定函数时按"非必需"处理，绝不因此让请求崩成 500。
   if (typeof isRedisRequired !== 'function' || !isRedisRequired()) return next();
-  if (redis.ready && redis.client) return next();
+  // 用真实连接生命周期判定（验收 V-04）：启动时连上、运行期断连也必须立刻 503，
+  // 不能只看 ready 与 client 是否存在，把请求放进离线队列干等重连。
+  if (typeof redisUsable === 'function' ? redisUsable() : (redis.ready && redis.client)) return next();
   return res.status(503).json({ error: '登录服务暂时不可用，请稍后再试' });
 }
 

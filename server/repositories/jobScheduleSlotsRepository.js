@@ -347,10 +347,12 @@ async function update_ops_worker_heartbeats(params, client = pool) {
 }
 
 async function insert_ops_worker_heartbeats(params, client = pool) {
-  return client.query(`INSERT INTO ops.worker_heartbeats(worker_id,role,pid,app_version,status,started_at,last_seen_at,updated_at)
-     VALUES($1,$2,$3,$4,$5,now(),now(),now())
+  // params: [worker_id, role, pid, app_version, status, commit_sha]
+  // commit_sha 是部署后核对"进程加载的是哪个提交"的唯一心跳证据（迁移 182）。
+  return client.query(`INSERT INTO ops.worker_heartbeats(worker_id,role,pid,app_version,status,commit_sha,started_at,last_seen_at,updated_at)
+     VALUES($1,$2,$3,$4,$5,$6,now(),now(),now())
      ON CONFLICT(worker_id) DO UPDATE SET role=EXCLUDED.role,pid=EXCLUDED.pid,
-       app_version=EXCLUDED.app_version,
+       app_version=EXCLUDED.app_version,commit_sha=EXCLUDED.commit_sha,
        started_at=CASE WHEN ops.worker_heartbeats.pid IS DISTINCT FROM EXCLUDED.pid
                             OR ops.worker_heartbeats.status='stopped'
                        THEN EXCLUDED.started_at ELSE ops.worker_heartbeats.started_at END,

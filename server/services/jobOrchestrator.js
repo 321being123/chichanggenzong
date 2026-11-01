@@ -52,18 +52,37 @@ function tierOfDefinition(definition) {
 
 // 本进程可同时执行的任务数；历史类最多占 historyCapacity，保证核心任务始终留得住槽位。
 const EXECUTOR_CAPACITY = Math.max(Number(process.env.JOB_EXECUTOR_CAPACITY) || 2, 1);
-const HISTORY_CAPACITY = Math.max(Math.min(Number(process.env.JOB_EXECUTOR_HISTORY_CAPACITY) || 1, EXECUTOR_CAPACITY - 1), 0);
+// 历史类可占的并发上限：容量 >=2 时至少给核心留一个槽；容量为 1 时历史退化为串行执行
+// （上限 1），否则 historyCapacity=0 会让历史任务永远派不出去（验收 V-02）。
+const HISTORY_CAPACITY = EXECUTOR_CAPACITY <= 1
+  ? 1
+  : Math.max(Math.min(Number(process.env.JOB_EXECUTOR_HISTORY_CAPACITY) || 1, EXECUTOR_CAPACITY - 1), 1);
 const CORE_CANDIDATE_LIMIT = 20;
 const HISTORY_CANDIDATE_LIMIT = 5;
 
-// 有界执行 + 补位调度（纯逻辑，便于受控屏障测试）：
-//   - 容量满时新候选进 pending，任一任务结束立刻 pump 补位，不等整轮候选全部完成；
-//   - 同一 job_code 在本进程内串行（跨进程互斥仍由原 claimSlot 原子领取保证）；
-//   - 历史类占满 historyCapacity 时不再开始历史任务，把槽位留给核心/普通。
-function createDispatchScheduler({ capacity, historyCapacity, launch }) {
+// 有界执行 + 补位调度（纯逻辑，便于受控屏障测试）。
+// 2026-11-01 验收 V-02 修正三点：
+//   1) 未领取队列按 slot 去重：同一槽位每个 tick 都会被扫出来，重复入队会让队列无限膨胀；
+//   2) 每次补位都按「最新优先级」重排，而不是先进先出——历史任务先排队不能把核心任务压在后面；
+//   3) 历史类等待超过阈值时优先派发一次（双向不饥饿），容量为 1 时历史退化为串行执行而不是永不执行。
+const TIER_ORDER = { core: 0, normal: 1, history: 2 };
+const HISTORY_STARVATION_MS = Math.max(Number(process.env.JOB_EXECUTOR_HISTORY_STARVATION_MS) || 10 * 60 * 1000, 0);
+
+function slotKey(slot) {
+  if (!slot) return 'unknown';
+  if (slot.slot_id !== undefined && slot.slot_id !== null) return `slot:${slot.slot_id}`;
+  return `job:${slot.job_code || 'unknown'}@${slot.business_date || ''}`;
+}
+
+function createDispatchScheduler({
+  capacity, historyCapacity, launch,
+  now = () => Date.now(),
+  historyStarvationMs = HISTORY_STARVATION_MS,
+}) {
   const runningJobs = new Map();
   const runningByTier = { core: 0, normal: 0, history: 0 };
-  const pending = [];
+  const pending = new Map();
+  let sequence = 0;
   const totalRunning = () => runningByTier.core + runningByTier.normal + runningByTier.history;
 
   function canStart(tier, jobCode) {
@@ -71,6 +90,20 @@ function createDispatchScheduler({ capacity, historyCapacity, launch }) {
     if (jobCode && runningJobs.get(jobCode)) return false;
     if (tier === 'history' && runningByTier.history >= historyCapacity) return false;
     return true;
+  }
+
+  // 候选排序：先按分类（核心→普通→历史），同分类按入队顺序；
+  // 历史项等待超过阈值时临时提到最前，保证持续有核心任务时历史也不会被永久饿死。
+  function orderedCandidates(nowMs) {
+    const items = [...pending.values()];
+    const byPriority = (a, b) => (TIER_ORDER[a.tier] - TIER_ORDER[b.tier]) || (a.queuedAt - b.queuedAt) || (a.seq - b.seq);
+    const starved = items
+      .filter(item => item.tier === 'history' && historyStarvationMs > 0 && nowMs - item.queuedAt >= historyStarvationMs)
+      .sort((a, b) => (a.queuedAt - b.queuedAt) || (a.seq - b.seq))[0];
+    if (starved) {
+      return [starved, ...items.filter(item => item !== starved).sort(byPriority)];
+    }
+    return items.sort(byPriority);
   }
 
   function idle() {
@@ -98,24 +131,42 @@ function createDispatchScheduler({ capacity, historyCapacity, launch }) {
   }
 
   function pump() {
-    for (let i = 0; i < pending.length;) {
-      const item = pending[i];
-      if (!canStart(item.tier, item.slot && item.slot.job_code)) { i += 1; continue; }
-      pending.splice(i, 1);
-      start(item.slot, item.tier);
+    let progressed = true;
+    while (progressed) {
+      progressed = false;
+      for (const item of orderedCandidates(now())) {
+        if (!canStart(item.tier, item.slot && item.slot.job_code)) continue;
+        pending.delete(item.key);
+        start(item.slot, item.tier);
+        progressed = true;
+        break; // 重新排序后再取下一个，保证"每次补位都按最新优先级"
+      }
     }
-    return pending.length;
+    return pending.size;
   }
 
-  function enqueue(slot, tier) { pending.push({ slot, tier }); }
+  // 同一槽位只保留一条候选：重复入队只更新内容，保留最早的排队时间（饥饿计时用）。
+  function enqueue(slot, tier) {
+    const key = slotKey(slot);
+    const existing = pending.get(key);
+    if (existing) {
+      existing.slot = slot;
+      existing.tier = tier;
+      return { key, duplicate: true };
+    }
+    sequence += 1;
+    pending.set(key, { key, slot, tier, queuedAt: now(), seq: sequence });
+    return { key, duplicate: false };
+  }
 
   return {
     enqueue, pump, start,
-    pendingCount: () => pending.length,
+    pendingCount: () => pending.size,
+    pendingKeys: () => [...pending.keys()],
     running: () => totalRunning(),
     runningByTier: () => ({ ...runningByTier }),
     isRunning: jobCode => Boolean(runningJobs.get(jobCode)),
-    clearPending: () => pending.splice(0).length,
+    clearPending: () => { const n = pending.size; pending.clear(); return n; },
   };
 }
 

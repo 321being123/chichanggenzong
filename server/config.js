@@ -49,6 +49,16 @@ const REGISTER_CODE = process.env.REGISTER_CODE;
 // 用可变对象持有状态，供限流中间件实时读取（避免 let 导出被快照为初始值）
 const redis = { client: null, store: undefined, ready: false };
 
+// 运行期可用性判定（验收 V-04）：ready 只是启动结果，断连/重连中要如实反映。
+// 敏感入口、限流与依赖健康检查统一走这里，不要再各自判断 ready + client 是否存在。
+function redisUsable() {
+  const client = redis.client;
+  if (!redis.ready || !client) return false;
+  if (client.isReady === false) return false;
+  if (client.isOpen === false) return false;
+  return true;
+}
+
 // 必需的共享存储：生产环境显式声明 REDIS_REQUIRED=1。
 // 判定只在启动入口做一次；运行期是否可用由 redis.ready 决定，两者不能混为一谈。
 function isRedisRequired() {
@@ -70,8 +80,15 @@ async function initRedis() {
     const { createClient } = require('redis');
     const connectRedis = require('connect-redis');
     const RedisStore = connectRedis.default || connectRedis;
-    const client = createClient({ url });
+    // disableOfflineQueue（验收 V-04）：断连期间命令不能进离线队列干等重连，
+    // 否则敏感入口会挂住而不是按约定的 503 快速失败。命令在未就绪时立即 reject。
+    const client = createClient({ url, disableOfflineQueue: true });
     client.on('error', (e) => console.warn('[Redis] 连接错误:', e.message));
+    // ready 必须跟着真实连接生命周期走：初始化成功只代表启动那一刻连上了，
+    // 断连后仍把 ready 留在 true 会让上层以为"共享存储可用"。
+    client.on('ready', () => { redis.ready = true; });
+    client.on('end', () => { redis.ready = false; });
+    client.on('reconnecting', () => { redis.ready = false; });
     await client.connect(); // 阻塞直到连接确认
     redis.client = client;
     redis.store = new RedisStore({ client, prefix: 'sess:' });
@@ -110,5 +127,5 @@ if (process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS) {
 module.exports = {
   PORT, SECRET, ALLOWED_HOSTS, AI_ALLOWED_HOSTS, ALLOWED_VISION_MODELS,
   DEFAULT_VISION_MODEL, isVisionModelAllowed, getConfiguredVisionModel,
-  REGISTER_CODE, redis, mailer, initRedis, isRedisRequired
+  REGISTER_CODE, redis, mailer, initRedis, isRedisRequired, redisUsable
 };

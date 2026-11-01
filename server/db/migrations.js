@@ -199,6 +199,7 @@ const MIGRATIONS = [
   { version: '179_nav_basis_uniqueness', up: M.migration179NavBasisUniqueness },
   { version: '180_lixinger_official_source', up: () => require('./migrations/lixingerOfficialSource').migration180LixingerOfficialSource(pool) },
   { version: '181_lixinger_official_priority', up: () => require('./migrations/lixingerOfficialSource').migration181LixingerOfficialPriority(pool) },
+  { version: '182_worker_heartbeat_commit', up: () => require('./migrations/releaseIdentity').migration182WorkerHeartbeatCommit(pool) },
 ];
 
 async function ensureMigrationsTable() {

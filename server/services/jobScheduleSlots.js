@@ -1005,7 +1005,9 @@ async function heartbeat(role = 'worker', status = 'running') {
   // 兼容旧版本留下的“主机＋进程号＋随机值”记录：同一主机同一角色启动后，
   // 先把旧进程标记为 stopped，避免旧记录继续被误判为多个在线 Worker。
   await repository.update_ops_worker_heartbeats([role, `${HOSTNAME}:%`, workerId]);
-  await repository.insert_ops_worker_heartbeats([workerId, role, String(process.pid), process.env.APP_VERSION || appVersion || '', status]);
+  // 带上启动时固定的完整提交号（APP_COMMIT 或仓库 HEAD），供部署脚本核对同一次发布。
+  const commit = (() => { try { return require('./buildIdentity').commit || ''; } catch (_) { return ''; } })();
+  await repository.insert_ops_worker_heartbeats([workerId, role, String(process.pid), process.env.APP_VERSION || appVersion || '', status, commit || null]);
 }
 
 async function getJobOverview() {

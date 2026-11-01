@@ -95,7 +95,8 @@ function slot(id, jobCode, payload) {
     scheduler.enqueue(slot(3, 'history_b'), 'history');
     scheduler.pump();
     await wait(10);
-    assert.deepStrictEqual(started, ['history_a#1', 'core_a#2'], '历史类最多占 historyCapacity 个槽');
+    // 2026-11-01 验收 V-02：派发顺序按分类优先（核心先于历史），与入队顺序无关。
+    assert.deepStrictEqual(started.slice().sort(), ['core_a#2', 'history_a#1'], '历史类最多占 historyCapacity 个槽');
     assert.strictEqual(scheduler.pendingCount(), 1, '第二个历史任务应排队');
     runs.get(2).resolve();
     await wait(20);

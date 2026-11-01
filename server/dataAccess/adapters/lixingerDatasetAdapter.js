@@ -621,6 +621,7 @@ async function officialStockCode(canonicalCode) {
 
 module.exports = {
   SOURCE,
+  CONTROL_ERROR_CODES,
   MAX_RANGE_YEARS,
   rangeChunks,
   REPORT_METRICS,

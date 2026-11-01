@@ -1,5 +1,5 @@
 // ========= 通用限流（Redis 优先，内存兜底） =========
-const { redis, isRedisRequired } = require('../config');
+const { redis, isRedisRequired, redisUsable } = require('../config');
 
 // R2-003（2026-11-01）：固定窗口的计数与首次 TTL 改成一个 Lua 原子调用。
 // 原来是 incr 与 expire 两条命令：中间失败会留下没有过期时间的键（该键永久计数，
@@ -24,7 +24,9 @@ function rateLimit({ prefix, windowMs, max, getKey, message }) {
   return async function (req, res, next) {
     const id = getKey ? getKey(req) : (req.ip || '');
     const key = 'rl:' + prefix + ':' + id;
-    if (redis.ready && redis.client) {
+    // 与敏感入口同一判定：断连/重连中不把请求塞进离线队列等，走下面的降级或 503。
+    const usable = typeof redisUsable === 'function' ? redisUsable() : (redis.ready && redis.client);
+    if (usable) {
       try {
         const windowSeconds = Math.max(Math.ceil(windowMs / 1000), 1);
         const c = await redis.client.eval(INCR_WITH_TTL_LUA, { keys: [key], arguments: [String(windowSeconds)] });

@@ -14,11 +14,39 @@ const { tsRows, normDate } = require('../services/tushareFormat');
 const marketSource = require('../services/marketVolatilitySource');
 const official = require('./adapters/lixingerDatasetAdapter');
 
-const ABORT_CODES = new Set(['JOB_BUDGET_EXCEEDED', 'POLICY_NOT_CONFIGURED', 'DATASET_LOCKED']);
+// 中止类错误码与适配层保持单一来源（验收 V-01）：原来这里只有三种控制码，
+// 适配层新增的 CANCELLED / DEADLINE_EXCEEDED / 权限类被当成"可回退故障"吞掉，
+// 结果数组包装成 []，上层会把"取数被取消/超时"读成"本来没有数据"。
+const ABORT_CODES = new Set([
+  ...(official.CONTROL_ERROR_CODES || []),
+  'JOB_BUDGET_EXCEEDED', 'POLICY_NOT_CONFIGURED', 'DATASET_LOCKED',
+]);
 const YUAN_TO_100M = 1e8;
 
 function isAbort(error) {
   return Boolean(error && ABORT_CODES.has(error.code));
+}
+
+// 取数缺口的可查询留证（验收 V-01）：只在失败时写，成功时关闭同作用域旧缺口。
+// 懒加载，避免数据层在正常路径就绑定数据库连接。
+function valuationQuality() {
+  return require('../services/valuationFetchQuality');
+}
+
+async function recordValuationGap(params) {
+  try {
+    await valuationQuality().recordGap(params);
+  } catch (error) {
+    console.warn(`[数据层] 估值取数缺口留证失败：${String(error && error.message).slice(0, 160)}`);
+  }
+}
+
+async function clearValuationGap(params) {
+  try {
+    await valuationQuality().clearGap(params);
+  } catch (error) {
+    console.warn(`[数据层] 估值取数缺口恢复留证失败：${String(error && error.message).slice(0, 160)}`);
+  }
 }
 
 // 主来源失败时的统一痕迹：数据层自己记原因，上层只看到「本次用了备源」。
@@ -409,6 +437,13 @@ async function readStockValuationRows({ tradeDate } = {}) {
       officialRows = (detail && detail.rows) || [];
       if (detail && !detail.complete) {
         console.warn(`[数据层] stock_valuation 官方快照未取全（计划 ${detail.planned} 批，失败 ${detail.failed} 批，空 ${detail.emptyBatches} 批），缺失代码按备源补齐`);
+        await recordValuationGap({
+          scope: 'snapshot', key: String(tradeDate), targetDate: String(tradeDate),
+          planned: detail.planned, succeeded: detail.succeeded, failed: detail.failed,
+          notAttempted: detail.notAttempted, failures: detail.failures,
+        });
+      } else if (detail) {
+        await clearValuationGap({ scope: 'snapshot', key: String(tradeDate) });
       }
     } catch (error) {
       if (isAbort(error)) throw error;
@@ -452,7 +487,18 @@ async function readStockValuationSeriesDetailed({ codes = [], startDate, endDate
     'stock_valuation_series',
   );
   if (!primary.value) return null;
-  return { ...primary.value, rows: primary.value.rows.map(row => ({ ...row, source_code: official.SOURCE })) };
+  const detail = primary.value;
+  const key = `${detail.scope && detail.scope.startDate || startDate}~${detail.scope && detail.scope.endDate || endDate}:${list.length}只`;
+  if (!detail.complete) {
+    await recordValuationGap({
+      scope: 'series', key, startDate: String(startDate), endDate: String(endDate),
+      planned: detail.planned, succeeded: detail.succeeded, failed: detail.failed,
+      notAttempted: detail.notAttempted, failures: detail.failures,
+    });
+  } else {
+    await clearValuationGap({ scope: 'series', key });
+  }
+  return { ...detail, rows: detail.rows.map(row => ({ ...row, source_code: official.SOURCE })) };
 }
 
 // 复权因子（按代码区间）：官方无因子接口，复权仍以本来源计算。
@@ -481,6 +527,13 @@ async function readStockValuationHistory({ tsCode, startDate, endDate, fields = 
     if (!detail) return [];
     if (!detail.complete) {
       console.warn(`[数据层] stock_valuation 官方历史未取全 ${tsCode}：计划 ${detail.planned} 段，成功 ${detail.succeeded} 段，失败 ${detail.failed} 段；已取到的官方日期照常使用，其余日期沿用备源`);
+      await recordValuationGap({
+        scope: 'history', key: String(tsCode), startDate: from, endDate: to,
+        planned: detail.planned, succeeded: detail.succeeded, failed: detail.failed,
+        notAttempted: detail.notAttempted, failures: detail.failures,
+      });
+    } else {
+      await clearValuationGap({ scope: 'history', key: String(tsCode) });
     }
     const rows = detail.rows;
     if (!rows.length) return rows;

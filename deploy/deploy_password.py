@@ -670,9 +670,15 @@ def main():
             "&& web_started=$(systemctl show -p ActiveEnterTimestamp --value portfolio-server.service) "
             "&& worker_started=$(systemctl show -p ActiveEnterTimestamp --value portfolio-worker.service) "
             "&& health_commit=$(printf '%s' \"$health_json\" | sed -n 's/.*\"commit\":\"\\([^\"]*\\)\".*/\\1/p') "
-            "&& migrations_head=$(ls server/db/migrations 2>/dev/null | sort | tail -1) "
-            "&& printf 'release_identity head=%s version=%s health_version=%s health_commit=%s web_pid=%s web_started=%s worker_pid=%s worker_started=%s migrations_head=%s\\n' "
-            "\"$release_head\" \"" + local_version + "\" \"$(printf '%s' \"$health_json\" | sed -n 's/.*\"version\":\"\\([^\"]*\\)\".*/\\1/p')\" \"$health_commit\" \"$web_pid\" \"$web_started\" \"$worker_pid\" \"$worker_started\" \"$migrations_head\" "
+            # 发布身份核对（审查 S-001）：不再用"迁移目录字母序最后一个文件"冒充已应用迁移，
+            # 改为探针读 /health 自述提交、Worker 心跳的 commit_sha 与 schema_migrations 实际集合。
+            # 只有明确的身份不一致（IDENTITY_MISMATCH）才让部署失败进入回滚；
+            # 探针自身不可用（IDENTITY_UNAVAILABLE，如迁移 env 缺失）只记录，不阻断代码发布。
+            "&& identity_out=$(MIGRATION_ENV_FILE=/etc/portfolio/migration.env /usr/bin/node server/scripts/deployIdentityProbe.js --expect-head=\"$release_head\" --expect-version=" + local_version + " 2>&1 || true) "
+            "&& identity_mismatch=$(printf '%s' \"$identity_out\" | grep -c '^IDENTITY_MISMATCH' || true) "
+            "&& printf 'release_identity head=%s version=%s health_version=%s health_commit=%s web_pid=%s web_started=%s worker_pid=%s worker_started=%s identity=%s\\n' "
+            "\"$release_head\" \"" + local_version + "\" \"$(printf '%s' \"$health_json\" | sed -n 's/.*\"version\":\"\\([^\"]*\\)\".*/\\1/p')\" \"$health_commit\" \"$web_pid\" \"$web_started\" \"$worker_pid\" \"$worker_started\" \"$identity_out\" "
+            "&& if [ \"$identity_mismatch\" != \"0\" ]; then echo \"发布身份不一致，部署判为失败：$identity_out\"; exit 1; fi "
             "&& deploy_complete=1",
             timeout=3600,
         )

@@ -410,6 +410,21 @@ async function readStockValuationRows({ tradeDate } = {}) {
   return [...officialRows, ...fallbackRows];
 }
 
+// 逐只估值区间批量（历史回填专用）：按「代码批 × 日期区间」取官方估值，只回官方不回落备源。
+// 与 readStockValuationRows（单日快照）互补——后者按日调用，回填十年历史要 9000+ 次请求；
+// 本入口一次取一批代码的整段，适配层内部按官方 ≤10 年跨度限制自动分段。
+// 返回 Tushare 形状（total_mv 万元、dv_ttm 百分数点），source_code 固定官方；
+// 官方无数据时返回空数组，由调用方决定是否重试，不得在此回退 Tushare（会把 77 写成官方）。
+async function readStockValuationSeriesBatch({ codes = [], startDate, endDate } = {}) {
+  const list = (codes || []).filter(Boolean);
+  if (!list.length || !startDate || !endDate) return [];
+  const primary = await safeOfficial(
+    () => official.resolveValuationSeries({ codes: list, startDate, endDate }),
+    'stock_valuation_series',
+  );
+  return (primary.value || []).map(row => ({ ...row, source_code: official.SOURCE }));
+}
+
 // 复权因子（按代码区间）：官方无因子接口，复权仍以本来源计算。
 async function readAdjustmentFactorSeries({ tsCode, startDate, endDate, fields = 'ts_code,trade_date,adj_factor' } = {}) {
   const data = await tushareQuery('adj_factor', {
@@ -420,8 +435,7 @@ async function readAdjustmentFactorSeries({ tsCode, startDate, endDate, fields =
   return tsRows(data).map(row => ({ ...row, source_code: 'tushare' }));
 }
 
-// 估值历史（按代码区间）：单只证券的每日估值，用于分析页与异常修复。
-// 官方按 (证券, 日期区间) 整段取数；官方覆盖到的日期，六项估值一律取官方数值（不是只换标签），
+// 估值历史（按代码区间）：单只证券的每日估值，用于分析页与异常修复。// 官方按 (证券, 日期区间) 整段取数；官方覆盖到的日期，六项估值一律取官方数值（不是只换标签），
 // 官方没有的日期才沿用备源数值并标回备源来源。静态市盈率由官方市值 ÷ 官方年报归母净利派生。
 // 备源仍要取：官方估值接口不提供收盘价与股本（total_share/float_share/free_share），
 // 这份区间骨架同时兜住官方没覆盖的日期；股本单独标 share_source_code，不与估值来源混为一谈。
@@ -665,5 +679,6 @@ module.exports = {
   readStockDailySeries,
   readStockValuationHistory,
   readStockValuationRows,
+  readStockValuationSeriesBatch,
   readTotalAShareMarketCap,
 };

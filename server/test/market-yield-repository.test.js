@@ -37,23 +37,48 @@ pool.query = async (sql, params) => { calls.push({ sql, params }); return { rows
     assert.match(calls[4].sql, /VALUES \('US',10,\$1,\$2,'tushare_us_tycr',\$1,\$3\)/);
     assert.deepStrictEqual(calls[4].params, ['2026-10-27', 4.1, '{\"date\":\"20261027\"}']);
     await repo.saveMoneySupply([{ month: '2026-10-01', m2: 100, row: { month: '202610' } }]);
-    assert.match(calls[5].sql, /VALUES \('CN',\$1,\$2,'nbs_via_tushare',\$3\)/);
+    assert.match(calls[5].sql, /VALUES \('CN',\$1,\$2,\$3,\$4\)/);
     assert.strictEqual(calls[5].params[1], 100);
-    assert.strictEqual(JSON.parse(calls[5].params[2]).m1DefinitionVersion, '2025_revised');
+    assert.strictEqual(calls[5].params[2], 'nbs_via_tushare');
+    assert.strictEqual(JSON.parse(calls[5].params[3]).m1DefinitionVersion, '2025_revised');
+    // 沪深300 估值：一次取数里官方与备源可能各占一段，按行来源分组写，不能整批套一个来源。
     await repo.saveCsi300Valuations([{ day: '2026-10-28', pe: -1, pb: 2, raw: { total_mv: '0' } }]);
-    assert.match(calls[6].sql, /VALUES \('CSI300','market_cap_weighted',\$1,\$2,\$3,\$4,'tushare_index_dailybasic',\$5\)/);
-    assert.deepStrictEqual(calls[6].params, ['2026-10-28', null, null, 2, '{\"total_mv\":\"0\"}']);
+    assert.match(calls[6].sql, /VALUES \('CSI300','market_cap_weighted',\$1,\$2,\$3,\$4,\$5,\$6\)/);
+    assert.deepStrictEqual(calls[6].params, ['2026-10-28', null, null, 2, 'tushare_index_dailybasic', '{\"total_mv\":\"0\"}']);
+    calls.length = 0;
+    await repo.saveCsi300Valuations([
+      { day: '2026-10-27', pe: 12.9, pb: 1.3, raw: { pe_ttm: 12.9 }, source_code: 'lixinger_official' },
+      { day: '2026-10-28', pe: 13.0, pb: 1.3, raw: { pe_ttm: 13.0 }, source_code: 'tushare_index_dailybasic' },
+    ]);
+    assert.strictEqual(calls.length, 2, '两种来源必须分两条语句写');
+    assert.strictEqual(calls[0].params[4], 'lixinger_official');
+    assert.strictEqual(calls[1].params[4], 'tushare_index_dailybasic');
+    calls.length = 0;
+    await repo.saveMoneySupply([
+      { month: '2026-09-01', m2: 200, row: { month: '202609', source_code: 'lixinger_official' } },
+      { month: '2026-08-01', m2: 300, row: { month: '202608' } },
+    ]);
+    assert.strictEqual(calls.length, 2, '货币供应也要按来源分开写');
+    assert.strictEqual(calls[0].params[2], 'lixinger_official');
+    assert.strictEqual(calls[1].params[2], 'nbs_via_tushare');
+    calls.length = 0;
     await repo.saveMarketCap({ day: '2026-10-28', totalYi: 100, securityCount: 5000, fromUnified: true });
-    assert.deepStrictEqual(calls[7].params.slice(0, 3), ['2026-10-28', 100, 5000]);
-    assert.strictEqual(JSON.parse(calls[7].params[3]).upstreamUnit, 'CNY');
+    assert.deepStrictEqual(calls[0].params.slice(0, 3), ['2026-10-28', 100, 5000]);
+    assert.strictEqual(JSON.parse(calls[0].params[3]).upstreamUnit, 'CNY');
     await repo.saveMarketCap({ day: '2026-10-28', totalYi: 100, securityCount: 5000, fromUnified: false });
-    assert.strictEqual(JSON.parse(calls[8].params[3]).upstreamUnit, '10000 CNY');
+    assert.strictEqual(JSON.parse(calls[1].params[3]).upstreamUnit, '10000 CNY');
+    calls.length = 0;
+    // 沪深300 估值换源后水位也要按新来源取：仍按旧来源查会读不到自己的进度，每轮都做全量回填。
+    await repo.readCsi300Watermark();
+    assert.match(calls[0].sql, /index_code='CSI300' AND source_code=\$1/);
+    assert.deepStrictEqual(calls[0].params, ['lixinger_official']);
+    calls.length = 0;
     const codes = ['cn_yield', 'csi300_pe', 'csi_all_pe', 'hsi_pe', 'us_treasury_yield', 'm2', 'a_share_market_cap', 'm2_market_cap', 'graham_csi300', 'graham_csi_all'];
     for (const code of codes) await repo.readSubdatasetFreshness(code);
-    assert.strictEqual(calls.length, 19);
-    assert.match(calls[9].sql, /source_code IN \('chinabond','lixinger_official'\)/);
-    assert.match(calls[13].sql, /source_code='tushare_us_tycr'/);
-    assert.match(calls[16].sql, /data_status='normal'/);
+    assert.strictEqual(calls.length, 10);
+    assert.match(calls[0].sql, /source_code IN \('chinabond','lixinger_official'\)/);
+    assert.match(calls[4].sql, /source_code='tushare_us_tycr'/);
+    assert.match(calls[7].sql, /data_status='normal'/);
     await assert.rejects(repo.readSubdatasetFreshness('unknown'), /未知市场周期数据集/);
     console.log('market yield repository: parameter binding and write order passed');
   } finally { pool.query = original; await pool.end(); }

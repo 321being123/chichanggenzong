@@ -66,45 +66,68 @@ async function readMoneyWatermark() {
   return pool.query(`SELECT max(month)::text AS mx FROM market.money_supply_monthly WHERE market_code='CN'`);
 }
 
+// 同样按每行自己的来源写：宏观货币供应官方与备源口径相同（同日 m2 完全一致），
+// 但来源名必须跟着数据走，不能整批套一个。
 async function saveMoneySupply(kept, sourceCode = 'nbs_via_tushare') {
-  const values = [], params = []; let p = 1;
+  const bySource = new Map();
   for (const k of kept) {
-    values.push(`('CN',$${p},$${p+1},'${sourceCode}',$${p+2})`);
-    params.push(k.month, k.m2, JSON.stringify({
-      ...k.row,
-      source: 'https://data.stats.gov.cn/',
-      fiscalReference: 'https://gks.mof.gov.cn/tongjishuju/',
-      transport: 'tushare.cn_m',
-      unit: '100m CNY',
-      m1DefinitionVersion: String(k.row.month) >= '202501' ? '2025_revised' : 'pre_2025',
-    }));
-    p += 3;
+    const code = (k.row && k.row.source_code) || sourceCode;
+    if (!bySource.has(code)) bySource.set(code, []);
+    bySource.get(code).push(k);
   }
-  await pool.query(`INSERT INTO market.money_supply_monthly
-    (market_code,month,m2_100m_yuan,source_code,raw_payload)
-    VALUES ${values.join(',')}
-    ON CONFLICT(market_code,month,source_code) DO UPDATE SET
-      m2_100m_yuan=EXCLUDED.m2_100m_yuan,raw_payload=EXCLUDED.raw_payload,ingested_at=now()`, params);
+  for (const [code, rows] of bySource) {
+    const values = [], params = []; let p = 1;
+    for (const k of rows) {
+      values.push(`('CN',$${p},$${p + 1},$${p + 2},$${p + 3})`);
+      params.push(k.month, k.m2, code, JSON.stringify({
+        ...k.row,
+        source: 'https://data.stats.gov.cn/',
+        fiscalReference: 'https://gks.mof.gov.cn/tongjishuju/',
+        transport: (k.row && k.row.source_code) === 'lixinger_official' ? 'lixinger.cn/macro' : 'tushare.cn_m',
+        unit: '100m CNY',
+        m1DefinitionVersion: String(k.row.month) >= '202501' ? '2025_revised' : 'pre_2025',
+      }));
+      p += 4;
+    }
+    await pool.query(`INSERT INTO market.money_supply_monthly
+      (market_code,month,m2_100m_yuan,source_code,raw_payload)
+      VALUES ${values.join(',')}
+      ON CONFLICT(market_code,month,source_code) DO UPDATE SET
+        m2_100m_yuan=EXCLUDED.m2_100m_yuan,raw_payload=EXCLUDED.raw_payload,ingested_at=now()`, params);
+  }
 }
 
-async function readCsi300Watermark() {
-  return pool.query(`SELECT max(trade_date)::text AS mx FROM market.index_valuation_history WHERE index_code='CSI300' AND source_code='tushare_index_dailybasic'`);
+// 沪深300 估值的水位也只认新来源（理杏仁官方）：写入口既然固定写官方，
+// 水位若继续按旧来源取，换源后永远读不到自己的进度 → 每轮任务都当成空表做全量回填。
+async function readCsi300Watermark(sourceCode = 'lixinger_official') {
+  return pool.query(`SELECT max(trade_date)::text AS mx FROM market.index_valuation_history WHERE index_code='CSI300' AND source_code=$1`, [sourceCode]);
 }
 
+// 落库按「每行自己的来源」分组写：一次取数里官方与备源可能各占一段，
+// 整批套一个来源会把备源数值记到官方名下（与全市场 PE 当初那处误标同一类问题）。
 async function saveCsi300Valuations(kept, sourceCode = 'tushare_index_dailybasic') {
-  const values = [], params = []; let p = 1;
+  const bySource = new Map();
   for (const row of kept) {
-    const { day, pe, pb } = row;
-    values.push(`('CSI300','market_cap_weighted',$${p},$${p+1},$${p+2},$${p+3},'${sourceCode}',$${p+4})`);
-    params.push(day, Number((row.raw && (row.raw.total_mv ?? row.raw.mc)) || row.marketCap) || null, pe > 0 ? pe : null, pb > 0 ? pb : null, JSON.stringify(row.raw));
-    p += 5;
+    const code = row.source_code || sourceCode;
+    if (!bySource.has(code)) bySource.set(code, []);
+    bySource.get(code).push(row);
   }
-  await pool.query(`INSERT INTO market.index_valuation_history
-    (index_code,valuation_method,trade_date,market_cap,pe_ttm,pb,source_code,raw_payload)
-    VALUES ${values.join(',')}
-    ON CONFLICT(index_code,valuation_method,trade_date,source_code) DO UPDATE SET
-      market_cap=EXCLUDED.market_cap,pe_ttm=EXCLUDED.pe_ttm,pb=EXCLUDED.pb,
-      raw_payload=EXCLUDED.raw_payload,ingested_at=now()`, params);
+  for (const [code, rows] of bySource) {
+    const values = [], params = []; let p = 1;
+    for (const row of rows) {
+      const { day, pe, pb } = row;
+      values.push(`('CSI300','market_cap_weighted',$${p},$${p + 1},$${p + 2},$${p + 3},$${p + 4},$${p + 5})`);
+      params.push(day, Number((row.raw && (row.raw.total_mv ?? row.raw.mc)) || row.marketCap) || null,
+        pe > 0 ? pe : null, pb > 0 ? pb : null, code, JSON.stringify(row.raw));
+      p += 6;
+    }
+    await pool.query(`INSERT INTO market.index_valuation_history
+      (index_code,valuation_method,trade_date,market_cap,pe_ttm,pb,source_code,raw_payload)
+      VALUES ${values.join(',')}
+      ON CONFLICT(index_code,valuation_method,trade_date,source_code) DO UPDATE SET
+        market_cap=EXCLUDED.market_cap,pe_ttm=EXCLUDED.pe_ttm,pb=EXCLUDED.pb,
+        raw_payload=EXCLUDED.raw_payload,ingested_at=now()`, params);
+  }
 }
 
 async function readM2Inputs() {

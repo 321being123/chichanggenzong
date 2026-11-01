@@ -23,6 +23,8 @@ async function fetchChinaYield(from, to) {
   return withExternalCallGuard('chinabond', `yield:${from}:${to}`, process.env.JOB_BUSINESS_DATE, () => new Promise((resolve, reject) => { const req = https.request(u, { method: 'POST', headers: { 'User-Agent': 'portfolio-server/1.0', Referer: 'https://yield.chinabond.com.cn/cbweb-mn/pgxh/showHistory' } }, r => { let b=''; r.on('data', c => b += c); r.on('end', () => { try { if (r.statusCode === 429) { const e = new Error('中债接口 HTTP 429'); e.code='RATE_LIMIT'; e.errorType='rate_limit'; e.source='chinabond'; throw e; } if (r.statusCode >= 500) { const e = new Error('中债接口 HTTP ' + r.statusCode); e.code='UPSTREAM_5XX'; e.errorType='network'; e.source='chinabond'; throw e; } const data=JSON.parse(b); if (!Array.isArray(data)) throw new Error('中债返回格式错误'); resolve(data); } catch(e) { if (!e.code) { e = new Error('中债 ' + from + ' 至 ' + to + ' 查询失败：' + e.message); } reject(e); } }); }); req.on('error', reject); req.end(); }));
 }
 
+// 中证 PE 专用接口（整体法）。2026-11-01 起沪深300 与全市场 PE 都改用理杏仁官方加权口径，
+// 同步任务已不再调用本函数；保留它只为人工核对「另一种算法」的差异，不得重新接回自动链路。
 function fetchCsiPe(benchmark, indexCode) {
   return request('https://www.csindex.com.cn/csindex-home/perf/indexCsiDsPe?indexCode=' + indexCode, false, 'csindex', `pe:${benchmark}:${indexCode}`);
 }

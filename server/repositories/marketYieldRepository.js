@@ -20,15 +20,15 @@ async function saveHsiIndexHistory(day, pe, row, sourceCode = 'hsi_official') {
 }
 
 // 水位按来源分开看：来源一换（csindex → lixinger_official）就自然走全量回填，
-// 不会拿旧来源的最大日期当自己的水位。
-async function readCsiWatermark(benchmark, sourceCode = 'csindex') {
+// 不会拿旧来源的最大日期当自己的水位。中证官网口径已停用，默认就是官方来源。
+async function readCsiWatermark(benchmark, sourceCode = 'lixinger_official') {
   return pool.query(`SELECT max(trade_date)::text AS mx FROM market.market_valuation_daily WHERE market_code='CN' AND benchmark_code=$1 AND source_code=$2`, [benchmark, sourceCode]);
 }
 
 // 中证系指数 PE 落 market_valuation_daily：来源由取数方传入。
-// 沪深300（CSI300）仍是中证官网 csindex；A股全市场（CSIALL）只认理杏仁官方 lixinger_official——
-// 两者算法不同（整体法 vs 总市值加权），**同一基准不允许两来源并存**，中证旧行已按一次性脚本清理。
-async function saveCsiValuations(benchmark, kept, sourceCode = 'csindex') {
+// 沪深300（CSI300）与 A股全市场（CSIALL）现在都只认理杏仁官方 lixinger_official——
+// 官方是总市值加权、中证官网是整体法，**同一基准不允许两来源并存**，中证旧行已按一次性脚本清理。
+async function saveCsiValuations(benchmark, kept, sourceCode = 'lixinger_official') {
   const values = [], params = []; let p = 1;
   for (const k of kept) {
     values.push(`('CN',$${p},$${p+1},$${p+2},$${p+3},$${p+1},$${p+4})`);
@@ -178,7 +178,7 @@ async function saveMarketCap({ day, totalYi, securityCount, fromUnified, sourceC
 
 const SUBDATASET_QUERIES = Object.freeze({
   cn_yield: "SELECT max(trade_date)::text AS data_as_of FROM market.sovereign_yield_daily WHERE market_code='CN' AND tenor_years=10 AND source_code IN ('chinabond','lixinger_official')",
-  csi300_pe: "SELECT max(trade_date)::text AS data_as_of FROM market.market_valuation_daily WHERE market_code='CN' AND benchmark_code='CSI300' AND source_code IN ('csindex','lixinger_official','tushare_index_dailybasic')",
+  csi300_pe: "SELECT max(trade_date)::text AS data_as_of FROM market.market_valuation_daily WHERE market_code='CN' AND benchmark_code='CSI300' AND source_code='lixinger_official'",
   csi_all_pe: "SELECT max(trade_date)::text AS data_as_of FROM market.market_valuation_daily WHERE market_code='CN' AND benchmark_code='CSIALL' AND source_code='lixinger_official'",
   hsi_pe: "SELECT max(trade_date)::text AS data_as_of FROM market.market_valuation_daily WHERE market_code='HK' AND benchmark_code='HSI' AND source_code IN ('hsi_official','lixinger_official')",
   us_treasury_yield: "SELECT max(trade_date)::text AS data_as_of FROM market.sovereign_yield_daily WHERE market_code='US' AND tenor_years=10 AND source_code='tushare_us_tycr'",

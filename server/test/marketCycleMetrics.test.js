@@ -64,7 +64,10 @@ assert.ok(job.includes('readTotalAShareMarketCap({ day: normDate(day)'), '任务
 assert.ok(marketRepo.includes('ON CONFLICT(trade_date,formula_version)') && job.includes('marketYieldRepository.calculateM2MarketCap'), 'M2/市值比写入必须幂等');
 assert.ok(marketRepo.includes("'nbs_via_tushare'") && job.includes('marketYieldRepository.saveMoneySupply'), 'M2未记录国家统计局来源');
 assert.ok(job.includes('day > previous'), '月末交易日选择未处理上游倒序返回');
-assert.ok(marketSource.includes('/perf/indexCsiDsPe?indexCode=') && job.includes('marketSource.fetchCsiPe'), '中证全指PE未使用中证指数官网历史接口');
+// 2026-11-01：指数 PE（沪深300 与全市场）都切理杏仁官方加权口径，中证官网接口不再被自动链路调用。
+// 保留中证接口定义（人工核对另一种算法用），但任务源码里不得再出现对它的调用。
+assert.ok(marketSource.includes('/perf/indexCsiDsPe?indexCode='), '中证官网 PE 接口定义被误删（保留供人工核对）');
+assert.ok(!job.includes('marketSource.fetchCsiPe'), '指数 PE 已切理杏仁官方，同步任务不得再调用中证官网接口');
 assert.ok(job.includes('readIndexValuationSeries({ indexCode: \'000300\''), '沪深300估值必须经数据层');
 assert.ok(!job.includes('tushare_all_a_aggregate_proxy'), '中证全指PB不应使用估算数据');
 

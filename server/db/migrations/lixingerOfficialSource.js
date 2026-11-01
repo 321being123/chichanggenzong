@@ -36,4 +36,14 @@ async function migration180LixingerOfficialSource(pool) {
   await pool.query(`UPDATE ops.data_sources SET enabled=false WHERE source_code='geoscope_lixinger'`);
 }
 
-module.exports = { migration180LixingerOfficialSource };
+// 迁移181：来源优先级的语义是「数值小者优先」（`stockRepository.totalMarketCap` 等按
+// `s.priority ASC` 择优），迁移180 登记时写成了 70，比 tushare 的 10 大——这些查询实际
+// 先取 tushare，与「官方优先」正好相反。同一证券同一天两来源并存时，值虽然一致，
+// 但一旦官方修正了数据，择优仍会读旧来源，属于口径与标签双错的风险。
+// 调到 5：早于 tushare／tencent（10），晚于 calculated（1，系统自算）。
+// 与 cninfo（公告，5）同值不冲突：两者不会落在同一张表的同一资源上。
+async function migration181LixingerOfficialPriority(pool) {
+  await pool.query(`UPDATE ops.data_sources SET priority=5 WHERE source_code='lixinger_official' AND priority<>5`);
+}
+
+module.exports = { migration180LixingerOfficialSource, migration181LixingerOfficialPriority };

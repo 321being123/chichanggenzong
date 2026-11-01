@@ -198,6 +198,7 @@ const MIGRATIONS = [
   { version: '178_lixinger_source', up: () => require('./migrations/lixingerSource').migration178LixingerSource(pool) },
   { version: '179_nav_basis_uniqueness', up: M.migration179NavBasisUniqueness },
   { version: '180_lixinger_official_source', up: () => require('./migrations/lixingerOfficialSource').migration180LixingerOfficialSource(pool) },
+  { version: '181_lixinger_official_priority', up: () => require('./migrations/lixingerOfficialSource').migration181LixingerOfficialPriority(pool) },
 ];
 
 async function ensureMigrationsTable() {

@@ -40,7 +40,12 @@ assert(/trigger_type='auto_retry'/.test(slots), '失败退避后必须标记为�
 assert(/dependencyCodes/.test(slots) && /claimSlot/.test(slots), '领取任务前必须检查依赖');
 assert(/同业务日同范围的后续实例已完成并通过运行、阶段和分区证据核验/.test(slots) && /status='skipped'/.test(slots), '后续完整成功实例必须收敛旧失败/阻断槽位及告警');
 assert(/normalizeBusinessDate\(slot\.business_date\)/.test(slots), '数据分区依赖校验必须兼容 PostgreSQL date 返回的 Date 对象');
-assert(/benchmark_code='CSI300'/.test(slots) && /benchmark_code='CSIALL'/.test(slots) && /source_code='chinabond'/.test(slots) && /source_code='tushare_us_tycr'/.test(slots), '市场波动水位必须逐项检查必要来源');
+// 2026-11-01 换源：CSI300 也切理杏仁官方（只认 lixinger_official），CN 10 年国债／恒指／全A总市值
+// 改成「官方或原来源都算」——换源后若仍只认旧来源，任务会永远读不到自己的进度而被判落后。
+assert(/benchmark_code='CSI300' AND source_code='lixinger_official'/.test(slots) && /benchmark_code='CSIALL'/.test(slots)
+  && /source_code IN \('chinabond','lixinger_official'\)/.test(slots)
+  && /source_code IN \('tushare_daily_basic','lixinger_official'\)/.test(slots)
+  && /source_code='tushare_us_tycr'/.test(slots), '市场波动水位必须逐项检查必要来源');
 assert(/重新校验发现业务数据水位落后/.test(slots), '重新校验发现水位落后时必须落库为降级');
 assert(/slot\.status === 'degraded'/.test(slots) && /resolveJobSlotAlerts/.test(slots), '数据恢复后重新校验必须恢复状态和告警');
 assert(/fork\(/.test(orchestrator) && /taskkill/.test(orchestrator) && /SIGKILL/.test(orchestrator), '任务必须在可强制终止的独立进程执行');

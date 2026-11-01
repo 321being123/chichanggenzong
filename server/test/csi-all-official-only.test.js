@@ -1,7 +1,8 @@
-// A股全市场 PE（CSIALL）只认理杏仁官方来源，不允许掺中证官网另一种口径。
+// A股指数 PE（沪深300 / 中证全指）只认理杏仁官方来源，不允许掺中证官网另一种口径。
 //
 // 背景：中证官网是整体法（Σ总市值 ÷ Σ净利润），理杏仁是总市值加权平均，同一天差 −17.6%～+18.7%，
 // 掺在一条序列里会让格雷厄姆指数失真。所以官方取不到数据时必须让任务失败，而不是回落写另一种口径。
+// 2026-11-01 起沪深300 也按用户决定切到官方口径（此前只有 CSIALL 走官方、CSI300 仍走中证官网）。
 // 本用例用替代模块（数据层 / 中证官网 / 仓储）验证这条不变式，不连数据库、不发外部请求。
 process.env.NODE_ENV = 'test';
 
@@ -19,12 +20,12 @@ const stub = (relativePath, exports) => {
 let officialRows = [];
 stub('../dataAccess/marketDatasets', {
   readIndexValuationSeries: async ({ indexCode, endDate }) => {
-    if (indexCode !== '000985') return [];
+    if (indexCode !== '000985' && indexCode !== '000300') return [];
     return String(endDate) >= '2026-01-01' ? officialRows : [];
   },
 });
 
-// 中证官网：只被 CSI300 用到，CSIALL 一旦调用就是回归
+// 中证官网：切换后任何基准都不该再被调用，一旦调用就是回归
 stub('../services/marketVolatilitySource', {
   fetchCsiPe: async () => {
     csindexCalls += 1;
@@ -63,14 +64,33 @@ const job = require('../jobs/marketVolatilitySync');
   assert.deepStrictEqual(savedSources.map(item => item.sourceCode), ['lixinger_official'], '全市场 PE 只写官方来源');
   assert.strictEqual(csindexCalls, 0, '官方成功时同样不得调用中证官网');
 
-  // 三、沪深300 不受影响：仍走中证官网，来源 csindex
+  // 三、沪深300 同样只走官方：来源必须是 lixinger_official，且不得碰中证官网
+  officialRows = [{ day: '2026-10-30', pe: 12.61, pb: 1.42, raw: { 'pe_ttm.mcw': 12.61 } }];
   savedSources = [];
   const csi300 = await job.syncCsiIndexPe('CSI300', '000300');
-  assert.strictEqual(csi300, 1, '沪深300 仍从中证官网取一条');
-  assert.strictEqual(csindexCalls, 1, '沪深300 必须调用中证官网');
-  assert.deepStrictEqual(savedSources.map(item => item.sourceCode), ['csindex'], '沪深300 仍写 csindex 来源');
+  assert.strictEqual(csi300, 1, '沪深300 应写入 1 条官方 PE');
+  assert.strictEqual(csindexCalls, 0, '沪深300 切官方后不得再调用中证官网（两种算法不能掺）');
+  assert.deepStrictEqual(savedSources.map(item => item.sourceCode), ['lixinger_official'], '沪深300 也必须写官方来源');
 
-  console.log('csi-all-official-only：全市场 PE 只认官方、失败不回退中证、沪深300 不受影响');
+  // 四、沪深300 官方返空：同样只能失败，不能回退中证官网
+  officialRows = [];
+  savedSources = [];
+  await assert.rejects(
+    () => job.syncCsiIndexPe('CSI300', '000300'),
+    /官方口径本次无数据写入/,
+    '沪深300 官方取不到数据时任务必须失败'
+  );
+  assert.deepStrictEqual(savedSources, [], '失败时一条都不许写');
+  assert.strictEqual(csindexCalls, 0, '沪深300 失败时也不得回退中证官网');
+
+  // 五、没登记官方起点的基准不许偷偷走别的口径
+  await assert.rejects(
+    () => job.syncCsiIndexPe('CSI500', '000905'),
+    /未配置官方 PE 起点/,
+    '未登记官方起点的基准必须直接报错，不按中证口径写入'
+  );
+
+  console.log('csi-all-official-only：沪深300 与全市场 PE 都只认官方、失败不回退中证');
 })().catch(error => {
   console.error(String(error && error.stack ? error.stack : error));
   process.exit(1);

@@ -987,6 +987,8 @@ async function loadCachedStockBars(stockCode, startDate) {
 async function loadCachedStockValuations(stockCode, startDate) {
   if (!stockCode) return [];
   const { rows } = await pool.query(
+    // 同一交易日可能同时有官方与原来源两行：按日期只取一行，官方优先（原先按 ingested_at
+    // 取最新写入的一行，写入顺序一变就会莫名其妙换口径）。
     `SELECT DISTINCT ON (v.trade_date) v.trade_date,v.pe_static AS pe,v.pe_ttm,v.pb,
             v.dividend_yield_ttm * 100 AS dv_ttm,v.total_market_cap / 10000 AS total_mv,
             v.circulating_market_cap / 10000 AS circ_mv
@@ -994,7 +996,7 @@ async function loadCachedStockValuations(stockCode, startDate) {
        JOIN core.instruments i ON i.instrument_id=v.instrument_id
        JOIN ops.data_sources ds ON ds.source_id=v.source_id
       WHERE i.canonical_code=$1 AND v.trade_date >= $2::date AND ds.source_code IN ('tushare','lixinger_official')
-      ORDER BY v.trade_date DESC,v.ingested_at DESC`,
+      ORDER BY v.trade_date DESC, CASE WHEN ds.source_code='lixinger_official' THEN 0 ELSE 1 END`,
     [stockCode, startDate]
   );
   return rows;

@@ -87,9 +87,10 @@ async function loadAnalysisInputs(params, tx) {
     runner.query(`SELECT r.raw_payload data FROM fundamental.financial_reports r JOIN core.company_instruments ci ON ci.company_id=r.company_id JOIN core.instruments i ON i.instrument_id=ci.instrument_id WHERE i.canonical_code=$1 AND r.report_kind='indicator'`, [tsCode]),
     runner.query(`SELECT a.raw_payload data FROM fundamental.corporate_actions a JOIN core.instruments i ON i.instrument_id=a.instrument_id WHERE i.canonical_code=$1 AND a.action_type='dividend'`, [tsCode]),
     runner.query(`SELECT g.raw_payload data FROM fundamental.earnings_guidance g JOIN core.company_instruments ci ON ci.company_id=g.company_id JOIN core.instruments i ON i.instrument_id=ci.instrument_id WHERE i.canonical_code=$1`, [tsCode]),
-    runner.query(`SELECT to_char(v.trade_date,'YYYYMMDD') trade_date,b.close,a.adj_factor,v.pe_static pe,v.pe_ttm,v.pb,v.dividend_yield_ttm*100 dv_ttm,
+    runner.query(`SELECT DISTINCT ON (v.trade_date) to_char(v.trade_date,'YYYYMMDD') trade_date,b.close,a.adj_factor,v.pe_static pe,v.pe_ttm,v.pb,v.dividend_yield_ttm*100 dv_ttm,
       s.total_shares/10000 total_share,v.total_market_cap/10000 total_mv,s.circulating_shares/10000 float_share,s.free_float_shares/10000 free_share,v.circulating_market_cap/10000 circ_mv
       FROM market.daily_valuations v JOIN core.instruments i ON i.instrument_id=v.instrument_id
+      JOIN ops.data_sources ds ON ds.source_id=v.source_id
       LEFT JOIN LATERAL (SELECT close FROM market.daily_bars x
         WHERE x.instrument_id=v.instrument_id AND x.trade_date=v.trade_date
         ORDER BY (x.source_id=v.source_id) DESC,x.source_id LIMIT 1) b ON true
@@ -97,7 +98,10 @@ async function loadAnalysisInputs(params, tx) {
         WHERE x.instrument_id=v.instrument_id AND x.trade_date=v.trade_date
         ORDER BY (x.source_id=v.source_id) DESC,x.source_id LIMIT 1) a ON true
       LEFT JOIN LATERAL (SELECT * FROM market.share_capital_history s WHERE s.instrument_id=v.instrument_id AND s.effective_date<=v.trade_date ORDER BY s.effective_date DESC LIMIT 1) s ON true
-      WHERE i.canonical_code=$1 ORDER BY v.trade_date`, [tsCode]),
+      WHERE i.canonical_code=$1 AND ds.source_code IN ('lixinger_official','tushare')
+      -- 换成官方来源后同一交易日会有两行（官方 + 原来源），序列必须按日期只取一行，
+      -- 否则图表出现重复日期点、分位样本被重复计数。择一规则与其它读取端一致：官方优先。
+      ORDER BY v.trade_date, CASE WHEN ds.source_code='lixinger_official' THEN 0 ELSE 1 END`, [tsCode]),
     runner.query(`SELECT ds.source_code source,to_char(e.event_date,'YYYYMMDD') event_date,e.title,d.url,e.event_type category,e.is_official
       FROM event.company_events e JOIN ops.data_sources ds ON ds.source_id=e.source_id LEFT JOIN event.documents d ON d.document_id=e.document_id
       JOIN core.company_instruments ci ON ci.company_id=e.company_id JOIN core.instruments i ON i.instrument_id=ci.instrument_id

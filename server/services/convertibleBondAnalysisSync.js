@@ -17,6 +17,7 @@ const { evaluateConvertibleBondFreshness, CONV_PRICE_EPS } = require('./analysis
 const { datasetScope, getDatasetCursors, isDatasetFresh, markDatasetSuccess,
   recordQualityIssue, resolveQualityIssue } = require('./datasetCursors');
 const { publishDatasetPartition } = require('./datasetPartitions');
+const { readSnapshot } = require('./datasetPartitionRegistry');
 const {
   mergeDateRanges,
   findSuspensionCoverageGaps,
@@ -859,9 +860,20 @@ async function syncConvertibleBondUniverse(reason = 'scheduled', options = {}) {
       console.warn('[主同步] 正股停牌日同步失败，保留上一份停牌日缓存：', suspensionError.message);
     }
     let partitionPublicationError = null;
+    // 主档只数与「上市可转债列表」同口径（2026-11-01）：从当日行情分区派生，不再用 profiles.length。
+    // profiles.length 是本次写主档的只数，含行情源给已摘牌债返回的冻结行（2026-10-30 为 311，
+    // 列表实为 307），直接发布会让数据健康页的「可转债主档」比上市列表多 4 只。
+    // 只数只影响展示与对账，读取失败不阻断当天主同步，回退本次处理只数并告警。
+    let bondMasterRowCount = profiles.length;
+    try {
+      const masterCountSnapshot = await readSnapshot('bond_master', { partitionKey: daily.tradeDate });
+      if (masterCountSnapshot.rowCount > 0) bondMasterRowCount = masterCountSnapshot.rowCount;
+    } catch (countError) {
+      console.warn('[主同步] 主档只数快照读取失败，暂按本次处理只数发布：', countError.message);
+    }
     try {
       await Promise.all([
-        publishDatasetPartition('bond_master', 'CN', { dataAsOf: daily.tradeDate, partitionKey: daily.tradeDate, rowCount: profiles.length, sourceId: tushareSourceId, diagnostics: { targetTradeDate } }),
+        publishDatasetPartition('bond_master', 'CN', { dataAsOf: daily.tradeDate, partitionKey: daily.tradeDate, rowCount: bondMasterRowCount, sourceId: tushareSourceId, diagnostics: { targetTradeDate, processed_count: profiles.length } }),
         publishDatasetPartition('bond_daily', 'CN', {
           dataAsOf: targetTradeDate, partitionKey: targetTradeDate, rowCount: activeDailyRows.length,
           status: unresolvedCodes.length ? 'partial_published' : 'published', sourceId: tushareSourceId,
@@ -976,7 +988,7 @@ async function syncConvertibleBondUniverse(reason = 'scheduled', options = {}) {
       missingDates: suspensionResult.ok ? (suspensionResult.missingDates || []) : [isoDate(daily.tradeDate)],
       publishDatasets: false,
       datasetDiagnostics: {
-        bond_master: { partition_row_count: profiles.length, dataAsOf: isoDate(daily.tradeDate) },
+        bond_master: { partition_row_count: bondMasterRowCount, processed_count: profiles.length, dataAsOf: isoDate(daily.tradeDate) },
         bond_daily: {
           partition_row_count: activeDailyRows.length, dataAsOf: targetTradeDate,
           status: unresolvedCodes.length ? 'partial_published' : 'published', unresolved_count: unresolvedCodes.length,

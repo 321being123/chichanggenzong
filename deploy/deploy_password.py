@@ -684,8 +684,11 @@ def main():
             "&& identity_out=$(MIGRATION_ENV_FILE=/etc/portfolio/migration.env /usr/bin/node server/scripts/deployIdentityProbe.js --expect-head=\"$release_head\" --expect-version=" + local_version + " --expect-web-pid=\"$web_pid\" --expect-worker-pid=\"$worker_pid\" --expect-web-started=\"$web_started\" --expect-worker-started=\"$worker_started\" --require-process-times 2>&1 || true) "
             "&& identity_mismatch=$(printf '%s' \"$identity_out\" | grep -c '^IDENTITY_MISMATCH' || true) "
             "&& identity_unknown=$(printf '%s' \"$identity_out\" | grep -c '^IDENTITY_UNKNOWN' || true) "
-            "&& printf 'release_identity head=%s version=%s health_version=%s health_commit=%s web_pid=%s web_started=%s worker_pid=%s worker_started=%s identity=%s\\n' "
-            "\"$release_head\" \"" + local_version + "\" \"$(printf '%s' \"$health_json\" | sed -n 's/.*\"version\":\"\\([^\"]*\\)\".*/\\1/p')\" \"$health_commit\" \"$web_pid\" \"$web_started\" \"$worker_pid\" \"$worker_started\" \"$identity_out\" "
+            # 复验 RR-01 之后这里只打印解析后的字段，原始 health JSON 必须一起回显：
+            # 下面部署后的版本断言检查的是 health 原文里的 "version":"x.y.z"，
+            # 不回显原文会让断言在部署成功时也判失败（2026-11-02 0.9.1.21 实测踩到）。
+            "&& printf 'release_identity head=%s version=%s health_version=%s health_commit=%s web_pid=%s web_started=%s worker_pid=%s worker_started=%s identity=%s health_json=%s\\n' "
+            "\"$release_head\" \"" + local_version + "\" \"$(printf '%s' \"$health_json\" | sed -n 's/.*\"version\":\"\\([^\"]*\\)\".*/\\1/p')\" \"$health_commit\" \"$web_pid\" \"$web_started\" \"$worker_pid\" \"$worker_started\" \"$identity_out\" \"$health_json\" "
             "&& if [ \"$identity_mismatch\" != \"0\" ]; then echo \"发布身份不一致，部署判为失败：$identity_out\"; exit 1; fi "
             "&& if [ \"$identity_unknown\" != \"0\" ]; then echo \"发布身份无法核实（不视为通过，需回执人工确认）：$identity_out\"; fi "
             "&& deploy_complete=1",

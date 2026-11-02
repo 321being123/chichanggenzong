@@ -55,9 +55,29 @@ class FakeConnection:
         self.closed = True
 
 
+def close_enough(actual_value, expected_value):
+    """浮点按相对误差比较：symlog/expm1 依赖各平台的 libm 实现，
+    Windows(MSVC) 与 Linux(glibc) 末位可能差 1 ulp，精确相等会误报基线偏离。
+    容差 1e-9 只放过末位噪声，算法/特征真改了仍然会失败。"""
+    if isinstance(expected_value, dict):
+        if not isinstance(actual_value, dict) or set(actual_value) != set(expected_value):
+            return False
+        return all(close_enough(actual_value[key], item) for key, item in expected_value.items())
+    if isinstance(expected_value, list):
+        if not isinstance(actual_value, list) or len(actual_value) != len(expected_value):
+            return False
+        return all(close_enough(a, e) for a, e in zip(actual_value, expected_value))
+    if isinstance(expected_value, float) or isinstance(actual_value, float):
+        if not isinstance(expected_value, (int, float)) or not isinstance(actual_value, (int, float)):
+            return False
+        return math.isclose(actual_value, expected_value, rel_tol=1e-9, abs_tol=1e-12)
+    return actual_value == expected_value
+
+
 def main():
     fixture = Path(__file__).resolve().parent.parent / 'server/test/fixtures/ipo-training-boundary-baseline.json'
-    assert actual() == json.loads(fixture.read_text(encoding='utf-8'))['expected'], '训练特征、模型参数或目标变换偏离改动前基线'
+    expected = json.loads(fixture.read_text(encoding='utf-8'))['expected']
+    assert close_enough(actual(), expected), '训练特征、模型参数或目标变换偏离改动前基线'
     assert facade.rows_to_arrays is domain.rows_to_arrays
     assert facade.load_training_rows is data.load_training_rows
     primary = FakeConnection(ROWS)

@@ -19,6 +19,11 @@ const testDir = __dirname;
 const rootDir = path.join(__dirname, '..', '..');
 
 let pass = 0, fail = 0, skip = 0;
+// CI 上「按设计跳过」的项：skill-host-contract 校验的是工作区级 Skill 目录
+// （D:\Users\存在小站\.codebuddy\skills），该目录只存在于开发机，CI 检出必然没有。
+// 这类跳过不算关键测试缺失，否则每次 CI 都会红；其余跳过在 CI 仍判失败。
+const CI_ALLOWED_SKIPS = new Set(['skill-host-contract.test.js']);
+let allowedSkip = 0;
 const failed = [];
 const isCI = process.env.CI === '1';
 // 所有测试子进程统一隔离真实邮件；空字符串可阻止 dotenv 从开发机 .env 回填真实收件人。
@@ -114,7 +119,9 @@ function runNode(file) {
   }
   // 识别测试自身标记的跳过（如空库迁移在无 PG 时打印 [SKIP]），不计入通过
   if (/\[SKIP\]|SKIP-/.test(out)) {
-    skip++; console.log('  ⊘ ' + file + '  (跳过)  ——  ' + last);
+    skip++;
+    if (CI_ALLOWED_SKIPS.has(path.basename(file))) allowedSkip += 1;
+    console.log('  ⊘ ' + file + '  (跳过)  ——  ' + last);
   } else if (r.status === 0) { pass++; console.log('  ✓ ' + file + '  ——  ' + last); }
   else {
     fail++; failed.push(file);
@@ -232,8 +239,8 @@ function runPython() {
   console.log('\n========================================');
   console.log('测试库 ' + TEST_DATABASE + ' · 通过 ' + pass + ' · 失败 ' + fail + ' · 跳过 ' + skip +
     (fail ? ' · 失败项：' + failed.join('、') : (skip ? '' : ' · 全部通过 ✅')));
-  if (isCI && skip > 0) {
-    console.log('CI 模式下不允许跳过关键测试（共跳过 ' + skip + ' 项），判定失败');
+  if (isCI && skip - allowedSkip > 0) {
+    console.log('CI 模式下不允许跳过关键测试（共跳过 ' + (skip - allowedSkip) + ' 项），判定失败');
     process.exit(1);
   }
   process.exit(fail ? 1 : 0);

@@ -31,8 +31,9 @@ function isAbort(error) {
 // 成功时只关闭被本次成功完整覆盖的单元（证券 + 区间 / 交易日 + 代码集合）。
 // 之前按读取请求整片关闭，导致「只补一个月」或「换一只股票成功」都能把长期缺口误标恢复。
 // 懒加载，避免数据层在正常路径就绑定数据库连接。
+// 2026-11-02：改为同层 require（原先是反向依赖 services 层，触发 CROSS_LAYER_IMPORT）。
 function valuationQuality() {
-  return require('../services/valuationFetchQuality');
+  return require('./valuationQualityIssues');
 }
 
 async function recordValuationGaps({ kind, stage, detail }) {

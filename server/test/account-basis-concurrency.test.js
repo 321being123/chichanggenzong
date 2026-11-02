@@ -247,8 +247,17 @@ async function test(name, fn) {
     if (client) await client.end().catch(() => {});
     // 必须先关业务连接池再删库：直接 DROP ... WITH (FORCE) 会把池里的连接踢断，
     // pg 的 Pool 会抛未处理的 'error' 事件把进程带崩（2026-10-30 实测）。
-    await require('../db/connection').pool.end().catch(() => {});
-    await admin.query('DROP DATABASE IF EXISTS "' + tmpDb + '" WITH (FORCE)').catch(() => {});
+    // 2026-11-02 CI 复现补充：pool.end() 只保证连接对象已释放，socket 仍可能收到迟到的
+    // FATAL 报文；此池已 end、无 'error' 监听，进程照样被未处理事件带崩（断言全绿却退出码 1）。
+    // 因此：①挂 error 兜底监听 ②先切断该临时库的后端连接并留收敛窗口 ③用普通 DROP。
+    const conn = require('../db/connection');
+    conn.pool.on('error', () => {});
+    await conn.pool.end().catch(() => {});
+    await admin.query(
+      'SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname=$1 AND pid<>pg_backend_pid()', [tmpDb]
+    ).catch(() => {});
+    await new Promise(resolve => setTimeout(resolve, 200));
+    await admin.query('DROP DATABASE IF EXISTS "' + tmpDb + '"').catch(() => {});
     await admin.end().catch(() => {});
   }
 

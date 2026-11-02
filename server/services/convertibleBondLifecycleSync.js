@@ -98,10 +98,7 @@ async function parseLifecycleDocuments(events) {
 // 公告解析名只作兜底。公告正文残留（如「中科转债」被并成「中科转债二」）不得覆盖主档，
 // 否则会经 core.instruments.name 流入打新日历与日报（2026-11-01 中科转债事故）。
 async function authoritativeBondName(client, canonicalCode, candidate) {
-  const { rows } = await client.query(
-    `SELECT p.bond_short_name FROM core.instruments i
-       LEFT JOIN fundamental.convertible_bond_profiles p ON p.instrument_id=i.instrument_id
-      WHERE i.canonical_code=$1`, [canonicalCode]);
+  const { rows } = await repository.select_core_instruments_1([canonicalCode], client);
   return pickAuthoritativeName(rows[0] && rows[0].bond_short_name, candidate);
 }
 

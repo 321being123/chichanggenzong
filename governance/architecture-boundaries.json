@@ -1594,6 +1594,27 @@
       "batch": 1,
       "status": "registered",
       "note": "理杏仁官方指标字典→站内字段口径的唯一换算点（估值/三表/指标表/分红/指数/日线/宏观）；不判断业务是否需要、不写库"
+    },
+    {
+      "path": "server/dataAccess/valuationQualityIssues.js",
+      "role": "data_access",
+      "batch": 3,
+      "status": "registered",
+      "note": "估值取数缺口（ops.data_quality_issues）的读写与失败单元判定；2026-11-02 由 services 层迁入，SQL 只留在此处"
+    },
+    {
+      "path": "server/services/valuationFetchQuality.js",
+      "role": "application",
+      "batch": 3,
+      "status": "registered",
+      "note": "仅转发 dataAccess/valuationQualityIssues，保留原 require 路径；本文件不含 SQL"
+    },
+    {
+      "path": "server/services/buildIdentity.js",
+      "role": "infrastructure",
+      "batch": 3,
+      "status": "registered",
+      "note": "启动构建身份（提交号/启动时刻/进程号）供 /health 自述；只读 Git 与进程环境，不访问业务库"
     }
   ],
   "globalContracts": {

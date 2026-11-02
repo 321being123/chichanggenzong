@@ -27,10 +27,14 @@ const { closeExternalCircuit } = require('../services/externalCallGuard');
        VALUES($1,'*','none','open',now()-interval '1 minute','RATE_LIMIT','rate_limit','test')`,
       [source]
     );
+    // last_seen_at 显式取 2 分钟前：真实场景里告警一定早于恢复探测成功。
+    // 若沿用默认 now()，INSERT 与随后的 closeExternalCircuit 可能落在同一毫秒，
+    // 「成功时间严格晚于告警时间」就不成立，告警不会关闭 —— GitHub 上因此概率性失败。
     await pool.query(
       `INSERT INTO ops.alert_notifications
-         (alert_key,alert_type,severity,status,scope_type,scope_key,subject,summary)
-       VALUES($1,'failure','critical','pending','source_endpoint',$2,'test','test')`,
+         (alert_key,alert_type,severity,status,scope_type,scope_key,subject,summary,first_seen_at,last_seen_at)
+       VALUES($1,'failure','critical','pending','source_endpoint',$2,'test','test',
+              now()-interval '2 minutes',now()-interval '2 minutes')`,
       [alertKey, `${source}:*`]
     );
 

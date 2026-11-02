@@ -4260,7 +4260,8 @@
       "title": "Worker 离线告警只能用故障之后的在线心跳关闭，关闭语句自身复核证据",
       "implementation": {
         "file": "server/services/jobAlertMailer.js",
-        "symbol": "resolveWorkerOfflineAlert"
+        "symbol": "resolveWorkerOfflineAlert",
+        "via": "bc6fc83c独立场景复验：服务先取告警版本，再读晚于故障的在线心跳；仓储resolve_alert_with_evidence复核running/2分钟窗口/晚于故障。真实PG六组含正常恢复、旧/过期/停止心跳、新故障交错和直接SQL，全部符合预期；不作为真实双Worker或生产验收证据，见docs/第二轮代码审查核查与整改开发清单_20261101.md第14节。"
       },
       "tests": [
         {

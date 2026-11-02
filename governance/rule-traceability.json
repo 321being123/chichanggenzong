@@ -733,7 +733,7 @@
       "implementation": {
         "file": "public/shared/core-date.js",
         "symbol": "normalizeBusinessDate",
-        "via": "2026-11-02覆盖边界复核（RR-01/A/B 已修）：verified仅限原共享工具及所列测试。deployIdentityProbe 的 unit 启动时刻只接受 epoch / 明确 UTC / 带偏移 ISO；亚秒按 JS 毫秒截断（1/3/4/6 位与 ISO 一致），英文时区缩写与无时区文本判无法解析；部署带 --require-process-times，要求采集而取不到记 *_start_missing（无法核实），不得因\"没得比\"输出通过。反例见 server/test/release-identity.test.js（亚秒等价、CST 只记无法核实、采集失败不判 OK、真旧进程判不一致）。仍不作为其它新脚本或生产通过证据，见 docs/第二轮代码审查核查与整改开发清单_20261101.md 第12节。"
+        "via": "2026-11-02独立复验6609dad4：RR-01/A/B原反例通过，verified仍仅限原共享工具及所列测试。发布探针来源限epoch/明确UTC/带偏移ISO，UTC亚秒按JS毫秒截断，1/3/4/6位与等价ISO一致；部署--require-process-times时缺失记*_start_missing/UNKNOWN，可选省略仍OK。release-identity.test.js覆盖精度、CST拒绝、缺失与真旧进程，不作为其它脚本或生产身份行已验收的证据；当前见docs/第二轮代码审查核查与整改开发清单_20261101.md第13节。"
       },
       "tests": [
         {

@@ -384,13 +384,22 @@ async function readTotalAShareMarketCap({ day, minUnifiedCount = 1000 } = {}) {
       return row && Number(row.raw && row.raw.mc_om) > 0 ? row : null;
     }, 'a_share_market_cap');
     if (primary.value) {
-      totalYi = Number(primary.value.raw.mc_om) / YUAN_TO_100M;
-      sourceCode = official.SOURCE;
-      raw = primary.value.raw;
+      const capYi = Number(primary.value.raw.mc_om) / YUAN_TO_100M;
       // 官方只给 A 股市值、不给证券只数：用当日估值分区的实际行数补，写 0 会被误读成"没有证券"。
       const { rows } = await require('../db/connection').pool
         .query('SELECT count(*)::int AS n FROM market.daily_valuations WHERE trade_date = $1::date', [date]);
-      securityCount = Number(rows[0] && rows[0].n) || 0;
+      const valuationRows = Number(rows[0] && rows[0].n) || 0;
+      // 分区不完整时（当天估值还没采、或只采了一部分）不能拿这个小数字当证券只数：
+      // ① 写库会撞 chk_a_share_security_count（security_count >= 1000）；
+      // ② 市场总量数据集不能建立在残缺分区上。此时继续走下一层（Tushare 当日全量快照），
+      //    口径与历史每日数据保持一致，而不是把残缺值当有效值落库（2026-11-02 生产实测：
+      //    11-02 估值分区 0 行，官方 mc_om 有值，security_count 写 0 触发约束失败两次）。
+      if (capYi > 0 && valuationRows >= minUnifiedCount) {
+        totalYi = capYi;
+        securityCount = valuationRows;
+        sourceCode = official.SOURCE;
+        raw = primary.value.raw;
+      }
     }
   }
 

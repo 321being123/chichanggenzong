@@ -61,6 +61,10 @@ assert.ok(datasets.includes('/ 10000'), 'daily_basic.total_mv 未从万元换算
 assert.ok(datasets.includes('/ YUAN_TO_100M'), '统一层 total_market_cap 未从元换算为亿元');
 assert.ok(datasets.includes('getTotalMarketCap(date)'), '统一层总市值未按目标交易日聚合');
 assert.ok(job.includes('readTotalAShareMarketCap({ day: normDate(day)'), '任务必须经数据层取总市值');
+// 2026-11-02 生产实测：官方 mc_om 有值、当日估值分区 0 行时，曾把 security_count=0 写库，
+// 撞 chk_a_share_security_count(>=1000) 连续失败两次。官方市值路径必须先按估值分区行数过门禁，
+// 不完整时继续回退 Tushare 全量快照，而不是把残缺值当有效值落库。
+assert.ok(/valuationRows\s*>=\s*minUnifiedCount/.test(datasets), '官方市值路径缺少估值分区完整性门禁（会写入 0 只证券）');
 assert.ok(marketRepo.includes('ON CONFLICT(trade_date,formula_version)') && job.includes('marketYieldRepository.calculateM2MarketCap'), 'M2/市值比写入必须幂等');
 assert.ok(marketRepo.includes("'nbs_via_tushare'") && job.includes('marketYieldRepository.saveMoneySupply'), 'M2未记录国家统计局来源');
 assert.ok(job.includes('day > previous'), '月末交易日选择未处理上游倒序返回');

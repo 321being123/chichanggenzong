@@ -27,6 +27,34 @@ const SCHEDULES = {
       '12-31': { holidayName: '新年前夕', closeTime: '12:10' },
     },
   },
+  // 2027：港交所通告 ce_SEHK_CT_077_2026（2026 年发布，中文本 cc_SEHK_CT_077_2026），
+  // 依据香港特区政府公布的 2027 年公众假期编订。2027 年农历年初一（2/6）与初二（2/7）
+  // 落在周六日，故通告只列年初三、年初四两个休市日。
+  2027: {
+    title: '2027 年香港证券市场假期',
+    sourceUrl: 'https://www.hkex.com.hk/-/media/HKEX-Market/Services/Circulars-and-Notices/Participant-and-Members-Circulars/SEHK/2026/ce_SEHK_CT_077_2026.pdf',
+    verifiedAt: '2026-11-02',
+    holidays: {
+      '01-01': '一月一日',
+      '02-08': '农历年初三',
+      '02-09': '农历年初四',
+      '03-26': '耶稣受难节',
+      '03-29': '复活节星期一',
+      '04-05': '清明节',
+      '05-13': '佛诞',
+      '06-09': '端午节',
+      '07-01': '香港特别行政区成立纪念日',
+      '09-16': '中秋节翌日',
+      '10-01': '国庆日',
+      '10-08': '重阳节',
+      '12-27': '圣诞节后第一个周日',
+    },
+    halfDays: {
+      '02-05': { holidayName: '农历新年前夕', closeTime: '12:10' },
+      '12-24': { holidayName: '圣诞节前夕', closeTime: '12:10' },
+      '12-31': { holidayName: '新年前夕', closeTime: '12:10' },
+    },
+  },
 };
 
 function dateText(value) {

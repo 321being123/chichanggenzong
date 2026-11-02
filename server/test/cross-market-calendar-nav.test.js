@@ -64,10 +64,13 @@ async function main() {
     const hkOpen = await marketState.getMarketState({ market: 'HK', businessDate: '2026-09-25', time: '10:00' });
     assert.strictEqual(cnHoliday.status, 'closed', '2026-09-25 A 股休市');
     assert.strictEqual(hkOpen.status, 'open', '2026-09-25 港股按 HKEX 日历开市');
-    marketState.invalidateMarketStateCache({ market: 'HK', businessDate: '2027-01-04' });
-    const unknownHk = await marketState.getMarketState({ market: 'HK', businessDate: '2027-01-04', time: '10:00' });
+    // 2027 年度安排已于 2026-11-02 按港交所通告 ce_SEHK_CT_077_2026 录入并核验，
+    // 因此"未录入的未来日期"样本后移到 2028（2028-01-03 周一）。断言语义不变：
+    // 没有官方通告核验的年份必须保持 unknown，不能按星期几推断开市。
+    marketState.invalidateMarketStateCache({ market: 'HK', businessDate: '2028-01-03' });
+    const unknownHk = await marketState.getMarketState({ market: 'HK', businessDate: '2028-01-03', time: '10:00' });
     assert.strictEqual(unknownHk.status, 'unknown', '未录入并核验的未来港股日期必须保持未知');
-    assert.strictEqual(marketState.isPotentialHkTradingTime('2027-01-04', '10:00'), true,
+    assert.strictEqual(marketState.isPotentialHkTradingTime('2028-01-03', '10:00'), true,
       '日历未知时仅允许手动入口判断潜在交易时段');
 
     for (const [date, expectedHK, expectedCN] of [
@@ -89,8 +92,8 @@ async function main() {
       assert.ok(await resolveScheduleForDate(definition, definition, '2026-09-25'), `${jobCode} 应在港股独立开市日生成任务`);
       marketState.invalidateMarketStateCache({ market: 'HK', businessDate: '2026-10-01' });
       assert.strictEqual(await resolveScheduleForDate(definition, definition, '2026-10-01'), null, `${jobCode} 港股休市日不得生成任务`);
-      marketState.invalidateMarketStateCache({ market: 'HK', businessDate: '2027-01-04' });
-      assert.strictEqual(await resolveScheduleForDate(definition, definition, '2027-01-04'), null, `${jobCode} 港股日历未知时不得猜测开市`);
+      marketState.invalidateMarketStateCache({ market: 'HK', businessDate: '2028-01-03' });
+      assert.strictEqual(await resolveScheduleForDate(definition, definition, '2028-01-03'), null, `${jobCode} 港股日历未知时不得猜测开市`);
     }
 
     const scheduleCases = [
@@ -173,12 +176,16 @@ async function main() {
       : { rows: [{ covered_days: 365, verified_days: 365 }] };
     assert.strictEqual((await checkAnnualScheduleReminder('2026-10-31', { query: reminderQuery, notify: alert => notices.push(alert), enabled: true })).status,
       'not_due', '年度日历待办应从 11 月 1 日开始检查');
-    const reminder1 = await checkAnnualScheduleReminder('2026-11-01', { query: reminderQuery, notify: alert => notices.push(alert), enabled: true });
-    const reminder2 = await checkAnnualScheduleReminder('2026-11-02', { query: reminderQuery, notify: alert => notices.push(alert), enabled: true });
-    assert.strictEqual(reminder1.status, 'pending', '未登记核验的次年计划即使无行缺口也不得自动通过');
-    assert.strictEqual(reminder1.noticePublished, false, '未核验的次年通告不得标记已发布');
-    assert.strictEqual(notices[0].alertKey, notices[1].alertKey, '年度待办应按 HKEX 和目标年份使用同一去重键');
-    assert.strictEqual(reminder2.targetYear, 2027, '年度待办应指向次年');
+    // 2027 已于 2026-11-02 按官方通告核验登记（覆盖 365/365），应判定通过；
+    // 次年（2028）尚无通告，仍必须停在待核验，且不得标记为已发布。
+    const reminderVerified = await checkAnnualScheduleReminder('2026-11-01', { query: reminderQuery, notify: alert => notices.push(alert), enabled: true });
+    const reminderPending = await checkAnnualScheduleReminder('2027-11-01', { query: reminderQuery, notify: alert => notices.push(alert), enabled: true });
+    assert.strictEqual(reminderVerified.status, 'verified', '已按官方通告核准并覆盖全年的次年计划应判定通过');
+    assert.strictEqual(reminderVerified.targetYear, 2027, '年度待办应指向次年');
+    assert.strictEqual(reminderPending.status, 'pending', '未登记核验的次年计划即使无行缺口也不得自动通过');
+    assert.strictEqual(reminderPending.noticePublished, false, '未核验的次年通告不得标记已发布');
+    assert.strictEqual(notices.length, 1, '只有未核验的年份才发待办通知');
+    assert.strictEqual(notices[0].alertKey, 'hkex-calendar:2028:annual-plan', '年度待办应按 HKEX 和目标年份使用同一去重键');
     assert.throws(() => validateManualCorrection({ date: '2026-09-25', status: 'open', sessionType: 'full_day', closeTime: '16:10', evidenceUrl: 'http://example.com/notice', reason: '临时安排已确认' }),
       /港交所官网/, '人工日历修正必须使用 HTTPS 港交所公告证据');
     assert.strictEqual(validateManualCorrection({ date: '2026-09-25', status: 'open', sessionType: 'full_day', closeTime: '16:10', evidenceUrl: 'https://www.hkex.com.hk/notice', reason: '港交所临时安排已核验' }).isOpen,

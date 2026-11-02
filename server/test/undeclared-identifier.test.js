@@ -24,6 +24,7 @@ const GLOBALS = new Set([
   'Uint8Array', 'Int8Array', 'Uint16Array', 'Int16Array', 'Uint32Array', 'Int32Array', 'Float32Array', 'Float64Array',
   'BigInt64Array', 'BigUint64Array', 'Uint8ClampedArray', 'performance', 'crypto', 'navigator', 'window', 'document',
   'localStorage', 'sessionStorage', 'undefined', 'NaN', 'Infinity', 'Function', 'eval', 'atob', 'btoa',
+  'Atomics', 'SharedArrayBuffer',
 ]);
 
 function listFiles(dir, out = []) {

@@ -35,8 +35,8 @@ const expectedPublic = ['home', 'knowledge', 'stock-analysis', 'bond-safety', 'm
 ok(JSON.stringify(publicPages) === JSON.stringify(expectedPublic),
   '公开页面应为 ' + expectedPublic.join(',') + '，实际为 ' + publicPages.join(','));
 
-// 站内通知属本人数据，必须登录（2026-10-25）
-const expectedProtected = ['holdings', 'profile', 'position-compare', 'notifications'];
+// 站内通知属本人数据，必须登录（2026-10-25）；股票筛选含个人资金设置与个人测算，接口全部要求登录（2026-11-03）
+const expectedProtected = ['holdings', 'profile', 'position-compare', 'notifications', 'stock-selection'];
 ok(JSON.stringify(protectedPages) === JSON.stringify(expectedProtected),
   '受限页面应为 ' + expectedProtected.join(',') + '，实际为 ' + protectedPages.join(','));
 

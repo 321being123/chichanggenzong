@@ -1,4 +1,6 @@
 # INC-0033：A 股 IPO 行业漏解析与持续补全研发方案
+2026-11-03 共享文件核对（投资策略选股中心）：`jobDefinitions` 仅新增选股模式声明，IPO行业解析、行业PE与产业链补全逻辑未改动，原文证据与遗留未闭环项不变。
+
 2026-10-29 共享文件核对（0.9.0.4）：`server/routes/ipo.js` 仅补回 `/report` 分支丢失的 `total` 声明（不带日期访问原会 500），行业解析、行业 PE 口径、申万二级行业回退与产业链补全逻辑均未改动；同批新增的 `UNDEF-01` 与 `REPO-CONTRACT-01` 两条静态门禁只防重构丢符号，不改变任何采集或口径。
 
 2026-10-27 共享入口核对（应用分层批次3，本地实现、未部署）：IPO 的 SQL 与 SQL 片段生成器由 `server/routes/ipo.js` 整段迁入 `server/repositories/ipoRepository.js`，`hkOfferPhaseSql`／`stockFieldStatusSql` 仍从路由转发导出；字段口径、行业/PE 判定、预测模型与门禁均未改动，只改实现位置。港股 IPO 继续暂停，不因本次结构迁移恢复任何来源或任务。

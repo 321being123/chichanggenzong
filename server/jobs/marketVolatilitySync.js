@@ -47,7 +47,9 @@ async function syncChinaYield(start, end) {
 const CSI_OFFICIAL_PE_SINCE = Object.freeze({ CSI300: '2005-04-08', CSIALL: '2011-08-01' });
 const CSI_OFFICIAL_PE_CHUNK_YEARS = 5; // 官方单次区间过长会返回空（实测 15 年返回 0 行，5 年正常）
 const CSI_OFFICIAL_SOURCE = 'lixinger_official';
-
+// 指数估值历史表的 index_code：沪深300 用既有基准代码，A股全市场用中证全指的真实指数代码 000985。
+// 投资策略选股按方案 3.2 只认这张表的市值加权 PB，因此市场周期阶段必须把官方 PE/PB 一起写进来。
+const CSI_INDEX_HISTORY_CODE = Object.freeze({ CSI300: 'CSI300', CSIALL: '000985' });
 function csiPeChunks(since, end, years = CSI_OFFICIAL_PE_CHUNK_YEARS) {
   const chunks = [];
   let startYear = Number(String(since).slice(0, 4));
@@ -83,20 +85,33 @@ async function syncCsiPeFromOfficial(benchmark, indexCode, options = {}) {
     // 结果写成「理杏仁 77」）。回退关掉后官方没有就是空，走下面的失败分支。
     const rows = await readIndexValuationSeries({ indexCode, startDate: start, endDate: end, allowFallback: false });
     const kept = [];
+    const keptForHistory = [];
     const foreignSources = new Set();
     for (const row of rows || []) {
       if (row.source_code && row.source_code !== CSI_OFFICIAL_SOURCE) { foreignSources.add(String(row.source_code)); continue; }
       const pe = Number(row.pe);
-      if (!row.day || !(pe > 0)) continue;
+      const pb = Number(row.pb);
+      if (!row.day) continue;
+      // 选股需要指数 PB：官方同一响应里就有 pb.mcw，不能因为 PE 缺失把整行丢掉。
+      if ((pe > 0) || (pb > 0)) keptForHistory.push({ day: row.day, pe: pe > 0 ? pe : null, pb: pb > 0 ? pb : null, marketCap: row.marketCap ?? null, raw: row.raw });
+      if (!(pe > 0)) continue;
       kept.push({ day: row.day, pe, raw: row.raw });
     }
     // 万一数据层以后又把回退打开，这里也不许把别家口径写成官方：直接失败，不静默落库。
     if (foreignSources.size) {
       throw new Error(`指数PE(${benchmark}) 数据层返回非官方来源（${[...foreignSources].join(',')}），拒绝按官方口径落库`);
     }
-    if (!kept.length) continue;
-    await marketYieldRepository.saveCsiValuations(benchmark, kept, CSI_OFFICIAL_SOURCE);
-    written += kept.length;
+    if (!kept.length && !keptForHistory.length) continue;
+    // 市场周期既有消费者仍读 market_valuation_daily 的 PE；选股需要的 PE+PB 写入指数估值历史表，
+    // 两条写入同源同方法，不新增第三套市场估值事实表。
+    if (kept.length) await marketYieldRepository.saveCsiValuations(benchmark, kept, CSI_OFFICIAL_SOURCE);
+    const historyCode = CSI_INDEX_HISTORY_CODE[benchmark];
+    if (historyCode && keptForHistory.length) {
+      await marketYieldRepository.saveIndexValuationHistoryRows({
+        indexCode: historyCode, rows: keptForHistory, sourceCode: CSI_OFFICIAL_SOURCE,
+      });
+    }
+    written += keptForHistory.length;
   }
   if (written) console.log(`[市场周期] 指数PE(${benchmark}) 官方口径 区间(${from}起) 写入=${written}条（总市值加权 pe_ttm.mcw）`);
   return written;
@@ -119,9 +134,12 @@ async function syncHsiPe() {
   const rows = await readIndexValuationSeries({ indexCode: 'HSI', market: 'hk', startDate: start, endDate: end });
   let saved = 0;
   for (const row of rows) {
-    if (!(row.pe > 0)) continue;
-    await marketYieldRepository.saveHsiMarketValuation(row.day, row.pe, row.raw, row.source_code);
-    await marketYieldRepository.saveHsiIndexHistory(row.day, row.pe, row.raw, row.source_code);
+    const pe = Number(row.pe);
+    const pb = Number(row.pb);
+    // 恒指 PB 同样是选股的市场准入依据：官方返回 pb.mcw 时必须落库，不能只留 PE。
+    if (!(pe > 0) && !(pb > 0)) continue;
+    if (pe > 0) await marketYieldRepository.saveHsiMarketValuation(row.day, pe, row.raw, row.source_code);
+    await marketYieldRepository.saveHsiIndexHistory(row.day, pe > 0 ? pe : null, row.raw, row.source_code, pb > 0 ? pb : null);
     saved += 1;
   }
   if (saved) console.log(`[市场周期] 恒指估值 写入=${saved}条（来源=${rows[0].source_code}）`);

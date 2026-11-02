@@ -46,7 +46,7 @@ async function navigation() {
   w.setupMainNav(); load(w, 'shared/mobile-ui.js');
   const panel = d.querySelector('.mobile-nav-panel'), toggle = d.querySelector('.mobile-nav-toggle');
   ok(panel.querySelector('.main-nav') === originalNav, '手机复用原导航，不复制栏目');
-  ok(panel.querySelectorAll('[data-main]').length === 9, '9 个原有栏目完整保留');
+  ok(panel.querySelectorAll('[data-main]').length === 10, '9 个原有栏目＋股票筛选完整保留');
   ok(d.querySelector('.mobile-account-tools #account-select') === account, '账户控件移动时保留原节点和状态');
   w.renderTopUser(null);
   ok(panel.querySelector('.guest-avatar') && !panel.querySelector('[href="/admin.html"]'), '游客保持登录入口与原权限');

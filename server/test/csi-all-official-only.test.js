@@ -36,9 +36,14 @@ stub('../services/marketVolatilitySource', {
 });
 
 // 仓储：记录写入来源，不落库
+let historyWrites = [];
 stub('../repositories/marketYieldRepository', {
   readCsiWatermark: async () => ({ rows: [{ mx: null }] }),
   saveCsiValuations: async (benchmark, kept, sourceCode) => { savedSources.push({ benchmark, count: kept.length, sourceCode }); },
+  // 2026-11-03：指数 PB 也要落库（投资策略选股的市场准入依据），这里同样只记录调用。
+  saveIndexValuationHistoryRows: async ({ indexCode, rows, sourceCode }) => {
+    historyWrites.push({ indexCode, count: rows.length, sourceCode, pb: rows.map(row => row.pb) });
+  },
 });
 
 const job = require('../jobs/marketVolatilitySync');
@@ -59,10 +64,16 @@ const job = require('../jobs/marketVolatilitySync');
     { day: '2026-10-30', pe: 18.16, pb: 1.55, raw: { 'pe_ttm.mcw': 18.16 } },
   ];
   savedSources = [];
+  historyWrites = [];
   const written = await job.syncCsiIndexPe('CSIALL', '000985');
   assert.strictEqual(written, 2, '应写入 2 条官方 PE');
   assert.deepStrictEqual(savedSources.map(item => item.sourceCode), ['lixinger_official'], '全市场 PE 只写官方来源');
   assert.strictEqual(csindexCalls, 0, '官方成功时同样不得调用中证官网');
+  // 指数 PB 必须同源写入 index_valuation_history，且用中证全指真实指数代码 000985。
+  assert.strictEqual(historyWrites.length, 1, '官方成功时应写一次指数估值历史');
+  assert.strictEqual(historyWrites[0].indexCode, '000985');
+  assert.strictEqual(historyWrites[0].sourceCode, 'lixinger_official');
+  assert.deepStrictEqual(historyWrites[0].pb, [1.55, 1.55], 'PB 必须随 PE 一起落库');
 
   // 三、沪深300 同样只走官方：来源必须是 lixinger_official，且不得碰中证官网
   officialRows = [{ day: '2026-10-30', pe: 12.61, pb: 1.42, raw: { 'pe_ttm.mcw': 12.61 } }];

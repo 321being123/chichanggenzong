@@ -18,7 +18,11 @@ async function cacheRegression(){
   const result=await require('../services/repoSourceAdmission').probeOfficial(sample.date,async(sql,args)=>{calls.push({sql,args});return {rows:sql.includes('ops.data_sources')?[{source_id:1}]:[{payload:{...sample,sqlId:'COMMON_SSEBOND_SCSJ_SCTJ_SCGL_ZQZYSHGSCGL_CX_L'}}]};});
   assert.strictEqual(result.value,'1.283');assert.strictEqual(calls.length,2,'已有官方原文证据命中不联网、不重写策略');
   await assert.rejects(()=>require('../services/repoSourceAdmission').probeOfficial(require('../../public/shared/core-date').todayInZone('Asia/Shanghai'),async()=>{throw new Error('不得访问');}),/已完成/);
-  const python=process.env.IPO_PYTHON_PATH||require('path').resolve('venv/Scripts/python.exe');
+  // 解释器：显式配置优先；独立 worktree 默认不带 venv，退回 PATH 上的 python（与 run-all 的解析顺序一致），
+  // 避免“代码已通过、却在收尾 spawn 时因固定相对路径找不到解释器”造成假失败。
+  const fs = require('fs');
+  const local = require('path').resolve('venv/Scripts/python.exe');
+  const python = process.env.IPO_PYTHON_PATH || process.env.PYTHON || (fs.existsSync(local) ? local : 'python');
   const script=`import importlib.util, json, io
 from unittest.mock import patch
 spec=importlib.util.spec_from_file_location('probe','server/scripts/probeRepoOfficial.py'); m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m)

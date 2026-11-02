@@ -1,0 +1,318 @@
+// 投资策略选股中心：季度回测（方案第 8 节）。
+// 复用同一四项过滤、排名、异常与组合函数，按季度滚动；不虚构成交、不默认退市零损失。
+// 数据不足以还原时返回 not_evaluable 并披露支持区间，不包装成"历史验证完成"。
+'use strict';
+
+const RULES = require('../domain/stockSelectionRules');
+const PORTFOLIO = require('../domain/stockSelectionPortfolio');
+const repo = require('../repositories/stockSelectionRepository');
+const service = require('./stockSelectionService');
+const { withTransaction } = require('../db/transaction');
+
+const EXECUTION_MODEL_VERSION = 'next-open-v1';
+const COST_VERSION = 'cost-v1';
+const DEFAULT_COSTS = Object.freeze({ buyBps: 3, sellBps: 3 });
+const BENCHMARK_BY_MARKET = Object.freeze({ CN: 'CSI300', HK: 'HSI' });
+
+function shiftQuarter(quarter, delta) {
+  const match = /^(\d{4})Q([1-4])$/.exec(quarter);
+  let total = Number(match[1]) * 4 + (Number(match[2]) - 1) + delta;
+  const year = Math.floor(total / 4);
+  const q = total % 4 + 1;
+  return `${year}Q${q}`;
+}
+
+function maxDrawdown(series) {
+  let peak = -Infinity;
+  let worst = 0;
+  series.forEach(value => {
+    if (!Number.isFinite(value)) return;
+    peak = Math.max(peak, value);
+    if (peak > 0) worst = Math.min(worst, value / peak - 1);
+  });
+  return worst;
+}
+
+function annualized(series, dayCount) {
+  if (!series.length || !dayCount) return null;
+  const first = series[0], last = series[series.length - 1];
+  if (!(first > 0) || !(last > 0)) return null;
+  return Math.pow(last / first, 365 / dayCount) - 1;
+}
+
+function volatility(series) {
+  const returns = [];
+  for (let i = 1; i < series.length; i++) {
+    if (series[i - 1] > 0) returns.push(series[i] / series[i - 1] - 1);
+  }
+  if (returns.length < 2) return null;
+  const mean = returns.reduce((sum, value) => sum + value, 0) / returns.length;
+  const variance = returns.reduce((sum, value) => sum + (value - mean) ** 2, 0) / (returns.length - 1);
+  return Math.sqrt(variance) * Math.sqrt(252);
+}
+
+function toDateText(value) {
+  return String(value).slice(0, 10);
+}
+
+/**
+ * 执行一次回测。区间由实际覆盖推导，不接受写死的起始年份。
+ * 执行模型：信号日（季度末）→ 下一交易日未复权开盘价成交；缺执行价保留现金/旧仓。
+ */
+async function runBacktest(input) {
+  const market = String(input.market || '').toUpperCase();
+  if (!['CN', 'HK'].includes(market)) {
+    const error = new Error('市场参数不合法');
+    error.status = 400;
+    throw error;
+  }
+  const startDate = String(input.startDate || '');
+  const endDate = String(input.endDate || '');
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(startDate) || !/^\d{4}-\d{2}-\d{2}$/.test(endDate) || startDate >= endDate) {
+    const error = new Error('回测区间不合法');
+    error.status = 400;
+    throw error;
+  }
+  const costs = Object.assign({}, DEFAULT_COSTS, input.costs || {});
+  const strategyVersion = input.strategyVersion || service.STRATEGY_VERSION;
+  const calendar = await repo.loadCalendar({ market, fromDate: startDate, toDate: endDate });
+  const benchmarkCode = input.benchmarkCode || BENCHMARK_BY_MARKET[market];
+  const diagnostics = { quarters: [], missing: {}, supportedFrom: null };
+  if (calendar.length < 2) {
+    return persistBacktest({
+      market, strategyId: null, startDate, endDate, status: 'not_evaluable',
+      metrics: {}, diagnostics: Object.assign(diagnostics, { reason: 'calendar_unavailable' }),
+      costs, strategyVersion, benchmarkCode,
+    });
+  }
+
+  // 季度末落在区间内的季度序列。
+  const quarterEnds = [];
+  const firstQuarter = service.quarterOf(startDate);
+  const lastQuarter = service.quarterOf(endDate);
+  for (let quarter = firstQuarter; quarter <= lastQuarter; quarter = shiftQuarter(quarter, 1)) {
+    const end = service.quarterEndDate(quarter);
+    const tradingDay = [...calendar].reverse().find(day => day <= end);
+    if (tradingDay && tradingDay >= startDate) quarterEnds.push({ quarter, signalDate: tradingDay });
+  }
+  if (quarterEnds.length < 2) {
+    return persistBacktest({
+      market, strategyId: null, startDate, endDate, status: 'not_evaluable',
+      metrics: {}, diagnostics: Object.assign(diagnostics, { reason: 'insufficient_quarters', quarterCount: quarterEnds.length }),
+      costs, strategyVersion, benchmarkCode,
+    });
+  }
+
+  // 每个信号日的选股结果（纯计算，不落正式批次）。
+  const selections = [];
+  for (const item of quarterEnds) {
+    const computed = await service.computeSelection({ market, asOfDate: item.signalDate, positionRatio: 1, strategyVersion });
+    const executionDate = calendar.find(day => day > item.signalDate) || null;
+    selections.push({ ...item, computed, executionDate });
+    diagnostics.quarters.push({
+      quarter: item.quarter, signalDate: item.signalDate, executionDate,
+      marketEligible: computed.gate.eligible,
+      publishable: computed.quality.publishable,
+      pendingCount: computed.quality.pendingCount,
+      selectedCount: computed.portfolio.members.length,
+    });
+  }
+
+  // 任一季度数据不完整即视为不可还原，不用当期个股 PB 平均去补指数或虚构收益。
+  const blocked = selections.filter(item => !item.computed.gate.eligible || item.computed.quality.pendingCount > 0);
+  if (blocked.length) {
+    diagnostics.missing = {
+      reason: 'point_in_time_inputs_incomplete',
+      quarters: blocked.map(item => item.quarter),
+    };
+    return persistBacktest({
+      market, strategyId: null, startDate, endDate, status: 'not_evaluable',
+      metrics: {}, diagnostics, costs, strategyVersion, benchmarkCode,
+    });
+  }
+
+  const allInstrumentIds = new Set();
+  selections.forEach(item => item.computed.portfolio.members.forEach(member => allInstrumentIds.add(member.instrumentId)));
+  const executionDates = selections.map(item => item.executionDate).filter(Boolean);
+  const openPrices = await repo.loadOpenPrices({ instrumentIds: [...allInstrumentIds], dates: executionDates });
+  const benchmarkCloses = await repo.loadBenchmarkCloses({ indexCode: benchmarkCode, fromDate: startDate, toDate: endDate });
+
+  let cash = 1;
+  let holdings = new Map();
+  const periods = [];
+  let totalFees = 0;
+  let totalDividends = 0;
+  let previousNav = 1;
+  let turnoverSum = 0;
+  let benchmarkBase = null;
+  let benchmarkLast = null;
+  let periodStart = null;
+
+  for (const item of selections) {
+    if (!item.executionDate) continue;
+    const benchmarkAt = day => benchmarkCloses.get(day);
+    let unpriced = 0;
+    let feesThisPeriod = 0;
+    let tradedAmount = 0;
+    let dividendsThisPeriod = 0;
+
+    // 持有期现金分红：未复权价格 + 真实分红现金，不重复加股息。
+    if (periodStart && holdings.size) {
+      const heldIds = [...holdings.keys()];
+      const dividends = await repo.loadDividendCash({ instrumentIds: heldIds, fromDate: periodStart, toDate: item.executionDate });
+      for (const [instrumentId, position] of holdings) {
+        const perShare = dividends.get(String(instrumentId)) || 0;
+        if (perShare > 0) {
+          const amount = perShare * position.shares;
+          dividendsThisPeriod += amount;
+          cash += amount;
+        }
+      }
+    }
+
+    // 卖出：按开盘价，缺价保留旧仓（不虚构成交）。
+    let proceeds = 0;
+    for (const [instrumentId, position] of holdings) {
+      const price = openPrices.get(`${instrumentId}|${item.executionDate}`);
+      if (price === null || price === undefined || !(price > 0)) { unpriced++; continue; }
+      const amount = price * position.shares;
+      const fee = amount * Number(costs.sellBps) / 10000;
+      proceeds += amount - fee;
+      feesThisPeriod += fee;
+      tradedAmount += amount;
+      holdings.delete(instrumentId);
+    }
+    cash += proceeds;
+
+    // 买入：等权 30 席，缺价不买，资金留现金。
+    const members = item.computed.portfolio.members;
+    const targetPerMember = cash / Math.max(members.length, 1);
+    for (const member of members) {
+      const price = openPrices.get(`${member.instrumentId}|${item.executionDate}`);
+      if (price === null || price === undefined || !(price > 0)) { unpriced++; continue; }
+      if (targetPerMember <= 0) continue;
+      const fee = targetPerMember * Number(costs.buyBps) / 10000;
+      if (targetPerMember + fee > cash) continue;
+      const shares = (targetPerMember - fee) / price;
+      holdings.set(member.instrumentId, { shares, entryPrice: price, entryDate: item.executionDate });
+      cash -= targetPerMember;
+      feesThisPeriod += fee;
+      tradedAmount += targetPerMember;
+    }
+
+    const marketValue = [...holdings].reduce((sum, [instrumentId, position]) => {
+      const price = openPrices.get(`${instrumentId}|${item.executionDate}`) || position.entryPrice;
+      return sum + price * position.shares;
+    }, 0);
+    const nav = cash + marketValue;
+    totalFees += feesThisPeriod;
+    totalDividends += dividendsThisPeriod;
+    turnoverSum += tradedAmount / Math.max(previousNav, 1e-9);
+    const benchmarkClose = benchmarkAt(item.executionDate) || benchmarkLast;
+    if (benchmarkBase === null && benchmarkClose) benchmarkBase = benchmarkClose;
+    if (benchmarkClose) benchmarkLast = benchmarkClose;
+    periods.push({
+      tradeDate: item.executionDate,
+      nav: Number(nav.toFixed(8)),
+      cashWeight: nav > 0 ? Number((cash / nav).toFixed(8)) : 1,
+      turnover: Number((tradedAmount / Math.max(previousNav, 1e-9)).toFixed(8)),
+      fees: Number(feesThisPeriod.toFixed(8)),
+      dividendIncome: Number(dividendsThisPeriod.toFixed(8)),
+      benchmarkNav: benchmarkBase && benchmarkClose ? Number((benchmarkClose / benchmarkBase).toFixed(8)) : null,
+      unpricedCount: unpriced,
+    });
+    previousNav = nav;
+    periodStart = item.executionDate;
+    diagnostics.supportedFrom = diagnostics.supportedFrom || item.signalDate;
+  }
+
+  if (periods.length < 2) {
+    diagnostics.missing = { reason: 'insufficient_executable_periods', periods: periods.length };
+    return persistBacktest({
+      market, strategyId: null, startDate, endDate, status: 'not_evaluable',
+      metrics: {}, diagnostics, costs, strategyVersion, benchmarkCode,
+    });
+  }
+
+  const navSeries = periods.map(item => item.nav);
+  const dayCount = Math.round((new Date(periods[periods.length - 1].tradeDate) - new Date(periods[0].tradeDate)) / 86400000);
+  const metrics = {
+    totalReturn: navSeries[navSeries.length - 1] / navSeries[0] - 1,
+    annualizedReturn: annualized(navSeries, dayCount),
+    maxDrawdown: maxDrawdown(navSeries),
+    // 季度序列不足时不输出伪精确的波动与夏普。
+    volatility: periods.length >= 5 ? volatility(navSeries) : null,
+    sharpe: null,
+    turnover: turnoverSum,
+    fees: totalFees,
+    dividendIncome: totalDividends,
+    cashWeightLast: periods[periods.length - 1].cashWeight,
+    benchmarkReturn: periods[periods.length - 1].benchmarkNav === null ? null : periods[periods.length - 1].benchmarkNav - 1,
+    benchmarkReturnType: 'price',
+    periodCount: periods.length,
+    currency: input.currency || 'LOCAL',
+    note: periods.length < 5 ? '季度样本不足 5 期，波动率与夏普不输出' : null,
+  };
+
+  return persistBacktest({
+    market, strategyId: null, startDate, endDate, status: 'partial',
+    metrics, diagnostics, costs, strategyVersion, benchmarkCode, periods,
+  });
+}
+
+async function persistBacktest(input) {
+  const inputHash = require('crypto').createHash('sha256')
+    .update(JSON.stringify({ market: input.market, start: input.startDate, end: input.endDate, costs: input.costs, strategyVersion: input.strategyVersion, benchmarkCode: input.benchmarkCode }))
+    .digest('hex');
+  const backtestId = await withTransaction(async tx => {
+    const strategyId = input.strategyId || await resolveStrategyId(tx, input);
+    const id = await repo.insertBacktest(tx, {
+      market: input.market,
+      strategyId,
+      startDate: input.startDate,
+      endDate: input.endDate,
+      currency: input.currency || 'LOCAL',
+      status: input.status,
+      inputHash,
+      executionModelVersion: EXECUTION_MODEL_VERSION,
+      costVersion: COST_VERSION,
+      benchmarkCode: input.benchmarkCode,
+      benchmarkReturnType: 'price',
+      parameters: { costs: input.costs, strategyVersion: input.strategyVersion },
+      metrics: input.metrics || {},
+      diagnostics: input.diagnostics || {},
+    });
+    if (input.periods && input.periods.length) await repo.insertBacktestPeriods(tx, id, input.periods);
+    return id;
+  });
+  return { backtestId, status: input.status, metrics: input.metrics || {}, diagnostics: input.diagnostics || {} };
+}
+
+async function resolveStrategyId(tx, input) {
+  return repo.upsertStrategy(tx, {
+    strategyCode: RULES.STRATEGY_CODE,
+    market: input.market,
+    version: input.strategyVersion || service.STRATEGY_VERSION,
+    formulaVersion: RULES.DEFAULT_PARAMS.formulaVersion,
+    adapterVersion: RULES.DEFAULT_PARAMS.adapterVersion,
+    riskVersion: RULES.DEFAULT_PARAMS.riskVersion,
+    industryVersion: RULES.DEFAULT_PARAMS.industryVersion,
+    effectiveFrom: input.startDate,
+    parameters: RULES.DEFAULT_PARAMS,
+    contentHash: require('crypto').createHash('sha256')
+      .update(JSON.stringify({ strategy: RULES.STRATEGY_CODE, params: RULES.DEFAULT_PARAMS, version: input.strategyVersion || service.STRATEGY_VERSION }))
+      .digest('hex'),
+  });
+}
+
+module.exports = {
+  runBacktest,
+  EXECUTION_MODEL_VERSION,
+  COST_VERSION,
+  DEFAULT_COSTS,
+  BENCHMARK_BY_MARKET,
+  shiftQuarter,
+  maxDrawdown,
+  annualized,
+  volatility,
+};

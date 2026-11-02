@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "lastReviewed": "2026-11-02",
+  "lastReviewed": "2026-11-03",
   "rules": [
     {
       "id": "BOND-PROSPECTUS-SELECTION-059",
@@ -4458,6 +4458,38 @@
         }
       ],
       "owner": "Codex",
+      "status": "implemented"
+    },
+    {
+      "id": "SELECTION-PENDING-NO-FORMAL-RELEASE-001",
+      "title": "排名池存在待补（PENDING）对象时只保存部分数据预览，不发布正式可投资组合",
+      "implementation": {
+        "file": "server/services/stockSelectionService.js",
+        "symbol": "computeSelection"
+      },
+      "tests": [
+        {
+          "file": "server/test/stock-selection-pipeline.test.js",
+          "pattern": "发布正式可投资组合"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "implemented"
+    },
+    {
+      "id": "SELECTION-30-SLOT-INDUSTRY-CAP-002",
+      "title": "每市场固定 30 个等权席位，单一行业不超过市场预算 20%，合格股不足时留现金而不放大单只权重",
+      "implementation": {
+        "file": "server/domain/stockSelectionPortfolio.js",
+        "symbol": "buildPortfolio"
+      },
+      "tests": [
+        {
+          "file": "server/test/stock-selection-rules.test.js",
+          "pattern": "同一行业最多 6 只"
+        }
+      ],
+      "owner": "WorkBuddy",
       "status": "implemented"
     }
   ]

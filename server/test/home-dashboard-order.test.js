@@ -26,7 +26,7 @@ for (const width of [320, 360, 390, 430, 760, 768, 900, 1024, 1440]) {
     window.applyHomeOrder(doc, loggedIn);
     assert.deepStrictEqual(sectionOrder(), EXPECT_ORDER, '首页剩余区块顺序应一致');
     assert.strictEqual(doc.getElementById('home-section-modules'), null, '首页不应保留常用工具区域');
-    assert.strictEqual(doc.querySelectorAll('.main-nav .main-tab').length, 9, '应保留原九个导航入口');
+    assert.strictEqual(doc.querySelectorAll('.main-nav .main-tab').length, 10, '九个原有入口＋股票筛选共十个导航入口');
   }
 }
 console.log('home-dashboard-order: 通过（9档宽度、游客/登录/切回游客、原导航保留）');

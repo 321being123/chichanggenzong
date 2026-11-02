@@ -7,6 +7,9 @@ const { migrateCashFlowDatePrecision } = require('../db/cashIncomeMigration');
   const schema='cash_income_migration_test';
   const adapter={connect:async()=>({query:client.query.bind(client),release(){}})};
   try {
+    // 上一次运行被中断时隔离 schema 会残留，导致下一次 CREATE SCHEMA 直接失败；
+    // 这里先无条件清理，保证用例可重复执行（只影响本用例独占的 schema）。
+    await client.query(`DROP SCHEMA IF EXISTS ${schema} CASCADE`);
     await client.query(`CREATE SCHEMA ${schema}`);
     await client.query(`SET search_path TO ${schema}`);
     await client.query("CREATE TABLE cash_flows(id text,username text,account_name text,date text DEFAULT '',amount numeric(20,2))");

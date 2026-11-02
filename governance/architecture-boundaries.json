@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "lastReviewed": "2026-10-27",
+  "lastReviewed": "2026-11-03",
   "rulesVersion": "layer-coupling-5",
   "defaultRole": "pending_contract",
   "scan": {
@@ -1659,6 +1659,15 @@
         ],
         "batch": 2,
         "status": "retire_planned"
+      },
+      {
+        "symbol": "ssState",
+        "kind": "variable",
+        "file": "public/js/presenters/stock-selection-presenter.js",
+        "consumers": [
+          "public/js/stock-selection.js",
+          "public/js/presenters/stock-selection-presenter.js"
+        ]
       }
     ],
     "pages": [
@@ -1683,6 +1692,17 @@
             "requiredSymbols": [
               "stockAnalysisState",
               "securityAnalysisLoadList"
+            ]
+          },
+          {
+            "name": "stock-selection",
+            "scripts": [
+              "public/js/api/stock-selection-api.js",
+              "public/js/presenters/stock-selection-presenter.js",
+              "public/js/stock-selection.js"
+            ],
+            "requiredSymbols": [
+              "ssState"
             ]
           }
         ]
@@ -1924,11 +1944,12 @@
       "public/js/market-cycle-metrics.js",
       "public/js/market-volatility.js",
       "public/js/position-comparison.js",
-      "public/js/stock-analysis.js",
       "public/js/stock-analysis-statements.js",
-      "public/shared/core-quote.js",
+      "public/js/stock-analysis.js",
+      "public/js/stock-selection.js",
       "public/shared/core-account.js",
-      "public/shared/core-earnings.js"
+      "public/shared/core-earnings.js",
+      "public/shared/core-quote.js"
     ],
     "pending": []
   },

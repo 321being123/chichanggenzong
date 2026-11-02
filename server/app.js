@@ -26,6 +26,7 @@ const bondValuationRouter = require('./routes/bondValuation');
 const bondRedemptionRouter = require('./routes/bondRedemption');
 const bondRevisionRouter = require('./routes/bondRevision');
 const stockAnalysisRouter = require('./routes/stockAnalysis');
+const stockSelectionRouter = require('./routes/stockSelection');
 const bondAnalysisRouter = require('./routes/bondAnalysis');
 const knowledgeRouter = require('./routes/knowledge');
 const marketVolatilityRouter = require('./routes/marketVolatility');
@@ -156,6 +157,10 @@ async function start() {
   app.use('/', importRouter);   // 同时承接 /api/* 与 /m/*
   app.use('/api', metaRouter);
   app.use('/api', profileRouter);   // 个人中心：资料读取/更新/改密
+  // 股票筛选（投资策略选股中心）：登录只读 + 管理员补数/计算/回测入队。
+  // 管理员入口必须先于通用 /api/admin 挂载，否则会被后台路由的兜底吃掉。
+  app.use('/api/admin/stock-selection', stockSelectionRouter.adminRouter);
+  app.use('/api/stock-selection', stockSelectionRouter);
   app.use('/api/admin', adminRouter);   // 管理后台：统一 /api/admin 前缀，路由内已 requireAdmin
   app.use('/api/stock-analysis', stockAnalysisRouter); // 股票分析：持仓/自选、三表快照和单股刷新
   app.use('/api/bond-analysis', bondAnalysisRouter); // 可转债分析：数据库快照读取和单债刷新

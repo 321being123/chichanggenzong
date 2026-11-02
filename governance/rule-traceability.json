@@ -4256,6 +4256,30 @@
       "status": "local_verified"
     },
     {
+      "id": "ALERT-EVIDENCE-011",
+      "title": "Worker 离线告警只能用故障之后的在线心跳关闭，关闭语句自身复核证据",
+      "implementation": {
+        "file": "server/services/jobAlertMailer.js",
+        "symbol": "resolveWorkerOfflineAlert"
+      },
+      "tests": [
+        {
+          "file": "server/test/session-store-and-contract-recovery.test.js",
+          "pattern": "Worker 离线告警：故障之前的在线心跳不能关闭新故障"
+        },
+        {
+          "file": "server/test/session-store-and-contract-recovery.test.js",
+          "pattern": "Worker 离线告警：读完在线心跳后又落新故障"
+        },
+        {
+          "file": "server/test/session-store-and-contract-recovery.test.js",
+          "pattern": "关闭语句自身复核心跳"
+        }
+      ],
+      "owner": "运维治理",
+      "status": "local_verified"
+    },
+    {
       "id": "STOCK-SWAP-SETTLE-067",
       "title": "换股结算仅接受目标日前官方已完成证据，未关联实施结果须阻塞；正确传递目标日、模式和结算数据集；按公告比例向下取整，锁内重读持仓并将账本与结算状态同事务，数量成本不符回滚",
       "implementation": {

@@ -215,11 +215,14 @@ async function update_ops_alert_notifications_9(params, client = pool) {
         WHERE alert_id=ANY($1::bigint[]) AND status='sending'`, params);
 }
 
-// 统一的「按证据关闭」入口（复验 RR-03-A/B）：所有关闭路径共用这一条原子语句，一次核对三件事——
+// 统一的「按证据关闭」入口（复验 RR-03-A/B/C）：所有关闭路径共用这一条原子语句，一次核对三件事——
 //   1) 告警仍是未关闭状态；
 //   2) 告警版本没有被推进（last_seen_at <= 判定时读到的版本，全精度文本比较）；
-//   3) 合同类告警消费的那条验证记录仍然有效：contract_ok=true、晚于告警、且仍是该作用域最新一条
-//      （NOT EXISTS 更晚的记录）。这样「新失败已入库、告警 last_seen_at 还没 upsert」的窗口也关不掉。
+//   3) 该告警类型自己的恢复证据在 UPDATE 这一刻仍然成立：
+//      - 合同类：消费的那条验证记录 contract_ok=true、晚于告警、且仍是该作用域最新一条
+//        （NOT EXISTS 更晚的记录）。这样「新失败已入库、告警 last_seen_at 还没 upsert」的窗口也关不掉；
+//      - Worker 离线：必须存在一条晚于告警 last_seen_at 且仍在 2 分钟窗口内的在线心跳。
+//        判定时读到的在线心跳若发生在故障之前，就不是这条故障的恢复证据（复验 RR-03-C）。
 // touchReconcile=true 时保留历史扫描的 last_checked_at/next_check_at 语义。
 async function resolve_alert_with_evidence(params, client = pool) {
   return client.query(`UPDATE ops.alert_notifications a
@@ -242,6 +245,15 @@ async function resolve_alert_with_evidence(params, client = pool) {
                     WHERE n.source = v.source AND n.api_name = v.api_name
                       AND (n.checked_at, n.verification_id) > (v.checked_at, v.verification_id)
                  )
+            )
+          )
+          AND (
+            a.alert_type <> 'worker_offline'
+            OR EXISTS (
+              SELECT 1 FROM ops.worker_heartbeats w
+               WHERE w.role='worker' AND w.status='running'
+                 AND w.last_seen_at >= now()-interval '2 minutes'
+                 AND w.last_seen_at > a.last_seen_at
             )
           )
         RETURNING a.*`, params);
@@ -299,10 +311,17 @@ async function select_ops_dataset_partitions(params, client = pool) {
       ORDER BY partition_key ASC,dataset_code ASC LIMIT $1`, params);
 }
 
+// 在线心跳查询：既回答「现在有没有在线 Worker」，也给出「这条在线证据是什么时刻」。
+// 传 $1（告警的全精度 last_seen_at 文本）时只返回晚于该时刻的心跳 —— 恢复证据必须发生在故障
+// 之后，顺序反过来会让故障前的心跳把故障之后新发生的离线告警关掉（复验 RR-03-C）。
+// 时间比较放在 SQL 里做，不用 JS 比时间戳文本，避免时区表示或毫秒截断带来的偏差。
 async function select_ops_worker_heartbeats(params, client = pool) {
-  return client.query(`SELECT worker_id FROM ops.worker_heartbeats
-        WHERE role='worker' AND status='running' AND last_seen_at >= now()-interval '2 minutes'
-        ORDER BY last_seen_at DESC LIMIT 1`);
+  const afterVersion = Array.isArray(params) && params.length ? params[0] : null;
+  return client.query(`SELECT worker_id, last_seen_at, last_seen_at::text AS last_seen_at_version
+       FROM ops.worker_heartbeats
+      WHERE role='worker' AND status='running' AND last_seen_at >= now()-interval '2 minutes'
+        AND ($1::timestamptz IS NULL OR last_seen_at > $1::timestamptz)
+      ORDER BY last_seen_at DESC LIMIT 1`, [afterVersion]);
 }
 
 async function update_ops_alert_notifications_14(params, client = pool) {

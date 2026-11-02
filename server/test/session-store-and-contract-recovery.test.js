@@ -251,11 +251,16 @@ const offlineClient = () => ({ isReady: false, isOpen: true, eval: async () => {
   const OTHER_API = 'cn.company.fs.non_financial';
   const ALERT_KEY = 'test:source_contract:rv04';
   const alertScopeKey = `${SOURCE}:${API}`;
+  // Worker 离线告警：按生产 checkWorkerHealth.js 的实际形状使用无 scope 的固定键。
+  const WORKER_ALERT_KEY = 'worker:offline';
+  const WORKER_ID = 'rv03c-worker-fixture';
 
   const cleanup = async () => {
     await pool.query('DELETE FROM ops.alert_notifications WHERE alert_key=$1', [ALERT_KEY]).catch(() => {});
     await pool.query('DELETE FROM ops.source_contract_verifications WHERE source=$1 AND api_name IN ($2,$3)', [SOURCE, API, OTHER_API]).catch(() => {});
     await pool.query('DELETE FROM ops.external_circuits WHERE source=$1 AND api_name IN ($2,$3)', [SOURCE, API, OTHER_API]).catch(() => {});
+    await pool.query("DELETE FROM ops.alert_notifications WHERE alert_key=$1 OR alert_key LIKE 'worker:recovered:%'", [WORKER_ALERT_KEY]).catch(() => {});
+    await pool.query('DELETE FROM ops.worker_heartbeats WHERE worker_id=$1', [WORKER_ID]).catch(() => {});
   };
 
   try {
@@ -520,6 +525,143 @@ const offlineClient = () => ({ isReady: false, isOpen: true, eval: async () => {
       const verdict = await mailer.verifyAlertScope(fresh);
       assert.strictEqual(verdict.recovered, false, '必须要求"告警之后"的新复验');
       assert.strictEqual(verdict.reason, 'contract_reverify_not_newer_than_alert');
+    });
+
+    // ===== 复验 RR-03-C：Worker 离线告警的恢复证据时序 =====
+    // 生产入口是 server/scripts/checkWorkerHealth.js:51 的 resolveWorkerOfflineAlert。
+    // 这里全部走真实服务入口与真实关闭 SQL，只在仓储读取边界注入时序，断言的是入口返回值与落库状态。
+    const loadWorkerAlert = async () => (await pool.query(
+      `SELECT alert_id, alert_type, status, resolved_at, occurrence_count,
+              last_seen_at, last_seen_at::text AS last_seen_at_version
+         FROM ops.alert_notifications WHERE alert_key=$1`,
+      [WORKER_ALERT_KEY],
+    )).rows[0];
+
+    // 落一条与生产同形状的 worker:offline 告警，并把 last_seen_at 放到指定秒数之前。
+    const seedWorkerAlert = async (secondsAgo) => {
+      await repository.insert_ops_alert_notifications([
+        WORKER_ALERT_KEY, 'worker_offline', 'critical', null, null, null, null,
+        '后台 Worker 已离线', '最近2分钟没有收到 Worker 心跳，后台定时任务可能无法执行。',
+      ]);
+      await pool.query(
+        `UPDATE ops.alert_notifications
+            SET status='pending', resolved_at=NULL, acknowledged_at=NULL, sending_started_at=NULL,
+                last_seen_at = now() - ($1 || ' seconds')::interval
+          WHERE alert_key=$2`, [String(secondsAgo), WORKER_ALERT_KEY],
+      );
+      return loadWorkerAlert();
+    };
+
+    const seedHeartbeat = async (secondsAgo, status = 'running') => {
+      await pool.query(
+        `INSERT INTO ops.worker_heartbeats(worker_id, role, status, last_seen_at, updated_at)
+         VALUES($1,'worker',$2, now() - ($3 || ' seconds')::interval, now())
+         ON CONFLICT (worker_id) DO UPDATE
+           SET role='worker', status=EXCLUDED.status, last_seen_at=EXCLUDED.last_seen_at, updated_at=now()`,
+        [WORKER_ID, status, String(secondsAgo)],
+      );
+    };
+
+    const recoveryNotices = async () => (await pool.query(
+      "SELECT alert_id, status FROM ops.alert_notifications WHERE alert_key LIKE 'worker:recovered:%'",
+    )).rows;
+
+    // 只让 NODE_ENV 进入生产分支以走服务入口；收件人为空，绝不发信。
+    const withProductionEnv = async (fn) => {
+      const backup = { NODE_ENV: process.env.NODE_ENV, to: process.env.ALERT_EMAIL_TO };
+      process.env.NODE_ENV = 'production';
+      process.env.ALERT_EMAIL_TO = '';
+      try {
+        return await fn();
+      } finally {
+        process.env.NODE_ENV = backup.NODE_ENV;
+        if (backup.to === undefined) delete process.env.ALERT_EMAIL_TO; else process.env.ALERT_EMAIL_TO = backup.to;
+      }
+    };
+
+    await check('Worker 离线告警：故障之前的在线心跳不能关闭新故障（服务入口）', async () => {
+      await pool.query("DELETE FROM ops.alert_notifications WHERE alert_key LIKE 'worker:recovered:%'");
+      // 心跳在 30 秒前（仍在 2 分钟在线窗口内），告警 last_seen_at 在 5 秒前：
+      // 这条在线证据发生在故障之前，不是这条故障的恢复证据。
+      await seedHeartbeat(30);
+      const alert = await seedWorkerAlert(5);
+      assert.strictEqual((await repository.select_ops_worker_heartbeats()).rows.length, 1,
+        '前置：2 分钟窗口内确实有在线心跳（旧实现会据此关闭）');
+
+      const resolved = await withProductionEnv(() => mailer.resolveWorkerOfflineAlert(alert.alert_id));
+      assert.strictEqual(resolved, 0, '心跳早于告警 last_seen_at 时不得关闭');
+      const after = await loadWorkerAlert();
+      assert.strictEqual(after.status, 'pending', '告警必须仍未关闭');
+      assert.strictEqual(after.resolved_at, null, '不得写关闭时间');
+      assert.strictEqual((await recoveryNotices()).length, 0, '没关闭就不能发恢复通知');
+    });
+
+    await check('Worker 离线告警：读完在线心跳后又落新故障 → 不关闭（并发时序）', async () => {
+      await pool.query("DELETE FROM ops.alert_notifications WHERE alert_key LIKE 'worker:recovered:%'");
+      await seedHeartbeat(1);
+      const alert = await seedWorkerAlert(600);
+      assert.strictEqual((await repository.select_ops_worker_heartbeats([alert.last_seen_at_version])).rows.length, 1,
+        '前置：此刻心跳晚于告警，按当前证据本来可以恢复');
+
+      const realHeartbeats = repository.select_ops_worker_heartbeats;
+      let injected = false;
+      repository.select_ops_worker_heartbeats = async (params, client) => {
+        const result = await realHeartbeats(params, client);
+        if (!injected) {
+          injected = true;
+          // 读完在线证据、关闭写回之前，健康检查又记录了一次离线故障（last_seen_at 前移）。
+          await repository.insert_ops_alert_notifications([
+            WORKER_ALERT_KEY, 'worker_offline', 'critical', null, null, null, null,
+            '后台 Worker 已离线', '最近2分钟没有收到 Worker 心跳，后台定时任务可能无法执行。',
+          ]);
+        }
+        return result;
+      };
+      try {
+        const resolved = await withProductionEnv(() => mailer.resolveWorkerOfflineAlert(alert.alert_id));
+        assert.strictEqual(injected, true, '注入点必须被服务入口真实触发');
+        assert.strictEqual(resolved, 0, '心跳读取之后的新故障不得被旧心跳关闭');
+        const after = await loadWorkerAlert();
+        assert.strictEqual(after.status, 'pending', '告警必须仍未关闭');
+        assert.strictEqual(after.occurrence_count, alert.occurrence_count + 1, '新故障确实又记了一次');
+      } finally {
+        repository.select_ops_worker_heartbeats = realHeartbeats;
+      }
+    });
+
+    await check('Worker 离线告警：故障之后的在线心跳可以关闭并发出恢复通知', async () => {
+      await pool.query("DELETE FROM ops.alert_notifications WHERE alert_key LIKE 'worker:recovered:%'");
+      await seedHeartbeat(1);
+      const alert = await seedWorkerAlert(600);
+      const resolved = await withProductionEnv(() => mailer.resolveWorkerOfflineAlert(alert.alert_id));
+      assert.strictEqual(resolved, 1, '心跳晚于故障时可以关闭');
+      const after = await loadWorkerAlert();
+      assert.strictEqual(after.status, 'resolved');
+      assert.ok(after.resolved_at instanceof Date, '关闭要记录时间');
+      const notices = await recoveryNotices();
+      assert.strictEqual(notices.length, 1, '关闭后必须留一条恢复通知记录');
+      assert.strictEqual(notices[0].alert_id !== undefined, true);
+    });
+
+    await check('Worker 离线告警：没有窗口内在线心跳时不关闭、不发恢复通知', async () => {
+      await pool.query("DELETE FROM ops.alert_notifications WHERE alert_key LIKE 'worker:recovered:%'");
+      await seedHeartbeat(600);   // 心跳在 2 分钟窗口之外，Worker 事实上离线
+      const alert = await seedWorkerAlert(600);
+      const resolved = await withProductionEnv(() => mailer.resolveWorkerOfflineAlert(alert.alert_id));
+      assert.strictEqual(resolved, 0, '没有在线心跳就不能关闭');
+      assert.strictEqual((await loadWorkerAlert()).status, 'pending');
+      assert.strictEqual((await recoveryNotices()).length, 0, '不得凭空发恢复通知');
+    });
+
+    await check('关闭语句自身复核心跳：绕过服务入口也不能用旧心跳关闭', async () => {
+      await seedHeartbeat(30);
+      const alert = await seedWorkerAlert(5);
+      // 其它关闭入口（如历史扫描）同样走这条语句，协议必须自己兜住，不能只靠服务层顺序。
+      const direct = await repository.resolve_alert_with_evidence([
+        alert.alert_id, alert.last_seen_at_version, null, false,
+      ]);
+      assert.strictEqual(direct.rows.length, 0, '关闭 SQL 自己就要拒绝早于故障的心跳');
+      assert.strictEqual((await loadWorkerAlert()).status, 'pending', '告警必须仍未关闭');
     });
   } finally {
     await cleanup();

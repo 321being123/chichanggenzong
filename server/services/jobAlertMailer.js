@@ -658,17 +658,25 @@ async function reconcilePartialDataAlerts(limit = 100) {
   return { checked: rows.length, created };
 }
 
+// Worker 离线告警的恢复：唯一证据是「故障之后仍收到在线心跳」。
+// 读取顺序有硬要求（复验 RR-03-C）：先取告警的全精度版本快照，再读在线心跳。
+// 反过来写会留下一个窗口——两次读取之间记录了新的离线故障时，后读到的已经是新版本，
+// 版本条件自然通过，故障前读到的旧心跳就把刚发生的新故障关掉了。
+// 关闭语句自身还会再复核一次心跳（见 resolve_alert_with_evidence），两层一起保证：
+// 心跳不晚于告警 last_seen_at 时，无论怎么交错都关不掉。
 async function resolveWorkerOfflineAlert(alertId) {
   if (!productionAlertsEnabled()) return 0;
   try {
-    const { rows: workers } = await repository.select_ops_worker_heartbeats();
-    if (!workers.length) return 0;
-    // 关闭前先取告警版本快照，和心跳读取之间若又出现新故障（last_seen_at 前移）则不关闭。
     const { rows: snapshot } = await repository.select_ops_alert_notifications_5([alertId]);
     const alert = snapshot[0];
     if (!alert) return 0;
+    if (['resolved', 'acknowledged'].includes(String(alert.status || ''))) return 0;
+    // 没有全精度版本就无法核对并发，宁可不关，留给下次检查。
+    if (!alert.last_seen_at_version) return 0;
+    const { rows: workers } = await repository.select_ops_worker_heartbeats([alert.last_seen_at_version]);
+    if (!workers.length) return 0;
     const { rows } = await repository.resolve_alert_with_evidence([
-      alertId, alert.last_seen_at_version || alert.last_seen_at || null, null, false,
+      alertId, alert.last_seen_at_version, null, false,
     ]);
     if (rows[0]) {
       await sendRecoveryAlert({

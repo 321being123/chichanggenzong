@@ -920,7 +920,8 @@ router.post('/nav/import', requireLogin, asyncHandler(assertOwnership), requireV
             cash_replacement_delta_cny: isAnchor && priorLatestCash != null ? round(r.cash - priorLatestCash, 2) : null,
             position_price_date: isAnchor ? anchorPriceDate : null,
             position_price_fallback: isAnchor && anchorPriceDate && anchorPriceDate !== requestedAnchorDate ? 'previous_complete_close' : null
-          }), inputHash]
+          }), inputHash],
+        client, // 必须沿用事务连接：走池连接会与本事务已持有的 nav_history 行锁互相等待
       );
       if (isAnchor) {
         // 前一完整收盘日用于周末/行情未落库日时，把同一组价格固化到导入日，

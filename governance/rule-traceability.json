@@ -4303,6 +4303,10 @@
         {
           "file": "server/test/stock-swap-job-execution.test.js",
           "pattern": "STOCK-SWAP-SETTLE-067"
+        },
+        {
+          "file": "server/test/stock-swap-journey.test.js",
+          "pattern": "STOCK-SWAP-SETTLE-067"
         }
       ],
       "owner": "WorkBuddy",

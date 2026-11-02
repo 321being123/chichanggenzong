@@ -9,11 +9,11 @@
 // 每个文件进程隔离（互不污染状态），汇总通过/失败数量并给出非零退出码。
 // 用法：node server/test/run-all.js
 require('dotenv').config({ path: require('path').join(__dirname, '..', '..', '.env') });
-const { spawnSync } = require('child_process');
+const { spawn, spawnSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
-const os = require('os');
-const { Client } = require('pg');
+const runControl = require('./lib/testRunControl');
+const { TEST_DATABASE, ensureTestDatabase, cleanupTestArtifacts } = require('./lib/testDatabase');
 
 const testDir = __dirname;
 const rootDir = path.join(__dirname, '..', '..');
@@ -35,85 +35,75 @@ const resolvedPython = findPython();
 const testEnv = { ...process.env, NODE_ENV: 'test', EXTERNAL_CALL_GUARD: '0', ALERT_EMAIL_TO: '', ALERT_EMAIL_FROM: '',
   PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8' };
 if (!testEnv.PYTHON && resolvedPython) testEnv.PYTHON = resolvedPython;
-const TEST_DATABASE = String(process.env.PGTESTDATABASE || 'portfolio_test').replace(/[^a-zA-Z0-9_]/g, '_');
 // 单文件超时：spawnSync 不设超时，卡住的用例会把整轮门禁永久挂起（2026-11-01 实测：
 // backup-retention 的 bash 子进程在本机被 shell 运行时垫片卡住，全量测试停住 40 分钟无任何输出，
 // 而数据库连接是空闲的，从日志完全看不出卡在哪个文件）。超时按失败处理并打印最后一行输出。
 const NODE_TEST_TIMEOUT_MS = 5 * 60 * 1000;
 const PY_TEST_TIMEOUT_MS = 5 * 60 * 1000;
+// N0 整轮硬截止：外部计时，单个文件卡死之外再加一道总时长上限，
+// 超出后剩余文件记为「未执行」而不是通过（方案 10.7 C）。
+const TOTAL_DEADLINE_MS = Number(process.env.TEST_RUN_DEADLINE_MS || 4 * 60 * 60 * 1000);
+const WAIT_TIMEOUT_MS = Number(process.env.TEST_RUN_WAIT_TIMEOUT_MS || 30 * 60 * 1000);
+let runStartedAt = Date.now();
+let runId = null;
 
-function testDatabaseConfig() {
-  const configured = process.env.DATABASE_URL;
-  if (configured) {
-    const url = new URL(configured);
-    url.pathname = '/' + TEST_DATABASE;
-    return { connectionString: url.toString() };
-  }
-  return {
-    host: process.env.PGHOST || 'localhost', port: Number(process.env.PGPORT || 5432),
-    user: process.env.PGUSER || 'postgres', password: process.env.PGPASSWORD || '', database: TEST_DATABASE,
-  };
+function deadlineExceeded() {
+  return Date.now() - runStartedAt > TOTAL_DEADLINE_MS;
 }
 
-// 测试用例会故意创建 test_guard_* / cninfo-test 熔断记录验证持久化行为。
-// 测试库是从业务库模板复制而来，必须在每轮测试前后清掉这些测试专属记录，
-// 防止历史测试数据进入验收统计；绝不连接或修改业务库。
-async function cleanupTestArtifacts() {
-  const client = new Client(testDatabaseConfig());
-  try {
-    await client.connect();
-    await client.query(`
-      DELETE FROM ops.external_call_budgets
-       WHERE source LIKE 'test_guard_%' OR source = 'cninfo-test'
-    `);
-    await client.query(`
-      DELETE FROM ops.external_circuits
-       WHERE source LIKE 'test_guard_%' OR source = 'cninfo-test'
-    `);
-  } finally {
-    await client.end().catch(() => {});
+function deadlineEvidence(file) {
+  return '整轮超过 ' + Math.round(TOTAL_DEADLINE_MS / 60000) + ' 分钟硬截止，未执行：' + file;
+}
+
+// ---- 全生命周期监督（2026-11-02 第二轮验收后重做） ----
+// 第一版是「同进程 setTimeout」，只能处理 await 卡住；一旦入口自身同步阻塞
+// （同步初始化、同步子命令、第三方代码死循环），定时器回调根本没机会执行，也就谈不上截止。
+// 现在改成「独立父进程监督 + 子进程执行」：
+//   监督者只做计时与终止，不做任何可能阻塞的工作；
+//   执行者跑建库/测试/清理，同步卡死只卡住它自己，父进程照常到点终止整棵进程树。
+let currentChildPid = null;
+
+function remainingBudgetMs() {
+  return Math.max(0, TOTAL_DEADLINE_MS - (Date.now() - runStartedAt));
+}
+
+function trackChild(pid, label) {
+  currentChildPid = pid || null;
+  if (runId && pid) {
+    try { runControl.registerChild(runId, pid, label); } catch (_) { /* 登记失败不拖垮执行 */ }
   }
 }
 
-async function ensureTestDatabase() {
-  // 测试必须运行在独立数据库；首次运行从当前业务库复制结构和本地样例数据。
-  const configured = process.env.DATABASE_URL;
-  let adminConfig;
-  if (configured) {
-    const url = new URL(configured);
-    url.pathname = '/postgres';
-    adminConfig = { connectionString: url.toString() };
-  } else {
-    adminConfig = {
-      host: process.env.PGHOST || 'localhost', port: Number(process.env.PGPORT || 5432),
-      user: process.env.PGUSER || 'postgres', password: process.env.PGPASSWORD || '', database: 'postgres',
-    };
+// 未确认退出的子进程**不注销登记**：登记是释放判据唯一的证据，
+// 提前注销会让「保留资源」的意图落不到磁盘上（第一版的缺陷）。
+function untrackChild(pid, confirmedExit) {
+  if (currentChildPid === pid) currentChildPid = null;
+  if (!confirmedExit) return;
+  if (runId && pid) {
+    try { runControl.unregisterChild(runId, pid); } catch (_) { /* 同上 */ }
   }
-  const client = new Client(adminConfig);
-  try {
-    await client.connect();
-    const exists = await client.query('SELECT 1 FROM pg_database WHERE datname=$1', [TEST_DATABASE]);
-    if (!exists.rowCount) {
-      const source = String(process.env.PGDATABASE || 'portfolio').replace(/[^a-zA-Z0-9_]/g, '_');
-      if (source !== TEST_DATABASE) await client.query(`CREATE DATABASE "${TEST_DATABASE}" TEMPLATE "${source}"`);
-      else await client.query(`CREATE DATABASE "${TEST_DATABASE}"`);
-    }
-  } finally {
-    await client.end().catch(() => {});
-  }
-  delete testEnv.DATABASE_URL;
-  testEnv.PGDATABASE = TEST_DATABASE;
 }
 
-function runNode(file) {
-  const r = spawnSync(process.execPath, [file], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], env: testEnv, timeout: NODE_TEST_TIMEOUT_MS });
-  const out = (r.stdout || '') + (r.stderr || '');
+// 每个子文件的超时不能超过整轮剩余预算，否则「硬截止」会被单文件拖穿。
+function childTimeoutMs(base) {
+  return Math.max(1000, Math.min(base, remainingBudgetMs()));
+}
+
+async function runNode(file) {
+  const budget = childTimeoutMs(NODE_TEST_TIMEOUT_MS);
+  const r = await runControl.spawnWithTimeout(process.execPath, [file], {
+    cwd: rootDir, env: testEnv, timeoutMs: budget,
+    onSpawn: pid => trackChild(pid, path.basename(file)),
+  });
+  // 只有确认已退出才注销登记；否则保留，交给释放判据决定是否放行
+  untrackChild(r.pid, !runControl.isProcessAlive(r.pid));
+  const out = r.out || '';
   const lines = out.split('\n').map(s => s.trim()).filter(Boolean);
   const last = lines[lines.length - 1] || '(无输出)';
-  const timedOut = Boolean(r.error && r.error.code === 'ETIMEDOUT');
-  if (timedOut) {
+  if (r.timedOut) {
     fail++; failed.push(file);
-    console.log('  ✗ ' + file + '  (超时 ' + Math.round(NODE_TEST_TIMEOUT_MS / 1000) + 's 未结束，已终止)  ——  ' + last);
+    console.log('  ✗ ' + file + '  (超时 ' + Math.round(budget / 1000) + 's 未结束，已终止整棵进程树)  ——  ' + last);
+    if (r.treeKill) console.log('    进程树终止：' + r.treeKill.method + (r.treeKill.output ? ' · ' + r.treeKill.output : ''));
     console.log(out);
     return;
   }
@@ -130,13 +120,17 @@ function runNode(file) {
   }
 }
 
-function runNodeGlob() {
+async function runNodeGlob() {
   const files = fs.readdirSync(testDir).filter(f => f.endsWith('.test.js')).sort();
   console.log('【1/4 单元·集成测试】共 ' + files.length + ' 个文件');
-  for (const f of files) runNode(path.join(testDir, f));
+  for (const f of files) {
+    const file = path.join(testDir, f);
+    if (deadlineExceeded()) { fail++; failed.push(f); console.log('  ✗ ' + deadlineEvidence(f)); continue; }
+    await runNode(file);
+  }
 }
 
-function runExtraNode() {
+async function runExtraNode() {
   console.log('\n【2/4 安全专项 + IPO 前端】');
   const extras = [
     path.join(rootDir, 'test-security.js'),
@@ -144,7 +138,8 @@ function runExtraNode() {
   ];
   for (const file of extras) {
     if (!fs.existsSync(file)) { skip++; console.log('  ⊘ ' + file + '  (文件不存在，跳过)'); continue; }
-    runNode(file);
+    if (deadlineExceeded()) { fail++; failed.push(path.basename(file)); console.log('  ✗ ' + deadlineEvidence(path.basename(file))); continue; }
+    await runNode(file);
   }
 }
 
@@ -168,7 +163,7 @@ function findPython() {
   return null;
 }
 
-function runPython() {
+async function runPython() {
   console.log('\n【3/4 + 4/4 Python 功能测试】');
   const py = findPython();
   if (!py) { skip++; console.log('  ⊘ 未找到 Python 解释器，跳过 Python 功能测试'); return; }
@@ -185,13 +180,20 @@ function runPython() {
   ].filter(f => fs.existsSync(f));
   if (pyFiles.length === 0) { skip++; console.log('  ⊘ 未找到 Python 测试文件，跳过'); return; }
   for (const file of pyFiles) {
-    const r = spawnSync(py, [file], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], env: testEnv, timeout: PY_TEST_TIMEOUT_MS });
-    const out = (r.stdout || '') + (r.stderr || '');
+    if (deadlineExceeded()) { fail++; failed.push(path.basename(file)); console.log('  ✗ ' + deadlineEvidence(path.basename(file))); continue; }
+    const pyBudget = childTimeoutMs(PY_TEST_TIMEOUT_MS);
+    const r = await runControl.spawnWithTimeout(py, [file], {
+      cwd: rootDir, env: testEnv, timeoutMs: pyBudget,
+      onSpawn: pid => trackChild(pid, path.basename(file)),
+    });
+    untrackChild(r.pid, !runControl.isProcessAlive(r.pid));
+    const out = r.out || '';
     const lines = out.split('\n').map(s => s.trim()).filter(Boolean);
     const last = lines[lines.length - 1] || '(无输出)';
-    if (r.error && r.error.code === 'ETIMEDOUT') {
+    if (r.timedOut) {
       fail++; failed.push(path.basename(file));
-      console.log('  ✗ ' + path.basename(file) + '  (超时 ' + Math.round(PY_TEST_TIMEOUT_MS / 1000) + 's 未结束，已终止)  ——  ' + last);
+      console.log('  ✗ ' + path.basename(file) + '  (超时 ' + Math.round(pyBudget / 1000) + 's 未结束，已终止整棵进程树)  ——  ' + last);
+      if (r.treeKill) console.log('    进程树终止：' + r.treeKill.method + (r.treeKill.output ? ' · ' + r.treeKill.output : ''));
       console.log(out);
       continue;
     }
@@ -214,34 +216,140 @@ function runPython() {
   }
 }
 
-(async () => {
-  try {
-    await ensureTestDatabase();
-    await cleanupTestArtifacts();
-  } catch (error) {
-    console.error('测试隔离库初始化失败：', error.message);
-    process.exit(1);
+function currentResources() {
+  return [
+    runControl.pgResource(TEST_DATABASE),
+    runControl.dirResource(path.join(rootDir, 'data')),
+  ];
+}
+
+// ===== 执行者：真正跑建库/测试/清理。同步卡死只影响它自己，父进程照常到点终止。 =====
+async function runWorker() {
+  runStartedAt = Date.now();
+  const inherited = runControl.inheritRunContext({ resources: currentResources() });
+  if (!inherited) {
+    console.error('内部错误：工作进程必须由监督进程启动（缺少有效资源授权），本次未执行任何测试');
+    return 2;
   }
+  runId = inherited.runId;
+  testEnv.TEST_RUN_ID = runId;
+  testEnv.TEST_RUN_LOCK_OWNER_PID = String(inherited.ownerPid);
+  console.log('本轮 runId=' + runId + ' · 测试库 ' + TEST_DATABASE +
+    ' · 硬截止 ' + Math.round(TOTAL_DEADLINE_MS / 60000) + ' 分钟（由独立监督进程计时，pid=' + inherited.ownerPid + '）');
+
   try {
-    runNodeGlob();
-    runExtraNode();
-    runPython();
-  } finally {
     try {
+      await ensureTestDatabase();
+      // 子进程统一指向隔离测试库：只设 PGDATABASE 不够，还必须摘掉可能指回业务库的 DATABASE_URL。
+      delete testEnv.DATABASE_URL;
+      testEnv.PGDATABASE = TEST_DATABASE;
       await cleanupTestArtifacts();
     } catch (error) {
-      fail++;
-      failed.push('test-artifact-cleanup');
-      console.error('测试专属熔断记录清理失败：', error.message);
+      console.error('测试隔离库初始化失败：', error.message);
+      process.exitCode = 1;
+      return;
     }
-  }
+    try {
+      await runNodeGlob();
+      await runExtraNode();
+      await runPython();
+    } finally {
+      try {
+        await cleanupTestArtifacts();
+      } catch (error) {
+        fail++;
+        failed.push('test-artifact-cleanup');
+        console.error('测试专属熔断记录清理失败：', error.message);
+      }
+    }
 
-  console.log('\n========================================');
-  console.log('测试库 ' + TEST_DATABASE + ' · 通过 ' + pass + ' · 失败 ' + fail + ' · 跳过 ' + skip +
-    (fail ? ' · 失败项：' + failed.join('、') : (skip ? '' : ' · 全部通过 ✅')));
-  if (isCI && skip - allowedSkip > 0) {
-    console.log('CI 模式下不允许跳过关键测试（共跳过 ' + (skip - allowedSkip) + ' 项），判定失败');
-    process.exit(1);
+    console.log('\n========================================');
+    console.log('runId ' + runId + ' · 测试库 ' + TEST_DATABASE + ' · 通过 ' + pass + ' · 失败 ' + fail + ' · 跳过 ' + skip +
+      (fail ? ' · 失败项：' + failed.join('、') : (skip ? '' : ' · 全部通过 ✅')));
+    // 保留 0.9.1.22 引入的「允许跳过」口径：CI 白名单内的跳过不算关键测试缺失。
+    if (isCI && skip - allowedSkip > 0) {
+      console.log('CI 模式下不允许跳过关键测试（共跳过 ' + (skip - allowedSkip) + ' 项），判定失败');
+      return 1;
+    }
+    return fail ? 1 : 0;
+  } catch (error) {
+    console.error('测试执行异常：', (error && error.stack) || error);
+    return 1;
   }
-  process.exit(fail ? 1 : 0);
-})();
+}
+
+// ===== 监督者：只持有资源、计时、终止；绝不做任何可能阻塞的工作 =====
+async function runSupervisor() {
+  runStartedAt = Date.now();
+  let lease;
+  try {
+    lease = await runControl.acquireLock({
+      prefix: 'test-all',
+      label: 'test:all @ ' + rootDir,
+      resources: currentResources(),
+      waitTimeoutMs: WAIT_TIMEOUT_MS,
+    });
+  } catch (error) {
+    console.error('测试资源准入失败（本次未执行任何测试）：', error.message);
+    return 2;
+  }
+  runId = lease.runId;
+  console.log('本轮 runId=' + runId + ' · 测试库 ' + TEST_DATABASE +
+    (lease.waitMs > 0 ? ' · 排队 ' + Math.round(lease.waitMs / 1000) + 's' : '') +
+    ' · 硬截止 ' + Math.round(TOTAL_DEADLINE_MS / 60000) + ' 分钟 · 独立监督进程 pid=' + process.pid);
+
+  const env = { ...process.env, TEST_RUN_ID: runId, TEST_RUN_LOCK_OWNER_PID: String(process.pid) };
+  const child = spawn(process.execPath, [__filename, '--worker'], {
+    cwd: rootDir, env, stdio: 'inherit', windowsHide: true,
+  });
+  runControl.registerChild(runId, child.pid, 'test:all worker');
+
+  // 释放只有一条路径：lease.release() 自己检查登记的子进程是否都已退出。
+  // 有存活就保留锁并返回原因——不再有「调用方标志 + 内部逻辑」两套判据。
+  const finish = (code, note) => {
+    const retained = lease.release();
+    if (retained) {
+      console.error('[测试资源] ' + (note ? note + '时' : '') + '仍有未确认退出的子进程，保留资源占用：' + JSON.stringify(retained));
+      console.error('[测试资源] 请用 node server/test/testctl.js status 核查；不要手工删锁抢跑');
+      return 1;
+    }
+    if (note) console.error('[测试资源] ' + note + '，资源已释放');
+    return code;
+  };
+
+  return await new Promise(resolve => {
+    let settled = false;
+    // 到期下限 100ms：允许用极小预算复现「同步卡死」，不再被人为的 1s 下限吃掉。
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      console.error('\n[测试资源] 整轮超过硬截止（' + Math.round(TOTAL_DEADLINE_MS / 1000) + 's，独立监督进程），强制结束');
+      const kill = runControl.killProcessTree(child.pid);
+      console.error('[测试资源] 终止测试进程树：' + kill.method + ' · 已确认退出=' + kill.killed);
+      if (kill.killed) runControl.unregisterChild(runId, child.pid);
+      resolve(finish(1, '整轮超时'));
+    }, Math.max(100, TOTAL_DEADLINE_MS));
+
+    child.on('error', error => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      console.error('测试进程启动失败：' + error.message);
+      resolve(finish(1, '测试进程启动失败'));
+    });
+
+    child.on('close', code => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      const exited = !runControl.isProcessAlive(child.pid);
+      if (exited) runControl.unregisterChild(runId, child.pid);
+      resolve(finish(Number.isInteger(code) ? code : 1));
+    });
+  });
+}
+
+const entry = process.argv.includes('--worker') ? runWorker() : runSupervisor();
+entry
+  .then(code => process.exit(code || 0))
+  .catch(error => { console.error((error && error.stack) || error); process.exit(1); });

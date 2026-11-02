@@ -22,7 +22,9 @@ const slotService = read('server/services/jobScheduleSlots.js') + read('server/r
 const adminUi = read('public/js/admin.js');
 const pythonGuard = read('ipo-report/external_call_guard.py');
 const externalGuard = read('server/services/externalCallGuard.js');
-const testRunner = read('server/test/run-all.js');
+// 2026-11-02 N0：建库/清理抽到 server/test/lib/testDatabase.js，全量与单文件入口共用同一实现，
+// 断言必须同时覆盖入口与共享实现，否则会因搬家误判成「隔离库被去掉」。
+const testRunner = read('server/test/run-all.js') + read('server/test/lib/testDatabase.js');
 const tushareClient = read('server/services/tushare.js');
 const identitySource = read('server/services/securityIdentity.js');
 const financialArchitecture = read('server/repositories/stockProjectionRepository.js');

@@ -15,6 +15,17 @@ if (String(process.env.NODE_ENV || '').toLowerCase() === 'test') {
   }
 }
 
+// N0-A.4：直接 `node server/test/*.test.js` 会绕过统一入口（没有隔离测试库、没有本机资源互斥），
+// 在没有 NODE_ENV=test 时甚至可能连到业务库。测试文件的唯一受控入口是
+// `npm.cmd run test:all` 或 `npm.cmd run test:file -- <文件>`。
+if (/[\\/]server[\\/]test[\\/].*\.test\.js$/i.test(process.argv[1] || '') && !process.env.TEST_RUN_ID) {
+  // 直接 node 跑测试文件必须硬失败：部分用例会把连接错误兜成 [SKIP] 并退出 0，
+  // 只抛异常会被吞成「跳过成功」，等于变相绕过隔离。
+  console.error('测试文件必须经受控入口运行：npm.cmd run test:file -- <测试文件>（或 npm.cmd run test:all）。\n' +
+    '直接 node 运行会绕过隔离测试库与本机资源互斥，本次不执行任何用例。');
+  process.exit(2);
+}
+
 // DATA_DIR 指向项目根目录下的 data/（本文件位于 server/db，故需上溯两级）
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, '..', '..', 'data');
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });

@@ -79,7 +79,9 @@ async function claimRecoverySummaryAlerts() {
 
 async function loadResolutionCandidates(where, params) {
   const { rows } = await pool.query(
-    `SELECT * FROM ops.alert_notifications
+    // last_seen_at_version：全精度文本版本（复验 RR-03 的版本守卫要精确比较，
+    // Date 只有毫秒精度，回比会因微秒被截断而永远不相等）。
+    `SELECT *, last_seen_at::text AS last_seen_at_version FROM ops.alert_notifications
        WHERE status NOT IN ('resolved','acknowledged')
          AND alert_type NOT IN ('recovery','worker_recovered','job_overdue_recovered','external_api_switch','external_api_interface_failover')
          AND (${where})`, params
@@ -213,6 +215,27 @@ async function update_ops_alert_notifications_9(params, client = pool) {
         WHERE alert_id=ANY($1::bigint[]) AND status='sending'`, params);
 }
 
+// 按证据关闭时带上"读到的告警版本"（last_seen_at）：判定与关闭之间若又来了新失败，
+// last_seen_at 会被 upsert 推前，这里的条件不成立 → 不关闭，避免并发/过期判定关掉新故障（复验 RR-03）。
+// 注意：仓库里 _10~_16 是历史编号，已各有用途，这里用语义命名，避免重名覆盖（同名后声明会静默生效）。
+async function resolve_alert_evidence_guarded(params, client = pool) {
+  return client.query(`UPDATE ops.alert_notifications
+          SET status='resolved',resolved_at=now(),sending_started_at=NULL,updated_at=now()
+        WHERE alert_id=$1 AND status NOT IN ('resolved','acknowledged')
+          AND alert_type NOT IN ('recovery','worker_recovered','job_overdue_recovered','external_api_switch','external_api_interface_failover')
+          AND ($2::timestamptz IS NULL OR last_seen_at <= $2::timestamptz)
+        RETURNING *`, params);
+}
+
+// 同上，但不加通知型过滤（对应原 _11 的调用场景）。
+async function resolve_alert_evidence_guarded_untyped(params, client = pool) {
+  return client.query(`UPDATE ops.alert_notifications
+            SET status='resolved',resolved_at=now(),sending_started_at=NULL,updated_at=now()
+          WHERE alert_id=$1 AND status NOT IN ('resolved','acknowledged')
+            AND ($2::timestamptz IS NULL OR last_seen_at <= $2::timestamptz)
+          RETURNING *`, params);
+}
+
 async function update_ops_alert_notifications_10(params, client = pool) {
   return client.query(`UPDATE ops.alert_notifications
           SET status='resolved',resolved_at=now(),sending_started_at=NULL,updated_at=now()
@@ -222,7 +245,7 @@ async function update_ops_alert_notifications_10(params, client = pool) {
 }
 
 async function select_ops_alert_notifications_3(params, client = pool) {
-  return client.query(`SELECT * FROM ops.alert_notifications
+  return client.query(`SELECT *, last_seen_at::text AS last_seen_at_version FROM ops.alert_notifications
         WHERE scope_type='source_endpoint'
           AND status NOT IN ('resolved','acknowledged')
           AND alert_type NOT IN ('recovery','worker_recovered','job_overdue_recovered','external_api_switch','external_api_interface_failover')
@@ -362,13 +385,14 @@ function insert_ops_source_contract_verifications(params, client = pool) {
 }
 
 function loadSourceContractVerifications(executor, allApis, params) {
+  // 判定要按「最新一条」下结论（复验 RR-03）：同 checked_at 时用自增 id 兜底，避免次序不稳定。
   const sql = allApis
     ? `SELECT verification_id,source,api_name,status,contract_ok,detail,checked_at
          FROM ops.source_contract_verifications WHERE source=$1
-        ORDER BY checked_at DESC LIMIT $2`
+        ORDER BY checked_at DESC, verification_id DESC LIMIT $2`
     : `SELECT verification_id,source,api_name,status,contract_ok,detail,checked_at
          FROM ops.source_contract_verifications WHERE source=$1 AND api_name=$2
-        ORDER BY checked_at DESC LIMIT $3`;
+        ORDER BY checked_at DESC, verification_id DESC LIMIT $3`;
   return executor(sql, params);
 }
 
@@ -408,6 +432,8 @@ module.exports = {
   update_ops_alert_notifications_8,
   update_ops_alert_notifications_9,
   update_ops_alert_notifications_10,
+  resolve_alert_evidence_guarded,
+  resolve_alert_evidence_guarded_untyped,
   select_ops_alert_notifications_3,
   update_ops_alert_notifications_11,
   select_ops_alert_notifications_4,

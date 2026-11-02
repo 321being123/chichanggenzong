@@ -667,8 +667,13 @@ def main():
             "&& release_head=$(git rev-parse HEAD) "
             "&& web_pid=$(systemctl show -p MainPID --value portfolio-server.service) "
             "&& worker_pid=$(systemctl show -p MainPID --value portfolio-worker.service) "
-            "&& web_started=$(systemctl show -p ActiveEnterTimestamp --value portfolio-server.service) "
-            "&& worker_started=$(systemctl show -p ActiveEnterTimestamp --value portfolio-worker.service) "
+            # 复验 RR-01：systemctl 默认输出带英文时区缩写（如 `Sun 2026-11-01 21:41:28 CST`），
+            # JS 的 new Date 会把 CST 当美国中部时间，与 Asia/Shanghai 差 14 小时，
+            # 正常进程会被判成"旧进程"从而误触发失败/回滚。这里改取无歧义表示：
+            # 优先 epoch（--timestamp=unix），不支持时退回 TZ=UTC 的 UTC 文本；两者都拿不到就留空，
+            # 由探针记"无法核实"，绝不猜时区、也不机械减小时数。
+            "&& web_started=$({ systemctl show -p ActiveEnterTimestamp --value --timestamp=unix portfolio-server.service 2>/dev/null || TZ=UTC systemctl show -p ActiveEnterTimestamp --value portfolio-server.service; } | grep -v '^$' | head -1) "
+            "&& worker_started=$({ systemctl show -p ActiveEnterTimestamp --value --timestamp=unix portfolio-worker.service 2>/dev/null || TZ=UTC systemctl show -p ActiveEnterTimestamp --value portfolio-worker.service; } | grep -v '^$' | head -1) "
             "&& health_commit=$(printf '%s' \"$health_json\" | sed -n 's/.*\"commit\":\"\\([^\"]*\\)\".*/\\1/p') "
             # 发布身份核对（审查 S-001）：不再用"迁移目录字母序最后一个文件"冒充已应用迁移，
             # 改为探针读 /health 自述提交、Worker 心跳的 commit_sha 与 schema_migrations 实际集合。

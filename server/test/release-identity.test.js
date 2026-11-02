@@ -162,6 +162,71 @@ function check(name, fn) {
     assert.ok(wrongWebPid.mismatch.includes('web_pid_mismatch'), wrongWebPid.line);
   });
 
+  // 复验 RR-01：生产 systemctl 输出 `Sun ... CST`，JS 会按美国中部时间解析（差 14 小时），
+  // 正常进程被判成旧进程 → 部署失败/回滚。这里把"真实时刻等价性"和"不猜时区"都钉住。
+  const { parseUnitTimestamp } = require('../scripts/deployIdentityProbe');
+  const instantIso = '2026-11-01T21:41:28+08:00';
+  const instantMs = Date.parse(instantIso);
+
+  await check('同一真实时刻的不同表示必须解析成同一时刻（CST 文本不得被当成美国中部时间）', async () => {
+    assert.strictEqual(parseUnitTimestamp(instantIso), instantMs, '带 +08:00 偏移的 ISO');
+    assert.strictEqual(parseUnitTimestamp('2026-11-01T13:41:28Z'), instantMs, 'UTC ISO');
+    assert.strictEqual(parseUnitTimestamp('Sun 2026-11-01 13:41:28 UTC'), instantMs, 'TZ=UTC 的 systemctl 文本');
+    assert.strictEqual(parseUnitTimestamp(`@${Math.floor(instantMs / 1000)}`), instantMs, 'epoch 秒');
+    assert.strictEqual(parseUnitTimestamp(`@${instantMs * 1000}`), instantMs, 'epoch 微秒');
+    assert.strictEqual(parseUnitTimestamp(String(instantMs)), instantMs, 'epoch 毫秒');
+    // CST/CET 等英文缩写不可无歧义还原：拒绝猜测（返回 NaN），绝不机械减小时数。
+    assert.ok(Number.isNaN(parseUnitTimestamp('Sun 2026-11-01 21:41:28 CST')), 'CST 文本不能猜');
+    assert.ok(Number.isNaN(parseUnitTimestamp('2026-11-01 21:41:28')), '无时区文本不能猜');
+  });
+
+  await check('CST 文本只记"无法核实"，不得误判成旧进程（不触发假失败）', async () => {
+    const verdict = evaluateIdentity({
+      ...baseFacts, health: goodHealth, worker: goodWorker, expectWebPid: '111', expectWorkerPid: '222',
+      // 同一个真实时刻：CST 文本 vs 实际 ISO（若按美国中部时间解析会差 14 小时）
+      expectWebStarted: 'Sun 2026-11-01 21:41:28 CST',
+      expectWorkerStarted: 'Sun 2026-11-01 21:41:28 CST',
+    });
+    assert.strictEqual(verdict.status, 'unknown', verdict.line);
+    assert.ok(verdict.unknown.includes('web_start_unparsed'), verdict.line);
+    assert.ok(verdict.unknown.includes('worker_start_unparsed'), verdict.line);
+    assert.ok(!verdict.mismatch.includes('web_process_older_than_unit'), '不能因为时区表示差异报旧进程');
+    assert.ok(!verdict.mismatch.includes('worker_process_older_than_unit'), '不能因为时区表示差异报旧进程');
+  });
+
+  await check('UTC 文本、等价偏移与 epoch：同进程判一致，旧进程才判不一致', async () => {
+    // 进程真实启动时刻固定为 13:41:28Z（= 21:41:28+08:00）。
+    const healthAt = { ...goodHealth, startedAt: '2026-11-01T13:41:28Z' };
+    const workerAt = { ...goodWorker, started_at: '2026-11-01T13:41:28Z' };
+    const base = { ...baseFacts, health: healthAt, worker: workerAt, expectWebPid: '111', expectWorkerPid: '222' };
+
+    const okUtc = evaluateIdentity({ ...base, expectWebStarted: 'Sun 2026-11-01 13:41:28 UTC', expectWorkerStarted: 'Sun 2026-11-01 13:41:28 UTC' });
+    assert.strictEqual(okUtc.status, 'ok', okUtc.line);
+
+    const okEpoch = evaluateIdentity({ ...base, expectWebStarted: `@${Math.floor(instantMs / 1000)}`, expectWorkerStarted: `@${Math.floor(instantMs / 1000)}` });
+    assert.strictEqual(okEpoch.status, 'ok', okEpoch.line);
+
+    const okOffset = evaluateIdentity({ ...base, expectWebStarted: instantIso, expectWorkerStarted: instantIso });
+    assert.strictEqual(okOffset.status, 'ok', okOffset.line);
+
+    // 旧进程：unit 启动比进程真实启动晚一小时 → 必须判不一致（60 秒容差盖不住 1 小时）。
+    const oldProcess = evaluateIdentity({ ...base, expectWebStarted: 'Sun 2026-11-01 14:41:28 UTC', expectWorkerStarted: 'Sun 2026-11-01 14:41:28 UTC' });
+    assert.strictEqual(oldProcess.status, 'mismatch', oldProcess.line);
+    assert.ok(oldProcess.mismatch.includes('web_process_older_than_unit'));
+    assert.ok(oldProcess.mismatch.includes('worker_process_older_than_unit'));
+  });
+
+  await check('启动时刻缺失不比较、非法值记无法核实（都不制造假不一致）', async () => {
+    const missing = evaluateIdentity({ ...baseFacts, health: goodHealth, worker: goodWorker, expectWebPid: '111', expectWorkerPid: '222' });
+    assert.strictEqual(missing.status, 'ok', missing.line);
+    assert.ok(!missing.mismatch.some(item => /older_than_unit/.test(item)));
+
+    const invalid = evaluateIdentity({ ...baseFacts, health: goodHealth, worker: goodWorker, expectWebPid: '111', expectWorkerPid: '222', expectWebStarted: 'not-a-timestamp', expectWorkerStarted: '' });
+    assert.strictEqual(invalid.status, 'unknown', invalid.line);
+    assert.ok(invalid.unknown.includes('web_start_unparsed'), invalid.line);
+    assert.ok(!invalid.mismatch.includes('web_process_older_than_unit'));
+  });
+
   console.log('D. 部署脚本接线（静态）');
 
   const deploy = fs.readFileSync(path.join(__dirname, '..', '..', 'deploy', 'deploy_password.py'), 'utf8');
@@ -170,6 +235,9 @@ function check(name, fn) {
     assert.match(deploy, /IDENTITY_MISMATCH/, '必须识别身份不一致');
     assert.match(deploy, /--expect-worker-pid=/, '必须把当前 unit 的 MainPID 交给探针');
     assert.match(deploy, /--expect-worker-started=/, '必须把 unit 启动时刻交给探针');
+    // RR-01：时间取值必须无歧义（epoch 优先，退回 TZ=UTC），不能再直传 CST 文本。
+    assert.match(deploy, /ActiveEnterTimestamp --value --timestamp=unix/, '启动时刻必须取 epoch');
+    assert.match(deploy, /TZ=UTC systemctl show -p ActiveEnterTimestamp/, '不支持 epoch 时必须退回 UTC 文本');
     assert.match(deploy, /IDENTITY_UNKNOWN/, '无法核实要单独识别，不能当成通过');
     assert.match(deploy, /发布身份无法核实/, '无法核实要在输出里明说');
     assert.match(deploy, /发布身份不一致，部署判为失败/, '不一致要明确失败并进入回滚');

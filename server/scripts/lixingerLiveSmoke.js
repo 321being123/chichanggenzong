@@ -40,7 +40,9 @@ function metricValue(row, key) {
     const text = raw.trim();
     if (!text) return { present: true, valid: false, value: null };
     if (!/^[-+]?\d+(\.\d+)?([eE][-+]?\d+)?$/.test(text)) return { present: true, valid: false, value: null };
-    return { present: true, valid: true, value: Number(text) };
+    // 正则只证明"长得像数字"：1e999 会转成 Infinity，必须与数字分支同样校验有限性（复验 RR-04）。
+    const parsed = Number(text);
+    return { present: true, valid: Number.isFinite(parsed), value: Number.isFinite(parsed) ? parsed : null };
   }
   if (typeof raw === 'number') return { present: true, valid: Number.isFinite(raw), value: Number.isFinite(raw) ? raw : null };
   return { present: true, valid: false, value: null };
@@ -137,12 +139,15 @@ async function runSmoke({
 
 // 合同验证留证（复验 RV-04）：只有真的跑过一次合同判定才落库。
 // contract_ok=true 是唯一能关闭 source_contract 告警的证据；普通 HTTP 200 不能替代。
+// 复验 RR-02：EMPTY_OK 是"接口通了但没样本"，一列估值字段都没校验，不能算合同验证成功，
+// 只能作为"合法空/未验证"留证（contract_ok=false），否则空样本会把结构异常告警关掉。
 const CONTRACT_VERDICT_STATUSES = new Set(['OK', 'EMPTY_OK', 'CONTRACT_CHANGED']);
+const CONTRACT_VERIFIED_STATUSES = new Set(['OK']);
 
 async function recordContractVerification(result, { repository } = {}) {
   if (!CONTRACT_VERDICT_STATUSES.has(String(result.status || ''))) return { recorded: false, reason: 'no_contract_verdict' };
   const repo = repository || require('../repositories/jobAlertMailerRepository');
-  const contractOk = result.status === 'OK' || result.status === 'EMPTY_OK';
+  const contractOk = CONTRACT_VERIFIED_STATUSES.has(String(result.status || ''));
   try {
     await repo.insert_ops_source_contract_verifications([
       SOURCE,
@@ -216,5 +221,5 @@ if (require.main === module) {
 
 module.exports = {
   runSmoke, classifySmokeResult, classifyError, reportResult, recordContractVerification, metricValue,
-  SOURCE, SOURCE_API, SOURCE_API_NAME, DEFAULT_CODE, CONTRACT_VERDICT_STATUSES,
+  SOURCE, SOURCE_API, SOURCE_API_NAME, DEFAULT_CODE, CONTRACT_VERDICT_STATUSES, CONTRACT_VERIFIED_STATUSES,
 };

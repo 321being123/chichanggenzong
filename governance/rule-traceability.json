@@ -733,7 +733,7 @@
       "implementation": {
         "file": "public/shared/core-date.js",
         "symbol": "normalizeBusinessDate",
-        "via": "2026-11-02覆盖边界复核：verified仅限原共享工具及所列测试；4403b2ea的deployIdentityProbe.toTime对systemctl CST文本解析仍未覆盖，待修复与新增反例，见docs/第二轮代码审查核查与整改开发清单_20261101.md第11节RR-01；不作为新脚本或生产通过证据。"
+        "via": "2026-11-02覆盖边界复核（RR-01已修）：verified仅限原共享工具及所列测试。deployIdentityProbe 的 unit 启动时刻不再用 new Date 解析 systemctl 的 CST 文本，改为只接受 epoch / 明确 UTC / 带偏移 ISO，英文时区缩写与无时区文本判为无法解析（不猜时区、不减固定小时）；部署脚本在边界取 `--timestamp=unix` 或 `TZ=UTC` 文本。反例见 server/test/release-identity.test.js（同刻等价、CST 只记无法核实、真旧进程判不一致）。仍不作为其它新脚本或生产通过证据，见 docs/第二轮代码审查核查与整改开发清单_20261101.md 第11节。"
       },
       "tests": [
         {

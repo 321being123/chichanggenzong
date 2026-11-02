@@ -24,6 +24,7 @@ const { requireSessionStore } = require('../middleware/auth');
 const { errorHandler } = require('../middleware/errorHandler');
 const rateLimit = require('../middleware/rateLimit');
 const mailer = require('../services/jobAlertMailer');
+const smoke = require('../scripts/lixingerLiveSmoke');
 const repository = require('../repositories/jobAlertMailerRepository');
 const { pool } = require('../db/connection');
 
@@ -277,7 +278,8 @@ const offlineClient = () => ({ isReady: false, isOpen: true, eval: async () => {
     ]);
     await pool.query("UPDATE ops.alert_notifications SET last_seen_at = now() - interval '10 minutes' WHERE alert_key=$1", [ALERT_KEY]);
     const alertRow = (await pool.query(
-      'SELECT alert_id, alert_key, alert_type, scope_type, scope_key, last_seen_at, job_code FROM ops.alert_notifications WHERE alert_key=$1',
+      // last_seen_at_version 是全精度文本，版本守卫必须用它（Date 只有毫秒精度）。
+      'SELECT alert_id, alert_key, alert_type, status, scope_type, scope_key, last_seen_at, last_seen_at::text AS last_seen_at_version, job_code FROM ops.alert_notifications WHERE alert_key=$1',
       [ALERT_KEY],
     )).rows[0];
     assert.ok(alertRow, '告警必须真实落库');
@@ -303,7 +305,8 @@ const offlineClient = () => ({ isReady: false, isOpen: true, eval: async () => {
       await repository.insert_ops_source_contract_verifications([SOURCE, API, 'CONTRACT_CHANGED', false, '指标类型异常', JSON.stringify({})]);
       const verdict = await mailer.verifyAlertScope(alertRow);
       assert.strictEqual(verdict.recovered, false);
-      assert.strictEqual(verdict.reason, 'contract_reverify_not_newer_or_failed');
+      // 复验 RR-03 后原因按"最新一条"区分：最新是失败 → latest_contract_verification_failed。
+      assert.strictEqual(verdict.reason, 'latest_contract_verification_failed');
     });
 
     await check('别的接口复验成功也不能关这条告警（必须同接口）', async () => {
@@ -321,6 +324,90 @@ const offlineClient = () => ({ isReady: false, isOpen: true, eval: async () => {
       assert.strictEqual(disposition.disposition, 'true_recovery', '应按真实恢复记录');
     });
 
+    // last_seen_at_version 是全精度文本：版本守卫必须用它（node 的 Date 只有毫秒精度）。
+    const loadAlert = async () => (await pool.query(
+      `SELECT alert_id, alert_key, alert_type, status, scope_type, scope_key, last_seen_at,
+              last_seen_at::text AS last_seen_at_version, job_code
+         FROM ops.alert_notifications WHERE alert_key=$1`,
+      [ALERT_KEY],
+    )).rows[0];
+
+    // 复验 RR-02：空样本（EMPTY_OK）没有验证任何估值字段，不能作为合同恢复证据。
+    await check('空样本不算合同验证成功：结构失败 → 空样本仍未恢复 → 有效样本才恢复', async () => {
+      await pool.query("UPDATE ops.alert_notifications SET last_seen_at = now() - interval '30 minutes' WHERE alert_key=$1", [ALERT_KEY]);
+      await pool.query('DELETE FROM ops.source_contract_verifications WHERE source=$1 AND api_name=$2', [SOURCE, API]);
+
+      await smoke.recordContractVerification({ status: 'CONTRACT_CHANGED', apiName: API, detail: '指标类型异常', code: '600519' });
+      let verdict = await mailer.verifyAlertScope(await loadAlert());
+      assert.strictEqual(verdict.recovered, false, '结构失败时当然不恢复');
+
+      // 空样本：接口通了但 rows=0，一列字段都没校验
+      const emptyRun = await smoke.recordContractVerification({ status: 'EMPTY_OK', apiName: API, detail: '当日无数据', code: '600519' });
+      assert.strictEqual(emptyRun.contractOk, false, 'EMPTY_OK 不能算合同验证成功');
+      const row = (await pool.query(
+        'SELECT status, contract_ok FROM ops.source_contract_verifications WHERE source=$1 AND api_name=$2 ORDER BY checked_at DESC, verification_id DESC LIMIT 1',
+        [SOURCE, API],
+      )).rows[0];
+      assert.strictEqual(row.status, 'EMPTY_OK', '空样本要留证为合法空');
+      assert.strictEqual(row.contract_ok, false, '空样本的 contract_ok 必须是 false');
+
+      verdict = await mailer.verifyAlertScope(await loadAlert());
+      assert.strictEqual(verdict.recovered, false, '空样本不能关闭结构异常告警');
+      assert.strictEqual(verdict.reason, 'latest_contract_verification_failed');
+
+      await smoke.recordContractVerification({ status: 'OK', apiName: API, detail: '样例正常', code: '600519', sample: { stockCode: '600519' } });
+      verdict = await mailer.verifyAlertScope(await loadAlert());
+      assert.strictEqual(verdict.recovered, true, '有效样本才恢复');
+    });
+
+    // 复验 RR-03：同 scope 有更早的成功、但最新一条失败 → 不能恢复。
+    await check('较早成功不能掩盖之后的失败（按最新一条判定）', async () => {
+      await smoke.recordContractVerification({ status: 'CONTRACT_CHANGED', apiName: API, detail: '接口又变了', code: '600519' });
+      const verdict = await mailer.verifyAlertScope(await loadAlert());
+      assert.strictEqual(verdict.recovered, false, '最新一条是失败，不能拿更早的成功关闭');
+      assert.strictEqual(verdict.reason, 'latest_contract_verification_failed');
+      assert.strictEqual(verdict.evidence.latest.status, 'CONTRACT_CHANGED', '证据要给出最新一条');
+      assert.ok(verdict.evidence.verifications.length >= 2, '历史成功记录仍保留在证据里，只是不参与判定');
+    });
+
+    // 复验 RR-03：判定与关闭之间若又来新失败（last_seen_at 前移），旧判定不能关闭新故障。
+    // 这里用显式时间戳构造时序，避免"同一毫秒"导致断言不稳定。
+    await check('关闭要核对告警版本：判定后又来新失败则不关闭', async () => {
+      const insertVerification = (status, ok, checkedAtAgo) => pool.query(
+        `INSERT INTO ops.source_contract_verifications(source,api_name,status,contract_ok,detail,sample,checked_at)
+         VALUES($1,$2,$3,$4,'时序构造','{}'::jsonb, now() - ($5 || ' minutes')::interval)`,
+        [SOURCE, API, status, ok, String(checkedAtAgo)],
+      );
+
+      // 初始：告警 10 分钟前发生，10 分钟内有多次失败，5 分钟前有一次成功。
+      await pool.query('DELETE FROM ops.source_contract_verifications WHERE source=$1 AND api_name=$2', [SOURCE, API]);
+      await pool.query("UPDATE ops.alert_notifications SET last_seen_at = now() - interval '10 minutes' WHERE alert_key=$1", [ALERT_KEY]);
+      await insertVerification('CONTRACT_CHANGED', false, 8);
+      await insertVerification('OK', true, 5);
+
+      const snapshot = await loadAlert();
+      const verdict = await mailer.verifyAlertScope(snapshot);
+      assert.strictEqual(verdict.recovered, true, '最新一条是成功，可恢复');
+
+      // 判定之后又发生一次失败：last_seen_at 前移到 2 分钟前（晚于那次成功）。
+      await pool.query("UPDATE ops.alert_notifications SET last_seen_at = now() - interval '2 minutes' WHERE alert_key=$1", [ALERT_KEY]);
+      const late = await repository.resolve_alert_evidence_guarded([snapshot.alert_id, snapshot.last_seen_at_version]);
+      assert.strictEqual(late.rows.length, 0, '版本已变，不能用旧判定关闭新故障');
+      assert.notStrictEqual((await loadAlert()).status, 'resolved', '告警必须仍是未关闭状态');
+
+      // 新失败之后的旧成功不能当恢复证据。
+      const staleVerdict = await mailer.verifyAlertScope(await loadAlert());
+      assert.strictEqual(staleVerdict.recovered, false, '失败之后没有新复验不能恢复');
+      assert.strictEqual(staleVerdict.reason, 'contract_reverify_not_newer_than_alert');
+
+      // 再复验一次（当前时刻）：这次才允许关闭，且版本与判定一致。
+      await insertVerification('OK', true, 0);
+      const fresh = await loadAlert();
+      assert.strictEqual((await mailer.verifyAlertScope(fresh)).recovered, true);
+      const done = await repository.resolve_alert_evidence_guarded([fresh.alert_id, fresh.last_seen_at_version]);
+      assert.strictEqual(done.rows.length, 1, '版本一致时才能关闭');
+    });
+
     await check('告警之后没有新复验时，旧的合同成功记录不能关闭新告警', async () => {
       // 把告警时间推到"最新一条复验之后"。
       await pool.query("UPDATE ops.alert_notifications SET last_seen_at = now() + interval '5 minutes' WHERE alert_key=$1", [ALERT_KEY]);
@@ -330,7 +417,7 @@ const offlineClient = () => ({ isReady: false, isOpen: true, eval: async () => {
       )).rows[0];
       const verdict = await mailer.verifyAlertScope(fresh);
       assert.strictEqual(verdict.recovered, false, '必须要求"告警之后"的新复验');
-      assert.strictEqual(verdict.reason, 'contract_reverify_not_newer_or_failed');
+      assert.strictEqual(verdict.reason, 'contract_reverify_not_newer_than_alert');
     });
   } finally {
     await cleanup();

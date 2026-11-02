@@ -60,8 +60,70 @@ const PROCESS_START_TOLERANCE_MS = 60 * 1000;
 
 function toTime(value) {
   if (!value) return NaN;
+  if (value instanceof Date) return Number.isFinite(value.getTime()) ? value.getTime() : NaN;
   const time = new Date(value).getTime();
   return Number.isFinite(time) ? time : NaN;
+}
+
+/**
+ * 解析 unit 启动时刻（复验 RR-01）。
+ *
+ * 背景：生产 systemd 输出的是本地时区英文缩写文本 `Sun 2026-11-01 21:41:28 CST`。
+ * JS 的 `new Date()` 把 CST 当成美国中部时间（UTC-6），与 Asia/Shanghai(+08:00) 差 **14 小时**，
+ * 结果正常进程被判成"旧进程"并触发 IDENTITY_MISMATCH → 部署失败/回滚。
+ *
+ * 所以这里只接受**无歧义**的时间表示，并按真实时刻比较：
+ *   - epoch：`@1712345678` / 纯数字（按量级区分 秒/毫秒/微秒），来自 `systemctl --timestamp=unix|us`；
+ *   - 明确 UTC 文本：`2026-11-01 13:41:28 UTC`（TZ=UTC 下的 systemctl 输出）；
+ *   - 带明确偏移的 ISO：`2026-11-01T21:41:28+08:00`、`...Z`；
+ * 其余（英文时区缩写、无时区本地文本、非法串）一律返回 NaN = "给了但无法解析"，由调用方记"无法核实"，
+ * 绝不做机械减小时数的猜测。
+ * @returns {number|null|NaN} null = 未提供（不比较）；NaN = 提供了但无法无歧义解析
+ */
+const AMBIGUOUS_ZONE_ABBR = /\b(CST|CDT|EST|EDT|MST|MDT|PST|PDT|IST|BST|CET|CEST|EET|JST|KST|AEST)\b/;
+
+function parseUnitTimestamp(value) {
+  if (value === null || value === undefined) return null;
+  if (value instanceof Date) return Number.isFinite(value.getTime()) ? value.getTime() : NaN;
+  const text = String(value).trim();
+  if (!text) return null;
+  // epoch：@秒 / 秒 / 毫秒 / 微秒
+  const epoch = text.match(/^@?(\d{9,17})$/);
+  if (epoch) {
+    const n = Number(epoch[1]);
+    if (!Number.isFinite(n)) return NaN;
+    if (n >= 1e14) return Math.round(n / 1000);   // 微秒
+    if (n >= 1e11) return n;                      // 毫秒
+    return n * 1000;                              // 秒
+  }
+  // 明确 UTC 文本（TZ=UTC systemctl 输出）：2026-11-01 13:41:28 UTC
+  // 允许 systemctl 的星期前缀：`Sun 2026-11-01 13:41:28 UTC`
+  const utcText = text.match(/^(?:[A-Za-z]{3},?\s+)?(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,6}))?\s*(?:UTC|GMT)$/i);
+  if (utcText) {
+    return Date.UTC(Number(utcText[1]), Number(utcText[2]) - 1, Number(utcText[3]),
+      Number(utcText[4]), Number(utcText[5]), Number(utcText[6]), utcText[7] ? Number(utcText[7].padEnd(3, '0')) : 0);
+  }
+  // 带明确偏移的 ISO（含 Z）：语义无歧义，可以直接交给 Date
+  if (/^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})$/i.test(text)) {
+    return toTime(text);
+  }
+  // 英文时区缩写 / 无时区本地文本 / 其它：不猜（CST 不是 Asia/Shanghai 的可靠表示）
+  if (AMBIGUOUS_ZONE_ABBR.test(text)) return NaN;
+  return NaN;
+}
+
+/**
+ * 进程启动时刻比较：只有"无歧义拿到的两个时刻"才能判旧进程，
+ * 拿不到就记"无法核实"，不制造假不一致。
+ */
+function checkProcessStart({ label, actual, expected, mismatch, unknown }) {
+  const expectedMs = parseUnitTimestamp(expected);
+  if (expectedMs === null) return; // 未提供 unit 启动时刻：不做比较
+  if (Number.isNaN(expectedMs)) { unknown.push(`${label}_start_unparsed`); return; }
+  const actualMs = parseUnitTimestamp(actual);
+  if (actualMs === null) return; // 实际侧没报启动时刻：由提交号/心跳规则兜底
+  if (Number.isNaN(actualMs)) { unknown.push(`${label}_start_unparsed`); return; }
+  if (actualMs < expectedMs - PROCESS_START_TOLERANCE_MS) mismatch.push(`${label}_process_older_than_unit`);
 }
 
 function evaluateIdentity({
@@ -83,11 +145,7 @@ function evaluateIdentity({
     else if (expectHead && String(health.commit) !== expectHead) mismatch.push('web_commit_mismatch');
     // 进程绑定：health 自述的 PID 必须就是当前 unit 的 MainPID，否则说明响应来自旧进程/别的实例。
     if (expectWebPid && String(health.pid || '') !== String(expectWebPid)) mismatch.push('web_pid_mismatch');
-    const webStarted = toTime(health.startedAt);
-    const unitWebStarted = toTime(expectWebStarted);
-    if (Number.isFinite(webStarted) && Number.isFinite(unitWebStarted) && webStarted < unitWebStarted - PROCESS_START_TOLERANCE_MS) {
-      mismatch.push('web_process_older_than_unit');
-    }
+    checkProcessStart({ label: 'web', actual: health.startedAt, expected: expectWebStarted, mismatch, unknown });
   }
 
   const applied = new Set((appliedVersions || []).map(item => String(item)));
@@ -113,11 +171,7 @@ function evaluateIdentity({
     if (expectVersion && String(worker.app_version || '') !== expectVersion) mismatch.push('worker_version_mismatch');
     // 心跳必须属于当前 unit 的进程：PID 不符或启动时刻早于 unit 启动，都是旧进程留下的心跳。
     if (expectWorkerPid && String(worker.pid || '') !== String(expectWorkerPid)) mismatch.push('worker_pid_mismatch');
-    const workerStarted = toTime(worker.started_at);
-    const unitWorkerStarted = toTime(expectWorkerStarted);
-    if (Number.isFinite(workerStarted) && Number.isFinite(unitWorkerStarted) && workerStarted < unitWorkerStarted - PROCESS_START_TOLERANCE_MS) {
-      mismatch.push('worker_process_older_than_unit');
-    }
+    checkProcessStart({ label: 'worker', actual: worker.started_at, expected: expectWorkerStarted, mismatch, unknown });
     // 缺提交号 = 未核实（不是一致）；有值就必须与目标提交相同。
     if (!worker.commit_sha) unknown.push('worker_commit_unknown');
     else if (expectHead && String(worker.commit_sha) !== expectHead) mismatch.push('worker_commit_mismatch');
@@ -188,4 +242,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { evaluateIdentity, fetchHealth, short, main };
+module.exports = { evaluateIdentity, parseUnitTimestamp, checkProcessStart, fetchHealth, short, main };

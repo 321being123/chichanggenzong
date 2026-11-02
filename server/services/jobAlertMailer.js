@@ -261,14 +261,22 @@ async function verifyAlertScope(alert, query = (sql, params) => repository.runQu
       const scoped = apiName === '*'
         ? verifications
         : verifications.filter(item => String(item.api_name || '') === apiName);
-      const reverified = scoped.find(item => item.contract_ok === true
-        && (!Number.isFinite(lastSeen) || new Date(item.checked_at).getTime() > lastSeen));
+      // 只认「最新一条」：查询已按 checked_at DESC 排序，若最新是失败（含空样本未验证），
+      // 就不能拿更早的成功去关（复验 RR-03）。否则"成功 → 又失败"会被旧成功掩盖。
+      const latest = scoped[0] || null;
+      const latestAt = latest ? new Date(latest.checked_at).getTime() : NaN;
+      const newerThanAlert = Boolean(latest) && Number.isFinite(latestAt)
+        && (!Number.isFinite(lastSeen) || latestAt > lastSeen);
+      const recovered = Boolean(latest && latest.contract_ok === true && newerThanAlert);
+      const reason = !scoped.length
+        ? 'contract_reverify_evidence_missing'
+        : latest.contract_ok !== true
+          ? 'latest_contract_verification_failed'
+          : 'contract_reverify_not_newer_than_alert';
       return {
-        recovered: Boolean(reverified),
-        evidence: { circuits: rows, verifications: scoped },
-        ...(reverified ? {} : {
-          reason: scoped.length ? 'contract_reverify_not_newer_or_failed' : 'contract_reverify_evidence_missing',
-        }),
+        recovered,
+        evidence: { circuits: rows, verifications: scoped, latest },
+        ...(recovered ? {} : { reason }),
       };
     }
     const hasNewProbeSuccess = rows.some(row => {
@@ -496,7 +504,8 @@ async function resolveAlertsByCandidates(candidates, caller) {
   for (const alert of candidates) {
     const verification = await verifyAlertScope(alert);
     if (!verification.recovered) continue;
-    const { rows } = await repository.update_ops_alert_notifications_10([alert.alert_id]);
+    // 关闭条件带上读到的 last_seen_at：判定与关闭之间若又来了新失败，这里会不成立（复验 RR-03）。
+    const { rows } = await repository.resolve_alert_evidence_guarded([alert.alert_id, alert.last_seen_at_version || alert.last_seen_at || null]);
     if (rows[0]) resolvedRows.push({ ...rows[0], verification });
   }
   if (resolvedRows.length) {
@@ -565,7 +574,7 @@ async function reconcileRecoveredSourceAlerts(limit = 100) {
     for (const alert of candidates) {
       const verification = await verifyAlertScope(alert);
       if (!verification.recovered) continue;
-      const { rows } = await repository.update_ops_alert_notifications_11([alert.alert_id]);
+      const { rows } = await repository.resolve_alert_evidence_guarded_untyped([alert.alert_id, alert.last_seen_at_version || alert.last_seen_at || null]);
       if (!rows[0]) continue;
       resolved += 1;
       const scope = parseAlertScope(rows[0]);

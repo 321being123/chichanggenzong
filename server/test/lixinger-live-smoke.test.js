@@ -110,6 +110,17 @@ function sourceError(code) {
 
     const array = smoke.classifySmokeResult([['600519']]);
     assert.strictEqual(array.status, 'CONTRACT_CHANGED', '行不是对象属于结构异常');
+
+    // 复验 RR-04：'1e999' 能通过数字正则，但转成 Infinity 不是有效指标（文本分支原先漏了有限性校验）。
+    assert.strictEqual(smoke.classifySmokeResult([{ ...base, mc: '1e999' }]).status, 'CONTRACT_CHANGED', '文本溢出的总市值');
+    assert.strictEqual(smoke.classifySmokeResult([{ ...base, pe_ttm: '1e999' }]).status, 'CONTRACT_CHANGED', '文本溢出的比率');
+    assert.strictEqual(smoke.classifySmokeResult([{ ...base, pb: '-1e999' }]).status, 'CONTRACT_CHANGED', '负溢出同样不接受');
+    assert.strictEqual(smoke.classifySmokeResult([{ ...base, cmc: '1e400' }]).status, 'CONTRACT_CHANGED', '可缺字段一旦出现也必须有限');
+    assert.strictEqual(smoke.classifySmokeResult([{ ...base, mc: Infinity }]).status, 'CONTRACT_CHANGED', '数字类型的 Infinity 同样不接受');
+    assert.strictEqual(smoke.classifySmokeResult([{ ...base, mc: NaN }]).status, 'CONTRACT_CHANGED', 'NaN 不接受');
+    // 两个分支（数字/文本）必须给出同样的判定结论。
+    assert.deepStrictEqual(smoke.metricValue({ mc: 1e12 }, 'mc').valid, smoke.metricValue({ mc: '1e12' }, 'mc').valid);
+    assert.strictEqual(smoke.metricValue({ mc: '1e999' }, 'mc').valid, smoke.metricValue({ mc: Infinity }, 'mc').valid, '文本与数字分支一致');
   });
 
   await check('权限/限流/网络/阻断分别归类，不混成一个"失败"', async () => {
@@ -165,6 +176,18 @@ function sourceError(code) {
       const okCode = await smoke.reportResult(ok, { env: {}, repository });
       assert.strictEqual(okCode, 0);
       assert.strictEqual(resolved.length, 1, '成功要用恢复证据关闭来源告警，而不是手工改状态');
+      // 复验 RR-02：空样本（EMPTY_OK）要留证，但 contract_ok 必须是 false——
+      // 一列估值字段都没校验，不能作为"结构/单位变化"告警的恢复证据。
+      const empty = await smoke.runSmoke({
+        callEndpoint: async () => ({ rows: [] }),
+        env: { LIXINGER_LIVE_SMOKE: '1', LIXINGER_TOKEN: 'x' },
+      });
+      assert.strictEqual(empty.status, 'EMPTY_OK');
+      await smoke.reportResult(empty, { env: {}, repository });
+      const emptyRow = recorded.find(item => item[2] === 'EMPTY_OK');
+      assert.ok(emptyRow, '空样本也要留证（区分"未运行"与"合法空"）');
+      assert.strictEqual(emptyRow[3], false, '空样本不能算合同验证成功');
+
       // 合同证据（RV-04）：只有真的跑过合同判定才落库；OK 的 contract_ok 必须是 true。
       const verdicts = recorded.filter(item => item[2] === 'OK');
       assert.strictEqual(verdicts.length, 1, '成功抽样必须留下一条合同验证记录');

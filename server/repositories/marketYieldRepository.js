@@ -195,6 +195,16 @@ async function readSubdatasetFreshness(code) {
   return pool.query(sql);
 }
 
+// 新鲜度判定用的本地交易日列表（不联网、不消耗外部额度）。
+// 滞后必须按交易日算：周五的数据到周一才更新是常态（T+1 + 周末），
+// 按自然日会凭空多出 2 天，导致每个周一都误判 stale（2026-11-02 生产实测 cn_yield）。
+async function listOpenTradingDays({ exchange = 'SSE', fromDate, toDate }) {
+  const { rows } = await pool.query(`SELECT trade_date::text AS day FROM market.trade_calendar
+     WHERE exchange=$1 AND COALESCE(is_open,true) AND trade_date >= $2::date AND trade_date <= $3::date
+     ORDER BY trade_date`, [exchange, fromDate, toDate]);
+  return rows.map(row => String(row.day).slice(0, 10));
+}
+
 async function countChinaYield() {
   return pool.query("SELECT count(*)::int AS n FROM market.sovereign_yield_daily WHERE market_code='CN' AND source_code='chinabond'");
 }
@@ -203,4 +213,4 @@ async function countMarketCap() {
   return pool.query("SELECT count(*)::int AS n FROM market.a_share_market_cap_daily WHERE source_code='tushare_daily_basic'");
 }
 
-module.exports = { saveChinaYield, saveHsiMarketValuation, saveHsiIndexHistory, readCsiWatermark, saveCsiValuations, readUsYieldWatermark, saveUsYieldBatch, readMoneyWatermark, saveMoneySupply, readCsi300Watermark, saveCsi300Valuations, readM2Inputs, calculateM2MarketCap, listMarketCapDates, saveMarketCap, readSubdatasetFreshness, countChinaYield, countMarketCap };
+module.exports = { saveChinaYield, saveHsiMarketValuation, saveHsiIndexHistory, readCsiWatermark, saveCsiValuations, readUsYieldWatermark, saveUsYieldBatch, readMoneyWatermark, saveMoneySupply, readCsi300Watermark, saveCsi300Valuations, readM2Inputs, calculateM2MarketCap, listMarketCapDates, saveMarketCap, readSubdatasetFreshness, listOpenTradingDays, countChinaYield, countMarketCap };

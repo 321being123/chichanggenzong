@@ -323,31 +323,55 @@ async function syncMarketCycleMetrics(full, options = {}) {
   return result;
 }
 
+// calendar 指定该子项按哪个市场的交易日计滞后；未指定则按自然日（本地没有对应日历）。
 const MARKET_SUBDATASET_POLICIES = Object.freeze({
-  cn_yield: { maxLagDays: 1 },
-  csi300_pe: { maxLagDays: 1 },
-  csi_all_pe: { maxLagDays: 1 },
-  hsi_pe: { maxLagDays: 45 },
+  cn_yield: { maxLagDays: 1, calendar: 'SSE' },
+  csi300_pe: { maxLagDays: 1, calendar: 'SSE' },
+  csi_all_pe: { maxLagDays: 1, calendar: 'SSE' },
+  hsi_pe: { maxLagDays: 45, calendar: 'HKEX' },
+  // 美国市场：本地没有美股交易日历，仍按自然日；阈值 10 天足以容纳周末与短假。
   us_treasury_yield: { maxLagDays: 10 },
   m2: { maxLagMonths: 2 },
-  a_share_market_cap: { maxLagDays: 1 },
-  m2_market_cap: { maxLagDays: 1 },
-  graham_csi300: { maxLagDays: 1 },
-  graham_csi_all: { maxLagDays: 1 },
+  a_share_market_cap: { maxLagDays: 1, calendar: 'SSE' },
+  m2_market_cap: { maxLagDays: 1, calendar: 'SSE' },
+  graham_csi300: { maxLagDays: 1, calendar: 'SSE' },
+  graham_csi_all: { maxLagDays: 1, calendar: 'SSE' },
 });
 
 async function readMarketSubdatasetFreshness(targetDate) {
-  const target = new Date(`${String(targetDate || dateStr(new Date())).slice(0, 10)}T00:00:00Z`);
+  const targetText = String(targetDate || dateStr(new Date())).slice(0, 10);
+  const target = new Date(`${targetText}T00:00:00Z`);
   const diagnostics = {};
+  // 每个市场只查一次本地交易日历，组内复用；取不到就退回自然日，
+  // 不能因为日历缺失把滞后算小而误判 fresh（宁可多报一次 stale）。
+  const calendars = {};
+  const tradingDaysFor = async (exchange) => {
+    if (!Object.prototype.hasOwnProperty.call(calendars, exchange)) {
+      const fromDate = new Date(target.getTime() - 120 * 86400000).toISOString().slice(0, 10);
+      try {
+        const days = await marketYieldRepository.listOpenTradingDays({ exchange, fromDate, toDate: targetText });
+        calendars[exchange] = days.length ? days : null;
+      } catch (_) {
+        calendars[exchange] = null;
+      }
+    }
+    return calendars[exchange];
+  };
   for (const [code, policy] of Object.entries(MARKET_SUBDATASET_POLICIES)) {
+    const { calendar, ...policyFields } = policy;
     const { rows } = await marketYieldRepository.readSubdatasetFreshness(code);
     const raw = rows[0] && rows[0].data_as_of;
     const dataAsOf = raw ? String(raw).slice(0, 10) : null;
     const actual = dataAsOf ? new Date(`${dataAsOf}T00:00:00Z`) : null;
-    const lagDays = actual && !Number.isNaN(actual.getTime()) ? Math.max(0, Math.floor((target - actual) / 86400000)) : null;
+    let lagDays = actual && !Number.isNaN(actual.getTime()) ? Math.max(0, Math.floor((target - actual) / 86400000)) : null;
+    if (calendar && dataAsOf) {
+      // 交易日口径：只数 dataAsOf 之后、目标日（含）之前的开市日。
+      const days = await tradingDaysFor(calendar);
+      if (days) lagDays = days.filter(day => day > dataAsOf).length;
+    }
     const lagMonths = dataAsOf ? Math.max(0, (target.getUTCFullYear() - actual.getUTCFullYear()) * 12 + target.getUTCMonth() - actual.getUTCMonth()) : null;
     const fresh = policy.maxLagMonths != null ? lagMonths != null && lagMonths <= policy.maxLagMonths : lagDays != null && lagDays <= policy.maxLagDays;
-    diagnostics[code] = { status: fresh ? 'fresh' : 'stale', data_as_of: dataAsOf, ...(lagDays == null ? {} : { lag_days: lagDays }), ...(lagMonths == null ? {} : { lag_months: lagMonths }), ...policy };
+    diagnostics[code] = { status: fresh ? 'fresh' : 'stale', data_as_of: dataAsOf, ...(lagDays == null ? {} : { lag_days: lagDays }), ...(lagMonths == null ? {} : { lag_months: lagMonths }), ...policyFields };
   }
   return diagnostics;
 }
@@ -416,4 +440,4 @@ async function runMarketVolatilitySync(context = {}) {
 function scheduleMarketVolatilitySync() { runMarketVolatilitySync().catch(e => console.error('股市波动首次同步失败:', e.message)); const now=new Date(), next=new Date(); next.setHours(18,45,0,0); if(next<=now) next.setDate(next.getDate()+1); const first=setTimeout(function(){ runMarketVolatilitySync().catch(e=>console.error('股市波动同步失败:',e.message)); const timer=setInterval(()=>runMarketVolatilitySync().catch(e=>console.error('股市波动同步失败:',e.message)),86400000); if(timer.unref) timer.unref(); }, next-now); if(first.unref) first.unref(); }
 module.exports = { syncChinaYield, syncCsiIndexPe, syncCsiPeFromOfficial, CSI_OFFICIAL_PE_SINCE, syncHsiPe, syncUsTreasuryYield, calculateGraham, parseHsiWorkbook,
   syncCsi300Valuation, syncMoneySupply, tradeMonthEnds, syncAShareMarketCap, calculateM2MarketCap,
-  syncMarketCycleMetrics, runMarketVolatilitySync, scheduleMarketVolatilitySync };
+  syncMarketCycleMetrics, runMarketVolatilitySync, scheduleMarketVolatilitySync, readMarketSubdatasetFreshness };

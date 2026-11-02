@@ -391,7 +391,7 @@ const offlineClient = () => ({ isReady: false, isOpen: true, eval: async () => {
 
       // 判定之后又发生一次失败：last_seen_at 前移到 2 分钟前（晚于那次成功）。
       await pool.query("UPDATE ops.alert_notifications SET last_seen_at = now() - interval '2 minutes' WHERE alert_key=$1", [ALERT_KEY]);
-      const late = await repository.resolve_alert_evidence_guarded([snapshot.alert_id, snapshot.last_seen_at_version]);
+      const late = await repository.resolve_alert_with_evidence([snapshot.alert_id, snapshot.last_seen_at_version, null, false]);
       assert.strictEqual(late.rows.length, 0, '版本已变，不能用旧判定关闭新故障');
       assert.notStrictEqual((await loadAlert()).status, 'resolved', '告警必须仍是未关闭状态');
 
@@ -403,14 +403,116 @@ const offlineClient = () => ({ isReady: false, isOpen: true, eval: async () => {
       // 再复验一次（当前时刻）：这次才允许关闭，且版本与判定一致。
       await insertVerification('OK', true, 0);
       const fresh = await loadAlert();
-      assert.strictEqual((await mailer.verifyAlertScope(fresh)).recovered, true);
-      const done = await repository.resolve_alert_evidence_guarded([fresh.alert_id, fresh.last_seen_at_version]);
-      assert.strictEqual(done.rows.length, 1, '版本一致时才能关闭');
+      const freshVerdict = await mailer.verifyAlertScope(fresh);
+      assert.strictEqual(freshVerdict.recovered, true);
+      const evidenceId = freshVerdict.evidence.latest.verification_id;
+      // 不带证据 id 时合同类告警不允许关闭（原子语句要求消费的记录仍存在且有效）。
+      const noEvidence = await repository.resolve_alert_with_evidence([fresh.alert_id, fresh.last_seen_at_version, null, false]);
+      assert.strictEqual(noEvidence.rows.length, 0, '合同告警必须带上被消费的证据 id');
+      const done = await repository.resolve_alert_with_evidence([fresh.alert_id, fresh.last_seen_at_version, evidenceId, false]);
+      assert.strictEqual(done.rows.length, 1, '版本一致且证据仍有效时才能关闭');
+    });
+
+    // 复验 RR-03-A：验证失败已落库、告警 last_seen_at 还没 upsert 的窗口，常规恢复也不能关闭。
+    // 走真实服务入口 resolveSourceEndpointAlerts，只在「判定后、写回前」插入新失败，原关闭 SQL 照常执行。
+    await check('服务入口屏障：判定后新验证失败已落库（告警未更新）→ 常规恢复关不掉', async () => {
+      const realResolve = repository.resolve_alert_with_evidence;
+      const envBackup = { NODE_ENV: process.env.NODE_ENV, to: process.env.ALERT_EMAIL_TO };
+      process.env.NODE_ENV = 'production';   // 进入服务入口的分支；收件人为空，不会发信
+      process.env.ALERT_EMAIL_TO = '';
+      try {
+        await pool.query('DELETE FROM ops.source_contract_verifications WHERE source=$1 AND api_name=$2', [SOURCE, API]);
+        await pool.query("UPDATE ops.alert_notifications SET status='pending', resolved_at=NULL, last_seen_at = now() - interval '10 minutes' WHERE alert_key=$1", [ALERT_KEY]);
+        // 判定时会看到的那次成功
+        await pool.query(
+          `INSERT INTO ops.source_contract_verifications(source,api_name,status,contract_ok,detail,sample,checked_at)
+           VALUES($1,$2,'OK',true,'修复后复验','{}'::jsonb, now() - interval '5 minutes')`, [SOURCE, API],
+        );
+
+        const before = await loadAlert();
+        assert.strictEqual((await mailer.verifyAlertScope(before)).recovered, true, '前置：当前确实判定为可恢复');
+
+        // 注入点：判定之后、写回之前，新的合同失败落库；告警 last_seen_at 故意不更新。
+        let injected = false;
+        repository.resolve_alert_with_evidence = async (params, client) => {
+          if (!injected) {
+            injected = true;
+            await pool.query(
+              `INSERT INTO ops.source_contract_verifications(source,api_name,status,contract_ok,detail,sample,checked_at)
+               VALUES($1,$2,'CONTRACT_CHANGED',false,'判定后新失败','{}'::jsonb, now())`, [SOURCE, API],
+            );
+          }
+          return realResolve(params, client);
+        };
+
+        const resolved = await mailer.resolveSourceEndpointAlerts(SOURCE, API);
+        assert.strictEqual(injected, true, '注入点必须被真实关闭路径触发');
+        assert.strictEqual(resolved, 0, '证据已失效时不得关闭');
+
+        repository.resolve_alert_with_evidence = realResolve;
+        const after = await loadAlert();
+        assert.strictEqual(after.status, 'pending', '告警必须仍未关闭');
+        assert.strictEqual((await mailer.verifyAlertScope(after)).recovered, false, '最新一条已是失败');
+      } finally {
+        repository.resolve_alert_with_evidence = realResolve;
+        process.env.NODE_ENV = envBackup.NODE_ENV;
+        if (envBackup.to === undefined) delete process.env.ALERT_EMAIL_TO; else process.env.ALERT_EMAIL_TO = envBackup.to;
+      }
+    });
+
+    // 复验 RR-03-B：历史扫描入口同样不能绕过版本/证据约束。
+    await check('历史扫描入口：判定后新失败且告警版本推进 → 仍不得关闭', async () => {
+      const realResolve = repository.resolve_alert_with_evidence;
+      const envBackup = { NODE_ENV: process.env.NODE_ENV, to: process.env.ALERT_EMAIL_TO };
+      process.env.NODE_ENV = 'production';
+      process.env.ALERT_EMAIL_TO = '';
+      try {
+        // 历史扫描取候选按到期轮转：清掉其它活动告警，保证只扫到本用例这条。
+        await pool.query("DELETE FROM ops.alert_notifications WHERE alert_key <> $1", [ALERT_KEY]);
+        await pool.query('DELETE FROM ops.source_contract_verifications WHERE source=$1 AND api_name=$2', [SOURCE, API]);
+        await pool.query(
+          "UPDATE ops.alert_notifications SET status='pending', resolved_at=NULL, last_checked_at=NULL, next_check_at=NULL, last_seen_at = now() - interval '10 minutes' WHERE alert_key=$1",
+          [ALERT_KEY],
+        );
+        await pool.query(
+          `INSERT INTO ops.source_contract_verifications(source,api_name,status,contract_ok,detail,sample,checked_at)
+           VALUES($1,$2,'OK',true,'历史扫描前的成功','{}'::jsonb, now() - interval '5 minutes')`, [SOURCE, API],
+        );
+
+        let injected = false;
+        repository.resolve_alert_with_evidence = async (params, client) => {
+          if (!injected) {
+            injected = true;
+            // 同时：新失败落库 + 告警版本推进（真实扫描里 upsert 与判定可能交错）
+            await pool.query(
+              `INSERT INTO ops.source_contract_verifications(source,api_name,status,contract_ok,detail,sample,checked_at)
+               VALUES($1,$2,'CONTRACT_CHANGED',false,'扫描判定后新失败','{}'::jsonb, now())`, [SOURCE, API],
+            );
+            await pool.query("UPDATE ops.alert_notifications SET last_seen_at = now() - interval '1 minute' WHERE alert_key=$1", [ALERT_KEY]);
+          }
+          return realResolve(params, client);
+        };
+
+        const result = await mailer.reconcileHistoricalAlerts(1);
+        assert.strictEqual(injected, true, '历史扫描必须走到关闭语句');
+        assert.strictEqual(result.resolved, 0, '历史扫描同样不得在证据失效后关闭');
+        repository.resolve_alert_with_evidence = realResolve;
+        assert.strictEqual((await loadAlert()).status, 'pending', '告警必须仍未关闭');
+      } finally {
+        repository.resolve_alert_with_evidence = realResolve;
+        process.env.NODE_ENV = envBackup.NODE_ENV;
+        if (envBackup.to === undefined) delete process.env.ALERT_EMAIL_TO; else process.env.ALERT_EMAIL_TO = envBackup.to;
+      }
     });
 
     await check('告警之后没有新复验时，旧的合同成功记录不能关闭新告警', async () => {
-      // 把告警时间推到"最新一条复验之后"。
-      await pool.query("UPDATE ops.alert_notifications SET last_seen_at = now() + interval '5 minutes' WHERE alert_key=$1", [ALERT_KEY]);
+      // 自包含：先清掉前面用例留下的验证记录，只留一条"更早的成功"，再把告警时间推后。
+      await pool.query('DELETE FROM ops.source_contract_verifications WHERE source=$1 AND api_name=$2', [SOURCE, API]);
+      await pool.query(
+        `INSERT INTO ops.source_contract_verifications(source,api_name,status,contract_ok,detail,sample,checked_at)
+         VALUES($1,$2,'OK',true,'更早的成功','{}'::jsonb, now() - interval '6 minutes')`, [SOURCE, API],
+      );
+      await pool.query("UPDATE ops.alert_notifications SET status='pending', resolved_at=NULL, last_seen_at = now() + interval '5 minutes' WHERE alert_key=$1", [ALERT_KEY]);
       const fresh = (await pool.query(
         'SELECT alert_id, alert_type, scope_type, scope_key, last_seen_at, job_code FROM ops.alert_notifications WHERE alert_key=$1',
         [ALERT_KEY],

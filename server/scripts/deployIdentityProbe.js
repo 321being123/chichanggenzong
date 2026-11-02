@@ -98,10 +98,13 @@ function parseUnitTimestamp(value) {
   }
   // 明确 UTC 文本（TZ=UTC systemctl 输出）：2026-11-01 13:41:28 UTC
   // 允许 systemctl 的星期前缀：`Sun 2026-11-01 13:41:28 UTC`
-  const utcText = text.match(/^(?:[A-Za-z]{3},?\s+)?(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,6}))?\s*(?:UTC|GMT)$/i);
+  const utcText = text.match(/^(?:[A-Za-z]{3},?\s+)?(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,9}))?\s*(?:UTC|GMT)$/i);
   if (utcText) {
+    // 亚秒统一按 JS 毫秒精度「截断」（与 new Date 解析 ISO 的行为一致）：取前 3 位补零。
+    // 曾经把 `.123456` 整体当成 123456 毫秒 → 被扩成 2 分 3.456 秒，等价时刻被判成旧进程（RR-01-A）。
+    const millis = utcText[7] ? Number(utcText[7].slice(0, 3).padEnd(3, '0')) : 0;
     return Date.UTC(Number(utcText[1]), Number(utcText[2]) - 1, Number(utcText[3]),
-      Number(utcText[4]), Number(utcText[5]), Number(utcText[6]), utcText[7] ? Number(utcText[7].padEnd(3, '0')) : 0);
+      Number(utcText[4]), Number(utcText[5]), Number(utcText[6]), millis);
   }
   // 带明确偏移的 ISO（含 Z）：语义无歧义，可以直接交给 Date
   if (/^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})$/i.test(text)) {
@@ -116,19 +119,30 @@ function parseUnitTimestamp(value) {
  * 进程启动时刻比较：只有"无歧义拿到的两个时刻"才能判旧进程，
  * 拿不到就记"无法核实"，不制造假不一致。
  */
-function checkProcessStart({ label, actual, expected, mismatch, unknown }) {
+/**
+ * 进程启动时刻比较。必须区分两种合同（复验 RR-01-B）：
+ *   - requireStart=true：部署时**要求采集**启动时刻。取不到（空串/缺失）就必须记"无法核实"，
+ *     不能因为"没得比"就输出 IDENTITY_OK —— 那等于把采集失败当通过。
+ *   - requireStart=false：纯函数的可选调用（调用方不要求比对时间），缺失就跳过，不影响结论。
+ * 另：期望侧给了值、实际侧却没报启动时刻，也记"无法核实"（不能默认同进程）。
+ */
+function checkProcessStart({ label, actual, expected, requireStart, mismatch, unknown }) {
   const expectedMs = parseUnitTimestamp(expected);
-  if (expectedMs === null) return; // 未提供 unit 启动时刻：不做比较
+  if (expectedMs === null) {
+    if (requireStart) unknown.push(`${label}_start_missing`);
+    return;
+  }
   if (Number.isNaN(expectedMs)) { unknown.push(`${label}_start_unparsed`); return; }
   const actualMs = parseUnitTimestamp(actual);
-  if (actualMs === null) return; // 实际侧没报启动时刻：由提交号/心跳规则兜底
+  if (actualMs === null) { unknown.push(`${label}_start_missing`); return; }
   if (Number.isNaN(actualMs)) { unknown.push(`${label}_start_unparsed`); return; }
   if (actualMs < expectedMs - PROCESS_START_TOLERANCE_MS) mismatch.push(`${label}_process_older_than_unit`);
 }
 
 function evaluateIdentity({
   expectHead, expectVersion, health, worker, appliedVersions, requiredVersions,
-  expectWebPid, expectWorkerPid, expectWebStarted, expectWorkerStarted, now = Date.now(),
+  expectWebPid, expectWorkerPid, expectWebStarted, expectWorkerStarted,
+  requireProcessTimes = false, now = Date.now(),
 }) {
   // 明确矛盾（能证明"不是这次发布"）与无法核实（缺证据）必须分开：混在一起会把缺证据当通过，
   // 也会把环境限制当代码回滚理由。
@@ -145,7 +159,7 @@ function evaluateIdentity({
     else if (expectHead && String(health.commit) !== expectHead) mismatch.push('web_commit_mismatch');
     // 进程绑定：health 自述的 PID 必须就是当前 unit 的 MainPID，否则说明响应来自旧进程/别的实例。
     if (expectWebPid && String(health.pid || '') !== String(expectWebPid)) mismatch.push('web_pid_mismatch');
-    checkProcessStart({ label: 'web', actual: health.startedAt, expected: expectWebStarted, mismatch, unknown });
+    checkProcessStart({ label: 'web', actual: health.startedAt, expected: expectWebStarted, requireStart: requireProcessTimes, mismatch, unknown });
   }
 
   const applied = new Set((appliedVersions || []).map(item => String(item)));
@@ -171,7 +185,7 @@ function evaluateIdentity({
     if (expectVersion && String(worker.app_version || '') !== expectVersion) mismatch.push('worker_version_mismatch');
     // 心跳必须属于当前 unit 的进程：PID 不符或启动时刻早于 unit 启动，都是旧进程留下的心跳。
     if (expectWorkerPid && String(worker.pid || '') !== String(expectWorkerPid)) mismatch.push('worker_pid_mismatch');
-    checkProcessStart({ label: 'worker', actual: worker.started_at, expected: expectWorkerStarted, mismatch, unknown });
+    checkProcessStart({ label: 'worker', actual: worker.started_at, expected: expectWorkerStarted, requireStart: requireProcessTimes, mismatch, unknown });
     // 缺提交号 = 未核实（不是一致）；有值就必须与目标提交相同。
     if (!worker.commit_sha) unknown.push('worker_commit_unknown');
     else if (expectHead && String(worker.commit_sha) !== expectHead) mismatch.push('worker_commit_mismatch');
@@ -199,6 +213,8 @@ async function main() {
   const expectWebPid = arg('expect-web-pid').trim();
   const expectWorkerPid = arg('expect-worker-pid').trim();
   const expectWebStarted = arg('expect-web-started').trim();
+  // 部署脚本会带这个开关：表示"本次要求采集启动时刻"，取不到就要记无法核实（RR-01-B）。
+  const requireProcessTimes = process.argv.includes('--require-process-times');
   const expectWorkerStarted = arg('expect-worker-started').trim();
   const health = await fetchHealth();
 
@@ -227,7 +243,7 @@ async function main() {
 
   const verdict = evaluateIdentity({
     expectHead, expectVersion, health, worker, appliedVersions, requiredVersions,
-    expectWebPid, expectWorkerPid, expectWebStarted, expectWorkerStarted,
+    expectWebPid, expectWorkerPid, expectWebStarted, expectWorkerStarted, requireProcessTimes,
   });
   if (pool) await pool.end().catch(() => {});
   console.log(verdict.line);

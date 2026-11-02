@@ -499,13 +499,23 @@ async function sendRecoveryAlert(input) {
   );
 }
 
+// 关闭时要把"判定消费的那条合同验证记录"带进原子语句：只有它仍是最新且有效才允许关闭（RR-03-A）。
+function consumedVerificationId(verification) {
+  const latest = verification && verification.evidence && verification.evidence.latest;
+  const id = latest && (latest.verification_id !== undefined ? latest.verification_id : latest.verificationId);
+  return id === undefined || id === null ? null : String(id);
+}
+
 async function resolveAlertsByCandidates(candidates, caller) {
   const resolvedRows = [];
   for (const alert of candidates) {
     const verification = await verifyAlertScope(alert);
     if (!verification.recovered) continue;
     // 关闭条件带上读到的 last_seen_at：判定与关闭之间若又来了新失败，这里会不成立（复验 RR-03）。
-    const { rows } = await repository.resolve_alert_evidence_guarded([alert.alert_id, alert.last_seen_at_version || alert.last_seen_at || null]);
+    const { rows } = await repository.resolve_alert_with_evidence([
+      alert.alert_id, alert.last_seen_at_version || alert.last_seen_at || null,
+      consumedVerificationId(verification), false,
+    ]);
     if (rows[0]) resolvedRows.push({ ...rows[0], verification });
   }
   if (resolvedRows.length) {
@@ -574,7 +584,10 @@ async function reconcileRecoveredSourceAlerts(limit = 100) {
     for (const alert of candidates) {
       const verification = await verifyAlertScope(alert);
       if (!verification.recovered) continue;
-      const { rows } = await repository.resolve_alert_evidence_guarded_untyped([alert.alert_id, alert.last_seen_at_version || alert.last_seen_at || null]);
+      const { rows } = await repository.resolve_alert_with_evidence([
+        alert.alert_id, alert.last_seen_at_version || alert.last_seen_at || null,
+        consumedVerificationId(verification), false,
+      ]);
       if (!rows[0]) continue;
       resolved += 1;
       const scope = parseAlertScope(rows[0]);
@@ -612,7 +625,12 @@ async function reconcileHistoricalAlerts(limit = 100) {
       continue;
     }
     if (verification.recovered) {
-      const { rows } = await repository.update_ops_alert_notifications_12([alert.alert_id]);
+      // 历史扫描与常规/来源周期共用同一条原子关闭语句（复验 RR-03-B）：判定后若又落库了新失败，
+      // 或告警版本被推进，这里一行都不会更新，而不是绕过版本条件直接关。
+      const { rows } = await repository.resolve_alert_with_evidence([
+        alert.alert_id, alert.last_seen_at_version || alert.last_seen_at || null,
+        consumedVerificationId(verification), true,
+      ]);
       resolved += rows.length;
     } else {
       const cooldown = reconciliationCooldownMinutes(alert);
@@ -645,7 +663,13 @@ async function resolveWorkerOfflineAlert(alertId) {
   try {
     const { rows: workers } = await repository.select_ops_worker_heartbeats();
     if (!workers.length) return 0;
-    const { rows } = await repository.update_ops_alert_notifications_14([alertId]);
+    // 关闭前先取告警版本快照，和心跳读取之间若又出现新故障（last_seen_at 前移）则不关闭。
+    const { rows: snapshot } = await repository.select_ops_alert_notifications_5([alertId]);
+    const alert = snapshot[0];
+    if (!alert) return 0;
+    const { rows } = await repository.resolve_alert_with_evidence([
+      alertId, alert.last_seen_at_version || alert.last_seen_at || null, null, false,
+    ]);
     if (rows[0]) {
       await sendRecoveryAlert({
         alertKey: `worker:recovered:${rows[0].alert_id}`, alertType: 'worker_recovered', severity: 'info',

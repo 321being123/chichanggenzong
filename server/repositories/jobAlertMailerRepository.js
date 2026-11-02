@@ -215,25 +215,36 @@ async function update_ops_alert_notifications_9(params, client = pool) {
         WHERE alert_id=ANY($1::bigint[]) AND status='sending'`, params);
 }
 
-// 按证据关闭时带上"读到的告警版本"（last_seen_at）：判定与关闭之间若又来了新失败，
-// last_seen_at 会被 upsert 推前，这里的条件不成立 → 不关闭，避免并发/过期判定关掉新故障（复验 RR-03）。
-// 注意：仓库里 _10~_16 是历史编号，已各有用途，这里用语义命名，避免重名覆盖（同名后声明会静默生效）。
-async function resolve_alert_evidence_guarded(params, client = pool) {
-  return client.query(`UPDATE ops.alert_notifications
-          SET status='resolved',resolved_at=now(),sending_started_at=NULL,updated_at=now()
-        WHERE alert_id=$1 AND status NOT IN ('resolved','acknowledged')
-          AND alert_type NOT IN ('recovery','worker_recovered','job_overdue_recovered','external_api_switch','external_api_interface_failover')
-          AND ($2::timestamptz IS NULL OR last_seen_at <= $2::timestamptz)
-        RETURNING *`, params);
-}
-
-// 同上，但不加通知型过滤（对应原 _11 的调用场景）。
-async function resolve_alert_evidence_guarded_untyped(params, client = pool) {
-  return client.query(`UPDATE ops.alert_notifications
-            SET status='resolved',resolved_at=now(),sending_started_at=NULL,updated_at=now()
-          WHERE alert_id=$1 AND status NOT IN ('resolved','acknowledged')
-            AND ($2::timestamptz IS NULL OR last_seen_at <= $2::timestamptz)
-          RETURNING *`, params);
+// 统一的「按证据关闭」入口（复验 RR-03-A/B）：所有关闭路径共用这一条原子语句，一次核对三件事——
+//   1) 告警仍是未关闭状态；
+//   2) 告警版本没有被推进（last_seen_at <= 判定时读到的版本，全精度文本比较）；
+//   3) 合同类告警消费的那条验证记录仍然有效：contract_ok=true、晚于告警、且仍是该作用域最新一条
+//      （NOT EXISTS 更晚的记录）。这样「新失败已入库、告警 last_seen_at 还没 upsert」的窗口也关不掉。
+// touchReconcile=true 时保留历史扫描的 last_checked_at/next_check_at 语义。
+async function resolve_alert_with_evidence(params, client = pool) {
+  return client.query(`UPDATE ops.alert_notifications a
+          SET status='resolved', resolved_at=now(), sending_started_at=NULL, updated_at=now(),
+              last_checked_at = CASE WHEN $4::boolean THEN now() ELSE last_checked_at END,
+              next_check_at = CASE WHEN $4::boolean THEN NULL ELSE next_check_at END
+        WHERE a.alert_id=$1
+          AND a.status NOT IN ('resolved','acknowledged')
+          AND a.alert_type NOT IN ('recovery','worker_recovered','job_overdue_recovered','external_api_switch','external_api_interface_failover')
+          AND ($2::timestamptz IS NULL OR a.last_seen_at <= $2::timestamptz)
+          AND (
+            a.alert_type <> 'source_contract'
+            OR EXISTS (
+              SELECT 1 FROM ops.source_contract_verifications v
+               WHERE v.verification_id = $3::bigint
+                 AND v.contract_ok = true
+                 AND v.checked_at > a.last_seen_at
+                 AND NOT EXISTS (
+                   SELECT 1 FROM ops.source_contract_verifications n
+                    WHERE n.source = v.source AND n.api_name = v.api_name
+                      AND (n.checked_at, n.verification_id) > (v.checked_at, v.verification_id)
+                 )
+            )
+          )
+        RETURNING a.*`, params);
 }
 
 async function update_ops_alert_notifications_10(params, client = pool) {
@@ -260,7 +271,7 @@ async function update_ops_alert_notifications_11(params, client = pool) {
 }
 
 async function select_ops_alert_notifications_4(params, client = pool) {
-  return client.query(`SELECT * FROM ops.alert_notifications
+  return client.query(`SELECT *, last_seen_at::text AS last_seen_at_version FROM ops.alert_notifications
       WHERE status NOT IN ('resolved','acknowledged')
         AND alert_type NOT IN ('recovery','worker_recovered','job_overdue_recovered','external_api_switch','external_api_interface_failover')
         AND (last_checked_at IS NULL OR next_check_at IS NULL OR next_check_at <= now())
@@ -302,7 +313,7 @@ async function update_ops_alert_notifications_14(params, client = pool) {
 }
 
 async function select_ops_alert_notifications_5(params, client = pool) {
-  return client.query(`SELECT * FROM ops.alert_notifications WHERE alert_id=$1`, params);
+  return client.query(`SELECT *, last_seen_at::text AS last_seen_at_version FROM ops.alert_notifications WHERE alert_id=$1`, params);
 }
 
 async function update_ops_alert_notifications_15(params, client = pool) {
@@ -432,8 +443,10 @@ module.exports = {
   update_ops_alert_notifications_8,
   update_ops_alert_notifications_9,
   update_ops_alert_notifications_10,
-  resolve_alert_evidence_guarded,
-  resolve_alert_evidence_guarded_untyped,
+  update_ops_alert_notifications_11,
+  update_ops_alert_notifications_12,
+  update_ops_alert_notifications_14,
+  resolve_alert_with_evidence,
   select_ops_alert_notifications_3,
   update_ops_alert_notifications_11,
   select_ops_alert_notifications_4,

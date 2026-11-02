@@ -227,6 +227,75 @@ function check(name, fn) {
     assert.ok(!invalid.mismatch.includes('web_process_older_than_unit'));
   });
 
+  // 复验 RR-01-A：亚秒必须按 JS 毫秒精度截断，不能把 .123456 当成 123456 毫秒（会被扩成 2 分 3 秒）。
+  await check('亚秒精度：1/3/4/6 位 UTC 小数与等价 ISO/epoch 必须同一时刻', async () => {
+    const base = Date.UTC(2026, 10, 1, 13, 41, 28); // 2026-11-01T13:41:28Z
+    const cases = [
+      ['Sun 2026-11-01 13:41:28.1 UTC', base + 100, '2026-11-01T13:41:28.1Z'],
+      ['Sun 2026-11-01 13:41:28.123 UTC', base + 123, '2026-11-01T13:41:28.123Z'],
+      ['Sun 2026-11-01 13:41:28.1234 UTC', base + 123, '2026-11-01T13:41:28.1234Z'],
+      ['Sun 2026-11-01 13:41:28.123456 UTC', base + 123, '2026-11-01T13:41:28.123456Z'],
+    ];
+    for (const [utcText, expected, isoText] of cases) {
+      assert.strictEqual(parseUnitTimestamp(utcText), expected, `${utcText} 必须按毫秒截断`);
+      assert.strictEqual(parseUnitTimestamp(isoText), expected, `${isoText} 与 UTC 文本必须一致`);
+    }
+    // 6 位小数不得被扩成秒/分钟（历史上的错误是 13:43:31.456）。
+    assert.notStrictEqual(parseUnitTimestamp('Sun 2026-11-01 13:41:28.123456 UTC'), base + 123456);
+  });
+
+  await check('亚秒场景下同进程判一致、真旧进程仍判不一致', async () => {
+    const healthAt = { ...goodHealth, startedAt: '2026-11-01T13:41:28.123Z' };
+    const workerAt = { ...goodWorker, started_at: '2026-11-01T13:41:28.123Z' };
+    const base = { ...baseFacts, health: healthAt, worker: workerAt, expectWebPid: '111', expectWorkerPid: '222', requireProcessTimes: true };
+
+    const same = evaluateIdentity({ ...base, expectWebStarted: 'Sun 2026-11-01 13:41:28.123456 UTC', expectWorkerStarted: 'Sun 2026-11-01 13:41:28.123456 UTC' });
+    assert.strictEqual(same.status, 'ok', same.line);
+
+    const old = evaluateIdentity({ ...base, expectWebStarted: 'Sun 2026-11-01 14:41:28.123 UTC', expectWorkerStarted: 'Sun 2026-11-01 14:41:28.123 UTC' });
+    assert.strictEqual(old.status, 'mismatch', old.line);
+    assert.ok(old.mismatch.includes('web_process_older_than_unit'));
+  });
+
+  // 复验 RR-01-B：部署"要求采集但取不到"必须记无法核实，不能因为没得比就输出 OK。
+  await check('部署要求采集但启动时刻为空 → 无法核实（不是 OK）', async () => {
+    const verdict = evaluateIdentity({
+      ...baseFacts, health: goodHealth, worker: goodWorker, expectWebPid: '111', expectWorkerPid: '222',
+      expectWebStarted: '', expectWorkerStarted: '', requireProcessTimes: true,
+    });
+    assert.strictEqual(verdict.status, 'unknown', verdict.line);
+    assert.ok(verdict.unknown.includes('web_start_missing'), verdict.line);
+    assert.ok(verdict.unknown.includes('worker_start_missing'), verdict.line);
+    assert.strictEqual(verdict.ok, false);
+
+    // 部署参数完全没给（--expect-*-started 缺失）时同样算采集失败。
+    const absent = evaluateIdentity({ ...baseFacts, health: goodHealth, worker: goodWorker, expectWebPid: '111', expectWorkerPid: '222', requireProcessTimes: true });
+    assert.strictEqual(absent.status, 'unknown', absent.line);
+  });
+
+  await check('期望侧有值、实际侧缺 startedAt → 无法核实', async () => {
+    const noWebStart = evaluateIdentity({
+      ...baseFacts, health: { ...goodHealth, startedAt: undefined }, worker: goodWorker,
+      expectWebPid: '111', expectWorkerPid: '222', requireProcessTimes: true,
+      expectWebStarted: 'Sun 2026-11-01 13:41:28 UTC', expectWorkerStarted: 'Sun 2026-11-01 13:41:28 UTC',
+    });
+    assert.strictEqual(noWebStart.status, 'unknown', noWebStart.line);
+    assert.ok(noWebStart.unknown.includes('web_start_missing'), noWebStart.line);
+  });
+
+  await check('可选调用（不要求比对时间）仍可省略；非法值记无法核实', async () => {
+    const optional = evaluateIdentity({ ...baseFacts, health: goodHealth, worker: goodWorker, expectWebPid: '111', expectWorkerPid: '222' });
+    assert.strictEqual(optional.status, 'ok', optional.line);
+
+    const invalid = evaluateIdentity({
+      ...baseFacts, health: goodHealth, worker: goodWorker, expectWebPid: '111', expectWorkerPid: '222', requireProcessTimes: true,
+      expectWebStarted: 'not-a-timestamp', expectWorkerStarted: 'Sun 2026-11-01 13:41:28 CST',
+    });
+    assert.strictEqual(invalid.status, 'unknown', invalid.line);
+    assert.ok(invalid.unknown.includes('web_start_unparsed'));
+    assert.ok(invalid.unknown.includes('worker_start_unparsed'));
+  });
+
   console.log('D. 部署脚本接线（静态）');
 
   const deploy = fs.readFileSync(path.join(__dirname, '..', '..', 'deploy', 'deploy_password.py'), 'utf8');
@@ -238,6 +307,8 @@ function check(name, fn) {
     // RR-01：时间取值必须无歧义（epoch 优先，退回 TZ=UTC），不能再直传 CST 文本。
     assert.match(deploy, /ActiveEnterTimestamp --value --timestamp=unix/, '启动时刻必须取 epoch');
     assert.match(deploy, /TZ=UTC systemctl show -p ActiveEnterTimestamp/, '不支持 epoch 时必须退回 UTC 文本');
+    // RR-01-B：部署必须声明"要求采集启动时刻"，否则取不到会被当成没得比而输出 OK。
+    assert.match(deploy, /--require-process-times/, '部署必须要求进程启动时刻');
     assert.match(deploy, /IDENTITY_UNKNOWN/, '无法核实要单独识别，不能当成通过');
     assert.match(deploy, /发布身份无法核实/, '无法核实要在输出里明说');
     assert.match(deploy, /发布身份不一致，部署判为失败/, '不一致要明确失败并进入回滚');

@@ -50,6 +50,27 @@ function tierOfDefinition(definition) {
   return executionTier(definition);
 }
 
+// 选股模式（selection_*）的请求参数必须真正送进任务上下文。
+// 2026-11-03 线上实证：人工入队把市场写进 request_payload 后，执行上下文是白名单构造的，
+// market 没被带进来 → runSelectionMode 在入口直接判 selection_market_required 阻断，
+// 任务 12 秒失败，季度批次永远生成不出来，页面永久空白。
+// 同类字段一起补：market（必需）、quarter（管理员指定季度）、requestId（可追溯）、
+// targetDate（预览/补数必须按管理员指定目标日，不能用槽位业务日顶替）。
+function selectionContextOf(claimed) {
+  const payload = (claimed && claimed.request_payload) || {};
+  const mode = String(payload.mode || '');
+  if (!mode.startsWith('selection_')) return {};
+  const market = String(payload.market || '').toUpperCase();
+  const targetDate = String(payload.targetDate || payload.targetTradeDate || '').slice(0, 10);
+  return {
+    ...(market ? { market } : {}),
+    ...(payload.quarter ? { quarter: String(payload.quarter) } : {}),
+    ...(payload.requestId ? { requestId: String(payload.requestId) } : {}),
+    ...(targetDate ? { targetDate } : {}),
+    ...(claimed.job_code === 'company_financial_incremental_sync' && targetDate ? { targetTradeDate: targetDate } : {}),
+  };
+}
+
 // 本进程可同时执行的任务数；历史类最多占 historyCapacity，保证核心任务始终留得住槽位。
 const EXECUTOR_CAPACITY = Math.max(Number(process.env.JOB_EXECUTOR_CAPACITY) || 2, 1);
 // 历史类可占的并发上限：容量 >=2 时至少给核心留一个槽；容量为 1 时历史退化为串行执行
@@ -785,6 +806,9 @@ async function runSlot(slot, reason = reasonForSlot(slot)) {
     slotExternalCallsTotal: Number(claimed.result_summary && claimed.result_summary.slotExternalCallsTotal || 0),
     slotExternalCallsLimit: Number(definition.slotExternalCallsLimit || 0) || null,
     targetDate: claimed.result_summary && claimed.result_summary.targetDate || claimed.business_date,
+    // 选股模式：market/quarter/requestId/targetDate 必须从 request_payload 带进上下文，
+    // 否则任务在入口被判缺市场参数而直接阻断。放在 targetDate 之后，按请求里固定目标日覆盖。
+    ...selectionContextOf(claimed),
     pendingStages: claimed.result_summary && Array.isArray(claimed.result_summary.pendingStages)
       ? claimed.result_summary.pendingStages : [],
     continuationCount: Number(claimed.result_summary && claimed.result_summary.continuationCount || 0),
@@ -1027,4 +1051,4 @@ async function stopDurableExecutor(timeoutMs = 5000) {
   }
 }
 
-module.exports = { startDurableExecutor, stopDurableExecutor, runDueSlots, runSlot, JOB_DEFINITIONS, touchSlot, runJobInIsolatedProcess, childErrorFromMessage, classifyFailure, recoverySchedule, resolveMaxAttempts, hasSkippedSignal, datasetPartitionKeyForSlot, buildDatasetDiagnosticAlerts, createDispatchScheduler, executionTier, slotTier, EXECUTOR_CAPACITY, HISTORY_CAPACITY };
+module.exports = { startDurableExecutor, stopDurableExecutor, runDueSlots, runSlot, JOB_DEFINITIONS, touchSlot, runJobInIsolatedProcess, childErrorFromMessage, classifyFailure, recoverySchedule, resolveMaxAttempts, hasSkippedSignal, datasetPartitionKeyForSlot, buildDatasetDiagnosticAlerts, createDispatchScheduler, executionTier, slotTier, selectionContextOf, EXECUTOR_CAPACITY, HISTORY_CAPACITY };

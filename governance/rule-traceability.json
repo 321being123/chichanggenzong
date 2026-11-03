@@ -4835,6 +4835,22 @@
       ],
       "owner": "WorkBuddy",
       "status": "implemented"
+    },
+    {
+      "id": "JOB-CONTEXT-SELECTION-PARAMS-246",
+      "title": "选股模式的请求参数必须经编排器执行上下文送达任务入口：market/quarter/requestId/targetDate（selection_inputs 另加 targetTradeDate）缺一即被判 selection_market_required，入队成功也永远生成不出批次",
+      "implementation": {
+        "file": "server/services/jobOrchestrator.js",
+        "symbol": "selectionContextOf"
+      },
+      "tests": [
+        {
+          "file": "server/test/stock-selection-job-context.test.js",
+          "pattern": "market"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "implemented"
     }
   ]
 }

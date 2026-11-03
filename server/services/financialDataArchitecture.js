@@ -48,7 +48,8 @@ async function persistCollectedData(metadata, bundle) {
       for (const [code, group] of groupBySource(rows)) {
         const sourceId = sources[code];
         if (!sourceId) throw new Error(`未找到数据源登记：${code}`);
-        await projection.syncReportRows(client, group, kind, master.companyId, sourceId);
+        // 金额币种按证券主档兜底（港股 HKD），行内自带币种时以行为准（R2-03）。
+        await projection.syncReportRows(client, group, kind, master.companyId, sourceId, { currency: master.currency });
       }
     }
     const daily = new Map((bundle.daily || []).map(x => [x.trade_date, x]));
@@ -89,6 +90,11 @@ async function persistCollectedData(metadata, bundle) {
     }
     for (const r of bundle.dividends || []) {
       const cash = finite(r.cash_div_tax), base = finite(r.base_share);
+      // 来源直接给出分红总额时以它为准（港股常无 base_share），币种也按行落库，不硬编码 CNY（R2-03）。
+      const declaredTotal = finite(r.total_cash_amount);
+      const totalCash = declaredTotal != null
+        ? declaredTotal
+        : (cash == null || base == null ? null : cash * base * 10000);
       // 官方（非默认来源）行改按自己的来源落库，不再记在备源名下。键必须与
       // stockProjectionRepository.syncOfficialDividends 用的一致（同一来源、同一事件、同一行），
       // 否则 refreshDividends 里那条「另写标准分红事实」会再插一条同源副本，现金收益择一时出现并列。
@@ -99,7 +105,8 @@ async function persistCollectedData(metadata, bundle) {
         instrumentId: master.instrumentId, fiscalPeriodEnd: asDate(r.end_date), announcedAt: asDate(r.ann_date || r.imp_ann_date),
         recordDate: asDate(r.record_date), exDate: asDate(r.ex_date), payDate: asDate(r.pay_date), status: r.div_proc || '',
         cashPerSharePreTax: cash, cashPerShareAfterTax: finite(r.cash_div), stockDividendRatio: finite(r.stk_bo_rate), capitalizationRatio: finite(r.stk_co_rate),
-        baseShares: base == null ? null : base * 10000, totalCashAmount: cash == null || base == null ? null : cash * base * 10000,
+        baseShares: base == null ? null : base * 10000, totalCashAmount: totalCash,
+        currencyCode: String(r.currency || master.currency || 'CNY').toUpperCase(),
         sourceId: sourceIdOf(r), sourceKey, rawPayload: r,
       }, client);
     }

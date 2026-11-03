@@ -56,37 +56,64 @@ async function runSelectionMode(mode, reason, context) {
     const datasetCode = selectionDatasetCode(market, 'snapshot');
     // 已正式发布却写不进分区 → 任务必须失败，不能把"组合已发布但分区缺失"报成成功。
     const publicationFailed = result.published && !publication.published;
-    return {
-      ok: !publicationFailed,
-      status: publicationFailed ? 'failed' : 'succeeded',
+    // R2-05：阶段完成必须是**四种终态之一**，不能只看分区行有没有写成功：
+    //   quarterly_published = 正式季度组合已发布且分区已落库（唯一"正式完成"）
+    //   market_closed       = 指数 PB≥2 的正常业务关闭，是可核验的终态（有 runId 与质量结论）
+    //   preview_only        = 只记录了部分/预览结果，输入未补齐 → 不得算完成，必须续跑
+    //   failed              = 已发布但分区写入失败
+    const released = result.published === true && publication.published === true;
+    // 正常市场关闭（指数 PB≥2）不是数据缺失：本季度本就不该持股。
+    // 它的终态证据是"该季度的质量裁决已经算出 market_closed"，不写空分区冒充已发布。
+    const marketClosed = !released && result.businessStatus === 'market_closed' && Boolean(result.runId);
+    const stageCompletedKind = publicationFailed ? 'failed'
+      : released ? 'quarterly_published'
+        : marketClosed ? 'market_closed' : 'preview_only';
+    const stageComplete = released || marketClosed;
+    const resultBody = {
+      ok: stageComplete && !publicationFailed,
+      status: publicationFailed ? 'failed'
+        : released ? 'succeeded'
+          : marketClosed ? 'market_closed' : 'partial',
       mode,
       market,
       quarter: result.quarter,
       runId: result.runId,
-      dataAsOf: result.published ? (result.quarterDate || quarterDateFallback(result.quarter)) : null,
+      qualityStatus: result.qualityStatus,
+      businessStatus: result.businessStatus,
+      pendingCount: result.pendingCount || 0,
+      qualityReasons: result.qualityReasons || [],
+      dataAsOf: stageComplete ? (result.quarterDate || quarterDateFallback(result.quarter)) : null,
       // 分区已在本模式内显式发布，不再走通用发布路径，避免二次写入。
       publishDatasets: false,
       publishDatasetCodes: [datasetCode],
+      stageComplete,
+      stageCompletedKind,
+      // 没到正式终态就是"部分完成"，必须续跑，不能凭一条 partial 分区结案。
+      ...(stageComplete ? {} : {
+        continuationRequired: true,
+        reason: 'selection_not_publishable',
+      }),
       ...(publicationFailed ? {
         error: `选股组合已发布但分区写入失败：${publication.error || publication.reason || 'unknown'}`,
         failedDatasets: [datasetCode],
       } : {}),
-      stageComplete: Boolean(publication.published),
       datasetDiagnostics: {
         [selectionDatasetCode(market, 'snapshot')]: {
           partition_row_count: result.selectedCount,
           quality_status: result.qualityStatus,
           business_status: result.businessStatus,
           query_status: 'success',
-          coverage_status: result.published ? 'released' : 'preview_only',
+          coverage_status: released ? 'released' : (marketClosed ? 'market_closed' : 'preview_only'),
           run_id: result.runId,
           publication_reason: publication && publication.reason ? publication.reason : null,
           published: Boolean(publication && publication.published),
+          stage_completed_kind: stageCompletedKind,
         },
       },
       selectionRunId: result.runId,
       published: result.published,
     };
+    return resultBody;
   }
   if (mode === 'selection_inputs') {
     const targetDate = context.targetDate || context.businessDate;
@@ -108,32 +135,40 @@ async function runSelectionMode(mode, reason, context) {
       reason: 'job:stock_analysis_refresh:selection_inputs',
     }).catch(error => ({ published: false, reason: 'publish_error', error: error.message }));
     const inputDatasetCode = selectionDatasetCode(market, 'inputs');
+    const clearedInputs = audit.gapCount === 0;
     return {
       // 审计成功但分区没写进去，同样不能算完成：下游看不到这份覆盖证据。
-      ok: audit.gapCount === 0 && Boolean(publication.published),
-      status: publication.published ? (audit.gapCount === 0 ? 'succeeded' : 'partial') : 'failed',
+      ok: clearedInputs && Boolean(publication.published),
+      status: publication.published ? (clearedInputs ? 'succeeded' : 'partial') : 'failed',
       mode,
       market,
       dataAsOf: asOfDate,
       publishDatasets: false,
       publishDatasetCodes: [inputDatasetCode],
+      // R2-05：缺口未清空 = 只记录了部分覆盖，不是阶段完成。
+      stageComplete: clearedInputs && Boolean(publication.published),
+      stageCompletedKind: clearedInputs && publication.published ? 'inputs_cleared' : 'inputs_gaps_pending',
+      ...(clearedInputs ? {} : { continuationRequired: true }),
       ...(publication.published ? {} : {
         error: `选股输入覆盖分区写入失败：${publication.error || publication.reason || 'unknown'}`,
         failedDatasets: [inputDatasetCode],
       }),
       // 缺口清单已持久化并可续跑；补齐仍走原行情/财务采集入口，本模式不自行联网。
-      reason: audit.gapCount === 0 ? undefined : 'selection_inputs_gaps_pending',
+      reason: clearedInputs ? undefined : 'selection_inputs_gaps_pending',
       gapCount: audit.gapCount,
+      domainCounts: audit.domainCounts || {},
       queueId: audit.queueId,
       datasetDiagnostics: {
         [selectionDatasetCode(market, 'inputs')]: {
           partition_row_count: audit.coverage.withValuation,
-          quality_status: audit.gapCount === 0 ? 'passed' : 'partial',
+          quality_status: clearedInputs ? 'passed' : 'partial',
           query_status: 'success',
-          coverage_status: audit.gapCount === 0 ? 'verified' : 'gaps_pending',
+          coverage_status: clearedInputs ? 'verified' : 'gaps_pending',
           universe_count: audit.coverage.universeCount,
           gap_count: audit.gapCount,
+          domain_counts: audit.domainCounts || {},
           published: Boolean(publication && publication.published),
+          stage_completed_kind: clearedInputs && publication.published ? 'inputs_cleared' : 'inputs_gaps_pending',
         },
       },
     };
@@ -154,6 +189,8 @@ async function runSelectionMode(mode, reason, context) {
       backtestId: result.backtestId,
       publishDatasets: false,
       dataAsOf: null,
+      stageComplete: result.status !== 'not_evaluable',
+      stageCompletedKind: result.status === 'not_evaluable' ? 'backtest_not_evaluable' : 'backtest_evaluated',
       datasetDiagnostics: {},
     };
   }
@@ -163,6 +200,7 @@ async function runSelectionMode(mode, reason, context) {
   const result = await service.computeAndPersist({
     market, asOfDate, runKind: 'preview', requestId: context.requestId,
   });
+  // R2-05：预览的终态是"预览已记录"，与"质量通过/正式发布"是两件事，这里必须写明。
   return {
     ok: true,
     status: 'succeeded',
@@ -170,8 +208,10 @@ async function runSelectionMode(mode, reason, context) {
     market,
     dataAsOf: asOfDate,
     runId: result.runId,
+    qualityStatus: result.run && result.run.quality_status,
     publishDatasets: false,
     stageComplete: true,
+    stageCompletedKind: 'preview_recorded',
     datasetDiagnostics: {},
   };
 }

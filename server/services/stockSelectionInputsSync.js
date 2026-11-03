@@ -4,7 +4,6 @@
 // 不新建第二套采集链、不自己拼 HTTP、不写平行事实表；估值与行情的补齐仍由共享行情任务负责。
 'use strict';
 
-const { pool } = require('../db/connection');
 const { persistCollectedData } = require('./financialDataArchitecture');
 const repo = require('../repositories/stockSelectionRepository');
 const { upsertIndustryPath } = require('../repositories/industryRepository');
@@ -24,29 +23,43 @@ function shiftYears(date, years) {
   return `${year}-${month}`;
 }
 
-/** 缺口原因里哪些属于"可以靠补财报/分红解决"，哪些必须等共享行情补估值，哪些只需补行业分类。 */
+/**
+ * 缺口分类（R2-04）：按缺口自带的 domains 归类，**多条互斥判断改为并列**——
+ * 一只证券同时缺财报与估值时必须两处都进去，不能因为 else-if 只补一类、
+ * 然后把另一类永远留在"没人处理"的状态里。
+ *
+ * fundamental = 本任务能补的财报/分红（同一 collectOne 一并取回）
+ * industry    = 本任务能补的一级行业分类
+ * valuation   = 本任务不补，只负责如实记为剩余（等共享行情任务）
+ * unclassified = 未能识别归属的缺口，必须显式暴露，不能静默消失
+ */
 function classifyGaps(gaps) {
-  const financial = [];
+  const fundamental = [];
   const industry = [];
   const valuation = [];
-  gaps.forEach(gap => {
-    const reasons = gap.reasons || [];
-    // 同一只证券可能既缺财报又缺行业：两边都列，补齐时各按自己的能力补，互不顶替。
-    if (reasons.some(reason => /industry_unverified/i.test(reason))) industry.push(gap);
-    const needsFinancial = reasons.some(reason => /R04|R05|annual|equity|dividend|history/i.test(reason));
-    const needsValuation = reasons.some(reason => /R01|R02|pb_/i.test(reason));
-    if (needsFinancial) financial.push(gap);
-    else if (needsValuation) valuation.push(gap);
+  const unclassified = [];
+  (gaps || []).forEach(gap => {
+    const domains = Array.isArray(gap.domains) ? gap.domains : [];
+    if (domains.includes('financial_reports') || domains.includes('dividends')) fundamental.push(gap);
+    if (domains.includes('industry')) industry.push(gap);
+    if (domains.includes('valuation')) valuation.push(gap);
+    if (domains.includes('unclassified') || (!domains.length && (gap.reasons || []).length === 0)) unclassified.push(gap);
   });
-  return { financial, industry, valuation };
+  return { fundamental, financial: fundamental, industry, valuation, unclassified };
+}
+
+// 上次批次失败的代码排到队尾，避免"永远从同一个失败前缀开始"导致剩余对象饿死。
+function rotateAfterFailures(list, failedCodes) {
+  if (!failedCodes || !failedCodes.size) return list;
+  const front = [];
+  const back = [];
+  list.forEach(item => (failedCodes.has(item.code) ? back : front).push(item));
+  return front.concat(back);
 }
 
 async function readMeta(tsCode) {
-  const { rows } = await pool.query(
-    `SELECT i.canonical_code AS ts_code, i.name, i.market, i.list_date::text AS list_date,
-            i.currency_code, i.raw_data
-       FROM core.instruments i WHERE i.canonical_code = $1 LIMIT 1`, [tsCode]);
-  return rows[0] || null;
+  // SQL 只允许在仓储层（静态分层门禁 R2-07）；服务层不再直接持连接池查询。
+  return repo.findInstrumentMeta({ tsCode });
 }
 
 /**
@@ -140,10 +153,20 @@ async function syncSelectionInputs(input) {
   const limit = Number.isFinite(Number(input.batchLimit)) && Number(input.batchLimit) > 0
     ? Math.floor(Number(input.batchLimit)) : 20;
   const audit = await service.auditInputs({ market, asOfDate });
-  const { financial, industry, valuation } = classifyGaps(audit.gaps || []);
+  const { financial: fundamental, industry, valuation, unclassified } = classifyGaps(audit.gaps || []);
+  // 上一次失败过的代码排到队尾，本批不再反复撞同一个失败前缀。
+  let previouslyFailed = new Set();
+  try {
+    const lastQueue = await repo.readInputGapQueue({ market });
+    const codes = (lastQueue && lastQueue.cursor_payload && lastQueue.cursor_payload.lastRun
+      && lastQueue.cursor_payload.lastRun.failedCodes) || [];
+    previouslyFailed = new Set(codes);
+  } catch (_) { /* 读不到历史队列不影响本次补齐，只失去轮转顺序 */ }
+  const industryQueue = rotateAfterFailures(industry, previouslyFailed);
+  const fundamentalQueue = rotateAfterFailures(fundamental, previouslyFailed);
   // 行业分类先补：一次取数就能补齐一条完整路径，成本低，且它是"能否发布正式组合"的阻断项，
   // 不能被财报批次挤掉。
-  const industryBatch = industry.slice(0, limit);
+  const industryBatch = industryQueue.slice(0, limit);
   const industryResults = [];
   for (const gap of industryBatch) {
     try {
@@ -152,7 +175,7 @@ async function syncSelectionInputs(input) {
       industryResults.push({ code: gap.code, ok: false, reason: 'industry_collect_failed', error: String(error.message || error).slice(0, 320) });
     }
   }
-  const batch = financial.slice(0, limit);
+  const batch = fundamentalQueue.slice(0, limit);
   const results = [];
   for (const gap of batch) {
     try {
@@ -165,35 +188,55 @@ async function syncSelectionInputs(input) {
   // 重新审计：剩余量以"补完后仍待补"为准，不用本批处理数冒充完成。
   const after = await service.auditInputs({ market, asOfDate });
   const remaining = classifyGaps(after.gaps || []);
+  const failedResults = results.concat(industryResults).filter(item => !item.ok);
   // 队列里同时保留：补齐摘要 + 补齐后仍待补的对象明细（明细来自重新审计，不是本批结果倒推）。
   const queuePayload = {
     market,
     asOfDate,
     generatedAt: new Date().toISOString(),
     universeCount: after.coverage ? after.coverage.universeCount : null,
-    gapCount: remaining.financial.length + remaining.industry.length + remaining.valuation.length,
+    gapCount: (after.gaps || []).length,
+    domainCounts: after.domainCounts || {},
     coverage: after.coverage,
     quality: after.quality,
-    gaps: (after.gaps || []).slice(0, 5000),
-    truncated: (after.gaps || []).length > 5000,
+    gaps: after.gaps || [],
+    truncated: false,
     lastRun: {
       processed: results.length,
       succeeded: results.filter(item => item.ok).length,
       failed: results.filter(item => !item.ok).length,
       industryProcessed: industryResults.length,
       industrySucceeded: industryResults.filter(item => item.ok).length,
-      remainingFinancial: remaining.financial.length,
+      remainingFundamental: remaining.fundamental.length,
+      remainingFinancial: remaining.fundamental.length,
       remainingIndustry: remaining.industry.length,
       remainingValuation: remaining.valuation.length,
+      remainingUnclassified: remaining.unclassified.length,
       valuationCodes: remaining.valuation.slice(0, 200).map(item => item.code),
+      // 失败代码持久化：下次批次据此轮转到队尾，保证剩余对象不会被同一前缀一直挡住。
+      failedCodes: failedResults.map(item => item.code).slice(0, 500),
+      failedReasons: failedResults.slice(0, 50).map(item => ({ code: item.code, reason: item.reason || 'unknown' })),
     },
   };
   await repo.saveInputGapQueue({ market, payload: queuePayload });
-  // 行业未核验同样是发布阻断项，不能只等财报补齐就说"补齐完成"。
-  const cleared = remaining.financial.length === 0 && remaining.industry.length === 0;
+  // 完成判定（R2-04）：本任务能补的（财报/分红/行业）与不能补但必需的（估值）都必须清空；
+  // 未识别的缺口也不允许当完成。处理 0 个而仍有缺口时更不能报 succeeded。
+  const blockingRemaining = remaining.fundamental.length + remaining.industry.length
+    + remaining.valuation.length + remaining.unclassified.length;
+  const cleared = blockingRemaining === 0;
+  const unclassifiedBlocked = remaining.unclassified.length > 0;
+  const valuationBlocked = remaining.valuation.length > 0;
+  const processedAny = results.length + industryResults.length > 0;
+  const status = cleared ? 'succeeded'
+    : (!processedAny ? 'blocked' : 'partial');
+  const reason = cleared ? undefined
+    : unclassifiedBlocked ? 'selection_gap_unclassified'
+      : valuationBlocked && blockedOnlyByValuation(remaining) ? 'remaining_valuation_gap'
+        : 'selection_inputs_gaps_pending';
   return {
     ok: cleared,
-    status: cleared ? 'succeeded' : 'partial',
+    status,
+    reason,
     market,
     asOfDate,
     processed: results.length,
@@ -201,13 +244,23 @@ async function syncSelectionInputs(input) {
     failed: queuePayload.lastRun.failed,
     industryProcessed: queuePayload.lastRun.industryProcessed,
     industrySucceeded: queuePayload.lastRun.industrySucceeded,
+    remainingFundamental: queuePayload.lastRun.remainingFundamental,
     remainingFinancial: queuePayload.lastRun.remainingFinancial,
     remainingIndustry: queuePayload.lastRun.remainingIndustry,
     remainingValuation: queuePayload.lastRun.remainingValuation,
+    remainingUnclassified: queuePayload.lastRun.remainingUnclassified,
+    gapCount: queuePayload.gapCount,
+    domainCounts: queuePayload.domainCounts,
     coverage: after.coverage,
     batchResults: results.slice(0, 50),
     industryResults: industryResults.slice(0, 50),
   };
+}
+
+// 只剩估值缺口时给出专门原因，便于任务面板区分"等共享行情"与"还有别的缺口在补"。
+function blockedOnlyByValuation(remaining) {
+  return remaining.fundamental.length === 0 && remaining.industry.length === 0
+    && remaining.unclassified.length === 0 && remaining.valuation.length > 0;
 }
 
 module.exports = { syncSelectionInputs, collectOne, collectIndustryOne, classifyGaps, REPORT_KINDS, HISTORY_YEARS };

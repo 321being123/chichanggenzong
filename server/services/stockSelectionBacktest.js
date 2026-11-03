@@ -133,19 +133,41 @@ async function runBacktest(input) {
       quarter: item.quarter, signalDate: item.signalDate, executionDate,
       marketEligible: computed.gate.eligible,
       publishable: computed.quality.publishable,
+      qualityReasons: computed.quality.reasons || [],
       pendingCount: computed.quality.pendingCount,
+      industryMissing: computed.quality.industryMissing || 0,
+      universeCount: (computed.coverage && computed.coverage.universeCount) || 0,
       selectedCount: computed.portfolio.members.length,
     });
   }
 
   // 只有"输入未知"才不可还原；指数 PB≥2 属于正常业务关闭（SSV-08）：
   // 那一段就该持有现金，是可还原的历史，不能和缺数据混为一谈。
-  const unknownInputs = selections.filter(item =>
-    item.computed.gate.status === 'data_missing' || item.computed.quality.pendingCount > 0);
-  if (unknownInputs.length) {
+  // R2-06：可还原性必须按**全部必需质量依赖**裁决，不能只看 data_missing 与 pendingCount。
+  // 行业/身份/股份/币种/财年等未知同样让"这个季度选出来的东西"不可信，
+  // 把它当成"策略主动空仓"会凭空生成一段全现金零收益的"有效"历史。
+  // 唯一可恢复的"零候选"是质量裁决只给出 no_eligible_member（确实没有合格股票）。
+  const recoverableOnlyReasons = new Set(['no_eligible_member']);
+  const notRecoverable = selections.filter(item => {
+    const computed = item.computed;
+    const gate = computed.gate || {};
+    if (gate.status === 'market_closed') return false;   // 正常关闭：可还原为持有现金
+    if (gate.status !== 'eligible') return true;          // 指数数据缺失/异常
+    const reasons = (computed.quality && computed.quality.reasons) || [];
+    const blocking = reasons.filter(reason => !recoverableOnlyReasons.has(reason));
+    return blocking.length > 0;
+  });
+  if (notRecoverable.length) {
     diagnostics.missing = {
       reason: 'point_in_time_inputs_incomplete',
-      quarters: unknownInputs.map(item => item.quarter),
+      quarters: notRecoverable.map(item => item.quarter),
+      details: notRecoverable.map(item => ({
+        quarter: item.quarter,
+        reasons: (item.computed.quality && item.computed.quality.reasons) || [],
+        pendingCount: (item.computed.quality && item.computed.quality.pendingCount) || 0,
+        industryMissing: (item.computed.quality && item.computed.quality.industryMissing) || 0,
+        universeCount: (item.computed.coverage && item.computed.coverage.universeCount) || 0,
+      })),
     };
     return persistBacktest({
       market, strategyId: null, startDate, endDate, status: 'not_evaluable',

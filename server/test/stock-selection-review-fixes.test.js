@@ -96,7 +96,7 @@ async function main() {
     assert.strictEqual(result.rules.R02.reason, 'history_coverage_unknown');
   });
 
-  // ---------- SSV-04：分红缺失不能补 0 ----------
+  // ---------- SSV-04 / R2-01：分红缺失不能补 0，也不能当成通过 ----------
   await check('SSV-04 历史某年没有分红记录时跳过分红比较并标注，不补 0', () => {
     const years = Array.from({ length: 11 }, (_, index) => ({
       year: 2015 + index, profit: 1e9, dividend: index === 3 ? null : 1e8,
@@ -107,7 +107,9 @@ async function main() {
     assert.strictEqual(anomaly.dividendComparison, 'skipped_unknown_dividend');
     assert.deepStrictEqual(anomaly.dividendUnknownYears, [2018]);
     assert.strictEqual(anomaly.dividendSum, null, '不能用 0 参与求和');
-    assert.strictEqual(anomaly.status, RULES.STATUS.PASS, '利润维度可用时不应因分红未知直接排除');
+    // R2-01：分红是必要维度，未知不等于通过——必须待补并阻断正式发布。
+    assert.strictEqual(anomaly.status, RULES.STATUS.PENDING, '分红未知必须待补，不能放行');
+    assert.strictEqual(anomaly.reason, 'dividend_history_unknown');
   });
 
   await check('SSV-04 分红全部可核验时才做十年比较', () => {
@@ -157,13 +159,18 @@ async function main() {
         assert.ok(registry.DATASET_PARTITION_REGISTRY[code], `${code} 必须在分区注册表`);
       });
     const evidence = definitions.stageCompletionEvidence(definition, {
-      mode: 'selection_quarterly', ok: true, stageComplete: true, market: 'HK',
+      mode: 'selection_quarterly', ok: true, stageComplete: true, market: 'HK', stageCompletedKind: 'quarterly_published',
     }, { mode: 'selection_quarterly', market: 'HK' });
-    assert.strictEqual(evidence, true, '选股模式的市场级完成证据必须被认可');
+    assert.strictEqual(evidence, true, '选股模式的市场级正式发布必须被认可');
     const mismatched = definitions.stageCompletionEvidence(definition, {
-      mode: 'selection_quarterly', ok: true, stageComplete: true, market: 'CN',
+      mode: 'selection_quarterly', ok: true, stageComplete: true, market: 'CN', stageCompletedKind: 'quarterly_published',
     }, { mode: 'selection_quarterly', market: 'HK' });
     assert.strictEqual(mismatched, false, '市场不一致不得当作完成');
+    // R2-05：只剩预览/部分结果时，stageComplete 不能凭"分区写成功"通过。
+    const partial = definitions.stageCompletionEvidence(definition, {
+      mode: 'selection_quarterly', ok: true, stageComplete: true, market: 'HK', stageCompletedKind: 'preview_only',
+    }, { mode: 'selection_quarterly', market: 'HK' });
+    assert.strictEqual(partial, false, '预览/部分结果不得算阶段完成');
   });
 
   // ---------- SSV-01：模式必须被识别，不能静默回落 ----------

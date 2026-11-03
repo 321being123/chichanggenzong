@@ -34,9 +34,24 @@ function stablePayload(value) {
   return value;
 }
 
+// 期末日期可能带分隔符（'2025-12-31'）也可能不带（'20251231'），旧实现只认后者，
+// 于是所有按 asDate() 传入的报表都被标成 'other'，annual 年度读取一条也取不到（R2-03 连带修正）。
 function periodType(endDate) {
-  const suffix = String(endDate || '').slice(4);
+  const digits = String(endDate || '').replace(/\D/g, '');
+  const suffix = digits.length >= 8 ? digits.slice(4, 8) : digits;
   return suffix === '1231' ? 'annual' : suffix === '0630' ? 'semiannual' : suffix === '0331' ? 'q1' : suffix === '0930' ? 'q3' : 'other';
+}
+
+/**
+ * 报告期类型（R2-03）：优先用适配层按官方"报告类型"给出的期间类型。
+ * 港股财年可以在 3/6/7 月结束，只按期末月份推断会把 3 月年报写成 q1，
+ * 于是"年度利润"永远取不到、人民币/币种口径也跟着错。官方报告类型缺失时
+ * 适配层会显式给 'unknown'，此处如实保留未知，不再用月份猜。
+ */
+function resolvePeriodType(row) {
+  const declared = String((row && row.period_type) || '').trim().toLowerCase();
+  if (declared) return declared;
+  return periodType(row && row.end_date);
 }
 
 // 上游字段 → 标准指标口径；只在适配边界转换一次。
@@ -80,6 +95,7 @@ module.exports = {
   hash,
   marketMultiple,
   periodType,
+  resolvePeriodType,
   rowVersion,
   stablePayload,
 };

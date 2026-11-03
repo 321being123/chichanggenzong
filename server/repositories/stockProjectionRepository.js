@@ -4,7 +4,7 @@
 const { ensureInstrumentIdentity } = require('../services/securityIdentity');
 const { upsertIndustryPath } = require('./industryRepository');
 const {
-  FACT_MAP, METRICS, analysisMetricValues, asDate, finite, hash, periodType, rowVersion, stablePayload,
+  FACT_MAP, METRICS, analysisMetricValues, asDate, finite, hash, resolvePeriodType, rowVersion, stablePayload,
 } = require('../domain/stockFacts');
 
 async function sourceIds(client) {
@@ -62,6 +62,10 @@ async function syncReportRows(client, rows, kind, companyId, sourceId, options =
     if (!asDate(data.end_date)) continue;
     if (options.reportTypeOnly && String(data.report_type || '') !== String(options.reportTypeOnly)) continue;
     const sourceVersion = rowVersion(data), announced = asDate(data.ann_date), fAnnDate = asDate(data.f_ann_date || data.ann_date);
+    // 报告期类型与金额币种都必须来自事实本身（R2-03）：港股 3 月年报不能被月份推断成 q1，
+    // USD 报表金额也不能落成 CNY。行里没有币种时按证券主档币种兜底，而不是一律 CNY。
+    const rowPeriodType = resolvePeriodType(data);
+    const rowCurrency = String(data.currency || options.currency || 'CNY').toUpperCase();
     let rawRecordId = null;
     if (options.runId && sourceId) {
       const rawKey = `${companyId}:${kind}:${asDate(data.end_date)}:${announced || ''}:${fAnnDate || ''}:${data.report_type || ''}:${data.update_flag || ''}`;
@@ -78,12 +82,14 @@ async function syncReportRows(client, rows, kind, companyId, sourceId, options =
       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::jsonb) ON CONFLICT(company_id,report_kind,period_end,source_id,source_version)
       DO UPDATE SET announced_at=COALESCE(EXCLUDED.announced_at,fundamental.financial_reports.announced_at),
         f_ann_date=COALESCE(EXCLUDED.f_ann_date,fundamental.financial_reports.f_ann_date),
+        -- 报告期类型随重新采集更新：历史行曾按错误口径落成 other，不更新就永远取不到年度利润。
+        period_type=EXCLUDED.period_type,
         report_type=COALESCE(NULLIF(EXCLUDED.report_type,''),fundamental.financial_reports.report_type),
         comp_type=COALESCE(NULLIF(EXCLUDED.comp_type,''),fundamental.financial_reports.comp_type),
         update_flag=COALESCE(NULLIF(EXCLUDED.update_flag,''),fundamental.financial_reports.update_flag),
         raw_record_id=COALESCE(EXCLUDED.raw_record_id,fundamental.financial_reports.raw_record_id),
         raw_payload=EXCLUDED.raw_payload,ingested_at=now() RETURNING report_id`,
-    [companyId, kind, asDate(data.end_date), periodType(data.end_date), announced, fAnnDate, String(data.report_type || ''), String(data.comp_type || ''), sourceId, sourceVersion, data.update_flag || '', rawRecordId, JSON.stringify(data)])).rows[0];
+    [companyId, kind, asDate(data.end_date), rowPeriodType, announced, fAnnDate, String(data.report_type || ''), String(data.comp_type || ''), sourceId, sourceVersion, data.update_flag || '', rawRecordId, JSON.stringify(data)])).rows[0];
     await client.query(`UPDATE fundamental.financial_reports
       SET f_ann_date=COALESCE($2,f_ann_date),report_type=COALESCE(NULLIF($3,''),report_type),comp_type=COALESCE(NULLIF($4,''),comp_type),statement_scope=CASE WHEN $3='1' THEN 'consolidated' ELSE statement_scope END,
       raw_record_id=COALESCE($5,raw_record_id)
@@ -93,7 +99,7 @@ async function syncReportRows(client, rows, kind, companyId, sourceId, options =
       if (value === null) continue;
       const unit = metricCode === 'interest_coverage' ? 'multiple' : /roe|roa/.test(metricCode) ? 'percent' : 'currency';
       await client.query(`INSERT INTO fundamental.financial_facts(report_id,statement_type,metric_code,numeric_value,unit_code,currency_code,source_field)
-        VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(report_id,metric_code) DO UPDATE SET numeric_value=EXCLUDED.numeric_value,unit_code=EXCLUDED.unit_code,source_field=EXCLUDED.source_field`, [report.report_id, kind, metricCode, value, unit, unit === 'currency' ? 'CNY' : null, sourceField]);
+        VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(report_id,metric_code) DO UPDATE SET numeric_value=EXCLUDED.numeric_value,unit_code=EXCLUDED.unit_code,currency_code=EXCLUDED.currency_code,source_field=EXCLUDED.source_field`, [report.report_id, kind, metricCode, value, unit, unit === 'currency' ? rowCurrency : null, sourceField]);
     }
   }
   await client.query(`WITH ranked AS (SELECT report_id,row_number() OVER(PARTITION BY company_id,report_kind,period_end ORDER BY CASE WHEN report_type='1' THEN 0 ELSE 1 END,announced_at DESC NULLS LAST,ingested_at DESC,report_id DESC) rn FROM fundamental.financial_reports WHERE company_id=$1 AND report_kind=$2) UPDATE fundamental.financial_reports r SET is_current_version=(ranked.rn=1) FROM ranked WHERE r.report_id=ranked.report_id`, [companyId, kind]);
@@ -108,12 +114,17 @@ async function syncOfficialDividends(client, instrumentId, sourceId, rows) {
     if (!row || !row.end_date) continue;
     const cashPre = finite(row.cash_div_tax);
     const base = finite(row.base_share);
-    const amount = cashPre != null && base != null ? cashPre * base * 10000 : null;
+    // 分红总额优先用来源直接给的金额（R2-03）：缺少 base_share 时不能把总额算成 null，
+    // 年度异常与股息率都要用它做"已实施现金"。
+    const declaredTotal = finite(row.total_cash_amount);
+    const amount = declaredTotal != null ? declaredTotal
+      : (cashPre != null && base != null ? cashPre * base * 10000 : null);
     await client.query(`INSERT INTO fundamental.corporate_actions(instrument_id,action_type,fiscal_period_end,announced_at,record_date,ex_date,pay_date,status,cash_per_share_pre_tax,cash_per_share_after_tax,stock_dividend_ratio,capitalization_ratio,base_shares,total_cash_amount,currency_code,source_id,source_key,raw_payload)
-      VALUES($1,'dividend',$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'CNY',$14,$15,$16::jsonb)
-      ON CONFLICT(source_id,source_key) DO UPDATE SET status=EXCLUDED.status,record_date=EXCLUDED.record_date,ex_date=EXCLUDED.ex_date,pay_date=EXCLUDED.pay_date,total_cash_amount=EXCLUDED.total_cash_amount,raw_payload=EXCLUDED.raw_payload,ingested_at=now()`,
+      VALUES($1,'dividend',$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17::jsonb)
+      ON CONFLICT(source_id,source_key) DO UPDATE SET status=EXCLUDED.status,record_date=EXCLUDED.record_date,ex_date=EXCLUDED.ex_date,pay_date=EXCLUDED.pay_date,total_cash_amount=EXCLUDED.total_cash_amount,currency_code=EXCLUDED.currency_code,raw_payload=EXCLUDED.raw_payload,ingested_at=now()`,
     [instrumentId, asDate(row.end_date), asDate(row.ann_date), asDate(row.record_date), asDate(row.ex_date), asDate(row.pay_date),
       row.div_proc || '', cashPre, null, finite(row.stk_bo_rate), finite(row.stk_co_rate), base == null ? null : base * 10000, amount,
+      String(row.currency || 'CNY').toUpperCase(),
       sourceId, `${row.ts_code || instrumentId}:${row.end_date}:${row.ann_date || ''}`, JSON.stringify(row)]);
     written += 1;
   }
@@ -282,11 +293,11 @@ async function upsertShareCapital(params, tx) {
 async function upsertCorporateAction(params, tx) {
   await tx.query(
     `INSERT INTO fundamental.corporate_actions(instrument_id,action_type,fiscal_period_end,announced_at,record_date,ex_date,pay_date,status,cash_per_share_pre_tax,cash_per_share_after_tax,stock_dividend_ratio,capitalization_ratio,base_shares,total_cash_amount,currency_code,source_id,source_key,raw_payload)
-     VALUES($1,'dividend',$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'CNY',$14,$15,$16::jsonb) ON CONFLICT(source_id,source_key)
-     DO UPDATE SET status=EXCLUDED.status,record_date=EXCLUDED.record_date,ex_date=EXCLUDED.ex_date,pay_date=EXCLUDED.pay_date,total_cash_amount=EXCLUDED.total_cash_amount,raw_payload=EXCLUDED.raw_payload,ingested_at=now()`,
+     VALUES($1,'dividend',$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17::jsonb) ON CONFLICT(source_id,source_key)
+     DO UPDATE SET status=EXCLUDED.status,record_date=EXCLUDED.record_date,ex_date=EXCLUDED.ex_date,pay_date=EXCLUDED.pay_date,total_cash_amount=EXCLUDED.total_cash_amount,currency_code=EXCLUDED.currency_code,raw_payload=EXCLUDED.raw_payload,ingested_at=now()`,
     [params.instrumentId, params.fiscalPeriodEnd, params.announcedAt, params.recordDate, params.exDate, params.payDate, params.status,
       params.cashPerSharePreTax, params.cashPerShareAfterTax, params.stockDividendRatio, params.capitalizationRatio,
-      params.baseShares, params.totalCashAmount, params.sourceId, params.sourceKey, JSON.stringify(params.rawPayload || {})],
+      params.baseShares, params.totalCashAmount, params.currencyCode || 'CNY', params.sourceId, params.sourceKey, JSON.stringify(params.rawPayload || {})],
   );
 }
 

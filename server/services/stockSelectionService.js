@@ -116,6 +116,8 @@ function buildAnnualYears(profits, annualDividends) {
       dividend: hasEvents ? Number(dividendRow.dividend || 0) : null,
       dividendKnown: hasEvents,
       complete: item.profit !== null && item.profit !== undefined,
+      // 事实版本随年度一起保留：它是"这一年的利润有没有被更正过"的证据（R2-02）。
+      sourceVersion: item.sourceVersion || null,
       dividendBasis: hasEvents ? 'dividend_events_visible' : 'dividend_unknown',
     };
   }).sort((a, b) => a.year - b.year);
@@ -303,26 +305,47 @@ async function computeSelection(input, tx) {
 }
 
 /**
- * 逐股输入摘要（SSV-05）：哈希必须覆盖"值"，不能只覆盖计数。
- * 反例：同一集合里把某只 PB 从 1.2 改成 0.81，行数、指数、参数都不变，
- * 旧实现因此复用旧快照并保留旧的 PB=1.2。这里把每只证券的关键输入与规则结论、
- * 财报/分红版本证据一起排序后哈希，任一有效输入变化都会产生新哈希与新 revision。
+ * 逐股输入摘要（SSV-05 / R2-02）：哈希必须覆盖实际参与判断的**全部值与证据**。
+ * 反例一：同一集合里把某只 PB 从 1.2 改成 0.81，行数、指数、参数都不变，旧实现复用旧快照。
+ * 反例二：把 2015 年利润从 10 亿改成 -200 亿，最新一年与其他指标不变——只哈希最新一年时
+ * 年度异常已从 PASS 变 FAIL，哈希却不变，于是继续返回旧已发布批次。
+ * 因此这里把每一年的利润/分红/完整性、事实版本、权益版本与年度异常结论一起排序后哈希。
  */
 function inputsDigestOf(computed) {
+  const anomalyById = computed.anomalyById || {};
   const rows = computed.evaluated.map(item => {
     const detail = item.detail || {};
     const equity = detail.equity || {};
     const dividend = detail.dividend || {};
     const annual = detail.annual || {};
     const pbWindow = detail.pbWindow || {};
-    const latestYear = annual.latestYear ? (annual.years || []).find(row => Number(row.year) === Number(annual.latestYear)) : null;
+    // 全部年度事实都要进指纹，不能只取最新一年。
+    const years = (annual.years || []).map(row => [
+      Number(row.year), row.profit === undefined ? null : row.profit,
+      row.dividend === undefined ? null : row.dividend,
+      row.dividendKnown === true, row.complete === true, row.sourceVersion || null,
+    ]);
+    const anomaly = anomalyById[item.instrumentId] || null;
+    const anomalyEvidence = anomaly ? [
+      anomaly.status, anomaly.reason || null, anomaly.latestYear,
+      anomaly.profitY === undefined ? null : anomaly.profitY,
+      anomaly.profitSum === undefined ? null : anomaly.profitSum,
+      anomaly.dividendY === undefined ? null : anomaly.dividendY,
+      anomaly.dividendSum === undefined ? null : anomaly.dividendSum,
+      anomaly.dividendComparable === undefined ? null : anomaly.dividendComparable,
+      anomaly.dividendComparison || null,
+      (anomaly.dividendUnknownYears || []).join(','),
+      (anomaly.missingYears || []).join(','),
+    ] : null;
     return [
       item.instrumentId, item.code,
       item.currentPb, item.currentPe, detail.price, item.dividendYield,
-      item.historicalPbMax, pbWindow.expectedDays, pbWindow.gapDays,
+      item.historicalPbMax, pbWindow.expectedDays, pbWindow.gapDays, pbWindow.coveredDays,
       item.equityCny, item.equityCurrency, equity.reportId, equity.periodEnd, equity.announcedAt,
-      dividend.ttmPerShare, dividend.count,
-      annual.latestYear, latestYear ? latestYear.profit : null, latestYear ? latestYear.dividend : null,
+      equity.sourceVersion || null,
+      dividend.ttmPerShare, dividend.count, dividend.currency || null, dividend.shareUnitUnverified === true,
+      annual.latestYear, annual.currency || null, years,
+      anomalyEvidence,
       item.industry ? `${item.industry.system}:${item.industry.code}:${item.industry.version}` : null,
       item.rules.R01.status, item.rules.R02.status, item.rules.R04.status, item.rules.R05.status,
       item.filterStatus, item.profitStatus,
@@ -488,7 +511,17 @@ async function runQuarterly({ market, quarter, requestId, strategyVersion }) {
     businessStatus: result.run.business_status,
     published: !!result.run.published_at,
     selectedCount: Number(result.run.selected_count || 0),
+    // 阶段完成裁决需要区分"正式发布 / 市场正常关闭 / 只是预览"，这些证据必须一起返回。
+    pendingCount: Number(result.run.pending_count || 0),
+    qualityReasons: computedQualityReasons(result),
   };
+}
+
+// 质量裁决的阻断原因随批次落库在 input_manifest.quality，这里只做安全读取。
+function computedQualityReasons(result) {
+  const manifest = result && result.run && result.run.input_manifest;
+  const quality = manifest && manifest.quality;
+  return (quality && Array.isArray(quality.reasons)) ? quality.reasons : [];
 }
 
 /** 该市场待生成的最近一个完整季度（用于自动排队）。 */
@@ -839,40 +872,96 @@ async function listBacktests({ market, limit, offset }) {
 }
 
 /**
+ * 缺口的数据集归属（R2-04）：每个原因必须能落到"补什么"，
+ * 补不了的（估值由共享行情任务负责）也要显式分类，不能变成"没有原因"。
+ */
+function gapDomainsOf(item, anomaly) {
+  const domains = new Set();
+  const reasons = [];
+  const add = (domain, reason) => { domains.add(domain); reasons.push(reason); };
+
+  if (item.filterStatus === RULES.STATUS.PENDING) {
+    RULES.RULE_CODES.forEach(code => {
+      const rule = (item.rules || {})[code];
+      if (!rule || rule.status !== RULES.STATUS.PENDING) return;
+      const reason = `${code}:${rule.reason || rule.status}`;
+      // R04 走分红事实、R05 走财报、R01/R02 走行情估值。
+      if (code === 'R04') add('dividends', reason);
+      else if (code === 'R05') add('financial_reports', reason);
+      else add('valuation', reason);
+    });
+  }
+  // 排名受阻：利润口径未知要补财报，静态 PE 缺失要补估值。
+  (item.rankBlockReasons || []).forEach(reason => {
+    if (reason === 'profit_status_unknown') add('financial_reports', `RANK:${reason}`);
+    else add('valuation', `RANK:${reason}`);
+  });
+  if (anomaly && anomaly.status === RULES.STATUS.PENDING) {
+    const code = `annual_anomaly:${anomaly.reason || 'pending'}`;
+    const unknownYears = anomaly.dividendUnknownYears || [];
+    // 分红未知 → 补分红；利润历史不全 → 补财报；两者都可能时都入队。
+    if (unknownYears.length) add('dividends', code);
+    if (!unknownYears.length || (anomaly.missingYears || []).length) add('financial_reports', code);
+  }
+  if (!item.industry) add('industry', 'industry_unverified');
+  // 未识别原因也保留：不允许"有缺口但 reasons 为空"。
+  if (!reasons.length) {
+    const fallback = Array.from(new Set((item.exclusionReasons || []).map(row => row.code))).filter(Boolean);
+    if (fallback.length) fallback.forEach(code => add('unclassified', code));
+    else add('unclassified', 'gap_reason_unresolved');
+  }
+  return { domains: Array.from(domains), reasons: Array.from(new Set(reasons)) };
+}
+
+/**
  * 选股输入缺口审计（对应选股任务 selection_inputs 模式）：
  * 只读库内标准事实，冻结"应补未补"的对象清单并持久化可续跑队列；
  * 不在这里新增第二条外部采集链路（方案 7.1 要求复用原采集入口）。
+ *
+ * R2-04：缺口必须带明确的字段/数据集分类（domains），并且：
+ * - 只有"待补/排名输入未知/年度异常待补/行业未核验"才进队列，明确不符合(FAIL)与风险暂缓(RISK)不是缺口；
+ * - 因此不会出现"gapCount=1 但 reasons=[]"导致补齐任务处理 0 个还报成功；
+ * - 明细全量持久化（不再按 5000 条截断），续跑队列因此完整。
  */
 async function auditInputs({ market, asOfDate }) {
   const computed = await computeSelection({ market, asOfDate, positionRatio: 1 });
-  const gaps = computed.evaluated
-    // 行业未核验也要进缺口清单：否则补齐任务永远不知道要去取分类，
-    // 而 quality 又会因为 industry_missing 一直不发布，形成死循环。
-    .filter(item => item.filterStatus === RULES.STATUS.PENDING || !item.rankReady || !item.industry)
-    .map(item => {
-      const reasons = Array.from(new Set(item.exclusionReasons.map(reason => reason.code)));
-      if (!item.industry) reasons.push('industry_unverified');
-      return {
-        code: item.code,
-        name: item.name,
-        companyId: item.companyId,
-        reasons,
-      };
+  const gaps = [];
+  computed.evaluated.forEach(item => {
+    const anomaly = computed.anomalyById ? computed.anomalyById[item.instrumentId] : null;
+    const pending = item.filterStatus === RULES.STATUS.PENDING;
+    const rankBlocked = item.filterStatus === RULES.STATUS.PASS && item.rankReady === false;
+    const anomalyPending = item.filterStatus === RULES.STATUS.PASS && anomaly && anomaly.status === RULES.STATUS.PENDING;
+    // 明确不符合(FAIL)与当期风险(RISK)是结论，不是缺口；它们不该被反复"补齐"。
+    if (!pending && !rankBlocked && !anomalyPending && item.industry) return;
+    const classified = gapDomainsOf(item, anomaly);
+    gaps.push({
+      code: item.code,
+      name: item.name,
+      companyId: item.companyId,
+      filterStatus: item.filterStatus,
+      domains: classified.domains,
+      reasons: classified.reasons,
     });
+  });
+  const domainCounts = gaps.reduce((acc, gap) => {
+    gap.domains.forEach(domain => { acc[domain] = (acc[domain] || 0) + 1; });
+    return acc;
+  }, {});
   const payload = {
     market: computed.market,
     asOfDate: computed.asOfDate,
     generatedAt: new Date().toISOString(),
     universeCount: computed.coverage.universeCount,
     gapCount: gaps.length,
+    domainCounts,
     coverage: computed.coverage,
     quality: computed.quality,
-    // 队列按证券代码排序后截断明细，总量仍完整保存在 gapCount；不因页面或日志截断而少算。
-    gaps: gaps.slice(0, 5000),
-    truncated: gaps.length > 5000,
+    // 全量保存：补齐任务与续跑判定都依赖完整队列，截断会让"剩余数量"失真。
+    gaps,
+    truncated: false,
   };
   const queueId = await repo.saveInputGapQueue({ market: computed.market, payload });
-  return { queueId, gapCount: gaps.length, coverage: computed.coverage, quality: computed.quality, gaps };
+  return { queueId, gapCount: gaps.length, domainCounts, coverage: computed.coverage, quality: computed.quality, gaps };
 }
 
 module.exports = {

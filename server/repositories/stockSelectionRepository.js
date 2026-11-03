@@ -206,6 +206,7 @@ async function loadAnnualProfits({ companyIds, asOfDate, availableBefore }, tx) 
            r.company_id,
            date_part('year', r.period_end)::int AS fiscal_year,
            r.period_end::text AS period_end,
+           r.source_version,
            f.numeric_value, f.currency_code
       FROM fundamental.financial_reports r
       JOIN fundamental.financial_facts f ON f.report_id = r.report_id AND f.metric_code = 'net_profit_parent'
@@ -227,6 +228,8 @@ async function loadAnnualProfits({ companyIds, asOfDate, availableBefore }, tx) 
       periodEnd: row.period_end,
       profit: row.numeric_value === null ? null : Number(row.numeric_value),
       currency: row.currency_code || null,
+      // 事实版本进入输入指纹（R2-02）：同一财年被更正后版本会变，不能继续命中旧快照。
+      sourceVersion: row.source_version || null,
     });
     map.set(key, list);
   });
@@ -787,6 +790,16 @@ async function readInputGapQueue({ market }, tx) {
   return rows[0] || null;
 }
 
+/** 证券主档最小信息（选股输入补齐用）。SQL 留在仓储层，服务不再直接持连接池查询。 */
+async function findInstrumentMeta({ tsCode }, tx) {
+  const exec = executorOf(tx);
+  const { rows } = await exec(
+    `SELECT i.canonical_code AS ts_code, i.name, i.market, i.list_date::text AS list_date,
+            i.currency_code, i.raw_data
+       FROM core.instruments i WHERE i.canonical_code = $1 LIMIT 1`, [tsCode]);
+  return rows[0] || null;
+}
+
 async function insertBacktest(tx, backtest) {  const exec = executorOf(tx);
   const { rows } = await exec(`
     INSERT INTO analytics.stock_selection_backtests
@@ -915,6 +928,6 @@ module.exports = {
   publishRun, markRunFailure,
   listRuns, findRun, listCandidates, findCandidate, listMembers, latestPublishedRun, copyCandidates,
   readUserSettings, saveUserSettings,
-  saveInputGapQueue, readInputGapQueue,
+  saveInputGapQueue, readInputGapQueue, findInstrumentMeta,
   insertBacktest, insertBacktestPeriods, findBacktest, listBacktestPeriods, listBacktests, previousPublishedMembers,
 };

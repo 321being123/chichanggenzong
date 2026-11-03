@@ -291,15 +291,25 @@ function externalCallLimitForMode(definition, mode = 'core') {
   return Math.max(Number(value) || 0, 0);
 }
 
+// 选股各模式的合法完成终态（R2-05）：只认"正式发布 / 正常关闭 / 预览已记录 / 缺口已清空 /
+// 回测可评估"，不允许用"分区行写成功"或 ok:true 冒充。
+const SELECTION_STAGE_KINDS = Object.freeze({
+  selection_quarterly: ['quarterly_published', 'market_closed'],
+  selection_preview: ['preview_recorded'],
+  selection_backtest: ['backtest_evaluated'],
+  selection_inputs: ['inputs_cleared'],
+});
+
 function stageCompletionEvidence(definition, result = {}, request = {}) {
   const requestedMode = request.mode || (request.targetCodes?.length ? 'targeted' : definition.mode || 'core');
   if (result.mode !== requestedMode) return false;
-  // 选股模式没有 targetCodes 合同：完成证据是"本市场目标日算完且分区已写入"。
-  // 缺这一段会让 selection_quarterly 的 stageComplete=true 永远不被认可。
+  // 选股模式没有 targetCodes 合同：完成证据是"本市场目标日算到明确终态且分区/证据已落库"。
   if (String(requestedMode).startsWith('selection_')) {
     const market = String(request.market || result.market || '').toUpperCase();
+    const allowedKinds = SELECTION_STAGE_KINDS[requestedMode] || [];
     return result.ok === true
       && result.stageComplete === true
+      && allowedKinds.includes(result.stageCompletedKind)
       && !result.error
       && result.continuationRequired !== true
       && (result.failedDatasets || []).length === 0
@@ -328,6 +338,6 @@ function declaredDailyExternalCallBudget(definition) {
 
 module.exports = {
   DEFAULT_JOB_OPTIONS, JOB_DEFINITION_SOURCE, JOB_CONTRACTS, JOB_DEFINITIONS, JOB_DEFINITION_AUDIT,
-  DATA_DATE_POLICIES, PARTITION_DATE_POLICIES, validateJobDefinitionSources,
+  DATA_DATE_POLICIES, PARTITION_DATE_POLICIES, validateJobDefinitionSources, SELECTION_STAGE_KINDS,
   isKnownJobCode, getRegisteredJobDefinition, getJobDefinition, externalCallLimitForMode, declaredDailyExternalCallBudget, stageCompletionEvidence,
 };

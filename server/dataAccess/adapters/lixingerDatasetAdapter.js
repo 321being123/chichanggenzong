@@ -448,6 +448,24 @@ function hkValuationRow(rawRow, tsCode, fallbackDate) {
   };
 }
 
+// 官方报告类型 → 标准期间类型（R2-03）。港股财年可以在 3/6/7 月结束，
+// 写库层再按期末月份推断会把它错标成季报，导致年度利润永远取不到。
+// 只做一一对应映射，认不出的保持 null（上层落 'unknown'，不猜）。
+const REPORT_PERIOD_TYPES = {
+  annual_report: 'annual',
+  semi_annual_report: 'semiannual',
+  semiannual_report: 'semiannual',
+  q1: 'q1',
+  q2: 'semiannual',
+  q3: 'q3',
+  q4: 'annual',
+};
+
+function periodTypeOfReportType(reportType) {
+  const key = String(reportType || '').trim().toLowerCase();
+  return REPORT_PERIOD_TYPES[key] || null;
+}
+
 // 财务三表：官方 cn/company/fs/non_financial。指标表（ROE/ROA 等）口径与 Tushare 不同，不在此映射。
 async function resolveFinancialReports({ tsCode, startDate, endDate, kinds = ['income', 'balance', 'cashflow', 'indicator'], options = {} } = {}) {
   const code = stockCodeOf(tsCode);
@@ -470,6 +488,7 @@ async function resolveFinancialReports({ tsCode, startDate, endDate, kinds = ['i
     // A 股沿用 standardDate（标准化后的报告期），两者都不拿"今天"顶替。
     const periodEnd = hk ? (isoDate(item.date) || isoDate(item.standardDate)) : (isoDate(item.standardDate) || isoDate(item.date));
     if (!periodEnd) continue;
+    const reportPeriodType = periodTypeOfReportType(item.reportType);
     const base = {
       ts_code: tsCode,
       end_date: periodEnd,
@@ -477,6 +496,9 @@ async function resolveFinancialReports({ tsCode, startDate, endDate, kinds = ['i
       f_ann_date: isoDate(item.reportDate) || isoDate(item.date),
       report_type: '1',
       comp_type: '1',
+      // 官方报告类型原值留证；港股缺它就记 'unknown'，让上层按"年度未知"处理而不是按月份猜。
+      report_period_label: item.reportType || null,
+      ...(hk ? { period_type: reportPeriodType || 'unknown' } : {}),
       currency: item.currency || (hk ? 'HKD' : 'CNY'),
       update_flag: '0',
       source_code: SOURCE,
@@ -761,6 +783,7 @@ module.exports = {
   resolveValuationSeriesDetailed,
   isHkCode,
   industryEndpointOf,
+  periodTypeOfReportType,
   HK_REPORT_METRICS,
   HK_VALUATION_METRICS,
 };

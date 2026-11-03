@@ -30,8 +30,10 @@ function facts(overrides) {
 }
 
 function annualWith(overrides) {
+  // dividendKnown 必须显式为 true：没有这条证据就属"分红未知"，按 R2-01 只能待补。
+  // 本组用例测的是利润维度比较，所以夹具要给出"分红事实已采集"的完整前提。
   return Array.from({ length: 11 }, (_, index) => Object.assign(
-    { year: 2015 + index, profit: 1e9, dividend: 1e8, complete: true }, overrides || {}));
+    { year: 2015 + index, profit: 1e9, dividend: 1e8, dividendKnown: true, complete: true }, overrides || {}));
 }
 
 async function main() {

@@ -189,6 +189,14 @@ function evaluateInstrument(facts, params = DEFAULT_PARAMS) {
   // 亏损与零利润保留事实，禁止把负 PE 当成低估值优先；PE 缺失属于待补，不混入亏损组。
   const peResolved = profitStatus === 'unknown' ? false : (profitStatus === 'profit' ? (pe !== null && pe > 0) : true);
 
+  // 排名受阻时把"到底缺哪个字段"写清楚（R2-04）：只给一个布尔会让缺口队列分不到类、
+  // 补齐任务处理 0 个对象却报完成。
+  const rankBlockReasons = [];
+  if (filterStatus === STATUS.PASS && !peResolved) {
+    if (profitStatus === 'unknown') rankBlockReasons.push('profit_status_unknown');
+    else rankBlockReasons.push('pe_static_unavailable');
+  }
+
   const exclusionReasons = [];
   risks.forEach(risk => exclusionReasons.push(risk));
   RULE_CODES.forEach(code => {
@@ -197,6 +205,7 @@ function evaluateInstrument(facts, params = DEFAULT_PARAMS) {
       exclusionReasons.push({ code: `${code}:${r.reason || r.status}`, rule: code, status: r.status });
     }
   });
+  rankBlockReasons.forEach(reason => exclusionReasons.push({ code: `RANK:${reason}`, rule: 'RANK', status: STATUS.PENDING }));
 
   return {
     instrumentId: facts.instrumentId,
@@ -221,6 +230,7 @@ function evaluateInstrument(facts, params = DEFAULT_PARAMS) {
     riskReasons: risks,
     // 名次计算前置：四项通过、无风险暂缓，且 PE/利润口径已定，才允许参与排名。
     rankReady: filterStatus === STATUS.PASS && peResolved,
+    rankBlockReasons,
     dataQualityStatus: filterStatus === STATUS.PASS && peResolved ? 'complete' : 'partial',
     exclusionReasons,
     detail: {
@@ -244,10 +254,12 @@ function findYear(years, year) {
  * 年度异常识别（方案 5.2）：Y 为截止 T 已完整披露的最新实际财年，
  * 与 Y 之前十个完整财年比较；利润或现金分红任一严格大于十年合计即排除。
  *
- * 利润与分红的完整性**分别取证**（SSV-04）：
+ * 利润与分红的完整性**分别取证**（SSV-04 / R2-01）：
  * - 利润：11 年都得有已披露归母利润，缺一年即待补；
- * - 分红：只有 11 年都能确认"这一年分红事实已采集"（有记录，含明确的零分红）才做分红比较；
- *   任何一年缺失都只跳过比较并标注，绝不把"没采集到"当 0 参与求和。
+ * - 分红：11 年都要能确认"这一年分红事实已采集"（有记录，含明确的零分红）；
+ *   任一年缺失就是**未知** → 整个年度异常判 PENDING 并阻断正式发布，绝不跳过比较后放行；
+ *   不会把"没采集到"当 0 参与求和，也不把"未知"当成"通过"。
+ *   唯一例外是利润维度已经明确超十年合计——那时"不符合"成立，结论无需依赖分红。
  */
 function evaluateAnnualAnomaly(annual, params = DEFAULT_PARAMS) {
   const p = Object.assign({}, DEFAULT_PARAMS, params || {});
@@ -288,9 +300,17 @@ function evaluateAnnualAnomaly(annual, params = DEFAULT_PARAMS) {
   const profitExceeded = result.profitY !== null && result.profitY > profitSum;
   const dividendExceeded = dividendComparable && result.dividendY !== null && result.dividendY > dividendSum;
   const excluded = profitExceeded || dividendExceeded;
+  // R2-01：分红是年度异常的**必要维度**之一，未知不等于通过。
+  // 原实现把"分红不可比"当成跳过比较后直接 PASS，等于未知条件被放行——
+  // 只有利润已经严格超十年合计（明确不符合）才允许直接排除；其余情况一律待补。
+  const status = excluded ? STATUS.FAIL
+    : (dividendComparable ? STATUS.PASS : STATUS.PENDING);
+  const reason = excluded
+    ? (profitExceeded && dividendExceeded ? 'profit_and_dividend_exceed_decade' : profitExceeded ? 'profit_exceed_decade' : 'dividend_exceed_decade')
+    : (dividendComparable ? null : 'dividend_history_unknown');
   return Object.assign(result, {
-    status: excluded ? STATUS.FAIL : STATUS.PASS,
-    reason: excluded ? (profitExceeded && dividendExceeded ? 'profit_and_dividend_exceed_decade' : profitExceeded ? 'profit_exceed_decade' : 'dividend_exceed_decade') : null,
+    status,
+    reason,
     profitSum, dividendSum,
     profitExceeded, dividendExceeded,
     dividendComparable,

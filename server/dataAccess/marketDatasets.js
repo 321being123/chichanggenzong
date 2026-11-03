@@ -32,7 +32,8 @@ function isAbort(error) {
 // 之前按读取请求整片关闭，导致「只补一个月」或「换一只股票成功」都能把长期缺口误标恢复。
 // 懒加载，避免数据层在正常路径就绑定数据库连接。
 function valuationQuality() {
-  return require('../services/valuationFetchQuality');
+  // 缺口留证模块已下沉到数据访问层（R2-07）：数据层引用服务层属跨层依赖。
+  return require('./valuationGapQuality');
 }
 
 async function recordValuationGaps({ kind, stage, detail }) {

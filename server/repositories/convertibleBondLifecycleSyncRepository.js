@@ -9,6 +9,16 @@ async function sourceIds(client) {
   return Object.fromEntries(rows.map(row => [row.source_code, row.source_id]));
 }
 
+// 主档官方简称（R2-07）：原先这段 SQL 直接写在服务层，属 SQL 越界；
+// 只取事实，如何择优仍由服务层的 pickAuthoritativeName 决定。
+async function select_bond_short_name(params, client = pool) {
+  const { rows } = await client.query(
+    `SELECT p.bond_short_name FROM core.instruments i
+       LEFT JOIN fundamental.convertible_bond_profiles p ON p.instrument_id=i.instrument_id
+      WHERE i.canonical_code=$1`, params);
+  return rows;
+}
+
 async function insert_fundamental_convertible_bond_profiles(params, client = pool) {
   return client.query(`INSERT INTO fundamental.convertible_bond_profiles
        (instrument_id,bond_full_name,bond_short_name,cb_type,issue_price,issue_size,source_id,raw_payload,source_updated_at)
@@ -100,6 +110,7 @@ async function update_ops_ingestion_runs_1(params, client = pool) {
 
 module.exports = {
   sourceIds,
+  select_bond_short_name,
   insert_fundamental_convertible_bond_profiles,
   insert_event_instrument_events,
   insert_ops_raw_records,

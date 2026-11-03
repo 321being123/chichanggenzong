@@ -4587,6 +4587,42 @@
       ],
       "owner": "WorkBuddy",
       "status": "implemented"
+    },
+    {
+      "id": "SELECTION-STAGE-COMPLETION-233",
+      "title": "选股任务各模式必须有唯一可验证终态：正式发布/正常关闭/预览已记录/缺口已清空/回测可评估，分区写成功不算完成",
+      "implementation": {
+        "file": "server/services/jobDefinitions.js",
+        "symbol": "stageCompletionEvidence"
+      },
+      "tests": [
+        {
+          "file": "server/test/stock-selection-review-r2.test.js",
+          "pattern": "R2-05"
+        },
+        {
+          "file": "server/test/stock-selection-review-fixes.test.js",
+          "pattern": "SSV-07"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "implemented"
+    },
+    {
+      "id": "SELECTION-GAP-CLASSIFICATION-234",
+      "title": "选股输入缺口必须按数据集分类并多域并入队列，剩余估值与未识别缺口参与完成裁决",
+      "implementation": {
+        "file": "server/services/stockSelectionService.js",
+        "symbol": "auditInputs"
+      },
+      "tests": [
+        {
+          "file": "server/test/stock-selection-review-r2.test.js",
+          "pattern": "R2-04"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "implemented"
     }
   ]
 }

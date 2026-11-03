@@ -103,6 +103,20 @@ function flattenMetrics(node, prefix = '', out = {}) {
   return out;
 }
 
+// 多批响应的深度合并：q 是 {bs:{ta:{t}}, ps:{...}} 的嵌套结构，
+// 浅合并会让后一批整体覆盖同名前缀（例如第二批的 ps 冲掉第一批的 ps 全部字段），
+// 结果是标准字段（total_assets 等）凭空消失、行被判"没填到值"而整行丢弃。
+function mergeMetricTree(target, source) {
+  const out = { ...(target || {}) };
+  for (const [key, value] of Object.entries(source || {})) {
+    const isObject = value && typeof value === 'object' && !Array.isArray(value);
+    out[key] = isObject
+      ? mergeMetricTree(out[key] && typeof out[key] === 'object' && !Array.isArray(out[key]) ? out[key] : {}, value)
+      : value;
+  }
+  return out;
+}
+
 function stockCodeOf(tsCode) {
   const text = String(tsCode || '').trim();
   if (/^\d{6}$/.test(text)) return text;
@@ -498,7 +512,7 @@ async function resolveFinancialReports({ tsCode, startDate, endDate, kinds = ['i
       const key = [item.date, item.standardDate, item.reportType, item.stockCode].join('|');
       const prev = merged.get(key);
       if (!prev) merged.set(key, { ...item, q: { ...(item.q || {}) } });
-      else prev.q = { ...prev.q, ...(item.q || {}) };
+      else prev.q = mergeMetricTree(prev.q, item.q || {});
     }
   }
   const rows = [...merged.values()];
@@ -795,6 +809,7 @@ module.exports = {
   CONTROL_ERROR_CODES,
   MAX_RANGE_YEARS,
   rangeChunks,
+  mergeMetricTree,
   REPORT_METRICS,
   VALUATION_METRICS,
   fillStaticPe,

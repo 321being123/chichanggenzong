@@ -102,6 +102,21 @@ async function main() {
       '列名必须来自字典白名单，不能拼接外部输入');
   });
 
+  await check('多批响应必须深度合并，不能覆盖前一批字段（线上实测事故）', () => {
+    const adapter = require('../dataAccess/adapters/lixingerDatasetAdapter');
+    // 第 1 批给资产负债表字段，第 2 批给利润表字段：浅合并会把 q.bs / q.ps 整体冲掉
+    const merged = adapter.mergeMetricTree(
+      { bs: { ta: { t: 100 }, tl: { t: 60 } } },
+      { ps: { toi: { t: 9 } }, bs: { ta: { t: 101 } } }
+    );
+    assert.strictEqual(merged.bs.ta.t, 101, '同字段以后批为准');
+    assert.strictEqual(merged.bs.tl.t, 60, '同前缀不同字段不能被覆盖丢失');
+    assert.strictEqual(merged.ps.toi.t, 9, '另一张表的字段必须保留');
+    // 反例：这正是修复前的写法（浅合并），必须能复现字段丢失
+    const shallow = Object.assign({}, { bs: { ta: { t: 100 }, tl: { t: 60 } } }, { ps: { toi: { t: 9 } }, bs: { ta: { t: 101 } } });
+    assert.strictEqual(shallow.bs.tl, undefined, '浅合并会丢字段，作为本断言的反例证据');
+  });
+
   const failed = tests.filter(item => item[0] === 'FAIL');
   console.log(`\n三表科目与宽表：${tests.length - failed.length}/${tests.length} 通过`);
   console.log(`  A股：资产 ${CN.balance} / 利润 ${CN.income} / 现金流 ${CN.cashflow}（共 ${CN.total}）`);

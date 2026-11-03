@@ -38,13 +38,11 @@ function baseConfig() {
 
   let pool = null;
   try {
-    await admin.query('CREATE DATABASE "' + tmpDb + '"');
+    await require('./helpers/migrated-database').createMigratedDatabase(admin, tmpDb);
     // 关键顺序：先切换库名，再 require 连接模块，确保连接池落在临时库
     process.env.PGDATABASE = tmpDb;
     delete process.env.DATABASE_URL;
 
-    const migrations = require('../db/migrations');
-    await migrations.runMigrations();
     pool = require('../db').pool;
     const store = require('../db/feedback');
     const service = require('../services/feedbackService');
@@ -181,7 +179,7 @@ function baseConfig() {
       assert.strictEqual(ok.fields.status, 'needs_info');
     });
 
-    await test('状态规则：标记已实施必须绑定已验收的发布批次（不再接受自由填写）', async function () {
+    await test('状态规则：标记已实施必须绑定已验收的发布批次（含 A-02 无批次反例）', async function () {
       await pool.query('DELETE FROM public.feedbacks');
       const id = await createFor('alice', '实施校验');
       const fb = await store.getFeedback(pool, id);

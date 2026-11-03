@@ -80,11 +80,10 @@ function spawnHoldLock(dbName, readyFile, token, holdSeconds) {
   let pool = null;
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fb-lock-'));
   try {
-    await admin.query('CREATE DATABASE "' + tmpDb + '"');
+    await require('./helpers/migrated-database').createMigratedDatabase(admin, tmpDb);
     process.env.PGDATABASE = tmpDb;
     delete process.env.DATABASE_URL;
 
-    await require('../db/migrations').runMigrations();
     pool = require('../db').pool;
     const store = require('../db/feedback');
     const service = require('../services/feedbackService');

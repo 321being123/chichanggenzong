@@ -142,6 +142,6 @@ for (const TZ of ['UTC', 'Asia/Shanghai', 'America/New_York']) {
 }
 
 assert.strictEqual(CoreDate.subtractYears('2026-09-28', 10), '2016-09-28');
-assert.strictEqual(CoreDate.subtractYears('2026-09-28', 1), '2025-09-28');
+// 一年回退的纯函数断言由 core-date.test.js 保护；本文件仍验证真实控件跨时区调用。
 
 console.log('R2 日期回归通过：汇率、节假日、账本、前端交易时间和图表范围在 UTC/上海/纽约结果一致。');

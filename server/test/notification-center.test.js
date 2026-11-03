@@ -6,7 +6,7 @@
 //       未读与已读幂等、全部已读只影响当前分类且不吞新投递、
 //       群发预览固定名单/幂等发送/零收件人拒绝/draft 取消/指定人数去重、
 //       Runner 分页投递与停用账号跳过、已投递不重投、旧执行令牌不能改状态。
-// 在临时数据库中执行（与业务库隔离）：先建库 → 跑全量迁移 → 断言 → 删库。
+// 在临时数据库中执行：全量入口克隆同轮干净迁移模板；单文件运行仍从空库迁移。
 // 连不上本地 PostgreSQL 时明确标记跳过（不视为通过）。
 const assert = require('assert');
 const path = require('path');
@@ -44,13 +44,11 @@ function baseConfig() {
   }
 
   try {
-    await admin.query('CREATE DATABASE "' + tmpDb + '"');
+    await require('./helpers/migrated-database').createMigratedDatabase(admin, tmpDb);
     // 关键顺序：先切换库名，再 require 连接模块，确保连接池落在临时库
     process.env.PGDATABASE = tmpDb;
     delete process.env.DATABASE_URL;
 
-    const migrations = require('../db/migrations');
-    await migrations.runMigrations();
     const pool = require('../db').pool;
     const store = require('../db/notifications');
     const ns = require('../services/notificationService');

@@ -59,12 +59,13 @@ async function main() {
 
 // ===================== R2-01：分红未知不得放行 =====================
 async function runR201() {
-  await check('R2-01 缺一年分红必须待补，不能放行', () => {
+  await check('R2-01 / SSV-04 缺一年分红必须待补，不能放行', () => {
     const anomaly = RULES.evaluateAnnualAnomaly({ latestYear: 2025, years: annualYears({ unknownDividendYears: [2018] }) });
     assert.deepStrictEqual(anomaly.dividendUnknownYears, [2018]);
     assert.strictEqual(anomaly.status, RULES.STATUS.PENDING);
     assert.strictEqual(anomaly.reason, 'dividend_history_unknown');
     assert.strictEqual(anomaly.dividendComparable, false);
+    assert.strictEqual(anomaly.dividendComparison, 'skipped_unknown_dividend');
     assert.strictEqual(anomaly.dividendSum, null, '未知年份不得按 0 求和');
   });
 
@@ -81,9 +82,10 @@ async function runR201() {
     assert.strictEqual(anomaly.status, RULES.STATUS.PASS);
   });
 
-  await check('R2-01 分红完整且最新年超十年合计才排除', () => {
+  await check('R2-01 / SSV-04 分红完整且最新年超十年合计才排除', () => {
     const anomaly = RULES.evaluateAnnualAnomaly({ latestYear: 2025, years: annualYears({ latestDividend: 3e10 }) });
     assert.strictEqual(anomaly.dividendComparable, true);
+    assert.strictEqual(anomaly.dividendExceeded, true);
     assert.strictEqual(anomaly.status, RULES.STATUS.FAIL);
     assert.strictEqual(anomaly.reason, 'dividend_exceed_decade');
   });
@@ -135,10 +137,11 @@ async function runR202() {
     assert.notStrictEqual(afterHash, beforeHash, '分红更正必须换新哈希');
   });
 
-  await check('R2-02 完全相同的输入仍然命中幂等', async () => {
+  await check('R2-02 / SSV-05 完全相同的输入仍然命中幂等', async () => {
     const state = {};
     const service = await loadSelectionService({ state });
-    await service.computeAndPersist({ market: 'CN', asOfDate: '2026-09-30', runKind: 'preview', positionRatio: 1 });
+    const first = await service.computeAndPersist({ market: 'CN', asOfDate: '2026-09-30', runKind: 'preview', positionRatio: 1 });
+    assert.strictEqual(first.reused, false);
     const hash = state.runs[state.runs.length - 1].inputHash;
     const repoModule = require('../repositories/stockSelectionRepository');
     const original = repoModule.findRunByIdempotencyKey;

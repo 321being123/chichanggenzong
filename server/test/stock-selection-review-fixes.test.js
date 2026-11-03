@@ -96,32 +96,7 @@ async function main() {
     assert.strictEqual(result.rules.R02.reason, 'history_coverage_unknown');
   });
 
-  // ---------- SSV-04 / R2-01：分红缺失不能补 0，也不能当成通过 ----------
-  await check('SSV-04 历史某年没有分红记录时跳过分红比较并标注，不补 0', () => {
-    const years = Array.from({ length: 11 }, (_, index) => ({
-      year: 2015 + index, profit: 1e9, dividend: index === 3 ? null : 1e8,
-      dividendKnown: index !== 3, complete: true,
-    }));
-    const anomaly = RULES.evaluateAnnualAnomaly({ latestYear: 2025, years });
-    assert.strictEqual(anomaly.dividendComparable, false, '分红不完整时整段比较不成立');
-    assert.strictEqual(anomaly.dividendComparison, 'skipped_unknown_dividend');
-    assert.deepStrictEqual(anomaly.dividendUnknownYears, [2018]);
-    assert.strictEqual(anomaly.dividendSum, null, '不能用 0 参与求和');
-    // R2-01：分红是必要维度，未知不等于通过——必须待补并阻断正式发布。
-    assert.strictEqual(anomaly.status, RULES.STATUS.PENDING, '分红未知必须待补，不能放行');
-    assert.strictEqual(anomaly.reason, 'dividend_history_unknown');
-  });
-
-  await check('SSV-04 分红全部可核验时才做十年比较', () => {
-    const years = Array.from({ length: 11 }, (_, index) => ({
-      year: 2015 + index, profit: 1e8, dividend: index === 10 ? 3e10 : 2e9,
-      dividendKnown: true, complete: true,
-    }));
-    const anomaly = RULES.evaluateAnnualAnomaly({ latestYear: 2025, years });
-    assert.strictEqual(anomaly.dividendComparable, true);
-    assert.strictEqual(anomaly.dividendExceeded, true);
-    assert.strictEqual(anomaly.status, RULES.STATUS.FAIL);
-  });
+  // SSV-04 的未知分红与完整分红超限场景合入 stock-selection-review-r2.test.js 的 R2-01。
 
   // ---------- SSV-06：季度解析 ----------
   await check('SSV-06 pendingQuarter 必须 await 后拿到确定季度', async () => {
@@ -293,20 +268,7 @@ async function runServiceCases() {
     state.pbOverrides[1] = {};
   });
 
-  await check('SSV-05 同输入重复执行仍然命中幂等（不会每次新建）', async () => {
-    const first = await service.computeAndPersist({ market: 'CN', asOfDate: '2026-09-30', runKind: 'preview', positionRatio: 1 });
-    const hash = state.runs[state.runs.length - 1].inputHash;
-    // 模拟"该哈希已存在"：直接让仓储按当前哈希命中
-    const repoModule = require(repositoryPath);
-    const originalFind = repoModule.findRunByIdempotencyKey;
-    repoModule.findRunByIdempotencyKey = async () => 42;
-    const second = await service.computeAndPersist({ market: 'CN', asOfDate: '2026-09-30', runKind: 'preview', positionRatio: 1 });
-    repoModule.findRunByIdempotencyKey = originalFind;
-    assert.strictEqual(second.reused, true);
-    assert.strictEqual(second.runId, 42);
-    assert.ok(hash);
-    assert.ok(first);
-  });
+  // SSV-05 同输入幂等合入二轮 R2-02；上面的 PB 更正指纹反例仍独立保留。
 }
 
 // ===== 回测：4 只入选必须保留 26/30 现金 =====

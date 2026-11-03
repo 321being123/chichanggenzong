@@ -14,6 +14,8 @@ const fs = require('fs');
 const path = require('path');
 const runControl = require('./lib/testRunControl');
 const { TEST_DATABASE, ensureTestDatabase, cleanupTestArtifacts } = require('./lib/testDatabase');
+const { templateName, dropTemplate } = require('./helpers/migrated-database');
+const { formatDuration, summarizeTimings } = require('./lib/testTimings');
 
 const testDir = __dirname;
 const rootDir = path.join(__dirname, '..', '..');
@@ -25,6 +27,7 @@ let pass = 0, fail = 0, skip = 0;
 const CI_ALLOWED_SKIPS = new Set(['skill-host-contract.test.js']);
 let allowedSkip = 0;
 const failed = [];
+const timings = [];
 const isCI = process.env.CI === '1';
 // 所有测试子进程统一隔离真实邮件；空字符串可阻止 dotenv 从开发机 .env 回填真实收件人。
 // Python Guard 生产默认开启；测试进程显式关闭，避免纯函数回归因本机数据库状态产生外部副作用。
@@ -97,9 +100,10 @@ async function runNode(file) {
   });
   // 只有确认已退出才注销登记；否则保留，交给释放判据决定是否放行
   untrackChild(r.pid, !runControl.isProcessAlive(r.pid));
+  timings.push({ file: path.relative(rootDir, file), durationMs: r.durationMs, kind: 'file' });
   const out = r.out || '';
   const lines = out.split('\n').map(s => s.trim()).filter(Boolean);
-  const last = lines[lines.length - 1] || '(无输出)';
+  const last = (lines[lines.length - 1] || '(无输出)') + ' · 耗时 ' + formatDuration(r.durationMs);
   if (r.timedOut) {
     fail++; failed.push(file);
     console.log('  ✗ ' + file + '  (超时 ' + Math.round(budget / 1000) + 's 未结束，已终止整棵进程树)  ——  ' + last);
@@ -187,9 +191,10 @@ async function runPython() {
       onSpawn: pid => trackChild(pid, path.basename(file)),
     });
     untrackChild(r.pid, !runControl.isProcessAlive(r.pid));
+    timings.push({ file: path.relative(rootDir, file), durationMs: r.durationMs, kind: 'file' });
     const out = r.out || '';
     const lines = out.split('\n').map(s => s.trim()).filter(Boolean);
-    const last = lines[lines.length - 1] || '(无输出)';
+    const last = (lines[lines.length - 1] || '(无输出)') + ' · 耗时 ' + formatDuration(r.durationMs);
     if (r.timedOut) {
       fail++; failed.push(path.basename(file));
       console.log('  ✗ ' + path.basename(file) + '  (超时 ' + Math.round(pyBudget / 1000) + 's 未结束，已终止整棵进程树)  ——  ' + last);
@@ -232,50 +237,75 @@ async function runWorker() {
     return 2;
   }
   runId = inherited.runId;
+  // 工作进程也执行模板清理等测试库操作，不能只给测试子文件设置 NODE_ENV。
+  process.env.NODE_ENV = 'test';
   testEnv.TEST_RUN_ID = runId;
   testEnv.TEST_RUN_LOCK_OWNER_PID = String(inherited.ownerPid);
   console.log('本轮 runId=' + runId + ' · 测试库 ' + TEST_DATABASE +
     ' · 硬截止 ' + Math.round(TOTAL_DEADLINE_MS / 60000) + ' 分钟（由独立监督进程计时，pid=' + inherited.ownerPid + '）');
 
+  let schemaTemplate = null;
+  let initialized = false;
   try {
-    try {
-      await ensureTestDatabase();
-      // 子进程统一指向隔离测试库：只设 PGDATABASE 不够，还必须摘掉可能指回业务库的 DATABASE_URL。
-      delete testEnv.DATABASE_URL;
-      testEnv.PGDATABASE = TEST_DATABASE;
-      await cleanupTestArtifacts();
-    } catch (error) {
-      console.error('测试隔离库初始化失败：', error.message);
-      process.exitCode = 1;
-      return;
+    await ensureTestDatabase();
+    // 子进程统一指向隔离测试库，摘掉可能指回业务库的 DATABASE_URL。
+    delete testEnv.DATABASE_URL;
+    testEnv.PGDATABASE = TEST_DATABASE;
+    initialized = true;
+    await cleanupTestArtifacts();
+
+    schemaTemplate = templateName(runId);
+    const prepared = await runControl.spawnWithTimeout(process.execPath,
+      [path.join(testDir, 'helpers/migrated-database.js'), schemaTemplate], {
+        cwd: rootDir, env: testEnv, timeoutMs: childTimeoutMs(NODE_TEST_TIMEOUT_MS),
+        onSpawn: pid => trackChild(pid, '迁移模板准备'),
+      });
+    untrackChild(prepared.pid, !runControl.isProcessAlive(prepared.pid));
+    timings.push({ file: '迁移模板准备', durationMs: prepared.durationMs, kind: 'setup' });
+    if (prepared.status !== 0 || prepared.timedOut) {
+      throw new Error('迁移模板准备失败：' + (prepared.out || prepared.spawnError || '超时'));
     }
-    try {
-      await runNodeGlob();
-      await runExtraNode();
-      await runPython();
-    } finally {
-      try {
-        await cleanupTestArtifacts();
-      } catch (error) {
-        fail++;
-        failed.push('test-artifact-cleanup');
+    process.env.TEST_SCHEMA_TEMPLATE = schemaTemplate;
+    testEnv.TEST_SCHEMA_TEMPLATE = schemaTemplate;
+    console.log('干净迁移模板准备完成 · 耗时 ' + formatDuration(prepared.durationMs) + '（五个业务测试分别克隆，迁移专项仍走空库）');
+
+    await runNodeGlob();
+    await runExtraNode();
+    await runPython();
+  } catch (error) {
+    fail++;
+    failed.push('test-setup-or-execution');
+    console.error('测试准备/执行异常：', (error && error.stack) || error);
+  } finally {
+    if (schemaTemplate) {
+      try { await dropTemplate(schemaTemplate); }
+      catch (error) {
+        fail++; failed.push('schema-template-cleanup');
+        console.error('本轮迁移模板清理失败（' + schemaTemplate + '）：', error.message);
+      }
+    }
+    if (initialized) {
+      try { await cleanupTestArtifacts(); }
+      catch (error) {
+        fail++; failed.push('test-artifact-cleanup');
         console.error('测试专属熔断记录清理失败：', error.message);
       }
     }
+    const report = summarizeTimings(timings, Date.now() - runStartedAt);
+    console.log('\n耗时汇总：本轮执行 ' + formatDuration(report.elapsedMs) + '（不含排队） · 文件累计 ' +
+      formatDuration(report.fileMs) + ' · 迁移模板准备 ' + formatDuration(report.setupMs));
+    console.log('最慢测试文件（已执行且有计时的 ' + report.measuredFiles + ' 个文件，含失败/跳过）：');
+    report.slowest.forEach(item => console.log('  ' + formatDuration(item.durationMs) + '  ' + item.file));
+  }
 
-    console.log('\n========================================');
-    console.log('runId ' + runId + ' · 测试库 ' + TEST_DATABASE + ' · 通过 ' + pass + ' · 失败 ' + fail + ' · 跳过 ' + skip +
-      (fail ? ' · 失败项：' + failed.join('、') : (skip ? '' : ' · 全部通过 ✅')));
-    // 保留 0.9.1.22 引入的「允许跳过」口径：CI 白名单内的跳过不算关键测试缺失。
-    if (isCI && skip - allowedSkip > 0) {
-      console.log('CI 模式下不允许跳过关键测试（共跳过 ' + (skip - allowedSkip) + ' 项），判定失败');
-      return 1;
-    }
-    return fail ? 1 : 0;
-  } catch (error) {
-    console.error('测试执行异常：', (error && error.stack) || error);
+  console.log('\n========================================');
+  console.log('runId ' + runId + ' · 测试库 ' + TEST_DATABASE + ' · 通过 ' + pass + ' · 失败 ' + fail + ' · 跳过 ' + skip +
+    (fail ? ' · 失败项：' + failed.join('、') : (skip ? '' : ' · 全部通过 ✅')));
+  if (isCI && skip - allowedSkip > 0) {
+    console.log('CI 模式下不允许跳过关键测试（共跳过 ' + (skip - allowedSkip) + ' 项），判定失败');
     return 1;
   }
+  return fail ? 1 : 0;
 }
 
 // ===== 监督者：只持有资源、计时、终止；绝不做任何可能阻塞的工作 =====

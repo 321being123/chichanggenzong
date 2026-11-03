@@ -37,11 +37,10 @@ function baseConfig() {
 
   let pool = null;
   try {
-    await admin.query('CREATE DATABASE "' + tmpDb + '"');
+    await require('./helpers/migrated-database').createMigratedDatabase(admin, tmpDb);
     process.env.PGDATABASE = tmpDb;
     delete process.env.DATABASE_URL;
 
-    await require('../db/migrations').runMigrations();
     pool = require('../db').pool;
     const store = require('../db/feedback');
     const service = require('../services/feedbackService');
@@ -154,14 +153,7 @@ function baseConfig() {
     });
 
     // ---------- A-02：真实发布/专项验收门禁 ----------
-    await test('A-02 未指定发布批次不能标记已实施', async function () {
-      await pool.query('DELETE FROM public.feedbacks');
-      const id = await createFeedback('alice', '无批次关闭');
-      const fb = await store.getFeedback(pool, id);
-      await assert.rejects(function () {
-        return service.validateStatusChange(pool, fb, { status: 'implemented' }, { reason: 'x' });
-      }, /必须指定已通过专项验收的发布批次/);
-    });
+    // A-02 无批次反例统一由 feedback-module.test.js 的状态规则用例保护。
 
     await test('A-02 空验收证据不允许通过', async function () {
       await pool.query('DELETE FROM ops.feedback_release_items');

@@ -57,9 +57,7 @@ const datasets = fs.readFileSync(path.join(__dirname, '..', 'dataAccess', 'marke
 assert.ok(datasets.includes("tushareQuery('index_dailybasic'"), '未接入指数 PE/PB');
 assert.ok(datasets.includes("tushareQuery('cn_m'"), '未接入 M2');
 assert.ok(datasets.includes("tushareQuery('daily_basic'"), '未接入A股总市值');
-assert.ok(datasets.includes('/ 10000'), 'daily_basic.total_mv 未从万元换算为亿元');
-assert.ok(datasets.includes('/ YUAN_TO_100M'), '统一层 total_market_cap 未从元换算为亿元');
-assert.ok(datasets.includes('getTotalMarketCap(date)'), '统一层总市值未按目标交易日聚合');
+// 总市值单位换算和目标交易日聚合由 marketVolatilitySync-fix.test.js 集中保护。
 assert.ok(job.includes('readTotalAShareMarketCap({ day: normDate(day)'), '任务必须经数据层取总市值');
 // 2026-11-02 生产实测：官方 mc_om 有值、当日估值分区 0 行时，曾把 security_count=0 写库，
 // 撞 chk_a_share_security_count(>=1000) 连续失败两次。官方市值路径必须先按估值分区行数过门禁，

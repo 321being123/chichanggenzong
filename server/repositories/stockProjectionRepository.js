@@ -2,6 +2,7 @@
 // 合同：method(params..., client) 的第一个参数始终是调用方事务 client；
 // 本文件只做 SQL 与标准事实写入，不判断业务规则、不触发外采、不自行 BEGIN/COMMIT。
 const { ensureInstrumentIdentity } = require('../services/securityIdentity');
+const { upsertIndustryPath } = require('./industryRepository');
 const {
   FACT_MAP, METRICS, analysisMetricValues, asDate, finite, hash, periodType, rowVersion, stablePayload,
 } = require('../domain/stockFacts');
@@ -25,15 +26,26 @@ async function ensureMaster(client, tsCode, sources, metadata) {
   const instrument = { instrument_id: master.instrumentId };
   const industryName = raw.industry || legacy.industry || '', system = raw.industry_system || 'Tushare基础行业', levelText = raw.industry_level || '';
   if (industryName) {
-    const taxonomyCode = /申万/.test(system) ? 'SW2021' : 'TUSHARE_BASIC';
-    const taxonomy = (await client.query('SELECT taxonomy_id FROM core.industry_taxonomies WHERE taxonomy_code=$1', [taxonomyCode])).rows[0];
-    const industryCode = String(raw.industry_code || hash(`${taxonomyCode}|${industryName}`).slice(0, 16));
+    // 行业必须整条路径入库（一级/二级/三级 + 父子关系）：只存最深处会让"按一级行业控上限"
+    // 和所有按行业分组的查询都取不到分类。分类体系按来源判定，恒生与申万互不顶替。
+    const taxonomyCode = /恒生/.test(system) ? 'HSICS' : (/申万/.test(system) ? 'SW2021' : 'TUSHARE_BASIC');
     const level = Number((String(levelText).match(/\d+/) || [])[0]) || null;
-    const node = (await client.query(`INSERT INTO core.industry_nodes(taxonomy_id,industry_code,industry_name,level) VALUES($1,$2,$3,$4)
-      ON CONFLICT(taxonomy_id,industry_code) DO UPDATE SET industry_name=EXCLUDED.industry_name,level=COALESCE(EXCLUDED.level,core.industry_nodes.level) RETURNING industry_node_id`, [taxonomy.taxonomy_id, industryCode, industryName, level])).rows[0];
-    await client.query(`UPDATE core.company_industry_memberships SET is_current=false,valid_to=CURRENT_DATE WHERE company_id=$1 AND is_current=true AND industry_node_id<>$2`, [company.company_id, node.industry_node_id]);
-    await client.query(`INSERT INTO core.company_industry_memberships(company_id,industry_node_id,source_id,valid_from,is_current)
-      VALUES($1,$2,$3,$4,true) ON CONFLICT(company_id,industry_node_id,valid_from) DO UPDATE SET is_current=true,valid_to=NULL,source_id=EXCLUDED.source_id`, [company.company_id, node.industry_node_id, sources[raw.industry_source || 'tushare'], asDate(legacy.list_date)]);
+    const nodes = (Array.isArray(raw.industry_nodes) && raw.industry_nodes.length)
+      ? raw.industry_nodes.map(node => ({ code: node.code, name: node.name, level: node.level }))
+      : [{
+        code: String(raw.industry_code || hash(`${taxonomyCode}|${industryName}`).slice(0, 16)),
+        name: industryName,
+        level,
+      }];
+    await upsertIndustryPath({
+      companyId: company.company_id,
+      taxonomyCode,
+      taxonomyName: taxonomyCode === 'HSICS' ? '恒生行业分类' : (taxonomyCode === 'SW2021' ? '申万行业' : 'Tushare基础行业'),
+      taxonomyVersion: taxonomyCode === 'SW2021' ? '2021' : '',
+      nodes,
+      sourceCode: raw.industry_source || 'tushare',
+      validFrom: asDate(legacy.list_date),
+    }, client);
   }
   const controller = raw.actual_controller;
   if (controller && controller.name) {

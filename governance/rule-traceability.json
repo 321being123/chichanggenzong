@@ -4555,6 +4555,38 @@
       ],
       "owner": "WorkBuddy",
       "status": "implemented"
+    },
+    {
+      "id": "INDUSTRY-HK-ROOT-REQUIRED-007",
+      "title": "港股行业分类必须从恒生一级起连续，缺一级视为无分类，不得当成已核验",
+      "implementation": {
+        "file": "server/domain/lixingerIndustry.js",
+        "symbol": "selectIndustryPath"
+      },
+      "tests": [
+        {
+          "file": "server/test/stock-selection-industry.test.js",
+          "pattern": "港股只有二级三级、缺一级时判为无分类"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "implemented"
+    },
+    {
+      "id": "INDUSTRY-TAXONOMY-ISOLATION-008",
+      "title": "行业归属写入只影响同一分类体系，A 股申万与港股恒生互不顶替，且一级行业沿父子链回溯",
+      "implementation": {
+        "file": "server/repositories/industryRepository.js",
+        "symbol": "upsertIndustryPath"
+      },
+      "tests": [
+        {
+          "file": "server/test/stock-selection-pipeline.test.js",
+          "pattern": "港股恒生一级行业可读，且不会顶掉同公司的申万归属"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "implemented"
     }
   ]
 }

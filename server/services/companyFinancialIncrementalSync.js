@@ -346,9 +346,9 @@ async function runCompanyFinancialIncrementalSync(reason = 'scheduled', options 
         asOfDate: options.targetTradeDate || options.asOfDate || options.targetDate,
         batchLimit: options.batchLimit,
       });
-      const remaining = Number(result.remainingFinancial || 0);
+      const remaining = Number(result.remainingFinancial || 0) + Number(result.remainingIndustry || 0);
       await finishJobRun(runId, result.ok === true,
-        `选股输入补齐：处理 ${result.processed}，成功 ${result.succeeded}，剩余待补 ${remaining}`);
+        `选股输入补齐：处理 ${result.processed}，成功 ${result.succeeded}，剩余待补 ${remaining}（含行业 ${Number(result.remainingIndustry || 0)}）`);
       return Object.assign(result, {
         mode: 'selection_inputs',
         // 本阶段不发布数据集（写的是同一张标准表）；有剩余就续批，清空才算阶段完成。

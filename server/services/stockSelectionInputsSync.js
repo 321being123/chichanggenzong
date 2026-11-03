@@ -7,6 +7,7 @@
 const { pool } = require('../db/connection');
 const { persistCollectedData } = require('./financialDataArchitecture');
 const repo = require('../repositories/stockSelectionRepository');
+const { upsertIndustryPath } = require('../repositories/industryRepository');
 
 // 财报历史要覆盖"最新一年 + 此前十年"（方案 5.2 的 11 个完整财年），再往前留一年缓冲。
 const HISTORY_YEARS = 12;
@@ -23,18 +24,21 @@ function shiftYears(date, years) {
   return `${year}-${month}`;
 }
 
-/** 缺口原因里哪些属于"可以靠补财报/分红解决"，哪些必须等共享行情补估值。 */
+/** 缺口原因里哪些属于"可以靠补财报/分红解决"，哪些必须等共享行情补估值，哪些只需补行业分类。 */
 function classifyGaps(gaps) {
   const financial = [];
+  const industry = [];
   const valuation = [];
   gaps.forEach(gap => {
     const reasons = gap.reasons || [];
+    // 同一只证券可能既缺财报又缺行业：两边都列，补齐时各按自己的能力补，互不顶替。
+    if (reasons.some(reason => /industry_unverified/i.test(reason))) industry.push(gap);
     const needsFinancial = reasons.some(reason => /R04|R05|annual|equity|dividend|history/i.test(reason));
     const needsValuation = reasons.some(reason => /R01|R02|pb_/i.test(reason));
     if (needsFinancial) financial.push(gap);
     else if (needsValuation) valuation.push(gap);
   });
-  return { financial, valuation };
+  return { financial, industry, valuation };
 }
 
 async function readMeta(tsCode) {
@@ -85,6 +89,37 @@ async function collectOne(gap, asOfDate) {
 }
 
 /**
+ * 单只证券补一级行业分类：A 股走官方申万 2021，港股走官方恒生行业分类（hsi），
+ * 取整条路径后写标准层（全层级节点 + 归属指向最深节点），供"单一行业不超过 20%"使用。
+ */
+async function collectIndustryOne(gap, market) {
+  const companyId = gap.companyId ? Number(gap.companyId) : null;
+  if (!companyId) return { code: gap.code, ok: false, reason: 'company_missing' };
+  const { readIndustryClassification } = require('../dataAccess/marketDatasets');
+  const info = await readIndustryClassification({ tsCode: gap.code });
+  if (!info || !Array.isArray(info.industry_nodes) || !info.industry_nodes.length) {
+    // 官方没给到从一级起的完整路径就是不补：塞个"其他"会让行业上限判定失真。
+    return { code: gap.code, ok: false, reason: 'industry_source_returned_empty' };
+  }
+  const isHk = String(market || '').toUpperCase() === 'HK';
+  await upsertIndustryPath({
+    companyId,
+    taxonomyCode: isHk ? 'HSICS' : 'SW2021',
+    taxonomyName: isHk ? '恒生行业分类' : '申万行业',
+    taxonomyVersion: isHk ? '' : '2021',
+    nodes: info.industry_nodes,
+    sourceCode: info.sourceCode || 'lixinger_official',
+  });
+  return {
+    code: gap.code,
+    ok: true,
+    industry: info.industry,
+    level: info.industry_level,
+    path: (info.industry_path || []).join(' / '),
+  };
+}
+
+/**
  * 执行一次选股输入补齐。
  * @param {{market:'CN'|'HK', asOfDate:string, batchLimit?:number}} input
  */
@@ -105,7 +140,18 @@ async function syncSelectionInputs(input) {
   const limit = Number.isFinite(Number(input.batchLimit)) && Number(input.batchLimit) > 0
     ? Math.floor(Number(input.batchLimit)) : 20;
   const audit = await service.auditInputs({ market, asOfDate });
-  const { financial, valuation } = classifyGaps(audit.gaps || []);
+  const { financial, industry, valuation } = classifyGaps(audit.gaps || []);
+  // 行业分类先补：一次取数就能补齐一条完整路径，成本低，且它是"能否发布正式组合"的阻断项，
+  // 不能被财报批次挤掉。
+  const industryBatch = industry.slice(0, limit);
+  const industryResults = [];
+  for (const gap of industryBatch) {
+    try {
+      industryResults.push(await collectIndustryOne(gap, market));
+    } catch (error) {
+      industryResults.push({ code: gap.code, ok: false, reason: 'industry_collect_failed', error: String(error.message || error).slice(0, 320) });
+    }
+  }
   const batch = financial.slice(0, limit);
   const results = [];
   for (const gap of batch) {
@@ -125,7 +171,7 @@ async function syncSelectionInputs(input) {
     asOfDate,
     generatedAt: new Date().toISOString(),
     universeCount: after.coverage ? after.coverage.universeCount : null,
-    gapCount: remaining.financial.length + remaining.valuation.length,
+    gapCount: remaining.financial.length + remaining.industry.length + remaining.valuation.length,
     coverage: after.coverage,
     quality: after.quality,
     gaps: (after.gaps || []).slice(0, 5000),
@@ -134,25 +180,34 @@ async function syncSelectionInputs(input) {
       processed: results.length,
       succeeded: results.filter(item => item.ok).length,
       failed: results.filter(item => !item.ok).length,
+      industryProcessed: industryResults.length,
+      industrySucceeded: industryResults.filter(item => item.ok).length,
       remainingFinancial: remaining.financial.length,
+      remainingIndustry: remaining.industry.length,
       remainingValuation: remaining.valuation.length,
       valuationCodes: remaining.valuation.slice(0, 200).map(item => item.code),
     },
   };
   await repo.saveInputGapQueue({ market, payload: queuePayload });
+  // 行业未核验同样是发布阻断项，不能只等财报补齐就说"补齐完成"。
+  const cleared = remaining.financial.length === 0 && remaining.industry.length === 0;
   return {
-    ok: remaining.financial.length === 0,
-    status: remaining.financial.length === 0 ? 'succeeded' : 'partial',
+    ok: cleared,
+    status: cleared ? 'succeeded' : 'partial',
     market,
     asOfDate,
     processed: results.length,
     succeeded: queuePayload.lastRun.succeeded,
     failed: queuePayload.lastRun.failed,
+    industryProcessed: queuePayload.lastRun.industryProcessed,
+    industrySucceeded: queuePayload.lastRun.industrySucceeded,
     remainingFinancial: queuePayload.lastRun.remainingFinancial,
+    remainingIndustry: queuePayload.lastRun.remainingIndustry,
     remainingValuation: queuePayload.lastRun.remainingValuation,
     coverage: after.coverage,
     batchResults: results.slice(0, 50),
+    industryResults: industryResults.slice(0, 50),
   };
 }
 
-module.exports = { syncSelectionInputs, collectOne, classifyGaps, REPORT_KINDS, HISTORY_YEARS };
+module.exports = { syncSelectionInputs, collectOne, collectIndustryOne, classifyGaps, REPORT_KINDS, HISTORY_YEARS };

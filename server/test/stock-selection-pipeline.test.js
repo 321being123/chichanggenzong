@@ -58,6 +58,8 @@ async function cleanup(pool) {
     await pool.query(`DELETE FROM core.instruments WHERE instrument_id = ANY($1::bigint[])`, [instrumentIds]);
   }
   await pool.query(`DELETE FROM core.industry_nodes WHERE industry_code = $1`, [TEST_MARK + '_IND']);
+  // 行业取证用例写入的临时节点（按测试名与专用代码段清理，不触碰真实分类）。
+  await pool.query(`DELETE FROM core.industry_nodes WHERE industry_name LIKE '测试申万%' OR industry_name LIKE '测试恒生%'`);
   await pool.query(`DELETE FROM market.index_valuation_history WHERE index_code='000985' AND trade_date=$1::date`, [AS_OF]);
 }
 
@@ -293,6 +295,40 @@ async function main() {
       assert.strictEqual(cn.benchmarkCode, 'CSIALL');
       assert.strictEqual(cn.benchmarkLabel, '中证全指');
       assert.ok(['eligible', 'market_closed', 'data_missing'].includes(cn.gate.status));
+    });
+
+    // ===== 港股一级行业（恒生行业分类）接入取证（2026-11-03）=====
+    const industryRepo = require('../repositories/industryRepository');
+    await industryRepo.upsertIndustryPath({
+      companyId: firstCompany, taxonomyCode: 'SW2021', taxonomyName: '申万行业', taxonomyVersion: '2021',
+      nodes: [{ code: '890000', name: '测试申万一级', level: 1 },
+        { code: '890100', name: '测试申万二级', level: 2 },
+        { code: '890111', name: '测试申万三级', level: 3 }],
+      sourceCode: 'tushare',
+    });
+    const cnIndustries = await repo.loadIndustries({ companyIds: [firstCompany], market: 'CN', asOfDate: AS_OF });
+    record('申万三级归属沿父子链回溯出一级行业（行业上限需要一级）', () => {
+      const item = cnIndustries.get(String(firstCompany));
+      assert.ok(item, '必须取到一级行业，不能因为归属在三级节点就当成没有分类');
+      assert.strictEqual(item.code, '890000');
+      assert.strictEqual(item.system, 'SW2021');
+    });
+
+    await industryRepo.upsertIndustryPath({
+      companyId: firstCompany, taxonomyCode: 'HSICS', taxonomyName: '恒生行业分类',
+      nodes: [{ code: 'H99', name: '测试恒生一级', level: 1 },
+        { code: 'H9990', name: '测试恒生二级', level: 2 },
+        { code: 'H999015', name: '测试恒生三级', level: 3 }],
+      sourceCode: 'lixinger_official',
+    });
+    const hkIndustries = await repo.loadIndustries({ companyIds: [firstCompany], market: 'HK', asOfDate: AS_OF });
+    record('港股恒生一级行业可读，且不会顶掉同公司的申万归属', () => {
+      const hk = hkIndustries.get(String(firstCompany));
+      assert.ok(hk, '港股必须能读到恒生一级行业');
+      assert.strictEqual(hk.code, 'H99');
+      assert.strictEqual(hk.system, 'HSICS');
+      const cn = cnIndustries.get(String(firstCompany));
+      assert.strictEqual(cn.code, '890000', '跨体系写入不得互相顶掉');
     });
 
     const audit = await service.auditInputs({ market: MARKET, asOfDate: AS_OF });

@@ -318,23 +318,40 @@ async function loadAnnualDividends({ companyIds, asOfDate }, tx) {
   return map;
 }
 
-/** 一级行业（时点有效），按市场分类体系取。缺分类不塞"其他"。 */
+/** 一级行业（时点有效），按市场分类体系取。缺分类不塞"其他"。
+ *  公司归属记录在**最深**行业节点上（申万三级 / 恒生三级），所以一级要沿 parent 链回溯；
+ *  归属直接落在一级时本身即命中。 */
 async function loadIndustries({ companyIds, market, asOfDate }, tx) {
   if (!companyIds.length) return new Map();
   const config = marketConfig(market);
   const exec = executorOf(tx);
   const { rows } = await exec(`
-    SELECT DISTINCT ON (m.company_id)
-           m.company_id, n.industry_code, n.industry_name, t.taxonomy_code, t.version
-      FROM core.company_industry_memberships m
-      JOIN core.industry_nodes n ON n.industry_node_id = m.industry_node_id
-      JOIN core.industry_taxonomies t ON t.taxonomy_id = n.taxonomy_id
-     WHERE m.company_id = ANY($1::bigint[])
-       AND n.level = 1
-       AND t.taxonomy_code = ANY($2::text[])
-       AND (m.valid_from IS NULL OR m.valid_from <= $3::date)
-       AND (m.valid_to IS NULL OR m.valid_to >= $3::date)
-     ORDER BY m.company_id, COALESCE(m.is_current, false) DESC, m.valid_from DESC NULLS LAST`,
+    WITH RECURSIVE picked AS (
+      SELECT DISTINCT ON (m.company_id, t.taxonomy_code)
+             m.company_id, n.industry_node_id, n.parent_id, n.level, n.industry_code, n.industry_name,
+             t.taxonomy_code, t.version, m.valid_from
+        FROM core.company_industry_memberships m
+        JOIN core.industry_nodes n ON n.industry_node_id = m.industry_node_id
+        JOIN core.industry_taxonomies t ON t.taxonomy_id = n.taxonomy_id
+       WHERE m.company_id = ANY($1::bigint[])
+         AND t.taxonomy_code = ANY($2::text[])
+         AND (m.valid_from IS NULL OR m.valid_from <= $3::date)
+         AND (m.valid_to IS NULL OR m.valid_to >= $3::date)
+       ORDER BY m.company_id, t.taxonomy_code, COALESCE(m.is_current, false) DESC, m.valid_from DESC NULLS LAST
+    ), walk AS (
+      SELECT company_id, industry_node_id, parent_id, level, industry_code, industry_name, taxonomy_code, version
+        FROM picked
+      UNION ALL
+      SELECT w.company_id, parent.industry_node_id, parent.parent_id, parent.level,
+             parent.industry_code, parent.industry_name, w.taxonomy_code, w.version
+        FROM walk w
+        JOIN core.industry_nodes parent ON parent.industry_node_id = w.parent_id
+    )
+    SELECT DISTINCT ON (company_id)
+           company_id, industry_code, industry_name, taxonomy_code, version
+      FROM walk
+     WHERE level = 1
+     ORDER BY company_id, array_position($2::text[], taxonomy_code)`,
   [companyIds, config.industryTaxonomies, asOfDate]);
   return new Map(rows.map(row => [String(row.company_id), {
     code: row.industry_code,

@@ -708,13 +708,19 @@ async function resolveSovereignYield10y({ startDate, endDate, areaCode = 'cn' } 
   return [...byDay.values()].sort((a, b) => (a.workTime < b.workTime ? -1 : a.workTime > b.workTime ? 1 : 0));
 }
 
-// 股票行业分类（官方一次返回 sw / sw_2021 / cni 多套体系）：只回原始行，
+// 股票行业分类（A 股一次返回 sw / sw_2021 / cni，港股返回 hsi 恒生行业分类）：只回原始行，
 // 选哪套体系、怎么判级属于领域规则，不在适配层决定。
+// 行业分类端点按市场分流：A 股返回申万等多套体系，港股返回恒生行业分类（hsi）。
+function industryEndpointOf(tsCode) {
+  return isHkCode(tsCode) ? 'hk/company/industries' : 'cn/company/industries';
+}
+
 async function resolveIndustryRows({ tsCode, cacheMs } = {}) {
   const resolved = await officialStockCode(tsCode).catch(() => null);
   const code = (typeof resolved === 'string' && resolved) || stockCodeOf(tsCode);
   if (!code) return null;
-  const result = await callEndpoint('cn/company/industries', { stockCode: code },
+  const endpoint = industryEndpointOf(tsCode);
+  const result = await callEndpoint(endpoint, { stockCode: code },
     { dataset: 'stock_analysis_industry', ...(cacheMs ? { maxAgeMs: cacheMs } : {}) });
   return result.rows;
 }
@@ -754,6 +760,7 @@ module.exports = {
   resolveValuationSeries,
   resolveValuationSeriesDetailed,
   isHkCode,
+  industryEndpointOf,
   HK_REPORT_METRICS,
   HK_VALUATION_METRICS,
 };

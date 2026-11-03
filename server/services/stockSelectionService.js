@@ -846,13 +846,19 @@ async function listBacktests({ market, limit, offset }) {
 async function auditInputs({ market, asOfDate }) {
   const computed = await computeSelection({ market, asOfDate, positionRatio: 1 });
   const gaps = computed.evaluated
-    .filter(item => item.filterStatus === RULES.STATUS.PENDING || !item.rankReady)
-    .map(item => ({
-      code: item.code,
-      name: item.name,
-      companyId: item.companyId,
-      reasons: Array.from(new Set(item.exclusionReasons.map(reason => reason.code))),
-    }));
+    // 行业未核验也要进缺口清单：否则补齐任务永远不知道要去取分类，
+    // 而 quality 又会因为 industry_missing 一直不发布，形成死循环。
+    .filter(item => item.filterStatus === RULES.STATUS.PENDING || !item.rankReady || !item.industry)
+    .map(item => {
+      const reasons = Array.from(new Set(item.exclusionReasons.map(reason => reason.code)));
+      if (!item.industry) reasons.push('industry_unverified');
+      return {
+        code: item.code,
+        name: item.name,
+        companyId: item.companyId,
+        reasons,
+      };
+    });
   const payload = {
     market: computed.market,
     asOfDate: computed.asOfDate,

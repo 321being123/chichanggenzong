@@ -174,4 +174,13 @@ async function migration184StockSelection(pg) {
     ON fundamental.financial_reports(company_id, period_end DESC, available_at DESC)`);
 }
 
-module.exports = { migration184StockSelection };
+module.exports = { migration184StockSelection, migration185HangSengIndustryTaxonomy };
+
+// 185：港股一级行业分类（恒生行业分类）体系登记。
+// 选股按"单一行业不超过市场预算 20%"控上限，港股必须有可用的分类体系；
+// 原种子数据只建了申万与 Tushare 基础行业，港股分类缺体系行会被静默丢掉。
+async function migration185HangSengIndustryTaxonomy(pg) {
+  await pg.query(`INSERT INTO core.industry_taxonomies(taxonomy_code, taxonomy_name, version)
+    VALUES ('HSICS','恒生行业分类','')
+    ON CONFLICT(taxonomy_code) DO NOTHING`);
+}

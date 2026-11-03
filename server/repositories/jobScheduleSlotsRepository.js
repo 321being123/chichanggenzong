@@ -146,8 +146,10 @@ async function update_ops_job_schedule_slots_5(params, client = pool) {
       RETURNING *`, params);
 }
 
+// R4-01：领取与依赖解析需要 request_payload.mode —— 漏这一列会让按模式解析永远退回 core，
+// 选股槽又被 A 股转债链挡住（表现为"列为 due 却领不到"）。
 async function select_ops_job_schedule_slots_1(params, client = pool) {
-  return client.query(`SELECT job_code,business_date::text AS business_date,scheduled_for FROM ops.job_schedule_slots WHERE slot_id=$1`, params);
+  return client.query(`SELECT job_code,business_date::text AS business_date,scheduled_for,request_payload FROM ops.job_schedule_slots WHERE slot_id=$1`, params);
 }
 
 async function update_ops_job_schedule_slots_6(params, client = pool) {

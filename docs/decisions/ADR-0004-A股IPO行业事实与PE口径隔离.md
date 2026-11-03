@@ -1,5 +1,6 @@
 # ADR-0004：A 股 IPO 行业事实与 PE 口径隔离
 
+2026-11-03 四轮整改（R4-01/R4-05）：只改调度领取依赖解析与选股季度去重判据；A股IPO行业事实、行业PE 与产业链口径不受影响，本ADR决策不变。
 2026-11-03 三轮整改（R3-01/R3-04）：`jobDefinitions` 只调整选股季度终态白名单（新增 `no_eligible_member`）；A股IPO行业事实、行业PE 与产业链口径不受影响，本ADR决策不变。
 2026-11-03 二轮整改（R2-05/R2-07）：`jobDefinitions` 仅调整选股模式的阶段完成判定（`stageCompletedKind` 白名单）；`core.industry_nodes`/公司归属写入未改（仍走 `industryRepository.upsertIndustryPath`），A股IPO行业事实、行业PE 与产业链口径不受影响。
 2026-11-03 追加核对（股票筛选·港股一级行业接入）：`core.industry_nodes`/`core.company_industry_memberships` 的写入改为 `industryRepository.upsertIndustryPath`（全层级 + 父子链、只顶掉同体系旧归属），读取改为沿 `parent_id` 回溯一级；新增迁移 185 登记 `HSICS` 体系。A股IPO行业事实、IPO行业PE、申万二级回退与预测输入均未改动，本ADR决策不变。

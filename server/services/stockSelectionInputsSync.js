@@ -48,13 +48,34 @@ function classifyGaps(gaps) {
   return { fundamental, financial: fundamental, industry, valuation, unclassified };
 }
 
-// 上次批次失败的代码排到队尾，避免"永远从同一个失败前缀开始"导致剩余对象饿死。
-function rotateAfterFailures(list, failedCodes) {
-  if (!failedCodes || !failedCodes.size) return list;
-  const front = [];
-  const back = [];
-  list.forEach(item => (failedCodes.has(item.code) ? back : front).push(item));
-  return front.concat(back);
+/**
+ * 批次公平的顺序（R4-02）：按"累计被尝试次数"升序排队，同一次数内上次失败/无进展的排后，再按审计原序。
+ * 只把"上一批失败的对象"挪到队尾是不够的——每轮只保存本批集合会让更早的尝试记录丢失，
+ * 三只对象、每批一只时永远在处理前两只（第三只永远轮不到）。
+ * 这里改为跨批次持久化每个对象的尝试次数：次数少的一定先被选中，
+ * 因此 N 个对象、每批 B 个时，最多 ⌈N/B⌉+1 轮每个对象都会获得机会，且在重启后依然成立。
+ */
+function orderByAttempts(list, attempts, deprioritized) {
+  return list
+    .map((item, index) => ({
+      item,
+      index,
+      tries: Math.max(0, Number((attempts || {})[item.code] || 0)),
+      late: deprioritized && deprioritized.has(item.code) ? 1 : 0,
+    }))
+    .sort((a, b) => a.tries - b.tries || a.late - b.late || a.index - b.index)
+    .map(row => row.item);
+}
+
+// 只保留仍待补对象的尝试次数，避免已解决对象的历史计数无限增长。
+function pruneAttempts(attempts, remainingCodes, limit = 2000) {
+  const out = {};
+  Object.entries(attempts || {}).forEach(([code, count]) => {
+    if (!remainingCodes.has(code)) return;
+    if (Object.keys(out).length >= limit) return;
+    out[code] = Number(count) || 0;
+  });
+  return out;
 }
 
 async function readMeta(tsCode) {
@@ -157,16 +178,19 @@ async function syncSelectionInputs(input) {
   // 拿到的永远是刚被清空 lastRun 的新记录，失败轮转等于从未生效，
   // 全市场批次会被固定的失败前缀反复占满、后面的股票永远轮不到。
   let previouslyFailed = new Set();
+  let priorAttempts = {};
   try {
     const lastQueue = await repo.readInputGapQueue({ market });
     const lastRun = (lastQueue && lastQueue.cursor_payload && lastQueue.cursor_payload.lastRun) || {};
     // failedCodes = 本次失败；deferredCodes = 返回了结果但缺口仍未解除（无进展也不能占着队首）。
     previouslyFailed = new Set([...(lastRun.failedCodes || []), ...(lastRun.deferredCodes || [])]);
+    // attempts 是跨批次的尝试计数（R4-02）：只记上一批的失败会把更早的尝试记录丢掉。
+    priorAttempts = lastRun.attempts && typeof lastRun.attempts === 'object' ? lastRun.attempts : {};
   } catch (_) { /* 读不到历史队列不影响本次补齐，只失去轮转顺序 */ }
   const audit = await service.auditInputs({ market, asOfDate });
   const { financial: fundamental, industry, valuation, unclassified } = classifyGaps(audit.gaps || []);
-  const industryQueue = rotateAfterFailures(industry, previouslyFailed);
-  const fundamentalQueue = rotateAfterFailures(fundamental, previouslyFailed);
+  const industryQueue = orderByAttempts(industry, priorAttempts, previouslyFailed);
+  const fundamentalQueue = orderByAttempts(fundamental, priorAttempts, previouslyFailed);
   // 行业分类先补：一次取数就能补齐一条完整路径，成本低，且它是"能否发布正式组合"的阻断项，
   // 不能被财报批次挤掉。
   const industryBatch = industryQueue.slice(0, limit);
@@ -199,6 +223,11 @@ async function syncSelectionInputs(input) {
   const deferredCodes = [...new Set(results.concat(industryResults)
     .map(item => item.code)
     .filter(code => remainingCodes.has(code) && !failedCodes.includes(code)))];
+  // 本批被尝试过的对象都要累加计数（不论成功与否）：这是"谁还没轮到"的唯一依据。
+  const nextAttempts = Object.assign({}, priorAttempts);
+  results.concat(industryResults).forEach(item => {
+    nextAttempts[item.code] = Number(nextAttempts[item.code] || 0) + 1;
+  });
   // 队列里同时保留：补齐摘要 + 补齐后仍待补的对象明细（明细来自重新审计，不是本批结果倒推）。
   const queuePayload = {
     market,
@@ -226,6 +255,8 @@ async function syncSelectionInputs(input) {
       // 失败代码持久化：下次批次据此轮转到队尾，保证剩余对象不会被同一前缀一直挡住。
       failedCodes: failedCodes.slice(0, 500),
       deferredCodes: deferredCodes.slice(0, 500),
+      // 本次被尝试过的对象计数 +1（跨批次累加，清空后自动丢弃），下次批次按次数最少优先。
+      attempts: pruneAttempts(nextAttempts, remainingCodes),
       failedReasons: failedResults.slice(0, 50).map(item => ({ code: item.code, reason: item.reason || 'unknown' })),
     },
   };

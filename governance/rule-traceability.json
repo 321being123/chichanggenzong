@@ -4695,6 +4695,90 @@
       ],
       "owner": "WorkBuddy",
       "status": "implemented"
+    },
+    {
+      "id": "SELECTION-SLOT-CLAIM-MODE-DEPENDENCY-238",
+      "title": "任务领取与阻塞恢复必须按槽位模式解析前置依赖，仓储查询必须返回 request_payload，否则显式无依赖的模式会被默认依赖永久挡住",
+      "implementation": {
+        "file": "server/services/jobScheduleSlots.js",
+        "symbol": "claimSlot"
+      },
+      "tests": [
+        {
+          "file": "server/test/stock-selection-review-r4.test.js",
+          "pattern": "R4-01"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "implemented"
+    },
+    {
+      "id": "SELECTION-SLOT-MODE-PAYLOAD-239",
+      "title": "领取用槽位查询必须带 request_payload.mode，缺少该列会让按模式解析静默退回 core 依赖",
+      "implementation": {
+        "file": "server/repositories/jobScheduleSlotsRepository.js",
+        "symbol": "select_ops_job_schedule_slots_1"
+      },
+      "tests": [
+        {
+          "file": "server/test/stock-selection-review-r4.test.js",
+          "pattern": "R4-01 真库"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "implemented"
+    },
+    {
+      "id": "SELECTION-INPUT-GAP-FAIR-ROTATION-240",
+      "title": "选股缺口续跑必须跨批次持久化尝试次数，保证 N 个对象每批 B 个时每个对象在有界轮次内都获得机会，重启后仍成立",
+      "implementation": {
+        "file": "server/services/stockSelectionInputsSync.js",
+        "symbol": "syncSelectionInputs"
+      },
+      "tests": [
+        {
+          "file": "server/test/stock-selection-review-r4.test.js",
+          "pattern": "R4-02"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "implemented"
+    },
+    {
+      "id": "SELECTION-FISCAL-YEAR-END-241",
+      "title": "财年末必须取公司实际年报期末（3/6/12 月及变更财年），不得以自然年末代替；年度分红与零分红证据按该期末识别",
+      "implementation": {
+        "file": "server/repositories/stockSelectionRepository.js",
+        "symbol": "loadAnnualDividends"
+      },
+      "tests": [
+        {
+          "file": "server/test/stock-selection-review-r4.test.js",
+          "pattern": "R4-03"
+        },
+        {
+          "file": "server/test/stock-selection-review-r4.test.js",
+          "pattern": "R4-04"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "implemented"
+    },
+    {
+      "id": "SELECTION-QUARTER-TERMINAL-DEDUP-242",
+      "title": "季度自动排队去重要覆盖全部合法终态（已发布、市场正常关闭、明确零合格），数据不足与失败仍继续补算",
+      "implementation": {
+        "file": "server/jobs/stockAnalysisRefresh.js",
+        "symbol": "quarterRunCompleted"
+      },
+      "tests": [
+        {
+          "file": "server/test/stock-selection-review-r4.test.js",
+          "pattern": "R4-05"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "implemented"
     }
   ]
 }

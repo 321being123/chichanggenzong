@@ -276,17 +276,33 @@ async function loadDividendWindow({ instrumentIds, windowStart, asOfDate }, tx) 
 /** 按公司财年汇总的现金分红（A/H 同一发行人按经济事件去重），只认目标日当时可见的事实（SSV-04）。
  *  - 可见性：公告日严格早于目标日；公告日缺失但除息日已发生（除息必然在公告之后）视为可见；
  *  - 金额只统计目标日之前已除息且状态为"实施"的现金，后续状态变化不会回灌旧季度；
- *  - 完整性独立于行数（R3-03）：只有"年末分红已实施、已除息且总额已知"才构成该财年完整证据。
+ *  - 完整性独立于行数（R3-03）：只有"财年末那笔分红已实施、已除息且总额已知"才构成该财年完整证据。
  *    只有预案（未实施）= 之后可能再实施一笔；只有中期记录 = 末期可能尚未采集；
  *    已实施但 total_cash_amount 为 NULL = 金额未知。这三种都保留 dividend=NULL、dividendKnown=false，
  *    绝不把"未知"折成 0 参与年度比较；行数只用于诊断，不用于判定。
+ *  - 财年末按公司**实际年报期末**识别（R4-03）：港股/变更财年可能是 3/6 月结束，
+ *    写死 12-31 会把整段年度分红判成"只有中期"，所以用同期 `period_type='annual'` 的
+ *    `financial_reports.period_end` 作为该财年期末集合。
+ *  - 明确零分红也算已知（R4-04）：官方"无股息"落成"实施 + 每股 0 + 无除息日"，
+ *    这类年度零分红证据要与"金额未知"区分开，不能为了放行零值又回到"有记录即完整"。
  */
 async function loadAnnualDividends({ companyIds, asOfDate }, tx) {
   if (!companyIds.length) return new Map();
   const exec = executorOf(tx);
   const implemented = `ca.status = '实施' AND ca.ex_date IS NOT NULL AND ca.ex_date <= $2::date`;
+  // 明确零分红：状态已实施、没有除息日（本就不该有）、每股金额明确为 0。
+  const explicitZero = `ca.status = '实施' AND ca.ex_date IS NULL AND ca.cash_per_share_pre_tax = 0`;
   const { rows } = await exec(`
-    WITH per_instrument AS (
+    WITH annual_ends AS (
+      SELECT DISTINCT r.company_id, r.period_end
+        FROM fundamental.financial_reports r
+       WHERE r.company_id = ANY($1::bigint[])
+         AND r.report_kind = 'income'
+         AND r.period_type = 'annual'
+         AND r.statement_scope = 'consolidated'
+         AND r.announced_at IS NOT NULL
+         AND r.announced_at < $2::date
+    ), per_instrument AS (
       SELECT ci.company_id,
              date_part('year', ca.fiscal_period_end)::int AS fiscal_year,
              ci.instrument_id,
@@ -294,9 +310,12 @@ async function loadAnnualDividends({ companyIds, asOfDate }, tx) {
              COUNT(*) FILTER (WHERE ${implemented})::int AS implemented_count,
              COUNT(*) FILTER (WHERE ${implemented} AND ca.total_cash_amount IS NULL)::int AS amount_missing_count,
              COUNT(*) FILTER (WHERE NOT (${implemented}))::int AS not_implemented_count,
-             BOOL_OR(${implemented}
-                     AND date_part('month', ca.fiscal_period_end) = 12
-                     AND date_part('day', ca.fiscal_period_end) = 31) AS has_year_end_implemented
+             COUNT(*) FILTER (WHERE ${explicitZero} AND EXISTS (
+               SELECT 1 FROM annual_ends ae
+                WHERE ae.company_id = ci.company_id AND ae.period_end = ca.fiscal_period_end))::int AS year_zero_count,
+             BOOL_OR(${implemented} AND EXISTS (
+               SELECT 1 FROM annual_ends ae
+                WHERE ae.company_id = ci.company_id AND ae.period_end = ca.fiscal_period_end)) AS has_year_end_implemented
         FROM fundamental.corporate_actions ca
         JOIN core.company_instruments ci ON ci.instrument_id = ca.instrument_id AND ci.relation_type = 'issued_by'
        WHERE ci.company_id = ANY($1::bigint[])
@@ -313,6 +332,7 @@ async function loadAnnualDividends({ companyIds, asOfDate }, tx) {
            SUM(implemented_count)::int AS implemented_count,
            SUM(amount_missing_count)::int AS amount_missing_count,
            SUM(not_implemented_count)::int AS not_implemented_count,
+           SUM(year_zero_count)::int AS year_zero_count,
            BOOL_OR(has_year_end_implemented) AS has_year_end_implemented
       FROM per_instrument
      GROUP BY 1, 2`, [companyIds, asOfDate]);
@@ -323,16 +343,21 @@ async function loadAnnualDividends({ companyIds, asOfDate }, tx) {
     const implementedCount = Number(row.implemented_count || 0);
     const amountMissing = Number(row.amount_missing_count || 0);
     const notImplemented = Number(row.not_implemented_count || 0);
-    // 完整证据 = 年末那笔已实施已除息 + 该年所有已实施记录金额都不缺。
-    const known = implementedCount > 0 && amountMissing === 0 && row.has_year_end_implemented === true;
+    const yearZero = Number(row.year_zero_count || 0);
+    // 完整证据 = 财年末那笔已实施已除息 + 该年所有已实施记录金额都不缺；
+    // 或者官方明确给出"该财年零股息"（实施 + 每股 0 + 无除息日）。
+    const knownFromImplemented = implementedCount > 0 && amountMissing === 0 && row.has_year_end_implemented === true;
+    const knownFromZero = yearZero > 0 && amountMissing === 0;
+    const known = knownFromImplemented || knownFromZero;
     list.push({
       year: Number(row.fiscal_year),
       dividend: known ? Number(row.implemented_cash || 0) : null,
       eventCount: implementedCount + notImplemented,
       dividendKnown: known,
-      dividendBasis: known ? 'annual_implemented_amount'
-        : amountMissing > 0 ? 'implemented_amount_missing'
-          : implementedCount > 0 ? 'interim_only' : 'plan_only',
+      dividendBasis: knownFromImplemented ? 'annual_implemented_amount'
+        : knownFromZero ? (implementedCount > 0 ? 'interim_plus_verified_zero' : 'verified_zero_dividend')
+          : amountMissing > 0 ? 'implemented_amount_missing'
+            : implementedCount > 0 ? 'interim_only' : 'plan_only',
     });
     map.set(key, list);
   });

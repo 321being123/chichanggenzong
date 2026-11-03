@@ -277,6 +277,19 @@ async function activeStockScope(stocks, targetDate, query = pool.query.bind(pool
 }
 
 /**
+ * 该季度是否已有"可核验的完成终态"（R4-05）。
+ * 自动排队只做去重，不判断要不要重算：已正式发布、或执行成功且业务结论是
+ * 正常市场关闭 / 明确零合格（旧数据可能没写 published_at）都算完成，
+ * 不能让同一季度每轮自动检查都新建一个槽。数据不足与失败仍继续补算。
+ */
+function quarterRunCompleted(row) {
+  if (!row) return false;
+  if (row.published_at) return true;
+  if (String(row.execution_status || '') !== 'succeeded') return false;
+  return ['market_closed', 'no_eligible_member', 'insufficient_candidates'].includes(String(row.business_status || ''));
+}
+
+/**
  * 季度自动排队（方案 9.2）：由现有调度入口在交易日检查尚未生成的季度并入队。
  * 同一季度已存在任何正式批次就不再重复排队；两市场各自独立，不互相等待。
  */
@@ -291,10 +304,10 @@ async function enqueueDueSelectionQuarters(now = new Date()) {
     // 结果就是"查不到、也排不出"，季度任务永远不生成。
     const pending = await service.pendingQuarter({ market, now: today });
     if (!pending || !pending.quarter) continue;
-    const existing = await repo.listRuns({ market, quarter: pending.quarter, kind: 'quarterly', ownerUsername: null, limit: 5, offset: 0 });
-    // 只有"已发布的正式季度"才跳过；上一轮只存了预览或部分数据时必须重新排队，
+    const existing = await repo.listRuns({ market, quarter: pending.quarter, kind: 'quarterly', ownerUsername: null, limit: 20, offset: 0 });
+    // 只有"已完成终态"的季度才跳过；上一轮只存了预览或部分数据时必须重新排队，
     // 不能因为表里存在过一条该季度记录就永远不再尝试。
-    if (existing.rows.some(row => row.published_at)) continue;
+    if (existing.rows.some(quarterRunCompleted)) continue;
     const slot = await enqueueManualJob('stock_analysis_refresh', { mode: 'selection_quarterly', market, quarter: pending.quarter });
     if (slot) queued.push({ market, quarter: pending.quarter, slotId: slot.slot_id });
   }
@@ -424,4 +437,4 @@ function scheduleStockAnalysisRefresh() {
   console.log('[stock-analysis] 已调度：每日 08:20（上海时间）');
 }
 
-module.exports = { nextShanghaiDelay, latestStockAnalysisDate, targetDateStatus, trackedStocks, activeStockScope, verifiedStockDataDate, runStockAnalysisRefresh, scheduleStockAnalysisRefresh, runSelectionMode, enqueueDueSelectionQuarters, SELECTION_MODES };
+module.exports = { nextShanghaiDelay, latestStockAnalysisDate, targetDateStatus, trackedStocks, activeStockScope, verifiedStockDataDate, runStockAnalysisRefresh, scheduleStockAnalysisRefresh, runSelectionMode, enqueueDueSelectionQuarters, quarterRunCompleted, SELECTION_MODES };

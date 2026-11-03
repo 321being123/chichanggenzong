@@ -399,8 +399,19 @@ async function reconcileSlot(slot) {
     return slot;
   }
   if (slot.status === 'blocked') {
-    const dependencies = definition.dependencyCodes || [];
-    if (dependencies.length || (definition.datasetDependencies || []).length) {
+    // R4-01：阻塞恢复与待执行筛选、领取必须用同一套按模式解析的依赖，
+    // 否则选股模式（显式无依赖）会被 core 的转债链一直挡在 blocked。
+    const mode = slotMode(slot);
+    const declared = definition.modeDependencyCodes && Object.prototype.hasOwnProperty.call(definition.modeDependencyCodes, mode);
+    const dependencies = dependenciesForMode(definition.modeDependencyCodes, mode, definition.dependencyCodes);
+    const datasetRequirements = dependenciesForMode(definition.modeDatasetDependencies, mode, definition.datasetDependencies);
+    if (declared && !dependencies.length && !(datasetRequirements || []).length) {
+      // 该模式显式声明"无前置任务/无数据集依赖"：历史被 core 依赖错标成 blocked 的槽必须释放，
+      // 否则会永远停在 blocked，待执行筛选又把它列为 due，形成领取僵局。
+      const { rows: releasedRows } = await repository.update_ops_job_schedule_slots_4([slot.slot_id]);
+      return releasedRows[0] || slot;
+    }
+    if (dependencies.length || (datasetRequirements || []).length) {
       const states = await taskDependencyStates(slot, dependencies);
       const datasets = await datasetDependencyState(slot, definition);
       if (dependencies.every(code => states.get(code) === 'succeeded') && datasets.ready) {
@@ -524,7 +535,10 @@ async function claimSlot(slotId, workerId = WORKER_ID, triggerType = 'scheduled'
   if (!lookup.rows[0]) return null;
   const definition = getJobDefinition(lookup.rows[0].job_code);
   if (definition.disabled) return null;
-  const dependencies = definition.dependencyCodes || [];
+  // R4-01：领取必须按槽位模式解析依赖。原实现读全局 dependencyCodes，
+  // 导致显式声明"无依赖"的选股模式仍被 A 股转债链挡住（待执行筛选却已按模式放行），
+  // 出现"列为 due 但永远领不到"的僵局。
+  const dependencies = dependenciesForMode(definition.modeDependencyCodes, slotMode(lookup.rows[0]), definition.dependencyCodes);
   if (dependencies.length) {
     const states = await taskDependencyStates(lookup.rows[0], dependencies);
     if (dependencies.some(code => ['failed', 'degraded', 'blocked'].includes(states.get(code)))) {
@@ -964,7 +978,8 @@ async function listJobSlots(options = {}) {
       request_payload: sanitizeJobResult(row.request_payload || {}),
       label: labels.get(row.job_code) || row.job_code,
       category: definition.category, importance: definition.importance,
-      dependency_codes: definition.dependencyCodes || [],
+      // R4-01：展示的依赖也要按槽位模式解析，不能显示 core 的转债链而实际可领取。
+      dependency_codes: dependenciesForMode(definition.modeDependencyCodes, slotMode(row), definition.dependencyCodes),
       deadline_at: new Date(lateAt).toISOString(), max_attempts: definition.maxAttempts,
       waiting_state: waitingState,
       is_late: ['pending', 'running', 'failed', 'degraded'].includes(row.status) && lateAt < Date.now()
@@ -978,7 +993,8 @@ async function getJobSlot(slotId) {
   const definition = getJobDefinition(rows[0].job_code);
   const [runs, dependencies, alerts, audits] = await Promise.all([
     repository.select_job_runs_2([slotId, rows[0].last_run_id || 0]),
-    repository.select_ops_job_schedule_slots_8([rows[0].business_date, definition.dependencyCodes || [], rows[0].scheduled_for]),
+    repository.select_ops_job_schedule_slots_8([rows[0].business_date,
+      dependenciesForMode(definition.modeDependencyCodes, slotMode(rows[0]), definition.dependencyCodes), rows[0].scheduled_for]),
     repository.select_ops_alert_notifications([slotId]),
     repository.select_admin_audit_log([String(slotId)]),
   ]);

@@ -4851,6 +4851,26 @@
       ],
       "owner": "WorkBuddy",
       "status": "implemented"
+    },
+    {
+      "id": "FINANCIAL-STATEMENT-STANDARD-ISOLATION-247",
+      "title": "财报三表科目必须按会计准则分表落库：A股CAS与港股HKFRS科目集合不同，禁止共用一个列集合或跨准则套用；采集按官方单只股票128指标上限分批",
+      "implementation": {
+        "file": "server/repositories/stockProjectionRepository.js",
+        "symbol": "writeStatementWideRow"
+      },
+      "tests": [
+        {
+          "file": "server/test/financial-statements-wide.test.js",
+          "pattern": "两套准则科目不混用"
+        },
+        {
+          "file": "server/test/financial-statements-wide.test.js",
+          "pattern": "128 指标上限"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "implemented"
     }
   ]
 }

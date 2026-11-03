@@ -203,6 +203,7 @@ const MIGRATIONS = [
   { version: '183_source_contract_verifications', up: () => require('./migrations/releaseIdentity').migration183SourceContractVerifications(pool) },
   { version: '184_stock_selection', up: () => require('./migrations/era10StockSelection').migration184StockSelection(pool) },
   { version: '185_hang_seng_industry_taxonomy', up: () => require('./migrations/era10StockSelection').migration185HangSengIndustryTaxonomy(pool) },
+  { version: '186_financial_statement_wide', up: () => require('./migrations/era11FinancialStatements').migration186FinancialStatementWide(pool) },
 ];
 
 async function ensureMigrationsTable() {

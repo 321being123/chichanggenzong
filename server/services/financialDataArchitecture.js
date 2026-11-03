@@ -49,7 +49,7 @@ async function persistCollectedData(metadata, bundle) {
         const sourceId = sources[code];
         if (!sourceId) throw new Error(`未找到数据源登记：${code}`);
         // 金额币种按证券主档兜底（港股 HKD），行内自带币种时以行为准（R2-03）。
-        await projection.syncReportRows(client, group, kind, master.companyId, sourceId, { currency: master.currency });
+        await projection.syncReportRows(client, group, kind, master.companyId, sourceId, { currency: master.currency, tsCode });
       }
     }
     const daily = new Map((bundle.daily || []).map(x => [x.trade_date, x]));

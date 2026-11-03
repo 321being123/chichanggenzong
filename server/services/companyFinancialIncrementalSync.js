@@ -278,7 +278,7 @@ async function persistCompanyReports(target, reportResult, options = {}) {
           // 来源 id 一律按登记表解析；缺登记就报错，不再按来源名做特殊兜底。
           const sourceId = sourceIdByCode.get(code);
           if (!sourceId) throw new Error(`未找到数据源登记：${code}`);
-          await syncReportRows(client, group, kind, target.companyId, sourceId, { runId: ingestionRunId, reportTypeOnly: '1' });
+          await syncReportRows(client, group, kind, target.companyId, sourceId, { runId: ingestionRunId, reportTypeOnly: '1', tsCode: target.tsCode });
         }
         const latestPeriod = rows.map(row => row.end_date).sort().pop();
         const latestAnnouncement = rows.map(row => row.f_ann_date || row.ann_date).filter(Boolean).sort().pop();

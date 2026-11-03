@@ -12,6 +12,7 @@
 // 后缀 `.t` 是"报告期累计"，与 Tushare 累计口径一致；`.c` 是单季，本项目不用。
 const { callEndpoint } = require('../../services/lixingerOfficial');
 const { resolveProviderIdentifier } = require('../../services/securityIdentity');
+const reportMetrics = require('../lixingerReportMetrics');
 
 const SOURCE = 'lixinger_official';
 const VALUATION_CHUNK = 100; // 官方限制：stockCodes 一次最多 100 个
@@ -472,18 +473,47 @@ async function resolveFinancialReports({ tsCode, startDate, endDate, kinds = ['i
   const start = dashDate(startDate), end = dashDate(endDate);
   if (!code || !start || !end) return null;
   const hk = isHkCode(tsCode);
+  const market = hk ? 'HK' : 'CN';
   const mapping = hk ? HK_REPORT_METRICS : REPORT_METRICS;
   const metrics = [];
   for (const kind of kinds) {
     for (const base of Object.values(mapping[kind] || {})) metrics.push(`q.${base}.t`);
   }
   if (!metrics.length) return null;
-  const { rows } = await callEndpointRange(hk ? 'hk/company/fs/non_financial' : 'cn/company/fs/non_financial',
-    { stockCodes: [code], metricsList: metrics }, start, end,
-    { dataset: 'stock_financial_reports', targetDate: end, ...options });
+  const endpoint = hk ? 'hk/company/fs/non_financial' : 'cn/company/fs/non_financial';
+  // 三表全量：官方同一接口按指标点菜，单只股票一次最多 128 个指标，
+  // 因此除标准 17 项外，再按字典（A股 CAS / 港股 HKFRS 各自一套）分批发全量科目。
+  // 两套准则科目不同，字典按市场取，禁止互相套用。
+  const standardCodes = new Set(metrics);
+  const extraBatches = reportMetrics.requestBatchesOf(market)
+    .map(batch => batch.filter(code => !standardCodes.has(code)))
+    .filter(batch => batch.length);
+  const merged = new Map();
+  for (const list of [metrics, ...extraBatches]) {
+    const { rows: batchRows } = await callEndpointRange(endpoint,
+      { stockCodes: [code], metricsList: list }, start, end,
+      { dataset: 'stock_financial_reports', targetDate: end, ...options });
+    for (const item of batchRows) {
+      // 同一份报告分散在多批响应里，必须按"报告身份"合并，不能按响应顺序拼接。
+      const key = [item.date, item.standardDate, item.reportType, item.stockCode].join('|');
+      const prev = merged.get(key);
+      if (!prev) merged.set(key, { ...item, q: { ...(item.q || {}) } });
+      else prev.q = { ...prev.q, ...(item.q || {}) };
+    }
+  }
+  const rows = [...merged.values()];
   const out = { income: [], balance: [], cashflow: [], indicator: [] };
   for (const item of rows) {
     const flat = flattenMetrics(item.q || {});
+    // 三表原始科目：键形如 bs.ta.t / ps.toi.t / cfs.ncffoa.t，去掉粒度后缀后按代码交给落库层。
+    // 只收 bs/ps/cfs（m.* 是衍生指标，由三表算得，不入库）。
+    const statementMetrics = {};
+    for (const [key, value] of Object.entries(flat)) {
+      const match = /^((?:bs|ps|cfs)\.[a-z0-9_]+)\.t$/.exec(key);
+      if (!match) continue;
+      if (value === null || value === undefined || value === '') continue;
+      statementMetrics[match[1]] = value;
+    }
     // 港股财年不统一（3/6/7 月结束都有），periodEnd 必须用真实期末 date；
     // A 股沿用 standardDate（标准化后的报告期），两者都不拿"今天"顶替。
     const periodEnd = hk ? (isoDate(item.date) || isoDate(item.standardDate)) : (isoDate(item.standardDate) || isoDate(item.date));
@@ -498,6 +528,8 @@ async function resolveFinancialReports({ tsCode, startDate, endDate, kinds = ['i
       comp_type: '1',
       // 官方报告类型原值留证；港股缺它就记 'unknown'，让上层按"年度未知"处理而不是按月份猜。
       report_period_label: item.reportType || null,
+      // 三表全量科目随行返回，落库层据此写宽表；没有科目时不挂空对象，避免污染原始留证。
+      ...(Object.keys(statementMetrics).length ? { __statement_metrics: statementMetrics } : {}),
       ...(hk ? { period_type: reportPeriodType || 'unknown' } : {}),
       currency: item.currency || (hk ? 'HKD' : 'CNY'),
       update_flag: '0',

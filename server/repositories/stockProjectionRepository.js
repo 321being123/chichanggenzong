@@ -3,6 +3,7 @@
 // 本文件只做 SQL 与标准事实写入，不判断业务规则、不触发外采、不自行 BEGIN/COMMIT。
 const { ensureInstrumentIdentity } = require('../services/securityIdentity');
 const { upsertIndustryPath } = require('./industryRepository');
+const reportMetrics = require('../dataAccess/lixingerReportMetrics');
 const {
   FACT_MAP, METRICS, analysisMetricValues, asDate, finite, hash, resolvePeriodType, rowVersion, stablePayload,
 } = require('../domain/stockFacts');
@@ -57,9 +58,49 @@ async function ensureMaster(client, tsCode, sources, metadata) {
   return { companyId: company.company_id, instrumentId: instrument.instrument_id, legacy, currency };
 }
 
+/**
+ * 三表宽表写入（迁移 186）：一行一份报告，列 = 字典科目（bs.ta → bs_ta）。
+ * A股（CAS）与港股（HKFRS）各自一张表，科目集合不同，禁止串用。
+ * 只写有值的科目；同 report_id 幂等覆盖，不删旧值以外的列。
+ */
+async function writeStatementWideRow(client, params) {
+  const {
+    reportId, companyId, market, kind, periodEnd, periodType,
+    announcedAt, currency, sourceId, sourceVersion, rawRecordId, metrics,
+  } = params;
+  if (!reportMetrics.STATEMENTS.includes(kind)) return 0;
+  if (!reportId || !companyId || !periodEnd) return 0;
+  const table = reportMetrics.tableNameOf(market, kind);
+  const columns = ['report_id', 'company_id', 'period_end', 'period_type', 'announced_at',
+    'currency_code', 'accounting_standard', 'source_id', 'source_version', 'raw_record_id'];
+  const values = [reportId, companyId, periodEnd, periodType || null, announcedAt || null,
+    currency || null, reportMetrics.standardOf(market), sourceId || null, sourceVersion || null, rawRecordId || null];
+  for (const metric of reportMetrics.metricsByStatement(market, kind)) {
+    const value = finite(metrics && metrics[metric.code]);
+    if (value === null) continue;
+    columns.push(reportMetrics.columnOf(metric.code));
+    values.push(value);
+  }
+  const placeholders = columns.map((_, index) => `$${index + 1}`);
+  const updates = columns.slice(1).map(name => `${name}=EXCLUDED.${name}`).join(',');
+  await client.query(`INSERT INTO ${table}(${columns.join(',')})
+    VALUES(${placeholders.join(',')})
+    ON CONFLICT (report_id) DO UPDATE SET ${updates}, ingested_at=now()`, values);
+  return columns.length;
+}
+
 async function syncReportRows(client, rows, kind, companyId, sourceId, options = {}) {
-  for (const data of rows) {
-    if (!asDate(data.end_date)) continue;
+  // 会计准则按市场隔离：港股标的走 HKFRS 宽表，其余走 CAS 宽表。
+  const market = /\.HK$/i.test(String(options.tsCode || '')) ? 'HK' : 'CN';
+  for (const rawData of rows) {
+    if (!asDate(rawData.end_date)) continue;
+    // 三表全量科目与报告本体分开：科目写宽表，报告本体写 financial_reports / 原始留证，
+    // 避免几百个科目在两份 JSONB 里重复膨胀。
+    const statementMetrics = rawData.__statement_metrics && typeof rawData.__statement_metrics === 'object'
+      ? rawData.__statement_metrics : null;
+    const data = statementMetrics
+      ? (() => { const { __statement_metrics, ...rest } = rawData; return rest; })()
+      : rawData;
     if (options.reportTypeOnly && String(data.report_type || '') !== String(options.reportTypeOnly)) continue;
     const sourceVersion = rowVersion(data), announced = asDate(data.ann_date), fAnnDate = asDate(data.f_ann_date || data.ann_date);
     // 报告期类型与金额币种都必须来自事实本身（R2-03）：港股 3 月年报不能被月份推断成 q1，
@@ -74,7 +115,7 @@ async function syncReportRows(client, rows, kind, companyId, sourceId, options =
         ON CONFLICT(source_id,dataset_code,source_key,payload_hash)
         DO UPDATE SET run_id=EXCLUDED.run_id
         RETURNING raw_record_id`,
-      [options.runId, sourceId, `stock_financial_${kind}`, rawKey, fAnnDate || announced, JSON.stringify(data), hash(JSON.stringify(stablePayload(data)))]
+      [options.runId, sourceId, `stock_financial_${kind}`, rawKey, fAnnDate || announced, JSON.stringify(rawData), hash(JSON.stringify(stablePayload(rawData)))]
       )).rows[0];
       rawRecordId = raw && raw.raw_record_id;
     }
@@ -100,6 +141,15 @@ async function syncReportRows(client, rows, kind, companyId, sourceId, options =
       const unit = metricCode === 'interest_coverage' ? 'multiple' : /roe|roa/.test(metricCode) ? 'percent' : 'currency';
       await client.query(`INSERT INTO fundamental.financial_facts(report_id,statement_type,metric_code,numeric_value,unit_code,currency_code,source_field)
         VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(report_id,metric_code) DO UPDATE SET numeric_value=EXCLUDED.numeric_value,unit_code=EXCLUDED.unit_code,currency_code=EXCLUDED.currency_code,source_field=EXCLUDED.source_field`, [report.report_id, kind, metricCode, value, unit, unit === 'currency' ? rowCurrency : null, sourceField]);
+    }
+    // 三表全量科目：写对应准则的宽表（A股 CAS / 港股 HKFRS）。
+    // 标准 20 个科目仍写 financial_facts，下游读取口径不变；两者互不替代。
+    if (statementMetrics) {
+      await writeStatementWideRow(client, {
+        reportId: report.report_id, companyId, market, kind,
+        periodEnd: asDate(data.end_date), periodType: rowPeriodType, announcedAt: announced,
+        currency: rowCurrency, sourceId, sourceVersion, rawRecordId, metrics: statementMetrics,
+      });
     }
   }
   await client.query(`WITH ranked AS (SELECT report_id,row_number() OVER(PARTITION BY company_id,report_kind,period_end ORDER BY CASE WHEN report_type='1' THEN 0 ELSE 1 END,announced_at DESC NULLS LAST,ingested_at DESC,report_id DESC) rn FROM fundamental.financial_reports WHERE company_id=$1 AND report_kind=$2) UPDATE fundamental.financial_reports r SET is_current_version=(ranked.rn=1) FROM ranked WHERE r.report_id=ranked.report_id`, [companyId, kind]);
@@ -359,6 +409,7 @@ module.exports = {
   syncAnalytics,
   syncQualityIssues,
   syncReportRows,
+  writeStatementWideRow,
   syncOfficialDividends,
   syncSourcedDividendFacts,
   upsertAdjustmentFactor,

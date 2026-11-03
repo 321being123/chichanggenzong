@@ -119,13 +119,17 @@ async function select_ops_data_sources(params, client = pool) {
 }
 
 async function select_fundamental_convertible_bond_profiles(params, client = pool) {
+  // 候选池不能只放「在市」转债：到期兑付结果、终止上市这类公告天然发生在退市之后，
+  // 一旦按 status='listed' 过滤，这些公告永远匹配不到证券，会一直计成 unmatched_security，
+  // 让强赎投影的 qualityStatus 恒为 stale → 17:30 日历阶段无法完成 → 上市流通规模分区不发布。
+  // 唯一性由 pickInstrument 保证（标题里必须出现债券简称或代码，同正股多债无法区分时仍返回 null）。
   return client.query(`SELECT p.instrument_id,split_part(s.canonical_code,'.',1) AS stock_code,
-            split_part(i.canonical_code,'.',1) AS security_code,i.name AS bond_name,p.bond_short_name,p.maturity_date
+            split_part(i.canonical_code,'.',1) AS security_code,i.name AS bond_name,p.bond_short_name,p.maturity_date,i.status
        FROM fundamental.convertible_bond_profiles p
        JOIN core.instruments i ON i.instrument_id=p.instrument_id
        LEFT JOIN fundamental.convertible_bond_issuance iss ON iss.instrument_id=p.instrument_id
        JOIN core.instruments s ON s.instrument_id=p.stock_instrument_id
-      WHERE i.status='listed' AND (iss.issue_type IS NULL OR iss.issue_type NOT IN ('定向','私募'))`);
+      WHERE (iss.issue_type IS NULL OR iss.issue_type NOT IN ('定向','私募'))`);
 }
 
 async function select_core_instruments(params, client = pool) {

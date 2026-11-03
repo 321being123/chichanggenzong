@@ -33,6 +33,13 @@ assert.strictEqual(pickInstrument({ title: '关于转债的公告' }, [
   { instrument_id: 1, bond_name: '甲转债', security_code: '123001' },
   { instrument_id: 2, bond_name: '乙转债', security_code: '123002' },
 ]), null);
+// 到期兑付结果、终止上市这类公告发生在退市之后：候选池若只放「在市」债，公告永远匹配不到证券，
+// 会一直计成 unmatched_security，让强赎投影恒为 stale、17:30 日历阶段永不完成。
+// 这里钉住两点：①匹配函数对已退市债同样按简称唯一命中；②候选查询不再按 status='listed' 过滤。
+assert.strictEqual(pickInstrument({ title: '浙江华海药业股份有限公司关于“华海转债”到期兑付结果暨股份变动的公告' }, [
+  { instrument_id: 123, bond_name: '华海转债', security_code: '110076', status: 'delisted' },
+  { instrument_id: 456, bond_name: '华海转2', security_code: '110077', status: 'listed' },
+]), 123);
 
 const root = path.join(__dirname, '..', '..');
 const html = fs.readFileSync(path.join(root, 'public', 'index.html'), 'utf8');
@@ -142,6 +149,13 @@ assert.ok(redemptionSync.includes("COUNT(*) FILTER (WHERE parser_version=$1 AND 
   '强赎质量门禁必须统计全局部分解析和文档失败，不能只看本批结果');
 assert.ok(redemptionSync.includes('reconcileCallQuality') && redemptionSync.includes("q.issue_type='unmatched_security'"),
   '强赎质量问题在重放成功后必须幂等收敛历史遗留告警');
+{
+  const candidateQuery = (redemptionSync.match(/async function select_fundamental_convertible_bond_profiles[\s\S]*?\n\}/) || [''])[0];
+  assert.ok(candidateQuery.includes('instrument_id') && candidateQuery.includes('bond_name'),
+    '候选池查询必须带证券身份与债券简称，否则 pickInstrument 无从匹配');
+  assert.ok(!/i\.status\s*=\s*'listed'/.test(candidateQuery),
+    '候选池不能只放市转债：退市后的到期兑付公告必须仍能匹配到证券');
+}
 assert.ok(redemptionSync.includes('new_parser_lower_quality') && redemptionSync.includes('preserved_previous_fact'),
   '新版解析质量较低时必须保留旧有效事实并记录解析历史');
 assert.ok(redemptionSync.includes("eventType === 'waive'") && redemptionSync.includes('announcementDate'),

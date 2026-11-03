@@ -804,7 +804,9 @@ async function queryDataAsOf(jobCode, businessDate) {
     : null);
   if (!sql) return null;
   const normalizedBusinessDate = normalizeBusinessDate(businessDate);
-  const { rows } = await jobScheduleSlotsRepository.selectDataAsOfDate(sql, marketPredicate ? [normalizedBusinessDate] : []);
+  // 仓储这一层返回的是行数组本身（不是 { rows }）；按 { rows } 解构会拿到 undefined，
+  // 导致水位判定抛错被下面的 catch 吞成 null，凡是靠本函数取水位的任务都会被误判“数据日期缺失”。
+  const rows = await jobScheduleSlotsRepository.selectDataAsOfDate(sql, marketPredicate ? [normalizedBusinessDate] : []);
   if (!rows[0] || !rows[0].data_as_of) return null;
   if (jobCode === 'hk_rate') return normalizeDataAsOf(rows[0].data_as_of);
   const raw = String(rows[0].data_as_of).slice(0, 10);
@@ -1053,7 +1055,9 @@ async function getJobOverview() {
     definitions: JOB_DEFINITIONS,
     counts: counts.rows,
     slots: slots.rows.map(slot => ({ ...slot, last_error: slot.last_error ? sanitizeJobError(slot.last_error) : null })),
-    alerts: alerts.rows,
+    // countAlertsByStatus 直接返回 [{status,count}] 数组，前端按数组消费；再取 .rows 会变成 undefined。
+    // countAlertsByStatus 直接返回 [{status,count}] 数组，前端按数组消费；再取 .rows 会变成 undefined。
+    alerts,
     workers: workers.rows,
     health: {
       durableScheduler: process.env.DURABLE_SCHEDULER !== '0',

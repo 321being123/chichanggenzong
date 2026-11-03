@@ -104,6 +104,19 @@ pool.query = async (sql, params) => { calls.push({ sql, params }); return { rows
     });
     assert.match(calls[0].sql, /market\.index_valuation_history/);
     assert.match(calls[0].sql, /pb=COALESCE\(EXCLUDED\.pb,market\.index_valuation_history\.pb\)/);
+    // 列清单 8 项，VALUES 每组也必须 8 个表达式（1 个常量方法 + 7 个占位符）。
+    // 2026-11-03 线上就是少写了一个占位符，PG 报 42601「INSERT has more target columns
+    // than expressions」，中证系估值历史一行都没写进去，任务连续三天最终失败。
+    // 这里按「列数 == 每组表达式数」做通用校验，避免下次再漏。
+    const columnList = calls[0].sql.match(/\(([a-z_,]+)\)\s*VALUES/);
+    assert.ok(columnList, '必须能解析出列清单');
+    const columnCount = columnList[1].split(',').filter(Boolean).length;
+    const valueGroups = calls[0].sql.split(/VALUES/i)[1].split(/ON CONFLICT/i)[0].match(/\([^()]*\)/g) || [];
+    assert.ok(valueGroups.length >= 1, '必须能解析出 VALUES 分组');
+    valueGroups.forEach((group, index) => {
+      const expressions = group.slice(1, -1).split(',').filter(item => item.trim()).length;
+      assert.strictEqual(expressions, columnCount, `第 ${index + 1} 组表达式数量必须等于列数 ${columnCount}`);
+    });
     assert.strictEqual(calls[0].params[0], '000985');
     assert.strictEqual(calls[0].params[3], 18.16);
     assert.strictEqual(calls[0].params[4], 1.52);

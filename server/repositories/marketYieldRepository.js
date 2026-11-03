@@ -37,7 +37,10 @@ async function saveIndexValuationHistoryRows({ indexCode, rows, sourceCode }) {
     const pb = Number.isFinite(Number(row.pb)) && Number(row.pb) > 0 ? Number(row.pb) : null;
     const pe = Number.isFinite(Number(row.pe)) && Number(row.pe) > 0 ? Number(row.pe) : null;
     if (!row.day || (pe === null && pb === null)) continue;
-    values.push(`($${p++},'market_cap_weighted',$${p++},$${p++},$${p++},$${p++},$${p++}::jsonb)`);
+    // 列顺序 index_code,valuation_method,trade_date,market_cap,pe_ttm,pb,source_code,raw_payload，
+    // 共 8 个表达式：1 个常量 method + 7 个占位符，少写一个会直接报
+    // “INSERT has more target columns than expressions”，整条估值写入失败。
+    values.push(`($${p++},'market_cap_weighted',$${p++},$${p++},$${p++},$${p++},$${p++},$${p++}::jsonb)`);
     params.push(indexCode, row.day, row.marketCap === undefined ? null : row.marketCap, pe, pb, sourceCode, JSON.stringify(row.raw || {}));
   }
   if (!values.length) return { rowCount: 0 };

@@ -211,15 +211,30 @@ async function resolveValuationRowsDetailed({ codes = [], tradeDate, options = {
   for (const batch of batches) {
     attempted += 1;
     try {
-      const result = await callEndpoint('cn/company/fundamental/non_financial', {
-        stockCodes: batch.map(item => item.code), date, metricsList: VALUATION_METRICS,
-      }, { dataset: 'stock_valuation', targetDate: date, ...options });
+      // 同一批次里可能混有 A 股与港股：按证券代码分组后分别走对应端点，
+      // 港股走 hk/company/fundamental/non_financial 并使用 bs.* 指标。
+      const hkBatch = batch.filter(item => isHkCode(item.tsCode));
+      const cnBatch = batch.filter(item => !isHkCode(item.tsCode));
+      const resultRows = [];
+      if (cnBatch.length) {
+        const cnResult = await callEndpoint('cn/company/fundamental/non_financial', {
+          stockCodes: cnBatch.map(item => item.code), date, metricsList: VALUATION_METRICS,
+        }, { dataset: 'stock_valuation', targetDate: date, ...options });
+        resultRows.push(...cnResult.rows);
+      }
+      if (hkBatch.length) {
+        const hkResult = await callEndpoint('hk/company/fundamental/non_financial', {
+          stockCodes: hkBatch.map(item => item.code), date, metricsList: HK_VALUATION_METRICS,
+        }, { dataset: 'stock_valuation', targetDate: date, ...options });
+        resultRows.push(...hkResult.rows);
+      }
+      const result = { rows: resultRows };
       if (!result.rows.length) emptyBatches += 1;
       const byCode = new Map(batch.map(item => [item.code, item.tsCode]));
       for (const row of result.rows) {
         const tsCode = byCode.get(String(row.stockCode));
         if (!tsCode) continue;
-        const mapped = valuationRow(row, tsCode, tradeDate);
+        const mapped = isHkCode(tsCode) ? hkValuationRow(row, tsCode, tradeDate) : valuationRow(row, tsCode, tradeDate);
         if (mapped) rows.push(mapped);
       }
     } catch (error) {
@@ -301,13 +316,15 @@ async function resolveValuationSeriesDetailed({ codes = [], startDate, endDate, 
     for (const [from, to] of rangeChunks(start, end)) {
       attempted += 1;
       try {
-        const result = await callEndpoint('cn/company/fundamental/non_financial', {
-          stockCodes: [item.code], startDate: from, endDate: to, metricsList: VALUATION_METRICS,
+        const hk = isHkCode(item.tsCode);
+        const result = await callEndpoint(hk ? 'hk/company/fundamental/non_financial' : 'cn/company/fundamental/non_financial', {
+          stockCodes: [item.code], startDate: from, endDate: to,
+          metricsList: hk ? HK_VALUATION_METRICS : VALUATION_METRICS,
         }, { dataset: 'stock_valuation', targetDate: end, ...options });
         if (!result.rows.length) emptyBatches += 1;
         for (const row of result.rows) {
           if (String(row.stockCode) !== String(item.code)) continue;
-          const mapped = valuationRow(row, item.tsCode, to);
+          const mapped = hk ? hkValuationRow(row, item.tsCode, to) : valuationRow(row, item.tsCode, to);
           if (mapped) rows.push(mapped);
         }
       } catch (error) {
@@ -375,23 +392,83 @@ function fillStaticPe(rows, annuals) {
   });
 }
 
+// ===== 港股（SSV-01）=====
+// 港股官方接口是独立端点族：hk/company/fundamental|fs|dividend，指标表名与 A 股不完全相同。
+// 这里只映射官方文档明确列出、且与现有标准层字段语义一致的指标；文档里没有的键一律留空，
+// 不用推导值冒充供应商口径（例如港股没有 EBIT、没有单独的交易性金融资产）。
+const HK_VALUATION_METRICS = ['bs.pe_ttm', 'bs.pb', 'bs.dyr', 'bs.mc', 'bs.tsc'];
+
+const HK_REPORT_METRICS = {
+  income: {
+    total_revenue: 'ps.toi',
+    revenue: 'ps.oi',
+    total_profit: 'ps.tp',
+    // 港股按"归属于母公司普通股股东的净利润"取归母口径（与 A 股 n_income_attr_p 同义）。
+    n_income_attr_p: 'ps.npatoshopc',
+  },
+  balance: {
+    total_assets: 'bs.ta',
+    total_liab: 'bs.tl',
+    total_hldr_eqy_exc_min_int: 'bs.tetoshopc',
+    goodwill: 'bs.gw',
+    money_cap: 'bs.cabb',
+  },
+  cashflow: {
+    n_cashflow_act: 'cfs.ncffoa',
+  },
+  indicator: {
+    roe: 'm.roe',
+    roa: 'm.roa',
+  },
+};
+
+function isHkCode(tsCode) {
+  return /\.HK$/i.test(String(tsCode || '').trim());
+}
+
+// 港股估值行 → 现有链路字段。官方 mc 是港币元，仍按"万元"口径 /10000 并标注币种 HKD。
+function hkValuationRow(rawRow, tsCode, fallbackDate) {
+  const pick = key => (rawRow[key] !== undefined ? rawRow[key] : rawRow[key.replace(/^bs\./, '')]);
+  const peTtm = numberOrNull(pick('bs.pe_ttm'));
+  const pb = numberOrNull(pick('bs.pb'));
+  const dyr = numberOrNull(pick('bs.dyr'));
+  const mc = numberOrNull(pick('bs.mc'));
+  if ([peTtm, pb, dyr, mc].every(value => value === null)) return null;
+  return {
+    ts_code: tsCode,
+    trade_date: isoDate(rawRow.date) || isoDate(fallbackDate),
+    pe: null,
+    pe_ttm: peTtm,
+    pb,
+    dv_ttm: dyr === null ? null : dyr * 100,
+    total_mv: mc === null ? null : mc / 10000,
+    circ_mv: null,
+    currency: 'HKD',
+    source_code: SOURCE,
+  };
+}
+
 // 财务三表：官方 cn/company/fs/non_financial。指标表（ROE/ROA 等）口径与 Tushare 不同，不在此映射。
 async function resolveFinancialReports({ tsCode, startDate, endDate, kinds = ['income', 'balance', 'cashflow', 'indicator'], options = {} } = {}) {
   const code = stockCodeOf(tsCode);
   const start = dashDate(startDate), end = dashDate(endDate);
   if (!code || !start || !end) return null;
+  const hk = isHkCode(tsCode);
+  const mapping = hk ? HK_REPORT_METRICS : REPORT_METRICS;
   const metrics = [];
   for (const kind of kinds) {
-    for (const base of Object.values(REPORT_METRICS[kind] || {})) metrics.push(`q.${base}.t`);
+    for (const base of Object.values(mapping[kind] || {})) metrics.push(`q.${base}.t`);
   }
   if (!metrics.length) return null;
-  const { rows } = await callEndpointRange('cn/company/fs/non_financial',
+  const { rows } = await callEndpointRange(hk ? 'hk/company/fs/non_financial' : 'cn/company/fs/non_financial',
     { stockCodes: [code], metricsList: metrics }, start, end,
     { dataset: 'stock_financial_reports', targetDate: end, ...options });
   const out = { income: [], balance: [], cashflow: [], indicator: [] };
   for (const item of rows) {
     const flat = flattenMetrics(item.q || {});
-    const periodEnd = isoDate(item.standardDate) || isoDate(item.date);
+    // 港股财年不统一（3/6/7 月结束都有），periodEnd 必须用真实期末 date；
+    // A 股沿用 standardDate（标准化后的报告期），两者都不拿"今天"顶替。
+    const periodEnd = hk ? (isoDate(item.date) || isoDate(item.standardDate)) : (isoDate(item.standardDate) || isoDate(item.date));
     if (!periodEnd) continue;
     const base = {
       ts_code: tsCode,
@@ -400,14 +477,14 @@ async function resolveFinancialReports({ tsCode, startDate, endDate, kinds = ['i
       f_ann_date: isoDate(item.reportDate) || isoDate(item.date),
       report_type: '1',
       comp_type: '1',
-      currency: item.currency || 'CNY',
+      currency: item.currency || (hk ? 'HKD' : 'CNY'),
       update_flag: '0',
       source_code: SOURCE,
     };
     for (const kind of kinds) {
       const row = { ...base };
       let filled = 0;
-      for (const [field, official] of Object.entries(REPORT_METRICS[kind] || {})) {
+      for (const [field, official] of Object.entries(mapping[kind] || {})) {
         const raw = numberOrNull(flat[`${official}.t`]);
         const value = raw !== null && PERCENT_FIELDS.has(field) ? raw * 100 : raw;
         row[field] = value;
@@ -424,8 +501,40 @@ async function resolveDividendRows({ tsCode, startDate, endDate, options = {} } 
   const code = stockCodeOf(tsCode);
   const start = dashDate(startDate), end = dashDate(endDate);
   if (!code || !start || !end) return null;
-  const result = await callEndpointRange('cn/company/dividend', { stockCode: code }, start, end,
+  const hk = isHkCode(tsCode);
+  const result = await callEndpointRange(hk ? 'hk/company/dividend' : 'cn/company/dividend', { stockCode: code }, start, end,
     { dataset: 'stock_cash_dividend_facts', targetDate: end, ...options });
+  if (hk) {
+    // 港股分红接口没有"进度"字段：按是否已定除净日推断实施状态。
+    // dividend=0 的行（官方明确"无股息截至期末…"）落成 cash=0 的实施记录，
+    // 这正好是年度异常需要的"该财年确实零分红"证据，而不是补 0 猜测。
+    const unique = new Map();
+    for (const row of result.rows) {
+      const fsEnd = isoDate(row.fsEndDate);
+      if (!fsEnd) continue;
+      const cash = numberOrNull(row.dividend);
+      const exDate = isoDate(row.exDate);
+      const mappedRow = {
+        ts_code: tsCode,
+        end_date: fsEnd,
+        ann_date: isoDate(row.date),
+        imp_ann_date: isoDate(row.date),
+        div_proc: exDate ? '实施' : (cash !== null && cash > 0 ? '预案' : '实施'),
+        cash_div_tax: cash,
+        cash_div: null,
+        stk_bo_rate: numberOrNull(row.bonusSharesFromProfit),
+        stk_co_rate: numberOrNull(row.bonusSharesFromCapitalReserve),
+        record_date: isoDate(row.registerDate),
+        ex_date: exDate,
+        pay_date: isoDate(row.paymentDate),
+        total_cash_amount: numberOrNull(row.dividendAmount),
+        currency: row.currency || 'HKD',
+        source_code: SOURCE,
+      };
+      unique.set(`${mappedRow.end_date}:${mappedRow.ann_date || ''}:${mappedRow.div_proc}`, mappedRow);
+    }
+    return [...unique.values()];
+  }
   const mapped = result.rows.map(row => {
     const cashRaw = numberOrNull(row.dividend);
     const amount = numberOrNull(row.dividendAmount);
@@ -644,4 +753,7 @@ module.exports = {
   resolveValuationRowsDetailed,
   resolveValuationSeries,
   resolveValuationSeriesDetailed,
+  isHkCode,
+  HK_REPORT_METRICS,
+  HK_VALUATION_METRICS,
 };

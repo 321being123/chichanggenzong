@@ -324,10 +324,40 @@ function selectCompanyBatch(queue, requestedLimit, options = {}) {
   return batch;
 }
 
+// 该任务只有两个显式模式 + 默认 core。未知模式必须直接拒绝，
+// 不能像以前那样静默落进转债正股默认流程——那会把"选股补齐"做成"又跑了一遍转债"（SSV-01）。
+const KNOWN_MODES = new Set(['core', 'stock_analysis', 'selection_inputs']);
+
 async function runCompanyFinancialIncrementalSync(reason = 'scheduled', options = {}) {
+  const requestedMode = options.mode === undefined ? 'core' : String(options.mode);
+  if (!KNOWN_MODES.has(requestedMode)) {
+    const error = new Error(`不支持的财务同步模式：${requestedMode}`);
+    error.code = 'UNKNOWN_MODE';
+    throw error;
+  }
   if (!(await tryClaimJob(JOB_NAME))) return { ok: false, skipped: true, reason: 'already_running' };
   const runId = await startJobRun(JOB_NAME);
   try {
+    if (requestedMode === 'selection_inputs') {
+      // 选股输入补齐：按市场/目标日冻结缺口，逐公司复用既有数据层与标准层写入，不新增采集链。
+      const { syncSelectionInputs } = require('./stockSelectionInputsSync');
+      const result = await syncSelectionInputs({
+        market: options.market,
+        asOfDate: options.targetTradeDate || options.asOfDate || options.targetDate,
+        batchLimit: options.batchLimit,
+      });
+      const remaining = Number(result.remainingFinancial || 0);
+      await finishJobRun(runId, result.ok === true,
+        `选股输入补齐：处理 ${result.processed}，成功 ${result.succeeded}，剩余待补 ${remaining}`);
+      return Object.assign(result, {
+        mode: 'selection_inputs',
+        // 本阶段不发布数据集（写的是同一张标准表）；有剩余就续批，清空才算阶段完成。
+        publishDatasetCodes: [],
+        continuationRequired: remaining > 0,
+        stageComplete: remaining === 0,
+        status: remaining === 0 ? 'succeeded' : (result.succeeded > 0 ? 'partial' : 'failed'),
+      });
+    }
     if (options.mode === 'stock_analysis') {
       const result = await syncRequestedStockAnalysis(options);
       await finishJobRun(runId, true, `指定股票分析完成：${result.tsCode}`);

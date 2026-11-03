@@ -8,6 +8,9 @@ const STATUS = Object.freeze({
   FAIL: 'FAIL',
   PENDING: 'PENDING',
   NOT_APPLICABLE: 'NOT_APPLICABLE',
+  // 风险暂缓（SSV-02）：停牌、ST/退市风险、目标日已终止上市属"当期不可入选"，
+  // 与"策略不符合(FAIL)"、与"数据待补(PENDING)"都不同——它不缺数据，只是本轮不许买。
+  RISK: 'RISK',
 });
 
 const STRATEGY_CODE = 'investment_essentials_adapted_v1';
@@ -65,26 +68,28 @@ function evaluateCurrentPb(facts, params) {
 }
 
 // R02 十年 PB：窗口内至少一条有效 PB 严格大于 1 即成立（"存在一次"正证）。
-// 找不到正证时，只有"应有历史完整"才能判不通过，否则待补。
+// 找不到正证时，只有"应有交易日一天不缺"才能判不通过；有任何缺口都只能待补（SSV-09）。
+// 验收反例：1000 个应有日只覆盖 900 日、已知最高 PB=0.9，不能推断未覆盖的 100 日没有 PB>1。
 function evaluateHistoricalPb(facts) {
   const window = facts.pbWindow || {};
   const maxPb = num(window.maxPb);
   const coveredDays = num(window.coveredDays) || 0;
-  const marketDays = num(window.marketDays) || 0;
-  const calendarDays = num(window.calendarDays) || 0;
-  const evidence = { maxPb, coveredDays, marketDays, calendarDays, threshold: 1 };
+  const gapDays = num(window.gapDays);
+  const expectedDays = num(window.expectedDays);
+  const evidence = { maxPb, coveredDays, expectedDays, gapDays, threshold: 1 };
   if (maxPb !== null && maxPb > 1) {
+    // 正证路径不变：找到可靠 PB>1 证据即通过，其余缺口不反向推翻。
     return { rule: rule('R02', STATUS.PASS, Object.assign({ value: maxPb, reason: null }, evidence)), maxPb };
   }
-  // 市场层历史本身不完整时，个股"没找到正证"不能证明不存在。
-  const marketCoverage = marketDays > 0 && calendarDays > 0 ? marketDays / calendarDays : 0;
-  const instrumentCoverage = marketDays > 0 ? coveredDays / marketDays : 0;
-  const historyComplete = marketCoverage >= 0.9 && instrumentCoverage >= 0.9;
-  const status = historyComplete ? STATUS.FAIL : STATUS.PENDING;
-  const reason = historyComplete
-    ? 'no_pb_above_one_evidence'
-    : (marketCoverage < 0.9 ? 'market_history_incomplete' : 'instrument_history_incomplete');
-  return { rule: rule('R02', status, Object.assign({ value: maxPb, reason }, evidence)), maxPb };
+  // 没有缺口信息（旧调用/仓储未提供）时按"未知"处理，绝不猜成完整。
+  if (gapDays === null) {
+    return { rule: rule('R02', STATUS.PENDING, Object.assign({ value: maxPb, reason: 'history_coverage_unknown' }, evidence)), maxPb };
+  }
+  if (gapDays > 0) {
+    return { rule: rule('R02', STATUS.PENDING, Object.assign({ value: maxPb, reason: 'history_gap_exists' }, evidence)), maxPb };
+  }
+  // 应有交易日全部有有效同口径 PB 且都不大于 1，才是不符合。
+  return { rule: rule('R02', STATUS.FAIL, Object.assign({ value: maxPb, reason: 'no_pb_above_one_evidence' }, evidence)), maxPb };
 }
 
 // R04 股息率：T 前 12 个月已实施、已除息的现金股息 ÷ T 收盘价，严格大于 0。
@@ -163,7 +168,18 @@ function evaluateInstrument(facts, params = DEFAULT_PARAMS) {
   const r04 = evaluateDividendYield(facts, p);
   const r05 = evaluateEquity(facts, p);
   const rules = { R01: r01.rule, R02: r02.rule, R04: r04.rule, R05: r05.rule };
-  const filterStatus = worstStatus(RULE_CODES.map(code => rules[code].status));
+  const ruleStatus = worstStatus(RULE_CODES.map(code => rules[code].status));
+
+  // 风险暂缓（SSV-02）：停牌、ST/退市风险、目标日已终止上市必须真的挡住入选，
+  // 不能只写进原因却让组合继续接收。规则已明确不符合时保持 FAIL（明确的策略结论优先）。
+  const risks = [];
+  if (facts.suspended) risks.push({ code: 'suspended_at_target_date', detail: facts.suspensionReason || null });
+  if (facts.delistedAtTargetDate) risks.push({ code: 'delisted_at_target_date' });
+  if (facts.riskWarning) risks.push({ code: 'risk_warning_name', detail: facts.riskWarning });
+  const riskHeld = risks.length > 0;
+  const filterStatus = riskHeld && ruleStatus === STATUS.PASS
+    ? STATUS.RISK
+    : (riskHeld && ruleStatus === STATUS.PENDING ? STATUS.PENDING : ruleStatus);
 
   const annual = facts.annual || {};
   const latest = annual.latestYear ? findYear(annual.years, annual.latestYear) : null;
@@ -174,9 +190,7 @@ function evaluateInstrument(facts, params = DEFAULT_PARAMS) {
   const peResolved = profitStatus === 'unknown' ? false : (profitStatus === 'profit' ? (pe !== null && pe > 0) : true);
 
   const exclusionReasons = [];
-  if (facts.suspended) exclusionReasons.push({ code: 'suspended_at_target_date', detail: facts.suspensionReason || null });
-  if (facts.delistedAtTargetDate) exclusionReasons.push({ code: 'delisted_at_target_date' });
-  if (facts.riskWarning) exclusionReasons.push({ code: 'risk_warning_name', detail: facts.riskWarning });
+  risks.forEach(risk => exclusionReasons.push(risk));
   RULE_CODES.forEach(code => {
     const r = rules[code];
     if (r.status === STATUS.FAIL || r.status === STATUS.PENDING) {
@@ -203,7 +217,9 @@ function evaluateInstrument(facts, params = DEFAULT_PARAMS) {
     fxDate: r05.fxDate,
     rules,
     filterStatus,
-    // 名次计算前置：四项通过但 PE/利润口径未定也算"待补"，不能静默混进排名。
+    riskHeld,
+    riskReasons: risks,
+    // 名次计算前置：四项通过、无风险暂缓，且 PE/利润口径已定，才允许参与排名。
     rankReady: filterStatus === STATUS.PASS && peResolved,
     dataQualityStatus: filterStatus === STATUS.PASS && peResolved ? 'complete' : 'partial',
     exclusionReasons,
@@ -227,6 +243,11 @@ function findYear(years, year) {
 /**
  * 年度异常识别（方案 5.2）：Y 为截止 T 已完整披露的最新实际财年，
  * 与 Y 之前十个完整财年比较；利润或现金分红任一严格大于十年合计即排除。
+ *
+ * 利润与分红的完整性**分别取证**（SSV-04）：
+ * - 利润：11 年都得有已披露归母利润，缺一年即待补；
+ * - 分红：只有 11 年都能确认"这一年分红事实已采集"（有记录，含明确的零分红）才做分红比较；
+ *   任何一年缺失都只跳过比较并标注，绝不把"没采集到"当 0 参与求和。
  */
 function evaluateAnnualAnomaly(annual, params = DEFAULT_PARAMS) {
   const p = Object.assign({}, DEFAULT_PARAMS, params || {});
@@ -239,7 +260,7 @@ function evaluateAnnualAnomaly(annual, params = DEFAULT_PARAMS) {
   for (let i = 1; i <= p.anomalyLookbackYears; i++) needed.push(latestYear - i);
   const missing = needed.filter(y => {
     const row = findYear(years, y);
-    return !row || row.complete !== true;
+    return !row || row.complete !== true || num(row.profit) === null;
   });
   const current = findYear(years, latestYear);
   const result = {
@@ -253,19 +274,28 @@ function evaluateAnnualAnomaly(annual, params = DEFAULT_PARAMS) {
     return Object.assign(result, { status: STATUS.PENDING, reason: 'insufficient_fiscal_history', missingYears: missing.sort((a, b) => a - b), profitSum: null, dividendSum: null });
   }
   const profitSum = needed.reduce((sum, y) => sum + (num(findYear(years, y).profit) || 0), 0);
-  const dividendSum = needed.reduce((sum, y) => sum + (num(findYear(years, y).dividend) || 0), 0);
+  // 分红完整性独立判断：任一年 dividendKnown 不为真，整段分红比较不成立。
+  const dividendUnknownYears = [latestYear, ...needed].filter(y => {
+    const row = findYear(years, y);
+    return !row || row.dividendKnown !== true || num(row.dividend) === null;
+  }).sort((a, b) => a - b);
+  const dividendComparable = dividendUnknownYears.length === 0;
+  const dividendSum = dividendComparable ? needed.reduce((sum, y) => sum + (num(findYear(years, y).dividend) || 0), 0) : null;
   if (result.profitY === null && result.dividendY === null) {
     return Object.assign(result, { status: STATUS.PENDING, reason: 'annual_facts_unavailable', profitSum, dividendSum });
   }
   // 有符号归母利润：不取绝对值、不清零历史亏损。严格大于才排除（恰等不排除）。
   const profitExceeded = result.profitY !== null && result.profitY > profitSum;
-  const dividendExceeded = result.dividendY !== null && result.dividendY > dividendSum;
+  const dividendExceeded = dividendComparable && result.dividendY !== null && result.dividendY > dividendSum;
   const excluded = profitExceeded || dividendExceeded;
   return Object.assign(result, {
     status: excluded ? STATUS.FAIL : STATUS.PASS,
     reason: excluded ? (profitExceeded && dividendExceeded ? 'profit_and_dividend_exceed_decade' : profitExceeded ? 'profit_exceed_decade' : 'dividend_exceed_decade') : null,
     profitSum, dividendSum,
     profitExceeded, dividendExceeded,
+    dividendComparable,
+    dividendUnknownYears: dividendComparable ? [] : dividendUnknownYears,
+    dividendComparison: dividendComparable ? 'compared' : 'skipped_unknown_dividend',
   });
 }
 

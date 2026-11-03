@@ -31,7 +31,11 @@ async function runSelectionMode(mode, reason, context) {
     return { ok: false, status: 'blocked', reason: 'selection_market_required', publishDatasets: false };
   }
   if (mode === 'selection_quarterly') {
-    const quarter = context.quarter || service.pendingQuarter({ market }).quarter;
+    // 管理员没指定季度时按交易日历推最近一个已结束季度；同样必须 await。
+    const quarter = context.quarter || (await service.pendingQuarter({ market })).quarter;
+    if (!quarter) {
+      return { ok: false, status: 'blocked', reason: 'selection_quarter_unresolved', publishDatasets: false, mode };
+    }
     const result = await service.runQuarterly({ market, quarter, requestId: context.requestId });
     if (!result.ok) return Object.assign(result, { publishDatasets: false, mode });
     const { publishDatasetSnapshot } = require('../services/datasetPartitionRegistry');
@@ -49,9 +53,12 @@ async function runSelectionMode(mode, reason, context) {
       },
       reason: 'job:stock_analysis_refresh:selection_quarterly',
     }).catch(error => ({ published: false, reason: 'publish_error', error: error.message }));
+    const datasetCode = selectionDatasetCode(market, 'snapshot');
+    // 已正式发布却写不进分区 → 任务必须失败，不能把"组合已发布但分区缺失"报成成功。
+    const publicationFailed = result.published && !publication.published;
     return {
-      ok: true,
-      status: 'succeeded',
+      ok: !publicationFailed,
+      status: publicationFailed ? 'failed' : 'succeeded',
       mode,
       market,
       quarter: result.quarter,
@@ -59,7 +66,12 @@ async function runSelectionMode(mode, reason, context) {
       dataAsOf: result.published ? (result.quarterDate || quarterDateFallback(result.quarter)) : null,
       // 分区已在本模式内显式发布，不再走通用发布路径，避免二次写入。
       publishDatasets: false,
-      stageComplete: result.published,
+      publishDatasetCodes: [datasetCode],
+      ...(publicationFailed ? {
+        error: `选股组合已发布但分区写入失败：${publication.error || publication.reason || 'unknown'}`,
+        failedDatasets: [datasetCode],
+      } : {}),
+      stageComplete: Boolean(publication.published),
       datasetDiagnostics: {
         [selectionDatasetCode(market, 'snapshot')]: {
           partition_row_count: result.selectedCount,
@@ -95,13 +107,20 @@ async function runSelectionMode(mode, reason, context) {
       },
       reason: 'job:stock_analysis_refresh:selection_inputs',
     }).catch(error => ({ published: false, reason: 'publish_error', error: error.message }));
+    const inputDatasetCode = selectionDatasetCode(market, 'inputs');
     return {
-      ok: audit.gapCount === 0,
-      status: audit.gapCount === 0 ? 'succeeded' : 'partial',
+      // 审计成功但分区没写进去，同样不能算完成：下游看不到这份覆盖证据。
+      ok: audit.gapCount === 0 && Boolean(publication.published),
+      status: publication.published ? (audit.gapCount === 0 ? 'succeeded' : 'partial') : 'failed',
       mode,
       market,
       dataAsOf: asOfDate,
       publishDatasets: false,
+      publishDatasetCodes: [inputDatasetCode],
+      ...(publication.published ? {} : {
+        error: `选股输入覆盖分区写入失败：${publication.error || publication.reason || 'unknown'}`,
+        failedDatasets: [inputDatasetCode],
+      }),
       // 缺口清单已持久化并可续跑；补齐仍走原行情/财务采集入口，本模式不自行联网。
       reason: audit.gapCount === 0 ? undefined : 'selection_inputs_gaps_pending',
       gapCount: audit.gapCount,
@@ -221,9 +240,14 @@ async function enqueueDueSelectionQuarters(now = new Date()) {
   const today = CoreDate.todayInZone('Asia/Shanghai', now);
   const queued = [];
   for (const market of ['CN', 'HK']) {
-    const pending = service.pendingQuarter({ market, now: today });
+    // pendingQuarter 是异步函数：漏掉 await 会让 quarter 变成 undefined（SSV-06），
+    // 结果就是"查不到、也排不出"，季度任务永远不生成。
+    const pending = await service.pendingQuarter({ market, now: today });
+    if (!pending || !pending.quarter) continue;
     const existing = await repo.listRuns({ market, quarter: pending.quarter, kind: 'quarterly', ownerUsername: null, limit: 5, offset: 0 });
-    if (existing.total > 0) continue;
+    // 只有"已发布的正式季度"才跳过；上一轮只存了预览或部分数据时必须重新排队，
+    // 不能因为表里存在过一条该季度记录就永远不再尝试。
+    if (existing.rows.some(row => row.published_at)) continue;
     const slot = await enqueueManualJob('stock_analysis_refresh', { mode: 'selection_quarterly', market, quarter: pending.quarter });
     if (slot) queued.push({ market, quarter: pending.quarter, slotId: slot.slot_id });
   }

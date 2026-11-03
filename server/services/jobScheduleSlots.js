@@ -148,8 +148,22 @@ async function ensureSlot(jobCode, scheduledFor, businessDate, triggerType = 'sc
 
 /* taskDependencyStates 已迁入 server/repositories/jobScheduleSlotsRepository.js */
 
+// 同一任务的不同模式消耗的数据集/前置任务并不相同（例如个股分析刷新新增的选股模式
+// 不依赖可转债共享行情链）。这里按 slot.request_payload.mode 解析，空数组表示"该模式显式无此依赖"，
+// 不能用 `||` 退回全局默认值，否则港股选股会被 A 股转债链一直挡住。
+function slotMode(slot) {
+  const payload = slot && slot.request_payload;
+  const mode = payload && typeof payload === 'object' ? payload.mode : null;
+  return typeof mode === 'string' && mode ? mode : 'core';
+}
+
+function dependenciesForMode(modeMap, mode, fallback) {
+  if (modeMap && Object.prototype.hasOwnProperty.call(modeMap, mode)) return modeMap[mode] || [];
+  return fallback || [];
+}
+
 async function datasetDependencyState(slot, definition) {
-  const requirements = definition.datasetDependencies || [];
+  const requirements = dependenciesForMode(definition.modeDatasetDependencies, slotMode(slot), definition.datasetDependencies);
   if (!requirements.length) return { ready: true, failed: false, detail: '' };
   if (!getRegisteredJobDefinition(definition.jobCode)) {
     return { ready: false, failed: true, detail: 'unknown_job_definition', scopeKeys: [] };
@@ -640,7 +654,7 @@ async function listDueSlots(limit = 20, options = {}) {
   for (const slot of rows) {
     const definition = getJobDefinition(slot.job_code);
     if (Number(slot.attempt_count || 0) >= attemptLimit(slot,definition)) continue;
-    const dependencies = definition.dependencyCodes || [];
+    const dependencies = dependenciesForMode(definition.modeDependencyCodes, slotMode(slot), definition.dependencyCodes);
     if (dependencies.length) {
       const states = await taskDependencyStates(slot, dependencies);
       const dependencyFailed = dependencies.some(code => ['failed', 'degraded', 'blocked'].includes(states.get(code)));
@@ -1078,7 +1092,7 @@ async function validateJobSlot(slotId) {
 }
 
 module.exports = {
-  WORKER_ID, workerIdForRole, JOB_DEFINITIONS, dateText, normalizeBusinessDate, shanghaiParts, ensureSlot, enqueueManualJob, syncScheduleSlots,
+  WORKER_ID, workerIdForRole, JOB_DEFINITIONS, dateText, normalizeBusinessDate, shanghaiParts, ensureSlot, enqueueManualJob, syncScheduleSlots, slotMode, dependenciesForMode,
   claimSlot, completeSlot, deferSlot, waitForExternalSlot, continueSlot, mergeSlotExternalCallSummary, touchSlot, recoverExpiredSlots, listDueSlots, retryJobSlot, acknowledgeSlot,
   listJobSlots, getJobSlot, validateJobSlot, heartbeat, getJobOverview, queryDataAsOf, isDataAsOfFresh, resolveDataAsOf, expectedDataDate,
   isSlotDayAllowed, isWeekday, previousDate, resolveScheduleForDate,

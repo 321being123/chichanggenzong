@@ -53,14 +53,16 @@ async function main() {
     assert.strictEqual(result.rules.R02.status, RULES.STATUS.PASS);
   });
 
-  await check('R02 无正证且市场历史不完整时待补，不判不通过', () => {
-    const result = RULES.evaluateInstrument(facts({ pbWindow: { maxPb: 0.9, coveredDays: 300, marketDays: 300, calendarDays: 1050 } }));
+  // 2026-11-03 整改（SSV-09）：历史完整性改为"上市后应有交易日一天不缺"，
+  // 不看覆盖率阈值；gapDays>0 只能待补，gapDays=0 才是不符合。
+  await check('R02 有缺口时待补，不判不通过', () => {
+    const result = RULES.evaluateInstrument(facts({ pbWindow: { maxPb: 0.9, coveredDays: 900, expectedDays: 1000, gapDays: 100 } }));
     assert.strictEqual(result.rules.R02.status, RULES.STATUS.PENDING);
-    assert.strictEqual(result.rules.R02.reason, 'market_history_incomplete');
+    assert.strictEqual(result.rules.R02.reason, 'history_gap_exists');
   });
 
-  await check('R02 无正证但历史完整才判不通过', () => {
-    const result = RULES.evaluateInstrument(facts({ pbWindow: { maxPb: 0.98, coveredDays: 1000, marketDays: 1000, calendarDays: 1050 } }));
+  await check('R02 无正证但应有日全部覆盖才判不通过', () => {
+    const result = RULES.evaluateInstrument(facts({ pbWindow: { maxPb: 0.98, coveredDays: 1000, expectedDays: 1000, gapDays: 0 } }));
     assert.strictEqual(result.rules.R02.status, RULES.STATUS.FAIL);
   });
 
@@ -169,7 +171,8 @@ async function main() {
 
   await check('年度异常：分红十年合计比较用公司口径总额', () => {
     // 前十年每年 2e9（合计 2e10），最新年 3e10 → 严格大于，排除
-    const years = annualWith({ profit: 1e8, dividend: 2e9 })
+    // 2026-11-03 整改（SSV-04）：只有各年分红事实都可核验时才做分红比较，夹具要显式标 dividendKnown。
+    const years = annualWith({ profit: 1e8, dividend: 2e9, dividendKnown: true })
       .map(row => row.year === 2025 ? Object.assign({}, row, { dividend: 3e10 }) : row);
     const result = RULES.evaluateAnnualAnomaly({ latestYear: 2025, years });
     assert.strictEqual(result.status, RULES.STATUS.FAIL);

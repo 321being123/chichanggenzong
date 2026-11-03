@@ -52,6 +52,11 @@ function buildPortfolio(input) {
       skipped.push({ code: item.code, instrumentId: item.instrumentId, reason: 'annual_anomaly_pending', detail: anomaly.reason });
       continue;
     }
+    if (item.filterStatus === RULES.STATUS.RISK || item.riskHeld === true) {
+      // 风险暂缓（停牌/ST/退市风险）不得进入席位：原因与"数据待补""策略不符合"分开记。
+      skipped.push({ code: item.code, instrumentId: item.instrumentId, reason: 'risk_held', detail: item.riskReasons || null });
+      continue;
+    }
     if (item.filterStatus !== RULES.STATUS.PASS || item.rankReady === false) {
       skipped.push({ code: item.code, instrumentId: item.instrumentId, reason: 'rule_or_data_pending' });
       continue;

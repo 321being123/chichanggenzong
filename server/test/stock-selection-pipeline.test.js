@@ -140,6 +140,62 @@ async function main() {
     await cleanup(pool);
     await seed(pool);
 
+    // ===== 整改反例的真库取证（SSV-04 / SSV-09）=====
+    const repo = require('../repositories/stockSelectionRepository');
+    const fixtureIds = (await pool.query(
+      `SELECT i.instrument_id, ci.company_id FROM core.instruments i JOIN core.company_instruments ci ON ci.instrument_id = i.instrument_id WHERE i.canonical_code = ANY($1) ORDER BY i.canonical_code`,
+      [CODES])).rows;
+    const firstInstrument = fixtureIds[0].instrument_id;
+    const firstCompany = fixtureIds[0].company_id;
+
+    const beforeDividend = await repo.loadAnnualDividends({ companyIds: [firstCompany], asOfDate: AS_OF });
+    record('SSV-04 年度分红按目标日截止读取，且能区分"有记录"与"无记录"', () => {
+      const rows = beforeDividend.get(String(firstCompany)) || [];
+      assert.ok(rows.length >= 11, '11 个财年都应有可见的分红记录');
+      rows.forEach(row => assert.strictEqual(row.dividendKnown, true, '有记录的年必须标 dividendKnown'));
+    });
+
+    // 把最新财年的分红公告日推到目标日之后：旧季度不能再读到它。
+    await pool.query(
+      `UPDATE fundamental.corporate_actions SET announced_at = '2026-10-20', ex_date = '2026-11-20'
+        WHERE instrument_id = $1 AND fiscal_period_end = '2025-12-31'`, [firstInstrument]);
+    const afterCut = await repo.loadAnnualDividends({ companyIds: [firstCompany], asOfDate: AS_OF });
+    record('SSV-04 目标日之后的公告不得进入旧季度输入', () => {
+      const rows = afterCut.get(String(firstCompany)) || [];
+      assert.ok(!rows.some(row => row.year === 2025), '2026-10-20 公告的 2025 财年分红不应出现在 2026-09-30 的批次里');
+    });
+
+    // 直接删掉某年全部记录：该年必须是"未知"，不能变成 0。
+    await pool.query(`DELETE FROM fundamental.corporate_actions WHERE instrument_id = $1 AND fiscal_period_end = '2018-12-31'`, [firstInstrument]);
+    const missingYear = await repo.loadAnnualDividends({ companyIds: [firstCompany], asOfDate: AS_OF });
+    record('SSV-04 完全没有分红记录的年份标为未知，不补 0', () => {
+      const rows = missingYear.get(String(firstCompany)) || [];
+      assert.ok(!rows.some(row => row.year === 2018), '缺失年份不能以 0 出现在结果里');
+    });
+    // 还原现场，避免影响后续季度计算
+    for (let year = 2015; year <= 2025; year++) {
+      const exDate = year === 2025 ? '2026-06-15' : `${year + 1}-06-15`;
+      await pool.query(
+        `INSERT INTO fundamental.corporate_actions (instrument_id, action_type, fiscal_period_end, announced_at, ex_date, status, cash_per_share_pre_tax, total_cash_amount, currency_code, source_id, source_key)
+         SELECT $1,'dividend',$2::date,$3::date,$4::date,'实施',0.5,1e8,'CNY',(SELECT source_id FROM ops.data_sources ORDER BY source_id LIMIT 1),$5
+          WHERE NOT EXISTS (SELECT 1 FROM fundamental.corporate_actions WHERE instrument_id=$1 AND fiscal_period_end=$2::date AND cash_per_share_pre_tax=0.5)`,
+        [firstInstrument, `${year}-12-31`, `${year + 1}-05-01`, exDate, `${TEST_MARK}-DIV-RESTORE-${year}`]);
+    }
+
+    // 把 2025 财年的公告日与除息日也还原，避免"未来公告"残留影响后续季度断言。
+    await pool.query(
+      `UPDATE fundamental.corporate_actions SET announced_at = '2026-05-01', ex_date = '2026-06-15'
+        WHERE instrument_id = $1 AND fiscal_period_end = '2025-12-31'`, [firstInstrument]);
+
+    const pbEvidence = await repo.loadPbWindow({ market: MARKET, windowStart: '2016-09-30', asOfDate: AS_OF });
+    record('SSV-09 十年 PB 覆盖按交易日历计算缺口，缺日不回退成"完整"', () => {
+      const evidence = pbEvidence.byInstrument.get(String(firstInstrument));
+      assert.ok(evidence, '必须返回该证券的覆盖证据');
+      assert.ok(evidence.expectedDays > 0, '应有交易日必须来自本地交易日历');
+      assert.ok(evidence.gapDays > 0, `只补了目标日附近的估值，十年窗口必然有缺口，实际 gapDays=${evidence.gapDays}`);
+      assert.ok(evidence.coveredDays <= evidence.expectedDays, '已覆盖日不得超过应有日');
+    });
+
     const result = await service.runQuarterly({ market: MARKET, quarter: QUARTER, requestId: 'test-pipeline' });
     record('季度目标日由本地交易日历推导，不使用执行当天', () => {
       assert.strictEqual(result.ok, true, '季度执行应成功');

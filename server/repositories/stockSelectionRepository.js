@@ -88,19 +88,55 @@ async function loadUniverse({ market, asOfDate }, tx) {
   return rows;
 }
 
-/** 十年 PB 证据：窗口内有效 PB 的最大值与已覆盖交易日；同时给出市场层覆盖用于判断历史是否完整。 */
+/**
+ * 十年 PB 证据：按"上市后应有交易日"逐日核验，不看覆盖率阈值（SSV-09）。
+ * - 应有日：本地市场交易日历在窗口内的开市日，且晚于该证券上市日（上市前空白不算缺口）；
+ * - 有效日：当天有同口径有效 PB（>0），同一天多来源时按官方优先择一，不跨来源拼值；
+ * - gapDays = 应有日 − 有效日：>0 说明未覆盖区间可能藏有 PB>1 正证，只能待补。
+ * 日历为空时 gapDays 返回 null（未知），绝不当作"无缺口"。
+ */
 async function loadPbWindow({ market, windowStart, asOfDate }, tx) {
   const config = marketConfig(market);
   const exec = executorOf(tx);
-  // 同一事务连接上不允许并发发送（pg 会告警且可能错序），这里按顺序取数。
-  const perInstrument = await exec(`
-      SELECT v.instrument_id,
-             MAX(v.pb) FILTER (WHERE v.pb > 0) AS max_pb,
-             COUNT(DISTINCT v.trade_date) AS covered_days
-        FROM market.daily_valuations v
-        JOIN core.instruments i ON i.instrument_id = v.instrument_id
-       WHERE i.market = $1 AND v.trade_date > $2::date AND v.trade_date <= $3::date
-       GROUP BY 1`, [market, windowStart, asOfDate]);
+  const detail = await exec(`
+    WITH cal AS (
+      SELECT trade_date FROM market.trade_calendar
+       WHERE exchange = ANY($3::text[]) AND COALESCE(is_open, true) = true
+         AND trade_date > $1::date AND trade_date <= $2::date
+    ),
+    inst AS (
+      SELECT instrument_id, COALESCE(list_date, DATE '1900-01-01') AS list_date
+        FROM core.instruments
+       WHERE market = $4 AND asset_class = 'stock'
+    ),
+    expect AS (
+      SELECT i.instrument_id, COUNT(c.trade_date)::int AS expected_days
+        FROM inst i JOIN cal c ON c.trade_date > i.list_date
+       GROUP BY 1
+    ),
+    covered AS (
+      SELECT picked.instrument_id,
+             MAX(picked.pb) AS max_pb,
+             COUNT(*)::int AS covered_days
+        FROM (
+          SELECT DISTINCT ON (v.instrument_id, v.trade_date) v.instrument_id, v.trade_date, v.pb
+            FROM market.daily_valuations v
+            JOIN inst i2 ON i2.instrument_id = v.instrument_id
+            JOIN cal c2 ON c2.trade_date = v.trade_date
+            LEFT JOIN ops.data_sources s ON s.source_id = v.source_id
+           WHERE v.trade_date > $1::date AND v.trade_date <= $2::date
+             AND v.pb IS NOT NULL AND v.pb > 0
+           ORDER BY v.instrument_id, v.trade_date,
+                    CASE WHEN s.source_code LIKE 'lixinger%' THEN 0 ELSE 1 END, v.source_id
+        ) picked
+       GROUP BY 1
+    )
+    SELECT e.instrument_id, e.expected_days,
+           COALESCE(c.covered_days, 0)::int AS covered_days,
+           c.max_pb
+      FROM expect e
+      LEFT JOIN covered c USING (instrument_id)`,
+  [windowStart, asOfDate, config.calendarExchanges, market]);
   const marketDays = await exec(`
       SELECT COUNT(DISTINCT v.trade_date)::int AS market_days
         FROM market.daily_valuations v
@@ -112,18 +148,28 @@ async function loadPbWindow({ market, windowStart, asOfDate }, tx) {
        WHERE exchange = ANY($1::text[]) AND trade_date > $2::date AND trade_date <= $3::date
          AND COALESCE(is_open, true) = true`,
   [config.calendarExchanges, windowStart, asOfDate]);
-  return {
-    byInstrument: new Map(perInstrument.rows.map(row => [String(row.instrument_id), {
+  const calendarCount = Number((calendarDays.rows[0] || {}).calendar_days || 0);
+  const byInstrument = new Map();
+  detail.rows.forEach(row => {
+    const expectedDays = Number(row.expected_days || 0);
+    const coveredDays = Number(row.covered_days || 0);
+    byInstrument.set(String(row.instrument_id), {
       maxPb: row.max_pb === null ? null : Number(row.max_pb),
-      coveredDays: Number(row.covered_days || 0),
-    }])),
+      coveredDays,
+      expectedDays,
+      // 日历缺档时缺口未知；否则缺口 = 应有 − 已覆盖（covered 已限制在日历内，不会为负）。
+      gapDays: calendarCount === 0 ? null : Math.max(expectedDays - coveredDays, 0),
+    });
+  });
+  return {
+    byInstrument,
     marketDays: Number((marketDays.rows[0] || {}).market_days || 0),
-    calendarDays: Number((calendarDays.rows[0] || {}).calendar_days || 0),
+    calendarDays: calendarCount,
   };
 }
 
 /** 最新可见归母权益（按公告日严格早于目标日，目录日期不当作公告日）。 */
-async function loadEquityFacts({ companyIds, asOfDate }, tx) {
+async function loadEquityFacts({ companyIds, asOfDate, availableBefore }, tx) {
   if (!companyIds.length) return new Map();
   const exec = executorOf(tx);
   const { rows } = await exec(`
@@ -137,7 +183,8 @@ async function loadEquityFacts({ companyIds, asOfDate }, tx) {
        AND r.statement_scope = 'consolidated'
        AND r.announced_at IS NOT NULL
        AND r.announced_at < $2::date
-     ORDER BY r.company_id, r.period_end DESC, r.announced_at DESC, r.report_id DESC`, [companyIds, asOfDate]);
+       AND ($3::timestamptz IS NULL OR r.available_at IS NULL OR r.available_at < $3::timestamptz)
+     ORDER BY r.company_id, r.period_end DESC, r.announced_at DESC, r.report_id DESC`, [companyIds, asOfDate, availableBefore || null]);
   return new Map(rows.map(row => [String(row.company_id), {
     reportId: row.report_id,
     amount: row.numeric_value === null ? null : Number(row.numeric_value),
@@ -151,7 +198,7 @@ async function loadEquityFacts({ companyIds, asOfDate }, tx) {
 }
 
 /** 年度归母利润（只取年报口径），同一财年取最新公告版本。 */
-async function loadAnnualProfits({ companyIds, asOfDate }, tx) {
+async function loadAnnualProfits({ companyIds, asOfDate, availableBefore }, tx) {
   if (!companyIds.length) return new Map();
   const exec = executorOf(tx);
   const { rows } = await exec(`
@@ -168,8 +215,9 @@ async function loadAnnualProfits({ companyIds, asOfDate }, tx) {
        AND r.statement_scope = 'consolidated'
        AND r.announced_at IS NOT NULL
        AND r.announced_at < $2::date
+       AND ($3::timestamptz IS NULL OR r.available_at IS NULL OR r.available_at < $3::timestamptz)
      ORDER BY r.company_id, date_part('year', r.period_end), r.period_end DESC, r.announced_at DESC, r.report_id DESC`,
-  [companyIds, asOfDate]);
+  [companyIds, asOfDate, availableBefore || null]);
   const map = new Map();
   rows.forEach(row => {
     const key = String(row.company_id);
@@ -222,30 +270,49 @@ async function loadDividendWindow({ instrumentIds, windowStart, asOfDate }, tx) 
   }]));
 }
 
-/** 按公司财年汇总的现金分红总额（A/H 同一发行人按经济事件去重，不把两地公告各算一次）。 */
-async function loadAnnualDividends({ companyIds }, tx) {
+/** 按公司财年汇总的现金分红（A/H 同一发行人按经济事件去重），只认目标日当时可见的事实（SSV-04）。
+ *  - 可见性：公告日严格早于目标日；公告日缺失但除息日已发生（除息必然在公告之后）视为可见；
+ *  - 金额只统计目标日之前已除息且状态为"实施"的现金，后续状态变化不会回灌旧季度；
+ *  - 每年同时返回"是否有任何分红记录"，供上层区分"确实零分红"与"没有采集到"，未知不补 0。
+ */
+async function loadAnnualDividends({ companyIds, asOfDate }, tx) {
   if (!companyIds.length) return new Map();
   const exec = executorOf(tx);
   const { rows } = await exec(`
-    SELECT company_id, fiscal_year, SUM(total_cash) AS total_cash
-      FROM (
-        SELECT DISTINCT ci.company_id,
-               date_part('year', ca.fiscal_period_end)::int AS fiscal_year,
-               ca.fiscal_period_end,
-               COALESCE(ca.total_cash_amount, 0) AS total_cash
-          FROM fundamental.corporate_actions ca
-          JOIN core.company_instruments ci ON ci.instrument_id = ca.instrument_id AND ci.relation_type = 'issued_by'
-         WHERE ci.company_id = ANY($1::bigint[])
-           AND ca.action_type = 'dividend'
-           AND ca.status = '实施'
-           AND ca.fiscal_period_end IS NOT NULL
-      ) t
-     GROUP BY company_id, fiscal_year`, [companyIds]);
+    WITH per_instrument AS (
+      SELECT ci.company_id,
+             date_part('year', ca.fiscal_period_end)::int AS fiscal_year,
+             ci.instrument_id,
+             SUM(CASE WHEN ca.status = '实施' AND ca.ex_date IS NOT NULL AND ca.ex_date <= $2::date
+                      THEN COALESCE(ca.total_cash_amount, 0) ELSE 0 END) AS implemented_cash,
+             COUNT(*)::int AS event_count
+        FROM fundamental.corporate_actions ca
+        JOIN core.company_instruments ci ON ci.instrument_id = ca.instrument_id AND ci.relation_type = 'issued_by'
+       WHERE ci.company_id = ANY($1::bigint[])
+         AND ca.action_type = 'dividend'
+         AND ca.fiscal_period_end IS NOT NULL
+         AND (
+           (ca.announced_at IS NOT NULL AND ca.announced_at < $2::date)
+           OR (ca.announced_at IS NULL AND ca.ex_date IS NOT NULL AND ca.ex_date <= $2::date)
+         )
+       GROUP BY 1, 2, 3
+    )
+    SELECT company_id, fiscal_year,
+           MAX(implemented_cash) AS implemented_cash,
+           SUM(event_count)::int AS event_count
+      FROM per_instrument
+     GROUP BY 1, 2`, [companyIds, asOfDate]);
   const map = new Map();
   rows.forEach(row => {
     const key = String(row.company_id);
     const list = map.get(key) || [];
-    list.push({ year: Number(row.fiscal_year), dividend: Number(row.total_cash || 0) });
+    list.push({
+      year: Number(row.fiscal_year),
+      // 只有"实施"且已除息的记录才计入现金；其余状态记 0 但保留 event_count 作为"事实存在"证据。
+      dividend: Number(row.implemented_cash || 0),
+      eventCount: Number(row.event_count || 0),
+      dividendKnown: Number(row.event_count || 0) > 0,
+    });
     map.set(key, list);
   });
   return map;

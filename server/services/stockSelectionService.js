@@ -8,6 +8,7 @@ const RULES = require('../domain/stockSelectionRules');
 const PORTFOLIO = require('../domain/stockSelectionPortfolio');
 const repo = require('../repositories/stockSelectionRepository');
 const { withTransaction } = require('../db/transaction');
+const CoreDate = require('../../public/shared/core-date.js');
 
 const STRATEGY_VERSION = 'v1';
 const MARKET_LABEL = Object.freeze({ CN: 'A股', HK: '港股' });
@@ -100,6 +101,26 @@ function normalizeMarket(market) {
   return value;
 }
 
+/**
+ * 年度事实构造（SSV-04）：利润与分红的完整性分别标注。
+ * 没有任何分红记录的一年是"未知"，不是"零分红"——记 null 并标 dividendKnown=false，
+ * 让年度异常比较整段跳过，而不是拿 0 参与求和把公司误判成异常或正常。
+ */
+function buildAnnualYears(profits, annualDividends) {
+  return (profits || []).map(item => {
+    const dividendRow = (annualDividends || []).find(d => d.year === item.year);
+    const hasEvents = !!dividendRow && (Number(dividendRow.eventCount || 0) > 0 || dividendRow.dividendKnown === true);
+    return {
+      year: item.year,
+      profit: item.profit === undefined ? null : item.profit,
+      dividend: hasEvents ? Number(dividendRow.dividend || 0) : null,
+      dividendKnown: hasEvents,
+      complete: item.profit !== null && item.profit !== undefined,
+      dividendBasis: hasEvents ? 'dividend_events_visible' : 'dividend_unknown',
+    };
+  }).sort((a, b) => a.year - b.year);
+}
+
 /** 把库内事实拼成规则输入（不查库）。 */
 function buildRuleFacts(row, ctx) {
   const companyKey = row.company_id === null || row.company_id === undefined ? null : String(row.company_id);
@@ -110,17 +131,7 @@ function buildRuleFacts(row, ctx) {
   const industry = companyKey ? ctx.industries.get(companyKey) || null : null;
   const pbEvidence = ctx.pbWindow.byInstrument.get(String(row.instrument_id)) || { maxPb: null, coveredDays: 0 };
 
-  const years = profits.map(item => {
-    const dividendRow = annualDividends.find(d => d.year === item.year);
-    return {
-      year: item.year,
-      profit: item.profit,
-      // 年报存在即视为该财年现金分红已完整披露；没有分红事件按零记录并留证据口径。
-      dividend: dividendRow ? dividendRow.dividend : 0,
-      complete: item.profit !== null,
-      dividend_basis: dividendRow ? 'implemented_events' : 'no_dividend_event',
-    };
-  }).sort((a, b) => a.year - b.year);
+  const years = buildAnnualYears(profits, annualDividends);
   const latestYear = years.length ? years[years.length - 1].year : null;
 
   let fx = null;
@@ -142,6 +153,8 @@ function buildRuleFacts(row, ctx) {
     pbWindow: {
       maxPb: pbEvidence.maxPb,
       coveredDays: pbEvidence.coveredDays,
+      expectedDays: pbEvidence.expectedDays,
+      gapDays: pbEvidence.gapDays,
       marketDays: ctx.pbWindow.marketDays,
       calendarDays: ctx.pbWindow.calendarDays,
     },
@@ -195,12 +208,14 @@ async function computeSelection(input, tx) {
   const instrumentIds = universe.map(row => row.instrument_id);
   const windowStart = shiftYears(asOfDate, params.pbLookbackYears);
   const dividendWindowStart = shiftMonths(asOfDate, params.dividendWindowMonths);
+  // 信息可见截止：目标日当地收盘时刻。财报 available_at 晚于截止的修订版不得进入旧季度。
+  const knowledgeCutoff = knowledgeCutoffFor(market, asOfDate);
   const [pbWindow, equity, profits, dividends, annualDividends, industries] = await runBatched([
     () => repo.loadPbWindow({ market, windowStart, asOfDate }, tx),
-    () => repo.loadEquityFacts({ companyIds, asOfDate }, tx),
-    () => repo.loadAnnualProfits({ companyIds, asOfDate }, tx),
+    () => repo.loadEquityFacts({ companyIds, asOfDate, availableBefore: knowledgeCutoff }, tx),
+    () => repo.loadAnnualProfits({ companyIds, asOfDate, availableBefore: knowledgeCutoff }, tx),
     () => repo.loadDividendWindow({ instrumentIds, windowStart: dividendWindowStart, asOfDate }, tx),
-    () => repo.loadAnnualDividends({ companyIds }, tx),
+    () => repo.loadAnnualDividends({ companyIds, asOfDate }, tx),
     () => repo.loadIndustries({ companyIds, market, asOfDate }, tx),
   ], tx);
   const fxPairs = Array.from(equity.values())
@@ -217,10 +232,7 @@ async function computeSelection(input, tx) {
     const companyKey = item.companyId === null || item.companyId === undefined ? null : String(item.companyId);
     const profitRows = companyKey ? profits.get(companyKey) || [] : [];
     const dividendRows = companyKey ? annualDividends.get(companyKey) || [] : [];
-    const years = profitRows.map(row => {
-      const dividendRow = dividendRows.find(d => d.year === row.year);
-      return { year: row.year, profit: row.profit, dividend: dividendRow ? dividendRow.dividend : 0, complete: row.profit !== null };
-    });
+    const years = buildAnnualYears(profitRows, dividendRows);
     const latestYear = years.length ? years[years.length - 1].year : null;
     anomalyById[item.instrumentId] = RULES.evaluateAnnualAnomaly({ latestYear, years }, params);
   });
@@ -235,10 +247,18 @@ async function computeSelection(input, tx) {
     params,
   });
 
-  // 质量裁决：PENDING 表示"未知"，FAIL 是"明确不符合"。只有明确排除过或全部核验过才允许正式发布。
+  // 质量裁决：PENDING 表示"未知"，FAIL 是"明确不符合"，RISK 是"当期风险暂缓"。
+  // SSV-03：四项通过但排名输入未知（如静态 PE/利润口径未定）也必须算待补，
+  // 否则它会从排名池静默消失、还能让别人把 publishable 撑成 true。
   const pending = evaluated.filter(item => item.filterStatus === RULES.STATUS.PENDING);
+  const rankBlocked = evaluated.filter(item => item.filterStatus === RULES.STATUS.PASS && item.rankReady === false);
   const anomalyPending = ranked.filter(item => (anomalyById[item.instrumentId] || {}).status === RULES.STATUS.PENDING);
-  const pendingCount = pending.length + anomalyPending.length;
+  const pendingCount = pending.length + rankBlocked.length + anomalyPending.length;
+  const riskHeld = evaluated.filter(item => item.filterStatus === RULES.STATUS.RISK);
+  const anomalyDividendSkipped = ranked.filter(item => {
+    const anomaly = anomalyById[item.instrumentId];
+    return anomaly && anomaly.dividendComparable === false;
+  }).length;
   const industryMissing = ranked.filter(item => !item.industry).length;
   const stalePrice = evaluated.filter(item => item.rules.R01.status === RULES.STATUS.PASS && !item.detail.priceDate).length;
 
@@ -257,6 +277,9 @@ async function computeSelection(input, tx) {
     poolSize,
     pendingCount,
     anomalyPendingCount: anomalyPending.length,
+    rankBlockedCount: rankBlocked.length,
+    riskHeldCount: riskHeld.length,
+    anomalyDividendSkipped,
     industryMissing,
     stalePrice,
     profitCount,
@@ -279,6 +302,35 @@ async function computeSelection(input, tx) {
   return { market, asOfDate, gate, valuation, params, positionRatio, universe, evaluated, ranked, anomalyById, portfolio, quality, coverage };
 }
 
+/**
+ * 逐股输入摘要（SSV-05）：哈希必须覆盖"值"，不能只覆盖计数。
+ * 反例：同一集合里把某只 PB 从 1.2 改成 0.81，行数、指数、参数都不变，
+ * 旧实现因此复用旧快照并保留旧的 PB=1.2。这里把每只证券的关键输入与规则结论、
+ * 财报/分红版本证据一起排序后哈希，任一有效输入变化都会产生新哈希与新 revision。
+ */
+function inputsDigestOf(computed) {
+  const rows = computed.evaluated.map(item => {
+    const detail = item.detail || {};
+    const equity = detail.equity || {};
+    const dividend = detail.dividend || {};
+    const annual = detail.annual || {};
+    const pbWindow = detail.pbWindow || {};
+    const latestYear = annual.latestYear ? (annual.years || []).find(row => Number(row.year) === Number(annual.latestYear)) : null;
+    return [
+      item.instrumentId, item.code,
+      item.currentPb, item.currentPe, detail.price, item.dividendYield,
+      item.historicalPbMax, pbWindow.expectedDays, pbWindow.gapDays,
+      item.equityCny, item.equityCurrency, equity.reportId, equity.periodEnd, equity.announcedAt,
+      dividend.ttmPerShare, dividend.count,
+      annual.latestYear, latestYear ? latestYear.profit : null, latestYear ? latestYear.dividend : null,
+      item.industry ? `${item.industry.system}:${item.industry.code}:${item.industry.version}` : null,
+      item.rules.R01.status, item.rules.R02.status, item.rules.R04.status, item.rules.R05.status,
+      item.filterStatus, item.profitStatus,
+    ];
+  }).sort((a, b) => Number(a[0]) - Number(b[0]));
+  return hashOf(rows);
+}
+
 function manifestOf(computed, extra) {
   return Object.assign({
     market: computed.market,
@@ -294,6 +346,9 @@ function manifestOf(computed, extra) {
     withIndustry: computed.coverage.withIndustry,
     pbWindow: computed.coverage.pbWindow,
     params: computed.params,
+    // 证券集合与逐股关键值摘要：变值不变行数、变证券不变总数都会改变哈希。
+    universeDigest: hashOf(computed.evaluated.map(item => item.code).sort()),
+    inputsDigest: inputsDigestOf(computed),
   }, extra || {});
 }
 
@@ -409,18 +464,23 @@ async function computeAndPersist(input) {
 /** 季度自动执行：目标日与季度都由交易日历推导，不用执行当天替代。 */
 async function runQuarterly({ market, quarter, requestId, strategyVersion }) {
   const normalized = normalizeMarket(market);
-  const target = await resolveQuarterTarget({ market: normalized, quarter }, null);
+  // 缺省季度由最近一个已结束季度解析（管理员不带季度直接点计算也必须有确定目标日）。
+  const resolvedQuarter = quarter || (await pendingQuarter({ market: normalized })).quarter;
+  if (!resolvedQuarter) {
+    return { ok: false, status: 'blocked', reason: 'selection_quarter_unresolved', market: normalized, quarter: null };
+  }
+  const target = await resolveQuarterTarget({ market: normalized, quarter: resolvedQuarter }, null);
   if (!target.asOfDate) {
     return { ok: false, status: 'blocked', reason: target.reason, market: normalized, quarter };
   }
   const result = await computeAndPersist({
-    market: normalized, asOfDate: target.asOfDate, quarter, runKind: 'quarterly',
+    market: normalized, asOfDate: target.asOfDate, quarter: resolvedQuarter, runKind: 'quarterly',
     requestId, strategyVersion, positionRatio: 1,
   });
   return {
     ok: true,
     market: normalized,
-    quarter,
+    quarter: resolvedQuarter,
     quarterDate: target.asOfDate,
     runId: result.runId,
     reused: result.reused,
@@ -434,7 +494,10 @@ async function runQuarterly({ market, quarter, requestId, strategyVersion }) {
 /** 该市场待生成的最近一个完整季度（用于自动排队）。 */
 async function pendingQuarter({ market, now }) {
   const normalized = normalizeMarket(market);
-  const today = now || new Date().toISOString().slice(0, 10);
+  // 业务日按上海时区取，不用 UTC 截日（INC-0032 口径）。
+  const today = typeof now === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(now)
+    ? now
+    : CoreDate.todayInZone('Asia/Shanghai', now instanceof Date ? now : new Date());
   const currentQuarter = quarterOf(today);
   const currentEnd = quarterEndDate(currentQuarter);
   const previousQuarter = today <= currentEnd ? previousQuarterOf(currentQuarter) : currentQuarter;

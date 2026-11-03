@@ -265,17 +265,28 @@ adminRouter.post('/backfills', requireCapability('ops_manage'), asyncHandler(asy
   const body = req.body || {};
   const market = String(body.market || '').toUpperCase();
   if (!['CN', 'HK'].includes(market)) return res.status(400).json({ error: '市场参数不合法' });
-  // 补数仍走原财务与行情采集入口，不在这里新增第二套外采链路。
+  // 补齐必须对"确定目标日"执行：没有目标日就无法冻结缺口范围，容易补成一片。
+  const targetDate = String(body.targetDate || '').slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(targetDate)) {
+    return res.status(400).json({ error: '补数必须指定目标日（YYYY-MM-DD）' });
+  }
+  const batchLimit = Number(body.batchLimit);
+  // 走原财务任务入口（其 selection_inputs 模式会按市场/目标日冻结缺口并复用既有采集与标准层写入），
+  // 不在路由里新增第二套外采链路；未知模式会被 Runner 直接拒绝。
   try {
     const slot = await enqueueManualJob('company_financial_incremental_sync', {
-      mode: 'selection_inputs', market, targetDate: body.targetDate,
+      mode: 'selection_inputs',
+      market,
+      targetTradeDate: targetDate,
+      targetDate,
+      ...(Number.isInteger(batchLimit) && batchLimit > 0 ? { batchLimit } : {}),
     });
     if (!slot) return res.status(400).json({ error: '补数任务暂不可用' });
     await auditEvent({
       actor: req.session.user, action: 'stock_selection_backfill_queue', target: market,
-      result: 'success', requestId: req.id, metadata: { slotId: slot.slot_id },
+      result: 'success', requestId: req.id, metadata: { slotId: slot.slot_id, targetDate },
     });
-    res.status(202).json({ ok: true, queued: true, slotId: slot.slot_id, market });
+    res.status(202).json({ ok: true, queued: true, slotId: slot.slot_id, market, targetDate });
   } catch (error) {
     await auditEvent({
       actor: req.session.user, action: 'stock_selection_backfill_queue', target: market,

@@ -40,7 +40,12 @@ function annualized(series, dayCount) {
   return Math.pow(last / first, 365 / dayCount) - 1;
 }
 
-function volatility(series) {
+/**
+ * 波动率按**实际观察频率**年化（SSV-08）。
+ * 季度净值序列乘 sqrt(252) 会把年化波动放大近 4 倍，是不可比的伪精确值。
+ * periodsPerYear 由实际相邻观察间隔天数推算，日频才会接近 252。
+ */
+function volatility(series, periodsPerYear) {
   const returns = [];
   for (let i = 1; i < series.length; i++) {
     if (series[i - 1] > 0) returns.push(series[i] / series[i - 1] - 1);
@@ -48,7 +53,22 @@ function volatility(series) {
   if (returns.length < 2) return null;
   const mean = returns.reduce((sum, value) => sum + value, 0) / returns.length;
   const variance = returns.reduce((sum, value) => sum + (value - mean) ** 2, 0) / (returns.length - 1);
-  return Math.sqrt(variance) * Math.sqrt(252);
+  const factor = Number(periodsPerYear);
+  if (!Number.isFinite(factor) || factor <= 0) return null;
+  return Math.sqrt(variance) * Math.sqrt(factor);
+}
+
+/** 由相邻观察日期的实际间隔推算每年观察次数。 */
+function periodsPerYearOf(tradeDates) {
+  const gaps = [];
+  for (let i = 1; i < tradeDates.length; i++) {
+    const days = Math.round((new Date(tradeDates[i]) - new Date(tradeDates[i - 1])) / 86400000);
+    if (days > 0) gaps.push(days);
+  }
+  if (!gaps.length) return null;
+  gaps.sort((a, b) => a - b);
+  const median = gaps[Math.floor(gaps.length / 2)];
+  return median > 0 ? 365 / median : null;
 }
 
 function toDateText(value) {
@@ -118,12 +138,14 @@ async function runBacktest(input) {
     });
   }
 
-  // 任一季度数据不完整即视为不可还原，不用当期个股 PB 平均去补指数或虚构收益。
-  const blocked = selections.filter(item => !item.computed.gate.eligible || item.computed.quality.pendingCount > 0);
-  if (blocked.length) {
+  // 只有"输入未知"才不可还原；指数 PB≥2 属于正常业务关闭（SSV-08）：
+  // 那一段就该持有现金，是可还原的历史，不能和缺数据混为一谈。
+  const unknownInputs = selections.filter(item =>
+    item.computed.gate.status === 'data_missing' || item.computed.quality.pendingCount > 0);
+  if (unknownInputs.length) {
     diagnostics.missing = {
       reason: 'point_in_time_inputs_incomplete',
-      quarters: blocked.map(item => item.quarter),
+      quarters: unknownInputs.map(item => item.quarter),
     };
     return persistBacktest({
       market, strategyId: null, startDate, endDate, status: 'not_evaluable',
@@ -170,6 +192,20 @@ async function runBacktest(input) {
       }
     }
 
+    // 先按当期开盘价给旧仓估值（缺价用最近一次成交价并计入 unpriced），得到调仓前总资产。
+    let holdingsValue = 0;
+    for (const [instrumentId, position] of holdings) {
+      const price = openPrices.get(`${instrumentId}|${item.executionDate}`);
+      if (price === null || price === undefined || !(price > 0)) {
+        unpriced++;
+        holdingsValue += position.lastPrice * position.shares;
+        continue;
+      }
+      position.lastPrice = price;
+      holdingsValue += price * position.shares;
+    }
+    const navBeforeTrades = cash + holdingsValue;
+
     // 卖出：按开盘价，缺价保留旧仓（不虚构成交）。
     let proceeds = 0;
     for (const [instrumentId, position] of holdings) {
@@ -184,24 +220,29 @@ async function runBacktest(input) {
     }
     cash += proceeds;
 
-    // 买入：等权 30 席，缺价不买，资金留现金。
-    const members = item.computed.portfolio.members;
-    const targetPerMember = cash / Math.max(members.length, 1);
+    // 买入：按方案 6.1 的固定 30 席权重（SSV-08）。
+    // 每席预算 = 调仓前总资产 × 仓位 / 30，而不是"把可用现金平均分给入选股票"——
+    // 后者会在只选出 4 只时变成满仓，把行业与风险敞口一起放大。
+    const slots = Number(item.computed.params.slotsPerMarket || 30);
+    const positionRatio = Number(item.computed.positionRatio === undefined ? 1 : item.computed.positionRatio);
+    const targetPerMember = navBeforeTrades * positionRatio / slots;
+    const members = item.computed.gate.eligible ? item.computed.portfolio.members : [];
+    if (!item.computed.gate.eligible) diagnostics.cashOnlyQuarters = (diagnostics.cashOnlyQuarters || []).concat(item.quarter);
     for (const member of members) {
       const price = openPrices.get(`${member.instrumentId}|${item.executionDate}`);
       if (price === null || price === undefined || !(price > 0)) { unpriced++; continue; }
       if (targetPerMember <= 0) continue;
       const fee = targetPerMember * Number(costs.buyBps) / 10000;
-      if (targetPerMember + fee > cash) continue;
+      if (targetPerMember > cash) continue; // 预算不足（含费用）就留现金，不挪用其他席位
       const shares = (targetPerMember - fee) / price;
-      holdings.set(member.instrumentId, { shares, entryPrice: price, entryDate: item.executionDate });
+      holdings.set(member.instrumentId, { shares, entryPrice: price, lastPrice: price, entryDate: item.executionDate });
       cash -= targetPerMember;
       feesThisPeriod += fee;
       tradedAmount += targetPerMember;
     }
 
     const marketValue = [...holdings].reduce((sum, [instrumentId, position]) => {
-      const price = openPrices.get(`${instrumentId}|${item.executionDate}`) || position.entryPrice;
+      const price = openPrices.get(`${instrumentId}|${item.executionDate}`) || position.lastPrice || position.entryPrice;
       return sum + price * position.shares;
     }, 0);
     const nav = cash + marketValue;
@@ -241,7 +282,8 @@ async function runBacktest(input) {
     annualizedReturn: annualized(navSeries, dayCount),
     maxDrawdown: maxDrawdown(navSeries),
     // 季度序列不足时不输出伪精确的波动与夏普。
-    volatility: periods.length >= 5 ? volatility(navSeries) : null,
+    volatility: periods.length >= 5 ? volatility(navSeries, periodsPerYearOf(periods.map(item => item.tradeDate))) : null,
+    periodsPerYear: periodsPerYearOf(periods.map(item => item.tradeDate)),
     sharpe: null,
     turnover: turnoverSum,
     fees: totalFees,
@@ -315,4 +357,5 @@ module.exports = {
   maxDrawdown,
   annualized,
   volatility,
+  periodsPerYearOf,
 };

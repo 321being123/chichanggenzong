@@ -4491,6 +4491,70 @@
       ],
       "owner": "WorkBuddy",
       "status": "implemented"
+    },
+    {
+      "id": "SELECTION-RISK-EXCLUDED-FROM-PORTFOLIO-003",
+      "title": "停牌、ST/退市风险等风险暂缓必须真的挡住入选，不能只记录排除原因",
+      "implementation": {
+        "file": "server/domain/stockSelectionRules.js",
+        "symbol": "evaluateInstrument"
+      },
+      "tests": [
+        {
+          "file": "server/test/stock-selection-review-fixes.test.js",
+          "pattern": "SSV-02 停牌证券不得进入最终席位"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "implemented"
+    },
+    {
+      "id": "SELECTION-PB-HISTORY-GAP-PENDING-004",
+      "title": "十年 PB 无正证且有任一应有交易日缺口时必须待补，只有缺口清零才判不符合",
+      "implementation": {
+        "file": "server/repositories/stockSelectionRepository.js",
+        "symbol": "loadPbWindow"
+      },
+      "tests": [
+        {
+          "file": "server/test/stock-selection-review-fixes.test.js",
+          "pattern": "SSV-09 1000 个应有日只覆盖 900 日"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "implemented"
+    },
+    {
+      "id": "SELECTION-INPUT-HASH-COVERS-VALUES-005",
+      "title": "选股批次输入哈希必须覆盖逐股关键值，值变化要产生新 revision 而不是复用旧快照",
+      "implementation": {
+        "file": "server/services/stockSelectionService.js",
+        "symbol": "inputsDigestOf"
+      },
+      "tests": [
+        {
+          "file": "server/test/stock-selection-review-fixes.test.js",
+          "pattern": "SSV-05 个股 PB 从 1.2 改成 0.81"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "implemented"
+    },
+    {
+      "id": "SELECTION-BACKTEST-FIXED-SLOT-BUDGET-006",
+      "title": "回测按固定 30 席预算买入并保留未填席位现金，正常市场关闭按现金可还原",
+      "implementation": {
+        "file": "server/services/stockSelectionBacktest.js",
+        "symbol": "runBacktest"
+      },
+      "tests": [
+        {
+          "file": "server/test/stock-selection-review-fixes.test.js",
+          "pattern": "SSV-08 只入选 4 只时必须保留约 86.67% 现金"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "implemented"
     }
   ]
 }

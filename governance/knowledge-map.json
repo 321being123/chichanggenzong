@@ -471,6 +471,83 @@
       }
     },
     {
+      "id": "stock-selection",
+      "risk": "high",
+      "paths": [
+        "docs/投资策略选股中心研发方案_20261102.md",
+        "server/domain/stockSelection*.js",
+        "server/services/stockSelection*.js",
+        "server/repositories/stockSelection*.js",
+        "server/routes/stockSelection.js",
+        "server/test/stock-selection*.test.js",
+        "public/js/stock-selection*.js",
+        "public/js/presenters/stock-selection*.js",
+        "public/js/api/stock-selection*.js",
+        "public/css/stock-selection*.css"
+      ],
+      "keywords": [
+        "投资要义",
+        "投资策略选股",
+        "股票筛选",
+        "季度组合",
+        "双市场选股",
+        "stock-selection"
+      ],
+      "read": [
+        "docs/投资策略选股中心研发方案_20261102.md",
+        "docs/技术架构.md",
+        "docs/理杏仁官方API接入与数据层整体切换研发方案_20261030.md",
+        "docs/应用分层与MVP架构整改方案_20261027.md",
+        "docs/日期时间统一治理研发方案_20260928.md",
+        "docs/自动任务重复执行与API调用保护整改方案_20260815.md"
+      ],
+      "readSections": {
+        "docs/技术架构.md": [
+          "## 6. 后端分层",
+          "### 8.2 标准数据流",
+          "### 8.4 统一数据层读写矩阵",
+          "### 9.2 股票分析",
+          "### 9.4 市场周期",
+          "## 10. 外部数据源与缓存",
+          "## 11. 后台任务"
+        ],
+        "docs/投资策略选股中心研发方案_20261102.md": [
+          "## 1. 产品决策与交付范围",
+          "## 2. 已有能力、复用能力与真实缺口",
+          "## 9. 架构与任务编排",
+          "## 13. 回归测试矩阵与完成标准"
+        ],
+        "docs/理杏仁官方API接入与数据层整体切换研发方案_20261030.md": [
+          "## 5. 数据契约与选源"
+        ],
+        "docs/应用分层与MVP架构整改方案_20261027.md": [
+          "## 3. 目标结构与依赖规则",
+          "### 8.0 当前实施与验收状态"
+        ],
+        "docs/日期时间统一治理研发方案_20260928.md": [
+          "### 3.1 三类值必须分开",
+          "### 3.2 最小公共能力",
+          "### 3.3 数据库边界"
+        ]
+      },
+      "update": [
+        "docs/投资策略选股中心研发方案_20261102.md",
+        "docs/技术架构.md",
+        "docs/知识索引.md"
+      ],
+      "checks": [
+        "npm.cmd run check:knowledge"
+      ],
+      "expandOn": [
+        "指数PB和个股PB口径",
+        "全市场历史覆盖与可见版本",
+        "港股财年币种及股份范围",
+        "原Runner逐模式契约和市场隔离",
+        "资金预算及行业集中度",
+        "历史回测和未来数据泄漏"
+      ]
+    },
+    {
       "id": "solution-design",
       "risk": "high",
       "paths": [

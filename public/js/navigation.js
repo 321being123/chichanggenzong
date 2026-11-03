@@ -42,7 +42,7 @@ function switchMain(main, noPushState, bondSub) {
   if (window.SiteTelemetry && main !== 'bond-safety') {
     var telemetryPageMap = {
       home: 'home', profile: 'profile', feedback: 'feedback.list', ipo: 'ipo.calendar',
-      'stock-analysis': 'stock.analysis', 'market-volatility': 'market.volatility',
+      'stock-analysis': 'stock.analysis', 'stock-selection': 'stock.selection', 'market-volatility': 'market.volatility',
       arbitrage: new URLSearchParams(window.location.search).get('case') ? 'arbitrage.detail' : 'arbitrage.list', knowledge: 'knowledge.list'
     };
     var telemetryPage = main === 'holdings'
@@ -51,6 +51,7 @@ function switchMain(main, noPushState, bondSub) {
     if (telemetryPage) window.SiteTelemetry.trackPage(telemetryPage, main, 'nav');
   }
   var lazySection = { 'bond-safety': 'bond-safety', 'stock-analysis': 'stock-analysis',
+    'stock-selection': 'stock-selection',
     'market-volatility': 'market-volatility', knowledge: 'knowledge', ipo: 'ipo',
     feedback: 'feedback', 'position-compare': 'position-compare', holdings: 'holdings' }[main];
   var ready = (lazySection && window.LazySections) ? LazySections.ensureSection(lazySection) : Promise.resolve();
@@ -67,6 +68,7 @@ function switchMain(main, noPushState, bondSub) {
       else loadBondSafety();
     }
     if (main === 'stock-analysis') loadStockAnalysis();
+    if (main === 'stock-selection') loadStockSelection();
     if (main === 'market-volatility') loadMarketVolatility();
     if (main === 'arbitrage') loadArbitrage();
     if (main === 'knowledge') {

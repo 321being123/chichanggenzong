@@ -199,19 +199,26 @@ async function readHkDailyByTencent({ canonicalCode, startDate, endDate } = {}) 
 
 // ---------- 股票行业分类 ----------
 
-// 行业分类：官方申万 2021 优先，Tushare 申万成分表备源；都取不到返回 null（调用方保留上一轮结论）。
+// 行业分类：A 股用官方申万 2021（Tushare 申万成分表备源），港股用官方恒生行业分类（hsi）；
+// 都取不到返回 null（调用方保留上一轮结论，不猜）。
 async function readIndustryClassification({ tsCode, cacheMs } = {}) {
   const { selectIndustryPath } = require('../domain/lixingerIndustry');
+  const isHk = /\.HK$/i.test(String(tsCode || '').trim());
   const primary = await safeOfficial(async () => {
     const rows = await official.resolveIndustryRows({ tsCode, cacheMs });
     if (!rows || !rows.length) return null;
-    return selectIndustryPath(rows, { system: 'sw_2021', areaCode: 'cn' });
+    // 港股要求路径从一级起连续：选股按一级行业控上限，缺一级等于没有分类。
+    return isHk
+      ? selectIndustryPath(rows, { system: 'hsi', areaCode: 'hk', requireRoot: true })
+      : selectIndustryPath(rows, { system: 'sw_2021', areaCode: 'cn' });
   }, 'stock_industry');
   if (primary.value) {
     const levelText = String(primary.value.industry_level || '')
       .replace(/^1级$/, '一级').replace(/^2级$/, '二级').replace(/^3级$/, '三级');
     return { ...primary.value, industry_level: levelText || primary.value.industry_level, sourceCode: official.SOURCE };
   }
+  // Tushare 申万成分表只有 A 股，不能拿来给港股兜底。
+  if (isHk) return null;
 
   try {
     const rows = tsRows(await tushareQuery('index_member_all', { ts_code: tsCode, is_new: 'Y' },

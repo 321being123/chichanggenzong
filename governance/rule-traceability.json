@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "lastReviewed": "2026-11-02",
+  "lastReviewed": "2026-11-03",
   "rules": [
     {
       "id": "BOND-PROSPECTUS-SELECTION-059",
@@ -4462,6 +4462,378 @@
         }
       ],
       "owner": "Codex",
+      "status": "implemented"
+    },
+    {
+      "id": "SELECTION-PENDING-NO-FORMAL-RELEASE-001",
+      "title": "排名池存在待补（PENDING）对象时只保存部分数据预览，不发布正式可投资组合",
+      "implementation": {
+        "file": "server/services/stockSelectionService.js",
+        "symbol": "computeSelection"
+      },
+      "tests": [
+        {
+          "file": "server/test/stock-selection-pipeline.test.js",
+          "pattern": "发布正式可投资组合"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "implemented"
+    },
+    {
+      "id": "SELECTION-30-SLOT-INDUSTRY-CAP-002",
+      "title": "每市场固定 30 个等权席位，单一行业不超过市场预算 20%，合格股不足时留现金而不放大单只权重",
+      "implementation": {
+        "file": "server/domain/stockSelectionPortfolio.js",
+        "symbol": "buildPortfolio"
+      },
+      "tests": [
+        {
+          "file": "server/test/stock-selection-rules.test.js",
+          "pattern": "同一行业最多 6 只"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "implemented"
+    },
+    {
+      "id": "SELECTION-RISK-EXCLUDED-FROM-PORTFOLIO-003",
+      "title": "停牌、ST/退市风险等风险暂缓必须真的挡住入选，不能只记录排除原因",
+      "implementation": {
+        "file": "server/domain/stockSelectionRules.js",
+        "symbol": "evaluateInstrument"
+      },
+      "tests": [
+        {
+          "file": "server/test/stock-selection-review-fixes.test.js",
+          "pattern": "SSV-02 停牌证券不得进入最终席位"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "implemented"
+    },
+    {
+      "id": "SELECTION-PB-HISTORY-GAP-PENDING-004",
+      "title": "十年 PB 无正证且有任一应有交易日缺口时必须待补，只有缺口清零才判不符合",
+      "implementation": {
+        "file": "server/repositories/stockSelectionRepository.js",
+        "symbol": "loadPbWindow"
+      },
+      "tests": [
+        {
+          "file": "server/test/stock-selection-review-fixes.test.js",
+          "pattern": "SSV-09 1000 个应有日只覆盖 900 日"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "implemented"
+    },
+    {
+      "id": "SELECTION-INPUT-HASH-COVERS-VALUES-005",
+      "title": "选股批次输入哈希必须覆盖逐股关键值，值变化要产生新 revision 而不是复用旧快照",
+      "implementation": {
+        "file": "server/services/stockSelectionService.js",
+        "symbol": "inputsDigestOf"
+      },
+      "tests": [
+        {
+          "file": "server/test/stock-selection-review-fixes.test.js",
+          "pattern": "SSV-05 个股 PB 从 1.2 改成 0.81"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "implemented"
+    },
+    {
+      "id": "SELECTION-BACKTEST-FIXED-SLOT-BUDGET-006",
+      "title": "回测按固定 30 席预算买入并保留未填席位现金，正常市场关闭按现金可还原",
+      "implementation": {
+        "file": "server/services/stockSelectionBacktest.js",
+        "symbol": "runBacktest"
+      },
+      "tests": [
+        {
+          "file": "server/test/stock-selection-review-fixes.test.js",
+          "pattern": "SSV-08 只入选 4 只时必须保留约 86.67% 现金"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "implemented"
+    },
+    {
+      "id": "INDUSTRY-HK-ROOT-REQUIRED-007",
+      "title": "港股行业分类必须从恒生一级起连续，缺一级视为无分类，不得当成已核验",
+      "implementation": {
+        "file": "server/domain/lixingerIndustry.js",
+        "symbol": "selectIndustryPath"
+      },
+      "tests": [
+        {
+          "file": "server/test/stock-selection-industry.test.js",
+          "pattern": "港股只有二级三级、缺一级时判为无分类"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "implemented"
+    },
+    {
+      "id": "INDUSTRY-TAXONOMY-ISOLATION-008",
+      "title": "行业归属写入只影响同一分类体系，A 股申万与港股恒生互不顶替，且一级行业沿父子链回溯",
+      "implementation": {
+        "file": "server/repositories/industryRepository.js",
+        "symbol": "upsertIndustryPath"
+      },
+      "tests": [
+        {
+          "file": "server/test/stock-selection-pipeline.test.js",
+          "pattern": "港股恒生一级行业可读，且不会顶掉同公司的申万归属"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "implemented"
+    },
+    {
+      "id": "SELECTION-STAGE-COMPLETION-233",
+      "title": "选股任务各模式必须有唯一可验证终态：正式发布/正常关闭/预览已记录/缺口已清空/回测可评估，分区写成功不算完成",
+      "implementation": {
+        "file": "server/services/jobDefinitions.js",
+        "symbol": "stageCompletionEvidence"
+      },
+      "tests": [
+        {
+          "file": "server/test/stock-selection-review-r2.test.js",
+          "pattern": "R2-05"
+        },
+        {
+          "file": "server/test/stock-selection-review-fixes.test.js",
+          "pattern": "SSV-07"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "implemented"
+    },
+    {
+      "id": "SELECTION-GAP-CLASSIFICATION-234",
+      "title": "选股输入缺口必须按数据集分类并多域并入队列，剩余估值与未识别缺口参与完成裁决",
+      "implementation": {
+        "file": "server/services/stockSelectionService.js",
+        "symbol": "auditInputs"
+      },
+      "tests": [
+        {
+          "file": "server/test/stock-selection-review-r2.test.js",
+          "pattern": "R2-04"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "implemented"
+    },
+    {
+      "id": "SELECTION-INPUTS-RUNNER-COMPLETION-234",
+      "title": "选股输入补齐的完成裁决必须与槽位门禁同源：剩余量覆盖财报/行业/估值/未分类，清空且底层成功才返回 inputs_cleared",
+      "implementation": {
+        "file": "server/services/companyFinancialIncrementalSync.js",
+        "symbol": "runCompanyFinancialIncrementalSync"
+      },
+      "tests": [
+        {
+          "file": "server/test/stock-selection-review-r3.test.js",
+          "pattern": "R3-01"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "implemented"
+    },
+    {
+      "id": "SELECTION-INPUT-GAP-QUEUE-ROTATION-235",
+      "title": "选股缺口续跑队列必须在审计前读取上次进度，失败与无进展对象都轮转到队尾，避免固定失败前缀占满批次",
+      "implementation": {
+        "file": "server/services/stockSelectionInputsSync.js",
+        "symbol": "syncSelectionInputs"
+      },
+      "tests": [
+        {
+          "file": "server/test/stock-selection-review-r3.test.js",
+          "pattern": "R3-02"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "implemented"
+    },
+    {
+      "id": "SELECTION-ANNUAL-DIVIDEND-EVIDENCE-236",
+      "title": "年度分红完整性独立于记录行数：只有年末已实施且金额已知才算已知，预案/仅中期/总额缺失一律保留 NULL 并判待补",
+      "implementation": {
+        "file": "server/repositories/stockSelectionRepository.js",
+        "symbol": "loadAnnualDividends"
+      },
+      "tests": [
+        {
+          "file": "server/test/stock-selection-review-r3.test.js",
+          "pattern": "R3-03"
+        },
+        {
+          "file": "server/test/stock-selection-pipeline.test.js",
+          "pattern": "SSV-04"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "implemented"
+    },
+    {
+      "id": "SELECTION-ZERO-ELIGIBLE-TERMINAL-237",
+      "title": "输入完整但无合格股票是有效空仓终态：不得计入待补，季度按 no_eligible_member 推进且允许 0 行分区",
+      "implementation": {
+        "file": "server/services/stockSelectionService.js",
+        "symbol": "businessStatusOf"
+      },
+      "tests": [
+        {
+          "file": "server/test/stock-selection-review-r3.test.js",
+          "pattern": "R3-04"
+        },
+        {
+          "file": "server/test/stock-selection-review-r2.test.js",
+          "pattern": "R2-05"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "implemented"
+    },
+    {
+      "id": "SELECTION-SLOT-CLAIM-MODE-DEPENDENCY-238",
+      "title": "任务领取与阻塞恢复必须按槽位模式解析前置依赖，仓储查询必须返回 request_payload，否则显式无依赖的模式会被默认依赖永久挡住",
+      "implementation": {
+        "file": "server/services/jobScheduleSlots.js",
+        "symbol": "claimSlot"
+      },
+      "tests": [
+        {
+          "file": "server/test/stock-selection-review-r4.test.js",
+          "pattern": "R4-01"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "implemented"
+    },
+    {
+      "id": "SELECTION-SLOT-MODE-PAYLOAD-239",
+      "title": "领取用槽位查询必须带 request_payload.mode，缺少该列会让按模式解析静默退回 core 依赖",
+      "implementation": {
+        "file": "server/repositories/jobScheduleSlotsRepository.js",
+        "symbol": "select_ops_job_schedule_slots_1"
+      },
+      "tests": [
+        {
+          "file": "server/test/stock-selection-review-r4.test.js",
+          "pattern": "R4-01 真库"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "implemented"
+    },
+    {
+      "id": "SELECTION-INPUT-GAP-FAIR-ROTATION-240",
+      "title": "选股缺口续跑必须跨批次持久化尝试次数，保证 N 个对象每批 B 个时每个对象在有界轮次内都获得机会，重启后仍成立",
+      "implementation": {
+        "file": "server/services/stockSelectionInputsSync.js",
+        "symbol": "syncSelectionInputs"
+      },
+      "tests": [
+        {
+          "file": "server/test/stock-selection-review-r4.test.js",
+          "pattern": "R4-02"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "implemented"
+    },
+    {
+      "id": "SELECTION-FISCAL-YEAR-END-241",
+      "title": "财年末必须取公司实际年报期末（3/6/12 月及变更财年），不得以自然年末代替；年度分红与零分红证据按该期末识别",
+      "implementation": {
+        "file": "server/repositories/stockSelectionRepository.js",
+        "symbol": "loadAnnualDividends"
+      },
+      "tests": [
+        {
+          "file": "server/test/stock-selection-review-r4.test.js",
+          "pattern": "R4-03"
+        },
+        {
+          "file": "server/test/stock-selection-review-r4.test.js",
+          "pattern": "R4-04"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "implemented"
+    },
+    {
+      "id": "SELECTION-QUARTER-TERMINAL-DEDUP-242",
+      "title": "季度自动排队去重要覆盖全部合法终态（已发布、市场正常关闭、明确零合格），数据不足与失败仍继续补算",
+      "implementation": {
+        "file": "server/jobs/stockAnalysisRefresh.js",
+        "symbol": "quarterRunCompleted"
+      },
+      "tests": [
+        {
+          "file": "server/test/stock-selection-review-r4.test.js",
+          "pattern": "R4-05"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "implemented"
+    },
+    {
+      "id": "SELECTION-INPUT-GAP-FULL-PROGRESS-243",
+      "title": "选股缺口续跑的持久进度必须覆盖全部未完成对象，不得用 JSON 条数上限改变公平性；执行批量与队列完整性分开",
+      "implementation": {
+        "file": "server/services/stockSelectionInputsSync.js",
+        "symbol": "syncSelectionInputs"
+      },
+      "tests": [
+        {
+          "file": "server/test/stock-selection-review-r5.test.js",
+          "pattern": "R5-01"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "implemented"
+    },
+    {
+      "id": "SELECTION-ANNUAL-DIVIDEND-AVAILABILITY-244",
+      "title": "年度分红与财年期末集合必须使用与利润查询相同的信息截止（含 available_at），未来可见的财报版本不得改变旧季度分红判定",
+      "implementation": {
+        "file": "server/repositories/stockSelectionRepository.js",
+        "symbol": "loadAnnualDividends"
+      },
+      "tests": [
+        {
+          "file": "server/test/stock-selection-review-r5.test.js",
+          "pattern": "R5-02"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "implemented"
+    },
+    {
+      "id": "SELECTION-QUARTER-COMPLETION-EXISTS-245",
+      "title": "季度已完成判定必须用仓储层终态存在性查询，不得以列表分页当完整终态集合（分页边界会误判未完成并重复排队）",
+      "implementation": {
+        "file": "server/repositories/stockSelectionRepository.js",
+        "symbol": "hasCompletedQuarterRun"
+      },
+      "tests": [
+        {
+          "file": "server/test/stock-selection-review-r5.test.js",
+          "pattern": "R5-03"
+        },
+        {
+          "file": "server/test/stock-selection-review-r4.test.js",
+          "pattern": "R4-05"
+        }
+      ],
+      "owner": "WorkBuddy",
       "status": "implemented"
     }
   ]

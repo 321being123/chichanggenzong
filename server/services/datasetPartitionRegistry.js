@@ -77,6 +77,37 @@ const DATASET_PARTITION_REGISTRY = Object.freeze({
   },
   arbitrage_cases: { scopeKey: 'GLOBAL', table: 'event.arbitrage_cases', countSql: 'SELECT COUNT(*)::int AS row_count', dataAsOfSql: 'SELECT MAX(announced_at)::text AS data_as_of' },
   trade_calendar: { scopeKey: 'GLOBAL', table: 'market.trade_calendar', whereSql: "WHERE exchange='SSE'", countSql: 'SELECT COUNT(*)::int AS row_count', dataAsOfSql: 'SELECT MAX(trade_date)::text AS data_as_of' },
+  // 投资策略选股中心（2026-11-02 方案第 9.2 节）：两市场各自分区，不合并成一个跨市场数据集。
+  // snapshot 只统计"已正式发布"的季度组合席位；保存为部分数据预览时不产生可投资分区。
+  stock_selection_snapshot_cn: {
+    scopeKey: 'CN', table: 'analytics.stock_selection_portfolio_members',
+    partitionedCountSql: `SELECT COUNT(*)::int AS row_count FROM analytics.stock_selection_portfolio_members m
+        JOIN analytics.stock_selection_runs r ON r.run_id = m.run_id
+       WHERE r.market = 'CN' AND r.run_kind = 'quarterly' AND r.as_of_date = $1::date AND r.published_at IS NOT NULL`,
+    partitionedDataAsOfSql: 'SELECT $1::text AS data_as_of',
+  },
+  stock_selection_snapshot_hk: {
+    scopeKey: 'HK', table: 'analytics.stock_selection_portfolio_members',
+    partitionedCountSql: `SELECT COUNT(*)::int AS row_count FROM analytics.stock_selection_portfolio_members m
+        JOIN analytics.stock_selection_runs r ON r.run_id = m.run_id
+       WHERE r.market = 'HK' AND r.run_kind = 'quarterly' AND r.as_of_date = $1::date AND r.published_at IS NOT NULL`,
+    partitionedDataAsOfSql: 'SELECT $1::text AS data_as_of',
+  },
+  // 选股输入：该市场目标日有标准估值与收盘价的普通股数量，用于缺口可查与质量判定。
+  stock_selection_inputs_cn: {
+    scopeKey: 'CN', table: 'market.daily_valuations',
+    partitionedCountSql: `SELECT COUNT(DISTINCT v.instrument_id)::int AS row_count
+        FROM market.daily_valuations v JOIN core.instruments i ON i.instrument_id = v.instrument_id
+       WHERE i.market = 'CN' AND i.asset_class = 'stock' AND v.trade_date = $1::date AND v.pb IS NOT NULL`,
+    partitionedDataAsOfSql: 'SELECT $1::text AS data_as_of',
+  },
+  stock_selection_inputs_hk: {
+    scopeKey: 'HK', table: 'market.daily_valuations',
+    partitionedCountSql: `SELECT COUNT(DISTINCT v.instrument_id)::int AS row_count
+        FROM market.daily_valuations v JOIN core.instruments i ON i.instrument_id = v.instrument_id
+       WHERE i.market = 'HK' AND i.asset_class = 'stock' AND v.trade_date = $1::date AND v.pb IS NOT NULL`,
+    partitionedDataAsOfSql: 'SELECT $1::text AS data_as_of',
+  },
 });
 
 function dateValue(value) {

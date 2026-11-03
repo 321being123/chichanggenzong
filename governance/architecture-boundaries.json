@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "lastReviewed": "2026-10-27",
+  "lastReviewed": "2026-11-03",
   "rulesVersion": "layer-coupling-5",
   "defaultRole": "pending_contract",
   "scan": {
@@ -1603,6 +1603,27 @@
       "note": "估值取数缺口（ops.data_quality_issues）的读写与失败单元判定；2026-11-02 由 services 层迁入，SQL 只留在此处"
     },
     {
+      "path": "server/services/stockSelectionService.js",
+      "role": "application",
+      "batch": 3,
+      "status": "registered",
+      "note": "选股用例编排：读标准事实→调纯规则→质量裁决→事务落库；0 SQL/0 联网/0 DOM"
+    },
+    {
+      "path": "server/services/stockSelectionInputsSync.js",
+      "role": "application",
+      "batch": 3,
+      "status": "registered",
+      "note": "选股输入补齐编排：缺口队列与既有采集入口；SQL 已移入 stockSelectionRepository，0 SQL"
+    },
+    {
+      "path": "server/services/stockSelectionBacktest.js",
+      "role": "application",
+      "batch": 3,
+      "status": "registered",
+      "note": "选股回测用例编排：复用规则/组合纯函数与仓储读取，0 SQL"
+    },
+    {
       "path": "server/services/valuationFetchQuality.js",
       "role": "application",
       "batch": 3,
@@ -1615,6 +1636,48 @@
       "batch": 3,
       "status": "registered",
       "note": "启动构建身份（提交号/启动时刻/进程号）供 /health 自述；只读 Git 与进程环境，不访问业务库"
+    },
+    {
+      "path": "server/domain/stockSelectionRules.js",
+      "role": "domain",
+      "batch": 3,
+      "status": "registered",
+      "note": "选股四项规则、年度异常、排名与市场准入纯函数"
+    },
+    {
+      "path": "server/domain/stockSelectionPortfolio.js",
+      "role": "domain",
+      "batch": 3,
+      "status": "registered",
+      "note": "选股组合席位、行业上限与风险跳过纯函数"
+    },
+    {
+      "path": "server/domain/lixingerIndustry.js",
+      "role": "domain",
+      "batch": 3,
+      "status": "registered",
+      "note": "行业路径解析纯函数（申万/恒生）"
+    },
+    {
+      "path": "server/repositories/stockSelectionRepository.js",
+      "role": "repository",
+      "batch": 3,
+      "status": "registered",
+      "note": "选股标准事实读写（SQL 只在此）"
+    },
+    {
+      "path": "server/repositories/industryRepository.js",
+      "role": "repository",
+      "batch": 3,
+      "status": "registered",
+      "note": "行业节点与公司归属写入"
+    },
+    {
+      "path": "public/js/stock-selection.js",
+      "role": "frontend_legacy",
+      "batch": 4,
+      "status": "registered",
+      "note": "选股中心页面脚本：尚未拆分 Presenter/View，按存量前端登记"
     }
   ],
   "globalContracts": {
@@ -1680,6 +1743,15 @@
         ],
         "batch": 2,
         "status": "retire_planned"
+      },
+      {
+        "symbol": "ssState",
+        "kind": "variable",
+        "file": "public/js/presenters/stock-selection-presenter.js",
+        "consumers": [
+          "public/js/stock-selection.js",
+          "public/js/presenters/stock-selection-presenter.js"
+        ]
       }
     ],
     "pages": [
@@ -1704,6 +1776,17 @@
             "requiredSymbols": [
               "stockAnalysisState",
               "securityAnalysisLoadList"
+            ]
+          },
+          {
+            "name": "stock-selection",
+            "scripts": [
+              "public/js/api/stock-selection-api.js",
+              "public/js/presenters/stock-selection-presenter.js",
+              "public/js/stock-selection.js"
+            ],
+            "requiredSymbols": [
+              "ssState"
             ]
           }
         ]
@@ -1945,11 +2028,12 @@
       "public/js/market-cycle-metrics.js",
       "public/js/market-volatility.js",
       "public/js/position-comparison.js",
-      "public/js/stock-analysis.js",
       "public/js/stock-analysis-statements.js",
-      "public/shared/core-quote.js",
+      "public/js/stock-analysis.js",
+      "public/js/stock-selection.js",
       "public/shared/core-account.js",
-      "public/shared/core-earnings.js"
+      "public/shared/core-earnings.js",
+      "public/shared/core-quote.js"
     ],
     "pending": []
   },

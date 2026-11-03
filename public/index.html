@@ -16,6 +16,7 @@
 <link rel="stylesheet" href="css/stock-analysis.css?v=__APP_VERSION__">
 <link rel="stylesheet" href="css/share.css?v=__APP_VERSION__">
 <link rel="stylesheet" href="css/market-volatility.css?v=__APP_VERSION__">
+<link rel="stylesheet" href="css/stock-selection.css?v=__APP_VERSION__">
 <link rel="stylesheet" href="vendor/vditor/dist/index.css?v=20260904">
 <link rel="stylesheet" href="css/knowledge.css?v=__APP_VERSION__">
 <link rel="stylesheet" href="css/feedback.css?v=__APP_VERSION__">
@@ -37,6 +38,7 @@
         <button class="main-tab" data-main="ipo">打新日历</button>
         <button class="main-tab" data-main="bond-safety">可转债</button>
         <button class="main-tab" data-main="stock-analysis">证券分析</button>
+        <button class="main-tab" data-main="stock-selection">股票筛选</button>
         <button class="main-tab" data-main="market-volatility">市场周期</button>
         <button class="main-tab" data-main="arbitrage">套利机会<span id="arb-unread-count" class="arb-nav-badge" aria-live="polite" hidden></span></button>
         <button class="main-tab" data-main="feedback">反馈</button>
@@ -553,6 +555,55 @@
       <section class="bond-analysis-section"><h3>正股相关</h3><div id="bond-analysis-stock"></div></section>
       <section class="bond-analysis-section"><h3>评级历史</h3><div id="bond-analysis-ratings"></div></section>
       <div class="bond-analysis-status" id="bond-analysis-status"></div>
+    </div>
+  </div>
+</div>
+
+<!-- 股票筛选（一级页，投资策略选股中心） -->
+<div class="main-page" id="main-stock-selection">
+  <div class="feature-page-shell ss-shell">
+    <div class="ss-hero">
+      <div>
+        <h2>投资策略选股中心</h2>
+        <p>按低 PB、十年出现过高 PB、有现金分红、净资产达标四项条件筛股；A股与港股各自独立排名，每个市场最多 30 只等权席位。仅供研究参考，不构成投资建议。</p>
+      </div>
+      <span id="ss-updated">页面只读数据库，不会触发外部采集</span>
+    </div>
+    <div class="ss-tabs" id="ss-tabs">
+      <button type="button" data-ss-market="CN" class="active">A股</button>
+      <button type="button" data-ss-market="HK">港股</button>
+    </div>
+    <div id="ss-status" class="ss-status"></div>
+    <div id="ss-market-cards" class="ss-cards"></div>
+    <ul class="ss-rule-list">
+      <li><strong>准入</strong>：市场估值代理 PB 严格小于 2 才配置；PB 等于或高于 2 本轮不配置，PB 缺失按数据故障处理，不解释成便宜。</li>
+      <li><strong>R01 当前 PB</strong>：0 &lt; PB ≤ 1.5。</li>
+      <li><strong>R02 十年 PB</strong>：最近十年内至少出现一次 PB 严格大于 1。</li>
+      <li><strong>R04 股息率</strong>：近十二个月已实施、已除息的税前现金股息率严格大于 0。</li>
+      <li><strong>R05 净资产</strong>：归母净资产折人民币不低于 100 亿元。</li>
+      <li><strong>排名</strong>：PB 升序、静态 PE 升序、股息率降序，三项名次相加，越小越优；亏损与零利润按规则记分，不作为低估优先。</li>
+      <li><strong>组合</strong>：每市场 30 个等权席位，单一行业不超过该市场预算的 20%，合格股不足则留现金。</li>
+    </ul>
+    <div class="table-wrap">
+      <div class="table-header">
+        <h3>季度批次</h3>
+        <select id="ss-run-select" aria-label="选择季度批次"><option value="">正在读取...</option></select>
+      </div>
+      <div id="ss-run-header" class="ss-run-header"></div>
+      <div id="ss-candidates"></div>
+    </div>
+    <div class="table-wrap">
+      <div class="table-header"><h3>目标组合（等权 30 席）</h3></div>
+      <div id="ss-portfolio"></div>
+    </div>
+    <div id="ss-detail" class="ss-detail" hidden></div>
+    <div class="table-wrap">
+      <div class="table-header"><h3>历史回测</h3></div>
+      <div id="ss-backtests"></div>
+    </div>
+    <div class="table-wrap">
+      <div class="table-header"><h3>我的资金设置</h3></div>
+      <div id="ss-settings"></div>
     </div>
   </div>
 </div>
@@ -1244,6 +1295,9 @@
 <script type="text/lazy" data-lazy-section="market-volatility" src="js/presenters/market-volatility-presenter.js?v=__APP_VERSION__"></script>
 <script type="text/lazy" data-lazy-section="market-volatility" src="js/market-cycle-metrics.js?v=__APP_VERSION__"></script>
 <script type="text/lazy" data-lazy-section="market-volatility" src="js/presenters/market-cycle-metrics-presenter.js?v=__APP_VERSION__"></script>
+<script type="text/lazy" data-lazy-section="stock-selection" src="js/api/stock-selection-api.js?v=__APP_VERSION__"></script>
+<script type="text/lazy" data-lazy-section="stock-selection" src="js/presenters/stock-selection-presenter.js?v=__APP_VERSION__"></script>
+<script type="text/lazy" data-lazy-section="stock-selection" src="js/stock-selection.js?v=__APP_VERSION__"></script>
 <script src="js/home-dashboard.js?v=__APP_VERSION__" defer></script>
 <script src="js/presenters/home-dashboard-presenter.js?v=__APP_VERSION__" defer></script>
 <!-- 持仓页标题右侧的「仓位对比」按钮与官方标杆发布下拉也由本脚本渲染，故 holdings 栏目同样需要加载 -->

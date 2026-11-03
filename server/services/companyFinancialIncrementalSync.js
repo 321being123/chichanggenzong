@@ -324,10 +324,56 @@ function selectCompanyBatch(queue, requestedLimit, options = {}) {
   return batch;
 }
 
+// 该任务只有两个显式模式 + 默认 core。未知模式必须直接拒绝，
+// 不能像以前那样静默落进转债正股默认流程——那会把"选股补齐"做成"又跑了一遍转债"（SSV-01）。
+const KNOWN_MODES = new Set(['core', 'stock_analysis', 'selection_inputs']);
+
 async function runCompanyFinancialIncrementalSync(reason = 'scheduled', options = {}) {
+  const requestedMode = options.mode === undefined ? 'core' : String(options.mode);
+  if (!KNOWN_MODES.has(requestedMode)) {
+    const error = new Error(`不支持的财务同步模式：${requestedMode}`);
+    error.code = 'UNKNOWN_MODE';
+    throw error;
+  }
   if (!(await tryClaimJob(JOB_NAME))) return { ok: false, skipped: true, reason: 'already_running' };
   const runId = await startJobRun(JOB_NAME);
   try {
+    if (requestedMode === 'selection_inputs') {
+      // 选股输入补齐：按市场/目标日冻结缺口，逐公司复用既有数据层与标准层写入，不新增采集链。
+      const { syncSelectionInputs } = require('./stockSelectionInputsSync');
+      const result = await syncSelectionInputs({
+        market: options.market,
+        asOfDate: options.targetTradeDate || options.asOfDate || options.targetDate,
+        batchLimit: options.batchLimit,
+      });
+      // R3-01：完成裁决必须与底层同一口径、同一全域剩余量。原实现只相加财报与行业，
+      // 结果"只剩估值缺口"时外层仍报 succeeded/stageComplete=true 而停止续批；
+      // 同时没有 stageCompletedKind，缺口真清空后又过不了槽位门禁（要求 inputs_cleared）。
+      const remainingFinancial = Number(result.remainingFinancial || 0);
+      const remainingIndustry = Number(result.remainingIndustry || 0);
+      const remainingValuation = Number(result.remainingValuation || 0);
+      const remainingUnclassified = Number(result.remainingUnclassified || 0);
+      const remaining = remainingFinancial + remainingIndustry + remainingValuation + remainingUnclassified;
+      // 底层 ok=false 也继续跑（有剩余就要续批），但绝不能在未清空时宣告完成。
+      const cleared = remaining === 0 && result.ok === true;
+      const status = cleared ? 'succeeded'
+        : result.status === 'blocked' ? 'blocked' : 'partial';
+      await finishJobRun(runId, cleared,
+        `选股输入补齐：处理 ${result.processed}（行业 ${result.industryProcessed || 0}），成功 ${result.succeeded}，`
+        + `剩余待补 ${remaining}（财报 ${remainingFinancial}、行业 ${remainingIndustry}、估值 ${remainingValuation}、未分类 ${remainingUnclassified}）`);
+      return Object.assign(result, {
+        mode: 'selection_inputs',
+        // 本阶段不发布数据集（写的是同一张标准表）；有剩余就续批，清空才算阶段完成。
+        publishDatasetCodes: [],
+        remainingFinancial, remainingIndustry, remainingValuation, remainingUnclassified, remaining,
+        continuationRequired: !cleared,
+        stageComplete: cleared,
+        stageCompletedKind: cleared ? 'inputs_cleared' : 'inputs_gaps_pending',
+        pendingStages: cleared ? [] : ['selectionInputs'],
+        reason: cleared ? undefined : (result.reason || 'selection_inputs_gaps_pending'),
+        status,
+      });
+    }
     if (options.mode === 'stock_analysis') {
       const result = await syncRequestedStockAnalysis(options);
       await finishJobRun(runId, true, `指定股票分析完成：${result.tsCode}`);

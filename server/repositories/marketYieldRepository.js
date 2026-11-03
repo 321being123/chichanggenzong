@@ -12,11 +12,43 @@ async function saveHsiMarketValuation(day, pe, row, sourceCode = 'hsi_official')
       VALUES('HK','HSI',$1,$2,$4,$1,$3) ON CONFLICT(market_code,benchmark_code,trade_date,source_code) DO UPDATE SET pe=EXCLUDED.pe,raw_payload=EXCLUDED.raw_payload,ingested_at=now()`, [day, pe, JSON.stringify(row), sourceCode]);
 }
 
-async function saveHsiIndexHistory(day, pe, row, sourceCode = 'hsi_official') {
-  return pool.query(`INSERT INTO market.index_valuation_history(index_code,valuation_method,trade_date,pe_ttm,source_code,raw_payload)
-      VALUES('HSI','market_cap_weighted',$1,$2,$4,$3)
+async function saveHsiIndexHistory(day, pe, row, sourceCode = 'hsi_official', pb = null) {
+  // 2026-11-03：PB 与 PE 同源贯通（投资策略选股中心的数据前提）。
+  // 官方一次请求同时返回 pe_ttm.mcw 与 pb.mcw，旧实现只写 PE，选股拿不到恒指 PB。
+  // 这里 PB 允许为空：本批没有 PB 时保留表内已有值，不能用 null 覆盖历史正确值。
+  return pool.query(`INSERT INTO market.index_valuation_history(index_code,valuation_method,trade_date,pe_ttm,pb,source_code,raw_payload)
+      VALUES('HSI','market_cap_weighted',$1,$2,$5,$4,$3)
       ON CONFLICT(index_code,valuation_method,trade_date,source_code) DO UPDATE SET
-        pe_ttm=EXCLUDED.pe_ttm,raw_payload=EXCLUDED.raw_payload,ingested_at=now()`, [day, pe, JSON.stringify(row), sourceCode]);
+        pe_ttm=EXCLUDED.pe_ttm,pb=COALESCE(EXCLUDED.pb,market.index_valuation_history.pb),raw_payload=EXCLUDED.raw_payload,ingested_at=now()`,
+  [day, pe, JSON.stringify(row), sourceCode, Number.isFinite(Number(pb)) && Number(pb) > 0 ? Number(pb) : null]);
+}
+
+/**
+ * 中证系指数（沪深300 / 中证全指）当日估值写入 index_valuation_history。
+ * 与 saveCsiValuations 的区别：那张表是市场周期既有消费者用的 PE 事实表（无 PB 列），
+ * 本函数专门给选股等需要指数 PB 的场景补同源 PE+PB，方法与来源口径保持一致（market_cap_weighted / 官方）。
+ */
+async function saveIndexValuationHistoryRows({ indexCode, rows, sourceCode }) {
+  if (!indexCode || !Array.isArray(rows) || !rows.length) return { rowCount: 0 };
+  const values = [];
+  const params = [];
+  let p = 1;
+  for (const row of rows) {
+    const pb = Number.isFinite(Number(row.pb)) && Number(row.pb) > 0 ? Number(row.pb) : null;
+    const pe = Number.isFinite(Number(row.pe)) && Number(row.pe) > 0 ? Number(row.pe) : null;
+    if (!row.day || (pe === null && pb === null)) continue;
+    values.push(`($${p++},'market_cap_weighted',$${p++},$${p++},$${p++},$${p++},$${p++}::jsonb)`);
+    params.push(indexCode, row.day, row.marketCap === undefined ? null : row.marketCap, pe, pb, sourceCode, JSON.stringify(row.raw || {}));
+  }
+  if (!values.length) return { rowCount: 0 };
+  return pool.query(`INSERT INTO market.index_valuation_history
+      (index_code,valuation_method,trade_date,market_cap,pe_ttm,pb,source_code,raw_payload)
+      VALUES ${values.join(',')}
+      ON CONFLICT(index_code,valuation_method,trade_date,source_code) DO UPDATE SET
+        market_cap=COALESCE(EXCLUDED.market_cap,market.index_valuation_history.market_cap),
+        pe_ttm=COALESCE(EXCLUDED.pe_ttm,market.index_valuation_history.pe_ttm),
+        pb=COALESCE(EXCLUDED.pb,market.index_valuation_history.pb),
+        raw_payload=EXCLUDED.raw_payload,ingested_at=now()`, params);
 }
 
 // 水位按来源分开看：来源一换（csindex → lixinger_official）就自然走全量回填，
@@ -213,4 +245,4 @@ async function countMarketCap() {
   return pool.query("SELECT count(*)::int AS n FROM market.a_share_market_cap_daily WHERE source_code='tushare_daily_basic'");
 }
 
-module.exports = { saveChinaYield, saveHsiMarketValuation, saveHsiIndexHistory, readCsiWatermark, saveCsiValuations, readUsYieldWatermark, saveUsYieldBatch, readMoneyWatermark, saveMoneySupply, readCsi300Watermark, saveCsi300Valuations, readM2Inputs, calculateM2MarketCap, listMarketCapDates, saveMarketCap, readSubdatasetFreshness, listOpenTradingDays, countChinaYield, countMarketCap };
+module.exports = { saveChinaYield, saveHsiMarketValuation, saveHsiIndexHistory, readCsiWatermark, saveCsiValuations, readUsYieldWatermark, saveUsYieldBatch, readMoneyWatermark, saveMoneySupply, readCsi300Watermark, saveCsi300Valuations, readM2Inputs, calculateM2MarketCap, listMarketCapDates, saveMarketCap, readSubdatasetFreshness, listOpenTradingDays, countChinaYield, countMarketCap, saveIndexValuationHistoryRows };

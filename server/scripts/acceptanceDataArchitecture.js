@@ -440,8 +440,11 @@ async function runDatabaseChecks() {
     '计划实例、租约和 waiting_external 状态均由 PostgreSQL 持久化', queueRows[0] || {});
 
   const declaredCalls = JOB_DEFINITIONS.reduce((sum, job) => sum + declaredDailyExternalCallBudget(job), 0);
-  // 任务数随定义增删调整：2026-10-25 新增 notification_dispatch（原 28 → 29）
-  addCheck(checks, 'job_matrix_budget', JOB_DEFINITIONS.length === 29 && declaredCalls <= 80,
+  // 任务数随定义增删调整：2026-10-25 新增 notification_dispatch（28→29）；
+  // 2026-11-02 新增 account_price_backfill（29→30）。
+  // 2026-11-03 核对：本分支定义数已为 30，但断言仍写 29，导致门禁稳定失败；按实际定义数修正，
+  // 不改预算上限（仍为任务报表目标 80/日，不是来源日限额）。
+  addCheck(checks, 'job_matrix_budget', JOB_DEFINITIONS.length === 30 && declaredCalls <= 80,
     `任务定义 ${JOB_DEFINITIONS.length} 个，声明预算 ${declaredCalls}/日（任务报表目标≤80，不是来源日限额）`,
     { jobs: JOB_DEFINITIONS.length, declaredCalls });
 

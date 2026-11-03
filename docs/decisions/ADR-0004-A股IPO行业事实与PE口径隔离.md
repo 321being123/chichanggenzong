@@ -1,5 +1,14 @@
 # ADR-0004：A 股 IPO 行业事实与 PE 口径隔离
 
+2026-11-03 五轮整改（R5-01—R5-03）：只改选股补数进度、分红可见性与季度去重判据；A股IPO行业事实、行业PE 与产业链口径不受影响，本ADR决策不变。
+2026-11-03 四轮整改（R4-01/R4-05）：只改调度领取依赖解析与选股季度去重判据；A股IPO行业事实、行业PE 与产业链口径不受影响，本ADR决策不变。
+2026-11-03 三轮整改（R3-01/R3-04）：`jobDefinitions` 只调整选股季度终态白名单（新增 `no_eligible_member`）；A股IPO行业事实、行业PE 与产业链口径不受影响，本ADR决策不变。
+2026-11-03 二轮整改（R2-05/R2-07）：`jobDefinitions` 仅调整选股模式的阶段完成判定（`stageCompletedKind` 白名单）；`core.industry_nodes`/公司归属写入未改（仍走 `industryRepository.upsertIndustryPath`），A股IPO行业事实、行业PE 与产业链口径不受影响。
+2026-11-03 追加核对（股票筛选·港股一级行业接入）：`core.industry_nodes`/`core.company_industry_memberships` 的写入改为 `industryRepository.upsertIndustryPath`（全层级 + 父子链、只顶掉同体系旧归属），读取改为沿 `parent_id` 回溯一级；新增迁移 185 登记 `HSICS` 体系。A股IPO行业事实、IPO行业PE、申万二级回退与预测输入均未改动，本ADR决策不变。
+2026-11-03 整改补记（投资策略选股独立验收）：`jobDefinitions` 只改个股分析刷新与财务增量同步的模式声明与选股数据集，A股IPO行业事实、行业PE口径、申万二级回退与预测输入均未改动；本ADR决策不变。
+2026-11-03 共享文件核对（投资策略选股中心）：`jobDefinitions` 只改 `stock_analysis_refresh` 的模式声明与选股分区，A股IPO行业事实、行业PE口径、申万二级回退与预测输入均未改动；本ADR决策不变。
+
+
 2026-10-29 共享文件核对（0.9.0.4）：`server/routes/ipo.js` 仅补回 `/report` 分支丢失的 `total` 声明（不带日期访问原会 500）；行业事实、PE 口径、申万二级行业回退与预测输入均未改动。
 
 2026-10-27 共享入口核对（应用分层批次3，本地实现、未部署）：IPO 的 SQL 与 SQL 片段生成器由 `server/routes/ipo.js` 整段迁入 `server/repositories/ipoRepository.js`，`hkOfferPhaseSql`／`stockFieldStatusSql` 仍从路由转发导出；字段口径、行业/PE 判定、预测模型与门禁均未改动，只改实现位置。港股 IPO 继续暂停，不因本次结构迁移恢复任何来源或任务。

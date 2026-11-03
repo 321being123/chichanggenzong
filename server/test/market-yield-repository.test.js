@@ -19,7 +19,7 @@ pool.query = async (sql, params) => { calls.push({ sql, params }); return { rows
     assert.match(calls[1].sql, /market\.market_valuation_daily/);
     assert.match(calls[2].sql, /market\.index_valuation_history/);
     // 恒指估值同样按来源入参：默认 hsi_official，理杏仁官方优先时写 lixinger_official。
-    assert.deepStrictEqual(calls[2].params, ['2026-10-27', 12, JSON.stringify(sample), 'hsi_official']);
+    assert.deepStrictEqual(calls[2].params, ['2026-10-27', 12, JSON.stringify(sample), 'hsi_official', null]);
     // 中证系指数 PE 落 market_valuation_daily：沪深300 与全市场都已切理杏仁官方（总市值加权），
     // 默认来源即 lixinger_official；中证官网口径（csindex）不再写入，仅在清理旧行时按条件删除。
     // source_date 与 trade_date 复用同一个参数（$2）。
@@ -81,6 +81,38 @@ pool.query = async (sql, params) => { calls.push({ sql, params }); return { rows
     assert.match(calls[4].sql, /source_code='tushare_us_tycr'/);
     assert.match(calls[7].sql, /data_status='normal'/);
     await assert.rejects(repo.readSubdatasetFreshness('unknown'), /未知市场周期数据集/);
+    // 2026-11-03：指数 PB 与 PE 同源贯通（投资策略选股的市场准入前提）。
+    // 恒指写入必须带 PB，且缺 PB 时不能把表内已有值覆盖成空。
+    calls.length = 0;
+    await repo.saveHsiIndexHistory('2026-10-28', 11.5, {}, 'lixinger_official', 1.23);
+    assert.match(calls[0].sql, /pe_ttm,pb,source_code/);
+    assert.match(calls[0].sql, /pb=COALESCE\(EXCLUDED\.pb,market\.index_valuation_history\.pb\)/);
+    assert.strictEqual(calls[0].params[4], 1.23);
+    // 非正数或非有限值的 PB 视为缺失，传 null 而不是 0。
+    await repo.saveHsiIndexHistory('2026-10-29', 11.5, {}, 'lixinger_official', 0);
+    assert.strictEqual(calls[1].params[4], null);
+    // 中证系（沪深300/中证全指）写入指数估值历史：保留 PE 与 PB，同样不覆盖已有值。
+    calls.length = 0;
+    await repo.saveIndexValuationHistoryRows({
+      indexCode: '000985',
+      sourceCode: 'lixinger_official',
+      rows: [
+        { day: '2026-10-30', pe: 18.16, pb: 1.52, marketCap: 5e13, raw: { 'pe_ttm.mcw': 18.16, 'pb.mcw': 1.52 } },
+        { day: '2026-10-31', pe: null, pb: 1.5, raw: {} },
+        { day: null, pe: 1, pb: 1 },
+      ],
+    });
+    assert.match(calls[0].sql, /market\.index_valuation_history/);
+    assert.match(calls[0].sql, /pb=COALESCE\(EXCLUDED\.pb,market\.index_valuation_history\.pb\)/);
+    assert.strictEqual(calls[0].params[0], '000985');
+    assert.strictEqual(calls[0].params[3], 18.16);
+    assert.strictEqual(calls[0].params[4], 1.52);
+    // 只有 PB 没有 PE 的行也必须写：选股只需要 PB，不能因 PE 缺失丢掉整行。
+    // 每行 7 个参数（indexCode, day, marketCap, pe, pb, sourceCode, raw），第二行起点是 7。
+    assert.strictEqual(calls[0].params[8], '2026-10-31');
+    assert.strictEqual(calls[0].params[10], null);
+    assert.strictEqual(calls[0].params[11], 1.5);
+    assert.strictEqual(calls[0].params.length, 14, '三行里缺日期的一行被丢弃，只剩两条');
     console.log('market yield repository: parameter binding and write order passed');
   } finally { pool.query = original; await pool.end(); }
 })().catch(error => { console.error(error); process.exitCode = 1; });

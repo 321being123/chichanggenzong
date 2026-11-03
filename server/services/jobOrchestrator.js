@@ -55,18 +55,21 @@ function tierOfDefinition(definition) {
 // market 没被带进来 → runSelectionMode 在入口直接判 selection_market_required 阻断，
 // 任务 12 秒失败，季度批次永远生成不出来，页面永久空白。
 // 同类字段一起补：market（必需）、quarter（管理员指定季度）、requestId（可追溯）、
-// targetDate（预览/补数必须按管理员指定目标日，不能用槽位业务日顶替）。
+// targetDate（预览/补数必须按管理员指定目标日，不能用槽位业务日顶替）、
+// batchLimit（补数批次大小——漏了会静默退回默认 20 只，吞吐被批次间隔拖垮）。
 function selectionContextOf(claimed) {
   const payload = (claimed && claimed.request_payload) || {};
   const mode = String(payload.mode || '');
   if (!mode.startsWith('selection_')) return {};
   const market = String(payload.market || '').toUpperCase();
   const targetDate = String(payload.targetDate || payload.targetTradeDate || '').slice(0, 10);
+  const batchLimit = Number(payload.batchLimit);
   return {
     ...(market ? { market } : {}),
     ...(payload.quarter ? { quarter: String(payload.quarter) } : {}),
     ...(payload.requestId ? { requestId: String(payload.requestId) } : {}),
     ...(targetDate ? { targetDate } : {}),
+    ...(Number.isInteger(batchLimit) && batchLimit > 0 ? { batchLimit } : {}),
     ...(claimed.job_code === 'company_financial_incremental_sync' && targetDate ? { targetTradeDate: targetDate } : {}),
   };
 }

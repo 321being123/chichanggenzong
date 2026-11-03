@@ -54,6 +54,16 @@ async function main() {
     assert.strictEqual(context.targetTradeDate, '2026-10-30', '缺目标日会把缺口补到错误的一天');
   });
 
+  await check('补数：batchLimit 必须带进上下文，否则静默退回默认 20 只', () => {
+    const context = orchestrator.selectionContextOf(slotOf('company_financial_incremental_sync',
+      { mode: 'selection_inputs', market: 'CN', targetTradeDate: '2026-10-30', batchLimit: 120 }));
+    assert.strictEqual(context.batchLimit, 120, '批次大小丢失会让每批只跑 20 只，吞吐被批间隔拖垮');
+    // 非法/缺省时不伪造：交给 syncSelectionInputs 用默认值
+    const noLimit = orchestrator.selectionContextOf(slotOf('company_financial_incremental_sync',
+      { mode: 'selection_inputs', market: 'CN', targetTradeDate: '2026-10-30', batchLimit: 'abc' }));
+    assert.strictEqual(Object.prototype.hasOwnProperty.call(noLimit, 'batchLimit'), false);
+  });
+
   await check('非选股模式：不注入选股字段，原有个股刷新流程不受影响', () => {
     const empty = orchestrator.selectionContextOf(slotOf('stock_analysis_refresh', { mode: 'core' }));
     assert.deepStrictEqual(empty, {});

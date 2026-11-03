@@ -39,16 +39,20 @@ async function runSelectionMode(mode, reason, context) {
     const result = await service.runQuarterly({ market, quarter, requestId: context.requestId });
     if (!result.ok) return Object.assign(result, { publishDatasets: false, mode });
     const { publishDatasetSnapshot } = require('../services/datasetPartitionRegistry');
+    // R3-04：明确零合格是有效空仓结果，已正式发布时允许写 0 行分区（分区本身就是"本期无持仓"的证据），
+    // 否则它会被当成"没有数据"而永远停在 preview_only、季度反复续跑。
+    const publishedZeroSelection = result.published === true && Number(result.selectedCount || 0) === 0;
     // 只有正式发布的季度组合才产生可投资数据分区；预览状态的分区明确标 preview_only。
     const publication = await publishDatasetSnapshot(selectionDatasetCode(market, 'snapshot'), {
       partitionKey: result.quarterDate || quarterDateFallback(result.quarter),
       dataAsOf: result.quarterDate || quarterDateFallback(result.quarter),
       rowCount: result.selectedCount,
+      allowEmpty: publishedZeroSelection,
       diagnostics: {
         quality_status: result.qualityStatus,
         business_status: result.businessStatus,
         query_status: 'success',
-        coverage_status: result.published ? 'released' : 'preview_only',
+        coverage_status: result.published ? (publishedZeroSelection ? 'verified_no_member' : 'released') : 'preview_only',
         run_id: result.runId,
       },
       reason: 'job:stock_analysis_refresh:selection_quarterly',
@@ -59,15 +63,18 @@ async function runSelectionMode(mode, reason, context) {
     // R2-05：阶段完成必须是**四种终态之一**，不能只看分区行有没有写成功：
     //   quarterly_published = 正式季度组合已发布且分区已落库（唯一"正式完成"）
     //   market_closed       = 指数 PB≥2 的正常业务关闭，是可核验的终态（有 runId 与质量结论）
+    //   no_eligible_member  = 输入完整但没有合格股票：本季明确空仓（R3-04），不是数据缺口
     //   preview_only        = 只记录了部分/预览结果，输入未补齐 → 不得算完成，必须续跑
     //   failed              = 已发布但分区写入失败
     const released = result.published === true && publication.published === true;
     // 正常市场关闭（指数 PB≥2）不是数据缺失：本季度本就不该持股。
     // 它的终态证据是"该季度的质量裁决已经算出 market_closed"，不写空分区冒充已发布。
     const marketClosed = !released && result.businessStatus === 'market_closed' && Boolean(result.runId);
+    const zeroSelection = released && Number(result.selectedCount || 0) === 0;
     const stageCompletedKind = publicationFailed ? 'failed'
-      : released ? 'quarterly_published'
-        : marketClosed ? 'market_closed' : 'preview_only';
+      : zeroSelection ? 'no_eligible_member'
+        : released ? 'quarterly_published'
+          : marketClosed ? 'market_closed' : 'preview_only';
     const stageComplete = released || marketClosed;
     const resultBody = {
       ok: stageComplete && !publicationFailed,
@@ -103,7 +110,7 @@ async function runSelectionMode(mode, reason, context) {
           quality_status: result.qualityStatus,
           business_status: result.businessStatus,
           query_status: 'success',
-          coverage_status: released ? 'released' : (marketClosed ? 'market_closed' : 'preview_only'),
+          coverage_status: released ? (zeroSelection ? 'verified_no_member' : 'released') : (marketClosed ? 'market_closed' : 'preview_only'),
           run_id: result.runId,
           publication_reason: publication && publication.reason ? publication.reason : null,
           published: Boolean(publication && publication.published),

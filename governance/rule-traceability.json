@@ -4623,6 +4623,78 @@
       ],
       "owner": "WorkBuddy",
       "status": "implemented"
+    },
+    {
+      "id": "SELECTION-INPUTS-RUNNER-COMPLETION-234",
+      "title": "选股输入补齐的完成裁决必须与槽位门禁同源：剩余量覆盖财报/行业/估值/未分类，清空且底层成功才返回 inputs_cleared",
+      "implementation": {
+        "file": "server/services/companyFinancialIncrementalSync.js",
+        "symbol": "runCompanyFinancialIncrementalSync"
+      },
+      "tests": [
+        {
+          "file": "server/test/stock-selection-review-r3.test.js",
+          "pattern": "R3-01"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "implemented"
+    },
+    {
+      "id": "SELECTION-INPUT-GAP-QUEUE-ROTATION-235",
+      "title": "选股缺口续跑队列必须在审计前读取上次进度，失败与无进展对象都轮转到队尾，避免固定失败前缀占满批次",
+      "implementation": {
+        "file": "server/services/stockSelectionInputsSync.js",
+        "symbol": "syncSelectionInputs"
+      },
+      "tests": [
+        {
+          "file": "server/test/stock-selection-review-r3.test.js",
+          "pattern": "R3-02"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "implemented"
+    },
+    {
+      "id": "SELECTION-ANNUAL-DIVIDEND-EVIDENCE-236",
+      "title": "年度分红完整性独立于记录行数：只有年末已实施且金额已知才算已知，预案/仅中期/总额缺失一律保留 NULL 并判待补",
+      "implementation": {
+        "file": "server/repositories/stockSelectionRepository.js",
+        "symbol": "loadAnnualDividends"
+      },
+      "tests": [
+        {
+          "file": "server/test/stock-selection-review-r3.test.js",
+          "pattern": "R3-03"
+        },
+        {
+          "file": "server/test/stock-selection-pipeline.test.js",
+          "pattern": "SSV-04"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "implemented"
+    },
+    {
+      "id": "SELECTION-ZERO-ELIGIBLE-TERMINAL-237",
+      "title": "输入完整但无合格股票是有效空仓终态：不得计入待补，季度按 no_eligible_member 推进且允许 0 行分区",
+      "implementation": {
+        "file": "server/services/stockSelectionService.js",
+        "symbol": "businessStatusOf"
+      },
+      "tests": [
+        {
+          "file": "server/test/stock-selection-review-r3.test.js",
+          "pattern": "R3-04"
+        },
+        {
+          "file": "server/test/stock-selection-review-r2.test.js",
+          "pattern": "R2-05"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "implemented"
     }
   ]
 }

@@ -291,10 +291,10 @@ function externalCallLimitForMode(definition, mode = 'core') {
   return Math.max(Number(value) || 0, 0);
 }
 
-// 选股各模式的合法完成终态（R2-05）：只认"正式发布 / 正常关闭 / 预览已记录 / 缺口已清空 /
-// 回测可评估"，不允许用"分区行写成功"或 ok:true 冒充。
+// 选股各模式的合法完成终态（R2-05 / R3-04）：只认"正式发布 / 正常关闭 / 明确空仓 /
+// 预览已记录 / 缺口已清空 / 回测可评估"，不允许用"分区行写成功"或 ok:true 冒充。
 const SELECTION_STAGE_KINDS = Object.freeze({
-  selection_quarterly: ['quarterly_published', 'market_closed'],
+  selection_quarterly: ['quarterly_published', 'market_closed', 'no_eligible_member'],
   selection_preview: ['preview_recorded'],
   selection_backtest: ['backtest_evaluated'],
   selection_inputs: ['inputs_cleared'],

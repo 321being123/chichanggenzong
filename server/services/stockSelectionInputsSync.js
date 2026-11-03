@@ -152,16 +152,19 @@ async function syncSelectionInputs(input) {
   }
   const limit = Number.isFinite(Number(input.batchLimit)) && Number(input.batchLimit) > 0
     ? Math.floor(Number(input.batchLimit)) : 20;
-  const audit = await service.auditInputs({ market, asOfDate });
-  const { financial: fundamental, industry, valuation, unclassified } = classifyGaps(audit.gaps || []);
-  // 上一次失败过的代码排到队尾，本批不再反复撞同一个失败前缀。
+  // 上一次的续跑进度必须在审计**之前**读取（R3-02）：auditInputs 会把同一市场的
+  // cursor_payload 整体替换掉（它只写本次审计结果），若在审计后再读，
+  // 拿到的永远是刚被清空 lastRun 的新记录，失败轮转等于从未生效，
+  // 全市场批次会被固定的失败前缀反复占满、后面的股票永远轮不到。
   let previouslyFailed = new Set();
   try {
     const lastQueue = await repo.readInputGapQueue({ market });
-    const codes = (lastQueue && lastQueue.cursor_payload && lastQueue.cursor_payload.lastRun
-      && lastQueue.cursor_payload.lastRun.failedCodes) || [];
-    previouslyFailed = new Set(codes);
+    const lastRun = (lastQueue && lastQueue.cursor_payload && lastQueue.cursor_payload.lastRun) || {};
+    // failedCodes = 本次失败；deferredCodes = 返回了结果但缺口仍未解除（无进展也不能占着队首）。
+    previouslyFailed = new Set([...(lastRun.failedCodes || []), ...(lastRun.deferredCodes || [])]);
   } catch (_) { /* 读不到历史队列不影响本次补齐，只失去轮转顺序 */ }
+  const audit = await service.auditInputs({ market, asOfDate });
+  const { financial: fundamental, industry, valuation, unclassified } = classifyGaps(audit.gaps || []);
   const industryQueue = rotateAfterFailures(industry, previouslyFailed);
   const fundamentalQueue = rotateAfterFailures(fundamental, previouslyFailed);
   // 行业分类先补：一次取数就能补齐一条完整路径，成本低，且它是"能否发布正式组合"的阻断项，
@@ -189,6 +192,13 @@ async function syncSelectionInputs(input) {
   const after = await service.auditInputs({ market, asOfDate });
   const remaining = classifyGaps(after.gaps || []);
   const failedResults = results.concat(industryResults).filter(item => !item.ok);
+  const remainingCodes = new Set((after.gaps || []).map(gap => gap.code));
+  const failedCodes = failedResults.map(item => item.code);
+  // 本批"跑完了但缺口仍未解除"的对象同样要排到队尾（R3-02）：只轮转抛错对象时，
+  // 一批"能返回数据但补不齐"的股票会稳稳占住队首，后面的对象永远轮不到。
+  const deferredCodes = [...new Set(results.concat(industryResults)
+    .map(item => item.code)
+    .filter(code => remainingCodes.has(code) && !failedCodes.includes(code)))];
   // 队列里同时保留：补齐摘要 + 补齐后仍待补的对象明细（明细来自重新审计，不是本批结果倒推）。
   const queuePayload = {
     market,
@@ -214,7 +224,8 @@ async function syncSelectionInputs(input) {
       remainingUnclassified: remaining.unclassified.length,
       valuationCodes: remaining.valuation.slice(0, 200).map(item => item.code),
       // 失败代码持久化：下次批次据此轮转到队尾，保证剩余对象不会被同一前缀一直挡住。
-      failedCodes: failedResults.map(item => item.code).slice(0, 500),
+      failedCodes: failedCodes.slice(0, 500),
+      deferredCodes: deferredCodes.slice(0, 500),
       failedReasons: failedResults.slice(0, 50).map(item => ({ code: item.code, reason: item.reason || 'unknown' })),
     },
   };

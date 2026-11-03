@@ -105,20 +105,25 @@ function normalizeMarket(market) {
  * 年度事实构造（SSV-04）：利润与分红的完整性分别标注。
  * 没有任何分红记录的一年是"未知"，不是"零分红"——记 null 并标 dividendKnown=false，
  * 让年度异常比较整段跳过，而不是拿 0 参与求和把公司误判成异常或正常。
+ * R3-03：完整性只认仓储层给出的"该财年分红已完整取证且金额已知"；
+ * 预案、只有中期单条、已实施但总额缺失都属未知，一律保持 null，不能因 eventCount>0 就折成 0。
  */
 function buildAnnualYears(profits, annualDividends) {
   return (profits || []).map(item => {
     const dividendRow = (annualDividends || []).find(d => d.year === item.year);
-    const hasEvents = !!dividendRow && (Number(dividendRow.eventCount || 0) > 0 || dividendRow.dividendKnown === true);
+    const known = !!dividendRow && dividendRow.dividendKnown === true
+      && dividendRow.dividend !== null && dividendRow.dividend !== undefined;
     return {
       year: item.year,
       profit: item.profit === undefined ? null : item.profit,
-      dividend: hasEvents ? Number(dividendRow.dividend || 0) : null,
-      dividendKnown: hasEvents,
+      dividend: known ? Number(dividendRow.dividend) : null,
+      dividendKnown: known,
       complete: item.profit !== null && item.profit !== undefined,
       // 事实版本随年度一起保留：它是"这一年的利润有没有被更正过"的证据（R2-02）。
       sourceVersion: item.sourceVersion || null,
-      dividendBasis: hasEvents ? 'dividend_events_visible' : 'dividend_unknown',
+      dividendBasis: known
+        ? (dividendRow.dividendBasis || 'dividend_events_visible')
+        : ((dividendRow && dividendRow.dividendBasis) || 'dividend_unknown'),
     };
   }).sort((a, b) => a.year - b.year);
 }
@@ -269,7 +274,11 @@ async function computeSelection(input, tx) {
   if (!universe.length) reasons.push('universe_empty');
   if (pendingCount > 0) reasons.push('pending_objects_in_ranking_pool');
   if (industryMissing > 0) reasons.push('industry_unverified_in_ranking_pool');
-  if (portfolio.members.length === 0) reasons.push('no_eligible_member');
+  // R3-04：输入完整时"没有合格股票"是有效业务结果（本季空仓），不是数据缺口。
+  // 只有存在输入缺口或市场不可入时才把"无合格成员"记为附加阻断，
+  // 否则零合格会永远被当成待补数据、季度反复续跑却永远补不齐。
+  const inputBlocked = !gate.eligible || pendingCount > 0 || industryMissing > 0;
+  if (portfolio.members.length === 0 && inputBlocked) reasons.push('no_eligible_member');
 
   const quality = {
     publishable: reasons.length === 0,
@@ -379,7 +388,14 @@ function businessStatusOf(computed, quality) {
   if (!computed.gate.eligible) {
     return computed.gate.status === 'market_closed' ? 'market_closed' : 'market_data_missing';
   }
-  if (quality.publishable) return quality.poolSize > 0 ? 'eligible' : 'insufficient_candidates';
+  if (quality.publishable) {
+    // R3-04：可发布但没有成员 = 明确空仓。零候选池与"有候选池但全不合格"要分开，
+    // 两者都不是"数据不足"，季度应当推进而不是续跑。
+    if (!computed.portfolio.members.length) {
+      return quality.poolSize > 0 ? 'no_eligible_member' : 'insufficient_candidates';
+    }
+    return 'eligible';
+  }
   return 'insufficient_data';
 }
 
@@ -975,6 +991,7 @@ module.exports = {
   resolveQuarterTarget,
   knowledgeCutoffFor,
   computeSelection,
+  buildAnnualYears,
   computeAndPersist,
   runQuarterly,
   pendingQuarter,

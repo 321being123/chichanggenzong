@@ -276,19 +276,27 @@ async function loadDividendWindow({ instrumentIds, windowStart, asOfDate }, tx) 
 /** 按公司财年汇总的现金分红（A/H 同一发行人按经济事件去重），只认目标日当时可见的事实（SSV-04）。
  *  - 可见性：公告日严格早于目标日；公告日缺失但除息日已发生（除息必然在公告之后）视为可见；
  *  - 金额只统计目标日之前已除息且状态为"实施"的现金，后续状态变化不会回灌旧季度；
- *  - 每年同时返回"是否有任何分红记录"，供上层区分"确实零分红"与"没有采集到"，未知不补 0。
+ *  - 完整性独立于行数（R3-03）：只有"年末分红已实施、已除息且总额已知"才构成该财年完整证据。
+ *    只有预案（未实施）= 之后可能再实施一笔；只有中期记录 = 末期可能尚未采集；
+ *    已实施但 total_cash_amount 为 NULL = 金额未知。这三种都保留 dividend=NULL、dividendKnown=false，
+ *    绝不把"未知"折成 0 参与年度比较；行数只用于诊断，不用于判定。
  */
 async function loadAnnualDividends({ companyIds, asOfDate }, tx) {
   if (!companyIds.length) return new Map();
   const exec = executorOf(tx);
+  const implemented = `ca.status = '实施' AND ca.ex_date IS NOT NULL AND ca.ex_date <= $2::date`;
   const { rows } = await exec(`
     WITH per_instrument AS (
       SELECT ci.company_id,
              date_part('year', ca.fiscal_period_end)::int AS fiscal_year,
              ci.instrument_id,
-             SUM(CASE WHEN ca.status = '实施' AND ca.ex_date IS NOT NULL AND ca.ex_date <= $2::date
-                      THEN COALESCE(ca.total_cash_amount, 0) ELSE 0 END) AS implemented_cash,
-             COUNT(*)::int AS event_count
+             SUM(CASE WHEN ${implemented} THEN COALESCE(ca.total_cash_amount, 0) ELSE 0 END) AS implemented_cash,
+             COUNT(*) FILTER (WHERE ${implemented})::int AS implemented_count,
+             COUNT(*) FILTER (WHERE ${implemented} AND ca.total_cash_amount IS NULL)::int AS amount_missing_count,
+             COUNT(*) FILTER (WHERE NOT (${implemented}))::int AS not_implemented_count,
+             BOOL_OR(${implemented}
+                     AND date_part('month', ca.fiscal_period_end) = 12
+                     AND date_part('day', ca.fiscal_period_end) = 31) AS has_year_end_implemented
         FROM fundamental.corporate_actions ca
         JOIN core.company_instruments ci ON ci.instrument_id = ca.instrument_id AND ci.relation_type = 'issued_by'
        WHERE ci.company_id = ANY($1::bigint[])
@@ -302,19 +310,29 @@ async function loadAnnualDividends({ companyIds, asOfDate }, tx) {
     )
     SELECT company_id, fiscal_year,
            MAX(implemented_cash) AS implemented_cash,
-           SUM(event_count)::int AS event_count
+           SUM(implemented_count)::int AS implemented_count,
+           SUM(amount_missing_count)::int AS amount_missing_count,
+           SUM(not_implemented_count)::int AS not_implemented_count,
+           BOOL_OR(has_year_end_implemented) AS has_year_end_implemented
       FROM per_instrument
      GROUP BY 1, 2`, [companyIds, asOfDate]);
   const map = new Map();
   rows.forEach(row => {
     const key = String(row.company_id);
     const list = map.get(key) || [];
+    const implementedCount = Number(row.implemented_count || 0);
+    const amountMissing = Number(row.amount_missing_count || 0);
+    const notImplemented = Number(row.not_implemented_count || 0);
+    // 完整证据 = 年末那笔已实施已除息 + 该年所有已实施记录金额都不缺。
+    const known = implementedCount > 0 && amountMissing === 0 && row.has_year_end_implemented === true;
     list.push({
       year: Number(row.fiscal_year),
-      // 只有"实施"且已除息的记录才计入现金；其余状态记 0 但保留 event_count 作为"事实存在"证据。
-      dividend: Number(row.implemented_cash || 0),
-      eventCount: Number(row.event_count || 0),
-      dividendKnown: Number(row.event_count || 0) > 0,
+      dividend: known ? Number(row.implemented_cash || 0) : null,
+      eventCount: implementedCount + notImplemented,
+      dividendKnown: known,
+      dividendBasis: known ? 'annual_implemented_amount'
+        : amountMissing > 0 ? 'implemented_amount_missing'
+          : implementedCount > 0 ? 'interim_only' : 'plan_only',
     });
     map.set(key, list);
   });

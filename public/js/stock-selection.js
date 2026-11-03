@@ -91,6 +91,7 @@ var SS_STATUS_TEXT = {
   quality: { passed: '数据完整', partial: '数据待补', failed: '质量未通过', pending: '未判定' },
   business: {
     eligible: '可投资', market_closed: '市场暂不配置', insufficient_candidates: '合格股不足',
+    no_eligible_member: '本期无合格股票（空仓）',
     insufficient_data: '数据不足以发布正式组合', market_data_missing: '市场估值缺失',
     personal_simulation: '个人测算',
   },

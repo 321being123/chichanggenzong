@@ -68,11 +68,13 @@ function orderByAttempts(list, attempts, deprioritized) {
 }
 
 // 只保留仍待补对象的尝试次数，避免已解决对象的历史计数无限增长。
-function pruneAttempts(attempts, remainingCodes, limit = 2000) {
+// R5-01：**不设条数上限**——用 JSON 键数上限裁掉尾部对象，会把这些对象的计数当成 0，
+// 于是每轮都把它们当成"最少尝试"再补一次，前面的对象反而永远拿不到重试机会。
+// 公平性必须覆盖全部未完成对象；执行批量（batchLimit）与队列完整性是两件事。
+function pruneAttempts(attempts, remainingCodes) {
   const out = {};
   Object.entries(attempts || {}).forEach(([code, count]) => {
     if (!remainingCodes.has(code)) return;
-    if (Object.keys(out).length >= limit) return;
     out[code] = Number(count) || 0;
   });
   return out;

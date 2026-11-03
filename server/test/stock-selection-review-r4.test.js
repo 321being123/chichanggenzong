@@ -199,13 +199,22 @@ async function runR405() {
   });
 }
 
+/**
+ * 自动排队场景：任务的去重已改为"仓储层终态存在性查询"（R5-03），
+ * 所以这里按同一判据给出 `hasCompletedQuarter` 的返回值，并显式证明它不再读列表分页。
+ */
 async function runEnqueueScenario(rows) {
   const enqueued = [];
+  const completedFn = require('../jobs/stockAnalysisRefresh').quarterRunCompleted;
+  const completed = rows.some(completedFn);
+  let listRunsCalls = 0;
   stub(path.join(__dirname, '..', 'services', 'stockSelectionService.js'), {
     pendingQuarter: async () => ({ quarter: '2026Q3', quarterEnd: '2026-09-30' }),
+    hasCompletedQuarter: async () => completed,
   });
   stub(path.join(__dirname, '..', 'repositories', 'stockSelectionRepository.js'), {
-    listRuns: async () => ({ rows, total: rows.length }),
+    // 任何分页列表调用都算越界：去重不允许再依赖"最近 N 条"。
+    listRuns: async () => { listRunsCalls += 1; return { rows, total: rows.length }; },
   });
   stub(path.join(__dirname, '..', 'services', 'jobScheduleSlots.js'), {
     enqueueManualJob: async (code, payload) => { enqueued.push({ code, payload }); return { slot_id: enqueued.length }; },
@@ -213,6 +222,7 @@ async function runEnqueueScenario(rows) {
   dropCache('../jobs/stockAnalysisRefresh');
   const refresh = require('../jobs/stockAnalysisRefresh');
   await refresh.enqueueDueSelectionQuarters(new Date('2026-10-05T02:00:00Z'));
+  assert.strictEqual(listRunsCalls, 0, '自动去重不得再用列表分页判"是否已完成"');
   return { enqueued };
 }
 

@@ -286,7 +286,7 @@ async function loadDividendWindow({ instrumentIds, windowStart, asOfDate }, tx) 
  *  - 明确零分红也算已知（R4-04）：官方"无股息"落成"实施 + 每股 0 + 无除息日"，
  *    这类年度零分红证据要与"金额未知"区分开，不能为了放行零值又回到"有记录即完整"。
  */
-async function loadAnnualDividends({ companyIds, asOfDate }, tx) {
+async function loadAnnualDividends({ companyIds, asOfDate, availableBefore }, tx) {
   if (!companyIds.length) return new Map();
   const exec = executorOf(tx);
   const implemented = `ca.status = '实施' AND ca.ex_date IS NOT NULL AND ca.ex_date <= $2::date`;
@@ -294,6 +294,9 @@ async function loadAnnualDividends({ companyIds, asOfDate }, tx) {
   const explicitZero = `ca.status = '实施' AND ca.ex_date IS NULL AND ca.cash_per_share_pre_tax = 0`;
   const { rows } = await exec(`
     WITH annual_ends AS (
+      -- R5-02：财年期末集合必须与利润查询用**同一套信息截止**。
+      -- 只过滤公告日会让"公告在目标日前、但目标日之后才可取到"的年报版本混进来，
+      -- 把旧季度的分红从"待补"变成"通过"（未来数据泄漏）。
       SELECT DISTINCT r.company_id, r.period_end
         FROM fundamental.financial_reports r
        WHERE r.company_id = ANY($1::bigint[])
@@ -302,6 +305,7 @@ async function loadAnnualDividends({ companyIds, asOfDate }, tx) {
          AND r.statement_scope = 'consolidated'
          AND r.announced_at IS NOT NULL
          AND r.announced_at < $2::date
+         AND ($3::timestamptz IS NULL OR r.available_at IS NULL OR r.available_at < $3::timestamptz)
     ), per_instrument AS (
       SELECT ci.company_id,
              date_part('year', ca.fiscal_period_end)::int AS fiscal_year,
@@ -335,7 +339,7 @@ async function loadAnnualDividends({ companyIds, asOfDate }, tx) {
            SUM(year_zero_count)::int AS year_zero_count,
            BOOL_OR(has_year_end_implemented) AS has_year_end_implemented
       FROM per_instrument
-     GROUP BY 1, 2`, [companyIds, asOfDate]);
+     GROUP BY 1, 2`, [companyIds, asOfDate, availableBefore || null]);
   const map = new Map();
   rows.forEach(row => {
     const key = String(row.company_id);
@@ -833,6 +837,32 @@ async function readInputGapQueue({ market }, tx) {
   return rows[0] || null;
 }
 
+/**
+ * 该季度是否已有"可核验的完成终态"批次（R5-03）。
+ * 用**存在性查询**而不是列表分页：批次修订会把完成记录推到很远，
+ * 只看最近 N 条会在"N 条更新的部分批次"出现时误判"没完成"并重复排队。
+ * 完成终态 = 已正式发布，或执行成功且业务结论为正常关闭/明确零合格；
+ * insufficient_data 与失败不算完成，仍应继续补算。
+ */
+async function hasCompletedQuarterRun({ market, quarter }, tx) {
+  if (!market || !quarter) return false;
+  const exec = executorOf(tx);
+  const { rows } = await exec(`
+    SELECT 1 AS hit
+      FROM analytics.stock_selection_runs r
+     WHERE r.market = $1
+       AND r.quarter = $2
+       AND r.run_kind = 'quarterly'
+       AND r.owner_username IS NULL
+       AND (
+         r.published_at IS NOT NULL
+         OR (r.execution_status = 'succeeded'
+             AND r.business_status IN ('market_closed', 'no_eligible_member', 'insufficient_candidates'))
+       )
+     LIMIT 1`, [market, quarter]);
+  return rows.length > 0;
+}
+
 /** 证券主档最小信息（选股输入补齐用）。SQL 留在仓储层，服务不再直接持连接池查询。 */
 async function findInstrumentMeta({ tsCode }, tx) {
   const exec = executorOf(tx);
@@ -971,6 +1001,6 @@ module.exports = {
   publishRun, markRunFailure,
   listRuns, findRun, listCandidates, findCandidate, listMembers, latestPublishedRun, copyCandidates,
   readUserSettings, saveUserSettings,
-  saveInputGapQueue, readInputGapQueue, findInstrumentMeta,
+  saveInputGapQueue, readInputGapQueue, findInstrumentMeta, hasCompletedQuarterRun,
   insertBacktest, insertBacktestPeriods, findBacktest, listBacktestPeriods, listBacktests, previousPublishedMembers,
 };

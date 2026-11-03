@@ -295,7 +295,6 @@ function quarterRunCompleted(row) {
  */
 async function enqueueDueSelectionQuarters(now = new Date()) {
   const service = require('../services/stockSelectionService');
-  const repo = require('../repositories/stockSelectionRepository');
   const { enqueueManualJob } = require('../services/jobScheduleSlots');
   const today = CoreDate.todayInZone('Asia/Shanghai', now);
   const queued = [];
@@ -304,10 +303,9 @@ async function enqueueDueSelectionQuarters(now = new Date()) {
     // 结果就是"查不到、也排不出"，季度任务永远不生成。
     const pending = await service.pendingQuarter({ market, now: today });
     if (!pending || !pending.quarter) continue;
-    const existing = await repo.listRuns({ market, quarter: pending.quarter, kind: 'quarterly', ownerUsername: null, limit: 20, offset: 0 });
-    // 只有"已完成终态"的季度才跳过；上一轮只存了预览或部分数据时必须重新排队，
-    // 不能因为表里存在过一条该季度记录就永远不再尝试。
-    if (existing.rows.some(quarterRunCompleted)) continue;
+    // R5-03：去重必须走**仓储层存在性查询**，不能用列表分页当"完整终态集合"——
+    // 完成批次被更新的部分批次挤到第 21 条之后时，分页会误判"没完成"并重复排队。
+    if (await service.hasCompletedQuarter({ market, quarter: pending.quarter })) continue;
     const slot = await enqueueManualJob('stock_analysis_refresh', { mode: 'selection_quarterly', market, quarter: pending.quarter });
     if (slot) queued.push({ market, quarter: pending.quarter, slotId: slot.slot_id });
   }

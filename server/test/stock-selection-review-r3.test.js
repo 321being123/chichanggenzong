@@ -502,14 +502,16 @@ async function loadRefresh({ quarterly, publish }) {
   return require('../jobs/stockAnalysisRefresh');
 }
 
-/** 季度排队：已发布就跳过；这里只验证"不重复排队"这一条。 */
+/**
+ * 季度排队：已完成就跳过；这里只验证"不重复排队"这一条。
+ * R5-03 起任务改用仓储层终态存在性查询，因此这里按同一判据给出服务返回值。
+ */
 async function loadQuarterEnqueue({ publishedRuns }) {
   const enqueued = [];
+  const completedFn = require('../jobs/stockAnalysisRefresh').quarterRunCompleted;
   stub(path.join(__dirname, '..', 'services', 'stockSelectionService.js'), {
     pendingQuarter: async () => ({ quarter: '2026Q3', quarterEnd: '2026-09-30' }),
-  });
-  stub(path.join(__dirname, '..', 'repositories', 'stockSelectionRepository.js'), {
-    listRuns: async () => ({ rows: publishedRuns, total: publishedRuns.length }),
+    hasCompletedQuarter: async () => publishedRuns.some(completedFn),
   });
   stub(path.join(__dirname, '..', 'services', 'jobScheduleSlots.js'), {
     enqueueManualJob: async (code, payload) => { enqueued.push({ code, payload }); return { slot_id: enqueued.length }; },

@@ -222,7 +222,9 @@ async function computeSelection(input, tx) {
     () => repo.loadEquityFacts({ companyIds, asOfDate, availableBefore: knowledgeCutoff }, tx),
     () => repo.loadAnnualProfits({ companyIds, asOfDate, availableBefore: knowledgeCutoff }, tx),
     () => repo.loadDividendWindow({ instrumentIds, windowStart: dividendWindowStart, asOfDate }, tx),
-    () => repo.loadAnnualDividends({ companyIds, asOfDate }, tx),
+    // R5-02：年度分红与利润、权益共用同一个信息截止（目标日收盘时刻），
+    // 否则"目标日之后才可取到"的年报版本会把旧季度分红从待补变成通过。
+    () => repo.loadAnnualDividends({ companyIds, asOfDate, availableBefore: knowledgeCutoff }, tx),
     () => repo.loadIndustries({ companyIds, market, asOfDate }, tx),
   ], tx);
   const fxPairs = Array.from(equity.values())
@@ -538,6 +540,12 @@ function computedQualityReasons(result) {
   const manifest = result && result.run && result.run.input_manifest;
   const quality = manifest && manifest.quality;
   return (quality && Array.isArray(quality.reasons)) ? quality.reasons : [];
+}
+
+/** 该季度是否已有可核验的完成终态（R5-03）：走仓储存在性查询，不受列表分页影响。 */
+async function hasCompletedQuarter({ market, quarter }) {
+  if (!quarter) return false;
+  return repo.hasCompletedQuarterRun({ market: normalizeMarket(market), quarter });
 }
 
 /** 该市场待生成的最近一个完整季度（用于自动排队）。 */
@@ -995,6 +1003,7 @@ module.exports = {
   computeAndPersist,
   runQuarterly,
   pendingQuarter,
+  hasCompletedQuarter,
   getMarkets,
   listRuns,
   getRun,

@@ -37,12 +37,17 @@ function annualWith(overrides) {
 }
 
 async function main() {
-  await check('R01 边界：PB=0/空/负数均为待补，不是"便宜"', () => {
-    [0, null, -1, undefined].forEach(pb => {
+  await check('R01 边界：PB 为空或恰为 0 待补；PB 为负是净资产为负的事实，判不通过', () => {
+    [0, null, undefined].forEach(pb => {
       const result = RULES.evaluateInstrument(facts({ pb }));
       assert.strictEqual(result.rules.R01.status, RULES.STATUS.PENDING, `PB=${pb} 必须待补`);
       assert.strictEqual(result.filterStatus, RULES.STATUS.PENDING);
     });
+    // 2026-11-04 口径：负 PB 不是数据缺失（净资产为负是真实事实），这类公司永远不满足低 PB 条件，
+    // 判不通过而不是挂在待补上反复重试、阻断整批发布。
+    const negative = RULES.evaluateInstrument(facts({ pb: -1 }));
+    assert.strictEqual(negative.rules.R01.status, RULES.STATUS.FAIL, 'PB=-1 必须判不通过');
+    assert.strictEqual(negative.rules.R01.reason, 'pb_negative_equity');
   });
 
   await check('R01 边界：PB=1.5 通过、1.5001 不通过', () => {

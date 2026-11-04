@@ -120,8 +120,8 @@ async function seed(pool) {
       // 除息日：2025 财年的分红落在目标日前十二个月内（用于股息率），其余年份在窗口之外。
       const exDate = year === 2025 ? '2026-06-15' : `${year + 1}-06-15`;
       await pool.query(
-        `INSERT INTO fundamental.corporate_actions (instrument_id, action_type, fiscal_period_end, announced_at, ex_date, status, cash_per_share_pre_tax, total_cash_amount, currency_code, source_id, source_key)
-         VALUES ($1,'dividend',$2::date,$3::date,$4::date,'实施',0.5,1e8,'CNY',$5,$6)`,
+        `INSERT INTO fundamental.corporate_actions (instrument_id, action_type, fiscal_period_end, announced_at, ex_date, status, cash_per_share_pre_tax, stock_dividend_ratio, capitalization_ratio, total_cash_amount, currency_code, source_id, source_key)
+         VALUES ($1,'dividend',$2::date,$3::date,$4::date,'实施',0.5,0,0,1e8,'CNY',$5,$6)`,
         [instrumentId, `${year}-12-31`, `${year + 1}-05-01`, exDate, sourceId, `${TEST_MARK}-DIV-${index}-${year}`]);
     }
   }
@@ -178,8 +178,8 @@ async function main() {
     for (let year = 2015; year <= 2025; year++) {
       const exDate = year === 2025 ? '2026-06-15' : `${year + 1}-06-15`;
       await pool.query(
-        `INSERT INTO fundamental.corporate_actions (instrument_id, action_type, fiscal_period_end, announced_at, ex_date, status, cash_per_share_pre_tax, total_cash_amount, currency_code, source_id, source_key)
-         SELECT $1,'dividend',$2::date,$3::date,$4::date,'实施',0.5,1e8,'CNY',(SELECT source_id FROM ops.data_sources ORDER BY source_id LIMIT 1),$5
+        `INSERT INTO fundamental.corporate_actions (instrument_id, action_type, fiscal_period_end, announced_at, ex_date, status, cash_per_share_pre_tax, stock_dividend_ratio, capitalization_ratio, total_cash_amount, currency_code, source_id, source_key)
+         SELECT $1,'dividend',$2::date,$3::date,$4::date,'实施',0.5,0,0,1e8,'CNY',(SELECT source_id FROM ops.data_sources ORDER BY source_id LIMIT 1),$5
           WHERE NOT EXISTS (SELECT 1 FROM fundamental.corporate_actions WHERE instrument_id=$1 AND fiscal_period_end=$2::date AND cash_per_share_pre_tax=0.5)`,
         [firstInstrument, `${year}-12-31`, `${year + 1}-05-01`, exDate, `${TEST_MARK}-DIV-RESTORE-${year}`]);
     }

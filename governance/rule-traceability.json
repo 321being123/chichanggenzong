@@ -4895,6 +4895,30 @@
       ],
       "owner": "WorkBuddy",
       "status": "implemented"
+    },
+    {
+      "id": "SELECTION-DATA-SEMANTICS-249",
+      "title": "选股不得把「数据其实有」判成缺失：送转须按官方送股/转增比例折到 T 日股本单位；从未有过行情的证券不进池；仅暂停牌按停牌前最后交易日回退；负 PB 是净资产为负的事实（判不通过且计入窗口覆盖）；已实施但金额全空的空分红记录不得让整年未知；官方无静态 PE 时按总市值除最近年报归母净利现算",
+      "implementation": {
+        "file": "server/repositories/stockSelectionRepository.js",
+        "symbol": "loadDividendWindow"
+      },
+      "tests": [
+        {
+          "file": "server/test/stock-selection-data-semantics.test.js",
+          "pattern": "送转"
+        },
+        {
+          "file": "server/test/stock-selection-data-semantics.test.js",
+          "pattern": "负 PB"
+        },
+        {
+          "file": "server/test/stock-selection-data-semantics.test.js",
+          "pattern": "空分红"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "implemented"
     }
   ]
 }

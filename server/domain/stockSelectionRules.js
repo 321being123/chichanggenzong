@@ -45,14 +45,31 @@ function rule(code, status, fields) {
   return Object.assign({ code, status }, fields || {});
 }
 
-// R01 当前 PB：0 < PB ≤ maxPb；PB 为空、非正或非有限值属于数据异常，不能当作"便宜"。
+// R01 当前 PB：0 < PB ≤ maxPb；PB 为空或恰为 0 属数据异常，不能当作"便宜"。
+// PB 明确为负是"净资产为负"的真实事实（2026-11-04），它不是缺失：这类公司永远不满足低 PB 条件，
+// 应判不通过，不该挂在"待补"上反复重试、也不该阻断整批发布。
 function evaluateCurrentPb(facts, params) {
   const pb = num(facts.pb);
-  if (pb === null || pb <= 0) {
+  if (pb === null) {
     return {
       rule: rule('R01', STATUS.PENDING, {
-        value: pb, threshold: params.maxPb,
-        reason: pb === null ? 'pb_unavailable' : 'pb_non_positive',
+        value: pb, threshold: params.maxPb, reason: 'pb_unavailable',
+      }),
+      pb,
+    };
+  }
+  if (pb < 0) {
+    return {
+      rule: rule('R01', STATUS.FAIL, {
+        value: pb, threshold: params.maxPb, reason: 'pb_negative_equity',
+      }),
+      pb,
+    };
+  }
+  if (pb === 0) {
+    return {
+      rule: rule('R01', STATUS.PENDING, {
+        value: pb, threshold: params.maxPb, reason: 'pb_non_positive',
       }),
       pb,
     };

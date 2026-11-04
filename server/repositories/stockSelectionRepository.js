@@ -53,7 +53,15 @@ async function loadUniverse({ market, asOfDate }, tx) {
            i.exchange_code, i.list_date::text AS list_date, i.delist_date::text AS delist_date,
            ${RISK_NAME_SQL} AS risk_warning,
            ci.company_id,
-           v.pb, v.pe_static, v.pe_ttm, v.dividend_yield_ttm, v.total_market_cap, v.currency_code AS valuation_currency,
+           v.pb,
+           -- 官方估值接口不提供静态市盈率（实测 metricsList 报 (pe,pe_static) are invalid price metrics），
+           -- 按站内既定口径现算：当前总市值 ÷ 最近一期已公告年报归母净利（600519 校验与 Tushare 完全一致）。
+           -- 这是同一口径的定义式计算，不是估算兜底；归母净利缺失或为 0 时保持 NULL，不猜。
+           COALESCE(v.pe_static, CASE WHEN v.total_market_cap IS NOT NULL
+                                        AND np.net_profit IS NOT NULL AND np.net_profit <> 0
+                                       THEN v.total_market_cap / np.net_profit END) AS pe_static,
+           v.pe_ttm, v.dividend_yield_ttm, v.total_market_cap, v.currency_code AS valuation_currency,
+           v.trade_date::text AS valuation_date,
            b.close AS price, b.trade_date::text AS price_date,
            s.suspend_type
       FROM core.instruments i
@@ -64,26 +72,50 @@ async function loadUniverse({ market, asOfDate }, tx) {
            AND (c.valid_to IS NULL OR c.valid_to >= $2::date)
          ORDER BY c.valid_from DESC NULLS LAST LIMIT 1
       ) ci ON true
+      -- 最近一期已公告年报归母净利：静态 PE 定义式的分母（与读取估值序列的 fillStaticPe 同一口径）。
       LEFT JOIN LATERAL (
-        SELECT dv.pb, dv.pe_static, dv.pe_ttm, dv.dividend_yield_ttm, dv.total_market_cap, dv.currency_code
+        SELECT f.numeric_value AS net_profit
+          FROM fundamental.financial_reports r
+          JOIN fundamental.financial_facts f ON f.report_id = r.report_id AND f.metric_code = 'net_profit_parent'
+         WHERE r.company_id = ci.company_id
+           AND r.report_kind = 'income'
+           AND r.period_type = 'annual'
+           AND r.statement_scope = 'consolidated'
+           AND r.announced_at IS NOT NULL AND r.announced_at < $2::date
+         ORDER BY r.period_end DESC, r.announced_at DESC
+         LIMIT 1
+      ) np ON true
+      -- 停牌先判：只有"当天确实停牌（S=停牌，R=复牌不算）"才允许把估值/价格回退到停牌前最后交易日。
+      LEFT JOIN LATERAL (
+        SELECT sc.suspend_type FROM market.stock_suspend_calendar sc
+         WHERE sc.instrument_id = i.instrument_id AND sc.trade_date = $2::date
+           AND sc.suspend_type = 'S' LIMIT 1
+      ) s ON true
+      LEFT JOIN LATERAL (
+        SELECT dv.pb, dv.pe_static, dv.pe_ttm, dv.dividend_yield_ttm, dv.total_market_cap,
+               dv.currency_code, dv.trade_date
           FROM market.daily_valuations dv
-         WHERE dv.instrument_id = i.instrument_id AND dv.trade_date = $2::date
-         ORDER BY dv.source_id DESC LIMIT 1
+         WHERE dv.instrument_id = i.instrument_id
+           AND dv.trade_date <= $2::date
+           AND (dv.trade_date = $2::date OR s.suspend_type IS NOT NULL)
+         ORDER BY dv.trade_date DESC, dv.source_id DESC LIMIT 1
       ) v ON true
       LEFT JOIN LATERAL (
         SELECT bb.close, bb.trade_date FROM market.daily_bars bb
-         WHERE bb.instrument_id = i.instrument_id AND bb.trade_date = $2::date
-         LIMIT 1
+         WHERE bb.instrument_id = i.instrument_id
+           AND bb.trade_date <= $2::date
+           AND (bb.trade_date = $2::date OR s.suspend_type IS NOT NULL)
+         ORDER BY bb.trade_date DESC LIMIT 1
       ) b ON true
-      LEFT JOIN LATERAL (
-        SELECT sc.suspend_type FROM market.stock_suspend_calendar sc
-         WHERE sc.instrument_id = i.instrument_id AND sc.trade_date = $2::date LIMIT 1
-      ) s ON true
      WHERE i.asset_class = 'stock'
        AND i.market = $1
        AND i.exchange_code = ANY($3::text[])
        AND (i.list_date IS NULL OR i.list_date <= $2::date)
        AND (i.delist_date IS NULL OR i.delist_date > $2::date)
+       -- 从未有过任何行情/估值的证券（已退市、已摘牌、吸收合并后残留主档）不构成可评估对象。
+       -- 真停牌的历史上一定有成交记录，所以按"有没有过任何数据"区分，不看名称、也不依赖主档 status 是否已更新。
+       AND (EXISTS (SELECT 1 FROM market.daily_bars bx WHERE bx.instrument_id = i.instrument_id)
+         OR EXISTS (SELECT 1 FROM market.daily_valuations vx WHERE vx.instrument_id = i.instrument_id))
      ORDER BY i.canonical_code`, [market, asOfDate, config.exchanges]);
   return rows;
 }
@@ -110,7 +142,19 @@ async function loadPbWindow({ market, windowStart, asOfDate }, tx) {
        WHERE market = $4 AND asset_class = 'stock'
     ),
     expect AS (
-      SELECT i.instrument_id, COUNT(c.trade_date)::int AS expected_days
+      -- 停牌且当天没有派生出 PB 的交易日不算"应有证据"：停牌期间没有新价格，估值沿用停牌前是正常的，
+      -- 把它算成缺口会让每个停牌股都被判"历史数据待补"（2026-11-04 口径：暂时停牌按停牌前最后交易日）。
+      SELECT i.instrument_id,
+             GREATEST(COUNT(c.trade_date) - COALESCE((
+               SELECT COUNT(DISTINCT sc.trade_date)::int
+                 FROM market.stock_suspend_calendar sc
+                 JOIN cal c3 ON c3.trade_date = sc.trade_date
+                WHERE sc.instrument_id = i.instrument_id AND sc.suspend_type = 'S'
+                  AND NOT EXISTS (
+                    SELECT 1 FROM market.daily_valuations v3
+                     WHERE v3.instrument_id = sc.instrument_id
+                       AND v3.trade_date = sc.trade_date AND v3.pb IS NOT NULL)
+             ), 0), 0)::int AS expected_days
         FROM inst i JOIN cal c ON c.trade_date > i.list_date
        GROUP BY 1
     ),
@@ -125,7 +169,9 @@ async function loadPbWindow({ market, windowStart, asOfDate }, tx) {
             JOIN cal c2 ON c2.trade_date = v.trade_date
             LEFT JOIN ops.data_sources s ON s.source_id = v.source_id
            WHERE v.trade_date > $1::date AND v.trade_date <= $2::date
-             AND v.pb IS NOT NULL AND v.pb > 0
+             -- 负 PB 是"净资产为负"的真实取值，不是缺失：只排除 NULL（2026-11-04）。
+             -- 负值不可能是 >1 的正证，MAX(pb) 仍如实反映窗口内最高值。
+             AND v.pb IS NOT NULL
            ORDER BY v.instrument_id, v.trade_date,
                     CASE WHEN s.source_code LIKE 'lixinger%' THEN 0 ELSE 1 END, v.source_id
         ) picked
@@ -236,33 +282,42 @@ async function loadAnnualProfits({ companyIds, asOfDate, availableBefore }, tx) 
   return map;
 }
 
-/** T 前十二个月按除息日计入的现金股息（每股，税前），并检测送转拆合导致的股份单位变化。 */
+/**
+ * T 前十二个月按除息日计入的现金股息（每股，税前），折算到 **T 日股本单位**。
+ * - 送转拆合会让历史上"每股派 X 元"在除权前后不可比，必须用其后发生的送转因子折算（前复权）；
+ * - 送转比例直接来自官方分红接口（bonusSharesFromProfit / bonusSharesFromCapitalReserve），
+ *   A 股没有独立股权变动接口，但这两项随每笔分红一起返回，不需要另建采集；
+ * - 只有"该笔确实发生过送转、但比例字段为空"才判股份单位未知（旧备源数据），这种情况下不猜、不折算；
+ * - 同一除息日多来源重复登记只取一条（官方优先），避免把同一笔派息加两遍。
+ */
 async function loadDividendWindow({ instrumentIds, windowStart, asOfDate }, tx) {
   if (!instrumentIds.length) return new Map();
   const exec = executorOf(tx);
-  const cash = await exec(`
+  const detail = await exec(`
       SELECT ca.instrument_id,
-             SUM(ca.cash_per_share_pre_tax) FILTER (WHERE ca.cash_per_share_pre_tax > 0) AS per_share,
-             COUNT(*) FILTER (WHERE ca.cash_per_share_pre_tax > 0)::int AS cash_count,
-             MAX(ca.currency_code) AS currency,
-             SUM(ca.total_cash_amount) FILTER (WHERE ca.total_cash_amount > 0) AS total_cash
+             ca.ex_date,
+             ca.cash_per_share_pre_tax,
+             ca.stock_dividend_ratio,
+             ca.capitalization_ratio,
+             ca.currency_code,
+             ca.total_cash_amount
         FROM fundamental.corporate_actions ca
        WHERE ca.instrument_id = ANY($1::bigint[])
          AND ca.action_type = 'dividend'
          AND ca.status = '实施'
          AND ca.ex_date IS NOT NULL
          AND ca.ex_date > $2::date AND ca.ex_date <= $3::date
-       GROUP BY 1`, [instrumentIds, windowStart, asOfDate]);
-  const shareChanges = await exec(`
-      SELECT ca.instrument_id, COUNT(*)::int AS cnt
-        FROM fundamental.corporate_actions ca
-       WHERE ca.instrument_id = ANY($1::bigint[])
-         AND ca.status = '实施'
-         AND ca.ex_date IS NOT NULL
-         AND ca.ex_date > $2::date AND ca.ex_date <= $3::date
-         AND (COALESCE(ca.stock_dividend_ratio, 0) > 0 OR COALESCE(ca.capitalization_ratio, 0) > 0)
-       GROUP BY 1`, [instrumentIds, windowStart, asOfDate]);
-  const shareChangeById = new Map(shareChanges.rows.map(row => [String(row.instrument_id), Number(row.cnt)]));
+       ORDER BY ca.instrument_id, ca.ex_date DESC, ca.source_id DESC`, [instrumentIds, windowStart, asOfDate]);
+  const byInstrument = new Map();
+  for (const row of detail.rows) {
+    const key = String(row.instrument_id);
+    const list = byInstrument.get(key) || [];
+    // 同一除息日多来源重复登记只保留排序第一条（source_id 降序 = 官方优先）。
+    const last = list[list.length - 1];
+    if (last && new Date(last.ex_date).getTime() === new Date(row.ex_date).getTime()) continue;
+    list.push(row);
+    byInstrument.set(key, list);
+  }
   // 「采过分红但窗口内一笔都没有」与「从没采过」必须分开（2026-11-04 口径调整）：
   // 前者是明确的"近 12 个月无现金分红"（可判不通过），后者才可能是数据缺失。
   // 老实现只返回有现金分红的证券，导致没分红的公司一律被当成"分红不可用"并阻断整批发布。
@@ -272,26 +327,43 @@ async function loadDividendWindow({ instrumentIds, windowStart, asOfDate }, tx) 
        WHERE instrument_id = ANY($1::bigint[])
          AND action_type = 'dividend'`, [instrumentIds]);
   const hasHistory = new Set(history.rows.map(row => String(row.instrument_id)));
-  const cashById = new Map(cash.rows.map(row => [String(row.instrument_id), row]));
   const map = new Map();
   for (const instrumentId of instrumentIds) {
     const key = String(instrumentId);
-    const row = cashById.get(key);
-    map.set(key, row ? {
-      ttmPerShare: row.per_share === null ? null : Number(row.per_share),
-      count: Number(row.cash_count || 0),
-      currency: row.currency || null,
-      totalCash: row.total_cash === null ? null : Number(row.total_cash),
-      // 区间内发生送转/拆合股时，历史每股金额未统一到 T 股份单位 → 标待核验，不直接算股息率。
-      shareUnitUnverified: (shareChangeById.get(key) || 0) > 0,
-      hasDividendHistory: true,
-    } : {
-      ttmPerShare: null,
-      count: 0,
-      currency: null,
-      totalCash: null,
-      shareUnitUnverified: (shareChangeById.get(key) || 0) > 0,
+    const rows = byInstrument.get(key) || [];
+    // 按除息日倒序遍历：先累积"这笔之后发生过的送转"因子，再把这笔现金折算到 T 日股本单位。
+    let factor = 1;
+    let perShare = null;
+    let count = 0;
+    let totalCash = null;
+    let currency = null;
+    let unitUnverified = false;
+    for (const row of rows) {
+      const bonus = row.stock_dividend_ratio === null ? null : Number(row.stock_dividend_ratio);
+      const cap = row.capitalization_ratio === null ? null : Number(row.capitalization_ratio);
+      const cashValue = row.cash_per_share_pre_tax === null ? null : Number(row.cash_per_share_pre_tax);
+      // 两项都为空 = 这一笔到底有没有送转不知道，折算因子无从谈起 → 整只标未核验，不猜。
+      if (bonus === null && cap === null) unitUnverified = true;
+      const change = (bonus || 0) + (cap || 0);
+      // 本行的送转同样作用于本行现金：除权后股数才变多，所以本行现金要除以含本行的因子。
+      if (change > 0) factor *= 1 + change;
+      if (cashValue === null || cashValue <= 0) continue;
+      perShare = (perShare || 0) + cashValue / factor;
+      count += 1;
+      if (row.total_cash_amount !== null && Number(row.total_cash_amount) > 0) {
+        totalCash = (totalCash || 0) + Number(row.total_cash_amount);
+      }
+      if (!currency && row.currency_code) currency = row.currency_code;
+    }
+    map.set(key, {
+      ttmPerShare: perShare,
+      count,
+      currency,
+      totalCash,
+      shareUnitUnverified: unitUnverified,
       hasDividendHistory: hasHistory.has(key),
+      // 折算因子留证：1 表示窗口内没发生送转，>1 表示历史每股金额已按比例折到 T 日单位。
+      adjustmentFactor: Number(factor.toFixed(6)),
     });
   }
   return map;
@@ -313,7 +385,11 @@ async function loadDividendWindow({ instrumentIds, windowStart, asOfDate }, tx) 
 async function loadAnnualDividends({ companyIds, asOfDate, availableBefore }, tx) {
   if (!companyIds.length) return new Map();
   const exec = executorOf(tx);
-  const implemented = `ca.status = '实施' AND ca.ex_date IS NOT NULL AND ca.ex_date <= $2::date`;
+  // 官方会返回"已实施、已除息、但每股金额与总金额都是空"的记录（多见于中期分红），
+  // 这种行不携带任何金额信息，不能算成"实施但金额缺失"——否则同财年里一笔年度分红已经拿到，
+  // 整年仍被判未知（177 只曾因此在年度异常上永远待补）。
+  const visibleCash = `(ca.cash_per_share_pre_tax IS NOT NULL OR ca.total_cash_amount IS NOT NULL)`;
+  const implemented = `ca.status = '实施' AND ca.ex_date IS NOT NULL AND ca.ex_date <= $2::date AND ${visibleCash}`;
   // 明确零分红：状态已实施、没有除息日（本就不该有）、每股金额明确为 0。
   const explicitZero = `ca.status = '实施' AND ca.ex_date IS NULL AND ca.cash_per_share_pre_tax = 0`;
   const { rows } = await exec(`

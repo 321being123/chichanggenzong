@@ -148,6 +148,15 @@ function evaluateEquity(facts, params) {
   const fx = facts.fx || {};
   const base = { currency, periodEnd: equity.periodEnd || null, announcedAt: equity.announcedAt || null, reportId: equity.reportId || null, threshold: params.minEquityCny };
   if (amount === null) {
+    // 一点财报事实都没有（新股上市不满一个财年、或该证券根本没人任何年报）：
+    // 这是"客观上不可能判断"，不是"该补没补"——不入选，也不阻断整批发布（2026-11-04）。
+    const years = (facts.annual && facts.annual.years) || [];
+    if (!years.length) {
+      return {
+        rule: rule('R05', STATUS.NOT_APPLICABLE, Object.assign({ value: null, reason: 'equity_not_evaluable_no_report' }, base)),
+        equityCny: null, fxRate: null, fxDate: null,
+      };
+    }
     return { rule: rule('R05', STATUS.PENDING, Object.assign({ value: null, reason: 'equity_unavailable' }, base)), equityCny: null, fxRate: null, fxDate: null };
   }
   let rate = null, fxDate = null;
@@ -309,6 +318,11 @@ function evaluateAnnualAnomaly(annual, params = DEFAULT_PARAMS) {
   const years = Array.isArray((annual || {}).years) ? annual.years : [];
   const latestYear = annual && annual.latestYear ? Number(annual.latestYear) : null;
   if (!latestYear) {
+    // 连一条年报事实都没有（新股上市不满一个财年）：客观无法判断年度异常，
+    // 不入选、不进缺口、不阻断整批发布（2026-11-04）。
+    if (!years.length) {
+      return { status: STATUS.NOT_APPLICABLE, reason: 'fiscal_history_not_evaluable_no_report', profitY: null, profitSum: null, dividendY: null, dividendSum: null, comparedYears: [] };
+    }
     return { status: STATUS.PENDING, reason: 'latest_fiscal_year_unknown', profitY: null, profitSum: null, dividendY: null, dividendSum: null, comparedYears: [] };
   }
   const needed = [];

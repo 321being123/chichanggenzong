@@ -336,14 +336,18 @@ async function loadDividendWindow({ instrumentIds, windowStart, asOfDate }, tx) 
     list.push(row);
     byInstrument.set(key, list);
   }
-  // 「采过分红但窗口内一笔都没有」与「从没采过」必须分开（2026-11-04 口径调整）：
-  // 前者是明确的"近 12 个月无现金分红"（可判不通过），后者才可能是数据缺失。
-  // 老实现只返回有现金分红的证券，导致没分红的公司一律被当成"分红不可用"并阻断整批发布。
+  // 「采过分红但窗口内一笔都没有」与「从没采过」必须分开：前者是明确的"近 12 个月无现金分红"
+  // （可判不通过），后者才可能是数据缺失。判"采过"的证据有两条：
+  //   ①该证券有任意分红历史记录；②该证券所属公司有财报——补数是同一任务里一起采的，
+  //   财报采到了说明分红接口也请求过（新股接口返回空则是"确实没分红"，不是"没采"）。
   const history = await exec(`
-      SELECT DISTINCT instrument_id
-        FROM fundamental.corporate_actions
-       WHERE instrument_id = ANY($1::bigint[])
-         AND action_type = 'dividend'`, [instrumentIds]);
+      SELECT instrument_id FROM fundamental.corporate_actions
+       WHERE instrument_id = ANY($1::bigint[]) AND action_type = 'dividend'
+      UNION
+      SELECT ci.instrument_id
+        FROM core.company_instruments ci
+        JOIN fundamental.financial_reports r ON r.company_id = ci.company_id
+       WHERE ci.instrument_id = ANY($1::bigint[]) AND ci.relation_type = 'issued_by'`, [instrumentIds]);
   const hasHistory = new Set(history.rows.map(row => String(row.instrument_id)));
   const map = new Map();
   for (const instrumentId of instrumentIds) {

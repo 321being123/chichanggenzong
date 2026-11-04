@@ -282,11 +282,13 @@ async function computeSelection(input, tx) {
   if (!gate.eligible) reasons.push(gate.reason || 'market_not_eligible');
   if (!universe.length) reasons.push('universe_empty');
   if (pendingCount > 0) reasons.push('pending_objects_in_ranking_pool');
-  if (industryMissing > 0) reasons.push('industry_unverified_in_ranking_pool');
+  // 行业源本身不给（北交所新股、已合并主体）只让该股不可评估，不阻断整批：
+  // buildPortfolio 已经把 industry 为空的证券 skip 掉（reason=industry_unverified），
+  // 它们不会进组合，也就不影响组合内的行业集中度；把它当阻断项会让整批永远发不出去。
   // R3-04：输入完整时"没有合格股票"是有效业务结果（本季空仓），不是数据缺口。
   // 只有存在输入缺口或市场不可入时才把"无合格成员"记为附加阻断，
   // 否则零合格会永远被当成待补数据、季度反复续跑却永远补不齐。
-  const inputBlocked = !gate.eligible || pendingCount > 0 || industryMissing > 0;
+  const inputBlocked = !gate.eligible || pendingCount > 0;
   if (portfolio.members.length === 0 && inputBlocked) reasons.push('no_eligible_member');
 
   const quality = {

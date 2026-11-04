@@ -53,7 +53,9 @@ async function loadUniverse({ market, asOfDate }, tx) {
            i.exchange_code, i.list_date::text AS list_date, i.delist_date::text AS delist_date,
            ${RISK_NAME_SQL} AS risk_warning,
            ci.company_id,
-           v.pb,
+           COALESCE(v.pb, CASE WHEN v.total_market_cap IS NOT NULL
+                                AND eq.equity IS NOT NULL AND eq.equity <> 0
+                               THEN v.total_market_cap / eq.equity END) AS pb,
            -- 官方估值接口不提供静态市盈率（实测 metricsList 报 (pe,pe_static) are invalid price metrics），
            -- 按站内既定口径现算：当前总市值 ÷ 最近一期已公告年报归母净利（600519 校验与 Tushare 完全一致）。
            -- 这是同一口径的定义式计算，不是估算兜底；归母净利缺失或为 0 时保持 NULL，不猜。
@@ -85,6 +87,19 @@ async function loadUniverse({ market, asOfDate }, tx) {
          ORDER BY r.period_end DESC, r.announced_at DESC
          LIMIT 1
       ) np ON true
+      -- 最近一期已公告归母净资产：源站对"净资产为负"的股票直接不给 PB（字段为空，不是没有这一行），
+      -- 所以 PB 为空时要按同一定义式现算（总市值 ÷ 归母净资产），负值如实判为净资产为负。
+      LEFT JOIN LATERAL (
+        SELECT f.numeric_value AS equity
+          FROM fundamental.financial_reports r
+          JOIN fundamental.financial_facts f ON f.report_id = r.report_id AND f.metric_code = 'equity_parent'
+         WHERE r.company_id = ci.company_id
+           AND r.report_kind = 'balance'
+           AND r.statement_scope = 'consolidated'
+           AND r.announced_at IS NOT NULL AND r.announced_at < $2::date
+         ORDER BY r.period_end DESC, r.announced_at DESC
+         LIMIT 1
+      ) eq ON true
       -- 停牌先判：只有"当天确实停牌（S=停牌，R=复牌不算）"才允许把估值/价格回退到停牌前最后交易日。
       LEFT JOIN LATERAL (
         SELECT sc.suspend_type FROM market.stock_suspend_calendar sc
@@ -410,33 +425,37 @@ async function loadAnnualDividends({ companyIds, asOfDate, availableBefore }, tx
          AND r.announced_at < $2::date
          AND ($3::timestamptz IS NULL OR r.available_at IS NULL OR r.available_at < $3::timestamptz)
     ), per_instrument AS (
+      -- 以「公司实际年报期末」为主表（2026-11-04 口径）：财报采到了就证明这家公司被采集过，
+      -- 某个财年一笔分红记录都没有，就是该财年**确实没有分红事件**，判 0 而不是未知。
+      -- 原实现从 corporate_actions 出发，无记录的财年根本不出行，于是永远挂在"年度分红未知"上。
       SELECT ci.company_id,
-             date_part('year', ca.fiscal_period_end)::int AS fiscal_year,
+             date_part('year', ae.period_end)::int AS fiscal_year,
              ci.instrument_id,
              SUM(CASE WHEN ${implemented} THEN COALESCE(ca.total_cash_amount, 0) ELSE 0 END) AS implemented_cash,
-             COUNT(*) FILTER (WHERE ${implemented})::int AS implemented_count,
-             COUNT(*) FILTER (WHERE ${implemented} AND ca.total_cash_amount IS NULL)::int AS amount_missing_count,
-             COUNT(*) FILTER (WHERE NOT (${implemented}))::int AS not_implemented_count,
+             COUNT(ca.action_id) FILTER (WHERE ${implemented})::int AS implemented_count,
+             COUNT(ca.action_id) FILTER (WHERE ${implemented} AND ca.total_cash_amount IS NULL)::int AS amount_missing_count,
+             COUNT(ca.action_id) FILTER (WHERE ca.action_id IS NOT NULL AND NOT (${implemented}))::int AS not_implemented_count,
              -- 财年期末已过 2 年以上、状态仍停在预案/股东大会通过且该财年从未实施：
-             -- 这种历史方案就是"没有落地"，再等也不会变（2026-11-04 口径），
-             -- 与"金额未知"要分开，否则老公司会永远挂在"年度分红未知"上。
-             COUNT(*) FILTER (WHERE ca.status IN ('预案', '股东大会通过')
+             -- 这种历史方案就是"没有落地"，再等也不会变，与"金额未知"要分开。
+             COUNT(ca.action_id) FILTER (WHERE ca.status IN ('预案', '股东大会通过')
                AND ca.fiscal_period_end <= ($2::date - INTERVAL '2 years'))::int AS stale_plan_count,
-             COUNT(*) FILTER (WHERE ${explicitZero} AND EXISTS (
-               SELECT 1 FROM annual_ends ae
-                WHERE ae.company_id = ci.company_id AND ae.period_end = ca.fiscal_period_end))::int AS year_zero_count,
-             BOOL_OR(${implemented} AND EXISTS (
-               SELECT 1 FROM annual_ends ae
-                WHERE ae.company_id = ci.company_id AND ae.period_end = ca.fiscal_period_end)) AS has_year_end_implemented
-        FROM fundamental.corporate_actions ca
-        JOIN core.company_instruments ci ON ci.instrument_id = ca.instrument_id AND ci.relation_type = 'issued_by'
-       WHERE ci.company_id = ANY($1::bigint[])
+             COUNT(ca.action_id) FILTER (WHERE ${explicitZero})::int AS year_zero_count,
+             BOOL_OR(${implemented}) AS has_year_end_implemented,
+             COUNT(ca.action_id)::int AS event_count,
+             -- 「零分红」只在财年已经充分尘埃落定时成立：年报出了不等于分红已经公布，
+             -- 分红方案公告晚于年报、甚至跨年才实施都常见。给足 1 年，避免把"尚未公告"误判成"没有分红"。
+             BOOL_OR(ae.period_end <= ($2::date - INTERVAL '1 year')) AS fiscal_year_settled
+        FROM annual_ends ae
+        JOIN core.company_instruments ci ON ci.company_id = ae.company_id AND ci.relation_type = 'issued_by'
+        LEFT JOIN fundamental.corporate_actions ca
+          ON ca.instrument_id = ci.instrument_id
          AND ca.action_type = 'dividend'
-         AND ca.fiscal_period_end IS NOT NULL
+         AND ca.fiscal_period_end = ae.period_end
          AND (
            (ca.announced_at IS NOT NULL AND ca.announced_at < $2::date)
            OR (ca.announced_at IS NULL AND ca.ex_date IS NOT NULL AND ca.ex_date <= $2::date)
          )
+       WHERE ci.company_id = ANY($1::bigint[])
        GROUP BY 1, 2, 3
     )
     SELECT company_id, fiscal_year,
@@ -446,6 +465,8 @@ async function loadAnnualDividends({ companyIds, asOfDate, availableBefore }, tx
            SUM(not_implemented_count)::int AS not_implemented_count,
            SUM(stale_plan_count)::int AS stale_plan_count,
            SUM(year_zero_count)::int AS year_zero_count,
+           SUM(event_count)::int AS event_count,
+           BOOL_OR(fiscal_year_settled) AS fiscal_year_settled,
            BOOL_OR(has_year_end_implemented) AS has_year_end_implemented
       FROM per_instrument
      GROUP BY 1, 2`, [companyIds, asOfDate, availableBefore || null]);
@@ -458,14 +479,17 @@ async function loadAnnualDividends({ companyIds, asOfDate, availableBefore }, tx
     const notImplemented = Number(row.not_implemented_count || 0);
     const yearZero = Number(row.year_zero_count || 0);
     const stalePlan = Number(row.stale_plan_count || 0);
+    const eventCount = Number(row.event_count || 0);
     // 完整证据 = 财年末那笔已实施已除息 + 该年所有已实施记录金额都不缺；
     // 或者官方明确给出"该财年零股息"（实施 + 每股 0 + 无除息日）；
     // 或者该财年只有"预案/股东大会通过"、且财年期末已过 2 年以上仍从未实施——
-    // 这种历史方案不会再有落地，按"该财年无已实施现金分红"计入（2026-11-04 口径）。
+    // 或者该财年**一笔分红记录都没有**：财报采到了就说明这家公司被采集过，
+    // 缺记录就是该财年确实没有分红事件（2026-11-04 口径，按真实计 0）。
     const knownFromImplemented = implementedCount > 0 && amountMissing === 0 && row.has_year_end_implemented === true;
     const knownFromZero = yearZero > 0 && amountMissing === 0;
     const knownFromStalePlan = implementedCount === 0 && amountMissing === 0 && stalePlan > 0;
-    const known = knownFromImplemented || knownFromZero || knownFromStalePlan;
+    const knownFromNoEvent = eventCount === 0 && row.fiscal_year_settled === true;
+    const known = knownFromImplemented || knownFromZero || knownFromStalePlan || knownFromNoEvent;
     list.push({
       year: Number(row.fiscal_year),
       dividend: known ? Number(row.implemented_cash || 0) : null,
@@ -474,8 +498,9 @@ async function loadAnnualDividends({ companyIds, asOfDate, availableBefore }, tx
       dividendBasis: knownFromImplemented ? 'annual_implemented_amount'
         : knownFromZero ? (implementedCount > 0 ? 'interim_plus_verified_zero' : 'verified_zero_dividend')
           : knownFromStalePlan ? 'stale_plan_not_implemented'
-            : amountMissing > 0 ? 'implemented_amount_missing'
-              : implementedCount > 0 ? 'interim_only' : 'plan_only',
+            : knownFromNoEvent ? 'no_dividend_event_in_fiscal_year'
+              : amountMissing > 0 ? 'implemented_amount_missing'
+                : implementedCount > 0 ? 'interim_only' : 'plan_only',
     });
     map.set(key, list);
   });

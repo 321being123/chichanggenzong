@@ -12,7 +12,7 @@ require('dotenv').config({ path: path.join(__dirname, '..', '..', '.env') });
 
 const MARK = '6098';
 const CODES = [`${MARK}01.SH`, `${MARK}02.SH`, `${MARK}03.SH`, `${MARK}04.SH`, `${MARK}05.SH`,
-  `${MARK}06.SH`, `${MARK}07.SH`, `${MARK}08.SH`];
+  `${MARK}06.SH`, `${MARK}07.SH`, `${MARK}08.SH`, `${MARK}09.SH`, `${MARK}10.SH`];
 const COMPANY_PREFIX = '选股口径测试';
 const TAG = Date.now().toString(36);
 const AS_OF = '2026-09-30';
@@ -107,6 +107,8 @@ async function main() {
     const stalePlan = await createInstrument(pool, 5);
     const recentValuation = await createInstrument(pool, 6);
     const ancientValuation = await createInstrument(pool, 7);
+    const noDividendYear = await createInstrument(pool, 8);
+    const negativeFromSource = await createInstrument(pool, 9);
 
     // 1) 2025-12-01 派现 0.2 元/股（无送转），2026-06-15 每 10 股转增 4 股 → 1 股转增 0.4 股。
     await insertAction(pool, send.instrumentId, sourceId, { exDate: '2025-12-01', cash: 0.2, key: 'send-cash' });
@@ -150,6 +152,17 @@ async function main() {
     });
 
     // 6) 2022 财年只有"股东大会通过"、从未实施（财年期末距目标日已超 2 年）。
+    // 年度判定以年报期末为主表，所以这只也要有 2022 年报。
+    const spReport = await pool.query(
+      `INSERT INTO fundamental.financial_reports
+         (company_id, report_kind, period_end, period_type, statement_scope, announced_at,
+          source_id, source_version, update_flag, is_current_version, report_type)
+       VALUES ($1,'income','2022-12-31'::date,'annual','consolidated','2023-03-31'::date,$2,'v1','',true,'1')
+       RETURNING report_id`, [stalePlan.companyId, sourceId]);
+    await pool.query(
+      `INSERT INTO fundamental.financial_facts
+         (report_id, statement_type, metric_code, numeric_value, unit_code, currency_code, source_field, is_calculated)
+       VALUES ($1,'income','net_profit_parent',3e8,'CNY','CNY','n_income_attr_p',false)`, [spReport.rows[0].report_id]);
     await pool.query(
       `INSERT INTO fundamental.corporate_actions
          (instrument_id, action_type, fiscal_period_end, announced_at, ex_date, status,
@@ -163,6 +176,33 @@ async function main() {
         `INSERT INTO market.daily_valuations (instrument_id, trade_date, source_id, pb, total_market_cap, currency_code)
          VALUES ($1,$2::date,$3,1.3,3e10,'CNY')`, [instrumentId, day, sourceId]);
     }
+
+    // 8) 有 2024 年报、但该财年一笔分红记录都没有 → 应判该财年零分红（不是未知）。
+    const ndReport = await pool.query(
+      `INSERT INTO fundamental.financial_reports
+         (company_id, report_kind, period_end, period_type, statement_scope, announced_at,
+          source_id, source_version, update_flag, is_current_version, report_type)
+       VALUES ($1,'income','2024-12-31'::date,'annual','consolidated','2025-03-31'::date,$2,'v1','',true,'1')
+       RETURNING report_id`, [noDividendYear.companyId, sourceId]);
+    await pool.query(
+      `INSERT INTO fundamental.financial_facts
+         (report_id, statement_type, metric_code, numeric_value, unit_code, currency_code, source_field, is_calculated)
+       VALUES ($1,'income','net_profit_parent',5e8,'CNY','CNY','n_income_attr_p',false)`, [ndReport.rows[0].report_id]);
+
+    // 9) 源站 PB 为空、但净资产为负：应按定义式现算出负 PB，而不是判缺失。
+    const neReport = await pool.query(
+      `INSERT INTO fundamental.financial_reports
+         (company_id, report_kind, period_end, period_type, statement_scope, announced_at,
+          source_id, source_version, update_flag, is_current_version, report_type)
+       VALUES ($1,'balance','2026-06-30'::date,'interim','consolidated','2026-08-20'::date,$2,'v1','',true,'2')
+       RETURNING report_id`, [negativeFromSource.companyId, sourceId]);
+    await pool.query(
+      `INSERT INTO fundamental.financial_facts
+         (report_id, statement_type, metric_code, numeric_value, unit_code, currency_code, source_field, is_calculated)
+       VALUES ($1,'balance','equity_parent',-2e8,'CNY','CNY','total_hldr_eqy_exc_min_int',false)`, [neReport.rows[0].report_id]);
+    await pool.query(
+      `INSERT INTO market.daily_valuations (instrument_id, trade_date, source_id, pb, total_market_cap, currency_code)
+       VALUES ($1,$2::date,$3,NULL,1e9,'CNY')`, [negativeFromSource.instrumentId, AS_OF, sourceId]);
 
     await check('送转后每股股息按官方送转比例折算到 T 日股本单位', async () => {
       const map = await repo.loadDividendWindow({ instrumentIds: [send.instrumentId], windowStart: WINDOW_START, asOfDate: AS_OF });
@@ -224,6 +264,23 @@ async function main() {
       const ancient = byId.get(String(ancientValuation.instrumentId));
       assert.ok(ancient, '有历史行情的证券仍在池内（不按无行情排除）');
       assert.strictEqual(ancient.pb, null, '超过 60 天窗口不得回退，保持缺失');
+    });
+
+    await check('财年一笔分红记录都没有 → 判该年零分红，不算未知', async () => {
+      const map = await repo.loadAnnualDividends({ companyIds: [noDividendYear.companyId], asOfDate: AS_OF });
+      const rows = map.get(String(noDividendYear.companyId)) || [];
+      const year = rows.find(row => row.year === 2024);
+      assert.ok(year, '必须给出 2024 财年记录（以年报期末为主表）');
+      assert.strictEqual(year.dividendKnown, true, '采过但没有记录的年份就是没分红');
+      assert.strictEqual(Number(year.dividend), 0);
+      assert.strictEqual(year.dividendBasis, 'no_dividend_event_in_fiscal_year');
+    });
+
+    await check('源站 PB 为空时按总市值÷归母净资产现算，负净资产如实为负 PB', async () => {
+      const universe = await repo.loadUniverse({ market: 'CN', asOfDate: AS_OF });
+      const row = universe.find(item => String(item.instrument_id) === String(negativeFromSource.instrumentId));
+      assert.ok(row, '该证券必须在池内');
+      assert.strictEqual(Number(row.pb), -5, '总市值 10 亿 ÷ 归母净资产 -2 亿 = -5');
     });
 
     await check('负 PB 在 R01 判不通过而不是待补，不阻断整批发布', async () => {

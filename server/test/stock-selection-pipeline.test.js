@@ -164,15 +164,23 @@ async function main() {
     const afterCut = await repo.loadAnnualDividends({ companyIds: [firstCompany], asOfDate: AS_OF });
     record('SSV-04 目标日之后的公告不得进入旧季度输入', () => {
       const rows = afterCut.get(String(firstCompany)) || [];
-      assert.ok(!rows.some(row => row.year === 2025), '2026-10-20 公告的 2025 财年分红不应出现在 2026-09-30 的批次里');
+      const y2025 = rows.find(row => row.year === 2025);
+      // 2026-11-04 口径：每个年报财年都会出行，但 2026-10-20 才公告的分红在 9-30 时点必须看不见；
+      // 2025 财年期末距目标日不足 1 年，也不满足"零分红"的证据条件，只能判未知。
+      assert.ok(!y2025 || (y2025.dividendKnown === false && y2025.dividend === null),
+        '2026-10-20 公告的 2025 财年分红不得进入 2026-09-30 的批次，也不得判成零分红');
     });
 
-    // 直接删掉某年全部记录：该年必须是"未知"，不能变成 0。
+    // 直接删掉某年全部记录：财年期末距今已超 1 年，按新口径应判该年零分红（不是未知）。
     await pool.query(`DELETE FROM fundamental.corporate_actions WHERE instrument_id = $1 AND fiscal_period_end = '2018-12-31'`, [firstInstrument]);
     const missingYear = await repo.loadAnnualDividends({ companyIds: [firstCompany], asOfDate: AS_OF });
-    record('SSV-04 完全没有分红记录的年份标为未知，不补 0', () => {
+    record('SSV-04 财报覆盖的财年一笔分红都没有 → 按该年零分红计', () => {
       const rows = missingYear.get(String(firstCompany)) || [];
-      assert.ok(!rows.some(row => row.year === 2018), '缺失年份不能以 0 出现在结果里');
+      const y2018 = rows.find(row => row.year === 2018);
+      assert.ok(y2018, '年报期末在集合里的财年必须出行');
+      assert.strictEqual(y2018.dividendKnown, true, '2018 财年期末距今超 1 年，缺记录即无分红');
+      assert.strictEqual(Number(y2018.dividend), 0);
+      assert.strictEqual(y2018.dividendBasis, 'no_dividend_event_in_fiscal_year');
     });
     // 还原现场，避免影响后续季度计算
     for (let year = 2015; year <= 2025; year++) {

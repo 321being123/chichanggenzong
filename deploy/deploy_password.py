@@ -90,9 +90,15 @@ def run_sudo(client, command, timeout=240):
 
 
 def run_local(args):
+    # 本机 git 以子进程调 ssh 时，HOME 是 Windows 形式（且用户名含中文），
+    # 默认身份文件路径解析失败，表现为 “Permission denied (publickey)”；
+    # 显式指定密钥 + IdentitiesOnly 才能稳定通过（2026-11-04 实测：不指定时 rc=128，指定后 rc=0）。
+    env = dict(os.environ)
     if args[:2] == ['git', 'fetch'] and os.name == 'nt':
-        args = ['git', '-c', 'core.sshCommand=C:/Windows/System32/OpenSSH/ssh.exe', *args[1:]]
-    result = subprocess.run(args, cwd=ROOT, text=True, capture_output=True, encoding='utf-8', errors='replace')
+        key = os.path.expanduser('~/.ssh/id_ed25519').replace('\\', '/')
+        env.setdefault('GIT_SSH_COMMAND',
+                       f'C:/Windows/System32/OpenSSH/ssh.exe -i {key} -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new')
+    result = subprocess.run(args, cwd=ROOT, text=True, capture_output=True, encoding='utf-8', errors='replace', env=env)
     if result.returncode:
         message = (result.stderr or result.stdout).strip()
         raise SystemExit(f"发布前置校验失败：{' '.join(args)}\n{message}")

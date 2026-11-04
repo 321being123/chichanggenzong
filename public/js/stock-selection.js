@@ -115,7 +115,7 @@ function ssRenderMarkets(state) {
     var active = item.market === state.market ? ' active' : '';
     var position = item.referencePosition === null || item.referencePosition === undefined
       ? '本轮不配置' : Math.round(item.referencePosition * 100) + '%';
-    return '<div class="ss-card' + active + '">'
+    return '<div class="ss-card bond-feature-stat' + active + '">'
       + '<div class="ss-card-head"><strong>' + ssEsc(item.label) + '</strong>'
       + '<span class="ss-gate ss-gate-' + ssEsc(item.gate.status) + '">' + ssEsc(SS_GATE_TEXT[item.gate.status] || item.gate.status) + '</span></div>'
       + '<div class="ss-card-body">'
@@ -306,7 +306,7 @@ function ssRenderDetail(state) {
       + ' / 十年合计 ' + (anomaly.dividendSum === null ? '--' : (Number(anomaly.dividendSum) / 1e8).toFixed(2) + ' 亿') + '。')
     : '年度异常比较数据待补。';
   root.hidden = false;
-  root.innerHTML = '<div class="ss-detail-head"><strong>' + ssEsc(candidate.name || candidate.code) + '（' + ssEsc(candidate.code) + '）</strong>'
+  root.innerHTML = '<div class="ss-detail-head"><h3>' + ssEsc(candidate.name || candidate.code) + '（' + ssEsc(candidate.code) + '）</h3>'
     + '<button class="btn btn-outline btn-sm" id="ss-detail-close">关闭</button></div>'
     + '<div class="ss-detail-meta">批次 #' + ssEsc(detail.runId) + ' · 目标日 ' + ssEsc(detail.asOfDate)
     + ' · 行业 ' + ssEsc(candidate.industry ? candidate.industry.name : '待核验')

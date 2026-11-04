@@ -91,20 +91,23 @@ async function loadUniverse({ market, asOfDate }, tx) {
          WHERE sc.instrument_id = i.instrument_id AND sc.trade_date = $2::date
            AND sc.suspend_type = 'S' LIMIT 1
       ) s ON true
+      -- 停牌或当日数据延迟：取目标日前 60 天窗口内最后一个有值交易日（当天有值仍然是当天）。
+      -- 不能只靠 suspend_type 触发回退：停牌表只覆盖转债正股与已跟踪股票，全市场并不完整
+      -- （*ST康佳A 这类 9-03 之后就没有任何行情的，表里查不到）。60 天上限保证不会拿长期停牌/退市前的陈旧价格。
       LEFT JOIN LATERAL (
         SELECT dv.pb, dv.pe_static, dv.pe_ttm, dv.dividend_yield_ttm, dv.total_market_cap,
                dv.currency_code, dv.trade_date
           FROM market.daily_valuations dv
          WHERE dv.instrument_id = i.instrument_id
            AND dv.trade_date <= $2::date
-           AND (dv.trade_date = $2::date OR s.suspend_type IS NOT NULL)
+           AND dv.trade_date > ($2::date - INTERVAL '60 days')
          ORDER BY dv.trade_date DESC, dv.source_id DESC LIMIT 1
       ) v ON true
       LEFT JOIN LATERAL (
         SELECT bb.close, bb.trade_date FROM market.daily_bars bb
          WHERE bb.instrument_id = i.instrument_id
            AND bb.trade_date <= $2::date
-           AND (bb.trade_date = $2::date OR s.suspend_type IS NOT NULL)
+           AND bb.trade_date > ($2::date - INTERVAL '60 days')
          ORDER BY bb.trade_date DESC LIMIT 1
       ) b ON true
      WHERE i.asset_class = 'stock'
@@ -414,6 +417,11 @@ async function loadAnnualDividends({ companyIds, asOfDate, availableBefore }, tx
              COUNT(*) FILTER (WHERE ${implemented})::int AS implemented_count,
              COUNT(*) FILTER (WHERE ${implemented} AND ca.total_cash_amount IS NULL)::int AS amount_missing_count,
              COUNT(*) FILTER (WHERE NOT (${implemented}))::int AS not_implemented_count,
+             -- 财年期末已过 2 年以上、状态仍停在预案/股东大会通过且该财年从未实施：
+             -- 这种历史方案就是"没有落地"，再等也不会变（2026-11-04 口径），
+             -- 与"金额未知"要分开，否则老公司会永远挂在"年度分红未知"上。
+             COUNT(*) FILTER (WHERE ca.status IN ('预案', '股东大会通过')
+               AND ca.fiscal_period_end <= ($2::date - INTERVAL '2 years'))::int AS stale_plan_count,
              COUNT(*) FILTER (WHERE ${explicitZero} AND EXISTS (
                SELECT 1 FROM annual_ends ae
                 WHERE ae.company_id = ci.company_id AND ae.period_end = ca.fiscal_period_end))::int AS year_zero_count,
@@ -436,6 +444,7 @@ async function loadAnnualDividends({ companyIds, asOfDate, availableBefore }, tx
            SUM(implemented_count)::int AS implemented_count,
            SUM(amount_missing_count)::int AS amount_missing_count,
            SUM(not_implemented_count)::int AS not_implemented_count,
+           SUM(stale_plan_count)::int AS stale_plan_count,
            SUM(year_zero_count)::int AS year_zero_count,
            BOOL_OR(has_year_end_implemented) AS has_year_end_implemented
       FROM per_instrument
@@ -448,11 +457,15 @@ async function loadAnnualDividends({ companyIds, asOfDate, availableBefore }, tx
     const amountMissing = Number(row.amount_missing_count || 0);
     const notImplemented = Number(row.not_implemented_count || 0);
     const yearZero = Number(row.year_zero_count || 0);
+    const stalePlan = Number(row.stale_plan_count || 0);
     // 完整证据 = 财年末那笔已实施已除息 + 该年所有已实施记录金额都不缺；
-    // 或者官方明确给出"该财年零股息"（实施 + 每股 0 + 无除息日）。
+    // 或者官方明确给出"该财年零股息"（实施 + 每股 0 + 无除息日）；
+    // 或者该财年只有"预案/股东大会通过"、且财年期末已过 2 年以上仍从未实施——
+    // 这种历史方案不会再有落地，按"该财年无已实施现金分红"计入（2026-11-04 口径）。
     const knownFromImplemented = implementedCount > 0 && amountMissing === 0 && row.has_year_end_implemented === true;
     const knownFromZero = yearZero > 0 && amountMissing === 0;
-    const known = knownFromImplemented || knownFromZero;
+    const knownFromStalePlan = implementedCount === 0 && amountMissing === 0 && stalePlan > 0;
+    const known = knownFromImplemented || knownFromZero || knownFromStalePlan;
     list.push({
       year: Number(row.fiscal_year),
       dividend: known ? Number(row.implemented_cash || 0) : null,
@@ -460,8 +473,9 @@ async function loadAnnualDividends({ companyIds, asOfDate, availableBefore }, tx
       dividendKnown: known,
       dividendBasis: knownFromImplemented ? 'annual_implemented_amount'
         : knownFromZero ? (implementedCount > 0 ? 'interim_plus_verified_zero' : 'verified_zero_dividend')
-          : amountMissing > 0 ? 'implemented_amount_missing'
-            : implementedCount > 0 ? 'interim_only' : 'plan_only',
+          : knownFromStalePlan ? 'stale_plan_not_implemented'
+            : amountMissing > 0 ? 'implemented_amount_missing'
+              : implementedCount > 0 ? 'interim_only' : 'plan_only',
     });
     map.set(key, list);
   });

@@ -11,7 +11,8 @@ const path = require('path');
 require('dotenv').config({ path: path.join(__dirname, '..', '..', '.env') });
 
 const MARK = '6098';
-const CODES = [`${MARK}01.SH`, `${MARK}02.SH`, `${MARK}03.SH`, `${MARK}04.SH`, `${MARK}05.SH`];
+const CODES = [`${MARK}01.SH`, `${MARK}02.SH`, `${MARK}03.SH`, `${MARK}04.SH`, `${MARK}05.SH`,
+  `${MARK}06.SH`, `${MARK}07.SH`, `${MARK}08.SH`];
 const COMPANY_PREFIX = '选股口径测试';
 const TAG = Date.now().toString(36);
 const AS_OF = '2026-09-30';
@@ -103,6 +104,9 @@ async function main() {
     const noMarket = await createInstrument(pool, 2);
     const negative = await createInstrument(pool, 3, { listDate: '2020-01-01' });
     const emptyAction = await createInstrument(pool, 4);
+    const stalePlan = await createInstrument(pool, 5);
+    const recentValuation = await createInstrument(pool, 6);
+    const ancientValuation = await createInstrument(pool, 7);
 
     // 1) 2025-12-01 派现 0.2 元/股（无送转），2026-06-15 每 10 股转增 4 股 → 1 股转增 0.4 股。
     await insertAction(pool, send.instrumentId, sourceId, { exDate: '2025-12-01', cash: 0.2, key: 'send-cash' });
@@ -145,6 +149,21 @@ async function main() {
       cash: 0.5, total: 1e8, key: 'annual-cash',
     });
 
+    // 6) 2022 财年只有"股东大会通过"、从未实施（财年期末距目标日已超 2 年）。
+    await pool.query(
+      `INSERT INTO fundamental.corporate_actions
+         (instrument_id, action_type, fiscal_period_end, announced_at, ex_date, status,
+          cash_per_share_pre_tax, stock_dividend_ratio, capitalization_ratio, total_cash_amount,
+          currency_code, source_id, source_key)
+       VALUES ($1,'dividend','2022-12-31'::date,'2023-05-01'::date,NULL,'股东大会通过',NULL,0,0,NULL,'CNY',$2,$3)`,
+      [stalePlan.instrumentId, sourceId, `${MARK}-STALE-2022`]);
+    // 7) 目标日当天无估值：20 天前有值 → 应回退取到；121 天前有值 → 超出 60 天窗口，保持缺失。
+    for (const [instrumentId, day] of [[recentValuation.instrumentId, '2026-09-10'], [ancientValuation.instrumentId, '2026-06-01']]) {
+      await pool.query(
+        `INSERT INTO market.daily_valuations (instrument_id, trade_date, source_id, pb, total_market_cap, currency_code)
+         VALUES ($1,$2::date,$3,1.3,3e10,'CNY')`, [instrumentId, day, sourceId]);
+    }
+
     await check('送转后每股股息按官方送转比例折算到 T 日股本单位', async () => {
       const map = await repo.loadDividendWindow({ instrumentIds: [send.instrumentId], windowStart: WINDOW_START, asOfDate: AS_OF });
       const item = map.get(String(send.instrumentId));
@@ -183,6 +202,28 @@ async function main() {
       assert.ok(year, '必须给出 2025 财年记录');
       assert.strictEqual(year.dividendKnown, true, '金额为空的中期空记录不得让整年未知');
       assert.strictEqual(Number(year.dividend), 1e8, '年度分红总额应如实取到');
+    });
+
+    await check('财年期末已过 2 年仍停在股东大会通过 → 判该年无已实施分红，不算未知', async () => {
+      const map = await repo.loadAnnualDividends({ companyIds: [stalePlan.companyId], asOfDate: AS_OF });
+      const rows = map.get(String(stalePlan.companyId)) || [];
+      const year = rows.find(row => row.year === 2022);
+      assert.ok(year, '必须给出 2022 财年记录');
+      assert.strictEqual(year.dividendKnown, true, '过期的股东大会通过方案不能永远算未知');
+      assert.strictEqual(Number(year.dividend), 0, '未落地方案按 0 计');
+      assert.strictEqual(year.dividendBasis, 'stale_plan_not_implemented');
+    });
+
+    await check('当日无估值时回退到 60 天窗口内最后有值日，超窗不回退', async () => {
+      const universe = await repo.loadUniverse({ market: 'CN', asOfDate: AS_OF });
+      const byId = new Map(universe.map(row => [String(row.instrument_id), row]));
+      const recent = byId.get(String(recentValuation.instrumentId));
+      assert.ok(recent, '20 天前有估值的证券必须在池内');
+      assert.strictEqual(Number(recent.pb), 1.3, '应回退取到 20 天前的 PB');
+      assert.strictEqual(recent.valuation_date, '2026-09-10', '回退来源日期必须留证');
+      const ancient = byId.get(String(ancientValuation.instrumentId));
+      assert.ok(ancient, '有历史行情的证券仍在池内（不按无行情排除）');
+      assert.strictEqual(ancient.pb, null, '超过 60 天窗口不得回退，保持缺失');
     });
 
     await check('负 PB 在 R01 判不通过而不是待补，不阻断整批发布', async () => {

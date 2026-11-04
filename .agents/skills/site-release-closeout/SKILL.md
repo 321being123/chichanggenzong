@@ -27,7 +27,7 @@ description: "存在小站（portfolio-server）上线发布，或上一次发�
 ## A 分支：新发布
 
 1. **定版**：更新 `public/changelog.json`、`CHANGELOG.md`、`package.json` 的 `appVersion`（默认末位加一）。条目用大白话，带 `新增：` / `优化：` / `修复：` 前缀，顺序固定为 新增→优化→修复。
-2. **本地验收**：相关专项测试 + `npm.cmd run test:all` + `npm.cmd run check:knowledge`。
+2. **本地验收**：按 `docs/生产部署流程.md` 的「测试分级与全量结果复用」核对相关专项、知识门禁及最终整合树的全量证据。没有满足复用条件的完整证据时运行一次 `npm.cmd run test:all`；相同已测代码/测试和环境不因换对话重复跑，合并或运行条件变化按该节重验，保留失败/跳过及未验项。
 3. **提交并固定发布身份**：精确 `git add <文件>`，禁止 `git add -A`；提交后记下 HEAD SHA 与 `appVersion`，生成 `--deployment-id`（UUID）。
 4. **反馈核对准备（必须在部署之前完成）**：按 `docs/意见反馈与版本发布闭环研发方案_20261023.md` 的链路，用 `--mode read` **完整**读取待处理反馈与 revision（分页读完，`complete=true`），逐条判定完整解决 / 部分解决 / 未涉及 / 待核验；再 `prepare`（绑本次 deployment-id、发布 SHA、版本）→ `conclusions` → `freeze` → 专项验收后 `verify --pass`。拿不准的留「待核验」，不要为了清空而关单。
    - 确认本批**没有**相关反馈时，不要凭记忆下结论：写一份查询证据文件（`complete=true`、逐条候选给 `unrelated` 与理由、`queriedAt` 在 48 小时内、`releaseSha` 指向本次提交），交给部署脚本 `--feedback-none-evidence`。

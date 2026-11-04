@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "lastReviewed": "2026-11-03",
+  "lastReviewed": "2026-11-04",
   "requiredFiles": [
     "docs/知识库公共规则.md",
     "docs/知识索引.md",
@@ -110,6 +110,62 @@
         ],
         "docs/知识索引.md": [
           "## 快速入口（按需读取）"
+        ]
+      }
+    },
+    {
+      "id": "test-validation-policy",
+      "risk": "medium",
+      "paths": [
+        "server/test/run-all.js",
+        "server/test/run-one.js",
+        "server/test/lib/**"
+      ],
+      "keywords": [
+        "减少测试",
+        "测试分级",
+        "分级测试",
+        "测试规范",
+        "测试策略",
+        "全量测试",
+        "全量结果复用"
+      ],
+      "read": [
+        "AGENTS.md",
+        "docs/生产部署流程.md",
+        "deploy/本地验证交接文档.md",
+        "docs/技术架构.md",
+        "docs/tasks/README.md"
+      ],
+      "update": [
+        "docs/生产部署流程.md",
+        "docs/技术架构.md",
+        "docs/知识索引.md"
+      ],
+      "checks": [
+        "npm.cmd run check:knowledge"
+      ],
+      "expandOn": [
+        "影响范围不清",
+        "共享基础能力与跨模块重构",
+        "发布最终代码树",
+        "测试环境或样本变化",
+        "全量失败或必需项跳过"
+      ],
+      "readSections": {
+        "docs/生产部署流程.md": [
+          "## 2. 本地验证",
+          "### 测试分级与全量结果复用",
+          "### Windows 全量测试（固定方式）"
+        ],
+        "docs/技术架构.md": [
+          "## 13. 运行、测试与部署"
+        ],
+        "deploy/本地验证交接文档.md": [
+          "## 三、按实际改动选择验证"
+        ],
+        "docs/tasks/README.md": [
+          "## 模板"
         ]
       }
     },
@@ -361,7 +417,8 @@
         "docs/技术架构.md",
         "docs/日期时间统一治理研发方案_20260928.md",
         "docs/incidents/INC-0032-全项目日期时间边界审计与整改方案.md",
-        "docs/自动任务重复执行与API调用保护整改方案_20260815.md"
+        "docs/自动任务重复执行与API调用保护整改方案_20260815.md",
+        "docs/生产部署流程.md"
       ],
       "update": [
         "docs/技术架构.md",
@@ -372,7 +429,6 @@
       ],
       "checks": [
         "npm.cmd run check:date",
-        "npm.cmd run test:all",
         "npm.cmd run check:knowledge"
       ],
       "expandOn": [
@@ -392,6 +448,9 @@
           "### 3.1 三类值必须分开",
           "### 3.2 最小公共能力",
           "### 3.3 数据库边界"
+        ],
+        "docs/生产部署流程.md": [
+          "### 测试分级与全量结果复用"
         ]
       }
     },
@@ -428,7 +487,8 @@
       ],
       "read": [
         "docs/技术架构.md",
-        "docs/应用分层与MVP架构整改方案_20261027.md"
+        "docs/应用分层与MVP架构整改方案_20261027.md",
+        "docs/生产部署流程.md"
       ],
       "update": [
         "docs/技术架构.md",
@@ -437,8 +497,7 @@
       ],
       "checks": [
         "npm.cmd run check:knowledge",
-        "npm.cmd run check:data-architecture",
-        "npm.cmd run test:all"
+        "npm.cmd run check:data-architecture"
       ],
       "expandOn": [
         "数据源替换",
@@ -467,6 +526,9 @@
           "### 8.1 每批正文更新落点",
           "### 8.2 本轮评审建议的采纳结论",
           "### 8.3 本次补充评审的采纳结论"
+        ],
+        "docs/生产部署流程.md": [
+          "### 测试分级与全量结果复用"
         ]
       }
     },
@@ -707,14 +769,14 @@
       "read": [
         "docs/技术架构.md",
         "docs/decisions/ADR-0001-公告数据源优先级与统一采集.md",
-        "docs/自动任务重复执行与API调用保护整改方案_20260815.md"
+        "docs/自动任务重复执行与API调用保护整改方案_20260815.md",
+        "docs/生产部署流程.md"
       ],
       "update": [
         "docs/技术架构.md",
         "docs/知识索引.md"
       ],
       "checks": [
-        "npm.cmd run test:all",
         "npm.cmd run check:knowledge"
       ],
       "expandOn": [
@@ -733,6 +795,9 @@
           "## 决策",
           "## 影响范围",
           "## 何时重新评估"
+        ],
+        "docs/生产部署流程.md": [
+          "### 测试分级与全量结果复用"
         ]
       }
     },
@@ -774,7 +839,8 @@
         "docs/decisions/ADR-0004-A股IPO行业事实与PE口径隔离.md",
         "docs/自动任务重复执行与API调用保护整改方案_20260815.md",
         "docs/incidents/INC-0033-A股IPO行业漏解析与持续补全研发方案.md",
-        "docs/线上告警与异常整改开发方案_20261023.md"
+        "docs/线上告警与异常整改开发方案_20261023.md",
+        "docs/生产部署流程.md"
       ],
       "update": [
         "docs/技术架构.md",
@@ -785,7 +851,6 @@
         "governance/rule-traceability.json"
       ],
       "checks": [
-        "npm.cmd run test:all",
         "npm.cmd run check:knowledge"
       ],
       "expandOn": [
@@ -822,6 +887,9 @@
         ],
         "docs/线上告警与异常整改开发方案_20261023.md": [
           "#### 正常等待披露的运营确认（2026-10-25，沿用0.8.4.38，无代码变更）"
+        ],
+        "docs/生产部署流程.md": [
+          "### 测试分级与全量结果复用"
         ]
       }
     },
@@ -913,7 +981,8 @@
         "docs/技术架构.md",
         "docs/decisions/ADR-0002-后台任务与数据质量不变量.md",
         "docs/decisions/ADR-0003-告警与任务治理门禁补强.md",
-        "docs/自动任务重复执行与API调用保护整改方案_20260815.md"
+        "docs/自动任务重复执行与API调用保护整改方案_20260815.md",
+        "docs/生产部署流程.md"
       ],
       "update": [
         "docs/技术架构.md",
@@ -921,7 +990,6 @@
         "docs/decisions/ADR-0003-告警与任务治理门禁补强.md"
       ],
       "checks": [
-        "npm.cmd run test:all",
         "npm.cmd run check:knowledge"
       ],
       "expandOn": [
@@ -945,6 +1013,9 @@
           "## 决策",
           "## 影响范围",
           "## 何时重新评估"
+        ],
+        "docs/生产部署流程.md": [
+          "### 测试分级与全量结果复用"
         ]
       }
     },
@@ -1020,14 +1091,14 @@
         "docs/技术架构.md",
         "docs/可转债强赎监控页面_设计方案.md",
         "docs/可转债强赎公告解析与锁定期状态治理_研发方案_20260915.md",
-        "docs/自动任务重复执行与API调用保护整改方案_20260815.md"
+        "docs/自动任务重复执行与API调用保护整改方案_20260815.md",
+        "docs/生产部署流程.md"
       ],
       "update": [
         "docs/技术架构.md",
         "docs/可转债强赎公告解析与锁定期状态治理_研发方案_20260915.md"
       ],
       "checks": [
-        "npm.cmd run test:all",
         "npm.cmd run check:knowledge"
       ],
       "expandOn": [
@@ -1046,6 +1117,9 @@
           "### 7.1 状态优先级与时间口径",
           "### 7.2 锁定期口径",
           "### 13.2 状态边界"
+        ],
+        "docs/生产部署流程.md": [
+          "### 测试分级与全量结果复用"
         ]
       }
     },
@@ -1082,7 +1156,8 @@
         "docs/港股打新日历与严选建议研发方案_20260907.md",
         "docs/港股IPO数据源与实时申购信号整改研发方案_20260920.md",
         "docs/技术架构.md",
-        "docs/自动任务重复执行与API调用保护整改方案_20260815.md"
+        "docs/自动任务重复执行与API调用保护整改方案_20260815.md",
+        "docs/生产部署流程.md"
       ],
       "update": [
         "docs/港股打新日历与严选建议研发方案_20260907.md",
@@ -1090,7 +1165,6 @@
         "docs/技术架构.md"
       ],
       "checks": [
-        "npm.cmd run test:all",
         "npm.cmd run check:knowledge"
       ],
       "expandOn": [
@@ -1106,6 +1180,9 @@
           "### 9.3 可转债",
           "## 10. 外部数据源与缓存",
           "## 11. 后台任务"
+        ],
+        "docs/生产部署流程.md": [
+          "### 测试分级与全量结果复用"
         ]
       }
     },
@@ -1126,13 +1203,14 @@
         "schema"
       ],
       "read": [
-        "docs/技术架构.md"
+        "docs/技术架构.md",
+        "docs/生产部署流程.md"
       ],
       "update": [
         "docs/技术架构.md"
       ],
       "checks": [
-        "npm.cmd run test:all"
+        "npm.cmd run check:knowledge"
       ],
       "expandOn": [
         "历史数据",
@@ -1144,6 +1222,9 @@
         "docs/技术架构.md": [
           "### 8.1 Schema 分工",
           "### 8.2 标准数据流"
+        ],
+        "docs/生产部署流程.md": [
+          "### 测试分级与全量结果复用"
         ]
       }
     },
@@ -1162,13 +1243,14 @@
         "定时"
       ],
       "read": [
-        "docs/技术架构.md"
+        "docs/技术架构.md",
+        "docs/生产部署流程.md"
       ],
       "update": [
         "docs/技术架构.md"
       ],
       "checks": [
-        "npm.cmd run test:all"
+        "npm.cmd run check:knowledge"
       ],
       "expandOn": [
         "幂等",
@@ -1180,6 +1262,9 @@
         "docs/技术架构.md": [
           "### 8.2.2 后台任务、质量和熔断不变量（P0-2～P0-7）",
           "## 11. 后台任务"
+        ],
+        "docs/生产部署流程.md": [
+          "### 测试分级与全量结果复用"
         ]
       }
     },
@@ -1198,13 +1283,14 @@
         "API"
       ],
       "read": [
-        "docs/技术架构.md"
+        "docs/技术架构.md",
+        "docs/生产部署流程.md"
       ],
       "update": [
         "docs/技术架构.md"
       ],
       "checks": [
-        "npm.cmd run test:all"
+        "npm.cmd run check:knowledge"
       ],
       "expandOn": [
         "兼容",
@@ -1215,6 +1301,9 @@
         "docs/技术架构.md": [
           "### 4.3 中间件顺序",
           "## 7. API 模块"
+        ],
+        "docs/生产部署流程.md": [
+          "### 测试分级与全量结果复用"
         ]
       }
     },
@@ -1233,13 +1322,14 @@
         "服务"
       ],
       "read": [
-        "docs/技术架构.md"
+        "docs/技术架构.md",
+        "docs/生产部署流程.md"
       ],
       "update": [
         "docs/技术架构.md"
       ],
       "checks": [
-        "npm.cmd run test:all"
+        "npm.cmd run check:knowledge"
       ],
       "expandOn": [
         "外部 API",
@@ -1251,6 +1341,9 @@
         "docs/技术架构.md": [
           "### 8.2 标准数据流",
           "## 10. 外部数据源与缓存"
+        ],
+        "docs/生产部署流程.md": [
+          "### 测试分级与全量结果复用"
         ]
       }
     },
@@ -1307,13 +1400,14 @@
         "响应式"
       ],
       "read": [
-        "docs/技术架构.md"
+        "docs/技术架构.md",
+        "docs/生产部署流程.md"
       ],
       "update": [
         "docs/技术架构.md"
       ],
       "checks": [
-        "npm.cmd run test:all"
+        "npm.cmd run check:knowledge"
       ],
       "expandOn": [
         "权限",
@@ -1328,6 +1422,9 @@
           "### 5.1 全局业务表格规范",
           "#### 5.3.1 共用移动端规则",
           "### 7.1 页面级访问矩阵（ACCESS-01）"
+        ],
+        "docs/生产部署流程.md": [
+          "### 测试分级与全量结果复用"
         ]
       }
     },
@@ -1358,7 +1455,8 @@
       ],
       "read": [
         "docs/证券分析与通用分享开发方案_20261022.md",
-        "docs/技术架构.md"
+        "docs/技术架构.md",
+        "docs/生产部署流程.md"
       ],
       "update": [
         "docs/技术架构.md",
@@ -1366,7 +1464,7 @@
         "docs/证券分析与通用分享开发方案_20261022.md"
       ],
       "checks": [
-        "npm.cmd run test:all"
+        "npm.cmd run check:knowledge"
       ],
       "expandOn": [
         "权限",
@@ -1379,6 +1477,9 @@
         "docs/技术架构.md": [
           "### 9.7 证券分析与通用分享（2026-10-22 实现，0.8.4.9/247c898 已生产发布）",
           "## 12. 配置与敏感信息"
+        ],
+        "docs/生产部署流程.md": [
+          "### 测试分级与全量结果复用"
         ]
       }
     },
@@ -1580,7 +1681,8 @@
           "## 2. 本地验证",
           "## 3. Git 正式发布",
           "## 4. 服务器标准部署",
-          "## 5. 部署后验收"
+          "## 5. 部署后验收",
+          "### 测试分级与全量结果复用"
         ],
         "docs/知识库公共规则.md": [
           "## 6. 多Agent写入与整合顺序"

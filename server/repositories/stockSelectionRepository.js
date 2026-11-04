@@ -501,7 +501,10 @@ async function loadAnnualDividends({ companyIds, asOfDate, availableBefore }, tx
     const knownFromZero = yearZero > 0 && amountMissing === 0;
     const knownFromStalePlan = implementedCount === 0 && amountMissing === 0 && stalePlan > 0;
     const knownFromNoEvent = eventCount === 0 && row.fiscal_year_settled === true;
-    const known = knownFromImplemented || knownFromZero || knownFromStalePlan || knownFromNoEvent;
+    // 有记录、但一条都没走到实施（只剩预案/股东大会通过）→ 该财年没有已实施现金分红，按 0 计。
+    // 与「金额缺失」区分：amountMissing>0 说明实施记录确实存在、只是金额没采到，那才是未知。
+    const knownFromPlanOnly = implementedCount === 0 && amountMissing === 0 && eventCount > 0;
+    const known = knownFromImplemented || knownFromZero || knownFromStalePlan || knownFromNoEvent || knownFromPlanOnly;
     list.push({
       year: Number(row.fiscal_year),
       dividend: known ? Number(row.implemented_cash || 0) : null,
@@ -511,8 +514,9 @@ async function loadAnnualDividends({ companyIds, asOfDate, availableBefore }, tx
         : knownFromZero ? (implementedCount > 0 ? 'interim_plus_verified_zero' : 'verified_zero_dividend')
           : knownFromStalePlan ? 'stale_plan_not_implemented'
             : knownFromNoEvent ? 'no_dividend_event_in_fiscal_year'
-              : amountMissing > 0 ? 'implemented_amount_missing'
-                : implementedCount > 0 ? 'interim_only' : 'plan_only',
+              : knownFromPlanOnly ? 'plan_not_implemented_zero'
+                : amountMissing > 0 ? 'implemented_amount_missing'
+                  : implementedCount > 0 ? 'interim_only' : 'plan_only',
     });
     map.set(key, list);
   });

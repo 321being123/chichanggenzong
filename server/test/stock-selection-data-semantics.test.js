@@ -234,6 +234,24 @@ async function main() {
           currency_code, source_id, source_key)
        VALUES ($1,'dividend','2024-12-31'::date,'2025-03-31'::date,NULL,'股东大会通过',NULL,0,0,NULL,'CNY',$2,$3)`,
       [meetingZero.instrumentId, sourceId, `${MARK}-MEETING-ZERO`]);
+    // 11) 2023 财年只有「预案」、从未实施：按 2026-11-04 口径也是「该年没分红」，不是未知。
+    const poReport = await pool.query(
+      `INSERT INTO fundamental.financial_reports
+         (company_id, report_kind, period_end, period_type, statement_scope, announced_at,
+          source_id, source_version, update_flag, is_current_version, report_type)
+       VALUES ($1,'income','2023-12-31'::date,'annual','consolidated','2024-03-31'::date,$2,'v1','',true,'1')
+       RETURNING report_id`, [meetingZero.companyId, sourceId]);
+    await pool.query(
+      `INSERT INTO fundamental.financial_facts
+         (report_id, statement_type, metric_code, numeric_value, unit_code, currency_code, source_field, is_calculated)
+       VALUES ($1,'income','net_profit_parent',1.5e8,'CNY','CNY','n_income_attr_p',false)`, [poReport.rows[0].report_id]);
+    await pool.query(
+      `INSERT INTO fundamental.corporate_actions
+         (instrument_id, action_type, fiscal_period_end, announced_at, ex_date, status,
+          cash_per_share_pre_tax, stock_dividend_ratio, capitalization_ratio, total_cash_amount,
+          currency_code, source_id, source_key)
+       VALUES ($1,'dividend','2023-12-31'::date,'2024-03-31'::date,NULL,'预案',NULL,0,0,NULL,'CNY',$2,$3)`,
+      [meetingZero.instrumentId, sourceId, `${MARK}-PLAN-ONLY`]);
 
     await check('送转后每股股息按官方送转比例折算到 T 日股本单位', async () => {
       const map = await repo.loadDividendWindow({ instrumentIds: [send.instrumentId], windowStart: WINDOW_START, asOfDate: AS_OF });
@@ -314,6 +332,17 @@ async function main() {
       assert.ok(year, '必须给出 2024 财年记录');
       assert.strictEqual(year.dividendKnown, true, '方案已定、就是不分红，不能判未知');
       assert.strictEqual(Number(year.dividend), 0);
+    });
+
+    await check('只有预案、从未实施 → 判该财年没分红，不是未知', async () => {
+      const map = await repo.loadAnnualDividends({ companyIds: [meetingZero.companyId], asOfDate: AS_OF });
+      const rows = map.get(String(meetingZero.companyId)) || [];
+      const year = rows.find(row => row.year === 2023);
+      assert.ok(year, '必须给出 2023 财年记录');
+      assert.strictEqual(year.dividendKnown, true, '预案没实施就是没分红');
+      assert.strictEqual(Number(year.dividend), 0);
+      // 距今已过 2 年的财年先命中的是「过期方案」分支，两者语义相同（未实施即 0）。
+      assert.ok(['stale_plan_not_implemented', 'plan_not_implemented_zero'].includes(year.dividendBasis), '实际 basis=' + year.dividendBasis);
     });
 
     await check('源站 PB 为空时按总市值÷归母净资产现算，负净资产如实为负 PB', async () => {

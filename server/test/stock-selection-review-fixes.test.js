@@ -68,13 +68,16 @@ async function main() {
     assert.strictEqual(recovered.rankReady, true);
   });
 
-  // ---------- SSV-09：十年 PB 缺口不能推成"不符合" ----------
-  await check('SSV-09 1000 个应有日只覆盖 900 日、最高 PB=0.9 → 待补而非 FAIL', () => {
+  // ---------- SSV-09：十年 PB 缺口不能推成"不符合"（2026-11-04 口径：不可评估，不是待补） ----------
+  await check('SSV-09 1000 个应有日只覆盖 900 日、最高 PB=0.9 → 不可评估而非 FAIL 或待补', () => {
     const result = RULES.evaluateInstrument(facts({
       pbWindow: { maxPb: 0.9, coveredDays: 900, expectedDays: 1000, gapDays: 100 },
     }));
-    assert.strictEqual(result.rules.R02.status, RULES.STATUS.PENDING, '有缺口时不能推断未覆盖区间没有正证');
-    assert.strictEqual(result.rules.R02.reason, 'history_gap_exists');
+    // 仍是"不能推断未覆盖区间没有正证"，但结论从"待补"改为"不可评估"：
+    // 补不动的估值缺口不该永远阻断整批发布，也不该凭缺失区间错杀。
+    assert.strictEqual(result.rules.R02.status, RULES.STATUS.NOT_APPLICABLE, '有缺口时不能推断未覆盖区间没有正证');
+    assert.strictEqual(result.rules.R02.reason, 'history_gap_not_evaluable');
+    assert.strictEqual(result.filterStatus, RULES.STATUS.NOT_APPLICABLE, '整只股票不能进候选');
   });
 
   await check('SSV-09 应有日全部覆盖且都≤1 才判不符合；正证路径不受影响', () => {
@@ -88,11 +91,11 @@ async function main() {
     assert.strictEqual(positive.rules.R02.status, RULES.STATUS.PASS, '有正证即通过，不被其他缺口推翻');
   });
 
-  await check('SSV-09 缺缺口信息时按未知处理，不猜成完整', () => {
+  await check('SSV-09 缺缺口信息时按不可评估处理，不猜成完整也不猜成符合', () => {
     const result = RULES.evaluateInstrument(facts({
       pbWindow: { maxPb: 0.9, coveredDays: 900 },
     }));
-    assert.strictEqual(result.rules.R02.status, RULES.STATUS.PENDING);
+    assert.strictEqual(result.rules.R02.status, RULES.STATUS.NOT_APPLICABLE);
     assert.strictEqual(result.rules.R02.reason, 'history_coverage_unknown');
   });
 

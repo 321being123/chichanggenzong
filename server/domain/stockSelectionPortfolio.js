@@ -52,6 +52,12 @@ function buildPortfolio(input) {
       skipped.push({ code: item.code, instrumentId: item.instrumentId, reason: 'annual_anomaly_pending', detail: anomaly.reason });
       continue;
     }
+    if (anomaly && anomaly.status === RULES.STATUS.NOT_APPLICABLE) {
+      // 2026-11-04：上市历史不足 → 无法判断年度财务异常，本轮不入选。
+      // 与"待补"区分：不进补数队列、不阻断发布，但也绝不放进组合。
+      skipped.push({ code: item.code, instrumentId: item.instrumentId, reason: 'annual_anomaly_not_evaluable', detail: anomaly.reason });
+      continue;
+    }
     if (item.filterStatus === RULES.STATUS.RISK || item.riskHeld === true) {
       // 风险暂缓（停牌/ST/退市风险）不得进入席位：原因与"数据待补""策略不符合"分开记。
       skipped.push({ code: item.code, instrumentId: item.instrumentId, reason: 'risk_held', detail: item.riskReasons || null });

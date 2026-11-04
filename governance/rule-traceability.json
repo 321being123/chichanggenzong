@@ -4875,6 +4875,26 @@
       ],
       "owner": "WorkBuddy",
       "status": "implemented"
+    },
+    {
+      "id": "SELECTION-NOT-EVALUABLE-SEMANTICS-248",
+      "title": "选股的「不可评估」不得当成「待补」：估值窗口先天覆盖不全、上市不足所需财年属客观无法判定——不入选、不进补数队列、不阻断发布；已采分红但窗口内无已实施现金分红判明确不通过",
+      "implementation": {
+        "file": "server/domain/stockSelectionRules.js",
+        "symbol": "worstStatus"
+      },
+      "tests": [
+        {
+          "file": "server/test/stock-selection-rules.test.js",
+          "pattern": "不可评估"
+        },
+        {
+          "file": "server/test/stock-selection-review-fixes.test.js",
+          "pattern": "SSV-09"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "implemented"
     }
   ]
 }

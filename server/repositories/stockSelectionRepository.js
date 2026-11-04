@@ -263,14 +263,38 @@ async function loadDividendWindow({ instrumentIds, windowStart, asOfDate }, tx) 
          AND (COALESCE(ca.stock_dividend_ratio, 0) > 0 OR COALESCE(ca.capitalization_ratio, 0) > 0)
        GROUP BY 1`, [instrumentIds, windowStart, asOfDate]);
   const shareChangeById = new Map(shareChanges.rows.map(row => [String(row.instrument_id), Number(row.cnt)]));
-  return new Map(cash.rows.map(row => [String(row.instrument_id), {
-    ttmPerShare: row.per_share === null ? null : Number(row.per_share),
-    count: Number(row.cash_count || 0),
-    currency: row.currency || null,
-    totalCash: row.total_cash === null ? null : Number(row.total_cash),
-    // 区间内发生送转/拆合股时，历史每股金额未统一到 T 股份单位 → 标待核验，不直接算股息率。
-    shareUnitUnverified: (shareChangeById.get(String(row.instrument_id)) || 0) > 0,
-  }]));
+  // 「采过分红但窗口内一笔都没有」与「从没采过」必须分开（2026-11-04 口径调整）：
+  // 前者是明确的"近 12 个月无现金分红"（可判不通过），后者才可能是数据缺失。
+  // 老实现只返回有现金分红的证券，导致没分红的公司一律被当成"分红不可用"并阻断整批发布。
+  const history = await exec(`
+      SELECT DISTINCT instrument_id
+        FROM fundamental.corporate_actions
+       WHERE instrument_id = ANY($1::bigint[])
+         AND action_type = 'dividend'`, [instrumentIds]);
+  const hasHistory = new Set(history.rows.map(row => String(row.instrument_id)));
+  const cashById = new Map(cash.rows.map(row => [String(row.instrument_id), row]));
+  const map = new Map();
+  for (const instrumentId of instrumentIds) {
+    const key = String(instrumentId);
+    const row = cashById.get(key);
+    map.set(key, row ? {
+      ttmPerShare: row.per_share === null ? null : Number(row.per_share),
+      count: Number(row.cash_count || 0),
+      currency: row.currency || null,
+      totalCash: row.total_cash === null ? null : Number(row.total_cash),
+      // 区间内发生送转/拆合股时，历史每股金额未统一到 T 股份单位 → 标待核验，不直接算股息率。
+      shareUnitUnverified: (shareChangeById.get(key) || 0) > 0,
+      hasDividendHistory: true,
+    } : {
+      ttmPerShare: null,
+      count: 0,
+      currency: null,
+      totalCash: null,
+      shareUnitUnverified: (shareChangeById.get(key) || 0) > 0,
+      hasDividendHistory: hasHistory.has(key),
+    });
+  }
+  return map;
 }
 
 /** 按公司财年汇总的现金分红（A/H 同一发行人按经济事件去重），只认目标日当时可见的事实（SSV-04）。

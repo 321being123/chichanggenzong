@@ -57,10 +57,38 @@ async function main() {
 
   // 2026-11-03 整改（SSV-09）：历史完整性改为"上市后应有交易日一天不缺"，
   // 不看覆盖率阈值；gapDays>0 只能待补，gapDays=0 才是不符合。
-  await check('R02 有缺口时待补，不判不通过', () => {
+  await check('R02 覆盖不全时判不可评估：不入选、不进缺口，也不判不通过', () => {
     const result = RULES.evaluateInstrument(facts({ pbWindow: { maxPb: 0.9, coveredDays: 900, expectedDays: 1000, gapDays: 100 } }));
-    assert.strictEqual(result.rules.R02.status, RULES.STATUS.PENDING);
-    assert.strictEqual(result.rules.R02.reason, 'history_gap_exists');
+    // 2026-11-04 口径：覆盖不全无法证明"十年内没有 PB>1"，属于客观不可评估。
+    // 判 PENDING 会让补不动的估值缺口永远阻断整批发布，判 FAIL 又会凭缺失区间错杀。
+    assert.strictEqual(result.rules.R02.status, RULES.STATUS.NOT_APPLICABLE);
+    assert.strictEqual(result.rules.R02.reason, 'history_gap_not_evaluable');
+    assert.strictEqual(result.filterStatus, RULES.STATUS.NOT_APPLICABLE, '整只股票也不能进候选');
+  });
+
+  await check('R04 采过分红但近 12 个月无已实施现金分红 → 明确不通过，不再当数据缺失', () => {
+    const result = RULES.evaluateInstrument(facts({
+      dividend: { ttmPerShare: null, count: 0, verifiedZero: true, hasDividendHistory: true },
+    }));
+    assert.strictEqual(result.rules.R04.status, RULES.STATUS.FAIL);
+    assert.strictEqual(result.rules.R04.reason, 'verified_no_cash_dividend');
+  });
+
+  await check('年度异常：历史连续但起点偏晚（新股）判不可评估，不阻断发布', () => {
+    const years = [2021, 2022, 2023, 2024, 2025].map(year => ({
+      year, profit: 1e8, dividend: 1e7, dividendKnown: true, complete: true,
+    }));
+    const anomaly = RULES.evaluateAnnualAnomaly({ latestYear: 2025, years }, RULES.DEFAULT_PARAMS);
+    assert.strictEqual(anomaly.status, RULES.STATUS.NOT_APPLICABLE);
+    assert.strictEqual(anomaly.reason, 'fiscal_history_insufficient_not_evaluable');
+  });
+
+  await check('年度异常：中间断档仍算待补，不能当新股放过去', () => {
+    const years = [2015, 2016, 2021, 2022, 2023, 2024, 2025].map(year => ({
+      year, profit: 1e8, dividend: 1e7, dividendKnown: true, complete: true,
+    }));
+    const anomaly = RULES.evaluateAnnualAnomaly({ latestYear: 2025, years }, RULES.DEFAULT_PARAMS);
+    assert.strictEqual(anomaly.status, RULES.STATUS.PENDING);
   });
 
   await check('R02 无正证但应有日全部覆盖才判不通过', () => {

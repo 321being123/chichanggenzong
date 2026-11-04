@@ -83,10 +83,13 @@ function evaluateHistoricalPb(facts) {
   }
   // 没有缺口信息（旧调用/仓储未提供）时按"未知"处理，绝不猜成完整。
   if (gapDays === null) {
-    return { rule: rule('R02', STATUS.PENDING, Object.assign({ value: maxPb, reason: 'history_coverage_unknown' }, evidence)), maxPb };
+    return { rule: rule('R02', STATUS.NOT_APPLICABLE, Object.assign({ value: maxPb, reason: 'history_coverage_unknown' }, evidence)), maxPb };
   }
   if (gapDays > 0) {
-    return { rule: rule('R02', STATUS.PENDING, Object.assign({ value: maxPb, reason: 'history_gap_exists' }, evidence)), maxPb };
+    // 2026-11-04 口径调整：覆盖不全属于"客观不可评估"，不是"该补没补"。
+    // 只靠缺失区间推断"十年内没出现过 PB>1"等于把缺数据当成结论，因此既不判通过也不判不通过，
+    // 该股本轮不入选、也不进补数队列（避免补不动的对象永远阻断发布）。
+    return { rule: rule('R02', STATUS.NOT_APPLICABLE, Object.assign({ value: maxPb, reason: 'history_gap_not_evaluable' }, evidence)), maxPb };
   }
   // 应有交易日全部有有效同口径 PB 且都不大于 1，才是不符合。
   return { rule: rule('R02', STATUS.FAIL, Object.assign({ value: maxPb, reason: 'no_pb_above_one_evidence' }, evidence)), maxPb };
@@ -151,9 +154,32 @@ function evaluateEquity(facts, params) {
   };
 }
 
+// 汇总优先级：待补(数据缺失) > 明确不符合 > 不可评估(客观无法判定) > 通过。
+// 「不可评估」与「待补」是两件事（2026-11-04 口径调整）：
+//   待补 = 该有数据但没取到 → 进补数队列、阻断正式发布；
+//   不可评估 = 客观无法判定（上市历史不足、估值窗口先天覆盖不全）→ 不进补数队列，但也不入选。
+/**
+ * 上市历史不足 vs 数据没采全，必须分开：
+ *   - 财年连续覆盖、但起点晚于所需起点 → 公司客观上没有更早历史（新股），判"不可评估"；
+ *   - 中间断档（有早年份但缺其中几年）→ 属于数据缺口，仍要补，判"待补"。
+ * 只看"缺几年"会把没采全也当成新股，那样数据问题就被洗白了。
+ */
+function fiscalHistoryInsufficient(latestYear, years, requiredYears) {
+  const numeric = years.map(row => Number(row.year)).filter(Number.isFinite);
+  if (!numeric.length) return false;
+  const unique = Array.from(new Set(numeric)).sort((a, b) => a - b);
+  const oldest = unique[0];
+  const earliestNeeded = latestYear - requiredYears;
+  if (oldest <= earliestNeeded) return false;
+  const span = latestYear - oldest + 1;
+  if (unique.length < span) return false;
+  return true;
+}
+
 function worstStatus(statuses) {
   if (statuses.includes(STATUS.PENDING)) return STATUS.PENDING;
   if (statuses.includes(STATUS.FAIL)) return STATUS.FAIL;
+  if (statuses.includes(STATUS.NOT_APPLICABLE)) return STATUS.NOT_APPLICABLE;
   return STATUS.PASS;
 }
 
@@ -283,6 +309,19 @@ function evaluateAnnualAnomaly(annual, params = DEFAULT_PARAMS) {
     currency: annual.currency || null,
   };
   if (missing.length) {
+    // 2026-11-04 口径调整：上市不满 requiredFiscalYears 个财年属于"客观上没有这么长历史"，
+    // 不是"该补没补"。原来判 PENDING 会让新股永远阻断整批发布、还被反复排进补数队列。
+    // 现在判 NOT_APPLICABLE：该股不入选（无法判断是否财务异常），但不进缺口、不阻断发布。
+    const insufficientHistory = fiscalHistoryInsufficient(latestYear, years, needed.length);
+    if (insufficientHistory) {
+      return Object.assign(result, {
+        status: STATUS.NOT_APPLICABLE,
+        reason: 'fiscal_history_insufficient_not_evaluable',
+        missingYears: missing.sort((a, b) => a - b),
+        profitSum: null,
+        dividendSum: null,
+      });
+    }
     return Object.assign(result, { status: STATUS.PENDING, reason: 'insufficient_fiscal_history', missingYears: missing.sort((a, b) => a - b), profitSum: null, dividendSum: null });
   }
   const profitSum = needed.reduce((sum, y) => sum + (num(findYear(years, y).profit) || 0), 0);

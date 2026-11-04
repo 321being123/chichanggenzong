@@ -174,7 +174,10 @@ function buildRuleFacts(row, ctx) {
     dividend: dividend ? Object.assign({}, dividend, {
       windowStart: ctx.dividendWindowStart,
       windowEnd: ctx.asOfDate,
-      verifiedZero: dividend.count === 0,
+      // 2026-11-04 口径调整：采过分红事实、但近 12 个月没有一笔已实施现金分红，
+      // 就是明确的"本期无现金分红"（R04 判不通过），不再当成"数据不可用"阻断整批发布。
+      // 只有从未采过分红的证券才保留未知（继续待补）。
+      verifiedZero: dividend.count === 0 && dividend.hasDividendHistory === true,
     }) : { verifiedZero: false },
     annual: { latestYear, years, currency: profits.length ? profits[0].currency : null },
     industry,
@@ -264,6 +267,10 @@ async function computeSelection(input, tx) {
   const anomalyPending = ranked.filter(item => (anomalyById[item.instrumentId] || {}).status === RULES.STATUS.PENDING);
   const pendingCount = pending.length + rankBlocked.length + anomalyPending.length;
   const riskHeld = evaluated.filter(item => item.filterStatus === RULES.STATUS.RISK);
+  // 不可评估（R02 估值窗口先天覆盖不全、年度历史不足）：不入选、不进缺口、不阻断发布，
+  // 必须单独计数，否则"少了一批人"在页面上看不出来。
+  const notEvaluable = evaluated.filter(item => item.filterStatus === RULES.STATUS.NOT_APPLICABLE);
+  const anomalyNotEvaluable = ranked.filter(item => (anomalyById[item.instrumentId] || {}).status === RULES.STATUS.NOT_APPLICABLE);
   const anomalyDividendSkipped = ranked.filter(item => {
     const anomaly = anomalyById[item.instrumentId];
     return anomaly && anomaly.dividendComparable === false;
@@ -292,6 +299,8 @@ async function computeSelection(input, tx) {
     anomalyPendingCount: anomalyPending.length,
     rankBlockedCount: rankBlocked.length,
     riskHeldCount: riskHeld.length,
+    notEvaluableCount: notEvaluable.length,
+    anomalyNotEvaluableCount: anomalyNotEvaluable.length,
     anomalyDividendSkipped,
     industryMissing,
     stalePrice,

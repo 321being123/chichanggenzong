@@ -2,6 +2,29 @@ const { pool } = require('../db/connection');
 
 // 自 server/services/arbitrageAnnouncementSync.js 迁入的数据读写函数（只做标准事实读写，业务判定仍留在服务层）。
 
+/**
+ * 标的已退市的进行中案例收口（2026-11-04）：被吸并方退市 = 换股吸收合并已完成。
+ * 靠公告标题词表判「完成」不可靠（「A股换股实施公告」可能只是宣布即将实施），
+ * 标的 delist_date 已过才是硬证据。审计痕迹写进 raw_payload.autoSettled，不伪造人工审核状态。
+ */
+async function update_event_arbitrage_cases_auto_settle_delisted(params = [], client = pool) {
+  const [asOfDate] = params;
+  return client.query(`
+    UPDATE event.arbitrage_cases c
+       SET event_status = 'completed',
+           raw_payload = COALESCE(c.raw_payload, '{}'::jsonb) || jsonb_build_object(
+             'autoSettled', jsonb_build_object(
+               'at', now(), 'reason', 'target_delisted', 'delistDate', i.delist_date, 'asOfDate', $1::date)
+           ),
+           updated_at = now()
+      FROM core.instruments i
+     WHERE i.instrument_id = c.target_instrument_id
+       AND c.event_status NOT IN ('completed', 'terminated', 'expired')
+       AND i.delist_date IS NOT NULL
+       AND i.delist_date <= $1::date
+  RETURNING c.case_id, i.canonical_code, i.delist_date`, [asOfDate]);
+}
+
 async function createIngestionRun(sourceId, dataset, range) {
   const { rows } = await pool.query(
     `INSERT INTO ops.ingestion_runs(source_id, dataset_code, request_range, status) VALUES($1,$2,$3,'running') RETURNING run_id`,
@@ -379,4 +402,5 @@ module.exports = {
   select_event_arbitrage_case_documents_3,
   update_event_arbitrage_case_documents,
   selectTerminalFollowUpCase,
+  update_event_arbitrage_cases_auto_settle_delisted,
 };

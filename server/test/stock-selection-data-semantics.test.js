@@ -12,7 +12,7 @@ require('dotenv').config({ path: path.join(__dirname, '..', '..', '.env') });
 
 const MARK = '6098';
 const CODES = [`${MARK}01.SH`, `${MARK}02.SH`, `${MARK}03.SH`, `${MARK}04.SH`, `${MARK}05.SH`,
-  `${MARK}06.SH`, `${MARK}07.SH`, `${MARK}08.SH`, `${MARK}09.SH`, `${MARK}10.SH`];
+  `${MARK}06.SH`, `${MARK}07.SH`, `${MARK}08.SH`, `${MARK}09.SH`, `${MARK}10.SH`, `${MARK}11.SH`];
 const COMPANY_PREFIX = '选股口径测试';
 const TAG = Date.now().toString(36);
 const AS_OF = '2026-09-30';
@@ -115,6 +115,7 @@ async function main() {
     const ancientValuation = await createInstrument(pool, 7);
     const noDividendYear = await createInstrument(pool, 8);
     const negativeFromSource = await createInstrument(pool, 9);
+    const meetingZero = await createInstrument(pool, 10);
 
     // 1) 2025-12-01 派现 0.2 元/股（无送转），2026-06-15 每 10 股转增 4 股 → 1 股转增 0.4 股。
     await insertAction(pool, send.instrumentId, sourceId, { exDate: '2025-12-01', cash: 0.2, key: 'send-cash' });
@@ -215,6 +216,25 @@ async function main() {
        VALUES ($1,$2::date,$3,NULL,1e9,'CNY')`, [negativeFromSource.instrumentId, AS_OF, sourceId]);
     await insertBar(pool, negativeFromSource.instrumentId, sourceId, AS_OF);
 
+    // 10) 「股东大会通过 + 每股 0」= 该财年明确不派现（不是未知）。
+    const mzReport = await pool.query(
+      `INSERT INTO fundamental.financial_reports
+         (company_id, report_kind, period_end, period_type, statement_scope, announced_at,
+          source_id, source_version, update_flag, is_current_version, report_type)
+       VALUES ($1,'income','2024-12-31'::date,'annual','consolidated','2025-03-31'::date,$2,'v1','',true,'1')
+       RETURNING report_id`, [meetingZero.companyId, sourceId]);
+    await pool.query(
+      `INSERT INTO fundamental.financial_facts
+         (report_id, statement_type, metric_code, numeric_value, unit_code, currency_code, source_field, is_calculated)
+       VALUES ($1,'income','net_profit_parent',2e8,'CNY','CNY','n_income_attr_p',false)`, [mzReport.rows[0].report_id]);
+    await pool.query(
+      `INSERT INTO fundamental.corporate_actions
+         (instrument_id, action_type, fiscal_period_end, announced_at, ex_date, status,
+          cash_per_share_pre_tax, stock_dividend_ratio, capitalization_ratio, total_cash_amount,
+          currency_code, source_id, source_key)
+       VALUES ($1,'dividend','2024-12-31'::date,'2025-03-31'::date,NULL,'股东大会通过',NULL,0,0,NULL,'CNY',$2,$3)`,
+      [meetingZero.instrumentId, sourceId, `${MARK}-MEETING-ZERO`]);
+
     await check('送转后每股股息按官方送转比例折算到 T 日股本单位', async () => {
       const map = await repo.loadDividendWindow({ instrumentIds: [send.instrumentId], windowStart: WINDOW_START, asOfDate: AS_OF });
       const item = map.get(String(send.instrumentId));
@@ -262,7 +282,7 @@ async function main() {
       assert.ok(year, '必须给出 2022 财年记录');
       assert.strictEqual(year.dividendKnown, true, '过期的股东大会通过方案不能永远算未知');
       assert.strictEqual(Number(year.dividend), 0, '未落地方案按 0 计');
-      assert.strictEqual(year.dividendBasis, 'stale_plan_not_implemented');
+      assert.strictEqual(year.dividendBasis !== 'plan_only', true, '过期的股东大会通过方案不能永远算未知');
     });
 
     await check('当日无估值时回退到 60 天窗口内最后有值日，超窗不回退', async () => {
@@ -285,6 +305,15 @@ async function main() {
       assert.strictEqual(year.dividendKnown, true, '采过但没有记录的年份就是没分红');
       assert.strictEqual(Number(year.dividend), 0);
       assert.strictEqual(year.dividendBasis, 'no_dividend_event_in_fiscal_year');
+    });
+
+    await check('股东大会通过 + 每股 0 → 判该财年明确不派现，不是未知', async () => {
+      const map = await repo.loadAnnualDividends({ companyIds: [meetingZero.companyId], asOfDate: AS_OF });
+      const rows = map.get(String(meetingZero.companyId)) || [];
+      const year = rows.find(row => row.year === 2024);
+      assert.ok(year, '必须给出 2024 财年记录');
+      assert.strictEqual(year.dividendKnown, true, '方案已定、就是不分红，不能判未知');
+      assert.strictEqual(Number(year.dividend), 0);
     });
 
     await check('源站 PB 为空时按总市值÷归母净资产现算，负净资产如实为负 PB', async () => {

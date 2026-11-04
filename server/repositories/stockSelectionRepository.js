@@ -418,8 +418,10 @@ async function loadAnnualDividends({ companyIds, asOfDate, availableBefore }, tx
   // 整年仍被判未知（177 只曾因此在年度异常上永远待补）。
   const visibleCash = `(ca.cash_per_share_pre_tax IS NOT NULL OR ca.total_cash_amount IS NOT NULL)`;
   const implemented = `ca.status = '实施' AND ca.ex_date IS NOT NULL AND ca.ex_date <= $2::date AND ${visibleCash}`;
-  // 明确零分红：状态已实施、没有除息日（本就不该有）、每股金额明确为 0。
-  const explicitZero = `ca.status = '实施' AND ca.ex_date IS NULL AND ca.cash_per_share_pre_tax = 0`;
+  // 明确零分红：官方把"该财年不派现"落成「股东大会通过 + 每股 0 + 无除息日」，
+  // 实施且每股 0 同理。只认"实施"会把这类年份判成未知（福莱特 2024/2022/2021/2019 都是这样），
+  // 实际上方案已定、就是不分红。预案（board_director_plan）仍属未定，不在此列。
+  const explicitZero = `ca.status IN ('实施', '股东大会通过') AND ca.ex_date IS NULL AND COALESCE(ca.cash_per_share_pre_tax, 0) = 0`;
   const { rows } = await exec(`
     WITH annual_ends AS (
       -- R5-02：财年期末集合必须与利润查询用**同一套信息截止**。

@@ -492,6 +492,18 @@ function generateMonthWindows(fromDate, toDate) {
 }
 
 // 首次 1 年同步
+/**
+ * 标的已退市（delist_date 已过）的进行中案例自动收口为 completed。
+ * 只改状态与 raw_payload 审计痕迹，不动人工审核结论；返回本次收口的案例供任务日志留证。
+ */
+async function settleDelistedCases({ asOfDate = todayShanghaiDate() } = {}) {
+  const { rows } = await repository.update_event_arbitrage_cases_auto_settle_delisted([asOfDate]);
+  return {
+    settled: rows.length,
+    cases: rows.map(row => ({ caseId: row.case_id, code: row.canonical_code, delistDate: row.delist_date })),
+  };
+}
+
 async function runFirstSync() {
   const today = todayShanghaiDate();
   const oneYearAgo = todayShanghaiDate(new Date(Date.now() - 365 * 24 * 60 * 60 * 1000));
@@ -659,6 +671,9 @@ async function runSync(windows, isFirst) {
   }
 
   results.recovery = await retryPendingDocuments();
+  // 标的已退市的进行中案例收口（2026-11-04）：被吸并方退市 = 合并已完成。
+  // 靠公告标题词表判「完成」不可靠，「A股换股实施公告」可能只是宣布即将实施；退市是硬证据。
+  results.delistedSettled = await settleDelistedCases();
 
   return results;
 }
@@ -666,6 +681,7 @@ async function runSync(windows, isFirst) {
 module.exports = {
   runFirstSync,
   runIncrementalSync,
+  settleDelistedCases,
   runSync,
   generateMonthWindows,
   standardizeAnnouncement,

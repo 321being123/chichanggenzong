@@ -4898,7 +4898,7 @@
     },
     {
       "id": "SELECTION-DATA-SEMANTICS-249",
-      "title": "选股不得把「数据其实有」判成缺失：送转须按官方送股/转增比例折到 T 日股本单位；从未有过行情的证券不进池；仅暂停牌按停牌前最后交易日回退；负 PB 是净资产为负的事实（判不通过且计入窗口覆盖）；已实施但金额全空的空分红记录不得让整年未知；官方无静态 PE 时按总市值除最近年报归母净利现算；财年期末已过 2 年仍未实施的分红方案按该年零分红计；目标日无行情时回退到 60 天窗口内最后有值日（超窗不回退）；以年报期末为主表：财年无任何分红记录即判该年零分红；源站不给 PB 时按总市值除归母净资产现算；行业源缺失只让该股不可评估、不阻断发布；分红「采过」的证据是「有记录 或 所属公司有财报」；一条年报事实都没有的新股判 NOT_APPLICABLE，不进缺口不阻断；目标日前 60 天零成交视为已停止交易，排除出选股池",
+      "title": "选股不得把「数据其实有」判成缺失：送转须按官方送股/转增比例折到 T 日股本单位；从未有过行情的证券不进池；仅暂停牌按停牌前最后交易日回退；负 PB 是净资产为负的事实（判不通过且计入窗口覆盖）；已实施但金额全空的空分红记录不得让整年未知；官方无静态 PE 时按总市值除最近年报归母净利现算；财年期末已过 2 年仍未实施的分红方案按该年零分红计；目标日无行情时回退到 60 天窗口内最后有值日（超窗不回退）；以年报期末为主表：财年无任何分红记录即判该年零分红；源站不给 PB 时按总市值除归母净资产现算；行业源缺失只让该股不可评估、不阻断发布；分红「采过」的证据是「有记录 或 所属公司有财报」；一条年报事实都没有的新股判 NOT_APPLICABLE，不进缺口不阻断；目标日前 60 天零成交视为已停止交易，排除出选股池；「股东大会通过 + 每股 0 + 无除息日」是明确不派现，不得判未知",
       "implementation": {
         "file": "server/repositories/stockSelectionRepository.js",
         "symbol": "loadDividendWindow"
@@ -4931,6 +4931,22 @@
         {
           "file": "server/test/stock-selection-data-semantics.test.js",
           "pattern": "归母净资产"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "implemented"
+    },
+    {
+      "id": "ARBITRAGE-STATUS-DELIST-SETTLE-250",
+      "title": "套利案例判「完成」不能用公告标题词表当唯一依据（A股换股实施公告可能只是宣布即将实施）；被吸并方 delist_date 已过且案例未终态时必须自动置 completed，审计痕迹写 raw_payload.autoSettled，且不得改动人工 review_status",
+      "implementation": {
+        "file": "server/services/arbitrageAnnouncementSync.js",
+        "symbol": "settleDelistedCases"
+      },
+      "tests": [
+        {
+          "file": "server/test/arbitrage-auto-settle.test.js",
+          "pattern": "已退市"
         }
       ],
       "owner": "WorkBuddy",

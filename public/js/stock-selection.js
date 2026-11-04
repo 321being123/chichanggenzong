@@ -221,7 +221,7 @@ function ssRenderCandidates(state) {
       if (window.StockSelectionPresenter) window.StockSelectionPresenter.loadMore();
     });
   }
-  if (window.BusinessTable) window.BusinessTable.attach(root, { page: '#main-stock-selection', sticky: false });
+  if (window.BusinessTable) window.BusinessTable.attach(root, { page: '#main-stock-selection' });
   ssRenderRunHeader(state);
 }
 
@@ -260,7 +260,7 @@ function ssRenderPortfolio(state) {
     + '现金 ' + (Number(portfolio.cashWeightInMarketBudget) * 100).toFixed(2) + '%。</div>'
     + ssRenderChanges(portfolio.changes)
     + (industries ? '<ul class="ss-industry">' + industries + '</ul>' : '');
-  if (window.BusinessTable) window.BusinessTable.attach(root, { page: '#main-stock-selection', sticky: false });
+  if (window.BusinessTable) window.BusinessTable.attach(root, { page: '#main-stock-selection' });
 }
 
 // 季度调入调出：只在有上一份正式季度组合时才有可比对象，否则明确说明没有对比基准。
@@ -410,7 +410,7 @@ function ssRenderBacktests(state) {
     + '<th class="text-right">年化</th><th class="text-right">最大回撤</th><th class="text-right">基准收益</th><th class="text-right">期数</th>'
     + '</tr></thead><tbody>' + rows + '</tbody></table></div>'
     + '<div class="ss-settings-note">基准：A股沪深300、港股恒生指数，均为价格指数；夏普在缺少合格无风险序列时不输出。</div>';
-  if (window.BusinessTable) window.BusinessTable.attach(root, { page: '#main-stock-selection', sticky: false });
+  if (window.BusinessTable) window.BusinessTable.attach(root, { page: '#main-stock-selection' });
 }
 
 window.StockSelectionView = {

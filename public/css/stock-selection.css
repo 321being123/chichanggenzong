@@ -38,6 +38,8 @@
 .ss-settings-grid input:focus { border-color: var(--bond-feature-focus); box-shadow: 0 0 0 2px rgba(26, 35, 126, .08); }
 .ss-settings-grid input::placeholder { color: var(--bond-feature-muted); }
 .ss-settings-actions { display: flex; gap: 10px; flex-wrap: wrap; margin: 0; padding: 0 16px 14px; }
+/* 操作区按钮与同栏输入框同高同字号（技术架构 5.1 工具栏按钮口径）。 */
+.ss-settings-actions .btn { min-height: 36px; padding: 0 14px; font-size: 13px; }
 .ss-settings-note { color: var(--bond-feature-muted); font-size: 12px; line-height: 1.7; padding: 0 16px 16px; }
 .ss-empty { padding: 70px 20px; text-align: center; color: var(--bond-feature-muted); line-height: 1.8; }
 .ss-cards .ss-empty { grid-column: 1 / -1; }
@@ -50,6 +52,7 @@
   .ss-card-body { grid-template-columns: minmax(0, 1fr); }
   .ss-settings-grid { grid-template-columns: minmax(0, 1fr); }
   .ss-settings-grid input { height: 44px; font-size: 16px; }
+  .ss-settings-actions .btn { min-height: 44px; }
   .ss-run-header, .ss-list-foot, .ss-portfolio-summary, .ss-industry,
   .ss-settings-actions, .ss-settings-note { padding-left: 12px; padding-right: 12px; }
 }

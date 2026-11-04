@@ -411,6 +411,13 @@ function classifyTitle(title, scope) {
 
   if (scope !== 'hkex' && isBuyerOfferAnnouncement(title)) return null;
 
+  // 「主动终止上市 + 现金选择权」是一类真实的现金选择权套利事件：异议股东可按约定价把股票换成现金。
+  // 标题里的「终止上市」指公司退市，不是套利事件终止——让下面的 detectUpdate 先命中会把它误判成
+  // terminated 而丢掉整个事件（*ST康佳A 2026-09/10 那批公告就是这样一条案例都没建）。
+  // 只放行「派发/实施/提示性」这类过程公告；「申报结果」仍交给 detectUpdate 收口，避免重复建案例。
+  // 注意标题措辞是「主动终止公司股票上市」，中间夹着标的词，正则要留出间隔。
+  if (/主动终止.{0,12}上市/.test(title) && /现金选择权/.test(title) && !/结果/.test(title)) return 'a_cash_offer';
+
   // 完成/终止类公告只用于关闭已有事件，不能在找不到旧事件时反向新建一条“进行中”案件。
   if (detectUpdate(title)) return null;
 

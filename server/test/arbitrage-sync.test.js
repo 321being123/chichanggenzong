@@ -98,6 +98,18 @@ test('标题分类：完成公告不能新建进行中案件', () => {
   assert.strictEqual(sync.classifyTitle('关于现金选择权申报结果的公告', 'cninfo'), null);
 });
 
+// 2026-11-04：主动终止上市 + 现金选择权是一类真实套利事件（异议股东按约定价换现金），
+// 标题里的「终止上市」容易被 detectUpdate 误判成事件终止，导致整条案例建不出来（*ST康佳A 就是这样）。
+test('主动终止上市 + 现金选择权：过程公告要建案，结果公告仍收口', () => {
+  const base = '关于以股东会决议方式主动终止公司股票上市现金选择权';
+  assert.strictEqual(sync.classifyTitle(base + '派发的公告', 'szse'), 'a_cash_offer');
+  assert.strictEqual(sync.classifyTitle(base + '行权暨实施的公告', 'szse'), 'a_cash_offer');
+  assert.strictEqual(sync.classifyTitle(base + '行权暨实施的提示性公告', 'szse'), 'a_cash_offer');
+  assert.strictEqual(sync.classifyTitle(base + '申报结果的公告', 'szse'), null);
+  // 只命中「终止上市」但没有现金选择权的，仍按终止处理，不能凭空建现金选择权案例。
+  assert.strictEqual(sync.classifyTitle('关于公司股票终止上市的公告', 'szse'), null);
+});
+
 test('换股吸收合并的终止上市公告不应关闭套利案件', () => {
   const title = '关于公司A股股票连续停牌直至终止上市、实施换股吸收合并的提示性公告';
   assert.strictEqual(sync.detectUpdate(title), null);

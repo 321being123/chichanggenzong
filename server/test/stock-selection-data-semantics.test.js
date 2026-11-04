@@ -73,6 +73,12 @@ async function createInstrument(pool, index, options = {}) {
   return { code, companyId, instrumentId };
 }
 
+async function insertBar(pool, instrumentId, sourceId, day, close = 10) {
+  await pool.query(
+    `INSERT INTO market.daily_bars (instrument_id, trade_date, source_id, open, high, low, close, volume, amount)
+     VALUES ($1,$2::date,$3,$4,$4,$4,$4,1000,10000)`, [instrumentId, day, sourceId, close]);
+}
+
 async function insertAction(pool, instrumentId, sourceId, row) {
   await pool.query(
     `INSERT INTO fundamental.corporate_actions
@@ -119,6 +125,7 @@ async function main() {
     await pool.query(
       `INSERT INTO market.daily_valuations (instrument_id, trade_date, source_id, pb, total_market_cap, currency_code)
        VALUES ($1,$2::date,$3,1.2,5e10,'CNY')`, [send.instrumentId, AS_OF, sourceId]);
+    await insertBar(pool, send.instrumentId, sourceId, AS_OF);
     // 4) 负 PB 三天 + 远期日历五天。
     for (const day of ['2029-01-02', '2029-01-03', '2029-01-04']) {
       await pool.query(
@@ -171,11 +178,14 @@ async function main() {
        VALUES ($1,'dividend','2022-12-31'::date,'2023-05-01'::date,NULL,'股东大会通过',NULL,0,0,NULL,'CNY',$2,$3)`,
       [stalePlan.instrumentId, sourceId, `${MARK}-STALE-2022`]);
     // 7) 目标日当天无估值：20 天前有值 → 应回退取到；121 天前有值 → 超出 60 天窗口，保持缺失。
+    // 两者都要有窗口内的行情（否则会按"已停止交易"排除出池，测不到回退行为）。
     for (const [instrumentId, day] of [[recentValuation.instrumentId, '2026-09-10'], [ancientValuation.instrumentId, '2026-06-01']]) {
       await pool.query(
         `INSERT INTO market.daily_valuations (instrument_id, trade_date, source_id, pb, total_market_cap, currency_code)
          VALUES ($1,$2::date,$3,1.3,3e10,'CNY')`, [instrumentId, day, sourceId]);
     }
+    await insertBar(pool, recentValuation.instrumentId, sourceId, '2026-09-10');
+    await insertBar(pool, ancientValuation.instrumentId, sourceId, '2026-09-10');
 
     // 8) 有 2024 年报、但该财年一笔分红记录都没有 → 应判该财年零分红（不是未知）。
     const ndReport = await pool.query(
@@ -203,6 +213,7 @@ async function main() {
     await pool.query(
       `INSERT INTO market.daily_valuations (instrument_id, trade_date, source_id, pb, total_market_cap, currency_code)
        VALUES ($1,$2::date,$3,NULL,1e9,'CNY')`, [negativeFromSource.instrumentId, AS_OF, sourceId]);
+    await insertBar(pool, negativeFromSource.instrumentId, sourceId, AS_OF);
 
     await check('送转后每股股息按官方送转比例折算到 T 日股本单位', async () => {
       const map = await repo.loadDividendWindow({ instrumentIds: [send.instrumentId], windowStart: WINDOW_START, asOfDate: AS_OF });

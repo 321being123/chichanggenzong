@@ -131,9 +131,15 @@ async function loadUniverse({ market, asOfDate }, tx) {
        AND (i.list_date IS NULL OR i.list_date <= $2::date)
        AND (i.delist_date IS NULL OR i.delist_date > $2::date)
        -- 从未有过任何行情/估值的证券（已退市、已摘牌、吸收合并后残留主档）不构成可评估对象。
-       -- 真停牌的历史上一定有成交记录，所以按"有没有过任何数据"区分，不看名称、也不依赖主档 status 是否已更新。
+       -- 真停牌的历史上一定有成交记录，所以按"有没有过数据"区分，不看名称、也不依赖主档 status 是否已更新。
        AND (EXISTS (SELECT 1 FROM market.daily_bars bx WHERE bx.instrument_id = i.instrument_id)
          OR EXISTS (SELECT 1 FROM market.daily_valuations vx WHERE vx.instrument_id = i.instrument_id))
+       -- 目标日前 60 天内没有任何行情 = 已经停止交易（退市整理、长期停牌）。这类证券买不到，
+       -- 留着只会让它们以"缺 PB / 缺股价"的名义反复阻断整批发布（2026-11-04）。
+       AND EXISTS (SELECT 1 FROM market.daily_bars bt
+                   WHERE bt.instrument_id = i.instrument_id
+                     AND bt.trade_date <= $2::date
+                     AND bt.trade_date > ($2::date - INTERVAL '60 days'))
      ORDER BY i.canonical_code`, [market, asOfDate, config.exchanges]);
   return rows;
 }

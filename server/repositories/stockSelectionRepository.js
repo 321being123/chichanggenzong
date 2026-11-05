@@ -45,7 +45,7 @@ function marketConfig(market) {
 }
 
 /** 目标日股票池 + 当日估值/收盘价/停牌/公司关联，单次批量取数。 */
-async function loadUniverse({ market, asOfDate }, tx) {
+async function loadUniverse({ market, asOfDate, availableBefore = null }, tx) {
   const config = marketConfig(market);
   const exec = executorOf(tx);
   const { rows } = await exec(`
@@ -53,15 +53,22 @@ async function loadUniverse({ market, asOfDate }, tx) {
            i.exchange_code, i.list_date::text AS list_date, i.delist_date::text AS delist_date,
            ${RISK_NAME_SQL} AS risk_warning,
            ci.company_id,
+           -- PB 回退必须币种闭合（F09）：市值与归母权益币种不一致时相除没有意义，
+           -- 这种情况宁可留 NULL 让规则判"待补/不可评估"，也不生成一个错误量纲的 PB。
            COALESCE(v.pb, CASE WHEN v.total_market_cap IS NOT NULL
                                 AND eq.equity IS NOT NULL AND eq.equity <> 0
+                                AND (eq.equity_currency IS NULL OR v.currency_code IS NULL
+                                     OR upper(eq.equity_currency) = upper(v.currency_code))
                                THEN v.total_market_cap / eq.equity END) AS pb,
+           eq.equity_currency,
            -- 官方估值接口不提供静态市盈率（实测 metricsList 报 (pe,pe_static) are invalid price metrics），
            -- 按站内既定口径现算：当前总市值 ÷ 最近一期已公告年报归母净利（600519 校验与 Tushare 完全一致）。
            -- 这是同一口径的定义式计算，不是估算兜底；归母净利缺失或为 0 时保持 NULL，不猜。
            -- 2026-11-05 起选股排名与页面展示统一使用 pe_ttm（滚动十二个月），静态 PE 只保留作排查参考。
            COALESCE(v.pe_static, CASE WHEN v.total_market_cap IS NOT NULL
                                         AND np.net_profit IS NOT NULL AND np.net_profit <> 0
+                                        AND (np.net_profit_currency IS NULL OR v.currency_code IS NULL
+                                             OR upper(np.net_profit_currency) = upper(v.currency_code))
                                        THEN v.total_market_cap / np.net_profit END) AS pe_static,
            v.pe_ttm, v.dividend_yield_ttm, v.total_market_cap, v.currency_code AS valuation_currency,
            v.trade_date::text AS valuation_date,
@@ -76,8 +83,10 @@ async function loadUniverse({ market, asOfDate }, tx) {
          ORDER BY c.valid_from DESC NULLS LAST LIMIT 1
       ) ci ON true
       -- 最近一期已公告年报归母净利：静态 PE 定义式的分母（与读取估值序列的 fillStaticPe 同一口径）。
+      -- 可见时点必须与 loadEquityFacts / loadAnnualProfits 同源（F09）：只按 announced_at 截断，
+      -- 会让同一批计算里的 PE 和净资产规则落在不同版本的报表上。
       LEFT JOIN LATERAL (
-        SELECT f.numeric_value AS net_profit
+        SELECT f.numeric_value AS net_profit, f.currency_code AS net_profit_currency
           FROM fundamental.financial_reports r
           JOIN fundamental.financial_facts f ON f.report_id = r.report_id AND f.metric_code = 'net_profit_parent'
          WHERE r.company_id = ci.company_id
@@ -85,19 +94,21 @@ async function loadUniverse({ market, asOfDate }, tx) {
            AND r.period_type = 'annual'
            AND r.statement_scope = 'consolidated'
            AND r.announced_at IS NOT NULL AND r.announced_at < $2::date
+           AND ($4::timestamptz IS NULL OR r.available_at IS NULL OR r.available_at < $4::timestamptz)
          ORDER BY r.period_end DESC, r.announced_at DESC
          LIMIT 1
       ) np ON true
       -- 最近一期已公告归母净资产：源站对"净资产为负"的股票直接不给 PB（字段为空，不是没有这一行），
       -- 所以 PB 为空时要按同一定义式现算（总市值 ÷ 归母净资产），负值如实判为净资产为负。
       LEFT JOIN LATERAL (
-        SELECT f.numeric_value AS equity
+        SELECT f.numeric_value AS equity, f.currency_code AS equity_currency
           FROM fundamental.financial_reports r
           JOIN fundamental.financial_facts f ON f.report_id = r.report_id AND f.metric_code = 'equity_parent'
          WHERE r.company_id = ci.company_id
            AND r.report_kind = 'balance'
            AND r.statement_scope = 'consolidated'
            AND r.announced_at IS NOT NULL AND r.announced_at < $2::date
+           AND ($4::timestamptz IS NULL OR r.available_at IS NULL OR r.available_at < $4::timestamptz)
          ORDER BY r.period_end DESC, r.announced_at DESC
          LIMIT 1
       ) eq ON true
@@ -144,7 +155,7 @@ async function loadUniverse({ market, asOfDate }, tx) {
                    WHERE bt.instrument_id = i.instrument_id
                      AND bt.trade_date <= $2::date
                      AND bt.trade_date > ($2::date - INTERVAL '60 days'))
-     ORDER BY i.canonical_code`, [market, asOfDate, config.exchanges]);
+     ORDER BY i.canonical_code`, [market, asOfDate, config.exchanges, availableBefore || null]);
   return rows;
 }
 
@@ -376,6 +387,7 @@ async function loadDividendWindow({ instrumentIds, windowStart, asOfDate, market
     let count = 0;
     let totalCash = null;
     let currency = null;
+    let currencyMixed = false;
     let unitUnverified = false;
     let hasSplitRatio = false;
     for (const row of rows) {
@@ -395,12 +407,19 @@ async function loadDividendWindow({ instrumentIds, windowStart, asOfDate, market
       if (row.total_cash_amount !== null && Number(row.total_cash_amount) > 0) {
         totalCash = (totalCash || 0) + Number(row.total_cash_amount);
       }
-      if (!currency && row.currency_code) currency = row.currency_code;
+      // 币种不能只留第一条（F09）：同一窗口里混着 USD 与 HKD 的派息，
+      // 相加得到的"每股股息"没有量纲，除价格算出来的股息率是错的。
+      const rowCurrency = row.currency_code ? String(row.currency_code).toUpperCase() : null;
+      if (rowCurrency) {
+        if (!currency) currency = rowCurrency;
+        else if (currency !== rowCurrency) currencyMixed = true;
+      }
     }
     map.set(key, {
       ttmPerShare: perShare,
       count,
       currency,
+      currencyMixed,
       totalCash,
       shareUnitUnverified: unitUnverified,
       // 口径留证按实际数据判定，不按市场一刀切：源端给了比例（哪怕将来港股开始给）就走折算，
@@ -496,22 +515,36 @@ async function loadAnnualDividends({ companyIds, asOfDate, availableBefore, mark
              SUM(CASE WHEN ${implemented} THEN COALESCE(${amountExpr}, 0) ELSE 0 END) AS implemented_cash,
              COUNT(ca.action_id) FILTER (WHERE ${implemented})::int AS implemented_count,
              COUNT(ca.action_id) FILTER (WHERE ${implemented} AND ${amountExpr} IS NULL)::int AS amount_missing_count,
+             -- 「已实施但完全没有金额」既不是零分红也不是已知金额（R4-04 对照用例）：
+             -- 官方偶尔只给状态、不给钱数，这种年份必须保持未知，不能被后面的"预案判零"规则吞掉。
+             -- 只认"连除息日都没有"的空实施记录：官方会给一批「实施 + 无金额 + 有除息日」的
+             -- 中期空记录，它们不携带任何金额信息（2026-11-05 口径），不能反过来把整年判未知；
+             -- 而同财年已有真实年度分红时必须仍然算已知。
+             COUNT(ca.action_id) FILTER (WHERE ca.status = '实施' AND ca.ex_date IS NULL
+               AND ca.cash_per_share_pre_tax IS NULL AND ca.total_cash_amount IS NULL)::int AS amount_unknown_count,
+             -- 「财年末那笔已实施」必须精确到本财年期末，不能用"本财年有过任何一笔实施"代替（R5-02）：
+             -- 只有中期分红而年末尚未公告时，该财年仍是未知，不是零分红。
+             COUNT(ca.action_id) FILTER (WHERE ${implemented} AND ca.fiscal_period_end = ae.period_end)::int AS year_end_implemented_count,
              COUNT(ca.action_id) FILTER (WHERE ca.action_id IS NOT NULL AND NOT (${implemented}))::int AS not_implemented_count,
              -- 财年期末已过 2 年以上、状态仍停在预案/股东大会通过且该财年从未实施：
              -- 这种历史方案就是"没有落地"，再等也不会变，与"金额未知"要分开。
              COUNT(ca.action_id) FILTER (WHERE ca.status IN ('预案', '股东大会通过')
                AND ca.fiscal_period_end <= ($2::date - INTERVAL '2 years'))::int AS stale_plan_count,
              COUNT(ca.action_id) FILTER (WHERE ${explicitZero})::int AS year_zero_count,
-             BOOL_OR(${implemented}) AS has_year_end_implemented,
+             BOOL_OR(${implemented}) AS has_any_implemented,
              COUNT(ca.action_id)::int AS event_count,
              -- 「零分红」只在财年已经充分尘埃落定时成立：年报出了不等于分红已经公布，
              -- 分红方案公告晚于年报、甚至跨年才实施都常见。给足 1 年，避免把"尚未公告"误判成"没有分红"。
              BOOL_OR(ae.period_end <= ($2::date - INTERVAL '1 year')) AS fiscal_year_settled
         FROM annual_ends ae
         JOIN core.company_instruments ci ON ci.company_id = ae.company_id AND ci.relation_type = 'issued_by'
+        -- 按「证券 + 财年」关联，而不是按 period_end 精确相等（R5-02）：
+        -- 中期分红的 fiscal_period_end 是期中日期，精确相等会让它以"该财年一笔记录都没有"的身份消失，
+        -- 于是"只有中期记录"被误判成"该财年零分红"。
         LEFT JOIN ca_kept ca
           ON ca.instrument_id = ci.instrument_id
-         AND ca.fiscal_period_end = ae.period_end
+         AND ca.fiscal_period_end IS NOT NULL
+         AND date_part('year', ca.fiscal_period_end) = date_part('year', ae.period_end)
        WHERE ci.company_id = ANY($1::bigint[])
        GROUP BY 1, 2, 3
     )
@@ -519,12 +552,14 @@ async function loadAnnualDividends({ companyIds, asOfDate, availableBefore, mark
            MAX(implemented_cash) AS implemented_cash,
            SUM(implemented_count)::int AS implemented_count,
            SUM(amount_missing_count)::int AS amount_missing_count,
+           SUM(amount_unknown_count)::int AS amount_unknown_count,
            SUM(not_implemented_count)::int AS not_implemented_count,
            SUM(stale_plan_count)::int AS stale_plan_count,
            SUM(year_zero_count)::int AS year_zero_count,
            SUM(event_count)::int AS event_count,
            BOOL_OR(fiscal_year_settled) AS fiscal_year_settled,
-           BOOL_OR(has_year_end_implemented) AS has_year_end_implemented
+           BOOL_OR(has_any_implemented) AS has_any_implemented,
+           SUM(year_end_implemented_count)::int AS year_end_implemented_count
       FROM per_instrument
      GROUP BY 1, 2`, [companyIds, asOfDate, availableBefore || null]);
   const map = new Map();
@@ -533,6 +568,7 @@ async function loadAnnualDividends({ companyIds, asOfDate, availableBefore, mark
     const list = map.get(key) || [];
     const implementedCount = Number(row.implemented_count || 0);
     const amountMissing = Number(row.amount_missing_count || 0);
+    const amountUnknown = Number(row.amount_unknown_count || 0);
     const notImplemented = Number(row.not_implemented_count || 0);
     const yearZero = Number(row.year_zero_count || 0);
     const stalePlan = Number(row.stale_plan_count || 0);
@@ -542,13 +578,19 @@ async function loadAnnualDividends({ companyIds, asOfDate, availableBefore, mark
     // 或者该财年只有"预案/股东大会通过"、且财年期末已过 2 年以上仍从未实施——
     // 或者该财年**一笔分红记录都没有**：财报采到了就说明这家公司被采集过，
     // 缺记录就是该财年确实没有分红事件（2026-11-04 口径，按真实计 0）。
-    const knownFromImplemented = implementedCount > 0 && amountMissing === 0 && row.has_year_end_implemented === true;
-    const knownFromZero = yearZero > 0 && amountMissing === 0;
-    const knownFromStalePlan = implementedCount === 0 && amountMissing === 0 && stalePlan > 0;
+    const yearEndImplemented = Number(row.year_end_implemented_count || 0) > 0;
+    // 金额未知优先：只要有"已实施但完全没有金额"的记录，该财年就是未知（R4-04）。
+    const amountIncomplete = amountMissing > 0 || amountUnknown > 0;
+    const knownFromImplemented = implementedCount > 0 && !amountIncomplete && yearEndImplemented;
+    const knownFromZero = yearZero > 0 && !amountIncomplete;
+    const knownFromStalePlan = implementedCount === 0 && !amountIncomplete && stalePlan > 0;
     const knownFromNoEvent = eventCount === 0 && row.fiscal_year_settled === true;
-    // 有记录、但一条都没走到实施（只剩预案/股东大会通过）→ 该财年没有已实施现金分红，按 0 计。
-    // 与「金额缺失」区分：amountMissing>0 说明实施记录确实存在、只是金额没采到，那才是未知。
-    const knownFromPlanOnly = implementedCount === 0 && amountMissing === 0 && eventCount > 0;
+    // 有记录、但一条都没走到实施（只剩预案/股东大会通过）→ 2026-11-04 口径判零分红。
+    // 与「金额缺失」区分：amountIncomplete 说明实施记录确实存在、只是金额没采到，那才是未知。
+    // 只有预案/股东大会通过时判零分红有前提：该财年已经尘埃落定（期末早于目标日 1 年以上），
+    // 或方案已停摆 2 年以上仍未实施。财年还没到期的预案仍按未知——它后面还可能真的实施一笔。
+    const knownFromPlanOnly = implementedCount === 0 && !amountIncomplete && eventCount > 0
+      && (row.fiscal_year_settled === true || stalePlan > 0);
     const known = knownFromImplemented || knownFromZero || knownFromStalePlan || knownFromNoEvent || knownFromPlanOnly;
     list.push({
       year: Number(row.fiscal_year),
@@ -562,7 +604,7 @@ async function loadAnnualDividends({ companyIds, asOfDate, availableBefore, mark
           : knownFromStalePlan ? 'stale_plan_not_implemented'
             : knownFromNoEvent ? 'no_dividend_event_in_fiscal_year'
               : knownFromPlanOnly ? 'plan_not_implemented_zero'
-                : amountMissing > 0 ? 'implemented_amount_missing'
+                : amountIncomplete ? 'implemented_amount_missing'
                   : implementedCount > 0 ? 'interim_only' : 'plan_only',
     });
     map.set(key, list);
@@ -705,6 +747,20 @@ async function loadOpenPrices({ instrumentIds, dates }, tx) {
   return map;
 }
 
+/** 期末估值用收盘价（F10）：调仓按开盘价成交，但区间末净值必须按当日收盘估值，
+ *  否则请求到 9-30 的回测会把最后净值停在 7-01。 */
+async function loadClosePrices({ instrumentIds, dates }, tx) {
+  if (!instrumentIds.length || !dates.length) return new Map();
+  const exec = executorOf(tx);
+  const { rows } = await exec(`
+    SELECT instrument_id, trade_date::text AS trade_date, close
+      FROM market.daily_bars
+     WHERE instrument_id = ANY($1::bigint[]) AND trade_date = ANY($2::date[])`, [instrumentIds, dates]);
+  const map = new Map();
+  rows.forEach(row => map.set(`${row.instrument_id}|${row.trade_date}`, row.close === null ? null : Number(row.close)));
+  return map;
+}
+
 async function loadBenchmarkCloses({ indexCode, fromDate, toDate }, tx) {
   const exec = executorOf(tx);
   const { rows } = await exec(`
@@ -719,15 +775,22 @@ async function loadBenchmarkCloses({ indexCode, fromDate, toDate }, tx) {
 async function loadDividendCash({ instrumentIds, fromDate, toDate }, tx) {
   if (!instrumentIds.length) return new Map();
   const exec = executorOf(tx);
+  // 同一经济事件被两个来源同时落库时不能双计（F10）：先按 (证券, 除息日) 取官方优先的一条，
+  // 再按证券求和。取舍规则与 loadDividendWindow 的窗口累计保持一致。
   const { rows } = await exec(`
     SELECT instrument_id, SUM(cash_per_share_pre_tax) AS per_share
-      FROM fundamental.corporate_actions
-     WHERE instrument_id = ANY($1::bigint[])
-       AND action_type = 'dividend'
-       AND status = '实施'
-       AND ex_date IS NOT NULL
-       AND ex_date > $2::date AND ex_date <= $3::date
-       AND cash_per_share_pre_tax > 0
+      FROM (
+        SELECT DISTINCT ON (ca.instrument_id, ca.ex_date)
+               ca.instrument_id, ca.ex_date, ca.cash_per_share_pre_tax
+          FROM fundamental.corporate_actions ca
+         WHERE ca.instrument_id = ANY($1::bigint[])
+           AND ca.action_type = 'dividend'
+           AND ca.status = '实施'
+           AND ca.ex_date IS NOT NULL
+           AND ca.ex_date > $2::date AND ca.ex_date <= $3::date
+           AND ca.cash_per_share_pre_tax > 0
+         ORDER BY ca.instrument_id, ca.ex_date, ca.source_id DESC
+      ) d
      GROUP BY 1`, [instrumentIds, fromDate, toDate]);
   return new Map(rows.map(row => [String(row.instrument_id), Number(row.per_share)]));
 }
@@ -1279,7 +1342,7 @@ module.exports = {
   MARKET_CONFIG,
   loadUniverse, loadPbWindow, loadEquityFacts, loadAnnualProfits, loadDividendWindow,
   loadAnnualDividends, loadIndustries, loadFxRatesForPairs, loadMarketValuation, loadLatestMarketValuation, loadCalendar,
-  loadOpenPrices, loadBenchmarkCloses, loadDividendCash,
+  loadOpenPrices, loadClosePrices, loadBenchmarkCloses, loadDividendCash,
   upsertStrategy, findRunByIdempotencyKey, nextRevision, insertRun, insertCandidates, insertMembers,
   publishRun, markRunFailure,
   listRuns, findRun, listCandidates, findCandidate, listMembers, latestPublishedRun, copyCandidates,

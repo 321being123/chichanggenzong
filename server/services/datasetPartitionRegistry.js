@@ -286,6 +286,36 @@ async function publishJobDatasets(jobCode, businessDate, result) {
   return results;
 }
 
+/**
+ * 数据集"已发布且质量通过"的唯一判据（F08）。
+ *
+ * 发布门禁、依赖判定、槽位恢复和告警恢复此前各写一套：槽位恢复接受"published + 非 stale +
+ * quality 缺省"，告警恢复连 query_status 都不看，于是隔离分区 query_status='failed' 且没有
+ * quality_status 时仍能被判成恢复。这里把判据收敛成一份，缺字段只在**该数据集本来就不写这条
+ * 证据**时才不算失败，绝不用"没有字段"当"通过"。
+ *
+ * @param {object} row ops.dataset_partitions 行
+ * @param {string} code 数据集代码
+ * @param {{requireQuality?:boolean}} [options] 强制要求 quality_status === 'passed'
+ */
+const STRICT_QUALITY_DATASETS = new Set([
+  'ipo_history', 'hk_ipo_facts', 'bond_redemption_events', 'bond_listing_liquidity',
+  'account_cash_income', 'repo_daily_rates', 'stock_cash_dividend_facts', 'stock_swap_settlements',
+]);
+const ACCEPTED_QUERY_STATUS = new Set(['success', 'passed', 'verified']);
+
+function isPublishedDatasetEvidence(row, code, options = {}) {
+  if (!row || row.status !== 'published' || row.is_stale) return false;
+  const diagnostics = row.diagnostics && typeof row.diagnostics === 'object' ? row.diagnostics : {};
+  const requireQuality = options.requireQuality === true || STRICT_QUALITY_DATASETS.has(String(code || ''));
+  if (requireQuality && diagnostics.quality_status !== 'passed') return false;
+  const query = diagnostics.query_status;
+  // 明确写了"没查成"就不是恢复证据；字段缺省只说明该数据集不上报这条，不等于通过也不等于失败。
+  if (query !== undefined && query !== null && String(query).trim() !== ''
+    && !ACCEPTED_QUERY_STATUS.has(String(query))) return false;
+  return true;
+}
+
 async function areDatasetPartitionsPublished(datasetCodes, businessDate,context={}) {
   const datasets = datasetCodes.filter(code => DATASET_PARTITION_REGISTRY[code]);
   if (datasets.length !== datasetCodes.length) return false;
@@ -303,13 +333,7 @@ async function areDatasetPartitionsPublished(datasetCodes, businessDate,context=
   const byCodeAndScope = new Map(rows.map(row => [`${row.dataset_code}:${row.scope_key}`, row]));
   return datasets.every(code => {
     const scopeKey = resolveDatasetScope(code,context);
-    const row = byCodeAndScope.get(`${code}:${scopeKey}`);
-    if (!row || row.status !== 'published' || row.is_stale) return false;
-    if (code === 'ipo_history' || code === 'hk_ipo_facts' || code === 'bond_redemption_events' || code === 'bond_listing_liquidity' || code==='account_cash_income' || code==='repo_daily_rates' || code==='stock_cash_dividend_facts' || code==='stock_swap_settlements') {
-      return row.diagnostics && row.diagnostics.quality_status === 'passed';
-    }
-    if (code === 'stock_suspend_calendar') return row.diagnostics && row.diagnostics.query_status === 'success';
-    return true;
+    return isPublishedDatasetEvidence(byCodeAndScope.get(`${code}:${scopeKey}`), code);
   });
 }
 
@@ -323,4 +347,4 @@ async function areJobDatasetsPublished(jobCode, businessDate, requestedDatasets 
   return areDatasetPartitionsPublished(datasets, businessDate,context);
 }
 
-module.exports = { DATASET_PARTITION_REGISTRY, readSnapshot, publishDatasetSnapshot, publishJobDatasets, areJobDatasetsPublished,resolveDatasetScope };
+module.exports = { DATASET_PARTITION_REGISTRY, readSnapshot, publishDatasetSnapshot, publishJobDatasets, areJobDatasetsPublished,resolveDatasetScope, isPublishedDatasetEvidence, STRICT_QUALITY_DATASETS };

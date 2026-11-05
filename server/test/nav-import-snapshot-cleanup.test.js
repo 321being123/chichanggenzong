@@ -11,6 +11,7 @@
 //
 // 走真实入口：express + accountsRouter + 真实库（run-all 下是隔离测试库），不做 SQL 层模拟。
 const assert = require('assert');
+const { testSession } = require('./helpers/session-subject');
 const crypto = require('crypto');
 const express = require('express');
 const { pool, loadAccountData, saveAccountData } = require('../db');
@@ -87,7 +88,7 @@ function totalSnapshots() {
     const accountId = await reset();
     const app = express();
     app.use(express.json());
-    app.use((req, res, next) => { req.session = { user: U, authVersion: 1 }; next(); });
+    app.use(async (req, res, next) => { req.session = await testSession(U); next(); });
     app.use('/api', accountsRouter);
     server = await new Promise(resolve => { const s = app.listen(0, '127.0.0.1', () => resolve(s)); });
     const base = 'http://127.0.0.1:' + server.address().port + '/api';

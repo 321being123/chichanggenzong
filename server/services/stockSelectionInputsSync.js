@@ -355,8 +355,19 @@ async function resolveHkTargetPool({ asOfDate, fsTableTypes = ['non_financial', 
     excludedByType[key] = (excludedByType[key] || 0) + 1;
   });
   const excludedCount = rows.length - kept.length;
+  const codes = kept.map(row => row.code);
+  // 来源完整性（F05）：任一来源失败都会让"目标集合"缩水。缩水后的分母不能拿来说"已全部完成"，
+  // 因此把失败来源单独列出来，由完成判定统一消费。
+  const sourceErrors = [
+    constituentsError ? { source: 'hsi', error: constituentsError } : null,
+    mutualError ? { source: 'mutual_market', error: mutualError } : null,
+    // 财报口径缺失会把目标误判成"按类型排除"，等于偷偷缩小分母。
+    profileError ? { source: 'company_profile', error: profileError } : null,
+  ].filter(Boolean);
   return {
-    codes: kept.map(row => row.code),
+    codes,
+    // 目标集合指纹：同一目标日的范围摘要，供续跑与验收核对"还是不是同一件事"。
+    targetSetHash: require('crypto').createHash('sha256').update([...codes].sort().join(',')).digest('hex'),
     hsiCount: constituents.length,
     mutualMarketCount: mutualCount,
     overlapCount: overlap,
@@ -367,6 +378,7 @@ async function resolveHkTargetPool({ asOfDate, fsTableTypes = ['non_financial', 
     constituentsError,
     mutualError,
     profileError,
+    sourceErrors,
     reason: kept.length ? undefined : (constituentsError || mutualError ? 'target_pool_sources_failed' : 'target_pool_empty'),
   };
 }
@@ -391,7 +403,7 @@ async function syncHkTargetPoolBars({ asOfDate, maxCodes } = {}) {
     profileError: pool.profileError || null,
   };
   if (!codes.length) {
-    return Object.assign({ targetCount: 0, pending: 0, processed: 0, succeeded: 0, reason: pool.reason || 'target_pool_empty', results: [] }, poolMeta);
+    return Object.assign({ codes: [], targetSetHash: pool.targetSetHash || null, targetCount: 0, pending: 0, processed: 0, succeeded: 0, reason: pool.reason || 'target_pool_empty', results: [] }, poolMeta);
   }
   const covered = await repo.listCodesWithRecentBars({ codes, asOfDate, days: 60 });
   const pending = codes.filter(code => !covered.has(code));
@@ -402,7 +414,7 @@ async function syncHkTargetPoolBars({ asOfDate, maxCodes } = {}) {
   const sources = await store.sourceIds();
   const officialId = sources.lixinger_official;
   if (!officialId) {
-    return Object.assign({ targetCount: codes.length, pending: pending.length, processed: 0, succeeded: 0, reason: 'valuation_source_missing', results: [] }, poolMeta);
+    return Object.assign({ codes, targetSetHash: pool.targetSetHash || null, targetCount: codes.length, pending: pending.length, processed: 0, succeeded: 0, reason: 'valuation_source_missing', results: [] }, poolMeta);
   }
   const priceStart = dashDate(shiftYears(asOfDate, HK_PRICE_YEARS)) || asOfDate;
   const results = [];
@@ -419,6 +431,8 @@ async function syncHkTargetPoolBars({ asOfDate, maxCodes } = {}) {
     }
   }
   return Object.assign({
+    codes,
+    targetSetHash: pool.targetSetHash || null,
     targetCount: codes.length,
     pending: pending.length,
     processed: batch.length,
@@ -512,6 +526,21 @@ async function syncSelectionInputs(input) {
   // 重新审计：剩余量以"补完后仍待补"为准，不用本批处理数冒充完成。
   const after = await service.auditInputs({ market, asOfDate });
   const remaining = classifyGaps(after.gaps || []);
+  // 目标池批后复核（F05）。
+  // 修复前完成判定只数 auditInputs 的缺口，而 auditInputs 的分母是 loadUniverse（只含近 60 天
+  // 有行情的证券）：目标池里"还没补到行情"的股票根本不在分母里，于是 3 只目标只处理 1 只也能
+  // 返回 succeeded/gapCount=0，续批直接停掉。这里对冻结的目标清单重新算一次真实剩余差集。
+  const targetPoolAfter = market === 'HK' ? await auditHkTargetPoolAfterBatch(targetPool, asOfDate) : null;
+  const targetPoolPending = targetPoolAfter && Array.isArray(targetPoolAfter.pendingCodes)
+    ? targetPoolAfter.pendingCodes.length : 0;
+  // 来源失败/口径缺失不得靠"分母变小"过关；空目标必须有完整取证。
+  const targetPoolSourceFailed = Boolean(targetPool && (
+    (Array.isArray(targetPool.sourceErrors) && targetPool.sourceErrors.length)
+    || ['target_pool_sources_failed', 'target_pool_bars_failed', 'valuation_source_missing'].includes(String(targetPool.reason || ''))
+  ));
+  const targetPoolUnaudited = market === 'HK' && !targetPool;
+  const targetPoolIncomplete = targetPoolSourceFailed || targetPoolPending > 0
+    || targetPoolUnaudited || Boolean(targetPoolAfter && targetPoolAfter.error);
   const failedResults = attempted.filter(item => !item.ok);
   const remainingCodes = new Set((after.gaps || []).map(gap => gap.code));
   const failedCodes = failedResults.map(item => item.code);
@@ -548,7 +577,18 @@ async function syncSelectionInputs(input) {
       valuationSucceeded: valuationResults.filter(item => item.ok).length,
       valuationRows: valuationResults.reduce((sum, item) => sum + Number(item.valuations || 0), 0),
       valuationBars: valuationResults.reduce((sum, item) => sum + Number(item.bars || 0), 0),
-      targetPool,
+      targetPool: targetPool ? Object.assign({}, targetPool, {
+        // 批后真实剩余（不是批前统计），并给出未处理对象明细供续跑核对。
+        pendingAfter: targetPoolPending,
+        pendingAfterCodes: targetPoolAfter && targetPoolAfter.pendingCodes ? targetPoolAfter.pendingCodes.slice(0, 200) : [],
+        pendingAfterTruncated: Boolean(targetPoolAfter && targetPoolAfter.pendingCodes && targetPoolAfter.pendingCodes.length > 200),
+        sourceErrors: targetPool.sourceErrors || [],
+        targetSetHash: targetPool.targetSetHash || null,
+      }) : null,
+      targetPoolPending,
+      targetPoolSourceFailed,
+      targetPoolUnaudited,
+      targetPoolIncomplete,
       remainingFundamental: remaining.fundamental.length,
       remainingFinancial: remaining.fundamental.length,
       remainingIndustry: remaining.industry.length,
@@ -568,17 +608,23 @@ async function syncSelectionInputs(input) {
   // 未识别的缺口也不允许当完成。处理 0 个而仍有缺口时更不能报 succeeded。
   const blockingRemaining = remaining.fundamental.length + remaining.industry.length
     + remaining.valuation.length + remaining.unclassified.length;
-  const cleared = blockingRemaining === 0;
+  // 完成必须同时满足：目标来源完整、每个目标都有归属、批后真实剩余为零、必需数据缺口已闭合（F05）。
+  const cleared = blockingRemaining === 0 && !targetPoolIncomplete;
   const unclassifiedBlocked = remaining.unclassified.length > 0;
   const valuationBlocked = remaining.valuation.length > 0;
   const processedAny = results.length + industryResults.length + valuationResults.length > 0
     || Boolean(targetPool && targetPool.processed);
+  // 来源失败属于"客观阻塞"，要等来源恢复，不能靠继续续批碰运气；
+  // 仍有可补目标（未补到行情）是 partial，续批继续处理。
   const status = cleared ? 'succeeded'
-    : (!processedAny ? 'blocked' : 'partial');
+    : (targetPoolSourceFailed || targetPoolUnaudited) ? 'blocked'
+      : (!processedAny && targetPoolPending === 0 ? 'blocked' : 'partial');
   const reason = cleared ? undefined
-    : unclassifiedBlocked ? 'selection_gap_unclassified'
-      : valuationBlocked && blockedOnlyByValuation(remaining) ? 'remaining_valuation_gap'
-        : 'selection_inputs_gaps_pending';
+    : (targetPoolSourceFailed || targetPoolUnaudited) ? 'selection_target_pool_sources_failed'
+      : targetPoolPending > 0 ? 'selection_target_pool_pending'
+        : unclassifiedBlocked ? 'selection_gap_unclassified'
+          : valuationBlocked && blockedOnlyByValuation(remaining) ? 'remaining_valuation_gap'
+            : 'selection_inputs_gaps_pending';
   return {
     ok: cleared,
     status,
@@ -595,6 +641,11 @@ async function syncSelectionInputs(input) {
     valuationRows: queuePayload.lastRun.valuationRows,
     valuationBars: queuePayload.lastRun.valuationBars,
     targetPool,
+    // 目标池剩余量单独暴露，供上层续批止损把"未补到行情的目标"也算进剩余工作。
+    remainingTargetPool: targetPoolPending,
+    targetPoolSourceFailed,
+    targetPoolIncomplete,
+    targetSetHash: targetPool ? (targetPool.targetSetHash || null) : null,
     remainingFundamental: queuePayload.lastRun.remainingFundamental,
     remainingFinancial: queuePayload.lastRun.remainingFinancial,
     remainingIndustry: queuePayload.lastRun.remainingIndustry,
@@ -606,6 +657,21 @@ async function syncSelectionInputs(input) {
     batchResults: results.slice(0, 50),
     industryResults: industryResults.slice(0, 50),
   };
+}
+
+// 批后复核目标池（F05）：对冻结的目标清单重新算"目标日前 60 天内有没有行情"，
+// 得出真实剩余差集。不能直接把批前的 targetPool.pending 相加冒充最终剩余。
+async function auditHkTargetPoolAfterBatch(targetPool, asOfDate) {
+  const codes = targetPool && Array.isArray(targetPool.codes) ? targetPool.codes : [];
+  if (!codes.length) return { pendingCodes: [], coveredCount: 0, targetCount: 0 };
+  try {
+    const covered = await repo.listCodesWithRecentBars({ codes, asOfDate, days: 60 });
+    const pendingCodes = codes.filter(code => !covered.has(code));
+    return { targetCount: codes.length, coveredCount: codes.length - pendingCodes.length, pendingCodes };
+  } catch (error) {
+    // 复核失败不等于"没有剩余"：按未知处理，完成判定一律不放行。
+    return { error: String(error.message || error).slice(0, 320), pendingCodes: [] };
+  }
 }
 
 // 只剩估值缺口时给出专门原因，便于任务面板区分"等共享行情"与"还有别的缺口在补"。

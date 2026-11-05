@@ -234,8 +234,10 @@ async function verifyAlertScope(alert, query = (sql, params) => repository.runQu
     }
     const { rows } = await layerSql.verifyAlertScopeLayerQuery3(query, [], [datasetCode, datasetScope, partitionKey]);
     const row = rows[0];
-    const quality = row && row.diagnostics && row.diagnostics.quality_status;
-    const recovered = Boolean(row && row.status === 'published' && !row.is_stale && (!quality || quality === 'passed'));
+    // F08：与发布门禁/槽位恢复共用同一个判据。修复前这里只看 published + 非 stale + quality 缺省，
+    // 连 query_status='failed' 都能判成恢复——"没有字段"被当成了"通过"。
+    const { isPublishedDatasetEvidence } = require('./datasetPartitionRegistry');
+    const recovered = isPublishedDatasetEvidence(row, datasetCode);
     return { recovered, evidence: row || null, ...(recovered ? {} : { reason: 'dataset_not_published_or_quality_failed' }) };
   }
   if (scope.type === 'source_endpoint') {

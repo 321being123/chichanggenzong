@@ -3,6 +3,7 @@
 // 静态：新增数据运维菜单与视图；前台管理员刷新按钮（bond-safety-refresh）已移除。
 // 缺库时打印 ADMIN-OPS-SKIP 并跳过（不计入失败）。
 const assert = require('assert');
+const { testSession } = require('./helpers/session-subject');
 const fs = require('fs');
 const path = require('path');
 require('dotenv').config({ path: path.join(__dirname, '..', '..', '.env') });
@@ -71,11 +72,15 @@ function readSrc(rel) { return fs.readFileSync(path.join(ROOT, rel), 'utf8'); }
 
   const app = express();
   app.use(express.json());
-  app.use(function (req, res, next) {
-    if (!req.session) req.session = {};
-    const u = req.headers['x-test-user'];
-    if (u && users[u] !== undefined) { req.session.user = u; req.session.authVersion = users[u]; }
-    next();
+  app.use(async function (req, res, next) {
+    try {
+      // F04：鉴权要求会话绑定不可复用主体身份，这里按 x-test-user 取该用户真实 subject_id。
+      const u = req.headers['x-test-user'];
+      if (u && users[u] !== undefined) {
+        req.session = await testSession(u, { authVersion: users[u] });
+      } else if (!req.session) req.session = {};
+      next();
+    } catch (error) { next(error); }
   });
   app.use('/api/admin', require('../routes/admin'));
   app.use('/api/bond-safety', require('../routes/bondSafety'));

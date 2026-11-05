@@ -11,13 +11,19 @@ function destroySession(req) {
   } catch (e) { /* 忽略销毁异常 */ }
 }
 
-// ========== 登录态校验（AUTH-01：统一验证存在/状态/会话版本）==========
-// 每次请求校验用户仍存在、状态为 active、会话版本与数据库一致；任一不满足即销毁会话并返回 401/403。
+// ========== 登录态校验（AUTH-01 + F04：统一验证存在/状态/会话版本/主体身份）==========
+// 每次请求校验用户仍存在、状态为 active、会话版本与数据库一致；
+// 并且会话绑定的**不可复用主体身份**必须与库内一致——删号后同名重建会拿到新的 subject_id，
+// 旧会话因此失效。username 仅作可读标识，不参与"是不是同一个人"的判定。
 // 校验结果缓存到 req.authUser，供同请求内的 requireAdmin 复用，避免重复查询。
+function sessionSubject(req) {
+  return String((req.session && req.session.subjectId) || '');
+}
+
 async function resolveSessionUser(req) {
   if (!req.session || !req.session.user) return { status: 401, error: '未登录' };
   const { rows } = await pool.query(
-    'SELECT username, role, status, auth_version, permissions FROM users WHERE username=$1',
+    'SELECT username, role, status, auth_version, permissions, subject_id::text AS subject_identity FROM users WHERE username=$1',
     [req.session.user]
   );
   const user = rows[0];
@@ -25,6 +31,13 @@ async function resolveSessionUser(req) {
   if (user.status && user.status !== 'active') {
     destroySession(req);
     return { status: 403, error: '该账号已被禁用，请联系管理员' };
+  }
+  // 缺少主体身份的会话一律重新登录：不能用用户名现推一个身份补上，
+  // 那等于把"同名"当成"同一个人"。发布后旧会话需重新登录是预期行为。
+  const expected = String(user.subject_identity || '');
+  if (!expected || sessionSubject(req) !== expected) {
+    destroySession(req);
+    return { status: 401, error: '登录态已失效，请重新登录' };
   }
   if (user.auth_version !== req.session.authVersion) {
     destroySession(req);
@@ -158,9 +171,15 @@ async function requireAdmin(req, res, next) {
   if (!username) return res.status(401).json({ error: '未登录' });
   try {
     const user = req.authUser
-      || (await pool.query('SELECT role, status, auth_version FROM users WHERE username=$1', [username])).rows[0];
+      || (await pool.query('SELECT role, status, auth_version, subject_id::text AS subject_identity FROM users WHERE username=$1', [username])).rows[0];
     if (!user) { destroySession(req); return res.status(403).json({ error: '无权限：该操作仅限管理员执行' }); }
     if (user.status && user.status !== 'active') { destroySession(req); return res.status(403).json({ error: '该账号已被禁用，请联系管理员' }); }
+    // 主体身份与会话版本同时校验：与 requireLogin 同一出口判据，不能只在其中一个入口设防。
+    const expected = String(user.subject_identity || '');
+    if (!expected || sessionSubject(req) !== expected) {
+      destroySession(req);
+      return res.status(401).json({ error: '登录态已失效，请重新登录' });
+    }
     if (user.auth_version !== req.session.authVersion) {
       destroySession(req);
       return res.status(401).json({ error: '登录态已失效，请重新登录' });

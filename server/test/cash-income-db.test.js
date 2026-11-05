@@ -1,4 +1,5 @@
 const assert = require('assert');
+const { testSession } = require('./helpers/session-subject');
 const express = require('express');
 const { pool } = require('../db/connection');
 const { loadAccountData, loadAccountSummary, saveAccountData } = require('../db/accounts');
@@ -56,7 +57,7 @@ async function cleanup() {
     await deleteCashFlow(U,A,'manual',current.version);
     assert.strictEqual((await loadAccountData(U,A)).cash,1013);
     const app=express(); app.use(express.json());
-    app.use((req,res,next)=>{req.session={user:U,authVersion:1};next();}); app.use('/api',router);
+    app.use(async (req,res,next)=>{ try { req.session = await testSession(U); next(); } catch (e) { next(e); } }); app.use('/api',router);
     server=await new Promise(resolve=>{const x=app.listen(0,'127.0.0.1',()=>resolve(x));});
     const base='http://127.0.0.1:'+server.address().port;
     const ok=await fetch(base+'/api/accounts/'+encodeURIComponent(A)+'/cash-income/coverage');

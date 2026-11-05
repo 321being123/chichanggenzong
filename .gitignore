@@ -79,6 +79,9 @@ _tmp*
 # 验收/复核过程产生的证据文件只留本地，不入库
 /data/ipo_reacceptance_*
 
+# 全量测试证据（发布前置读取，绑定本机代码树，不入库）
+/data/test-evidence/
+
 # 端到端验收截图等证据产物只留本地，不入库
 outputs/e2e-acceptance-*/
 

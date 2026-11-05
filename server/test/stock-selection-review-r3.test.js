@@ -101,17 +101,19 @@ async function runR303Database() {
       const planOnly = await repo.loadAnnualDividends({ companyIds: [companyId], asOfDate });
       const planRow = (planOnly.get(String(companyId)) || []).find(row => row.year === 2018);
       assert.ok(planRow, '有预案记录的年份仍要返回，便于诊断');
-      assert.strictEqual(planRow.dividendKnown, false, '只有预案不得标为已知');
-      assert.strictEqual(planRow.dividend, null, '未知金额必须保留 NULL');
-      assert.strictEqual(planRow.dividendBasis, 'plan_only');
+      // 口径变更（2026-11-04 / 0.9.2.15「预案未实施判零分红」）：
+      // 该财年期末已过 2 年以上仍停在预案、从未实施，就是"方案没有落地"，按零分红计；
+      // 判零有前提（财年已尘埃落定或方案停摆 2 年以上），刚公告的预案仍按未知。
+      // 原断言"只有预案必须未知"是这次口径变更前的规则，此处随权威口径更新。
+      assert.strictEqual(planRow.dividendKnown, true, '财年已尘定的未实施预案按零分红计');
+      assert.strictEqual(planRow.dividend, 0);
+      assert.strictEqual(planRow.dividendBasis, 'stale_plan_not_implemented');
       let years = service.buildAnnualYears(
         [{ year: 2025, profit: 1e9 }].concat(
           Array.from({ length: 10 }, (_, index) => ({ year: 2015 + index, profit: 1e9 }))),
         planOnly.get(String(companyId)));
       let anomaly = RULES.evaluateAnnualAnomaly({ latestYear: 2025, years });
-      assert.strictEqual(anomaly.status, RULES.STATUS.PENDING, '只有预案必须待补，不能 PASS');
-      assert.deepStrictEqual(anomaly.dividendUnknownYears, [2018]);
-      assert.strictEqual(anomaly.dividendSum, null);
+      assert.deepStrictEqual(anomaly.dividendUnknownYears, [], '按零分红计入后不应再出现在未知年份里');
 
       // 情形②：2018 年已实施且每股 0.5 元，但公司总额为 NULL。
       await pool.query(

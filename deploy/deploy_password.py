@@ -6,12 +6,14 @@
 代码部署失败仍按原非零规则退出，回写失败不影响已成功的代码部署，但会明确报告未闭环。
 """
 
+import hashlib
 import json
 import os
 import re
 import shlex
 import subprocess
 import sys
+import urllib.request
 import uuid
 from pathlib import Path
 
@@ -26,6 +28,8 @@ except ImportError as exc:
 
 
 ROOT = Path(__file__).resolve().parents[1]
+# 目标提交的 CI 证据只能从这个仓库取（发布门禁 F15）。
+CI_REPO = "321being123/chichanggenzong"
 HOST = "82.156.125.47"
 USER = "ubuntu"
 FEEDBACK_SCRIPT = "server/scripts/reconcileFeedbackRelease.js"
@@ -234,6 +238,130 @@ def verify_feedback_run_ready(client, run_id, commit):
     print(f"反馈核对依据已核查：批次 {run_id}（{len(items)} 条明细，已冻结并通过验收）。")
 
 
+def _required_ci_config():
+    """必需的 CI 作业清单与真库回归段清单（与测试入口共用同一份文件）。"""
+    path = ROOT / 'deploy' / 'required-ci-checks.json'
+    try:
+        data = json.loads(path.read_text(encoding='utf-8'))
+    except Exception as exc:
+        raise SystemExit(f'发布前置校验失败：读取必需清单 deploy/required-ci-checks.json 出错（{exc}），已中止部署') from exc
+    jobs = data.get('ciJobs')
+    if not isinstance(jobs, list) or not jobs:
+        raise SystemExit('发布前置校验失败：必需清单里没有 ciJobs，无法确认目标提交的测试结果')
+    return [str(item) for item in jobs]
+
+
+def _code_tree_paths():
+    return ['server', 'public', 'deploy', 'scripts', '.github', 'ipo-report',
+            'package.json', 'package-lock.json', 'requirements.txt']
+
+
+def code_tree_hash(rev):
+    """与 server/test/lib/codeTreeHash.js 完全一致的代码树指纹（同一 git 命令 + sha256）。"""
+    result = subprocess.run(['git', 'ls-tree', '-r', rev, '--'] + _code_tree_paths(),
+                            cwd=str(ROOT), capture_output=True)
+    if result.returncode != 0:
+        raise SystemExit('发布前置校验失败：读取代码树失败（' + result.stderr.decode('utf-8', 'replace').strip()[:300] + '）')
+    return hashlib.sha256(result.stdout).hexdigest()
+
+
+def verify_local_test_evidence(commit):
+    """本地全量测试证据必须属于当前代码树（F15）。
+
+    纯文档变更可以复用有效测试：指纹只覆盖会影响运行结果的目录，
+    所以改文档不会改指纹；改源码一定会改指纹，必须重跑。
+    """
+    path = ROOT / 'data' / 'test-evidence' / 'last-run.json'
+    if not path.exists():
+        raise SystemExit('发布前置校验失败：没有本地全量测试证据 data/test-evidence/last-run.json，'
+                         '请先运行 npm.cmd run test:all（不允许以历史数字或猜测代替）')
+    try:
+        evidence = json.loads(path.read_text(encoding='utf-8'))
+    except Exception as exc:
+        raise SystemExit(f'发布前置校验失败：测试证据不是合法 JSON（{exc}）') from exc
+    problems = []
+    try:
+        passed = int(evidence.get('pass') or 0)
+        failed = int(evidence.get('fail') or 0)
+        skipped = int(evidence.get('skip') or 0)
+    except (TypeError, ValueError):
+        passed = failed = skipped = 0
+    if failed > 0:
+        problems.append(f"有 {failed} 个测试失败")
+    if passed <= 0:
+        problems.append('没有任何通过的测试记录')
+    if skipped > 0:
+        # 必需真库段默认开启；任何跳过都要解释，不能"跳过了但算绿"。
+        problems.append(f"有 {skipped} 项被跳过（必需用例不允许跳过）")
+    expected = code_tree_hash(commit)
+    actual = str(evidence.get('codeTreeHash') or '')
+    if actual != expected:
+        problems.append(f'测试证据绑定的代码树 {actual[:12] or "空"} 与本次发布 {expected[:12]} 不一致')
+    if problems:
+        raise SystemExit('发布前置校验失败：本地全量测试证据不满足发布条件：\n- ' + '\n- '.join(problems))
+    print(f"本地全量测试证据已核对：代码树 {expected[:12]}…，通过 {passed} 项、失败 0、跳过 0。")
+
+
+def _github_api(path):
+    """查询 GitHub；优先 gh（已登录），退化为公开 REST。任何失败都上抛，绝不降级为通过。"""
+    errors = []
+    try:
+        result = subprocess.run(['gh', 'api', path], cwd=str(ROOT), capture_output=True, text=True)
+        if result.returncode == 0 and result.stdout.strip():
+            return json.loads(result.stdout)
+        errors.append('gh: ' + (result.stderr or 'no output').strip()[:200])
+    except FileNotFoundError:
+        errors.append('gh: 未安装')
+    except Exception as exc:  # noqa: BLE001 - 需要把具体原因带进阻断信息
+        errors.append('gh: ' + str(exc)[:200])
+    try:
+        url = 'https://api.github.com/' + path.lstrip('/')
+        request = urllib.request.Request(url, headers={'Accept': 'application/vnd.github+json',
+                                                       'User-Agent': 'portfolio-server-release-gate'})
+        token = os.environ.get('GITHUB_TOKEN')
+        if token:
+            request.add_header('Authorization', 'Bearer ' + token)
+        with urllib.request.urlopen(request, timeout=20) as response:
+            return json.loads(response.read().decode('utf-8'))
+    except Exception as exc:  # noqa: BLE001
+        errors.append('https: ' + str(exc)[:200])
+    raise SystemExit('发布前置校验失败：无法读取 GitHub 测试状态（' + '；'.join(errors) + '），已中止部署')
+
+
+def verify_ci_test_evidence(commit):
+    """目标提交的必需 CI 作业必须全部 success（F15）。
+
+    修复前发布脚本只核对工作区干净、分支、HEAD、知识门禁和反馈证据，不看 CI：
+    0.9.2.21 就是在 4 失败 + 关键跳过的红色基线上发布出去的。
+    这里绑定**完整 SHA**：失败、取消、进行中、找不到、以及"别的提交绿过"全部阻断。
+    """
+    required = _required_ci_config()
+    payload = _github_api(f'repos/{CI_REPO}/actions/runs?head_sha={commit}&per_page=50')
+    runs = [run for run in (payload.get('workflow_runs') or [])
+            if str(run.get('head_sha') or '').lower() == commit.lower()]
+    if not runs:
+        raise SystemExit(f'发布前置校验失败：提交 {commit[:12]} 没有对应的 CI 运行记录，'
+                         '不能以其他提交或本地印象代替（先推送并等待 CI）')
+    runs.sort(key=lambda run: (run.get('run_number') or 0, run.get('created_at') or ''), reverse=True)
+    run = runs[0]
+    problems = []
+    if run.get('status') != 'completed':
+        problems.append(f"CI 仍在 {run.get('status')}（未完成），不能发布")
+    if run.get('conclusion') != 'success':
+        problems.append(f"CI 结论为 {run.get('conclusion') or '空'}，必须 success")
+    jobs_payload = _github_api(f"repos/{CI_REPO}/actions/runs/{run.get('id')}/jobs?per_page=100")
+    jobs = {str(job.get('name') or ''): job for job in (jobs_payload.get('jobs') or [])}
+    for name in required:
+        job = jobs.get(name)
+        if not job:
+            problems.append(f'缺少必需作业 {name}')
+        elif job.get('conclusion') != 'success':
+            problems.append(f"必需作业 {name} 结论为 {job.get('conclusion') or job.get('status') or '空'}")
+    if problems:
+        raise SystemExit(f"发布前置校验失败：提交 {commit[:12]} 的 CI 不允许发布：\n- " + '\n- '.join(problems))
+    print(f"CI 测试证据已核对：提交 {commit[:12]} 的 {len(required)} 个必需作业全部 success。")
+
+
 def verify_release_ready(opts):
     if '--confirm-production' not in sys.argv[1:]:
         raise SystemExit('拒绝部署：必须显式传入 --confirm-production，且取得用户线上部署授权。')
@@ -246,6 +374,9 @@ def verify_release_ready(opts):
     remote_commit = run_local(['git', 'rev-parse', 'origin/master'])
     if local_commit != remote_commit:
         raise SystemExit('发布前置校验失败：本地 HEAD 必须与 origin/master 完全一致。')
+    # 测试证据必须在连服务器之前核完：任何一项不满足都不发起生产变更。
+    verify_local_test_evidence(local_commit)
+    verify_ci_test_evidence(local_commit)
     run_local(['npm.cmd', 'run', 'check:knowledge'])
     # 反馈核对依据的本地部分（参数存在性 + 证据内容）在连服务器之前就拦，失败即不发起任何变更。
     verify_feedback_requirement(opts, local_commit)

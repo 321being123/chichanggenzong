@@ -1,4 +1,5 @@
 const assert = require('assert');
+const { testSession } = require('./helpers/session-subject');
 const express = require('express');
 const { pool, loadAccountData, upsertNav } = require('../db');
 const router = require('../routes/accounts');
@@ -32,7 +33,7 @@ let server;
   await pool.query(`INSERT INTO daily_prices(username,account_name,date,code,name,price)
     VALUES($1,$2,'2026-09-22','600000','测试证券',10),($1,$2,'2026-09-23','600000','测试证券',11),($1,$2,'2026-09-24','600000','测试证券',12)`,[U,A]);
   const app = express();app.use(express.json());
-  app.use((req,res,next)=>{req.session={user:U,authVersion:1};next();});app.use('/api',router);
+  app.use(async (req,res,next)=>{ try { req.session = await testSession(U); next(); } catch (e) { next(e); } }); app.use('/api',router);
   server = await new Promise(resolve=>{const s=app.listen(0,'127.0.0.1',()=>resolve(s));});
   const base='http://127.0.0.1:'+server.address().port;
   let input=await loadAccountData(U,A);

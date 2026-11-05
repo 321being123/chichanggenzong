@@ -40,7 +40,9 @@ function sameSlotRecoveryScope(left, right) {
   for (const key of ['username', 'accountName', 'market', 'scopeKey']) {
     if (String(payload(left)[key] ?? '') !== String(payload(right)[key] ?? '')) return false;
   }
-  for (const key of ['fromDate', 'throughDate']) {
+  // 业务身份字段必须逐一相等（F08）：SQL 侧 recoveryScopeFilter 用同一份清单，
+  // 两侧任一遗漏都会得出"双重检查仍然错"的结论。
+  for (const key of ['fromDate', 'throughDate', 'batchId', 'targetDate', 'targetTradeDate', 'quarter']) {
     if (String(payload(left)[key] ?? '') !== String(payload(right)[key] ?? '')) return false;
   }
   return sameTargetScope(left, right);
@@ -186,7 +188,7 @@ async function verifySlotRecoveryEvidence(slot, query = (sql, params) => reposit
   if (phase?.requiresDataWatermark === false && !stageVerified) return { recovered: false, reason: 'target_scope_evidence_missing', evidence: { slot, run } };
   const datasets = phase ? [...new Set([...(phase.publish || []), ...(phase.requirePublished || [])])] : definition.producesDatasets || [];
   const { expectedDataDate } = require('./jobScheduleSlots');
-  const { resolveDatasetScope } = require('./datasetPartitionRegistry');
+  const { resolveDatasetScope, isPublishedDatasetEvidence } = require('./datasetPartitionRegistry');
   const businessDate = businessDateText(slot.business_date);
   if(slot.job_code==='nav_snapshot'&&requestedMode==='core'&&summary.requestedRange) {
     const expectedFrom=slot.request_payload?.fromDate||businessDate;
@@ -205,13 +207,11 @@ async function verifySlotRecoveryEvidence(slot, query = (sql, params) => reposit
       return byCodeAndScope.get(`${code}:${expectedScopeKey}`)
         || { dataset_code: code, scope_key: expectedScopeKey, partition_key: partitionKey, status: 'missing' };
     });
-    const allPublished = datasetEvidence.every(row => {
-      const diagnostics = row.diagnostics && typeof row.diagnostics === 'object' ? row.diagnostics : {};
-      const qualityOk = legacyHkPostclose||['account_cash_income','repo_daily_rates','stock_cash_dividend_facts'].includes(row.dataset_code)
-        ? diagnostics.quality_status==='passed':!diagnostics.quality_status || diagnostics.quality_status === 'passed';
-      const queryOk = !diagnostics.query_status || ['success', 'passed', 'verified'].includes(diagnostics.query_status);
-      return row.status === 'published' && !row.is_stale && qualityOk && queryOk;
-    });
+    // 统一到注册表的同一判据（F08）：不再各写一套"缺字段就算通过"。
+    // legacyHkPostclose 仍需强制 quality_status='passed'。
+    const allPublished = datasetEvidence.every(row => isPublishedDatasetEvidence(
+      row, row.dataset_code, { requireQuality: legacyHkPostclose === true },
+    ));
     if (!allPublished) return { recovered: false, reason: 'strict_dataset_evidence_missing', evidence: { slot, datasets: datasetEvidence } };
   }
   if (definition.requiresDataWatermark !== false && !stageVerified) {

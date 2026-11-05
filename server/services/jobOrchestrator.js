@@ -356,7 +356,7 @@ function datasetPartitionKeyForSlot(slot, result = {}, datasetCode = null) {
     .find(value => /^\d{4}-\d{2}-\d{2}$/.test(value)) || null;
 }
 
-async function applyDatasetFailureBreaker(slot, runId, normalized, failure) {
+async function applyDatasetFailureBreaker(slot, runId, normalized, failure, executionToken = null) {
   const definition = getJobDefinition(slot.job_code);
   const failed = incompleteDatasets(definition, normalized);
   if (!failed.length) return null;
@@ -370,10 +370,24 @@ async function applyDatasetFailureBreaker(slot, runId, normalized, failure) {
   normalized.datasetFailureCounts = counts;
   normalized.datasetBreaker = { threshold, failedDatasets: failed, blockedDatasets };
   if (!blockedDatasets.length) return null;
-  const summary = sanitizeJobResult(await mergeSlotExternalCallSummary(slot.slot_id, normalized));
+  const summary = sanitizeJobResult(normalized);
   await finishManagedRun(runId, slot.job_code, false, normalized, failure).catch(() => {});
-  const { rows } = await repository.update_ops_job_schedule_slots([slot.slot_id, runId, JSON.stringify(summary), sanitizeJobError(`数据集 ${blockedDatasets.join(',')} 连续 ${threshold} 次未完成，任务已暂停，等待人工处理`)]);
-  const blocked = rows[0] || null;
+  // F07：数据集断路也是"状态变更"，必须和正常收尾走同一套执行令牌 + 租约校验。
+  // 修复前这里直接 UPDATE ... WHERE slot_id AND status='running'，老执行租约过期、被新执行接管后
+  // 仍能覆盖新执行的 lease/状态/run_id，还顺带发出一条错误断路告警。
+  const blocked = await completeSlot(
+    slot.slot_id,
+    'blocked',
+    summary,
+    sanitizeJobError(`数据集 ${blockedDatasets.join(',')} 连续 ${threshold} 次未完成，任务已暂停，等待人工处理`),
+    runId,
+    executionToken,
+  );
+  if (!blocked) {
+    // 影响 0 行 = 执行资格已经失效：停止旧执行的后续状态写入与告警动作。
+    console.warn(`[job-orchestrator] 数据集断路收尾被拒绝（执行资格已失效）slot=${slot.slot_id}`);
+    return null;
+  }
   if (blocked) {
     const { notifyJobFailure } = require('./jobAlertMailer');
     const partitionKey = datasetPartitionKeyForSlot(slot, normalized, blockedDatasets[0]);
@@ -621,7 +635,7 @@ async function failOrRetry(slot, error, runId, result = {}, executionToken = nul
   // freshnessGate 自身不会进入 failOrRetry，因此只读检查未命中不会被误计为失败。
   await notifyDatasetDiagnostics(slot, normalized);
   await notifyIncompleteDataset(slot, normalized);
-  const blocked = await applyDatasetFailureBreaker(slot, runId, normalized, failure);
+  const blocked = await applyDatasetFailureBreaker(slot, runId, normalized, failure, executionToken);
   if (blocked) return blocked;
   const externalRecoveryFailure = definition.retryPolicy !== 'no_retry'
     && ['BUDGET_WAIT', 'RATE_LIMIT', 'QUOTA_EXHAUSTED', 'CIRCUIT_OPEN'].includes(failure.code);

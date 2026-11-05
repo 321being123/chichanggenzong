@@ -31,6 +31,37 @@ async function loadDeps() {
   return { pool, service: require('../services/stockSelectionService') };
 }
 
+/**
+ * 自备最小交易日历（F13）。
+ *
+ * 修复前本文件在铺夹具之前就用 `resolveQuarterTarget` 解析季度末，日历只能来自"开发机上恰好
+ * 有业务库克隆"的 market.trade_calendar；干净 CI 是空库 + ci-seed.sql，必然在这里
+ * calendar_unavailable 直接失败，金融断言根本没机会跑。
+ * 这里按 2026Q3 所在季度补工作日开市，只在缺失时插入（ON CONFLICT DO NOTHING），
+ * 不会改写任何真实日历行；跨月缺档、季度末休市的负例另用远期季度验证。
+ */
+async function seedCalendar(pool) {
+  const days = [];
+  for (let month = 7; month <= 9; month++) {
+    const monthText = String(month).padStart(2, '0');
+    for (let day = 1; day <= 31; day++) {
+      const text = `2026-${monthText}-${String(day).padStart(2, '0')}`;
+      const date = new Date(text + 'T00:00:00Z');
+      if (Number.isNaN(date.getTime()) || date.getUTCMonth() + 1 !== month) continue;
+      const weekday = date.getUTCDay();
+      if (weekday === 0 || weekday === 6) continue; // 周末休市
+      days.push(text);
+    }
+  }
+  // 2026-09-30 是周三，天然是交易日；季度末休市的负例由远期季度覆盖。
+  await pool.query(
+    `INSERT INTO market.trade_calendar (exchange, trade_date, is_open, source_code)
+     SELECT 'SSE', d::date, true, 'test_fixture'
+       FROM unnest($1::text[]) AS d
+     ON CONFLICT (exchange, trade_date) DO NOTHING`, [days]);
+  return days.length;
+}
+
 async function cleanup(pool) {
   const codes = CODES;
   await pool.query(`DELETE FROM analytics.stock_selection_runs WHERE market=$1 AND as_of_date=$2::date`, [MARKET, AS_OF]);
@@ -136,10 +167,22 @@ async function seed(pool) {
 async function main() {
   const { pool, service } = await loadDeps();
   try {
-    // 先由交易日历推出季度末目标日，再按该日铺夹具，避免"夹具日期与目标日错位"的假失败。
+    // 先自备最小交易日历，再由它推出季度末目标日，最后按该日铺夹具：
+    // 三步顺序固定，避免"日历靠开发机残留"或"夹具日期与目标日错位"两类假失败。
+    await seedCalendar(pool);
     const target = await service.resolveQuarterTarget({ market: MARKET, quarter: QUARTER });
-    assert.ok(target.asOfDate, '本地交易日历应能推出季度末目标日：' + (target.reason || ''));
+    record('F13 干净库自带最小交易日历即可解析季度末目标日', () => {
+      assert.ok(target.asOfDate, '自备日历后应能推出季度末目标日：' + (target.reason || ''));
+      assert.strictEqual(target.quarterEnd, '2026-09-30');
+    });
+    // 负例：日历确实没有覆盖到的季度必须被拒绝，而不是按工作日猜。
+    const far = await service.resolveQuarterTarget({ market: MARKET, quarter: '2099Q1' });
+    record('F13 日历未覆盖的季度必须拒绝（不按工作日猜测）', () => {
+      assert.strictEqual(far.asOfDate, null, '没有日历证据时不得产出目标日');
+      assert.ok(['calendar_unavailable', 'calendar_incomplete'].includes(far.reason), '必须给出明确原因：' + far.reason);
+    });
     AS_OF = target.asOfDate;
+    if (!AS_OF) throw new Error('季度末目标日解析失败，后续金融断言无法执行：' + (target.reason || ''));
     await cleanup(pool);
     await seed(pool);
 

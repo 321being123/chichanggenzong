@@ -1,5 +1,6 @@
 // 历史净值权威导入真实回归：验证历史价格/汇率锚点、重复导入和导入后续算闭合。
 const assert = require('assert');
+const { testSession } = require('./helpers/session-subject');
 const express = require('express');
 const { pool, loadAccountData, saveAccountData, upsertNav } = require('../db');
 const accountsRouter = require('../routes/accounts');
@@ -61,7 +62,7 @@ const previousCloseDate = (() => {
 
     const app = express();
     app.use(express.json());
-    app.use((req, res, next) => { req.session = { user: U, authVersion: 1 }; next(); });
+    app.use(async (req, res, next) => { req.session = await testSession(U); next(); });
     app.use('/api', accountsRouter);
     server = await new Promise(resolve => { const s = app.listen(0, '127.0.0.1', () => resolve(s)); });
     const base = 'http://127.0.0.1:' + server.address().port + '/api';

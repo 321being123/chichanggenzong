@@ -1,4 +1,5 @@
 const assert = require('assert');
+const { subjectIdOf } = require('./helpers/session-subject');
 const fs = require('fs');
 const path = require('path');
 const { JSDOM } = require('jsdom');
@@ -86,7 +87,21 @@ async function testApi(users, ids) {
   app.use(require('express').json());
   let user = null;
   const version = await pool.query('SELECT auth_version FROM users WHERE username=$1', [users[1]]);
-  app.use((req, res, next) => { req.session = user ? { user, authVersion: version.rows[0].auth_version } : {}; next(); });
+  // F04：登录态必须带该用户真实主体身份，否则真实 requireLogin 会判失效。
+  // user 在用例中途才被赋值，因此每次请求都按当前 user 取（带缓存），不能在启动时算一次。
+  const subjectCache = new Map();
+  const subjectFor = async name => {
+    if (!subjectCache.has(name)) subjectCache.set(name, await subjectIdOf(name));
+    return subjectCache.get(name);
+  };
+  app.use(async (req, res, next) => {
+    try {
+      req.session = user
+        ? { user, authVersion: version.rows[0].auth_version, subjectId: await subjectFor(user) }
+        : {};
+      next();
+    } catch (error) { next(error); }
+  });
   app.use('/api/arbitrage', require('../routes/arbitrage'));
   const server = await new Promise(resolve => { const s = app.listen(0, '127.0.0.1', () => resolve(s)); });
   const url = 'http://127.0.0.1:' + server.address().port + '/api/arbitrage';

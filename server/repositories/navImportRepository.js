@@ -80,15 +80,28 @@ async function deleteAllNav({ username, accountName }, client = pool) {
   return client.query('DELETE FROM nav_history WHERE username=$1 AND account_name=$2', [username, accountName]);
 }
 
-// 幂等判定：按批次号或内容指纹查已存在批次并加锁
+// 幂等判定：按批次号或内容指纹查**仍然有效**的已提交批次并加锁。
+// 已回滚批次（status='rolled_back'）不能复活成成功：它只作审计历史，
+// 既不参与幂等命中，也不占住内容唯一索引（迁移 188 把唯一性收窄到有效提交）。
 async function findImportBatch({ username, accountName, batchId, inputHash }, client = pool) {
   return client.query(
-    `SELECT id, input_hash AS "inputHash", row_count AS "rowCount"
+    `SELECT id, input_hash AS "inputHash", row_count AS "rowCount", status
          FROM nav_import_batches WHERE username=$1 AND account_name=$2
+           AND status <> 'rolled_back'
            AND (id=$3 OR input_hash=$4)
          ORDER BY CASE WHEN id=$3 THEN 0 ELSE 1 END, imported_at DESC
          LIMIT 1 FOR UPDATE`,
     [username, accountName, batchId, inputHash],
+  );
+}
+
+// 批次号是全局主键：任何写业务数据之前先确认这个 ID 归谁所有。
+// 只按 (username, account_name) 查询会漏掉"这个 ID 已属于别的账户"，
+// 之后 ON CONFLICT DO NOTHING 静默跳过插入，代码继续往下写（F01 的实际链路）。
+async function findImportBatchOwner({ batchId }, client = pool) {
+  return client.query(
+    'SELECT id, username, account_name AS "accountName", status FROM nav_import_batches WHERE id=$1',
+    [batchId],
   );
 }
 
@@ -132,11 +145,14 @@ async function listFxRatesUntil({ date }, client = pool) {
   );
 }
 
+// 插入批次必须回读实际写入的归属：`DO NOTHING` 在 ID 已被别的账户占用时会静默跳过，
+// 若把「没报错」当「插入成功」，后续写净值、删快照就都落在错误的前提上（F01）。
 async function insertImportBatch(params, client = pool) {
   return client.query(
     `INSERT INTO nav_import_batches (id, username, account_name, range_start, range_end, row_count, input_hash, status, backup_payload, diagnostics)
        VALUES ($1,$2,$3,$4,$5,$6,$7,'committed',$8::jsonb,$9::jsonb)
-       ON CONFLICT (id) DO NOTHING`, params,
+       ON CONFLICT (id) DO NOTHING
+     RETURNING id, username, account_name AS "accountName", status`, params,
   );
 }
 
@@ -167,8 +183,17 @@ async function upsertAnchorDailyPrice(params, client = pool) {
   );
 }
 
-async function deletePositionSnapshotsByBatch({ snapshotId }, client = pool) {
-  return client.query('DELETE FROM nav_position_snapshots WHERE snapshot_id=$1', [snapshotId]);
+// 快照删除必须带账户范围（F01）：快照主键是 snapshot_id + instrument_code，
+// snapshot_id 直接来自批次号，只按 snapshot_id 删除会连带删掉另一账户的快照。
+// 账户条件缺失时直接报错，不静默降级成全表条件。
+async function deletePositionSnapshotsByBatch({ username, accountName, snapshotId }, client = pool) {
+  if (!username || !accountName || !snapshotId) {
+    throw new Error('删除导入快照必须同时提供账户与批次号');
+  }
+  return client.query(
+    'DELETE FROM nav_position_snapshots WHERE username=$1 AND account_name=$2 AND snapshot_id=$3',
+    [username, accountName, snapshotId],
+  );
 }
 
 // 该账户下「已经没有任何导航历史引用」的导入批次编号（2026-10-30，方案 A2）。
@@ -270,6 +295,7 @@ module.exports = {
   selectUnreferencedSnapshotBatches,
   deletePositionSnapshotsByIds,
   findImportBatch,
+  findImportBatchOwner,
   insertImportBatch,
   insertPositionSnapshot,
   listFxRatesUntil,

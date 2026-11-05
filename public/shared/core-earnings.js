@@ -390,13 +390,50 @@ function detectMappingExact(headers) {
   return { date: find('date'), nav: find('nav'), total: find('total'), invested: find('invested'), cash: find('cash') };
 }
 
+// ===================== 导入范围保护（F02） =====================
+// 收益导入是"读文件 → 备份 → 提交 → 回读"的长链路，中途用户可能切换账户或退出重登。
+// 修复前 finishImport 在 `await backupNavHistoryServer()` 之后才重新读取全局
+// currentAccount / dataVersion，于是 A 的文件会被提交到 B 的账户、并带上 B 的合法版本——
+// 服务端乐观锁只能证明"版本是 B 的真实版本"，拦不住写错账户。
+// 这里的做法与行情/收益链路一致：进入导入时冻结一次范围，每个异步边界后复核，
+// 范围一改变就取消本次操作，过期响应也不允许刷新当前账户。
+var earningsImportSeq = 0;
+
+function captureEarningsImportScope() {
+  return {
+    seq: ++earningsImportSeq,
+    account: typeof currentAccount === 'string' ? currentAccount : '',
+    user: typeof username === 'string' ? username : '',
+    identity: typeof accountIdentity === 'string' ? accountIdentity : '',
+    version: dataVersion,
+  };
+}
+
+function isEarningsImportScopeCurrent(scope) {
+  if (!scope || scope.seq !== earningsImportSeq) return false;
+  return scope.account === (typeof currentAccount === 'string' ? currentAccount : '')
+    && scope.user === (typeof username === 'string' ? username : '')
+    && scope.identity === (typeof accountIdentity === 'string' ? accountIdentity : '')
+    && String(scope.version) === String(dataVersion);
+}
+
+// 范围失效时的统一收尾：不写任何数据、不渲染旧响应，只告诉用户发生了什么。
+function abandonEarningsImport(scope, stage) {
+  if (scope) scope.seq = -1; // 让同一个 scope 在后续边界持续判定为失效
+  closeImportProgress();
+  showToast('导入过程中账户或登录状态已变化，本次导入已取消（' + stage + '）。请重新选择文件');
+}
+
 async function importFundExcel(event) {
   const file = event.target.files[0];
   if (!file) return;
+  const scope = captureEarningsImportScope();
   try {
     openImportProgress();
     const base64 = await fileToBase64(file);
+    if (!isEarningsImportScopeCurrent(scope)) { abandonEarningsImport(scope, '读取文件后'); return; }
     const r = await window.earningsHistoryApi.parseExcel(base64);
+    if (!isEarningsImportScopeCurrent(scope)) { abandonEarningsImport(scope, '解析文件后'); return; }
     const d = r.payload;
     if (!r.ok || d.error) { showImportError(d.error || ('请求失败：HTTP ' + r.status)); return; }
     if (!d.headers || !d.rows || d.rows.length === 0) { closeImportProgress(); showToast('Excel 中没有可识别的数据行'); return; }
@@ -405,9 +442,9 @@ async function importFundExcel(event) {
     if (auto.date >= 0 && auto.nav >= 0 && auto.total >= 0 && auto.invested >= 0) {
       // 精确匹配成功，直接导入
       closeImportProgress();
-      await finishImport(d.rows, auto);
+      await finishImport(d.rows, auto, scope);
     } else {
-      // 无法精确匹配 → 弹框让用户手动选列
+      // 无法精确匹配 → 弹框让用户手动选列（确认映射时再冻结一次范围）
       closeImportProgress();
       openMappingModal(d.headers, d.rows, auto);
     }
@@ -419,7 +456,10 @@ async function importFundExcel(event) {
 }
 
 // 按列映射从数据行提取记录并合并进 navHistory（共享：自动匹配与手动匹配都会走到这）
-async function finishImport(rows, mapping) {
+// scope 是本轮导入冻结的账户/登录/版本范围（F02）；缺省时（老调用方）现场冻结一次，
+// 保证任何路径都不会再"读全局当前账户"。
+async function finishImport(rows, mapping, scope) {
+  const frozen = scope || captureEarningsImportScope();
   const parsed = [];
   const badRows = [];
   // “累计投入资金”是累计值。券商表尾公式损坏/空白时，仅对最后一个有效值之后的连续尾部行沿用前值；
@@ -466,8 +506,13 @@ async function finishImport(rows, mapping) {
   var importedRecords = Array.from(uniqueByDate.values());
   var duplicateCount = parsed.length - importedRecords.length;
 
-  // 导入前自动备份当前 navHistory（误导入可一键还原）；备份失败则中止导入，防止"以为有快照实际没有"
-  var backedUp = await backupNavHistoryServer();
+  // 进入异步链路前先确认范围没变：解析/映射期间用户可能已经切了账户。
+  if (!isEarningsImportScopeCurrent(frozen)) { abandonEarningsImport(frozen, '提交前'); return; }
+
+  // 导入前自动备份**冻结账户**的 navHistory（误导入可一键还原）；备份失败则中止导入，
+  // 防止"以为有快照实际没有"。备份读取的是 frozen.account，不再读全局当前账户。
+  var backedUp = await backupNavHistoryServer(frozen.account);
+  if (!isEarningsImportScopeCurrent(frozen)) { abandonEarningsImport(frozen, '备份返回后'); return; }
   if (!backedUp) {
     showToast('导入前自动备份失败，已取消导入（避免误导入后无法还原）。请稍后重试');
     return;
@@ -476,8 +521,10 @@ async function finishImport(rows, mapping) {
   // 阶段三：净值导入走 POST /nav/import 局部接口
   try {
     // 导入字段是券商账户级事实：同日一律覆盖；持仓数量不在此接口中写入。
-    var importBody = { account: currentAccount, records: importedRecords, mode: 'merge' };
-    var r = await window.earningsHistoryApi.importNav(dataVersion, importBody);
+    // 账户、版本、回读范围全部来自冻结快照：备份期间切换账户不会把 A 的文件写进 B。
+    var importBody = { account: frozen.account, records: importedRecords, mode: 'merge' };
+    var r = await window.earningsHistoryApi.importNav(frozen.version, importBody);
+    if (!isEarningsImportScopeCurrent(frozen)) { abandonEarningsImport(frozen, '提交返回后'); return; }
     var j = r.payload;
     if (!r.ok) { showToast(j.error || '导入失败'); return; }
     if (j.data) refreshDataFromServer(j.data);
@@ -495,10 +542,11 @@ async function finishImport(rows, mapping) {
 // ===================== 历史净值备份/还原（导入前自动拍快照，误导入可一键还原） =====================
 
 // 调用后端 API：把当前 nav_history 存到 nav_history_backup；成功返回 true，失败返回 false
-async function backupNavHistoryServer() {
-  if (!currentAccount) return true; // 无账户上下文不备份也不阻塞
+async function backupNavHistoryServer(account) {
+  var target = typeof account === 'string' && account ? account : currentAccount;
+  if (!target) return true; // 无账户上下文不备份也不阻塞
   try {
-    var r = await window.earningsHistoryApi.backup(currentAccount);
+    var r = await window.earningsHistoryApi.backup(target);
     if (!r.ok) { console.warn('历史数据备份失败：HTTP ' + r.status); return false; }
     return true;
   } catch (e) { console.warn('历史数据备份失败', e); return false; }
@@ -574,7 +622,8 @@ async function doClearNavHistory() {
 let pendingMapping = null;
 
 function openMappingModal(headers, rows, auto) {
-  pendingMapping = { headers: headers, rows: rows };
+  // 记下打开弹框时的账户：确认映射时用它判断期间是否切了账户（F02）。
+  pendingMapping = { headers: headers, rows: rows, account: typeof currentAccount === 'string' ? currentAccount : '' };
   const fields = [
     { key: 'date', label: '日期列 *', def: auto.date },
     { key: 'nav', label: '净值列 *', def: auto.nav },
@@ -640,7 +689,13 @@ function confirmMapping() {
   }
   const pm = pendingMapping;
   closeMappingModal();
-  finishImport(pm.rows, map);
+  // 手动映射是又一次用户动作：从这里重新冻结范围，判断"用户在弹框期间是否切了账户"。
+  const scope = captureEarningsImportScope();
+  if (pm.account && pm.account !== scope.account) {
+    abandonEarningsImport(scope, '选择列期间');
+    return;
+  }
+  finishImport(pm.rows, map, scope);
 }
 
 function closeMappingModal() {

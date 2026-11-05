@@ -129,9 +129,23 @@ function evaluateDividendYield(facts, params) {
   const dividend = facts.dividend || {};
   const price = num(facts.price);
   const perShare = num(dividend.ttmPerShare);
-  const base = { windowStart: dividend.windowStart || null, windowEnd: dividend.windowEnd || null, count: dividend.count || 0, currency: dividend.currency || null };
+  const priceCurrency = facts.priceCurrency ? String(facts.priceCurrency).toUpperCase() : null;
+  const dividendCurrency = dividend.currency ? String(dividend.currency).toUpperCase() : null;
+  const base = {
+    windowStart: dividend.windowStart || null, windowEnd: dividend.windowEnd || null, count: dividend.count || 0,
+    currency: dividendCurrency, priceCurrency,
+  };
   if (dividend.shareUnitUnverified) {
     return { rule: rule('R04', STATUS.PENDING, Object.assign({ value: null, reason: 'share_unit_adjustment_unverified' }, base)), yield: null };
+  }
+  // 币种必须闭合（F09）：分红与价格不同币种时相除没有量纲，0.5 USD + 0.5 HKD ÷ 10 HKD
+  // 会算出 10% 这种不存在的结果。这类缺口补数也补不出来（缺的是历史汇率），
+  // 因此判"不可评估"而不是"待补"，既不生成伪数值也不阻断整批发布。
+  if (dividend.currencyMixed) {
+    return { rule: rule('R04', STATUS.NOT_APPLICABLE, Object.assign({ value: null, reason: 'dividend_currency_mixed_not_evaluable' }, base)), yield: null };
+  }
+  if (perShare !== null && dividendCurrency && priceCurrency && dividendCurrency !== priceCurrency) {
+    return { rule: rule('R04', STATUS.NOT_APPLICABLE, Object.assign({ value: null, reason: 'dividend_currency_mismatch_not_evaluable' }, base)), yield: null };
   }
   if (price === null || price <= 0) {
     return { rule: rule('R04', STATUS.PENDING, Object.assign({ value: null, reason: 'price_unavailable' }, base)), yield: null };

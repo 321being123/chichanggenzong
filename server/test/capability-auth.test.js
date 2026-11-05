@@ -3,6 +3,7 @@
 // 禁用或会话版本失效无论能力如何均拒绝；/me 返回白名单过滤的能力布尔值。
 // 缺库时打印 CAPABILITY-AUTH-SKIP 并跳过（不计入失败）。
 const assert = require('assert');
+const { testSession } = require('./helpers/session-subject');
 const path = require('path');
 require('dotenv').config({ path: path.join(__dirname, '..', '..', '.env') });
 const express = require('express');
@@ -53,14 +54,17 @@ async function check(name, fn) {
   // ===== 测试 mini-app（用请求头注入登录态，避免真实会话依赖）=====
   const app = express();
   app.use(express.json());
-  app.use(function (req, res, next) {
-    if (!req.session) req.session = {};
-    const u = req.headers['x-test-user'];
-    if (u && users[u] !== undefined) {
-      req.session.user = u;
-      req.session.authVersion = Number(req.headers['x-test-version'] || users[u]);
-    }
-    next();
+  app.use(async function (req, res, next) {
+    try {
+      // F04：会话必须绑定该用户真实的主体身份，否则真实 requireLogin 会判会话失效。
+      const u = req.headers['x-test-user'];
+      if (u && users[u] !== undefined) {
+        req.session = await testSession(u, { authVersion: Number(req.headers['x-test-version'] || users[u]) });
+      } else if (!req.session) {
+        req.session = {};
+      }
+      next();
+    } catch (error) { next(error); }
   });
   app.get('/api/cap/staff', requireStaff, function (req, res) { res.json({ ok: true }); });
   app.get('/api/cap/content', requireCapability('content_manage'), function (req, res) { res.json({ ok: true }); });

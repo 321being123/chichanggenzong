@@ -59,8 +59,10 @@ async function getUserProfile(username) {
 // ====== 登录鉴权（精简记录，含密码/角色/状态/会话版本，避免 loadUsers 全表）======
 async function getUserAuth(username) {
   const { rows } = await pool.query(
-    // account_identity 与通知收件人同口径：建号时间是不可复用身份，删号后同名重注册会变
+    // subject_identity 与通知收件人同口径：建号即生成且不可复用的主体身份（迁移 187）。
+    // 只暴露摘要给前端缓存隔离，鉴权仍由服务端比对。
     `SELECT username, password, role, status, email, auth_version,
+            subject_id::text AS subject_identity,
             COALESCE(extract(epoch FROM created_at)::text, '') AS account_identity
        FROM users WHERE username=$1`,
     [username]

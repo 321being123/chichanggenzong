@@ -353,11 +353,15 @@ async function runCompanyFinancialIncrementalSync(reason = 'scheduled', options 
       const remainingIndustry = Number(result.remainingIndustry || 0);
       const remainingValuation = Number(result.remainingValuation || 0);
       const remainingUnclassified = Number(result.remainingUnclassified || 0);
-      const remaining = remainingFinancial + remainingIndustry + remainingValuation + remainingUnclassified;
+      // F05：目标池里"还没补到行情"的对象不在 auditInputs 的分母里，必须单独相加，
+      // 否则 3 只目标只处理 1 只也会被判成 remaining=0 并停止续批。
+      const remainingTargetPool = Number(result.remainingTargetPool || 0);
+      const remaining = remainingFinancial + remainingIndustry + remainingValuation
+        + remainingUnclassified + remainingTargetPool;
       // 底层 ok=false 也继续跑（有剩余就要续批），但绝不能在未清空时宣告完成。
       const cleared = remaining === 0 && result.ok === true;
       const status = cleared ? 'succeeded'
-        : result.status === 'blocked' ? 'blocked' : 'partial';
+        : (result.status === 'blocked' || result.targetPoolSourceFailed === true) ? 'blocked' : 'partial';
       // P0-5：与 core 模式同一套续批进度与止损。此前 selection_inputs 只回 continuationRequired，
       // 上游执行器拿不到 noProgressCount / 起始时间，遇到「上游客观缺字段、采集再多也补不上」的
       // 缺口会无限 auto_retry 空耗外部配额（2026-11-05 生产实测 remaining 恒 448）。
@@ -375,12 +379,14 @@ async function runCompanyFinancialIncrementalSync(reason = 'scheduled', options 
       const continuationBlocked = continuationRequired && (noProgressCount >= 2 || continuationAgeExceeded);
       await finishJobRun(runId, cleared,
         `选股输入补齐：处理 ${result.processed}（行业 ${result.industryProcessed || 0}），成功 ${result.succeeded}，`
-        + `剩余待补 ${remaining}（财报 ${remainingFinancial}、行业 ${remainingIndustry}、估值 ${remainingValuation}、未分类 ${remainingUnclassified}）`);
+        + `剩余待补 ${remaining}（财报 ${remainingFinancial}、行业 ${remainingIndustry}、估值 ${remainingValuation}、`
+        + `未分类 ${remainingUnclassified}、目标池未补行情 ${remainingTargetPool}）`);
       return Object.assign(result, {
         mode: 'selection_inputs',
         // 本阶段不发布数据集（写的是同一张标准表）；有剩余就续批，清空才算阶段完成。
         publishDatasetCodes: [],
-        remainingFinancial, remainingIndustry, remainingValuation, remainingUnclassified, remaining,
+        remainingFinancial, remainingIndustry, remainingValuation, remainingUnclassified,
+        remainingTargetPool, remaining,
         continuationRequired,
         continuationCount, initialRemaining, lastRemaining, noProgressCount, continuationStartedAt,
         nextAttemptInMinutes: continuationRequired ? 1 : null,

@@ -53,12 +53,15 @@ function codeMatches(actual, expected) {
 
 // 统一身份建立（R2-002）：注册与登录共用「轮换 SID → 写入当前身份与版本 → 保存成功 → 再响应」。
 // 不复制旧会话内容：已消费的邮箱验证码/重置码不能借会话轮换复活。
+// F04：会话同时绑定不可复用的主体身份 subjectId。删号后同名重建会拿到新的主体身份，
+// 旧会话因此失效；缺少主体身份的旧会话一律要求重新登录（这是预期的兼容行为）。
 // SID 轮换或保存失败一律 reject，且清掉可能已带身份的新会话，不遗留"半登录"状态；
 // 失败时调用方不得返回登录成功。
-function establishSession(req, username, authVersion) {
+function establishSession(req, username, authVersion, subjectIdentity) {
   const apply = () => {
     req.session.user = username;
     req.session.authVersion = (authVersion === undefined || authVersion === null) ? 1 : authVersion;
+    req.session.subjectId = String(subjectIdentity || '');
   };
   const discard = () => { try { if (req.session && typeof req.session.destroy === 'function') req.session.destroy(() => {}); } catch (_) { /* 忽略销毁异常 */ } };
   // 兼容桩 session（没有真实 Store 的调用方）：只设置身份。
@@ -116,7 +119,7 @@ router.post('/register', requireSessionStore, registerIpLimit, asyncHandler(asyn
   // 会话建立失败不代表账号回滚：不回滚账号、不重放已消费的验证码，明确提示直接登录。
   const created = await getUserAuth(username);
   try {
-    await establishSession(req, username, created && created.auth_version);
+    await establishSession(req, username, created && created.auth_version, created && created.subject_identity);
   } catch (e) {
     console.error('[auth] 注册后会话建立失败（账号已创建）:', String(e && e.message).slice(0, 160));
     return res.status(503).json({ error: '账号已创建，但登录会话未能建立，请用刚才的账号直接登录' });
@@ -152,7 +155,8 @@ router.post('/login', requireSessionStore, loginIpLimit, asyncHandler(async (req
   }
   // 会话固定防护（P1-1）：登录成功后重建会话，丢弃旧会话ID，防会话固定攻击
   try {
-    await establishSession(req, username, user.auth_version); // 写入会话版本，供后续请求校验（AUTH-01）
+    // 写入会话版本与主体身份，供后续请求校验（AUTH-01 / F04）
+    await establishSession(req, username, user.auth_version, user.subject_identity);
   } catch (e) {
     return next(e);
   }
@@ -172,6 +176,9 @@ router.get('/me', asyncHandler(async (req, res) => {
   // AUTH-01：会话失效（账号删除/禁用/版本不一致）时不再返回旧身份，按游客处理
   const a = await getUserAuth(req.session.user);
   if (!a || a.status !== 'active') return res.json({ username: null });
+  // 会话必须属于同一个不可复用主体（F04）：删号后同名重建、旧会话缺主体身份都按游客处理。
+  const expectedSubject = String(a.subject_identity || '');
+  if (!expectedSubject || String(req.session.subjectId || '') !== expectedSubject) return res.json({ username: null });
   if (a.auth_version !== req.session.authVersion) return res.json({ username: null });
   const p = await getUserProfile(req.session.user);
   const role = isAdminIdentity(p.username, p.role) ? 'admin' : (p.role || 'user');

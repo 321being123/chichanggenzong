@@ -157,6 +157,8 @@ function buildRuleFacts(row, ctx) {
     peTtm: row.pe_ttm,
     price: row.price,
     priceDate: row.price_date,
+    // 价格币种（F09）：股息必须与价格同币种才能相除，否则算出来的是错误量纲的比率。
+    priceCurrency: row.currency_code ? String(row.currency_code).toUpperCase() : null,
     pbWindow: {
       maxPb: pbEvidence.maxPb,
       coveredDays: pbEvidence.coveredDays,
@@ -204,7 +206,10 @@ async function computeSelection(input, tx) {
   const valuation = await repo.loadMarketValuation({ market, asOfDate }, tx);
   const gate = RULES.evaluateMarketGate(valuation, params);
 
-  const universe = await repo.loadUniverse({ market, asOfDate }, tx);
+  // 信息可见截止先算出来：宇宙查询里的 PE/PB 回退也要用它，否则同一批计算里
+  // PE/净资产会取到不同版本的报表（F09）。
+  const knowledgeCutoff = knowledgeCutoffFor(market, asOfDate);
+  const universe = await repo.loadUniverse({ market, asOfDate, availableBefore: knowledgeCutoff }, tx);
   if (!universe.length) {
     // 空候选池是合法状态（例如港股行情还没补齐）。返回契约必须与正常路径一致：
     // auditInputs 会遍历 evaluated，缺字段会直接抛错并把整批补数打成 failed（2026-11-05 生产实测）。
@@ -212,7 +217,12 @@ async function computeSelection(input, tx) {
       market, asOfDate, gate, valuation, params, positionRatio,
       universe, evaluated: [], anomalyById: {},
       candidates: [], ranked: [], portfolio: PORTFOLIO.buildPortfolio({ ranked: [], positionRatio, params }),
-      quality: { publishable: false, reason: 'universe_empty', universeCount: 0, pendingCount: 0, poolSize: 0 },
+      // 空池必须同时给出 reason 和 reasons（F10）：回测只读 reasons 判"可不可还原"，
+      // 只填 reason 会让空池被当成"没有质量阻断"，进而把缺数据算成 0% 收益的策略空仓。
+      quality: {
+        publishable: false, reason: 'universe_empty', reasons: ['universe_empty'],
+        universeCount: 0, pendingCount: 0, poolSize: 0,
+      },
       coverage: { universeCount: 0 },
     };
   }
@@ -221,8 +231,7 @@ async function computeSelection(input, tx) {
   const instrumentIds = universe.map(row => row.instrument_id);
   const windowStart = shiftYears(asOfDate, params.pbLookbackYears);
   const dividendWindowStart = shiftMonths(asOfDate, params.dividendWindowMonths);
-  // 信息可见截止：目标日当地收盘时刻。财报 available_at 晚于截止的修订版不得进入旧季度。
-  const knowledgeCutoff = knowledgeCutoffFor(market, asOfDate);
+  // 信息可见截止（knowledgeCutoff）已在宇宙查询前算好：同一批计算共用同一个截止时刻。
   const [pbWindow, equity, profits, dividends, annualDividends, industries] = await runBatched([
     () => repo.loadPbWindow({ market, windowStart, asOfDate }, tx),
     () => repo.loadEquityFacts({ companyIds, asOfDate, availableBefore: knowledgeCutoff }, tx),

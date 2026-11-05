@@ -4,14 +4,24 @@
 // 不依赖真实 PG。运行：node server/test/auth-session-revocation.test.js
 const assert = require('assert');
 
-// 预设用户（status / role / auth_version）
+// 预设用户（status / role / auth_version / subject_identity）
+// subject_identity 是迁移 187 加的不可复用主体身份：每次建号都不同，
+// 删号后同名重注册会拿到新值（F04）。测试桩必须按真实列名返回它。
+const SUBJECT = {
+  alice: '11111111-1111-4111-8111-111111111111',
+  bob: '22222222-2222-4222-8222-222222222222',
+  carol: '33333333-3333-4333-8333-333333333333',
+  admin: '44444444-4444-4444-8444-444444444444',
+  badadmin: '55555555-5555-4555-8555-555555555555',
+  legacy: '66666666-6666-4666-8666-666666666666',
+};
 const USERS = {
-  alice: { username: 'alice', role: 'user', status: 'active', auth_version: 1 },
-  bob: { username: 'bob', role: 'user', status: 'disabled', auth_version: 1 }, // 已禁用
-  carol: { username: 'carol', role: 'user', status: 'active', auth_version: 2 }, // 版本已递增
-  admin: { username: 'admin', role: 'admin', status: 'active', auth_version: 1 },
-  badadmin: { username: 'badadmin', role: 'admin', status: 'disabled', auth_version: 1 }, // 管理员被禁用
-  legacy: { username: 'legacy', role: 'user', status: 'active', auth_version: 1 }, // 白名单管理员
+  alice: { username: 'alice', role: 'user', status: 'active', auth_version: 1, subject_identity: SUBJECT.alice },
+  bob: { username: 'bob', role: 'user', status: 'disabled', auth_version: 1, subject_identity: SUBJECT.bob }, // 已禁用
+  carol: { username: 'carol', role: 'user', status: 'active', auth_version: 2, subject_identity: SUBJECT.carol }, // 版本已递增
+  admin: { username: 'admin', role: 'admin', status: 'active', auth_version: 1, subject_identity: SUBJECT.admin },
+  badadmin: { username: 'badadmin', role: 'admin', status: 'disabled', auth_version: 1, subject_identity: SUBJECT.badadmin }, // 管理员被禁用
+  legacy: { username: 'legacy', role: 'user', status: 'active', auth_version: 1, subject_identity: SUBJECT.legacy }, // 白名单管理员
 };
 
 const db = require('../db');
@@ -41,8 +51,16 @@ function run(mw, session) {
     mw(req, res, (e) => settle({ req, res, nexted: !e, err: e }));
   });
 }
+// 默认按会话用户取对应的主体身份，避免每个用例都要手写；显式传 subjectId 时以显式值为准。
 function session(over) {
-  return Object.assign({ user: 'alice', authVersion: 1, destroy(cb) { this.destroyed = true; if (cb) cb(); } }, over || {});
+  const opts = over || {};
+  const user = opts.user === undefined ? 'alice' : opts.user;
+  const base = {
+    user, authVersion: 1,
+    subjectId: Object.prototype.hasOwnProperty.call(opts, 'subjectId') ? opts.subjectId : (SUBJECT[user] || ''),
+    destroy(cb) { this.destroyed = true; if (cb) cb(); },
+  };
+  return Object.assign(base, opts);
 }
 
 const results = [];
@@ -139,6 +157,39 @@ async function main() {
     // 老 Session 在改密前签发，不带 authVersion 字段；移除守卫后必须一律判定失效
     const s = session({ user: 'alice', authVersion: undefined });
     const r = await run(auth.requireLogin, s);
+    assert.strictEqual(r.res.code, 401);
+    assert.strictEqual(s.destroyed, true);
+  });
+
+  await check('F04 缺主体身份的旧会话：401 且销毁会话（不按用户名补身份）', async () => {
+    const s = session({ user: 'alice', subjectId: undefined });
+    const r = await run(auth.requireLogin, s);
+    assert.strictEqual(r.res.code, 401);
+    assert.strictEqual(s.destroyed, true);
+  });
+
+  await check('F04 删号后同名重建：旧会话主体身份与新账号不同 → 401', async () => {
+    // 同名 alice 重建后拿到新的 subject_id，auth_version 与状态都"看起来正常"，
+    // 只有主体身份不同——这正是修复前会放行的路径。
+    const original = USERS.alice;
+    USERS.alice = { ...original, subject_identity: '99999999-9999-4999-8999-999999999999' };
+    try {
+      const s = session({ user: 'alice', subjectId: SUBJECT.alice });
+      const r = await run(auth.requireLogin, s);
+      assert.strictEqual(r.res.code, 401, '旧会话不能获得新账号身份');
+      assert.strictEqual(s.destroyed, true);
+      // 新登录（带新主体身份）必须正常通过
+      const fresh = await run(auth.requireLogin, session({ user: 'alice', subjectId: '99999999-9999-4999-8999-999999999999' }));
+      assert.strictEqual(fresh.nexted, true, '新会话应正常放行');
+    } finally {
+      USERS.alice = original;
+    }
+  });
+
+  await check('F04 requireAdmin 同样校验主体身份', async () => {
+    const s = session({ user: 'admin', subjectId: SUBJECT.alice });
+    const r = await run(auth.requireAdmin, s);
+    assert.strictEqual(r.nexted, false);
     assert.strictEqual(r.res.code, 401);
     assert.strictEqual(s.destroyed, true);
   });

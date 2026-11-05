@@ -234,3 +234,8 @@ Tushare 官方文档只把 `stock_basic.industry` 定义为“所属行业”，
 
 
 2026-11-05 路由核对（选股补数的 selection_inputs 契约归属修正）：`services/jobDefinitions.js` 本次只改 stock_analysis_refresh 与 company_financial_incremental_sync 两个任务的 selection_inputs 契约字段（谁外采、额度未知留 `null`），**未改** A 股 IPO 行业采集、行业 PE、产业链补全与 `ipo_history_sync` 的目标定向口径，本文结论与未验边界不变。
+
+
+## 补记：本轮对 ADR-0004 无影响的核对结论（2026-11-06，版本 0.9.2.23）
+
+本轮 `jobOrchestrator` 的改动只涉及数据集断路收尾的执行令牌与租约校验，不触碰 IPO 行业事实、行业 PE 口径、`industry` 字段写入或下游消费；`stockSelectionRepository.loadUniverse` 的改动是给 PE/PB 现算补 `available_at` 可见时点与币种一致校验，与 ADR-0004 的"行业事实与行业 PE 隔离"是两个维度。因此本 ADR 的决策与实现边界不变，此处仅记录已核对、无需要修改的结论。

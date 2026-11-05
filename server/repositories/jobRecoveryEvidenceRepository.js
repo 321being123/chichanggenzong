@@ -5,7 +5,13 @@ async function runQuery(sql, params, client = pool) {
   return client.query(sql, params);
 }
 
-const SCOPE_PAYLOAD_KEYS = ['username', 'accountName', 'market', 'scopeKey', 'fromDate', 'throughDate'];
+// 业务身份字段（F08）：只比 job + 业务日 + 模式，会把"同一任务名的另一件工作"当成续跑。
+// batchId（通知群发按批次执行）、targetDate/targetTradeDate（补数按目标日）、quarter（选股按季度）
+// 必须进 SQL 的 WHERE，否则分页取候选时前 N 条都是别的业务对象，真正的同范围成功永远找不到。
+const SCOPE_PAYLOAD_KEYS = [
+  'username', 'accountName', 'market', 'scopeKey', 'fromDate', 'throughDate',
+  'batchId', 'targetDate', 'targetTradeDate', 'quarter',
+];
 
 // 恢复范围条件：任务/业务日/阶段/账户区间与目标证券字段全部进 WHERE，由仓储构造
 function recoveryScopeFilter(slot, startIndex) {

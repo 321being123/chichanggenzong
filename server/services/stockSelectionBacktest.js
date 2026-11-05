@@ -154,6 +154,14 @@ async function runBacktest(input) {
     if (gate.status === 'market_closed') return false;   // 正常关闭：可还原为持有现金
     if (gate.status !== 'eligible') return true;          // 指数数据缺失/异常
     const reasons = (computed.quality && computed.quality.reasons) || [];
+    // 质量结构不完整（缺 reasons 数组）时不能当成"没有阻断"：那是未知，不是通过。
+    // 修复前空池只填 quality.reason 不填 reasons，于是缺数据被算成 0% 收益的策略空仓。
+    if (!Array.isArray(reasons) || reasons.length === 0) {
+      const hasVerdict = computed.quality && (computed.quality.publishable === true
+        || (Array.isArray(computed.portfolio?.members) && computed.portfolio.members.length > 0));
+      // 有合格成员却没有任何质量原因 = 正常可还原；其余一律按不可还原处理。
+      if (!hasVerdict) return true;
+    }
     const blocking = reasons.filter(reason => !recoverableOnlyReasons.has(reason));
     return blocking.length > 0;
   });
@@ -289,6 +297,57 @@ async function runBacktest(input) {
     diagnostics.supportedFrom = diagnostics.supportedFrom || item.signalDate;
   }
 
+  // 区间末终值（F10）：净值此前只在调仓执行日估值，请求到 2026-09-30 的回测最后净值会停在
+  // 2026-07-01。这里补一次按收盘价的期末估值，并把终段分红与基准一起算进去。
+  const finalDate = calendar[calendar.length - 1];
+  if (periods.length && finalDate && finalDate > periods[periods.length - 1].tradeDate) {
+    let dividendsThisPeriod = 0;
+    if (periodStart && holdings.size) {
+      const dividends = await repo.loadDividendCash({ instrumentIds: [...holdings.keys()], fromDate: periodStart, toDate: finalDate });
+      for (const [instrumentId, position] of holdings) {
+        const perShare = dividends.get(String(instrumentId)) || 0;
+        if (perShare > 0) {
+          const amount = perShare * position.shares;
+          dividendsThisPeriod += amount;
+          cash += amount;
+        }
+      }
+    }
+    let unpriced = 0;
+    let marketValue = 0;
+    if (holdings.size) {
+      const closes = await repo.loadClosePrices({ instrumentIds: [...holdings.keys()], dates: [finalDate] });
+      for (const [instrumentId, position] of holdings) {
+        const price = closes.get(`${instrumentId}|${finalDate}`);
+        if (price === null || price === undefined || !(price > 0)) {
+          unpriced++;
+          marketValue += position.lastPrice * position.shares;
+          continue;
+        }
+        position.lastPrice = price;
+        marketValue += price * position.shares;
+      }
+    }
+    const nav = cash + marketValue;
+    totalDividends += dividendsThisPeriod;
+    const benchmarkClose = benchmarkCloses.get(finalDate) || benchmarkLast;
+    if (benchmarkBase === null && benchmarkClose) benchmarkBase = benchmarkClose;
+    if (benchmarkClose) benchmarkLast = benchmarkClose;
+    periods.push({
+      tradeDate: finalDate,
+      nav: Number(nav.toFixed(8)),
+      cashWeight: nav > 0 ? Number((cash / nav).toFixed(8)) : 1,
+      turnover: 0,
+      fees: 0,
+      dividendIncome: Number(dividendsThisPeriod.toFixed(8)),
+      benchmarkNav: benchmarkBase && benchmarkClose ? Number((benchmarkClose / benchmarkBase).toFixed(8)) : null,
+      unpricedCount: unpriced,
+      valuationOnly: true,
+    });
+    previousNav = nav;
+    diagnostics.finalValuationDate = finalDate;
+  }
+
   if (periods.length < 2) {
     diagnostics.missing = { reason: 'insufficient_executable_periods', periods: periods.length };
     return persistBacktest({
@@ -300,6 +359,8 @@ async function runBacktest(input) {
   const navSeries = periods.map(item => item.nav);
   const dayCount = Math.round((new Date(periods[periods.length - 1].tradeDate) - new Date(periods[0].tradeDate)) / 86400000);
   const metrics = {
+    effectiveStart: periods[0].tradeDate,
+    effectiveEnd: periods[periods.length - 1].tradeDate,
     totalReturn: navSeries[navSeries.length - 1] / navSeries[0] - 1,
     annualizedReturn: annualized(navSeries, dayCount),
     maxDrawdown: maxDrawdown(navSeries),

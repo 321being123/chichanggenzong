@@ -67,6 +67,23 @@ async function runR401() {
       const coreSlot = await reconcileSlot(patched.slot({ status: 'blocked', mode: null }));
       assert.strictEqual(patched.releaseWrites, 0, 'core 模式的 blocked 槽不得被释放');
       assert.strictEqual(coreSlot.status, 'blocked');
+      // F06 反例：同样"显式无依赖"，但阻塞原因是止损/人工/权限时，重复扫描不得撤销阻塞。
+      patched.reset();
+      const stopLoss = await reconcileSlot(patched.slot({
+        status: 'blocked', mode: 'selection_quarterly',
+        lastError: '续批已超过 24 小时仍未清空剩余工作，已停止自动续批并等待人工处理',
+        resultSummary: { continuationBlocked: true, requiresManualAction: true },
+      }));
+      assert.strictEqual(patched.releaseWrites, 0, '续批止损不得被依赖恢复撤销');
+      assert.strictEqual(stopLoss.status, 'blocked');
+      patched.reset();
+      const permission = await reconcileSlot(patched.slot({
+        status: 'blocked', mode: 'selection_quarterly',
+        lastError: '外部来源返回无权限，任务已暂停，等待人工处理',
+        resultSummary: { permissionDenied: true, requiresManualAction: true },
+      }));
+      assert.strictEqual(patched.releaseWrites, 0, '权限阻塞不得被依赖恢复撤销');
+      assert.strictEqual(permission.status, 'blocked');
     } finally { patched.restore(); }
   });
 }
@@ -110,11 +127,18 @@ function patchSlotsRepository() {
     setStatus: status => { state.status = status; },
     slot(overrides = {}) {
       const mode = Object.prototype.hasOwnProperty.call(overrides, 'mode') ? overrides.mode : state.mode;
+      // F06 起 blocked 槽必须带"为什么阻塞"的证据：只有依赖原因才允许被依赖恢复解除。
+      // 这里默认给依赖原因，模拟"历史上被 core 依赖链错标成 blocked"的真实场景。
+      const lastError = Object.prototype.hasOwnProperty.call(overrides, 'lastError')
+        ? overrides.lastError : '依赖任务未成功：bond_redemption=missing';
+      const resultSummary = Object.prototype.hasOwnProperty.call(overrides, 'resultSummary')
+        ? overrides.resultSummary : {};
       return {
         slot_id: 9, job_code: 'stock_analysis_refresh',
         request_payload: mode ? { mode, market: 'CN' } : {},
         business_date: '2026-09-30', scheduled_for: '2026-10-01T00:30:00.000Z',
         attempt_count: 0, status: overrides.status || state.status,
+        last_error: lastError, result_summary: resultSummary,
       };
     },
     reset() { state.blockedWrites.length = 0; state.releaseWrites = 0; state.depQueries = 0; },
@@ -394,12 +418,21 @@ async function runDatabaseChecks() {
       const unknownRow = (unknown.get(String(companyId)) || []).find(row => row.year === 2018);
       assert.strictEqual(unknownRow.dividendKnown, false, '金额未知不得当零分红');
       assert.strictEqual(unknownRow.dividend, null);
-      // 对照：只有预案（未实施）同样未知。
+      // 对照：只有预案（未实施）。2026-11-04 口径（0.9.2.15「预案未实施判零分红」）下，
+      // 财年期末已过 2 年仍未落地的方案按零分红计；刚公告的预案才保持未知。
       await pool.query(`UPDATE fundamental.corporate_actions SET status='预案', cash_per_share_pre_tax=0.5, total_cash_amount=1e8, announced_at='2019-05-01' WHERE source_key='R4Z-ZERO'`);
       const plan = await repo.loadAnnualDividends({ companyIds: [companyId], asOfDate });
       const planRow = (plan.get(String(companyId)) || []).find(row => row.year === 2018);
-      assert.strictEqual(planRow.dividendKnown, false);
-      assert.strictEqual(planRow.dividendBasis, 'plan_only');
+      assert.strictEqual(planRow.dividendKnown, true, '停摆 2 年以上的预案按零分红计');
+      assert.strictEqual(planRow.dividend, 0);
+      assert.strictEqual(planRow.dividendBasis, 'stale_plan_not_implemented');
+      // 刚公告的预案（财年还没尘埃落定）仍必须未知，不能被同一条规则吞掉。
+      await pool.query(`UPDATE fundamental.corporate_actions SET fiscal_period_end='2026-06-30', announced_at='2026-08-01' WHERE source_key='R4Z-ZERO'`);
+      const fresh = await repo.loadAnnualDividends({ companyIds: [companyId], asOfDate });
+      const freshRow = (fresh.get(String(companyId)) || []).find(row => row.year === 2026);
+      if (freshRow) {
+        assert.strictEqual(freshRow.dividendKnown, false, '尚未尘埃落定的预案必须保持未知');
+      }
     } finally {
       if (companyId) {
         await pool.query(`DELETE FROM fundamental.financial_facts WHERE report_id IN (SELECT report_id FROM fundamental.financial_reports WHERE company_id=$1)`, [companyId]).catch(() => {});

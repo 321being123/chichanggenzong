@@ -813,6 +813,23 @@ router.post('/nav/import', requireLogin, asyncHandler(assertOwnership), requireV
   let outcome = null;
   try {
     outcome = await withTransaction(async client => {
+    // F01：批次号是全局主键。先确认它归谁所有，再谈任何业务写入。
+    // 只按本账户查重会漏掉"这个 ID 已经属于别的账户"：插入被 ON CONFLICT DO NOTHING 静默跳过，
+    // 代码继续写本账户净值，并在锚点分支按同一 ID 删掉别人的快照。
+    const { rows: ownerRows } = await navImportRepository.findImportBatchOwner({ batchId: importBatchId }, client);
+    const owner = ownerRows[0] || null;
+    if (owner && (owner.username !== username || owner.accountName !== accountName)) {
+      const e = new Error('importBatchId 已被其他账户占用，请重新发起导入');
+      e.status = 409;
+      throw e;
+    }
+    if (owner && owner.status === 'rolled_back') {
+      // 已回滚批次不能复活：保留审计记录，本次必须用新批次号重新导入。
+      const e = new Error('该导入批次已回滚，不能复用同一批次号，请重新导入以生成新批次');
+      e.status = 409;
+      throw e;
+    }
+    // F03：幂等只认仍然有效（status <> 'rolled_back'）的已提交结果。
     const { rows: oldBatch } = await navImportRepository.findImportBatch({ username, accountName, batchId: importBatchId, inputHash }, client);
     if (oldBatch[0]) {
       if (oldBatch[0].inputHash !== inputHash) {
@@ -896,11 +913,19 @@ router.post('/nav/import', requireLogin, asyncHandler(assertOwnership), requireV
     // 但必须留着它：回滚按 backup_payload 恢复 nav 行（含旧 import_batch_id），那时还要用这套锚点。
     // 所以这里只记下「本次导入之前就已经没人引用」的批次，写完后清这批（方案 A2）。
     const staleSnapshotBatches = await navImportRepository.selectUnreferencedSnapshotBatches({ username, accountName }, client);
-    await navImportRepository.insertImportBatch(
+    // F01：必须回读实际写入的归属。DO NOTHING 在 ID 冲突时不报错但也不写，
+    // 把「没抛异常」当「插入成功」会让后续写入建立在错误前提上。
+    const insertedBatch = await navImportRepository.insertImportBatch(
       [importBatchId, username, accountName, minImportDate, maxImportDate, normalizedRecords.length, inputHash,
         JSON.stringify(currentNav), JSON.stringify({ systemRate, systemMarketValue, preservedAnchorDate: preserveExistingAnchor ? latestExistingAnchor : null })],
       client,
     );
+    const insertedRow = insertedBatch.rows && insertedBatch.rows[0];
+    if (!insertedRow || insertedRow.username !== username || insertedRow.accountName !== accountName) {
+      const e = new Error('导入批次写入未取得归属，已取消本次导入（未写入任何业务数据）');
+      e.status = 409;
+      throw e;
+    }
     // 全量替换模式：先清空再导入
     if (req.body.mode === 'replace') {
       await navImportRepository.deleteAllNav({ username, accountName }, client);
@@ -935,7 +960,8 @@ router.post('/nav/import', requireLogin, asyncHandler(assertOwnership), requireV
             );
           }
         }
-        await navImportRepository.deletePositionSnapshotsByBatch({ snapshotId: importBatchId }, client);
+        // F01：删除也带账户范围，绝不按快照号裸删。
+        await navImportRepository.deletePositionSnapshotsByBatch({ username, accountName, snapshotId: importBatchId }, client);
         for (const p of anchorPositions) {
           const price = maxImportDate === todayCN()
             ? (Number(p.price) || 0)

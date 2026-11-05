@@ -465,3 +465,8 @@ v10 修复代码前后格式、代码标签、大类与子类拼接和标准号�
 
 
 2026-11-05 路由核对（选股补数的 selection_inputs 契约归属修正）：`services/jobDefinitions.js` 本次只改 stock_analysis_refresh 与 company_financial_incremental_sync 两个任务的 selection_inputs 契约字段（谁外采、额度未知留 `null`），**未改** A 股 IPO 行业采集、行业 PE、产业链补全与 `ipo_history_sync` 的目标定向口径，本文结论与未验边界不变。
+
+
+## 补记：本轮核对结论（2026-11-06，版本 0.9.2.23）
+
+`jobOrchestrator` 的改动限于数据集断路收尾（执行令牌 + 租约），不改变 IPO 行业补全的采集入口、字段口径与证据链；`stockSelectionInputsSync` 的改动限于港股目标池完成裁决，不涉及 `ipo_history_sync`。本事故的根因与整改措施保持原样，此处只记录"本轮未回退其判据"的核对结论。

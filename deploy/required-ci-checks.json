@@ -1,0 +1,17 @@
+{
+  "_comment": "发布门禁与测试入口共用的必需清单（唯一来源）。CI 作业名必须与 .github/workflows/ci.yml 的 jobs 键一致；真库回归段环境变量必须与本机/CI 实际可执行的段一致。改动此文件等同于改动发布条件。",
+  "ciWorkflow": "ci.yml",
+  "ciJobs": [
+    "syntax-check",
+    "full-test",
+    "dependency-audit",
+    "validate-json",
+    "knowledge-governance",
+    "secret-scan"
+  ],
+  "requiredDbSuites": [
+    "STOCK_SELECTION_R3_DB",
+    "STOCK_SELECTION_R4_DB",
+    "STOCK_SELECTION_R5_DB"
+  ]
+}

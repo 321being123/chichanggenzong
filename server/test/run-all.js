@@ -13,6 +13,7 @@ const { spawn, spawnSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const runControl = require('./lib/testRunControl');
+const { classifyTestResult } = require('./lib/testResultVerdict');
 const { TEST_DATABASE, ensureTestDatabase, cleanupTestArtifacts } = require('./lib/testDatabase');
 const { templateName, dropTemplate } = require('./helpers/migrated-database');
 const { formatDuration, summarizeTimings } = require('./lib/testTimings');
@@ -21,6 +22,9 @@ const testDir = __dirname;
 const rootDir = path.join(__dirname, '..', '..');
 
 let pass = 0, fail = 0, skip = 0;
+// 部分跳过（文件里有 [SKIP] 段，但整份文件仍跑完并正常退出）单独计数：
+// 修复前它与「整份文件被跳过」共用一个计数，导致非零退出 + [SKIP] 被当成跳过（F11）。
+let partialSkip = 0;
 // CI 上「按设计跳过」的项：skill-host-contract 校验的是工作区级 Skill 目录
 // （D:\Users\存在小站\.codebuddy\skills），该目录只存在于开发机，CI 检出必然没有。
 // 这类跳过不算关键测试缺失，否则每次 CI 都会红；其余跳过在 CI 仍判失败。
@@ -37,6 +41,27 @@ const resolvedPython = findPython();
 // Python 输出与 Node 的 UTF-8 解码保持一致，避免 Windows GBK 破坏中文证据或无法输出 Unicode。
 const testEnv = { ...process.env, NODE_ENV: 'test', EXTERNAL_CALL_GUARD: '0', ALERT_EMAIL_TO: '', ALERT_EMAIL_FROM: '',
   PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8' };
+// 必需真库回归段（F12）：R3/R4/R5 的 PostgreSQL 段默认必须真的执行。
+// 本入口自己会 ensureTestDatabase() 并把子进程 PGDATABASE 指向隔离测试库，
+// 因此「没设开关」不再等于「环境不具备」——不默认开启就等于把金融 SQL 与恢复边界的
+// 验收长期挂空。确需离线快速回归时才用 TEST_SKIP_REQUIRED_DB=1 显式降级（CI 不允许）。
+const REQUIRED_DB_SUITES = (() => {
+  try {
+    const list = JSON.parse(fs.readFileSync(path.join(rootDir, 'deploy', 'required-ci-checks.json'), 'utf8')).requiredDbSuites;
+    if (Array.isArray(list) && list.length) return list.map(String);
+  } catch (error) {
+    console.error('读取必需真库回归清单失败（deploy/required-ci-checks.json）：' + error.message);
+  }
+  // 读不到清单时按内置默认执行，绝不因此把必需段降级为"没有"。
+  return ['STOCK_SELECTION_R3_DB', 'STOCK_SELECTION_R4_DB', 'STOCK_SELECTION_R5_DB'];
+})();
+const requiredDbSuitesEnabled = String(process.env.TEST_SKIP_REQUIRED_DB || '') !== '1';
+if (requiredDbSuitesEnabled) {
+  REQUIRED_DB_SUITES.forEach(key => { testEnv[key] = '1'; });
+} else if (process.env.CI === '1') {
+  console.error('CI 模式下不允许关闭必需真库回归段（TEST_SKIP_REQUIRED_DB=1 仅限本地离线回归）');
+  process.exit(2);
+}
 if (!testEnv.PYTHON && resolvedPython) testEnv.PYTHON = resolvedPython;
 // 单文件超时：spawnSync 不设超时，卡住的用例会把整轮门禁永久挂起（2026-11-01 实测：
 // backup-retention 的 bash 子进程在本机被 shell 运行时垫片卡住，全量测试停住 40 分钟无任何输出，
@@ -104,24 +129,31 @@ async function runNode(file) {
   const out = r.out || '';
   const lines = out.split('\n').map(s => s.trim()).filter(Boolean);
   const last = (lines[lines.length - 1] || '(无输出)') + ' · 耗时 ' + formatDuration(r.durationMs);
-  if (r.timedOut) {
+  const verdict = classifyTestResult(r, out);
+  if (verdict.verdict === 'timeout') {
     fail++; failed.push(file);
     console.log('  ✗ ' + file + '  (超时 ' + Math.round(budget / 1000) + 's 未结束，已终止整棵进程树)  ——  ' + last);
     if (r.treeKill) console.log('    进程树终止：' + r.treeKill.method + (r.treeKill.output ? ' · ' + r.treeKill.output : ''));
     console.log(out);
     return;
   }
-  // 识别测试自身标记的跳过（如空库迁移在无 PG 时打印 [SKIP]），不计入通过
-  if (/\[SKIP\]|SKIP-/.test(out)) {
-    skip++;
-    if (CI_ALLOWED_SKIPS.has(path.basename(file))) allowedSkip += 1;
-    console.log('  ⊘ ' + file + '  (跳过)  ——  ' + last);
-  } else if (r.status === 0) { pass++; console.log('  ✓ ' + file + '  ——  ' + last); }
-  else {
+  if (verdict.verdict === 'spawn_error' || verdict.verdict === 'signal' || verdict.verdict === 'fail') {
     fail++; failed.push(file);
-    console.log('  ✗ ' + file + '  (退出码 ' + r.status + ')  ——  ' + last);
+    const label = verdict.verdict === 'spawn_error' ? '启动失败：' + verdict.detail
+      : verdict.verdict === 'signal' ? '被信号 ' + (verdict.detail || '未知') + ' 结束'
+        : '退出码 ' + r.status;
+    console.log('  ✗ ' + file + '  (' + label + ')  ——  ' + last);
     console.log(out);
+    return;
   }
+  // 正常退出后才发现跳过：非正常退出已在上面判失败，不会再被 [SKIP] 文本降级成跳过。
+  if (verdict.verdict === 'partial_skip') {
+    skip++; partialSkip++;
+    if (CI_ALLOWED_SKIPS.has(path.basename(file))) allowedSkip += 1;
+    console.log('  ⊘ ' + file + '  (部分跳过)  ——  ' + last);
+    return;
+  }
+  pass++; console.log('  ✓ ' + file + '  ——  ' + last);
 }
 
 async function runNodeGlob() {
@@ -207,6 +239,13 @@ async function runPython() {
     if (envErr) {
       if (isCI) { fail++; failed.push(path.basename(file)); console.log('  ✗ ' + path.basename(file) + '  (CI 模式下环境缺失视为失败)  ——  ' + last); }
       else { skip++; console.log('  ⊘ ' + path.basename(file) + '  (环境/依赖缺失，跳过)  ——  ' + last); }
+      continue;
+    }
+    // 启动失败与信号结束没有退出码，必须先按客观失败处理，不能被后面的输出文本解释覆盖。
+    if (r.spawnError) {
+      fail++; failed.push(path.basename(file));
+      console.log('  ✗ ' + path.basename(file) + '  (启动失败：' + r.spawnError + ')  ——  ' + last);
+      console.log(out);
       continue;
     }
     // 解析测试自身汇总行「PASS=x  FAIL=y  ERROR=z」，避免退出码为 0 却内部失败被误判通过
@@ -298,8 +337,32 @@ async function runWorker() {
     report.slowest.forEach(item => console.log('  ' + formatDuration(item.durationMs) + '  ' + item.file));
   }
 
-  console.log('\n========================================');
+  // 测试证据落盘（F15）：把本轮结果绑定到"哪份代码树"，供发布前置校验核对。
+// 只覆盖影响运行结果的目录（见 lib/codeTreeHash.js），因此纯文档变更可复用有效证据，
+// 源码一改指纹就变、必须重跑。写失败不改变本轮结论，但会让发布时缺少证据而阻断。
+try {
+  const { codeTreeHash, headCommit } = require('./lib/codeTreeHash');
+  const evidenceDir = path.join(rootDir, 'data', 'test-evidence');
+  fs.mkdirSync(evidenceDir, { recursive: true });
+  const evidence = {
+    command: 'node server/test/run-all.js',
+    finishedAt: new Date().toISOString(),
+    sha: headCommit(rootDir),
+    codeTreeHash: codeTreeHash('HEAD', rootDir),
+    node: process.version,
+    pass, fail, skip, partialSkip,
+    failedFiles: failed.slice(0, 200),
+    runId,
+  };
+  fs.writeFileSync(path.join(evidenceDir, 'last-run.json'), JSON.stringify(evidence, null, 2));
+  console.log('测试证据已写入 data/test-evidence/last-run.json（代码树 ' + String(evidence.codeTreeHash).slice(0, 12) + '…）');
+} catch (error) {
+  console.error('测试证据写入失败（不影响本轮判定，但发布前置会因缺少证据而阻断）：' + error.message);
+}
+
+console.log('\n========================================');
   console.log('runId ' + runId + ' · 测试库 ' + TEST_DATABASE + ' · 通过 ' + pass + ' · 失败 ' + fail + ' · 跳过 ' + skip +
+    (partialSkip ? '（其中部分跳过 ' + partialSkip + '）' : '') +
     (fail ? ' · 失败项：' + failed.join('、') : (skip ? '' : ' · 全部通过 ✅')));
   if (isCI && skip - allowedSkip > 0) {
     console.log('CI 模式下不允许跳过关键测试（共跳过 ' + (skip - allowedSkip) + ' 项），判定失败');
@@ -329,8 +392,10 @@ async function runSupervisor() {
     ' · 硬截止 ' + Math.round(TOTAL_DEADLINE_MS / 60000) + ' 分钟 · 独立监督进程 pid=' + process.pid);
 
   const env = { ...process.env, TEST_RUN_ID: runId, TEST_RUN_LOCK_OWNER_PID: String(process.pid) };
+  // F14：worker 自成进程组，超时终止能一并带走它启动的测试子进程（含孙进程）。
+  const useGroup = process.platform !== 'win32';
   const child = spawn(process.execPath, [__filename, '--worker'], {
-    cwd: rootDir, env, stdio: 'inherit', windowsHide: true,
+    cwd: rootDir, env, stdio: 'inherit', windowsHide: true, detached: useGroup,
   });
   runControl.registerChild(runId, child.pid, 'test:all worker');
 
@@ -354,10 +419,14 @@ async function runSupervisor() {
       if (settled) return;
       settled = true;
       console.error('\n[测试资源] 整轮超过硬截止（' + Math.round(TOTAL_DEADLINE_MS / 1000) + 's，独立监督进程），强制结束');
-      const kill = runControl.killProcessTree(child.pid);
-      console.error('[测试资源] 终止测试进程树：' + kill.method + ' · 已确认退出=' + kill.killed);
-      if (kill.killed) runControl.unregisterChild(runId, child.pid);
-      resolve(finish(1, '整轮超时'));
+      // 异步终止：先给整组 SIGTERM，有界等待后升级 SIGKILL，等确认退出再决定资源是否释放。
+      runControl.killProcessTreeAsync(child.pid, { group: useGroup })
+        .catch(error => ({ killed: false, method: 'error', output: error.message }))
+        .then(kill => {
+          console.error('[测试资源] 终止测试进程树：' + kill.method + ' · 已确认退出=' + kill.killed);
+          if (kill.killed) runControl.unregisterChild(runId, child.pid);
+          resolve(finish(1, '整轮超时'));
+        });
     }, Math.max(100, TOTAL_DEADLINE_MS));
 
     child.on('error', error => {

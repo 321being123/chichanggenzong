@@ -594,15 +594,66 @@ function killProcessTree(pid, options = {}) {
       output: ((r.stdout || '') + (r.stderr || '')).trim(),
     };
   }
+  return killProcessTreeSyncPosix(n, options);
+}
+
+/**
+ * POSIX 同步版：仅供同步上下文（进程退出钩子、测试清理）兜底使用。
+ * 正常监督路径必须走 killProcessTreeAsync —— 同步忙等会让本进程无法处理子进程退出事件，
+ * 也无法确认「本轮进程组是否真的清空」。
+ */
+function killProcessTreeSyncPosix(n, options = {}) {
   const graceMs = Number.isFinite(options.graceMs) ? options.graceMs : 3000;
-  try { process.kill(n, 'SIGTERM'); } catch (_) { /* 已退出 */ }
+  signalTarget(n, options, 'SIGTERM');
   const deadline = Date.now() + graceMs;
-  while (Date.now() < deadline && isProcessAlive(n)) sleepSync(200);
-  if (isProcessAlive(n)) {
-    try { process.kill(n, 'SIGKILL'); } catch (_) { /* 已退出 */ }
+  while (Date.now() < deadline && targetAlive(n, options)) sleepSync(200);
+  if (targetAlive(n, options)) {
+    signalTarget(n, options, 'SIGKILL');
     sleepSync(200);
   }
-  return { killed: !isProcessAlive(n), method: 'SIGTERM/SIGKILL' };
+  return { killed: !targetAlive(n, options), method: options.group ? 'group SIGTERM/SIGKILL' : 'SIGTERM/SIGKILL' };
+}
+
+/**
+ * POSIX 异步版（F14）：先发 SIGTERM 给**本轮进程组**，用有界轮询等组内全部退出，
+ * 再升级 SIGKILL；整个过程不阻塞事件循环，所以子进程的 exit/close 事件照常被处理。
+ */
+async function killProcessTreeAsync(pid, options = {}) {
+  const n = Number(pid);
+  if (!Number.isInteger(n) || n <= 0) return { killed: false, method: 'none' };
+  if (process.platform === 'win32') return killProcessTree(n, options);
+  const graceMs = Number.isFinite(options.graceMs) ? options.graceMs : 3000;
+  const pollMs = Number.isFinite(options.pollMs) ? options.pollMs : 100;
+  signalTarget(n, options, 'SIGTERM');
+  const deadline = Date.now() + graceMs;
+  while (Date.now() < deadline && targetAlive(n, options)) await sleep(pollMs);
+  let method = options.group ? 'group SIGTERM' : 'SIGTERM';
+  if (targetAlive(n, options)) {
+    signalTarget(n, options, 'SIGKILL');
+    method = options.group ? 'group SIGKILL' : 'SIGKILL';
+    const killDeadline = Date.now() + Math.max(pollMs * 5, 1000);
+    while (Date.now() < killDeadline && targetAlive(n, options)) await sleep(pollMs);
+  }
+  return { killed: !targetAlive(n, options), method };
+}
+
+/** 目标存活判定：优先按进程组（-pid），没有进程组时退回单 PID。 */
+function targetAlive(n, options = {}) {
+  if (options.group && process.platform !== 'win32') {
+    try { process.kill(-n, 0); return true; } catch (error) {
+      if (error.code === 'EPERM') return true;
+      // ESRCH：进程组已不存在，再兜底看单 PID，避免"组不在但进程还在"被误判已清空。
+      return isProcessAlive(n);
+    }
+  }
+  return isProcessAlive(n);
+}
+
+function signalTarget(n, options = {}, signalName) {
+  if (options.group && process.platform !== 'win32') {
+    try { process.kill(-n, signalName); return; } catch (_) { /* 无该进程组 → 退回单 PID */ }
+  }
+  try { process.kill(n, signalName); } catch (_) { /* 已退出 */ }
 }
 
 /**
@@ -610,6 +661,9 @@ function killProcessTree(pid, options = {}) {
  */
 function spawnWithTimeout(command, args, options = {}) {
   const timeoutMs = Number.isFinite(options.timeoutMs) ? options.timeoutMs : 5 * 60 * 1000;
+  // F14：POSIX 上让子进程自成一个进程组（detached 只影响进程组，不影响 stdio 管道），
+  // 这样超时终止可以精准结束"本轮这一组"，既能带走孙进程，又不会波及别人的进程。
+  const useGroup = process.platform !== 'win32';
   return new Promise(resolve => {
     const startedAt = Date.now();
     let out = '';
@@ -620,6 +674,7 @@ function spawnWithTimeout(command, args, options = {}) {
       env: options.env || process.env,
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
+      detached: useGroup,
     });
     const append = chunk => {
       out += chunk.toString('utf8');
@@ -634,8 +689,10 @@ function spawnWithTimeout(command, args, options = {}) {
 
     const timer = setTimeout(() => {
       timedOut = true;
-      const kill = killProcessTree(child.pid);
-      finish({ status: null, signal: 'TIMEOUT', timedOut: true, treeKill: kill });
+      // 先标记超时再异步终止：终止期间 close 事件可能先到，finish 的 settled 保护会把结果收敛为一次。
+      killProcessTreeAsync(child.pid, { group: useGroup })
+        .then(kill => finish({ status: null, signal: 'TIMEOUT', timedOut: true, treeKill: kill }))
+        .catch(error => finish({ status: null, signal: 'TIMEOUT', timedOut: true, treeKill: { killed: false, method: 'error', output: error.message } }));
     }, timeoutMs);
 
     function finish(result) {
@@ -645,7 +702,7 @@ function spawnWithTimeout(command, args, options = {}) {
       resolve({ ...result, out, durationMs: Date.now() - startedAt, pid: child.pid });
     }
 
-    child.on('error', error => finish({ status: null, signal: null, spawnError: error.message }));
+    child.on('error', error => finish({ status: null, signal: null, spawnError: error.message, timedOut }));
     child.on('close', (code, signal) => finish({ status: code, signal, timedOut }));
   });
 }
@@ -667,6 +724,7 @@ module.exports = {
   statusAll,
   releaseByRunId,
   killProcessTree,
+  killProcessTreeAsync,
   spawnWithTimeout,
   describeOwner,
   describeBlockReason,

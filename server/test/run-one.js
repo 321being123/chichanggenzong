@@ -127,9 +127,11 @@ async function runSupervisor() {
     ' · 监督进程 pid=' + process.pid);
 
   const env = { ...process.env, TEST_RUN_ID: runId, TEST_RUN_LOCK_OWNER_PID: String(ownerPid) };
+  // F14：执行进程自成进程组，超时时连同它启动的测试子进程（含孙进程）一起结束。
+  const useGroup = process.platform !== 'win32';
   const worker = spawn(process.execPath,
     [__filename, target, '--worker', '--timeout-ms=' + timeoutMs],
-    { cwd: rootDir, env, stdio: 'inherit', windowsHide: true });
+    { cwd: rootDir, env, stdio: 'inherit', windowsHide: true, detached: useGroup });
   try { runControl.registerChild(runId, worker.pid, 'run-one worker'); } catch (_) { /* 登记失败不拖垮执行 */ }
 
   const finish = (code, note) => {
@@ -150,10 +152,13 @@ async function runSupervisor() {
       if (settled) return;
       settled = true;
       console.error('\n[超时] 单文件入口整体超过 ' + Math.round(overallDeadlineMs / 1000) + 's（含初始化，独立监督），强制结束');
-      const kill = runControl.killProcessTree(worker.pid);
-      console.error('[超时] 终止执行进程树：' + kill.method + ' · 已确认退出=' + kill.killed);
-      if (kill.killed) runControl.unregisterChild(runId, worker.pid);
-      resolve(finish(1, '整体超时'));
+      runControl.killProcessTreeAsync(worker.pid, { group: useGroup })
+        .catch(error => ({ killed: false, method: 'error', output: error.message }))
+        .then(kill => {
+          console.error('[超时] 终止执行进程树：' + kill.method + ' · 已确认退出=' + kill.killed);
+          if (kill.killed) runControl.unregisterChild(runId, worker.pid);
+          resolve(finish(1, '整体超时'));
+        });
     }, overallDeadlineMs);
 
     worker.on('error', error => {

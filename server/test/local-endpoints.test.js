@@ -6,6 +6,7 @@
 //  4) 净值批量导入：按日期 upsert 持久化 + 版本提升
 // 走真实 HTTP（mini app + session mock）。
 const assert = require('assert');
+const { testSession } = require('./helpers/session-subject');
 const path = require('path');
 require('dotenv').config({ path: path.join(__dirname, '..', '..', '.env') });
 const express = require('express');
@@ -47,7 +48,7 @@ async function checkAsync(name, fn) {
 
     const app = express();
     app.use(express.json());
-    app.use(function (req, res, next) { req.session = { user: U, authVersion: 1 }; next(); });
+    app.use(async function (req, res, next) { req.session = await testSession(U); next(); });
     app.use('/api', accountsRouter);
     server = await new Promise(function (resolve) { const s = app.listen(0, '127.0.0.1', function () { resolve(s); }); });
     port = server.address().port;

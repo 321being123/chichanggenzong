@@ -58,6 +58,9 @@ jobs:
           --health-retries 5
     env:
       CI: '1'
+      # 必需真库回归段（STOCK_SELECTION_R3_DB/R4_DB/R5_DB）由 run-all 默认开启，
+      # 清单在 deploy/required-ci-checks.json，与发布前置校验共用；CI 不允许关闭。
+      TEST_SKIP_REQUIRED_DB: '0'
       PGHOST: localhost
       PGPORT: '5432'
       PGUSER: postgres

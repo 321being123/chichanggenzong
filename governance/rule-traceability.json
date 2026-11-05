@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "lastReviewed": "2026-11-05",
+  "lastReviewed": "2026-11-06",
   "rules": [
     {
       "id": "BOND-PROSPECTUS-SELECTION-059",
@@ -4947,6 +4947,174 @@
         {
           "file": "server/test/arbitrage-auto-settle.test.js",
           "pattern": "已退市"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "implemented"
+    },
+    {
+      "id": "JOB-BLOCK-REASON-186",
+      "title": "blocked 槽只有\"依赖未就绪\"能由依赖恢复解除；止损、权限、人工、数据集断路各自按原因保持阻塞",
+      "implementation": {
+        "file": "server/services/jobScheduleSlots.js",
+        "symbol": "blockReasonOf"
+      },
+      "tests": [
+        {
+          "file": "server/test/stability-invariants.test.js",
+          "pattern": "F06"
+        },
+        {
+          "file": "server/test/stock-selection-review-r4.test.js",
+          "pattern": "R4-01"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "implemented"
+    },
+    {
+      "id": "JOB-LEASE-TOKEN-BREAKER-187",
+      "title": "数据集断路收尾必须携带执行令牌与未过期租约；影响 0 行视为 lease_lost，不写状态不发告警",
+      "implementation": {
+        "file": "server/services/jobOrchestrator.js",
+        "symbol": "applyDatasetFailureBreaker"
+      },
+      "tests": [
+        {
+          "file": "server/test/stability-invariants.test.js",
+          "pattern": "F07"
+        },
+        {
+          "file": "server/test/test-run-control.test.js",
+          "pattern": "监督与进程树退出"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "implemented"
+    },
+    {
+      "id": "JOB-RECOVERY-SCOPE-IDENTITY-188",
+      "title": "槽位恢复必须同时匹配批次号、目标日、目标交易日与季度；SQL 与 JS 共用同一份业务身份清单",
+      "implementation": {
+        "file": "server/services/jobRecoveryEvidence.js",
+        "symbol": "sameSlotRecoveryScope"
+      },
+      "tests": [
+        {
+          "file": "server/test/stability-invariants.test.js",
+          "pattern": "F08"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "implemented"
+    },
+    {
+      "id": "DATASET-EVIDENCE-SINGLE-JUDGE-189",
+      "title": "数据集\"已发布且质量通过\"只认一个判据：query_status 明确失败不算恢复，强校验数据集缺 quality_status 判不通过",
+      "implementation": {
+        "file": "server/services/datasetPartitionRegistry.js",
+        "symbol": "isPublishedDatasetEvidence"
+      },
+      "tests": [
+        {
+          "file": "server/test/stability-invariants.test.js",
+          "pattern": "F08"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "implemented"
+    },
+    {
+      "id": "IMPORT-BATCH-OWNERSHIP-190",
+      "title": "导入批次号先核全局归属再写业务数据；插入回读实际归属；快照删除必须带账户范围",
+      "implementation": {
+        "file": "server/repositories/navImportRepository.js",
+        "symbol": "findImportBatchOwner"
+      },
+      "tests": [
+        {
+          "file": "server/test/nav-import-ownership.test.js",
+          "pattern": "F01"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "implemented"
+    },
+    {
+      "id": "IMPORT-IDEMPOTENT-ACTIVE-ONLY-191",
+      "title": "导入幂等只认 status<>'rolled_back' 的有效提交；已回滚批次不得复活也不占内容指纹",
+      "implementation": {
+        "file": "server/repositories/navImportRepository.js",
+        "symbol": "findImportBatch"
+      },
+      "tests": [
+        {
+          "file": "server/test/nav-import-ownership.test.js",
+          "pattern": "F03"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "implemented"
+    },
+    {
+      "id": "AUTH-SUBJECT-IDENTITY-192",
+      "title": "会话必须绑定不可复用的用户主体身份；鉴权出口统一校验主体 + auth_version + 状态",
+      "implementation": {
+        "file": "server/middleware/auth.js",
+        "symbol": "resolveSessionUser"
+      },
+      "tests": [
+        {
+          "file": "server/test/auth-session-revocation.test.js",
+          "pattern": "F04"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "implemented"
+    },
+    {
+      "id": "TEST-VERDICT-ORDER-193",
+      "title": "测试结果裁决顺序固定为超时→启动失败→信号→非零退出→正常退出后才识别跳过；跳过标记只认行首",
+      "implementation": {
+        "file": "server/test/lib/testResultVerdict.js",
+        "symbol": "classifyTestResult"
+      },
+      "tests": [
+        {
+          "file": "server/test/stability-invariants.test.js",
+          "pattern": "F11"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "implemented"
+    },
+    {
+      "id": "RELEASE-TEST-EVIDENCE-194",
+      "title": "发布前置必须核对本地全量证据（绑定代码树指纹）与目标完整 SHA 的必需 CI 作业；查询失败不降级为通过",
+      "implementation": {
+        "file": "deploy/deploy_password.py",
+        "symbol": "verify_ci_test_evidence"
+      },
+      "tests": [
+        {
+          "file": "server/test/stability-invariants.test.js",
+          "pattern": "F15"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "implemented"
+    },
+    {
+      "id": "DIVIDEND-CURRENCY-CLOSURE-195",
+      "title": "股息率只在分红币种与价格币种一致时产出数值；混币或异币种判不可评估",
+      "implementation": {
+        "file": "server/domain/stockSelectionRules.js",
+        "symbol": "evaluateDividendYield"
+      },
+      "tests": [
+        {
+          "file": "server/test/stability-invariants.test.js",
+          "pattern": "F09"
         }
       ],
       "owner": "WorkBuddy",

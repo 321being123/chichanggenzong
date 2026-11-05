@@ -204,6 +204,8 @@ const MIGRATIONS = [
   { version: '184_stock_selection', up: () => require('./migrations/era10StockSelection').migration184StockSelection(pool) },
   { version: '185_hang_seng_industry_taxonomy', up: () => require('./migrations/era10StockSelection').migration185HangSengIndustryTaxonomy(pool) },
   { version: '186_financial_statement_wide', up: () => require('./migrations/era11FinancialStatements').migration186FinancialStatementWide(pool) },
+  { version: '187_user_subject_identity', up: () => require('./migrations/era12AccountSubject').migration187UserSubjectIdentity(pool) },
+  { version: '188_nav_import_active_content', up: () => require('./migrations/era02cNavImportOwnership').migration188NavImportActiveContent(pool) },
 ];
 
 async function ensureMigrationsTable() {

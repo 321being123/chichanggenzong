@@ -326,6 +326,33 @@ async function expireContinuationSlot(slot, definition, now) {
   return rows[0];
 }
 
+// 阻塞原因分类（F06）。
+//
+// 修复前 reconcileSlot 对 blocked 只看"依赖是否就绪"：无依赖模式直接放行、有依赖模式在
+// 前置就绪后放行，完全不看为什么阻塞。于是续批止损、无进展、权限不足、人工暂停这些
+// 明确需要人工介入的阻塞，会被下一次调度扫描悄悄撤销，止损形同虚设。
+// 这里把写入端已经在用的原因（result_summary 标记 + last_error 前缀）集中解析成可判定值，
+// 只有 dependency 允许由依赖恢复解除；其它原因各自等自己的证据。
+const MANUAL_BLOCK_FLAGS = Object.freeze([
+  ['permissionDenied', 'permission'],
+  ['continuationBlocked', 'continuation_stop'],
+  ['requiresManualAction', 'manual'],
+]);
+const DEPENDENCY_BLOCK_PREFIXES = Object.freeze(['依赖任务未成功', '依赖数据分区未发布']);
+
+function blockReasonOf(slot) {
+  const summary = slot && slot.result_summary && typeof slot.result_summary === 'object' ? slot.result_summary : {};
+  for (const [flag, reason] of MANUAL_BLOCK_FLAGS) {
+    if (summary[flag] === true) return reason;
+  }
+  if (Number(summary.missingRecoverAtCount || 0) > 0) return 'external_no_recovery_time';
+  if (summary.datasetBreaker) return 'dataset';
+  const error = String((slot && slot.last_error) || '');
+  if (DEPENDENCY_BLOCK_PREFIXES.some(prefix => error.startsWith(prefix))) return 'dependency';
+  if (/^数据集 .*连续 \d+ 次未完成/.test(error)) return 'dataset';
+  return 'unknown';
+}
+
 async function reconcileSlot(slot) {
   if (!slot || new Date(slot.scheduled_for) > new Date()) return slot;
   const definition = getJobDefinition(slot.job_code);
@@ -399,6 +426,9 @@ async function reconcileSlot(slot) {
     return slot;
   }
   if (slot.status === 'blocked') {
+    // F06：先判阻塞原因。只有"依赖未就绪"这一类由依赖恢复解除；
+    // 续批止损、无进展、权限、人工暂停、数据集断路都必须保持阻塞，等它自己的证据。
+    if (blockReasonOf(slot) !== 'dependency') return slot;
     // R4-01：阻塞恢复与待执行筛选、领取必须用同一套按模式解析的依赖，
     // 否则选股模式（显式无依赖）会被 core 的转债链一直挡在 blocked。
     const mode = slotMode(slot);
@@ -1117,5 +1147,5 @@ module.exports = {
   listJobSlots, getJobSlot, validateJobSlot, heartbeat, getJobOverview, queryDataAsOf, isDataAsOfFresh, resolveDataAsOf, expectedDataDate,
   isSlotDayAllowed, isWeekday, previousDate, resolveScheduleForDate,
   resolveDatasetPartitionDate, datasetDependencyState, recoverNavDependencies, attemptLimit, sweepStaleSlots,
-  reconcileSlot, pendingNeedsTakeoverCheck,
+  reconcileSlot, pendingNeedsTakeoverCheck, blockReasonOf,
 };

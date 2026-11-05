@@ -141,6 +141,18 @@ async function main() {
     assert.ok(!('R03' in result.rules));
   });
 
+  // 2026-11-05：PE 口径统一为 TTM（滚动十二个月），静态 PE 不再参与展示与排名。
+  await check('PE 口径：只有 PE(TTM) 能参与排名，只有静态 PE 视为待补', () => {
+    const staticOnly = RULES.evaluateInstrument(facts({ instrumentId: 901, code: 'P1', peStatic: 10, peTtm: null }));
+    assert.strictEqual(staticOnly.currentPe, null, '只有静态 PE 时不得拿它当排名值');
+    assert.strictEqual(staticOnly.rankReady, false, '缺 PE(TTM) 不允许进入排名');
+    assert.ok(staticOnly.rankBlockReasons.includes('pe_ttm_unavailable'), '缺口原因必须写明缺 PE(TTM)');
+
+    const ttmOnly = RULES.evaluateInstrument(facts({ instrumentId: 902, code: 'P2', peStatic: null, peTtm: 9.5 }));
+    assert.strictEqual(ttmOnly.currentPe, 9.5, '排名与展示都取 PE(TTM)');
+    assert.strictEqual(ttmOnly.rankReady, true, '有 PE(TTM) 即可排名，不再依赖静态 PE');
+  });
+
   await check('排名：亏损/零利润的 PE 分统一为 P，不追加为 P+1', () => {
     const pool = [
       poolRow(1, 'A', { currentPb: 1.2, currentPe: 8, profitStatus: 'profit' }),

@@ -73,9 +73,26 @@ function ssInitView() {
   var candidates = ssEl('ss-candidates');
   if (candidates) {
     candidates.addEventListener('click', function (event) {
+      // 证券名称是跳转入口：走进证券分析页看该股完整分析，不再打开本页详情面板。
+      var jump = event.target.closest('[data-ss-analysis]');
+      if (jump && window.StockSelectionPresenter) {
+        event.preventDefault();
+        window.StockSelectionPresenter.openInAnalysis(jump.getAttribute('data-ss-analysis'));
+        return;
+      }
       var row = event.target.closest('[data-ss-code]');
       if (!row || !window.StockSelectionPresenter) return;
       window.StockSelectionPresenter.openStock(row.dataset.ssCode);
+    });
+  }
+  // 目标组合表的证券名称同样跳证券分析，两个表格行为保持一致。
+  var portfolio = ssEl('ss-portfolio');
+  if (portfolio) {
+    portfolio.addEventListener('click', function (event) {
+      var jump = event.target.closest('[data-ss-analysis]');
+      if (!jump || !window.StockSelectionPresenter) return;
+      event.preventDefault();
+      window.StockSelectionPresenter.openInAnalysis(jump.getAttribute('data-ss-analysis'));
     });
   }
 }
@@ -138,14 +155,16 @@ function ssRenderRuns(state) {
   if (!select) return;
   var runs = state.runs || [];
   if (!runs.length) {
-    select.innerHTML = '<option value="">暂无批次</option>';
+    select.innerHTML = '<option value="">暂无已发布组合</option>';
     select.disabled = true;
     return;
   }
   select.disabled = false;
   select.innerHTML = runs.map(function (run) {
-    var label = run.quarter + ' · ' + (run.runKind === 'quarterly' ? '正式季度' : run.runKind === 'preview' ? '预览' : '个人测算')
-      + ' · ' + (run.publishedAt ? '已发布' : '未发布') + ' · ' + run.selectedCount + ' 只';
+    var kindText = run.runKind === 'quarterly' ? '正式季度' : run.runKind === 'preview' ? '预览' : '个人测算';
+    // 个人测算本身就不进正式发布指针，标签不再重复标「未发布」。
+    var statusText = run.runKind === 'personal' ? '' : (run.publishedAt ? ' · 已发布' : ' · 未发布');
+    var label = run.quarter + ' · ' + kindText + statusText + ' · ' + run.selectedCount + ' 只';
     return '<option value="' + ssEsc(run.runId) + '"' + (Number(run.runId) === Number(state.runId) ? ' selected' : '') + '>' + ssEsc(label) + '</option>';
   }).join('');
 }
@@ -196,7 +215,8 @@ function ssRenderCandidates(state) {
       .map(function (reason) { return ssEsc(reason.code); }).join('、');
     return '<tr data-ss-code="' + ssEsc(item.code) + '" tabindex="0">'
       + '<td class="text-right">' + ssEsc(order) + '</td>'
-      + '<td><strong>' + ssEsc(item.name || item.code) + '</strong><div class="ss-sub">' + ssEsc(item.code) + '</div></td>'
+      + '<td><button type="button" class="ss-stock-link" data-ss-analysis="' + ssEsc(item.code) + '">'
+      + ssEsc(item.name || item.code) + '</button><div class="ss-sub">' + ssEsc(item.code) + '</div></td>'
       + '<td>' + ssEsc(item.industry ? item.industry.name : '分类待核验') + '</td>'
       + '<td class="text-right">' + (item.currentPb === null ? '--' : Number(item.currentPb).toFixed(3)) + '</td>'
       + '<td class="text-right">' + (item.historicalPbMax === null ? '--' : Number(item.historicalPbMax).toFixed(3)) + '</td>'
@@ -210,7 +230,7 @@ function ssRenderCandidates(state) {
   }).join('');
   root.innerHTML = '<div class="biz-table-scroll"><table class="biz-table"><thead><tr>'
     + '<th class="text-right">名次</th><th>证券</th><th>行业</th><th class="text-right">PB</th><th class="text-right">十年最高 PB</th>'
-    + '<th class="text-right">静态 PE</th><th class="text-right">股息率</th><th class="text-right">净资产（人民币）</th>'
+    + '<th class="text-right">PE（TTM）</th><th class="text-right">股息率</th><th class="text-right">净资产（人民币）</th>'
     + '<th class="text-right">PB/PE/股息名次</th><th class="text-right">总分</th><th>结论</th>'
     + '</tr></thead><tbody>' + rows + '</tbody></table></div>'
     + '<div class="ss-list-foot">已显示 ' + list.length + ' / ' + state.candidateTotal + ' 只'
@@ -238,7 +258,8 @@ function ssRenderPortfolio(state) {
   var rows = portfolio.members.map(function (member) {
     return '<tr>'
       + '<td class="text-right">' + ssEsc(member.slotNo) + '</td>'
-      + '<td><strong>' + ssEsc(member.name || member.code) + '</strong><div class="ss-sub">' + ssEsc(member.code) + '</div></td>'
+      + '<td><button type="button" class="ss-stock-link" data-ss-analysis="' + ssEsc(member.code) + '">'
+      + ssEsc(member.name || member.code) + '</button><div class="ss-sub">' + ssEsc(member.code) + '</div></td>'
       + '<td>' + ssEsc(member.industryName || '分类待核验') + '</td>'
       + '<td class="text-right">' + (Number(member.weightInMarketBudget) * 100).toFixed(2) + '%</td>'
       + '<td class="text-right">' + (Number(member.weightInEquityTarget) * 100).toFixed(2) + '%</td>'
@@ -311,7 +332,7 @@ function ssRenderDetail(state) {
     + '<div class="ss-detail-meta">批次 #' + ssEsc(detail.runId) + ' · 目标日 ' + ssEsc(detail.asOfDate)
     + ' · 行业 ' + ssEsc(candidate.industry ? candidate.industry.name : '待核验')
     + ' · PB ' + (candidate.currentPb === null ? '--' : Number(candidate.currentPb).toFixed(3))
-    + ' · 静态 PE ' + (candidate.currentPe === null ? '--' : Number(candidate.currentPe).toFixed(2))
+    + ' · PE（TTM） ' + (candidate.currentPe === null ? '--' : Number(candidate.currentPe).toFixed(2))
     + '（' + ssEsc(candidate.profitStatus === 'loss' ? '亏损，按规则记分' : candidate.profitStatus === 'zero' ? '零利润，按规则记分' : candidate.profitStatus === 'profit' ? '盈利' : '利润待补') + '）'
     + ' · 股息率 ' + (candidate.dividendYield === null ? '--' : (Number(candidate.dividendYield) * 100).toFixed(2) + '%')
     + ' · 净资产 ' + (candidate.equityCny === null ? '--' : (Number(candidate.equityCny) / 1e8).toFixed(2) + ' 亿元')

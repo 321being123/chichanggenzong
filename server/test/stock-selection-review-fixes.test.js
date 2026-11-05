@@ -169,6 +169,25 @@ async function main() {
     assert.strictEqual(phase.requireStageComplete, true);
   });
 
+  // ---------- 2026-11-05：批次下拉只列有意义的批次 ----------
+  await check('批次列表：publishedOnly 只保留已发布组合与本人个人测算', async () => {
+    const repo = require('../repositories/stockSelectionRepository');
+    let filtered = null;
+    await repo.listRuns(
+      { market: 'CN', publishedOnly: true, limit: 20, offset: 0 },
+      { query: async (sql, params) => { filtered = { sql, params }; return { rows: [] }; } },
+    );
+    assert.ok(filtered, '必须真的下发一条查询');
+    assert.ok(/published_at IS NOT NULL/.test(filtered.sql), '已发布条件必须进 SQL');
+    assert.ok(/'personal'/.test(filtered.sql), '个人测算批次仍需可见（它本来就不发布）');
+    let all = null;
+    await repo.listRuns(
+      { market: 'CN', limit: 20, offset: 0 },
+      { query: async sql => { all = sql; return { rows: [] }; } },
+    );
+    assert.ok(!/published_at IS NOT NULL/.test(all), '不传 published 时必须保持原全量行为');
+  });
+
   // ---------- SSV-03 / SSV-05：服务层反例（stub 仓储与事务） ----------
   await runServiceCases();
 

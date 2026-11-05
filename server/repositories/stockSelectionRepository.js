@@ -59,6 +59,7 @@ async function loadUniverse({ market, asOfDate }, tx) {
            -- 官方估值接口不提供静态市盈率（实测 metricsList 报 (pe,pe_static) are invalid price metrics），
            -- 按站内既定口径现算：当前总市值 ÷ 最近一期已公告年报归母净利（600519 校验与 Tushare 完全一致）。
            -- 这是同一口径的定义式计算，不是估算兜底；归母净利缺失或为 0 时保持 NULL，不猜。
+           -- 2026-11-05 起选股排名与页面展示统一使用 pe_ttm（滚动十二个月），静态 PE 只保留作排查参考。
            COALESCE(v.pe_static, CASE WHEN v.total_market_cap IS NOT NULL
                                         AND np.net_profit IS NOT NULL AND np.net_profit <> 0
                                        THEN v.total_market_cap / np.net_profit END) AS pe_static,
@@ -860,13 +861,17 @@ async function markRunFailure(tx, runId, { executionStatus, qualityStatus, busin
 
 // ========== 读接口 ==========
 
-async function listRuns({ market, quarter, kind, ownerUsername, limit, offset }, tx) {
+async function listRuns({ market, quarter, kind, ownerUsername, publishedOnly, limit, offset }, tx) {
   const exec = executorOf(tx);
   const conditions = [];
   const params = [];
   if (market) { params.push(market); conditions.push(`r.market = $${params.length}`); }
   if (quarter) { params.push(quarter); conditions.push(`r.quarter = $${params.length}`); }
   if (kind) { params.push(kind); conditions.push(`r.run_kind = $${params.length}`); }
+  // 页面批次下拉只列有意义的批次：已正式发布的组合，以及本人的个人测算结果。
+  // 未发布的 preview（部分数据预览）既没有可买入席位也不代表本期结论，混在可选列表里只会误导
+  // （2026-11-05 用户反馈：同一季度堆了 6 条「未发布」）。
+  if (publishedOnly) conditions.push("(r.published_at IS NOT NULL OR r.run_kind = 'personal')");
   // 个人运行只有本人可见；正式与预览按登录可见。所有者一律走参数，不拼字符串。
   if (ownerUsername) { params.push(ownerUsername); conditions.push(`(r.run_kind <> 'personal' OR r.owner_username = $${params.length})`); }
   else conditions.push(`r.run_kind <> 'personal'`);

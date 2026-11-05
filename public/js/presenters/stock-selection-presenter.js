@@ -82,7 +82,8 @@ async function loadStockSelection() {
   try {
     var results = await Promise.all([
       window.StockSelectionApi.getMarkets(),
-      window.StockSelectionApi.listRuns({ market: ssState.market, limit: 20 }),
+      // published: '1' 只要已正式发布的组合：未发布批次只是部分数据预览，不能当作可选结论。
+      window.StockSelectionApi.listRuns({ market: ssState.market, published: '1', limit: 20 }),
       window.StockSelectionApi.getSettings().catch(function () { return { settings: {}, revision: 0 }; }),
       window.StockSelectionApi.listBacktests({ market: ssState.market, limit: 10 }).catch(function () { return { backtests: [] }; }),
     ]);
@@ -99,7 +100,10 @@ async function loadStockSelection() {
     if (typeof ssRenderBacktests === 'function') ssRenderBacktests(ssState);
     if (!ssState.runId) {
       if (typeof ssSetStatus === 'function') {
-        ssSetStatus('该市场还没有生成批次。管理员可在后台按季度生成，页面本身不触发外部采集。');
+        // 港股与 A 股的空列表原因不同：港股是本地还没有个股行情与估值，不能说成"等着生成就有"。
+        ssSetStatus(ssState.market === 'HK'
+          ? '港股还没有正式发布的季度组合：本地暂无港股个股行情与估值数据，生成港股组合前需要先补齐这些数据。'
+          : '该市场还没有正式发布的季度组合。后台按季度计算并正式发布后才会出现在这里。');
       }
       if (typeof ssRenderCandidates === 'function') ssRenderCandidates(ssState);
       if (typeof ssRenderPortfolio === 'function') ssRenderPortfolio(ssState);
@@ -174,6 +178,17 @@ async function ssOpenStock(code) {
   }
 }
 
+// 点证券名称跳「证券分析」看该股完整分析：只切页并复用证券分析既有入口，
+// 不在本页复制一套取数与渲染。
+async function ssOpenInAnalysis(code) {
+  var raw = String(code || '').trim().toUpperCase();
+  if (!raw) return;
+  if (typeof switchMain === 'function') await switchMain('stock-analysis');
+  if (typeof securityAnalysisSetCodeInput === 'function') securityAnalysisSetCodeInput(raw, 'stock');
+  if (typeof securityAnalysisSubmit === 'function') return securityAnalysisSubmit(raw, 'stock');
+  if (typeof ssShowToast === 'function') ssShowToast('证券分析页还没加载完成，请稍后重试');
+}
+
 // 市场切换：清掉该市场的批次状态后重新读取，另一个市场的错误不会清空本市场内容。
 async function ssSwitchMarket(market) {
   if (market === ssState.market) return;
@@ -228,6 +243,7 @@ window.StockSelectionPresenter = {
   selectRun: ssSelectRun,
   loadMore: ssLoadMoreCandidates,
   openStock: ssOpenStock,
+  openInAnalysis: ssOpenInAnalysis,
   saveSettings: ssSaveSettings,
   simulate: ssSimulate,
   formatPercent: ssFormatPercent,

@@ -420,7 +420,9 @@ async function loadSelectionService(options = {}, extra = {}) {
   const universe = [
     { instrument_id: 1, code: '600001.SH', name: '甲', market: 'CN', currency_code: 'CNY', list_date: '2010-01-01', company_id: 11, pb: 1.2, pe_static: 10, pe_ttm: 9, price: 10, price_date: '2026-09-30', risk_warning: false, suspend_type: null },
     { instrument_id: 2, code: '600002.SH', name: '乙', market: 'CN', currency_code: 'CNY', list_date: '2010-01-01', company_id: 12, pb: 1.1, pe_static: 9, pe_ttm: 8, price: 10, price_date: '2026-09-30', risk_warning: false, suspend_type: null },
-    { instrument_id: 3, code: '600003.SH', name: '丙', market: 'CN', currency_code: 'CNY', list_date: '2010-01-01', company_id: 13, pb: 1.0, pe_static: options.missingPeCompany === '13' ? null : 8, pe_ttm: null, price: 10, price_date: '2026-09-30', risk_warning: false, suspend_type: null },
+    // PE 口径统一 TTM（2026-11-05）：缺 PE 的开关要同时作用在两列上，
+    // 否则第 3 只在默认场景也缺 TTM，会从排名池消失、让"分红未知"用例测不到原目标。
+    { instrument_id: 3, code: '600003.SH', name: '丙', market: 'CN', currency_code: 'CNY', list_date: '2010-01-01', company_id: 13, pb: 1.0, pe_static: options.missingPeCompany === '13' ? null : 8, pe_ttm: options.missingPeCompany === '13' ? null : 7.5, price: 10, price_date: '2026-09-30', risk_warning: false, suspend_type: null },
   ];
   if (options.failCompany) {
     const target = universe.find(row => row.company_id === Number(options.failCompany));

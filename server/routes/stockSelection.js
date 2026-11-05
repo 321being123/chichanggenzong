@@ -75,7 +75,9 @@ router.get('/runs', requireLogin, asyncHandler(async (req, res) => {
   if (quarter && !/^\d{4}Q[1-4]$/.test(quarter)) return res.status(400).json({ error: '季度参数不合法' });
   const limit = intParam(req.query.limit, 20, MAX_PAGE_SIZE) || 20;
   const offset = intParam(req.query.offset, 0);
-  const result = await service.listRuns({ market, quarter, kind, ownerUsername: req.session.user, limit, offset });
+  // published=1 只返回已正式发布的组合（页面批次下拉用）；不传保持原有全量行为。
+  const publishedOnly = ['1', 'true'].includes(String(req.query.published || '').toLowerCase());
+  const result = await service.listRuns({ market, quarter, kind, ownerUsername: req.session.user, publishedOnly, limit, offset });
   res.json({
     total: result.total,
     limit, offset,

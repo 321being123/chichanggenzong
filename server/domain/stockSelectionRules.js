@@ -237,7 +237,10 @@ function evaluateInstrument(facts, params = DEFAULT_PARAMS) {
   const latest = annual.latestYear ? findYear(annual.years, annual.latestYear) : null;
   const profit = latest ? num(latest.profit) : null;
   const profitStatus = profit === null ? 'unknown' : profit > 0 ? 'profit' : profit < 0 ? 'loss' : 'zero';
-  const pe = num(facts.peStatic);
+  // PE 口径统一用 PE(TTM)：最近十二个月滚动归母净利，和行情源的滚动市盈率同口径（2026-11-05 用户要求）。
+  // 静态 PE 用最近一期年报作分母，年初会明显滞后于当期盈利，不适合用来给"现在贵不贵"排名。
+  // TTM 缺失属于待补，不静默回退静态 PE，避免同一批里两种口径混排。
+  const pe = num(facts.peTtm);
   // 亏损与零利润保留事实，禁止把负 PE 当成低估值优先；PE 缺失属于待补，不混入亏损组。
   const peResolved = profitStatus === 'unknown' ? false : (profitStatus === 'profit' ? (pe !== null && pe > 0) : true);
 
@@ -246,7 +249,7 @@ function evaluateInstrument(facts, params = DEFAULT_PARAMS) {
   const rankBlockReasons = [];
   if (filterStatus === STATUS.PASS && !peResolved) {
     if (profitStatus === 'unknown') rankBlockReasons.push('profit_status_unknown');
-    else rankBlockReasons.push('pe_static_unavailable');
+    else rankBlockReasons.push('pe_ttm_unavailable');
   }
 
   const exclusionReasons = [];
@@ -408,7 +411,7 @@ function competitionRank(items, valueOf, direction) {
 }
 
 /**
- * 排名（方案 5.1）：PB 升序、静态 PE 升序、股息率降序，各自竞赛排名后求和。
+ * 排名（方案 5.1）：PB 升序、PE(TTM) 升序、股息率降序，各自竞赛排名后求和。
  * 亏损/零利润的 PE 分统一为盈利股数量 P；P=0 时统一为排名池数量 N。
  * 排序全部用原始精度，不按页面四舍五入值判并列。
  */

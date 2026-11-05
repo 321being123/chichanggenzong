@@ -93,11 +93,12 @@ async function seed(pool) {
     await pool.query(
       `INSERT INTO core.company_industry_memberships (company_id, industry_node_id, source_id, valid_from, is_current) VALUES ($1,$2,$3,'2010-01-01',true)`,
       [companyId, nodeId, sourceId]);
-    // PB 逐档排列，便于验证名次：1.1 / 1.2 / 1.3 / 1.4
+    // PB 逐档排列，便于验证名次：1.1 / 1.2 / 1.3 / 1.4。
+    // 估值同时写静态 PE 与 PE(TTM)：2026-11-05 起排名与页面只用 TTM，两列给不同值以证明取的是 TTM。
     await pool.query(
-      `INSERT INTO market.daily_valuations (instrument_id, trade_date, source_id, pe_static, pb, dividend_yield_ttm, total_market_cap, currency_code)
-       VALUES ($1,$2::date,$3,$4,$5,0.05,5e10,'CNY')`,
-      [instrumentId, AS_OF, sourceId, 8 + index, 1.1 + index * 0.1]);
+      `INSERT INTO market.daily_valuations (instrument_id, trade_date, source_id, pe_static, pe_ttm, pb, dividend_yield_ttm, total_market_cap, currency_code)
+       VALUES ($1,$2::date,$3,$4,$5,$6,0.05,5e10,'CNY')`,
+      [instrumentId, AS_OF, sourceId, 8 + index, 7 + index, 1.1 + index * 0.1]);
     await pool.query(
       `INSERT INTO market.daily_bars (instrument_id, trade_date, source_id, open, high, low, close, volume, amount)
        VALUES ($1,$2::date,$3,10,10,10,10,1000,10000)`,

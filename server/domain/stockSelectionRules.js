@@ -51,6 +51,18 @@ function rule(code, status, fields) {
 function evaluateCurrentPb(facts, params) {
   const pb = num(facts.pb);
   if (pb === null) {
+    // 一条财报都没有的标的（生产实证 03774.HK：财报 0 行、PB/PE 全空）：PB 客观算不出来，
+    // 属"不可评估"而不是"待补"，与 R05 的 equity_not_evaluable_no_report 同一判据——
+    // 不入选、不进补数队列、不阻断整批发布。有财报但 PB 字段缺失仍判待补，避免把漏采当成客观缺失。
+    const years = (facts.annual && facts.annual.years) || [];
+    if (!years.length) {
+      return {
+        rule: rule('R01', STATUS.NOT_APPLICABLE, {
+          value: null, threshold: params.maxPb, reason: 'pb_not_evaluable_no_report',
+        }),
+        pb,
+      };
+    }
     return {
       rule: rule('R01', STATUS.PENDING, {
         value: pb, threshold: params.maxPb, reason: 'pb_unavailable',
@@ -245,7 +257,12 @@ function evaluateInstrument(facts, params = DEFAULT_PARAMS) {
   // TTM 缺失属于待补，不静默回退静态 PE，避免同一批里两种口径混排。
   const pe = num(facts.peTtm);
   // 亏损与零利润保留事实，禁止把负 PE 当成低估值优先；PE 缺失属于待补，不混入亏损组。
-  const peResolved = profitStatus === 'unknown' ? false : (profitStatus === 'profit' ? (pe !== null && pe > 0) : true);
+  // 负 PE 是"TTM 亏损"的事实、不是缺数据（2026-11-05 生产实证 02039.HK：年报盈利、TTM 亏损
+  // pe_ttm=-134.16）：排名时已按 pe>0 过滤并统一给盈利股数量 P 的分数，这里不能反过来当缺口，
+  // 否则亏损股会一直挂在待补、还阻断整批发布。PE 恰为 0 更像数据异常，仍按未定处理。
+  const peResolved = profitStatus === 'unknown' ? false
+    : (profitStatus === 'profit' ? (pe !== null && pe !== 0) : true);
+  const peNegative = pe !== null && pe < 0;
 
   // 排名受阻时把"到底缺哪个字段"写清楚（R2-04）：只给一个布尔会让缺口队列分不到类、
   // 补齐任务处理 0 个对象却报完成。
@@ -276,6 +293,8 @@ function evaluateInstrument(facts, params = DEFAULT_PARAMS) {
     historicalPbMax: r02.maxPb,
     currentPe: pe,
     profitStatus,
+    // 负 PE = TTM 亏损的事实留证，不参与 PE 升序排名，也不当缺口。
+    peNegative,
     dividendYield: r04.yield,
     equityAmount: num((facts.equity || {}).amount),
     equityCurrency: (facts.equity || {}).currency || null,

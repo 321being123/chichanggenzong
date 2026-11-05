@@ -427,13 +427,21 @@ async function loadDividendWindow({ instrumentIds, windowStart, asOfDate, market
  *  - 明确零分红也算已知（R4-04）：官方"无股息"落成"实施 + 每股 0 + 无除息日"，
  *    这类年度零分红证据要与"金额未知"区分开，不能为了放行零值又回到"有记录即完整"。
  */
-async function loadAnnualDividends({ companyIds, asOfDate, availableBefore }, tx) {
+async function loadAnnualDividends({ companyIds, asOfDate, availableBefore, market }, tx) {
   if (!companyIds.length) return new Map();
   const exec = executorOf(tx);
+  // 金额口径按市场分流（2026-11-05 生产实证）：港股分红多数只有「每股现金」、没有总额，
+  // 沿用 A 股的 total_cash_amount 会被判成「已实施但金额缺失」→ 永远待补
+  // （01919.HK 46 笔分红全部有每股现金、只有 10 笔有总额）。港股改用每股现金同口径累计：
+  // 只在同一公司内部逐财年比较，不跨公司、不与总额口径混用；A 股仍按总额。
+  const perShareBasis = String(market || '').toUpperCase() === 'HK';
+  const amountExpr = perShareBasis ? 'ca.cash_per_share_pre_tax' : 'ca.total_cash_amount';
   // 官方会返回"已实施、已除息、但每股金额与总金额都是空"的记录（多见于中期分红），
   // 这种行不携带任何金额信息，不能算成"实施但金额缺失"——否则同财年里一笔年度分红已经拿到，
   // 整年仍被判未知（177 只曾因此在年度异常上永远待补）。
-  const visibleCash = `(ca.cash_per_share_pre_tax IS NOT NULL OR ca.total_cash_amount IS NOT NULL)`;
+  const visibleCash = perShareBasis
+    ? `(ca.cash_per_share_pre_tax IS NOT NULL)`
+    : `(ca.cash_per_share_pre_tax IS NOT NULL OR ca.total_cash_amount IS NOT NULL)`;
   const implemented = `ca.status = '实施' AND ca.ex_date IS NOT NULL AND ca.ex_date <= $2::date AND ${visibleCash}`;
   // 明确零分红：官方把"该财年不派现"落成「股东大会通过 + 每股 0 + 无除息日」，
   // 实施且每股 0 同理。只认"实施"会把这类年份判成未知（福莱特 2024/2022/2021/2019 都是这样），
@@ -453,6 +461,31 @@ async function loadAnnualDividends({ companyIds, asOfDate, availableBefore }, tx
          AND r.announced_at IS NOT NULL
          AND r.announced_at < $2::date
          AND ($3::timestamptz IS NULL OR r.available_at IS NULL OR r.available_at < $3::timestamptz)
+    ), visible_actions AS (
+      -- 可见性先于去重：同一笔分红备源公告更晚时，不能因为"官方那条还没到公告日"
+      -- 就把一条本来可见的记录整笔丢掉，否则旧季度会把已可见分红当成"该年没有分红"。
+      SELECT ca.*
+        FROM fundamental.corporate_actions ca
+       WHERE ca.action_type = 'dividend'
+         AND (
+           (ca.announced_at IS NOT NULL AND ca.announced_at < $2::date)
+           OR (ca.announced_at IS NULL AND ca.ex_date IS NOT NULL AND ca.ex_date <= $2::date)
+         )
+    ), dedup_actions AS (
+      -- 同一笔分红会被官方与备源各写一行（2026-11-05 生产实测：A 股 213 个、港股 38 个除息日
+      -- 存在重复登记），不去重直接 SUM 会把同一笔钱算多遍。按「证券 + 除息日」只留一条、
+      -- 官方（source_id 大）优先，与 loadDividendWindow 近 12 个月去重同一规则。
+      SELECT DISTINCT ON (ca.instrument_id, ca.ex_date) ca.*
+        FROM visible_actions ca
+       WHERE ca.ex_date IS NOT NULL
+       -- 先保能归属财年的那条（备源港股分红常不带 fiscal_period_end，留着它会让这笔钱算不进任何财年），
+       -- 同层再按来源优先级取官方。
+       ORDER BY ca.instrument_id, ca.ex_date, (ca.fiscal_period_end IS NOT NULL) DESC, ca.source_id DESC
+    ), ca_kept AS (
+      SELECT * FROM dedup_actions
+      UNION ALL
+      -- 无除息日的行（官方"该财年不派现"= 实施 + 每股 0）不参与按除息日去重，原样保留。
+      SELECT * FROM visible_actions WHERE ex_date IS NULL
     ), per_instrument AS (
       -- 以「公司实际年报期末」为主表（2026-11-04 口径）：财报采到了就证明这家公司被采集过，
       -- 某个财年一笔分红记录都没有，就是该财年**确实没有分红事件**，判 0 而不是未知。
@@ -460,9 +493,9 @@ async function loadAnnualDividends({ companyIds, asOfDate, availableBefore }, tx
       SELECT ci.company_id,
              date_part('year', ae.period_end)::int AS fiscal_year,
              ci.instrument_id,
-             SUM(CASE WHEN ${implemented} THEN COALESCE(ca.total_cash_amount, 0) ELSE 0 END) AS implemented_cash,
+             SUM(CASE WHEN ${implemented} THEN COALESCE(${amountExpr}, 0) ELSE 0 END) AS implemented_cash,
              COUNT(ca.action_id) FILTER (WHERE ${implemented})::int AS implemented_count,
-             COUNT(ca.action_id) FILTER (WHERE ${implemented} AND ca.total_cash_amount IS NULL)::int AS amount_missing_count,
+             COUNT(ca.action_id) FILTER (WHERE ${implemented} AND ${amountExpr} IS NULL)::int AS amount_missing_count,
              COUNT(ca.action_id) FILTER (WHERE ca.action_id IS NOT NULL AND NOT (${implemented}))::int AS not_implemented_count,
              -- 财年期末已过 2 年以上、状态仍停在预案/股东大会通过且该财年从未实施：
              -- 这种历史方案就是"没有落地"，再等也不会变，与"金额未知"要分开。
@@ -476,14 +509,9 @@ async function loadAnnualDividends({ companyIds, asOfDate, availableBefore }, tx
              BOOL_OR(ae.period_end <= ($2::date - INTERVAL '1 year')) AS fiscal_year_settled
         FROM annual_ends ae
         JOIN core.company_instruments ci ON ci.company_id = ae.company_id AND ci.relation_type = 'issued_by'
-        LEFT JOIN fundamental.corporate_actions ca
+        LEFT JOIN ca_kept ca
           ON ca.instrument_id = ci.instrument_id
-         AND ca.action_type = 'dividend'
          AND ca.fiscal_period_end = ae.period_end
-         AND (
-           (ca.announced_at IS NOT NULL AND ca.announced_at < $2::date)
-           OR (ca.announced_at IS NULL AND ca.ex_date IS NOT NULL AND ca.ex_date <= $2::date)
-         )
        WHERE ci.company_id = ANY($1::bigint[])
        GROUP BY 1, 2, 3
     )
@@ -527,6 +555,8 @@ async function loadAnnualDividends({ companyIds, asOfDate, availableBefore }, tx
       dividend: known ? Number(row.implemented_cash || 0) : null,
       eventCount: implementedCount + notImplemented,
       dividendKnown: known,
+      // 留证：港股按每股现金、A 股按总额；同一公司内部同口径比较，不跨市场混用。
+      amountBasis: perShareBasis ? 'per_share' : 'total_amount',
       dividendBasis: knownFromImplemented ? 'annual_implemented_amount'
         : knownFromZero ? (implementedCount > 0 ? 'interim_plus_verified_zero' : 'verified_zero_dividend')
           : knownFromStalePlan ? 'stale_plan_not_implemented'

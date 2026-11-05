@@ -230,7 +230,7 @@ async function computeSelection(input, tx) {
     () => repo.loadDividendWindow({ instrumentIds, windowStart: dividendWindowStart, asOfDate, market }, tx),
     // R5-02：年度分红与利润、权益共用同一个信息截止（目标日收盘时刻），
     // 否则"目标日之后才可取到"的年报版本会把旧季度分红从待补变成通过。
-    () => repo.loadAnnualDividends({ companyIds, asOfDate, availableBefore: knowledgeCutoff }, tx),
+    () => repo.loadAnnualDividends({ companyIds, asOfDate, availableBefore: knowledgeCutoff, market }, tx),
     () => repo.loadIndustries({ companyIds, market, asOfDate }, tx),
   ], tx);
   const fxPairs = Array.from(equity.values())

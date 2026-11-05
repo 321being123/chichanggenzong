@@ -799,6 +799,44 @@ async function resolveIndustryRows({ tsCode, cacheMs } = {}) {
 }
 
 /**
+ * 港股通标的清单（2026-11-05 实测确认）：
+ * 官方 `hk/company` 支持 `isMutualMarketAhFlag: true` 直接筛出全部互联互通（港股通）标的，
+ * 实测单次返回 **666 只**、`total=666`、每条 `mutualMarketFlag=true` 且 `mutualMarkets=["ah"]`，
+ * 不需要港交所官方名单文件、也不需要逐只查询。
+ * 同时返回每手股数 `sharesPerLot`、财报类型 `fsTableType`、上市状态 `listingStatus`，供选股与财报端点选择使用。
+ * 名单按日调整：这里只原样给事实，是否入池由调用方决定（本函数不判断业务用途）。
+ */
+async function resolveMutualMarketCompanies({ maxAgeMs = 6 * 60 * 60 * 1000 } = {}) {
+  const result = await callEndpoint('hk/company', {
+    // 实测：不带 stockCodes、不带分页参数时一次返回全部 666 条（total=666），不需要翻页。
+    isMutualMarketAhFlag: true,
+  }, { dataset: 'hk_mutual_market_universe', maxAgeMs });
+  const rows = [];
+  const seen = new Set();
+  for (const item of result.rows || []) {
+    const bare = String((item && item.stockCode) || '').trim();
+    if (!bare) continue;
+    const canonical = `${bare.padStart(5, '0')}.HK`;
+    if (seen.has(canonical)) continue;
+    seen.add(canonical);
+    rows.push({
+      code: canonical,
+      name: (item && item.name) || null,
+      // 只认官方明确的互联互通标记；缺失或为 false 都不算港股通标的。
+      mutualMarketFlag: item && item.mutualMarketFlag === true,
+      mutualMarkets: Array.isArray(item && item.mutualMarkets) ? item.mutualMarkets : [],
+      sharesPerLot: numberOrNull(item && item.sharesPerLot),
+      fsTableType: (item && item.fsTableType) || null,
+      listingStatus: (item && item.listingStatus) || null,
+      // 上市日按标准层习惯给 YYYY-MM-DD（isoDate 是紧凑格式，别混用）。
+      ipoDate: dashDate(item && item.ipoDate),
+      source_code: SOURCE,
+    });
+  }
+  return rows;
+}
+
+/**
  * 指数成分股（港股恒生成分）：官方 `hk/index/constituents`。
  * 参数名虽写 stockCodes，实际传的是**指数代码**，日期为可选；
  * 2026-11-05 生产实测：`{stockCodes:['HSI'], date:'2026-11-04'}` 返回
@@ -855,6 +893,7 @@ module.exports = {
   resolveIndexDaily,
   resolveIndustryRows,
   resolveIndexConstituents,
+  resolveMutualMarketCompanies,
   resolveIndexValuation,
   resolveMoneySupply,
   resolveSovereignYield10y,

@@ -299,6 +299,19 @@ async function parseHsiWorkbook(buffer) {
 // 不同来源的算法可能不同（如全市场 PE：理杏仁总市值加权 vs Tushare/中证整体法），
 // 换源后的值若被调用方按官方名义落库，就成了来源误标，所以由调用方显式关掉回退。
 /**
+ * 港股通标的清单（2026-11-05 新增）：官方 `hk/company` 的 `isMutualMarketAhFlag` 筛选。
+ * 与指数成分一样无等价备源；取不到返回空数组并留证，不拿旧名单冒充当期标的
+ * （港股通名单按日调整，过期名单会把已调出的证券当成可买对象）。
+ */
+async function readMutualMarketCompanies(options = {}) {
+  const primary = await safeOfficial(() => official.resolveMutualMarketCompanies(options), 'mutual_market_universe');
+  if (Array.isArray(primary.value) && primary.value.length) {
+    return primary.value.map(row => ({ ...row, source_code: official.SOURCE }));
+  }
+  return [];
+}
+
+/**
  * 指数成分股（港股恒生成分，2026-11-05 新增）：官方 `hk/index/constituents`，无等价备源。
  * 取不到时返回空数组并留证，**不用旧名单冒充当期成分**——成分是按日调整的事实，
  * 拿过期名单去补数据会把已剔除的证券当成选股对象。
@@ -816,6 +829,7 @@ module.exports = {
   readFinancialStatementSeries,
   readIndexCloseSeries,
   readIndexConstituents,
+  readMutualMarketCompanies,
   readIndexValuationSeries,
   readHkDailyByTencent,
   readIndustryClassification,

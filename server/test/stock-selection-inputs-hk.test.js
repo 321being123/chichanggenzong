@@ -47,6 +47,7 @@ function buildEnv(options = {}) {
     readIndexConstituents: async () => (options.constituents || [
       { code: '00001.HK', name: '长和' }, { code: '00002.HK', name: '中电控股' },
     ]),
+    readMutualMarketCompanies: async () => (options.mutualMarketCompanies || []),
     readStockValuationSeriesBatch: async ({ codes }) => {
       calls.fetchedValuationCodes.push(...codes);
       // 官方真实返回的 trade_date 是紧凑格式（2026-11-05 实测：估值与日线都给 20261104），
@@ -150,6 +151,49 @@ async function main() {
     assert.ok(result.targetPool, '港股补齐必须回报目标池结果');
     assert.strictEqual(result.targetPool.processed, 2, '两个成分都缺行情，都应在本次补');
     assert.ok(calls.fetchedBarCodes.length >= 2, '目标池行情必须先于缺口审计执行');
+  });
+
+  await check('港股目标池：恒生成分与港股通合并去重，只认互联互通标记为真的标的', async () => {
+    const { service } = buildEnv({
+      constituents: [{ code: '00001.HK', name: '长和' }, { code: '00700.HK', name: '腾讯控股' }],
+      mutualMarketCompanies: [
+        { code: '00700.HK', name: '腾讯控股', mutualMarketFlag: true },
+        { code: '00005.HK', name: '汇丰控股', mutualMarketFlag: true },
+        { code: '01448.HK', name: '福寿园', mutualMarketFlag: false },
+      ],
+    });
+    const pool = await service.resolveHkTargetPool({ asOfDate: '2026-11-04' });
+    assert.deepStrictEqual(pool.codes.slice().sort(), ['00001.HK', '00005.HK', '00700.HK'], '两边来源要合并去重');
+    assert.strictEqual(pool.hsiCount, 2, '恒生成分数量如实回报');
+    assert.strictEqual(pool.mutualMarketCount, 2, '只统计标记为真的港股通标的，false 不入池也不计数');
+    assert.strictEqual(pool.overlapCount, 1, '两边都有的标的只算一次并计入重叠');
+  });
+
+  await check('港股通清单接口：按 isMutualMarketAhFlag 取数并解析每手股数与财报类型', async () => {
+    let captured = null;
+    stub('../services/lixingerOfficial', {
+      callEndpoint: async (endpoint, params) => {
+        captured = { endpoint, params };
+        return {
+          rows: [
+            { stockCode: '700', name: '腾讯控股', mutualMarketFlag: true, mutualMarkets: ['ah'], sharesPerLot: 100, fsTableType: 'non_financial', listingStatus: 'normally_listed', ipoDate: '2004-06-16T00:00:00+08:00' },
+            { stockCode: '00700', name: '腾讯控股（重复）', mutualMarketFlag: true },
+            { stockCode: '1448', name: '福寿园', mutualMarketFlag: false, sharesPerLot: 1000 },
+          ],
+        };
+      },
+    });
+    const adapterPath = require.resolve('../dataAccess/adapters/lixingerDatasetAdapter');
+    delete require.cache[adapterPath];
+    const adapter = require(adapterPath);
+    const rows = await adapter.resolveMutualMarketCompanies({});
+    assert.strictEqual(captured.endpoint, 'hk/company', '必须走港股公司信息接口');
+    assert.strictEqual(captured.params.isMutualMarketAhFlag, true, '必须显式按互联互通筛选，不能拉全市场再过滤');
+    assert.deepStrictEqual(rows.map(row => row.code), ['00700.HK', '01448.HK'], '补足 5 位并去重');
+    assert.strictEqual(rows[0].sharesPerLot, 100, '每手股数要保留');
+    assert.strictEqual(rows[0].fsTableType, 'non_financial', '财报类型要保留，供财报端点选择');
+    assert.strictEqual(rows[0].ipoDate, '2004-06-16');
+    assert.strictEqual(rows[1].mutualMarketFlag, false, '标记为假的要如实保留，由调用方决定是否入池');
   });
 
   await check('指数成分接口：把 constituents 解析成规范港股代码', async () => {

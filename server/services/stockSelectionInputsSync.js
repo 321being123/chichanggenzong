@@ -273,17 +273,57 @@ async function writeHkBars({ rawBars, instrumentId, sources, officialId }) {
 }
 
 /**
- * 港股目标池（恒生成分股）：数据层/HTTP 都交给既有统一采集层。
- * 只返回规范代码清单，不写业务事实表；调用方据此决定本批补哪些对象。
+ * 港股目标池 = 恒生成分股 ∪ 港股通标的（2026-11-05 用户确认的范围）。
+ *
+ * 两个来源都走既有统一采集层：恒生成分用官方 `hk/index/constituents`，
+ * 港股通用官方 `hk/company` 的 `isMutualMarketAhFlag`（实测一次返回 666 只，`mutualMarketFlag=true`）。
+ * 合并去重后只返回规范代码；不写业务事实表，也不在这里判断"值不值得买"。
+ * 任一来源取不到只让该来源缺席并记在返回里，不用旧名单补齐。
  */
 async function resolveHkTargetPool({ asOfDate } = {}) {
-  const { readIndexConstituents } = require('../dataAccess/marketDatasets');
-  if (typeof readIndexConstituents !== 'function') {
-    return { codes: [], reason: 'index_constituents_endpoint_unavailable' };
+  const { readIndexConstituents, readMutualMarketCompanies } = require('../dataAccess/marketDatasets');
+  const merged = new Map();
+  let constituents = [];
+  let mutual = [];
+  let constituentsError = null;
+  let mutualError = null;
+  if (typeof readIndexConstituents === 'function') {
+    try { constituents = (await readIndexConstituents({ indexCode: 'HSI', date: asOfDate })) || []; }
+    catch (error) { constituentsError = String(error.message || error).slice(0, 200); }
   }
-  const rows = await readIndexConstituents({ indexCode: 'HSI', date: asOfDate });
-  const codes = Array.from(new Set((rows || []).map(row => row.code).filter(Boolean)));
-  return { codes, reason: codes.length ? undefined : 'index_constituents_empty' };
+  if (typeof readMutualMarketCompanies === 'function') {
+    try { mutual = (await readMutualMarketCompanies()) || []; }
+    catch (error) { mutualError = String(error.message || error).slice(0, 200); }
+  }
+  constituents.forEach(row => {
+    if (!row || !row.code) return;
+    merged.set(row.code, { code: row.code, name: row.name || null, sources: ['hsi'] });
+  });
+  let mutualCount = 0;
+  mutual.forEach(row => {
+    if (!row || !row.code) return;
+    // 只认官方明确的互联互通标记：false 或缺失都不算港股通标的。
+    if (row.mutualMarketFlag === false) return;
+    mutualCount += 1;
+    const existing = merged.get(row.code);
+    if (existing) {
+      if (!existing.sources.includes('mutual_market')) existing.sources.push('mutual_market');
+      if (!existing.name) existing.name = row.name || null;
+      return;
+    }
+    merged.set(row.code, { code: row.code, name: row.name || null, sources: ['mutual_market'] });
+  });
+  const rows = Array.from(merged.values());
+  const overlap = rows.filter(row => row.sources.length > 1).length;
+  return {
+    codes: rows.map(row => row.code),
+    hsiCount: constituents.length,
+    mutualMarketCount: mutualCount,
+    overlapCount: overlap,
+    constituentsError,
+    mutualError,
+    reason: rows.length ? undefined : (constituentsError || mutualError ? 'target_pool_sources_failed' : 'target_pool_empty'),
+  };
 }
 
 /**
@@ -298,8 +338,12 @@ async function resolveHkTargetPool({ asOfDate } = {}) {
 async function syncHkTargetPoolBars({ asOfDate, maxCodes } = {}) {
   const pool = await resolveHkTargetPool({ asOfDate });
   const codes = pool.codes || [];
+  const poolMeta = {
+    hsiCount: pool.hsiCount, mutualMarketCount: pool.mutualMarketCount, overlapCount: pool.overlapCount,
+    constituentsError: pool.constituentsError || null, mutualError: pool.mutualError || null,
+  };
   if (!codes.length) {
-    return { targetCount: 0, pending: 0, processed: 0, succeeded: 0, reason: pool.reason || 'target_pool_empty', results: [] };
+    return Object.assign({ targetCount: 0, pending: 0, processed: 0, succeeded: 0, reason: pool.reason || 'target_pool_empty', results: [] }, poolMeta);
   }
   const covered = await repo.listCodesWithRecentBars({ codes, asOfDate, days: 60 });
   const pending = codes.filter(code => !covered.has(code));
@@ -310,7 +354,7 @@ async function syncHkTargetPoolBars({ asOfDate, maxCodes } = {}) {
   const sources = await store.sourceIds();
   const officialId = sources.lixinger_official;
   if (!officialId) {
-    return { targetCount: codes.length, pending: pending.length, processed: 0, succeeded: 0, reason: 'valuation_source_missing', results: [] };
+    return Object.assign({ targetCount: codes.length, pending: pending.length, processed: 0, succeeded: 0, reason: 'valuation_source_missing', results: [] }, poolMeta);
   }
   const priceStart = dashDate(shiftYears(asOfDate, HK_PRICE_YEARS)) || asOfDate;
   const results = [];
@@ -326,13 +370,13 @@ async function syncHkTargetPoolBars({ asOfDate, maxCodes } = {}) {
       results.push({ code, ok: false, reason: 'bars_collect_failed', error: String(error.message || error).slice(0, 320) });
     }
   }
-  return {
+  return Object.assign({
     targetCount: codes.length,
     pending: pending.length,
     processed: batch.length,
     succeeded: results.filter(item => item.ok).length,
     results,
-  };
+  }, poolMeta);
 }
 
 /**

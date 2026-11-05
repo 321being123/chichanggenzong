@@ -6,6 +6,7 @@ const {
   lifecycleSyncWindow,
   lifecycleCandidates,
   issueSize100m,
+  normalizeBondMasterCode,
 } = require('../services/convertibleBondLifecycleSync');
 const definitions = require('../services/jobDefinitions');
 
@@ -48,4 +49,18 @@ assert.ok(analysis.includes("includeTushare: mode === 'calendar'"), 'cb_issue �
 assert.ok(!schedule.includes('scheduleDaily(7, 45'), '旧07:45强赎公告任务必须移除');
 assert.ok(schedule.includes('scheduleDaily(17, 30'), '兼容调度必须注册晚间生命周期槽');
 
-console.log('OK convertible-bond-lifecycle-sync: 三日增量、统一公告任务和单一cb_issue写入者通过');
+// 2026-11-05：异常债券代码不得带着脏值写主档，否则单条上游脏数据会让整批事务回滚。
+assert.strictEqual(normalizeBondMasterCode('123291.SZ'), '123291.SZ');
+assert.strictEqual(normalizeBondMasterCode('118078.SH'), '118078.SH');
+assert.strictEqual(normalizeBondMasterCode('123291'), '123291.SZ');
+for (const bad of ['102583523', 'NAN', '', null, undefined, '2026-11-05', 'abcdef', '123291123292']) {
+  assert.strictEqual(normalizeBondMasterCode(bad), null, `异常代码必须拦住：${String(bad)}`);
+}
+const lifecycleSource = fs.readFileSync(path.join(root, 'server', 'services', 'convertibleBondLifecycleSync.js'), 'utf8');
+assert.ok(lifecycleSource.includes('if (!canonicalCode) return null;'), '非法代码不得写主档');
+assert.ok(lifecycleSource.includes('excludedInvalidCodes.push'), '被排除的脏代码必须留可查证据');
+assert.ok(lifecycleSource.includes('excludedInvalidCodes }'), '排除清单必须回传供质量核对');
+const analysisSource = fs.readFileSync(path.join(root, 'server', 'services', 'convertibleBondAnalysisSync.js'), 'utf8');
+assert.ok(analysisSource.includes('excluded_invalid_codes'), '排除清单必须进数据集诊断');
+
+console.log('OK convertible-bond-lifecycle-sync: 三日增量、统一公告任务、单一cb_issue写入者和异常代码守门通过');

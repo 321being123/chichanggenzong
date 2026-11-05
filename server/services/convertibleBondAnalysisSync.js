@@ -1521,6 +1521,7 @@ async function syncConvertibleBondAnnouncementHistories({ tsCodes = [], fromDate
         quality_status: 'passed',
         issue_count: Number(lifecycle && lifecycle.issueCount || 0),
         official_count: Number(lifecycle && lifecycle.officialCount || 0),
+        excluded_invalid_codes: (lifecycle && lifecycle.excludedInvalidCodes) || [],
       },
       ...(mode === 'calendar' ? { bond_listing_liquidity: {
         quality_status: listingLiquidity && listingLiquidity.ok !== false ? 'passed' : 'stale',

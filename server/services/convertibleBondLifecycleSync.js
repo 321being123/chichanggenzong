@@ -4,7 +4,7 @@ const fs = require('fs');
 const { spawn } = require('child_process');
 const { pool } = require('../db/connection');
 const { tushareQuery, tsRows, tsDateStr } = require('./market');
-const { ensureInstrumentIdentity, resolveCanonicalCode } = require('./securityIdentity');
+const { ensureInstrumentIdentity, canonicalizeSecurityCode } = require('./securityIdentity');
 const { pickAuthoritativeName } = require('../domain/convertibleBondNameRules');
 const { childProcessEnv, mergeExternalCallStatsFromStderr } = require('./externalCallGuard');
 const txControl = require('../repositories/transactionControl');
@@ -102,8 +102,16 @@ async function authoritativeBondName(client, canonicalCode, candidate) {
   return pickAuthoritativeName(rows[0] && rows[0].bond_short_name, candidate);
 }
 
+// 主档只允许 6 位数字 + .SH/.SZ。上游偶尔给出异常代码时不能带着脏值写主档，
+// 否则单条脏数据会让整个生命周期事务回滚，当天数据集无法发布、下游任务被挡。
+function normalizeBondMasterCode(rawCode) {
+  const canonical = canonicalizeSecurityCode(rawCode, 'convertible_bond');
+  return /^\d{6}\.(SH|SZ)$/.test(canonical || '') ? canonical : null;
+}
+
 async function ensureMinimalProfile(client, row, sources) {
-  const canonicalCode = await resolveCanonicalCode(row.ts_code || row.bond_code, 'convertible_bond', client.query.bind(client));
+  const canonicalCode = normalizeBondMasterCode(row.ts_code || row.bond_code);
+  if (!canonicalCode) return null;
   const name = await authoritativeBondName(client, canonicalCode, row.bond_name || row.onl_name) || canonicalCode;
   const listDate = isoDate(row.listing_date);
   const subscriptionDate = isoDate(row.onl_date || row.online_date);
@@ -126,7 +134,9 @@ async function upsertEvent(client, instrumentId, eventType, eventDate, sourceId,
 }
 
 async function saveIssueRow(client, row, sources, runId) {
-  const { instrumentId, canonicalCode } = await ensureMinimalProfile(client, row, sources);
+  const profile = await ensureMinimalProfile(client, row, sources);
+  if (!profile) return null;
+  const { instrumentId, canonicalCode } = profile;
   const payload = JSON.stringify(row);
   const hash = crypto.createHash('sha256').update(payload).digest('hex');
   await repository.insert_ops_raw_records([runId, sources.tushare, `tushare:cb_issue:${canonicalCode}`, payload, hash], client);
@@ -146,7 +156,9 @@ async function saveIssueRow(client, row, sources, runId) {
 async function saveOfficialRow(client, row, sources) {
   const source = sources[row.source] ? row.source : 'cninfo';
   const normalized = { ...row, ts_code: row.bond_code, onl_date: row.online_date };
-  const { instrumentId, canonicalCode } = await ensureMinimalProfile(client, normalized, sources);
+  const profile = await ensureMinimalProfile(client, normalized, sources);
+  if (!profile) return null;
+  const { instrumentId, canonicalCode } = profile;
   const sourceId = sources[source] || sources.cninfo;
   for (const [type, date] of [['shareholder_record', row.shareholder_record_date], ['online_subscription', row.online_date], ['listing', row.listing_date]]) {
     await upsertEvent(client, instrumentId, type, date, sourceId,
@@ -180,8 +192,13 @@ async function syncConvertibleBondLifecycleFacts({ toDate, officialEvents = [], 
     runId = run.rows[0].run_id;
     const persisted = new Set();
     const expectedEvents = [];
+    const excludedInvalidCodes = [];
     for (const row of issueRows) {
       const code = await saveIssueRow(client, row, sources, runId);
+      if (!code) {
+        excludedInvalidCodes.push({ source: 'tushare:cb_issue', code: String(row.ts_code || ''), reason: 'invalid_bond_code' });
+        continue;
+      }
       persisted.add(code);
       for (const [eventType, value] of [['issue_announcement', row.ann_date], ['shareholder_record', row.shd_ration_record_date],
         ['online_subscription', row.onl_date], ['result_announcement', row.res_ann_date]]) {
@@ -190,6 +207,10 @@ async function syncConvertibleBondLifecycleFacts({ toDate, officialEvents = [], 
     }
     for (const row of officialRows) {
       const code = await saveOfficialRow(client, row, sources);
+      if (!code) {
+        excludedInvalidCodes.push({ source: row.source || 'official', code: String(row.bond_code || ''), sourceKey: row.sourceKey || row.url || '', reason: 'invalid_bond_code' });
+        continue;
+      }
       persisted.add(code);
       for (const [eventType, value] of [['shareholder_record', row.shareholder_record_date],
         ['online_subscription', row.online_date], ['listing', row.listing_date]]) {
@@ -210,7 +231,7 @@ async function syncConvertibleBondLifecycleFacts({ toDate, officialEvents = [], 
     await txControl.commit(client);
     return { ok: true, fromDate: window.startDate, toDate: window.endDate, issueCount: issueRows.length,
       officialCount: officialRows.length, eventCount: uniqueExpected.length,
-      qualityStatus: 'passed', persistedCodes: [...persisted].filter(Boolean) };
+      qualityStatus: 'passed', persistedCodes: [...persisted].filter(Boolean), excludedInvalidCodes };
   } catch (error) {
     await txControl.rollback(client);
     if (runId) await repository.update_ops_ingestion_runs_1([runId, String(error.message || error).slice(0, 1000)]).catch(() => {});
@@ -218,4 +239,4 @@ async function syncConvertibleBondLifecycleFacts({ toDate, officialEvents = [], 
   } finally { client.release(); }
 }
 
-module.exports = { OVERLAP_DAYS, LIFECYCLE_TITLE, lifecycleSyncWindow, lifecycleCandidates, issueSize100m, syncConvertibleBondLifecycleFacts };
+module.exports = { OVERLAP_DAYS, LIFECYCLE_TITLE, lifecycleSyncWindow, lifecycleCandidates, issueSize100m, normalizeBondMasterCode, syncConvertibleBondLifecycleFacts };

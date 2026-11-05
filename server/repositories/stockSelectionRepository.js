@@ -1027,10 +1027,87 @@ async function hasCompletedQuarterRun({ market, quarter }, tx) {
 async function findInstrumentMeta({ tsCode }, tx) {
   const exec = executorOf(tx);
   const { rows } = await exec(
-    `SELECT i.canonical_code AS ts_code, i.name, i.market, i.list_date::text AS list_date,
+    `SELECT i.instrument_id, i.canonical_code AS ts_code, i.name, i.market, i.list_date::text AS list_date,
             i.currency_code, i.raw_data
        FROM core.instruments i WHERE i.canonical_code = $1 LIMIT 1`, [tsCode]);
   return rows[0] || null;
+}
+
+/** 这批代码里，谁在目标日往前 days 天内已经有收盘价（避免对同一批对象重复请求外部接口）。 */
+async function listCodesWithRecentBars({ codes = [], asOfDate, days = 60 }, tx) {
+  const list = (codes || []).filter(Boolean);
+  if (!list.length || !asOfDate) return new Set();
+  const exec = executorOf(tx);
+  const { rows } = await exec(`
+    SELECT DISTINCT i.canonical_code AS code
+      FROM market.daily_bars b
+      JOIN core.instruments i ON i.instrument_id = b.instrument_id
+     WHERE i.canonical_code = ANY($1::text[]) AND b.trade_date <= $2::date AND b.trade_date > ($2::date - $3::int)`,
+  [list, asOfDate, Number(days) || 60]);
+  return new Set(rows.map(row => row.code));
+}
+
+/**
+ * 港股选股补估值：批量按 (instrument_id, trade_date, source_id) 幂等写入。
+ * 行由数据层给出标准字段（total_market_cap 已是元、dividend_yield_ttm 已是小数），
+ * 这里只负责落库，不做单位换算与口径判断；币种必须随行写入，避免 HKD 被当成人民币。
+ */
+async function upsertDailyValuationRows({ rows = [], sourceId }, tx) {
+  const list = (rows || []).filter(row => row && row.instrumentId && row.tradeDate).map(row => ({
+    instrument_id: Number(row.instrumentId),
+    trade_date: row.tradeDate,
+    pe_static: row.peStatic === undefined ? null : row.peStatic,
+    pe_ttm: row.peTtm === undefined ? null : row.peTtm,
+    pb: row.pb === undefined ? null : row.pb,
+    dividend_yield_ttm: row.dividendYield === undefined ? null : row.dividendYield,
+    total_market_cap: row.totalMarketCap === undefined ? null : row.totalMarketCap,
+    circulating_market_cap: row.circulatingMarketCap === undefined ? null : row.circulatingMarketCap,
+    currency_code: row.currencyCode || null,
+  }));
+  if (!list.length) return 0;
+  const exec = executorOf(tx);
+  await exec(`
+    INSERT INTO market.daily_valuations(instrument_id,trade_date,source_id,pe_static,pe_ttm,pb,dividend_yield_ttm,
+      total_market_cap,circulating_market_cap,currency_code)
+    SELECT x.instrument_id,x.trade_date,$2,x.pe_static,x.pe_ttm,x.pb,x.dividend_yield_ttm,
+           x.total_market_cap,x.circulating_market_cap,x.currency_code
+      FROM jsonb_to_recordset($1::jsonb) AS x(instrument_id bigint,trade_date date,pe_static numeric,pe_ttm numeric,
+           pb numeric,dividend_yield_ttm numeric,total_market_cap numeric,circulating_market_cap numeric,currency_code text)
+    ON CONFLICT(instrument_id,trade_date,source_id) DO UPDATE SET
+      pe_static=COALESCE(EXCLUDED.pe_static,market.daily_valuations.pe_static),
+      pe_ttm=COALESCE(EXCLUDED.pe_ttm,market.daily_valuations.pe_ttm),
+      pb=COALESCE(EXCLUDED.pb,market.daily_valuations.pb),
+      dividend_yield_ttm=COALESCE(EXCLUDED.dividend_yield_ttm,market.daily_valuations.dividend_yield_ttm),
+      total_market_cap=COALESCE(EXCLUDED.total_market_cap,market.daily_valuations.total_market_cap),
+      circulating_market_cap=COALESCE(EXCLUDED.circulating_market_cap,market.daily_valuations.circulating_market_cap),
+      currency_code=COALESCE(EXCLUDED.currency_code,market.daily_valuations.currency_code),
+      ingested_at=now()`, [JSON.stringify(list), sourceId]);
+  return list.length;
+}
+
+/** 港股选股补收盘价：批量按 (instrument_id, trade_date, source_id) 幂等写入 OHLC。 */
+async function upsertDailyBarRows({ rows = [], sourceId }, tx) {
+  const list = (rows || []).filter(row => row && row.instrumentId && row.tradeDate).map(row => ({
+    instrument_id: Number(row.instrumentId),
+    trade_date: row.tradeDate,
+    open: row.open === undefined ? null : row.open,
+    high: row.high === undefined ? null : row.high,
+    low: row.low === undefined ? null : row.low,
+    close: row.close === undefined ? null : row.close,
+    volume: row.volume === undefined ? null : row.volume,
+    amount: row.amount === undefined ? null : row.amount,
+  }));
+  if (!list.length) return 0;
+  const exec = executorOf(tx);
+  await exec(`
+    INSERT INTO market.daily_bars(instrument_id,trade_date,source_id,open,high,low,close,volume,amount)
+    SELECT x.instrument_id,x.trade_date,$2,x.open,x.high,x.low,x.close,x.volume,x.amount
+      FROM jsonb_to_recordset($1::jsonb) AS x(instrument_id bigint,trade_date date,open numeric,high numeric,
+           low numeric,close numeric,volume numeric,amount numeric)
+    ON CONFLICT(instrument_id,trade_date,source_id) DO UPDATE SET
+      open=EXCLUDED.open,high=EXCLUDED.high,low=EXCLUDED.low,close=EXCLUDED.close,
+      volume=EXCLUDED.volume,amount=EXCLUDED.amount,ingested_at=now()`, [JSON.stringify(list), sourceId]);
+  return list.length;
 }
 
 async function insertBacktest(tx, backtest) {  const exec = executorOf(tx);
@@ -1162,5 +1239,6 @@ module.exports = {
   listRuns, findRun, listCandidates, findCandidate, listMembers, latestPublishedRun, copyCandidates,
   readUserSettings, saveUserSettings,
   saveInputGapQueue, readInputGapQueue, findInstrumentMeta, hasCompletedQuarterRun,
+  upsertDailyValuationRows, upsertDailyBarRows, listCodesWithRecentBars,
   insertBacktest, insertBacktestPeriods, findBacktest, listBacktestPeriods, listBacktests, previousPublishedMembers,
 };

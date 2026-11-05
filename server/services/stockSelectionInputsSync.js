@@ -1,7 +1,9 @@
 // 投资策略选股中心：选股输入补齐（SSV-01）。
 // 只做两件事：①把"应补未补"的对象按市场/目标日冻结成可续跑队列；②逐公司调用**既有**数据访问层与
 // 既有标准层写入入口（persistCollectedData）把财报与分红补进原表。
-// 不新建第二套采集链、不自己拼 HTTP、不写平行事实表；估值与行情的补齐仍由共享行情任务负责。
+// 不新建第二套采集链、不自己拼 HTTP、不写平行事实表。
+// 估值与行情：A 股仍由共享行情任务负责（本任务只记剩余）；**港股没有这条共享链路**，
+// 港股估值缺口由本任务的 collectHkMarketData 补（数据层已支持 hk 端点，写入同为 daily_valuations/daily_bars）。
 'use strict';
 
 const { persistCollectedData } = require('./financialDataArchitecture');
@@ -11,6 +13,15 @@ const { upsertIndustryPath } = require('../repositories/industryRepository');
 // 财报历史要覆盖"最新一年 + 此前十年"（方案 5.2 的 11 个完整财年），再往前留一年缓冲。
 const HISTORY_YEARS = 12;
 const REPORT_KINDS = ['income', 'balance', 'cashflow', 'indicator'];
+// 港股估值要覆盖十年 PB 窗口（R02），再留一年缓冲；收盘价只需覆盖近一年（R04 分母 + 60 天窗口判定）。
+const HK_VALUATION_YEARS = 11;
+const HK_PRICE_YEARS = 1;
+
+function finite(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
 
 function dashDate(value) {
   const text = String(value || '').slice(0, 10);
@@ -156,8 +167,167 @@ async function collectIndustryOne(gap, market) {
 }
 
 /**
+ * 港股单只补估值序列 + 收盘价（A 股不走这里，仍等共享行情任务）。
+ *
+ * 数据层 `readStockValuationSeriesBatch` / `readStockDailySeries` 已按代码后缀分流到官方港股端点，
+ * 本函数只做两件事：把数据层给的原有链路口径换算成标准层口径，再幂等落库。
+ * 口径：数据层港股行沿用 `hkValuationRow` 的 `dv_ttm` 百分数点、`total_mv` 万元；
+ * 标准层统一为小数股息率与「元」总市值，币种随行写入 HKD。
+ * 官方分段取数部分失败时，已取到的行照常落库，剩余区间留给下一批，不用空值覆盖旧行。
+ */
+async function collectHkMarketData(gap, asOfDate) {
+  const meta = await readMeta(gap.code);
+  if (!meta) return { code: gap.code, ok: false, reason: 'instrument_missing' };
+  const instrumentId = meta.instrument_id === null || meta.instrument_id === undefined ? null : Number(meta.instrument_id);
+  if (!instrumentId) return { code: gap.code, ok: false, reason: 'instrument_id_missing' };
+  const { readStockValuationSeriesBatch, readStockDailySeries } = require('../dataAccess/marketDatasets');
+  const store = require('./convertibleBondAnalysisStore');
+  const sources = await store.sourceIds();
+  const officialId = sources.lixinger_official;
+  if (!officialId) return { code: gap.code, ok: false, reason: 'valuation_source_missing' };
+
+  const valuationStart = dashDate(shiftYears(asOfDate, HK_VALUATION_YEARS)) || '2000-01-01';
+  const priceStart = dashDate(shiftYears(asOfDate, HK_PRICE_YEARS)) || valuationStart;
+  let rawValuations = [];
+  let partial = false;
+  try {
+    rawValuations = await readStockValuationSeriesBatch({
+      codes: [meta.ts_code], startDate: valuationStart, endDate: asOfDate,
+    });
+  } catch (error) {
+    if (Array.isArray(error && error.partialRows)) {
+      rawValuations = error.partialRows;
+      partial = true;
+    } else throw error;
+  }
+  const valuations = (rawValuations || []).map(row => {
+    const dividendYield = finite(row.dv_ttm);
+    const totalMv = finite(row.total_mv);
+    const circMv = finite(row.circ_mv);
+    return {
+      instrumentId,
+      tradeDate: dashDate(row.trade_date),
+      peStatic: finite(row.pe),
+      peTtm: finite(row.pe_ttm),
+      pb: finite(row.pb),
+      dividendYield: dividendYield === null ? null : dividendYield / 100,
+      totalMarketCap: totalMv === null ? null : totalMv * 10000,
+      circulatingMarketCap: circMv === null ? null : circMv * 10000,
+      currencyCode: row.currency || meta.currency_code || 'HKD',
+    };
+  }).filter(row => row.tradeDate);
+  const valuationWritten = await repo.upsertDailyValuationRows({ rows: valuations, sourceId: officialId });
+
+  const rawBars = await readStockDailySeries({
+    tsCode: meta.ts_code, startDate: priceStart, endDate: asOfDate, market: 'hk',
+  });
+  const barWritten = await writeHkBars({
+    rawBars, instrumentId, sources, officialId,
+  });
+
+  const ok = valuationWritten > 0 || barWritten > 0;
+  return {
+    code: gap.code,
+    ok,
+    reason: ok ? undefined : 'projection_returned_empty',
+    valuations: valuationWritten,
+    bars: barWritten,
+    partial,
+  };
+}
+
+/**
+ * 港股收盘价落库：按来源分组写（官方与腾讯混用时各自记来源），返回写入行数。
+ * 单位与字段口径由数据层保证，这里只做代码→instrument_id 的绑定与落库。
+ */
+async function writeHkBars({ rawBars, instrumentId, sources, officialId }) {
+  const barGroups = new Map();
+  (rawBars || []).forEach(row => {
+    const tradeDate = dashDate(String(row.trade_date || '').replace(/^(\d{4})(\d{2})(\d{2})$/, '$1-$2-$3'));
+    const close = finite(row.close);
+    if (!tradeDate || close === null) return;
+    const sourceCode = row.source_code || 'lixinger_official';
+    if (!barGroups.has(sourceCode)) barGroups.set(sourceCode, []);
+    barGroups.get(sourceCode).push({
+      instrumentId, tradeDate,
+      open: finite(row.open), high: finite(row.high), low: finite(row.low), close,
+      volume: finite(row.vol), amount: finite(row.amount),
+    });
+  });
+  let written = 0;
+  for (const [sourceCode, rows] of barGroups) {
+    written += await repo.upsertDailyBarRows({ rows, sourceId: sources[sourceCode] || officialId });
+  }
+  return written;
+}
+
+/**
+ * 港股目标池（恒生成分股）：数据层/HTTP 都交给既有统一采集层。
+ * 只返回规范代码清单，不写业务事实表；调用方据此决定本批补哪些对象。
+ */
+async function resolveHkTargetPool({ asOfDate } = {}) {
+  const { readIndexConstituents } = require('../dataAccess/marketDatasets');
+  if (typeof readIndexConstituents !== 'function') {
+    return { codes: [], reason: 'index_constituents_endpoint_unavailable' };
+  }
+  const rows = await readIndexConstituents({ indexCode: 'HSI', date: asOfDate });
+  const codes = Array.from(new Set((rows || []).map(row => row.code).filter(Boolean)));
+  return { codes, reason: codes.length ? undefined : 'index_constituents_empty' };
+}
+
+/**
+ * 港股目标池预补收盘价（2026-11-05）。
+ *
+ * 为什么必须先补行情再审计缺口：`loadUniverse` 只把"目标日前 60 天内有日线"的证券当成可评估对象，
+ * 恒生成分股里绝大多数港股目前一天行情都没有，它们根本不会进入选股池 ——
+ * 直接补估值会永远补不到对象上。所以港股补齐的顺序是：先在册成分补近一年收盘价，
+ * 再走缺口审计补估值/财报/分红/行业。
+ * 幂等：本地已有近 60 天行情的成分不再请求外部接口。
+ */
+async function syncHkTargetPoolBars({ asOfDate, maxCodes } = {}) {
+  const pool = await resolveHkTargetPool({ asOfDate });
+  const codes = pool.codes || [];
+  if (!codes.length) {
+    return { targetCount: 0, pending: 0, processed: 0, succeeded: 0, reason: pool.reason || 'target_pool_empty', results: [] };
+  }
+  const covered = await repo.listCodesWithRecentBars({ codes, asOfDate, days: 60 });
+  const pending = codes.filter(code => !covered.has(code));
+  const cap = Number.isFinite(Number(maxCodes)) && Number(maxCodes) > 0 ? Math.floor(Number(maxCodes)) : pending.length;
+  const batch = pending.slice(0, cap);
+  const { readStockDailySeries } = require('../dataAccess/marketDatasets');
+  const store = require('./convertibleBondAnalysisStore');
+  const sources = await store.sourceIds();
+  const officialId = sources.lixinger_official;
+  if (!officialId) {
+    return { targetCount: codes.length, pending: pending.length, processed: 0, succeeded: 0, reason: 'valuation_source_missing', results: [] };
+  }
+  const priceStart = dashDate(shiftYears(asOfDate, HK_PRICE_YEARS)) || asOfDate;
+  const results = [];
+  for (const code of batch) {
+    try {
+      const meta = await readMeta(code);
+      const instrumentId = meta && meta.instrument_id ? Number(meta.instrument_id) : null;
+      if (!instrumentId) { results.push({ code, ok: false, reason: 'instrument_missing' }); continue; }
+      const rawBars = await readStockDailySeries({ tsCode: meta.ts_code, startDate: priceStart, endDate: asOfDate, market: 'hk' });
+      const written = await writeHkBars({ rawBars, instrumentId, sources, officialId });
+      results.push({ code, ok: written > 0, bars: written, reason: written > 0 ? undefined : 'bars_returned_empty' });
+    } catch (error) {
+      results.push({ code, ok: false, reason: 'bars_collect_failed', error: String(error.message || error).slice(0, 320) });
+    }
+  }
+  return {
+    targetCount: codes.length,
+    pending: pending.length,
+    processed: batch.length,
+    succeeded: results.filter(item => item.ok).length,
+    results,
+  };
+}
+
+/**
  * 执行一次选股输入补齐。
  * @param {{market:'CN'|'HK', asOfDate:string, batchLimit?:number}} input
+ * @param {{targetPool?:{codes:string[]}}} [options]
  */
 async function syncSelectionInputs(input) {
   const service = require('./stockSelectionService');
@@ -189,6 +359,16 @@ async function syncSelectionInputs(input) {
     // attempts 是跨批次的尝试计数（R4-02）：只记上一批的失败会把更早的尝试记录丢掉。
     priorAttempts = lastRun.attempts && typeof lastRun.attempts === 'object' ? lastRun.attempts : {};
   } catch (_) { /* 读不到历史队列不影响本次补齐，只失去轮转顺序 */ }
+  // 港股先补齐"在册目标池"的近一年收盘价，再审计缺口：
+  // 没有行情就不在选股池里，估值缺口也就无从补起（见 syncHkTargetPoolBars 注释）。
+  let targetPool = null;
+  if (market === 'HK') {
+    try {
+      targetPool = await syncHkTargetPoolBars({ asOfDate, maxCodes: limit });
+    } catch (error) {
+      targetPool = { targetCount: 0, pending: 0, processed: 0, succeeded: 0, reason: 'target_pool_bars_failed', error: String(error.message || error).slice(0, 320) };
+    }
+  }
   const audit = await service.auditInputs({ market, asOfDate });
   const { financial: fundamental, industry, valuation, unclassified } = classifyGaps(audit.gaps || []);
   const industryQueue = orderByAttempts(industry, priorAttempts, previouslyFailed);
@@ -214,20 +394,32 @@ async function syncSelectionInputs(input) {
       results.push({ code: gap.code, ok: false, reason: 'collect_failed', error: String(error.message || error).slice(0, 320) });
     }
   }
+  // 港股估值/收盘价：A 股有共享行情任务，港股没有，缺口会永远悬着（2026-11-05 生产实证：
+  // 港股 daily_valuations 全历史 0 行）。因此只在港股补，A 股的 valuation 缺口仍如实记为剩余。
+  const valuationBatch = market === 'HK' ? orderByAttempts(valuation, priorAttempts, previouslyFailed).slice(0, limit) : [];
+  const valuationResults = [];
+  for (const gap of valuationBatch) {
+    try {
+      valuationResults.push(await collectHkMarketData(gap, asOfDate));
+    } catch (error) {
+      valuationResults.push({ code: gap.code, ok: false, reason: 'valuation_collect_failed', error: String(error.message || error).slice(0, 320) });
+    }
+  }
+  const attempted = results.concat(industryResults, valuationResults);
   // 重新审计：剩余量以"补完后仍待补"为准，不用本批处理数冒充完成。
   const after = await service.auditInputs({ market, asOfDate });
   const remaining = classifyGaps(after.gaps || []);
-  const failedResults = results.concat(industryResults).filter(item => !item.ok);
+  const failedResults = attempted.filter(item => !item.ok);
   const remainingCodes = new Set((after.gaps || []).map(gap => gap.code));
   const failedCodes = failedResults.map(item => item.code);
   // 本批"跑完了但缺口仍未解除"的对象同样要排到队尾（R3-02）：只轮转抛错对象时，
   // 一批"能返回数据但补不齐"的股票会稳稳占住队首，后面的对象永远轮不到。
-  const deferredCodes = [...new Set(results.concat(industryResults)
+  const deferredCodes = [...new Set(attempted
     .map(item => item.code)
     .filter(code => remainingCodes.has(code) && !failedCodes.includes(code)))];
   // 本批被尝试过的对象都要累加计数（不论成功与否）：这是"谁还没轮到"的唯一依据。
   const nextAttempts = Object.assign({}, priorAttempts);
-  results.concat(industryResults).forEach(item => {
+  attempted.forEach(item => {
     nextAttempts[item.code] = Number(nextAttempts[item.code] || 0) + 1;
   });
   // 队列里同时保留：补齐摘要 + 补齐后仍待补的对象明细（明细来自重新审计，不是本批结果倒推）。
@@ -248,6 +440,12 @@ async function syncSelectionInputs(input) {
       failed: results.filter(item => !item.ok).length,
       industryProcessed: industryResults.length,
       industrySucceeded: industryResults.filter(item => item.ok).length,
+      // 估值补齐只在港股执行；A 股仍如实记为剩余（等共享行情任务）。
+      valuationProcessed: valuationResults.length,
+      valuationSucceeded: valuationResults.filter(item => item.ok).length,
+      valuationRows: valuationResults.reduce((sum, item) => sum + Number(item.valuations || 0), 0),
+      valuationBars: valuationResults.reduce((sum, item) => sum + Number(item.bars || 0), 0),
+      targetPool,
       remainingFundamental: remaining.fundamental.length,
       remainingFinancial: remaining.fundamental.length,
       remainingIndustry: remaining.industry.length,
@@ -270,7 +468,8 @@ async function syncSelectionInputs(input) {
   const cleared = blockingRemaining === 0;
   const unclassifiedBlocked = remaining.unclassified.length > 0;
   const valuationBlocked = remaining.valuation.length > 0;
-  const processedAny = results.length + industryResults.length > 0;
+  const processedAny = results.length + industryResults.length + valuationResults.length > 0
+    || Boolean(targetPool && targetPool.processed);
   const status = cleared ? 'succeeded'
     : (!processedAny ? 'blocked' : 'partial');
   const reason = cleared ? undefined
@@ -288,6 +487,11 @@ async function syncSelectionInputs(input) {
     failed: queuePayload.lastRun.failed,
     industryProcessed: queuePayload.lastRun.industryProcessed,
     industrySucceeded: queuePayload.lastRun.industrySucceeded,
+    valuationProcessed: queuePayload.lastRun.valuationProcessed,
+    valuationSucceeded: queuePayload.lastRun.valuationSucceeded,
+    valuationRows: queuePayload.lastRun.valuationRows,
+    valuationBars: queuePayload.lastRun.valuationBars,
+    targetPool,
     remainingFundamental: queuePayload.lastRun.remainingFundamental,
     remainingFinancial: queuePayload.lastRun.remainingFinancial,
     remainingIndustry: queuePayload.lastRun.remainingIndustry,
@@ -307,4 +511,7 @@ function blockedOnlyByValuation(remaining) {
     && remaining.unclassified.length === 0 && remaining.valuation.length > 0;
 }
 
-module.exports = { syncSelectionInputs, collectOne, collectIndustryOne, classifyGaps, REPORT_KINDS, HISTORY_YEARS };
+module.exports = {
+  syncSelectionInputs, collectOne, collectIndustryOne, classifyGaps, REPORT_KINDS, HISTORY_YEARS,
+  collectHkMarketData, syncHkTargetPoolBars, resolveHkTargetPool, writeHkBars,
+};

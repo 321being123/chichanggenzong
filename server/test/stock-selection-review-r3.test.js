@@ -429,9 +429,11 @@ async function loadSelectionService(options = {}, extra = {}) {
   const state = extra.state || { runs: [] };
   const peOf = (index) => (options.missingPeAll ? null : (index === 2 && options.missingPeCompany === '13' ? null : 8 + index));
   const universe = [
-    { instrument_id: 1, code: '600001.SH', name: '甲', market: 'CN', currency_code: 'CNY', list_date: '2010-01-01', company_id: 11, pb: extra.allFail ? 9.9 : 1.2, pe_static: peOf(0), pe_ttm: 9, price: 10, price_date: '2026-09-30', risk_warning: false, suspend_type: null },
-    { instrument_id: 2, code: '600002.SH', name: '乙', market: 'CN', currency_code: 'CNY', list_date: '2010-01-01', company_id: 12, pb: extra.allFail ? 8.8 : 1.1, pe_static: peOf(1), pe_ttm: 8, price: 10, price_date: '2026-09-30', risk_warning: false, suspend_type: null },
-    { instrument_id: 3, code: '600003.SH', name: '丙', market: 'CN', currency_code: 'CNY', list_date: '2010-01-01', company_id: 13, pb: extra.allFail ? 7.7 : 1.0, pe_static: peOf(2), pe_ttm: null, price: 10, price_date: '2026-09-30', risk_warning: false, suspend_type: null },
+    // PE 口径统一 TTM（2026-11-05）：PE(TTM) 与缺 PE 开关必须联动，
+    // 否则 missingPeAll 只有静态列生效、TTM 仍给值，用例就测不到"排名输入未知"。
+    { instrument_id: 1, code: '600001.SH', name: '甲', market: 'CN', currency_code: 'CNY', list_date: '2010-01-01', company_id: 11, pb: extra.allFail ? 9.9 : 1.2, pe_static: peOf(0), pe_ttm: peOf(0) === null ? null : 8.5, price: 10, price_date: '2026-09-30', risk_warning: false, suspend_type: null },
+    { instrument_id: 2, code: '600002.SH', name: '乙', market: 'CN', currency_code: 'CNY', list_date: '2010-01-01', company_id: 12, pb: extra.allFail ? 8.8 : 1.1, pe_static: peOf(1), pe_ttm: peOf(1) === null ? null : 7.5, price: 10, price_date: '2026-09-30', risk_warning: false, suspend_type: null },
+    { instrument_id: 3, code: '600003.SH', name: '丙', market: 'CN', currency_code: 'CNY', list_date: '2010-01-01', company_id: 13, pb: extra.allFail ? 7.7 : 1.0, pe_static: peOf(2), pe_ttm: peOf(2) === null ? null : 6.5, price: 10, price_date: '2026-09-30', risk_warning: false, suspend_type: null },
   ];
   const companies = ['11', '12', '13'];
   const equity = new Map(companies.map(key => [key, {

@@ -793,8 +793,38 @@ async function resolveIndustryRows({ tsCode, cacheMs } = {}) {
   return result.rows;
 }
 
-// 官方证券代码走统一身份映射，业务不得自己拼后缀。
-// 官方供应商代码：标识层可能返回标识行对象，也可能是字符串；
+/**
+ * 指数成分股（港股恒生成分）：官方 `hk/index/constituents`。
+ * 参数名虽写 stockCodes，实际传的是**指数代码**，日期为可选；
+ * 2026-11-05 生产实测：`{stockCodes:['HSI'], date:'2026-11-04'}` 返回
+ * `[{stockCode:'HSI', constituents:[{stockCode:'00001', stockName:{cmn_hans_cn:'长和'}}...]}]`。
+ * 只输出规范代码（补足 5 位 + `.HK`）与名称，不写库、不判断业务用途。
+ */
+async function resolveIndexConstituents({ indexCode, date } = {}) {
+  const code = String(indexCode || '').trim().toUpperCase();
+  if (!code) return null;
+  const day = dashDate(date);
+  const result = await callEndpoint('hk/index/constituents', {
+    stockCodes: [code], ...(day ? { date: day } : {}),
+    // 成分按日调整，同一业务日反复跑任务不该重复消耗配额：6 小时内复用同一响应。
+  }, { dataset: 'hk_index_constituents', targetDate: day || undefined, maxAgeMs: 6 * 60 * 60 * 1000 });
+  const rows = [];
+  const seen = new Set();
+  for (const batch of result.rows || []) {
+    for (const item of (batch && batch.constituents) || []) {
+      const bare = String((item && item.stockCode) || '').trim();
+      if (!bare) continue;
+      const canonical = `${bare.padStart(5, '0')}.HK`;
+      if (seen.has(canonical)) continue;
+      seen.add(canonical);
+      const names = (item && item.stockName) || {};
+      rows.push({ code: canonical, name: names.cmn_hans_cn || names.cmn_hant_hk || names.en || null, source_code: SOURCE });
+    }
+  }
+  return rows;
+}
+
+// 官方证券代码走统一身份映射，业务不得自己拼后缀。// 官方供应商代码：标识层可能返回标识行对象，也可能是字符串；
 // 这里统一收敛成纯代码，避免把对象塞进请求体（会被上游判为 400 ValidationError）。
 async function officialStockCode(canonicalCode) {
   const resolved = await resolveProviderIdentifier({ canonicalCode, sourceCode: SOURCE, identifierType: 'stock_code' });
@@ -819,6 +849,7 @@ module.exports = {
   resolveFinancialReports,
   resolveIndexDaily,
   resolveIndustryRows,
+  resolveIndexConstituents,
   resolveIndexValuation,
   resolveMoneySupply,
   resolveSovereignYield10y,

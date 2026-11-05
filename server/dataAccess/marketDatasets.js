@@ -298,6 +298,19 @@ async function parseHsiWorkbook(buffer) {
 // allowFallback=false 时**不换源**：只回官方数据，官方没有就返回空。给「只认官方口径」的调用方用——
 // 不同来源的算法可能不同（如全市场 PE：理杏仁总市值加权 vs Tushare/中证整体法），
 // 换源后的值若被调用方按官方名义落库，就成了来源误标，所以由调用方显式关掉回退。
+/**
+ * 指数成分股（港股恒生成分，2026-11-05 新增）：官方 `hk/index/constituents`，无等价备源。
+ * 取不到时返回空数组并留证，**不用旧名单冒充当期成分**——成分是按日调整的事实，
+ * 拿过期名单去补数据会把已剔除的证券当成选股对象。
+ */
+async function readIndexConstituents({ indexCode, date } = {}) {
+  const primary = await safeOfficial(() => official.resolveIndexConstituents({ indexCode, date }), 'index_constituents');
+  if (Array.isArray(primary.value) && primary.value.length) {
+    return primary.value.map(row => ({ ...row, source_code: official.SOURCE }));
+  }
+  return [];
+}
+
 async function readIndexValuationSeries({ indexCode, startDate, endDate, market = 'cn', allowFallback = true } = {}) {
   const primary = await safeOfficial(() => official.resolveIndexValuation({ indexCode, startDate, endDate, market }), 'index_valuation');
   if (primary.value && primary.value.length) {
@@ -792,8 +805,7 @@ async function readEquitySeries({ tsCode, fields = 'ts_code,f_ann_date,end_date,
 }
 
 module.exports = {
-  readAdjustmentFactors,
-  readAdjustmentFactorSeries,
+  readAdjustmentFactors,  readAdjustmentFactorSeries,
   readBondSafetyFinancials,
   readEquitySeries,
   readForecast,
@@ -803,6 +815,7 @@ module.exports = {
   readFinancialReportRows,
   readFinancialStatementSeries,
   readIndexCloseSeries,
+  readIndexConstituents,
   readIndexValuationSeries,
   readHkDailyByTencent,
   readIndustryClassification,

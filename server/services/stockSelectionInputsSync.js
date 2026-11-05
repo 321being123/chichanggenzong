@@ -28,6 +28,17 @@ function dashDate(value) {
   return /^\d{4}-\d{2}-\d{2}$/.test(text) ? text : null;
 }
 
+/**
+ * 交易日归一：官方估值/日线在不同接口上分别返回 `YYYYMMDD` 与 `YYYY-MM-DD`
+ * （2026-11-05 实测：港股日线与估值序列都给 `20261104`），统一成标准层的 date 文本。
+ */
+function normalizeTradeDate(value) {
+  const text = String(value || '').trim();
+  const compact = text.match(/^(\d{4})(\d{2})(\d{2})$/);
+  if (compact) return `${compact[1]}-${compact[2]}-${compact[3]}`;
+  return dashDate(text);
+}
+
 function shiftYears(date, years) {
   const year = Number(String(date).slice(0, 4)) - years;
   const month = String(date).slice(5, 10);
@@ -206,7 +217,7 @@ async function collectHkMarketData(gap, asOfDate) {
     const circMv = finite(row.circ_mv);
     return {
       instrumentId,
-      tradeDate: dashDate(row.trade_date),
+      tradeDate: normalizeTradeDate(row.trade_date),
       peStatic: finite(row.pe),
       peTtm: finite(row.pe_ttm),
       pb: finite(row.pb),
@@ -243,7 +254,7 @@ async function collectHkMarketData(gap, asOfDate) {
 async function writeHkBars({ rawBars, instrumentId, sources, officialId }) {
   const barGroups = new Map();
   (rawBars || []).forEach(row => {
-    const tradeDate = dashDate(String(row.trade_date || '').replace(/^(\d{4})(\d{2})(\d{2})$/, '$1-$2-$3'));
+    const tradeDate = normalizeTradeDate(row.trade_date);
     const close = finite(row.close);
     if (!tradeDate || close === null) return;
     const sourceCode = row.source_code || 'lixinger_official';

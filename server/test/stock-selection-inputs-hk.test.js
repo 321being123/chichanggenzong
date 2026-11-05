@@ -49,8 +49,10 @@ function buildEnv(options = {}) {
     ]),
     readStockValuationSeriesBatch: async ({ codes }) => {
       calls.fetchedValuationCodes.push(...codes);
+      // 官方真实返回的 trade_date 是紧凑格式（2026-11-05 实测：估值与日线都给 20261104），
+      // 夹具按真实返回造，避免"日期归一漏了也能过"。
       return options.valuationRows || [
-        { ts_code: codes[0], trade_date: '2026-11-04', pe: null, pe_ttm: 9.5, pb: 0.8, dv_ttm: 5, total_mv: 1000, circ_mv: null, currency: 'HKD' },
+        { ts_code: codes[0], trade_date: '20261104', pe: null, pe_ttm: 9.5, pb: 0.8, dv_ttm: 5, total_mv: 1000, circ_mv: null, currency: 'HKD' },
       ];
     },
     readStockDailySeries: async ({ tsCode }) => {
@@ -103,6 +105,7 @@ async function main() {
     assert.strictEqual(written[0].dividendYield, 0.05, 'dv_ttm 百分数点必须换成小数');
     assert.strictEqual(written[0].totalMarketCap, 10000000, 'total_mv 万元必须换成元');
     assert.strictEqual(written[0].currencyCode, 'HKD', '港股必须写入 HKD，不能当人民币');
+    assert.strictEqual(written[0].tradeDate, '2026-11-04', '官方紧凑日期 20261104 必须归一成标准层日期');
     assert.strictEqual(calls.valuations[0].sourceId, 9, '来源必须记在官方名下');
     assert.strictEqual(result.valuationProcessed, 1);
   });

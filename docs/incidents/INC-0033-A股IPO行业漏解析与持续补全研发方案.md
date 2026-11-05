@@ -462,3 +462,6 @@ v10 修复代码前后格式、代码标签、大类与子类拼接和标准号�
 2026-11-01 路由核对（第二轮审查整改，执行器调度）：`services/jobOrchestrator.js` 与 `services/jobScheduleSlots.js` 本轮只改执行容量、候选分类排序与补位，不改变 IPO 行业补全的目标代码范围、原文证据要求与字段准入；`ipo_history_sync` 的定义、模式与数据集声明均未修改。
 
 2026-11-02 路由核对（独立验收 V-02 修正）：`services/jobOrchestrator.js` / `services/jobScheduleSlots.js` 本轮只改派发顺序、队列去重与心跳身份，不改变 IPO 行业补全的目标代码范围、原文证据要求与字段准入；`ipo_history_sync` 的定义、模式与数据集声明未修改。
+
+
+2026-11-05 路由核对（选股补数的 selection_inputs 契约归属修正）：`services/jobDefinitions.js` 本次只改 stock_analysis_refresh 与 company_financial_incremental_sync 两个任务的 selection_inputs 契约字段（谁外采、额度未知留 `null`），**未改** A 股 IPO 行业采集、行业 PE、产业链补全与 `ipo_history_sync` 的目标定向口径，本文结论与未验边界不变。

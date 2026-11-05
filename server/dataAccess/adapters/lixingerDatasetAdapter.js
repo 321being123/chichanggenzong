@@ -411,7 +411,12 @@ function fillStaticPe(rows, annuals) {
 // 港股官方接口是独立端点族：hk/company/fundamental|fs|dividend，指标表名与 A 股不完全相同。
 // 这里只映射官方文档明确列出、且与现有标准层字段语义一致的指标；文档里没有的键一律留空，
 // 不用推导值冒充供应商口径（例如港股没有 EBIT、没有单独的交易性金融资产）。
-const HK_VALUATION_METRICS = ['bs.pe_ttm', 'bs.pb', 'bs.dyr', 'bs.mc', 'bs.tsc'];
+// 港股估值指标：**必须与 A 股同形（无前缀）**。2026-11-05 本地实测（00001.HK）：
+// `["bs.pe_ttm","bs.pb","bs.dyr","bs.mc"]` 无论带 date 还是 startDate/endDate 都直接 400
+// `(bs.pe_ttm,bs.pb,bs.dyr,bs.mc) are invalid price metrics`；
+// `["pe_ttm","pb","dyr","mc"]` 两种用法都返回正常（pe_ttm 6.9831 / pb 0.4562 / dyr 0.0341 / mc 港币元）。
+// 港股没有流通市值等价字段，cmc 不请求；tsc（总股本）本链路不用。
+const HK_VALUATION_METRICS = ['pe_ttm', 'pb', 'dyr', 'mc'];
 
 const HK_REPORT_METRICS = {
   income: {

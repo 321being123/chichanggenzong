@@ -32,7 +32,7 @@ const DEFAULT_JOB_OPTIONS = {
 };
 
 const JOB_DEFINITION_SOURCE = [
-  { jobCode: 'company_financial_incremental_sync', label: '公司财务增量同步', hour: 6, minute: 30, weekdays: false, catchupMode: 'latest_only', dataDatePolicy: 'latest_available', freshnessGate: false, requiresDataWatermark: false, strictDatasetPublication: true, deadlineMinutes: 120, timeoutMinutes: 30, manualTargetScope: 'stock_analysis模式仅对request_payload.targetCodes指定的一只普通A股补齐完整历史财报、分红与公告并重算快照，不发布全市场分区', sourceDescription: '日常当前上市可转债正股；手动股票分析按明确指定单股采集财报入标准层', mayConsumeQuota: true, externalSources: ['tushare', 'sse', 'szse', 'cninfo'], retryPolicy: 'external', retryDelaysMinutes: [15, 60, 240], maxAttempts: 4 },
+  { jobCode: 'company_financial_incremental_sync', label: '公司财务增量同步', hour: 6, minute: 30, weekdays: false, catchupMode: 'latest_only', dataDatePolicy: 'latest_available', freshnessGate: false, requiresDataWatermark: false, strictDatasetPublication: true, deadlineMinutes: 120, timeoutMinutes: 30, manualTargetScope: 'stock_analysis模式仅对request_payload.targetCodes指定的一只普通A股补齐完整历史财报、分红与公告并重算快照，不发布全市场分区；selection_inputs模式按market与targetTradeDate冻结选股输入缺口，复用既有财务/分红/行业采集入口与标准层写入，港股另补成分、日线和估值，剩余对象持久化续跑，不发布全市场财务分区', sourceDescription: '日常当前上市可转债正股；手动股票分析按明确指定单股采集财报入标准层；选股输入补齐以理杏仁官方为主源，分红与A股行业可回退Tushare、港股日线可回退腾讯，均经既有数据访问层入口', mayConsumeQuota: true, externalSources: ['lixinger_official', 'tushare', 'tencent', 'sse', 'szse', 'cninfo'], retryPolicy: 'external', retryDelaysMinutes: [15, 60, 240], maxAttempts: 4 },
   { jobCode: 'bond_safety_refresh', label: '可转债安全评分', hour: 8, minute: 30, weekdays: true, afterTradingDay: true, deadlineMinutes: 120, dataDatePolicy: 'previous_trading_day', freshnessGate: true, strictDatasetPublication: true, dependencyCodes: ['convertible_bond_universe_refresh'], sourceDescription: '已发布的共享标准行情与财务标准层；本地计算', mayConsumeQuota: false, externalSources: [], retryPolicy: 'local', retryDelaysMinutes: [15, 60, 240], maxAttempts: 4 },
   { jobCode: 'market_close:A股', label: 'A股收盘数据', hour: 15, minute: 10, weekdays: true, deadlineMinutes: 90, dataDatePolicy: 'same_day', freshnessGate: true, sourceDescription: '腾讯行情接口', mayConsumeQuota: true, externalSources: ['tencent'], retryPolicy: 'external', retryDelaysMinutes: [15, 60], maxAttempts: 3 },
   { jobCode: 'market_close:可转债', label: '可转债收盘数据', hour: 15, minute: 10, weekdays: true, deadlineMinutes: 90, dataDatePolicy: 'same_day', freshnessGate: true, sourceDescription: '腾讯行情接口', mayConsumeQuota: true, externalSources: ['tencent'], retryPolicy: 'external', retryDelaysMinutes: [15, 60], maxAttempts: 3 },
@@ -71,7 +71,16 @@ const JOB_DEFINITION_SOURCE = [
 
 // 任务→接口→数据集契约是生成矩阵和预算门禁的唯一输入；没有外部接口的计算任务必须显式保持空数组。
 const JOB_CONTRACTS = {
-  'company_financial_incremental_sync': { externalApis: ['disclosure_date', 'income', 'balancesheet', 'cashflow', 'fina_indicator', 'dividend', 'sse', 'szse', 'cninfo'], producesDatasets: ['stock_financial_reports'], consumesDatasets: ['stock_master', 'financial_disclosure_schedule'], maxExternalCallsPerRun: null,
+  // selection_inputs 复用本任务入口补选股输入：官方接口按 lixingerEndpoints.json 已登记的 key 列名，
+  // 备源按既有 Tushare/腾讯接口名登记；未知的单批调用额度保持 null，不编造上限。
+  'company_financial_incremental_sync': { externalApis: [
+    'disclosure_date', 'income', 'balancesheet', 'cashflow', 'fina_indicator', 'dividend', 'sse', 'szse', 'cninfo',
+    'cn/company/fs/non_financial', 'hk/company/fs/non_financial',
+    'cn/company/dividend', 'hk/company/dividend',
+    'cn/company/industries', 'hk/company/industries',
+    'hk/company/fundamental/non_financial', 'hk/company/candlestick', 'hk/index/constituents',
+    'index_member_all', 'tencent_hk_daily',
+  ], producesDatasets: ['stock_financial_reports'], consumesDatasets: ['stock_master', 'financial_disclosure_schedule'], maxExternalCallsPerRun: null,
     datasetPublicationByMode: {
       core: { publish: ['stock_financial_reports'] },
       stock_analysis: { publish: [], requirePublished: [], requireStageComplete: true, requiresDataWatermark: false,

@@ -129,9 +129,11 @@ async function main() {
     assert.strictEqual(Math.round(result.equityCny), 1.8e10);
   });
 
-  await check('R05 币种未知或汇率缺口待补，不用现汇倒算', () => {
+  await check('R05 币种未知仍待补；非 CNY 无历史汇率按客观不可评估（不猜汇率）', () => {
     assert.strictEqual(RULES.evaluateInstrument(facts({ equity: { amount: 2e10, currency: null } })).rules.R05.status, RULES.STATUS.PENDING);
-    assert.strictEqual(RULES.evaluateInstrument(facts({ equity: { amount: 2e10, currency: 'USD', periodEnd: '2025-12-31' }, fx: {} })).rules.R05.status, RULES.STATUS.PENDING);
+    const fxMissing = RULES.evaluateInstrument(facts({ equity: { amount: 2e10, currency: 'USD', periodEnd: '2025-12-31' }, fx: {} }));
+    assert.strictEqual(fxMissing.rules.R05.status, RULES.STATUS.NOT_APPLICABLE);
+    assert.strictEqual(fxMissing.rules.R05.reason, 'fx_unavailable_not_evaluable');
   });
 
   await check('R03 审计机构条件不存在，缺审计数据也能正常判定', () => {

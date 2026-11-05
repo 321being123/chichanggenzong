@@ -358,6 +358,21 @@ async function runCompanyFinancialIncrementalSync(reason = 'scheduled', options 
       const cleared = remaining === 0 && result.ok === true;
       const status = cleared ? 'succeeded'
         : result.status === 'blocked' ? 'blocked' : 'partial';
+      // P0-5：与 core 模式同一套续批进度与止损。此前 selection_inputs 只回 continuationRequired，
+      // 上游执行器拿不到 noProgressCount / 起始时间，遇到「上游客观缺字段、采集再多也补不上」的
+      // 缺口会无限 auto_retry 空耗外部配额（2026-11-05 生产实测 remaining 恒 448）。
+      const continuationRequired = !cleared;
+      const continuationCount = Number(options.continuationCount || 0) + (continuationRequired ? 1 : 0);
+      const initialRemaining = Number(options.initialRemaining ?? remaining);
+      const lastRemaining = remaining;
+      const previousRemaining = Number(options.lastRemaining ?? initialRemaining);
+      const noProgressCount = continuationRequired && lastRemaining >= previousRemaining
+        ? Number(options.noProgressCount || 0) + 1 : 0;
+      const continuationStartedAt = continuationRequired
+        ? (options.continuationStartedAt || new Date().toISOString()) : null;
+      const continuationAgeExceeded = continuationStartedAt
+        && Date.now() - Date.parse(continuationStartedAt) >= 24 * 60 * 60 * 1000;
+      const continuationBlocked = continuationRequired && (noProgressCount >= 2 || continuationAgeExceeded);
       await finishJobRun(runId, cleared,
         `选股输入补齐：处理 ${result.processed}（行业 ${result.industryProcessed || 0}），成功 ${result.succeeded}，`
         + `剩余待补 ${remaining}（财报 ${remainingFinancial}、行业 ${remainingIndustry}、估值 ${remainingValuation}、未分类 ${remainingUnclassified}）`);
@@ -366,12 +381,20 @@ async function runCompanyFinancialIncrementalSync(reason = 'scheduled', options 
         // 本阶段不发布数据集（写的是同一张标准表）；有剩余就续批，清空才算阶段完成。
         publishDatasetCodes: [],
         remainingFinancial, remainingIndustry, remainingValuation, remainingUnclassified, remaining,
-        continuationRequired: !cleared,
+        continuationRequired,
+        continuationCount, initialRemaining, lastRemaining, noProgressCount, continuationStartedAt,
+        nextAttemptInMinutes: continuationRequired ? 1 : null,
         stageComplete: cleared,
         stageCompletedKind: cleared ? 'inputs_cleared' : 'inputs_gaps_pending',
         pendingStages: cleared ? [] : ['selectionInputs'],
         reason: cleared ? undefined : (result.reason || 'selection_inputs_gaps_pending'),
         status,
+        ...(continuationBlocked ? {
+          continuationBlocked: true,
+          continuationStopReason: continuationAgeExceeded
+            ? '续批超过 24 小时，已停止自动续批'
+            : '连续两批剩余缺口数量未下降，已停止自动续批',
+        } : {}),
       });
     }
     if (options.mode === 'stock_analysis') {

@@ -227,7 +227,7 @@ async function computeSelection(input, tx) {
     () => repo.loadPbWindow({ market, windowStart, asOfDate }, tx),
     () => repo.loadEquityFacts({ companyIds, asOfDate, availableBefore: knowledgeCutoff }, tx),
     () => repo.loadAnnualProfits({ companyIds, asOfDate, availableBefore: knowledgeCutoff }, tx),
-    () => repo.loadDividendWindow({ instrumentIds, windowStart: dividendWindowStart, asOfDate }, tx),
+    () => repo.loadDividendWindow({ instrumentIds, windowStart: dividendWindowStart, asOfDate, market }, tx),
     // R5-02：年度分红与利润、权益共用同一个信息截止（目标日收盘时刻），
     // 否则"目标日之后才可取到"的年报版本会把旧季度分红从待补变成通过。
     () => repo.loadAnnualDividends({ companyIds, asOfDate, availableBefore: knowledgeCutoff }, tx),
@@ -249,7 +249,7 @@ async function computeSelection(input, tx) {
     const dividendRows = companyKey ? annualDividends.get(companyKey) || [] : [];
     const years = buildAnnualYears(profitRows, dividendRows);
     const latestYear = years.length ? years[years.length - 1].year : null;
-    anomalyById[item.instrumentId] = RULES.evaluateAnnualAnomaly({ latestYear, years }, params);
+    anomalyById[item.instrumentId] = RULES.evaluateAnnualAnomaly({ latestYear, years, market }, params);
   });
 
   const { ranked, profitCount, poolSize, peRankFallback } = RULES.rankCandidates(evaluated);

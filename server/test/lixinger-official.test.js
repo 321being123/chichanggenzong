@@ -93,6 +93,12 @@ function jsonResponse(body, status = 200) {
 async function resetState() {
   await migration180LixingerOfficialSource(pool);
   await migration180LixingerOfficialSource(pool);
+  // 测试库跨轮复用（lib/testDatabase.js 只在首次从业务库模板建库，之后不清空）：
+  // 其他用例或上一轮可能留下引用本来源原始记录的财报行。必须先删依赖行再删原始记录，
+  // 否则会撞 financial_reports_raw_record_id_fkey，清理顺序变成隐式前置条件。
+  await pool.query(`DELETE FROM fundamental.financial_reports
+    WHERE raw_record_id IN (SELECT raw_record_id FROM ops.raw_records
+      WHERE source_id=(SELECT source_id FROM ops.data_sources WHERE source_code=$1))`, [SOURCE]);
   await pool.query(`DELETE FROM ops.raw_records WHERE source_id=(SELECT source_id FROM ops.data_sources WHERE source_code=$1)`, [SOURCE]);
   await pool.query(`DELETE FROM ops.external_circuits WHERE source LIKE $1`, [`${SOURCE}%`]);
   await pool.query(`DELETE FROM ops.external_call_budgets WHERE source=$1`, [SOURCE]);

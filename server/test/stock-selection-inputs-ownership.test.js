@@ -152,7 +152,9 @@ async function main() {
     assert.match(sync, /failedCodes|deferredCodes/, '失败与无进展对象必须留下轮转证据');
     const financial = read('server/services/companyFinancialIncrementalSync.js');
     assert.match(financial, /finishJobRun\(runId, cleared/);
-    assert.match(financial, /continuationRequired: !cleared/, '未清空剩余不得宣告阶段完成');
+    // 0.9.2.20 起改成先算变量再上报（同一断言口径，仍要求「未清空不得宣告完成」）。
+    assert.match(financial, /const continuationRequired = !cleared/, '未清空剩余不得宣告阶段完成');
+    assert.match(financial, /continuationRequired,\s*\n/, '续跑标志必须原样上报给执行器');
   });
 }
 

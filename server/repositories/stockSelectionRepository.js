@@ -315,11 +315,18 @@ async function loadAnnualProfits({ companyIds, asOfDate, availableBefore }, tx) 
  * - 送转拆合会让历史上"每股派 X 元"在除权前后不可比，必须用其后发生的送转因子折算（前复权）；
  * - 送转比例直接来自官方分红接口（bonusSharesFromProfit / bonusSharesFromCapitalReserve），
  *   A 股没有独立股权变动接口，但这两项随每笔分红一起返回，不需要另建采集；
- * - 只有"该笔确实发生过送转、但比例字段为空"才判股份单位未知（旧备源数据），这种情况下不猜、不折算；
+ * - A 股源逐行下发比例，只有"该笔确实发生过送转、但比例字段为空"才判股份单位未知（旧备源数据），这种情况下不猜、不折算；
+ *   港股源未下发比例（见函数内 2026-11-05 实测说明），两列空属常态、不能推断送转，按官方每股现金累计；
  * - 同一除息日多来源重复登记只取一条（官方优先），避免把同一笔派息加两遍。
  */
-async function loadDividendWindow({ instrumentIds, windowStart, asOfDate }, tx) {
+async function loadDividendWindow({ instrumentIds, windowStart, asOfDate, market }, tx) {
   if (!instrumentIds.length) return new Map();
+  // 送转比例取自官方分红接口。2026-11-05 实测：`hk/company/dividend` 对港股（含 01211、
+  // 01171、00754 这些确实派过红股/转增的标的）不返回 bonusSharesFromProfit /
+  // bonusSharesFromCapitalReserve，方案原文也不含送转；`cn/company/dividend` 才逐行下发（含 0）。
+  // 所以港股「两列都空」是常态、不能推断发生过送转：官方每股现金本就是按当期股本单位
+  // 公布的已实施金额，直接累计即可。若日后源端对港股下发了比例，仍按下面同一套因子折算。
+  const hkDividend = String(market || '').toUpperCase() === 'HK';
   const exec = executorOf(tx);
   const detail = await exec(`
       SELECT ca.instrument_id,
@@ -370,12 +377,15 @@ async function loadDividendWindow({ instrumentIds, windowStart, asOfDate }, tx) 
     let totalCash = null;
     let currency = null;
     let unitUnverified = false;
+    let hasSplitRatio = false;
     for (const row of rows) {
       const bonus = row.stock_dividend_ratio === null ? null : Number(row.stock_dividend_ratio);
       const cap = row.capitalization_ratio === null ? null : Number(row.capitalization_ratio);
       const cashValue = row.cash_per_share_pre_tax === null ? null : Number(row.cash_per_share_pre_tax);
-      // 两项都为空 = 这一笔到底有没有送转不知道，折算因子无从谈起 → 整只标未核验，不猜。
-      if (bonus === null && cap === null) unitUnverified = true;
+      // A 股源逐行下发比例（含 0），两列都空 = 这一笔有没有送转不知道 → 整只标未核验，不猜。
+      // 港股源未下发比例，两列空是常态，不能据此推断送转；官方每股现金按当期股本单位给出。
+      if (!hkDividend && bonus === null && cap === null) unitUnverified = true;
+      if (bonus !== null || cap !== null) hasSplitRatio = true;
       const change = (bonus || 0) + (cap || 0);
       // 本行的送转同样作用于本行现金：除权后股数才变多，所以本行现金要除以含本行的因子。
       if (change > 0) factor *= 1 + change;
@@ -393,6 +403,9 @@ async function loadDividendWindow({ instrumentIds, windowStart, asOfDate }, tx) 
       currency,
       totalCash,
       shareUnitUnverified: unitUnverified,
+      // 口径留证按实际数据判定，不按市场一刀切：源端给了比例（哪怕将来港股开始给）就走折算，
+      // 港股两列全空才按官方每股现金直接累计；A 股维持既有留证值。
+      shareUnitBasis: hkDividend && !hasSplitRatio ? 'official_per_share_hk' : 'verified_split_ratio',
       hasDividendHistory: hasHistory.has(key),
       // 折算因子留证：1 表示窗口内没发生送转，>1 表示历史每股金额已按比例折到 T 日单位。
       adjustmentFactor: Number(factor.toFixed(6)),

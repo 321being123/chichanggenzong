@@ -169,7 +169,10 @@ function evaluateEquity(facts, params) {
     rate = num(fx.rate);
     fxDate = fx.date || null;
     if (rate === null || rate <= 0) {
-      return { rule: rule('R05', STATUS.PENDING, Object.assign({ value: amount, reason: 'fx_unavailable' }, base)), equityCny: null, fxRate: null, fxDate: null };
+      // 非 CNY 记账却拿不到历史汇率（港股 2019 年前财报期、USD 记账的金融股）：现有汇率链路
+      // 只有稀疏的 HKD→CNY 日频、没有 USD，补历史等于新增数据源。沿用 2026-11-04 起的既有判据，
+      // 这类「客观无法折算」判不可评估：不入选、不进补数队列、不阻断整批发布（不猜汇率）。
+      return { rule: rule('R05', STATUS.NOT_APPLICABLE, Object.assign({ value: amount, reason: 'fx_unavailable_not_evaluable' }, base)), equityCny: null, fxRate: null, fxDate: null };
     }
   }
   const equityCny = amount * rate;
@@ -355,6 +358,11 @@ function evaluateAnnualAnomaly(annual, params = DEFAULT_PARAMS) {
         profitSum: null,
         dividendSum: null,
       });
+    }
+    // 港股财报年份覆盖受官方端点限制，中间缺年份时补数任务反复采集也补不齐（2026-11-05 生产实测）：
+    // 按「客观不可评估」处理，不入选、不进补数队列、不阻断整批发布；A 股中间断档仍判待补。
+    if (String((annual || {}).market || '').toUpperCase() === 'HK') {
+      return Object.assign(result, { status: STATUS.NOT_APPLICABLE, reason: 'fiscal_history_gap_not_evaluable_hk', missingYears: missing.sort((a, b) => a - b), profitSum: null, dividendSum: null });
     }
     return Object.assign(result, { status: STATUS.PENDING, reason: 'insufficient_fiscal_history', missingYears: missing.sort((a, b) => a - b), profitSum: null, dividendSum: null });
   }

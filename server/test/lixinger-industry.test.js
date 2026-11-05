@@ -28,11 +28,26 @@ assert.strictEqual(picked.industry_code, '340501');
 assert.deepStrictEqual(selectIndustryPath(rows600519.filter(r => r.source === 'cni')), null);
 assert.strictEqual(selectIndustryPath(rows600519, { system: 'cni' }), null);
 
-// 同一级出现两行 = 歧义，返回 null 保留原来源，不猜。
+// 同一级出现两行、且没有下级 = 脏数据，仍然返回 null。
 assert.strictEqual(selectIndustryPath([
   { areaCode: 'cn', stockCode: '110000', source: 'sw_2021', name: '农林牧渔' },
   { areaCode: 'cn', stockCode: '220000', source: 'sw_2021', name: '基础化工' },
 ]), null);
+
+// 多套完整层级链（多业务归属）：取接口返回顺序的第一条完整链，并留备选证据。
+const dualPath = selectIndustryPath([
+  { areaCode: 'cn', stockCode: '640000', source: 'sw_2021', name: '机械设备' },
+  { areaCode: 'cn', stockCode: '640600', source: 'sw_2021', name: '工程机械' },
+  { areaCode: 'cn', stockCode: '640601', source: 'sw_2021', name: '工程机械整机' },
+  { areaCode: 'cn', stockCode: '620000', source: 'sw_2021', name: '建筑装饰' },
+  { areaCode: 'cn', stockCode: '620600', source: 'sw_2021', name: '工程咨询服务' },
+  { areaCode: 'cn', stockCode: '620601', source: 'sw_2021', name: '工程咨询服务' },
+]);
+assert.ok(dualPath, '多套完整链不能整条丢掉');
+assert.deepStrictEqual(dualPath.industry_path, ['机械设备', '工程机械', '工程机械整机'], '取官方排第一的那条链');
+assert.strictEqual(dualPath.industry_code, '640601');
+assert.strictEqual(dualPath.industry_ambiguous, true);
+assert.deepStrictEqual(dualPath.industry_alternatives, ['640000 机械设备', '620000 建筑装饰']);
 
 // 只有一级时按一级返回。
 const levelOne = selectIndustryPath([{ areaCode: 'cn', stockCode: '340000', source: 'sw_2021', name: '食品饮料' }]);

@@ -561,20 +561,22 @@
 
 <!-- 股票筛选（一级页，投资策略选股中心） -->
 <div class="main-page" id="main-stock-selection">
-  <div class="feature-page-shell ss-shell">
-    <div class="ss-hero">
+  <div class="bond-header">
+    <div class="bond-sub-nav" id="ss-tabs">
+      <button type="button" class="bond-sub-tab active" data-ss-market="CN">A股</button>
+      <button type="button" class="bond-sub-tab" data-ss-market="HK">港股</button>
+    </div>
+  </div>
+  <div class="feature-page-shell">
+    <div class="ss-hero bond-feature-hero">
       <div>
         <h2>投资策略选股中心</h2>
         <p>按低 PB、十年出现过高 PB、有现金分红、净资产达标四项条件筛股；A股与港股各自独立排名，每个市场最多 30 只等权席位。仅供研究参考，不构成投资建议。</p>
       </div>
-      <span id="ss-updated">页面只读数据库，不会触发外部采集</span>
-    </div>
-    <div class="ss-tabs" id="ss-tabs">
-      <button type="button" data-ss-market="CN" class="active">A股</button>
-      <button type="button" data-ss-market="HK">港股</button>
+      <span id="ss-updated" class="ss-updated bond-feature-updated">页面只读数据库，不会触发外部采集</span>
     </div>
     <div id="ss-status" class="ss-status"></div>
-    <div id="ss-market-cards" class="ss-cards"></div>
+    <div id="ss-market-cards" class="ss-cards bond-feature-stats"></div>
     <ul class="ss-rule-list">
       <li><strong>准入</strong>：市场估值代理 PB 严格小于 2 才配置；PB 等于或高于 2 本轮不配置，PB 缺失按数据故障处理，不解释成便宜。</li>
       <li><strong>R01 当前 PB</strong>：0 &lt; PB ≤ 1.5。</li>
@@ -585,9 +587,9 @@
       <li><strong>组合</strong>：每市场 30 个等权席位，单一行业不超过该市场预算的 20%，合格股不足则留现金。</li>
     </ul>
     <div class="table-wrap">
-      <div class="table-header">
-        <h3>季度批次</h3>
-        <select id="ss-run-select" aria-label="选择季度批次"><option value="">正在读取...</option></select>
+      <div class="table-header"><h3>季度批次</h3></div>
+      <div class="ss-toolbar bond-feature-toolbar">
+        <label>批次<select id="ss-run-select" aria-label="选择季度批次"><option value="">正在读取...</option></select></label>
       </div>
       <div id="ss-run-header" class="ss-run-header"></div>
       <div id="ss-candidates"></div>

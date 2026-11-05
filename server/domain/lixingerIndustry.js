@@ -40,19 +40,52 @@ function selectIndustryPath(rows, options = {}) {
     .filter(node => node.level && node.name && isValidCode(system, node.code))
     .sort((a, b) => a.level - b.level);
   if (!nodes.length) return null;
-  // 同一级出现多行说明分类有歧义，不猜。
-  if (new Set(nodes.map(node => node.level)).size !== nodes.length) return null;
+  const levels = nodes.map(node => node.level);
+  const maxLevel = Math.max(...levels);
+  const unambiguous = new Set(levels).size === levels.length;
+  let chain = null;
+  let alternatives = null;
+  if (unambiguous) {
+    chain = nodes.slice().sort((a, b) => a.level - b.level);
+  } else {
+    // 同一级出现多行有两种情况，必须分开：
+    //  ① 只有几个同级代码、没有下级 → 脏数据/无法判断，仍然返回 null（不猜）。
+    //  ② 存在多套**完整层级链**（同一家公司被同时归入多个一级行业，例如中诚咨询 920003
+    //     的申万 2021 同时有「机械设备→工程机械→工程机械整机」和「建筑装饰→工程咨询→工程咨询」）：
+    //     这类不是脏数据，官方把主分类排在接口返回的前面，就取第一条完整链，
+    //     其余一级行业作为备选留证，交人工复核。整条丢掉会让这些证券永远"行业未知"。
+    if (maxLevel < 2) return null;
+    const byCode = new Map(nodes.map(node => [node.code, node]));
+    const fits = [];
+    for (const node of nodes) {
+      if (node.level !== maxLevel) continue;
+      const path = [node];
+      let cursor = node;
+      while (cursor.level > 1) {
+        const parentCode = cursor.level === 3 ? cursor.code.slice(0, 4) + '00' : cursor.code.slice(0, 2) + '0000';
+        const parent = byCode.get(parentCode);
+        if (!parent || parent.level !== cursor.level - 1) { cursor = null; break; }
+        path.unshift(parent);
+        cursor = parent;
+      }
+      if (cursor) fits.push(path);
+    }
+    if (!fits.length) return null;
+    chain = fits[0];
+    if (fits.length > 1) alternatives = fits.map(path => `${path[0].code} ${path[0].name}`);
+  }
   // 需要按一级行业控上限的调用方（港股选股）要求路径从一级起连续，缺一级宁可当未知。
-  if (options.requireRoot === true && nodes[0].level !== 1) return null;
-  const deepest = nodes[nodes.length - 1];
+  if (options.requireRoot === true && chain[0].level !== 1) return null;
+  const deepest = chain[chain.length - 1];
   return {
     industry: deepest.name,
     industry_system: SYSTEM_LABELS[system] || system,
     industry_level: `${deepest.level}级`,
-    industry_path: nodes.map(node => node.name),
+    industry_path: chain.map(node => node.name),
     industry_code: deepest.code,
     // 全层级节点交给标准层落库：只存最深节点会让"按一级行业控上限"读不到任何分类。
-    industry_nodes: nodes.map(node => ({ code: node.code, name: node.name, level: node.level })),
+    industry_nodes: chain.map(node => ({ code: node.code, name: node.name, level: node.level })),
+    ...(alternatives ? { industry_ambiguous: true, industry_alternatives: alternatives } : {}),
   };
 }
 

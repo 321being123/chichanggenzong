@@ -418,8 +418,10 @@ async function loadAnnualDividends({ companyIds, asOfDate, availableBefore }, tx
   // 整年仍被判未知（177 只曾因此在年度异常上永远待补）。
   const visibleCash = `(ca.cash_per_share_pre_tax IS NOT NULL OR ca.total_cash_amount IS NOT NULL)`;
   const implemented = `ca.status = '实施' AND ca.ex_date IS NOT NULL AND ca.ex_date <= $2::date AND ${visibleCash}`;
-  // 明确零分红：状态已实施、没有除息日（本就不该有）、每股金额明确为 0。
-  const explicitZero = `ca.status = '实施' AND ca.ex_date IS NULL AND ca.cash_per_share_pre_tax = 0`;
+  // 明确零分红：官方把"该财年不派现"落成「股东大会通过 + 每股 0 + 无除息日」，
+  // 实施且每股 0 同理。只认"实施"会把这类年份判成未知（福莱特 2024/2022/2021/2019 都是这样），
+  // 实际上方案已定、就是不分红。预案（board_director_plan）仍属未定，不在此列。
+  const explicitZero = `ca.status IN ('实施', '股东大会通过') AND ca.ex_date IS NULL AND COALESCE(ca.cash_per_share_pre_tax, 0) = 0`;
   const { rows } = await exec(`
     WITH annual_ends AS (
       -- R5-02：财年期末集合必须与利润查询用**同一套信息截止**。
@@ -499,7 +501,10 @@ async function loadAnnualDividends({ companyIds, asOfDate, availableBefore }, tx
     const knownFromZero = yearZero > 0 && amountMissing === 0;
     const knownFromStalePlan = implementedCount === 0 && amountMissing === 0 && stalePlan > 0;
     const knownFromNoEvent = eventCount === 0 && row.fiscal_year_settled === true;
-    const known = knownFromImplemented || knownFromZero || knownFromStalePlan || knownFromNoEvent;
+    // 有记录、但一条都没走到实施（只剩预案/股东大会通过）→ 该财年没有已实施现金分红，按 0 计。
+    // 与「金额缺失」区分：amountMissing>0 说明实施记录确实存在、只是金额没采到，那才是未知。
+    const knownFromPlanOnly = implementedCount === 0 && amountMissing === 0 && eventCount > 0;
+    const known = knownFromImplemented || knownFromZero || knownFromStalePlan || knownFromNoEvent || knownFromPlanOnly;
     list.push({
       year: Number(row.fiscal_year),
       dividend: known ? Number(row.implemented_cash || 0) : null,
@@ -509,8 +514,9 @@ async function loadAnnualDividends({ companyIds, asOfDate, availableBefore }, tx
         : knownFromZero ? (implementedCount > 0 ? 'interim_plus_verified_zero' : 'verified_zero_dividend')
           : knownFromStalePlan ? 'stale_plan_not_implemented'
             : knownFromNoEvent ? 'no_dividend_event_in_fiscal_year'
-              : amountMissing > 0 ? 'implemented_amount_missing'
-                : implementedCount > 0 ? 'interim_only' : 'plan_only',
+              : knownFromPlanOnly ? 'plan_not_implemented_zero'
+                : amountMissing > 0 ? 'implemented_amount_missing'
+                  : implementedCount > 0 ? 'interim_only' : 'plan_only',
     });
     map.set(key, list);
   });

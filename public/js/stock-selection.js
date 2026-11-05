@@ -115,7 +115,7 @@ function ssRenderMarkets(state) {
     var active = item.market === state.market ? ' active' : '';
     var position = item.referencePosition === null || item.referencePosition === undefined
       ? '本轮不配置' : Math.round(item.referencePosition * 100) + '%';
-    return '<div class="ss-card' + active + '">'
+    return '<div class="ss-card bond-feature-stat' + active + '">'
       + '<div class="ss-card-head"><strong>' + ssEsc(item.label) + '</strong>'
       + '<span class="ss-gate ss-gate-' + ssEsc(item.gate.status) + '">' + ssEsc(SS_GATE_TEXT[item.gate.status] || item.gate.status) + '</span></div>'
       + '<div class="ss-card-body">'
@@ -221,7 +221,7 @@ function ssRenderCandidates(state) {
       if (window.StockSelectionPresenter) window.StockSelectionPresenter.loadMore();
     });
   }
-  if (window.BusinessTable) window.BusinessTable.attach(root, { page: '#main-stock-selection', sticky: false });
+  if (window.BusinessTable) window.BusinessTable.attach(root, { page: '#main-stock-selection' });
   ssRenderRunHeader(state);
 }
 
@@ -260,7 +260,7 @@ function ssRenderPortfolio(state) {
     + '现金 ' + (Number(portfolio.cashWeightInMarketBudget) * 100).toFixed(2) + '%。</div>'
     + ssRenderChanges(portfolio.changes)
     + (industries ? '<ul class="ss-industry">' + industries + '</ul>' : '');
-  if (window.BusinessTable) window.BusinessTable.attach(root, { page: '#main-stock-selection', sticky: false });
+  if (window.BusinessTable) window.BusinessTable.attach(root, { page: '#main-stock-selection' });
 }
 
 // 季度调入调出：只在有上一份正式季度组合时才有可比对象，否则明确说明没有对比基准。
@@ -306,7 +306,7 @@ function ssRenderDetail(state) {
       + ' / 十年合计 ' + (anomaly.dividendSum === null ? '--' : (Number(anomaly.dividendSum) / 1e8).toFixed(2) + ' 亿') + '。')
     : '年度异常比较数据待补。';
   root.hidden = false;
-  root.innerHTML = '<div class="ss-detail-head"><strong>' + ssEsc(candidate.name || candidate.code) + '（' + ssEsc(candidate.code) + '）</strong>'
+  root.innerHTML = '<div class="ss-detail-head"><h3>' + ssEsc(candidate.name || candidate.code) + '（' + ssEsc(candidate.code) + '）</h3>'
     + '<button class="btn btn-outline btn-sm" id="ss-detail-close">关闭</button></div>'
     + '<div class="ss-detail-meta">批次 #' + ssEsc(detail.runId) + ' · 目标日 ' + ssEsc(detail.asOfDate)
     + ' · 行业 ' + ssEsc(candidate.industry ? candidate.industry.name : '待核验')
@@ -410,7 +410,7 @@ function ssRenderBacktests(state) {
     + '<th class="text-right">年化</th><th class="text-right">最大回撤</th><th class="text-right">基准收益</th><th class="text-right">期数</th>'
     + '</tr></thead><tbody>' + rows + '</tbody></table></div>'
     + '<div class="ss-settings-note">基准：A股沪深300、港股恒生指数，均为价格指数；夏普在缺少合格无风险序列时不输出。</div>';
-  if (window.BusinessTable) window.BusinessTable.attach(root, { page: '#main-stock-selection', sticky: false });
+  if (window.BusinessTable) window.BusinessTable.attach(root, { page: '#main-stock-selection' });
 }
 
 window.StockSelectionView = {

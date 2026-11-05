@@ -90,9 +90,14 @@ def run_sudo(client, command, timeout=240):
 
 
 def run_local(args):
-    if args[:2] == ['git', 'fetch'] and os.name == 'nt':
-        args = ['git', '-c', 'core.sshCommand=C:/Windows/System32/OpenSSH/ssh.exe', *args[1:]]
-    result = subprocess.run(args, cwd=ROOT, text=True, capture_output=True, encoding='utf-8', errors='replace')
+    # 2026-11-04 复盘：发布前置 fetch 失败（Permission denied (publickey)）的真因**不在本脚本**，
+    # 而是本机到 github.com:22 的链路间歇丢包/被干扰——同一把密钥、同一条命令连测 10 次，
+    # 走 22 端口 6 成 4 败，走 GitHub 官方的 SSH-443 (ssh.github.com:443) 9 成 1 败。
+    # 解决办法写在 ~/.ssh/config（Host github.com → HostName ssh.github.com / Port 443），
+    # 不在这里注入 ssh 命令：仓库级 core.sshCommand 的优先级高于 GIT_SSH_COMMAND，
+    # 这里设的环境变量会被覆盖，加了反而误导。保留 env 透传只为不改动原有行为。
+    env = dict(os.environ)
+    result = subprocess.run(args, cwd=ROOT, text=True, capture_output=True, encoding='utf-8', errors='replace', env=env)
     if result.returncode:
         message = (result.stderr or result.stdout).strip()
         raise SystemExit(f"发布前置校验失败：{' '.join(args)}\n{message}")

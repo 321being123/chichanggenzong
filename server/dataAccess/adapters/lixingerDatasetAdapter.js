@@ -418,6 +418,16 @@ function fillStaticPe(rows, annuals) {
 // 港股没有流通市值等价字段，cmc 不请求；tsc（总股本）本链路不用。
 const HK_VALUATION_METRICS = ['pe_ttm', 'pb', 'dyr', 'mc'];
 
+// 港股按财报类型分端点（2026-11-05 实测确认）：银行/保险/证券/REIT/其他金融各走自己那份端点，
+// 但**指标名与普通公司完全一致**（q.ps.npatoshopc.t、q.bs.tetoshopc.t、q.bs.ta.t 三类都取到真值，
+// 币种随行：友邦 USD、建行/中信证券 CNY）。之前全部 400 的原因不是指标名，而是漏了 q./.t 完整格式。
+// 金融类只取三表标准项：金融专属科目与 HKFRS 通用科目混发会被整批判非法，宽表分批一律不发。
+const HK_FINANCIAL_TABLE_TYPES = new Set(['bank', 'insurance', 'security', 'reit', 'other_financial']);
+const HK_FINANCIAL_REPORT_METRICS = {
+  income: { revenue: 'ps.oi', total_profit: 'ps.tp', n_income_attr_p: 'ps.npatoshopc' },
+  balance: { total_assets: 'bs.ta', total_liab: 'bs.tl', total_hldr_eqy_exc_min_int: 'bs.tetoshopc' },
+};
+
 const HK_REPORT_METRICS = {
   income: {
     total_revenue: 'ps.toi',
@@ -493,18 +503,22 @@ async function resolveFinancialReports({ tsCode, startDate, endDate, kinds = ['i
   if (!code || !start || !end) return null;
   const hk = isHkCode(tsCode);
   const market = hk ? 'HK' : 'CN';
-  const mapping = hk ? HK_REPORT_METRICS : REPORT_METRICS;
+  // 财报类型决定端点与指标集；未识别或缺失时回落 non_financial，不猜成金融口径。
+  const requestedType = String((options || {}).fsTableType || '');
+  const tableType = hk ? (HK_FINANCIAL_TABLE_TYPES.has(requestedType) ? requestedType : 'non_financial') : null;
+  const financialTable = Boolean(tableType && tableType !== 'non_financial');
+  const mapping = hk ? (financialTable ? HK_FINANCIAL_REPORT_METRICS : HK_REPORT_METRICS) : REPORT_METRICS;
   const metrics = [];
   for (const kind of kinds) {
     for (const base of Object.values(mapping[kind] || {})) metrics.push(`q.${base}.t`);
   }
   if (!metrics.length) return null;
-  const endpoint = hk ? 'hk/company/fs/non_financial' : 'cn/company/fs/non_financial';
+  const endpoint = hk ? `hk/company/fs/${tableType}` : 'cn/company/fs/non_financial';
   // 三表全量：官方同一接口按指标点菜，单只股票一次最多 128 个指标，
   // 因此除标准 17 项外，再按字典（A股 CAS / 港股 HKFRS 各自一套）分批发全量科目。
   // 两套准则科目不同，字典按市场取，禁止互相套用。
   const standardCodes = new Set(metrics);
-  const extraBatches = reportMetrics.requestBatchesOf(market)
+  const extraBatches = financialTable ? [] : reportMetrics.requestBatchesOf(market)
     .map(batch => batch.filter(code => !standardCodes.has(code)))
     .filter(batch => batch.length);
   const merged = new Map();

@@ -748,8 +748,10 @@ async function readFinancialStatementSeries({ tsCode, kind, startDate, endDate, 
 // ---------- 财报与分红 ----------
 
 // 财报（按报表类型）：官方优先；官方无数据时返回 null，由调用方沿用既有批量取数链路。
-async function readFinancialReportRows({ tsCode, kinds, startDate, endDate } = {}) {
-  const primary = await safeOfficial(() => official.resolveFinancialReports({ tsCode, startDate, endDate, kinds }), 'financial_reports');
+async function readFinancialReportRows({ tsCode, kinds, startDate, endDate, fsTableType } = {}) {
+  // 港股财报端点按公司财报类型分流（bank/insurance/security/reit/other_financial/non_financial），
+  // 类型由调用方按 hk/company 档案给出；缺省回落 non_financial，不猜。
+  const primary = await safeOfficial(() => official.resolveFinancialReports({ tsCode, startDate, endDate, kinds, options: { fsTableType } }), 'financial_reports');
   if (!primary.value) return null;
   const hasAny = Object.values(primary.value).some(rows => Array.isArray(rows) && rows.length);
   if (!hasAny) return null;

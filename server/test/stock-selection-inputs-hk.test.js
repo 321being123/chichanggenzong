@@ -173,24 +173,56 @@ async function main() {
     assert.strictEqual(pool.overlapCount, 1, '两边都有的标的只算一次并计入重叠');
   });
 
-  await check('港股目标池：金融类财报口径未接入前不入池，排除数量按类型如实回报', async () => {
+  await check('港股目标池：六类财报类型全部纳入，只有类型未知才排除', async () => {
     const { service } = buildEnv({
       constituents: [{ code: '00001.HK', name: '长和' }],
-      companyProfiles: [
-        { code: '00001.HK', fsTableType: 'non_financial' },
-      ],
+      companyProfiles: [{ code: '00001.HK', fsTableType: 'non_financial' }],
       mutualMarketCompanies: [
         { code: '00700.HK', name: '腾讯控股', mutualMarketFlag: true, fsTableType: 'non_financial' },
         { code: '00939.HK', name: '建设银行', mutualMarketFlag: true, fsTableType: 'bank' },
         { code: '01299.HK', name: '友邦保险', mutualMarketFlag: true, fsTableType: 'insurance' },
         { code: '06030.HK', name: '中信证券', mutualMarketFlag: true, fsTableType: 'security' },
+        { code: '09999.HK', name: '类型未知', mutualMarketFlag: true, fsTableType: null },
       ],
     });
     const pool = await service.resolveHkTargetPool({ asOfDate: '2026-11-04' });
-    assert.deepStrictEqual(pool.codes.slice().sort(), ['00001.HK', '00700.HK'], '只纳入财报口径已支持的非金融股');
-    assert.strictEqual(pool.excludedCount, 3, '被排除的数量必须如实回报');
-    assert.deepStrictEqual(pool.excludedByType, { bank: 1, insurance: 1, security: 1 }, '排除项要按财报类型分开计数');
-    assert.deepStrictEqual(pool.fsTableTypes, ['non_financial'], '支持的类型要写在返回里，便于核对');
+    assert.deepStrictEqual(pool.codes.slice().sort(), ['00001.HK', '00700.HK', '00939.HK', '01299.HK', '06030.HK'],
+      '银行/保险/证券都要入池，只有类型未知的排除');
+    assert.strictEqual(pool.excludedCount, 1, '未知类型必须如实计数');
+    assert.deepStrictEqual(pool.excludedByType, { unknown: 1 });
+    assert.strictEqual(pool.fsTableTypes.length, 6, '支持的财报类型要列全');
+  });
+
+  await check('港股财报：金融类型走对应端点，且只发三表标准项不带宽表分批', async () => {
+    const calls = [];
+    stub('../services/lixingerOfficial', {
+      callEndpoint: async (endpoint, params) => {
+        calls.push({ endpoint, metricsList: params.metricsList || [] });
+        return { rows: [] };
+      },
+    });
+    const adapterPath = require.resolve('../dataAccess/adapters/lixingerDatasetAdapter');
+    delete require.cache[adapterPath];
+    const adapter = require(adapterPath);
+    await adapter.resolveFinancialReports({
+      tsCode: '00939.HK', startDate: '2024-01-01', endDate: '2026-11-04',
+      kinds: ['income', 'balance', 'cashflow', 'indicator'], options: { fsTableType: 'bank' },
+    });
+    assert.strictEqual(calls.length, 1, '金融类只发一批标准项，不得再发宽表分批');
+    assert.strictEqual(calls[0].endpoint, 'hk/company/fs/bank', '银行必须走银行端点，不能套非金融端点');
+    const metrics = calls[0].metricsList;
+    assert.ok(metrics.includes('q.ps.npatoshopc.t'), '归母净利润用完整指标格式');
+    assert.ok(metrics.includes('q.bs.tetoshopc.t'), '归母股东权益要取，R05 依赖它');
+    assert.ok(metrics.includes('q.bs.ta.t'), '总资产要取');
+    assert.ok(!metrics.includes('q.ps.toi.t'), '金融类不发营业总收入，避免整批被判非法');
+
+    calls.length = 0;
+    await adapter.resolveFinancialReports({
+      tsCode: '00700.HK', startDate: '2024-01-01', endDate: '2026-11-04',
+      kinds: ['income', 'balance'], options: { fsTableType: 'non_financial' },
+    });
+    assert.strictEqual(calls[0].endpoint, 'hk/company/fs/non_financial', '非金融仍走原端点');
+    assert.ok(calls[0].metricsList.includes('q.ps.toi.t'), '非金融保留营业总收入等原有指标');
   });
 
   await check('港股通清单接口：按 isMutualMarketAhFlag 取数并解析每手股数与财报类型', async () => {

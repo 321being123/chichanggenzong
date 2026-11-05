@@ -118,7 +118,19 @@ async function collectOne(gap, asOfDate) {
   const { readFinancialReportRows, readDividendRows } = require('../dataAccess/marketDatasets');
   const bundle = {};
   let anyFinancial = false;
-  const financial = await readFinancialReportRows({ tsCode: meta.ts_code, kinds: REPORT_KINDS, startDate, endDate: asOfDate });
+  // 港股财报端点按公司财报类型分流（2026-11-05 实测：银行/保险/证券端点指标名与普通公司一致，
+  // 只是端点不同；类型取自 hk/company 档案，取不到就按普通公司处理并让上游留缺口）。
+  let fsTableType = null;
+  if (/^\d{5}\.HK$/i.test(String(meta.ts_code || ''))) {
+    try {
+      const { readCompanyProfiles } = require('../dataAccess/marketDatasets');
+      const profiles = (await readCompanyProfiles({ codes: [meta.ts_code] })) || [];
+      fsTableType = (profiles[0] && profiles[0].fsTableType) || null;
+    } catch (_) { fsTableType = null; }
+  }
+  const financial = await readFinancialReportRows({
+    tsCode: meta.ts_code, kinds: REPORT_KINDS, startDate, endDate: asOfDate, fsTableType,
+  });
   if (financial) {
     if (Array.isArray(financial.income) && financial.income.length) { bundle.income = financial.income; anyFinancial = true; }
     if (Array.isArray(financial.balance) && financial.balance.length) { bundle.balance = financial.balance; anyFinancial = true; }
@@ -280,7 +292,7 @@ async function writeHkBars({ rawBars, instrumentId, sources, officialId }) {
  * 合并去重后只返回规范代码；不写业务事实表，也不在这里判断"值不值得买"。
  * 任一来源取不到只让该来源缺席并记在返回里，不用旧名单补齐。
  */
-async function resolveHkTargetPool({ asOfDate, fsTableTypes = ['non_financial'] } = {}) {
+async function resolveHkTargetPool({ asOfDate, fsTableTypes = ['non_financial', 'bank', 'insurance', 'security', 'reit', 'other_financial'] } = {}) {
   const { readIndexConstituents, readMutualMarketCompanies, readCompanyProfiles } = require('../dataAccess/marketDatasets');
   const merged = new Map();
   let constituents = [];

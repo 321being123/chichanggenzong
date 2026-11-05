@@ -48,6 +48,10 @@ function buildEnv(options = {}) {
       { code: '00001.HK', name: '长和' }, { code: '00002.HK', name: '中电控股' },
     ]),
     readMutualMarketCompanies: async () => (options.mutualMarketCompanies || []),
+    // 财报类型未知时批量补查；默认给非金融，保持既有用例语义不变。
+    readCompanyProfiles: async ({ codes = [] } = {}) => (options.companyProfiles
+      ? options.companyProfiles
+      : codes.map(code => ({ code, name: null, fsTableType: 'non_financial' }))),
     readStockValuationSeriesBatch: async ({ codes }) => {
       calls.fetchedValuationCodes.push(...codes);
       // 官方真实返回的 trade_date 是紧凑格式（2026-11-05 实测：估值与日线都给 20261104），
@@ -167,6 +171,26 @@ async function main() {
     assert.strictEqual(pool.hsiCount, 2, '恒生成分数量如实回报');
     assert.strictEqual(pool.mutualMarketCount, 2, '只统计标记为真的港股通标的，false 不入池也不计数');
     assert.strictEqual(pool.overlapCount, 1, '两边都有的标的只算一次并计入重叠');
+  });
+
+  await check('港股目标池：金融类财报口径未接入前不入池，排除数量按类型如实回报', async () => {
+    const { service } = buildEnv({
+      constituents: [{ code: '00001.HK', name: '长和' }],
+      companyProfiles: [
+        { code: '00001.HK', fsTableType: 'non_financial' },
+      ],
+      mutualMarketCompanies: [
+        { code: '00700.HK', name: '腾讯控股', mutualMarketFlag: true, fsTableType: 'non_financial' },
+        { code: '00939.HK', name: '建设银行', mutualMarketFlag: true, fsTableType: 'bank' },
+        { code: '01299.HK', name: '友邦保险', mutualMarketFlag: true, fsTableType: 'insurance' },
+        { code: '06030.HK', name: '中信证券', mutualMarketFlag: true, fsTableType: 'security' },
+      ],
+    });
+    const pool = await service.resolveHkTargetPool({ asOfDate: '2026-11-04' });
+    assert.deepStrictEqual(pool.codes.slice().sort(), ['00001.HK', '00700.HK'], '只纳入财报口径已支持的非金融股');
+    assert.strictEqual(pool.excludedCount, 3, '被排除的数量必须如实回报');
+    assert.deepStrictEqual(pool.excludedByType, { bank: 1, insurance: 1, security: 1 }, '排除项要按财报类型分开计数');
+    assert.deepStrictEqual(pool.fsTableTypes, ['non_financial'], '支持的类型要写在返回里，便于核对');
   });
 
   await check('港股通清单接口：按 isMutualMarketAhFlag 取数并解析每手股数与财报类型', async () => {

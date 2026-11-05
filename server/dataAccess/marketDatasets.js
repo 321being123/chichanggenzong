@@ -303,6 +303,17 @@ async function parseHsiWorkbook(buffer) {
  * 与指数成分一样无等价备源；取不到返回空数组并留证，不拿旧名单冒充当期标的
  * （港股通名单按日调整，过期名单会把已调出的证券当成可买对象）。
  */
+/**
+ * 港股公司档案（批量）：主要取 fsTableType 决定财报端点与指标口径；无等价备源，取不到返回空数组。
+ */
+async function readCompanyProfiles({ codes = [] } = {}) {
+  const primary = await safeOfficial(() => official.resolveCompanyProfiles({ codes }), 'hk_company_profile');
+  if (Array.isArray(primary.value) && primary.value.length) {
+    return primary.value.map(row => ({ ...row, source_code: official.SOURCE }));
+  }
+  return [];
+}
+
 async function readMutualMarketCompanies(options = {}) {
   const primary = await safeOfficial(() => official.resolveMutualMarketCompanies(options), 'mutual_market_universe');
   if (Array.isArray(primary.value) && primary.value.length) {
@@ -830,6 +841,7 @@ module.exports = {
   readIndexCloseSeries,
   readIndexConstituents,
   readMutualMarketCompanies,
+  readCompanyProfiles,
   readIndexValuationSeries,
   readHkDailyByTencent,
   readIndustryClassification,

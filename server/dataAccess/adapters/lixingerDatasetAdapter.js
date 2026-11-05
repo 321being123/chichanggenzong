@@ -799,6 +799,37 @@ async function resolveIndustryRows({ tsCode, cacheMs } = {}) {
 }
 
 /**
+ * 港股公司档案（按代码批量）：`hk/company` 的 stockCodes 用法，一次最多 100 只。
+ * 主要拿 `fsTableType`（non_financial / bank / insurance / security / other_financial / reit），
+ * 港股财报端点与指标口径按它分流——2026-11-05 实测：银行/保险用 non_financial 的指标名会被判
+ * `are invalid fs metrics`，所以类型必须先确认再决定取哪种财报。
+ */
+async function resolveCompanyProfiles({ codes = [], maxAgeMs = 6 * 60 * 60 * 1000 } = {}) {
+  const list = Array.from(new Set((codes || []).map(stockCodeOf).filter(Boolean)));
+  if (!list.length) return [];
+  const rows = [];
+  for (let i = 0; i < list.length; i += 100) {
+    const batch = list.slice(i, i + 100);
+    const result = await callEndpoint('hk/company', { stockCodes: batch },
+      { dataset: 'hk_company_profile', maxAgeMs });
+    for (const item of result.rows || []) {
+      const bare = String((item && item.stockCode) || '').trim();
+      if (!bare) continue;
+      rows.push({
+        code: `${bare.padStart(5, '0')}.HK`,
+        name: (item && item.name) || null,
+        fsTableType: (item && item.fsTableType) || null,
+        listingStatus: (item && item.listingStatus) || null,
+        sharesPerLot: numberOrNull(item && item.sharesPerLot),
+        ipoDate: dashDate(item && item.ipoDate),
+        source_code: SOURCE,
+      });
+    }
+  }
+  return rows;
+}
+
+/**
  * 港股通标的清单（2026-11-05 实测确认）：
  * 官方 `hk/company` 支持 `isMutualMarketAhFlag: true` 直接筛出全部互联互通（港股通）标的，
  * 实测单次返回 **666 只**、`total=666`、每条 `mutualMarketFlag=true` 且 `mutualMarkets=["ah"]`，
@@ -894,6 +925,7 @@ module.exports = {
   resolveIndustryRows,
   resolveIndexConstituents,
   resolveMutualMarketCompanies,
+  resolveCompanyProfiles,
   resolveIndexValuation,
   resolveMoneySupply,
   resolveSovereignYield10y,

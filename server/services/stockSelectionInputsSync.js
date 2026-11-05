@@ -280,13 +280,14 @@ async function writeHkBars({ rawBars, instrumentId, sources, officialId }) {
  * 合并去重后只返回规范代码；不写业务事实表，也不在这里判断"值不值得买"。
  * 任一来源取不到只让该来源缺席并记在返回里，不用旧名单补齐。
  */
-async function resolveHkTargetPool({ asOfDate } = {}) {
-  const { readIndexConstituents, readMutualMarketCompanies } = require('../dataAccess/marketDatasets');
+async function resolveHkTargetPool({ asOfDate, fsTableTypes = ['non_financial'] } = {}) {
+  const { readIndexConstituents, readMutualMarketCompanies, readCompanyProfiles } = require('../dataAccess/marketDatasets');
   const merged = new Map();
   let constituents = [];
   let mutual = [];
   let constituentsError = null;
   let mutualError = null;
+  let profileError = null;
   if (typeof readIndexConstituents === 'function') {
     try { constituents = (await readIndexConstituents({ indexCode: 'HSI', date: asOfDate })) || []; }
     catch (error) { constituentsError = String(error.message || error).slice(0, 200); }
@@ -297,7 +298,7 @@ async function resolveHkTargetPool({ asOfDate } = {}) {
   }
   constituents.forEach(row => {
     if (!row || !row.code) return;
-    merged.set(row.code, { code: row.code, name: row.name || null, sources: ['hsi'] });
+    merged.set(row.code, { code: row.code, name: row.name || null, fsTableType: null, sources: ['hsi'] });
   });
   let mutualCount = 0;
   mutual.forEach(row => {
@@ -309,20 +310,52 @@ async function resolveHkTargetPool({ asOfDate } = {}) {
     if (existing) {
       if (!existing.sources.includes('mutual_market')) existing.sources.push('mutual_market');
       if (!existing.name) existing.name = row.name || null;
+      if (!existing.fsTableType) existing.fsTableType = row.fsTableType || null;
       return;
     }
-    merged.set(row.code, { code: row.code, name: row.name || null, sources: ['mutual_market'] });
+    merged.set(row.code, {
+      code: row.code, name: row.name || null, fsTableType: row.fsTableType || null, sources: ['mutual_market'],
+    });
   });
+  // 财报类型决定财报端点与指标口径，必须在入池前确认；指数成分不返回该字段，这里批量补查一次（≤100 只/次，有缓存）。
+  const unknownType = Array.from(merged.values()).filter(row => !row.fsTableType).map(row => row.code);
+  if (unknownType.length && typeof readCompanyProfiles === 'function') {
+    try {
+      const profiles = (await readCompanyProfiles({ codes: unknownType })) || [];
+      profiles.forEach(profile => {
+        const target = merged.get(profile.code);
+        if (target && !target.fsTableType) target.fsTableType = profile.fsTableType || null;
+      });
+    } catch (error) {
+      profileError = String(error.message || error).slice(0, 200);
+    }
+  }
   const rows = Array.from(merged.values());
   const overlap = rows.filter(row => row.sources.length > 1).length;
+  // 只纳入财报口径已支持的类型：港股银行/保险/证券等金融口径的官方指标字典尚未接入，
+  // 硬纳入只会让它们永远停在"财报待补"并阻断整批发布（2026-11-05 实测 non_financial/bank/insurance
+  // 三个端点都拒收通用指标名）。排除项按类型计数回报，不让"少了一批人"看不见。
+  const allowed = new Set((fsTableTypes || []).map(type => String(type)));
+  const kept = rows.filter(row => row.fsTableType && allowed.has(row.fsTableType));
+  const excludedByType = {};
+  rows.filter(row => !row.fsTableType || !allowed.has(row.fsTableType)).forEach(row => {
+    const key = row.fsTableType || 'unknown';
+    excludedByType[key] = (excludedByType[key] || 0) + 1;
+  });
+  const excludedCount = rows.length - kept.length;
   return {
-    codes: rows.map(row => row.code),
+    codes: kept.map(row => row.code),
     hsiCount: constituents.length,
     mutualMarketCount: mutualCount,
     overlapCount: overlap,
+    mergedCount: rows.length,
+    excludedCount,
+    excludedByType,
+    fsTableTypes: Array.from(allowed),
     constituentsError,
     mutualError,
-    reason: rows.length ? undefined : (constituentsError || mutualError ? 'target_pool_sources_failed' : 'target_pool_empty'),
+    profileError,
+    reason: kept.length ? undefined : (constituentsError || mutualError ? 'target_pool_sources_failed' : 'target_pool_empty'),
   };
 }
 
@@ -340,7 +373,10 @@ async function syncHkTargetPoolBars({ asOfDate, maxCodes } = {}) {
   const codes = pool.codes || [];
   const poolMeta = {
     hsiCount: pool.hsiCount, mutualMarketCount: pool.mutualMarketCount, overlapCount: pool.overlapCount,
+    mergedCount: pool.mergedCount, excludedCount: pool.excludedCount, excludedByType: pool.excludedByType,
+    fsTableTypes: pool.fsTableTypes,
     constituentsError: pool.constituentsError || null, mutualError: pool.mutualError || null,
+    profileError: pool.profileError || null,
   };
   if (!codes.length) {
     return Object.assign({ targetCount: 0, pending: 0, processed: 0, succeeded: 0, reason: pool.reason || 'target_pool_empty', results: [] }, poolMeta);

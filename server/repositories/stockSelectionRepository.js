@@ -128,7 +128,10 @@ async function loadUniverse({ market, asOfDate }, tx) {
       ) b ON true
      WHERE i.asset_class = 'stock'
        AND i.market = $1
-       AND i.exchange_code = ANY($3::text[])
+       -- 港股历史主档里有一批 .HK 证券的交易所被登记成 SZSE（2026-11-05 生产实测 688 只，
+       -- 恰好是港股通＋恒生成分目标池），按交易所过滤会把整个港股候选池清空、连带补数任务崩溃。
+       -- 港股市场唯一，改以 market 为准纳入；A 股仍按交易所列表过滤。
+       AND (i.market = 'HK' OR i.exchange_code = ANY($3::text[]))
        AND (i.list_date IS NULL OR i.list_date <= $2::date)
        AND (i.delist_date IS NULL OR i.delist_date > $2::date)
        -- 从未有过任何行情/估值的证券（已退市、已摘牌、吸收合并后残留主档）不构成可评估对象。

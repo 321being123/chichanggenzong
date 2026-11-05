@@ -206,9 +206,12 @@ async function computeSelection(input, tx) {
 
   const universe = await repo.loadUniverse({ market, asOfDate }, tx);
   if (!universe.length) {
+    // 空候选池是合法状态（例如港股行情还没补齐）。返回契约必须与正常路径一致：
+    // auditInputs 会遍历 evaluated，缺字段会直接抛错并把整批补数打成 failed（2026-11-05 生产实测）。
     return {
       market, asOfDate, gate, valuation, params, positionRatio,
-      universe, candidates: [], ranked: [], portfolio: PORTFOLIO.buildPortfolio({ ranked: [], positionRatio, params }),
+      universe, evaluated: [], anomalyById: {},
+      candidates: [], ranked: [], portfolio: PORTFOLIO.buildPortfolio({ ranked: [], positionRatio, params }),
       quality: { publishable: false, reason: 'universe_empty', universeCount: 0, pendingCount: 0, poolSize: 0 },
       coverage: { universeCount: 0 },
     };

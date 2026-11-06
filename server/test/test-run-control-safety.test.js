@@ -160,31 +160,28 @@ function stopChild(child) {
       } finally { lease.release(); }
     });
 
-    await test('R1-多个回收者同时抢失主锁：只能有一个真正进入', async function () {
+    await test('R1-多个回收者同时抢失主锁：临界区不得重叠（不假定谁先拿到）', async function () {
       clearLocks();
       writeFakeLock(RESOURCE, {
         runId: 'dead-owner-run', ownerPid: DEAD_PID, label: 'dead', children: [],
         startedAt: new Date(Date.now() - 60000).toISOString(), resource: RESOURCE,
       });
-      const holderScript = `
+      // 两个进程同时抢同一把失主锁。旧写法断言"先启动的那个必须先拿到"——这依赖操作系统调度，
+      // 在 Linux CI 上常常反过来，于是把一个正确的互斥实现判成失败（F14 后半条）。
+      // 真正要证明的不变量是：**同一时刻只有一个持有者**，谁先进入都可以。
+      // 因此各自打印进入/离开的时间戳，最后核对两个持有区间不重叠。
+      const makeScript = (tag, holdMs) => `
         const ctl = require(process.env.CHILD_MODULE);
-        ctl.acquireLock({ runId: 'holder-a', label: 'holder-a', resources: [process.env.CHILD_RESOURCE],
-          pollMs: 10, waitTimeoutMs: 3000, log: () => {} })
+        ctl.acquireLock({ runId: '${tag}', label: '${tag}', resources: [process.env.CHILD_RESOURCE],
+          pollMs: 10, waitTimeoutMs: 5000, log: () => {} })
           .then(async l => {
-            console.log('HOLDER_ACQUIRED');
-            await new Promise(r => setTimeout(r, 900));
+            console.log('${tag}_ACQUIRED ' + Date.now());
+            await new Promise(r => setTimeout(r, ${holdMs}));
+            console.log('${tag}_RELEASED ' + Date.now());
             l.release();
-            console.log('HOLDER_RELEASED');
             process.exit(0);
           })
-          .catch(e => { console.log('HOLDER_FAILED ' + e.code); process.exit(0); });
-      `;
-      const rivalScript = `
-        const ctl = require(process.env.CHILD_MODULE);
-        ctl.acquireLock({ runId: 'rival-b', label: 'rival-b', resources: [process.env.CHILD_RESOURCE],
-          pollMs: 10, waitTimeoutMs: 300, log: () => {} })
-          .then(l => { console.log('RIVAL_ACQUIRED'); l.release(); process.exit(0); })
-          .catch(e => { console.log('RIVAL_BLOCKED ' + e.code); process.exit(0); });
+          .catch(e => { console.log('${tag}_FAILED ' + e.code); process.exit(0); });
       `;
       const runChild = script => new Promise(resolve => {
         const p = spawn(process.execPath, ['-e', script], {
@@ -195,10 +192,21 @@ function stopChild(child) {
         p.stdout.on('data', c => { out += c.toString('utf8'); });
         p.on('close', () => resolve(out));
       });
-      const [holderOut, rivalOut] = await Promise.all([runChild(holderScript), runChild(rivalScript)]);
-      assert.ok(/HOLDER_ACQUIRED/.test(holderOut), '先到者应拿到资源：' + holderOut);
-      assert.ok(!/RIVAL_ACQUIRED/.test(rivalOut), '同时抢失主锁的第二个进程不得同时进入：' + rivalOut);
-      assert.ok(/RIVAL_BLOCKED/.test(rivalOut), '第二个进程必须排队并给出阻塞原因：' + rivalOut);
+      const [outA, outB] = await Promise.all([runChild(makeScript('holder', 900)), runChild(makeScript('rival', 300))]);
+      const windowOf = (out, tag) => {
+        const acquired = new RegExp(tag + '_ACQUIRED (\\d+)').exec(out);
+        const released = new RegExp(tag + '_RELEASED (\\d+)').exec(out);
+        if (!acquired) return null;
+        return { start: Number(acquired[1]), end: released ? Number(released[1]) : Number(acquired[1]) + 900 };
+      };
+      const holder = windowOf(outA, 'holder');
+      const rival = windowOf(outB, 'rival');
+      assert.ok(holder || rival, '至少有一个进程应拿到资源：' + outA + ' / ' + outB);
+      if (holder && rival) {
+        const overlap = holder.start < rival.end && rival.start < holder.end;
+        assert.ok(!overlap,
+          '两个持有区间不得重叠（holder ' + holder.start + '-' + holder.end + '，rival ' + rival.start + '-' + rival.end + '）');
+      }
     });
 
     // ==================== R2：父进程消失不等于可以回收 ====================

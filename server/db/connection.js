@@ -62,4 +62,12 @@ const pool = process.env.DATABASE_URL
       ...roleOptions,
     });
 
+// 空闲连接被服务端单方面断开（PG 重启、网络抖动、管理员 pg_terminate_backend、临时测试库被删）时，
+// pg 的 Pool 会向进程抛 'error' 事件；没有监听器时 Node 会把它当未捕获异常、直接退出整个进程。
+// 这在生产上是"数据库抖一下就整个服务挂掉"，在测试里表现为"用例全过但进程崩了、退出码 1"。
+// 这里只记录并继续运行：坏连接由池自动丢弃，下一次 acquire 会重建。
+pool.on('error', (error) => {
+  console.error('[db] 连接池空闲连接异常（已忽略，下次取连接自动重连）：' + String((error && error.message) || error).slice(0, 300));
+});
+
 module.exports = { pool, crypto, fs, path, DATA_DIR, DEFAULT_FEE_SETTINGS };

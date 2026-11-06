@@ -5,13 +5,29 @@
 
 const crypto = require('crypto');
 const RULES = require('../domain/stockSelectionRules');
+const RULES_V2 = require('../domain/stockSelectionRulesV2');
 const PORTFOLIO = require('../domain/stockSelectionPortfolio');
+const PERIODS = require('./stockSelectionPeriods');
 const repo = require('../repositories/stockSelectionRepository');
 const { withTransaction } = require('../db/transaction');
 const CoreDate = require('../../public/shared/core-date.js');
 
 const STRATEGY_VERSION = 'v1';
+const STRATEGY_CODES = Object.freeze([RULES.STRATEGY_CODE, RULES_V2.STRATEGY_CODE_V2]);
+/**
+ * 默认激活策略：由 STOCK_SELECTION_STRATEGY 显式指定，未配置时保持 V1。
+ * 这是方案 27.13 的上线顺序决定的——V2 必须先以影子批次跑满两个完整周，
+ * 由发布对话确认后再切换默认值；代码上线不等于策略切换，不能悄悄改现网业务结论。
+ */
+const DEFAULT_STRATEGY_CODE = (() => {
+  const code = String(process.env.STOCK_SELECTION_STRATEGY || '').trim().toLowerCase();
+  return STRATEGY_CODES.includes(code) ? code : RULES.STRATEGY_CODE;
+})();
 const MARKET_LABEL = Object.freeze({ CN: 'A股', HK: '港股' });
+// 运行类型 → 信号周期：季度保留原 quarter，日/周新增；预览与个人不做正式周期发布，归属日。
+const PERIOD_TYPE_OF_KIND = Object.freeze({
+  quarterly: 'quarter', daily: 'day', weekly: 'week', preview: 'day', personal: 'day',
+});
 // 收盘可见时点：A股 15:00、港股 16:00（当地）。只有日期没有时刻的公告保守地从下一交易日视为可用。
 const CLOSE_CUTOFF = Object.freeze({ CN: 'T15:00:00+08:00', HK: 'T16:00:00+08:00' });
 
@@ -101,6 +117,26 @@ function normalizeMarket(market) {
   return value;
 }
 
+/** 策略代码规范化：只接受已登记的策略，未知代码直接 400，不静默退回默认。 */
+function normalizeStrategyCode(value) {
+  const code = String(value || DEFAULT_STRATEGY_CODE).toLowerCase();
+  if (!STRATEGY_CODES.includes(code)) {
+    const error = new Error('策略版本不合法');
+    error.status = 400;
+    throw error;
+  }
+  return code;
+}
+
+/**
+ * V2 参数覆盖白名单：当前为空。
+ * 阈值（maxPb=1.5、乘积 22.5、三倍极值比）与 R02 证据政策只能随公式/策略版本固化，
+ * 浏览器请求不得覆盖公共策略——这是方案 27.4 的明确要求，不是遗漏参数。
+ */
+function sanitizeV2Overrides() {
+  return {};
+}
+
 /**
  * 年度事实构造（SSV-04）：利润与分红的完整性分别标注。
  * 没有任何分红记录的一年是"未知"，不是"零分红"——记 null 并标 dividendKnown=false，
@@ -152,21 +188,48 @@ function buildRuleFacts(row, ctx) {
     code: row.code,
     name: row.name,
     market: row.market,
+    // 原始 NUMERIC 文本：V2 全链路十进制判定必须拿到数据库原文，不能先经过 Number（方案 27.4）。
+    pbRaw: row.pb === null || row.pb === undefined ? null : String(row.pb),
+    peTtmRaw: row.pe_ttm === null || row.pe_ttm === undefined ? null : String(row.pe_ttm),
     pb: row.pb,
     peStatic: row.pe_static,
     peTtm: row.pe_ttm,
     price: row.price,
     priceDate: row.price_date,
+    // 停牌回退时的真实估值日期：V2 要能说清"这是停牌前最后有效 PB"，不能冒充 T 日值。
+    valuationAsOf: row.valuation_date || null,
     // 价格币种（F09）：股息必须与价格同币种才能相除，否则算出来的是错误量纲的比率。
     priceCurrency: row.currency_code ? String(row.currency_code).toUpperCase() : null,
     pbWindow: {
+      // V1 合同字段
       maxPb: pbEvidence.maxPb,
       coveredDays: pbEvidence.coveredDays,
       expectedDays: pbEvidence.expectedDays,
       gapDays: pbEvidence.gapDays,
       marketDays: ctx.pbWindow.marketDays,
       calendarDays: ctx.pbWindow.calendarDays,
+      // V2 正极值比与覆盖分账（原始 NUMERIC 文本一并保留）
+      minPb: pbEvidence.minPb,
+      minPbRaw: pbEvidence.minPbRaw,
+      maxPbRaw: pbEvidence.maxPbRaw,
+      positiveDays: pbEvidence.positiveDays,
+      positiveGapDays: pbEvidence.positiveGapDays,
+      observedDays: pbEvidence.observedDays,
+      nonPositiveDays: pbEvidence.nonPositiveDays,
+      invalidDays: pbEvidence.invalidDays,
+      missingDays: pbEvidence.missingDays,
+      exemptDays: pbEvidence.exemptDays,
+      calendarComplete: pbEvidence.calendarComplete,
+      effectiveStart: pbEvidence.effectiveStart,
+      listDate: pbEvidence.listDate,
+      minPbDate: pbEvidence.minPbDate,
+      maxPbDate: pbEvidence.maxPbDate,
+      historyYears: pbEvidence.historyYears,
+      windowStart: pbEvidence.windowStart,
+      windowEnd: pbEvidence.windowEnd,
     },
+    // 证据引用：完整日序列仍在 market.daily_valuations，这里只带摘要指纹（方案 27.7）。
+    pbSeriesHash: pbEvidence.pbSeriesDigest || null,
     equity: equity ? {
       amount: equity.amount, currency: equity.currency, periodEnd: equity.periodEnd,
       announcedAt: equity.announcedAt, reportId: equity.reportId,
@@ -201,10 +264,17 @@ async function computeSelection(input, tx) {
     error.status = 400;
     throw error;
   }
-  const params = Object.assign({}, RULES.DEFAULT_PARAMS, input.params || {});
+  // 策略分派（方案 27.2）：V1 与 V2 各自登记参数/公式，服务不能写死 V1 常量。
+  // V2 的阈值与比较方式固化在公式版本里，不接受浏览器请求覆盖公共策略。
+  const strategyCode = normalizeStrategyCode(input.strategyCode);
+  const isV2 = strategyCode === RULES_V2.STRATEGY_CODE_V2;
+  const params = isV2
+    ? Object.assign({}, RULES_V2.V2_PARAMS, sanitizeV2Overrides(input.params))
+    : Object.assign({}, RULES.DEFAULT_PARAMS, input.params || {});
   const positionRatio = PORTFOLIO.clampRatio(input.positionRatio, 1);
   const valuation = await repo.loadMarketValuation({ market, asOfDate }, tx);
-  const gate = RULES.evaluateMarketGate(valuation, params);
+  // V2 取消市场指数 PB 配置门槛（方案 27.3）：指数估值只做可选展示，缺失/异常不阻断计算与发布。
+  const gate = isV2 ? RULES_V2.evaluateMarketGateV2(valuation) : RULES.evaluateMarketGate(valuation, params);
 
   // 信息可见截止先算出来：宇宙查询里的 PE/PB 回退也要用它，否则同一批计算里
   // PE/净资产会取到不同版本的报表（F09）。
@@ -215,6 +285,7 @@ async function computeSelection(input, tx) {
     // auditInputs 会遍历 evaluated，缺字段会直接抛错并把整批补数打成 failed（2026-11-05 生产实测）。
     return {
       market, asOfDate, gate, valuation, params, positionRatio,
+      strategyCode, isV2,
       universe, evaluated: [], anomalyById: {},
       candidates: [], ranked: [], portfolio: PORTFOLIO.buildPortfolio({ ranked: [], positionRatio, params }),
       // 空池必须同时给出 reason 和 reasons（F10）：回测只读 reasons 判"可不可还原"，
@@ -248,7 +319,8 @@ async function computeSelection(input, tx) {
   const fx = await repo.loadFxRatesForPairs({ pairs: fxPairs }, tx);
 
   const ctx = { equity, profits, annualDividends, dividends, industries, pbWindow, fx, asOfDate, dividendWindowStart };
-  const evaluated = universe.map(row => buildRuleFacts(row, ctx)).map(facts => RULES.evaluateInstrument(facts, params));
+  const evaluated = universe.map(row => buildRuleFacts(row, ctx))
+    .map(facts => (isV2 ? RULES_V2.evaluateInstrumentV2(facts, params) : RULES.evaluateInstrument(facts, params)));
 
   // 年度异常独立判定，不参与三项名次。
   const anomalyById = {};
@@ -261,7 +333,8 @@ async function computeSelection(input, tx) {
     anomalyById[item.instrumentId] = RULES.evaluateAnnualAnomaly({ latestYear, years, market }, params);
   });
 
-  const { ranked, profitCount, poolSize, peRankFallback } = RULES.rankCandidates(evaluated);
+  const ranking = isV2 ? RULES_V2.rankCandidatesV2(evaluated) : RULES.rankCandidates(evaluated);
+  const { ranked, profitCount, poolSize, peRankFallback } = ranking;
   const portfolio = PORTFOLIO.buildPortfolio({
     ranked,
     anomalyById,
@@ -269,6 +342,8 @@ async function computeSelection(input, tx) {
     slots: params.slotsPerMarket,
     industryLimitRatio: params.industryLimitRatio,
     params,
+    excludedInstrumentIds: input.excludedInstrumentIds || null,
+    excludedIndustryCodes: input.excludedIndustryCodes || null,
   });
 
   // 质量裁决：PENDING 表示"未知"，FAIL 是"明确不符合"，RISK 是"当期风险暂缓"。
@@ -335,7 +410,7 @@ async function computeSelection(input, tx) {
     pbWindow: { marketDays: pbWindow.marketDays, calendarDays: pbWindow.calendarDays, windowStart },
   };
 
-  return { market, asOfDate, gate, valuation, params, positionRatio, universe, evaluated, ranked, anomalyById, portfolio, quality, coverage };
+  return { market, asOfDate, gate, valuation, params, positionRatio, strategyCode, isV2, universe, evaluated, ranked, anomalyById, portfolio, quality, coverage };
 }
 
 /**
@@ -433,12 +508,13 @@ function statusOf(computed, quality) {
 }
 
 /**
- * 计算并落库（正式季度 / 预览 / 个人测算共用一条路径）。
- * runKind=quarterly 且质量通过时才移动正式发布指针；否则只保存部分数据预览。
+ * 计算并落库（正式季度/每日/每周 / 预览 / 个人测算共用一条路径）。
+ * 只有共享非影子且质量通过的 quarterly/daily/weekly 才移动对应渠道的正式发布指针；
+ * 影子只保存影子批次（分区由 Runner 另行发布），个人与预览永不发布。
  */
 async function computeAndPersist(input) {
   const runKind = input.runKind || 'preview';
-  if (!['quarterly', 'preview', 'personal'].includes(runKind)) {
+  if (!['quarterly', 'daily', 'weekly', 'preview', 'personal'].includes(runKind)) {
     const error = new Error('运行类型不合法');
     error.status = 400;
     throw error;
@@ -448,42 +524,73 @@ async function computeAndPersist(input) {
     error.status = 400;
     throw error;
   }
+  const isShadow = input.shadow === true || input.isShadow === true;
+  if (isShadow && !['daily', 'weekly'].includes(runKind)) {
+    const error = new Error('只有每日/每周模式支持影子批次');
+    error.status = 400;
+    throw error;
+  }
   return withTransaction(async tx => {
     const computed = await computeSelection(input, tx);
+    const isV2 = computed.strategyCode === RULES_V2.STRATEGY_CODE_V2;
+    const strategyVersion = input.strategyVersion || (isV2 ? 'v2' : STRATEGY_VERSION);
     const strategyId = await repo.upsertStrategy(tx, {
-      strategyCode: RULES.STRATEGY_CODE,
+      strategyCode: computed.strategyCode,
       market: computed.market,
-      version: input.strategyVersion || STRATEGY_VERSION,
+      version: strategyVersion,
       formulaVersion: computed.params.formulaVersion,
       adapterVersion: computed.params.adapterVersion,
       riskVersion: computed.params.riskVersion,
       industryVersion: computed.params.industryVersion,
       effectiveFrom: computed.asOfDate,
       parameters: computed.params,
-      contentHash: hashOf({ strategy: RULES.STRATEGY_CODE, params: computed.params, version: input.strategyVersion || STRATEGY_VERSION }),
+      contentHash: hashOf({ strategy: computed.strategyCode, params: computed.params, version: strategyVersion }),
     });
-    const manifest = manifestOf(computed, {
+    // 周期身份：日/周/季由 run_kind 决定；预览与个人不做正式周期发布，但同样记录归属周期便于筛选。
+    const periodType = input.periodType || PERIOD_TYPE_OF_KIND[runKind] || 'day';
+    const periodKey = input.periodKey || PERIODS.periodKeyOf(periodType, computed.asOfDate);
+    const periodRange = periodKey ? PERIODS.periodRangeOf(periodType, periodKey) : null;
+    const manifestExtra = {
       positionRatio: computed.positionRatio,
       industryLimitRatio: computed.params.industryLimitRatio,
       owner: input.ownerUsername || null,
       sourceRunId: input.sourceRunId || null,
-    });
+    };
+    // V1 的输入哈希保持原样（不因 V2 上线漂移）；V2 额外绑定策略/周期/精度/影子身份。
+    if (isV2) {
+      manifestExtra.strategyCode = computed.strategyCode;
+      manifestExtra.precisionPolicyVersion = computed.params.precisionPolicyVersion;
+      manifestExtra.pbExtremaPolicy = computed.params.pbExtremaPolicy;
+      if (runKind === 'daily' || runKind === 'weekly') {
+        manifestExtra.periodType = periodType;
+        manifestExtra.periodKey = periodKey;
+        manifestExtra.isShadow = isShadow;
+      }
+      if (input.settingsHash) manifestExtra.settingsHash = input.settingsHash;
+    }
+    const manifest = manifestOf(computed, manifestExtra);
     const inputHash = hashOf(manifest);
     const quarter = input.quarter || quarterOf(computed.asOfDate);
     const existing = await repo.findRunByIdempotencyKey(tx, {
       strategyId, market: computed.market, asOfDate: computed.asOfDate,
       runKind, inputHash, ownerUsername: input.ownerUsername || null,
+      periodType, isShadow,
     });
     if (existing) {
       const run = await repo.findRun(existing, tx);
-      return { runId: existing, reused: true, run, computed };
+      return { runId: existing, reused: true, run, computed, publish: null };
     }
-    const revision = runKind === 'quarterly' ? await repo.nextRevision(tx, { market: computed.market, quarter, strategyId }) : 1;
+    const isFormal = ['quarterly', 'daily', 'weekly'].includes(runKind) && !isShadow;
+    const revision = isFormal
+      ? await repo.nextRevision(tx, { market: computed.market, quarter, strategyId, periodType, periodKey, runKind })
+      : 1;
     const status = statusOf(computed, computed.quality);
-    const publishable = runKind === 'quarterly' && computed.quality.publishable;
+    const publishable = isFormal && computed.quality.publishable;
+    const computedAt = new Date();
     const runId = await repo.insertRun(tx, {
       strategyId, market: computed.market, runKind, ownerUsername: input.ownerUsername || null,
-      quarter, asOfDate: computed.asOfDate, knowledgeCutoff: knowledgeCutoffFor(computed.market, computed.asOfDate),
+      quarter: runKind === 'quarterly' ? quarter : null,
+      asOfDate: computed.asOfDate, knowledgeCutoff: knowledgeCutoffFor(computed.market, computed.asOfDate),
       executionStatus: status.executionStatus,
       qualityStatus: status.qualityStatus,
       businessStatus: status.businessStatus,
@@ -500,6 +607,16 @@ async function computeAndPersist(input) {
       publishedAt: null,
       supersedesRunId: input.supersedesRunId || null,
       requestId: input.requestId || null,
+      periodType, periodKey,
+      periodStart: periodRange ? periodRange.periodStart : null,
+      periodEnd: periodRange ? periodRange.periodEnd : null,
+      sourceDailyRunId: input.sourceDailyRunId || null,
+      settingsRevision: input.settingsRevision === undefined ? null : input.settingsRevision,
+      settingsHash: input.settingsHash || null,
+      ownerSubjectId: input.ownerSubjectId || null,
+      revisionReason: input.revisionReason || null,
+      computedAt,
+      isShadow,
     });
     // 候选要保存全市场逐项决策，不能只留最有希望的 30 只。
     const rankedById = new Map(computed.ranked.map(item => [item.instrumentId, item]));
@@ -512,21 +629,38 @@ async function computeAndPersist(input) {
         peRank: rankedRow.peRank,
         dividendRank: rankedRow.dividendRank,
         selectionOrder: rankedRow.selectionOrder,
+        rankReady: item.rankReady === true,
+        rankBlockReasons: item.rankBlockReasons || [],
       });
     });
     await repo.insertCandidates(tx, runId, rows);
     await repo.insertMembers(tx, runId, computed.portfolio.members);
     let publish = null;
     if (publishable) {
-      publish = await repo.publishRun(tx, runId, { market: computed.market, quarter });
+      publish = await repo.publishRun(tx, runId, {
+        market: computed.market,
+        quarter,
+        actor: input.actor || input.ownerUsername || null,
+        subjectId: input.ownerSubjectId || null,
+        slotId: input.slotId || null,
+        executionToken: input.executionToken || null,
+        reason: input.revisionReason || (isShadow ? 'shadow' : null),
+      });
     }
     const run = await repo.findRun(runId, tx);
-    return { runId, reused: false, run, computed, publish };
+    return { runId, reused: false, run, computed, publish, periodType, periodKey, isShadow };
+  }).then(async result => {
+    // 提交成功后补"可见确认"时刻：事务内 now() 不能冒称对外可见时间（方案 27.7）。
+    if (result.publish && result.publish.eventId) {
+      await repo.markPublicationVisible({ runId: result.runId, eventId: result.publish.eventId })
+        .catch(() => null);
+    }
+    return result;
   });
 }
 
 /** 季度自动执行：目标日与季度都由交易日历推导，不用执行当天替代。 */
-async function runQuarterly({ market, quarter, requestId, strategyVersion }) {
+async function runQuarterly({ market, quarter, requestId, strategyVersion, strategyCode, actor, slotId, executionToken }) {
   const normalized = normalizeMarket(market);
   // 缺省季度由最近一个已结束季度解析（管理员不带季度直接点计算也必须有确定目标日）。
   const resolvedQuarter = quarter || (await pendingQuarter({ market: normalized })).quarter;
@@ -539,13 +673,16 @@ async function runQuarterly({ market, quarter, requestId, strategyVersion }) {
   }
   const result = await computeAndPersist({
     market: normalized, asOfDate: target.asOfDate, quarter: resolvedQuarter, runKind: 'quarterly',
-    requestId, strategyVersion, positionRatio: 1,
+    requestId, strategyVersion, strategyCode, positionRatio: 1,
+    actor, slotId, executionToken,
   });
   return {
     ok: true,
     market: normalized,
     quarter: resolvedQuarter,
     quarterDate: target.asOfDate,
+    periodType: 'quarter',
+    periodKey: result.periodKey || `Q:${resolvedQuarter}`,
     runId: result.runId,
     reused: result.reused,
     qualityStatus: result.run.quality_status,
@@ -555,6 +692,149 @@ async function runQuarterly({ market, quarter, requestId, strategyVersion }) {
     // 阶段完成裁决需要区分"正式发布 / 市场正常关闭 / 只是预览"，这些证据必须一起返回。
     pendingCount: Number(result.run.pending_count || 0),
     qualityReasons: computedQualityReasons(result),
+  };
+}
+
+/**
+ * 周期目标日：先按周期键（或给定日期所在周期）算起止，再取该周期内最后一个开市日。
+ * 整周期休市返回 no_session（运营证据），不改用别的日期凑一次计算（方案 27.6）。
+ */
+async function resolvePeriodTarget({ market, periodType, date, periodKey }, tx) {
+  const normalized = normalizeMarket(market);
+  const type = String(periodType || '').toLowerCase();
+  if (!PERIODS.PERIOD_TYPES.includes(type)) {
+    const error = new Error('周期类型不合法');
+    error.status = 400;
+    throw error;
+  }
+  let key = periodKey || null;
+  if (!key) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(String(date || ''))) {
+      const error = new Error('目标日期参数不合法');
+      error.status = 400;
+      throw error;
+    }
+    key = PERIODS.periodKeyOf(type, date);
+  }
+  const range = key ? PERIODS.periodRangeOf(type, key) : null;
+  if (!range) {
+    const error = new Error('周期键不合法');
+    error.status = 400;
+    throw error;
+  }
+  const calendar = await repo.loadCalendar({ market: normalized, fromDate: range.periodStart, toDate: range.periodEnd }, tx);
+  if (!calendar.length) {
+    return { market: normalized, periodType: type, periodKey: key, ...range, asOfDate: null, reason: 'calendar_unavailable' };
+  }
+  const asOfDate = PERIODS.lastSessionOf(calendar, range.periodStart, range.periodEnd);
+  if (!asOfDate) {
+    return { market: normalized, periodType: type, periodKey: key, ...range, asOfDate: null, reason: 'no_session' };
+  }
+  // 日周期必须正好落在交易日，不允许把"周内最后开市日"当成某一天的结果。
+  if (type === 'day' && asOfDate !== date && date) {
+    return { market: normalized, periodType: type, periodKey: key, ...range, asOfDate: null, reason: 'no_session', targetDate: date };
+  }
+  return { market: normalized, periodType: type, periodKey: key, ...range, asOfDate, reason: null };
+}
+
+/**
+ * 每日/每周执行（方案 27.8 的 selection_daily / selection_weekly）。
+ * 影子批次（shadow=true）只保存影子结果，不移动正式指针、不写正式分区。
+ */
+async function runPeriodic(input) {
+  const market = normalizeMarket(input.market);
+  const periodType = String(input.periodType || '').toLowerCase();
+  if (!['day', 'week'].includes(periodType)) {
+    const error = new Error('周期类型不合法');
+    error.status = 400;
+    throw error;
+  }
+  const shadow = input.shadow === true;
+  const strategyCode = normalizeStrategyCode(input.strategyCode);
+  const target = await resolvePeriodTarget({ market, periodType, date: input.targetDate || input.date, periodKey: input.periodKey });
+  if (!target.asOfDate) {
+    return {
+      ok: false, status: target.reason === 'no_session' ? 'no_session' : 'blocked',
+      reason: target.reason, market, periodType, periodKey: target.periodKey,
+      periodStart: target.periodStart, periodEnd: target.periodEnd, shadow, runId: null,
+    };
+  }
+  const runKind = periodType === 'day' ? 'daily' : 'weekly';
+  const result = await computeAndPersist({
+    market,
+    asOfDate: target.asOfDate,
+    runKind,
+    periodType,
+    periodKey: target.periodKey,
+    shadow,
+    strategyCode,
+    requestId: input.requestId,
+    actor: input.actor || null,
+    slotId: input.slotId || null,
+    executionToken: input.executionToken || null,
+    positionRatio: 1,
+    sourceDailyRunId: input.sourceDailyRunId || null,
+  });
+  const quality = (result.run && result.run.input_manifest && result.run.input_manifest.quality) || {};
+  const readinessStatus = result.run && result.run.quality_status === 'passed' ? 'ready' : 'not_ready';
+  return {
+    ok: true,
+    status: result.run && result.run.quality_status === 'passed' ? 'succeeded' : 'partial',
+    market,
+    periodType,
+    periodKey: target.periodKey,
+    periodStart: target.periodStart,
+    periodEnd: target.periodEnd,
+    asOfDate: target.asOfDate,
+    shadow,
+    runId: result.runId,
+    reused: result.reused,
+    qualityStatus: result.run.quality_status,
+    businessStatus: result.run.business_status,
+    published: !!result.run.published_at,
+    selectedCount: Number(result.run.selected_count || 0),
+    pendingCount: Number(result.run.pending_count || 0),
+    qualityReasons: computedQualityReasons(result),
+    readinessStatus,
+    quality,
+    strategyCode,
+  };
+}
+
+/** 当前周期就绪概览：供 /markets 说明"本周/今日是否已就绪"，不用 daily 冒充 weekly。 */
+async function periodStatus({ market, periodType, strategyCode, date }) {
+  const normalized = normalizeMarket(market);
+  const type = String(periodType || 'week').toLowerCase();
+  const today = /^\d{4}-\d{2}-\d{2}$/.test(String(date || ''))
+    ? String(date)
+    : CoreDate.todayInZone('Asia/Shanghai');
+  const periodKey = PERIODS.periodKeyOf(type, today);
+  const range = periodKey ? PERIODS.periodRangeOf(type, periodKey) : null;
+  const code = normalizeStrategyCode(strategyCode);
+  const strategyId = await repo.findStrategyId({ market: normalized, strategyCode: code });
+  const latest = await repo.latestPublishedRun({ market: normalized, strategyId, periodType: type });
+  const target = await resolvePeriodTarget({ market: normalized, periodType: type, date: today });
+  return {
+    market: normalized,
+    periodType: type,
+    periodKey,
+    periodStart: range ? range.periodStart : null,
+    periodEnd: range ? range.periodEnd : null,
+    strategyCode: code,
+    asOfDate: target.asOfDate,
+    readinessStatus: target.asOfDate ? 'calendar_ready' : 'not_ready',
+    readinessReason: target.reason || null,
+    // "本周待就绪 + 最近一次历史正式结果日期"是页面必须能同时看到的两件事（方案 27.6）。
+    latest: latest ? {
+      runId: Number(latest.run_id),
+      periodType: latest.period_type || 'quarter',
+      periodKey: latest.period_key || (latest.quarter ? `Q:${latest.quarter}` : null),
+      asOfDate: latest.as_of_date,
+      revision: Number(latest.revision || 1),
+      selectedCount: Number(latest.selected_count || 0),
+      publishedAt: latest.published_at,
+    } : null,
+    samePeriodPublished: Boolean(latest && latest.period_key === periodKey),
   };
 }
 
@@ -592,15 +872,32 @@ function previousQuarterOf(quarter) {
   return `${year}Q${q - 1}`;
 }
 
-/** 市场概览：两市场指数 PB/PE、实际日期、准入结论与当前季度就绪情况。 */
-async function getMarkets() {
+/**
+ * 市场概览：指数 PB/PE（仅展示）、准入结论与当前周期就绪情况。
+ * V2 的 ready 只看"本周期是否有正式结果"，不再依赖指数 PB（方案 27.3）；
+ * 同时单独给出每日/每周状态，"本周未就绪"不能拿 daily 结果顶替。
+ */
+async function getMarkets({ strategyCode } = {}) {
+  const code = normalizeStrategyCode(strategyCode);
+  const isV2 = code === RULES_V2.STRATEGY_CODE_V2;
+  const params = isV2 ? RULES_V2.V2_PARAMS : RULES.DEFAULT_PARAMS;
+  const activePeriodType = isV2 ? 'week' : 'quarter';
   const markets = [];
   for (const market of ['CN', 'HK']) {
     const config = repo.MARKET_CONFIG[market];
     // 页面只读库：取该指数最近一条可用估值日期，不触发任何外部采集。
     const latest = await repo.loadLatestMarketValuation({ market });
-    const gate = RULES.evaluateMarketGate(latest, RULES.DEFAULT_PARAMS);
-    const published = await repo.latestPublishedRun({ market });
+    const gate = isV2 ? RULES_V2.evaluateMarketGateV2(latest) : RULES.evaluateMarketGate(latest, params);
+    const strategyId = await repo.findStrategyId({ market, strategyCode: code });
+    const published = await repo.latestPublishedRun({ market, strategyId, periodType: activePeriodType });
+    // 就绪 = 已激活策略在本周期有正式结果；指数 PB 是否合格不再是条件。
+    const ready = isV2 ? !!published : (gate.eligible && !!published);
+    let weekly = null;
+    let daily = null;
+    if (isV2) {
+      weekly = await periodStatus({ market, periodType: 'week', strategyCode: code }).catch(() => null);
+      daily = await periodStatus({ market, periodType: 'day', strategyCode: code }).catch(() => null);
+    }
     markets.push({
       market,
       label: MARKET_LABEL[market],
@@ -608,17 +905,24 @@ async function getMarkets() {
       benchmarkLabel: market === 'CN' ? '中证全指' : '恒生指数',
       valuationMethod: 'market_cap_weighted',
       valuationMethodLabel: '总市值加权',
+      // 页面名称必须写清是"市场代理"，不能标成精确全市场整体 PB（方案 3.2）。
+      proxyLabel: market === 'CN' ? '中证全指PB（A股市场代理）' : '恒生指数PB（港股市场代理）',
       asOfDate: latest.tradeDate,
       pb: latest.pb,
       pe: latest.pe,
       sourceCode: latest.sourceCode,
       gate,
+      // V2 明确标注指数估值只作参考，不参与是否配置（用户可见文案见方案 27.15）。
+      marketValuationRole: isV2 ? 'display_only' : 'gate',
       referencePosition: RULES.referencePositionForPb(latest.pb),
       latestRun: published,
-      ready: gate.eligible && !!published,
+      ready,
+      activePeriodType,
+      weekly,
+      daily,
     });
   }
-  return { markets, params: RULES.DEFAULT_PARAMS };
+  return { markets, params, strategyCode: code };
 }
 
 async function getRun(runId) {
@@ -653,6 +957,7 @@ async function getPortfolio(runId) {
   };
   const positionRatio = run.position_ratio === null ? 1 : Number(run.position_ratio);
   const slots = RULES.DEFAULT_PARAMS.slotsPerMarket;
+  const investedDenominator = members.length;
   const industryBreakdown = [];
   const industryCount = new Map();
   members.forEach(member => {
@@ -664,6 +969,8 @@ async function getPortfolio(runId) {
   industryCount.forEach(entry => {
     industryBreakdown.push(Object.assign(entry, {
       weightInMarketBudget: entry.count * positionRatio / slots,
+      // 实际股票子组合口径：不足 30 席时它和 1/30 不同；行业占预算 13.33% 不等于占股票 13.33%。
+      weightInInvestedEquity: investedDenominator > 0 ? entry.count / investedDenominator : null,
       limitRatio: RULES.DEFAULT_PARAMS.industryLimitRatio,
     }));
   });
@@ -671,6 +978,13 @@ async function getPortfolio(runId) {
   return {
     runId: Number(runId),
     market: run.market,
+    runKind: run.run_kind,
+    periodType: run.period_type || null,
+    periodKey: run.period_key || null,
+    periodStart: run.period_start_text || null,
+    periodEnd: run.period_end_text || null,
+    isShadow: run.is_shadow === true,
+    computedAt: run.computed_at || null,
     asOfDate: run.as_of_date_text,
     positionRatio,
     budgetRatio: run.budget_ratio === null ? null : Number(run.budget_ratio),
@@ -679,6 +993,13 @@ async function getPortfolio(runId) {
     unfilledSlots: slots - members.length,
     equityWeightInMarketBudget: equityWeight,
     cashWeightInMarketBudget: 1 - equityWeight,
+    // 三种权重分母分开给，页面不要用一个"权重"混着说（方案 27.9）。
+    weightBasis: {
+      weightInMarketBudget: positionRatio / slots,
+      weightInEquityTarget: 1 / slots,
+      weightInInvestedEquity: investedDenominator > 0 ? 1 / investedDenominator : null,
+      investedDenominator,
+    },
     changes,
     members: members.map(member => ({
       slotNo: member.slot_no,
@@ -690,11 +1011,22 @@ async function getPortfolio(runId) {
       industrySystem: member.industry_system,
       weightInMarketBudget: Number(member.weight_in_market_budget),
       weightInEquityTarget: Number(member.weight_in_equity_target),
+      weightInInvestedEquity: member.weight_in_invested_equity === null || member.weight_in_invested_equity === undefined
+        ? null : Number(member.weight_in_invested_equity),
       issuerDuplicate: member.issuer_duplicate,
       currentPb: member.current_pb === null ? null : Number(member.current_pb),
       currentPe: member.current_pe === null ? null : Number(member.current_pe),
       dividendYield: member.dividend_yield === null ? null : Number(member.dividend_yield),
       totalScore: member.total_score === null ? null : Number(member.total_score),
+      // V2 解释字段：估值通过路径与历史极值，和"最终入选"分开说明。
+      valuationStatus: member.valuation_status || null,
+      valuationPassReason: member.valuation_pass_reason || null,
+      pbPeProduct: member.pb_pe_product === null || member.pb_pe_product === undefined ? null : Number(member.pb_pe_product),
+      historicalPbMin: member.historical_pb_min === null || member.historical_pb_min === undefined ? null : Number(member.historical_pb_min),
+      historicalPbMax: member.historical_pb_max === null || member.historical_pb_max === undefined ? null : Number(member.historical_pb_max),
+      pbPositiveExtremaRatio: member.pb_positive_extrema_ratio === null || member.pb_positive_extrema_ratio === undefined
+        ? null : Number(member.pb_positive_extrema_ratio),
+      ttmProfitStatus: member.ttm_profit_status || null,
     })),
     industryBreakdown,
   };
@@ -722,6 +1054,23 @@ async function getStockDetail({ runId, code }) {
       } : null,
       currentPb: candidate.current_pb === null ? null : Number(candidate.current_pb),
       historicalPbMax: candidate.historical_pb_max === null ? null : Number(candidate.historical_pb_max),
+      historicalPbMin: candidate.historical_pb_min === null || candidate.historical_pb_min === undefined
+        ? null : Number(candidate.historical_pb_min),
+      pbPositiveExtremaRatio: candidate.pb_positive_extrema_ratio === null || candidate.pb_positive_extrema_ratio === undefined
+        ? null : Number(candidate.pb_positive_extrema_ratio),
+      pbPeProduct: candidate.pb_pe_product === null || candidate.pb_pe_product === undefined
+        ? null : Number(candidate.pb_pe_product),
+      valuationStatus: candidate.valuation_status || null,
+      valuationPassReason: candidate.valuation_pass_reason || null,
+      ttmProfitStatus: candidate.ttm_profit_status || null,
+      rankReady: candidate.rank_ready === null || candidate.rank_ready === undefined ? null : candidate.rank_ready === true,
+      rankBlockReasons: candidate.rank_block_reasons || [],
+      pbCoverage: {
+        coveredDays: candidate.pb_covered_days === null || candidate.pb_covered_days === undefined ? null : Number(candidate.pb_covered_days),
+        expectedDays: candidate.pb_expected_days === null || candidate.pb_expected_days === undefined ? null : Number(candidate.pb_expected_days),
+        gapDays: candidate.pb_gap_days === null || candidate.pb_gap_days === undefined ? null : Number(candidate.pb_gap_days),
+        historyYears: candidate.pb_history_years === null || candidate.pb_history_years === undefined ? null : Number(candidate.pb_history_years),
+      },
       currentPe: candidate.current_pe === null ? null : Number(candidate.current_pe),
       profitStatus: candidate.profit_status,
       dividendYield: candidate.dividend_yield === null ? null : Number(candidate.dividend_yield),
@@ -743,7 +1092,27 @@ async function getStockDetail({ runId, code }) {
   };
 }
 
-function validateSettingsPayload(body) {
+const SETTINGS_SCHEMA_VERSION = 2;
+const SETTINGS_LIMITS = Object.freeze({
+  industriesPerMarket: 200,
+  excludedInstruments: 500,
+  noteLength: 100,
+  codeLength: 20,
+});
+
+// 行业代码/备注是纯文本：长度受限、不做 HTML 转义后存储（前端渲染时转义），但不允许控制字符。
+const CONTROL_CHARS = /[\u0000-\u001f\u007f]/;
+
+function sanitizePlainText(value, maxLength) {
+  const text = String(value === undefined || value === null ? '' : value);
+  return text.replace(CONTROL_CHARS, '').slice(0, maxLength);
+}
+
+/**
+ * 设置校验（方案 27.9）：资金字段沿用原合同，新字段以「省略=保留、显式空=清空」处理。
+ * 旧客户端只提交资金字段时，服务端不能把已存的行业/证券排除一并清掉。
+ */
+function validateSettingsPayload(body, existing) {
   const errors = [];
   const pickRatio = (value, field) => {
     if (value === null || value === undefined || value === '') return null;
@@ -751,7 +1120,9 @@ function validateSettingsPayload(body) {
     if (!Number.isFinite(n) || n < 0 || n > 1) errors.push(`${field} 必须是 0—1 之间的小数`);
     return Number.isFinite(n) ? n : null;
   };
+  const prior = existing || {};
   const settings = {
+    schemaVersion: SETTINGS_SCHEMA_VERSION,
     budgetRatioA: pickRatio(body.budgetRatioA, 'A股市场资金占比'),
     budgetRatioHk: pickRatio(body.budgetRatioHk, '港股市场资金占比'),
     positionRatioA: pickRatio(body.positionRatioA, 'A股目标股票仓位'),
@@ -764,6 +1135,94 @@ function validateSettingsPayload(body) {
   }
   const budgetSum = (settings.budgetRatioA || 0) + (settings.budgetRatioHk || 0);
   if (budgetSum > 1 + 1e-9) errors.push('两个市场资金占比之和不能超过 100%');
+
+  // 行业排除：{ CN: [code...], HK: [code...] }，省略整个字段表示保留旧值。
+  const rawIndustries = body.industryFilters === undefined ? prior.industryFilters : body.industryFilters;
+  const industryFilters = { CN: [], HK: [] };
+  if (rawIndustries !== undefined && rawIndustries !== null) {
+    if (typeof rawIndustries !== 'object' || Array.isArray(rawIndustries)) {
+      errors.push('行业排除格式不合法');
+    } else {
+      ['CN', 'HK'].forEach(market => {
+        const list = rawIndustries[market];
+        if (list === undefined) {
+          // 只提交一个市场时，另一个市场保留旧值，不把"没提到"当"清空"。
+          industryFilters[market] = Array.isArray(prior.industryFilters && prior.industryFilters[market])
+            ? prior.industryFilters[market] : [];
+          return;
+        }
+        if (!Array.isArray(list)) {
+          errors.push(`${market} 市场行业排除必须是数组`);
+          return;
+        }
+        const seen = new Set();
+        list.forEach(item => {
+          const code = typeof item === 'object' && item !== null ? item.code : item;
+          const text = sanitizePlainText(code, 32).trim();
+          if (!text) return;
+          if (seen.has(text)) return;
+          seen.add(text);
+          industryFilters[market].push({
+            code: text,
+            system: typeof item === 'object' && item !== null ? sanitizePlainText(item.system, 32) || null : null,
+            version: typeof item === 'object' && item !== null ? sanitizePlainText(item.version, 16) || null : null,
+            name: typeof item === 'object' && item !== null ? sanitizePlainText(item.name, 64) || null : null,
+          });
+        });
+        if (industryFilters[market].length > SETTINGS_LIMITS.industriesPerMarket) {
+          errors.push(`${market} 市场行业排除最多 ${SETTINGS_LIMITS.industriesPerMarket} 个`);
+        }
+      });
+    }
+  } else {
+    industryFilters.CN = Array.isArray(prior.industryFilters && prior.industryFilters.CN) ? prior.industryFilters.CN : [];
+    industryFilters.HK = Array.isArray(prior.industryFilters && prior.industryFilters.HK) ? prior.industryFilters.HK : [];
+  }
+  settings.industryFilters = industryFilters;
+
+  // 证券排除：省略=保留；显式 [] 才是"全部恢复"。
+  const rawExcluded = body.excludedInstruments === undefined ? prior.excludedInstruments : body.excludedInstruments;
+  const excludedInstruments = [];
+  if (rawExcluded !== undefined && rawExcluded !== null) {
+    if (!Array.isArray(rawExcluded)) {
+      errors.push('股票排除必须是数组');
+    } else {
+      const seen = new Set();
+      rawExcluded.forEach(item => {
+        if (typeof item !== 'object' || item === null) { errors.push('股票排除每项必须是对象'); return; }
+        const market = String(item.market || '').toUpperCase();
+        if (!['CN', 'HK'].includes(market)) { errors.push('股票排除的市场必须是 CN 或 HK'); return; }
+        const code = sanitizePlainText(item.code, SETTINGS_LIMITS.codeLength).trim().toUpperCase();
+        if (!code) { errors.push('股票排除的代码不能为空'); return; }
+        const key = `${market}:${code}`;
+        if (seen.has(key)) return;
+        seen.add(key);
+        excludedInstruments.push({
+          market,
+          code,
+          instrumentId: item.instrumentId === undefined || item.instrumentId === null ? null : Number(item.instrumentId),
+          note: sanitizePlainText(item.note, SETTINGS_LIMITS.noteLength) || null,
+        });
+      });
+      if (excludedInstruments.length > SETTINGS_LIMITS.excludedInstruments) {
+        errors.push(`股票排除最多 ${SETTINGS_LIMITS.excludedInstruments} 只`);
+      }
+    }
+  } else if (Array.isArray(prior.excludedInstruments)) {
+    prior.excludedInstruments.forEach(item => {
+      if (!item || !item.market || !item.code) return;
+      excludedInstruments.push({
+        market: String(item.market).toUpperCase(),
+        code: String(item.code).toUpperCase(),
+        instrumentId: item.instrumentId === undefined ? null : item.instrumentId,
+        note: item.note || null,
+      });
+    });
+  }
+  settings.excludedInstruments = excludedInstruments;
+  // customFilterVersion 是结构版本，不能替代每次保存递增的 revision。
+  settings.customFilterVersion = SETTINGS_SCHEMA_VERSION;
+
   if (errors.length) {
     const error = new Error(errors.join('；'));
     error.status = 400;
@@ -782,34 +1241,125 @@ async function getSettings(username) {
   return { settings: stored.settings, revision: stored.revision };
 }
 
+/**
+ * 保存设置：显式 revision 乐观锁 + 统一身份解析（方案 27.9）。
+ * 用户填的代码必须唯一映射到一只证券，否则报错让用户写全代码，不猜、不静默丢弃。
+ */
 async function saveSettings({ username, body }) {
-  const settings = validateSettingsPayload(body || {});
   const stored = await repo.readUserSettings(username);
-  const expected = Number((body || {}).revision === undefined ? (stored ? stored.revision : 0) : (body || {}).revision);
+  if (!stored) {
+    const error = new Error('账号不存在');
+    error.status = 404;
+    throw error;
+  }
+  const settings = validateSettingsPayload(body || {}, stored.settings || {});
+  const expected = Number((body || {}).revision === undefined ? stored.revision : (body || {}).revision);
+  if (!Number.isInteger(expected) || expected !== stored.revision) {
+    const error = new Error('设置已被其他窗口修改，请刷新后重试');
+    error.status = 409;
+    throw error;
+  }
+
+  // 代码 → 统一身份：按市场分组批量解析，写回规范化代码与 instrument_id。
+  const byMarket = { CN: [], HK: [] };
+  settings.excludedInstruments.forEach(item => { byMarket[item.market].push(item.code); });
+  const resolved = new Map();
+  for (const market of ['CN', 'HK']) {
+    if (!byMarket[market].length) continue;
+    const rows = await repo.resolveInstrumentsByCodes({ market, codes: byMarket[market] });
+    const byCode = new Map();
+    rows.forEach(row => {
+      const bare = String(row.code).split('.')[0].toUpperCase();
+      [String(row.code).toUpperCase(), bare].forEach(key => {
+        const list = byCode.get(key) || [];
+        if (!list.some(item => Number(item.instrument_id) === Number(row.instrument_id))) list.push(row);
+        byCode.set(key, list);
+      });
+    });
+    for (const code of byMarket[market]) {
+      const bare = code.split('.')[0];
+      const candidates = byCode.get(code) || byCode.get(bare) || [];
+      const unique = Array.from(new Map(candidates.map(row => [String(row.instrument_id), row])).values());
+      if (!unique.length) {
+        const error = new Error(`${market === 'CN' ? 'A股' : '港股'}代码 ${code} 未找到对应证券`);
+        error.status = 400;
+        throw error;
+      }
+      if (unique.length > 1) {
+        const error = new Error(`${market === 'CN' ? 'A股' : '港股'}代码 ${code} 匹配到多只证券，请填写完整代码`);
+        error.status = 400;
+        throw error;
+      }
+      resolved.set(`${market}:${code}`, {
+        instrumentId: Number(unique[0].instrument_id),
+        code: String(unique[0].code),
+        name: unique[0].name || null,
+      });
+    }
+  }
+  settings.excludedInstruments = settings.excludedInstruments.map(item => {
+    const hit = resolved.get(`${item.market}:${item.code}`);
+    return hit
+      ? Object.assign({}, item, { instrumentId: hit.instrumentId, code: hit.code, name: hit.name })
+      : item;
+  });
+
   return repo.saveUserSettings({ username, settings, expectedRevision: expected });
 }
 
+/** 个人排除的生效集合：只取本人设置里、当前市场范围内的行业代码与 instrument_id。 */
+function exclusionOf(settings, market) {
+  const source = settings || {};
+  const industryCodes = (source.industryFilters && Array.isArray(source.industryFilters[market])
+    ? source.industryFilters[market] : []).map(item => (typeof item === 'string' ? item : (item && item.code))).filter(Boolean);
+  const instrumentIds = (Array.isArray(source.excludedInstruments) ? source.excludedInstruments : [])
+    .filter(item => item && String(item.market).toUpperCase() === market)
+    .map(item => Number(item.instrumentId))
+    .filter(id => Number.isFinite(id) && id > 0);
+  return { industryCodes, instrumentIds };
+}
+
 /**
- * 个人资金测算（方案 6.3、11）：复用已发布排名做资金测算，不重新取数、不改正式季度结果。
- * 排名沿用源批次快照，只按用户仓位与预算重算席位和权重。
+ * 个人资金测算（方案 27.9）：个人结果是公共策略的覆盖层，不是公共组合本身。
+ * - 源批次必须是**完整**质量通过的结果（daily 允许未发布但必须完整，方案 27.6）；
+ * - 用完整冻结投影（游标分页，不受 5000 行限制），保留源名次与全部判定，不补 rankReady；
+ * - 本人行业/证券排除 → 按原 selection_order 递补 → 席位与行业上限。
  */
-async function createSimulation({ username, sourceRunId, positionRatio, budgetRatio }) {
+async function createSimulation({ username, sourceRunId, positionRatio, budgetRatio, clientRequestId }) {
   const source = await repo.findRun(sourceRunId);
   if (!source) {
     const error = new Error('源批次不存在');
     error.status = 404;
     throw error;
   }
-  if (!source.published_at && source.run_kind !== 'preview') {
-    const error = new Error('该批次尚未发布，不能用它做个人测算');
+  const isPersonalSource = source.run_kind === 'personal';
+  const sourceReady = source.quality_status === 'passed'
+    && (source.published_at || ['daily', 'weekly', 'preview'].includes(source.run_kind));
+  if (!sourceReady || isPersonalSource) {
+    const error = new Error('该批次尚未就绪或不可作为测算来源');
+    error.status = 409;
+    throw error;
+  }
+  if (source.is_shadow) {
+    const error = new Error('影子批次不能用于个人测算');
     error.status = 409;
     throw error;
   }
   const ratio = PORTFOLIO.clampRatio(positionRatio, 1);
   const budget = budgetRatio === undefined ? null : PORTFOLIO.clampRatio(budgetRatio, null);
-  const rows = await repo.listCandidates({ runId: sourceRunId, limit: 5000, offset: 0 });
+  const stored = await repo.readUserSettings(username);
+  if (!stored) {
+    const error = new Error('账号不存在');
+    error.status = 404;
+    throw error;
+  }
+  const settings = stored.settings || {};
+  const exclusion = exclusionOf(settings, source.market);
+  const strategyParams = Object.assign({}, RULES.DEFAULT_PARAMS, source.parameters || {});
+
+  const rows = await repo.listCandidatesForProjection({ runId: sourceRunId });
   const anomalyById = {};
-  const ranked = rows.rows
+  const ranked = rows
     .filter(row => row.filter_status === RULES.STATUS.PASS)
     .map(row => {
       const detail = row.detail || {};
@@ -822,9 +1372,14 @@ async function createSimulation({ username, sourceRunId, positionRatio, budgetRa
         currentPb: row.current_pb === null ? null : Number(row.current_pb),
         currentPe: row.current_pe === null ? null : Number(row.current_pe),
         dividendYield: row.dividend_yield === null ? null : Number(row.dividend_yield),
-        profitStatus: row.profit_status,
+        // V2：盈利/亏损分类必须用源批次的 TTM 状态，不能退回最新年报状态。
+        profitStatus: row.ttm_profit_status || row.profit_status,
+        ttmProfitStatus: row.ttm_profit_status || row.profit_status,
         filterStatus: row.filter_status,
-        rankReady: true,
+        // 源批次真实的 rankReady，不再无证据补 true。
+        rankReady: row.rank_ready === null || row.rank_ready === undefined
+          ? detail.rankReady !== false
+          : row.rank_ready === true,
         selectionOrder: row.selection_order,
         industry: row.industry_code
           ? { code: row.industry_code, name: row.industry_name, system: row.industry_system, version: row.industry_version }
@@ -832,20 +1387,59 @@ async function createSimulation({ username, sourceRunId, positionRatio, budgetRa
       };
     })
     .sort((a, b) => (a.selectionOrder || 0) - (b.selectionOrder || 0));
-  const portfolio = PORTFOLIO.buildPortfolio({ ranked, anomalyById, positionRatio: ratio, params: RULES.DEFAULT_PARAMS });
+  const portfolio = PORTFOLIO.buildPortfolio({
+    ranked,
+    anomalyById,
+    positionRatio: ratio,
+    params: strategyParams,
+    excludedInstrumentIds: exclusion.instrumentIds,
+    excludedIndustryCodes: exclusion.industryCodes,
+  });
 
   return withTransaction(async tx => {
-    const inputHash = hashOf({ source: Number(sourceRunId), positionRatio: ratio, budgetRatio: budget, owner: username });
+    const settingsHash = hashOf({ settings, revision: stored.revision });
+    const payload = {
+      source: Number(sourceRunId), positionRatio: ratio, budgetRatio: budget, owner: username,
+      settingsRevision: stored.revision, settingsHash,
+      excludedInstrumentIds: exclusion.instrumentIds.slice().sort((a, b) => a - b),
+      excludedIndustryCodes: exclusion.industryCodes.slice().sort(),
+      strategyCode: source.strategy_code || RULES.STRATEGY_CODE,
+      formulaVersion: source.formula_version || strategyParams.formulaVersion,
+      clientRequestId: clientRequestId || null,
+    };
+    const inputHash = hashOf(payload);
+    // 请求幂等：同 ID 同输入复用，同 ID 不同输入 409（方案 27.9）。
+    if (clientRequestId) {
+      const existingByRequest = await repo.findPersonalRunByRequestId({ username, requestId: clientRequestId }, tx);
+      if (existingByRequest) {
+        if (String(existingByRequest.input_hash) !== inputHash) {
+          const error = new Error('同一请求编号提交了不同参数，请刷新后重试');
+          error.status = 409;
+          throw error;
+        }
+        return {
+          runId: Number(existingByRequest.run_id),
+          reused: true,
+          run: await repo.findRun(existingByRequest.run_id, tx),
+          portfolio,
+          settingsRevision: Number(existingByRequest.settings_revision || stored.revision),
+        };
+      }
+    }
     const existing = await repo.findRunByIdempotencyKey(tx, {
       strategyId: Number(source.strategy_id), market: source.market, asOfDate: source.as_of_date_text,
-      runKind: 'personal', inputHash, ownerUsername: username,
+      runKind: 'personal', inputHash, ownerUsername: username, periodType: source.period_type || null, isShadow: false,
     });
-    if (existing) return { runId: existing, reused: true, run: await repo.findRun(existing, tx), portfolio };
+    if (existing) {
+      return { runId: existing, reused: true, run: await repo.findRun(existing, tx), portfolio, settingsRevision: stored.revision };
+    }
+    const subjectId = await repo.readUserSubjectId(username, tx);
     const runId = await repo.insertRun(tx, {
       strategyId: Number(source.strategy_id),
       market: source.market,
       runKind: 'personal',
       ownerUsername: username,
+      ownerSubjectId: subjectId,
       quarter: source.quarter,
       asOfDate: source.as_of_date_text,
       knowledgeCutoff: source.knowledge_cutoff_text,
@@ -853,7 +1447,15 @@ async function createSimulation({ username, sourceRunId, positionRatio, budgetRa
       qualityStatus: source.quality_status,
       businessStatus: 'personal_simulation',
       inputHash,
-      inputManifest: { sourceRunId: Number(sourceRunId), positionRatio: ratio, budgetRatio: budget, owner: username },
+      inputManifest: Object.assign({}, payload, {
+        settingsSnapshot: settings,
+        portfolio: {
+          selectedCount: portfolio.members.length,
+          excludedCount: portfolio.excludedCount,
+          weightBasis: portfolio.weightBasis,
+        },
+        quality: source.input_manifest ? source.input_manifest.quality : null,
+      }),
       universeCount: Number(source.universe_count || 0),
       pendingCount: Number(source.pending_count || 0),
       selectedCount: portfolio.members.length,
@@ -866,11 +1468,22 @@ async function createSimulation({ username, sourceRunId, positionRatio, budgetRa
       revision: 1,
       publishedAt: null,
       supersedesRunId: Number(sourceRunId),
-      requestId: null,
+      requestId: clientRequestId || null,
+      periodType: source.period_type || null,
+      periodKey: source.period_key || null,
+      periodStart: source.period_start_text || null,
+      periodEnd: source.period_end_text || null,
+      settingsRevision: stored.revision,
+      settingsHash,
+      computedAt: new Date(),
+      isShadow: false,
     });
     await repo.copyCandidates({ sourceRunId: Number(sourceRunId), targetRunId: runId }, tx);
     await repo.insertMembers(tx, runId, portfolio.members);
-    return { runId, reused: false, run: await repo.findRun(runId, tx), portfolio };
+    return {
+      runId, reused: false, run: await repo.findRun(runId, tx), portfolio,
+      settingsRevision: stored.revision,
+    };
   });
 }
 
@@ -970,8 +1583,8 @@ function gapDomainsOf(item, anomaly) {
  * - 因此不会出现"gapCount=1 但 reasons=[]"导致补齐任务处理 0 个还报成功；
  * - 明细全量持久化（不再按 5000 条截断），续跑队列因此完整。
  */
-async function auditInputs({ market, asOfDate }) {
-  const computed = await computeSelection({ market, asOfDate, positionRatio: 1 });
+async function auditInputs({ market, asOfDate, strategyCode }) {
+  const computed = await computeSelection({ market, asOfDate, positionRatio: 1, strategyCode });
   const gaps = [];
   computed.evaluated.forEach(item => {
     const anomaly = computed.anomalyById ? computed.anomalyById[item.instrumentId] : null;
@@ -1011,20 +1624,46 @@ async function auditInputs({ market, asOfDate }) {
   return { queueId, gapCount: gaps.length, domainCounts, coverage: computed.coverage, quality: computed.quality, gaps };
 }
 
+/** 行业下拉：只读库内合法一级分类，不现场调用行业源（方案 27.10）。 */
+async function listIndustries({ market }) {
+  const normalized = normalizeMarket(market);
+  const rows = await repo.listIndustryOptions({ market: normalized });
+  return {
+    market: normalized,
+    // 分类体系代码由库内 taxonomy 给出，不伪造 HSICS 版本（方案 27.9）。
+    industries: rows.map(row => ({
+      code: row.code,
+      name: row.name,
+      system: row.system,
+      version: row.version || null,
+      level: row.level === null || row.level === undefined ? null : Number(row.level),
+    })),
+  };
+}
+
 module.exports = {
   STRATEGY_VERSION,
+  DEFAULT_STRATEGY_CODE,
+  STRATEGY_CODES,
+  SETTINGS_SCHEMA_VERSION,
+  PERIOD_TYPE_OF_KIND,
   MARKET_LABEL,
   RULES,
+  RULES_V2,
   PORTFOLIO,
+  PERIODS,
   quarterOf,
   quarterEndDate,
   previousQuarterOf,
   resolveQuarterTarget,
+  resolvePeriodTarget,
+  periodStatus,
   knowledgeCutoffFor,
   computeSelection,
   buildAnnualYears,
   computeAndPersist,
   runQuarterly,
+  runPeriodic,
   pendingQuarter,
   hasCompletedQuarter,
   getMarkets,
@@ -1042,5 +1681,8 @@ module.exports = {
   saveSettings,
   createSimulation,
   validateSettingsPayload,
+  exclusionOf,
+  listIndustries,
+  normalizeStrategyCode,
   runBacktest,
 };

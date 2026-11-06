@@ -206,6 +206,7 @@ const MIGRATIONS = [
   { version: '186_financial_statement_wide', up: () => require('./migrations/era11FinancialStatements').migration186FinancialStatementWide(pool) },
   { version: '187_user_subject_identity', up: () => require('./migrations/era12AccountSubject').migration187UserSubjectIdentity(pool) },
   { version: '188_nav_import_active_content', up: () => require('./migrations/era02cNavImportOwnership').migration188NavImportActiveContent(pool) },
+  { version: '189_stock_selection_v2', up: () => require('./migrations/era13StockSelectionV2').migration189StockSelectionV2(pool) },
 ];
 
 async function ensureMigrationsTable() {

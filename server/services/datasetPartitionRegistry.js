@@ -8,6 +8,27 @@ const { getJobDefinition } = require('./jobDefinitions');
 // 否则水位只统计到带横线的旧行（2026-10-21 审查 R-14：10-21 分区却记录 7-15 水位）。
 const DATE_TEXT = (column) => `MAX(CASE WHEN ${column}::text ~ '^(\\d{4}-\\d{2}-\\d{2}|\\d{8})$' THEN ${column}::date END)::text`;
 
+/**
+ * 选股 V2 周期渠道的数据集定义（方案 27.8）：
+ * 每日/每周/影子各自一个逻辑数据集，底层仍是 analytics.stock_selection_runs + members。
+ * 计数只取该渠道该业务日**生效的那一个** run（正式取已发布、影子取最新记录），
+ * 不把多个 revision 的成员相加——那会让修订后的行数虚高。
+ */
+function selectionPeriodDataset(market, runKind, shadow) {
+  const kindFilter = runKind ? `r.run_kind = '${runKind}'` : `r.run_kind IN ('daily','weekly')`;
+  const publishedFilter = shadow ? '' : 'AND r.published_at IS NOT NULL';
+  return {
+    scopeKey: market,
+    table: 'analytics.stock_selection_portfolio_members',
+    partitionedCountSql: `SELECT COALESCE((
+        SELECT r.selected_count FROM analytics.stock_selection_runs r
+         WHERE r.market = '${market}' AND ${kindFilter} AND r.as_of_date = $1::date
+           AND r.is_shadow = ${shadow ? 'true' : 'false'} ${publishedFilter}
+         ORDER BY r.revision DESC, r.run_id DESC LIMIT 1), 0)::int AS row_count`,
+    partitionedDataAsOfSql: 'SELECT $1::text AS data_as_of',
+  };
+}
+
 const DATASET_PARTITION_REGISTRY = Object.freeze({
   account_cash_income:{scopeKey:null,scopeType:'account',table:'public.cash_flows'},
   stock_cash_dividend_facts:{scopeKey:'GLOBAL',table:'fundamental.corporate_actions',countSql:"SELECT COUNT(*)::int AS row_count",whereSql:"WHERE action_type='dividend'",dataAsOfSql:'SELECT MAX(announced_at)::text AS data_as_of'},
@@ -108,6 +129,14 @@ const DATASET_PARTITION_REGISTRY = Object.freeze({
        WHERE i.market = 'HK' AND i.asset_class = 'stock' AND v.trade_date = $1::date AND v.pb IS NOT NULL`,
     partitionedDataAsOfSql: 'SELECT $1::text AS data_as_of',
   },
+  // V2 每日/每周/影子：渠道由数据集代码区分，底层仍是同一套 runs/members（方案 27.8）。
+  // 计数取"该渠道该日生效的正式 revision"，不把多个 revision 的成员相加。
+  stock_selection_daily_cn: selectionPeriodDataset('CN', 'daily', false),
+  stock_selection_daily_hk: selectionPeriodDataset('HK', 'daily', false),
+  stock_selection_weekly_cn: selectionPeriodDataset('CN', 'weekly', false),
+  stock_selection_weekly_hk: selectionPeriodDataset('HK', 'weekly', false),
+  stock_selection_shadow_cn: selectionPeriodDataset('CN', null, true),
+  stock_selection_shadow_hk: selectionPeriodDataset('HK', null, true),
 });
 
 function dateValue(value) {

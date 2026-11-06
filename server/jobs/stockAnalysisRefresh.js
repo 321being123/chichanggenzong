@@ -13,7 +13,11 @@ const JOB = 'stock_analysis_refresh';
 
 // 选股模式（方案 9.2）：与原单股/转债正股模式共用同一任务入口，但依赖、产出和完成条件各自声明。
 // 这些模式外采为 0，只消费已核验的标准事实；任何外部采集仍走原行情/财务任务。
-const SELECTION_MODES = Object.freeze(['selection_quarterly', 'selection_preview', 'selection_backtest', 'selection_inputs']);
+const SELECTION_MODES = Object.freeze([
+  'selection_quarterly', 'selection_preview', 'selection_backtest', 'selection_inputs',
+  // V2（方案 27.8）：每日动态与每周正式；二者共同支持 shadow=true 的影子批次。
+  'selection_daily', 'selection_weekly',
+]);
 
 function selectionDatasetCode(market, kind) {
   const suffix = String(market || '').toUpperCase() === 'HK' ? 'hk' : 'cn';
@@ -121,6 +125,114 @@ async function runSelectionMode(mode, reason, context) {
       published: result.published,
     };
     return resultBody;
+  }
+  if (mode === 'selection_daily' || mode === 'selection_weekly') {
+    const periodType = mode === 'selection_daily' ? 'day' : 'week';
+    const shadow = context.shadow === true;
+    const result = await service.runPeriodic({
+      market,
+      periodType,
+      targetDate: context.targetDate || context.businessDate,
+      periodKey: context.periodKey,
+      shadow,
+      strategyCode: context.strategyCode,
+      requestId: context.requestId,
+      slotId: context.slotId,
+      executionToken: context.executionToken,
+      actor: context.actor,
+    });
+    if (!result.ok) {
+      // no_session 是"整周期无交易日"的运营证据，属于可结案终态；日历缺档才是 blocked。
+      const noSession = result.status === 'no_session';
+      return {
+        ok: noSession,
+        status: result.status,
+        reason: result.reason,
+        mode, market, periodType,
+        periodKey: result.periodKey,
+        shadow,
+        publishDatasets: false,
+        dataAsOf: null,
+        stageComplete: noSession,
+        stageCompletedKind: noSession ? 'no_session' : undefined,
+        datasetDiagnostics: {},
+      };
+    }
+    const { publishDatasetSnapshot } = require('../services/datasetPartitionRegistry');
+    const prefix = shadow ? 'shadow' : (periodType === 'day' ? 'daily' : 'weekly');
+    const datasetCode = `stock_selection_${prefix}_${market === 'HK' ? 'hk' : 'cn'}`;
+    const publishedFormal = !shadow && result.published === true;
+    const zeroSelection = publishedFormal && Number(result.selectedCount || 0) === 0;
+    const publication = await publishDatasetSnapshot(datasetCode, {
+      // 分区键用业务日（registry 的 (dataset,scope,date) 结构），渠道由数据集名区分，
+      // 精确周期键与 run_id 进 diagnostics；这样同日多周期不会互相覆盖同一渠道。
+      partitionKey: result.asOfDate,
+      dataAsOf: result.asOfDate,
+      rowCount: result.selectedCount,
+      allowEmpty: publishedFormal || shadow,
+      diagnostics: {
+        quality_status: result.qualityStatus,
+        business_status: result.businessStatus,
+        query_status: 'success',
+        coverage_status: shadow ? 'shadow_only' : (publishedFormal ? (zeroSelection ? 'verified_no_member' : 'released') : 'preview_only'),
+        run_id: result.runId,
+        period_type: periodType,
+        period_key: result.periodKey,
+        is_shadow: shadow,
+        readiness_status: result.readinessStatus,
+        strategy_code: result.strategyCode,
+      },
+      reason: `job:stock_analysis_refresh:${mode}`,
+    }).catch(error => ({ published: false, reason: 'publish_error', error: error.message }));
+    const publicationFailed = (publishedFormal || shadow) && !publication.published;
+    // 终态：影子只证明"影子评估完成"，正式日结果记 daily_recorded，正式周度按是否零合格分开记。
+    const stageCompletedKind = publicationFailed ? 'failed'
+      : shadow ? 'shadow_evaluated'
+        : periodType === 'day' ? 'daily_recorded'
+          : zeroSelection ? 'no_eligible_member' : 'weekly_published';
+    // 日结果即使全部通过也不推进 weekly 指针：它只在自己的 day 渠道发布。
+    const stageComplete = shadow ? Boolean(publication.published) : publishedFormal && Boolean(publication.published);
+    return {
+      ok: stageComplete,
+      status: publicationFailed ? 'failed' : (stageComplete ? 'succeeded' : 'partial'),
+      mode, market, periodType,
+      periodKey: result.periodKey,
+      periodStart: result.periodStart,
+      periodEnd: result.periodEnd,
+      asOfDate: result.asOfDate,
+      shadow,
+      runId: result.runId,
+      qualityStatus: result.qualityStatus,
+      businessStatus: result.businessStatus,
+      pendingCount: result.pendingCount || 0,
+      qualityReasons: result.qualityReasons || [],
+      readinessStatus: result.readinessStatus,
+      publishDatasets: false,
+      publishDatasetCodes: [datasetCode],
+      stageComplete,
+      stageCompletedKind,
+      ...(stageComplete ? {} : { continuationRequired: true, reason: 'selection_not_publishable' }),
+      ...(publicationFailed ? {
+        error: `选股结果已记录但分区写入失败：${publication.error || publication.reason || 'unknown'}`,
+        failedDatasets: [datasetCode],
+      } : {}),
+      datasetDiagnostics: {
+        [datasetCode]: {
+          partition_row_count: result.selectedCount,
+          quality_status: result.qualityStatus,
+          query_status: 'success',
+          coverage_status: shadow ? 'shadow_only' : (publishedFormal ? 'released' : 'preview_only'),
+          run_id: result.runId,
+          period_type: periodType,
+          period_key: result.periodKey,
+          is_shadow: shadow,
+          published: Boolean(publication && publication.published),
+          stage_completed_kind: stageCompletedKind,
+        },
+      },
+      selectionRunId: result.runId,
+      published: result.published,
+    };
   }
   if (mode === 'selection_inputs') {
     const targetDate = context.targetDate || context.businessDate;

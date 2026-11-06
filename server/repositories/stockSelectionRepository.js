@@ -183,24 +183,51 @@ async function loadPbWindow({ market, windowStart, asOfDate }, tx) {
     expect AS (
       -- 停牌且当天没有派生出 PB 的交易日不算"应有证据"：停牌期间没有新价格，估值沿用停牌前是正常的，
       -- 把它算成缺口会让每个停牌股都被判"历史数据待补"（2026-11-04 口径：暂时停牌按停牌前最后交易日）。
-      SELECT i.instrument_id,
-             GREATEST(COUNT(c.trade_date) - COALESCE((
-               SELECT COUNT(DISTINCT sc.trade_date)::int
-                 FROM market.stock_suspend_calendar sc
-                 JOIN cal c3 ON c3.trade_date = sc.trade_date
-                WHERE sc.instrument_id = i.instrument_id AND sc.suspend_type = 'S'
-                  AND NOT EXISTS (
-                    SELECT 1 FROM market.daily_valuations v3
-                     WHERE v3.instrument_id = sc.instrument_id
-                       AND v3.trade_date = sc.trade_date AND v3.pb IS NOT NULL)
-             ), 0), 0)::int AS expected_days
+      -- 豁免数单独留证（V2 exemptDays），不能只从应有日里悄悄扣掉——否则复牌后重新核验时看不出扣过什么。
+      SELECT i.instrument_id, i.list_date,
+             GREATEST(COUNT(c.trade_date)
+               - COALESCE((
+                   SELECT COUNT(DISTINCT sc.trade_date)::int
+                     FROM market.stock_suspend_calendar sc
+                     JOIN cal c3 ON c3.trade_date = sc.trade_date
+                    WHERE sc.instrument_id = i.instrument_id AND sc.suspend_type = 'S'
+                      AND NOT EXISTS (
+                        SELECT 1 FROM market.daily_valuations v3
+                         WHERE v3.instrument_id = sc.instrument_id
+                           AND v3.trade_date = sc.trade_date AND v3.pb IS NOT NULL)
+                 ), 0), 0)::int AS expected_days,
+             COALESCE((
+                   SELECT COUNT(DISTINCT sc.trade_date)::int
+                     FROM market.stock_suspend_calendar sc
+                     JOIN cal c3 ON c3.trade_date = sc.trade_date
+                    WHERE sc.instrument_id = i.instrument_id AND sc.suspend_type = 'S'
+                      AND NOT EXISTS (
+                        SELECT 1 FROM market.daily_valuations v3
+                         WHERE v3.instrument_id = sc.instrument_id
+                           AND v3.trade_date = sc.trade_date AND v3.pb IS NOT NULL)
+                 ), 0)::int AS exempt_days
         FROM inst i JOIN cal c ON c.trade_date > i.list_date
-       GROUP BY 1
+       GROUP BY 1, 2
     ),
     covered AS (
       SELECT picked.instrument_id,
+             -- V1 口径：窗口内最高 PB 如实反映（含负值），用于「是否出现过 PB>1」的正证判断。
              MAX(picked.pb) AS max_pb,
-             COUNT(*)::int AS covered_days
+             -- V2 口径：只有正 PB 参与正极值比，负值是非正事实、不参与 min/max。
+             MAX(picked.pb) FILTER (WHERE picked.pb > 0) AS max_positive_pb,
+             MIN(picked.pb) FILTER (WHERE picked.pb > 0) AS min_positive_pb,
+             COUNT(*) FILTER (WHERE picked.pb > 0)::int AS covered_days,
+             COUNT(*)::int AS observed_days,
+             COUNT(*) FILTER (WHERE picked.pb <= 0)::int AS non_positive_days,
+             MIN(picked.trade_date) FILTER (WHERE picked.pb > 0) AS effective_start,
+             (ARRAY_AGG(picked.trade_date ORDER BY picked.pb ASC, picked.trade_date ASC)
+               FILTER (WHERE picked.pb > 0))[1] AS min_pb_date,
+             (ARRAY_AGG(picked.trade_date ORDER BY picked.pb DESC, picked.trade_date ASC)
+               FILTER (WHERE picked.pb > 0))[1] AS max_pb_date,
+             -- 内容指纹（V2 方案 27.5「同一冻结序列」）：逐行 32 位摘要累加＋行数，
+             -- 用于检测"证据被改过"；不是密码学前缀，明细仍以 market.daily_valuations 原始行为准。
+             SUM(('x' || substr(md5(picked.trade_date::text || ':' || picked.pb::text), 1, 8))::bit(32)::bigint) AS series_digest,
+             COUNT(*)::int AS series_rows
         FROM (
           SELECT DISTINCT ON (v.instrument_id, v.trade_date) v.instrument_id, v.trade_date, v.pb
             FROM market.daily_valuations v
@@ -209,16 +236,24 @@ async function loadPbWindow({ market, windowStart, asOfDate }, tx) {
             LEFT JOIN ops.data_sources s ON s.source_id = v.source_id
            WHERE v.trade_date > $1::date AND v.trade_date <= $2::date
              -- 负 PB 是"净资产为负"的真实取值，不是缺失：只排除 NULL（2026-11-04）。
-             -- 负值不可能是 >1 的正证，MAX(pb) 仍如实反映窗口内最高值。
+             -- 'NaN' 是 PG NUMERIC 的合法值，但比较恒为 false，必须单独归入 invalid 而不是"缺失"。
              AND v.pb IS NOT NULL
            ORDER BY v.instrument_id, v.trade_date,
                     CASE WHEN s.source_code LIKE 'lixinger%' THEN 0 ELSE 1 END, v.source_id
         ) picked
        GROUP BY 1
     )
-    SELECT e.instrument_id, e.expected_days,
+    SELECT e.instrument_id, e.expected_days, e.exempt_days, e.list_date::text AS list_date,
            COALESCE(c.covered_days, 0)::int AS covered_days,
-           c.max_pb
+           COALESCE(c.observed_days, 0)::int AS observed_days,
+           COALESCE(c.non_positive_days, 0)::int AS non_positive_days,
+           COALESCE(c.observed_days, 0)::int
+             - COALESCE(c.covered_days, 0)::int
+             - COALESCE(c.non_positive_days, 0)::int AS invalid_days,
+           c.max_pb, c.max_positive_pb, c.min_positive_pb,
+           c.effective_start::text AS effective_start,
+           c.min_pb_date::text AS min_pb_date, c.max_pb_date::text AS max_pb_date,
+           c.series_digest, c.series_rows
       FROM expect e
       LEFT JOIN covered c USING (instrument_id)`,
   [windowStart, asOfDate, config.calendarExchanges, market]);
@@ -237,13 +272,42 @@ async function loadPbWindow({ market, windowStart, asOfDate }, tx) {
   const byInstrument = new Map();
   detail.rows.forEach(row => {
     const expectedDays = Number(row.expected_days || 0);
-    const coveredDays = Number(row.covered_days || 0);
+    // 两个口径必须分开，不能互相顶替：
+    //   V1「十年 PB 覆盖」= 有观测（含负 PB 这类真实非正事实）——2026-11-04 口径，不能改成只算正值；
+    //   V2「有效正 PB 覆盖」= 只有 pb>0 才算覆盖（正极值比需要正值序列）。
+    const observedDays = Number(row.observed_days || 0);
+    const positiveDays = Number(row.covered_days || 0);
+    const listDate = row.list_date || null;
+    const effectiveStart = row.effective_start || listDate || null;
+    const gapOf = days => (calendarCount === 0 ? null : Math.max(expectedDays - days, 0));
     byInstrument.set(String(row.instrument_id), {
+      // V1 合同（R02「十年内出现过 PB>1」）沿用原字段，语义不变。
       maxPb: row.max_pb === null ? null : Number(row.max_pb),
-      coveredDays,
+      coveredDays: observedDays,
       expectedDays,
-      // 日历缺档时缺口未知；否则缺口 = 应有 − 已覆盖（covered 已限制在日历内，不会为负）。
-      gapDays: calendarCount === 0 ? null : Math.max(expectedDays - coveredDays, 0),
+      gapDays: gapOf(observedDays),
+      // V2：正极值比与覆盖分账。原始 NUMERIC 文本一并返回，判定走十进制，不先转 Number。
+      positiveDays,
+      positiveGapDays: gapOf(positiveDays),
+      minPb: row.min_positive_pb === null ? null : Number(row.min_positive_pb),
+      minPbRaw: row.min_positive_pb === null ? null : String(row.min_positive_pb),
+      maxPbRaw: row.max_positive_pb === null ? null : String(row.max_positive_pb),
+      observedDays,
+      nonPositiveDays: Number(row.non_positive_days || 0),
+      invalidDays: Number(row.invalid_days || 0),
+      missingDays: gapOf(observedDays),
+      exemptDays: Number(row.exempt_days || 0),
+      calendarComplete: calendarCount > 0,
+      windowStart,
+      windowEnd: asOfDate,
+      effectiveStart,
+      listDate,
+      minPbDate: row.min_pb_date || null,
+      maxPbDate: row.max_pb_date || null,
+      historyYears: effectiveStart ? Math.round((Date.parse(asOfDate) - Date.parse(effectiveStart)) / 86400000 / 365.25 * 10) / 10 : null,
+      pbSeriesDigest: row.series_digest === null || row.series_digest === undefined
+        ? null : `${row.series_digest}:${row.series_rows}`,
+      pbSeriesRows: Number(row.series_rows || 0),
     });
   });
   return {
@@ -820,18 +884,43 @@ async function upsertStrategy(tx, strategy) {
   return row.strategy_id;
 }
 
-async function findRunByIdempotencyKey(tx, { strategyId, market, asOfDate, runKind, inputHash, ownerUsername }) {
+/** 已登记策略的当前 id（取最新生效版本）；没登记过返回 null，不自动创建。 */
+async function findStrategyId({ market, strategyCode }, tx) {
   const exec = executorOf(tx);
+  const { rows } = await exec(`
+    SELECT strategy_id FROM analytics.stock_selection_strategies
+     WHERE market = $1 AND strategy_code = $2
+     ORDER BY effective_from DESC NULLS LAST, strategy_id DESC LIMIT 1`, [market, strategyCode]);
+  return rows[0] ? Number(rows[0].strategy_id) : null;
+}
+
+async function findRunByIdempotencyKey(tx, { strategyId, market, asOfDate, runKind, inputHash, ownerUsername, periodType, isShadow }) {
+  const exec = executorOf(tx);
+  // 影子与正式是两个渠道：同输入也不能互相复用（方案 27.8），周期类型参与身份但缺省按 V1 口径。
   const { rows } = await exec(`
     SELECT run_id FROM analytics.stock_selection_runs
      WHERE strategy_id = $1 AND market = $2 AND as_of_date = $3::date AND run_kind = $4
+       AND COALESCE(period_type, 'quarter') = COALESCE($7, 'quarter')
+       AND is_shadow = $8
        AND input_hash = $5 AND COALESCE(owner_username,'') = COALESCE($6,'')
-     LIMIT 1`, [strategyId, market, asOfDate, runKind, inputHash, ownerUsername || null]);
+     LIMIT 1`,
+  [strategyId, market, asOfDate, runKind, inputHash, ownerUsername || null, periodType || null, isShadow === true]);
   return rows[0] ? Number(rows[0].run_id) : null;
 }
 
-async function nextRevision(tx, { market, quarter, strategyId }) {
+async function nextRevision(tx, { market, quarter, strategyId, periodType, periodKey, runKind }) {
   const exec = executorOf(tx);
+  // V1 季度沿用原口径；V2 日/周按周期键在同一策略同一渠道内递增，影子和私人不占正式序列。
+  if (periodType && periodKey) {
+    const { rows } = await exec(`
+      SELECT COALESCE(MAX(revision), 0)::int AS max_revision
+        FROM analytics.stock_selection_runs
+       WHERE market = $1 AND strategy_id = $2 AND run_kind = $3
+         AND period_type = $4 AND period_key = $5 AND is_shadow = false
+         AND run_kind IN ('daily','weekly')`,
+    [market, strategyId, runKind || periodType, periodType, periodKey]);
+    return Number(rows[0].max_revision || 0) + 1;
+  }
   const { rows } = await exec(`
     SELECT COALESCE(MAX(revision), 0)::int AS max_revision
       FROM analytics.stock_selection_runs
@@ -842,13 +931,19 @@ async function nextRevision(tx, { market, quarter, strategyId }) {
 
 async function insertRun(tx, run) {
   const exec = executorOf(tx);
+  // V2 周期默认值：V1 调用只传 runKind/quarter，也要落到同一套周期语义，不能留 NULL 让筛选漏掉旧批次。
+  const periodType = run.periodType || (run.runKind === 'quarterly' ? 'quarter' : null);
+  const periodKey = run.periodKey || (run.runKind === 'quarterly' && run.quarter ? `Q:${run.quarter}` : null);
   const { rows } = await exec(`
     INSERT INTO analytics.stock_selection_runs
       (strategy_id, market, run_kind, owner_username, quarter, as_of_date, knowledge_cutoff,
        execution_status, quality_status, business_status, input_hash, input_manifest,
        universe_count, pending_count, selected_count, market_pb, market_pe, benchmark_code,
-       valuation_method, position_ratio, budget_ratio, revision, published_at, supersedes_run_id, request_id)
-    VALUES ($1,$2,$3,$4,$5,$6::date,$7::timestamptz,$8,$9,$10,$11,$12::jsonb,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25)
+       valuation_method, position_ratio, budget_ratio, revision, published_at, supersedes_run_id, request_id,
+       period_type, period_key, period_start, period_end, source_daily_run_id,
+       settings_revision, settings_hash, owner_subject_id, revision_reason, computed_at, is_shadow)
+    VALUES ($1,$2,$3,$4,$5,$6::date,$7::timestamptz,$8,$9,$10,$11,$12::jsonb,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,
+            $26,$27,$28::date,$29::date,$30,$31,$32,$33,$34,$35::timestamptz,$36)
     RETURNING run_id`, [
     run.strategyId, run.market, run.runKind, run.ownerUsername || null, run.quarter || null,
     run.asOfDate, run.knowledgeCutoff, run.executionStatus, run.qualityStatus, run.businessStatus,
@@ -856,6 +951,10 @@ async function insertRun(tx, run) {
     run.selectedCount, run.marketPb, run.marketPe, run.benchmarkCode, run.valuationMethod,
     run.positionRatio, run.budgetRatio, run.revision, run.publishedAt || null,
     run.supersedesRunId || null, run.requestId || null,
+    periodType, periodKey, run.periodStart || null, run.periodEnd || null,
+    run.sourceDailyRunId || null, run.settingsRevision === undefined ? null : run.settingsRevision,
+    run.settingsHash || null, run.ownerSubjectId || null, run.revisionReason || null,
+    run.computedAt || null, run.isShadow === true,
   ]);
   return Number(rows[0].run_id);
 }
@@ -869,7 +968,14 @@ async function insertCandidates(tx, runId, candidates) {
     'profit_status', 'dividend_yield', 'equity_amount', 'equity_currency', 'equity_cny',
     'fx_rate', 'fx_date', 'pb_rank', 'pe_rank', 'dividend_rank', 'total_score', 'selection_order',
     'filter_status', 'data_quality_status', 'exclusion_reasons', 'detail',
+    // V2 判定与证据列（V1 行写 null，不伪造）
+    'historical_pb_min', 'pb_positive_extrema_ratio', 'pb_pe_product',
+    'valuation_status', 'valuation_pass_reason', 'ttm_profit_status', 'rank_ready',
+    'rank_block_reasons', 'pb_covered_days', 'pb_expected_days', 'pb_gap_days', 'pb_history_years',
   ];
+  const JSON_COLUMNS = new Set(['exclusion_reasons', 'detail', 'rank_block_reasons']);
+  const INT_COLUMNS = new Set(['pb_covered_days', 'pb_expected_days', 'pb_gap_days']);
+  const DATE_COLUMNS = new Set(['fx_date']);
   // 一次写入全部列：filter_status / data_quality_status 是 NOT NULL，必须与行同批落库。
   for (let i = 0; i < candidates.length; i += chunkSize) {
     const chunk = candidates.slice(i, i + chunkSize);
@@ -877,12 +983,13 @@ async function insertCandidates(tx, runId, candidates) {
     const params = [];
     let p = 1;
     chunk.forEach(item => {
-      values.push('(' + insertColumns.map((_, index) => {
+      values.push('(' + insertColumns.map(name => {
         const position = `$${p++}`;
-        if (index === insertColumns.length - 2 || index === insertColumns.length - 1) return `${position}::jsonb`;
-        if (insertColumns[index] === 'fx_date') return `${position}::date`;
+        if (JSON_COLUMNS.has(name)) return `${position}::jsonb`;
+        if (DATE_COLUMNS.has(name)) return `${position}::date`;
         return position;
       }).join(',') + ')');
+      const coverage = item.pbCoverage || (item.detail && item.detail.pbWindow) || {};
       params.push(
         runId, item.instrumentId, item.companyId === undefined ? null : item.companyId, item.code, item.name || null,
         item.industry ? item.industry.code : null, item.industry ? item.industry.name : null,
@@ -909,7 +1016,25 @@ async function insertCandidates(tx, runId, candidates) {
           rules: item.rules || {},
           anomaly: item.anomaly || null,
           rankReady: item.rankReady !== false,
+          // V2：排名受阻原因必须随快照持久化（方案 27.4），不能只留内存字段。
+          rankBlockReasons: item.rankBlockReasons || [],
+          riskStatus: item.riskStatus || null,
+          valuationStatus: item.valuationStatus === undefined ? null : item.valuationStatus,
+          valuationPassReason: item.valuationPassReason === undefined ? null : item.valuationPassReason,
+          ttm: item.detail && item.detail.ttm ? item.detail.ttm : null,
         })),
+        item.historicalPbMin === undefined ? null : item.historicalPbMin,
+        item.pbPositiveExtremaRatio === undefined ? null : item.pbPositiveExtremaRatio,
+        item.pbPeProduct === undefined ? null : item.pbPeProduct,
+        item.valuationStatus === undefined ? null : item.valuationStatus,
+        item.valuationPassReason === undefined ? null : item.valuationPassReason,
+        item.ttmProfitStatus || null,
+        item.rankReady === undefined ? null : item.rankReady === true,
+        JSON.stringify(item.rankBlockReasons || []),
+        toNullableInt(coverage.coveredDays, INT_COLUMNS),
+        toNullableInt(coverage.expectedDays, INT_COLUMNS),
+        toNullableInt(coverage.gapDays, INT_COLUMNS),
+        coverage.historyYears === undefined || coverage.historyYears === null ? null : Number(coverage.historyYears),
       );
     });
     await exec(`
@@ -919,6 +1044,13 @@ async function insertCandidates(tx, runId, candidates) {
   }
 }
 
+/** NUMERIC/INTEGER 列只接受可解析数字：undefined/null/NaN 统一写 NULL，不写 0。 */
+function toNullableInt(value, _columns) {
+  if (value === undefined || value === null || value === '') return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? Math.round(n) : null;
+}
+
 async function insertMembers(tx, runId, members) {
   if (!members.length) return;
   const exec = executorOf(tx);
@@ -926,38 +1058,176 @@ async function insertMembers(tx, runId, members) {
   const params = [];
   let p = 1;
   members.forEach(member => {
-    values.push(`($${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++}::jsonb)`);
+    values.push(`($${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++}::jsonb)`);
     params.push(runId, member.instrumentId, member.slotNo, member.industry ? member.industry.code : null,
       member.industry ? member.industry.system : null, member.industry ? member.industry.version : null,
       member.weightInMarketBudget, member.weightInEquityTarget, !!member.issuerDuplicate,
+      member.weightInInvestedEquity === undefined ? null : member.weightInInvestedEquity,
       JSON.stringify({ selectionOrder: member.selectionOrder || null, code: member.code, name: member.name || null }));
   });
   await exec(`
     INSERT INTO analytics.stock_selection_portfolio_members
       (run_id, instrument_id, slot_no, industry_code, industry_system, industry_version,
-       weight_in_market_budget, weight_in_equity_target, issuer_duplicate, detail)
+       weight_in_market_budget, weight_in_equity_target, issuer_duplicate, weight_in_invested_equity, detail)
     VALUES ${values.join(',')}
     ON CONFLICT (run_id, instrument_id) DO NOTHING`, params);
 }
 
-/** 正式发布：范围锁 + 前一版本比较，失败事务不留下半个组合。 */
-async function publishRun(tx, runId, { market, quarter }) {
+/**
+ * 正式发布（V2 加固）：范围锁 + 前一版本比较 + 当前指针 + 不可变事件，同一事务提交。
+ * V1 调用只传 { market, quarter }，行为与原实现一致（季度渠道）；V2 日/周按 period_key 分渠道。
+ * 影子批次、私人批次、非共享季度/周度一律不得写正式指针。
+ */
+async function publishRun(tx, runId, options = {}) {
   const exec = executorOf(tx);
-  await exec(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`stock_selection_publish:${market}:${quarter || 'none'}`]);
-  const { rows } = await exec(`
-    SELECT run_id, revision FROM analytics.stock_selection_runs
-     WHERE market = $1 AND quarter = $2 AND run_kind = 'quarterly' AND published_at IS NOT NULL
-     ORDER BY revision DESC LIMIT 1`, [market, quarter]);
-  const current = rows[0] || null;
-  const target = await exec(`SELECT revision FROM analytics.stock_selection_runs WHERE run_id = $1`, [runId]);
-  const targetRevision = Number((target.rows[0] || {}).revision || 0);
-  if (current && Number(current.revision) >= targetRevision && Number(current.run_id) !== runId) {
-    const error = new Error('该季度已有更新版本，本次发布未通过前一版本比较');
+  const targetResult = await exec(`
+    SELECT run_id, market, strategy_id, run_kind, quarter, period_type, period_key,
+           period_start::text AS period_start, period_end::text AS period_end,
+           as_of_date::text AS as_of_date, revision, is_shadow, quality_status, input_hash
+      FROM analytics.stock_selection_runs WHERE run_id = $1`, [runId]);
+  const target = targetResult.rows[0];
+  if (!target) {
+    const error = new Error('批次不存在');
+    error.status = 404;
+    throw error;
+  }
+  if (target.is_shadow) {
+    const error = new Error('影子批次不得写入正式发布指针');
     error.status = 409;
     throw error;
   }
+  if (target.run_kind === 'personal') {
+    const error = new Error('个人测算结果不得发布为公共组合');
+    error.status = 409;
+    throw error;
+  }
+  const periodType = target.period_type || 'quarter';
+  const periodKey = target.period_key || (options.quarter && target.run_kind === 'quarterly' ? `Q:${options.quarter}` : null);
+  if (!periodKey) {
+    // 预览批次没有周期身份，原实现也不发布它们；这里显式拒绝而不是写一条无渠道的指针。
+    const error = new Error('该批次没有可发布的周期身份');
+    error.status = 409;
+    throw error;
+  }
+  if (target.quality_status !== 'passed' && !options.allowPartial) {
+    const error = new Error('质量未通过，不能发布正式组合');
+    error.status = 409;
+    throw error;
+  }
+
+  const lockKey = `stock_selection_publish:${target.market}:${target.strategy_id}:${periodType}:${periodKey}`;
+  await exec(`SELECT pg_advisory_xact_lock(hashtext($1))`, [lockKey]);
+
+  // 前一版本：同渠道已发布且 revision 更高时拒绝，防止旧批次覆盖新结论。
+  const currentResult = await exec(`
+    SELECT run_id, revision FROM analytics.stock_selection_runs
+     WHERE market = $1 AND strategy_id = $2
+       AND COALESCE(period_type, 'quarter') = $3 AND COALESCE(period_key, '') = $4
+       AND is_shadow = false AND published_at IS NOT NULL AND run_id <> $5
+     ORDER BY revision DESC, run_id DESC LIMIT 1`,
+  [target.market, target.strategy_id, periodType, periodKey, runId]);
+  const current = currentResult.rows[0] || null;
+  const targetRevision = Number(target.revision || 0);
+  if (current && Number(current.revision) >= targetRevision) {
+    const error = new Error('该周期已有更新版本，本次发布未通过前一版本比较');
+    error.status = 409;
+    throw error;
+  }
+  // CAS：调用方若声明了期望旧指针，就必须真的匹配（首次发布对"无前驱"同样校验）。
+  if (options.expectedRunId !== undefined && options.expectedRunId !== null
+    && Number(options.expectedRunId) !== (current ? Number(current.run_id) : 0)) {
+    const error = new Error('发布指针已被其他批次改变，请刷新后重试');
+    error.status = 409;
+    throw error;
+  }
+
   await exec(`UPDATE analytics.stock_selection_runs SET published_at = now(), execution_status = 'succeeded' WHERE run_id = $1`, [runId]);
-  return { published: true, previousRunId: current ? Number(current.run_id) : null };
+
+  const pointer = await exec(`
+    INSERT INTO analytics.stock_selection_publications
+      (market, strategy_id, period_type, period_key, period_start, period_end, run_id,
+       pointer_revision, activated_at, actor, reason)
+    VALUES ($1,$2,$3,$4,$5::date,$6::date,$7,1,$8,$9,$10)
+    ON CONFLICT (market, strategy_id, period_type, period_key) DO UPDATE
+      SET run_id = EXCLUDED.run_id,
+          period_start = COALESCE(EXCLUDED.period_start, analytics.stock_selection_publications.period_start),
+          period_end = COALESCE(EXCLUDED.period_end, analytics.stock_selection_publications.period_end),
+          pointer_revision = analytics.stock_selection_publications.pointer_revision + 1,
+          activated_at = EXCLUDED.activated_at,
+          actor = EXCLUDED.actor,
+          reason = EXCLUDED.reason
+    RETURNING publication_id, pointer_revision`,
+  [target.market, target.strategy_id, periodType, periodKey, target.period_start, target.period_end, runId,
+    new Date(), options.actor || null, options.reason || null]);
+  const pointerRow = pointer.rows[0] || {};
+
+  // 不可变事件：真实发布历史由事件链推导，不改写旧事件的结束时间。
+  const action = current ? 'correct' : 'publish';
+  const eventResult = await exec(`
+    INSERT INTO analytics.stock_selection_publication_events
+      (market, strategy_id, period_type, period_key, action, from_run_id, to_run_id,
+       from_strategy_id, to_strategy_id, pointer_revision, actor, subject_id, slot_id,
+       execution_token, input_hash, reason)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$2,$2,$8,$9,$10,$11,$12,$13,$14)
+    RETURNING event_id`,
+  [target.market, target.strategy_id, periodType, periodKey, action,
+    current ? Number(current.run_id) : null, runId, Number(pointerRow.pointer_revision || 1),
+    options.actor || null, options.subjectId || null, options.slotId || null,
+    options.executionToken || null, target.input_hash || null, options.reason || null]);
+
+  return {
+    published: true,
+    previousRunId: current ? Number(current.run_id) : null,
+    action,
+    pointerRevision: Number(pointerRow.pointer_revision || 1),
+    eventId: Number((eventResult.rows[0] || {}).event_id || 0),
+    periodType,
+    periodKey,
+  };
+}
+
+/**
+ * 提交后的可见确认：事务开始时的 now() 不能冒称"对外可见时刻"（方案 27.7）。
+ * 由上层层在事务成功提交后调用；未取得确认时 real_publication_replay 不据此回推交易时刻。
+ */
+async function markPublicationVisible({ runId, eventId }, tx) {
+  const exec = executorOf(tx);
+  if (eventId) {
+    await exec(`UPDATE analytics.stock_selection_publication_events SET visible_at = now() WHERE event_id = $1 AND visible_at IS NULL`, [eventId]);
+  }
+  await exec(`UPDATE analytics.stock_selection_publications SET visible_at = now() WHERE run_id = $1 AND visible_at IS NULL`, [runId]);
+  return true;
+}
+
+/** 当前发布指针（按渠道精确读取）；没有指针时返回 null，不猜。 */
+async function findPublication({ market, strategyId, periodType, periodKey }, tx) {
+  const exec = executorOf(tx);
+  const { rows } = await exec(`
+    SELECT p.publication_id, p.market, p.strategy_id, p.period_type, p.period_key,
+           p.period_start::text AS period_start, p.period_end::text AS period_end,
+           p.run_id, p.pointer_revision, p.activated_at, p.visible_at
+      FROM analytics.stock_selection_publications p
+     WHERE p.market = $1 AND ($2::bigint IS NULL OR p.strategy_id = $2::bigint)
+       AND ($3::text IS NULL OR p.period_type = $3::text)
+       AND ($4::text IS NULL OR p.period_key = $4::text)
+     ORDER BY p.activated_at DESC, p.publication_id DESC LIMIT 1`,
+  [market, strategyId || null, periodType || null, periodKey || null]);
+  return rows[0] || null;
+}
+
+async function listPublicationEvents({ market, periodType, periodKey, limit = 50 }, tx) {
+  const exec = executorOf(tx);
+  const { rows } = await exec(`
+    SELECT event_id, market, strategy_id, period_type, period_key, action,
+           from_run_id, to_run_id, from_strategy_id, to_strategy_id, pointer_revision,
+           actor, subject_id, slot_id, execution_token, input_hash, reason, occurred_at, visible_at
+      FROM analytics.stock_selection_publication_events
+     WHERE market = $1
+       AND ($2::text IS NULL OR period_type = $2::text)
+       AND ($3::text IS NULL OR period_key = $3::text)
+     ORDER BY event_id DESC LIMIT $4`,
+  [market, periodType || null, periodKey || null, limit]);
+  return rows;
 }
 
 async function markRunFailure(tx, runId, { executionStatus, qualityStatus, businessStatus }) {
@@ -970,13 +1240,17 @@ async function markRunFailure(tx, runId, { executionStatus, qualityStatus, busin
 
 // ========== 读接口 ==========
 
-async function listRuns({ market, quarter, kind, ownerUsername, publishedOnly, limit, offset }, tx) {
+async function listRuns({ market, quarter, kind, ownerUsername, publishedOnly, periodType, strategyCode, includeShadow, limit, offset }, tx) {
   const exec = executorOf(tx);
   const conditions = [];
   const params = [];
   if (market) { params.push(market); conditions.push(`r.market = $${params.length}`); }
   if (quarter) { params.push(quarter); conditions.push(`r.quarter = $${params.length}`); }
   if (kind) { params.push(kind); conditions.push(`r.run_kind = $${params.length}`); }
+  if (periodType) { params.push(periodType); conditions.push(`r.period_type = $${params.length}`); }
+  if (strategyCode) { params.push(strategyCode); conditions.push(`s.strategy_code = $${params.length}`); }
+  // 影子批次默认不出现在普通列表里：它是工程观察渠道，混进正式下拉会让用户以为已上线。
+  if (!includeShadow) conditions.push('r.is_shadow = false');
   // 页面批次下拉只列有意义的批次：已正式发布的组合，以及本人的个人测算结果。
   // 未发布的 preview（部分数据预览）既没有可买入席位也不代表本期结论，混在可选列表里只会误导
   // （2026-11-05 用户反馈：同一季度堆了 6 条「未发布」）。
@@ -990,11 +1264,13 @@ async function listRuns({ market, quarter, kind, ownerUsername, publishedOnly, l
     SELECT r.run_id, r.market, r.run_kind, r.quarter, r.as_of_date::text AS as_of_date, r.strategy_id,
            r.execution_status, r.quality_status, r.business_status, r.universe_count, r.pending_count,
            r.selected_count, r.market_pb, r.market_pe, r.revision, r.published_at, r.owner_username,
-           r.position_ratio, r.budget_ratio, s.version AS strategy_version, COUNT(*) OVER () AS total
+           r.position_ratio, r.budget_ratio, s.version AS strategy_version, s.strategy_code,
+           r.period_type, r.period_key, r.period_start::text AS period_start, r.period_end::text AS period_end,
+           r.is_shadow, r.computed_at, r.created_at, COUNT(*) OVER () AS total
       FROM analytics.stock_selection_runs r
       JOIN analytics.stock_selection_strategies s ON s.strategy_id = r.strategy_id
       ${where}
-     ORDER BY r.as_of_date DESC, r.run_id DESC
+     ORDER BY r.as_of_date DESC, r.period_type NULLS LAST, r.run_id DESC
      LIMIT $${params.length - 1} OFFSET $${params.length}`, params);
   return { rows, total: rows.length ? Number(rows[0].total) : 0 };
 }
@@ -1003,7 +1279,8 @@ async function findRun(runId, tx) {
   const exec = executorOf(tx);
   const { rows } = await exec(`
     SELECT r.*, r.as_of_date::text AS as_of_date_text, r.knowledge_cutoff::text AS knowledge_cutoff_text,
-           s.version AS strategy_version, s.formula_version, s.parameters
+           r.period_start::text AS period_start_text, r.period_end::text AS period_end_text,
+           s.version AS strategy_version, s.strategy_code, s.formula_version, s.parameters
       FROM analytics.stock_selection_runs r
       JOIN analytics.stock_selection_strategies s ON s.strategy_id = r.strategy_id
      WHERE r.run_id = $1`, [runId]);
@@ -1018,10 +1295,13 @@ async function listCandidates({ runId, limit, offset, filterStatus, orderBy }, t
   params.push(limit, offset);
   const order = orderBy === 'code' ? 'code ASC' : 'COALESCE(selection_order, 100000) ASC, code ASC';
   const { rows } = await exec(`
-    SELECT instrument_id, code, name, industry_code, industry_name, industry_system, industry_version,
-           current_pb, historical_pb_max, current_pe, profit_status, dividend_yield, equity_amount,
+    SELECT instrument_id, company_id, code, name, industry_code, industry_name, industry_system, industry_version,
+           current_pb, historical_pb_max, historical_pb_min, current_pe, profit_status, dividend_yield, equity_amount,
            equity_currency, equity_cny, fx_rate, fx_date::text AS fx_date, pb_rank, pe_rank, dividend_rank,
            total_score, selection_order, filter_status, data_quality_status, exclusion_reasons,
+           pb_positive_extrema_ratio, pb_pe_product, valuation_status, valuation_pass_reason,
+           ttm_profit_status, rank_ready, rank_block_reasons,
+           pb_covered_days, pb_expected_days, pb_gap_days, pb_history_years,
            COUNT(*) OVER () AS total
       FROM analytics.stock_selection_candidates
       ${where}
@@ -1041,9 +1321,12 @@ async function listMembers(runId, tx) {
   const exec = executorOf(tx);
   const { rows } = await exec(`
     SELECT m.slot_no, m.instrument_id, m.industry_code, m.industry_system, m.industry_version,
-           m.weight_in_market_budget, m.weight_in_equity_target, m.issuer_duplicate,
+           m.weight_in_market_budget, m.weight_in_equity_target, m.weight_in_invested_equity,
+           m.issuer_duplicate,
            c.code, c.name, c.company_id, c.industry_name,
-           c.current_pb, c.current_pe, c.dividend_yield, c.total_score
+           c.current_pb, c.current_pe, c.dividend_yield, c.total_score,
+           c.pb_pe_product, c.historical_pb_min, c.historical_pb_max, c.pb_positive_extrema_ratio,
+           c.valuation_status, c.valuation_pass_reason, c.ttm_profit_status
       FROM analytics.stock_selection_portfolio_members m
       JOIN analytics.stock_selection_candidates c ON c.run_id = m.run_id AND c.instrument_id = m.instrument_id
      WHERE m.run_id = $1
@@ -1061,6 +1344,24 @@ async function readUserSettings(username, tx) {
     settings: row.stock_selection_settings || {},
     revision: Number(row.stock_selection_settings_revision || 0),
   };
+}
+
+/** 不可复用主体 id（迁移 187）：私人批次绑定它，读取时按会话主体核验，不只按 username。 */
+async function readUserSubjectId(username, tx) {
+  const exec = executorOf(tx);
+  const { rows } = await exec(`SELECT subject_id::text AS subject_id FROM users WHERE username = $1`, [username]);
+  return rows[0] ? rows[0].subject_id : null;
+}
+
+/** 同一请求 id 的私人批次（幂等判定用），返回 run_id 与规范化载荷哈希。 */
+async function findPersonalRunByRequestId({ username, requestId }, tx) {
+  const exec = executorOf(tx);
+  const { rows } = await exec(`
+    SELECT run_id, input_hash, input_manifest, settings_revision
+      FROM analytics.stock_selection_runs
+     WHERE owner_username = $1 AND request_id = $2 AND run_kind = 'personal'
+     ORDER BY run_id DESC LIMIT 1`, [username, requestId]);
+  return rows[0] || null;
 }
 
 async function saveUserSettings({ username, settings, expectedRevision }, tx) {
@@ -1133,6 +1434,43 @@ async function hasCompletedQuarterRun({ market, quarter }, tx) {
 }
 
 /** 证券主档最小信息（选股输入补齐用）。SQL 留在仓储层，服务不再直接持连接池查询。 */
+/**
+ * 个人排除代码的统一身份解析（方案 27.9）：一次批量查询，不逐股回源。
+ * 输入允许「600519」「600519.SH」「700」「00700.HK」这几种写法；返回全部候选，
+ * 由服务层判定唯一匹配——不唯一就是待核验，不猜。
+ */
+async function resolveInstrumentsByCodes({ market, codes = [] }, tx) {
+  const list = Array.from(new Set((codes || []).map(code => String(code || '').trim().toUpperCase()).filter(Boolean)));
+  if (!list.length) return [];
+  const bare = list.map(code => code.split('.')[0]);
+  const padded = bare.map(code => (/^\d+$/.test(code) ? code.padStart(5, '0') : code));
+  const exec = executorOf(tx);
+  const { rows } = await exec(`
+    SELECT instrument_id, canonical_code AS code, name, market, asset_class,
+           list_date::text AS list_date, delist_date::text AS delist_date
+      FROM core.instruments
+     WHERE market = $1
+       AND (canonical_code = ANY($2::text[])
+            OR split_part(canonical_code, '.', 1) = ANY($3::text[])
+            OR split_part(canonical_code, '.', 1) = ANY($4::text[]))`,
+  [market, list, bare, padded]);
+  return rows;
+}
+
+/** 库内合法一级行业（按市场分类体系）：只读已落库分类，不现场调用行业源。 */
+async function listIndustryOptions({ market }, tx) {
+  const config = marketConfig(market);
+  const exec = executorOf(tx);
+  const { rows } = await exec(`
+    SELECT n.industry_code AS code, n.industry_name AS name,
+           t.taxonomy_code AS system, t.version, n.level
+      FROM core.industry_nodes n
+      JOIN core.industry_taxonomies t ON t.taxonomy_id = n.taxonomy_id
+     WHERE t.taxonomy_code = ANY($1::text[]) AND n.level = 1
+     ORDER BY array_position($1::text[], t.taxonomy_code), n.industry_code`, [config.industryTaxonomies]);
+  return rows;
+}
+
 async function findInstrumentMeta({ tsCode }, tx) {
   const exec = executorOf(tx);
   const { rows } = await exec(
@@ -1309,33 +1647,97 @@ async function listBacktestPeriods({ backtestId, limit, offset }, tx) {
   return { rows, total: rows.length ? Number(rows[0].total) : 0 };
 }
 
-async function latestPublishedRun({ market }, tx) {
+/**
+ * 最新正式结果：先限定 market／已激活策略／周期／非影子正式渠道，再按日期稳定排序。
+ * 有发布指针时优先读指针（指针就是"当前生效"的唯一事实），没有指针才回退到 published_at 扫描，
+ * 绝不按 period_key 字典序或跨 day/week/quarter 直接取最大值。
+ */
+async function latestPublishedRun({ market, strategyId, periodType }, tx) {
   const exec = executorOf(tx);
+  const type = periodType || 'quarter';
+  if (strategyId) {
+    const pointer = await exec(`
+      SELECT r.run_id, r.quarter, r.as_of_date::text AS as_of_date, r.revision, r.selected_count,
+             r.business_status, r.strategy_id, r.market_pb, r.market_pe, r.benchmark_code,
+             r.valuation_method, r.input_manifest, r.period_type, r.period_key,
+             r.period_start::text AS period_start, r.period_end::text AS period_end,
+             r.published_at, r.computed_at, p.pointer_revision
+        FROM analytics.stock_selection_publications p
+        JOIN analytics.stock_selection_runs r ON r.run_id = p.run_id
+       WHERE p.market = $1 AND p.strategy_id = $2 AND p.period_type = $3
+       ORDER BY p.activated_at DESC LIMIT 1`, [market, strategyId, type]);
+    if (pointer.rows[0]) return pointer.rows[0];
+  }
+  const kinds = type === 'quarter' ? ['quarterly'] : (type === 'week' ? ['weekly'] : ['daily']);
   const { rows } = await exec(`
     SELECT run_id, quarter, as_of_date::text AS as_of_date, revision, selected_count, business_status,
-           strategy_id, market_pb, market_pe, benchmark_code, valuation_method, input_manifest
+           strategy_id, market_pb, market_pe, benchmark_code, valuation_method, input_manifest,
+           period_type, period_key, period_start::text AS period_start, period_end::text AS period_end,
+           published_at, computed_at
       FROM analytics.stock_selection_runs
-     WHERE market = $1 AND run_kind = 'quarterly' AND published_at IS NOT NULL
-     ORDER BY as_of_date DESC, revision DESC LIMIT 1`, [market]);
+     WHERE market = $1 AND run_kind = ANY($2::text[]) AND published_at IS NOT NULL AND is_shadow = false
+       AND ($3::bigint IS NULL OR strategy_id = $3::bigint)
+     ORDER BY period_start DESC NULLS LAST, as_of_date DESC, revision DESC, run_id DESC LIMIT 1`,
+  [market, kinds, strategyId || null]);
   return rows[0] || null;
 }
 
-/** 个人测算复制源批次的候选快照（保留同一排名，不重新取数）。 */
+/**
+ * 个人测算复制源批次的候选快照（保留同一排名，不重新取数）。
+ * 必须复制**全部判定证据**（三项名次、V2 估值/极值/TTM/覆盖列），
+ * 否则个人结果会丢掉源批次的名次与原因，页面只能显示"无解释的空行"。
+ */
 async function copyCandidates({ sourceRunId, targetRunId }, tx) {
   const exec = executorOf(tx);
   await exec(`
     INSERT INTO analytics.stock_selection_candidates
       (run_id, instrument_id, company_id, code, name, industry_code, industry_name, industry_system, industry_version,
-       current_pb, historical_pb_max, current_pe, profit_status, dividend_yield, equity_amount, equity_currency,
-       equity_cny, fx_rate, fx_date, total_score, selection_order, filter_status, data_quality_status,
-       exclusion_reasons, detail)
+       current_pb, historical_pb_max, historical_pb_min, current_pe, profit_status, dividend_yield,
+       equity_amount, equity_currency, equity_cny, fx_rate, fx_date,
+       pb_rank, pe_rank, dividend_rank, total_score, selection_order,
+       filter_status, data_quality_status, exclusion_reasons, detail,
+       pb_positive_extrema_ratio, pb_pe_product, valuation_status, valuation_pass_reason,
+       ttm_profit_status, rank_ready, rank_block_reasons,
+       pb_covered_days, pb_expected_days, pb_gap_days, pb_history_years)
     SELECT $2, instrument_id, company_id, code, name, industry_code, industry_name, industry_system, industry_version,
-           current_pb, historical_pb_max, current_pe, profit_status, dividend_yield, equity_amount, equity_currency,
-           equity_cny, fx_rate, fx_date, total_score, selection_order, filter_status, data_quality_status,
-           exclusion_reasons, detail
+           current_pb, historical_pb_max, historical_pb_min, current_pe, profit_status, dividend_yield,
+           equity_amount, equity_currency, equity_cny, fx_rate, fx_date,
+           pb_rank, pe_rank, dividend_rank, total_score, selection_order,
+           filter_status, data_quality_status, exclusion_reasons, detail,
+           pb_positive_extrema_ratio, pb_pe_product, valuation_status, valuation_pass_reason,
+           ttm_profit_status, rank_ready, rank_block_reasons,
+           pb_covered_days, pb_expected_days, pb_gap_days, pb_history_years
       FROM analytics.stock_selection_candidates
      WHERE run_id = $1
     ON CONFLICT (run_id, instrument_id) DO NOTHING`, [sourceRunId, targetRunId]);
+}
+
+/**
+ * 个人派生用的完整冻结投影（方案 27.9）：分页游标读取源批次**全部**候选，
+ * 显式带出 detail/company_id/rankReady/reasons，不再用 5000 行上限截断、也不补 rankReady=true。
+ */
+async function listCandidatesForProjection({ runId, batchSize = 1000 }, tx) {
+  const exec = executorOf(tx);
+  const rows = [];
+  let lastInstrumentId = 0;
+  for (;;) {
+    const page = await exec(`
+      SELECT instrument_id, company_id, code, name, industry_code, industry_name, industry_system, industry_version,
+             current_pb, historical_pb_max, historical_pb_min, current_pe, profit_status, dividend_yield,
+             pb_rank, pe_rank, dividend_rank, total_score, selection_order,
+             filter_status, data_quality_status, exclusion_reasons, detail,
+             pb_positive_extrema_ratio, pb_pe_product, valuation_status, valuation_pass_reason,
+             ttm_profit_status, rank_ready, rank_block_reasons
+        FROM analytics.stock_selection_candidates
+       WHERE run_id = $1 AND instrument_id > $2
+       ORDER BY instrument_id
+       LIMIT $3`, [runId, lastInstrumentId, batchSize]);
+    if (!page.rows.length) break;
+    page.rows.forEach(row => rows.push(row));
+    lastInstrumentId = Number(page.rows[page.rows.length - 1].instrument_id);
+    if (page.rows.length < batchSize) break;
+  }
+  return rows;
 }
 
 module.exports = {
@@ -1343,10 +1745,14 @@ module.exports = {
   loadUniverse, loadPbWindow, loadEquityFacts, loadAnnualProfits, loadDividendWindow,
   loadAnnualDividends, loadIndustries, loadFxRatesForPairs, loadMarketValuation, loadLatestMarketValuation, loadCalendar,
   loadOpenPrices, loadClosePrices, loadBenchmarkCloses, loadDividendCash,
-  upsertStrategy, findRunByIdempotencyKey, nextRevision, insertRun, insertCandidates, insertMembers,
+  upsertStrategy, findStrategyId, findRunByIdempotencyKey, nextRevision, insertRun, insertCandidates, insertMembers,
   publishRun, markRunFailure,
+  findPublication, listPublicationEvents, markPublicationVisible,
   listRuns, findRun, listCandidates, findCandidate, listMembers, latestPublishedRun, copyCandidates,
+  listCandidatesForProjection,
   readUserSettings, saveUserSettings,
+  readUserSubjectId, findPersonalRunByRequestId,
+  resolveInstrumentsByCodes, listIndustryOptions,
   saveInputGapQueue, readInputGapQueue, findInstrumentMeta, hasCompletedQuarterRun,
   upsertDailyValuationRows, upsertDailyBarRows, listCodesWithRecentBars,
   insertBacktest, insertBacktestPeriods, findBacktest, listBacktestPeriods, listBacktests, previousPublishedMembers,

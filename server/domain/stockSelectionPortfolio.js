@@ -33,6 +33,13 @@ function buildPortfolio(input) {
   const industryLimitRatio = clampRatio(input.industryLimitRatio === undefined ? params.industryLimitRatio : input.industryLimitRatio, params.industryLimitRatio);
   const positionRatio = clampRatio(input.positionRatio, 1);
   const anomalyById = input.anomalyById || {};
+  // 个人覆盖层（方案 27.9）：排除只作用于本人派生结果，不改共享组合、不重算基础竞赛分。
+  const excludedInstruments = input.excludedInstrumentIds instanceof Set
+    ? input.excludedInstrumentIds
+    : new Set((input.excludedInstrumentIds || []).map(id => Number(id)));
+  const excludedIndustries = input.excludedIndustryCodes instanceof Set
+    ? input.excludedIndustryCodes
+    : new Set((input.excludedIndustryCodes || []).map(code => String(code)));
   const order = ranked.slice().sort((a, b) => (a.selectionOrder || 0) - (b.selectionOrder || 0));
 
   const members = [];
@@ -43,6 +50,18 @@ function buildPortfolio(input) {
   const weightPerSlotInEquity = 1 / slots;               // 占股票目标金额的比例
 
   for (const item of order) {
+    // 本人排除：先于任何规则使用，命中即跳过并按原 selection_order 继续递补下一只。
+    if (excludedInstruments.has(Number(item.instrumentId))) {
+      skipped.push({ code: item.code, instrumentId: item.instrumentId, reason: 'user_excluded_instrument', detail: item.exclusionNote || null });
+      continue;
+    }
+    if (item.industry && item.industry.code && excludedIndustries.has(String(item.industry.code))) {
+      skipped.push({
+        code: item.code, instrumentId: item.instrumentId, reason: 'user_excluded_industry',
+        detail: { industryCode: item.industry.code, industryName: item.industry.name || null },
+      });
+      continue;
+    }
     const anomaly = anomalyById[item.instrumentId] || null;
     if (anomaly && anomaly.status === RULES.STATUS.FAIL) {
       skipped.push({ code: item.code, instrumentId: item.instrumentId, reason: 'annual_anomaly', detail: anomaly.reason });
@@ -117,11 +136,21 @@ function buildPortfolio(input) {
     if (list.length > 1) list.forEach(member => { member.issuerDuplicate = true; });
   }
 
+  // 三种权重分母必须显式区分（方案 27.9）：
+  //   weightInMarketBudget = p/slots（占市场预算）、weightInEquityTarget = 1/slots（占预设股票目标）、
+  //   weightInInvestedEquity = 单股金额 / 实际股票金额合计（占实际股票子组合）。
+  // 不足 30 席时后两者不同；全现金（无成员）时实际子组合分母为 0，返回 null 而不是伪造 100%。
+  const investedDenominator = members.length;
+  members.forEach(member => {
+    member.weightInInvestedEquity = investedDenominator > 0 ? 1 / investedDenominator : null;
+  });
+
   const industryBreakdown = Array.from(industryCount, ([code, count]) => ({
     industryCode: code,
     industryName: (members.find(m => m.industry && m.industry.code === code) || {}).industry?.name || null,
     count,
     weightInMarketBudget: count * weightPerSlotInBudget,
+    weightInInvestedEquity: investedDenominator > 0 ? count / investedDenominator : null,
     limitRatio: industryLimitRatio,
   })).sort((a, b) => b.count - a.count || String(a.industryCode).localeCompare(String(b.industryCode)));
 
@@ -141,6 +170,13 @@ function buildPortfolio(input) {
     unfilledSlots: slots - members.length,
     // 方案 6.1：不合格股少是有效结果；未核验股可能改名次是数据不完整，两者分开上报。
     watchlistCount: watchlist.length,
+    weightBasis: {
+      weightInMarketBudget: weightPerSlotInBudget,
+      weightInEquityTarget: weightPerSlotInEquity,
+      weightInInvestedEquity: investedDenominator > 0 ? 1 / investedDenominator : null,
+      investedDenominator,
+    },
+    excludedCount: skipped.filter(row => row.reason === 'user_excluded_instrument' || row.reason === 'user_excluded_industry').length,
   };
 }
 

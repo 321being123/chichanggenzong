@@ -9,7 +9,10 @@ const repo = require('../repositories/stockSelectionRepository');
 const service = require('./stockSelectionService');
 const { withTransaction } = require('../db/transaction');
 
-const EXECUTION_MODEL_VERSION = 'next-open-v1';
+// 执行模型版本（方案 27.11.2）：
+// v1 曾是"每期先卖光所有旧仓再按目标金额买入"，周频会人为制造重复买卖和费用；
+// v2 改为净订单：deltaQty = 目标数量 − 当前数量，正买负卖、零不下单，只减仓只生成卖单。
+const EXECUTION_MODEL_VERSION = 'next-open-net-order-v1';
 const COST_VERSION = 'cost-v1';
 const DEFAULT_COSTS = Object.freeze({ buyBps: 3, sellBps: 3 });
 const BENCHMARK_BY_MARKET = Object.freeze({ CN: 'CSI300', HK: 'HSI' });
@@ -95,6 +98,8 @@ async function runBacktest(input) {
   }
   const costs = Object.assign({}, DEFAULT_COSTS, input.costs || {});
   const strategyVersion = input.strategyVersion || service.STRATEGY_VERSION;
+  // 回测必须与被测策略同源：V2 回测不能默默用 V1 规则算成员（方案 27.11.3 的 A0/A1 分步）。
+  const strategyCode = input.strategyCode || undefined;
   const calendar = await repo.loadCalendar({ market, fromDate: startDate, toDate: endDate });
   const benchmarkCode = input.benchmarkCode || BENCHMARK_BY_MARKET[market];
   const diagnostics = { quarters: [], missing: {}, supportedFrom: null };
@@ -102,7 +107,7 @@ async function runBacktest(input) {
     return persistBacktest({
       market, strategyId: null, startDate, endDate, status: 'not_evaluable',
       metrics: {}, diagnostics: Object.assign(diagnostics, { reason: 'calendar_unavailable' }),
-      costs, strategyVersion, benchmarkCode,
+      costs, strategyVersion, strategyCode, benchmarkCode,
     });
   }
 
@@ -119,14 +124,14 @@ async function runBacktest(input) {
     return persistBacktest({
       market, strategyId: null, startDate, endDate, status: 'not_evaluable',
       metrics: {}, diagnostics: Object.assign(diagnostics, { reason: 'insufficient_quarters', quarterCount: quarterEnds.length }),
-      costs, strategyVersion, benchmarkCode,
+      costs, strategyVersion, strategyCode, benchmarkCode,
     });
   }
 
   // 每个信号日的选股结果（纯计算，不落正式批次）。
   const selections = [];
   for (const item of quarterEnds) {
-    const computed = await service.computeSelection({ market, asOfDate: item.signalDate, positionRatio: 1, strategyVersion });
+    const computed = await service.computeSelection({ market, asOfDate: item.signalDate, positionRatio: 1, strategyVersion, strategyCode });
     const executionDate = calendar.find(day => day > item.signalDate) || null;
     selections.push({ ...item, computed, executionDate });
     diagnostics.quarters.push({
@@ -179,7 +184,7 @@ async function runBacktest(input) {
     };
     return persistBacktest({
       market, strategyId: null, startDate, endDate, status: 'not_evaluable',
-      metrics: {}, diagnostics, costs, strategyVersion, benchmarkCode,
+      metrics: {}, diagnostics, costs, strategyVersion, strategyCode, benchmarkCode,
     });
   }
 
@@ -236,39 +241,103 @@ async function runBacktest(input) {
     }
     const navBeforeTrades = cash + holdingsValue;
 
-    // 卖出：按开盘价，缺价保留旧仓（不虚构成交）。
-    let proceeds = 0;
-    for (const [instrumentId, position] of holdings) {
-      const price = openPrices.get(`${instrumentId}|${item.executionDate}`);
-      if (price === null || price === undefined || !(price > 0)) { unpriced++; continue; }
-      const amount = price * position.shares;
-      const fee = amount * Number(costs.sellBps) / 10000;
-      proceeds += amount - fee;
-      feesThisPeriod += fee;
-      tradedAmount += amount;
-      holdings.delete(instrumentId);
-    }
-    cash += proceeds;
-
-    // 买入：按方案 6.1 的固定 30 席权重（SSV-08）。
-    // 每席预算 = 调仓前总资产 × 仓位 / 30，而不是"把可用现金平均分给入选股票"——
-    // 后者会在只选出 4 只时变成满仓，把行业与风险敞口一起放大。
+    // 净订单调仓（方案 27.11.2）：
+    //   目标数量 = 每席目标金额 ÷ 当期开盘价；deltaQty = 目标 − 当前；正买负卖、零不下单。
+    // 不再"先卖光再买回"——那会在价格漂移时凭空多出一轮买卖和费用；
+    // "名单没变"也不保证零交易：权重漂移、分红、股数变化都可能产生真实净再平衡。
     const slots = Number(item.computed.params.slotsPerMarket || 30);
     const positionRatio = Number(item.computed.positionRatio === undefined ? 1 : item.computed.positionRatio);
     const targetPerMember = navBeforeTrades * positionRatio / slots;
+    // V2 取消指数门槛后 gate.eligible 恒为 true；V1 仍按原合同在指数不合格时只留现金。
     const members = item.computed.gate.eligible ? item.computed.portfolio.members : [];
     if (!item.computed.gate.eligible) diagnostics.cashOnlyQuarters = (diagnostics.cashOnlyQuarters || []).concat(item.quarter);
+
+    const desiredQty = new Map();
+    const priceOf = instrumentId => openPrices.get(`${instrumentId}|${item.executionDate}`);
     for (const member of members) {
-      const price = openPrices.get(`${member.instrumentId}|${item.executionDate}`);
+      const price = priceOf(member.instrumentId);
       if (price === null || price === undefined || !(price > 0)) { unpriced++; continue; }
       if (targetPerMember <= 0) continue;
-      const fee = targetPerMember * Number(costs.buyBps) / 10000;
-      if (targetPerMember > cash) continue; // 预算不足（含费用）就留现金，不挪用其他席位
-      const shares = (targetPerMember - fee) / price;
-      holdings.set(member.instrumentId, { shares, entryPrice: price, lastPrice: price, entryDate: item.executionDate });
-      cash -= targetPerMember;
+      desiredQty.set(member.instrumentId, targetPerMember / price);
+    }
+    // 不在目标里的持仓 → 目标数量 0（退出），按 delta 卖出而不是无条件清仓。
+    for (const instrumentId of holdings.keys()) {
+      if (!desiredQty.has(instrumentId)) desiredQty.set(instrumentId, 0);
+    }
+
+    const periodOrders = [];
+    // 先卖：回收现金再买，避免"先买后卖"用不存在的钱。
+    for (const [instrumentId, position] of [...holdings]) {
+      const price = priceOf(instrumentId);
+      if (price === null || price === undefined || !(price > 0)) { unpriced++; continue; }
+      const targetQty = desiredQty.get(instrumentId) || 0;
+      const delta = targetQty - position.shares;
+      if (delta >= -1e-9) continue;
+      const sellQty = Math.min(-delta, position.shares);
+      if (sellQty <= 1e-12) continue;
+      const amount = price * sellQty;
+      const fee = amount * Number(costs.sellBps) / 10000;
+      cash += amount - fee;
       feesThisPeriod += fee;
-      tradedAmount += targetPerMember;
+      tradedAmount += amount;
+      position.shares -= sellQty;
+      if (position.shares <= 1e-9) holdings.delete(instrumentId);
+      periodOrders.push({
+        instrumentId, side: 'sell', qty: Number(sellQty.toFixed(8)),
+        price: Number(price.toFixed(6)), amount: Number(amount.toFixed(2)), fee: Number(fee.toFixed(2)),
+        reason: targetQty === 0 ? 'exit' : 'rebalance',
+      });
+    }
+
+    // 再买：只补足差额；现金不足按可用现金压缩该笔，不挪用其他席位预算、不透支现金。
+    for (const member of members) {
+      const price = priceOf(member.instrumentId);
+      if (price === null || price === undefined || !(price > 0)) { unpriced++; continue; }
+      const targetQty = desiredQty.get(member.instrumentId);
+      if (!(targetQty > 0)) continue;
+      const currentQty = holdings.get(member.instrumentId) ? holdings.get(member.instrumentId).shares : 0;
+      const delta = targetQty - currentQty;
+      if (delta <= 1e-12) continue;
+      const unitFeeRate = Number(costs.buyBps) / 10000;
+      let amount = price * delta;
+      let fee = amount * unitFeeRate;
+      if (amount + fee > cash) {
+        const affordable = Math.max(cash, 0) / (1 + unitFeeRate);
+        if (affordable <= 1e-9) continue;
+        amount = affordable;
+        fee = amount * unitFeeRate;
+      }
+      const buyQty = amount / price;
+      if (buyQty <= 1e-12) continue;
+      const existing = holdings.get(member.instrumentId);
+      if (existing) {
+        // 加仓按加权成本更新入场价，持仓日期保持首次建仓日。
+        const totalQty = existing.shares + buyQty;
+        existing.entryPrice = (existing.entryPrice * existing.shares + price * buyQty) / totalQty;
+        existing.shares = totalQty;
+        existing.lastPrice = price;
+      } else {
+        holdings.set(member.instrumentId, { shares: buyQty, entryPrice: price, lastPrice: price, entryDate: item.executionDate });
+      }
+      cash -= amount + fee;
+      feesThisPeriod += fee;
+      tradedAmount += amount;
+      periodOrders.push({
+        instrumentId: member.instrumentId, side: 'buy', qty: Number(buyQty.toFixed(8)),
+        price: Number(price.toFixed(6)), amount: Number(amount.toFixed(2)), fee: Number(fee.toFixed(2)),
+        reason: currentQty > 0 ? 'rebalance' : 'entry',
+      });
+    }
+    // 账本留证：按设计只保留有界摘要（每期笔数 + 最近 200 笔明细），
+    // 完整成交明细属于可重算派生物，不在回测主表堆无界 JSON。
+    diagnostics.orderLedger = diagnostics.orderLedger || { periods: 0, orders: 0, fees: 0, sample: [] };
+    diagnostics.orderLedger.periods += 1;
+    diagnostics.orderLedger.orders += periodOrders.length;
+    diagnostics.orderLedger.fees = Number((diagnostics.orderLedger.fees + feesThisPeriod).toFixed(2));
+    if (periodOrders.length && diagnostics.orderLedger.sample.length < 200) {
+      periodOrders.slice(0, 200 - diagnostics.orderLedger.sample.length).forEach(order => {
+        diagnostics.orderLedger.sample.push(Object.assign({ tradeDate: item.executionDate, quarter: item.quarter }, order));
+      });
     }
 
     const marketValue = [...holdings].reduce((sum, [instrumentId, position]) => {
@@ -352,7 +421,7 @@ async function runBacktest(input) {
     diagnostics.missing = { reason: 'insufficient_executable_periods', periods: periods.length };
     return persistBacktest({
       market, strategyId: null, startDate, endDate, status: 'not_evaluable',
-      metrics: {}, diagnostics, costs, strategyVersion, benchmarkCode,
+      metrics: {}, diagnostics, costs, strategyVersion, strategyCode, benchmarkCode,
     });
   }
 
@@ -381,13 +450,17 @@ async function runBacktest(input) {
 
   return persistBacktest({
     market, strategyId: null, startDate, endDate, status: 'partial',
-    metrics, diagnostics, costs, strategyVersion, benchmarkCode, periods,
+    metrics, diagnostics, costs, strategyVersion, strategyCode, benchmarkCode, periods,
   });
 }
 
 async function persistBacktest(input) {
   const inputHash = require('crypto').createHash('sha256')
-    .update(JSON.stringify({ market: input.market, start: input.startDate, end: input.endDate, costs: input.costs, strategyVersion: input.strategyVersion, benchmarkCode: input.benchmarkCode }))
+    .update(JSON.stringify({
+      market: input.market, start: input.startDate, end: input.endDate, costs: input.costs,
+      strategyVersion: input.strategyVersion, strategyCode: input.strategyCode || null,
+      benchmarkCode: input.benchmarkCode, executionModelVersion: EXECUTION_MODEL_VERSION,
+    }))
     .digest('hex');
   const backtestId = await withTransaction(async tx => {
     const strategyId = input.strategyId || await resolveStrategyId(tx, input);
@@ -414,18 +487,24 @@ async function persistBacktest(input) {
 }
 
 async function resolveStrategyId(tx, input) {
+  // 回测登记的策略必须与实际使用的规则一致：V2 回测不能挂在 V1 策略版本下。
+  const V2 = require('../domain/stockSelectionRulesV2');
+  const isV2 = String(input.strategyCode || '').toLowerCase() === V2.STRATEGY_CODE_V2;
+  const strategyCode = isV2 ? V2.STRATEGY_CODE_V2 : RULES.STRATEGY_CODE;
+  const params = isV2 ? V2.V2_PARAMS : RULES.DEFAULT_PARAMS;
+  const version = input.strategyVersion || (isV2 ? 'v2' : service.STRATEGY_VERSION);
   return repo.upsertStrategy(tx, {
-    strategyCode: RULES.STRATEGY_CODE,
+    strategyCode,
     market: input.market,
-    version: input.strategyVersion || service.STRATEGY_VERSION,
-    formulaVersion: RULES.DEFAULT_PARAMS.formulaVersion,
-    adapterVersion: RULES.DEFAULT_PARAMS.adapterVersion,
-    riskVersion: RULES.DEFAULT_PARAMS.riskVersion,
-    industryVersion: RULES.DEFAULT_PARAMS.industryVersion,
+    version,
+    formulaVersion: params.formulaVersion,
+    adapterVersion: params.adapterVersion,
+    riskVersion: params.riskVersion,
+    industryVersion: params.industryVersion,
     effectiveFrom: input.startDate,
-    parameters: RULES.DEFAULT_PARAMS,
+    parameters: params,
     contentHash: require('crypto').createHash('sha256')
-      .update(JSON.stringify({ strategy: RULES.STRATEGY_CODE, params: RULES.DEFAULT_PARAMS, version: input.strategyVersion || service.STRATEGY_VERSION }))
+      .update(JSON.stringify({ strategy: strategyCode, params, version }))
       .digest('hex'),
   });
 }

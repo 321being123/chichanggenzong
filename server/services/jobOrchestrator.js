@@ -71,6 +71,14 @@ function selectionContextOf(claimed) {
     ...(targetDate ? { targetDate } : {}),
     ...(Number.isInteger(batchLimit) && batchLimit > 0 ? { batchLimit } : {}),
     ...(claimed.job_code === 'company_financial_incremental_sync' && targetDate ? { targetTradeDate: targetDate } : {}),
+    // V2（方案 27.8）：影子必须在验证、去重、领取、恢复、执行和完成证据全链路显式传递，
+    // 缺了它，影子请求会被当成正式批次执行——那是最危险的一种"看起来成功"。
+    ...(payload.strategyCode ? { strategyCode: String(payload.strategyCode) } : {}),
+    ...(payload.periodKey ? { periodKey: String(payload.periodKey) } : {}),
+    ...(payload.actor ? { actor: String(payload.actor) } : {}),
+    ...(payload.shadow === true ? { shadow: true } : {}),
+    ...(claimed.slot_id ? { slotId: String(claimed.slot_id) } : {}),
+    ...(claimed.execution_token ? { executionToken: String(claimed.execution_token) } : {}),
   };
 }
 

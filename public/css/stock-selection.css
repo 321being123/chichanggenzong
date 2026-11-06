@@ -40,6 +40,19 @@
 .ss-settings-grid input { height: 36px; border: 1px solid var(--bond-feature-input-border); border-radius: 7px; background: #fff; padding: 0 10px; color: #273142; font-family: inherit; font-size: 13px; outline: none; }
 .ss-settings-grid input:focus { border-color: var(--bond-feature-focus); box-shadow: 0 0 0 2px rgba(26, 35, 126, .08); }
 .ss-settings-grid input::placeholder { color: var(--bond-feature-muted); }
+/* 个人排除（V2 方案 27.9）：行业多选与代码输入沿用同一套输入边框与焦点样式，不另起一套控件外观。 */
+.ss-settings-exclusions { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); border-top: 1px solid #eef1f5; margin-top: 4px; padding-top: 16px; }
+.ss-settings-grid select[multiple],
+.ss-settings-grid textarea {
+  border: 1px solid var(--bond-feature-input-border); border-radius: 7px; background: #fff;
+  padding: 8px 10px; color: #273142; font-family: inherit; font-size: 13px; outline: none;
+  resize: vertical; min-height: 96px; line-height: 1.6;
+}
+.ss-settings-grid select[multiple]:focus,
+.ss-settings-grid textarea:focus { border-color: var(--bond-feature-focus); box-shadow: 0 0 0 2px rgba(26, 35, 126, .08); }
+.ss-settings-grid textarea::placeholder { color: var(--bond-feature-muted); }
+.ss-span-2 { grid-column: 1 / -1; }
+#ss-period-tabs { flex-wrap: wrap; }
 .ss-settings-actions { display: flex; gap: 10px; flex-wrap: wrap; margin: 0; padding: 0 16px 14px; }
 /* 操作区按钮与同栏输入框同高同字号（技术架构 5.1 工具栏按钮口径）。 */
 .ss-settings-actions .btn { min-height: 36px; padding: 0 14px; font-size: 13px; }
@@ -50,11 +63,15 @@
 @media (max-width: 900px) {
   .ss-cards { grid-template-columns: minmax(0, 1fr); }
   .ss-settings-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .ss-settings-exclusions { grid-template-columns: minmax(0, 1fr); }
 }
 @media (max-width: 760px) {
   .ss-card-body { grid-template-columns: minmax(0, 1fr); }
   .ss-settings-grid { grid-template-columns: minmax(0, 1fr); }
   .ss-settings-grid input { height: 44px; font-size: 16px; }
+  /* 手机端输入控件同样要求 16px，避免聚焦时被浏览器自动放大。 */
+  .ss-settings-grid select[multiple],
+  .ss-settings-grid textarea { font-size: 16px; }
   .ss-settings-actions .btn { min-height: 44px; }
   .ss-run-header, .ss-list-foot, .ss-portfolio-summary, .ss-industry,
   .ss-settings-actions, .ss-settings-note { padding-left: 12px; padding-right: 12px; }

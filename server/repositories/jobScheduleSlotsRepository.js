@@ -77,6 +77,14 @@ async function select_ops_job_schedule_slots(params, client = pool) {
     `, params);
 }
 
+async function select_job_slot_by_request_id(params, client = pool) {
+  return client.query(`
+      SELECT slot_id, job_code, status, request_payload
+        FROM ops.job_schedule_slots
+       WHERE job_code = $1 AND request_payload->>'requestId' = $2
+       ORDER BY slot_id DESC LIMIT 1`, params);
+}
+
 async function insert_ops_job_schedule_slots_1(params, client = pool) {
   return client.query(`
       INSERT INTO ops.job_schedule_slots(job_code,scheduled_for,business_date,trigger_type,next_attempt_at,request_payload)
@@ -548,6 +556,7 @@ module.exports = {
   select_ops_job_schedule_slots_7,
   select_job_runs_2,
   select_ops_job_schedule_slots_8,
+  select_job_slot_by_request_id,
   select_ops_alert_notifications,
   select_admin_audit_log,
   update_ops_worker_heartbeats,

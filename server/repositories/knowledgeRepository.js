@@ -94,9 +94,11 @@ async function listLatestArticles(params, tx) {
 async function readArticleById(params, tx) {
   const runner = tx || pool;
   const { rows } = await runner.query(
-    `SELECT a.*, c.name AS category_name
+    `SELECT a.*, c.name AS category_name,
+            COALESCE(NULLIF(u.nickname, ''), a.author_username) AS author_nickname
        FROM articles a
        LEFT JOIN article_categories c ON c.id = a.category_id
+       LEFT JOIN users u ON u.username = a.author_username
        WHERE a.id=$1`,
     [params.id],
   );
@@ -106,9 +108,11 @@ async function readArticleById(params, tx) {
 async function readArticleByShareToken(params, tx) {
   const runner = tx || pool;
   const { rows } = await runner.query(
-    `SELECT a.*, c.name AS category_name
+    `SELECT a.*, c.name AS category_name,
+            COALESCE(NULLIF(u.nickname, ''), a.author_username) AS author_nickname
        FROM articles a
        LEFT JOIN article_categories c ON c.id = a.category_id
+       LEFT JOIN users u ON u.username = a.author_username
        WHERE a.share_token=$1`,
     [params.token],
   );

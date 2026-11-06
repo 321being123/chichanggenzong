@@ -75,7 +75,7 @@ async function loadArticle() {
     const date = (a.published_at || a.updated_at || '').toString().slice(0, 19).replace('T', ' ');
     document.getElementById('s-meta').innerHTML =
       '<span>📁 ' + escapeHtml(a.category_name || '未分类') + '</span>' +
-      '<span>👤 ' + escapeHtml(a.author_username || '') + '</span>' +
+      '<span>👤 ' + escapeHtml(a.author_nickname || a.author_username || '') + '</span>' +
       '<span>🕒 ' + date + '</span><span>👁 ' + (a.view_count || 0) + '</span>';
     const content = document.getElementById('s-content');
     // 统一安全渲染：Vditor 优先，marked+DOMPurify 兜底净化

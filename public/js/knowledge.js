@@ -273,7 +273,7 @@ function ksPaintArticle(a) {
   ksEl('ks-read-title').textContent = a.title || '无标题';
   const date = (a.published_at || a.updated_at || '').toString().slice(0, 19).replace('T', ' ');
   let meta = '<span>' + escapeHtml(a.category_name || '未分类') + '</span>' +
-    '<span>作者：' + escapeHtml(a.author_username || '未知') + '</span>' +
+    '<span>作者：' + escapeHtml(a.author_nickname || a.author_username || '未知') + '</span>' +
     '<span>' + date + '</span><span>' + (a.view_count || 0) + ' 次阅读</span>';
   ksEl('ks-read-meta').innerHTML = meta;
   // 渲染正文（统一安全渲染：Vditor 优先，marked+DOMPurify 兜底净化）

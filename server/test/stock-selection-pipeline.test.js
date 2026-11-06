@@ -91,6 +91,13 @@ async function cleanup(pool) {
     await pool.query(`DELETE FROM core.company_instruments WHERE instrument_id = ANY($1::bigint[])`, [instrumentIds]);
     await pool.query(`DELETE FROM core.instruments WHERE instrument_id = ANY($1::bigint[])`, [instrumentIds]);
   }
+  // 删行业节点前必须先断开引用：只要库里还留着任何指向该测试节点的归属行
+  // （例如上一轮异常终止的残留、或某只夹具公司名没落在上面的前缀里），
+  // 直接删节点会撞外键，把"清理失败"变成整个文件失败。
+  await pool.query(
+    `DELETE FROM core.company_industry_memberships
+      WHERE industry_node_id IN (SELECT industry_node_id FROM core.industry_nodes WHERE industry_code = $1)`,
+    [TEST_MARK + '_IND']);
   await pool.query(`DELETE FROM core.industry_nodes WHERE industry_code = $1`, [TEST_MARK + '_IND']);
   // 行业取证用例写入的临时节点（按测试名与专用代码段清理，不触碰真实分类）。
   await pool.query(`DELETE FROM core.industry_nodes WHERE industry_name LIKE '测试申万%' OR industry_name LIKE '测试恒生%'`);

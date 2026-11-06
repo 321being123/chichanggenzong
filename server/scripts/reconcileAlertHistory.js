@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 // 历史后台告警收敛核查：默认只读预览；--apply 仅关闭已验证恢复且显式列出的告警。
+// 全量预览（不带 --alert-ids）也输出全部候选明细和可直接复用的告警 ID 清单。
 // 该脚本不自动发送恢复邮件，也不替用户确认线上数据修复。
 // 逐 ID 复核会同时输出处置分类（真实恢复/正常等待/任务下线/人工处置/证据不足），
 // 不把“不满足自动恢复门槛”直接当成当前故障，也不把“已确认”改写成“已恢复”。
@@ -29,6 +30,17 @@ function valueOf(flag, fallback = '') {
 function selectedIds() {
   return String(valueOf('--alert-ids', '')).split(',').map(item => Number(item.trim()))
     .filter(item => Number.isInteger(item) && item > 0);
+}
+
+// 预览范围：全量扫描时给出全部可收敛候选，指定 ID 时只回显该批以便逐条复核。
+// 它与 --apply 的写入范围严格分离，预览变成全量不会让写入范围跟着放宽。
+function previewCandidates(candidates, ids) {
+  return ids.length ? candidates.filter(item => ids.includes(item.alertId)) : candidates;
+}
+
+// 已确认记录默认不参与自动转换，只有显式 --include-acknowledged 才纳入。
+function closableCandidates(candidates, includeAcknowledged) {
+  return candidates.filter(item => includeAcknowledged || item.status !== 'acknowledged');
 }
 
 // 兼容历史脚本和既有测试；判断规则统一由 jobAlertMailer 提供。
@@ -188,16 +200,21 @@ async function main() {
     else unresolved.push(item);
   }
   const selected = candidates.filter(item => ids.includes(item.alertId));
-  const applicable = selected.filter(item => INCLUDE_ACKNOWLEDGED || item.status !== 'acknowledged');
+  const applicable = closableCandidates(selected, INCLUDE_ACKNOWLEDGED);
   const skippedAcknowledged = selected.length - applicable.length;
+  // 预览明细不再复用写入范围：不带 --alert-ids 时输出全部候选及可直接取用的告警 ID，
+  // 避免只剩 candidateCount 数字；带 ID 时保持逐 ID 复核的原语义。
+  const preview = previewCandidates(candidates, ids);
+  const readyAlertIds = closableCandidates(preview, INCLUDE_ACKNOWLEDGED).map(item => item.alertId);
   // 预览只用于展示；实际写入走 applyReconciliation，在事务内逐 ID 重新取证。
   const applied = APPLY && applicable.length
     ? await applyReconciliation(applicable.map(item => item.alertId), { includeAcknowledged: INCLUDE_ACKNOWLEDGED })
     : { closed: [], refused: [] };
   console.log(JSON.stringify({ mode: APPLY ? 'apply' : 'dry-run', scanned: alerts.length,
+    previewScope: ids.length ? 'selected_ids' : 'all_unresolved',
     candidateCount: candidates.length, selectedCount: selected.length, appliedCount: applicable.length,
-    skippedAcknowledged, closed: applied.closed, refused: applied.refused, dispositionSummary: summary,
-    candidates: applicable, skipped: unresolved }, null, 2));
+    skippedAcknowledged, readyAlertIds, closed: applied.closed, refused: applied.refused, dispositionSummary: summary,
+    candidates: preview, skipped: unresolved }, null, 2));
 }
 
 if (require.main === module) {
@@ -207,4 +224,5 @@ if (require.main === module) {
   }).finally(() => pool.end());
 }
 
-module.exports = { allCircuitsClosed, parseScope, verifyScope, applyReconciliation, evidenceTrace };
+module.exports = { allCircuitsClosed, parseScope, verifyScope, applyReconciliation, evidenceTrace,
+  previewCandidates, closableCandidates };

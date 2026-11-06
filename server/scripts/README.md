@@ -50,7 +50,7 @@
 | `probeTusharePermissions.js` | 6,000 积分 Tushare 权限探测：逐 Token、逐接口登记实测结果。 | |
 | `rebuildBondCallProjection.js` | （缺首行说明，补充后更新本表） | |
 | `recalculateCashIncome.js` | 明确指定用户；沿用本地服务，不采集、不部署、不触碰其他用户。 | |
-| `reconcileAlertHistory.js` | 历史后台告警收敛核查：默认只读预览；--apply 仅关闭已验证恢复且显式列出的告警。 | |
+| `reconcileAlertHistory.js` | 历史后台告警收敛核查：默认只读预览，全量预览也输出候选明细与可直接复用的告警 ID；`--apply` 仅关闭已验证恢复且显式列出的告警。 | |
 | `repairArbitrageEvents.js` | （缺首行说明，补充后更新本表） | |
 | `repairConvertibleBondCallEvents.js` | （缺首行说明，补充后更新本表） | |
 | `repairFxRateHistory.js` | 统一历史港币汇率并修复冲突日期的净值快照。 | |

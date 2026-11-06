@@ -9,7 +9,7 @@ const { closedCircuitApiNames } = require('../services/externalCallGuard');
 const { verifyAlertScope } = require('../services/jobAlertMailer');
 const { isDataAsOfFresh, resolveDatasetPartitionDate } = require('../services/jobScheduleSlots');
 const { getJobDefinition, getRegisteredJobDefinition, validateJobDefinitionSources } = require('../services/jobDefinitions');
-const { allCircuitsClosed, verifyScope } = require('../scripts/reconcileAlertHistory');
+const { allCircuitsClosed, verifyScope, previewCandidates, closableCandidates } = require('../scripts/reconcileAlertHistory');
 const { verifySlotRecoveryEvidence } = require('../services/jobRecoveryEvidence');
 
 function read(relative) {
@@ -110,6 +110,81 @@ assert(partitionRepair.includes('previous_target'));
 const alertRepair = read('server/scripts/reconcileAlertHistory.js');
 assert(alertRepair.includes('--alert-ids'));
 assert(alertRepair.includes('CONFIRM_ALERT_RECONCILIATION'));
+// 全量 dry-run 回归：以前预览明细复用了「只含显式 ID」的写入范围，不带 --alert-ids 时
+// candidateCount 有数、candidates 数组恒为空，只能先导出全部未结 ID 再回传。
+assert(alertRepair.includes('candidates: preview'), '预览明细必须取全量候选，不能只回显写入范围');
+assert(alertRepair.includes('readyAlertIds'), '预览必须给出可直接复用的告警 ID 清单');
+assert(alertRepair.includes('APPLY && !ids.length'), '--apply 仍须显式传入告警 ID，预览全量化不得放宽写入');
+const alertPreviewFixtures = [
+  { alertId: 11, status: 'open' },
+  { alertId: 12, status: 'acknowledged' },
+  { alertId: 13, status: 'open' },
+];
+assert.deepStrictEqual(previewCandidates(alertPreviewFixtures, []), alertPreviewFixtures,
+  '不带告警 ID 的全量预览必须输出全部候选明细');
+assert.deepStrictEqual(previewCandidates(alertPreviewFixtures, [13]), [alertPreviewFixtures[2]],
+  '指定告警 ID 时仍只回显该批记录');
+assert.deepStrictEqual(closableCandidates(previewCandidates(alertPreviewFixtures, []), false).map(item => item.alertId),
+  [11, 13], '已确认记录默认不进入可关闭清单');
+assert.deepStrictEqual(closableCandidates(previewCandidates(alertPreviewFixtures, []), true).map(item => item.alertId),
+  [11, 12, 13], '显式包含已确认记录时才全部纳入');
+assert.deepStrictEqual(closableCandidates(previewCandidates(alertPreviewFixtures, [11, 12, 13]), false).map(item => item.alertId),
+  [11, 13], '逐 ID 复核的写入范围不受全量预览影响');
+
+// 端到端跑真实 CLI：只替换连接和证据入口，不改脚本本身；验证输出 JSON 的候选明细，
+// 而不只是辅助函数。子进程不连库、不写状态、不触发 --apply。
+const { spawnSync } = require('child_process');
+const os = require('os');
+function runAlertPreviewCli(cliArgs) {
+  const mockFile = path.join(os.tmpdir(), `alert-preview-mock-${process.pid}.js`);
+  const fakeAlerts = [
+    { alert_id: 11, alert_key: 'k11', alert_type: 'job_failure', status: 'open', job_code: 'j', slot_id: 1,
+      scope_type: 'slot', scope_key: '1', last_seen_at: null, acknowledged_at: null },
+    { alert_id: 12, alert_key: 'k12', alert_type: 'job_failure', status: 'acknowledged', job_code: 'j', slot_id: 2,
+      scope_type: 'slot', scope_key: '2', last_seen_at: null, acknowledged_at: null },
+    { alert_id: 13, alert_key: 'k13', alert_type: 'job_failure', status: 'open', job_code: 'j', slot_id: 3,
+      scope_type: 'slot', scope_key: '3', last_seen_at: null, acknowledged_at: null },
+  ];
+  fs.writeFileSync(mockFile, [
+    "const Module = require('module');",
+    'const load = Module._load;',
+    `const alerts = ${JSON.stringify(fakeAlerts)};`,
+    'Module._load = function (request, parent, isMain) {',
+    "  const isCli = /reconcileAlertHistory\\.js$/.test((parent && parent.filename) || '');",
+    "  if (isCli && request === '../db/connection') {",
+    '    return { pool: { query: async () => ({ rows: alerts }), end: async () => {} } };',
+    '  }',
+    "  if (isCli && request === '../db') return { auditEvent: async () => {} };",
+    "  if (isCli && request === '../services/jobAlertMailer') {",
+    '    const real = load.call(this, request, parent, isMain);',
+    '    return { ...real,',
+    '      verifyAlertScope: async () => ({ recovered: true, evidence: {} }),',
+    "      classifyAlertDisposition: () => ({ disposition: 'true_recovery' }) };",
+    '  }',
+    '  return load.call(this, request, parent, isMain);',
+    '};',
+    '',
+  ].join('\n'));
+  try {
+    const result = spawnSync(process.execPath,
+      ['--require', mockFile, path.join(ROOT, 'server/scripts/reconcileAlertHistory.js'), ...cliArgs],
+      { encoding: 'utf8', cwd: ROOT });
+    assert.strictEqual(result.status, 0, `对账脚本必须正常退出：${(result.stderr || '').slice(0, 300)}`);
+    return JSON.parse(result.stdout);
+  } finally {
+    fs.rmSync(mockFile, { force: true });
+  }
+}
+const fullPreview = runAlertPreviewCli(['--limit', '10']);
+assert.strictEqual(fullPreview.previewScope, 'all_unresolved', '不传告警 ID 应标记为全量预览');
+assert.strictEqual(fullPreview.candidateCount, 3, '三条假告警都应通过证据判为可收敛');
+assert.deepStrictEqual(fullPreview.candidates.map(item => item.alertId), [11, 12, 13],
+  '全量 dry-run 必须输出候选明细，不能只剩 candidateCount 数字');
+assert.deepStrictEqual(fullPreview.readyAlertIds, [11, 13], '可关闭 ID 清单须排除已确认记录');
+const scopedPreview = runAlertPreviewCli(['--alert-ids', '11,12']);
+assert.strictEqual(scopedPreview.previewScope, 'selected_ids', '显式传 ID 时仍走逐条复核语义');
+assert.deepStrictEqual(scopedPreview.candidates.map(item => item.alertId), [11, 12],
+  '指定 ID 时只回显该批候选');
 
 const cninfoPy = read('ipo-report/external_call_guard.py');
 assert(cninfoPy.includes('def _record_forbidden'));

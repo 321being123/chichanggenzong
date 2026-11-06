@@ -414,36 +414,42 @@ async function runSupervisor() {
 
   return await new Promise(resolve => {
     let settled = false;
+    let killPending = false;
+    const settleOnce = value => {
+      if (settled) return;
+      settled = true;
+      resolve(value);
+    };
     // 到期下限 100ms：允许用极小预算复现「同步卡死」，不再被人为的 1s 下限吃掉。
     const timer = setTimeout(() => {
       if (settled) return;
-      settled = true;
+      killPending = true;
       console.error('\n[测试资源] 整轮超过硬截止（' + Math.round(TOTAL_DEADLINE_MS / 1000) + 's，独立监督进程），强制结束');
       // 异步终止：先给整组 SIGTERM，有界等待后升级 SIGKILL，等确认退出再决定资源是否释放。
       runControl.killProcessTreeAsync(child.pid, { group: useGroup })
         .catch(error => ({ killed: false, method: 'error', output: error.message }))
         .then(kill => {
+          killPending = false;
           console.error('[测试资源] 终止测试进程树：' + kill.method + ' · 已确认退出=' + kill.killed);
           if (kill.killed) runControl.unregisterChild(runId, child.pid);
-          resolve(finish(1, '整轮超时'));
+          settleOnce(finish(1, '整轮超时'));
         });
     }, Math.max(100, TOTAL_DEADLINE_MS));
 
     child.on('error', error => {
-      if (settled) return;
-      settled = true;
+      if (settled || killPending) return;
       clearTimeout(timer);
       console.error('测试进程启动失败：' + error.message);
-      resolve(finish(1, '测试进程启动失败'));
+      settleOnce(finish(1, '测试进程启动失败'));
     });
 
     child.on('close', code => {
-      if (settled) return;
-      settled = true;
+      // 终止确认中先不收尾：等整组退出后再判定资源能否释放。
+      if (settled || killPending) return;
       clearTimeout(timer);
       const exited = !runControl.isProcessAlive(child.pid);
       if (exited) runControl.unregisterChild(runId, child.pid);
-      resolve(finish(Number.isInteger(code) ? code : 1));
+      settleOnce(finish(Number.isInteger(code) ? code : 1));
     });
   });
 }

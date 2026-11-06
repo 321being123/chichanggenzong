@@ -84,14 +84,17 @@ function killPid(pid) {
   } catch (_) { /* 已退出 */ }
 }
 
-function waitGone(pid, timeoutMs = 5000) {
+// 必须**异步**等待：Atomics.wait 会阻塞事件循环，Node 收不到 SIGCHLD、子进程一直停在僵尸态，
+// process.kill(pid, 0) 就永远成功，于是"确认已退出"这一步在 Linux 上必然超时失败
+// （这正是 F14 记的"同步等待导致残锁/残进程"同类缺陷）。改成交还事件循环的定时等待后，
+// 被 SIGKILL 的子进程会被正常回收，判定才有意义。
+async function waitGone(pid, timeoutMs = 5000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     let alive = true;
     try { process.kill(pid, 0); } catch (error) { alive = error.code === 'EPERM'; }
     if (!alive) return true;
-    // 同步等待（本测试不是被监督对象，可以短暂忙等）
-    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
+    await new Promise(resolve => setTimeout(resolve, 100));
   }
   return false;
 }
@@ -174,7 +177,7 @@ function writeMocks() {
     await test('P1-1 终止失败：入口退出后锁与子进程登记都必须保留', async function () {
       clearControl();
       const probe = startProbe();
-      assert.ok(waitGone(probe.pid, 200) === false, '前置：探针进程必须存活');
+      assert.strictEqual(await waitGone(probe.pid, 200), false, '前置：探针进程必须存活');
 
       const result = await runNode(
         { args: [RUN_ONE, TRIVIAL_TEST] },
@@ -212,7 +215,7 @@ function writeMocks() {
 
       // 探针退出后，锁应可被回收（人工入口或下一轮自动回收）
       killPid(probe.pid);
-      assert.ok(waitGone(probe.pid, 6000), '前置：探针必须真的退出');
+      assert.strictEqual(await waitGone(probe.pid, 6000), true, '前置：探针必须真的退出');
       const afterExit = await runNode(
         { args: [RUN_ONE, TRIVIAL_TEST] },
         {},

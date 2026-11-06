@@ -148,33 +148,39 @@ async function runSupervisor() {
 
   return await new Promise(resolve => {
     let settled = false;
-    const timer = setTimeout(() => {
+    let killPending = false;
+    const settleOnce = value => {
       if (settled) return;
       settled = true;
+      resolve(value);
+    };
+    const timer = setTimeout(() => {
+      if (settled) return;
+      killPending = true;
       console.error('\n[超时] 单文件入口整体超过 ' + Math.round(overallDeadlineMs / 1000) + 's（含初始化，独立监督），强制结束');
       runControl.killProcessTreeAsync(worker.pid, { group: useGroup })
         .catch(error => ({ killed: false, method: 'error', output: error.message }))
         .then(kill => {
+          killPending = false;
           console.error('[超时] 终止执行进程树：' + kill.method + ' · 已确认退出=' + kill.killed);
           if (kill.killed) runControl.unregisterChild(runId, worker.pid);
-          resolve(finish(1, '整体超时'));
+          settleOnce(finish(1, '整体超时'));
         });
     }, overallDeadlineMs);
 
     worker.on('error', error => {
-      if (settled) return;
-      settled = true;
+      if (settled || killPending) return;
       clearTimeout(timer);
       console.error('执行进程启动失败：' + error.message);
-      resolve(finish(1, '执行进程启动失败'));
+      settleOnce(finish(1, '执行进程启动失败'));
     });
 
     worker.on('close', code => {
-      if (settled) return;
-      settled = true;
+      // 终止确认中：先别收尾，等 killProcessTreeAsync 判断整组是否真的退出。
+      if (settled || killPending) return;
       clearTimeout(timer);
       if (!runControl.isProcessAlive(worker.pid)) runControl.unregisterChild(runId, worker.pid);
-      resolve(finish(Number.isInteger(code) ? code : 1));
+      settleOnce(finish(Number.isInteger(code) ? code : 1));
     });
   });
 }

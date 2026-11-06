@@ -687,16 +687,25 @@ function spawnWithTimeout(command, args, options = {}) {
       try { options.onSpawn(child.pid); } catch (_) { /* 登记失败不能拖垮本次执行 */ }
     }
 
+    // 终止确认期间不能让 close 抢先收尾：SIGTERM 一到，直接子进程的 close 往往比
+    // "确认整组退出"更早触发，若此时就 resolve，调用方拿不到 treeKill 证据，
+    // 也没机会等孙进程真正退出（F14 的 Linux 反例就是这样丢掉证据/留下残锁的）。
+    let killPending = false;
     const timer = setTimeout(() => {
       timedOut = true;
-      // 先标记超时再异步终止：终止期间 close 事件可能先到，finish 的 settled 保护会把结果收敛为一次。
+      killPending = true;
       killProcessTreeAsync(child.pid, { group: useGroup })
-        .then(kill => finish({ status: null, signal: 'TIMEOUT', timedOut: true, treeKill: kill }))
-        .catch(error => finish({ status: null, signal: 'TIMEOUT', timedOut: true, treeKill: { killed: false, method: 'error', output: error.message } }));
+        .then(kill => { killPending = false; finish({ status: null, signal: 'TIMEOUT', timedOut: true, treeKill: kill }); })
+        .catch(error => {
+          killPending = false;
+          finish({ status: null, signal: 'TIMEOUT', timedOut: true, treeKill: { killed: false, method: 'error', output: error.message } });
+        });
     }, timeoutMs);
 
     function finish(result) {
       if (settled) return;
+      // 终止过程中先不收敛：等 killProcessTreeAsync 给出"整组已退出/未退出"的结论。
+      if (killPending && !result.treeKill) return;
       settled = true;
       clearTimeout(timer);
       resolve({ ...result, out, durationMs: Date.now() - startedAt, pid: child.pid });

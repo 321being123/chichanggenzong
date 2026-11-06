@@ -14,6 +14,9 @@ const QUARTER = '2026Q3';
 let AS_OF = null;
 // 609xxx 为 A 股未分配号段，避免与真实证券碰撞；同时满足 core.instruments 的代码形态约束。
 const CODES = [`${TEST_MARK}01.SH`, `${TEST_MARK}02.SH`, `${TEST_MARK}03.SH`, `${TEST_MARK}04.SH`];
+// 第五只只用于制造"确定性缺口"（无估值/无分红），不参与名次与组合断言。
+const GAP_CODE = `${TEST_MARK}05.SH`;
+const ALL_CODES = [...CODES, GAP_CODE];
 // 公司名带唯一后缀，避免与历史残留或真实公司重名（companies 有 country+name 唯一约束）。
 const COMPANY_NAME_PREFIX = '选股测试公司';
 const RUN_TAG = Date.now().toString(36);
@@ -63,7 +66,7 @@ async function seedCalendar(pool) {
 }
 
 async function cleanup(pool) {
-  const codes = CODES;
+  const codes = ALL_CODES;
   await pool.query(`DELETE FROM analytics.stock_selection_runs WHERE market=$1 AND as_of_date=$2::date`, [MARKET, AS_OF]);
   await pool.query(`DELETE FROM analytics.stock_selection_backtests WHERE market=$1 AND start_date=$2::date`, [MARKET, AS_OF]);
   // 先按名称前缀兜底清扫（含上一次失败运行留下的残留公司），再按代码清理证券与事实。
@@ -161,6 +164,38 @@ async function seed(pool) {
     `INSERT INTO market.index_valuation_history (index_code, valuation_method, trade_date, close, pe_ttm, pb, source_code)
      VALUES ('000985','market_cap_weighted',$1::date,6000,15,1.5,'lixinger_official')
      ON CONFLICT DO NOTHING`, [AS_OF]);
+
+  // 第五只：只有行情与一份年报，没有估值（PB 待补）、没有分红。
+  // 作用是让"存在待补对象时不得发布正式组合"这条断言**不依赖运行环境**：
+  // 旧写法靠"全市场 5000+ 只里必然有缺数据的"，在干净 CI 空库上只有上面 4 只且全部完整，
+  // 断言就反向失败（F13 的 CI 反例）。缺口由夹具自己制造后，任何库都能确定性复现。
+  const gapCompany = await pool.query(
+    `INSERT INTO core.companies (legal_name, short_name, country_code, company_type) VALUES ($1,$2,'CN','listed') RETURNING company_id`,
+    ['选股缺口公司' + RUN_TAG, TEST_MARK + 'G']);
+  const gapCompanyId = gapCompany.rows[0].company_id;
+  const gapInstrument = await pool.query(
+    `INSERT INTO core.instruments (canonical_code, name, asset_class, market, exchange_code, currency_code, list_date, status)
+     VALUES ($1,$2,'stock','CN','SSE','CNY','2010-01-01','listed') RETURNING instrument_id`,
+    [GAP_CODE, '缺口测试股票']);
+  const gapInstrumentId = gapInstrument.rows[0].instrument_id;
+  instrumentIds.push(gapInstrumentId);
+  await pool.query(
+    `INSERT INTO core.company_instruments (company_id, instrument_id, relation_type, valid_from) VALUES ($1,$2,'issued_by','2010-01-01')`,
+    [gapCompanyId, gapInstrumentId]);
+  await pool.query(
+    `INSERT INTO core.company_industry_memberships (company_id, industry_node_id, source_id, valid_from, is_current) VALUES ($1,$2,$3,'2010-01-01',true)`,
+    [gapCompanyId, nodeId, sourceId]);
+  await pool.query(
+    `INSERT INTO market.daily_bars (instrument_id, trade_date, source_id, open, high, low, close, volume, amount)
+     VALUES ($1,$2::date,$3,10,10,10,10,1000,10000)`, [gapInstrumentId, AS_OF, sourceId]);
+  const gapReport = await pool.query(
+    `INSERT INTO fundamental.financial_reports
+       (company_id, report_kind, period_end, period_type, statement_scope, announced_at, source_id, source_version, update_flag, is_current_version, report_type)
+     VALUES ($1,'income','2025-12-31','annual','consolidated','2026-03-31',$2,'v1','',true,'1') RETURNING report_id`,
+    [gapCompanyId, sourceId]);
+  await pool.query(
+    `INSERT INTO fundamental.financial_facts (report_id, statement_type, metric_code, numeric_value, unit_code, currency_code, source_field, is_calculated)
+     VALUES ($1,'balance','equity_parent',5e10,'CNY','CNY','total_hldr_eqy_exc_min_int',false)`, [gapReport.rows[0].report_id]);
   return { instrumentIds };
 }
 
@@ -265,7 +300,7 @@ async function main() {
     });
 
     record('数据不完整时不得发布正式可投资组合', () => {
-      // 全市场 5000+ 只里只有少数具备完整 11 年财报，必然存在待补对象。
+      // 缺口由夹具制造：最后一只证券有财报但没有估值（PB 待补），因此本批必然不完整。
       assert.strictEqual(Number(run.published_at === null), 1, '存在待补对象时 published_at 必须为空');
       assert.ok(Number(run.pending_count) > 0, '待补对象计数必须 > 0');
       assert.strictEqual(run.quality_status, 'partial');
@@ -386,8 +421,8 @@ async function main() {
     const audit = await service.auditInputs({ market: MARKET, asOfDate: AS_OF });
     record('选股输入缺口审计产出可续跑队列，不自行外采', () => {
       assert.ok(audit.queueId, '缺口队列必须持久化');
-      assert.ok(audit.gapCount > 0, '测试环境必然存在缺口');
-      assert.ok(audit.coverage.universeCount > CODES.length);
+      assert.ok(audit.gapCount > 0, '夹具里那只缺估值的证券必须产生可续跑缺口');
+      assert.ok(audit.coverage.universeCount >= CODES.length, '候选池必须覆盖本文件铺的全部证券');
     });
   } finally {
     try { await cleanup(pool); } catch (error) { console.error('清理夹具失败：', error.message); }

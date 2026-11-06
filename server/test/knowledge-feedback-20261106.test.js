@@ -62,6 +62,13 @@ check('#21 回弹露出的画布与顶栏同色', () => {
   assert.ok(/html\s*\{\s*background:\s*#1a237e/i.test(css), '根元素需给出与深蓝顶栏同色的画布背景，否则下拉回弹会露出浅灰空白');
 });
 
+check('#21 编辑器图标不被 CSP 挤成占位块', () => {
+  const css = read('public/css/knowledge.css');
+  assert.ok(/body\s*>\s*svg\[version="1\.1"\]\s*\{[^}]*position:\s*absolute/.test(css), 'CSP 的 style-src-attr none 会忽略 sprite 自带的内联样式，必须由外部样式设为 absolute，否则它按 300×150 占据文档流、把页面顶部撑出空白');
+  assert.ok(/body\s*>\s*svg\[version="1\.1"\]\s*\{[^}]*width:\s*0/.test(css), '图标 sprite 宽度必须为 0');
+  assert.ok(/body\s*>\s*svg\[version="1\.1"\]\s*\{[^}]*height:\s*0/.test(css), '图标 sprite 高度必须为 0');
+});
+
 check('#22 编辑器高度跟随正文', () => {
   const js = read('public/js/knowledge.js');
   const cfg = js.match(/new Vditor\('ks-editor',\s*\{([\s\S]*?)placeholder:/);

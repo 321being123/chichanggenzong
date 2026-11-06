@@ -1,4 +1,16 @@
 /* ========== 知识分享模块 ========== */
+/* 反馈 #21 真正根因：Vditor 图标 sprite 靠内联 style 声明 position:absolute / width:0 / height:0
+   来让自己不占空间，但本站 CSP 有 style-src-attr 'none'，内联 style 属性会被浏览器忽略，
+   sprite 于是退回 SVG 默认 300×150 并占据文档流，把整页往下撑出一块约 150px 的空白。
+   只有打开文章（初始化 Vditor）后才注入，所以表现为"点开文章就多一块空白"。
+   这里用外部样式补回与内联等价的声明；不改 CSP，禁用内联属性是既有安全设置。 */
+body > svg[version="1.1"] {
+  position: absolute;
+  width: 0;
+  height: 0;
+  overflow: hidden;
+}
+
 #main-knowledge,
 .share-wrap {
   --ks-primary: #1a237e;

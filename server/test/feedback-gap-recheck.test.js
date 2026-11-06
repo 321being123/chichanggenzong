@@ -27,6 +27,9 @@ function baseConfig() {
 (async () => {
   const tmpDb = 'portfolio_test_gap_' + Date.now();
   const admin = new Client(Object.assign(baseConfig(), { database: process.env.PGDATABASE || 'portfolio' }));
+  // 删临时库前会调 pg_terminate_backend，被切断的连接会向 pool 抛 'error' 事件；
+  // 没有监听器时 Node 直接以未捕获错误退出，把"用例全过"变成"进程崩了"（CI 实测）。
+  admin.on('error', () => {});
   try {
     await admin.connect();
   } catch (e) {
@@ -42,6 +45,7 @@ function baseConfig() {
     delete process.env.DATABASE_URL;
 
     pool = require('../db').pool;
+    if (pool && typeof pool.on === 'function') pool.on('error', () => {});
     const store = require('../db/feedback');
     const service = require('../services/feedbackService');
     const release = require('../services/feedbackRelease');

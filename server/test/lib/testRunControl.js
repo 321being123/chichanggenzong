@@ -79,15 +79,48 @@ function lockPath(resource) {
   return path.join(LOCK_DIR, sha1(resource).slice(0, 24) + '.lock');
 }
 
+// 读取 /proc 里的进程状态（Linux）。僵尸态（Z）表示进程已经退出、只等父进程回收，
+// 此时 kill(pid, 0) 仍然成功，但"它已经不再执行任何测试"——把它当存活会造成两个后果：
+// ①终止循环永远等不到"已退出"；②锁释放判据认为还有人活着，于是保留锁（CI 上的残锁反例）。
+function processStateOnLinux(pid) {
+  if (process.platform !== 'linux') return null;
+  try {
+    const stat = fs.readFileSync('/proc/' + pid + '/stat', 'utf8');
+    // 格式：pid (comm) state ppid pgrp ...；comm 里可能带空格和括号，所以从最后一个 ')' 切。
+    const close = stat.lastIndexOf(')');
+    if (close < 0) return null;
+    const fields = stat.slice(close + 2).trim().split(/\s+/);
+    return { state: fields[0] || null, pgrp: Number(fields[2]) };
+  } catch (_) {
+    return null;
+  }
+}
+
 function isProcessAlive(pid) {
   const n = Number(pid);
   if (!Number.isInteger(n) || n <= 0) return false;
+  const info = processStateOnLinux(n);
+  if (info && info.state === 'Z') return false;
   try {
     process.kill(n, 0);
     return true;
   } catch (error) {
     return error.code === 'EPERM';
   }
+}
+
+/** 进程组里是否还有活着的成员（Linux 直接扫 /proc；其它平台返回 null 交给 kill(-pgid,0)）。 */
+function groupHasLiveMembers(pgid) {
+  if (process.platform !== 'linux') return null;
+  let entries;
+  try { entries = fs.readdirSync('/proc'); } catch (_) { return null; }
+  for (const entry of entries) {
+    if (!/^\d+$/.test(entry)) continue;
+    const info = processStateOnLinux(Number(entry));
+    if (!info) continue;
+    if (info.pgrp === pgid && info.state !== 'Z') return true;
+  }
+  return false;
 }
 
 function sleepSync(ms) {
@@ -640,6 +673,9 @@ async function killProcessTreeAsync(pid, options = {}) {
 /** 目标存活判定：优先按进程组（-pid），没有进程组时退回单 PID。 */
 function targetAlive(n, options = {}) {
   if (options.group && process.platform !== 'win32') {
+    // 组内成员全部退出（含只剩僵尸）才算清空：kill(-pgid,0) 对僵尸组同样成功，不能作准。
+    const liveMembers = groupHasLiveMembers(n);
+    if (liveMembers !== null) return liveMembers;
     try { process.kill(-n, 0); return true; } catch (error) {
       if (error.code === 'EPERM') return true;
       // ESRCH：进程组已不存在，再兜底看单 PID，避免"组不在但进程还在"被误判已清空。

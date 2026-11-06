@@ -171,7 +171,9 @@ async function seed(pool) {
   // 断言就反向失败（F13 的 CI 反例）。缺口由夹具自己制造后，任何库都能确定性复现。
   const gapCompany = await pool.query(
     `INSERT INTO core.companies (legal_name, short_name, country_code, company_type) VALUES ($1,$2,'CN','listed') RETURNING company_id`,
-    ['选股缺口公司' + RUN_TAG, TEST_MARK + 'G']);
+    // 名字必须落在 cleanup 的前缀里，否则这只证券与它的行业归属会在库里残留，
+    // 下一次清理删行业节点时会被外键挡住。
+    [COMPANY_NAME_PREFIX + '缺口' + RUN_TAG, TEST_MARK + 'G']);
   const gapCompanyId = gapCompany.rows[0].company_id;
   const gapInstrument = await pool.query(
     `INSERT INTO core.instruments (canonical_code, name, asset_class, market, exchange_code, currency_code, list_date, status)
@@ -193,9 +195,14 @@ async function seed(pool) {
        (company_id, report_kind, period_end, period_type, statement_scope, announced_at, source_id, source_version, update_flag, is_current_version, report_type)
      VALUES ($1,'income','2025-12-31','annual','consolidated','2026-03-31',$2,'v1','',true,'1') RETURNING report_id`,
     [gapCompanyId, sourceId]);
+  // 必须同时有归母净利：R01 的判据是"有财报但缺 PB → 待补"，而"有财报"是按年度利润事实判定的；
+  // 只给净资产会让它落进"一条财报都没有 → 不可评估"，缺口就造不出来。
   await pool.query(
     `INSERT INTO fundamental.financial_facts (report_id, statement_type, metric_code, numeric_value, unit_code, currency_code, source_field, is_calculated)
      VALUES ($1,'balance','equity_parent',5e10,'CNY','CNY','total_hldr_eqy_exc_min_int',false)`, [gapReport.rows[0].report_id]);
+  await pool.query(
+    `INSERT INTO fundamental.financial_facts (report_id, statement_type, metric_code, numeric_value, unit_code, currency_code, source_field, is_calculated)
+     VALUES ($1,'income','net_profit_parent',1e9,'CNY','CNY','n_income_attr_p',false)`, [gapReport.rows[0].report_id]);
   return { instrumentIds };
 }
 

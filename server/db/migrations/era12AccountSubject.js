@@ -8,7 +8,8 @@
 // 旧行由 volatile 默认逐行生成，不改写任何业务数据、不删除任何行。
 // 之后鉴权统一校验「主体 ID + auth_version + 状态」，username 只作为可读标识。
 async function migration187UserSubjectIdentity(pool) {
-  await pool.query('CREATE EXTENSION IF NOT EXISTS pgcrypto');
+  // 不要 CREATE EXTENSION pgcrypto：生产应用角色没有建扩展权限，而且 PostgreSQL 13 起
+  // gen_random_uuid() 已是内置函数（生产 PG 16），根本不需要扩展。首轮部署就是卡在这一行。
   await pool.query(`
     DO $$
     BEGIN

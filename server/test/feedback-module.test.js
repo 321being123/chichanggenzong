@@ -28,6 +28,8 @@ function baseConfig() {
   // 库名必须匹配 server/db/connection.js 的测试隔离规则 (^|_)(test|migtest)(_|$)
   const tmpDb = 'portfolio_test_fb_' + Date.now();
   const admin = new Client(Object.assign(baseConfig(), { database: process.env.PGDATABASE || 'portfolio' }));
+  // 删临时库前会切断连接，pool 没有 error 监听时 Node 会直接以未捕获错误退出。
+  admin.on('error', () => {});
   try {
     await admin.connect();
   } catch (e) {
@@ -44,6 +46,8 @@ function baseConfig() {
     delete process.env.DATABASE_URL;
 
     pool = require('../db').pool;
+
+    if (pool && typeof pool.on === 'function') pool.on('error', () => {});
     const store = require('../db/feedback');
     const service = require('../services/feedbackService');
     const release = require('../services/feedbackRelease');

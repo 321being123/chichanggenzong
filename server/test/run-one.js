@@ -134,8 +134,13 @@ async function runSupervisor() {
     { cwd: rootDir, env, stdio: 'inherit', windowsHide: true, detached: useGroup });
   try { runControl.registerChild(runId, worker.pid, 'run-one worker'); } catch (_) { /* 登记失败不拖垮执行 */ }
 
-  const finish = (code, note) => {
+  const finish = (code, note, options = {}) => {
     if (!lease) return code; // 继承父授权时不负责释放
+    if (options.treeConfirmedDead) {
+      lease.forceRelease();
+      console.error('[测试资源] ' + (note ? note + '时' : '') + '整组已确认退出，资源已释放');
+      return code;
+    }
     const retained = lease.release();
     if (retained) {
       console.error('[测试资源] ' + (note ? note + '时' : '') + '仍有未确认退出的子进程，保留资源占用：' + JSON.stringify(retained));
@@ -164,7 +169,7 @@ async function runSupervisor() {
           killPending = false;
           console.error('[超时] 终止执行进程树：' + kill.method + ' · 已确认退出=' + kill.killed);
           if (kill.killed) runControl.unregisterChild(runId, worker.pid);
-          settleOnce(finish(1, '整体超时'));
+          settleOnce(finish(1, '整体超时', { treeConfirmedDead: kill.killed === true }));
         });
     }, overallDeadlineMs);
 

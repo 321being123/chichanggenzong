@@ -401,7 +401,14 @@ async function runSupervisor() {
 
   // 释放只有一条路径：lease.release() 自己检查登记的子进程是否都已退出。
   // 有存活就保留锁并返回原因——不再有「调用方标志 + 内部逻辑」两套判据。
-  const finish = (code, note) => {
+  // 例外：超时路径已经**确认整组退出**（killProcessTreeAsync 的 killed=true）时，
+  // 登记可能因为子进程刚被回收的时间差还挂着，此时强制释放是安全的；确认不了就照旧保留。
+  const finish = (code, note, options = {}) => {
+    if (options.treeConfirmedDead) {
+      lease.forceRelease();
+      console.error('[测试资源] ' + (note ? note + '时' : '') + '整组已确认退出，资源已释放');
+      return code;
+    }
     const retained = lease.release();
     if (retained) {
       console.error('[测试资源] ' + (note ? note + '时' : '') + '仍有未确认退出的子进程，保留资源占用：' + JSON.stringify(retained));
@@ -432,7 +439,7 @@ async function runSupervisor() {
           killPending = false;
           console.error('[测试资源] 终止测试进程树：' + kill.method + ' · 已确认退出=' + kill.killed);
           if (kill.killed) runControl.unregisterChild(runId, child.pid);
-          settleOnce(finish(1, '整轮超时'));
+          settleOnce(finish(1, '整轮超时', { treeConfirmedDead: kill.killed === true }));
         });
     }, Math.max(100, TOTAL_DEADLINE_MS));
 

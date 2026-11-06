@@ -514,7 +514,8 @@ function ksEnsureVditor() {
       editor = new Vditor('ks-editor', {
         mode: 'wysiwyg',
         cache: { enable: false },
-        height: 460,
+        height: 'auto',
+        minHeight: 200,
         placeholder: '开始写作…（支持 Markdown，所见即所得）',
         cdn: '/vendor/vditor',
         customWysiwygToolbar: function (type, element) {

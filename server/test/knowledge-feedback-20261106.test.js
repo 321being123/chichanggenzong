@@ -1,6 +1,8 @@
-// 2026-11-06 线上反馈 #19/#20 静态回归：
+// 2026-11-06 线上反馈静态回归：
 //   #19 投资笔记阅读页与分享页作者显示昵称，昵称缺失才回退账号
 //   #20 网站顶部一级标题（深蓝顶栏）固定在视口最上端，滚动或回弹时上方不留空白
+//   #21 禁止整页下拉回弹，避免固定顶栏下方被拽出一大片空白
+//   #22 编辑器高度跟随正文，短文章下方不再留一大片空白
 // 只断言源码事实，不启动浏览器（低性能模式）。
 const assert = require('assert');
 const fs = require('fs');
@@ -48,6 +50,20 @@ check('#20 顶栏固定在视口最上端', () => {
 check('#20 固定顶栏后有占位，内容不被遮挡', () => {
   const css = read('public/shared/style.css');
   assert.ok(/body:has\(\.nav\)\s*\{[^}]*padding-top:\s*var\(--site-nav-height, 52px\)/.test(css), '带顶栏的页面需补回顶部占位，并跟随手机端真实导航高度');
+});
+
+check('#21 禁止整页下拉回弹', () => {
+  const css = read('public/shared/style.css');
+  assert.ok(/html,\s*body\s*\{[^}]*overscroll-behavior-y:\s*none/.test(css), '根滚动容器需禁止下拉回弹，否则固定顶栏下方仍会露出空白');
+});
+
+check('#22 编辑器高度跟随正文', () => {
+  const js = read('public/js/knowledge.js');
+  const cfg = js.match(/new Vditor\('ks-editor',\s*\{([\s\S]*?)placeholder:/);
+  assert.ok(cfg, '缺少编辑器初始化配置');
+  assert.ok(/height:\s*'auto'/.test(cfg[1]), '编辑器高度应随正文自适应，不写死固定高度');
+  assert.ok(/minHeight:\s*\d+/.test(cfg[1]), '空文章时编辑区仍需保留最小高度');
+  assert.ok(!/height:\s*460/.test(cfg[1]), '固定 460 会让短文章下方留一大片空白');
 });
 
 const failed = tests.filter(t => t[0] === 'FAIL');

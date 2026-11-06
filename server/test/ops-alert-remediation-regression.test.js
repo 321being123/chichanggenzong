@@ -223,6 +223,79 @@ async function verifyReconciliationEvidence() {
   assert.strictEqual(recoveredSlot.evidence.mode, 'three_later_job_successes');
   assert.strictEqual(recoveredSlot.evidence.verifications.length, 3, '每条后续成功都必须逐条通过严格证据');
 
+  // 每天只跑一次的任务在同一业务日内永远凑不出 3 次后续运行，历史告警不能因此永久停在“证据不足”。
+  // 回退口径只放宽业务日：任务、阶段、账户/市场、区间、证券和字段范围仍必须一致。
+  {
+    const sameDayOnly = [successSlot({ slotId: 11, scheduledFor: '2026-09-06T08:30:00.000Z' })];
+    const crossDay = [
+      successSlot({ slotId: 14, scheduledFor: '2026-09-09T08:00:00.000Z', businessDate: '2026-09-09' }),
+      successSlot({ slotId: 13, scheduledFor: '2026-09-08T08:00:00.000Z', businessDate: '2026-09-08' }),
+      successSlot({ slotId: 12, scheduledFor: '2026-09-07T08:00:00.000Z', businessDate: '2026-09-07' }),
+    ];
+    const crossQuery = base => async (sql, params) => {
+      if (sql.includes('FROM job_runs')) {
+        const slotId = params && params[0];
+        const candidate = [...sameDayOnly, ...crossDay].find(row => String(row.slot_id) === String(slotId));
+        return { rows: candidate ? [{
+          id: Number(slotId) + 1000, slot_id: candidate.slot_id, status: 'done',
+          attempt_no: 1, trigger_type: 'scheduled', result_json: { ...candidate.result_summary },
+        }] : [] };
+      }
+      if (sql.includes('DISTINCT ON (business_date)')) return { rows: crossDay };
+      if (sql.includes('business_date=$2::date')) return { rows: sameDayOnly };
+      return base(sql, params);
+    };
+    const crossRecovered = await verifyScope(
+      { alert_type: 'failure', scope_type: 'slot', scope_key: '10', job_code: JOB_CODE },
+      crossQuery(evidenceQuery(original, []))
+    );
+    assert.strictEqual(crossRecovered.recovered, true, '单次日任务应能用跨业务日连续成功收敛历史告警');
+    assert.strictEqual(crossRecovered.evidence.mode, 'cross_day_job_successes');
+    assert.strictEqual(crossRecovered.evidence.verifications.length, 3, '跨业务日的每一条也必须通过严格证据');
+
+    // 最新业务日又失败时，跨日回退不能把告警关掉（失败占住该日唯一候选）。
+    const latestFailed = [
+      { ...crossDay[0], status: 'failed' },
+      crossDay[1], crossDay[2],
+    ];
+    const failedQuery = base => async (sql, params) => {
+      if (sql.includes('DISTINCT ON (business_date)')) return { rows: latestFailed };
+      if (sql.includes('FROM job_runs')) {
+        const slotId = params && params[0];
+        const candidate = [...sameDayOnly, ...latestFailed].find(row => String(row.slot_id) === String(slotId));
+        if (!candidate) return { rows: [] };
+        return { rows: [{
+          id: Number(slotId) + 1000, slot_id: candidate.slot_id,
+          status: candidate.status === 'failed' ? 'failed' : 'done',
+          attempt_no: 1, trigger_type: 'scheduled', result_json: { ...candidate.result_summary },
+        }] };
+      }
+      if (sql.includes('business_date=$2::date')) return { rows: sameDayOnly };
+      return base(sql, params);
+    };
+    const failedRecovered = await verifyScope(
+      { alert_type: 'failure', scope_type: 'slot', scope_key: '10', job_code: JOB_CODE },
+      failedQuery(evidenceQuery(original, []))
+    );
+    assert.strictEqual(failedRecovered.recovered, false, '最新业务日仍失败时不得用更早的跨日成功关闭告警');
+
+    // 跨日回退只放宽业务日：阶段不同不能互相抵消。
+    const otherMode = [
+      { ...crossDay[0], request_payload: { mode: 'targeted' }, result_summary: { ok: true, mode: 'targeted', dataAsOf: '2026-09-09' } },
+      crossDay[1], crossDay[2],
+    ];
+    const modeQuery = base => async (sql, params) => {
+      if (sql.includes('DISTINCT ON (business_date)')) return { rows: otherMode };
+      if (sql.includes('business_date=$2::date')) return { rows: [] };
+      return base(sql, params);
+    };
+    const modeRecovered = await verifyScope(
+      { alert_type: 'failure', scope_type: 'slot', scope_key: '10', job_code: JOB_CODE },
+      modeQuery(evidenceQuery(original, []))
+    );
+    assert.strictEqual(modeRecovered.recovered, false, '跨业务日回退不得放宽阶段一致性');
+  }
+
   // 部分完成（done 但 continuationRequired）不能算成功，也不能用来关闭旧告警。
   const partialRecovered = await verifyScope(
     { alert_type: 'failure', scope_type: 'slot', scope_key: '10', job_code: JOB_CODE },

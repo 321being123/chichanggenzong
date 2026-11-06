@@ -31,10 +31,12 @@ function sameTargetScope(left, right) {
 
 // 接管旧槽必须比目标范围更严格：同一任务、同一业务日、同一阶段，且账户/市场、
 // 日期区间、证券和字段范围全部一致，才算同一件事的后续执行。
-function sameSlotRecoveryScope(left, right) {
+// 跨业务日回退口径（ignoreBusinessDate）只放宽业务日，其余条件一项不减：
+// 每天只跑一次的任务在同一业务日凑不出多次后续运行，业务日不同不代表目标范围不同。
+function sameSlotRecoveryScope(left, right, options = {}) {
   if (!left || !right) return false;
   if (String(left.job_code || '') !== String(right.job_code || '')) return false;
-  if (businessDateText(left.business_date) !== businessDateText(right.business_date)) return false;
+  if (!options.ignoreBusinessDate && businessDateText(left.business_date) !== businessDateText(right.business_date)) return false;
   const payload = row => row.request_payload || {};
   if (String(payload(left).mode || 'core') !== String(payload(right).mode || 'core')) return false;
   for (const key of ['username', 'accountName', 'market', 'scopeKey']) {

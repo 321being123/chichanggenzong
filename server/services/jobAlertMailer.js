@@ -101,6 +101,16 @@ async function loadRecentRecoverySequence(row, limit, query) {
   return rows;
 }
 
+// 同业务日回退序列：只放宽业务日，任务/阶段/账户/区间/证券/字段范围仍由同一个范围过滤器限定。
+async function loadCrossDayRecoverySequence(row, limit, query) {
+  const recoveryScope = recoveryScopeFilter(row, 4);
+  const statusIndex = recoveryScope.nextIndex;
+  const limitIndex = statusIndex + 1;
+  const { rows } = await layerSql.loadRecentRecoverySequenceLayerQuery2(query, [statusIndex, recoveryScope.sql, limitIndex], [row.job_code, row.business_date, row.scheduled_for, ...recoveryScope.params,
+      RECOVERY_SEQUENCE_STATUSES, limit]);
+  return rows;
+}
+
 // 审计与历史对账需要记录“用哪一版证据策略关的告警”，版本号与验证器都来自注册表。
 function alertEvidencePolicy(alertType) {
   const policy = ALERT_EVIDENCE_POLICIES[String(alertType || '')];
@@ -191,17 +201,34 @@ async function verifyAlertScope(alert, query = (sql, params) => repository.runQu
       return { recovered: false, evidence: { slot: row, waiting: waitingState }, reason: 'waiting_evidence_not_due' };
     }
     const limit = laterSlotLimit(historical);
-    const later = await loadRecentRecoverySequence(row, limit, query);
-    // 后续成功必须与原告警同任务、同业务日、同阶段，且账户/市场、区间、证券和字段范围一致，
+    let later = await loadRecentRecoverySequence(row, limit, query);
+    let crossDay = false;
+    let evidenceMode = historical ? 'three_later_job_successes' : 'later_comparable_slot_success';
+    // 每天只跑一次的任务在同一业务日内凑不出 3 次后续运行，历史告警会永久停在“证据不足”。
+    // 同业务日序列不足时才回退到跨业务日序列：只放宽业务日，任务、阶段、账户、区间、
+    // 证券和字段范围一项不减；每个业务日只取最新一次运行，最新业务日失败即视为未恢复。
+    if (historical && later.length < limit) {
+      const crossRows = await loadCrossDayRecoverySequence(row, limit, query);
+      if (crossRows.length === limit) {
+        later = crossRows;
+        crossDay = true;
+        evidenceMode = 'cross_day_job_successes';
+      }
+    }
+    // 后续成功必须与原告警同任务、同阶段，且账户/市场、区间、证券和字段范围一致，
     // 并通过运行、阶段完整性和分区发布质量证据。不同任务或不同阶段不能互相抵消。
     // 序列按最新计划时间取，最后一条失败就说明最新状态仍是故障，不能被更早的成功掩盖。
     let recovered = later.length === limit;
     const verifications = [];
     for (const candidate of later) {
       if (!recovered) break;
-      if (!sameSlotRecoveryScope(row, candidate)) { recovered = false; break; }
+      if (!sameSlotRecoveryScope(row, candidate, { ignoreBusinessDate: crossDay })) { recovered = false; break; }
       const verified = await verifySlotRecoveryEvidence(
-        { ...candidate, job_code: row.job_code, business_date: row.business_date }, query, { alertType }
+        // 跨业务日时候选的业务日就是它自己的业务日，不能被原槽业务日覆盖。
+        crossDay
+          ? { ...candidate, job_code: row.job_code }
+          : { ...candidate, job_code: row.job_code, business_date: row.business_date },
+        query, { alertType }
       );
       if (!verified.recovered) { recovered = false; break; }
       verifications.push(verified.evidence);
@@ -209,8 +236,8 @@ async function verifyAlertScope(alert, query = (sql, params) => repository.runQu
     return {
       recovered,
       evidence: {
-        mode: historical ? 'three_later_job_successes' : 'later_comparable_slot_success',
-        sequenceOrder: 'scheduled_for_desc', requiredCount: limit,
+        mode: evidenceMode,
+        sequenceOrder: crossDay ? 'business_date_desc' : 'scheduled_for_desc', requiredCount: limit,
         original: row, later, verifications,
       },
       ...(recovered ? {} : { reason: 'insufficient_later_successes' }),

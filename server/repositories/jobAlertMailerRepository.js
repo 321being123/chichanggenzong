@@ -388,6 +388,16 @@ function loadRecentRecoverySequenceLayerQuery1(executor, parts, ...args) { retur
         AND ${parts[1]}
       ORDER BY scheduled_for DESC,slot_id DESC LIMIT $${parts[2]}`, ...args); }
 
+// 跨业务日回退序列：同一任务、同一阶段、同一范围，原槽之后每个业务日只取最新一次运行。
+// 每天只跑一次的任务在同一业务日内凑不出多次后续运行，历史告警会永久停在“证据不足”。
+// 只放宽业务日，其余范围条件照旧进 WHERE；最新一个业务日若失败，它仍会作为该日唯一候选被取到。
+function loadRecentRecoverySequenceLayerQuery2(executor, parts, ...args) { return executor(`SELECT DISTINCT ON (business_date) slot_id,job_code,status,business_date,scheduled_for,request_payload,result_summary,data_as_of
+       FROM ops.job_schedule_slots
+      WHERE job_code=$1 AND business_date>$2::date AND scheduled_for>$3::timestamptz
+        AND status = ANY($${parts[0]}::text[])
+        AND ${parts[1]}
+      ORDER BY business_date DESC,scheduled_for DESC,slot_id DESC LIMIT $${parts[2]}`, ...args); }
+
 function verifyAlertScopeLayerQuery1(executor, parts, ...args) { return executor(`SELECT slot_id,job_code,business_date,status,scheduled_for,updated_at,updated_at::text AS updated_at_exact,
               request_payload,result_summary,data_as_of
          FROM ops.job_schedule_slots WHERE slot_id=$1`, ...args); }
@@ -439,7 +449,7 @@ module.exports = {
   loadScopedCircuits,
   insert_ops_source_contract_verifications,
   loadSourceContractVerifications,
-  loadRecentRecoverySequenceLayerQuery1, verifyAlertScopeLayerQuery1, verifyAlertScopeLayerQuery2, verifyAlertScopeLayerQuery3, verifyAlertScopeLayerQuery4,
+  loadRecentRecoverySequenceLayerQuery1, loadRecentRecoverySequenceLayerQuery2, verifyAlertScopeLayerQuery1, verifyAlertScopeLayerQuery2, verifyAlertScopeLayerQuery3, verifyAlertScopeLayerQuery4,
   runQuery,
   ACTIVE_ALERT_WHERE,
   listAlertPage,

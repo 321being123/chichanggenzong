@@ -1,4 +1,6 @@
 * { margin: 0; padding: 0; box-sizing: border-box; }
+/* 顶栏固定后，整页下拉回弹时露出的画布跟随顶栏同色，不再是一大块浅灰空白（反馈 #21 续） */
+html { background: #1a237e; }
 /* 顶栏固定后禁止整页下拉回弹：否则内容会被整体拽下，导航下方露出一大片空白（反馈 #21） */
 html, body { overscroll-behavior-y: none; }
 body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', Roboto, sans-serif; background: #f0f2f5; color: #333; min-height: 100vh; overflow-y: scroll; }

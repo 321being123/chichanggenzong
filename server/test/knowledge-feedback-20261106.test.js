@@ -57,6 +57,11 @@ check('#21 禁止整页下拉回弹', () => {
   assert.ok(/html,\s*body\s*\{[^}]*overscroll-behavior-y:\s*none/.test(css), '根滚动容器需禁止下拉回弹，否则固定顶栏下方仍会露出空白');
 });
 
+check('#21 回弹露出的画布与顶栏同色', () => {
+  const css = read('public/shared/style.css');
+  assert.ok(/html\s*\{\s*background:\s*#1a237e/i.test(css), '根元素需给出与深蓝顶栏同色的画布背景，否则下拉回弹会露出浅灰空白');
+});
+
 check('#22 编辑器高度跟随正文', () => {
   const js = read('public/js/knowledge.js');
   const cfg = js.match(/new Vditor\('ks-editor',\s*\{([\s\S]*?)placeholder:/);

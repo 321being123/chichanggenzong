@@ -34,6 +34,11 @@ const V2_PARAMS = Object.freeze({
   pbLookbackYears: 10,
   pbPositiveExtremaMultiple: 3,
   pbExtremaPolicy: 'positive_evidence',
+  // R02 正式口径：老口径「十年内出现过 PB>1」与新口径「正极值比达倍数」取**或**。
+  // 之所以新增极值比，是因为港股大量标的十年 PB 从未破 1（老口径永远不合格），
+  // 但它们的估值落差可以超过三倍。所以新口径是补充，不是替代。
+  // 另两个值 v1_any_above_one / v2_positive_ratio 只用于单因素阶梯与审计对照。
+  r02Rule: 'v1_or_v2',
   minEquityCny: 10000000000,
   dividendWindowMonths: 12,
   slotsPerMarket: 30,
@@ -415,7 +420,7 @@ function evaluatePbExtremaV2(facts, params) {
 
   // 单因素阶梯（B03）：R02 回退成 V1 判据「窗口内存在 PB>1 即通过」，
   // 把"改 R01"与"改 R02"分开归因；不借用放宽倍数冒充规则切换。
-  if (String(params.r02Rule || 'v2_positive_ratio') === 'v1_any_above_one') {
+  if (String(params.r02Rule || 'v1_or_v2') === 'v1_any_above_one') {
     const aboveOne = compareDecimal(maxPbRaw, '1');
     if (aboveOne === null) {
       return Object.assign(evidence, {
@@ -443,6 +448,20 @@ function evaluatePbExtremaV2(facts, params) {
       status: STATUS.FAIL,
       reason: 'no_pb_above_one_evidence',
     });
+  }
+
+  // 正式口径 v1_or_v2：老口径的「十年内出现过 PB>1」与新口径的「正极值比达倍数」是**或**关系。
+  // 只出现可靠 PB>1 的正证就直接通过；没出现（港股常见的十年不破 1）才继续用极值比判定。
+  // 放在非正 PB 拦截之前是有意的：max>1 是正证，负权益（非正 PB）不推翻它。
+  if (String(params.r02Rule || 'v1_or_v2') === 'v1_or_v2') {
+    const aboveOne = compareDecimal(maxPbRaw, '1');
+    if (aboveOne !== null && aboveOne > 0) {
+      return Object.assign(evidence, {
+        rule: rule('R02', STATUS.PASS, { value: num(maxPbRaw), reason: null, evidence: 'v1_or_v2_pb_above_one' }),
+        status: STATUS.PASS,
+        reason: null,
+      });
+    }
   }
 
   // 已核实非正 PB（负权益）使正 PB 极值比不可评估，**不能因剔除后比值达标而通过**（方案 27.5 第 6 条）。

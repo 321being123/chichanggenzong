@@ -198,12 +198,17 @@ async function main() {
     const unverified = facts({
       pbWindow: Object.assign({}, facts().pbWindow, { calendarComplete: false }),
     });
-    const positive = V2.evaluateInstrumentV2(unverified, P);
+    // 本用例守的是极值比口径下的两种证据政策：日历未核验时缺口里是否藏极值不可知。
+    const v2Only = Object.assign({}, P, { r02Rule: 'v2_positive_ratio' });
+    const positive = V2.evaluateInstrumentV2(unverified, v2Only);
     assert.strictEqual(positive.pbCoverage.historyComplete, false);
     assert.strictEqual(positive.rules.R02.status, V2.STATUS.NOT_APPLICABLE);
     assert.strictEqual(positive.rules.R02.reason, 'history_calendar_unverified');
-    const strict = Object.assign({}, P, { pbExtremaPolicy: 'strict_complete' });
+    const strict = Object.assign({}, v2Only, { pbExtremaPolicy: 'strict_complete' });
     assert.strictEqual(V2.evaluateInstrumentV2(unverified, strict).rules.R02.status, V2.STATUS.NOT_APPLICABLE);
+    // 正式口径是「或」：maxPb>1 是已经证明的事实（正证），日历缺口不推翻它。
+    assert.strictEqual(V2.evaluateInstrumentV2(unverified, P).rules.R02.status, V2.STATUS.PASS,
+      '老口径那一支：PB 曾破 1 已可证明，不因日历未核验改判');
   });
 
   await check('R02 混合已核实非正事实：正极值三倍也不得通过（A10）', () => {
@@ -229,10 +234,16 @@ async function main() {
     assert.strictEqual(result.pbPositiveExtremaRatio, null);
   });
 
-  await check('R02 单点有效序列（min=max）完整覆盖 → 比值 1，不满足三倍，不通过', () => {
-    const result = V2.evaluateInstrumentV2(withPb('1.2', '1.2', 0), P);
+  await check('R02 单点有效序列（min=max）：极值比口径不通过，正式口径按老口径通过', () => {
+    const v2Only = Object.assign({}, P, { r02Rule: 'v2_positive_ratio' });
+    const result = V2.evaluateInstrumentV2(withPb('1.2', '1.2', 0), v2Only);
     assert.strictEqual(result.pbPositiveExtremaRatio, 1);
-    assert.strictEqual(result.rules.R02.status, V2.STATUS.FAIL);
+    assert.strictEqual(result.rules.R02.status, V2.STATUS.FAIL, '极值比口径：比值 1 不满足三倍');
+    // 正式口径是「或」：十年稳定在 1.2 已满足「曾破 1」，走老口径那一支通过。
+    assert.strictEqual(V2.evaluateInstrumentV2(withPb('1.2', '1.2', 0), P).rules.R02.status, V2.STATUS.PASS);
+    // 十年都在 1 以下且没有落差时，两支都不满足，才是明确不合格。
+    assert.strictEqual(V2.evaluateInstrumentV2(withPb('0.9', '0.9', 0), P).rules.R02.status, V2.STATUS.FAIL,
+      '十年在 1 以下且无落差 → 不合格');
   });
 
   await check('R02 展示年限于真实观察起止日，不用交易日数÷365 冒充', () => {
@@ -431,8 +442,11 @@ async function main() {
     const v1R02 = Object.assign({}, P, { r02Rule: 'v1_any_above_one' });
     assert.strictEqual(V2.evaluateInstrumentV2(window21, v1R02).rules.R02.status, V2.STATUS.PASS,
       'V1 判据：窗口内存在 PB>1 即通过');
-    assert.strictEqual(V2.evaluateInstrumentV2(window21, P).rules.R02.status, V2.STATUS.FAIL,
-      'V2 正极值比 2/1 < 3 不通过');
+    assert.strictEqual(
+      V2.evaluateInstrumentV2(window21, Object.assign({}, P, { r02Rule: 'v2_positive_ratio' })).rules.R02.status,
+      V2.STATUS.FAIL, '极值比口径单独使用：2/1 < 3 不通过');
+    assert.strictEqual(V2.evaluateInstrumentV2(window21, P).rules.R02.status, V2.STATUS.PASS,
+      '正式口径是「或」：PB 曾破 1 即通过，不因落差不足被挡');
     assert.strictEqual(V2.evaluateInstrumentV2(window21, Object.assign({}, P, { pbPositiveExtremaMultiple: 0 })).rules.R02.status,
       V2.STATUS.PASS, '倍数 0 必须保留为 0（恒过），不能被 || 3 还原');
 
@@ -455,6 +469,52 @@ async function main() {
     );
     assert.strictEqual(e.frequency, 'week');
     assert.strictEqual(d.frequency, 'quarter');
+  });
+
+  await check('B03b R02 正式口径是「或」：PB 曾破 1 与极值比达标，任一满足即通过', () => {
+    // 引入极值比的原因：港股大量标的十年 PB 从未破 1，老口径永远判不合格，
+    // 但它们的估值落差可以超过三倍。所以新口径必须能把这些标的捞回来。
+    const neverAboveOne = facts({
+      pbWindow: Object.assign({}, facts().pbWindow, {
+        minPb: 0.25, maxPb: 0.9, minPbRaw: '0.25', maxPbRaw: '0.9',
+        positiveDays: 900, positiveGapDays: 0, gapDays: 0, nonPositiveDays: 0,
+      }),
+    });
+    assert.strictEqual(V2.evaluateInstrumentV2(neverAboveOne, P).rules.R02.status, V2.STATUS.PASS,
+      '正式口径：十年不破 1 但落差 3.6 倍必须通过（港股场景）');
+    assert.strictEqual(
+      V2.evaluateInstrumentV2(neverAboveOne, Object.assign({}, P, { r02Rule: 'v1_any_above_one' })).rules.R02.status,
+      V2.STATUS.FAIL, '老口径单独使用：十年不破 1 判不合格');
+    assert.strictEqual(
+      V2.evaluateInstrumentV2(neverAboveOne, Object.assign({}, P, { r02Rule: 'v2_positive_ratio' })).rules.R02.status,
+      V2.STATUS.PASS, '极值比口径单独使用：落差达标即通过');
+
+    // 另一个方向：PB 曾破 1 但落差不足，老口径该过的不能被新口径挡住。
+    const aboveOneSmallSwing = facts({
+      pbWindow: Object.assign({}, facts().pbWindow, {
+        minPb: 1, maxPb: 2, minPbRaw: '1', maxPbRaw: '2',
+        positiveDays: 900, positiveGapDays: 0, gapDays: 0, nonPositiveDays: 0,
+      }),
+    });
+    assert.strictEqual(V2.evaluateInstrumentV2(aboveOneSmallSwing, P).rules.R02.status, V2.STATUS.PASS,
+      '正式口径：PB 曾破 1 即通过，不额外要求落差');
+    assert.strictEqual(
+      V2.evaluateInstrumentV2(aboveOneSmallSwing, Object.assign({}, P, { r02Rule: 'v2_positive_ratio' })).rules.R02.status,
+      V2.STATUS.FAIL, '极值比口径单独使用：2/1 < 3 不合格');
+
+    // 两条都不满足才判不合格。
+    const bothFail = facts({
+      pbWindow: Object.assign({}, facts().pbWindow, {
+        minPb: 0.8, maxPb: 0.95, minPbRaw: '0.8', maxPbRaw: '0.95',
+        positiveDays: 900, positiveGapDays: 0, gapDays: 0, nonPositiveDays: 0,
+      }),
+    });
+    assert.strictEqual(V2.evaluateInstrumentV2(bothFail, P).rules.R02.status, V2.STATUS.FAIL,
+      '十年不破 1 且落差不足 → 明确不合格');
+    assert.strictEqual(V2.evaluateInstrumentV2(aboveOneSmallSwing, P).rules.R02.evidence, 'v1_or_v2_pb_above_one',
+      '走老口径那一支时证据字段要标明，便于审计追溯');
+    assert.strictEqual(V2.evaluateInstrumentV2(neverAboveOne, P).rules.R02.evidence, 'positive_extrema',
+      '走极值比那一支时证据字段是 positive_extrema');
   });
 
   await check('C01 真实回放成交时点：可见晚于开盘顺延次日，开盘前才可当日', () => {

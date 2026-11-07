@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "lastReviewed": "2026-11-06",
+  "lastReviewed": "2026-11-07",
   "rules": [
     {
       "id": "BOND-PROSPECTUS-SELECTION-059",
@@ -5115,6 +5115,214 @@
         {
           "file": "server/test/stability-invariants.test.js",
           "pattern": "F09"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "implemented"
+    },
+    {
+      "id": "SELECTION-V2-VALUATION-RULE-196",
+      "title": "V2 R01：0<PB≤1.5 或 PB>1.5 且 PB×PE(TTM) 严格小于 22.5；十进制比较，等于 22.5 不通过",
+      "implementation": {
+        "file": "server/domain/stockSelectionRulesV2.js",
+        "symbol": "evaluateValuationV2"
+      },
+      "tests": [
+        {
+          "file": "server/test/stock-selection-v2.test.js",
+          "pattern": "乘积 22.4998 通过"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "implemented"
+    },
+    {
+      "id": "SELECTION-V2-PB-EXTREMA-197",
+      "title": "V2 R02：十年 PB 正极值比 max/min≥3（十进制交叉相乘），非正 PB 不参与极值，覆盖与年限如实返回",
+      "implementation": {
+        "file": "server/domain/stockSelectionRulesV2.js",
+        "symbol": "evaluatePbExtremaV2"
+      },
+      "tests": [
+        {
+          "file": "server/test/stock-selection-v2.test.js",
+          "pattern": "0.3→0.9"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "implemented"
+    },
+    {
+      "id": "SELECTION-V2-NO-MARKET-GATE-198",
+      "title": "V2 取消市场指数 PB 配置门槛：指数 PB 等于/高于 2、缺失或异常都不阻断计算、发布与个人测算",
+      "implementation": {
+        "file": "server/domain/stockSelectionRulesV2.js",
+        "symbol": "evaluateMarketGateV2"
+      },
+      "tests": [
+        {
+          "file": "server/test/stock-selection-v2.test.js",
+          "pattern": "指数 PB=1.9/2/2.1/缺失"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "implemented"
+    },
+    {
+      "id": "SELECTION-PERIOD-KEY-199",
+      "title": "周期键 D:/W:/Q:（周键=周一起始日）与目标日由本地交易日历取周期最后开市日，整周期休市记 no_session",
+      "implementation": {
+        "file": "server/services/stockSelectionPeriods.js",
+        "symbol": "periodKeyOf"
+      },
+      "tests": [
+        {
+          "file": "server/test/stock-selection-v2.test.js",
+          "pattern": "跨年周"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "implemented"
+    },
+    {
+      "id": "SELECTION-PUBLICATION-POINTER-200",
+      "title": "正式发布按渠道原子提交：锁内重查 + revision 比较 + CAS + 指针 upsert + 不可变事件；影子/私人不写正式指针",
+      "implementation": {
+        "file": "server/repositories/stockSelectionRepository.js",
+        "symbol": "publishRun"
+      },
+      "tests": [
+        {
+          "file": "server/test/stock-selection-v2.test.js",
+          "pattern": "影子批次拒绝写正式指针"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "implemented"
+    },
+    {
+      "id": "SELECTION-PERSONAL-OVERLAY-201",
+      "title": "个人结果是公共策略覆盖层：完整冻结投影、行业/证券排除按原名次递补、三种权重分母分开",
+      "implementation": {
+        "file": "server/services/stockSelectionService.js",
+        "symbol": "createSimulation"
+      },
+      "tests": [
+        {
+          "file": "server/test/stock-selection-v2.test.js",
+          "pattern": "个人排除按原 selection_order 递补"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "implemented"
+    },
+    {
+      "id": "SELECTION-NET-ORDER-BACKTEST-202",
+      "title": "回测按净订单调仓：deltaQty=目标−当前，正买负卖、零不下单、只减仓只卖，费用只对实际成交",
+      "implementation": {
+        "file": "server/services/stockSelectionBacktest.js",
+        "symbol": "runBacktest"
+      },
+      "tests": [
+        {
+          "file": "server/test/stock-selection-v2.test.js",
+          "pattern": "回测净订单"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "implemented"
+    },
+    {
+      "id": "SELECTION-PERIOD-AUTORUN-203",
+      "title": "每日/每周自动排队复用原 Runner：槽位按 selectionBusinessKey 精确去重，未就绪留 nextCheckAt 续跑",
+      "implementation": {
+        "file": "server/jobs/stockAnalysisRefresh.js",
+        "symbol": "enqueueDueSelectionPeriods"
+      },
+      "tests": [
+        {
+          "file": "server/test/stock-selection-v2.test.js",
+          "pattern": "选股槽位业务键"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "implemented"
+    },
+    {
+      "id": "SELECTION-UNIVERSE-ARTIFACT-204",
+      "title": "历史股票池按目标日固化为不可变 artifact：内容哈希参与清单，漂移阻断发布，成员不可得标 universe_not_recoverable",
+      "implementation": {
+        "file": "server/services/stockSelectionService.js",
+        "symbol": "loadUniverseWithArtifact"
+      },
+      "tests": [
+        {
+          "file": "server/test/stock-selection-v2.test.js",
+          "pattern": "股票池 artifact"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "implemented"
+    },
+    {
+      "id": "SELECTION-TTM-LINEAGE-205",
+      "title": "自算 TTM 归母净利：完整年度＋本期累计−上年同期，三段币种与报告版本留证，供应商 PE 只作对照",
+      "implementation": {
+        "file": "server/services/stockSelectionService.js",
+        "symbol": "computeTtmFromReports"
+      },
+      "tests": [
+        {
+          "file": "server/test/stock-selection-v2.test.js",
+          "pattern": "TTM 自算"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "implemented"
+    },
+    {
+      "id": "SELECTION-DAILY-NAV-206",
+      "title": "逐日 NAV 回测：停牌/开盘涨跌停不成交、容量按成交额参与率缩量、分红按除息日入账，周频与季度共用同一引擎",
+      "implementation": {
+        "file": "server/services/stockSelectionBacktest.js",
+        "symbol": "runDailyBacktest"
+      },
+      "tests": [
+        {
+          "file": "server/test/stock-selection-v2.test.js",
+          "pattern": "撮合约束"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "implemented"
+    },
+    {
+      "id": "SELECTION-REPLAY-ROLLBACK-207",
+      "title": "真实回放统一以事件目标版本（to_run_id）恢复持仓：回滚回到目标版本，from 只留审计",
+      "implementation": {
+        "file": "server/services/stockSelectionBacktest.js",
+        "symbol": "resolveRealReplayPlan"
+      },
+      "tests": [
+        {
+          "file": "server/test/stock-selection-real-replay.test.js",
+          "pattern": "D01"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "implemented"
+    },
+    {
+      "id": "SELECTION-REPLAY-TAIL-208",
+      "title": "真实回放尾部未执行信号只记待执行/区间外，不作废前期完整历史；早期周期缺事件仍拒绝",
+      "implementation": {
+        "file": "server/services/stockSelectionBacktest.js",
+        "symbol": "resolveRealReplayPlan"
+      },
+      "tests": [
+        {
+          "file": "server/test/stock-selection-real-replay.test.js",
+          "pattern": "D02"
         }
       ],
       "owner": "WorkBuddy",

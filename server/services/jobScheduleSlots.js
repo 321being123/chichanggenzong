@@ -207,11 +207,41 @@ async function datasetDependencyState(slot, definition) {
   };
 }
 
+const SELECTION_JOB_MODES = new Set([
+  'selection_quarterly', 'selection_preview', 'selection_daily', 'selection_weekly',
+  'selection_backtest', 'selection_inputs',
+]);
+
+/**
+ * V2 选股槽位的规范业务键（方案 27.8）：模式/市场/策略/周期键/目标日/影子/季度。
+ * 现役 `request_payload @>` 是"槽包含请求"的匹配，普通请求会命中多带 shadow 的旧槽，
+ * 同一天不同周期也会互相吃槽；这里把身份写成单字段并要求两边相等。
+ * 其他任务不带该字段，仍走原包含合同，不受影响。
+ */
+function selectionBusinessKeyOf(payload) {
+  const mode = String((payload && payload.mode) || '');
+  if (!SELECTION_JOB_MODES.has(mode)) return null;
+  const market = String(payload.market || '').toUpperCase();
+  const strategy = String(payload.strategyCode || '').toLowerCase();
+  const periodType = String(payload.periodType
+    || (mode === 'selection_daily' ? 'day'
+      : mode === 'selection_weekly' ? 'week'
+        : mode === 'selection_quarterly' ? 'quarter' : ''));
+  const periodKey = String(payload.periodKey || '')
+    || (periodType === 'quarter' && payload.quarter ? `Q:${payload.quarter}` : '');
+  const targetDate = String(payload.targetDate || payload.businessDate || '');
+  const shadow = payload.shadow === true || payload.shadow === 'true' ? '1' : '0';
+  return [mode, market, strategy, periodType, periodKey || targetDate, shadow, String(payload.quarter || '')].join('|');
+}
+
 async function enqueueManualJob(jobCode, requestPayload = {}, transactionClient = null) {
   const definition = JOB_DEFINITIONS.find(item => item.jobCode === jobCode);
   if (!definition) return null;
   if (definition.disabled) throw new Error(definition.disabledReason);
   const safePayload = sanitizeJobResult(requestPayload || {});
+  // 选股模式补规范业务键：槽位去重与领取都按它精确相等，避免影子/普通/不同周期互相复用。
+  const selectionKey = selectionBusinessKeyOf(safePayload);
+  if (selectionKey) safePayload.selectionBusinessKey = selectionKey;
   const client = transactionClient || await pool.connect();
   try {
     if(!transactionClient) await txControl.begin(client);
@@ -1141,8 +1171,45 @@ async function validateJobSlot(slotId) {
     message: valid ? '任务状态和数据时间均正常' : '任务尚未形成可确认的数据结果' };
 }
 
+/**
+ * V2 选股槽位入队（方案 27.8）：先把业务键规范化并显式化，再做相等去重。
+ * 原仓储用 `request_payload @> 请求JSON` 做包含匹配：普通请求没带 shadow 时可能命中
+ * 一条多带 shadow 的旧槽，从而把"影子"和"正式"混成同一个任务。
+ * 这里把 shadow（false 也显式）、strategyCode、periodKey、targetDate 全部写死进载荷，
+ * 并附 payloadHash；同 requestId 不同载荷直接 409，不允许借 JSON 子集复用。
+ */
+async function enqueueSelectionPeriodJob({ jobCode, payload, requestId }) {
+  const crypto = require('crypto');
+  const normalized = { ...(payload || {}) };
+  normalized.shadow = normalized.shadow === true;
+  normalized.strategyCode = String(normalized.strategyCode || 'investment_essentials_adapted_v2');
+  if (!normalized.periodKey && normalized.targetDate) {
+    const { periodKeyOf } = require('./stockSelectionPeriods');
+    const type = String(normalized.mode || '').includes('weekly') ? 'week' : 'day';
+    normalized.periodKey = periodKeyOf(type, String(normalized.targetDate).slice(0, 10)) || undefined;
+  }
+  if (requestId) normalized.requestId = String(requestId).slice(0, 100);
+  const payloadHash = crypto.createHash('sha256').update(JSON.stringify(normalized)).digest('hex');
+  normalized.payloadHash = payloadHash;
+  if (normalized.requestId) {
+    const existing = await layerSql.select_job_slot_by_request_id([jobCode, normalized.requestId]);
+    const row = existing && existing.rows ? existing.rows[0] : null;
+    if (row) {
+      const storedHash = (row.request_payload || {}).payloadHash || null;
+      if (storedHash !== payloadHash) {
+        const error = new Error('同一请求编号已提交过不同参数，请刷新后重试');
+        error.status = 409;
+        throw error;
+      }
+      return row;
+    }
+  }
+  return enqueueManualJob(jobCode, normalized);
+}
+
 module.exports = {
   WORKER_ID, workerIdForRole, JOB_DEFINITIONS, dateText, normalizeBusinessDate, shanghaiParts, ensureSlot, enqueueManualJob, syncScheduleSlots, slotMode, dependenciesForMode,
+  enqueueSelectionPeriodJob, selectionBusinessKeyOf,
   claimSlot, completeSlot, deferSlot, waitForExternalSlot, continueSlot, mergeSlotExternalCallSummary, touchSlot, recoverExpiredSlots, listDueSlots, retryJobSlot, acknowledgeSlot,
   listJobSlots, getJobSlot, validateJobSlot, heartbeat, getJobOverview, queryDataAsOf, isDataAsOfFresh, resolveDataAsOf, expectedDataDate,
   isSlotDayAllowed, isWeekday, previousDate, resolveScheduleForDate,

@@ -37,6 +37,10 @@
       return global.siteApi.get(base('/runs/' + runId + '/stocks/' + encodeURIComponent(code))).then(jsonOf);
     },
     getSettings: function () { return global.siteApi.get(base('/settings')).then(jsonOf); },
+    // 行业下拉只读库内已落库分类，不现场调用行业源（方案 27.10）。
+    listIndustries: function (market) {
+      return global.siteApi.get(base('/industries') + '?market=' + encodeURIComponent(market || 'CN')).then(jsonOf);
+    },
     saveSettings: function (body) { return global.siteApi.put(base('/settings'), body).then(jsonOf); },
     simulate: function (body) { return global.siteApi.post(base('/simulations'), body).then(jsonOf); },
     getBacktest: function (backtestId) { return global.siteApi.get(base('/backtests/' + backtestId)).then(jsonOf); },

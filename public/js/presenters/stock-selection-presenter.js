@@ -14,6 +14,7 @@ var ssState = {
   backtests: [],
   settings: null,
   settingsRevision: 0,
+  industries: [],
   detail: null,
   loading: false,
   loadingKey: null,
@@ -22,6 +23,8 @@ var ssState = {
 };
 
 var SS_PAGE_SIZE = 50;
+var SS_KIND_BY_PERIOD = { quarter: 'quarterly', weekly: 'weekly', daily: 'daily' };
+var SS_PERIOD_LABEL = { quarter: '季度组合', weekly: '每周正式组合', daily: '每日动态' };
 
 // 账号或市场切换守卫：身份变化即作废在途请求，旧响应不得写进新页面。
 function ssBeginLoad(key) {
@@ -83,12 +86,21 @@ async function loadStockSelection() {
     var results = await Promise.all([
       window.StockSelectionApi.getMarkets(),
       // published: '1' 只要已正式发布的组合：未发布批次只是部分数据预览，不能当作可选结论。
-      window.StockSelectionApi.listRuns({ market: ssState.market, published: '1', limit: 20 }),
+      window.StockSelectionApi.listRuns({ market: ssState.market, published: '1', limit: 20,
+        // 结果类型只是查询条件：日/周/季各自一个渠道，未发布的预览一律不进下拉。
+        kind: SS_KIND_BY_PERIOD[ssState.periodType] || undefined,
+      }),
       window.StockSelectionApi.getSettings().catch(function () { return { settings: {}, revision: 0 }; }),
       window.StockSelectionApi.listBacktests({ market: ssState.market, limit: 10 }).catch(function () { return { backtests: [] }; }),
+      // 行业排除下拉：只读库内分类；取不到就退化为空列表，不影响其它区块。
+      window.StockSelectionApi.listIndustries(ssState.market).catch(function () { return { industries: [] }; }),
     ]);
     if (!guard.current()) return;
     ssState.markets = results[0].markets || [];
+    ssState.industries = (results[4] && results[4].industries) || [];
+    ssState.strategyCode = results[0].strategyCode || null;
+    if (typeof ssRenderRuleScope === 'function') ssRenderRuleScope(ssState);
+    if (typeof ssRenderPeriodTabs === 'function') ssRenderPeriodTabs(ssState);
     ssState.runs = results[1].runs || [];
     ssState.settings = results[2].settings || {};
     ssState.settingsRevision = results[2].revision || 0;
@@ -205,6 +217,21 @@ async function ssSwitchMarket(market) {
   await loadStockSelection();
 }
 
+async function ssSwitchPeriod(periodType) {
+  var type = String(periodType || '');
+  if (!SS_KIND_BY_PERIOD[type] || type === ssState.periodType) return;
+  ssState.periodType = type;
+  ssState.runId = null;
+  ssState.run = null;
+  ssState.candidates = [];
+  ssState.candidateTotal = 0;
+  ssState.candidateOffset = 0;
+  ssState.portfolio = null;
+  ssState.detail = null;
+  if (typeof ssRenderPeriodTabs === 'function') ssRenderPeriodTabs(ssState);
+  await loadStockSelection();
+}
+
 async function ssSelectRun(runId) {
   if (!runId || Number(runId) === Number(ssState.runId)) return;
   await ssLoadRun(Number(runId));
@@ -220,6 +247,20 @@ async function ssSaveSettings(payload) {
   } catch (error) {
     if (typeof ssShowToast === 'function') ssShowToast('保存失败：' + (error.message || error));
   }
+}
+
+// 保存设置后再测算：排除项必须先落到服务端，否则这次测算用的还是旧设置。
+async function ssSaveSettingsAndSimulate(settingsPayload, simulatePayload) {
+  try {
+    var saved = await window.StockSelectionApi.saveSettings(Object.assign({}, settingsPayload, { revision: ssState.settingsRevision }));
+    ssState.settings = saved.settings;
+    ssState.settingsRevision = saved.revision;
+    if (typeof ssRenderSettings === 'function') ssRenderSettings(ssState);
+  } catch (error) {
+    if (typeof ssShowToast === 'function') ssShowToast('排除设置保存失败：' + (error.message || error));
+    return;
+  }
+  return ssSimulate(simulatePayload);
 }
 
 async function ssSimulate(payload) {
@@ -241,10 +282,12 @@ window.StockSelectionPresenter = {
   load: loadStockSelection,
   switchMarket: ssSwitchMarket,
   selectRun: ssSelectRun,
+  switchPeriod: ssSwitchPeriod,
   loadMore: ssLoadMoreCandidates,
   openStock: ssOpenStock,
   openInAnalysis: ssOpenInAnalysis,
   saveSettings: ssSaveSettings,
+  saveSettingsAndSimulate: ssSaveSettingsAndSimulate,
   simulate: ssSimulate,
   formatPercent: ssFormatPercent,
   formatNumber: ssFormatNumber,

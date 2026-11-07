@@ -453,6 +453,8 @@ async function loadSelectionService(options = {}, extra = {}) {
     MARKET_CONFIG: require('../repositories/stockSelectionRepository').MARKET_CONFIG,
     loadMarketValuation: async () => ({ benchmarkCode: 'CSIALL', valuationMethod: 'market_cap_weighted', tradeDate: '2026-09-30', pb: 1.5, pe: 15 }),
     loadUniverse: async () => universe,
+    // C0：名单（生命周期）与可交易子集分开；替身里两者一致。
+    loadUniverseRoster: async () => universe.map(row => Object.assign({}, row, { has_any_data: true, has_recent_bars: true })),
     loadPbWindow: async () => ({
       byInstrument: new Map(universe.map(row => [String(row.instrument_id), { maxPb: 2, coveredDays: 900, expectedDays: 900, gapDays: 0 }])),
       marketDays: 900, calendarDays: 900,
@@ -465,6 +467,10 @@ async function loadSelectionService(options = {}, extra = {}) {
     loadAnnualDividends: async () => dividends,
     loadIndustries: async () => industries,
     loadFxRatesForPairs: async () => new Map(),
+    // V2 新增依赖：历史池 artifact 与 TTM 三段报表必须显式替身。
+    findUniverseArtifact: async () => null,
+    insertUniverseArtifact: async () => 1,
+    loadTtmInputs: async () => new Map(),
     upsertStrategy: async () => 1,
     findRunByIdempotencyKey: async () => null,
     nextRevision: async () => 1,
@@ -472,6 +478,8 @@ async function loadSelectionService(options = {}, extra = {}) {
     insertCandidates: async () => {},
     insertMembers: async () => {},
     publishRun: async () => ({ published: true }),
+    // 发布前 CAS 需要读当前渠道指针；首次发布没有指针时返回 null。
+    findPublication: async () => null,
     findRun: async () => ({ run_id: 1, quality_status: 'passed', business_status: passedBusiness(state), selected_count: 0, published_at: null }),
     saveInputGapQueue: async () => 1,
     readInputGapQueue: async () => null,

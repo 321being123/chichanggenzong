@@ -461,6 +461,8 @@ async function loadSelectionService(options = {}, extra = {}) {
     MARKET_CONFIG: require('../repositories/stockSelectionRepository').MARKET_CONFIG,
     loadMarketValuation: async () => ({ benchmarkCode: 'CSIALL', valuationMethod: 'market_cap_weighted', tradeDate: '2026-09-30', pb: 1.5, pe: 15 }),
     loadUniverse: async () => universe,
+    // C0：名单（生命周期）与可交易子集分开；替身里两者一致。
+    loadUniverseRoster: async () => universe.map(row => Object.assign({}, row, { has_any_data: true, has_recent_bars: true })),
     loadPbWindow: async () => ({
       byInstrument: new Map(universe.map(row => [String(row.instrument_id), { maxPb: 2, coveredDays: 900, expectedDays: 900, gapDays: 0 }])),
       marketDays: 900, calendarDays: 900,
@@ -473,6 +475,10 @@ async function loadSelectionService(options = {}, extra = {}) {
     loadAnnualDividends: async () => new Map(companies.map(key => [key, buildDividends(key)])),
     loadIndustries: async () => industries,
     loadFxRatesForPairs: async () => new Map(),
+    // V2 新增依赖：替身必须显式提供（历史池 artifact、TTM 三段报表）。
+    findUniverseArtifact: async () => null,
+    insertUniverseArtifact: async () => 1,
+    loadTtmInputs: async () => new Map(),
     upsertStrategy: async () => 1,
     findRunByIdempotencyKey: async () => null,
     nextRevision: async () => 1,
@@ -577,6 +583,24 @@ async function runBacktestScenario({ gate, quality, members }) {
   stub(path.join(__dirname, '..', 'repositories', 'stockSelectionRepository.js'), {
     loadCalendar: async () => calendar,
     loadOpenPrices: async () => prices,
+    // 逐日引擎依赖：同一份价格构成日线，成交额充足。
+    loadBarWindow: async ({ instrumentIds, fromDate, toDate }) => {
+      const map = new Map();
+      instrumentIds.forEach(instrumentId => {
+        const bars = calendar
+          .filter(day => day >= fromDate && day <= toDate)
+          .map(day => ({
+            tradeDate: day,
+            open: prices.get(`${instrumentId}|${day}`) || 1,
+            high: null, low: null,
+            close: prices.get(`${instrumentId}|${day}`) || 1,
+            volume: 1e6, amount: 1e9,
+          }));
+        if (bars.length) map.set(String(instrumentId), bars);
+      });
+      return map;
+    },
+    loadDividendEvents: async () => new Map(),
     loadBenchmarkCloses: async () => new Map(calendar.map(day => [day, 100])),
     loadDividendCash: async () => new Map(),
     upsertStrategy: async () => 1,

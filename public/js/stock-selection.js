@@ -42,6 +42,15 @@ function ssInitView() {
       if (window.StockSelectionPresenter) window.StockSelectionPresenter.selectRun(event.target.value);
     });
   }
+  // 结果类型：每日动态 / 每周正式 / 历史季度，切换只改查询条件，不触发任何外部采集。
+  var periodTabs = ssEl('ss-period-tabs');
+  if (periodTabs) {
+    periodTabs.addEventListener('click', function (event) {
+      var button = event.target.closest('[data-ss-period]');
+      if (!button || !window.StockSelectionPresenter) return;
+      window.StockSelectionPresenter.switchPeriod(button.dataset.ssPeriod);
+    });
+  }
   var more = ssEl('ss-load-more');
   if (more) {
     more.addEventListener('click', function () {
@@ -118,7 +127,31 @@ var SS_GATE_TEXT = {
   eligible: '准入通过（指数 PB < 2）',
   market_closed: '本轮不配置（指数 PB ≥ 2）',
   data_missing: '指数 PB 缺失，数据故障',
+  // V2：指数估值只做参考，不参与是否配置（方案 27.3 / 27.15）。
+  not_required: '指数仅参考（V2 不设门槛）',
 };
+
+var SS_RUN_KIND_TEXT = {
+  quarterly: '正式季度', daily: '每日动态', weekly: '每周正式',
+  preview: '预览', personal: '个人测算',
+};
+
+function ssRenderPeriodTabs(state) {
+  document.querySelectorAll('[data-ss-period]').forEach(function (button) {
+    button.classList.toggle('active', button.dataset.ssPeriod === state.periodType);
+  });
+}
+
+/**
+ * 规则说明按当前策略切换：V1 与 V2 的 R01/R02 与市场门槛口径不同，
+ * 页面不能一边显示 V2 结果一边讲 V1 规则。
+ */
+function ssRenderRuleScope(state) {
+  var isV2 = String(state.strategyCode || '').indexOf('_v2') >= 0;
+  document.querySelectorAll('[data-ss-rule]').forEach(function (node) {
+    node.hidden = node.getAttribute('data-ss-rule') !== (isV2 ? 'v2' : 'v1');
+  });
+}
 
 function ssRenderMarkets(state) {
   var root = ssEl('ss-market-cards');
@@ -132,20 +165,36 @@ function ssRenderMarkets(state) {
     var active = item.market === state.market ? ' active' : '';
     var position = item.referencePosition === null || item.referencePosition === undefined
       ? '本轮不配置' : Math.round(item.referencePosition * 100) + '%';
+    // 快照字段在不同周期批次里名字不同：季度用 quarter，日/周用目标日。
+    var latest = item.latestRun || null;
+    var latestText = '尚未发布';
+    if (latest) {
+      var periodText = latest.quarter || latest.period_key || latest.as_of_date || '';
+      latestText = periodText + '（' + (latest.selected_count === undefined ? latest.selectedCount : latest.selected_count) + ' 只）';
+    }
+    var readiness = '';
+    if (item.weekly) {
+      readiness = item.weekly.samePeriodPublished
+        ? '本周已发布'
+        : ('本周待就绪' + (item.weekly.asOfDate ? '（目标交易日 ' + item.weekly.asOfDate + '）' : ''));
+    }
     return '<div class="ss-card bond-feature-stat' + active + '">'
       + '<div class="ss-card-head"><strong>' + ssEsc(item.label) + '</strong>'
       + '<span class="ss-gate ss-gate-' + ssEsc(item.gate.status) + '">' + ssEsc(SS_GATE_TEXT[item.gate.status] || item.gate.status) + '</span></div>'
       + '<div class="ss-card-body">'
-      + '<div><span>' + ssEsc(item.benchmarkLabel) + ' PB（' + ssEsc(item.label) + '市场代理）</span><strong>'
+      + '<div><span>' + ssEsc(item.proxyLabel || (item.benchmarkLabel + ' PB（市场代理）')) + '</span><strong>'
       + (item.pb === null ? '--' : Number(item.pb).toFixed(3)) + '</strong></div>'
       + '<div><span>' + ssEsc(item.benchmarkLabel) + ' PE（TTM）</span><strong>'
       + (item.pe === null ? '--' : Number(item.pe).toFixed(2)) + '</strong></div>'
       + '<div><span>估值日期</span><strong>' + ssEsc(item.asOfDate || '--') + '</strong></div>'
       + '<div><span>PB 参考仓位</span><strong>' + ssEsc(position) + '</strong></div>'
-      + '<div><span>当前季度组合</span><strong>'
-      + (item.latestRun ? ssEsc(item.latestRun.quarter + '（' + item.latestRun.selected_count + ' 只）') : '尚未发布') + '</strong></div>'
+      + '<div><span>最新正式结果</span><strong>' + ssEsc(latestText) + '</strong></div>'
+      + (readiness ? '<div><span>本周期</span><strong>' + ssEsc(readiness) + '</strong></div>' : '')
       + '</div>'
-      + '<div class="ss-card-note">口径：' + ssEsc(item.valuationMethodLabel || '总市值加权') + '；仅用于判断市场环境，不替代个股数据。</div>'
+      + '<div class="ss-card-note">口径：' + ssEsc(item.valuationMethodLabel || '总市值加权')
+      + (item.marketValuationRole === 'display_only'
+        ? '；指数估值仅供参考，不决定是否配置。'
+        : '；仅用于判断市场环境，不替代个股数据。') + '</div>'
       + '</div>';
   }).join('');
 }
@@ -161,10 +210,12 @@ function ssRenderRuns(state) {
   }
   select.disabled = false;
   select.innerHTML = runs.map(function (run) {
-    var kindText = run.runKind === 'quarterly' ? '正式季度' : run.runKind === 'preview' ? '预览' : '个人测算';
+    var kindText = SS_RUN_KIND_TEXT[run.runKind] || run.runKind;
     // 个人测算本身就不进正式发布指针，标签不再重复标「未发布」。
     var statusText = run.runKind === 'personal' ? '' : (run.publishedAt ? ' · 已发布' : ' · 未发布');
-    var label = run.quarter + ' · ' + kindText + statusText + ' · ' + run.selectedCount + ' 只';
+    var period = run.quarter || run.periodKey || run.asOfDate;
+    var label = period + ' · ' + kindText + statusText + ' · ' + run.selectedCount + ' 只'
+      + (run.isShadow ? ' · 影子' : '');
     return '<option value="' + ssEsc(run.runId) + '"' + (Number(run.runId) === Number(state.runId) ? ' selected' : '') + '>' + ssEsc(label) + '</option>';
   }).join('');
 }
@@ -210,27 +261,51 @@ function ssRenderCandidates(state) {
     var statusTag = item.filterStatus === 'PASS'
       ? '<span class="ss-tag ss-tag-ok">四项通过</span>'
       : item.filterStatus === 'FAIL' ? '<span class="ss-tag ss-tag-bad">不符合</span>'
-        : '<span class="ss-tag ss-tag-warn">数据待补</span>';
+        : item.filterStatus === 'RISK' ? '<span class="ss-tag ss-tag-warn">风险暂缓</span>'
+          : '<span class="ss-tag ss-tag-warn">数据待补</span>';
     var reasons = (item.exclusionReasons || []).filter(function (reason) { return reason.rule; })
       .map(function (reason) { return ssEsc(reason.code); }).join('、');
+    // V2 解释（方案 27.10）：估值通过路径、排名就绪与最终入选分开说明，
+    // 不能出现"显示已通过却没说为什么没入选"。
+    var valuationNote = '';
+    if (item.valuationStatus) {
+      var path = item.valuationPassReason === 'PB_THRESHOLD' ? 'PB≤1.5'
+        : item.valuationPassReason === 'PB_PE_PRODUCT' ? 'PB×PE(TTM)<22.5'
+          : item.valuationPassReason === 'VALUATION_FAILED' ? '估值不达标'
+            : item.valuationPassReason === 'PE_NON_POSITIVE' ? 'PE 非正'
+              : null;
+      if (path) valuationNote = '<div class="ss-sub">估值：' + ssEsc(path) + '</div>';
+    }
+    if (item.rankReady === false && (item.rankBlockReasons || []).length) {
+      valuationNote += '<div class="ss-sub">排名待补：' + ssEsc((item.rankBlockReasons || []).join('、')) + '</div>';
+    }
+    var ratioText = item.pbPositiveExtremaRatio === null || item.pbPositiveExtremaRatio === undefined
+      ? '--' : Number(item.pbPositiveExtremaRatio).toFixed(2) + '×';
+    var productText = item.pbPeProduct === null || item.pbPeProduct === undefined
+      ? '--' : Number(item.pbPeProduct).toFixed(2);
     return '<tr data-ss-code="' + ssEsc(item.code) + '" tabindex="0">'
       + '<td class="text-right">' + ssEsc(order) + '</td>'
       + '<td><button type="button" class="ss-stock-link" data-ss-analysis="' + ssEsc(item.code) + '">'
       + ssEsc(item.name || item.code) + '</button><div class="ss-sub">' + ssEsc(item.code) + '</div></td>'
       + '<td>' + ssEsc(item.industry ? item.industry.name : '分类待核验') + '</td>'
       + '<td class="text-right">' + (item.currentPb === null ? '--' : Number(item.currentPb).toFixed(3)) + '</td>'
-      + '<td class="text-right">' + (item.historicalPbMax === null ? '--' : Number(item.historicalPbMax).toFixed(3)) + '</td>'
+      + '<td class="text-right">' + (item.historicalPbMin === null || item.historicalPbMin === undefined
+        ? '--' : Number(item.historicalPbMin).toFixed(3) + ' ~ ' + (item.historicalPbMax === null ? '--' : Number(item.historicalPbMax).toFixed(3))) + '</td>'
+      + '<td class="text-right">' + ssEsc(ratioText) + '</td>'
       + '<td class="text-right">' + (item.currentPe === null ? '--' : Number(item.currentPe).toFixed(2)) + ' ' + profit + '</td>'
+      + '<td class="text-right">' + ssEsc(productText) + '</td>'
       + '<td class="text-right">' + (item.dividendYield === null ? '--' : (Number(item.dividendYield) * 100).toFixed(2) + '%') + '</td>'
       + '<td class="text-right">' + (item.equityCny === null ? '--' : (Number(item.equityCny) / 1e8).toFixed(1) + ' 亿') + '</td>'
       + '<td class="text-right">' + [item.pbRank, item.peRank, item.dividendRank].map(function (v) { return v === null || v === undefined ? '--' : v; }).join(' / ') + '</td>'
       + '<td class="text-right">' + (item.totalScore === null || item.totalScore === undefined ? '--' : item.totalScore) + '</td>'
-      + '<td>' + statusTag + (reasons ? '<div class="ss-sub">' + reasons + '</div>' : '') + '</td>'
+      + '<td>' + statusTag + (reasons ? '<div class="ss-sub">' + reasons + '</div>' : '') + valuationNote + '</td>'
       + '</tr>';
   }).join('');
   root.innerHTML = '<div class="biz-table-scroll"><table class="biz-table"><thead><tr>'
-    + '<th class="text-right">名次</th><th>证券</th><th>行业</th><th class="text-right">PB</th><th class="text-right">十年最高 PB</th>'
-    + '<th class="text-right">PE（TTM）</th><th class="text-right">股息率</th><th class="text-right">净资产（人民币）</th>'
+    + '<th class="text-right">名次</th><th>证券</th><th>行业</th><th class="text-right">PB</th>'
+    + '<th class="text-right">十年 PB 区间</th><th class="text-right">十年正极值比</th>'
+    + '<th class="text-right">PE（TTM）</th><th class="text-right">PB×PE</th>'
+    + '<th class="text-right">股息率</th><th class="text-right">净资产（人民币）</th>'
     + '<th class="text-right">PB/PE/股息名次</th><th class="text-right">总分</th><th>结论</th>'
     + '</tr></thead><tbody>' + rows + '</tbody></table></div>'
     + '<div class="ss-list-foot">已显示 ' + list.length + ' / ' + state.candidateTotal + ' 只'
@@ -352,6 +427,64 @@ function ssRenderDetail(state) {
   }
 }
 
+/** 个人排除的读取：行业多选 + 每行一个股票代码（可用空格跟一句备注）。 */
+function ssReadExclusions(state) {
+  var market = state.market;
+  var settings = state.settings || {};
+  var selectedIndustries = [];
+  var industrySelect = ssEl('ss-exclude-industries');
+  if (industrySelect) {
+    Array.prototype.forEach.call(industrySelect.options || [], function (option) {
+      if (!option.selected) return;
+      var label = option.getAttribute('data-ss-industry-name') || option.textContent;
+      selectedIndustries.push({ code: option.value, name: label, system: option.getAttribute('data-ss-industry-system') || null, version: option.getAttribute('data-ss-industry-version') || null });
+    });
+  }
+  var codeText = ssEl('ss-exclude-codes') ? ssEl('ss-exclude-codes').value : '';
+  var parsed = String(codeText || '').split(/\r?\n/).map(function (line) {
+    var text = line.trim();
+    if (!text) return null;
+    var parts = text.split(/\s+/);
+    return { market: market, code: parts[0].toUpperCase(), note: parts.slice(1).join(' ') || null };
+  }).filter(Boolean);
+  // 另一个市场的排除必须原样带回：服务端按数组整体替换，漏了就等于把它们删掉。
+  var other = (Array.isArray(settings.excludedInstruments) ? settings.excludedInstruments : [])
+    .filter(function (item) { return item && String(item.market).toUpperCase() !== market; });
+  var industryFilters = {};
+  industryFilters[market] = selectedIndustries;
+  return { industryFilters: industryFilters, excludedInstruments: other.concat(parsed) };
+}
+
+function ssRenderExclusions(state) {
+  var settings = state.settings || {};
+  var market = state.market;
+  var industries = state.industries || [];
+  var selected = ((settings.industryFilters && settings.industryFilters[market]) || [])
+    .map(function (item) { return typeof item === 'string' ? item : item && item.code; })
+    .filter(Boolean);
+  var codes = (Array.isArray(settings.excludedInstruments) ? settings.excludedInstruments : [])
+    .filter(function (item) { return item && String(item.market).toUpperCase() === market; })
+    .map(function (item) { return item.code + (item.note ? ' ' + item.note : ''); })
+    .join('\n');
+  var options = industries.map(function (item) {
+    var isSelected = selected.indexOf(item.code) >= 0;
+    return '<option value="' + ssEsc(item.code) + '"' + (isSelected ? ' selected' : '')
+      + ' data-ss-industry-name="' + ssEsc(item.name) + '"'
+      + ' data-ss-industry-system="' + ssEsc(item.system || '') + '"'
+      + ' data-ss-industry-version="' + ssEsc(item.version || '') + '">'
+      + ssEsc(item.name + '（' + item.code + (item.system ? ' · ' + item.system : '') + '）') + '</option>';
+  }).join('');
+  return '<div class="ss-settings-grid ss-settings-exclusions">'
+    + '<label class="ss-span-2">排除行业（可多选，按住 Ctrl/⌘）'
+    + '<select id="ss-exclude-industries" multiple size="6" aria-label="排除行业">'
+    + (options || '<option value="" disabled>本市场暂无可用行业分类</option>') + '</select></label>'
+    + '<label class="ss-span-2">排除股票代码（每行一个，可写备注）'
+    + '<textarea id="ss-exclude-codes" rows="4" placeholder="600519.SH 客户持仓&#10;00700.HK">' + ssEsc(codes) + '</textarea></label>'
+    + '</div>'
+    + '<div class="ss-settings-note">排除只影响你自己的测算结果，不改公共组合；恢复某只股票请从上面删掉那一行，'
+    + '清空全部行业选择并保存即恢复所有行业。设置保存后会冻结到本次测算批次里。</div>';
+}
+
 function ssRenderSettings(state) {
   var root = ssEl('ss-settings');
   if (!root) return;
@@ -368,6 +501,7 @@ function ssRenderSettings(state) {
     + '<label>总资金（可选）<input id="ss-total-capital" type="number" min="0" step="1000" inputmode="decimal" value="' + ssEsc(value('totalCapital')) + '"></label>'
     + '<label>个人测算仓位<input id="ss-simulate-position" type="number" min="0" max="1" step="0.01" inputmode="decimal" placeholder="例如 0.7"></label>'
     + '</div>'
+    + ssRenderExclusions(state)
     + '<div class="ss-settings-actions">'
     + '<button class="btn btn-primary btn-sm" id="ss-settings-save">保存资金设置</button>'
     + '<button class="btn btn-outline btn-sm" id="ss-simulate">用当前批次做个人测算</button>'
@@ -378,20 +512,29 @@ function ssRenderSettings(state) {
   if (save) {
     save.addEventListener('click', function () {
       if (!window.StockSelectionPresenter) return;
-      window.StockSelectionPresenter.saveSettings({
+      var exclusions = ssReadExclusions(state);
+      window.StockSelectionPresenter.saveSettings(Object.assign({
         budgetRatioA: ssEl('ss-budget-a').value,
         budgetRatioHk: ssEl('ss-budget-hk').value,
         positionRatioA: ssEl('ss-position-a').value,
         positionRatioHk: ssEl('ss-position-hk').value,
         totalCapital: ssEl('ss-total-capital').value,
-      });
+      }, exclusions));
     });
   }
   var simulate = ssEl('ss-simulate');
   if (simulate) {
     simulate.addEventListener('click', function () {
       if (!window.StockSelectionPresenter) return;
-      window.StockSelectionPresenter.simulate({
+      // 先保存排除再测算：否则用户刚勾的排除不会进这一次结果。
+      var exclusions = ssReadExclusions(state);
+      window.StockSelectionPresenter.saveSettingsAndSimulate(Object.assign({
+        budgetRatioA: ssEl('ss-budget-a').value,
+        budgetRatioHk: ssEl('ss-budget-hk').value,
+        positionRatioA: ssEl('ss-position-a').value,
+        positionRatioHk: ssEl('ss-position-hk').value,
+        totalCapital: ssEl('ss-total-capital').value,
+      }, exclusions), {
         positionRatio: ssEl('ss-simulate-position').value,
         budgetRatio: state.market === 'CN' ? ssEl('ss-budget-a').value : ssEl('ss-budget-hk').value,
       });
@@ -440,6 +583,8 @@ window.StockSelectionView = {
   setError: ssSetError,
   renderMarkets: ssRenderMarkets,
   renderRuns: ssRenderRuns,
+  renderPeriodTabs: ssRenderPeriodTabs,
+  renderRuleScope: ssRenderRuleScope,
   renderRunHeader: ssRenderRunHeader,
   renderCandidates: ssRenderCandidates,
   renderPortfolio: ssRenderPortfolio,

@@ -490,8 +490,13 @@ async function loadUniverseWithArtifact({ market, asOfDate, knowledgeCutoff, wri
     drift,
     excluded: excluded.slice(0, 200),
   };
-  // 名单里的成员一个都取不到可评估行：不是"策略主动空仓"，是历史池不可恢复。
-  if (!rows.length && savedIds.length) {
+  // 名单成员是否"还在主档"才是不可恢复的判据：
+  // 全部成员都查不到（主档重建、证券合并/删除）才是历史池不可还原；
+  // 成员都在、只是目标日取不到可评估行（行情未覆盖、知识截止早于行情）属正常空池，
+  // 必须交给上层按 universe_empty 处理。
+  // 旧写法只看 rows.length，导致首次算空池并固化 artifact 之后，同一天再算或回测
+  // 会被判成"数据坏了"（2026-11-07 生产版本发布时实测到）。
+  if (!rows.length && savedIds.length && missing.length === savedIds.length) {
     return {
       rows: [],
       artifact: saved,

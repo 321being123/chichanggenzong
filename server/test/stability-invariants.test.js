@@ -208,6 +208,39 @@ async function runner() {
       assert.ok(Array.isArray(computed.quality.reasons), 'reasons 必须是数组，否则回测会当成"没有质量阻断"');
       assert.deepStrictEqual(computed.quality.reasons, ['universe_empty']);
     });
+
+    await test('F10b 已固化名单、目标日只是没行情时仍是空池，不能判成历史池不可恢复', async () => {
+      const scope = "market = 'HK' AND target_date = '1999-01-04'";
+      await pool.query('DELETE FROM analytics.stock_selection_universe_artifacts WHERE ' + scope);
+      // 第一次按 C0 固化当日名单（成员仍在主档，只是 1999 年没有行情）。
+      const first = await service.computeSelection({ market: 'HK', asOfDate: '1999-01-04' });
+      assert.strictEqual(first.quality.reason, 'universe_empty', '首次计算是空池');
+      const saved = await pool.query(
+        'SELECT member_count FROM analytics.stock_selection_universe_artifacts WHERE ' + scope);
+      assert.ok(saved.rows.length && saved.rows[0].member_count > 0, '前提：名单确实被固化');
+      // 第二次读已固化名单：成员都在主档、当日无行情 → 仍是空池。
+      // 旧写法（只看 rows.length 为空就判不可恢复）在这里会给出 universe_not_recoverable。
+      const second = await service.computeSelection({ market: 'HK', asOfDate: '1999-01-04' });
+      assert.strictEqual((second.universe || []).length, 0);
+      assert.strictEqual(second.quality.reason, 'universe_empty', '成员都在、只是当天没行情，不是不可还原');
+      await pool.query('DELETE FROM analytics.stock_selection_universe_artifacts WHERE ' + scope);
+    });
+
+    await test('F10c 固化名单的成员在主档里全部不存在时才判历史池不可恢复', async () => {
+      const scope = "market = 'HK' AND target_date = '1999-01-04'";
+      await pool.query('DELETE FROM analytics.stock_selection_universe_artifacts WHERE ' + scope);
+      await pool.query(
+        `INSERT INTO analytics.stock_selection_universe_artifacts
+           (market, target_date, content_hash, member_count, instrument_ids, replay_type)
+         VALUES ('HK','1999-01-04','invariant-gone-members',2,
+                 ARRAY[9223372036854775806,9223372036854775805]::bigint[],'pit_research_replay')`);
+      const computed = await service.computeSelection({
+        market: 'HK', asOfDate: '1999-01-04', writeUniverseArtifact: false,
+      });
+      assert.strictEqual(computed.quality.reason, 'universe_not_recoverable',
+        '成员全都不在主档，这才是历史池不可还原');
+      await pool.query('DELETE FROM analytics.stock_selection_universe_artifacts WHERE ' + scope);
+    });
   }
 }
 

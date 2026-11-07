@@ -337,6 +337,10 @@ async function loadPbWindow({ market, windowStart, asOfDate }, tx) {
              -- 负 PB 是"净资产为负"的真实取值，不是缺失：只排除 NULL（2026-11-04）。
              -- 'NaN' 是 PG NUMERIC 的合法值，但比较恒为 false，必须单独归入 invalid 而不是"缺失"。
              AND v.pb IS NOT NULL
+           -- ⚠️ 这里刻意用表达式排序，不要"优化"成物化列：2026-11-07 生产实测过一版
+           -- source_priority 物化列 + 复合索引，DISTINCT ON 的 Sort 确实消失了，但索引扫描
+           -- 1220 万行反而更慢，loadPbWindow 由 60.7s 变成 62.4s。真正的耗时是"一千多万行必须
+           -- 排一次序"这个量级本身，不是排序键的写法。要实质提速只能做按年预聚合（见任务卡 21 节）。
            ORDER BY v.instrument_id, v.trade_date,
                     CASE WHEN s.source_code LIKE 'lixinger%' THEN 0 ELSE 1 END, v.source_id
         ) picked

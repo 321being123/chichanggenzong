@@ -54,3 +54,17 @@ SELECT c.company_id, i.instrument_id, 'issued_by'
  WHERE c.legal_name = '测试正股股份有限公司'
    AND i.canonical_code = '600000.SH'
 ON CONFLICT DO NOTHING;
+
+-- 交易日历最小样本（2026-11-07 补：选股 V2 日/周周期与晨间补算回归）
+-- 缺口背景：CI 是空库，没有 market.trade_calendar 行，于是
+--   · resolvePeriodTarget 对本周得到 calendar_incomplete（不是 calendar_unavailable），
+--     测试允许的 calendar_unavailable / no_session 都对不上；
+--   · duePeriodicTargets 晨间分支（回看 20 天）拿不到上一已结束交易日，恒返回空。
+-- 区间取「2026-11-06 往前 20 天 ～ 本周日」：既覆盖晨间补算的回看窗口，
+-- 也覆盖当前周（W:2026-11-02）与上一周（W:2026-10-26）的完整性判定；
+-- 工作日开市、周末休市（区间内无 2026 年法定假日）。
+-- 1990 等远期季度刻意不补，仍用于验证「没有日历覆盖必须拒绝」。
+INSERT INTO market.trade_calendar(exchange,trade_date,is_open,source_code)
+SELECT 'SSE', day::date, EXTRACT(ISODOW FROM day) < 6, 'tushare'
+  FROM generate_series('2026-10-17'::date, '2026-11-08'::date, interval '1 day') AS day
+ON CONFLICT(exchange,trade_date) DO NOTHING;

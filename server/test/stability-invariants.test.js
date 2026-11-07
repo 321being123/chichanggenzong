@@ -191,7 +191,17 @@ async function runner() {
 
     await test('F10 空候选池必须同时给出 reason 与 reasons（回测只读 reasons）', async () => {
       // 用一个必然没有证券的市场日构造空池：把该市场约束在没有任何行情的日期上。
-      const computed = await service.computeSelection({ market: 'HK', asOfDate: '1999-01-04' });
+      // 前提必须由用例自己保证：computeSelection 默认会把这一天的池固化成 artifact，
+      // 第二次运行读到它就走「名单成员取不到可评估行 → universe_not_recoverable」，
+      // 于是同一个用例在持久测试库上第二轮必然假失败（2026-11-07 全量实测：
+      // 上一轮写下 HK/1999-01-04、505 名成员的 artifact，本轮直接 red）。
+      // 这里先清掉该日 artifact 并关闭写入，让判据只反映"空池"本身。
+      await pool.query(
+        "DELETE FROM analytics.stock_selection_universe_artifacts WHERE market = 'HK' AND target_date = '1999-01-04'"
+      );
+      const computed = await service.computeSelection({
+        market: 'HK', asOfDate: '1999-01-04', writeUniverseArtifact: false,
+      });
       assert.strictEqual((computed.universe || []).length, 0, '前提：该日期没有可评估对象');
       assert.strictEqual(computed.quality.publishable, false);
       assert.strictEqual(computed.quality.reason, 'universe_empty');

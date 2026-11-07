@@ -160,6 +160,108 @@ async function loadUniverse({ market, asOfDate, availableBefore = null }, tx) {
 }
 
 /**
+ * 自算 TTM 的输入（方案 27.4「TTM 状态与血缘合同」）：每公司最近几个报告期的归母净利，
+ * 覆盖「完整年度＋本期累计−上年同期累计」所需的三段。可见时点与净资产/PE 同一口径，
+ * 只按 announced_at 与 available_at 截断，不用今天的最新投影补历史。
+ */
+async function loadTtmInputs({ companyIds, asOfDate, availableBefore = null }, tx) {
+  if (!companyIds.length) return new Map();
+  const exec = executorOf(tx);
+  const { rows } = await exec(`
+    SELECT r.company_id, r.report_id, r.period_end::text AS period_end, r.period_type,
+           r.announced_at::text AS announced_at,
+           f.numeric_value::text AS net_profit, f.currency_code
+      FROM fundamental.financial_reports r
+      JOIN fundamental.financial_facts f ON f.report_id = r.report_id AND f.metric_code = 'net_profit_parent'
+     WHERE r.company_id = ANY($1::bigint[])
+       AND r.report_kind = 'income'
+       AND r.statement_scope = 'consolidated'
+       AND r.period_end >= ($2::date - INTERVAL '3 years')
+       AND r.period_end <= $2::date
+       AND r.announced_at IS NOT NULL AND r.announced_at < $2::date
+       AND ($3::timestamptz IS NULL OR r.available_at IS NULL OR r.available_at < $3::timestamptz)
+     ORDER BY r.company_id, r.period_end DESC, r.announced_at DESC, r.report_id DESC`,
+  [companyIds, asOfDate, availableBefore]);
+  const byCompany = new Map();
+  rows.forEach(row => {
+    const key = String(row.company_id);
+    if (!byCompany.has(key)) byCompany.set(key, []);
+    byCompany.get(key).push({
+      reportId: Number(row.report_id),
+      periodEnd: row.period_end,
+      periodType: row.period_type || null,
+      announcedAt: row.announced_at || null,
+      netProfit: row.net_profit === null ? null : Number(row.net_profit),
+      currency: row.currency_code || null,
+    });
+  });
+  return byCompany;
+}
+
+/**
+ * 目标日已固化的股票池 artifact（方案 27.11 / DEV-02）。
+ * 同一目标日取最新一条：先固化的集合是这次历史的"当时名单"，后续重算/回测不得悄悄换成今天的池。
+ */
+async function findUniverseArtifact({ market, targetDate }, tx) {
+  const exec = executorOf(tx);
+  const { rows } = await exec(`
+    SELECT artifact_id, market, target_date::text AS target_date, content_hash, member_count,
+           instrument_ids, members, excluded, knowledge_cutoff, source_versions, basis, replay_type, created_at
+      FROM analytics.stock_selection_universe_artifacts
+     WHERE market = $1 AND target_date = $2::date
+     ORDER BY created_at DESC, artifact_id DESC LIMIT 1`, [market, targetDate]);
+  return rows[0] || null;
+}
+
+/** 固化股票池 artifact：同内容哈希幂等，不覆盖既有集合。 */
+async function insertUniverseArtifact({
+  market, targetDate, contentHash, instrumentIds, members, excluded,
+  knowledgeCutoff, sourceVersions, basis, replayType,
+}, tx) {
+  const exec = executorOf(tx);
+  const { rows } = await exec(`
+    INSERT INTO analytics.stock_selection_universe_artifacts
+      (market, target_date, content_hash, member_count, instrument_ids, members, excluded,
+       knowledge_cutoff, source_versions, basis, replay_type)
+    VALUES ($1,$2::date,$3,$4,$5::bigint[],$6::jsonb,$7::jsonb,$8,$9::jsonb,$10::jsonb,$11)
+    ON CONFLICT (market, target_date, content_hash) DO NOTHING
+    RETURNING artifact_id`,
+  [market, targetDate, contentHash, instrumentIds.length, instrumentIds,
+    JSON.stringify(members || []), JSON.stringify(excluded || []),
+    knowledgeCutoff || null, JSON.stringify(sourceVersions || {}),
+    JSON.stringify(basis || {}), replayType || 'pit_research_replay']);
+  if (rows[0]) return Number(rows[0].artifact_id);
+  const existing = await findUniverseArtifact({ market, targetDate }, tx);
+  return existing ? Number(existing.artifact_id) : null;
+}
+
+/**
+ * 目标日"目标池名单"（C0）：生命周期与准入范围内的**全部**证券，不带"近 60 日有行情"过滤。
+ * 是否在池只由生命周期/市场/交易场所决定；能不能交易（有无行情）是另一个维度，
+ * 由调用方作为 excluded 证据记录，不能因为当天没行情就把证券从历史名单里抹掉。
+ */
+async function loadUniverseRoster({ market, asOfDate }, tx) {
+  const config = marketConfig(market);
+  const exec = executorOf(tx);
+  const { rows } = await exec(`
+    SELECT i.instrument_id, i.canonical_code AS code, i.name, i.market, i.exchange_code,
+           i.currency_code, i.list_date::text AS list_date, i.delist_date::text AS delist_date,
+           EXISTS (SELECT 1 FROM market.daily_bars bx WHERE bx.instrument_id = i.instrument_id) AS has_any_data,
+           EXISTS (SELECT 1 FROM market.daily_bars bt
+                    WHERE bt.instrument_id = i.instrument_id
+                      AND bt.trade_date <= $2::date
+                      AND bt.trade_date > ($2::date - INTERVAL '60 days')) AS has_recent_bars
+      FROM core.instruments i
+     WHERE i.asset_class = 'stock'
+       AND i.market = $1
+       AND (i.market = 'HK' OR i.exchange_code = ANY($3::text[]))
+       AND (i.list_date IS NULL OR i.list_date <= $2::date)
+       AND (i.delist_date IS NULL OR i.delist_date > $2::date)
+     ORDER BY i.canonical_code`, [market, asOfDate, config.exchanges]);
+  return rows;
+}
+
+/**
  * 十年 PB 证据：按"上市后应有交易日"逐日核验，不看覆盖率阈值（SSV-09）。
  * - 应有日：本地市场交易日历在窗口内的开市日，且晚于该证券上市日（上市前空白不算缺口）；
  * - 有效日：当天有同口径有效 PB（>0），同一天多来源时按官方优先择一，不跨来源拼值；
@@ -798,6 +900,22 @@ async function loadCalendar({ market, fromDate, toDate }, tx) {
   return rows.map(row => row.trade_date);
 }
 
+/**
+ * 逐日日历证据（方案 27.5 第 1 条 / 27.6）：返回区间内**全部**日历行（含休市），
+ * 由上层区分「整周期休市」与「日历缺档」。loadCalendar 的原语义（只返回开市日）
+ * 被 V1 季度与回测复用，不能就地改返回结构。
+ */
+async function loadCalendarEvidence({ market, fromDate, toDate }, tx) {
+  const config = marketConfig(market);
+  const exec = executorOf(tx);
+  const { rows } = await exec(`
+    SELECT trade_date::text AS trade_date, COALESCE(is_open, true) AS is_open
+      FROM market.trade_calendar
+     WHERE exchange = ANY($1::text[]) AND trade_date >= $2::date AND trade_date <= $3::date
+     ORDER BY trade_date`, [config.calendarExchanges, fromDate, toDate]);
+  return rows.map(row => ({ trade_date: row.trade_date, is_open: row.is_open !== false }));
+}
+
 /** 交易日未复权开盘价，用于回测执行价。 */
 async function loadOpenPrices({ instrumentIds, dates }, tx) {
   if (!instrumentIds.length || !dates.length) return new Map();
@@ -859,8 +977,64 @@ async function loadDividendCash({ instrumentIds, fromDate, toDate }, tx) {
   return new Map(rows.map(row => [String(row.instrument_id), Number(row.per_share)]));
 }
 
-// ========== 写操作 ==========
+/**
+ * 逐日分红事件（除息日 → 每股税前现金）：逐日 NAV 回测必须把分红记在真实除息日，
+ * 不能在期末一次性累加，否则区间内现金曲线与再投资路径都不对。
+ * 与 loadDividendCash 同一去重口径（同证券同除息日取来源优先级最高的一条）。
+ */
+async function loadDividendEvents({ instrumentIds, fromDate, toDate }, tx) {
+  if (!instrumentIds.length) return new Map();
+  const exec = executorOf(tx);
+  const { rows } = await exec(`
+    SELECT DISTINCT ON (ca.instrument_id, ca.ex_date)
+           ca.instrument_id, ca.ex_date::text AS ex_date, ca.cash_per_share_pre_tax AS per_share
+      FROM fundamental.corporate_actions ca
+     WHERE ca.instrument_id = ANY($1::bigint[])
+       AND ca.action_type = 'dividend'
+       AND ca.status = '实施'
+       AND ca.ex_date IS NOT NULL
+       AND ca.ex_date > $2::date AND ca.ex_date <= $3::date
+       AND ca.cash_per_share_pre_tax > 0
+     ORDER BY ca.instrument_id, ca.ex_date, ca.source_id DESC`,
+  [instrumentIds, fromDate, toDate]);
+  const byDate = new Map();
+  rows.forEach(row => {
+    if (!byDate.has(row.ex_date)) byDate.set(row.ex_date, []);
+    byDate.get(row.ex_date).push({ instrumentId: Number(row.instrument_id), perShare: Number(row.per_share) });
+  });
+  return byDate;
+}
 
+/**
+ * 日线窗口（开/高/低/收/量/额）：撮合约束（停牌、涨跌停、容量）与逐日估值共用一次批量读取。
+ * 调用方把起始日提前若干天，才能拿到第一个信号日的前收盘价。
+ */
+async function loadBarWindow({ instrumentIds, fromDate, toDate }, tx) {
+  if (!instrumentIds.length) return new Map();
+  const exec = executorOf(tx);
+  const { rows } = await exec(`
+    SELECT instrument_id, trade_date::text AS trade_date, open, high, low, close, volume, amount
+      FROM market.daily_bars
+     WHERE instrument_id = ANY($1::bigint[]) AND trade_date >= $2::date AND trade_date <= $3::date
+     ORDER BY instrument_id, trade_date`, [instrumentIds, fromDate, toDate]);
+  const map = new Map();
+  rows.forEach(row => {
+    const key = String(row.instrument_id);
+    if (!map.has(key)) map.set(key, []);
+    map.get(key).push({
+      tradeDate: row.trade_date,
+      open: row.open === null ? null : Number(row.open),
+      high: row.high === null ? null : Number(row.high),
+      low: row.low === null ? null : Number(row.low),
+      close: row.close === null ? null : Number(row.close),
+      volume: row.volume === null ? null : Number(row.volume),
+      amount: row.amount === null ? null : Number(row.amount),
+    });
+  });
+  return map;
+}
+
+// ========== 写操作 ==========
 async function upsertStrategy(tx, strategy) {
   const exec = executorOf(tx);
   const { rows } = await exec(`
@@ -894,31 +1068,53 @@ async function findStrategyId({ market, strategyCode }, tx) {
   return rows[0] ? Number(rows[0].strategy_id) : null;
 }
 
-async function findRunByIdempotencyKey(tx, { strategyId, market, asOfDate, runKind, inputHash, ownerUsername, periodType, isShadow }) {
+async function findRunByIdempotencyKey(tx, { strategyId, market, asOfDate, runKind, inputHash, ownerUsername, ownerSubjectId, periodType, isShadow }) {
   const exec = executorOf(tx);
   // 影子与正式是两个渠道：同输入也不能互相复用（方案 27.8），周期类型参与身份但缺省按 V1 口径。
+  // 主体（迁移187 的 users.subject_id）参与身份：账号删除重建后同名不能继承旧结果（方案 27.9）。
   const { rows } = await exec(`
     SELECT run_id FROM analytics.stock_selection_runs
      WHERE strategy_id = $1 AND market = $2 AND as_of_date = $3::date AND run_kind = $4
        AND COALESCE(period_type, 'quarter') = COALESCE($7, 'quarter')
        AND is_shadow = $8
        AND input_hash = $5 AND COALESCE(owner_username,'') = COALESCE($6,'')
+       AND ($9::text IS NULL OR COALESCE(owner_subject_id::text,'') = $9::text)
      LIMIT 1`,
-  [strategyId, market, asOfDate, runKind, inputHash, ownerUsername || null, periodType || null, isShadow === true]);
+  [strategyId, market, asOfDate, runKind, inputHash, ownerUsername || null, periodType || null, isShadow === true,
+    ownerSubjectId || null]);
   return rows[0] ? Number(rows[0].run_id) : null;
 }
 
+/**
+ * 修订域：季度、日、周各自递增（方案 27.7「非影子正式 revision 在同市场/策略/类型/周期内递增」）。
+ * 季度与日/周不能共用同一分支：季度也带 period_type/period_key，若只用日/周过滤条件，
+ * MAX 会恒为 0，第二次修订又从 1 开始并撞旧季度唯一索引（AC-02）。
+ */
 async function nextRevision(tx, { market, quarter, strategyId, periodType, periodKey, runKind }) {
   const exec = executorOf(tx);
-  // V1 季度沿用原口径；V2 日/周按周期键在同一策略同一渠道内递增，影子和私人不占正式序列。
-  if (periodType && periodKey) {
+  const type = periodType || (runKind === 'quarterly' ? 'quarter' : null);
+  if (type === 'quarter' || runKind === 'quarterly') {
+    // V1 只写 quarter（period_key 可能尚未回填），V2 写 period_key；两种身份都要能匹配到同一域。
+    const key = periodKey || (quarter ? `Q:${quarter}` : null);
+    const { rows } = await exec(`
+      SELECT COALESCE(MAX(revision), 0)::int AS max_revision
+        FROM analytics.stock_selection_runs
+       WHERE market = $1 AND strategy_id = $2 AND run_kind = 'quarterly' AND is_shadow = false
+         AND (
+           ($3::text IS NOT NULL AND period_key = $3::text)
+           OR ($4::text IS NOT NULL AND quarter = $4::text)
+         )`,
+    [market, strategyId, key, quarter || null]);
+    return Number(rows[0].max_revision || 0) + 1;
+  }
+  if (type === 'day' || type === 'week') {
+    const kind = runKind || (type === 'day' ? 'daily' : 'weekly');
     const { rows } = await exec(`
       SELECT COALESCE(MAX(revision), 0)::int AS max_revision
         FROM analytics.stock_selection_runs
        WHERE market = $1 AND strategy_id = $2 AND run_kind = $3
-         AND period_type = $4 AND period_key = $5 AND is_shadow = false
-         AND run_kind IN ('daily','weekly')`,
-    [market, strategyId, runKind || periodType, periodType, periodKey]);
+         AND period_type = $4 AND period_key = $5 AND is_shadow = false`,
+    [market, strategyId, kind, type, periodKey]);
     return Number(rows[0].max_revision || 0) + 1;
   }
   const { rows } = await exec(`
@@ -1022,6 +1218,9 @@ async function insertCandidates(tx, runId, candidates) {
           valuationStatus: item.valuationStatus === undefined ? null : item.valuationStatus,
           valuationPassReason: item.valuationPassReason === undefined ? null : item.valuationPassReason,
           ttm: item.detail && item.detail.ttm ? item.detail.ttm : null,
+          // TTM 血缘证据（三段报表 + 公式）必须随快照持久化，不能只留一个状态字符串。
+          ttmEvidenceRef: item.ttmEvidenceRef || null,
+          ttmStatusBasis: item.ttmStatusBasis || null,
         })),
         item.historicalPbMin === undefined ? null : item.historicalPbMin,
         item.pbPositiveExtremaRatio === undefined ? null : item.pbPositiveExtremaRatio,
@@ -1073,6 +1272,55 @@ async function insertMembers(tx, runId, members) {
     ON CONFLICT (run_id, instrument_id) DO NOTHING`, params);
 }
 
+/** 只有共享正式渠道可写发布指针；预览/回测/个人属诊断产物（方案 27.7）。 */
+const PUBLISHABLE_RUN_KINDS = new Set(['quarterly', 'daily', 'weekly']);
+
+/**
+ * 发布前的执行身份校验（方案 27.7「发布前再次核验 slot_id、mode/market、当前租约与 executionToken」）。
+ * 手动管理入口不带槽位，不臆造租约；但只要给了 slotId 或 token 之一，两者都必须真实有效。
+ */
+async function assertPublishLease(exec, options) {
+  const slotId = options.slotId === undefined || options.slotId === null || options.slotId === '' ? null : Number(options.slotId);
+  const token = options.executionToken === undefined || options.executionToken === null ? '' : String(options.executionToken);
+  if (slotId === null && !token) return { verified: false, reason: 'manual_without_slot' };
+  if (slotId === null || !token) {
+    const error = new Error('发布必须同时提供有效槽位与执行令牌');
+    error.status = 409;
+    throw error;
+  }
+  const { rows } = await exec(`
+    SELECT slot_id, job_code, status, execution_token,
+           (lease_until IS NOT NULL AND lease_until > clock_timestamp()) AS lease_ok
+      FROM ops.job_schedule_slots WHERE slot_id = $1 FOR UPDATE`, [slotId]);
+  const slot = rows[0];
+  if (!slot) {
+    const error = new Error('执行槽位不存在，不能发布');
+    error.status = 409;
+    throw error;
+  }
+  if (slot.job_code !== 'stock_analysis_refresh') {
+    const error = new Error('执行槽位不属于选股任务');
+    error.status = 409;
+    throw error;
+  }
+  if (slot.status !== 'running') {
+    const error = new Error('执行槽位不在运行中，不能发布');
+    error.status = 409;
+    throw error;
+  }
+  if (String(slot.execution_token || '') !== token) {
+    const error = new Error('执行令牌与当前租约不一致');
+    error.status = 409;
+    throw error;
+  }
+  if (!slot.lease_ok) {
+    const error = new Error('执行租约已过期，不能发布');
+    error.status = 409;
+    throw error;
+  }
+  return { verified: true };
+}
+
 /**
  * 正式发布（V2 加固）：范围锁 + 前一版本比较 + 当前指针 + 不可变事件，同一事务提交。
  * V1 调用只传 { market, quarter }，行为与原实现一致（季度渠道）；V2 日/周按 period_key 分渠道。
@@ -1096,11 +1344,19 @@ async function publishRun(tx, runId, options = {}) {
     error.status = 409;
     throw error;
   }
+  // 存储层白名单与服务层 isFormal 同口径：预览/回测/个人即使带合法 period_key 也不得发布（AC-09）。
   if (target.run_kind === 'personal') {
     const error = new Error('个人测算结果不得发布为公共组合');
     error.status = 409;
     throw error;
   }
+  if (!PUBLISHABLE_RUN_KINDS.has(String(target.run_kind))) {
+    const error = new Error('该类型批次不得发布为正式组合');
+    error.status = 409;
+    throw error;
+  }
+  // 执行身份校验：槽位必须仍在运行、令牌一致且租约未过期，否则拒绝移动正式指针（AC-04）。
+  await assertPublishLease(exec, options);
   const periodType = target.period_type || 'quarter';
   const periodKey = target.period_key || (options.quarter && target.run_kind === 'quarterly' ? `Q:${options.quarter}` : null);
   if (!periodKey) {
@@ -1154,6 +1410,8 @@ async function publishRun(tx, runId, options = {}) {
           period_end = COALESCE(EXCLUDED.period_end, analytics.stock_selection_publications.period_end),
           pointer_revision = analytics.stock_selection_publications.pointer_revision + 1,
           activated_at = EXCLUDED.activated_at,
+          -- 修订后的指针必须等本次提交的可见确认；沿用旧 visible_at 会把历史发布时刻回推给新版本（AC-05）
+          visible_at = NULL,
           actor = EXCLUDED.actor,
           reason = EXCLUDED.reason
     RETURNING publication_id, pointer_revision`,
@@ -1192,11 +1450,28 @@ async function publishRun(tx, runId, options = {}) {
  */
 async function markPublicationVisible({ runId, eventId }, tx) {
   const exec = executorOf(tx);
+  let eventConfirmed = false;
   if (eventId) {
-    await exec(`UPDATE analytics.stock_selection_publication_events SET visible_at = now() WHERE event_id = $1 AND visible_at IS NULL`, [eventId]);
+    const updated = await exec(
+      `UPDATE analytics.stock_selection_publication_events SET visible_at = now()
+        WHERE event_id = $1 AND visible_at IS NULL RETURNING event_id`, [eventId]);
+    eventConfirmed = updated.rows.length > 0;
+    if (!eventConfirmed) {
+      const existing = await exec(`SELECT visible_at FROM analytics.stock_selection_publication_events WHERE event_id = $1`, [eventId]);
+      eventConfirmed = !!(existing.rows[0] && existing.rows[0].visible_at);
+    }
   }
-  await exec(`UPDATE analytics.stock_selection_publications SET visible_at = now() WHERE run_id = $1 AND visible_at IS NULL`, [runId]);
-  return true;
+  const pointerUpdated = await exec(
+    `UPDATE analytics.stock_selection_publications SET visible_at = now()
+      WHERE run_id = $1 AND visible_at IS NULL RETURNING publication_id`, [runId]);
+  let pointerConfirmed = pointerUpdated.rows.length > 0;
+  if (!pointerConfirmed) {
+    // 指针已被后续发布改写时，本次发布的可见确认不能算成功（返回 false 由上层记待补）。
+    const existing = await exec(`SELECT visible_at FROM analytics.stock_selection_publications WHERE run_id = $1`, [runId]);
+    pointerConfirmed = !!(existing.rows[0] && existing.rows[0].visible_at);
+  }
+  // 不再无条件返回 true：调用方必须能区分"确认成功"和"提交后可见时刻仍待补"（AC-05）。
+  return { ok: pointerConfirmed, eventConfirmed, pointerConfirmed };
 }
 
 /** 当前发布指针（按渠道精确读取）；没有指针时返回 null，不猜。 */
@@ -1230,6 +1505,37 @@ async function listPublicationEvents({ market, periodType, periodKey, limit = 50
   return rows;
 }
 
+/**
+ * 真实发布回放的证据（方案 27.7 生效历史 / 27.21 C04 / 27.23 E02）：按渠道返回**完整事件序列**，
+ * 不是每个周期一条。首次发布、修订、回滚、激活/停用都要按发生顺序保留，
+ * 回放时逐事件重建持仓区间；用 MAX(visible_at) 拼一条会把首次发布与它的持仓区间抹掉。
+ * 同时带上目标批次的完成/质量/业务状态与选中计数：只有这些证据都在，才能区分
+ * "已验证的零合格空仓"和"成员丢失/未知"（E02）。
+ */
+async function loadPublicationReplayEvidence({ market, periodType, periodKeys, strategyCode }, tx) {
+  if (!periodKeys || !periodKeys.length) return new Map();
+  const exec = executorOf(tx);
+  const { rows } = await exec(`
+    SELECT e.period_key, e.event_id, e.action, e.to_run_id, e.from_run_id,
+           e.visible_at, e.occurred_at, e.pointer_revision, e.actor, e.reason,
+           r.execution_status, r.quality_status, r.business_status,
+           r.selected_count, r.pending_count, r.universe_count
+      FROM analytics.stock_selection_publication_events e
+      JOIN analytics.stock_selection_strategies s ON s.strategy_id = e.strategy_id
+      LEFT JOIN analytics.stock_selection_runs r ON r.run_id = e.to_run_id
+     WHERE e.market = $1 AND e.period_type = $2 AND e.period_key = ANY($3::text[])
+       AND e.action IN ('publish','correct','rollback','activate','deactivate')
+       AND ($4::text IS NULL OR s.strategy_code = $4::text)
+     ORDER BY e.period_key, e.occurred_at NULLS LAST, e.event_id`,
+  [market, periodType, periodKeys, strategyCode || null]);
+  const byPeriod = new Map();
+  rows.forEach(row => {
+    if (!byPeriod.has(row.period_key)) byPeriod.set(row.period_key, []);
+    byPeriod.get(row.period_key).push(row);
+  });
+  return byPeriod;
+}
+
 async function markRunFailure(tx, runId, { executionStatus, qualityStatus, businessStatus }) {
   const exec = executorOf(tx);
   await exec(`
@@ -1240,7 +1546,20 @@ async function markRunFailure(tx, runId, { executionStatus, qualityStatus, busin
 
 // ========== 读接口 ==========
 
-async function listRuns({ market, quarter, kind, ownerUsername, publishedOnly, periodType, strategyCode, includeShadow, limit, offset }, tx) {
+/** 某渠道是否已有正式（非影子）批次：自动排队只做去重，不判断要不要重算（方案 27.8）。 */
+async function hasPeriodRun({ market, periodType, periodKey, strategyCode }, tx) {
+  const exec = executorOf(tx);
+  const { rows } = await exec(`
+    SELECT 1 FROM analytics.stock_selection_runs r
+      JOIN analytics.stock_selection_strategies s ON s.strategy_id = r.strategy_id
+     WHERE r.market = $1 AND r.period_type = $2 AND r.period_key = $3
+       AND r.is_shadow = false AND r.run_kind IN ('daily','weekly')
+       AND ($4::text IS NULL OR s.strategy_code = $4::text)
+     LIMIT 1`, [market, periodType, periodKey, strategyCode || null]);
+  return rows.length > 0;
+}
+
+async function listRuns({ market, quarter, kind, ownerUsername, ownerSubjectId, publishedOnly, periodType, strategyCode, includeShadow, limit, offset }, tx) {
   const exec = executorOf(tx);
   const conditions = [];
   const params = [];
@@ -1255,9 +1574,20 @@ async function listRuns({ market, quarter, kind, ownerUsername, publishedOnly, p
   // 未发布的 preview（部分数据预览）既没有可买入席位也不代表本期结论，混在可选列表里只会误导
   // （2026-11-05 用户反馈：同一季度堆了 6 条「未发布」）。
   if (publishedOnly) conditions.push("(r.published_at IS NOT NULL OR r.run_kind = 'personal')");
-  // 个人运行只有本人可见；正式与预览按登录可见。所有者一律走参数，不拼字符串。
-  if (ownerUsername) { params.push(ownerUsername); conditions.push(`(r.run_kind <> 'personal' OR r.owner_username = $${params.length})`); }
-  else conditions.push(`r.run_kind <> 'personal'`);
+  // 个人运行只有本人可见；主体（迁移 187 subject_id）优先，缺失时才回退 username（旧记录边界）。
+  // 账号删除重建后同名用户拿不到旧结果：新主体与旧行的 owner_subject_id 不相等（方案 27.9）。
+  if (ownerUsername || ownerSubjectId) {
+    const ownClauses = [];
+    if (ownerSubjectId) {
+      params.push(ownerSubjectId);
+      ownClauses.push(`r.owner_subject_id = $${params.length}::uuid`);
+    }
+    if (ownerUsername) {
+      params.push(ownerUsername);
+      ownClauses.push(`(r.owner_subject_id IS NULL AND r.owner_username = $${params.length})`);
+    }
+    conditions.push(`(r.run_kind <> 'personal' OR (${ownClauses.join(' OR ')}))`);
+  } else conditions.push(`r.run_kind <> 'personal'`);
   const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
   params.push(limit, offset);
   const { rows } = await exec(`
@@ -1353,14 +1683,21 @@ async function readUserSubjectId(username, tx) {
   return rows[0] ? rows[0].subject_id : null;
 }
 
-/** 同一请求 id 的私人批次（幂等判定用），返回 run_id 与规范化载荷哈希。 */
-async function findPersonalRunByRequestId({ username, requestId }, tx) {
+/**
+ * 同一请求 id 的私人批次（幂等判定用），返回 run_id 与规范化载荷哈希。
+ * 主体优先：同一 username 被删除重建后不能复用旧主体的私人结果（方案 27.9）。
+ */
+async function findPersonalRunByRequestId({ username, subjectId, requestId }, tx) {
   const exec = executorOf(tx);
   const { rows } = await exec(`
-    SELECT run_id, input_hash, input_manifest, settings_revision
+    SELECT run_id, input_hash, input_manifest, settings_revision, owner_subject_id::text AS owner_subject_id
       FROM analytics.stock_selection_runs
-     WHERE owner_username = $1 AND request_id = $2 AND run_kind = 'personal'
-     ORDER BY run_id DESC LIMIT 1`, [username, requestId]);
+     WHERE request_id = $2 AND run_kind = 'personal'
+       AND (
+         ($3::uuid IS NOT NULL AND owner_subject_id = $3::uuid)
+         OR ($3::uuid IS NULL AND owner_subject_id IS NULL AND owner_username = $1)
+       )
+     ORDER BY run_id DESC LIMIT 1`, [username || null, requestId, subjectId || null]);
   return rows[0] || null;
 }
 
@@ -1744,11 +2081,13 @@ module.exports = {
   MARKET_CONFIG,
   loadUniverse, loadPbWindow, loadEquityFacts, loadAnnualProfits, loadDividendWindow,
   loadAnnualDividends, loadIndustries, loadFxRatesForPairs, loadMarketValuation, loadLatestMarketValuation, loadCalendar,
-  loadOpenPrices, loadClosePrices, loadBenchmarkCloses, loadDividendCash,
+  loadCalendarEvidence, findUniverseArtifact, insertUniverseArtifact, loadUniverseRoster, loadTtmInputs,
+  loadOpenPrices, loadClosePrices, loadBenchmarkCloses, loadDividendCash, loadDividendEvents, loadBarWindow,
   upsertStrategy, findStrategyId, findRunByIdempotencyKey, nextRevision, insertRun, insertCandidates, insertMembers,
   publishRun, markRunFailure,
-  findPublication, listPublicationEvents, markPublicationVisible,
+  findPublication, listPublicationEvents, markPublicationVisible, loadPublicationReplayEvidence,
   listRuns, findRun, listCandidates, findCandidate, listMembers, latestPublishedRun, copyCandidates,
+  hasPeriodRun,
   listCandidatesForProjection,
   readUserSettings, saveUserSettings,
   readUserSubjectId, findPersonalRunByRequestId,

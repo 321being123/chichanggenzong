@@ -7,6 +7,8 @@ const V2 = require('../domain/stockSelectionRulesV2');
 const V1 = require('../domain/stockSelectionRules');
 const PORTFOLIO = require('../domain/stockSelectionPortfolio');
 const PERIODS = require('../services/stockSelectionPeriods');
+const SERVICE = require('../services/stockSelectionService');
+const BACKTEST = require('../services/stockSelectionBacktest');
 
 const tests = [];
 async function check(name, fn) {
@@ -176,15 +178,43 @@ async function main() {
     assert.strictEqual(result.pbCoverage.historyComplete, false);
   });
 
-  await check('R02 严格完整性政策（审计对照）：比值不足且有缺口判不可评估，达标仍按正证通过', () => {
+  await check('R02 严格完整性政策（27.5 零缺口基线）：有缺口时即使达标也不得判通过', () => {
     const strict = Object.assign({}, P, { pbExtremaPolicy: 'strict_complete' });
     // 0.2→0.5 只有 2.5 倍且缺口存在：零缺口基线不允许判 FAIL，只能不可评估。
     const below = V2.evaluateInstrumentV2(withPb('0.2', '0.5', 30), strict);
     assert.strictEqual(below.rules.R02.status, V2.STATUS.NOT_APPLICABLE);
     assert.strictEqual(below.rules.R02.reason, 'history_gap_not_evaluable');
-    // 已观测 3.5 倍属于数学下界正证，与完整性政策无关，两种政策都应通过。
-    const positive = V2.evaluateInstrumentV2(withPb('0.2', '0.7', 30), strict);
-    assert.strictEqual(positive.rules.R02.status, V2.STATUS.PASS);
+    // 独立验收 A01：0.3→0.9 已达标，但 gap=1 时严格政策必须不可评估，不能沿用正证通过。
+    const positiveWithGap = V2.evaluateInstrumentV2(withPb('0.3', '0.9', 1), strict);
+    assert.strictEqual(positiveWithGap.rules.R02.status, V2.STATUS.NOT_APPLICABLE);
+    assert.strictEqual(positiveWithGap.rules.R02.reason, 'history_gap_not_evaluable');
+    assert.strictEqual(positiveWithGap.pbCoverage.historyComplete, false);
+    // 零缺口且达标才是严格政策下唯一的 PASS 路径。
+    const zeroGap = V2.evaluateInstrumentV2(withPb('0.3', '0.9', 0), strict);
+    assert.strictEqual(zeroGap.rules.R02.status, V2.STATUS.PASS);
+  });
+
+  await check('R02 日历未核验：不得声称历史完整，两种政策都不能给正式结论（A02）', () => {
+    const unverified = facts({
+      pbWindow: Object.assign({}, facts().pbWindow, { calendarComplete: false }),
+    });
+    const positive = V2.evaluateInstrumentV2(unverified, P);
+    assert.strictEqual(positive.pbCoverage.historyComplete, false);
+    assert.strictEqual(positive.rules.R02.status, V2.STATUS.NOT_APPLICABLE);
+    assert.strictEqual(positive.rules.R02.reason, 'history_calendar_unverified');
+    const strict = Object.assign({}, P, { pbExtremaPolicy: 'strict_complete' });
+    assert.strictEqual(V2.evaluateInstrumentV2(unverified, strict).rules.R02.status, V2.STATUS.NOT_APPLICABLE);
+  });
+
+  await check('R02 混合已核实非正事实：正极值三倍也不得通过（A10）', () => {
+    const result = V2.evaluateInstrumentV2(facts({
+      pbWindow: Object.assign({}, facts().pbWindow, {
+        minPb: 0.3, maxPb: 0.9, minPbRaw: '0.3', maxPbRaw: '0.9',
+        nonPositiveDays: 1, expectedDays: 900, positiveDays: 899, positiveGapDays: 0, gapDays: 0,
+      }),
+    }), P);
+    assert.strictEqual(result.rules.R02.status, V2.STATUS.NOT_APPLICABLE);
+    assert.strictEqual(result.rules.R02.reason, 'pb_non_positive_not_evaluable');
   });
 
   await check('R02 非正 PB 不参加极值：已核实非正事实判不可评估', () => {
@@ -344,6 +374,271 @@ async function main() {
     assert.strictEqual(PERIODS.periodRangeOf('week', 'W:bad'), null);
   });
 
+  await check('周期键真实性：不存在的日期与非周一周键必须拒绝（A03 / AC-10）', () => {
+    // 正则挡不住 2026-02-31；Date 会把它归一成 3 月，不能拿归一结果当业务日。
+    assert.strictEqual(PERIODS.periodKeyOf('day', '2026-02-31'), null);
+    assert.strictEqual(PERIODS.periodKeyOf('week', '2026-02-31'), null);
+    assert.strictEqual(PERIODS.periodRangeOf('day', 'D:2026-02-31'), null);
+    // 周键必须是周一起点；周二当起点会让渠道周期与真实周边界错位。
+    assert.strictEqual(PERIODS.periodRangeOf('week', 'W:2026-11-03'), null);
+    assert.deepStrictEqual(PERIODS.periodRangeOf('week', 'W:2026-11-02'), { periodStart: '2026-11-02', periodEnd: '2026-11-08' });
+  });
+
+  await check('日历证据：整周休市与日历缺档必须分开（A08 / A09）', () => {
+    const closedWeek = ['2026-10-01', '2026-10-02', '2026-10-03', '2026-10-04', '2026-10-05', '2026-10-06', '2026-10-07']
+      .map(date => ({ trade_date: date, is_open: false }));
+    const closed = PERIODS.calendarEvidenceOf(closedWeek, '2026-10-01', '2026-10-07');
+    assert.strictEqual(closed.calendarComplete, true);
+    assert.deepStrictEqual(closed.openDays, []);
+    assert.strictEqual(closed.missingDates.length, 0);
+
+    // 整周只有一条开市行不是"完整周"：不能把这一天直接定成周度 T，必须暴露 6 天缺档。
+    const partial = PERIODS.calendarEvidenceOf([{ trade_date: '2026-11-04', is_open: true }], '2026-11-02', '2026-11-08');
+    assert.strictEqual(partial.calendarComplete, false);
+    assert.strictEqual(partial.missingDates.length, 6);
+    assert.deepStrictEqual(partial.openDays, ['2026-11-04']);
+  });
+
+  /* ---------------- 27.20 五项阻断的回归（B01—B05） ---------------- */
+  await check('B01 日周分区合同：runPeriodic 必须透传并回传 datasetPublication', () => {
+    const source = SERVICE.runPeriodic.toString();
+    assert.ok(/datasetPublication: input\.datasetPublication/.test(source), 'runPeriodic 必须把分区回调下沉到 computeAndPersist');
+    assert.ok(/datasetPublication: result\.datasetPublication/.test(source), 'runPeriodic 必须回传分区发布结果');
+  });
+
+  await check('B02 非12月财年 TTM：6月年报直接取完整年度，不当中期组合', () => {
+    const result = SERVICE.computeTtmFromReports([
+      { reportId: 3, periodEnd: '2026-06-30', periodType: 'annual', announcedAt: '2026-09-20', netProfit: 100, currency: 'HKD' },
+      { reportId: 2, periodEnd: '2025-12-31', periodType: 'semiannual', announcedAt: '2026-02-20', netProfit: 40, currency: 'HKD' },
+      { reportId: 1, periodEnd: '2025-06-30', periodType: 'annual', announcedAt: '2025-09-20', netProfit: 80, currency: 'HKD' },
+    ]);
+    assert.strictEqual(result.value, 100);
+    assert.strictEqual(result.evidence.method, 'annual_direct');
+    assert.strictEqual(result.evidence.fiscalYearEnd, '2026-06-30');
+  });
+
+  await check('B03 阶梯开关：R01 通道与 R02 规则可独立切换，倍数 0 不被还原成 3', () => {
+    const pbOnly = Object.assign({}, P, { r01Channel: 'pb_only' });
+    const pbOnlyResult = V2.evaluateInstrumentV2(facts({ pb: 1.8, pbRaw: '1.8', peTtm: 9, peTtmRaw: '9' }), pbOnly);
+    assert.strictEqual(pbOnlyResult.rules.R01.status, V2.STATUS.FAIL, 'pb_only 下 PB>1.5 不通过，即使乘积达标');
+
+    const window21 = facts({
+      pbWindow: Object.assign({}, facts().pbWindow, {
+        minPb: 1, maxPb: 2, minPbRaw: '1', maxPbRaw: '2',
+        positiveDays: 900, positiveGapDays: 0, gapDays: 0,
+      }),
+    });
+    const v1R02 = Object.assign({}, P, { r02Rule: 'v1_any_above_one' });
+    assert.strictEqual(V2.evaluateInstrumentV2(window21, v1R02).rules.R02.status, V2.STATUS.PASS,
+      'V1 判据：窗口内存在 PB>1 即通过');
+    assert.strictEqual(V2.evaluateInstrumentV2(window21, P).rules.R02.status, V2.STATUS.FAIL,
+      'V2 正极值比 2/1 < 3 不通过');
+    assert.strictEqual(V2.evaluateInstrumentV2(window21, Object.assign({}, P, { pbPositiveExtremaMultiple: 0 })).rules.R02.status,
+      V2.STATUS.PASS, '倍数 0 必须保留为 0（恒过），不能被 || 3 还原');
+
+    const ladderCodes = BACKTEST.LADDER_STEPS.map(step => step.code);
+    assert.deepStrictEqual(ladderCodes, ['A0', 'A1', 'B', 'C', 'D', 'E']);
+    const b = BACKTEST.LADDER_STEPS.find(step => step.code === 'B');
+    const c = BACKTEST.LADDER_STEPS.find(step => step.code === 'C');
+    const d = BACKTEST.LADDER_STEPS.find(step => step.code === 'D');
+    const e = BACKTEST.LADDER_STEPS.find(step => step.code === 'E');
+    assert.strictEqual(b.internalParams.r02Rule, 'v1_any_above_one');
+    assert.strictEqual(c.internalParams.r02Rule, 'v2_positive_ratio');
+    assert.strictEqual(b.internalParams.marketGate, 'v1');
+    assert.strictEqual(c.internalParams.marketGate, 'v1');
+    assert.strictEqual(d.internalParams.marketGate, 'off');
+    // 每步只改一个变量：B→C 只改 r02Rule，C→D 只改 marketGate，D→E 只改频率。
+    assert.strictEqual(b.internalParams.r01Channel, c.internalParams.r01Channel);
+    assert.deepStrictEqual(
+      [d.internalParams.r01Channel, d.internalParams.r02Rule],
+      [c.internalParams.r01Channel, c.internalParams.r02Rule],
+    );
+    assert.strictEqual(e.frequency, 'week');
+    assert.strictEqual(d.frequency, 'quarter');
+  });
+
+  await check('C01 真实回放成交时点：可见晚于开盘顺延次日，开盘前才可当日', () => {
+    const calendar = ['2026-10-22', '2026-10-23', '2026-10-26', '2026-10-27'];
+    const selections = [{ periodKey: 'Q:2026Q3', signalDate: '2026-10-23' }];
+    const membersByRun = new Map([[7, [{ instrument_id: 1, code: '600000', slot_no: 1 }]]]);
+    const planAt = visibleAt => {
+      const eventsByPeriod = new Map([['Q:2026Q3', [{
+        event_id: 1, action: 'publish', to_run_id: 7, from_run_id: null,
+        visible_at: visibleAt, occurred_at: visibleAt, pointer_revision: 1,
+      }]]]);
+      return BACKTEST.resolveRealReplayPlan({ selections, eventsByPeriod, calendar, membersByRun, market: 'CN' });
+    };
+    // 北京 18:00（收盘后）与 10:00（开盘后）：当天开盘已过去，不能倒填，只能顺延到 10-27。
+    assert.strictEqual(planAt('2026-10-26T10:00:00Z').resolved[0].executionDate, '2026-10-27');
+    assert.strictEqual(planAt('2026-10-26T02:00:00Z').resolved[0].executionDate, '2026-10-27');
+    // 北京 08:00（开盘前）：可以使用当天开盘。
+    assert.strictEqual(planAt('2026-10-26T00:00:00Z').resolved[0].executionDate, '2026-10-26');
+
+    // 缺事件 / 缺可见时刻 / 缺冻结成员一律不可评估。
+    const none = BACKTEST.resolveRealReplayPlan({
+      selections, eventsByPeriod: new Map(), calendar, membersByRun: new Map(), market: 'CN',
+    });
+    assert.strictEqual(none.resolved.length, 0);
+    assert.strictEqual(none.missing[0].reason, 'publication_event_missing');
+    const invisible = BACKTEST.resolveRealReplayPlan({
+      selections,
+      eventsByPeriod: new Map([['Q:2026Q3', [{ event_id: 1, action: 'publish', to_run_id: 7, visible_at: null }]]]),
+      calendar, membersByRun, market: 'CN',
+    });
+    assert.strictEqual(invisible.missing[0].reason, 'visible_at_missing');
+    const noMembers = BACKTEST.resolveRealReplayPlan({
+      selections,
+      eventsByPeriod: new Map([['Q:2026Q3', [{
+        event_id: 1, action: 'publish', to_run_id: 7, visible_at: '2026-10-26T00:00:00Z',
+      }]]]),
+      calendar, membersByRun: new Map(), market: 'CN',
+    });
+    assert.strictEqual(noMembers.missing[0].reason, 'published_run_members_missing');
+
+    // 假期：可见日在 10-26，但日历当天不开市 → 顺延到下一开市日。
+    const holidayCalendar = ['2026-10-22', '2026-10-23', '2026-10-27'];
+    const holiday = BACKTEST.resolveRealReplayPlan({
+      selections,
+      eventsByPeriod: new Map([['Q:2026Q3', [{
+        event_id: 1, action: 'publish', to_run_id: 7, visible_at: '2026-10-26T00:00:00Z',
+      }]]]),
+      calendar: holidayCalendar, membersByRun, market: 'CN',
+    });
+    assert.strictEqual(holiday.resolved[0].executionDate, '2026-10-27');
+  });
+
+  await check('C04 发布历史回放：首次发布先建仓，修订只在其生效后替换', () => {
+    const calendar = ['2026-10-23', '2026-10-26', '2026-10-27', '2026-10-28', '2026-10-29'];
+    const selections = [{ periodKey: 'W:2026-10-19', signalDate: '2026-10-23' }];
+    const eventsByPeriod = new Map([['W:2026-10-19', [
+      {
+        event_id: 1, action: 'publish', to_run_id: 91, from_run_id: null,
+        visible_at: '2026-10-23T10:00:00Z', occurred_at: '2026-10-23T10:00:00Z', pointer_revision: 1,
+      },
+      {
+        event_id: 2, action: 'correct', to_run_id: 92, from_run_id: 91,
+        visible_at: '2026-10-28T10:00:00Z', occurred_at: '2026-10-28T10:00:00Z', pointer_revision: 2,
+      },
+    ]]]);
+    const membersByRun = new Map([
+      [91, [{ instrument_id: 1, code: '600000', slot_no: 1 }]],
+      [92, [{ instrument_id: 2, code: '600001', slot_no: 1 }]],
+    ]);
+    const plan = BACKTEST.resolveRealReplayPlan({ selections, eventsByPeriod, calendar, membersByRun, market: 'CN' });
+    assert.strictEqual(plan.missing.length, 0);
+    assert.strictEqual(plan.resolved.length, 2, '首次发布与修订各自产生持仓区间，不能压成最后一条');
+    assert.strictEqual(plan.resolved[0].executionDate, '2026-10-26');
+    assert.strictEqual(plan.resolved[0].computed.portfolio.members[0].instrumentId, 1);
+    assert.strictEqual(plan.resolved[0].replayEvidence.action, 'publish');
+    assert.strictEqual(plan.resolved[1].executionDate, '2026-10-29');
+    assert.strictEqual(plan.resolved[1].computed.portfolio.members[0].instrumentId, 2);
+    assert.strictEqual(plan.resolved[1].replayEvidence.action, 'correct');
+  });
+
+  await check('C02 阶梯基线：A0/A1 固定 V1，报告值来自实际载荷', () => {
+    const steps = BACKTEST.LADDER_STEPS;
+    assert.strictEqual(steps[0].strategyCode, V1.STRATEGY_CODE, 'A0 必须固定 V1');
+    assert.strictEqual(steps[1].strategyCode, V1.STRATEGY_CODE, 'A1 必须固定 V1');
+    steps.forEach(step => assert.ok(step.strategyCode, `${step.code} 必须显式声明策略，不能继承调用方输入`));
+    const source = BACKTEST.runLadder.toString();
+    assert.ok(/strategyCode: step\.strategyCode/.test(source), '每步必须使用本步固定策略');
+    assert.ok(/strategyCode: payload\.strategyCode/.test(source), '报告值必须取自实际载荷');
+  });
+
+  /* ---------------- TTM 自算血缘（AC-01b） ---------------- */
+  await check('TTM 自算：年报直接取值，中期按"上年年报＋本期累计−上年同期"闭合', () => {
+    const annual = SERVICE.computeTtmFromReports([
+      { reportId: 1, periodEnd: '2025-12-31', announcedAt: '2026-03-20', netProfit: 100, currency: 'CNY' },
+    ]);
+    assert.strictEqual(annual.value, 100);
+    assert.strictEqual(annual.evidence.method, 'annual_direct');
+
+    const half = SERVICE.computeTtmFromReports([
+      { reportId: 3, periodEnd: '2026-06-30', announcedAt: '2026-08-20', netProfit: 60, currency: 'CNY' },
+      { reportId: 2, periodEnd: '2025-12-31', announcedAt: '2026-03-20', netProfit: 100, currency: 'CNY' },
+      { reportId: 1, periodEnd: '2025-06-30', announcedAt: '2025-08-20', netProfit: 40, currency: 'CNY' },
+    ]);
+    assert.strictEqual(half.value, 120);
+    assert.strictEqual(half.evidence.method, 'annual_plus_ytd_minus_prior_ytd');
+    assert.strictEqual(half.evidence.latest.reportId, 3);
+    assert.strictEqual(half.evidence.priorAnnual.reportId, 2);
+  });
+
+  await check('TTM 自算：缺上年同期或币种不一致都返回未知，不用最新投影凑', () => {
+    const missing = SERVICE.computeTtmFromReports([
+      { reportId: 3, periodEnd: '2026-06-30', announcedAt: '2026-08-20', netProfit: 60, currency: 'CNY' },
+      { reportId: 2, periodEnd: '2025-12-31', announcedAt: '2026-03-20', netProfit: 100, currency: 'CNY' },
+    ]);
+    assert.strictEqual(missing.value, null);
+    assert.strictEqual(missing.reason, 'ttm_components_missing');
+    const mismatch = SERVICE.computeTtmFromReports([
+      { reportId: 3, periodEnd: '2026-06-30', announcedAt: '2026-08-20', netProfit: 60, currency: 'USD' },
+      { reportId: 2, periodEnd: '2025-12-31', announcedAt: '2026-03-20', netProfit: 100, currency: 'CNY' },
+      { reportId: 1, periodEnd: '2025-06-30', announcedAt: '2025-08-20', netProfit: 40, currency: 'CNY' },
+    ]);
+    assert.strictEqual(mismatch.value, null);
+    assert.strictEqual(mismatch.reason, 'ttm_currency_mismatch');
+  });
+
+  await check('选股槽位业务键：影子/普通、同日不同周期互不吃槽（AC-08）', () => {
+    const slots = require('../services/jobScheduleSlots');
+    const base = { mode: 'selection_daily', market: 'CN', targetDate: '2026-11-06', periodKey: 'D:2026-11-06' };
+    const formal = slots.selectionBusinessKeyOf(base);
+    const shadow = slots.selectionBusinessKeyOf(Object.assign({}, base, { shadow: true }));
+    const weekly = slots.selectionBusinessKeyOf(Object.assign({}, base, { mode: 'selection_weekly', periodKey: 'W:2026-11-02' }));
+    assert.ok(formal && shadow && weekly);
+    assert.notStrictEqual(formal, shadow, '影子与普通必须是不同的槽');
+    assert.notStrictEqual(formal, weekly, '同日不同周期必须是不同的槽');
+    assert.strictEqual(formal, slots.selectionBusinessKeyOf(Object.assign({}, base)), '同身份必须稳定');
+    assert.strictEqual(slots.selectionBusinessKeyOf({ mode: 'core' }), null, '其他任务不生成选股业务键');
+  });
+
+  /* ---------------- 回测执行与撮合（AC-01c / AC-01d） ---------------- */
+  await check('回测信号：周频取每周最后开市日，季度沿用季末最后开市日', () => {
+    const calendar = ['2026-11-02', '2026-11-03', '2026-11-06', '2026-11-09', '2026-11-10', '2026-11-13'];
+    const weekly = BACKTEST.buildSignalSchedule({ calendar, startDate: '2026-11-01', endDate: '2026-11-30', frequency: 'week' });
+    assert.deepStrictEqual(weekly.map(item => item.periodKey), ['W:2026-11-02', 'W:2026-11-09']);
+    assert.deepStrictEqual(weekly.map(item => item.signalDate), ['2026-11-06', '2026-11-13']);
+    const quarterly = BACKTEST.buildSignalSchedule({ calendar, startDate: '2026-10-01', endDate: '2026-12-31', frequency: 'quarter' });
+    assert.strictEqual(quarterly.length, 1);
+    assert.strictEqual(quarterly[0].periodKey, 'Q:2026Q4');
+  });
+
+  await check('撮合约束：停牌不成交、开盘涨停不买、开盘跌停不卖、容量按成交额缩量', () => {
+    const suspended = BACKTEST.matchOrder({
+      side: 'buy', wantQty: 100, price: 10, bar: null, prevClose: 9.8, limitRatio: 0.1, participationRate: 0.05,
+    });
+    assert.strictEqual(suspended.filledQty, 0);
+    assert.strictEqual(suspended.reason, 'suspended_or_no_bar');
+
+    const limitUp = BACKTEST.matchOrder({
+      side: 'buy', wantQty: 100, price: 11, bar: { open: 11, amount: 1e9 }, prevClose: 10, limitRatio: 0.1, participationRate: 0.05,
+    });
+    assert.strictEqual(limitUp.filledQty, 0);
+    assert.strictEqual(limitUp.reason, 'limit_up_at_open');
+
+    const limitDown = BACKTEST.matchOrder({
+      side: 'sell', wantQty: 100, price: 9, bar: { open: 9, amount: 1e9 }, prevClose: 10, limitRatio: 0.1, participationRate: 0.05,
+    });
+    assert.strictEqual(limitDown.filledQty, 0);
+    assert.strictEqual(limitDown.reason, 'limit_down_at_open');
+
+    // 成交额 1000 × 参与率 5% = 50 元上限，价格 10 → 最多 5 股
+    const capped = BACKTEST.matchOrder({
+      side: 'buy', wantQty: 100, price: 10, bar: { open: 10, amount: 1000 }, prevClose: 9.9, limitRatio: 0.1, participationRate: 0.05,
+    });
+    assert.ok(Math.abs(capped.filledQty - 5) < 1e-9);
+    assert.strictEqual(capped.reason, 'capacity_capped');
+  });
+
+  await check('涨跌停比例：主板10%、创业板/科创板20%、北交所30%、港股无限制', () => {
+    assert.strictEqual(BACKTEST.priceLimitRatio({ market: 'CN', code: '600000' }), 0.1);
+    assert.strictEqual(BACKTEST.priceLimitRatio({ market: 'CN', code: '300750' }), 0.2);
+    assert.strictEqual(BACKTEST.priceLimitRatio({ market: 'CN', code: '688111' }), 0.2);
+    assert.strictEqual(BACKTEST.priceLimitRatio({ market: 'CN', code: '830799' }), 0.3);
+    assert.strictEqual(BACKTEST.priceLimitRatio({ market: 'HK', code: '00700' }), null);
+  });
+
   /* ---------------- 回测：净订单模型（静态不变量） ---------------- */
   await check('回测净订单：按 deltaQty 调仓，不存在"先清仓再买回"的旧实现', () => {
     const fs = require('fs');
@@ -374,6 +669,8 @@ async function main() {
     const repo = require('../repositories/stockSelectionRepository');
     const service = require('../services/stockSelectionService');
     const suffix = `v2test-${Date.now()}`;
+    // 季度修订反例用独立策略，避免与日/周渠道的 revision 互相干扰；清理段一并删除。
+    let quarterStrategyId = null;
     const strategyId = await repo.upsertStrategy(pool, {
       strategyCode: V2.STRATEGY_CODE_V2, market: 'CN', version: `t-${suffix}`,
       formulaVersion: P.formulaVersion, adapterVersion: P.adapterVersion,
@@ -468,6 +765,217 @@ async function main() {
       assert.strictEqual(far.asOfDate, null, '没有日历覆盖的季度必须拒绝，不能按工作日猜');
     });
 
+    await check('真库：季度修订域独立，已有 revision=1 时下一版必须是 2（A11 / AC-02）', async () => {
+      quarterStrategyId = await repo.upsertStrategy(pool, {
+        strategyCode: V2.STRATEGY_CODE_V2, market: 'CN', version: `q-${suffix}`,
+        formulaVersion: P.formulaVersion, adapterVersion: P.adapterVersion,
+        riskVersion: P.riskVersion, industryVersion: P.industryVersion,
+        effectiveFrom: '2026-01-01', parameters: P, contentHash: `hash-q-${suffix}`,
+      });
+      const firstQuarter = await repo.insertRun(pool, Object.assign({}, baseRun, {
+        strategyId: quarterStrategyId, runKind: 'quarterly', quarter: '2026Q4',
+        periodType: 'quarter', periodKey: 'Q:2026Q4', periodStart: '2026-10-01', periodEnd: '2026-12-31',
+        inputHash: `q1-${suffix}`, revision: 1,
+      }));
+      // 服务实际传参：quarterly 同时带 periodType/periodKey/quarter（旧实现因 run_kind 过滤恒返回 1）。
+      const next = await repo.nextRevision(pool, {
+        market: 'CN', quarter: '2026Q4', strategyId: quarterStrategyId,
+        periodType: 'quarter', periodKey: 'Q:2026Q4', runKind: 'quarterly',
+      });
+      assert.strictEqual(next, 2, '季度修订必须在自己的域递增');
+      const secondQuarter = await repo.insertRun(pool, Object.assign({}, baseRun, {
+        strategyId: quarterStrategyId, runKind: 'quarterly', quarter: '2026Q4',
+        periodType: 'quarter', periodKey: 'Q:2026Q4', periodStart: '2026-10-01', periodEnd: '2026-12-31',
+        inputHash: `q2-${suffix}`, revision: next,
+      }));
+      assert.ok(secondQuarter > firstQuarter);
+      const afterSecond = await repo.nextRevision(pool, {
+        market: 'CN', quarter: '2026Q4', strategyId: quarterStrategyId,
+        periodType: 'quarter', periodKey: 'Q:2026Q4', runKind: 'quarterly',
+      });
+      assert.strictEqual(afterSecond, 3, '第二版之后必须继续递增');
+    });
+
+    await check('真库：旧幂等索引已删除，身份索引含主体维度（A07 / A12）', async () => {
+      const legacy = await pool.query(`SELECT schemaname FROM pg_indexes WHERE indexname = 'ux_selection_runs_idempotent'`);
+      assert.strictEqual(legacy.rows.length, 0, '旧 ux_selection_runs_idempotent 必须真的被删除');
+      const identity = await pool.query(`SELECT indexdef FROM pg_indexes WHERE indexname = 'ux_selection_runs_identity_v2'`);
+      assert.ok(identity.rows.length, '新身份索引必须存在');
+      assert.ok(/owner_subject_id/.test(identity.rows[0].indexdef), '新身份索引必须含主体维度');
+      // 同输入、同渠道：正式与影子必须能并存（旧索引会把它们判成重复）。
+      const sameInput = `dup-${suffix}`;
+      const formalDup = await repo.insertRun(pool, Object.assign({}, baseRun, {
+        runKind: 'weekly', inputHash: sameInput, revision: 9,
+      }));
+      const shadowDup = await repo.insertRun(pool, Object.assign({}, baseRun, {
+        runKind: 'weekly', inputHash: sameInput, revision: 9, isShadow: true,
+      }));
+      assert.ok(formalDup && shadowDup, '同输入正式与影子必须都能落库');
+      // 同用户名不同主体：账号删除重建后不能撞同一唯一键（owner_username 有外键，必须用真实用户）。
+      const anyUser = await pool.query('SELECT username FROM users ORDER BY username LIMIT 1');
+      const ownerName = anyUser.rows[0] ? anyUser.rows[0].username : null;
+      const subjectA = await repo.insertRun(pool, Object.assign({}, baseRun, {
+        runKind: 'personal', inputHash: `sub-${suffix}`, ownerUsername: ownerName,
+        ownerSubjectId: '11111111-1111-1111-1111-111111111111', periodType: 'day', periodKey: 'D:2026-11-06',
+      }));
+      const subjectB = await repo.insertRun(pool, Object.assign({}, baseRun, {
+        runKind: 'personal', inputHash: `sub-${suffix}`, ownerUsername: ownerName,
+        ownerSubjectId: '22222222-2222-2222-2222-222222222222', periodType: 'day', periodKey: 'D:2026-11-06',
+      }));
+      assert.ok(subjectA && subjectB, '同名不同主体必须各自成行');
+    });
+
+    await check('真库：股票池 artifact 幂等固化，同一目标日复用同一内容哈希（AC-01a）', async () => {
+      const targetDate = '2020-01-02';
+      const hash = `u-${suffix}`;
+      const first = await repo.insertUniverseArtifact({
+        market: 'CN', targetDate, contentHash: hash,
+        instrumentIds: [1, 2, 3], members: [{ instrumentId: 1, code: '000001' }],
+        basis: { test: true }, replayType: 'pit_research_replay',
+      }, pool);
+      const again = await repo.insertUniverseArtifact({
+        market: 'CN', targetDate, contentHash: hash,
+        instrumentIds: [1, 2, 3], members: [], basis: {}, replayType: 'pit_research_replay',
+      }, pool);
+      assert.strictEqual(again, first, '同内容哈希必须幂等，不能重复固化');
+      const found = await repo.findUniverseArtifact({ market: 'CN', targetDate }, pool);
+      assert.strictEqual(found.content_hash, hash);
+      assert.deepStrictEqual(found.instrument_ids.map(Number).sort((a, b) => a - b), [1, 2, 3]);
+      assert.strictEqual(found.replay_type, 'pit_research_replay');
+      await pool.query('DELETE FROM analytics.stock_selection_universe_artifacts WHERE market = $1 AND target_date = $2::date', ['CN', targetDate]);
+    });
+
+    await check('真库：旧191库前向补列（excluded/knowledge_cutoff/source_versions，C03）', async () => {
+      const columns = await pool.query(`
+        SELECT column_name FROM information_schema.columns
+         WHERE table_schema = 'analytics' AND table_name = 'stock_selection_universe_artifacts'
+           AND column_name IN ('excluded','knowledge_cutoff','source_versions')`);
+      assert.deepStrictEqual(columns.rows.map(row => row.column_name).sort(),
+        ['excluded', 'knowledge_cutoff', 'source_versions'], '三列必须存在（旧库靠 192 前向补列）');
+      const applied = await pool.query(
+        "SELECT version FROM schema_migrations WHERE version = '192_stock_selection_universe_artifact_columns'");
+      assert.strictEqual(applied.rows.length, 1, '补列迁移必须已记录执行');
+    });
+
+    await check('真库：预览批次带合法周期键也不得发布（A05 / AC-09）', async () => {
+      const previewId = await repo.insertRun(pool, Object.assign({}, baseRun, {
+        runKind: 'preview', inputHash: `pv-${suffix}`, revision: 1,
+      }));
+      await assert.rejects(
+        () => repo.publishRun(pool, previewId, {}),
+        error => error.status === 409 && /不得发布/.test(error.message),
+      );
+    });
+
+    await check('真库：无效槽位/缺失令牌不得移动正式指针（A04 / AC-04）', async () => {
+      const candidate = await repo.insertRun(pool, Object.assign({}, baseRun, {
+        runKind: 'weekly', inputHash: `lease-${suffix}`, revision: 5,
+      }));
+      await assert.rejects(
+        () => repo.publishRun(pool, candidate, { slotId: 99999999, executionToken: 'expired-token' }),
+        error => error.status === 409 && /槽位不存在/.test(error.message),
+      );
+      await assert.rejects(
+        () => repo.publishRun(pool, candidate, { executionToken: 'only-token' }),
+        error => error.status === 409 && /槽位与执行令牌/.test(error.message),
+      );
+    });
+
+    await check('真库：修订发布不沿用旧 visible_at，确认后才是新时刻（A06 / AC-05）', async () => {
+      // 先把当前周度指针的可见时刻改成 2001，模拟旧确认被带进新版本。
+      await pool.query(`
+        UPDATE analytics.stock_selection_publications SET visible_at = '2001-01-01T00:00:00Z'
+         WHERE market = 'CN' AND strategy_id = $1 AND period_type = 'week' AND period_key = 'W:2026-11-02'`, [strategyId]);
+      const revision4 = await repo.insertRun(pool, Object.assign({}, baseRun, {
+        runKind: 'weekly', inputHash: `w4-${suffix}`, revision: 4,
+      }));
+      const published = await repo.publishRun(pool, revision4, {});
+      const pending = await pool.query(
+        `SELECT visible_at FROM analytics.stock_selection_publications WHERE run_id = $1`, [revision4]);
+      assert.strictEqual(pending.rows[0].visible_at, null, '修订后必须等本次确认，不能沿用旧 visible_at');
+      const confirmed = await repo.markPublicationVisible({ runId: revision4, eventId: published.eventId }, pool);
+      assert.strictEqual(confirmed.ok, true);
+      const afterConfirm = await pool.query(
+        `SELECT visible_at FROM analytics.stock_selection_publications WHERE run_id = $1`, [revision4]);
+      assert.ok(afterConfirm.rows[0].visible_at, '确认后必须写入真实可见时刻');
+      assert.ok(new Date(afterConfirm.rows[0].visible_at).getUTCFullYear() >= 2026, '不能回推到 2001 年');
+    });
+
+    await check('真库：发布→修订→回滚的事件链按 SQL 还原，回滚目标取 to_run_id（D01）', async () => {
+      const periodKey = 'W:2026-10-19';
+      const runA = await repo.insertRun(pool, Object.assign({}, baseRun, {
+        runKind: 'weekly', inputHash: `rb1-${suffix}`, revision: 1,
+        periodType: 'week', periodKey, periodStart: '2026-10-19', periodEnd: '2026-10-25',
+      }));
+      const runB = await repo.insertRun(pool, Object.assign({}, baseRun, {
+        runKind: 'weekly', inputHash: `rb2-${suffix}`, revision: 2,
+        periodType: 'week', periodKey, periodStart: '2026-10-19', periodEnd: '2026-10-25',
+      }));
+      const first = await repo.publishRun(pool, runA, { reason: 'replay-a' });
+      assert.strictEqual(first.action, 'publish');
+      const second = await repo.publishRun(pool, runB, { reason: 'replay-b' });
+      assert.strictEqual(second.action, 'correct', '第二次发布必须是修订事件');
+      assert.strictEqual(Number(second.previousRunId), runA, '修订事件的 from 是前一版本');
+      // 回滚事件沿用同一张事件表（本仓暂无回滚接口）：from=被回滚版本、to=回到的版本。
+      const rollback = await pool.query(`
+        INSERT INTO analytics.stock_selection_publication_events
+          (market, strategy_id, period_type, period_key, action, from_run_id, to_run_id,
+           from_strategy_id, to_strategy_id, pointer_revision, reason)
+        VALUES ('CN',$1,'week',$2,'rollback',$3,$4,$1,$1,3,'replay-rollback')
+        RETURNING event_id`, [strategyId, periodKey, runB, runA]);
+      // 固定可见时刻：让用例不依赖"今天"，同时保留真实事件的字段方向。
+      const stamps = [
+        [first.eventId, '2026-10-23T10:00:00Z'],
+        [second.eventId, '2026-10-27T10:00:00Z'],
+        [Number(rollback.rows[0].event_id), '2026-10-29T10:00:00Z'],
+      ];
+      for (const [eventId, stamp] of stamps) {
+        await pool.query(`
+          UPDATE analytics.stock_selection_publication_events
+             SET occurred_at = $2::timestamptz, visible_at = $2::timestamptz
+           WHERE event_id = $1`, [eventId, stamp]);
+      }
+      const events = await repo.loadPublicationReplayEvidence({
+        market: 'CN', periodType: 'week', periodKeys: [periodKey], strategyCode: V2.STRATEGY_CODE_V2,
+      });
+      const list = events.get(periodKey) || [];
+      assert.deepStrictEqual(list.map(item => item.action), ['publish', 'correct', 'rollback'], '事件序列必须完整保留');
+      assert.deepStrictEqual(list.map(item => Number(item.to_run_id)), [runA, runB, runA], 'to_run_id 才是目标版本');
+      assert.deepStrictEqual(
+        list.map(item => (item.from_run_id === null ? null : Number(item.from_run_id))),
+        [null, runA, runB], 'from_run_id 记录离开的版本，只作审计',
+      );
+      const plan = BACKTEST.resolveRealReplayPlan({
+        selections: [{ periodKey, signalDate: '2026-10-23' }],
+        eventsByPeriod: events,
+        calendar: ['2026-10-23', '2026-10-26', '2026-10-27', '2026-10-28', '2026-10-29', '2026-10-30'],
+        membersByRun: new Map([
+          [runA, [{ instrument_id: 1, code: '600000', slot_no: 1 }]],
+          [runB, [{ instrument_id: 2, code: '600001', slot_no: 1 }]],
+        ]),
+        market: 'CN',
+      });
+      assert.strictEqual(plan.missing.length, 0, JSON.stringify(plan.missing));
+      assert.deepStrictEqual(plan.resolved.map(item => item.replayEvidence.runId), [runA, runB, runA],
+        '回滚必须回到 to_run_id 指定的版本，不能停在被回滚的那一版');
+      assert.deepStrictEqual(plan.resolved.map(item => item.executionDate), ['2026-10-26', '2026-10-28', '2026-10-30']);
+      assert.deepStrictEqual(plan.resolved.map(item => item.computed.portfolio.members[0].instrumentId), [1, 2, 1],
+        '持仓必须随事件切换，并在回滚后恢复');
+    });
+
+    await check('真库：晨间执行补上一已结束交易日，晚间执行排当日（B05）', async () => {
+      // 上海 08:20 = UTC 00:20；旧实现 readyHour=18 时这个时刻恒返回空。
+      const morning = await service.duePeriodicTargets({ market: 'CN', now: new Date('2026-11-06T00:20:00Z'), readyHour: 18 });
+      assert.ok(morning.length > 0, '08:20 不得恒返回空');
+      const dayTarget = morning.find(item => item.periodType === 'day');
+      assert.ok(dayTarget, '必须给出上一已结束交易日');
+      assert.strictEqual(dayTarget.targetDate < '2026-11-06', true);
+      assert.strictEqual(dayTarget.catchup, true);
+      // 18:40 已过就绪窗口：排当日。
+      const evening = await service.duePeriodicTargets({ market: 'CN', now: new Date('2026-11-06T10:40:00Z'), readyHour: 18 });
+      assert.ok(evening.some(item => item.periodKey === 'D:2026-11-06'), '18:40 必须排出当日');
+    });
+
     await check('真库：设置保存的乐观锁与非法代码拒绝', async () => {
       const payload = service.validateSettingsPayload({ budgetRatioA: 0.6, excludedInstruments: [{ market: 'CN', code: '999999.SH' }] }, {});
       assert.strictEqual(payload.excludedInstruments.length, 1);
@@ -487,10 +995,11 @@ async function main() {
     // 清理本用例自建数据：测试库会被复用，残留策略会干扰 getMarkets 的"最新策略"解析。
     await (async () => {
       try {
-        await pool.query('DELETE FROM analytics.stock_selection_publication_events WHERE strategy_id = $1', [strategyId]);
-        await pool.query('DELETE FROM analytics.stock_selection_publications WHERE strategy_id = $1', [strategyId]);
-        await pool.query('DELETE FROM analytics.stock_selection_runs WHERE strategy_id = $1', [strategyId]);
-        await pool.query('DELETE FROM analytics.stock_selection_strategies WHERE strategy_id = $1', [strategyId]);
+        const strategyIds = [strategyId, quarterStrategyId].filter(Boolean);
+        await pool.query('DELETE FROM analytics.stock_selection_publication_events WHERE strategy_id = ANY($1::bigint[])', [strategyIds]);
+        await pool.query('DELETE FROM analytics.stock_selection_publications WHERE strategy_id = ANY($1::bigint[])', [strategyIds]);
+        await pool.query('DELETE FROM analytics.stock_selection_runs WHERE strategy_id = ANY($1::bigint[])', [strategyIds]);
+        await pool.query('DELETE FROM analytics.stock_selection_strategies WHERE strategy_id = ANY($1::bigint[])', [strategyIds]);
       } catch (error) {
         console.log('  [WARN] V2 测试数据清理失败：' + error.message);
       }

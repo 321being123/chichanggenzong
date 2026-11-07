@@ -26,6 +26,11 @@ function serviceWithEmptyUniverse() {
   stub(REPO, {
     loadMarketValuation: async () => ({}),
     loadUniverse: async () => [],
+    loadUniverseRoster: async () => [],
+    // V2 新增依赖：空池时不会写 artifact，但服务仍会先查一次历史池。
+    findUniverseArtifact: async () => null,
+    insertUniverseArtifact: async () => 1,
+    loadTtmInputs: async () => new Map(),
     saveInputGapQueue: async () => 1,
   });
   const servicePath = require.resolve(SERVICE);

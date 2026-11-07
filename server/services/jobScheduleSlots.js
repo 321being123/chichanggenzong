@@ -207,11 +207,41 @@ async function datasetDependencyState(slot, definition) {
   };
 }
 
+const SELECTION_JOB_MODES = new Set([
+  'selection_quarterly', 'selection_preview', 'selection_daily', 'selection_weekly',
+  'selection_backtest', 'selection_inputs',
+]);
+
+/**
+ * V2 选股槽位的规范业务键（方案 27.8）：模式/市场/策略/周期键/目标日/影子/季度。
+ * 现役 `request_payload @>` 是"槽包含请求"的匹配，普通请求会命中多带 shadow 的旧槽，
+ * 同一天不同周期也会互相吃槽；这里把身份写成单字段并要求两边相等。
+ * 其他任务不带该字段，仍走原包含合同，不受影响。
+ */
+function selectionBusinessKeyOf(payload) {
+  const mode = String((payload && payload.mode) || '');
+  if (!SELECTION_JOB_MODES.has(mode)) return null;
+  const market = String(payload.market || '').toUpperCase();
+  const strategy = String(payload.strategyCode || '').toLowerCase();
+  const periodType = String(payload.periodType
+    || (mode === 'selection_daily' ? 'day'
+      : mode === 'selection_weekly' ? 'week'
+        : mode === 'selection_quarterly' ? 'quarter' : ''));
+  const periodKey = String(payload.periodKey || '')
+    || (periodType === 'quarter' && payload.quarter ? `Q:${payload.quarter}` : '');
+  const targetDate = String(payload.targetDate || payload.businessDate || '');
+  const shadow = payload.shadow === true || payload.shadow === 'true' ? '1' : '0';
+  return [mode, market, strategy, periodType, periodKey || targetDate, shadow, String(payload.quarter || '')].join('|');
+}
+
 async function enqueueManualJob(jobCode, requestPayload = {}, transactionClient = null) {
   const definition = JOB_DEFINITIONS.find(item => item.jobCode === jobCode);
   if (!definition) return null;
   if (definition.disabled) throw new Error(definition.disabledReason);
   const safePayload = sanitizeJobResult(requestPayload || {});
+  // 选股模式补规范业务键：槽位去重与领取都按它精确相等，避免影子/普通/不同周期互相复用。
+  const selectionKey = selectionBusinessKeyOf(safePayload);
+  if (selectionKey) safePayload.selectionBusinessKey = selectionKey;
   const client = transactionClient || await pool.connect();
   try {
     if(!transactionClient) await txControl.begin(client);
@@ -1179,7 +1209,7 @@ async function enqueueSelectionPeriodJob({ jobCode, payload, requestId }) {
 
 module.exports = {
   WORKER_ID, workerIdForRole, JOB_DEFINITIONS, dateText, normalizeBusinessDate, shanghaiParts, ensureSlot, enqueueManualJob, syncScheduleSlots, slotMode, dependenciesForMode,
-  enqueueSelectionPeriodJob,
+  enqueueSelectionPeriodJob, selectionBusinessKeyOf,
   claimSlot, completeSlot, deferSlot, waitForExternalSlot, continueSlot, mergeSlotExternalCallSummary, touchSlot, recoverExpiredSlots, listDueSlots, retryJobSlot, acknowledgeSlot,
   listJobSlots, getJobSlot, validateJobSlot, heartbeat, getJobOverview, queryDataAsOf, isDataAsOfFresh, resolveDataAsOf, expectedDataDate,
   isSlotDayAllowed, isWeekday, previousDate, resolveScheduleForDate,

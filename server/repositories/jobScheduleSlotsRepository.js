@@ -71,6 +71,9 @@ async function select_ops_job_schedule_slots(params, client = pool) {
       SELECT * FROM ops.job_schedule_slots
        WHERE job_code=$1
          AND request_payload @> $3::jsonb
+         -- 选股槽位的规范业务键必须两边完全相等：普通请求不得命中多带 shadow 的旧槽，
+         -- 同日不同周期也不得互相吃槽；其他任务两边都为空，行为与原来一致（方案 27.8）。
+         AND COALESCE(request_payload->>'selectionBusinessKey','') = COALESCE($3::jsonb->>'selectionBusinessKey','')
          AND (status='running' OR (status='pending' AND scheduled_for <= now()
            AND COALESCE(next_attempt_at,scheduled_for) <= now() AND attempt_count < $2))
        ORDER BY slot_id DESC LIMIT 1

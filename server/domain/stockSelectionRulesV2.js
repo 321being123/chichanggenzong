@@ -295,6 +295,16 @@ function evaluateValuationV2(facts, params) {
       valuationPassReason: 'PB_THRESHOLD',
     });
   }
+  // 单因素阶梯（B03）：只启用 PB 通道，等价 V1 的 R01。
+  // 这是"关闭 PE 乘积通道"，不是把阈值放宽成某个宽松值——归因时必须能区分通道差异与阈值差异。
+  if (String(params.r01Channel || 'pb_or_product') === 'pb_only') {
+    return Object.assign(base, {
+      rule: rule('R01', STATUS.FAIL, { value: pb, threshold: params.maxPb, reason: 'VALUATION_FAILED', channel: 'pb_only' }),
+      valuationStatus: STATUS.FAIL,
+      valuationPass: false,
+      valuationPassReason: 'VALUATION_FAILED',
+    });
+  }
   // 第二条通道：PB>1.5 必须正 PE 且乘积严格小于 22.5。
   const ttmConflict = ttm.basis === 'provider_vs_computed_conflict';
   if (ttmConflict) {
@@ -375,7 +385,10 @@ function evaluatePbExtremaV2(facts, params) {
   const observed = num(window.observedDays);
   const nonPositive = num(window.nonPositiveDays) || 0;
   const ratio = extremaRatio(maxPbRaw, minPbRaw);
-  const multiple = num(params.pbPositiveExtremaMultiple) || 3;
+  // 倍数只允许显式 0（表示"该政策下不再要求倍数"）；旧写法 `num(x) || 3` 会把 0 悄悄还原成 3，
+  // 让"阶梯放宽"变成假动作（B03）。
+  const multipleRaw = params.pbPositiveExtremaMultiple;
+  const multiple = multipleRaw === undefined || multipleRaw === null ? 3 : (num(multipleRaw) === null ? 3 : num(multipleRaw));
   const policy = PB_EXTREMA_POLICIES.includes(params.pbExtremaPolicy) ? params.pbExtremaPolicy : 'positive_evidence';
   const evidence = {
     minPb: num(minPbRaw), maxPb: num(maxPbRaw), pbPositiveExtremaRatio: ratio,
@@ -394,20 +407,55 @@ function evaluatePbExtremaV2(facts, params) {
   const cmpMaxMin = compareDecimal(maxPbRaw, '0');
   const cmpMinMin = compareDecimal(minPbRaw, '0');
   const hasPositiveExtrema = cmpMaxMin !== null && cmpMaxMin > 0 && cmpMinMin !== null && cmpMinMin > 0;
+  const calendarVerified = window.calendarComplete !== false;
 
   // 覆盖完整性如实返回，不因最终判 PASS 而伪造完整（方案 27.5 第 5 条）。
-  if (expected !== null && gap !== null) evidence.historyComplete = gap === 0 && expected > 0;
-  else evidence.historyComplete = false;
+  // 日历未核验时"应有日集合"本身不可信，不能据此宣称完整（AC-03 A02）。
+  evidence.historyComplete = calendarVerified && expected !== null && gap !== null && gap === 0 && expected > 0;
 
-  if (!hasPositiveExtrema) {
-    // 已核实非正 PB（负权益）→ 正极值比不可评估，不是"待补"，也不入选。
-    if (nonPositive > 0) {
+  // 单因素阶梯（B03）：R02 回退成 V1 判据「窗口内存在 PB>1 即通过」，
+  // 把"改 R01"与"改 R02"分开归因；不借用放宽倍数冒充规则切换。
+  if (String(params.r02Rule || 'v2_positive_ratio') === 'v1_any_above_one') {
+    const aboveOne = compareDecimal(maxPbRaw, '1');
+    if (aboveOne === null) {
       return Object.assign(evidence, {
-        rule: rule('R02', STATUS.NOT_APPLICABLE, { value: null, reason: 'pb_non_positive_not_evaluable', threshold: multiple }),
+        rule: rule('R02', STATUS.NOT_APPLICABLE, { value: null, reason: 'history_coverage_unknown', ruleSet: 'v1' }),
         status: STATUS.NOT_APPLICABLE,
-        reason: 'pb_non_positive_not_evaluable',
+        reason: 'history_coverage_unknown',
       });
     }
+    if (aboveOne > 0) {
+      return Object.assign(evidence, {
+        rule: rule('R02', STATUS.PASS, { value: num(maxPbRaw), reason: null, ruleSet: 'v1', evidence: 'v1_any_above_one' }),
+        status: STATUS.PASS,
+        reason: null,
+      });
+    }
+    if (!calendarVerified || gap === null || gap > 0) {
+      return Object.assign(evidence, {
+        rule: rule('R02', STATUS.NOT_APPLICABLE, { value: num(maxPbRaw), reason: 'history_gap_not_evaluable', ruleSet: 'v1' }),
+        status: STATUS.NOT_APPLICABLE,
+        reason: 'history_gap_not_evaluable',
+      });
+    }
+    return Object.assign(evidence, {
+      rule: rule('R02', STATUS.FAIL, { value: num(maxPbRaw), reason: 'no_pb_above_one_evidence', ruleSet: 'v1' }),
+      status: STATUS.FAIL,
+      reason: 'no_pb_above_one_evidence',
+    });
+  }
+
+  // 已核实非正 PB（负权益）使正 PB 极值比不可评估，**不能因剔除后比值达标而通过**（方案 27.5 第 6 条）。
+  // 这一条必须先于"极值达标即通过"，否则混合了非正事实的窗口会被算成 PASS（AC-03 A10）。
+  if (nonPositive > 0) {
+    return Object.assign(evidence, {
+      rule: rule('R02', STATUS.NOT_APPLICABLE, { value: ratio, reason: 'pb_non_positive_not_evaluable', threshold: multiple }),
+      status: STATUS.NOT_APPLICABLE,
+      reason: 'pb_non_positive_not_evaluable',
+    });
+  }
+
+  if (!hasPositiveExtrema) {
     if (gap === null) {
       return Object.assign(evidence, {
         rule: rule('R02', STATUS.NOT_APPLICABLE, { value: null, reason: 'history_coverage_unknown', threshold: multiple }),
@@ -433,26 +481,46 @@ function evaluatePbExtremaV2(facts, params) {
   // 正证路径：max >= min × 3。用交叉比较，展示再求商。
   const bound = multiplyDecimal(minPbRaw, String(multiple));
   const passed = compareDecimal(maxPbRaw, bound) !== null && compareDecimal(maxPbRaw, bound) >= 0;
+
+  // 日历未核验时，两种证据政策都不能给出正式结论：缺口里是否藏极值本身不可知（方案 27.5 第 1/5 条）。
+  if (!calendarVerified) {
+    return Object.assign(evidence, {
+      rule: rule('R02', STATUS.NOT_APPLICABLE, { value: ratio, reason: 'history_calendar_unverified', threshold: multiple }),
+      status: STATUS.NOT_APPLICABLE,
+      reason: 'history_calendar_unverified',
+    });
+  }
+
+  if (policy === 'strict_complete') {
+    // 严格基线（27.5 零缺口）：historyComplete 才允许判 PASS/FAIL；
+    // 有缺口一律不可评估，即使已观测极值已达标——这正是旧实现把 A01 判 PASS 的缺口（AC-03）。
+    if (evidence.historyComplete !== true) {
+      return Object.assign(evidence, {
+        rule: rule('R02', STATUS.NOT_APPLICABLE, { value: ratio, reason: 'history_gap_not_evaluable', threshold: multiple }),
+        status: STATUS.NOT_APPLICABLE,
+        reason: 'history_gap_not_evaluable',
+      });
+    }
+    if (passed) {
+      return Object.assign(evidence, {
+        rule: rule('R02', STATUS.PASS, { value: ratio, reason: null, threshold: multiple, evidence: 'strict_complete' }),
+        status: STATUS.PASS,
+        reason: null,
+      });
+    }
+    return Object.assign(evidence, {
+      rule: rule('R02', STATUS.FAIL, { value: ratio, reason: 'pb_extrema_below_multiple', threshold: multiple }),
+      status: STATUS.FAIL,
+      reason: 'pb_extrema_below_multiple',
+    });
+  }
+
   if (passed) {
     return Object.assign(evidence, {
       // 正证是数学下界，缺口不推翻它（方案 27.5 候选口径）。
       rule: rule('R02', STATUS.PASS, { value: ratio, reason: null, threshold: multiple, evidence: 'positive_extrema' }),
       status: STATUS.PASS,
       reason: null,
-    });
-  }
-  if (policy === 'strict_complete') {
-    if (evidence.historyComplete === true) {
-      return Object.assign(evidence, {
-        rule: rule('R02', STATUS.FAIL, { value: ratio, reason: 'pb_extrema_below_multiple', threshold: multiple }),
-        status: STATUS.FAIL,
-        reason: 'pb_extrema_below_multiple',
-      });
-    }
-    return Object.assign(evidence, {
-      rule: rule('R02', STATUS.NOT_APPLICABLE, { value: ratio, reason: 'history_gap_not_evaluable', threshold: multiple }),
-      status: STATUS.NOT_APPLICABLE,
-      reason: 'history_gap_not_evaluable',
     });
   }
   // positive_evidence：比值不足且有缺口 → 未知（不能断言十年内没有三倍）；

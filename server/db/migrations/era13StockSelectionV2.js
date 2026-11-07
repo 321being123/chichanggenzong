@@ -59,9 +59,20 @@ async function migration189StockSelectionV2(pg) {
        SET period_type = CASE WHEN run_kind = 'quarterly' THEN 'quarter' ELSE 'day' END
      WHERE period_type IS NULL`);
 
-  // 5) 幂等索引分域：旧索引不含 is_shadow/period_type，影子与非影子同输入会互相撞，
-  //    这里重建为完整身份索引；V1 等价（quarter + is_shadow=false 落在同一域）。
-  await pg.query(`DROP INDEX IF EXISTS ux_selection_runs_idempotent`);
+  // 5) 幂等索引分域：旧索引不含 is_shadow/period_type/subject，
+  //    影子与非影子、不同主体（同名重建账号）的同输入会互相撞，这里重建为完整身份索引。
+  //    旧索引名不带 schema：search_path 不含 analytics 时 `DROP INDEX` 会静默跳过，
+  //    必须按 pg_indexes 实际所在 schema 逐个删除（AC-06）。
+  await pg.query(`
+    DO $$
+    DECLARE target RECORD;
+    BEGIN
+      FOR target IN
+        SELECT schemaname, indexname FROM pg_indexes WHERE indexname = 'ux_selection_runs_idempotent'
+      LOOP
+        EXECUTE format('DROP INDEX IF EXISTS %I.%I', target.schemaname, target.indexname);
+      END LOOP;
+    END $$`);
   await pg.query(`
     CREATE UNIQUE INDEX IF NOT EXISTS ux_selection_runs_identity_v2
       ON analytics.stock_selection_runs (
@@ -70,6 +81,7 @@ async function migration189StockSelectionV2(pg) {
         COALESCE(period_key, ''),
         is_shadow,
         COALESCE(owner_username, ''),
+        COALESCE(owner_subject_id::text, ''),
         input_hash)`);
 
   // 6) 正式发布选择用索引：先按市场/策略/周期，再按日期稳定排序（不按 period_key 字典序）。
@@ -166,4 +178,94 @@ async function migration189StockSelectionV2(pg) {
         (market, period_type, period_key, event_id DESC)`);
 }
 
-module.exports = { migration189StockSelectionV2 };
+/**
+ * 迁移 190：身份索引收敛（承接 AC-06 的存量环境）。
+ * 189 的 `DROP INDEX` 未带 schema，在 search_path 不含 analytics 的库会静默跳过，
+ * 已执行旧 189 的环境因此同时留着旧 `ux_selection_runs_idempotent` 与不含主体维度的新索引。
+ * 本迁移按 pg_indexes 实际 schema 收敛，可重复执行；生产首装由 189 直接建对，这里会跳过。
+ */
+async function migration190StockSelectionIdentityIndex(pg) {
+  await pg.query(`
+    DO $do$
+    DECLARE target RECORD;
+    BEGIN
+      FOR target IN
+        SELECT schemaname, indexname FROM pg_indexes WHERE indexname = 'ux_selection_runs_idempotent'
+      LOOP
+        EXECUTE format('DROP INDEX IF EXISTS %I.%I', target.schemaname, target.indexname);
+      END LOOP;
+    END $do$`);
+
+  await pg.query(`
+    DO $do$
+    DECLARE def TEXT;
+    BEGIN
+      SELECT indexdef INTO def FROM pg_indexes
+       WHERE schemaname = 'analytics' AND indexname = 'ux_selection_runs_identity_v2';
+      IF def IS NULL OR position('owner_subject_id' in def) = 0 THEN
+        EXECUTE $idx$DROP INDEX IF EXISTS analytics.ux_selection_runs_identity_v2$idx$;
+        EXECUTE $idx$CREATE UNIQUE INDEX ux_selection_runs_identity_v2
+          ON analytics.stock_selection_runs (
+            strategy_id, market, run_kind,
+            COALESCE(period_type, 'quarter'),
+            COALESCE(period_key, ''),
+            is_shadow,
+            COALESCE(owner_username, ''),
+            COALESCE(owner_subject_id::text, ''),
+            input_hash)$idx$;
+      END IF;
+    END $do$`);
+}
+
+/**
+ * 迁移 191：历史股票池不可变 artifact（方案 27.11 / DEV-02）。
+ * 同一 (市场, 目标日) 的证券集合首次计算后固化，后续重算/回测复用同一集合与哈希；
+ * 今日抓到的名单不能回填历史，也不把"重建"冒充当时真实可见（replay_type 明确区分）。
+ */
+async function migration191StockSelectionUniverseArtifact(pg) {
+  await pg.query(`
+    CREATE TABLE IF NOT EXISTS analytics.stock_selection_universe_artifacts (
+      artifact_id BIGSERIAL PRIMARY KEY,
+      market TEXT NOT NULL,
+      target_date DATE NOT NULL,
+      content_hash TEXT NOT NULL,
+      member_count INTEGER NOT NULL,
+      instrument_ids BIGINT[] NOT NULL,
+      members JSONB NOT NULL DEFAULT '[]'::jsonb,
+      -- 被排除的成员与原因（无任何行情/近 60 日无行情），与"是否在池"分开记录（C0）。
+      excluded JSONB NOT NULL DEFAULT '[]'::jsonb,
+      -- 冻结时的信息可见截止与来源版本：同一目标日的名单必须能证明用的是同一批事实。
+      knowledge_cutoff TEXT,
+      source_versions JSONB NOT NULL DEFAULT '{}'::jsonb,
+      basis JSONB NOT NULL DEFAULT '{}'::jsonb,
+      replay_type TEXT NOT NULL DEFAULT 'pit_research_replay',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      CONSTRAINT stock_selection_universe_artifacts_market_check CHECK (market IN ('CN','HK')),
+      CONSTRAINT stock_selection_universe_artifacts_replay_check
+        CHECK (replay_type IN ('real_time_observation','pit_research_replay')),
+      CONSTRAINT stock_selection_universe_artifacts_uk UNIQUE (market, target_date, content_hash)
+    )`);
+  await pg.query(`
+    CREATE INDEX IF NOT EXISTS ix_selection_universe_artifacts_lookup
+      ON analytics.stock_selection_universe_artifacts (market, target_date, created_at DESC, artifact_id DESC)`);
+}
+
+/**
+ * 迁移 192：191 的前向补列（方案 27.7/27.12 升级兼容，C03）。
+ * 已执行旧 191 的开发/验收库不会因为 CREATE TABLE IF NOT EXISTS 被修改而自动获得新列，
+ * 必须用独立的前向 ALTER 补齐；保留原 artifact 数据，不重建表。
+ */
+async function migration192StockSelectionUniverseArtifactColumns(pg) {
+  await pg.query(`
+    ALTER TABLE analytics.stock_selection_universe_artifacts
+      ADD COLUMN IF NOT EXISTS excluded JSONB NOT NULL DEFAULT '[]'::jsonb,
+      ADD COLUMN IF NOT EXISTS knowledge_cutoff TEXT,
+      ADD COLUMN IF NOT EXISTS source_versions JSONB NOT NULL DEFAULT '{}'::jsonb`);
+}
+
+module.exports = {
+  migration189StockSelectionV2,
+  migration190StockSelectionIdentityIndex,
+  migration191StockSelectionUniverseArtifact,
+  migration192StockSelectionUniverseArtifactColumns,
+};

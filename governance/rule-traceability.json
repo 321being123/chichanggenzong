@@ -5231,6 +5231,102 @@
       ],
       "owner": "WorkBuddy",
       "status": "implemented"
+    },
+    {
+      "id": "SELECTION-PERIOD-AUTORUN-203",
+      "title": "每日/每周自动排队复用原 Runner：槽位按 selectionBusinessKey 精确去重，未就绪留 nextCheckAt 续跑",
+      "implementation": {
+        "file": "server/jobs/stockAnalysisRefresh.js",
+        "symbol": "enqueueDueSelectionPeriods"
+      },
+      "tests": [
+        {
+          "file": "server/test/stock-selection-v2.test.js",
+          "pattern": "选股槽位业务键"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "implemented"
+    },
+    {
+      "id": "SELECTION-UNIVERSE-ARTIFACT-204",
+      "title": "历史股票池按目标日固化为不可变 artifact：内容哈希参与清单，漂移阻断发布，成员不可得标 universe_not_recoverable",
+      "implementation": {
+        "file": "server/services/stockSelectionService.js",
+        "symbol": "loadUniverseWithArtifact"
+      },
+      "tests": [
+        {
+          "file": "server/test/stock-selection-v2.test.js",
+          "pattern": "股票池 artifact"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "implemented"
+    },
+    {
+      "id": "SELECTION-TTM-LINEAGE-205",
+      "title": "自算 TTM 归母净利：完整年度＋本期累计−上年同期，三段币种与报告版本留证，供应商 PE 只作对照",
+      "implementation": {
+        "file": "server/services/stockSelectionService.js",
+        "symbol": "computeTtmFromReports"
+      },
+      "tests": [
+        {
+          "file": "server/test/stock-selection-v2.test.js",
+          "pattern": "TTM 自算"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "implemented"
+    },
+    {
+      "id": "SELECTION-DAILY-NAV-206",
+      "title": "逐日 NAV 回测：停牌/开盘涨跌停不成交、容量按成交额参与率缩量、分红按除息日入账，周频与季度共用同一引擎",
+      "implementation": {
+        "file": "server/services/stockSelectionBacktest.js",
+        "symbol": "runDailyBacktest"
+      },
+      "tests": [
+        {
+          "file": "server/test/stock-selection-v2.test.js",
+          "pattern": "撮合约束"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "implemented"
+    },
+    {
+      "id": "SELECTION-REPLAY-ROLLBACK-207",
+      "title": "真实回放统一以事件目标版本（to_run_id）恢复持仓：回滚回到目标版本，from 只留审计",
+      "implementation": {
+        "file": "server/services/stockSelectionBacktest.js",
+        "symbol": "resolveRealReplayPlan"
+      },
+      "tests": [
+        {
+          "file": "server/test/stock-selection-real-replay.test.js",
+          "pattern": "D01"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "implemented"
+    },
+    {
+      "id": "SELECTION-REPLAY-TAIL-208",
+      "title": "真实回放尾部未执行信号只记待执行/区间外，不作废前期完整历史；早期周期缺事件仍拒绝",
+      "implementation": {
+        "file": "server/services/stockSelectionBacktest.js",
+        "symbol": "resolveRealReplayPlan"
+      },
+      "tests": [
+        {
+          "file": "server/test/stock-selection-real-replay.test.js",
+          "pattern": "D02"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "implemented"
     }
   ]
 }

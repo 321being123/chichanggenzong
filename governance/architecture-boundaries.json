@@ -1624,6 +1624,13 @@
       "note": "选股回测用例编排：复用规则/组合纯函数与仓储读取，0 SQL"
     },
     {
+      "path": "server/services/stockSelectionPeriods.js",
+      "role": "application",
+      "batch": 3,
+      "status": "registered",
+      "note": "选股周期键/真实日期校验/逐日日历证据换算：纯函数，0 SQL/0 联网/0 DOM；周期性由调用方传入"
+    },
+    {
       "path": "server/services/valuationFetchQuality.js",
       "role": "application",
       "batch": 3,

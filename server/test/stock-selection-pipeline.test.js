@@ -233,6 +233,10 @@ async function main() {
     AS_OF = target.asOfDate;
     if (!AS_OF) throw new Error('季度末目标日解析失败，后续金融断言无法执行：' + (target.reason || ''));
     await cleanup(pool);
+    // 历史股票池 artifact 按目标日固化：本测试会重建证券主档（instrument_id 变化），
+    // 必须清掉同一市场的旧 artifact，否则新证券不在旧名单里会被判成"历史池不可恢复"。
+    // 这正是生产语义（今日名单不能回填历史），测试要显式声明自己的目标日是新造的。
+    await pool.query('DELETE FROM analytics.stock_selection_universe_artifacts WHERE market = $1', [MARKET]);
     await seed(pool);
 
     // ===== 整改反例的真库取证（SSV-04 / SSV-09）=====

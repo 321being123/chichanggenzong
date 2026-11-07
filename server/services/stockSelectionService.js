@@ -164,6 +164,142 @@ function buildAnnualYears(profits, annualDividends) {
   }).sort((a, b) => a.year - b.year);
 }
 
+/** 年报期类型识别：优先用供应商 periodType，缺失时才回退 12-31，不按月份猜中期性质。 */
+const ANNUAL_PERIOD_TYPES = /^(annual|year|yearly|fy|a)$/;
+const YTD_PERIOD_TYPES = /^(q1|q2|q3|q4|h1|h2|semi|semiannual|half|half_year|interim|third|ytd|quarter)$/;
+
+function normalizePeriodType(value) {
+  const text = String(value || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+  if (!text || text === 'unknown') return null;
+  if (ANNUAL_PERIOD_TYPES.test(text)) return 'annual';
+  if (YTD_PERIOD_TYPES.test(text)) return 'ytd';
+  return null;
+}
+
+/** 同一日往前/后推整数年（2-29 落到 2-28），用于定位"上年同期累计"。 */
+function shiftYearsText(date, years) {
+  const text = String(date || '');
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) return null;
+  const year = Number(text.slice(0, 4)) + years;
+  const monthDay = text.slice(4);
+  if (monthDay === '-02-29' && !(year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0))) {
+    return `${year}-02-28`;
+  }
+  return `${year}${monthDay}`;
+}
+
+/**
+ * 自算 TTM 归母净利（方案 27.4）：完整年度 ＋ 本期累计 − 上年同期累计。
+ * - 最新报告是否年度，按供应商 `periodType` 判定（6 月/9 月财年同样适用），不按月份猜；
+ * - 中期累计需要「最近一个完整年度」与「去年同期累计」，缺任一段保持未知，不用最新投影凑；
+ * - 去年同期必须早于最近年报，否则视为财年变更/口径不一致，保持未知；
+ * - 三段币种必须一致，否则相减得到错误量纲的利润。
+ * 同一 period_end 有多个版本时取最新公告的一条，不混用不同修订版本。
+ */
+function computeTtmFromReports(reports) {
+  const list = (reports || []).filter(item => item && item.netProfit !== null && item.netProfit !== undefined);
+  if (!list.length) return { value: null, reason: 'ttm_reports_missing', evidence: null };
+  const byPeriod = new Map();
+  list.forEach(item => {
+    const current = byPeriod.get(item.periodEnd);
+    if (!current || String(item.announcedAt || '') > String(current.announcedAt || '')) byPeriod.set(item.periodEnd, item);
+  });
+  const periods = [...byPeriod.values()].sort((a, b) => (a.periodEnd < b.periodEnd ? 1 : -1));
+  const latest = periods[0];
+  const pick = item => ({
+    reportId: item.reportId, periodEnd: item.periodEnd, announcedAt: item.announcedAt,
+    netProfit: item.netProfit, currency: item.currency, periodType: item.periodType || null,
+  });
+
+  // 性质判定：periodType 明确年度 → 年度；明确累计 → 累计；
+  // periodType 缺失时不按"月份"猜，先看该证券有没有更早的 12-31 年报作为财年证据：
+  // 有 12-31 年报纸 → 可确认是 12 月制财年，非 12-31 的那期按累计处理；都没有才判未知。
+  const declaredType = normalizePeriodType(latest.periodType);
+  const monthDay = String(latest.periodEnd).slice(5);
+  const hasPriorDecemberAnnual = periods.some(item => item !== latest
+    && item.periodEnd < latest.periodEnd
+    && String(item.periodEnd).slice(5) === '12-31');
+  const isAnnualReport = declaredType === 'annual' || (declaredType === null && monthDay === '12-31');
+  if (isAnnualReport) {
+    return {
+      value: latest.netProfit,
+      evidence: {
+        method: 'annual_direct',
+        basis: declaredType === 'annual' ? 'period_type_annual' : 'period_end_december',
+        latest: pick(latest),
+        fiscalYearEnd: latest.periodEnd,
+      },
+    };
+  }
+  const treatAsYtd = declaredType === 'ytd' || (declaredType === null && hasPriorDecemberAnnual);
+  if (!treatAsYtd) {
+    // 既不是年度、也没有可确认的财年证据：不猜，直接未知。
+    return {
+      value: null,
+      reason: 'ttm_period_type_unknown',
+      evidence: { method: 'period_type_unknown', latest: pick(latest) },
+    };
+  }
+
+  // 最近一个完整年度（必须早于本期累计，且月份口径由 periodType 决定，不看 12-31）。
+  const priorAnnual = periods.find(item => item !== latest
+    && item.periodEnd < latest.periodEnd
+    && (normalizePeriodType(item.periodType) === 'annual'
+      || (normalizePeriodType(item.periodType) === null && String(item.periodEnd).slice(5) === '12-31')));
+  const priorSameEnd = shiftYearsText(latest.periodEnd, -1);
+  const priorSame = priorSameEnd ? byPeriod.get(priorSameEnd) || null : null;
+
+  if (!priorAnnual || !priorSame) {
+    return {
+      value: null,
+      reason: 'ttm_components_missing',
+      evidence: {
+        method: 'annual_plus_ytd_minus_prior_ytd',
+        latest: pick(latest),
+        priorAnnual: priorAnnual ? pick(priorAnnual) : null,
+        priorSame: priorSame ? pick(priorSame) : null,
+        fiscalYearEnd: priorAnnual ? priorAnnual.periodEnd : null,
+      },
+    };
+  }
+  // 去年同期若晚于/等于最近年报，说明财年变更或口径不一致，相减没有意义。
+  if (priorSame.periodEnd >= priorAnnual.periodEnd) {
+    return {
+      value: null,
+      reason: 'ttm_fiscal_year_changed',
+      evidence: {
+        method: 'annual_plus_ytd_minus_prior_ytd',
+        latest: pick(latest),
+        priorAnnual: pick(priorAnnual),
+        priorSame: pick(priorSame),
+      },
+    };
+  }
+  const currencies = [priorAnnual.currency, latest.currency, priorSame.currency]
+    .map(value => (value ? String(value).toUpperCase() : null))
+    .filter(Boolean);
+  if (new Set(currencies).size > 1) {
+    return {
+      value: null,
+      reason: 'ttm_currency_mismatch',
+      evidence: {
+        method: 'annual_plus_ytd_minus_prior_ytd',
+        latest: pick(latest), priorAnnual: pick(priorAnnual), priorSame: pick(priorSame),
+        currencies,
+      },
+    };
+  }
+  return {
+    value: priorAnnual.netProfit + latest.netProfit - priorSame.netProfit,
+    evidence: {
+      method: 'annual_plus_ytd_minus_prior_ytd',
+      formula: 'priorAnnual + latestYtd - priorSameYtd',
+      latest: pick(latest), priorAnnual: pick(priorAnnual), priorSame: pick(priorSame),
+      fiscalYearEnd: priorAnnual.periodEnd,
+    },
+  };
+}
+
 /** 把库内事实拼成规则输入（不查库）。 */
 function buildRuleFacts(row, ctx) {
   const companyKey = row.company_id === null || row.company_id === undefined ? null : String(row.company_id);
@@ -173,6 +309,8 @@ function buildRuleFacts(row, ctx) {
   const dividend = ctx.dividends.get(String(row.instrument_id)) || null;
   const industry = companyKey ? ctx.industries.get(companyKey) || null : null;
   const pbEvidence = ctx.pbWindow.byInstrument.get(String(row.instrument_id)) || { maxPb: null, coveredDays: 0 };
+  // 自算 TTM（方案 27.4）：供应商 PE(TTM) 只作对照，利润口径由三段报表自行闭合。
+  const ttm = companyKey && ctx.ttm ? ctx.ttm.get(companyKey) || null : null;
 
   const years = buildAnnualYears(profits, annualDividends);
   const latestYear = years.length ? years[years.length - 1].year : null;
@@ -245,6 +383,10 @@ function buildRuleFacts(row, ctx) {
       verifiedZero: dividend.count === 0 && dividend.hasDividendHistory === true,
     }) : { verifiedZero: false },
     annual: { latestYear, years, currency: profits.length ? profits[0].currency : null },
+    // 自算 TTM 的利润与血缘证据（三份报表 + 公式 + 币种），供应商 PE 的符号另由规则层对照。
+    ttmProfit: ttm ? ttm.value : null,
+    ttmEvidenceRef: ttm ? ttm.evidence : null,
+    ttmStatusReason: ttm && ttm.value === null ? ttm.reason || null : null,
     industry,
     suspended: !!row.suspend_type,
     suspensionReason: row.suspend_type || null,
@@ -256,6 +398,116 @@ function buildRuleFacts(row, ctx) {
 /**
  * 计算一次选股（不写库）。返回候选、排名、组合、覆盖与质量裁决。
  */
+/**
+ * 股票池 + 不可变 artifact（方案 27.11 / DEV-02）：
+ * - 首次计算某目标日时固化证券集合与内容哈希（当天记 real_time_observation，历史记 pit_research_replay）；
+ * - 已有 artifact 时以它为准：集合一致直接复用；集合漂移时保留旧集合并把差异写进质量原因，
+ *   绝不用今天的主档替换已经固化的历史名单，也不把重建说成"当时真实可见"；
+ * - 固化成员在新主档里完全找不到（或取不到任何行）时返回 universe_not_recoverable，回测据此判不可还原。
+ */
+async function loadUniverseWithArtifact({ market, asOfDate, knowledgeCutoff, writeArtifact = true }, tx) {
+  // C0：先定"名单"（生命周期 + 市场/交易所准入，不含行情），再单独判断"能不能交易"。
+  // 不能因为今天没行情就把证券从历史名单里抹掉，也不能用今天有行情的子集冒充目标池。
+  const roster = await repo.loadUniverseRoster({ market, asOfDate }, tx);
+  const rosterIds = roster.map(row => Number(row.instrument_id)).sort((a, b) => a - b);
+  const rosterHash = hashOf(rosterIds);
+  const roleOfRoster = new Map(roster.map(row => [Number(row.instrument_id), row]));
+  const live = await repo.loadUniverse({ market, asOfDate, availableBefore: knowledgeCutoff }, tx);
+  const excluded = roster
+    .filter(row => row.has_recent_bars !== true)
+    .map(row => ({
+      instrumentId: Number(row.instrument_id),
+      code: row.code,
+      reason: row.has_any_data === true ? 'no_recent_bars_60d' : 'never_had_market_data',
+    }));
+  const today = CoreDate.todayInZone('Asia/Shanghai');
+  const replayType = asOfDate === today ? 'real_time_observation' : 'pit_research_replay';
+  const saved = await repo.findUniverseArtifact({ market, targetDate: asOfDate }, tx);
+
+  if (!saved) {
+    if (rosterIds.length && writeArtifact) {
+      await repo.insertUniverseArtifact({
+        market,
+        targetDate: asOfDate,
+        contentHash: rosterHash,
+        instrumentIds: rosterIds,
+        members: roster.map(row => ({
+          instrumentId: Number(row.instrument_id),
+          code: row.code,
+          listDate: row.list_date || null,
+          delistDate: row.delist_date || null,
+          exchange: row.exchange_code || null,
+          tradableAtTargetDate: row.has_recent_bars === true,
+        })),
+        excluded,
+        knowledgeCutoff,
+        sourceVersions: { universe: rosterHash, poolDefinition: 'lifecycle_admitted' },
+        basis: {
+          poolDefinition: 'lifecycle_admitted',
+          filters: ['asset_class_stock', 'market', 'exchange', 'list_date<=T', 'delist_date>T'],
+          rosterCount: rosterIds.length,
+          tradableCount: live.length,
+          excludedCount: excluded.length,
+        },
+        replayType,
+      }, tx);
+    }
+    return {
+      rows: live,
+      artifact: null,
+      drift: null,
+      evidence: {
+        contentHash: rosterHash,
+        memberCount: rosterIds.length,
+        tradableCount: live.length,
+        excludedCount: excluded.length,
+        poolDefinition: 'lifecycle_admitted',
+        replayType,
+        created: true,
+        excluded: excluded.slice(0, 200),
+      },
+    };
+  }
+
+  // 已有 artifact：在池判定以名单为准，行情只影响"可交易子集"，不再触发池漂移。
+  const savedIds = (saved.instrument_ids || []).map(Number).sort((a, b) => a - b);
+  const savedSet = new Set(savedIds);
+  const rosterSet = new Set(rosterIds);
+  const missing = savedIds.filter(id => !rosterSet.has(id));
+  const added = rosterIds.filter(id => !savedSet.has(id));
+  const rows = live.filter(row => savedSet.has(Number(row.instrument_id)));
+  const drift = missing.length || added.length ? { missing, added, rosterHash } : null;
+  const evidence = {
+    artifactId: Number(saved.artifact_id),
+    contentHash: saved.content_hash,
+    memberCount: savedIds.length,
+    tradableCount: rows.length,
+    excludedCount: excluded.length,
+    poolDefinition: (saved.basis && saved.basis.poolDefinition) || 'lifecycle_admitted',
+    replayType: saved.replay_type,
+    knowledgeCutoff: saved.knowledge_cutoff || null,
+    created: false,
+    drift,
+    excluded: excluded.slice(0, 200),
+  };
+  // 名单里的成员一个都取不到可评估行：不是"策略主动空仓"，是历史池不可恢复。
+  if (!rows.length && savedIds.length) {
+    return {
+      rows: [],
+      artifact: saved,
+      drift,
+      evidence: Object.assign(evidence, { reason: 'universe_not_recoverable' }),
+    };
+  }
+  // 名单内、但目标日不可交易（无近期行情）的数量单独计数，供质量裁决区分"空仓"与"缺数据"。
+  const untradableInRoster = rosterIds.filter(id => {
+    const row = roleOfRoster.get(id);
+    return row && row.has_recent_bars !== true;
+  }).length;
+  evidence.untradableInRoster = untradableInRoster;
+  return { rows, artifact: saved, drift, evidence };
+}
+
 async function computeSelection(input, tx) {
   const market = normalizeMarket(input.market);
   const asOfDate = String(input.asOfDate || '');
@@ -268,21 +520,32 @@ async function computeSelection(input, tx) {
   // V2 的阈值与比较方式固化在公式版本里，不接受浏览器请求覆盖公共策略。
   const strategyCode = normalizeStrategyCode(input.strategyCode);
   const isV2 = strategyCode === RULES_V2.STRATEGY_CODE_V2;
+  // internalParams 只给回测/审计的阶梯对照使用（不经 HTTP 入口），保证浏览器仍不能覆盖公共策略。
   const params = isV2
-    ? Object.assign({}, RULES_V2.V2_PARAMS, sanitizeV2Overrides(input.params))
-    : Object.assign({}, RULES.DEFAULT_PARAMS, input.params || {});
+    ? Object.assign({}, RULES_V2.V2_PARAMS, sanitizeV2Overrides(input.params), input.internalParams || {})
+    : Object.assign({}, RULES.DEFAULT_PARAMS, input.params || {}, input.internalParams || {});
   const positionRatio = PORTFOLIO.clampRatio(input.positionRatio, 1);
   const valuation = await repo.loadMarketValuation({ market, asOfDate }, tx);
   // V2 取消市场指数 PB 配置门槛（方案 27.3）：指数估值只做可选展示，缺失/异常不阻断计算与发布。
-  const gate = isV2 ? RULES_V2.evaluateMarketGateV2(valuation) : RULES.evaluateMarketGate(valuation, params);
+  // 阶梯对照需要能单独切换这一步：只有显式 marketGate='v1' 才按 V1 合同执行（B03）。
+  const gateMode = isV2 ? String(params.marketGate || 'off') : 'v1';
+  const gate = (isV2 && gateMode !== 'v1')
+    ? RULES_V2.evaluateMarketGateV2(valuation)
+    : RULES.evaluateMarketGate(valuation, Object.assign({}, RULES.DEFAULT_PARAMS, params));
 
   // 信息可见截止先算出来：宇宙查询里的 PE/PB 回退也要用它，否则同一批计算里
   // PE/净资产会取到不同版本的报表（F09）。
   const knowledgeCutoff = knowledgeCutoffFor(market, asOfDate);
-  const universe = await repo.loadUniverse({ market, asOfDate, availableBefore: knowledgeCutoff }, tx);
+  const universeLoad = await loadUniverseWithArtifact({
+    market, asOfDate, knowledgeCutoff,
+    // 只读审计（G0）传 false：不固化 artifact，也不写业务表。
+    writeArtifact: input.writeUniverseArtifact !== false,
+  }, tx);
+  const universe = universeLoad.rows;
   if (!universe.length) {
     // 空候选池是合法状态（例如港股行情还没补齐）。返回契约必须与正常路径一致：
     // auditInputs 会遍历 evaluated，缺字段会直接抛错并把整批补数打成 failed（2026-11-05 生产实测）。
+    const emptyReason = universeLoad.evidence.reason || 'universe_empty';
     return {
       market, asOfDate, gate, valuation, params, positionRatio,
       strategyCode, isV2,
@@ -291,10 +554,11 @@ async function computeSelection(input, tx) {
       // 空池必须同时给出 reason 和 reasons（F10）：回测只读 reasons 判"可不可还原"，
       // 只填 reason 会让空池被当成"没有质量阻断"，进而把缺数据算成 0% 收益的策略空仓。
       quality: {
-        publishable: false, reason: 'universe_empty', reasons: ['universe_empty'],
+        publishable: false, reason: emptyReason, reasons: [emptyReason],
         universeCount: 0, pendingCount: 0, poolSize: 0,
       },
       coverage: { universeCount: 0 },
+      universeEvidence: universeLoad.evidence,
     };
   }
 
@@ -303,7 +567,7 @@ async function computeSelection(input, tx) {
   const windowStart = shiftYears(asOfDate, params.pbLookbackYears);
   const dividendWindowStart = shiftMonths(asOfDate, params.dividendWindowMonths);
   // 信息可见截止（knowledgeCutoff）已在宇宙查询前算好：同一批计算共用同一个截止时刻。
-  const [pbWindow, equity, profits, dividends, annualDividends, industries] = await runBatched([
+  const [pbWindow, equity, profits, dividends, annualDividends, industries, ttmReports] = await runBatched([
     () => repo.loadPbWindow({ market, windowStart, asOfDate }, tx),
     () => repo.loadEquityFacts({ companyIds, asOfDate, availableBefore: knowledgeCutoff }, tx),
     () => repo.loadAnnualProfits({ companyIds, asOfDate, availableBefore: knowledgeCutoff }, tx),
@@ -312,13 +576,21 @@ async function computeSelection(input, tx) {
     // 否则"目标日之后才可取到"的年报版本会把旧季度分红从待补变成通过。
     () => repo.loadAnnualDividends({ companyIds, asOfDate, availableBefore: knowledgeCutoff, market }, tx),
     () => repo.loadIndustries({ companyIds, market, asOfDate }, tx),
+    // 自算 TTM 的三段报表：与权益/年度利润同一可见截止，不用今天的最新投影补历史。
+    () => repo.loadTtmInputs({ companyIds, asOfDate, availableBefore: knowledgeCutoff }, tx),
   ], tx);
+  // 逐公司先算一次 TTM，供 buildRuleFacts 直接取用（不在每只股票里重复算）。
+  const ttm = new Map();
+  companyIds.forEach(companyId => {
+    const key = String(companyId);
+    ttm.set(key, computeTtmFromReports(ttmReports.get(key) || []));
+  });
   const fxPairs = Array.from(equity.values())
     .filter(item => item.currency && item.currency !== 'CNY' && item.periodEnd)
     .map(item => ({ currency: String(item.currency).toUpperCase(), date: item.periodEnd }));
   const fx = await repo.loadFxRatesForPairs({ pairs: fxPairs }, tx);
 
-  const ctx = { equity, profits, annualDividends, dividends, industries, pbWindow, fx, asOfDate, dividendWindowStart };
+  const ctx = { equity, profits, annualDividends, dividends, industries, pbWindow, fx, ttm, asOfDate, dividendWindowStart };
   const evaluated = universe.map(row => buildRuleFacts(row, ctx))
     .map(facts => (isV2 ? RULES_V2.evaluateInstrumentV2(facts, params) : RULES.evaluateInstrument(facts, params)));
 
@@ -368,6 +640,8 @@ async function computeSelection(input, tx) {
   const reasons = [];
   if (!gate.eligible) reasons.push(gate.reason || 'market_not_eligible');
   if (!universe.length) reasons.push('universe_empty');
+  // 固化股票池与新主档不一致：保留旧集合，但把差异当阻断，不能静默换池（方案 27.11）。
+  if (universeLoad.evidence.drift) reasons.push('universe_drift');
   if (pendingCount > 0) reasons.push('pending_objects_in_ranking_pool');
   // 行业源本身不给（北交所新股、已合并主体）只让该股不可评估，不阻断整批：
   // buildPortfolio 已经把 industry 为空的证券 skip 掉（reason=industry_unverified），
@@ -410,7 +684,7 @@ async function computeSelection(input, tx) {
     pbWindow: { marketDays: pbWindow.marketDays, calendarDays: pbWindow.calendarDays, windowStart },
   };
 
-  return { market, asOfDate, gate, valuation, params, positionRatio, strategyCode, isV2, universe, evaluated, ranked, anomalyById, portfolio, quality, coverage };
+  return { market, asOfDate, gate, valuation, params, positionRatio, strategyCode, isV2, universe, evaluated, ranked, anomalyById, portfolio, quality, coverage, universeEvidence: universeLoad.evidence };
 }
 
 /**
@@ -480,6 +754,13 @@ function manifestOf(computed, extra) {
     params: computed.params,
     // 证券集合与逐股关键值摘要：变值不变行数、变证券不变总数都会改变哈希。
     universeDigest: hashOf(computed.evaluated.map(item => item.code).sort()),
+    // 不可变股票池 artifact 的内容哈希：同一目标日的重算必须能证明用的是同一份名单。
+    // 只放稳定字段（哈希/数量/回放类型）；created/artifactId 属本次执行过程，进哈希会让同输入重跑建新批次。
+    universeArtifact: computed.universeEvidence ? {
+      contentHash: computed.universeEvidence.contentHash,
+      memberCount: computed.universeEvidence.memberCount,
+      replayType: computed.universeEvidence.replayType,
+    } : null,
     inputsDigest: inputsDigestOf(computed),
   }, extra || {});
 }
@@ -505,6 +786,32 @@ function statusOf(computed, quality) {
     qualityStatus: quality.publishable ? 'passed' : 'partial',
     businessStatus: businessStatusOf(computed, quality),
   };
+}
+
+/**
+ * 在同一事务里发布质量分区（方案 27.7）：首次与"复用同一逻辑 run"都必须走这里，
+ * 否则重试或幂等复用会留下"指针有了、分区没有"的中间态（B01）。
+ * 分区写失败直接抛错，整笔回滚——不允许 catch 后当成已原子发布。
+ */
+async function publishPartitionInTransaction({ input, tx, runId, computed, qualityStatus, businessStatus, isShadow }) {
+  if (!input.datasetPublication) return null;
+  const { publishDatasetSnapshot } = require('./datasetPartitionRegistry');
+  const descriptor = await input.datasetPublication({
+    runId, asOfDate: computed.asOfDate, computed, qualityStatus, businessStatus, isShadow,
+  });
+  if (!descriptor || !descriptor.datasetCode) return null;
+  const options = Object.assign({}, descriptor.options || {});
+  const publication = await publishDatasetSnapshot(descriptor.datasetCode, Object.assign(options, {
+    partitionKey: options.partitionKey || computed.asOfDate,
+    dataAsOf: options.dataAsOf || computed.asOfDate,
+    rowCount: options.rowCount === undefined ? computed.portfolio.members.length : options.rowCount,
+  }), (sql, params) => tx.query(sql, params));
+  if (!publication.published) {
+    const error = new Error(`选股质量分区发布失败：${publication.reason || 'unknown'}`);
+    error.status = 409;
+    throw error;
+  }
+  return publication;
 }
 
 /**
@@ -571,14 +878,28 @@ async function computeAndPersist(input) {
     const manifest = manifestOf(computed, manifestExtra);
     const inputHash = hashOf(manifest);
     const quarter = input.quarter || quarterOf(computed.asOfDate);
+    const ownerSubjectId = input.ownerSubjectId || null;
+    // 业务身份范围锁：并发/重试必须在锁内重查内容幂等键；锁外各算一次再让随机失败者退出，
+    // 会把正常并发重试当成新 revision 或漏写半个组合（方案 27.7 创建/发布并发闭环）。
+    const identityKey = ['stock_selection_run', computed.market, strategyId, runKind, periodType,
+      periodKey || '', isShadow ? 'shadow' : 'formal', ownerSubjectId || input.ownerUsername || ''].join(':');
+    await tx.query('SELECT pg_advisory_xact_lock(hashtext($1))', [identityKey]);
     const existing = await repo.findRunByIdempotencyKey(tx, {
       strategyId, market: computed.market, asOfDate: computed.asOfDate,
       runKind, inputHash, ownerUsername: input.ownerUsername || null,
-      periodType, isShadow,
+      ownerSubjectId, periodType, isShadow,
     });
     if (existing) {
       const run = await repo.findRun(existing, tx);
-      return { runId: existing, reused: true, run, computed, publish: null };
+      // 幂等复用同一逻辑 run：仍要保证该渠道质量分区存在（上次可能写失败），
+      // 分区发布幂等且不移动指针，这是"复用/重试"路径的完成合同（B01）。
+      const reusedPublication = run && run.quality_status === 'passed'
+        ? await publishPartitionInTransaction({
+          input, tx, runId: existing, computed,
+          qualityStatus: run.quality_status, businessStatus: run.business_status, isShadow,
+        })
+        : null;
+      return { runId: existing, reused: true, run, computed, publish: null, datasetPublication: reusedPublication };
     }
     const isFormal = ['quarterly', 'daily', 'weekly'].includes(runKind) && !isShadow;
     const revision = isFormal
@@ -637,26 +958,115 @@ async function computeAndPersist(input) {
     await repo.insertMembers(tx, runId, computed.portfolio.members);
     let publish = null;
     if (publishable) {
+      // 指针 CAS：先读当前渠道指针并声明期望值；指针已被别的批次改写就拒绝，不能盲写（AC-04）。
+      // 历史季度可能已发布但迁移前没有指针行，此时不声明期望值，仍由 revision 比较与唯一键保护。
+      const pointer = await repo.findPublication({
+        market: computed.market, strategyId, periodType, periodKey,
+      }, tx);
       publish = await repo.publishRun(tx, runId, {
         market: computed.market,
         quarter,
+        expectedRunId: pointer ? Number(pointer.run_id) : undefined,
         actor: input.actor || input.ownerUsername || null,
-        subjectId: input.ownerSubjectId || null,
+        subjectId: ownerSubjectId,
         slotId: input.slotId || null,
         executionToken: input.executionToken || null,
         reason: input.revisionReason || (isShadow ? 'shadow' : null),
       });
     }
+    let datasetPublication = null;
+    const shouldPublishDataset = input.datasetPublication
+      && (isShadow ? computed.quality.publishable : (publishable && publish && publish.published));
+    if (shouldPublishDataset) {
+      datasetPublication = await publishPartitionInTransaction({
+        input, tx, runId, computed,
+        qualityStatus: status.qualityStatus, businessStatus: status.businessStatus, isShadow,
+      });
+    }
     const run = await repo.findRun(runId, tx);
-    return { runId, reused: false, run, computed, publish, periodType, periodKey, isShadow };
+    return { runId, reused: false, run, computed, publish, periodType, periodKey, isShadow, datasetPublication };
   }).then(async result => {
     // 提交成功后补"可见确认"时刻：事务内 now() 不能冒称对外可见时间（方案 27.7）。
+    // 确认失败不能再被静默吞掉：events.visible_at IS NULL 即持久待补证据，调用方必须能看到。
     if (result.publish && result.publish.eventId) {
-      await repo.markPublicationVisible({ runId: result.runId, eventId: result.publish.eventId })
-        .catch(() => null);
+      try {
+        const confirmed = await repo.markPublicationVisible({ runId: result.runId, eventId: result.publish.eventId });
+        result.publish.visibleConfirmed = confirmed.ok === true;
+        if (!confirmed.ok) {
+          console.warn(`[stock-selection] 发布可见确认未落地，run=${result.runId} 留待补`);
+        }
+      } catch (error) {
+        result.publish.visibleConfirmed = false;
+        result.publish.visibleConfirmError = error.message;
+        console.error(`[stock-selection] 发布可见确认失败，run=${result.runId} 留待补：`, error.message);
+      }
     }
     return result;
   });
+}
+
+/**
+ * 周期自动排队的到期目标（方案 27.6 / 27.8）：
+ * - daily：本市场今天开市，且已过工程就绪检查时刻（默认 18:30 上海，DEV-00 需按真实发布时段校准）；
+ * - weekly：今天是本周最后一个已确认开市日，且整周日历完整（缺档时不猜，等下一交易日复核）。
+ * 这里只给确定性目标，是否已有批次由调用方按 hasPeriodRun 去重，不新建平行任务。
+ */
+async function duePeriodicTargets({ market, now = new Date(), readyHour = 18, strategyCode } = {}, tx) {
+  const normalized = normalizeMarket(market);
+  const stamp = CoreDate.dateTimeInZone(now, 'Asia/Shanghai');
+  if (!stamp) return [];
+  const today = stamp.slice(0, 10);
+  const readyNow = Number(stamp.slice(11, 13)) >= readyHour;
+  const targets = [];
+  if (!readyNow) {
+    // 非就绪时段（晨间或提前执行）：补"上一个已结束的交易日 + 上一周"，覆盖迟到与跨日补算。
+    // 已有批次由调用方 hasPeriodRun 去重，不会重复建槽；整周日历缺档时不猜 T。
+    const lookbackStart = PERIODS.shiftDays(today, -20);
+    const rows = await loadPeriodCalendar({ market: normalized, fromDate: lookbackStart, toDate: today }, tx);
+    const evidence = PERIODS.calendarEvidenceOf(rows.rows, lookbackStart, today);
+    const pastDays = evidence.openDays.filter(day => day < today);
+    const prevDay = pastDays[pastDays.length - 1] || null;
+    if (prevDay) {
+      targets.push({ periodType: 'day', periodKey: `D:${prevDay}`, targetDate: prevDay, catchup: true, strategyCode: strategyCode || null });
+    }
+    const thisMonday = PERIODS.weekMondayOf(today);
+    const prevMonday = thisMonday ? PERIODS.shiftDays(thisMonday, -7) : null;
+    const prevRange = prevMonday ? PERIODS.periodRangeOf('week', `W:${prevMonday}`) : null;
+    if (prevRange && prevRange.periodEnd < today) {
+      const weekRows = await loadPeriodCalendar({
+        market: normalized, fromDate: prevRange.periodStart, toDate: prevRange.periodEnd,
+      }, tx);
+      const weekEvidence = PERIODS.calendarEvidenceOf(weekRows.rows, prevRange.periodStart, prevRange.periodEnd);
+      const lastOpen = weekEvidence.openDays[weekEvidence.openDays.length - 1] || null;
+      if (weekEvidence.calendarComplete && lastOpen) {
+        targets.push({ periodType: 'week', periodKey: `W:${prevMonday}`, targetDate: lastOpen, catchup: true, strategyCode: strategyCode || null });
+      }
+    }
+    return targets;
+  }
+  const dayRows = await loadPeriodCalendar({ market: normalized, fromDate: today, toDate: today }, tx);
+  const dayEvidence = PERIODS.calendarEvidenceOf(dayRows.rows, today, today);
+  if (dayEvidence.openDays.length === 1) {
+    targets.push({ periodType: 'day', periodKey: `D:${today}`, targetDate: today, strategyCode: strategyCode || null });
+  }
+  const monday = PERIODS.weekMondayOf(today);
+  const weekRange = monday ? PERIODS.periodRangeOf('week', `W:${monday}`) : null;
+  if (weekRange) {
+    const weekRows = await loadPeriodCalendar({
+      market: normalized, fromDate: weekRange.periodStart, toDate: weekRange.periodEnd,
+    }, tx);
+    const weekEvidence = PERIODS.calendarEvidenceOf(weekRows.rows, weekRange.periodStart, weekRange.periodEnd);
+    const lastOpen = weekEvidence.openDays[weekEvidence.openDays.length - 1] || null;
+    if (weekEvidence.calendarComplete && lastOpen === today) {
+      targets.push({ periodType: 'week', periodKey: `W:${monday}`, targetDate: today, strategyCode: strategyCode || null });
+    }
+  }
+  return targets;
+}
+
+/** 该渠道是否已有正式批次（自动排队去重用）。 */
+async function hasPeriodRun(query) {
+  return repo.hasPeriodRun(query);
 }
 
 /** 季度自动执行：目标日与季度都由交易日历推导，不用执行当天替代。 */
@@ -722,19 +1132,49 @@ async function resolvePeriodTarget({ market, periodType, date, periodKey }, tx) 
     error.status = 400;
     throw error;
   }
-  const calendar = await repo.loadCalendar({ market: normalized, fromDate: range.periodStart, toDate: range.periodEnd }, tx);
-  if (!calendar.length) {
-    return { market: normalized, periodType: type, periodKey: key, ...range, asOfDate: null, reason: 'calendar_unavailable' };
+  const calendar = await loadPeriodCalendar({ market: normalized, fromDate: range.periodStart, toDate: range.periodEnd }, tx);
+  const evidence = PERIODS.calendarEvidenceOf(calendar.rows, range.periodStart, range.periodEnd);
+  const calendarFields = {
+    calendarComplete: evidence.calendarComplete,
+    missingDates: evidence.missingDates,
+    expectedCalendarDays: evidence.expectedCalendarDays,
+  };
+  // 日历缺档与整周期休市必须分开（方案 27.5 第 1 条 / 27.6）：
+  // 只查到几条开市行就当成完整周，会把某一天直接定成周度 T（AC-07）。
+  if (calendar.authoritative && !evidence.calendarComplete) {
+    return { market: normalized, periodType: type, periodKey: key, ...range, ...calendarFields, asOfDate: null, reason: 'calendar_incomplete' };
   }
-  const asOfDate = PERIODS.lastSessionOf(calendar, range.periodStart, range.periodEnd);
-  if (!asOfDate) {
-    return { market: normalized, periodType: type, periodKey: key, ...range, asOfDate: null, reason: 'no_session' };
+  if (!evidence.openDays.length) {
+    if (!calendar.authoritative) {
+      return { market: normalized, periodType: type, periodKey: key, ...range, ...calendarFields, asOfDate: null, reason: 'calendar_unavailable' };
+    }
+    // 整周期全休市是运营证据（no_session），不是故障。
+    return { market: normalized, periodType: type, periodKey: key, ...range, ...calendarFields, asOfDate: null, reason: 'no_session' };
+  }
+  const asOfDate = evidence.openDays[evidence.openDays.length - 1];
+  // 未结束周期不得提前形成正式结果：T 不能晚于今天（上海），跨T日完成由延迟/补算表达（方案 27.6）。
+  const today = CoreDate.todayInZone('Asia/Shanghai');
+  if (asOfDate > today) {
+    return { market: normalized, periodType: type, periodKey: key, ...range, ...calendarFields, asOfDate: null, reason: 'period_not_finished', targetDate: asOfDate };
   }
   // 日周期必须正好落在交易日，不允许把"周内最后开市日"当成某一天的结果。
   if (type === 'day' && asOfDate !== date && date) {
-    return { market: normalized, periodType: type, periodKey: key, ...range, asOfDate: null, reason: 'no_session', targetDate: date };
+    return { market: normalized, periodType: type, periodKey: key, ...range, ...calendarFields, asOfDate: null, reason: 'no_session', targetDate: date };
   }
-  return { market: normalized, periodType: type, periodKey: key, ...range, asOfDate, reason: null };
+  return { market: normalized, periodType: type, periodKey: key, ...range, ...calendarFields, asOfDate, reason: null };
+}
+
+/**
+ * 周期日历行：优先取逐日证据（含休市），旧测试替身只提供 loadCalendar 时退回开市日语义，
+ * 并标记 authoritative=false —— 非权威证据不得用来断言"日历完整"。
+ */
+async function loadPeriodCalendar({ market, fromDate, toDate }, tx) {
+  if (typeof repo.loadCalendarEvidence === 'function') {
+    const rows = await repo.loadCalendarEvidence({ market, fromDate, toDate }, tx);
+    return { rows, authoritative: true };
+  }
+  const days = await repo.loadCalendar({ market, fromDate, toDate }, tx);
+  return { rows: (days || []).map(day => ({ trade_date: day, is_open: true })), authoritative: false };
 }
 
 /**
@@ -774,6 +1214,10 @@ async function runPeriodic(input) {
     executionToken: input.executionToken || null,
     positionRatio: 1,
     sourceDailyRunId: input.sourceDailyRunId || null,
+    // 质量分区回调必须原样下沉到 computeAndPersist：否则 Runner 传进来的 datasetPublication
+    // 在日/周路径被静默丢弃，指针已提交但分区缺失（B01）。
+    datasetPublication: input.datasetPublication || null,
+    ownerSubjectId: input.ownerSubjectId || null,
   });
   const quality = (result.run && result.run.input_manifest && result.run.input_manifest.quality) || {};
   const readinessStatus = result.run && result.run.quality_status === 'passed' ? 'ready' : 'not_ready';
@@ -798,6 +1242,8 @@ async function runPeriodic(input) {
     readinessStatus,
     quality,
     strategyCode,
+    // 分区发布结果必须回传：Runner 用它判定 stageComplete 与失败原因，不能只报 published。
+    datasetPublication: result.datasetPublication || null,
   };
 }
 
@@ -1397,6 +1843,8 @@ async function createSimulation({ username, sourceRunId, positionRatio, budgetRa
   });
 
   return withTransaction(async tx => {
+    // 主体先取：请求幂等、内容幂等与写入都绑定同一个不可复用 subject（方案 27.9）。
+    const subjectId = await repo.readUserSubjectId(username, tx);
     const settingsHash = hashOf({ settings, revision: stored.revision });
     const payload = {
       source: Number(sourceRunId), positionRatio: ratio, budgetRatio: budget, owner: username,
@@ -1410,7 +1858,7 @@ async function createSimulation({ username, sourceRunId, positionRatio, budgetRa
     const inputHash = hashOf(payload);
     // 请求幂等：同 ID 同输入复用，同 ID 不同输入 409（方案 27.9）。
     if (clientRequestId) {
-      const existingByRequest = await repo.findPersonalRunByRequestId({ username, requestId: clientRequestId }, tx);
+      const existingByRequest = await repo.findPersonalRunByRequestId({ username, subjectId, requestId: clientRequestId }, tx);
       if (existingByRequest) {
         if (String(existingByRequest.input_hash) !== inputHash) {
           const error = new Error('同一请求编号提交了不同参数，请刷新后重试');
@@ -1428,12 +1876,12 @@ async function createSimulation({ username, sourceRunId, positionRatio, budgetRa
     }
     const existing = await repo.findRunByIdempotencyKey(tx, {
       strategyId: Number(source.strategy_id), market: source.market, asOfDate: source.as_of_date_text,
-      runKind: 'personal', inputHash, ownerUsername: username, periodType: source.period_type || null, isShadow: false,
+      runKind: 'personal', inputHash, ownerUsername: username, ownerSubjectId: subjectId,
+      periodType: source.period_type || null, isShadow: false,
     });
     if (existing) {
       return { runId: existing, reused: true, run: await repo.findRun(existing, tx), portfolio, settingsRevision: stored.revision };
     }
-    const subjectId = await repo.readUserSubjectId(username, tx);
     const runId = await repo.insertRun(tx, {
       strategyId: Number(source.strategy_id),
       market: source.market,
@@ -1661,9 +2109,12 @@ module.exports = {
   knowledgeCutoffFor,
   computeSelection,
   buildAnnualYears,
+  computeTtmFromReports,
   computeAndPersist,
   runQuarterly,
   runPeriodic,
+  duePeriodicTargets,
+  hasPeriodRun,
   pendingQuarter,
   hasCompletedQuarter,
   getMarkets,

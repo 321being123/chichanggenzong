@@ -207,6 +207,9 @@ const MIGRATIONS = [
   { version: '187_user_subject_identity', up: () => require('./migrations/era12AccountSubject').migration187UserSubjectIdentity(pool) },
   { version: '188_nav_import_active_content', up: () => require('./migrations/era02cNavImportOwnership').migration188NavImportActiveContent(pool) },
   { version: '189_stock_selection_v2', up: () => require('./migrations/era13StockSelectionV2').migration189StockSelectionV2(pool) },
+  { version: '190_stock_selection_identity_index', up: () => require('./migrations/era13StockSelectionV2').migration190StockSelectionIdentityIndex(pool) },
+  { version: '191_stock_selection_universe_artifact', up: () => require('./migrations/era13StockSelectionV2').migration191StockSelectionUniverseArtifact(pool) },
+  { version: '192_stock_selection_universe_artifact_columns', up: () => require('./migrations/era13StockSelectionV2').migration192StockSelectionUniverseArtifactColumns(pool) },
 ];
 
 async function ensureMigrationsTable() {

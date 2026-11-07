@@ -17,6 +17,8 @@ const SELECTION_MODES = Object.freeze([
   'selection_quarterly', 'selection_preview', 'selection_backtest', 'selection_inputs',
   // V2（方案 27.8）：每日动态与每周正式；二者共同支持 shadow=true 的影子批次。
   'selection_daily', 'selection_weekly',
+  // 就绪时段触发的到期检查（18:40）：只入队日/周槽，计算由对应槽执行（B05）。
+  'selection_periodic',
 ]);
 
 function selectionDatasetCode(market, kind) {
@@ -30,6 +32,23 @@ function quarterDateFallback(quarter) {
 
 async function runSelectionMode(mode, reason, context) {
   const service = require('../services/stockSelectionService');
+  // 到期检查模式（方案 27.8 / B05）：在数据就绪时段（默认 18:40）跨市场执行，
+  // 只做"到期→入队"，计算由日/周槽自己领取执行；不要求单一 market，也不在这里算组合。
+  if (mode === 'selection_periodic') {
+    const queued = await enqueueDueSelectionPeriods(new Date());
+    return {
+      ok: true,
+      status: 'succeeded',
+      mode,
+      publishDatasets: false,
+      dataAsOf: null,
+      stageComplete: true,
+      stageCompletedKind: 'periodic_enqueued',
+      queued,
+      reason: queued.length ? undefined : 'no_periodic_target',
+      datasetDiagnostics: {},
+    };
+  }
   const market = String(context.market || '').toUpperCase();
   if (!['CN', 'HK'].includes(market)) {
     return { ok: false, status: 'blocked', reason: 'selection_market_required', publishDatasets: false };
@@ -129,18 +148,56 @@ async function runSelectionMode(mode, reason, context) {
   if (mode === 'selection_daily' || mode === 'selection_weekly') {
     const periodType = mode === 'selection_daily' ? 'day' : 'week';
     const shadow = context.shadow === true;
-    const result = await service.runPeriodic({
-      market,
-      periodType,
-      targetDate: context.targetDate || context.businessDate,
-      periodKey: context.periodKey,
-      shadow,
-      strategyCode: context.strategyCode,
-      requestId: context.requestId,
-      slotId: context.slotId,
-      executionToken: context.executionToken,
-      actor: context.actor,
-    });
+    const prefix = shadow ? 'shadow' : (periodType === 'day' ? 'daily' : 'weekly');
+    const datasetCode = `stock_selection_${prefix}_${market === 'HK' ? 'hk' : 'cn'}`;
+    let result;
+    try {
+      result = await service.runPeriodic({
+        market,
+        periodType,
+        targetDate: context.targetDate || context.businessDate,
+        periodKey: context.periodKey,
+        shadow,
+        strategyCode: context.strategyCode,
+        requestId: context.requestId,
+        slotId: context.slotId,
+        executionToken: context.executionToken,
+        actor: context.actor,
+        // 分区在服务事务内发布：指针、事件、质量分区同一次提交（方案 27.7）。
+        datasetPublication: ({ runId, asOfDate, computed, qualityStatus, businessStatus }) => ({
+          datasetCode,
+          options: {
+            partitionKey: asOfDate,
+            dataAsOf: asOfDate,
+            rowCount: computed.portfolio ? computed.portfolio.members.length : 0,
+            allowEmpty: true,
+            diagnostics: {
+              quality_status: qualityStatus,
+              business_status: businessStatus,
+              query_status: 'success',
+              coverage_status: shadow
+                ? 'shadow_only'
+                : (computed.portfolio && computed.portfolio.members.length === 0 ? 'verified_no_member' : 'released'),
+              run_id: runId,
+              period_type: periodType,
+              period_key: context.periodKey || null,
+              is_shadow: shadow,
+              strategy_code: context.strategyCode || null,
+            },
+            reason: `job:stock_analysis_refresh:${mode}`,
+          },
+        }),
+      });
+    } catch (error) {
+      // 分区写不进去或发布合同被拒：整笔已回滚，正式指针不移动，槽位按失败收尾。
+      return {
+        ok: false, status: 'failed', reason: error.reason || 'selection_publish_failed',
+        error: error.message, mode, market, periodType, shadow,
+        publishDatasets: false, publishDatasetCodes: [datasetCode],
+        dataAsOf: null, stageComplete: false, stageCompletedKind: 'failed',
+        failedDatasets: [datasetCode], datasetDiagnostics: {},
+      };
+    }
     if (!result.ok) {
       // no_session 是"整周期无交易日"的运营证据，属于可结案终态；日历缺档才是 blocked。
       const noSession = result.status === 'no_session';
@@ -158,32 +215,10 @@ async function runSelectionMode(mode, reason, context) {
         datasetDiagnostics: {},
       };
     }
-    const { publishDatasetSnapshot } = require('../services/datasetPartitionRegistry');
-    const prefix = shadow ? 'shadow' : (periodType === 'day' ? 'daily' : 'weekly');
-    const datasetCode = `stock_selection_${prefix}_${market === 'HK' ? 'hk' : 'cn'}`;
     const publishedFormal = !shadow && result.published === true;
     const zeroSelection = publishedFormal && Number(result.selectedCount || 0) === 0;
-    const publication = await publishDatasetSnapshot(datasetCode, {
-      // 分区键用业务日（registry 的 (dataset,scope,date) 结构），渠道由数据集名区分，
-      // 精确周期键与 run_id 进 diagnostics；这样同日多周期不会互相覆盖同一渠道。
-      partitionKey: result.asOfDate,
-      dataAsOf: result.asOfDate,
-      rowCount: result.selectedCount,
-      allowEmpty: publishedFormal || shadow,
-      diagnostics: {
-        quality_status: result.qualityStatus,
-        business_status: result.businessStatus,
-        query_status: 'success',
-        coverage_status: shadow ? 'shadow_only' : (publishedFormal ? (zeroSelection ? 'verified_no_member' : 'released') : 'preview_only'),
-        run_id: result.runId,
-        period_type: periodType,
-        period_key: result.periodKey,
-        is_shadow: shadow,
-        readiness_status: result.readinessStatus,
-        strategy_code: result.strategyCode,
-      },
-      reason: `job:stock_analysis_refresh:${mode}`,
-    }).catch(error => ({ published: false, reason: 'publish_error', error: error.message }));
+    // 分区已在服务事务内与指针/事件一起提交；这里只消费提交结果，不再另开事务写第二次。
+    const publication = result.datasetPublication || { published: false, reason: 'not_published' };
     const publicationFailed = (publishedFormal || shadow) && !publication.published;
     // 终态：影子只证明"影子评估完成"，正式日结果记 daily_recorded，正式周度按是否零合格分开记。
     const stageCompletedKind = publicationFailed ? 'failed'
@@ -211,7 +246,13 @@ async function runSelectionMode(mode, reason, context) {
       publishDatasetCodes: [datasetCode],
       stageComplete,
       stageCompletedKind,
-      ...(stageComplete ? {} : { continuationRequired: true, reason: 'selection_not_publishable' }),
+      // 未就绪/未完成必须同时给出原因与下一次检查时刻，续跑由原等待语义承载（方案 27.6）。
+      ...(stageComplete ? {} : {
+        continuationRequired: true,
+        reason: result.readinessStatus === 'not_ready' ? 'selection_not_ready' : 'selection_not_publishable',
+        nextCheckAt: nextSelectionRecheckAt(),
+        ...(result.readinessStatus === 'not_ready' ? { missingDatasets: [datasetCode], readinessStatus: 'not_ready' } : {}),
+      }),
       ...(publicationFailed ? {
         error: `选股结果已记录但分区写入失败：${publication.error || publication.reason || 'unknown'}`,
         failedDatasets: [datasetCode],
@@ -424,6 +465,59 @@ async function enqueueDueSelectionQuarters(now = new Date()) {
   return queued;
 }
 
+/**
+ * 下一次就绪检查时刻：工程默认 30 分钟，可用 STOCK_SELECTION_RECHECK_MINUTES 覆盖。
+ * 这是等待节奏，不是上游供应承诺，也不改目标 T（方案 27.6）。
+ */
+function nextSelectionRecheckAt() {
+  const minutes = Number(process.env.STOCK_SELECTION_RECHECK_MINUTES || 30);
+  const safe = Number.isFinite(minutes) && minutes > 0 ? minutes : 30;
+  return new Date(Date.now() + safe * 60000).toISOString();
+}
+
+/**
+ * 每日/每周自动排队（方案 27.8）：复用同一个 stock_analysis_refresh Runner 与槽位，
+ * 只有目标周期尚无正式批次时才入队；影子批次必须由 STOCK_SELECTION_SHADOW=1 显式开启，
+ * 槽位按 selectionBusinessKey 精确去重（影子/普通、同日不同周期互不吃槽）。
+ */
+async function enqueueDueSelectionPeriods(now = new Date()) {
+  const service = require('../services/stockSelectionService');
+  // 复用既有的选股周期入队入口（规范化 shadow/策略/周期键 + requestId 幂等），
+  // 再由 enqueueManualJob 补 selectionBusinessKey 做精确槽位去重。
+  const { enqueueSelectionPeriodJob } = require('../services/jobScheduleSlots');
+  const strategyCode = String(process.env.STOCK_SELECTION_STRATEGY || '').trim().toLowerCase() || undefined;
+  const shadowEnabled = String(process.env.STOCK_SELECTION_SHADOW || '') === '1';
+  const queued = [];
+  for (const market of ['CN', 'HK']) {
+    let targets = [];
+    try {
+      targets = await service.duePeriodicTargets({ market, now, strategyCode });
+    } catch (error) {
+      console.warn(`[选股] ${market} 周期到期待检查失败：`, error.message);
+      continue;
+    }
+    for (const target of targets) {
+      // 已有正式批次就不再排队；未就绪的历史槽位由原续跑机制继续，不新建平行槽。
+      if (await service.hasPeriodRun({
+        market, periodType: target.periodType, periodKey: target.periodKey, strategyCode,
+      })) continue;
+      const mode = target.periodType === 'day' ? 'selection_daily' : 'selection_weekly';
+      const payload = { mode, market, targetDate: target.targetDate, periodKey: target.periodKey };
+      if (strategyCode) payload.strategyCode = strategyCode;
+      const slot = await enqueueSelectionPeriodJob({ jobCode: 'stock_analysis_refresh', payload });
+      if (slot) queued.push({ market, mode, periodKey: target.periodKey, slotId: slot.slot_id });
+      if (shadowEnabled) {
+        const shadowSlot = await enqueueSelectionPeriodJob({
+          jobCode: 'stock_analysis_refresh',
+          payload: Object.assign({}, payload, { shadow: true }),
+        });
+        if (shadowSlot) queued.push({ market, mode, periodKey: target.periodKey, shadow: true, slotId: shadowSlot.slot_id });
+      }
+    }
+  }
+  return queued;
+}
+
 async function runStockAnalysisRefresh(reason = 'scheduled', context = {}) {
   const mode = String(context.mode || 'core');
   // 选股模式必须在原"目标日只能当天"的限制之前分流：它要支持历史目标日与季度回溯。
@@ -505,6 +599,14 @@ async function runStockAnalysisRefresh(reason = 'scheduled', context = {}) {
       const queuedSelection = await enqueueDueSelectionQuarters();
       if (queuedSelection.length) console.log('[选股] 已排队季度任务:', queuedSelection.map(item => `${item.market}${item.quarter}`).join(','));
     } catch (e) { console.warn('[选股] 季度排队失败（不影响个股分析）:', e.message); }
+    // 日/周自动排队：与季度同一个 Runner 与槽位，失败同样不拖累个股分析。
+    try {
+      const queuedPeriodic = await enqueueDueSelectionPeriods();
+      if (queuedPeriodic.length) {
+        console.log('[选股] 已排队日/周任务:', queuedPeriodic
+          .map(item => `${item.market}${item.mode}${item.shadow ? '(shadow)' : ''}${item.periodKey}`).join(','));
+      }
+    } catch (e) { console.warn('[选股] 日/周排队失败（不影响个股分析）:', e.message); }
     const failedDatasets = failures.filter(code => !recovered.includes(code));
     const skippedCodes = new Set(skipped.map(item => item.code));
     const firstFailure = failureDetails[0] || null;
@@ -547,4 +649,4 @@ function scheduleStockAnalysisRefresh() {
   console.log('[stock-analysis] 已调度：每日 08:20（上海时间）');
 }
 
-module.exports = { nextShanghaiDelay, latestStockAnalysisDate, targetDateStatus, trackedStocks, activeStockScope, verifiedStockDataDate, runStockAnalysisRefresh, scheduleStockAnalysisRefresh, runSelectionMode, enqueueDueSelectionQuarters, quarterRunCompleted, SELECTION_MODES };
+module.exports = { nextShanghaiDelay, latestStockAnalysisDate, targetDateStatus, trackedStocks, activeStockScope, verifiedStockDataDate, runStockAnalysisRefresh, scheduleStockAnalysisRefresh, runSelectionMode, enqueueDueSelectionQuarters, enqueueDueSelectionPeriods, quarterRunCompleted, SELECTION_MODES };

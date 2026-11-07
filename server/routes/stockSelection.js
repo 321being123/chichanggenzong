@@ -64,14 +64,29 @@ function runEnvelope(run) {
   };
 }
 
-/** 个人运行的归属校验：不属于本人一律 404，不泄露存在性。 */
+/** 会话中的不可复用主体身份（迁移 187）；老会话没有该字段时返回空串。 */
+function sessionSubjectOf(req) {
+  return String((req.session && req.session.subjectId) || '');
+}
+
+/**
+ * 个人运行的归属校验：不属于本人一律 404，不泄露存在性。
+ * 主体优先：有 owner_subject_id 的行只认同一个 subject，账号删除重建后同名用户拿不到旧结果；
+ * 只有迁移前的旧行（subject 为空）才回退 username 比较（方案 27.9）。
+ */
 function assertRunAccess(req, run) {
   if (!run) {
     const error = new Error('批次不存在');
     error.status = 404;
     throw error;
   }
-  if (run.run_kind === 'personal' && run.owner_username !== req.session.user) {
+  if (run.run_kind !== 'personal') return run;
+  const subjectId = sessionSubjectOf(req);
+  const ownerSubject = run.owner_subject_id ? String(run.owner_subject_id) : '';
+  const owned = ownerSubject
+    ? (!!subjectId && ownerSubject === subjectId)
+    : run.owner_username === req.session.user;
+  if (!owned) {
     const error = new Error('批次不存在');
     error.status = 404;
     throw error;
@@ -113,7 +128,7 @@ router.get('/runs', requireLogin, asyncHandler(async (req, res) => {
   // published=1 只返回已正式发布的组合（页面批次下拉用）；不传保持原有全量行为。
   const publishedOnly = ['1', 'true'].includes(String(req.query.published || '').toLowerCase());
   const result = await service.listRuns({
-    market, quarter, kind, ownerUsername: req.session.user, publishedOnly,
+    market, quarter, kind, ownerUsername: req.session.user, ownerSubjectId: sessionSubjectOf(req), publishedOnly,
     periodType, strategyCode: strategyCode ? strategyCode.toLowerCase() : null, includeShadow, limit, offset,
   });
   res.json({

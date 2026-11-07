@@ -114,6 +114,22 @@ async function main() {
     assert.strictEqual(result.rules.R04.reason, 'share_unit_adjustment_unverified');
   });
 
+  await check('R04 一份年报都没有的新股判不可评估，不把整批发布卡住', () => {
+    // 本月上市的新股客观上还没有年报与分红，属"不可评估"而非"待补"；
+    // 否则每个新股都会让整批判 partial 发不出去（2026-11-07 生产实测 7 只）。
+    const result = RULES.evaluateInstrument(facts({
+      dividend: { ttmPerShare: null, count: 0, verifiedZero: false },
+      annual: { latestYear: null, years: [], currency: null },
+    }));
+    assert.strictEqual(result.rules.R04.status, RULES.STATUS.NOT_APPLICABLE);
+    assert.strictEqual(result.rules.R04.reason, 'no_annual_report_not_evaluable');
+    // 有年报、只是没分红证据的，仍然待补（不能把缺口一起放过）。
+    const withReport = RULES.evaluateInstrument(facts({
+      dividend: { ttmPerShare: null, count: 0, verifiedZero: false },
+    }));
+    assert.strictEqual(withReport.rules.R04.status, RULES.STATUS.PENDING);
+  });
+
   await check('R05 100 亿边界：等于通过、少一分不通过', () => {
     assert.strictEqual(RULES.evaluateInstrument(facts({ equity: { amount: 1e10, currency: 'CNY', periodEnd: '2025-12-31' } })).rules.R05.status, RULES.STATUS.PASS);
     assert.strictEqual(RULES.evaluateInstrument(facts({ equity: { amount: 1e10 - 1, currency: 'CNY', periodEnd: '2025-12-31' } })).rules.R05.status, RULES.STATUS.FAIL);

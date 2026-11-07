@@ -151,6 +151,17 @@ function evaluateDividendYield(facts, params) {
     return { rule: rule('R04', STATUS.PENDING, Object.assign({ value: null, reason: 'price_unavailable' }, base)), yield: null };
   }
   if (perShare === null) {
+    // 公司一份年报都没有（本月新上市、还没出过年度报告）时，分红客观上无从评估：
+    // 这是"不可评估"，不是"待补"。否则每次有新股上市都会把整批发布卡在 partial。
+    // 与 R05 的 equity_not_evaluable_no_report 同一口径（方案 27.5 第 6 条：先天不存在判 NOT_APPLICABLE）。
+    const annualYears = facts.annual && Array.isArray(facts.annual.years) ? facts.annual.years : null;
+    const noAnnualReport = annualYears !== null && annualYears.length === 0;
+    if (!dividend.verifiedZero && noAnnualReport) {
+      return {
+        rule: rule('R04', STATUS.NOT_APPLICABLE, Object.assign({ value: null, reason: 'no_annual_report_not_evaluable' }, base)),
+        yield: null,
+      };
+    }
     // 明确核验过的零分红才判不通过；没有核验证据就是缺数据。
     const status = dividend.verifiedZero ? STATUS.FAIL : STATUS.PENDING;
     return {

@@ -282,34 +282,31 @@ async function loadPbWindow({ market, windowStart, asOfDate }, tx) {
         FROM core.instruments
        WHERE market = $4 AND asset_class = 'stock'
     ),
+    exempt AS (
+      -- 停牌豁免一次性按证券聚合：原实现把它写成 expect 里的相关子查询，
+      -- 而且是 expected_days 与 exempt_days 各写一遍（同一只证券算两次）。
+      -- 日历补齐到十年后（应有日基数 5749×2672≈1536 万），逐证券子查询变成主要耗时来源。
+      SELECT sc.instrument_id, COUNT(DISTINCT sc.trade_date)::int AS exempt_days
+        FROM market.stock_suspend_calendar sc
+        JOIN cal c3 ON c3.trade_date = sc.trade_date
+       WHERE sc.suspend_type = 'S'
+         AND NOT EXISTS (
+               SELECT 1 FROM market.daily_valuations v3
+                WHERE v3.instrument_id = sc.instrument_id
+                  AND v3.trade_date = sc.trade_date AND v3.pb IS NOT NULL)
+       GROUP BY 1
+    ),
     expect AS (
       -- 停牌且当天没有派生出 PB 的交易日不算"应有证据"：停牌期间没有新价格，估值沿用停牌前是正常的，
       -- 把它算成缺口会让每个停牌股都被判"历史数据待补"（2026-11-04 口径：暂时停牌按停牌前最后交易日）。
       -- 豁免数单独留证（V2 exemptDays），不能只从应有日里悄悄扣掉——否则复牌后重新核验时看不出扣过什么。
       SELECT i.instrument_id, i.list_date,
-             GREATEST(COUNT(c.trade_date)
-               - COALESCE((
-                   SELECT COUNT(DISTINCT sc.trade_date)::int
-                     FROM market.stock_suspend_calendar sc
-                     JOIN cal c3 ON c3.trade_date = sc.trade_date
-                    WHERE sc.instrument_id = i.instrument_id AND sc.suspend_type = 'S'
-                      AND NOT EXISTS (
-                        SELECT 1 FROM market.daily_valuations v3
-                         WHERE v3.instrument_id = sc.instrument_id
-                           AND v3.trade_date = sc.trade_date AND v3.pb IS NOT NULL)
-                 ), 0), 0)::int AS expected_days,
-             COALESCE((
-                   SELECT COUNT(DISTINCT sc.trade_date)::int
-                     FROM market.stock_suspend_calendar sc
-                     JOIN cal c3 ON c3.trade_date = sc.trade_date
-                    WHERE sc.instrument_id = i.instrument_id AND sc.suspend_type = 'S'
-                      AND NOT EXISTS (
-                        SELECT 1 FROM market.daily_valuations v3
-                         WHERE v3.instrument_id = sc.instrument_id
-                           AND v3.trade_date = sc.trade_date AND v3.pb IS NOT NULL)
-                 ), 0)::int AS exempt_days
-        FROM inst i JOIN cal c ON c.trade_date > i.list_date
-       GROUP BY 1, 2
+             GREATEST(COUNT(c.trade_date) - COALESCE(e.exempt_days, 0), 0)::int AS expected_days,
+             COALESCE(e.exempt_days, 0)::int AS exempt_days
+        FROM inst i
+        JOIN cal c ON c.trade_date > i.list_date
+        LEFT JOIN exempt e ON e.instrument_id = i.instrument_id
+       GROUP BY i.instrument_id, i.list_date, e.exempt_days
     ),
     covered AS (
       SELECT picked.instrument_id,

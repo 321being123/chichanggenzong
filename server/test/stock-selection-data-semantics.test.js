@@ -471,6 +471,26 @@ async function main() {
       assert.deepStrictEqual(partial.missingYears, [2016, 2017]);
     });
 
+    await check('年度异常与三项名次共用同一份年度事实，登记不会只生效一路', async () => {
+      const fs = require('fs');
+      const pathMod = require('path');
+      const svc = require('../services/stockSelectionService');
+      assert.strictEqual(typeof svc.annualFactsOf, 'function', 'annualFactsOf 必须可被回归断言调用');
+      const facts = svc.annualFactsOf([{ year: 2025, currency: 'CNY' }], [],
+        '601528.SH', new Map([['601528.SH', new Set([2017])]]));
+      assert.deepStrictEqual(facts.sourceGapYears, [2017], '登记年份必须进入年度事实');
+      // 源码守卫：年度列表只允许在 annualFactsOf 内部构造一次。
+      // 2026-11-08 生产事故就是「名次」和「年度异常」各造一份，登记只生效一路；
+      // 按行检查抓不到旧写法（buildAnnualYears 在调用行上一行），所以按出现次数守。
+      const src = fs.readFileSync(pathMod.join(__dirname, '..', 'services', 'stockSelectionService.js'), 'utf8');
+      // 只统计「赋值调用」（= buildAnnualYears(...)），不把函数定义算进来。
+      const rebuilds = (src.match(/=\s*buildAnnualYears\(/g) || []).length;
+      assert.strictEqual(rebuilds, 1,
+        'buildAnnualYears 只允许在 annualFactsOf 内调用 1 次，第二处会让登记等字段只生效一路，实际 ' + rebuilds + ' 次');
+      assert.ok(src.includes('annualFactsOf(profitRows, dividendRows, item.code, ctx.sourceGaps)'),
+        '年度异常必须用 annualFactsOf 构造的年度事实');
+    });
+
     await check('同一天除息、分属两个财年的两笔不同金额分红都要算进去', async () => {
       const map = await repo.loadAnnualDividends({ companyIds: [crossYearDiff.companyId], asOfDate: AS_OF });
       const year = (map.get(String(crossYearDiff.companyId)) || []).find(row => row.year === 2024);

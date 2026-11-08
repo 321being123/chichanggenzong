@@ -403,6 +403,22 @@ function evaluateAnnualAnomaly(annual, params = DEFAULT_PARAMS) {
         dividendSum: null,
       });
     }
+    // 方案 27.5 第 6 条：先天来源不覆盖、有证据的不可恢复区间标 NOT_APPLICABLE，
+    // 真实可补漏采与未查明原因仍标 PENDING。判据只认 governance/financial-source-gaps.json 的
+    // 核实登记，且要求缺的年份**全部**被登记覆盖——只登记一部分仍按待补，避免拿一条登记糊整段。
+    // 2026-11-08 首个登记：601528.SH 的 2017（理杏仁/Tushare/巨潮/上交所四条通道实查均取不到）。
+    const sourceGapYears = Array.isArray((annual || {}).sourceGapYears)
+      ? (annual || {}).sourceGapYears.map(Number).filter(Number.isInteger) : [];
+    if (sourceGapYears.length && missing.every(y => sourceGapYears.includes(y))) {
+      return Object.assign(result, {
+        status: STATUS.NOT_APPLICABLE,
+        reason: 'fiscal_history_source_unrecoverable',
+        missingYears: missing.sort((a, b) => a - b),
+        sourceGapYears: sourceGapYears.slice().sort((a, b) => a - b),
+        profitSum: null,
+        dividendSum: null,
+      });
+    }
     // 港股财报年份覆盖受官方端点限制，中间缺年份时补数任务反复采集也补不齐（2026-11-05 生产实测）：
     // 按「客观不可评估」处理，不入选、不进补数队列、不阻断整批发布；A 股中间断档仍判待补。
     if (String((annual || {}).market || '').toUpperCase() === 'HK') {

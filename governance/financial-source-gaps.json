@@ -1,0 +1,21 @@
+{
+  "说明": "财务源端缺口登记：只有多渠道实查确认「确实取不到」的标的与财年才登记。命中后年度异常判 NOT_APPLICABLE（不入选、不进补数队列、不阻断整批发布）；未登记的缺口一律保持 PENDING，真实可补的漏采与未查明原因都不得伪称客观不可评估（方案 27.5 第 6 条）。新增条目必须写明证据、核查日期与核查人。",
+  "version": 1,
+  "entries": [
+    {
+      "code": "601528.SH",
+      "name": "瑞丰银行",
+      "fiscalYear": 2017,
+      "kind": "income_annual",
+      "reason": "source_unrecoverable",
+      "verifiedAt": "2026-11-08",
+      "verifiedBy": "daicunzai",
+      "evidence": {
+        "理杏仁": "resolveFinancialReports 不返回 2017-12-31 年报行；库内 income 年报期末为 2014/2015/2016/2018…2025",
+        "tushare": "income、income_vip、express、balancesheet 均只有 2016 年报与 2017-06-30 半年报（归母 3.72 亿）；仅 fina_indicator 有 20171231 行（profit_dedt=794314742.61 扣非、eps=0.59、roe=9.971、ann=20180427），扣非不得替代归母净利",
+        "巨潮": "hisAnnouncement/query（orgId 9900032315）2018/2019/2020 三年均 0 条，2021 年起才有公告（66/85 条）",
+        "上交所": "queryCompanyBulletin.do 定期报告共 33 期，最早为 2021 年半年报"
+      }
+    }
+  ]
+}

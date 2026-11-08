@@ -437,6 +437,40 @@ async function main() {
       assert.strictEqual(result.rules.R01.reason, 'pb_negative_equity');
     });
 
+    // 方案 27.5 第 6 条：源端先天不给 → NOT_APPLICABLE；未登记 / 只登记一部分 → 仍待补。
+    const annualYears = (skip = []) => [2013, 2014, 2015, 2016, 2017, 2018, 2019, 2020,
+      2021, 2022, 2023, 2024, 2025].filter(y => !skip.includes(y))
+      .map(y => ({ year: y, profit: 1e8, complete: true, dividend: 0, dividendKnown: true }));
+
+    await check('已核实源端不可恢复的缺口年份判不可评估，不进补数队列', async () => {
+      const result = rules.evaluateAnnualAnomaly({
+        latestYear: 2025, market: 'CN', currency: 'CNY',
+        years: annualYears([2017]), sourceGapYears: [2017],
+      });
+      assert.strictEqual(result.status, rules.STATUS.NOT_APPLICABLE);
+      assert.strictEqual(result.reason, 'fiscal_history_source_unrecoverable');
+      assert.deepStrictEqual(result.missingYears, [2017]);
+      assert.deepStrictEqual(result.sourceGapYears, [2017]);
+    });
+
+    await check('缺口未登记、或只登记了一部分年份时仍判待补', async () => {
+      const unregistered = rules.evaluateAnnualAnomaly({
+        latestYear: 2025, market: 'CN', currency: 'CNY',
+        years: annualYears([2017]), sourceGapYears: [],
+      });
+      assert.strictEqual(unregistered.status, rules.STATUS.PENDING,
+        '没登记的缺口不能伪称客观不可评估');
+      assert.strictEqual(unregistered.reason, 'insufficient_fiscal_history');
+
+      const partial = rules.evaluateAnnualAnomaly({
+        latestYear: 2025, market: 'CN', currency: 'CNY',
+        years: annualYears([2016, 2017]), sourceGapYears: [2017],
+      });
+      assert.strictEqual(partial.status, rules.STATUS.PENDING,
+        '只登记了一半年份时，整段仍按待补');
+      assert.deepStrictEqual(partial.missingYears, [2016, 2017]);
+    });
+
     await check('同一天除息、分属两个财年的两笔不同金额分红都要算进去', async () => {
       const map = await repo.loadAnnualDividends({ companyIds: [crossYearDiff.companyId], asOfDate: AS_OF });
       const year = (map.get(String(crossYearDiff.companyId)) || []).find(row => row.year === 2024);

@@ -5,6 +5,7 @@
 
 const crypto = require('crypto');
 const RULES = require('../domain/stockSelectionRules');
+const { loadFinancialSourceGaps, sourceGapYearsOf } = require('../domain/financialSourceGaps');
 const RULES_V2 = require('../domain/stockSelectionRulesV2');
 const PORTFOLIO = require('../domain/stockSelectionPortfolio');
 const PERIODS = require('./stockSelectionPeriods');
@@ -382,7 +383,11 @@ function buildRuleFacts(row, ctx) {
       // 只有从未采过分红的证券才保留未知（继续待补）。
       verifiedZero: dividend.count === 0 && dividend.hasDividendHistory === true,
     }) : { verifiedZero: false },
-    annual: { latestYear, years, currency: profits.length ? profits[0].currency : null },
+    annual: {
+      latestYear, years, currency: profits.length ? profits[0].currency : null,
+      // 已核实「源端不可恢复」的财年（方案 27.5 第 6 条）：只有登记过的年份才允许判 NOT_APPLICABLE。
+      sourceGapYears: ctx.sourceGaps ? sourceGapYearsOf(ctx.sourceGaps, row.code) : [],
+    },
     // 自算 TTM 的利润与血缘证据（三份报表 + 公式 + 币种），供应商 PE 的符号另由规则层对照。
     ttmProfit: ttm ? ttm.value : null,
     ttmEvidenceRef: ttm ? ttm.evidence : null,
@@ -595,7 +600,8 @@ async function computeSelection(input, tx) {
     .map(item => ({ currency: String(item.currency).toUpperCase(), date: item.periodEnd }));
   const fx = await repo.loadFxRatesForPairs({ pairs: fxPairs }, tx);
 
-  const ctx = { equity, profits, annualDividends, dividends, industries, pbWindow, fx, ttm, asOfDate, dividendWindowStart };
+  const ctx = { equity, profits, annualDividends, dividends, industries, pbWindow, fx, ttm, asOfDate,
+    dividendWindowStart, sourceGaps: loadFinancialSourceGaps() };
   const evaluated = universe.map(row => buildRuleFacts(row, ctx))
     .map(facts => (isV2 ? RULES_V2.evaluateInstrumentV2(facts, params) : RULES.evaluateInstrument(facts, params)));
 

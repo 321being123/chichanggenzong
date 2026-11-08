@@ -34,7 +34,12 @@ const REPORT_METRICS = {
     total_profit: 'ps.tp',
     ebit: 'ps.ebit',
     fin_exp_int_exp: 'ps.ieife',
-    n_income_attr_p: 'ps.npatshaoehopc',
+    // 归母净利：官方在个别年份只返回 ps.npatoshopc，不返回 ps.npatshaoehopc
+    // （2026-11-07 生产实测：601398 的 2018/2019、601658 的 2018 都是这种情形，
+    //  其余 10 个年度两个字段同时存在且逐期完全相等；港股归母口径本来也取 ps.npatoshopc）。
+    // 因此按序回退，不能因为主字段缺失就判成"这家公司没有归母净利润"——
+    // 那会把利润表明明齐全的年份误报成数据缺口，进而阻断整批选股发布。
+    n_income_attr_p: ['ps.npatshaoehopc', 'ps.npatoshopc'],
   },
   balance: {
     total_assets: 'bs.ta',
@@ -84,6 +89,19 @@ function numberOrNull(value) {
   if (value === null || value === undefined || value === '') return null;
   const number = Number(value);
   return Number.isFinite(number) ? number : null;
+}
+
+// 按候选顺序取第一个非空指标值。
+// 为什么需要它：官方对个别年份只返回同义字段中的另一个名字（2026-11-07 实测 601398 的
+// 2018/2019、601658 的 2018 只有 ps.npatoshopc，没有 ps.npatshaoehopc），
+// 只认单一字段名会把"利润表齐全"的年份误判成没有归母净利润。
+function pickFirstMetric(flat, candidates) {
+  const list = Array.isArray(candidates) ? candidates : [candidates];
+  for (const candidate of list) {
+    const value = numberOrNull((flat || {})[`${candidate}.t`]);
+    if (value !== null) return value;
+  }
+  return null;
 }
 
 function chunk(list, size) {
@@ -510,7 +528,12 @@ async function resolveFinancialReports({ tsCode, startDate, endDate, kinds = ['i
   const mapping = hk ? (financialTable ? HK_FINANCIAL_REPORT_METRICS : HK_REPORT_METRICS) : REPORT_METRICS;
   const metrics = [];
   for (const kind of kinds) {
-    for (const base of Object.values(mapping[kind] || {})) metrics.push(`q.${base}.t`);
+    for (const base of Object.values(mapping[kind] || {})) {
+      // 映射值可以是「候选字段数组」（见 REPORT_METRICS.income.n_income_attr_p），
+      // 数组里的每个候选都要请求，取值时再按顺序选第一个有值的。
+      if (Array.isArray(base)) base.forEach(item => metrics.push(`q.${item}.t`));
+      else metrics.push(`q.${base}.t`);
+    }
   }
   if (!metrics.length) return null;
   const endpoint = hk ? `hk/company/fs/${tableType}` : 'cn/company/fs/non_financial';
@@ -572,7 +595,8 @@ async function resolveFinancialReports({ tsCode, startDate, endDate, kinds = ['i
       const row = { ...base };
       let filled = 0;
       for (const [field, official] of Object.entries(mapping[kind] || {})) {
-        const raw = numberOrNull(flat[`${official}.t`]);
+        // 候选字段按顺序取第一个非空值；全空才是真的没有这个指标。
+        const raw = pickFirstMetric(flat, official);
         const value = raw !== null && PERCENT_FIELDS.has(field) ? raw * 100 : raw;
         row[field] = value;
         if (value !== null) filled += 1;
@@ -929,6 +953,7 @@ module.exports = {
   rangeChunks,
   mergeMetricTree,
   REPORT_METRICS,
+  pickFirstMetric,
   VALUATION_METRICS,
   fillStaticPe,
   officialStockCode,

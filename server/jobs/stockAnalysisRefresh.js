@@ -459,7 +459,9 @@ async function enqueueDueSelectionQuarters(now = new Date()) {
     // R5-03：去重必须走**仓储层存在性查询**，不能用列表分页当"完整终态集合"——
     // 完成批次被更新的部分批次挤到第 21 条之后时，分页会误判"没完成"并重复排队。
     if (await service.hasCompletedQuarter({ market, quarter: pending.quarter })) continue;
-    const slot = await enqueueManualJob('stock_analysis_refresh', { mode: 'selection_quarterly', market, quarter: pending.quarter });
+    const slot = await enqueueManualJob('stock_analysis_refresh', {
+      mode: 'selection_quarterly', market, quarter: pending.quarter, freshnessGate: false,
+    });
     if (slot) queued.push({ market, quarter: pending.quarter, slotId: slot.slot_id });
   }
   return queued;
@@ -502,7 +504,7 @@ async function enqueueDueSelectionPeriods(now = new Date()) {
         market, periodType: target.periodType, periodKey: target.periodKey, strategyCode,
       })) continue;
       const mode = target.periodType === 'day' ? 'selection_daily' : 'selection_weekly';
-      const payload = { mode, market, targetDate: target.targetDate, periodKey: target.periodKey };
+      const payload = { mode, market, targetDate: target.targetDate, periodKey: target.periodKey, freshnessGate: false };
       if (strategyCode) payload.strategyCode = strategyCode;
       const slot = await enqueueSelectionPeriodJob({ jobCode: 'stock_analysis_refresh', payload });
       if (slot) queued.push({ market, mode, periodKey: target.periodKey, slotId: slot.slot_id });

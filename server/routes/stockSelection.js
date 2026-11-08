@@ -361,6 +361,9 @@ adminRouter.post('/runs', requireCapability('ops_manage'), asyncHandler(async (r
       periodKey: body.periodKey ? String(body.periodKey) : undefined,
       strategyCode,
       shadow,
+      // 选股批次按指定业务日重算并推进发布指针，个股分析数据新鲜不能代替"该批次已发布"；
+      // 与 18:40 周期槽、季度自动槽的既有约定一致，不带此开关会被编排器短路成 fresh。
+      freshnessGate: false,
       requestId,
     };
     // V2 周期模式走规范化业务键入队（显式 shadow/periodKey/payloadHash），避免包含匹配误复用。

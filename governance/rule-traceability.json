@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "lastReviewed": "2026-11-07",
+  "lastReviewed": "2026-11-08",
   "rules": [
     {
       "id": "BOND-PROSPECTUS-SELECTION-059",
@@ -5323,6 +5323,22 @@
         {
           "file": "server/test/stock-selection-real-replay.test.js",
           "pattern": "D02"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "implemented"
+    },
+    {
+      "id": "SELECTION-PERIOD-FRESHNESS-GATE-001",
+      "title": "选股周期批次入队必须显式关闭新鲜度门禁，避免被个股分析数据水位短路而不执行 Runner",
+      "implementation": {
+        "file": "server/jobs/stockAnalysisRefresh.js",
+        "symbol": "enqueueDueSelectionPeriods"
+      },
+      "tests": [
+        {
+          "file": "server/test/stock-selection-freshness-gate.test.js",
+          "pattern": "freshnessGate: false"
         }
       ],
       "owner": "WorkBuddy",

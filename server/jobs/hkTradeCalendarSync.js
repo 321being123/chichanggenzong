@@ -45,8 +45,19 @@ function normalizeCalendarRows(rows) {
 
 async function fetchConfiguredHkCalendar(fromDate, toDate) {
   // 港股日历属于「交易日历数据集」：接口名与交易所的配置差异留在数据层。
-  const rows = await referenceDatasets.readHkTradingCalendar({ startDate: fromDate, endDate: toDate });
-  return normalizeCalendarRows(rows);
+  // Tushare hk_tradecal 单次最多返回 2000 行（约 5.5 年），十年历史回补必须按年分段，
+  // 否则长区间只拿到最近一段，日历缺档会被误判为「已完整」。
+  const startYear = Number(String(fromDate).slice(0, 4));
+  const endYear = Number(String(toDate).slice(0, 4));
+  const rows = [];
+  for (let year = startYear; year <= endYear; year += 1) {
+    const partStart = year === startYear ? fromDate : `${year}-01-01`;
+    const partEnd = year === endYear ? toDate : `${year}-12-31`;
+    if (partStart > partEnd) continue;
+    const part = await referenceDatasets.readHkTradingCalendar({ startDate: partStart, endDate: partEnd });
+    rows.push(...normalizeCalendarRows(part));
+  }
+  return rows;
 }
 
 function validateManualCorrection(input = {}) {

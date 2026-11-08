@@ -497,7 +497,6 @@ function ksEnsureVditor() {
   if (ksState.vditorReady) return ksState.vditorReady;
   ksState.vditorReady = new Promise(function (resolve, reject) {
     if (typeof Vditor === 'undefined') {
-      ksState.vditorReady = null;
       reject(new Error('Vditor 未加载'));
       return;
     }
@@ -506,7 +505,6 @@ function ksEnsureVditor() {
       if (settled) return;
       settled = true;
       ksState.vditor = null;
-      ksState.vditorReady = null;
       reject(new Error('Vditor 初始化超时'));
     }, 15000);
     try {
@@ -553,9 +551,16 @@ function ksEnsureVditor() {
       settled = true;
       clearTimeout(timer);
       ksState.vditor = null;
-      ksState.vditorReady = null;
       reject(e);
     }
+  }).catch(function (error) {
+    // 失败时统一清缓存与残留 DOM。注意 executor 是同步执行的，在里面置空会被
+    // 外层赋值重新覆盖，导致再点「写文章」一直复用这次失败、只能刷新整页（反馈 #23/#24）。
+    ksState.vditorReady = null;
+    ksState.vditor = null;
+    const host = document.getElementById('ks-editor');
+    if (host) host.innerHTML = '';
+    throw error;
   });
   return ksState.vditorReady;
 }
@@ -605,9 +610,15 @@ async function ksPaintEditor(article) {
   try {
     editor = await ksEnsureVditor();
   } catch (e) {
-    showToast('编辑器加载失败，请刷新后重试');
-    ksShowView('list');
-    return;
+    // 栏目脚本偶发加载失败时自愈一次：重新加载脚本并重建编辑器，不再直接要求刷新整页（反馈 #23）。
+    try {
+      if (window.LazySections) await window.LazySections.ensureSection('knowledge');
+      editor = await ksEnsureVditor();
+    } catch (retryError) {
+      showToast('编辑器加载失败，请刷新后重试');
+      ksShowView('list');
+      return;
+    }
   }
   editor.setValue(article ? (article.content || '') : '');
 }

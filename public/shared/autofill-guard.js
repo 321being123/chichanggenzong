@@ -7,6 +7,8 @@
     'reg-pwd', 'reg-pwd2', 'email', 'pwd-old', 'pwd-new', 'pwd-new2'
   ]);
 
+  var FEEDBACK_FIELD_IDS = new Set(['fb-form-title-input', 'fb-form-page']);
+
   function isCredentialField(el) {
     return el.hasAttribute('data-autofill-credential') || CREDENTIAL_IDS.has(el.id);
   }
@@ -22,6 +24,9 @@
     var autocompleteValue = isPasswordField(el) ? 'new-password' : 'off';
     // data-autofill-ignore 不能改成 new-password，否则搜索框会被识别为账号/密码字段。
     if (el.hasAttribute('data-autofill-ignore') && !isPasswordField(el)) autocompleteValue = 'off';
+    // 反馈表单是「两个文本框 + 提交按钮」，Chrome 会当成登录表单并弹保存密码；
+    // off 拦不住这种判定，这里明确声明不是已有账号（反馈 #25）。
+    if (FEEDBACK_FIELD_IDS.has(el.id)) autocompleteValue = 'new-password';
     el.setAttribute('autocomplete', autocompleteValue);
     el.setAttribute('data-lpignore', 'true');
     el.setAttribute('data-1p-ignore', 'true');

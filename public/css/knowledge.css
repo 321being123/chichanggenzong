@@ -1425,6 +1425,18 @@ body > svg[version="1.1"] {
   overflow: visible;
 }
 
+/* 反馈 #24：Vditor 把高度写成内联样式，但本站 CSP 禁止内联样式生效，
+   编辑区会退化成正文下方一个带边框的空占位框；由外部样式兜底并收掉底部辅助条。 */
+.ks-editor-card #ks-editor > .vditor {
+  height: auto !important;
+  min-height: 0;
+}
+
+.ks-editor-card .vditor-resize,
+.ks-editor-card .vditor-counter {
+  display: none;
+}
+
 .ks-editor-card .vditor-toolbar {
   position: relative;
   z-index: 4;

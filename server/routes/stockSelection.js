@@ -365,7 +365,7 @@ adminRouter.post('/runs', requireCapability('ops_manage'), asyncHandler(async (r
     };
     // V2 周期模式走规范化业务键入队（显式 shadow/periodKey/payloadHash），避免包含匹配误复用。
     const slot = periodMode
-      ? await enqueueSelectionPeriodJob('stock_analysis_refresh', payload, requestId)
+      ? await enqueueSelectionPeriodJob({ jobCode: 'stock_analysis_refresh', payload, requestId })
       : await enqueueManualJob('stock_analysis_refresh', payload);
     if (!slot) return res.status(400).json({ error: '选股任务暂不可用' });
     await auditEvent({

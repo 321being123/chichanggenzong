@@ -12,7 +12,8 @@ require('dotenv').config({ path: path.join(__dirname, '..', '..', '.env') });
 
 const MARK = '6098';
 const CODES = [`${MARK}01.SH`, `${MARK}02.SH`, `${MARK}03.SH`, `${MARK}04.SH`, `${MARK}05.SH`,
-  `${MARK}06.SH`, `${MARK}07.SH`, `${MARK}08.SH`, `${MARK}09.SH`, `${MARK}10.SH`, `${MARK}11.SH`];
+  `${MARK}06.SH`, `${MARK}07.SH`, `${MARK}08.SH`, `${MARK}09.SH`, `${MARK}10.SH`, `${MARK}11.SH`,
+  `${MARK}12.SH`, `${MARK}13.SH`, `${MARK}14.SH`, `${MARK}15.SH`];
 const COMPANY_PREFIX = '选股口径测试';
 const TAG = Date.now().toString(36);
 const AS_OF = '2026-09-30';
@@ -85,10 +86,25 @@ async function insertAction(pool, instrumentId, sourceId, row) {
        (instrument_id, action_type, fiscal_period_end, announced_at, ex_date, status,
         cash_per_share_pre_tax, stock_dividend_ratio, capitalization_ratio, total_cash_amount,
         currency_code, source_id, source_key)
-     VALUES ($1,'dividend',$2::date,$3::date,$4::date,'实施',$5,$6,$7,$8,'CNY',$9,$10)`,
+     VALUES ($1,'dividend',$2::date,$3::date,$4::date,$5,$6,$7,$8,$9,'CNY',$10,$11)`,
     [instrumentId, row.fiscalPeriodEnd || null, row.announcedAt || null, row.exDate,
-      row.cash, row.bonus === undefined ? 0 : row.bonus, row.cap === undefined ? 0 : row.cap,
-      row.total, sourceId, `${MARK}-${row.key}`]);
+      row.status || '实施', row.cash, row.bonus === undefined ? 0 : row.bonus,
+      row.cap === undefined ? 0 : row.cap, row.total, sourceId, `${MARK}-${row.key}`]);
+}
+
+// 年报本体 + 归母净利事实：年度分红判定以「公司实际年报期末」为主表。
+async function insertAnnualReport(pool, companyId, sourceId, periodEnd, announcedAt, profit) {
+  const report = await pool.query(
+    `INSERT INTO fundamental.financial_reports
+       (company_id, report_kind, period_end, period_type, statement_scope, announced_at,
+        source_id, source_version, update_flag, is_current_version, report_type)
+     VALUES ($1,'income',$2::date,'annual','consolidated',$3::date,$4,'v1','',true,'1')
+     RETURNING report_id`, [companyId, periodEnd, announcedAt, sourceId]);
+  await pool.query(
+    `INSERT INTO fundamental.financial_facts
+       (report_id, statement_type, metric_code, numeric_value, unit_code, currency_code, source_field, is_calculated)
+     VALUES ($1,'income','net_profit_parent',$2,'CNY','CNY','n_income_attr_p',false)`,
+    [report.rows[0].report_id, profit]);
 }
 
 async function main() {
@@ -100,9 +116,11 @@ async function main() {
 
   await cleanup(pool);
 
-  const sourceRow = await pool.query(`SELECT source_id FROM ops.data_sources ORDER BY source_id LIMIT 1`);
-  assert.ok(sourceRow.rows[0], '测试环境缺少 ops.data_sources');
-  const sourceId = sourceRow.rows[0].source_id;
+  const sourceRows = await pool.query(`SELECT source_id FROM ops.data_sources ORDER BY source_id`);
+  assert.ok(sourceRows.rows[0], '测试环境缺少 ops.data_sources');
+  const sourceId = sourceRows.rows[0].source_id;
+  // 第二个来源用来复现「同一笔被两个来源各写一行」：去重只能留一条，不能双计。
+  const sourceId2 = (sourceRows.rows[1] || sourceRows.rows[0]).source_id;
 
   try {
     const send = await createInstrument(pool, 0);
@@ -116,6 +134,11 @@ async function main() {
     const noDividendYear = await createInstrument(pool, 8);
     const negativeFromSource = await createInstrument(pool, 9);
     const meetingZero = await createInstrument(pool, 10);
+    // 11—14：2026-11-08 生产实测的四类分红判定边界（601966 / 01177 / 600959 / 002648）。
+    const crossYearDiff = await createInstrument(pool, 11);
+    const crossYearSame = await createInstrument(pool, 12);
+    const pureTransfer = await createInstrument(pool, 13);
+    const staleWithInterim = await createInstrument(pool, 14);
 
     // 1) 2025-12-01 派现 0.2 元/股（无送转），2026-06-15 每 10 股转增 4 股 → 1 股转增 0.4 股。
     await insertAction(pool, send.instrumentId, sourceId, { exDate: '2025-12-01', cash: 0.2, key: 'send-cash' });
@@ -253,6 +276,57 @@ async function main() {
        VALUES ($1,'dividend','2023-12-31'::date,'2024-03-31'::date,NULL,'预案',NULL,0,0,NULL,'CNY',$2,$3)`,
       [meetingZero.instrumentId, sourceId, `${MARK}-PLAN-ONLY`]);
 
+    // 11) 同一天除息、分属两个财年、金额不同：2026-11-08 生产实测 601966
+    //    2024 年报每股 0.014 元（总额 2e7）与 2025 一季报每股 0.070 元（总额 1e8）同为 2025-07-10 除息。
+    //    年报那笔用较低来源、一季报用较高来源，旧实现按除息日去重会稳定保留后者、把年报那笔吞掉。
+    await insertAnnualReport(pool, crossYearDiff.companyId, sourceId, '2024-12-31', '2025-03-31', 1e9);
+    await insertAction(pool, crossYearDiff.instrumentId, sourceId, {
+      fiscalPeriodEnd: '2024-06-30', announcedAt: '2024-08-27', exDate: '2024-09-27',
+      cash: 0.1, total: 1e8, key: 'cyd-interim',
+    });
+    await insertAction(pool, crossYearDiff.instrumentId, sourceId, {
+      fiscalPeriodEnd: '2024-12-31', announcedAt: '2025-04-25', exDate: '2025-07-10',
+      cash: 0.014, total: 2e7, key: 'cyd-year-end',
+    });
+    await insertAction(pool, crossYearDiff.instrumentId, sourceId2, {
+      fiscalPeriodEnd: '2025-03-31', announcedAt: '2025-04-25', exDate: '2025-07-10',
+      cash: 0.07, total: 1e8, key: 'cyd-next-q1',
+    });
+
+    // 12) 同一天除息、被标成两个财年、金额完全相同：同一笔重复打标（01177.HK 那种），只能算一次。
+    await insertAnnualReport(pool, crossYearSame.companyId, sourceId, '2024-12-31', '2025-03-31', 1e9);
+    await insertAction(pool, crossYearSame.instrumentId, sourceId, {
+      fiscalPeriodEnd: '2024-12-31', announcedAt: '2025-04-25', exDate: '2025-06-20',
+      cash: 0.02, total: 1e8, key: 'cys-2024',
+    });
+    await insertAction(pool, crossYearSame.instrumentId, sourceId2, {
+      fiscalPeriodEnd: '2025-06-30', announcedAt: '2025-08-20', exDate: '2025-06-20',
+      cash: 0.02, total: 1e8, key: 'cys-2025',
+    });
+
+    // 13) 纯送转方案（复现 600959 的 2015）：同年中期 0.16 元已实施，年末 10 转 3、一分现金都没有。
+    //     年末那笔必须被认成「已实施、现金 0」，否则"财年末已实施"恒为 0，整年判未知。
+    await insertAnnualReport(pool, pureTransfer.companyId, sourceId, '2024-12-31', '2025-03-31', 1e9);
+    await insertAction(pool, pureTransfer.instrumentId, sourceId, {
+      fiscalPeriodEnd: '2024-06-30', announcedAt: '2024-08-29', exDate: '2024-11-06',
+      cash: 0.16, total: 4.78e8, key: 'pure-transfer-interim',
+    });
+    await insertAction(pool, pureTransfer.instrumentId, sourceId, {
+      fiscalPeriodEnd: '2024-12-31', announcedAt: '2025-04-19', exDate: '2025-07-10',
+      cash: null, cap: 0.3, total: null, key: 'pure-transfer',
+    });
+
+    // 14) 末期方案停在预案 3 年（期末距目标日超 2 年）、同年中期已实施（002648 的 2022）。
+    await insertAnnualReport(pool, staleWithInterim.companyId, sourceId, '2022-12-31', '2023-03-31', 3e8);
+    await insertAction(pool, staleWithInterim.instrumentId, sourceId, {
+      fiscalPeriodEnd: '2022-06-30', announcedAt: '2022-08-30', exDate: '2022-10-13',
+      cash: 0.4, total: 9.6e8, key: 'swi-interim',
+    });
+    await insertAction(pool, staleWithInterim.instrumentId, sourceId, {
+      fiscalPeriodEnd: '2022-12-31', announcedAt: '2023-04-29', exDate: null,
+      status: '预案', cash: null, total: null, key: 'swi-plan',
+    });
+
     await check('送转后每股股息按官方送转比例折算到 T 日股本单位', async () => {
       const map = await repo.loadDividendWindow({ instrumentIds: [send.instrumentId], windowStart: WINDOW_START, asOfDate: AS_OF });
       const item = map.get(String(send.instrumentId));
@@ -361,6 +435,43 @@ async function main() {
       });
       assert.strictEqual(result.rules.R01.status, rules.STATUS.FAIL);
       assert.strictEqual(result.rules.R01.reason, 'pb_negative_equity');
+    });
+
+    await check('同一天除息、分属两个财年的两笔不同金额分红都要算进去', async () => {
+      const map = await repo.loadAnnualDividends({ companyIds: [crossYearDiff.companyId], asOfDate: AS_OF });
+      const year = (map.get(String(crossYearDiff.companyId)) || []).find(row => row.year === 2024);
+      assert.ok(year, '必须给出 2024 财年记录');
+      assert.strictEqual(year.dividendKnown, true, '年报那笔被同日另一笔挤掉会让整年判成未知');
+      // 年度金额是该财年所有已实施现金之和：中期 1 亿 + 年报 2000 万 = 1.2 亿。
+      // 年报那笔被同日另一笔吞掉时会只剩 1 亿，这条断言就是抓这个。
+      assert.strictEqual(Number(year.dividend), 1.2e8, '中期 1 亿与年报 2000 万都必须计入');
+      assert.strictEqual(year.dividendBasis, 'annual_implemented_amount');
+    });
+
+    await check('同一天除息但金额相同的两条是同一笔重复打标，只能算一次', async () => {
+      const map = await repo.loadAnnualDividends({ companyIds: [crossYearSame.companyId], asOfDate: AS_OF });
+      const year = (map.get(String(crossYearSame.companyId)) || []).find(row => row.year === 2024);
+      assert.ok(year, '必须给出 2024 财年记录');
+      assert.strictEqual(year.dividendKnown, true);
+      assert.strictEqual(Number(year.dividend), 1e8, '同一笔 1 亿既不能算两次，也不能因合并丢掉');
+    });
+
+    await check('年末纯送转（有转增无现金）算已实施，现金 0 不是金额缺失', async () => {
+      const map = await repo.loadAnnualDividends({ companyIds: [pureTransfer.companyId], asOfDate: AS_OF });
+      const year = (map.get(String(pureTransfer.companyId)) || []).find(row => row.year === 2024);
+      assert.ok(year, '必须给出 2024 财年记录');
+      assert.strictEqual(year.dividendKnown, true, '10 转 3 没有一分现金，年末这笔仍是「已实施、现金 0」');
+      assert.strictEqual(Number(year.dividend), 4.78e8, '该财年现金就是中期那 4.78 亿');
+      assert.strictEqual(year.dividendBasis, 'annual_implemented_amount');
+    });
+
+    await check('末期方案停摆 2 年以上、同年中期已实施 → 按已实施金额判已知', async () => {
+      const map = await repo.loadAnnualDividends({ companyIds: [staleWithInterim.companyId], asOfDate: AS_OF });
+      const year = (map.get(String(staleWithInterim.companyId)) || []).find(row => row.year === 2022);
+      assert.ok(year, '必须给出 2022 财年记录');
+      assert.strictEqual(year.dividendKnown, true, '末期不再实施时，该财年金额就是已实施的中期');
+      assert.strictEqual(Number(year.dividend), 9.6e8);
+      assert.strictEqual(year.dividendBasis, 'stale_plan_not_implemented');
     });
   } finally {
     try { await cleanup(pool); } catch (error) { console.error('清理夹具失败：', error.message); }

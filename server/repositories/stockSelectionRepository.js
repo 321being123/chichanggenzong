@@ -628,11 +628,20 @@ async function loadAnnualDividends({ companyIds, asOfDate, availableBefore, mark
   const visibleCash = perShareBasis
     ? `(ca.cash_per_share_pre_tax IS NOT NULL)`
     : `(ca.cash_per_share_pre_tax IS NOT NULL OR ca.total_cash_amount IS NOT NULL)`;
-  const implemented = `ca.status = '实施' AND ca.ex_date IS NOT NULL AND ca.ex_date <= $2::date AND ${visibleCash}`;
+  // 纯送转方案（只有送股/转增比例、没有一分现金）也算「已实施」：它的现金分红就是 0。
+  // 不这样算的话，年末那笔转增进不了实现集合，"财年末已实施"恒为 0，该财年永远判未知
+  // （2026-11-08 生产实测 600959 的 2015：中期 0.16 元已实施、年末 10 转 3 无现金，整年挂了多年）。
+  const pureTransfer = `(ca.cash_per_share_pre_tax IS NULL AND ca.total_cash_amount IS NULL
+    AND (COALESCE(ca.stock_dividend_ratio, 0) > 0 OR COALESCE(ca.capitalization_ratio, 0) > 0))`;
+  const implemented = `ca.status = '实施' AND ca.ex_date IS NOT NULL AND ca.ex_date <= $2::date AND (${visibleCash} OR ${pureTransfer})`;
   // 明确零分红：官方把"该财年不派现"落成「股东大会通过 + 每股 0 + 无除息日」，
   // 实施且每股 0 同理。只认"实施"会把这类年份判成未知（福莱特 2024/2022/2021/2019 都是这样），
   // 实际上方案已定、就是不分红。预案（board_director_plan）仍属未定，不在此列。
   const explicitZero = `ca.status IN ('实施', '股东大会通过') AND ca.ex_date IS NULL AND COALESCE(ca.cash_per_share_pre_tax, 0) = 0`;
+  // 跨财年判重指纹（2026-11-08）：同一笔分红被标成两个财年时金额相同，可以合并；
+  // 金额不同就是两笔真实的钱（601966 的 2024 年报 0.014 元与 2025 一季报 0.070 元同为 2025-07-10 除息）。
+  // 用「总额优先、退到每股」的文本指纹，同一笔在两个来源间口径统一时能对上。
+  const amountKey = `COALESCE(ca.total_cash_amount::text, ca.cash_per_share_pre_tax::text, '0')`;
   const { rows } = await exec(`
     WITH annual_ends AS (
       -- R5-02：财年期末集合必须与利润查询用**同一套信息截止**。
@@ -657,18 +666,38 @@ async function loadAnnualDividends({ companyIds, asOfDate, availableBefore, mark
            (ca.announced_at IS NOT NULL AND ca.announced_at < $2::date)
            OR (ca.announced_at IS NULL AND ca.ex_date IS NOT NULL AND ca.ex_date <= $2::date)
          )
-    ), dedup_actions AS (
-      -- 同一笔分红会被官方与备源各写一行（2026-11-05 生产实测：A 股 213 个、港股 38 个除息日
-      -- 存在重复登记），不去重直接 SUM 会把同一笔钱算多遍。按「证券 + 除息日」只留一条、
-      -- 官方（source_id 大）优先，与 loadDividendWindow 近 12 个月去重同一规则。
+    ), same_fiscal_year AS (
+      -- 第一步：同一财年 + 同一除息日 就是同一笔，跨来源只留官方那条（source_id 大）。
+      -- 财年相同的两条不论金额是否一致都要合并：2026-11-08 生产实测同财年重复组 321 个，
+      -- 其中 147 组两个来源金额不一致（一条写 0、一条写空，或港股 0.034 与 0.046），
+      -- 按金额判重会在这些组里各留两行、把同一笔钱算两遍。
+      SELECT DISTINCT ON (ca.instrument_id, ca.ex_date, ca.fiscal_period_end) ca.*
+        FROM visible_actions ca
+       WHERE ca.ex_date IS NOT NULL AND ca.fiscal_period_end IS NOT NULL
+       ORDER BY ca.instrument_id, ca.ex_date, ca.fiscal_period_end, ca.source_id DESC
+    ), same_day_no_fy AS (
+      -- 缺财年的备源行（港股常见）：只有同一证券同一除息日完全没有带财年的记录时才留，
+      -- 否则它就是上面那条的重复登记；留着会让这笔钱被算两遍。
       SELECT DISTINCT ON (ca.instrument_id, ca.ex_date) ca.*
         FROM visible_actions ca
-       WHERE ca.ex_date IS NOT NULL
-       -- 先保能归属财年的那条（备源港股分红常不带 fiscal_period_end，留着它会让这笔钱算不进任何财年），
-       -- 同层再按来源优先级取官方。
-       ORDER BY ca.instrument_id, ca.ex_date, (ca.fiscal_period_end IS NOT NULL) DESC, ca.source_id DESC
+       WHERE ca.ex_date IS NOT NULL AND ca.fiscal_period_end IS NULL
+         AND NOT EXISTS (
+           SELECT 1 FROM visible_actions other
+            WHERE other.instrument_id = ca.instrument_id
+              AND other.ex_date = ca.ex_date
+              AND other.fiscal_period_end IS NOT NULL)
+       ORDER BY ca.instrument_id, ca.ex_date, ca.source_id DESC
+    ), dedup_actions AS (
+      -- 第二步：同证券同除息日但分属不同财年的记录，金额相同 → 同一笔重复打标，留较早财年那条；
+      -- 金额不同 → 两笔真实的钱，都保留（2026-11-08 生产实测 601966，原按除息日一刀切把年报那笔吞掉，
+      -- 该财年因此永远判"分红未知"；全库同类 22 组）。
+      SELECT DISTINCT ON (ca.instrument_id, ca.ex_date, ${amountKey}) ca.*
+        FROM same_fiscal_year ca
+       ORDER BY ca.instrument_id, ca.ex_date, ${amountKey}, ca.fiscal_period_end ASC, ca.source_id DESC
     ), ca_kept AS (
       SELECT * FROM dedup_actions
+      UNION ALL
+      SELECT * FROM same_day_no_fy
       UNION ALL
       -- 无除息日的行（官方"该财年不派现"= 实施 + 每股 0）不参与按除息日去重，原样保留。
       SELECT * FROM visible_actions WHERE ex_date IS NULL
@@ -681,7 +710,13 @@ async function loadAnnualDividends({ companyIds, asOfDate, availableBefore, mark
              ci.instrument_id,
              SUM(CASE WHEN ${implemented} THEN COALESCE(${amountExpr}, 0) ELSE 0 END) AS implemented_cash,
              COUNT(ca.action_id) FILTER (WHERE ${implemented})::int AS implemented_count,
-             COUNT(ca.action_id) FILTER (WHERE ${implemented} AND ${amountExpr} IS NULL)::int AS amount_missing_count,
+             -- 纯送转方案（只有送股/转增比例、没有一分现金）的现金分红就是 0，不算"金额缺失"：
+             -- 2026-11-08 生产实测全库 804 条「实施但现金全空」里 800 条带送转比例
+             -- （600959 的 2015 是 10 转 3，cash 全空但 capitalization_ratio=0.3），
+             -- 把它们当"没采到"会让这类年份永远挂在待补上。
+             COUNT(ca.action_id) FILTER (WHERE ${implemented} AND ${amountExpr} IS NULL
+               AND COALESCE(ca.stock_dividend_ratio, 0) = 0
+               AND COALESCE(ca.capitalization_ratio, 0) = 0)::int AS amount_missing_count,
              -- 「已实施但完全没有金额」既不是零分红也不是已知金额（R4-04 对照用例）：
              -- 官方偶尔只给状态、不给钱数，这种年份必须保持未知，不能被后面的"预案判零"规则吞掉。
              -- 只认"连除息日都没有"的空实施记录：官方会给一批「实施 + 无金额 + 有除息日」的
@@ -750,7 +785,11 @@ async function loadAnnualDividends({ companyIds, asOfDate, availableBefore, mark
     const amountIncomplete = amountMissing > 0 || amountUnknown > 0;
     const knownFromImplemented = implementedCount > 0 && !amountIncomplete && yearEndImplemented;
     const knownFromZero = yearZero > 0 && !amountIncomplete;
-    const knownFromStalePlan = implementedCount === 0 && !amountIncomplete && stalePlan > 0;
+    // 末期方案停摆 2 年以上仍未实施 → 视为该财年不会再有第二次分红，按已知处理；
+    // 即使该财年已有中期实施也成立（2026-11-08 生产实测 002648 的 2022：中期 0.4 元已实施，
+    // 年报方案停在「预案」三年，原先因 implementedCount>0 被判成 interim_only 永远待补）。
+    // 末期那笔真正实施后 stalePlan 归零，会改走 knownFromImplemented，不会互相打架。
+    const knownFromStalePlan = !amountIncomplete && stalePlan > 0 && !yearEndImplemented;
     const knownFromNoEvent = eventCount === 0 && row.fiscal_year_settled === true;
     // 有记录、但一条都没走到实施（只剩预案/股东大会通过）→ 2026-11-04 口径判零分红。
     // 与「金额缺失」区分：amountIncomplete 说明实施记录确实存在、只是金额没采到，那才是未知。
@@ -958,22 +997,29 @@ async function loadBenchmarkCloses({ indexCode, fromDate, toDate }, tx) {
 async function loadDividendCash({ instrumentIds, fromDate, toDate }, tx) {
   if (!instrumentIds.length) return new Map();
   const exec = executorOf(tx);
-  // 同一经济事件被两个来源同时落库时不能双计（F10）：先按 (证券, 除息日) 取官方优先的一条，
-  // 再按证券求和。取舍规则与 loadDividendWindow 的窗口累计保持一致。
+  // 同一经济事件被两个来源同时落库时不能双计（F10）；同一证券同一天也可能有两笔分属不同财年的
+  // 分红（2026-11-08 生产实测 601966：2024 年报 0.014 元与 2025 一季报 0.070 元同为 2025-07-10 除息）。
+  // 因此先去「财年 + 除息日」这一层（同财年不论金额都合并），再只合并跨财年且金额完全相同的重复打标。
   const { rows } = await exec(`
     SELECT instrument_id, SUM(cash_per_share_pre_tax) AS per_share
       FROM (
-        SELECT DISTINCT ON (ca.instrument_id, ca.ex_date)
-               ca.instrument_id, ca.ex_date, ca.cash_per_share_pre_tax
-          FROM fundamental.corporate_actions ca
-         WHERE ca.instrument_id = ANY($1::bigint[])
-           AND ca.action_type = 'dividend'
-           AND ca.status = '实施'
-           AND ca.ex_date IS NOT NULL
-           AND ca.ex_date > $2::date AND ca.ex_date <= $3::date
-           AND ca.cash_per_share_pre_tax > 0
-         ORDER BY ca.instrument_id, ca.ex_date, ca.source_id DESC
-      ) d
+        SELECT DISTINCT ON (d.instrument_id, d.ex_date, d.amount_key)
+               d.instrument_id, d.ex_date, d.cash_per_share_pre_tax
+          FROM (
+            SELECT DISTINCT ON (ca.instrument_id, ca.ex_date, ca.fiscal_period_end)
+                   ca.instrument_id, ca.ex_date, ca.fiscal_period_end, ca.cash_per_share_pre_tax,
+                   COALESCE(ca.total_cash_amount::text, ca.cash_per_share_pre_tax::text, '0') AS amount_key
+              FROM fundamental.corporate_actions ca
+             WHERE ca.instrument_id = ANY($1::bigint[])
+               AND ca.action_type = 'dividend'
+               AND ca.status = '实施'
+               AND ca.ex_date IS NOT NULL
+               AND ca.ex_date > $2::date AND ca.ex_date <= $3::date
+               AND ca.cash_per_share_pre_tax > 0
+             ORDER BY ca.instrument_id, ca.ex_date, ca.fiscal_period_end, ca.source_id DESC
+          ) d
+         ORDER BY d.instrument_id, d.ex_date, d.amount_key, d.fiscal_period_end ASC
+      ) e
      GROUP BY 1`, [instrumentIds, fromDate, toDate]);
   return new Map(rows.map(row => [String(row.instrument_id), Number(row.per_share)]));
 }
@@ -981,22 +1027,29 @@ async function loadDividendCash({ instrumentIds, fromDate, toDate }, tx) {
 /**
  * 逐日分红事件（除息日 → 每股税前现金）：逐日 NAV 回测必须把分红记在真实除息日，
  * 不能在期末一次性累加，否则区间内现金曲线与再投资路径都不对。
- * 与 loadDividendCash 同一去重口径（同证券同除息日取来源优先级最高的一条）。
+ * 与 loadDividendCash 同一去重口径：先去「财年 + 除息日」，再只合并跨财年金额相同的重复打标；
+ * 同一天的两笔不同财年分红（金额不同）各记一次，否则逐日现金曲线会少一笔。
  */
 async function loadDividendEvents({ instrumentIds, fromDate, toDate }, tx) {
   if (!instrumentIds.length) return new Map();
   const exec = executorOf(tx);
   const { rows } = await exec(`
-    SELECT DISTINCT ON (ca.instrument_id, ca.ex_date)
-           ca.instrument_id, ca.ex_date::text AS ex_date, ca.cash_per_share_pre_tax AS per_share
-      FROM fundamental.corporate_actions ca
-     WHERE ca.instrument_id = ANY($1::bigint[])
-       AND ca.action_type = 'dividend'
-       AND ca.status = '实施'
-       AND ca.ex_date IS NOT NULL
-       AND ca.ex_date > $2::date AND ca.ex_date <= $3::date
-       AND ca.cash_per_share_pre_tax > 0
-     ORDER BY ca.instrument_id, ca.ex_date, ca.source_id DESC`,
+    SELECT DISTINCT ON (e.instrument_id, e.ex_date, e.amount_key)
+           e.instrument_id, e.ex_date::text AS ex_date, e.cash_per_share_pre_tax AS per_share
+      FROM (
+        SELECT DISTINCT ON (ca.instrument_id, ca.ex_date, ca.fiscal_period_end)
+               ca.instrument_id, ca.ex_date, ca.fiscal_period_end, ca.cash_per_share_pre_tax,
+               COALESCE(ca.total_cash_amount::text, ca.cash_per_share_pre_tax::text, '0') AS amount_key
+          FROM fundamental.corporate_actions ca
+         WHERE ca.instrument_id = ANY($1::bigint[])
+           AND ca.action_type = 'dividend'
+           AND ca.status = '实施'
+           AND ca.ex_date IS NOT NULL
+           AND ca.ex_date > $2::date AND ca.ex_date <= $3::date
+           AND ca.cash_per_share_pre_tax > 0
+         ORDER BY ca.instrument_id, ca.ex_date, ca.fiscal_period_end, ca.source_id DESC
+      ) e
+     ORDER BY e.instrument_id, e.ex_date, e.amount_key, e.fiscal_period_end ASC`,
   [instrumentIds, fromDate, toDate]);
   const byDate = new Map();
   rows.forEach(row => {

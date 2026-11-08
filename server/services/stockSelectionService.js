@@ -306,16 +306,31 @@ function computeTtmFromReports(reports) {
  * 2026-11-08 生产事故——两处各自构造 annual，`sourceGapYears` 只进了名次那一路，
  * 已核实「源端不可恢复」的 601528.SH 仍被判待补，整批继续不可发布。
  */
-function annualFactsOf(profits, annualDividends, code, sourceGaps) {
+function annualFactsOf(profits, annualDividends, code, sourceGaps, listDate) {
   const rows = Array.isArray(profits) ? profits : [];
   const years = buildAnnualYears(rows, annualDividends);
   return {
     latestYear: years.length ? years[years.length - 1].year : null,
     years,
     currency: rows.length ? rows[0].currency : null,
+    // 上市年份：判断「十年比较窗口」是否早于上市（2026-11-08）。
+    // 上市前公司只在招股书里披露申报前 3 年，公开定期报告本就没有那些年份；
+    // 拿库内最早年份当"历史够长"的证据会被这 3 年骗过（601528 有 2014—2016、缺 2017），
+    // 于是把"上市前无年报"误判成"该补没补"。上市年份是硬事实，用它划窗口下限。
+    listingYear: listingYearOf(listDate),
     // 已核实「源端不可恢复」的财年（方案 27.5 第 6 条）：只有登记过的年份才允许判 NOT_APPLICABLE。
     sourceGapYears: sourceGaps ? sourceGapYearsOf(sourceGaps, code) : [],
   };
+}
+
+/** 从 `list_date`（YYYY-MM-DD 文本或 Date）取上市年份；缺失返回 null，交回原判定。 */
+function listingYearOf(listDate) {
+  if (!listDate) return null;
+  const text = String(listDate);
+  const match = text.match(/^(\d{4})/);
+  if (!match) return null;
+  const year = Number(match[1]);
+  return Number.isInteger(year) && year > 1900 ? year : null;
 }
 
 /** 把库内事实拼成规则输入（不查库）。 */
@@ -330,7 +345,7 @@ function buildRuleFacts(row, ctx) {
   // 自算 TTM（方案 27.4）：供应商 PE(TTM) 只作对照，利润口径由三段报表自行闭合。
   const ttm = companyKey && ctx.ttm ? ctx.ttm.get(companyKey) || null : null;
 
-  const annual = annualFactsOf(profits, annualDividends, row.code, ctx.sourceGaps);
+  const annual = annualFactsOf(profits, annualDividends, row.code, ctx.sourceGaps, row.list_date);
   const years = annual.years;
   const latestYear = annual.latestYear;
 
@@ -619,15 +634,16 @@ async function computeSelection(input, tx) {
   const evaluated = universe.map(row => buildRuleFacts(row, ctx))
     .map(facts => (isV2 ? RULES_V2.evaluateInstrumentV2(facts, params) : RULES.evaluateInstrument(facts, params)));
 
-  // 年度异常独立判定，不参与三项名次。
+  // 年度异常独立判定，不参与三项名次。这里直接遍历 universe 原始行，而不是 evaluated：
+  // evaluated 是规则输出（V1/V2 结构不同），从它身上取上市日期必然再出现「同一字段只生效一路」。
   const anomalyById = {};
-  evaluated.forEach(item => {
-    const companyKey = item.companyId === null || item.companyId === undefined ? null : String(item.companyId);
+  universe.forEach(row => {
+    const companyKey = row.company_id === null || row.company_id === undefined ? null : String(row.company_id);
     const profitRows = companyKey ? profits.get(companyKey) || [] : [];
     const dividendRows = companyKey ? annualDividends.get(companyKey) || [] : [];
-    // 与三项名次用同一个构造函数：两处各造一份 annual 曾导致「登记只进了名次、年度异常仍判待补」。
-    const annual = annualFactsOf(profitRows, dividendRows, item.code, ctx.sourceGaps);
-    anomalyById[item.instrumentId] = RULES.evaluateAnnualAnomaly(Object.assign({ market }, annual), params);
+    // 与三项名次用同一个构造函数、同一份原始行字段（2026-11-08 两处各造一份导致登记只生效一路）。
+    const annual = annualFactsOf(profitRows, dividendRows, row.code, ctx.sourceGaps, row.list_date);
+    anomalyById[Number(row.instrument_id)] = RULES.evaluateAnnualAnomaly(Object.assign({ market }, annual), params);
   });
 
   const ranking = isV2 ? RULES_V2.rankCandidatesV2(evaluated) : RULES.rankCandidates(evaluated);

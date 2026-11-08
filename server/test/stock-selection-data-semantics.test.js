@@ -479,6 +479,11 @@ async function main() {
       const facts = svc.annualFactsOf([{ year: 2025, currency: 'CNY' }], [],
         '601528.SH', new Map([['601528.SH', new Set([2017])]]));
       assert.deepStrictEqual(facts.sourceGapYears, [2017], '登记年份必须进入年度事实');
+      // 上市年份同理：601528.SH 的 2021-06-25 必须落到 listingYear，否则上市前年份判不出来。
+      const listed = svc.annualFactsOf([{ year: 2025, currency: 'CNY' }], [], '601528.SH', null, '2021-06-25');
+      assert.strictEqual(listed.listingYear, 2021, '上市日期必须进入年度事实');
+      assert.strictEqual(svc.annualFactsOf([], [], 'X', null, null).listingYear, null,
+        '没有上市日期时必须是 null，交回原判据而不是当成上市很早');
       // 源码守卫：年度列表只允许在 annualFactsOf 内部构造一次。
       // 2026-11-08 生产事故就是「名次」和「年度异常」各造一份，登记只生效一路；
       // 按行检查抓不到旧写法（buildAnnualYears 在调用行上一行），所以按出现次数守。
@@ -487,8 +492,73 @@ async function main() {
       const rebuilds = (src.match(/=\s*buildAnnualYears\(/g) || []).length;
       assert.strictEqual(rebuilds, 1,
         'buildAnnualYears 只允许在 annualFactsOf 内调用 1 次，第二处会让登记等字段只生效一路，实际 ' + rebuilds + ' 次');
-      assert.ok(src.includes('annualFactsOf(profitRows, dividendRows, item.code, ctx.sourceGaps)'),
-        '年度异常必须用 annualFactsOf 构造的年度事实');
+      // 两处消费者必须传同一套原始行字段（含上市日期）：任一处漏传就会重演「只生效一路」。
+      const annualCalls = (src.match(/= annualFactsOf\(/g) || []).length;
+      assert.strictEqual(annualCalls, 2,
+        '年度事实只允许两处消费（三项名次 + 年度异常），实际 ' + annualCalls + ' 处');
+      assert.ok(src.includes('annualFactsOf(profits, annualDividends, row.code, ctx.sourceGaps, row.list_date)'),
+        '三项名次必须把上市日期传进年度事实');
+      assert.ok(src.includes('annualFactsOf(profitRows, dividendRows, row.code, ctx.sourceGaps, row.list_date)'),
+        '年度异常必须与名次用同一套参数（含上市日期）');
+      // 年度异常不得再从 evaluated 取字段：它是规则输出，V1/V2 结构不同，取一次就漏一路。
+      const anomalyBlock = src.slice(src.indexOf('年度异常独立判定'), src.indexOf('const ranking = isV2'));
+      assert.ok(anomalyBlock.includes('universe.forEach'),
+        '年度异常必须遍历 universe 原始行');
+      assert.ok(!anomalyBlock.includes('item.code'),
+        '年度异常不得从 evaluated 的 item 取代码（结构随策略版本变化）');
+    });
+
+    await check('上市前的财年不要求年报：上市晚于十年窗口起点判不可评估', async () => {
+      // 601528.SH 实况：2021-06-25 上市，库里有招股书披露的 2014—2016、缺 2017。
+      // 上市前只在招股书给申报前 3 年，2017 年作为定期报告本就不存在。
+      // 老判据看「库内最早年份」会被 2014—2016 骗成"历史够长"，于是判成该补没补、卡住整批。
+      const result = rules.evaluateAnnualAnomaly({
+        latestYear: 2025, market: 'CN', currency: 'CNY',
+        years: annualYears([2017]), listingYear: 2021,
+      });
+      assert.strictEqual(result.status, rules.STATUS.NOT_APPLICABLE);
+      assert.strictEqual(result.reason, 'fiscal_history_insufficient_not_evaluable');
+      assert.strictEqual(result.listingYear, 2021);
+      assert.deepStrictEqual(result.missingYears, [2017]);
+    });
+
+    await check('上市早于窗口起点时，缺年份仍按真实缺口判待补', async () => {
+      const result = rules.evaluateAnnualAnomaly({
+        latestYear: 2025, market: 'CN', currency: 'CNY',
+        years: annualYears([2017]), listingYear: 2005,
+      });
+      assert.strictEqual(result.status, rules.STATUS.PENDING,
+        '上市够早还缺年报，说明是真没采到，不能拿上市日期当放行条');
+      assert.strictEqual(result.reason, 'insufficient_fiscal_history');
+      assert.deepStrictEqual(result.missingYears, [2017]);
+
+      // 边界：恰好等于窗口起点（2025-10=2015）不算"上市太晚"，仍按真实缺口处理。
+      const boundary = rules.evaluateAnnualAnomaly({
+        latestYear: 2025, market: 'CN', currency: 'CNY',
+        years: annualYears([2017]), listingYear: 2015,
+      });
+      assert.strictEqual(boundary.status, rules.STATUS.PENDING, '上市当年就要有年报，等于起点不算太晚');
+    });
+
+    await check('上市太晚时缺口落在上市后也整段不可评估，不制造补数队列', async () => {
+      // 301609.SZ / 920027.BJ 那类：上市前缺 2015—2017，上市后还缺 2019，
+      // 整段都没有十年可比历史；不能因为"上市后也缺"就退回待补，那会永远补不齐。
+      const result = rules.evaluateAnnualAnomaly({
+        latestYear: 2025, market: 'CN', currency: 'CNY',
+        years: annualYears([2015, 2016, 2017, 2019]), listingYear: 2025,
+      });
+      assert.strictEqual(result.status, rules.STATUS.NOT_APPLICABLE);
+      assert.strictEqual(result.reason, 'fiscal_history_insufficient_not_evaluable');
+      assert.deepStrictEqual(result.missingYears, [2015, 2016, 2017, 2019]);
+    });
+
+    await check('没有上市日期时退回原判据，不因缺字段而放行', async () => {
+      const result = rules.evaluateAnnualAnomaly({
+        latestYear: 2025, market: 'CN', currency: 'CNY',
+        years: annualYears([2017]),
+      });
+      assert.strictEqual(result.status, rules.STATUS.PENDING);
+      assert.strictEqual(result.reason, 'insufficient_fiscal_history');
     });
 
     await check('同一天除息、分属两个财年的两笔不同金额分红都要算进去', async () => {

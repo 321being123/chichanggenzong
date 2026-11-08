@@ -393,11 +393,23 @@ function evaluateAnnualAnomaly(annual, params = DEFAULT_PARAMS) {
     // 2026-11-04 口径调整：上市不满 requiredFiscalYears 个财年属于"客观上没有这么长历史"，
     // 不是"该补没补"。原来判 PENDING 会让新股永远阻断整批发布、还被反复排进补数队列。
     // 现在判 NOT_APPLICABLE：该股不入选（无法判断是否财务异常），但不进缺口、不阻断发布。
-    const insufficientHistory = fiscalHistoryInsufficient(latestYear, years, needed.length);
+    //
+    // 2026-11-08 判据改用**上市年份**：原判据看"库内最早年份"，会被招股书披露的申报前 3 年骗过
+    // ——601528.SH 库里有 2014—2016、缺 2017，看着历史够长，实际 2021-06-25 才上市，
+    // 2017 年作为定期报告根本不存在（上市前只在招股书里给前 3 年）。上市前的年份一律不要求，
+    // 因此只要上市年份晚于十年窗口起点，这段历史客观不可评估，与缺的是哪一年无关。
+    // 反向保护：上市早于窗口起点（listingYear <= earliestNeeded）时**不**走本分支，
+    // 缺年份仍按真实缺口判 PENDING / 登记，不能拿"有上市日期"当放行条。
+    const listingYear = Number((annual || {}).listingYear) || null;
+    const earliestNeeded = latestYear - p.anomalyLookbackYears;
+    const listedTooLate = listingYear !== null && listingYear > earliestNeeded;
+    const insufficientHistory = listedTooLate || fiscalHistoryInsufficient(latestYear, years, needed.length);
     if (insufficientHistory) {
       return Object.assign(result, {
         status: STATUS.NOT_APPLICABLE,
+        // 上市太晚与"数据跨度不够"是同一结论：客观没有十年可比历史，不入选也不阻断发布。
         reason: 'fiscal_history_insufficient_not_evaluable',
+        listingYear,
         missingYears: missing.sort((a, b) => a - b),
         profitSum: null,
         dividendSum: null,

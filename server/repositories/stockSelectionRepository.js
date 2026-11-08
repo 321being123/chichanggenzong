@@ -724,9 +724,15 @@ async function loadAnnualDividends({ companyIds, asOfDate, availableBefore, mark
              -- 而同财年已有真实年度分红时必须仍然算已知。
              COUNT(ca.action_id) FILTER (WHERE ca.status = '实施' AND ca.ex_date IS NULL
                AND ca.cash_per_share_pre_tax IS NULL AND ca.total_cash_amount IS NULL)::int AS amount_unknown_count,
-             -- 「财年末那笔已实施」必须精确到本财年期末，不能用"本财年有过任何一笔实施"代替（R5-02）：
+             -- 「财年末那笔已实施」必须落到本财年期末所在月份，不能用"本财年有过任何一笔实施"代替（R5-02）：
              -- 只有中期分红而年末尚未公告时，该财年仍是未知，不是零分红。
-             COUNT(ca.action_id) FILTER (WHERE ${implemented} AND ca.fiscal_period_end = ae.period_end)::int AS year_end_implemented_count,
+             -- 判据用**同年月**而非精确相等（2026-11-08 生产实测）：港股早年分红记录的
+             -- fiscal_period_end 被记成月初（2015-12-01），年报期末是月末（2015-12-31），
+             -- 精确相等会把已实施的末期股息当成"只有中期"，整年永远挂在分红未知上
+             -- （港股 96 只挂 2015/2016，正是这一位之差）。同年月既不把中期分红
+             -- （财年中期 9-30 对期末 12-31）算成末期，也不再依赖"日"这一位的来源差异。
+             COUNT(ca.action_id) FILTER (WHERE ${implemented}
+               AND date_trunc('month', ca.fiscal_period_end) = date_trunc('month', ae.period_end))::int AS year_end_implemented_count,
              COUNT(ca.action_id) FILTER (WHERE ca.action_id IS NOT NULL AND NOT (${implemented}))::int AS not_implemented_count,
              -- 财年期末已过 2 年以上、状态仍停在预案/股东大会通过且该财年从未实施：
              -- 这种历史方案就是"没有落地"，再等也不会变，与"金额未知"要分开。

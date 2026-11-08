@@ -279,6 +279,22 @@ async function main() {
       assert.strictEqual(Number(y2018.dividend), 0);
       assert.strictEqual(y2018.dividendBasis, 'no_dividend_event_in_fiscal_year');
     });
+    // 2026-11-08 口径：分红记录的 fiscal_period_end 被记成月初（2015-12-01）而年报期末是月末
+    // （2015-12-31）时，已实施的末期股息仍算该财年完整证据。旧判据要求精确相等，会把它当成
+    // "只有中期"，整年永远挂在分红未知上（生产实测港股 96 只挂 2015/2016）。
+    await pool.query(
+      `UPDATE fundamental.corporate_actions SET fiscal_period_end = '2015-12-01'
+        WHERE instrument_id = $1 AND fiscal_period_end = '2015-12-31'`, [firstInstrument]);
+    const monthStartFy = await repo.loadAnnualDividends({ companyIds: [firstCompany], asOfDate: AS_OF });
+    record('分红财年期末记成月初时，已实施的末期股息仍算该财年完整证据', () => {
+      const y2015 = (monthStartFy.get(String(firstCompany)) || []).find(row => row.year === 2015);
+      assert.ok(y2015, '2015 财年必须出行');
+      assert.strictEqual(y2015.dividendKnown, true, '同年月就是同一财年期末，不得因"日"不同判未知');
+      assert.strictEqual(y2015.dividendBasis, 'annual_implemented_amount');
+    });
+    await pool.query(
+      `UPDATE fundamental.corporate_actions SET fiscal_period_end = '2015-12-31'
+        WHERE instrument_id = $1 AND fiscal_period_end = '2015-12-01'`, [firstInstrument]);
     // 还原现场，避免影响后续季度计算
     for (let year = 2015; year <= 2025; year++) {
       const exDate = year === 2025 ? '2026-06-15' : `${year + 1}-06-15`;

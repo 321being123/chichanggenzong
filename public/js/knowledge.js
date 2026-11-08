@@ -493,9 +493,100 @@ function ksOpenTablePicker(event) {
   }, 0);
 }
 
-function ksEnsureVditor() {
-  if (ksState.vditorReady) return ksState.vditorReady;
-  ksState.vditorReady = new Promise(function (resolve, reject) {
+// 反馈 #26：本站 CSP 只允许同源外部脚本，Vditor 默认会先下载图标代码、再塞进动态
+// 内联 <script> 执行（会被拦），结果工具栏按钮生成了、图标却全是空白。改成先加载
+// 同源外部脚本，确认图标符号真的注册成功，再初始化编辑器。
+const KS_VDITOR_CDN = '/vendor/vditor';
+const KS_VDITOR_ICON_SRC = '/vendor/vditor/dist/js/icons/ant.js';
+
+function ksVditorIconsRegistered() {
+  return !!document.getElementById('vditor-icon-bold') && !!document.getElementById('vditor-icon-table');
+}
+
+function ksLoadVditorIcons() {
+  return new Promise(function (resolve, reject) {
+    if (ksVditorIconsRegistered()) { resolve(); return; }
+    const stale = document.getElementById('vditorIconScript');
+    if (stale) stale.remove();
+    const script = document.createElement('script');
+    script.id = 'vditorIconScript';
+    script.src = KS_VDITOR_ICON_SRC;
+    script.onload = function () {
+      if (ksVditorIconsRegistered()) resolve();
+      else { script.remove(); reject(new Error('编辑器图标未注册')); }
+    };
+    script.onerror = function () {
+      script.remove();
+      reject(new Error('编辑器图标加载失败'));
+    };
+    document.head.appendChild(script);
+  });
+}
+
+function ksShowEditorError(message, retry) {
+  const host = ksEl('ks-editor');
+  if (!host) return;
+  host.innerHTML = '';
+  const box = document.createElement('div');
+  box.className = 'ks-editor-error';
+  const text = document.createElement('p');
+  text.textContent = message;
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'ks-btn ks-btn-primary';
+  button.textContent = '重试';
+  button.addEventListener('click', retry);
+  box.appendChild(text);
+  box.appendChild(button);
+  host.appendChild(box);
+}
+
+let ksExportBridgeBound = false;
+
+// 反馈 #26：Vditor 导出 PDF 往 iframe 写的内联 <script> 被本站 CSP 拦下，
+// 预览渲染和打印都不会发生；而 iframe 的 document.open() 还会清掉挂在它 window 上的监听，
+// 所以不能靠预挂消息监听。父页面是外部脚本、不受此限：在点「导出 PDF」的捕获阶段
+// 排队，等 Vditor 同步写完 iframe 后，用 iframe 里已加载的预览引擎自己渲染正文并打印。
+// CSP 一个字都不放宽。
+function ksBridgeExportPdf() {
+  if (ksExportBridgeBound) return;
+  ksExportBridgeBound = true;
+  document.addEventListener('click', function (event) {
+    const btn = event.target && event.target.closest ? event.target.closest('[data-type="pdf"]') : null;
+    if (!btn) return;
+    setTimeout(function () {
+      const iframe = document.getElementById('vditorExportIframe');
+      const editor = ksState.vditor;
+      if (!iframe || !iframe.contentWindow || !editor) return;
+      const win = iframe.contentWindow;
+      let tries = 0;
+      const render = function () {
+        // iframe 里的 HTML 是 document.write 写进去的，解析与预览脚本加载是异步的，
+        // 刚点完按钮时容器可能还不存在；最多等 1 秒，避免抢在解析前面扑空。
+        const preview = win.document.getElementById('preview');
+        if ((!preview || !win.Vditor) && tries++ < 20) {
+          setTimeout(render, 50);
+          return;
+        }
+        if (!preview || !win.Vditor) {
+          showToast('导出预览没加载好，请重试');
+          return;
+        }
+        win.Vditor.preview(preview, editor.getValue(), {
+          cdn: KS_VDITOR_CDN,
+          markdown: { theme: editor.vditor.options.preview.theme },
+          hljs: { style: editor.vditor.options.preview.hljs.style },
+        });
+        // 打印计时器挂在父页面，不随 iframe 的文档重置丢失。
+        setTimeout(function () { win.print(); }, 3600);
+      };
+      render();
+    }, 0);
+  }, true);
+}
+
+function ksCreateVditor() {
+  return new Promise(function (resolve, reject) {
     if (typeof Vditor === 'undefined') {
       reject(new Error('Vditor 未加载'));
       return;
@@ -515,7 +606,7 @@ function ksEnsureVditor() {
         height: 'auto',
         minHeight: 200,
         placeholder: '开始写作…（支持 Markdown，所见即所得）',
-        cdn: '/vendor/vditor',
+        cdn: KS_VDITOR_CDN,
         customWysiwygToolbar: function (type, element) {
           element.classList.toggle('ks-vditor-table-tools', type === 'table');
         },
@@ -542,7 +633,13 @@ function ksEnsureVditor() {
           if (settled) return;
           settled = true;
           clearTimeout(timer);
+          if (!ksVditorIconsRegistered()) {
+            ksState.vditor = null;
+            reject(new Error('编辑器图标未注册'));
+            return;
+          }
           ksState.vditor = editor;
+          ksBridgeExportPdf();
           resolve(editor);
         },
       });
@@ -553,9 +650,14 @@ function ksEnsureVditor() {
       ksState.vditor = null;
       reject(e);
     }
-  }).catch(function (error) {
-    // 失败时统一清缓存与残留 DOM。注意 executor 是同步执行的，在里面置空会被
-    // 外层赋值重新覆盖，导致再点「写文章」一直复用这次失败、只能刷新整页（反馈 #23/#24）。
+  });
+}
+
+function ksEnsureVditor() {
+  if (ksState.vditorReady) return ksState.vditorReady;
+  // 图标先于编辑器加载；失败时统一清缓存与残留 DOM，再点「写文章」或点错误提示里的
+  // 「重试」都会重新走一次完整加载（反馈 #23/#24/#26）。
+  ksState.vditorReady = ksLoadVditorIcons().then(ksCreateVditor).catch(function (error) {
     ksState.vditorReady = null;
     ksState.vditor = null;
     const host = document.getElementById('ks-editor');
@@ -615,8 +717,8 @@ async function ksPaintEditor(article) {
       if (window.LazySections) await window.LazySections.ensureSection('knowledge');
       editor = await ksEnsureVditor();
     } catch (retryError) {
-      showToast('编辑器加载失败，请刷新后重试');
-      ksShowView('list');
+      showToast('编辑器加载失败，请重试');
+      ksShowEditorError('编辑器资源没加载好，请检查网络后重试。', function () { ksPaintEditor(article); });
       return;
     }
   }
@@ -672,7 +774,7 @@ async function ksPaintImportedArticle(title, content) {
   try {
     editor = await ksEnsureVditor();
   } catch (e) {
-    ksSetImportStatus('编辑器加载失败，请刷新后重试');
+    ksSetImportStatus('编辑器加载失败，请重新进入写文章页面重试');
     return;
   }
   ksEl('ks-edit-title').value = title;

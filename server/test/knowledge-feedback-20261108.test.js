@@ -23,11 +23,10 @@ check('#23 编辑器初始化失败不缓存失败结果', () => {
   assert.ok(block, '缺少编辑器初始化函数');
   assert.ok(/\.catch\(function \(error\) \{/.test(block[0]), '必须在 Promise 外层统一清缓存');
   assert.ok(/ksState\.vditorReady = null/.test(block[0]), '失败时要清空 Promise 缓存');
-  const split = block[0].indexOf('}).catch(');
-  assert.ok(split > 0, '缺少外层 catch');
-  const executor = block[0].slice(0, split);
-  assert.ok(!/ksState\.vditorReady = null/.test(executor),
-    'executor 同步执行，在其中置空会被外层赋值重新覆盖，不能当作失败清理');
+  const creator = js.match(/function ksCreateVditor\(\) \{[\s\S]*?\n\}/);
+  assert.ok(creator, '缺少编辑器创建函数');
+  assert.ok(!/ksState\.vditorReady = null/.test(creator[0]),
+    '创建过程内置空缓存会被外层赋值覆盖，失败清理只能放在 ksEnsureVditor 的 catch');
 });
 
 check('#23 失败时清掉残留的编辑器 DOM', () => {
@@ -36,21 +35,22 @@ check('#23 失败时清掉残留的编辑器 DOM', () => {
   assert.ok(/if \(host\) host\.innerHTML = ''/.test(js), '失败时要清空容器，避免留下空壳占位框');
 });
 
-check('#23 打开编辑器失败会重载栏目脚本再试一次', () => {
+check('#23 打开编辑器失败会重载栏目脚本并显示可重试提示', () => {
   const js = read('public/js/knowledge.js');
   const fn = js.match(/async function ksPaintEditor\(article\) \{[\s\S]*?\n\}/);
   assert.ok(fn, '缺少编辑器填充函数');
   assert.ok(/LazySections\.ensureSection\('knowledge'\)/.test(fn[0]), '首次失败要重新加载栏目脚本');
   const attempts = (fn[0].match(/await ksEnsureVditor\(\)/g) || []).length;
   assert.ok(attempts >= 2, '首次失败后要再初始化一次，不能只提示刷新整页');
-  assert.ok(/showToast\('编辑器加载失败/.test(fn[0]) && /ksShowView\('list'\)/.test(fn[0]),
-    '两次都失败仍保留原有提示与返回列表');
+  assert.ok(/ksShowEditorError\(/.test(fn[0]) && /ksPaintEditor\(article\)/.test(fn[0]),
+    '两次都失败要显示带「重试」按钮的提示，点击能重新初始化');
+  assert.ok(!/ksShowView\('list'\)/.test(fn[0]), '失败后不能跳回列表，否则看不到重试入口');
 });
 
 check('#24 编辑器高度由外部样式兜底', () => {
   const css = read('public/css/knowledge.css');
-  const rule = css.match(/\.ks-editor-card #ks-editor > \.vditor \{[^}]*\}/);
-  assert.ok(rule, 'CSP 禁止内联样式生效，必须由外部样式给出编辑区高度');
+  const rule = css.match(/\.ks-editor-card #ks-editor\.vditor \{[^}]*\}/);
+  assert.ok(rule, 'CSP 禁止 HTML 内联样式生效，必须由外部样式给出编辑区高度');
   assert.ok(/height:\s*auto !important/.test(rule[0]), '编辑区高度必须自适应');
   assert.ok(/min-height:\s*0/.test(rule[0]), '不得用固定最小高度留出空占位');
 });

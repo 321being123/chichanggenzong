@@ -9,6 +9,7 @@ const PORTFOLIO = require('../domain/stockSelectionPortfolio');
 const PERIODS = require('../services/stockSelectionPeriods');
 const SERVICE = require('../services/stockSelectionService');
 const BACKTEST = require('../services/stockSelectionBacktest');
+const GAPS = require('../domain/financialSourceGaps');
 
 const tests = [];
 async function check(name, fn) {
@@ -169,6 +170,84 @@ async function main() {
     const gap = V2.evaluateInstrumentV2(withPb('0.2', '0.599', 5), P);
     assert.strictEqual(gap.rules.R02.status, V2.STATUS.PENDING);
     assert.strictEqual(gap.rules.R02.reason, 'pb_extrema_gap_pending');
+  });
+
+  await check('R02 没有年报即不可评估：与 R01／R05 同口径，不得挂成待补（01256／02636／03774）', () => {
+    // 生产实测（2026-11-08）：三只港股 annual_reports=0，01256 与 02636 连估值行都没有，
+    // 03774 有 86 行估值但 pb 全空。同一件事实（一份年报都没有）此前给了两种口径：
+    // R01/R05 判不可评估，R02 判「序列不可用」待补 → 三只把整批港股卡在 publishable=false 上。
+    const emptyWindow = Object.assign({}, facts().pbWindow, {
+      minPb: null, maxPb: null, minPbRaw: null, maxPbRaw: null,
+      coveredDays: 0, positiveDays: 0, observedDays: 0,
+      positiveGapDays: 18, gapDays: 18, expectedDays: 18, historyYears: null,
+      windowStart: '2026-10-09', effectiveStart: '2026-10-09', listDate: '2026-10-09',
+      minPbDate: null, maxPbDate: null,
+    });
+    const noReport = facts({
+      code: '01256.HK', market: 'HK', pb: null, pbRaw: null, peTtm: null, peTtmRaw: null,
+      pbWindow: emptyWindow,
+      annual: { latestYear: null, years: [], currency: 'HKD' },
+      equity: { amount: null, currency: null, periodEnd: null, announcedAt: null, reportId: null },
+      dividend: { ttmPerShare: null, count: 0, currency: null, verifiedZero: false },
+    });
+    const result = V2.evaluateInstrumentV2(noReport, P);
+    assert.strictEqual(result.rules.R02.status, V2.STATUS.NOT_APPLICABLE);
+    assert.strictEqual(result.rules.R02.reason, 'pb_not_evaluable_no_report');
+    // 三条规则必须对同一事实给同一口径，否则统计口径自相矛盾。
+    assert.strictEqual(result.rules.R01.reason, 'pb_not_evaluable_no_report');
+    assert.strictEqual(result.rules.R05.reason, 'equity_not_evaluable_no_report');
+    assert.notStrictEqual(result.rules.R02.status, V2.STATUS.PENDING, '不可评估不是待补，不能进补数队列');
+  });
+
+  await check('R02 有年报但 PB 序列缺失：仍须待补（无年报分支不能放宽成通用放行）', () => {
+    const noPbSeries = facts({
+      pb: null, pbRaw: null,
+      pbWindow: Object.assign({}, facts().pbWindow, {
+        minPb: null, maxPb: null, minPbRaw: null, maxPbRaw: null,
+        coveredDays: 0, positiveDays: 0, observedDays: 0, positiveGapDays: 0, gapDays: 0,
+      }),
+    });
+    const result = V2.evaluateInstrumentV2(noPbSeries, P);
+    assert.strictEqual(result.rules.R02.status, V2.STATUS.PENDING);
+    assert.strictEqual(result.rules.R02.reason, 'pb_series_unavailable');
+  });
+
+  await check('R02 缺口已核实为源端不可恢复 → 不可评估；没登记／登记不全仍待补（06963.HK）', () => {
+    // 06963.HK 阳光保险缺 2023-06 的 4 个交易日，单只区间请求 complete=true、0 失败段，
+    // 同月其余交易日都有 PB：源端不覆盖，不是漏采（源端核实证据见 governance 登记表）。
+    // 十年 PB 从未破 1（max=0.61），正极值比 2.44 不足 3 → 才会挂成待补；
+    // max>1 的证券先走「曾破 1」正证，与本条无关。
+    const registered = Object.assign(withPb('0.25', '0.61', 4), { pbGapSourceUnrecoverable: true });
+    const na = V2.evaluateInstrumentV2(registered, P);
+    assert.strictEqual(na.rules.R02.status, V2.STATUS.NOT_APPLICABLE);
+    assert.strictEqual(na.rules.R02.reason, 'pb_gap_source_unrecoverable');
+    assert.strictEqual(na.pbCoverage.historyComplete, false, '不可评估不等于历史完整');
+
+    // 登记不是放行条：同一只没被登记覆盖时必须继续待补。
+    const unregistered = V2.evaluateInstrumentV2(withPb('0.25', '0.61', 4), P);
+    assert.strictEqual(unregistered.rules.R02.status, V2.STATUS.PENDING);
+    assert.strictEqual(unregistered.rules.R02.reason, 'pb_extrema_gap_pending');
+
+    // 登记不能把本来就成立的证据改弱：已观测到 3 倍仍按正证通过。
+    const positive = Object.assign(withPb('0.25', '0.8', 4), { pbGapSourceUnrecoverable: true });
+    assert.strictEqual(V2.evaluateInstrumentV2(positive, P).rules.R02.status, V2.STATUS.PASS);
+
+    // 零缺口的完整序列上这个标记必须完全不起作用。
+    const complete = Object.assign(withPb('0.25', '0.6', 0), { pbGapSourceUnrecoverable: true });
+    assert.strictEqual(V2.evaluateInstrumentV2(complete, P).rules.R02.status, V2.STATUS.FAIL);
+  });
+
+  await check('估值缺口登记表：4 天全部登记才放行，多一天没登记就仍算未覆盖', () => {
+    const map = GAPS.loadPbGapDays({ reload: true });
+    const days = ['2023-06-02', '2023-06-09', '2023-06-20', '2023-06-23'];
+    assert.strictEqual(GAPS.pbGapFullyRegistered(map, '06963.HK', days), true);
+    assert.strictEqual(GAPS.pbGapFullyRegistered(map, '06963.hk', days), true, '代码大小写不应影响命中');
+    // 窗口比登记窄（只缺其中两天）仍属全覆盖。
+    assert.strictEqual(GAPS.pbGapFullyRegistered(map, '06963.HK', days.slice(0, 2)), true);
+    // 多出一天没登记 → 不能判「已核实不可恢复」，必须继续待补。
+    assert.strictEqual(GAPS.pbGapFullyRegistered(map, '06963.HK', days.concat(['2023-06-30'])), false);
+    assert.strictEqual(GAPS.pbGapFullyRegistered(map, '00700.HK', days), false, '没登记的证券一律不算覆盖');
+    assert.strictEqual(GAPS.pbGapFullyRegistered(map, '06963.HK', []), false, '无缺口时不算覆盖（该走常规判定）');
   });
 
   await check('R02 正证优先：缺口存在但已观测 3 倍比值 → 通过（数学下界，不要求零缺口）', () => {

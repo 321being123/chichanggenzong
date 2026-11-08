@@ -418,6 +418,21 @@ function evaluatePbExtremaV2(facts, params) {
   // 日历未核验时"应有日集合"本身不可信，不能据此宣称完整（AC-03 A02）。
   evidence.historyComplete = calendarVerified && expected !== null && gap !== null && gap === 0 && expected > 0;
 
+  // 一份年报都没有 → 没有净资产，PB 客观上不存在，无从评估极值（2026-11-08 生产实测）：
+  // 01256.HK（2026-10-09 上市）、02636.HK（2026-10-15 上市）、03774.HK（2026-06-30 上市）
+  // 三只都是 `annual_reports=0`，R01 早已判 `pb_not_evaluable_no_report`、
+  // R05 判 `equity_not_evaluable_no_report`，唯独 R02 按 `pb_series_unavailable` 待补，
+  // 三只合起来把整批港股卡在 `publishable=false` 上——同一事实在不同规则里给了两种口径。
+  // 判据与 R01 完全一致：只认「年报年份集合为空」，不看 PB 行数（有行也是数据异常，不是可评估）。
+  const annualYearsR02 = (facts.annual && facts.annual.years) || [];
+  if (!annualYearsR02.length) {
+    return Object.assign(evidence, {
+      rule: rule('R02', STATUS.NOT_APPLICABLE, { value: null, reason: 'pb_not_evaluable_no_report', threshold: multiple }),
+      status: STATUS.NOT_APPLICABLE,
+      reason: 'pb_not_evaluable_no_report',
+    });
+  }
+
   // 单因素阶梯（B03）：R02 回退成 V1 判据「窗口内存在 PB>1 即通过」，
   // 把"改 R01"与"改 R02"分开归因；不借用放宽倍数冒充规则切换。
   if (String(params.r02Rule || 'v1_or_v2') === 'v1_any_above_one') {
@@ -549,6 +564,16 @@ function evaluatePbExtremaV2(facts, params) {
       rule: rule('R02', STATUS.FAIL, { value: ratio, reason: 'pb_extrema_below_multiple', threshold: multiple }),
       status: STATUS.FAIL,
       reason: 'pb_extrema_below_multiple',
+    });
+  }
+  // 缺口已核实为源端不可恢复（窗口内缺失日**全部**被 governance 登记覆盖）→ 与 601528 的财报缺口
+  // 同一口径（方案 27.5 第 6 条）：不入选、不进补数队列、不阻断整批发布。登记没覆盖到全部缺失日、
+  // 或压根没登记的，仍走下面的待补——登记不是放行条（2026-11-08 生产实测 06963.HK 缺 2023-06 的 4 天）。
+  if (gap !== null && gap > 0 && facts.pbGapSourceUnrecoverable === true) {
+    return Object.assign(evidence, {
+      rule: rule('R02', STATUS.NOT_APPLICABLE, { value: ratio, reason: 'pb_gap_source_unrecoverable', threshold: multiple }),
+      status: STATUS.NOT_APPLICABLE,
+      reason: 'pb_gap_source_unrecoverable',
     });
   }
   if (gap === null || gap > 0) {

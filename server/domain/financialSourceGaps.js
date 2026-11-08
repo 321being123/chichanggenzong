@@ -41,4 +41,52 @@ function sourceGapYearsOf(map, code) {
   return set ? Array.from(set).sort((a, b) => a - b) : [];
 }
 
-module.exports = { loadFinancialSourceGaps, sourceGapYearsOf, REGISTRY_PATH };
+let pbCache = null;
+
+/**
+ * 读取估值缺口登记 → Map<canonical_code, Set<'YYYY-MM-DD'>>。
+ * 与财报缺口同一份登记文件、同一条原则：只把**实查确认源端不返回**的交易日登记在案。
+ * 2026-11-08 起因：06963.HK 缺 2023-06 的 4 天 PB，单只区间请求 complete=true、0 失败段，
+ * 同月其余交易日都有 PB，属源端不覆盖而非漏采；R02 若只按 gapDays>0 判未知，
+ * 这只就会把整批港股卡在 publishable=false 上（见方案 27.36.7）。
+ */
+function loadPbGapDays({ registryPath = REGISTRY_PATH, reload = false } = {}) {
+  if (pbCache && !reload && registryPath === REGISTRY_PATH) return pbCache;
+  const map = new Map();
+  try {
+    const raw = fs.readFileSync(registryPath, 'utf8');
+    const parsed = JSON.parse(raw);
+    for (const entry of (parsed && parsed.pbGapDays) || []) {
+      const code = String((entry && entry.code) || '').trim().toUpperCase();
+      const days = Array.isArray(entry && entry.missingDays) ? entry.missingDays : [];
+      if (!code || entry.reason !== 'source_unrecoverable' || !days.length) continue;
+      if (!map.has(code)) map.set(code, new Set());
+      const set = map.get(code);
+      days.forEach(day => {
+        const text = String(day).slice(0, 10);
+        if (/^\d{4}-\d{2}-\d{2}$/.test(text)) set.add(text);
+      });
+    }
+  } catch (error) {
+    console.error('估值源端缺口登记读取失败，按无登记处理：' + error.message);
+  }
+  if (registryPath === REGISTRY_PATH) pbCache = map;
+  return map;
+}
+
+/** 窗口内缺失日是否**全部**被登记覆盖；缺口为空或没登记一律 false（宁可按待补，不静默放行）。 */
+function pbGapFullyRegistered(map, code, missingDays) {
+  const days = (missingDays || []).map(day => String(day).slice(0, 10)).filter(Boolean);
+  if (!days.length) return false;
+  const set = map && map.get(String(code || '').trim().toUpperCase());
+  if (!set || !set.size) return false;
+  return days.every(day => set.has(day));
+}
+
+module.exports = {
+  loadFinancialSourceGaps,
+  sourceGapYearsOf,
+  loadPbGapDays,
+  pbGapFullyRegistered,
+  REGISTRY_PATH,
+};

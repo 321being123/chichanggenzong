@@ -420,6 +420,63 @@ async function loadPbWindow({ market, windowStart, asOfDate }, tx) {
   };
 }
 
+/**
+ * 指定证券在 PB 窗口内的**缺失交易日清单**（应有交易日里没有有效正 PB 的那些天）。
+ * 只给已登记「源端不可恢复」的极少数证券单独调用：全市场口径的 loadPbWindow 不输出清单，
+ * 因为对 688 只逐日保留集合会把十年级查询再放大一轮（该查询已是本模块最慢的一段）。
+ * 判据用途：窗口内缺失日是否**全部**被 governance 登记覆盖，只有全覆盖才允许判不可评估。
+ *
+ * ⚠️ 语义必须与 loadPbWindow 的 expect/covered 完全一致，否则这里列出的"缺失日"和规则看到的
+ * positiveGapDays 不是同一批天，登记永远对不上：① 窗口严格 > windowStart；② 排除上市日
+ * （c.trade_date > list_date）；③ 停牌且当天无 PB 的交易日豁免；④ 只有 pb > 0 才算覆盖
+ * （负债真实取值的负 PB 在规则层先被判为非正事实，走不到缺口分支）。
+ */
+async function loadPbMissingDaysForCodes({ market, codes = [], windowStart, asOfDate }, tx) {
+  const list = (codes || []).filter(Boolean);
+  if (!list.length) return new Map();
+  const config = marketConfig(market);
+  const exec = executorOf(tx);
+  const { rows } = await exec(`
+    WITH inst AS (
+      SELECT instrument_id, canonical_code, COALESCE(list_date, DATE '1900-01-01') AS list_date
+        FROM core.instruments
+       WHERE market = $5 AND asset_class = 'stock' AND canonical_code = ANY($3::text[])
+    ), cal AS (
+      SELECT trade_date FROM market.trade_calendar
+       WHERE exchange = ANY($4::text[]) AND COALESCE(is_open, true) = true
+         AND trade_date > $1::date AND trade_date <= $2::date
+    ), susp AS (
+      SELECT sc.instrument_id, sc.trade_date
+        FROM market.stock_suspend_calendar sc
+        JOIN cal c3 ON c3.trade_date = sc.trade_date
+       WHERE sc.suspend_type = 'S'
+         AND NOT EXISTS (
+               SELECT 1 FROM market.daily_valuations v3
+                WHERE v3.instrument_id = sc.instrument_id
+                  AND v3.trade_date = sc.trade_date AND v3.pb IS NOT NULL)
+    )
+    SELECT i.canonical_code AS code, to_char(c.trade_date, 'YYYY-MM-DD') AS missing_day
+      FROM inst i
+      JOIN cal c ON c.trade_date > i.list_date
+     WHERE NOT EXISTS (
+             SELECT 1 FROM market.daily_valuations v
+              WHERE v.instrument_id = i.instrument_id
+                AND v.trade_date = c.trade_date
+                AND v.pb IS NOT NULL AND v.pb > 0)
+       AND NOT EXISTS (
+             SELECT 1 FROM susp s
+              WHERE s.instrument_id = i.instrument_id AND s.trade_date = c.trade_date)
+     ORDER BY 1, 2`, [windowStart, asOfDate, list, config.calendarExchanges, market]);
+  const map = new Map();
+  rows.forEach(row => {
+    const key = String(row.code || '').toUpperCase();
+    if (!key) return;
+    if (!map.has(key)) map.set(key, []);
+    map.get(key).push(String(row.missing_day).slice(0, 10));
+  });
+  return map;
+}
+
 /** 最新可见归母权益（按公告日严格早于目标日，目录日期不当作公告日）。 */
 async function loadEquityFacts({ companyIds, asOfDate, availableBefore }, tx) {
   if (!companyIds.length) return new Map();
@@ -2139,7 +2196,7 @@ async function listCandidatesForProjection({ runId, batchSize = 1000 }, tx) {
 
 module.exports = {
   MARKET_CONFIG,
-  loadUniverse, loadPbWindow, loadEquityFacts, loadAnnualProfits, loadDividendWindow,
+  loadUniverse, loadPbWindow, loadPbMissingDaysForCodes, loadEquityFacts, loadAnnualProfits, loadDividendWindow,
   loadAnnualDividends, loadIndustries, loadFxRatesForPairs, loadMarketValuation, loadLatestMarketValuation, loadCalendar,
   loadCalendarEvidence, findUniverseArtifact, insertUniverseArtifact, loadUniverseRoster, loadTtmInputs,
   loadOpenPrices, loadClosePrices, loadBenchmarkCloses, loadDividendCash, loadDividendEvents, loadBarWindow,

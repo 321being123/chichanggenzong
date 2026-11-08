@@ -5,7 +5,7 @@
 
 const crypto = require('crypto');
 const RULES = require('../domain/stockSelectionRules');
-const { loadFinancialSourceGaps, sourceGapYearsOf } = require('../domain/financialSourceGaps');
+const { loadFinancialSourceGaps, sourceGapYearsOf, loadPbGapDays, pbGapFullyRegistered } = require('../domain/financialSourceGaps');
 const RULES_V2 = require('../domain/stockSelectionRulesV2');
 const PORTFOLIO = require('../domain/stockSelectionPortfolio');
 const PERIODS = require('./stockSelectionPeriods');
@@ -417,6 +417,8 @@ function buildRuleFacts(row, ctx) {
       verifiedZero: dividend.count === 0 && dividend.hasDividendHistory === true,
     }) : { verifiedZero: false },
     annual,
+    // 估值缺口已核实为源端不可恢复（窗口内缺失日全部登记在案）→ R02 判不可评估，不进补数队列。
+    pbGapSourceUnrecoverable: !!(ctx.pbGapCovered && ctx.pbGapCovered.get(String(row.code || '').toUpperCase())),
     // 自算 TTM 的利润与血缘证据（三份报表 + 公式 + 币种），供应商 PE 的符号另由规则层对照。
     ttmProfit: ttm ? ttm.value : null,
     ttmEvidenceRef: ttm ? ttm.evidence : null,
@@ -629,8 +631,23 @@ async function computeSelection(input, tx) {
     .map(item => ({ currency: String(item.currency).toUpperCase(), date: item.periodEnd }));
   const fx = await repo.loadFxRatesForPairs({ pairs: fxPairs }, tx);
 
+  // 估值缺口登记（2026-11-08，方案 27.36.7）：只有「窗口内缺失日**全部**被 governance 登记覆盖」
+  // 才允许 R02 判不可评估。缺失日清单要对 688 只逐日保留集合，成本高，所以只对登记在案的证券查，
+  // 通常是 0～1 只；没登记、只登记一部分、登记的日期对不上，一律维持待补（不静默放行）。
+  const pbGapRegistry = loadPbGapDays();
+  const pbGapCodes = universe
+    .map(row => String(row.code || '').toUpperCase())
+    .filter(code => pbGapRegistry.has(code));
+  const pbGapCovered = new Map();
+  if (pbGapCodes.length) {
+    const pbMissing = await repo.loadPbMissingDaysForCodes({ market, codes: pbGapCodes, windowStart, asOfDate }, tx);
+    pbGapCodes.forEach(code => {
+      pbGapCovered.set(code, pbGapFullyRegistered(pbGapRegistry, code, pbMissing.get(code) || []));
+    });
+  }
+
   const ctx = { equity, profits, annualDividends, dividends, industries, pbWindow, fx, ttm, asOfDate,
-    dividendWindowStart, sourceGaps: loadFinancialSourceGaps() };
+    dividendWindowStart, sourceGaps: loadFinancialSourceGaps(), pbGapCovered };
   const evaluated = universe.map(row => buildRuleFacts(row, ctx))
     .map(facts => (isV2 ? RULES_V2.evaluateInstrumentV2(facts, params) : RULES.evaluateInstrument(facts, params)));
 

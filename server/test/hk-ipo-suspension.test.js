@@ -38,8 +38,20 @@ const { runJobByCode } = require('../services/jobRunners');
     pool.query = async () => { throw new Error('暂停接口不得读库或取行情'); };
     const app = express();
     app.use('/api/ipo', require('../routes/ipo'));
-    server = app.listen(0);
-    await new Promise(resolve => server.once('listening', resolve));
+    // listen(0) 拿的随机端口可能落在 undici/fetch 的禁用端口表里（6000、6665-6669、10080 等），
+    // 那样 fetch 直接报 bad port，与业务无关（2026-11-08 全量偶发一次）。这里避开这些端口重取。
+    const blockedPorts = new Set([0, 1, 7, 9, 11, 13, 15, 17, 19, 20, 21, 22, 23, 25, 37, 42, 43, 53, 69, 77, 79,
+      87, 95, 101, 102, 103, 104, 109, 110, 111, 113, 115, 117, 119, 123, 135, 137, 139, 143, 161, 179, 389, 427,
+      465, 512, 513, 514, 515, 526, 530, 531, 532, 540, 548, 554, 556, 563, 587, 601, 636, 989, 990, 993, 995,
+      1719, 1720, 1723, 2049, 3659, 4045, 4190, 5060, 5061, 6000, 6566, 6665, 6666, 6667, 6668, 6669, 6679, 6697, 10080]);
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      server = app.listen(0);
+      await new Promise(resolve => server.once('listening', resolve));
+      if (!blockedPorts.has(server.address().port)) break;
+      await new Promise(resolve => server.close(resolve));
+      server = null;
+    }
+    assert(server && server.address() && !blockedPorts.has(server.address().port), '未能取得可用于 fetch 的端口');
     for (const url of ['/calendar?market=HK', '/history?type=hk_stock', '/report/code?code=09995.HK']) {
       const response = await fetch(`http://127.0.0.1:${server.address().port}/api/ipo${url}`);
       assert.strictEqual(response.status, 503);

@@ -3,12 +3,13 @@
 'use strict';
 
 const express = require('express');
+const crypto = require('crypto');
 const router = express.Router();
 const asyncHandler = require('../middleware/async');
 const { requireLogin, requireCapability } = require('../middleware/auth');
 const service = require('../services/stockSelectionService');
 const backtestService = require('../services/stockSelectionBacktest');
-const { auditEvent } = require('../db');
+const { auditEvent, getUserAuth } = require('../db');
 const { enqueueManualJob, enqueueSelectionPeriodJob } = require('../services/jobScheduleSlots');
 
 const MAX_PAGE_SIZE = 200;
@@ -29,6 +30,12 @@ function isRealDate(text) {
 }
 
 function runEnvelope(run) {
+  const inputManifest = run.input_manifest ? Object.assign({}, run.input_manifest) : null;
+  if (inputManifest && inputManifest.portfolio) {
+    inputManifest.portfolio = Object.assign({}, inputManifest.portfolio);
+    // 未入选原因按候选页/详情投影，批次摘要不向浏览器下发整份候选原因表。
+    delete inputManifest.portfolio.selectionOutcomes;
+  }
   return {
     runId: Number(run.run_id),
     market: run.market,
@@ -42,6 +49,10 @@ function runEnvelope(run) {
     periodKey: run.period_key || null,
     periodStart: run.period_start_text || null,
     periodEnd: run.period_end_text || null,
+    sourceRunId: run.supersedes_run_id === null || run.supersedes_run_id === undefined
+      ? null : Number(run.supersedes_run_id),
+    sourceRevision: run.input_manifest && run.input_manifest.sourceRevision !== undefined
+      ? Number(run.input_manifest.sourceRevision) : null,
     isShadow: run.is_shadow === true,
     computedAt: run.computed_at || null,
     settingsRevision: run.settings_revision === null || run.settings_revision === undefined ? null : Number(run.settings_revision),
@@ -60,13 +71,31 @@ function runEnvelope(run) {
     positionRatio: run.position_ratio === null ? null : Number(run.position_ratio),
     budgetRatio: run.budget_ratio === null ? null : Number(run.budget_ratio),
     ownerUsername: run.owner_username || null,
-    inputManifest: run.input_manifest || null,
+    inputManifest,
   };
 }
 
 /** 会话中的不可复用主体身份（迁移 187）；老会话没有该字段时返回空串。 */
 function sessionSubjectOf(req) {
   return String((req.session && req.session.subjectId) || '');
+}
+
+function subjectTokenOf(req) {
+  return crypto.createHash('sha256').update(sessionSubjectOf(req)).digest('hex');
+}
+
+function errorPayload(error) {
+  return { error: error.message, code: error.code || null };
+}
+
+function assertExpectedSubject(req) {
+  const expected = req.body && req.body.expectedSubjectToken;
+  if (expected && expected !== subjectTokenOf(req)) {
+    const error = new Error('登录账号已变化，请刷新后重试');
+    error.status = 409;
+    error.code = 'STOCK_SELECTION_SUBJECT_CHANGED';
+    throw error;
+  }
 }
 
 /**
@@ -96,10 +125,12 @@ function assertRunAccess(req, run) {
 
 router.get('/markets', requireLogin, asyncHandler(async (req, res) => {
   const strategyCode = req.query.strategy ? String(req.query.strategy) : undefined;
+  const periodType = req.query.periodType ? String(req.query.periodType).toLowerCase() : undefined;
+  if (periodType && !PERIOD_TYPES.includes(periodType)) return res.status(400).json({ error: '周期类型不合法' });
   try {
-    res.json(await service.getMarkets({ strategyCode }));
+    res.json(await service.getMarkets({ strategyCode, periodType }));
   } catch (error) {
-    res.status(error.status || 500).json({ error: error.message });
+    res.status(error.status || 500).json(errorPayload(error));
   }
 }));
 
@@ -217,6 +248,11 @@ router.get('/runs/:id/candidates', requireLogin, asyncHandler(async (req, res) =
       ttmProfitStatus: row.ttm_profit_status || null,
       rankReady: row.rank_ready === null || row.rank_ready === undefined ? null : row.rank_ready === true,
       rankBlockReasons: row.rank_block_reasons || [],
+      personalExcluded: row.personalExcluded === true,
+      personalExclusionReasons: row.personalExclusionReasons || [],
+      personalSelected: row.personalSelected === true,
+      personalStatus: row.personalStatus || null,
+      personalNonSelectionReasons: row.personalNonSelectionReasons || [],
       pbCoverage: {
         coveredDays: row.pb_covered_days === undefined ? null : row.pb_covered_days,
         expectedDays: row.pb_expected_days === undefined ? null : row.pb_expected_days,
@@ -231,7 +267,10 @@ router.get('/runs/:id/portfolio', requireLogin, asyncHandler(async (req, res) =>
   const runId = intParam(req.params.id, null);
   if (!runId) return res.status(400).json({ error: '批次编号不合法' });
   assertRunAccess(req, await service.getRun(runId));
-  const portfolio = await service.getPortfolio(runId);
+  const baselineRunId = req.query.baselineRunId === undefined ? null : intParam(req.query.baselineRunId, null);
+  if (req.query.baselineRunId !== undefined && !baselineRunId) return res.status(400).json({ error: '比较基线编号不合法' });
+  if (baselineRunId) assertRunAccess(req, await service.getRun(baselineRunId));
+  const portfolio = await service.getPortfolio(runId, { baselineRunId });
   if (!portfolio) return res.status(404).json({ error: '批次不存在' });
   res.json(portfolio);
 }));
@@ -272,19 +311,22 @@ router.get('/backtests/:id/periods', requireLogin, asyncHandler(async (req, res)
 }));
 
 router.get('/settings', requireLogin, asyncHandler(async (req, res) => {
-  res.json(await service.getSettings(req.session.user));
+  const user = await getUserAuth(req.session.user);
+  res.json({ ...await service.getSettings(req.session.user), ownerUsername: req.session.user,
+    accountIdentity: String(user && user.account_identity || ''), subjectToken: subjectTokenOf(req) });
 }));
 
 router.put('/settings', requireLogin, asyncHandler(async (req, res) => {
   try {
-    const saved = await service.saveSettings({ username: req.session.user, body: req.body || {} });
+    assertExpectedSubject(req);
+    const saved = await service.saveSettings({ username: req.session.user, body: req.body || {}, expectedSubjectId: sessionSubjectOf(req) });
     await auditEvent({
       actor: req.session.user, action: 'stock_selection_settings', target: req.session.user,
       result: 'success', requestId: req.id, metadata: { revision: saved.revision },
     });
     res.json({ ok: true, ...saved });
   } catch (error) {
-    res.status(error.status || 500).json({ error: error.message });
+    res.status(error.status || 500).json(errorPayload(error));
   }
 }));
 
@@ -293,11 +335,14 @@ router.post('/simulations', requireLogin, asyncHandler(async (req, res) => {
   const sourceRunId = intParam(body.sourceRunId, null);
   if (!sourceRunId) return res.status(400).json({ error: '请选择已发布的批次' });
   try {
+    assertExpectedSubject(req);
     const result = await service.createSimulation({
       username: req.session.user,
+      expectedSubjectId: sessionSubjectOf(req),
       sourceRunId,
       positionRatio: body.positionRatio,
       budgetRatio: body.budgetRatio,
+      expectedSettingsRevision: body.settingsRevision === undefined ? undefined : Number(body.settingsRevision),
       // 请求幂等（方案 27.9）：同 ID 同输入复用，同 ID 不同输入 409；不是批次唯一键的替代。
       clientRequestId: body.clientRequestId ? String(body.clientRequestId).slice(0, 100) : null,
     });
@@ -316,7 +361,7 @@ router.post('/simulations', requireLogin, asyncHandler(async (req, res) => {
       run: runEnvelope(result.run),
     });
   } catch (error) {
-    res.status(error.status || 500).json({ error: error.message });
+    res.status(error.status || 500).json(errorPayload(error));
   }
 }));
 

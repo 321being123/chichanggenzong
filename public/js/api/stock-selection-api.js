@@ -10,13 +10,21 @@
       var message = (result.payload && result.payload.error) || result.error || ('请求失败（' + result.status + '）');
       var error = new Error(message);
       error.status = result.status;
+      error.code = result.payload && result.payload.code ? String(result.payload.code) : null;
+      error.payload = result.payload || {};
       throw error;
     }
     return result.payload || {};
   }
 
   global.StockSelectionApi = {
-    getMarkets: function () { return global.siteApi.get(base('/markets')).then(jsonOf); },
+    getMarkets: function (query) {
+      var qs = new URLSearchParams();
+      Object.keys(query || {}).forEach(function (key) {
+        if (query[key] !== undefined && query[key] !== null && query[key] !== '') qs.set(key, query[key]);
+      });
+      return global.siteApi.get(base('/markets') + (qs.toString() ? '?' + qs.toString() : '')).then(jsonOf);
+    },
     listRuns: function (query) {
       var qs = new URLSearchParams();
       Object.keys(query || {}).forEach(function (key) {
@@ -32,7 +40,7 @@
       });
       return global.siteApi.get(base('/runs/' + runId + '/candidates') + (qs.toString() ? '?' + qs.toString() : '')).then(jsonOf);
     },
-    getPortfolio: function (runId) { return global.siteApi.get(base('/runs/' + runId + '/portfolio')).then(jsonOf); },
+    getPortfolio: function (runId, baselineRunId) { return global.siteApi.get(base('/runs/' + runId + '/portfolio') + (baselineRunId ? '?baselineRunId=' + encodeURIComponent(baselineRunId) : '')).then(jsonOf); },
     getStock: function (runId, code) {
       return global.siteApi.get(base('/runs/' + runId + '/stocks/' + encodeURIComponent(code))).then(jsonOf);
     },

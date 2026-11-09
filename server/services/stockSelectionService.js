@@ -1381,11 +1381,13 @@ function previousQuarterOf(quarter) {
  * V2 的 ready 只看"本周期是否有正式结果"，不再依赖指数 PB（方案 27.3）；
  * 同时单独给出每日/每周状态，"本周未就绪"不能拿 daily 结果顶替。
  */
-async function getMarkets({ strategyCode } = {}) {
+async function getMarkets({ strategyCode, periodType } = {}) {
   const code = normalizeStrategyCode(strategyCode);
   const isV2 = code === RULES_V2.STRATEGY_CODE_V2;
   const params = isV2 ? RULES_V2.V2_PARAMS : RULES.DEFAULT_PARAMS;
-  const activePeriodType = isV2 ? 'week' : 'quarter';
+  const requestedPeriodType = ['day', 'week', 'quarter'].includes(String(periodType || '').toLowerCase())
+    ? String(periodType).toLowerCase() : null;
+  const activePeriodType = requestedPeriodType || (isV2 ? 'week' : 'quarter');
   const markets = [];
   for (const market of ['CN', 'HK']) {
     const config = repo.MARKET_CONFIG[market];
@@ -1402,6 +1404,7 @@ async function getMarkets({ strategyCode } = {}) {
       weekly = await periodStatus({ market, periodType: 'week', strategyCode: code }).catch(() => null);
       daily = await periodStatus({ market, periodType: 'day', strategyCode: code }).catch(() => null);
     }
+    const selectedPeriodStatus = activePeriodType === 'day' ? daily : activePeriodType === 'week' ? weekly : null;
     markets.push({
       market,
       label: MARKET_LABEL[market],
@@ -1422,11 +1425,12 @@ async function getMarkets({ strategyCode } = {}) {
       latestRun: published,
       ready,
       activePeriodType,
+      selectedPeriodStatus,
       weekly,
       daily,
     });
   }
-  return { markets, params, strategyCode: code };
+  return { markets, params, strategyCode: code, activePeriodType };
 }
 
 async function getRun(runId) {
@@ -1435,50 +1439,188 @@ async function getRun(runId) {
   return run;
 }
 
-async function getCandidates(query) {
-  return repo.listCandidates(query);
+// 个人生成与旧结果解释复用同一份冻结候选投影，不重算基础资格/排名。
+function personalPortfolioOf(rows, { positionRatio, params, exclusion, legacyIndustryCodes = [] }) {
+  const anomalyById = {};
+  const ranked = rows.filter(row => row.filter_status === RULES.STATUS.PASS).map(row => {
+    const detail = row.detail || {};
+    if (detail.anomaly) anomalyById[Number(row.instrument_id)] = detail.anomaly;
+    return {
+      instrumentId: Number(row.instrument_id), code: row.code, name: row.name,
+      companyId: row.company_id === null ? null : Number(row.company_id),
+      currentPb: row.current_pb === null ? null : Number(row.current_pb),
+      currentPe: row.current_pe === null ? null : Number(row.current_pe),
+      dividendYield: row.dividend_yield === null ? null : Number(row.dividend_yield),
+      profitStatus: row.ttm_profit_status || row.profit_status,
+      ttmProfitStatus: row.ttm_profit_status || row.profit_status,
+      filterStatus: row.filter_status,
+      rankReady: row.rank_ready === null || row.rank_ready === undefined ? detail.rankReady !== false : row.rank_ready === true,
+      selectionOrder: row.selection_order,
+      industry: row.industry_code ? { code: row.industry_code, name: row.industry_name, system: row.industry_system, version: row.industry_version } : null,
+    };
+  });
+  return PORTFOLIO.buildPortfolio({ ranked, anomalyById, positionRatio, params,
+    excludedInstrumentIds: exclusion.instrumentIds, excludedIndustryKeys: exclusion.industryKeys,
+    excludedIndustryCodes: legacyIndustryCodes });
 }
 
-async function getPortfolio(runId) {
+function personalSelectionOutcomes(portfolio) {
+  return (portfolio.skipped || []).map(item => ({ instrumentId: Number(item.instrumentId), reason: item.reason }))
+    .concat((portfolio.watchlist || []).map(item => ({ instrumentId: Number(item.instrumentId), reason: 'zero_position' })));
+}
+
+async function personalSelectionContext(run) {
+  const manifest = run.input_manifest || {};
+  const settings = manifest.settingsSnapshot || {};
+  const exclusion = exclusionOf(settings, run.market);
+  if (Array.isArray(manifest.excludedInstrumentIds)) exclusion.instrumentIds = manifest.excludedInstrumentIds.map(Number);
+  if (Array.isArray(manifest.excludedIndustryKeys)) exclusion.industryKeys = manifest.excludedIndustryKeys;
+  // 旧版按代码过滤的批次按其原冻结载荷解释，不把新完整身份语义套回旧结果。
+  const legacyIndustryCodes = !Array.isArray(manifest.excludedIndustryKeys) && Array.isArray(manifest.excludedIndustryCodes)
+    ? manifest.excludedIndustryCodes.map(String) : [];
+  const selected = new Set((await repo.listMembers(run.run_id)).map(row => Number(row.instrument_id)));
+  const frozen = run.input_manifest && run.input_manifest.portfolio;
+  let outcomes = frozen && frozen.selectionOutcomes;
+  if (!Array.isArray(outcomes) && run.position_ratio !== null && run.position_ratio !== undefined) {
+    // 历史个人结果没有原因摘要：只读其已复制的冻结候选，复用原席位规则回放，不写回旧快照。
+    const rows = await repo.listCandidatesForProjection({ runId: run.run_id });
+    const replay = personalPortfolioOf(rows, {
+      positionRatio: Number(run.position_ratio), params: run.parameters || {}, exclusion, legacyIndustryCodes,
+    });
+    // 历史算法不一致时不编造具体原因，实际成员始终以该快照落库结果为准。
+    const sameMembers = replay.members.length === selected.size && replay.members.every(item => selected.has(Number(item.instrumentId)));
+    outcomes = sameMembers ? personalSelectionOutcomes(replay) : [];
+  }
+  return { exclusion, selected, legacyIndustryCodes, outcomes: new Map((outcomes || []).map(item => [Number(item.instrumentId), item.reason])) };
+}
+
+function withPersonalSelection(row, context) {
+  const { exclusion, selected, outcomes, legacyIndustryCodes } = context;
+  const industry = row.industry_code ? {
+    code: row.industry_code, system: row.industry_system, version: row.industry_version,
+  } : null;
+  const industryKey = industry ? PORTFOLIO.industryIdentityKey(industry) : null;
+  const byStock = exclusion.instrumentIds.includes(Number(row.instrument_id));
+  const byIndustry = !!industryKey && (exclusion.industryKeys.includes(industryKey) || legacyIndustryCodes.includes(String(row.industry_code)));
+  const reasons = [];
+  if (byStock) reasons.push('user_excluded_instrument');
+  if (byIndustry) reasons.push('user_excluded_industry');
+  const isSelected = selected.has(Number(row.instrument_id));
+  const ruleReason = row.filter_status === RULES.STATUS.FAIL ? 'rule_not_passed'
+    : row.filter_status === RULES.STATUS.NOT_APPLICABLE ? 'rule_not_evaluable'
+      : row.filter_status === RULES.STATUS.RISK ? 'risk_held'
+        : row.filter_status !== RULES.STATUS.PASS ? 'rule_or_data_pending' : 'not_selected';
+  return Object.assign(row, {
+    personalExcluded: reasons.length > 0,
+    personalExclusionReasons: reasons,
+    personalSelected: isSelected,
+    personalStatus: isSelected ? 'selected' : (reasons.length ? 'excluded' : 'not_selected'),
+    personalNonSelectionReasons: isSelected ? [] : reasons.length ? reasons : [outcomes.get(Number(row.instrument_id)) || ruleReason],
+  });
+}
+
+async function getCandidates(query) {
+  const result = await repo.listCandidates(query);
+  const run = await repo.findRun(query.runId);
+  if (!run || run.run_kind !== 'personal') return result;
+  const context = await personalSelectionContext(run);
+  result.rows = result.rows.map(row => withPersonalSelection(row, context));
+  return result;
+}
+
+async function getPortfolio(runId, options = {}) {
   const run = await repo.findRun(runId);
   if (!run) return null;
   const members = await repo.listMembers(runId);
-  const previous = await repo.previousPublishedMembers({
-    market: run.market, asOfDate: run.as_of_date_text, excludeRunId: Number(runId),
-  });
+  const sourceRun = run.run_kind === 'personal' && run.supersedes_run_id
+    ? await repo.findRun(run.supersedes_run_id) : null;
+  const sourceIndustryIdentityCounts = await repo.listIndustryIdentityCounts(
+    sourceRun ? Number(sourceRun.run_id) : Number(runId));
+  let baseline;
+  if (options.baselineRunId) {
+    const requested = await repo.findRun(options.baselineRunId);
+    const sameOwner = requested && requested.run_kind === 'personal'
+      && ((run.owner_subject_id && String(requested.owner_subject_id) === String(run.owner_subject_id))
+        || (!run.owner_subject_id && !requested.owner_subject_id && requested.owner_username === run.owner_username));
+    if (!sourceRun || !requested || (Number(requested.run_id) !== Number(sourceRun.run_id)
+      && !(sameOwner && Number(requested.supersedes_run_id) === Number(sourceRun.run_id)))) {
+      const error = new Error('比较基线与个人组合来源或主体不一致');
+      error.status = 400;
+      throw error;
+    }
+    baseline = { run: requested, rows: await repo.listMembers(requested.run_id) };
+  } else if (sourceRun) {
+    const personalBaseline = await repo.previousPersonalMembers({
+      market: run.market,
+      sourceRunId: Number(sourceRun.run_id),
+      excludeRunId: Number(runId),
+      ownerUsername: run.owner_username,
+      ownerSubjectId: run.owner_subject_id,
+    });
+    baseline = personalBaseline.run ? personalBaseline : await repo.previousPublishedMembers({
+      market: run.market,
+      asOfDate: null,
+      excludeRunId: Number(runId),
+      periodType: sourceRun.period_type || 'quarter',
+      sourceRunId: Number(sourceRun.run_id),
+    });
+  } else {
+    baseline = await repo.previousPublishedMembers({
+      market: run.market,
+      asOfDate: run.as_of_date_text,
+      excludeRunId: Number(runId),
+      periodType: run.period_type || 'quarter',
+      sourceRunId: null,
+    });
+  }
+  const previous = baseline.rows;
   const currentIds = new Set(members.map(member => Number(member.instrument_id)));
   const previousIds = new Set(previous.map(row => Number(row.instrument_id)));
   const changes = {
-    // 调入/调出只在有上一份正式季度组合时才有意义；否则明确标注没有可比对象。
-    comparable: previous.length > 0,
-    previousQuarter: previous.length ? previous[0].quarter : null,
-    previousAsOfDate: previous.length ? previous[0].as_of_date : null,
+    // 有效零成员批次也属于可比较基线，不能用 rows.length 判断是否存在历史。
+    comparable: !!baseline.run,
+    basis: run.run_kind === 'personal'
+      ? (baseline.run && baseline.run.run_kind === 'personal' ? 'previous_personal_run' : 'source_public_run')
+      : ((run.period_type || 'quarter') === 'quarter' ? 'previous_period' : 'previous_same_channel'),
+    previousRunId: baseline.run ? Number(baseline.run.run_id) : null,
+    previousPeriodKey: baseline.run ? baseline.run.period_key : null,
+    previousQuarter: baseline.run ? baseline.run.quarter : null,
+    previousAsOfDate: baseline.run ? baseline.run.as_of_date : null,
     added: members.filter(member => !previousIds.has(Number(member.instrument_id)))
       .map(member => ({ code: member.code, name: member.name, slotNo: member.slot_no })),
     removed: previous.filter(row => !currentIds.has(Number(row.instrument_id)))
       .map(row => ({ code: row.code, name: row.name })),
     kept: members.filter(member => previousIds.has(Number(member.instrument_id))).length,
   };
-  const positionRatio = run.position_ratio === null ? 1 : Number(run.position_ratio);
+  const positionRatio = run.position_ratio === null || run.position_ratio === undefined ? null : Number(run.position_ratio);
   const slots = RULES.DEFAULT_PARAMS.slotsPerMarket;
   const investedDenominator = members.length;
   const industryBreakdown = [];
   const industryCount = new Map();
   members.forEach(member => {
     const key = member.industry_code || 'unverified';
-    const entry = industryCount.get(key) || { industryCode: key, industryName: member.industry_name || null, count: 0 };
+    const entry = industryCount.get(key) || {
+      industryCode: key, industryName: member.industry_name || null, count: 0, weightInMarketBudget: 0,
+    };
     entry.count += 1;
+    const memberWeight = member.weight_in_market_budget === null || member.weight_in_market_budget === undefined
+      ? null : Number(member.weight_in_market_budget);
+    entry.weightInMarketBudget = entry.weightInMarketBudget === null || memberWeight === null
+      ? null : entry.weightInMarketBudget + memberWeight;
     industryCount.set(key, entry);
   });
   industryCount.forEach(entry => {
     industryBreakdown.push(Object.assign(entry, {
-      weightInMarketBudget: entry.count * positionRatio / slots,
+      weightInMarketBudget: entry.weightInMarketBudget,
       // 实际股票子组合口径：不足 30 席时它和 1/30 不同；行业占预算 13.33% 不等于占股票 13.33%。
       weightInInvestedEquity: investedDenominator > 0 ? entry.count / investedDenominator : null,
       limitRatio: RULES.DEFAULT_PARAMS.industryLimitRatio,
     }));
   });
-  const equityWeight = members.length * positionRatio / slots;
+  const weightsComplete = members.every(member => member.weight_in_market_budget !== null && member.weight_in_market_budget !== undefined);
+  const equityWeight = weightsComplete
+    ? members.reduce((sum, member) => sum + Number(member.weight_in_market_budget), 0)
+    : null;
   return {
     runId: Number(runId),
     market: run.market,
@@ -1487,6 +1629,10 @@ async function getPortfolio(runId) {
     periodKey: run.period_key || null,
     periodStart: run.period_start_text || null,
     periodEnd: run.period_end_text || null,
+    sourceRunId: sourceRun ? Number(sourceRun.run_id) : (run.run_kind === 'personal' ? null : Number(run.run_id)),
+    sourceRevision: sourceRun ? Number(sourceRun.revision || 1) : Number(run.revision || 1),
+    settingsRevision: run.settings_revision === null || run.settings_revision === undefined ? null : Number(run.settings_revision),
+    strategyCode: run.strategy_code || null,
     isShadow: run.is_shadow === true,
     computedAt: run.computed_at || null,
     asOfDate: run.as_of_date_text,
@@ -1496,16 +1642,24 @@ async function getPortfolio(runId) {
     selectedCount: members.length,
     unfilledSlots: slots - members.length,
     equityWeightInMarketBudget: equityWeight,
-    cashWeightInMarketBudget: 1 - equityWeight,
+    cashWeightInMarketBudget: equityWeight === null ? null : 1 - equityWeight,
     // 三种权重分母分开给，页面不要用一个"权重"混着说（方案 27.9）。
     weightBasis: {
-      weightInMarketBudget: positionRatio / slots,
+      weightInMarketBudget: positionRatio === null ? null : positionRatio / slots,
       weightInEquityTarget: 1 / slots,
       weightInInvestedEquity: investedDenominator > 0 ? 1 / investedDenominator : null,
       investedDenominator,
     },
     changes,
+    sourceIndustryIdentityCounts: sourceIndustryIdentityCounts.map(row => ({
+      code: row.code,
+      name: row.name || null,
+      system: row.system || null,
+      version: row.version || null,
+      affectedCount: Number(row.affected_count || 0),
+    })),
     members: members.map(member => ({
+      instrumentId: Number(member.instrument_id),
       slotNo: member.slot_no,
       code: member.code,
       name: member.name,
@@ -1513,8 +1667,11 @@ async function getPortfolio(runId) {
       industryCode: member.industry_code,
       industryName: member.industry_name,
       industrySystem: member.industry_system,
-      weightInMarketBudget: Number(member.weight_in_market_budget),
-      weightInEquityTarget: Number(member.weight_in_equity_target),
+      industryVersion: member.industry_version,
+      weightInMarketBudget: member.weight_in_market_budget === null || member.weight_in_market_budget === undefined
+        ? null : Number(member.weight_in_market_budget),
+      weightInEquityTarget: member.weight_in_equity_target === null || member.weight_in_equity_target === undefined
+        ? null : Number(member.weight_in_equity_target),
       weightInInvestedEquity: member.weight_in_invested_equity === null || member.weight_in_invested_equity === undefined
         ? null : Number(member.weight_in_invested_equity),
       issuerDuplicate: member.issuer_duplicate,
@@ -1541,6 +1698,7 @@ async function getStockDetail({ runId, code }) {
   if (!run) return null;
   const candidate = await repo.findCandidate({ runId, code });
   if (!candidate) return null;
+  if (run.run_kind === 'personal') withPersonalSelection(candidate, await personalSelectionContext(run));
   return {
     runId: Number(runId),
     market: run.market,
@@ -1591,6 +1749,11 @@ async function getStockDetail({ runId, code }) {
       filterStatus: candidate.filter_status,
       dataQualityStatus: candidate.data_quality_status,
       exclusionReasons: candidate.exclusion_reasons,
+      personalExcluded: candidate.personalExcluded === true,
+      personalExclusionReasons: candidate.personalExclusionReasons || [],
+      personalSelected: candidate.personalSelected === true,
+      personalStatus: candidate.personalStatus || null,
+      personalNonSelectionReasons: candidate.personalNonSelectionReasons || [],
       detail: candidate.detail,
     },
   };
@@ -1625,15 +1788,20 @@ function validateSettingsPayload(body, existing) {
     return Number.isFinite(n) ? n : null;
   };
   const prior = existing || {};
+  const has = key => Object.prototype.hasOwnProperty.call(body || {}, key);
+  const priorRatio = key => (prior[key] === undefined ? null : prior[key]);
   const settings = {
     schemaVersion: SETTINGS_SCHEMA_VERSION,
-    budgetRatioA: pickRatio(body.budgetRatioA, 'A股市场资金占比'),
-    budgetRatioHk: pickRatio(body.budgetRatioHk, '港股市场资金占比'),
-    positionRatioA: pickRatio(body.positionRatioA, 'A股目标股票仓位'),
-    positionRatioHk: pickRatio(body.positionRatioHk, '港股目标股票仓位'),
-    totalCapital: body.totalCapital === undefined || body.totalCapital === null || body.totalCapital === ''
-      ? null : Number(body.totalCapital),
+    // 资金字段：省略=保留，显式 null/空字符串=清空。行内排除入口不得把旧资金配置写成 null。
+    budgetRatioA: pickRatio(has('budgetRatioA') ? body.budgetRatioA : priorRatio('budgetRatioA'), 'A股市场资金占比'),
+    budgetRatioHk: pickRatio(has('budgetRatioHk') ? body.budgetRatioHk : priorRatio('budgetRatioHk'), '港股市场资金占比'),
+    positionRatioA: pickRatio(has('positionRatioA') ? body.positionRatioA : priorRatio('positionRatioA'), 'A股目标股票仓位'),
+    positionRatioHk: pickRatio(has('positionRatioHk') ? body.positionRatioHk : priorRatio('positionRatioHk'), '港股目标股票仓位'),
+    totalCapital: has('totalCapital')
+      ? (body.totalCapital === null || body.totalCapital === '' ? null : Number(body.totalCapital))
+      : (prior.totalCapital === undefined ? null : prior.totalCapital),
   };
+  if (settings.totalCapital !== null) settings.totalCapital = Number(settings.totalCapital);
   if (settings.totalCapital !== null && (!Number.isFinite(settings.totalCapital) || settings.totalCapital < 0)) {
     errors.push('总资金必须是非负数字');
   }
@@ -1664,14 +1832,16 @@ function validateSettingsPayload(body, existing) {
           const code = typeof item === 'object' && item !== null ? item.code : item;
           const text = sanitizePlainText(code, 32).trim();
           if (!text) return;
-          if (seen.has(text)) return;
-          seen.add(text);
-          industryFilters[market].push({
+          const industry = {
             code: text,
             system: typeof item === 'object' && item !== null ? sanitizePlainText(item.system, 32) || null : null,
             version: typeof item === 'object' && item !== null ? sanitizePlainText(item.version, 16) || null : null,
             name: typeof item === 'object' && item !== null ? sanitizePlainText(item.name, 64) || null : null,
-          });
+          };
+          const identity = PORTFOLIO.industryIdentityKey(industry);
+          if (seen.has(identity)) return;
+          seen.add(identity);
+          industryFilters[market].push(industry);
         });
         if (industryFilters[market].length > SETTINGS_LIMITS.industriesPerMarket) {
           errors.push(`${market} 市场行业排除最多 ${SETTINGS_LIMITS.industriesPerMarket} 个`);
@@ -1749,7 +1919,7 @@ async function getSettings(username) {
  * 保存设置：显式 revision 乐观锁 + 统一身份解析（方案 27.9）。
  * 用户填的代码必须唯一映射到一只证券，否则报错让用户写全代码，不猜、不静默丢弃。
  */
-async function saveSettings({ username, body }) {
+async function saveSettings({ username, body, expectedSubjectId }) {
   const stored = await repo.readUserSettings(username);
   if (!stored) {
     const error = new Error('账号不存在');
@@ -1761,6 +1931,7 @@ async function saveSettings({ username, body }) {
   if (!Number.isInteger(expected) || expected !== stored.revision) {
     const error = new Error('设置已被其他窗口修改，请刷新后重试');
     error.status = 409;
+    error.code = 'STOCK_SELECTION_SETTINGS_REVISION_CONFLICT';
     throw error;
   }
 
@@ -1808,19 +1979,21 @@ async function saveSettings({ username, body }) {
       : item;
   });
 
-  return repo.saveUserSettings({ username, settings, expectedRevision: expected });
+  return repo.saveUserSettings({ username, settings, expectedRevision: expected, expectedSubjectId });
 }
 
 /** 个人排除的生效集合：只取本人设置里、当前市场范围内的行业代码与 instrument_id。 */
 function exclusionOf(settings, market) {
   const source = settings || {};
-  const industryCodes = (source.industryFilters && Array.isArray(source.industryFilters[market])
-    ? source.industryFilters[market] : []).map(item => (typeof item === 'string' ? item : (item && item.code))).filter(Boolean);
+  const industryFilters = (source.industryFilters && Array.isArray(source.industryFilters[market])
+    ? source.industryFilters[market] : []).map(item => (typeof item === 'string' ? { code: item } : item)).filter(item => item && item.code);
+  const industryCodes = industryFilters.map(item => item.code).filter(Boolean);
+  const industryKeys = industryFilters.map(item => PORTFOLIO.industryIdentityKey(item)).filter(Boolean);
   const instrumentIds = (Array.isArray(source.excludedInstruments) ? source.excludedInstruments : [])
     .filter(item => item && String(item.market).toUpperCase() === market)
     .map(item => Number(item.instrumentId))
     .filter(id => Number.isFinite(id) && id > 0);
-  return { industryCodes, instrumentIds };
+  return { industryFilters, industryCodes, industryKeys, instrumentIds };
 }
 
 /**
@@ -1829,167 +2002,196 @@ function exclusionOf(settings, market) {
  * - 用完整冻结投影（游标分页，不受 5000 行限制），保留源名次与全部判定，不补 rankReady；
  * - 本人行业/证券排除 → 按原 selection_order 递补 → 席位与行业上限。
  */
-async function createSimulation({ username, sourceRunId, positionRatio, budgetRatio, clientRequestId }) {
-  const source = await repo.findRun(sourceRunId);
-  if (!source) {
-    const error = new Error('源批次不存在');
-    error.status = 404;
-    throw error;
-  }
-  const isPersonalSource = source.run_kind === 'personal';
-  const sourceReady = source.quality_status === 'passed'
-    && (source.published_at || ['daily', 'weekly', 'preview'].includes(source.run_kind));
-  if (!sourceReady || isPersonalSource) {
-    const error = new Error('该批次尚未就绪或不可作为测算来源');
-    error.status = 409;
-    throw error;
-  }
-  if (source.is_shadow) {
-    const error = new Error('影子批次不能用于个人测算');
-    error.status = 409;
-    throw error;
-  }
-  const ratio = PORTFOLIO.clampRatio(positionRatio, 1);
-  const budget = budgetRatio === undefined ? null : PORTFOLIO.clampRatio(budgetRatio, null);
-  const stored = await repo.readUserSettings(username);
-  if (!stored) {
-    const error = new Error('账号不存在');
-    error.status = 404;
-    throw error;
-  }
-  const settings = stored.settings || {};
-  const exclusion = exclusionOf(settings, source.market);
-  const strategyParams = Object.assign({}, RULES.DEFAULT_PARAMS, source.parameters || {});
-
-  const rows = await repo.listCandidatesForProjection({ runId: sourceRunId });
-  const anomalyById = {};
-  const ranked = rows
-    .filter(row => row.filter_status === RULES.STATUS.PASS)
-    .map(row => {
-      const detail = row.detail || {};
-      if (detail.anomaly) anomalyById[Number(row.instrument_id)] = detail.anomaly;
-      return {
-        instrumentId: Number(row.instrument_id),
-        code: row.code,
-        name: row.name,
-        companyId: row.company_id === null ? null : Number(row.company_id),
-        currentPb: row.current_pb === null ? null : Number(row.current_pb),
-        currentPe: row.current_pe === null ? null : Number(row.current_pe),
-        dividendYield: row.dividend_yield === null ? null : Number(row.dividend_yield),
-        // V2：盈利/亏损分类必须用源批次的 TTM 状态，不能退回最新年报状态。
-        profitStatus: row.ttm_profit_status || row.profit_status,
-        ttmProfitStatus: row.ttm_profit_status || row.profit_status,
-        filterStatus: row.filter_status,
-        // 源批次真实的 rankReady，不再无证据补 true。
-        rankReady: row.rank_ready === null || row.rank_ready === undefined
-          ? detail.rankReady !== false
-          : row.rank_ready === true,
-        selectionOrder: row.selection_order,
-        industry: row.industry_code
-          ? { code: row.industry_code, name: row.industry_name, system: row.industry_system, version: row.industry_version }
-          : null,
-      };
-    })
-    .sort((a, b) => (a.selectionOrder || 0) - (b.selectionOrder || 0));
-  const portfolio = PORTFOLIO.buildPortfolio({
-    ranked,
-    anomalyById,
-    positionRatio: ratio,
-    params: strategyParams,
-    excludedInstrumentIds: exclusion.instrumentIds,
-    excludedIndustryCodes: exclusion.industryCodes,
-  });
-
+async function createSimulation({ username, sourceRunId, positionRatio, budgetRatio, clientRequestId, expectedSettingsRevision, expectedSubjectId }) {
   return withTransaction(async tx => {
-    // 主体先取：请求幂等、内容幂等与写入都绑定同一个不可复用 subject（方案 27.9）。
+    const summaryOf = run => {
+      const summary = run && run.input_manifest && run.input_manifest.portfolio;
+      return summary ? {
+        excludedCount: Number(summary.excludedCount || 0),
+        weightBasis: summary.weightBasis || null,
+      } : null;
+    };
+    const reusedResult = async (runId, settingsRevision) => {
+      const run = await repo.findRun(runId, tx);
+      return { runId: Number(runId), reused: true, run, portfolio: summaryOf(run), settingsRevision };
+    };
+    const requestMarker = value => value === undefined ? '__omitted__' : value === null ? '__null__' : String(value);
+    const requestValueMatches = (incoming, stored, effective, omittedValue, nullIsOmitted) => {
+      // 响应丢失后的同请求恢复以已落库的有效值为准；省略/空值由服务端按原合同回退，不能把等价数字格式判成异参。
+      if (incoming === undefined || incoming === '' || (incoming === null && nullIsOmitted)) {
+        if (omittedValue === undefined) return stored === '__omitted__';
+        return PORTFOLIO.clampRatio(omittedValue, null) === (effective == null ? null : Number(effective));
+      }
+      if (incoming === null) return effective === null || effective === undefined;
+      const incomingNumber = Number(incoming);
+      const effectiveNumber = effective === null || effective === undefined || effective === '' ? NaN : Number(effective);
+      if (Number.isFinite(incomingNumber) && Number.isFinite(effectiveNumber)) return PORTFOLIO.clampRatio(incomingNumber, null) === effectiveNumber;
+      return requestMarker(incoming) === requestMarker(stored) || requestMarker(incoming) === requestMarker(effective);
+    };
+    const requestMatchesRun = async run => {
+      if (!run || Number(run.supersedes_run_id) !== Number(sourceRunId)) return false;
+      const manifest = run.input_manifest || {};
+      const requestInputs = manifest.requestInputs || {};
+      const snapshot = manifest.settingsSnapshot;
+      const savedBudget = snapshot ? (run.market === 'CN' ? snapshot.budgetRatioA : snapshot.budgetRatioHk) : undefined;
+      // 旧版没有请求载荷快照：省略仓位固定为 1，省略预算固定为 null。
+      const legacyDefaults = !manifest.requestInputs && !snapshot && !Object.prototype.hasOwnProperty.call(manifest, 'defaultPositionRatio');
+      let defaultPosition = legacyDefaults ? 1 : Object.prototype.hasOwnProperty.call(manifest, 'defaultPositionRatio') ? manifest.defaultPositionRatio : undefined;
+      if (defaultPosition === undefined && (positionRatio === undefined || positionRatio === null || positionRatio === '')) {
+        // 旧批次没有冻结默认仓位时，只能从同一修订的公共来源和冻结设置恢复。
+        const originalSource = await repo.findRun(sourceRunId, tx);
+        if (originalSource && (!manifest.sourceRevision || Number(originalSource.revision || 1) === Number(manifest.sourceRevision))) {
+          if (originalSource.position_ratio !== null && originalSource.position_ratio !== undefined) defaultPosition = originalSource.position_ratio;
+          else if (snapshot) defaultPosition = (run.market === 'CN' ? snapshot.positionRatioA : snapshot.positionRatioHk) ?? null;
+        }
+      }
+      if (!requestValueMatches(positionRatio, requestInputs.positionRatio, run.position_ratio, defaultPosition, true)
+        || !requestValueMatches(budgetRatio, requestInputs.budgetRatio, run.budget_ratio, snapshot ? (savedBudget == null ? null : savedBudget) : legacyDefaults ? null : undefined, false)) return false;
+      if (expectedSettingsRevision !== undefined && expectedSettingsRevision !== null
+        && Number(expectedSettingsRevision) !== Number(run.settings_revision)) return false;
+      return true;
+    };
+    const requestConflict = () => {
+      const error = new Error('同一请求编号提交了不同参数，请刷新后重试');
+      error.status = 409;
+      error.code = 'STOCK_SELECTION_REQUEST_CONFLICT';
+      return error;
+    };
     const subjectId = await repo.readUserSubjectId(username, tx);
+    if (expectedSubjectId && subjectId !== expectedSubjectId) {
+      const error = new Error('登录账号已变化，请重新登录'); error.status = 401; error.code = 'AUTHENTICATION_REQUIRED'; throw error;
+    }
+    const recoverExistingRequest = async () => {
+      if (!clientRequestId) return null;
+      const binding = await repo.findStockSelectionRequestBinding({ username, subjectId, requestId: clientRequestId }, tx);
+      if (binding) {
+        if (!await requestMatchesRun(binding)) throw requestConflict();
+        return reusedResult(binding.run_id, binding.settings_revision);
+      }
+      const legacy = await repo.findPersonalRunByRequestId({ username, subjectId, requestId: clientRequestId }, tx);
+      if (!legacy) return null;
+      if (!await requestMatchesRun(legacy)) throw requestConflict();
+      await repo.bindStockSelectionRequest({ username, subjectId, requestId: clientRequestId, inputHash: legacy.input_hash, runId: legacy.run_id }, tx);
+      return reusedResult(legacy.run_id, legacy.settings_revision);
+    };
+    const earlyResult = await recoverExistingRequest();
+    if (earlyResult) return earlyResult;
+
+    // 源批次与用户设置在同一事务内锁定；计算可在锁外优化，但写入前不能再信任旧 revision。
+    const source = await repo.findRunForUpdate(sourceRunId, tx);
+    if (!source) {
+      const error = new Error('源批次不存在');
+      error.status = 404;
+      throw error;
+    }
+    const isPersonalSource = source.run_kind === 'personal';
+    const sourceReady = source.quality_status === 'passed'
+      && !!source.published_at && !source.is_shadow;
+    if (!sourceReady || isPersonalSource) {
+      const error = new Error('该批次尚未就绪或不可作为测算来源');
+      error.status = 409;
+      throw error;
+    }
+    const stored = await repo.readUserSettingsForUpdate(username, tx);
+    if (!stored) {
+      const error = new Error('账号不存在');
+      error.status = 404;
+      throw error;
+    }
+    if (expectedSubjectId && stored.subjectId !== expectedSubjectId) {
+      const error = new Error('登录账号已变化，请重新登录'); error.status = 401; error.code = 'AUTHENTICATION_REQUIRED'; throw error;
+    }
+    // 首次查询后若有同请求正在提交，等待用户行锁后再查一次；恢复原请求优先于当前 revision。
+    const lateResult = await recoverExistingRequest();
+    if (lateResult) return lateResult;
+    if (expectedSettingsRevision !== undefined && expectedSettingsRevision !== null
+      && Number(expectedSettingsRevision) !== stored.revision) {
+      const error = new Error('设置已被其他窗口修改，请刷新后重试');
+      error.status = 409;
+      error.code = 'STOCK_SELECTION_SETTINGS_REVISION_CONFLICT';
+      throw error;
+    }
+    const settings = stored.settings || {};
+    const exclusion = exclusionOf(settings, source.market);
+    const strategyParams = Object.assign({}, RULES.DEFAULT_PARAMS, source.parameters || {});
+    const savedPosition = source.market === 'CN' ? settings.positionRatioA : settings.positionRatioHk;
+    const defaultPositionRatio = PORTFOLIO.clampRatio(source.position_ratio === null || source.position_ratio === undefined ? savedPosition : source.position_ratio, null);
+    const ratioInput = positionRatio === undefined || positionRatio === null || positionRatio === ''
+      ? (source.position_ratio === null || source.position_ratio === undefined ? savedPosition : source.position_ratio)
+      : positionRatio;
+    const ratio = PORTFOLIO.clampRatio(ratioInput, null);
+    if (ratio === null) {
+      const error = new Error('无法确定该来源批次的实际仓位，请先保存本市场仓位后重试');
+      error.status = 409;
+      error.code = 'STOCK_SELECTION_POSITION_REQUIRED';
+      throw error;
+    }
+    const savedBudget = source.market === 'CN' ? settings.budgetRatioA : settings.budgetRatioHk;
+    const budget = budgetRatio === undefined || budgetRatio === ''
+      ? PORTFOLIO.clampRatio(savedBudget, null)
+      : PORTFOLIO.clampRatio(budgetRatio, null);
     const settingsHash = hashOf({ settings, revision: stored.revision });
+    // clientRequestId 是传输幂等标识，不进入内容哈希；同内容的多个请求仍可分别绑定。
     const payload = {
-      source: Number(sourceRunId), positionRatio: ratio, budgetRatio: budget, owner: username,
+      source: Number(sourceRunId), sourceRevision: Number(source.revision || 1),
+      positionRatio: ratio, budgetRatio: budget, owner: username,
       settingsRevision: stored.revision, settingsHash,
       excludedInstrumentIds: exclusion.instrumentIds.slice().sort((a, b) => a - b),
-      excludedIndustryCodes: exclusion.industryCodes.slice().sort(),
+      excludedIndustryKeys: exclusion.industryKeys.slice().sort(),
       strategyCode: source.strategy_code || RULES.STRATEGY_CODE,
       formulaVersion: source.formula_version || strategyParams.formulaVersion,
-      clientRequestId: clientRequestId || null,
     };
     const inputHash = hashOf(payload);
-    // 请求幂等：同 ID 同输入复用，同 ID 不同输入 409（方案 27.9）。
-    if (clientRequestId) {
-      const existingByRequest = await repo.findPersonalRunByRequestId({ username, subjectId, requestId: clientRequestId }, tx);
-      if (existingByRequest) {
-        if (String(existingByRequest.input_hash) !== inputHash) {
-          const error = new Error('同一请求编号提交了不同参数，请刷新后重试');
-          error.status = 409;
-          throw error;
-        }
-        return {
-          runId: Number(existingByRequest.run_id),
-          reused: true,
-          run: await repo.findRun(existingByRequest.run_id, tx),
-          portfolio,
-          settingsRevision: Number(existingByRequest.settings_revision || stored.revision),
-        };
-      }
-    }
     const existing = await repo.findRunByIdempotencyKey(tx, {
       strategyId: Number(source.strategy_id), market: source.market, asOfDate: source.as_of_date_text,
       runKind: 'personal', inputHash, ownerUsername: username, ownerSubjectId: subjectId,
       periodType: source.period_type || null, isShadow: false,
     });
     if (existing) {
-      return { runId: existing, reused: true, run: await repo.findRun(existing, tx), portfolio, settingsRevision: stored.revision };
+      if (clientRequestId) await repo.bindStockSelectionRequest({ username, subjectId, requestId: clientRequestId, inputHash, runId: existing }, tx);
+      return reusedResult(existing, stored.revision);
     }
+
+    const rows = await repo.listCandidatesForProjection({ runId: sourceRunId }, tx);
+    const portfolio = personalPortfolioOf(rows, { positionRatio: ratio, params: strategyParams, exclusion });
     const runId = await repo.insertRun(tx, {
-      strategyId: Number(source.strategy_id),
-      market: source.market,
-      runKind: 'personal',
-      ownerUsername: username,
-      ownerSubjectId: subjectId,
-      quarter: source.quarter,
-      asOfDate: source.as_of_date_text,
-      knowledgeCutoff: source.knowledge_cutoff_text,
-      executionStatus: 'succeeded',
-      qualityStatus: source.quality_status,
-      businessStatus: 'personal_simulation',
-      inputHash,
+      strategyId: Number(source.strategy_id), market: source.market, runKind: 'personal',
+      ownerUsername: username, ownerSubjectId: subjectId, quarter: source.quarter,
+      asOfDate: source.as_of_date_text, knowledgeCutoff: source.knowledge_cutoff_text,
+      executionStatus: 'succeeded', qualityStatus: source.quality_status,
+      businessStatus: 'personal_simulation', inputHash,
       inputManifest: Object.assign({}, payload, {
+        clientRequestId: clientRequestId || null,
+        defaultPositionRatio,
+        requestInputs: { positionRatio: String(ratio), budgetRatio: budget === null ? '__null__' : String(budget) },
         settingsSnapshot: settings,
         portfolio: {
-          selectedCount: portfolio.members.length,
-          excludedCount: portfolio.excludedCount,
+          selectedCount: portfolio.members.length, excludedCount: portfolio.excludedCount,
           weightBasis: portfolio.weightBasis,
+          selectionOutcomes: personalSelectionOutcomes(portfolio),
         },
         quality: source.input_manifest ? source.input_manifest.quality : null,
       }),
-      universeCount: Number(source.universe_count || 0),
-      pendingCount: Number(source.pending_count || 0),
+      universeCount: Number(source.universe_count || 0), pendingCount: Number(source.pending_count || 0),
       selectedCount: portfolio.members.length,
       marketPb: source.market_pb === null ? null : Number(source.market_pb),
       marketPe: source.market_pe === null ? null : Number(source.market_pe),
-      benchmarkCode: source.benchmark_code,
-      valuationMethod: source.valuation_method,
-      positionRatio: ratio,
-      budgetRatio: budget,
-      revision: 1,
-      publishedAt: null,
-      supersedesRunId: Number(sourceRunId),
-      requestId: clientRequestId || null,
-      periodType: source.period_type || null,
-      periodKey: source.period_key || null,
-      periodStart: source.period_start_text || null,
-      periodEnd: source.period_end_text || null,
-      settingsRevision: stored.revision,
-      settingsHash,
-      computedAt: new Date(),
-      isShadow: false,
+      benchmarkCode: source.benchmark_code, valuationMethod: source.valuation_method,
+      positionRatio: ratio, budgetRatio: budget, revision: 1, publishedAt: null,
+      supersedesRunId: Number(sourceRunId), requestId: clientRequestId || null,
+      periodType: source.period_type || null, periodKey: source.period_key || null,
+      periodStart: source.period_start_text || null, periodEnd: source.period_end_text || null,
+      settingsRevision: stored.revision, settingsHash, computedAt: new Date(), isShadow: false,
     });
     await repo.copyCandidates({ sourceRunId: Number(sourceRunId), targetRunId: runId }, tx);
     await repo.insertMembers(tx, runId, portfolio.members);
-    return {
-      runId, reused: false, run: await repo.findRun(runId, tx), portfolio,
-      settingsRevision: stored.revision,
-    };
+    if (clientRequestId) {
+      const binding = await repo.bindStockSelectionRequest({ username, subjectId, requestId: clientRequestId, inputHash, runId }, tx);
+      if (binding && Number(binding.run_id) !== Number(runId)) {
+        return reusedResult(binding.run_id, stored.revision);
+      }
+    }
+    return { runId, reused: false, run: await repo.findRun(runId, tx), portfolio, settingsRevision: stored.revision };
   });
 }
 

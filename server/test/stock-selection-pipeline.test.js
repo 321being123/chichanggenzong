@@ -5,6 +5,8 @@
 'use strict';
 const assert = require('assert');
 const path = require('path');
+const fs = require('fs');
+const vm = require('vm');
 require('dotenv').config({ path: path.join(__dirname, '..', '..', '.env') });
 
 const TEST_MARK = '6099';
@@ -20,6 +22,7 @@ const ALL_CODES = [...CODES, GAP_CODE];
 // 公司名带唯一后缀，避免与历史残留或真实公司重名（companies 有 country+name 唯一约束）。
 const COMPANY_NAME_PREFIX = '选股测试公司';
 const RUN_TAG = Date.now().toString(36);
+const RETRY_USER = `stock_selection_retry_${RUN_TAG}`;
 
 const tests = [];
 function record(name, fn) {
@@ -68,6 +71,7 @@ async function seedCalendar(pool) {
 async function cleanup(pool) {
   const codes = ALL_CODES;
   await pool.query(`DELETE FROM analytics.stock_selection_runs WHERE market=$1 AND as_of_date=$2::date`, [MARKET, AS_OF]);
+  await pool.query('DELETE FROM users WHERE username = $1', [RETRY_USER]);
   await pool.query(`DELETE FROM analytics.stock_selection_backtests WHERE market=$1 AND start_date=$2::date`, [MARKET, AS_OF]);
   // 先按名称前缀兜底清扫（含上一次失败运行留下的残留公司），再按代码清理证券与事实。
   const stale = await pool.query(`SELECT company_id FROM core.companies WHERE legal_name LIKE $1`, [COMPANY_NAME_PREFIX + '%']);
@@ -373,6 +377,211 @@ async function main() {
       assert.strictEqual(simulation.status, 409);
     });
 
+    // 响应丢失后用户设置可能已经前进：同一请求必须按绑定的原始载荷恢复，
+    // 而真正改变仓位的重试仍必须 409。该场景直接使用本文件刚生成的来源批次，
+    // 临时把它标为可发布，只验证个人派生的幂等合同，不改变生产数据。
+    const originalSourcePosition = (await pool.query(
+      'SELECT position_ratio FROM analytics.stock_selection_runs WHERE run_id=$1', [result.runId])).rows[0].position_ratio;
+    await pool.query(
+      `UPDATE analytics.stock_selection_runs
+          SET quality_status='passed', published_at=NOW(), business_status='eligible', position_ratio=0.4
+        WHERE run_id=$1`, [result.runId]);
+    await pool.query(
+      `INSERT INTO users(username,password,accounts,role,status,auth_version)
+       VALUES($1,'x','[]','user','active',1)`, [RETRY_USER]);
+    const retryBefore = (await pool.query(
+      `SELECT stock_selection_settings_revision FROM users WHERE username=$1`, [RETRY_USER])).rows[0];
+    const wrongSubject = '00000000-0000-4000-8000-000000000001';
+    const rejectedSettingsSubject = await service.saveSettings({ username: RETRY_USER, expectedSubjectId: wrongSubject,
+      body: { revision: Number(retryBefore.stock_selection_settings_revision) } }).then(() => null).catch(error => error);
+    const rejectedSimulationSubject = await service.createSimulation({ username: RETRY_USER, expectedSubjectId: wrongSubject,
+      sourceRunId: result.runId, positionRatio: 0.7 }).then(() => null).catch(error => error);
+    record('旧主体不能为同名账号保存设置或创建个人组合', () => {
+      assert.strictEqual(rejectedSettingsSubject.status, 409);
+      assert.strictEqual(rejectedSimulationSubject.status, 401);
+    });
+    const requestId = `stock-selection-retry-${RUN_TAG}`;
+    const firstSimulation = await service.createSimulation({
+      username: RETRY_USER, sourceRunId: result.runId, positionRatio: '0.70',
+      clientRequestId: requestId, expectedSettingsRevision: retryBefore.stock_selection_settings_revision,
+    });
+    await pool.query(
+      `UPDATE users SET stock_selection_settings='{}'::jsonb, stock_selection_settings_revision=$2 WHERE username=$1`,
+      [RETRY_USER, Number(retryBefore.stock_selection_settings_revision) + 1]);
+    const recoveredSimulation = await service.createSimulation({
+      username: RETRY_USER, sourceRunId: result.runId, positionRatio: 0.7,
+      clientRequestId: requestId, expectedSettingsRevision: retryBefore.stock_selection_settings_revision,
+    });
+    record('响应丢失后设置版本前进仍按原请求恢复个人结果', () => {
+      assert.strictEqual(recoveredSimulation.reused, true);
+      assert.strictEqual(Number(recoveredSimulation.runId), Number(firstSimulation.runId));
+    });
+    const changedRequest = await service.createSimulation({
+      username: RETRY_USER, sourceRunId: result.runId, positionRatio: 0.6,
+      clientRequestId: requestId, expectedSettingsRevision: retryBefore.stock_selection_settings_revision,
+    }).then(() => null).catch(error => error);
+    record('同一请求编号提交不同仓位必须冲突', () => {
+      assert.ok(changedRequest, '异参重试必须返回错误');
+      assert.strictEqual(changedRequest.status, 409);
+    });
+    const omittedPositionRetry = await service.createSimulation({
+      username: RETRY_USER, sourceRunId: result.runId, clientRequestId: requestId,
+      expectedSettingsRevision: retryBefore.stock_selection_settings_revision,
+    }).then(() => null).catch(error => error);
+    record('省略仓位按冻结来源默认值比较，不能复用异参', () => {
+      assert.ok(omittedPositionRetry);
+      assert.strictEqual(omittedPositionRetry.status, 409);
+    });
+    let legacyRecovery; let legacyChanged;
+    const savedFirst = (await pool.query('SELECT input_manifest, position_ratio, budget_ratio FROM analytics.stock_selection_runs WHERE run_id=$1', [firstSimulation.runId])).rows[0];
+    await pool.query(`UPDATE analytics.stock_selection_runs SET
+      input_manifest=input_manifest - 'requestInputs' - 'settingsSnapshot' - 'defaultPositionRatio' - 'sourceRevision',
+      position_ratio=1, budget_ratio=NULL WHERE run_id=$1`, [firstSimulation.runId]);
+    try {
+      legacyRecovery = await service.createSimulation({ username: RETRY_USER, sourceRunId: result.runId,
+        clientRequestId: requestId, expectedSettingsRevision: retryBefore.stock_selection_settings_revision });
+      legacyChanged = await service.createSimulation({ username: RETRY_USER, sourceRunId: result.runId, positionRatio: 0.9,
+        clientRequestId: requestId, expectedSettingsRevision: retryBefore.stock_selection_settings_revision }).then(() => null).catch(error => error);
+    } finally {
+      await pool.query('UPDATE analytics.stock_selection_runs SET input_manifest=$2::jsonb, position_ratio=$3, budget_ratio=$4 WHERE run_id=$1',
+        [firstSimulation.runId, JSON.stringify(savedFirst.input_manifest), savedFirst.position_ratio, savedFirst.budget_ratio]);
+    }
+    record('旧版请求按旧版默认仓位和预算恢复，异参仍冲突', () => {
+      assert.strictEqual(Number(legacyRecovery.runId), Number(firstSimulation.runId));
+      assert.strictEqual(legacyChanged.status, 409);
+    });
+
+    const distinctIndustryFilters = [
+      'LEGACY',
+      { code: 'SAME', system: 'SW2021', version: '2021', name: '甲' },
+      { code: 'SAME', system: 'SW2021', version: null, name: '甲旧版' },
+      { code: 'SAME', system: 'HSICS', version: '2021', name: '乙' },
+    ];
+    const sourceIndustry = (await pool.query(`SELECT industry_code, industry_system, industry_version
+      FROM analytics.stock_selection_candidates WHERE run_id=$1 AND code=$2`, [result.runId, CODES[1]])).rows[0];
+    assert.ok(sourceIndustry && sourceIndustry.industry_code, '测试候选必须有冻结行业身份');
+    const foreignIndustry = { code: sourceIndustry.industry_code, system: '__OTHER_SYSTEM__', version: null, name: '不同体系' };
+    const otherVersionIndustry = { code: sourceIndustry.industry_code, system: sourceIndustry.industry_system,
+      version: sourceIndustry.industry_version === null ? '__OTHER_VERSION__' : null, name: '不同版本' };
+    const secondSettings = await service.saveSettings({
+      username: RETRY_USER,
+      body: {
+        revision: Number(retryBefore.stock_selection_settings_revision) + 1,
+        budgetRatioA: 0.4, budgetRatioHk: 0.6,
+        industryFilters: { CN: [foreignIndustry, otherVersionIndustry], HK: distinctIndustryFilters },
+        excludedInstruments: [{ market: 'CN', code: CODES[0] }],
+      },
+    });
+    const readBackSettings = await service.getSettings(RETRY_USER);
+    const presenterContext = { window: {}, username: RETRY_USER };
+    vm.createContext(presenterContext);
+    vm.runInContext(fs.readFileSync(path.join(__dirname, '..', '..', 'public', 'js', 'presenters', 'stock-selection-presenter.js'), 'utf8'), presenterContext);
+    const expectedUserSettings = { industryFilters: { CN: [foreignIndustry, otherVersionIndustry], HK: distinctIndustryFilters }, budgetRatioA: 0.4, budgetRatioHk: 0.6,
+      excludedInstruments: [{ market: 'CN', code: CODES[0], instrumentId: secondSettings.settings.excludedInstruments[0].instrumentId, name: '页面旧名称', note: null }] };
+    record('同代码不同体系和版本完整保留，相同身份去重', () => {
+      assert.strictEqual(readBackSettings.settings.industryFilters.HK.length, 4);
+      const duplicate = service.validateSettingsPayload({ industryFilters: { CN: [], HK: distinctIndustryFilters.concat(distinctIndustryFilters[1]) } }, {});
+      assert.strictEqual(duplicate.industryFilters.HK.length, 4);
+    });
+    record('真实 JSONB 设置回读按业务身份比较，其他资金字段不能丢', () => {
+      assert.strictEqual(presenterContext.ssSettingsEquivalent(readBackSettings.settings, expectedUserSettings), true);
+      assert.strictEqual(presenterContext.ssSettingsEquivalent(readBackSettings.settings, { ...expectedUserSettings, budgetRatioHk: 0.5 }), false);
+    });
+    const secondPersonal = await service.createSimulation({
+      username: RETRY_USER, sourceRunId: result.runId, positionRatio: '0.70', budgetRatio: '0.60',
+      clientRequestId: `${requestId}-second`, expectedSettingsRevision: secondSettings.revision,
+    });
+    const secondPersonalPortfolio = await service.getPortfolio(secondPersonal.runId);
+    const secondPersonalCandidates = await service.getCandidates({ runId: secondPersonal.runId, limit: 200, offset: 0 });
+    const secondPersonalRun = await service.getRun(secondPersonal.runId);
+    const excludedDetail = await service.getStockDetail({ runId: secondPersonal.runId, code: CODES[0] });
+    record('个人结果冻结未入选原因，候选和详情读取同一原因', () => {
+      const candidate = secondPersonalCandidates.rows.find(item => item.code === CODES[0]);
+      assert.ok(secondPersonalRun.input_manifest.portfolio.selectionOutcomes.some(item => Number(item.instrumentId) === Number(candidate.instrument_id) && item.reason === 'user_excluded_instrument'));
+      assert.deepStrictEqual(candidate.personalNonSelectionReasons, ['user_excluded_instrument']);
+      assert.deepStrictEqual(excludedDetail.candidate.personalNonSelectionReasons, candidate.personalNonSelectionReasons);
+    });
+    record('连续个人排除按上一份个人组合解释本次变动', () => {
+      assert.strictEqual(secondPersonalPortfolio.changes.basis, 'previous_personal_run');
+      assert.strictEqual(Number(secondPersonalPortfolio.changes.previousRunId), Number(firstSimulation.runId));
+      assert.ok(secondPersonalPortfolio.changes.removed.some(item => item.code === CODES[0]), '本次排除的股票必须出现在本次调出中');
+    });
+    record('同代码不同体系或版本的排除不会误排候选', () => {
+      assert.ok(secondPersonalPortfolio.members.some(item => item.code === CODES[1]), '不同体系不得按代码宽匹配排除');
+      const candidate = secondPersonalCandidates.rows.find(item => item.code === CODES[1]);
+      assert.ok(candidate && !candidate.personalExcluded && candidate.personalSelected, '候选标记与组合必须一致');
+    });
+
+    const historicalPersonal = await service.getPortfolio(firstSimulation.runId);
+    record('历史个人结果不能使用后创建的组合做基线', () => {
+      assert.strictEqual(historicalPersonal.changes.basis, 'source_public_run');
+      assert.strictEqual(Number(historicalPersonal.changes.previousRunId), Number(result.runId));
+    });
+    const explicitPublicBaseline = await service.getPortfolio(secondPersonal.runId, { baselineRunId: result.runId });
+    const explicitSameBaseline = await service.getPortfolio(secondPersonal.runId, { baselineRunId: secondPersonal.runId });
+    const badBaseline = await service.getPortfolio(secondPersonal.runId, { baselineRunId: 2147483647 }).then(() => null).catch(error => error);
+    record('按操作时展示的组合比较并拒绝不匹配基线', () => {
+      assert.strictEqual(Number(explicitPublicBaseline.changes.previousRunId), Number(result.runId));
+      assert.strictEqual(Number(explicitSameBaseline.changes.previousRunId), Number(secondPersonal.runId));
+      assert.strictEqual(explicitSameBaseline.changes.added.length + explicitSameBaseline.changes.removed.length, 0);
+      assert.strictEqual(badBaseline.status, 400);
+    });
+    const nullBudgetRetry = await service.createSimulation({
+      username: RETRY_USER, sourceRunId: result.runId, positionRatio: 0.7, budgetRatio: null,
+      clientRequestId: `${requestId}-second`, expectedSettingsRevision: secondSettings.revision,
+    }).then(() => null).catch(error => error);
+    const omittedBudgetRetry = await service.createSimulation({
+      username: RETRY_USER, sourceRunId: result.runId, positionRatio: 0.7,
+      clientRequestId: `${requestId}-second`, expectedSettingsRevision: secondSettings.revision,
+    }).then(() => null).catch(error => error);
+    const equivalentBudgetRetry = await service.createSimulation({
+      username: RETRY_USER, sourceRunId: result.runId, positionRatio: 0.7, budgetRatio: 0.6,
+      clientRequestId: `${requestId}-second`, expectedSettingsRevision: secondSettings.revision,
+    });
+    record('预算显式空、默认值和等价数值按冻结设置区分幂等请求', () => {
+      assert.strictEqual(nullBudgetRetry.status, 409);
+      assert.strictEqual(omittedBudgetRetry.status, 409);
+      assert.strictEqual(Number(equivalentBudgetRetry.runId), Number(secondPersonal.runId));
+    });
+    let hkBudgetRecovery;
+    await pool.query("UPDATE analytics.stock_selection_runs SET market='HK' WHERE run_id=$1", [secondPersonal.runId]);
+    try {
+      hkBudgetRecovery = await service.createSimulation({ username: RETRY_USER, sourceRunId: result.runId, positionRatio: 0.7,
+        clientRequestId: `${requestId}-second`, expectedSettingsRevision: secondSettings.revision });
+    } finally {
+      await pool.query("UPDATE analytics.stock_selection_runs SET market='CN' WHERE run_id=$1", [secondPersonal.runId]);
+    }
+    record('港股绑定恢复使用港股冻结预算而非 A 股预算', () => {
+      assert.strictEqual(Number(hkBudgetRecovery.runId), Number(secondPersonal.runId));
+    });
+    const defaultPositionId = `${requestId}-default-position`;
+    const defaultPosition = await service.createSimulation({ username: RETRY_USER, sourceRunId: result.runId,
+      clientRequestId: defaultPositionId, expectedSettingsRevision: secondSettings.revision });
+    await pool.query('UPDATE analytics.stock_selection_runs SET position_ratio=0.9 WHERE run_id=$1', [result.runId]);
+    const recoveredDefaultPosition = await service.createSimulation({ username: RETRY_USER, sourceRunId: result.runId,
+      clientRequestId: defaultPositionId, expectedSettingsRevision: secondSettings.revision });
+    await pool.query('UPDATE analytics.stock_selection_runs SET position_ratio=0.4 WHERE run_id=$1', [result.runId]);
+    record('默认仓位与本市场预算省略时按冻结值正确恢复', () => {
+      assert.strictEqual(Number(defaultPosition.run.position_ratio), 0.4);
+      assert.strictEqual(Number(defaultPosition.run.budget_ratio), 0.4);
+      assert.strictEqual(Number(recoveredDefaultPosition.runId), Number(defaultPosition.runId));
+    });
+    const matchedSettings = await service.saveSettings({ username: RETRY_USER, body: {
+      revision: secondSettings.revision,
+      industryFilters: { CN: [{ code: sourceIndustry.industry_code, system: sourceIndustry.industry_system, version: sourceIndustry.industry_version }], HK: distinctIndustryFilters },
+      excludedInstruments: [],
+    } });
+    const matchedPersonal = await service.createSimulation({ username: RETRY_USER, sourceRunId: result.runId,
+      positionRatio: 0.7, clientRequestId: `${requestId}-matching-industry`, expectedSettingsRevision: matchedSettings.revision });
+    const matchedPortfolio = await service.getPortfolio(matchedPersonal.runId);
+    const matchedCandidates = await service.getCandidates({ runId: matchedPersonal.runId, limit: 200, offset: 0 });
+    record('相同完整行业身份正确排除候选', () => {
+      assert.ok(!matchedPortfolio.members.some(item => item.code === CODES[1]), '同体系同版本同代码必须命中排除');
+      const candidate = matchedCandidates.rows.find(item => item.code === CODES[1]);
+      assert.ok(candidate && candidate.personalExcluded && !candidate.personalSelected, '候选标记与组合必须一致');
+    });
+
+    await pool.query('UPDATE analytics.stock_selection_runs SET position_ratio=$2 WHERE run_id=$1', [result.runId, originalSourcePosition]);
     const portfolio = await service.getPortfolio(result.runId);
     record('组合席位权重固定为仓位/30，不因入选数量放大', () => {
       assert.ok(portfolio);
@@ -416,6 +625,11 @@ async function main() {
       assert.strictEqual(cn.benchmarkCode, 'CSIALL');
       assert.strictEqual(cn.benchmarkLabel, '中证全指');
       assert.ok(['eligible', 'market_closed', 'data_missing'].includes(cn.gate.status));
+    });
+    const dailyMarkets = await service.getMarkets({ periodType: 'day' });
+    record('市场概览按请求周期返回对应正式来源口径', () => {
+      assert.strictEqual(dailyMarkets.activePeriodType, 'day');
+      dailyMarkets.markets.forEach(item => assert.strictEqual(item.activePeriodType, 'day'));
     });
 
     // ===== 港股一级行业（恒生行业分类）接入取证（2026-11-03）=====

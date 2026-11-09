@@ -21,6 +21,15 @@ function clampRatio(value, fallback) {
 }
 
 /**
+ * 行业排除的稳定身份：代码只有在体系与版本相同时才代表同一个行业。
+ * 旧设置只保存 code 时仍由 excludedIndustryCodes 兼容，但新入口必须优先使用完整身份。
+ */
+function industryIdentityKey(industry) {
+  if (!industry || !industry.code) return null;
+  return [industry.system || null, industry.version || null, String(industry.code)].join('::');
+}
+
+/**
  * 生成目标组合（方案 6.1、6.2）。
  * - 每市场固定 slots 个等权目标席位，每只目标金额 = 市场预算 × 仓位 / slots；
  * - 实际入选 n < slots 时股票总额只占 仓位 × n/slots，剩余留现金，不放大单只权重；
@@ -40,6 +49,9 @@ function buildPortfolio(input) {
   const excludedIndustries = input.excludedIndustryCodes instanceof Set
     ? input.excludedIndustryCodes
     : new Set((input.excludedIndustryCodes || []).map(code => String(code)));
+  const excludedIndustryKeys = input.excludedIndustryKeys instanceof Set
+    ? input.excludedIndustryKeys
+    : new Set((input.excludedIndustryKeys || []).map(key => String(key)));
   const order = ranked.slice().sort((a, b) => (a.selectionOrder || 0) - (b.selectionOrder || 0));
 
   const members = [];
@@ -55,10 +67,15 @@ function buildPortfolio(input) {
       skipped.push({ code: item.code, instrumentId: item.instrumentId, reason: 'user_excluded_instrument', detail: item.exclusionNote || null });
       continue;
     }
-    if (item.industry && item.industry.code && excludedIndustries.has(String(item.industry.code))) {
+    const industryKey = industryIdentityKey(item.industry);
+    if (item.industry && item.industry.code
+      && (excludedIndustryKeys.has(String(industryKey)) || excludedIndustries.has(String(item.industry.code)))) {
       skipped.push({
         code: item.code, instrumentId: item.instrumentId, reason: 'user_excluded_industry',
-        detail: { industryCode: item.industry.code, industryName: item.industry.name || null },
+        detail: {
+          industryCode: item.industry.code, industryName: item.industry.name || null,
+          industrySystem: item.industry.system || null, industryVersion: item.industry.version || null,
+        },
       });
       continue;
     }
@@ -86,18 +103,18 @@ function buildPortfolio(input) {
       skipped.push({ code: item.code, instrumentId: item.instrumentId, reason: 'rule_or_data_pending' });
       continue;
     }
-    const industryKey = item.industry && item.industry.code ? item.industry.code : null;
-    if (!industryKey) {
+    const candidateIndustryCode = item.industry && item.industry.code ? item.industry.code : null;
+    if (!candidateIndustryCode) {
       // 缺分类待核验：不能把大量未知对象塞进"其他"绕过上限，也不能直接当合格入选。
       skipped.push({ code: item.code, instrumentId: item.instrumentId, reason: 'industry_unverified' });
       continue;
     }
-    const used = industryCount.get(industryKey) || 0;
+    const used = industryCount.get(candidateIndustryCode) || 0;
     // 用精确数值比较，避免页面舍入把 20% 边界算错。
     if ((used + 1) * weightPerSlotInBudget > industryLimitRatio + EPSILON) {
       skipped.push({
         code: item.code, instrumentId: item.instrumentId, reason: 'industry_limit',
-        detail: { industryCode: industryKey, industryName: item.industry.name || null, used, limitRatio: industryLimitRatio },
+        detail: { industryCode: candidateIndustryCode, industryName: item.industry.name || null, used, limitRatio: industryLimitRatio },
       });
       continue;
     }
@@ -109,7 +126,7 @@ function buildPortfolio(input) {
       skipped.push({ code: item.code, instrumentId: item.instrumentId, reason: 'slots_full' });
       continue;
     }
-    industryCount.set(industryKey, used + 1);
+    industryCount.set(candidateIndustryCode, used + 1);
     members.push({
       instrumentId: item.instrumentId,
       code: item.code,
@@ -229,4 +246,4 @@ function combinedExposure(entries) {
   return list.reduce((sum, entry) => sum + Number(entry.budgetRatio) * Number(entry.positionRatio) * Number(entry.selectedCount || 0) / Number(entry.slots || 30), 0);
 }
 
-module.exports = { buildPortfolio, industrySlotCap, combineIssuerExposure, combinedExposure, clampRatio };
+module.exports = { buildPortfolio, industrySlotCap, combineIssuerExposure, combinedExposure, clampRatio, industryIdentityKey };

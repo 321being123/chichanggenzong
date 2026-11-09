@@ -19,6 +19,31 @@
 .ss-run-header { margin: 4px 0 14px; padding: 0 16px; }
 .ss-run-meta { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 12px; color: var(--bond-feature-muted); }
 .ss-run-note { margin-top: 8px; font-size: 13px; color: #b45309; line-height: 1.7; }
+.ss-run-error { margin-top: 8px; color: #9a3412; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.ss-source-panel .ss-toolbar { align-items: center; }
+.ss-source-panel .ss-toolbar > label { display: inline-flex; align-items: center; gap: 8px; }
+.ss-source-panel .ss-toolbar select { min-height: 36px; }
+.ss-exclusions { border-top: 1px solid #eef1f5; margin-top: 10px; padding: 12px 16px 0; }
+.ss-exclusion-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; color: #273142; font-size: 13px; line-height: 1.7; }
+.ss-exclusion-head span { color: var(--bond-feature-muted); font-size: 12px; }
+.ss-exclusion-groups { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin-top: 8px; }
+.ss-exclusion-groups strong { color: #273142; font-size: 12px; }
+.ss-exclusion-groups ul { list-style: none; margin: 4px 0 0; padding: 0; }
+.ss-exclusion-groups li { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 4px 0; color: var(--bond-feature-muted); font-size: 12px; }
+.ss-row-actions { position: relative; min-width: 58px; }
+.ss-row-actions summary { min-height: 32px; padding: 5px 8px; border: 1px solid #d7dce3; border-radius: 6px; color: #273142; cursor: pointer; list-style: none; text-align: center; }
+.ss-row-actions summary::-webkit-details-marker { display: none; }
+.ss-row-actions summary::after { content: '⌄'; margin-left: 5px; color: var(--bond-feature-muted); }
+.ss-row-actions[open] summary::after { content: '⌃'; }
+.ss-row-menu { position: absolute; z-index: 30; right: 0; top: 38px; min-width: 150px; padding: 5px; border: 1px solid #d7dce3; border-radius: 8px; background: #fff; box-shadow: 0 7px 20px rgba(15, 23, 42, .16); }
+.ss-row-menu button { display: block; width: 100%; min-height: 36px; border: 0; background: #fff; color: #273142; cursor: pointer; text-align: left; }
+.ss-row-menu button:hover, .ss-row-menu button:focus-visible { background: #f1f5f9; outline: none; }
+.ss-disabled-note { color: #9a3412; font-size: 12px; }
+.ss-metric-help { display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; margin-left: 3px; padding: 0; border: 1px solid #94a3b8; border-radius: 50%; background: #fff; color: #475569; font-size: 12px; cursor: help; vertical-align: middle; }
+.ss-metric-help:focus-visible { outline: 2px solid var(--bond-feature-focus); outline-offset: 2px; }
+.ss-metric-tooltip { position: fixed; z-index: 1000; display: inline-flex; align-items: flex-start; gap: 8px; max-width: min(340px, calc(100vw - 16px)); max-height: calc(100vh - 16px); overflow: auto; padding: 9px 11px; border: 1px solid #cbd5e1; border-radius: 7px; background: #0f172a; color: #fff; font-size: 12px; font-weight: 400; line-height: 1.6; box-shadow: 0 8px 24px rgba(15, 23, 42, .2); }
+.ss-metric-tooltip-close { flex: 0 0 auto; width: 24px; height: 24px; margin: -3px -5px 0 0; padding: 0; border: 0; border-radius: 4px; background: transparent; color: #fff; font-size: 18px; line-height: 24px; cursor: pointer; }
+.ss-metric-tooltip-close:hover, .ss-metric-tooltip-close:focus-visible { background: rgba(255, 255, 255, .15); outline: none; }
 .ss-sub { color: var(--bond-feature-muted); font-size: 12px; margin-top: 2px; }
 /* 证券名称是跳证券分析的入口：做成链接样按钮，不改变表格行高与对齐。 */
 .ss-stock-link { padding: 0; border: 0; background: none; color: #1a237e; font: inherit; font-weight: 600; text-align: left; cursor: pointer; }
@@ -64,9 +89,18 @@
   .ss-cards { grid-template-columns: minmax(0, 1fr); }
   .ss-settings-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .ss-settings-exclusions { grid-template-columns: minmax(0, 1fr); }
+  .ss-source-panel .ss-toolbar { align-items: stretch; }
+  .ss-source-panel .ss-toolbar > label { width: 100%; justify-content: space-between; }
 }
 @media (max-width: 760px) {
   .ss-card-body { grid-template-columns: minmax(0, 1fr); }
+  .ss-exclusion-groups { grid-template-columns: minmax(0, 1fr); }
+  .ss-exclusion-head { display: block; }
+  .ss-exclusion-head span { display: block; margin-top: 3px; }
+  .ss-row-actions summary, .ss-row-menu button, .ss-source-panel .btn { min-height: 44px; }
+  .ss-metric-help { width: 44px; height: 44px; margin-left: 0; }
+  .ss-metric-tooltip-close { width: 44px; min-width: 44px; height: 44px; margin: -9px -11px 0 0; line-height: 44px; }
+  .ss-source-panel .ss-toolbar select { min-height: 44px; font-size: 16px; }
   .ss-settings-grid { grid-template-columns: minmax(0, 1fr); }
   .ss-settings-grid input { height: 44px; font-size: 16px; }
   /* 手机端输入控件同样要求 16px，避免聚焦时被浏览器自动放大。 */

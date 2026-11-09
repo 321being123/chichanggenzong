@@ -583,24 +583,25 @@
       <li data-ss-rule="v1"><strong>R01 当前 PB（V1）</strong>：0 &lt; PB ≤ 1.5。</li>
       <li data-ss-rule="v2"><strong>R01 估值（V2）</strong>：0 &lt; PB ≤ 1.5；或 PB &gt; 1.5 且 PB×PE(TTM) 严格小于 22.5（等于 22.5 不通过）。</li>
       <li data-ss-rule="v1"><strong>R02 十年 PB（V1）</strong>：最近十年内至少出现一次 PB 严格大于 1。</li>
-      <li data-ss-rule="v2"><strong>R02 十年PB正极值比（V2）</strong>：最近十年（上市不足十年按上市以来）有效正 PB 的最高值 ÷ 最低值 ≥ 3；窗口覆盖与观察年限随结果展示。</li>
+      <li data-ss-rule="v2"><strong>R02 十年 PB（V2）</strong>：最近十年（上市不足十年按上市以来）内 PB 曾严格大于 1，或有效正 PB 的最高值 ÷ 最低值 ≥ 3；窗口覆盖与观察年限随结果展示。</li>
       <li><strong>R04 股息率</strong>：近十二个月已实施、已除息的税前现金股息率严格大于 0。</li>
       <li><strong>R05 净资产</strong>：归母净资产折人民币不低于 100 亿元。</li>
       <li><strong>排名</strong>：PB 升序、PE（TTM）升序、股息率降序，三项名次相加，越小越优；亏损与零利润按规则记分，不作为低估优先。</li>
       <li><strong>组合</strong>：每市场 30 个等权席位，单一行业不超过该市场预算的 20%，合格股不足则留现金。</li>
     </ul>
-    <div class="table-wrap">
-      <div class="table-header"><h3>结果批次</h3></div>
+    <div class="table-wrap ss-source-panel">
+      <div class="table-header"><h3>当前市场来源</h3></div>
       <div class="ss-toolbar bond-feature-toolbar">
-        <div class="bond-sub-nav" id="ss-period-tabs">
+        <div class="bond-sub-nav" id="ss-period-tabs" aria-label="选择结果周期">
           <button type="button" class="bond-sub-tab" data-ss-period="weekly">每周正式</button>
           <button type="button" class="bond-sub-tab" data-ss-period="daily">每日动态</button>
-          <button type="button" class="bond-sub-tab active" data-ss-period="quarter">历史季度</button>
+          <button type="button" class="bond-sub-tab" data-ss-period="quarter">历史季度</button>
         </div>
-        <label>批次<select id="ss-run-select" aria-label="选择结果批次"><option value="">正在读取...</option></select></label>
+        <label>来源批次<select id="ss-run-select" aria-label="选择公共来源批次"><option value="">正在读取...</option></select></label>
+        <button type="button" class="btn btn-outline btn-sm" id="ss-run-load-more">加载更早来源</button>
       </div>
       <div id="ss-run-header" class="ss-run-header"></div>
-      <div id="ss-candidates"></div>
+      <div id="ss-exclusions" class="ss-exclusions"></div>
     </div>
     <div class="table-wrap">
       <div class="table-header"><h3>目标组合（等权 30 席）</h3></div>
@@ -608,12 +609,8 @@
     </div>
     <div id="ss-detail" class="ss-detail" hidden></div>
     <div class="table-wrap">
-      <div class="table-header"><h3>历史回测</h3></div>
-      <div id="ss-backtests"></div>
-    </div>
-    <div class="table-wrap">
-      <div class="table-header"><h3>我的资金设置</h3></div>
-      <div id="ss-settings"></div>
+      <div class="table-header"><h3>结果批次（候选）</h3></div>
+      <div id="ss-candidates"></div>
     </div>
   </div>
 </div>

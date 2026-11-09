@@ -210,6 +210,7 @@ const MIGRATIONS = [
   { version: '190_stock_selection_identity_index', up: () => require('./migrations/era13StockSelectionV2').migration190StockSelectionIdentityIndex(pool) },
   { version: '191_stock_selection_universe_artifact', up: () => require('./migrations/era13StockSelectionV2').migration191StockSelectionUniverseArtifact(pool) },
   { version: '192_stock_selection_universe_artifact_columns', up: () => require('./migrations/era13StockSelectionV2').migration192StockSelectionUniverseArtifactColumns(pool) },
+  { version: '193_stock_selection_ux_request_bindings', up: () => require('./migrations/era14StockSelectionUx').migration193StockSelectionUx(pool) },
 ];
 
 async function ensureMigrationsTable() {

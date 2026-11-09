@@ -1734,6 +1734,20 @@ async function findRun(runId, tx) {
   return rows[0] || null;
 }
 
+/** 个人派生事务内锁定源批次，避免源状态/访问权限在复制期间变化。 */
+async function findRunForUpdate(runId, tx) {
+  const exec = executorOf(tx);
+  const { rows } = await exec(`
+    SELECT r.*, r.as_of_date::text AS as_of_date_text, r.knowledge_cutoff::text AS knowledge_cutoff_text,
+           r.period_start::text AS period_start_text, r.period_end::text AS period_end_text,
+           s.version AS strategy_version, s.strategy_code, s.formula_version, s.parameters
+      FROM analytics.stock_selection_runs r
+      JOIN analytics.stock_selection_strategies s ON s.strategy_id = r.strategy_id
+     WHERE r.run_id = $1
+     FOR UPDATE OF r`, [runId]);
+  return rows[0] || null;
+}
+
 async function listCandidates({ runId, limit, offset, filterStatus, orderBy }, tx) {
   const exec = executorOf(tx);
   const params = [runId];
@@ -1755,6 +1769,20 @@ async function listCandidates({ runId, limit, offset, filterStatus, orderBy }, t
      ORDER BY ${order}
      LIMIT $${params.length - 1} OFFSET $${params.length}`, params);
   return { rows, total: rows.length ? Number(rows[0].total) : 0 };
+}
+
+/** 来源快照中的行业完整身份及受影响候选数；用于个人排除的可审计映射提示。 */
+async function listIndustryIdentityCounts(runId, tx) {
+  const exec = executorOf(tx);
+  const { rows } = await exec(`
+    SELECT industry_code AS code, MIN(industry_name) AS name,
+           industry_system AS system, industry_version AS version,
+           COUNT(*)::int AS affected_count
+      FROM analytics.stock_selection_candidates
+     WHERE run_id = $1 AND industry_code IS NOT NULL
+     GROUP BY industry_system, industry_version, industry_code
+     ORDER BY industry_system NULLS LAST, industry_version NULLS LAST, industry_code`, [runId]);
+  return rows;
 }
 
 async function findCandidate({ runId, code }, tx) {
@@ -1793,6 +1821,20 @@ async function readUserSettings(username, tx) {
   };
 }
 
+async function readUserSettingsForUpdate(username, tx) {
+  const exec = executorOf(tx);
+  const { rows } = await exec(`
+    SELECT stock_selection_settings, stock_selection_settings_revision, subject_id::text AS subject_id
+      FROM users WHERE username = $1 FOR UPDATE`, [username]);
+  const row = rows[0];
+  if (!row) return null;
+  return {
+    settings: row.stock_selection_settings || {},
+    revision: Number(row.stock_selection_settings_revision || 0),
+    subjectId: row.subject_id,
+  };
+}
+
 /** 不可复用主体 id（迁移 187）：私人批次绑定它，读取时按会话主体核验，不只按 username。 */
 async function readUserSubjectId(username, tx) {
   const exec = executorOf(tx);
@@ -1807,7 +1849,8 @@ async function readUserSubjectId(username, tx) {
 async function findPersonalRunByRequestId({ username, subjectId, requestId }, tx) {
   const exec = executorOf(tx);
   const { rows } = await exec(`
-    SELECT run_id, input_hash, input_manifest, settings_revision, owner_subject_id::text AS owner_subject_id
+    SELECT run_id, market, input_hash, input_manifest, settings_revision, supersedes_run_id,
+           position_ratio, budget_ratio, owner_subject_id::text AS owner_subject_id
       FROM analytics.stock_selection_runs
      WHERE request_id = $2 AND run_kind = 'personal'
        AND (
@@ -1818,17 +1861,45 @@ async function findPersonalRunByRequestId({ username, subjectId, requestId }, tx
   return rows[0] || null;
 }
 
-async function saveUserSettings({ username, settings, expectedRevision }, tx) {
+async function findStockSelectionRequestBinding({ username, subjectId, requestId }, tx) {
+  const exec = executorOf(tx);
+  const { rows } = await exec(`
+    SELECT b.binding_id, b.run_id, b.input_hash, b.owner_subject_id::text AS owner_subject_id,
+           r.market, r.input_manifest, r.settings_revision, r.supersedes_run_id, r.position_ratio, r.budget_ratio
+      FROM analytics.stock_selection_request_bindings b
+      JOIN analytics.stock_selection_runs r ON r.run_id = b.run_id
+     WHERE b.owner_username = $1
+       AND b.client_request_id = $2
+       AND ($3::uuid IS NOT DISTINCT FROM b.owner_subject_id)
+     ORDER BY b.binding_id DESC LIMIT 1`, [username, requestId, subjectId || null]);
+  return rows[0] || null;
+}
+
+async function bindStockSelectionRequest({ username, subjectId, requestId, inputHash, runId }, tx) {
+  const exec = executorOf(tx);
+  const { rows } = await exec(`
+    INSERT INTO analytics.stock_selection_request_bindings
+      (owner_username, owner_subject_id, client_request_id, input_hash, run_id)
+    VALUES ($1,$2::uuid,$3,$4,$5)
+    ON CONFLICT DO NOTHING
+    RETURNING binding_id, run_id, input_hash`, [username, subjectId || null, requestId, inputHash, runId]);
+  if (rows[0]) return rows[0];
+  return findStockSelectionRequestBinding({ username, subjectId, requestId }, tx);
+}
+
+async function saveUserSettings({ username, settings, expectedRevision, expectedSubjectId }, tx) {
   const exec = executorOf(tx);
   const { rows } = await exec(`
     UPDATE users
        SET stock_selection_settings = $2::jsonb,
            stock_selection_settings_revision = stock_selection_settings_revision + 1
      WHERE username = $1 AND stock_selection_settings_revision = $3
-     RETURNING stock_selection_settings_revision`, [username, JSON.stringify(settings), expectedRevision]);
+       AND ($4::uuid IS NULL OR subject_id = $4::uuid)
+     RETURNING stock_selection_settings_revision`, [username, JSON.stringify(settings), expectedRevision, expectedSubjectId || null]);
   if (!rows.length) {
     const error = new Error('设置已被其他窗口修改，请刷新后重试');
     error.status = 409;
+    error.code = 'STOCK_SELECTION_SETTINGS_REVISION_CONFLICT';
     throw error;
   }
   return { settings, revision: Number(rows[0].stock_selection_settings_revision) };
@@ -2071,22 +2142,68 @@ async function listBacktests({ market, limit, offset }, tx) {
   return { rows, total: rows.length ? Number(rows[0].total) : 0 };
 }
 
-/** 上一份已发布季度组合的席位，用于计算本季度调入/调出。 */
-async function previousPublishedMembers({ market, asOfDate, excludeRunId }, tx) {
+/** 找同市场、同周期的上一份正式来源；个人派生可通过 sourceRunId 精确锁定公共来源。 */
+async function previousPublishedRun({ market, asOfDate, excludeRunId, periodType = 'quarter', sourceRunId = null }, tx) {
   const exec = executorOf(tx);
   const { rows } = await exec(`
-    WITH prev AS (
-      SELECT run_id FROM analytics.stock_selection_runs
-       WHERE market = $1 AND run_kind = 'quarterly' AND published_at IS NOT NULL
-         AND as_of_date < $2::date AND run_id <> $3
-       ORDER BY as_of_date DESC, revision DESC LIMIT 1
-    )
-    SELECT m.instrument_id, c.code, c.name, r.quarter, r.as_of_date::text AS as_of_date
+      SELECT run_id, market, run_kind, period_type, period_key, quarter, as_of_date::text AS as_of_date,
+             revision, selected_count
+        FROM analytics.stock_selection_runs
+       WHERE market = $1 AND published_at IS NOT NULL
+         AND period_type = $4 AND run_id <> $3
+         AND ($5::bigint IS NULL OR run_id = $5)
+         AND ($2::date IS NULL OR as_of_date < $2::date)
+       ORDER BY period_start DESC NULLS LAST, as_of_date DESC, revision DESC, run_id DESC LIMIT 1
+    `, [market, asOfDate || null, excludeRunId, periodType, sourceRunId]);
+  return rows[0] || null;
+}
+
+/** 上一份已发布组合的席位；返回 run 元数据以区分“有效零成员”和“没有基线”。 */
+async function previousPublishedMembers(options, tx) {
+  const previous = await previousPublishedRun(options, tx);
+  if (!previous) return { run: null, rows: [] };
+  const exec = executorOf(tx);
+  const { rows } = await exec(`
+    SELECT r.run_id, r.market, r.run_kind, r.period_type, r.period_key,
+           m.instrument_id, c.code, c.name, r.quarter, r.as_of_date::text AS as_of_date
       FROM analytics.stock_selection_portfolio_members m
       JOIN analytics.stock_selection_runs r ON r.run_id = m.run_id
       JOIN analytics.stock_selection_candidates c ON c.run_id = m.run_id AND c.instrument_id = m.instrument_id
-     WHERE m.run_id = (SELECT run_id FROM prev)`, [market, asOfDate, excludeRunId]);
-  return rows;
+     WHERE m.run_id = $1`, [previous.run_id]);
+  return { run: previous, rows };
+}
+
+/** 同一主体、同一公共来源的上一份个人组合；用于解释连续排除的本次变动。 */
+async function previousPersonalRun({ market, sourceRunId, excludeRunId, ownerUsername, ownerSubjectId }, tx) {
+  const exec = executorOf(tx);
+  const { rows } = await exec(`
+      SELECT run_id, market, run_kind, period_type, period_key, quarter, as_of_date::text AS as_of_date,
+             revision, selected_count, created_at
+        FROM analytics.stock_selection_runs
+       WHERE market = $1 AND run_kind = 'personal'
+         AND supersedes_run_id = $2 AND run_id <> $3
+         AND (created_at, run_id) < (SELECT created_at, run_id FROM analytics.stock_selection_runs WHERE run_id = $3)
+         AND (
+           ($4::uuid IS NOT NULL AND owner_subject_id = $4::uuid)
+           OR ($4::uuid IS NULL AND owner_subject_id IS NULL AND owner_username = $5)
+         )
+       ORDER BY created_at DESC NULLS LAST, run_id DESC LIMIT 1
+    `, [market, sourceRunId, excludeRunId, ownerSubjectId || null, ownerUsername || null]);
+  return rows[0] || null;
+}
+
+async function previousPersonalMembers(options, tx) {
+  const previous = await previousPersonalRun(options, tx);
+  if (!previous) return { run: null, rows: [] };
+  const exec = executorOf(tx);
+  const { rows } = await exec(`
+    SELECT r.run_id, r.market, r.run_kind, r.period_type, r.period_key,
+           m.instrument_id, c.code, c.name, r.quarter, r.as_of_date::text AS as_of_date
+      FROM analytics.stock_selection_portfolio_members m
+      JOIN analytics.stock_selection_runs r ON r.run_id = m.run_id
+      JOIN analytics.stock_selection_candidates c ON c.run_id = m.run_id AND c.instrument_id = m.instrument_id
+     WHERE m.run_id = $1`, [previous.run_id]);
+  return { run: previous, rows };
 }
 
 async function listBacktestPeriods({ backtestId, limit, offset }, tx) {
@@ -2203,13 +2320,14 @@ module.exports = {
   upsertStrategy, findStrategyId, findRunByIdempotencyKey, nextRevision, insertRun, insertCandidates, insertMembers,
   publishRun, markRunFailure,
   findPublication, listPublicationEvents, markPublicationVisible, loadPublicationReplayEvidence,
-  listRuns, findRun, listCandidates, findCandidate, listMembers, latestPublishedRun, copyCandidates,
+  listRuns, findRun, findRunForUpdate, listCandidates, listIndustryIdentityCounts, findCandidate, listMembers, latestPublishedRun, copyCandidates,
   hasPeriodRun,
   listCandidatesForProjection,
-  readUserSettings, saveUserSettings,
+  readUserSettings, readUserSettingsForUpdate, saveUserSettings,
   readUserSubjectId, findPersonalRunByRequestId,
+  findStockSelectionRequestBinding, bindStockSelectionRequest,
   resolveInstrumentsByCodes, listIndustryOptions,
   saveInputGapQueue, readInputGapQueue, findInstrumentMeta, hasCompletedQuarterRun,
   upsertDailyValuationRows, upsertDailyBarRows, listCodesWithRecentBars,
-  insertBacktest, insertBacktestPeriods, findBacktest, listBacktestPeriods, listBacktests, previousPublishedMembers,
+  insertBacktest, insertBacktestPeriods, findBacktest, listBacktestPeriods, listBacktests, previousPublishedRun, previousPublishedMembers, previousPersonalRun, previousPersonalMembers,
 };

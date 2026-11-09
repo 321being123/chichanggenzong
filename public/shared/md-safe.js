@@ -10,6 +10,16 @@
       .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
   }
 
+  // 标准 Markdown 规则下，闭合 ** 前面是中文标点、后面紧跟字母或中文时，
+  // marked 与 lute 都不把它当作强调结束符，星号会原样显示（例如「**结论。**ST新潮」）。
+  // 只在这一种本来就无法加粗的写法后补一个空格；正常写法原样保留，可重复调用。
+  function normalizeInlineEmphasis(md) {
+    return String(md == null ? '' : md).replace(
+      /(\*\*[^*\n]+?[，。、；：！？）】」”’…]\s*\*\*)(?=[A-Za-z0-9\u3400-\u9fff])/g,
+      '$1 '
+    );
+  }
+
   // marked + DOMPurify 兜底净化；两者缺一则退化为转义纯文本
   function sanitizedMarkdown(md) {
     var text = md || '';
@@ -26,7 +36,7 @@
   // 供调用方在替换后重建依赖正文 DOM 的内容（如大纲）。
   function renderMarkdownSafe(el, md, opts) {
     if (!el) return Promise.resolve();
-    var text = md || '';
+    var text = normalizeInlineEmphasis(md || '');
     var onUpdate = opts && typeof opts.onUpdate === 'function' ? opts.onUpdate : null;
     var seq = ++renderSeq;
     el.dataset.mdSeq = String(seq);
@@ -61,4 +71,5 @@
   }
 
   global.renderMarkdownSafe = renderMarkdownSafe;
+  global.normalizeInlineEmphasis = normalizeInlineEmphasis;
 })(window);

@@ -107,26 +107,37 @@ function cnStockSector(row) {
 
 function cnStockIndustryChain(exposure) {
   const chain = exposure && typeof exposure.industry_chain === 'object' ? exposure.industry_chain : {};
+  const clean = value => String(value == null ? '' : value).trim();
+  const uniq = values => [...new Set(values.map(clean).filter(Boolean))];
+  const products = uniq(Array.isArray(chain.products) ? chain.products : []);
+
+  // 同一句招股书原文常被切成多个上游条目；按行业全局去重，产品名只在「本环节」列一次。
   const upstreamGroups = new Map();
   for (const item of Array.isArray(chain.upstream) ? chain.upstream : []) {
-    const industry = String(item && item.industry || '').trim();
-    const product = String(item && item.product || '').trim();
-    if (!industry || !product) continue;
+    const industry = clean(item && item.industry);
+    const product = clean(item && item.product) || '公司产品';
+    if (!industry) continue;
     if (!upstreamGroups.has(product)) upstreamGroups.set(product, []);
     upstreamGroups.get(product).push(industry);
   }
-  const upstream = [...upstreamGroups.entries()].map(([product, industries]) =>
-    `${[...new Set(industries)].join('、')}→${product}`
-  );
-  const products = [...new Set((Array.isArray(chain.products) ? chain.products : [])
-    .map(value => String(value || '').trim()).filter(Boolean))];
+  const seenIndustry = new Set();
+  const upstream = [];
+  for (const [product, industries] of upstreamGroups) {
+    const unique = uniq(industries).filter(function (industry) {
+      if (seenIndustry.has(industry)) return false;
+      seenIndustry.add(industry);
+      return true;
+    });
+    if (unique.length) upstream.push(`${unique.join('、')}→${product}`);
+  }
+
+  // 下游每条都挂着同一份全量产品名，逐条拼「产品→应用」会把产品名重复十几次；
+  // 改为只列去重后的应用名，产品仍由「本环节」统一说明。
   const downstreamItems = Array.isArray(chain.downstream) ? chain.downstream : [];
-  const downstream = [...new Set(downstreamItems
-    .filter(item => item && item.industry)
-    .map(item => `${(Array.isArray(item.products) && item.products.length ? item.products : products).join('、') || '公司产品'}→${item.industry}`))];
-  const relatedTracks = [...new Set(downstreamItems.flatMap(item =>
+  const downstream = uniq(downstreamItems.map(item => item && item.industry));
+  const relatedTracks = uniq(downstreamItems.flatMap(item =>
     Array.isArray(item && item.related_tracks) ? item.related_tracks : []
-  ).map(value => String(value || '').trim()).filter(Boolean))];
+  ));
   if (!upstream.length && !downstream.length) return null;
   const direct = (Array.isArray(exposure.exposures) ? exposure.exposures : [])
     .find(item => item && item.relationship === 'direct_business');

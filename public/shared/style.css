@@ -1646,6 +1646,11 @@ body:has(.nav) { padding-top: var(--site-nav-height, 52px); }
 .pc-down { color: #137333; }
 .pc-table td { vertical-align: middle; }
 .biz-table.biz-table--compact.pc-table { width: 100%; min-width: 100%; }
+/* 「我的」/「标杆」两组列分色；浮动吸顶表头克隆 th 时保留类名，手机横滑同样生效 */
+.pc-table th.pc-col-mine, .biz-table-floating-head .biz-table th.pc-col-mine { background: #dcebff; }
+.pc-table td.pc-col-mine { background: #f2f8ff; }
+.pc-table th.pc-col-bench, .biz-table-floating-head .biz-table th.pc-col-bench { background: #ffedcc; }
+.pc-table td.pc-col-bench { background: #fff8ea; }
 
 /* 仓位对比页面（非弹框，独立主页面） */
 .pc-page { padding: 20px 24px; max-width: 1280px; margin: 0 auto; }

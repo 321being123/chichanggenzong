@@ -1464,7 +1464,8 @@ body > svg:first-child[version="1.1"] {
 }
 
 .ks-editor-card .vditor-toolbar {
-  position: relative;
+  position: sticky;
+  top: var(--site-nav-height);
   z-index: 4;
   border-color: #e7e9ee;
   border-radius: 8px 8px 0 0;

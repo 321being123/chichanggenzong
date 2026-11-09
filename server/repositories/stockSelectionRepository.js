@@ -1748,23 +1748,37 @@ async function findRunForUpdate(runId, tx) {
   return rows[0] || null;
 }
 
+// 港股主档名可能是英文或代码（如 01114.HK 的 BRILLIANCE CHI）；腾讯行情缓存里已有中文名，
+// 仅对名称不含汉字的港股回退，中文名、A 股与所有计算字段都不变。
+const HK_NAME_FALLBACK = `
+      LEFT JOIN LATERAL (
+        SELECT q.name FROM market_quote_cache q
+         WHERE c.code LIKE '%.HK' AND q.source = 'tencent'
+           AND q.symbol = 'hk' || substring(c.code from 1 for 5)
+         ORDER BY q.fetched_at DESC LIMIT 1
+      ) q ON true`;
+
 async function listCandidates({ runId, limit, offset, filterStatus, orderBy }, tx) {
   const exec = executorOf(tx);
   const params = [runId];
-  let where = 'WHERE run_id = $1';
-  if (filterStatus) { params.push(filterStatus); where += ` AND filter_status = $${params.length}`; }
+  let where = 'WHERE c.run_id = $1';
+  if (filterStatus) { params.push(filterStatus); where += ` AND c.filter_status = $${params.length}`; }
   params.push(limit, offset);
-  const order = orderBy === 'code' ? 'code ASC' : 'COALESCE(selection_order, 100000) ASC, code ASC';
+  const order = orderBy === 'code' ? 'c.code ASC' : 'COALESCE(c.selection_order, 100000) ASC, c.code ASC';
   const { rows } = await exec(`
-    SELECT instrument_id, company_id, code, name, industry_code, industry_name, industry_system, industry_version,
-           current_pb, historical_pb_max, historical_pb_min, current_pe, profit_status, dividend_yield, equity_amount,
-           equity_currency, equity_cny, fx_rate, fx_date::text AS fx_date, pb_rank, pe_rank, dividend_rank,
-           total_score, selection_order, filter_status, data_quality_status, exclusion_reasons,
-           pb_positive_extrema_ratio, pb_pe_product, valuation_status, valuation_pass_reason,
-           ttm_profit_status, rank_ready, rank_block_reasons,
-           pb_covered_days, pb_expected_days, pb_gap_days, pb_history_years,
+    SELECT c.instrument_id, c.company_id, c.code,
+           CASE WHEN c.name ~ '[一-龥]' THEN c.name
+                ELSE COALESCE(NULLIF(q.name, ''), c.name) END AS name,
+           c.industry_code, c.industry_name, c.industry_system, c.industry_version,
+           c.current_pb, c.historical_pb_max, c.historical_pb_min, c.current_pe, c.profit_status, c.dividend_yield, c.equity_amount,
+           c.equity_currency, c.equity_cny, c.fx_rate, c.fx_date::text AS fx_date, c.pb_rank, c.pe_rank, c.dividend_rank,
+           c.total_score, c.selection_order, c.filter_status, c.data_quality_status, c.exclusion_reasons,
+           c.pb_positive_extrema_ratio, c.pb_pe_product, c.valuation_status, c.valuation_pass_reason,
+           c.ttm_profit_status, c.rank_ready, c.rank_block_reasons,
+           c.pb_covered_days, c.pb_expected_days, c.pb_gap_days, c.pb_history_years,
            COUNT(*) OVER () AS total
-      FROM analytics.stock_selection_candidates
+      FROM analytics.stock_selection_candidates c
+      ${HK_NAME_FALLBACK}
       ${where}
      ORDER BY ${order}
      LIMIT $${params.length - 1} OFFSET $${params.length}`, params);
@@ -1798,12 +1812,16 @@ async function listMembers(runId, tx) {
     SELECT m.slot_no, m.instrument_id, m.industry_code, m.industry_system, m.industry_version,
            m.weight_in_market_budget, m.weight_in_equity_target, m.weight_in_invested_equity,
            m.issuer_duplicate,
-           c.code, c.name, c.company_id, c.industry_name,
+           c.code,
+           CASE WHEN c.name ~ '[一-龥]' THEN c.name
+                ELSE COALESCE(NULLIF(q.name, ''), c.name) END AS name,
+           c.company_id, c.industry_name,
            c.current_pb, c.current_pe, c.dividend_yield, c.total_score,
            c.pb_pe_product, c.historical_pb_min, c.historical_pb_max, c.pb_positive_extrema_ratio,
            c.valuation_status, c.valuation_pass_reason, c.ttm_profit_status
       FROM analytics.stock_selection_portfolio_members m
       JOIN analytics.stock_selection_candidates c ON c.run_id = m.run_id AND c.instrument_id = m.instrument_id
+      ${HK_NAME_FALLBACK}
      WHERE m.run_id = $1
      ORDER BY m.slot_no`, [runId]);
   return rows;

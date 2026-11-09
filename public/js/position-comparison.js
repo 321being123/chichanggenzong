@@ -83,21 +83,21 @@
       return '<tr>' +
         '<td>' + escapeHtml(s.code) + '<br><span class="u-fs-11 u-c-muted">' + escapeHtml(s.name) + '</span></td>' +
         '<td>' + statusText + '</td>' +
-        '<td>' + fmtPct(s.myRatio) + '</td>' +
-        '<td>' + fmtPct(s.benchmarkRatio) + '</td>' +
+        '<td class="pc-col-mine">' + fmtPct(s.myRatio) + '</td>' +
+        '<td class="pc-col-bench">' + fmtPct(s.benchmarkRatio) + '</td>' +
         '<td class="' + diffCls + '">' + (s.diff >= 0 ? '+' : '') + fmtPct(s.diff) + '</td>' +
         '<td>' + priceText + '<br><span class="u-fs-11 u-c-muted">' + changeText + '</span></td>' +
-        '<td>' + fmtQty(s.myQuantity) + '</td><td>' + fmt(s.myMarketValue) + '</td>' +
+        '<td class="pc-col-mine">' + fmtQty(s.myQuantity) + '</td><td class="pc-col-mine">' + fmt(s.myMarketValue) + '</td>' +
         // 标杆数量/市值仅公开仓位展示；半公开时服务端已删除这些字段
-        (s.benchmarkQuantity === undefined ? '' : '<td>' + fmtQty(s.benchmarkQuantity) + '</td><td>' + fmt(s.benchmarkMarketValue) + '</td>') +
+        (s.benchmarkQuantity === undefined ? '' : '<td class="pc-col-bench">' + fmtQty(s.benchmarkQuantity) + '</td><td class="pc-col-bench">' + fmt(s.benchmarkMarketValue) + '</td>') +
       '</tr>';
     }).join('');
 
     var typeRows = d.typeGroups.map(function (g) {
-      return '<tr><td>' + escapeHtml(g.name) + '</td><td>' + fmtPct(g.myRatio) + '</td><td>' + fmtPct(g.benchmarkRatio) + '</td><td>' + (g.diff >= 0 ? '+' : '') + fmtPct(g.diff) + '</td></tr>';
+      return '<tr><td>' + escapeHtml(g.name) + '</td><td class="pc-col-mine">' + fmtPct(g.myRatio) + '</td><td class="pc-col-bench">' + fmtPct(g.benchmarkRatio) + '</td><td>' + (g.diff >= 0 ? '+' : '') + fmtPct(g.diff) + '</td></tr>';
     }).join('');
     var subtypeRows = d.subtypeGroups.map(function (g) {
-      return '<tr><td>' + escapeHtml(g.name) + '</td><td>' + fmtPct(g.myRatio) + '</td><td>' + fmtPct(g.benchmarkRatio) + '</td><td>' + (g.diff >= 0 ? '+' : '') + fmtPct(g.diff) + '</td></tr>';
+      return '<tr><td>' + escapeHtml(g.name) + '</td><td class="pc-col-mine">' + fmtPct(g.myRatio) + '</td><td class="pc-col-bench">' + fmtPct(g.benchmarkRatio) + '</td><td>' + (g.diff >= 0 ? '+' : '') + fmtPct(g.diff) + '</td></tr>';
     }).join('');
 
     var html =
@@ -115,15 +115,15 @@
       '</div>' +
       '<div class="table-wrap"><div class="table-header"><h3>证券持仓对比</h3></div>' +
         '<div class="biz-table-scroll"><table class="biz-table pc-table"><thead><tr>' +
-          '<th>证券</th><th>状态</th><th>我的占比</th><th>标杆占比</th><th>占比差异</th><th>最新价格/涨跌幅</th>' +
-          '<th>我的数量</th><th>我的市值</th>' +
-          (semi ? '' : '<th>标杆数量</th><th>标杆市值</th>') +
+          '<th>证券</th><th>状态</th><th class="pc-col-mine">我的占比</th><th class="pc-col-bench">标杆占比</th><th>占比差异</th><th>最新价格/涨跌幅</th>' +
+          '<th class="pc-col-mine">我的数量</th><th class="pc-col-mine">我的市值</th>' +
+          (semi ? '' : '<th class="pc-col-bench">标杆数量</th><th class="pc-col-bench">标杆市值</th>') +
         '</tr></thead><tbody>' + secRows + '</tbody></table></div></div>' +
       '<div class="table-wrap"><div class="table-header"><h3>资产类型对比</h3></div>' +
-        '<div class="biz-table-scroll"><table class="biz-table biz-table--compact pc-table"><thead><tr><th>资产类型</th><th>我的占比</th><th>标杆占比</th><th>占比差异</th></tr></thead>' +
+        '<div class="biz-table-scroll"><table class="biz-table biz-table--compact pc-table"><thead><tr><th>资产类型</th><th class="pc-col-mine">我的占比</th><th class="pc-col-bench">标杆占比</th><th>占比差异</th></tr></thead>' +
         '<tbody>' + typeRows + '</tbody></table></div></div>' +
       '<div class="table-wrap"><div class="table-header"><h3>持仓细类对比</h3></div>' +
-        '<div class="biz-table-scroll"><table class="biz-table biz-table--compact pc-table"><thead><tr><th>持仓细类</th><th>我的占比</th><th>标杆占比</th><th>占比差异</th></tr></thead>' +
+        '<div class="biz-table-scroll"><table class="biz-table biz-table--compact pc-table"><thead><tr><th>持仓细类</th><th class="pc-col-mine">我的占比</th><th class="pc-col-bench">标杆占比</th><th>占比差异</th></tr></thead>' +
         '<tbody>' + subtypeRows + '</tbody></table></div></div>' +
       '<div class="pc-page-actions">' +
         '<button type="button" class="btn btn-outline btn-sm" data-act="PositionComparison.openBenchmarkPicker">切换标杆</button>' +

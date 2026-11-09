@@ -1,5 +1,7 @@
 # ADR-0004：A 股 IPO 行业事实与 PE 口径隔离
 
+> **2026-11-10 核对（0.9.2.42 线上反馈 #29）**：本次只改打新详情页 `cnStockIndustryChain` 的重复项去重与展示顺序，`business_exposure.industry_chain` 字段口径、上游→公司产品→下游应用关系、原文证据与 PE 隔离均未改，未新增事实表或解析版本；ADR-0004 结论不变。
+>
 > **2026-11-07 核对（选股 V2）**：本版改动命中 `jobDefinitions.js`/`jobOrchestrator.js` 只是新增选股模式与执行上下文字段（`strategyCode/periodKey/shadow/slotId/executionToken`），不触及 A 股 IPO 行业事实、行业 PE 或赛道映射；`ipo_history_sync` 的 `request_payload.targetCodes` 合同与产业链写入路径未改。本 ADR 结论继续有效。（同日二次核对：`jobDefinitions.js` 再增 `stock_analysis_refresh` 的 18:40 `selection_periodic` 附加调度与对应模式契约，只影响选股到期检查，不改 `ipo_history_sync` 的任何模式、来源或行业口径。）
 
 2026-11-04 补数提速（0.9.2.6）：`jobOrchestrator` 仅补选股模式的 `batchLimit` 传递；A股IPO行业事实、行业PE 与产业链口径不受影响。

@@ -1,5 +1,7 @@
 # INC-0033：A 股 IPO 行业漏解析与持续补全研发方案
 
+> **2026-11-10 核对（0.9.2.42 线上反馈 #29）**：产业链事实仍只存 `business_exposure` JSONB，本次不改招股书解析、补全任务或字段状态，只在详情页渲染时按应用去重（源数据里同一句原文被切成多行、每行都挂全量产品名）；历史缺口与待办状态不变。
+>
 > **2026-11-07 核对（选股 V2）**：`jobDefinitions.js` 与 `jobOrchestrator.js` 的变更仅限选股新模式的契约与上下文透传，与 IPO 行业采集、行业 PE 与产业链解析无关；未改动 `ipo-industry-enrichment` 路由涉及的任何取值或口径。整改结论不受影响。（同日二次核对：新增的 `selection_periodic` 模式与 18:40 附加调度只做选股到期入队，`ipo_history_sync` 的 `targetCodes`、行业 PE 与产业链写入路径均未变更。）
 
 2026-11-04 补数提速（0.9.2.6）：`jobOrchestrator` 仅补选股模式的 `batchLimit` 传递；IPO 行业解析与补全链路行为不变。

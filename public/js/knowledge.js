@@ -722,7 +722,7 @@ async function ksPaintEditor(article) {
       return;
     }
   }
-  editor.setValue(article ? (article.content || '') : '');
+  editor.setValue(article ? normalizeInlineEmphasis(article.content || '') : '');
 }
 
 // 读取编辑表单与编辑器内容（ksSave 的 DOM 段）；返回 null 表示编辑器未就绪
@@ -778,7 +778,7 @@ async function ksPaintImportedArticle(title, content) {
     return;
   }
   ksEl('ks-edit-title').value = title;
-  editor.setValue(content);
+  editor.setValue(normalizeInlineEmphasis(content));
   ksShowView('edit');
 }
 

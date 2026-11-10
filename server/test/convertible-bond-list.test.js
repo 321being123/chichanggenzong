@@ -194,6 +194,19 @@ check('主同步回写已退市债生命周期，不靠人工补公告（反馈 
     '摘牌日已过的债券状态应落成 delisted');
 });
 
+// 2026-11-10 反馈 #32：列表首次打开要 5 秒以上。根因是正股最近两条行情用窗口函数对每只正股
+// 的完整历史排序后再取 rn=1/2，单次请求约 12 万页缓冲；必须改成 LIMIT 2 的局部取数。
+check('列表正股行情只取最近两条，不再对全历史做窗口排序（反馈 #32）', () => {
+  const repo = fs.readFileSync(path.join(__dirname, '..', 'repositories', 'convertibleBondListServiceRepository.js'), 'utf8');
+  const fnAt = repo.indexOf('async function fetchUniverseRows');
+  assert.ok(fnAt > 0, '必须能找到 fetchUniverseRows');
+  const body = repo.slice(fnAt, repo.indexOf('async function fetchLifecycleUndetermined'));
+  assert.ok(/ORDER BY trade_date DESC,source_id DESC LIMIT 2/.test(body),
+    '正股行情子查询必须按日期倒序 LIMIT 2 取最近两条');
+  assert.ok(!/ROW_NUMBER\(\) OVER \(ORDER BY trade_date DESC,source_id DESC\)/.test(body),
+    '不得再对正股完整历史做窗口排序，否则首次列表会回退到秒级全历史扫描');
+});
+
 const pass = tests.filter(item => item[0] === 'PASS').length;
 const fail = tests.filter(item => item[0] === 'FAIL').length;
 console.log('\n===== convertible-bond-list 测试汇总 =====');

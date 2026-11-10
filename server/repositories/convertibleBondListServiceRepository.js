@@ -65,14 +65,17 @@ async function fetchUniverseRows(tradeDate) {
         JOIN core.instruments b ON b.instrument_id=m.instrument_id
         JOIN public.bond_unified u ON u.instrument_id=m.instrument_id
         LEFT JOIN core.instruments s ON s.instrument_id=p.stock_instrument_id
+        -- 只取最近两条行情（2026-11-10 反馈 #32）：原来用窗口函数给该股全部历史排序再取 rn=1/2，
+        -- 单次列表要按 310 只正股各扫一遍完整历史（约 12 万页缓冲），首次打开要 5 秒以上。
         LEFT JOIN LATERAL (
-          SELECT MAX(trade_date) FILTER (WHERE rn=1) AS stock_trade_date,
-                 MAX(close) FILTER (WHERE rn=1) AS stock_close,
-                 MAX(close) FILTER (WHERE rn=2) AS stock_prev_close
+          SELECT (array_agg(trade_date ORDER BY trade_date DESC,source_id DESC))[1] AS stock_trade_date,
+                 (array_agg(close ORDER BY trade_date DESC,source_id DESC))[1] AS stock_close,
+                 (array_agg(close ORDER BY trade_date DESC,source_id DESC))[2] AS stock_prev_close
             FROM (
-              SELECT trade_date,close,ROW_NUMBER() OVER (ORDER BY trade_date DESC,source_id DESC) AS rn
+              SELECT trade_date,close,source_id
                 FROM market.daily_bars
                WHERE instrument_id=p.stock_instrument_id AND trade_date <= $1::date AND close > 0
+               ORDER BY trade_date DESC,source_id DESC LIMIT 2
             ) x
         ) sb ON true
         LEFT JOIN LATERAL (

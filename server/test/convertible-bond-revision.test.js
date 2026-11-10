@@ -176,4 +176,22 @@ const sseResponded = buildResetResult({ ...sseBond, revision_responses: [{ event
 assert.strictEqual(sseResponded.diagnostics.implicit_sse_no_revision_restart_date, null);
 assert.strictEqual(sseResponded.status, 'met');
 
+// 2026-11-10 反馈 #33：下修监控首次打开要 5～7 秒。根因是"每只正股最近一条行情/估值"用
+// DISTINCT ON 在千万级 market.daily_valuations 上退化成全表并行扫描（单次约 18 万页）。
+// 这里锁死取数写法：必须按证券逐只走索引 LIMIT 1，不能再出现 DISTINCT ON。
+const fsRepo = require('fs');
+const pathRepo = require('path');
+const revisionRepoSource = fsRepo.readFileSync(
+  pathRepo.join(__dirname, '..', 'repositories', 'convertibleBondRevisionServiceRepository.js'), 'utf8');
+const latestLookupFrom = revisionRepoSource.indexOf('async function select_market_daily_bars_1');
+const latestLookupTo = revisionRepoSource.indexOf('async function select_market_stock_suspend_calendar');
+if (latestLookupFrom < 0 || latestLookupTo < 0) {
+  throw new Error('下修仓储必须保留 select_market_daily_bars_1 / select_market_stock_suspend_calendar');
+}
+const latestLookupSource = revisionRepoSource.slice(latestLookupFrom, latestLookupTo);
+assert.ok(!/DISTINCT ON \(instrument_id\)/.test(latestLookupSource),
+  '最近一条行情/估值不得再用 DISTINCT ON，否则 daily_valuations 会退化成全表扫描');
+assert.strictEqual((latestLookupSource.match(/ORDER BY trade_date DESC,source_id DESC LIMIT 1/g) || []).length, 2,
+  '最近一条行情和最近一条估值都必须按证券逐只 ORDER BY ... LIMIT 1 取数');
+
 console.log('convertible bond revision tests passed');

@@ -126,18 +126,28 @@ async function select_market_daily_bars(params, client = pool) {
       WHERE rn <= 180 ORDER BY instrument_id,trade_date DESC`, params);
 }
 
+// 取每只正股最近一条行情/估值（2026-11-10 反馈 #33）：DISTINCT ON 对 daily_valuations
+// 这种千万级表会退化成全表并行扫描（单次约 18 万页、4.7 秒），改成按证券逐只走索引取 1 行。
 async function select_market_daily_bars_1(params, client = pool) {
-  return client.query(`SELECT DISTINCT ON (instrument_id) instrument_id,trade_date::text,close
-         FROM market.daily_bars
-        WHERE instrument_id=ANY($1::bigint[]) AND trade_date <= COALESCE($2::date,CURRENT_DATE) AND close > 0
-        ORDER BY instrument_id,trade_date DESC,source_id DESC`, params);
+  return client.query(`SELECT i.instrument_id,v.trade_date::text,v.close
+         FROM (SELECT DISTINCT instrument_id FROM unnest($1::bigint[]) AS instrument_id) i
+         JOIN LATERAL (
+           SELECT trade_date,close
+             FROM market.daily_bars
+            WHERE instrument_id=i.instrument_id AND trade_date <= COALESCE($2::date,CURRENT_DATE) AND close > 0
+            ORDER BY trade_date DESC,source_id DESC LIMIT 1
+         ) v ON true`, params);
 }
 
 async function select_market_daily_valuations(params, client = pool) {
-  return client.query(`SELECT DISTINCT ON (instrument_id) instrument_id,trade_date::text,pb
-         FROM market.daily_valuations
-        WHERE instrument_id=ANY($1::bigint[]) AND trade_date <= COALESCE($2::date,CURRENT_DATE)
-        ORDER BY instrument_id,trade_date DESC,source_id DESC`, params);
+  return client.query(`SELECT i.instrument_id,v.trade_date::text,v.pb
+         FROM (SELECT DISTINCT instrument_id FROM unnest($1::bigint[]) AS instrument_id) i
+         JOIN LATERAL (
+           SELECT trade_date,pb
+             FROM market.daily_valuations
+            WHERE instrument_id=i.instrument_id AND trade_date <= COALESCE($2::date,CURRENT_DATE)
+            ORDER BY trade_date DESC,source_id DESC LIMIT 1
+         ) v ON true`, params);
 }
 
 async function select_market_stock_suspend_calendar(params, client = pool) {

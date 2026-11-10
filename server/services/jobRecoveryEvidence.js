@@ -79,6 +79,14 @@ const WAIT_REASON_POLICIES = Object.freeze({
     evidenceFields: ['nextAttemptAt'],
     description: '资料字段待官方后续披露，按 Runner 返回的冷却时间复查',
   },
+  // 方案 27.38 P1：日/周选股"输入未就绪"是等数据补齐的正常等待，但必须有复查时刻、
+  // 待完成阶段和剩余数量才有资格算证据等待；缺口清空前一律不发布，超过 24 小时仍进止损。
+  selection_not_ready: {
+    jobs: ['stock_analysis_refresh'],
+    maxWaitHours: 24,
+    evidenceFields: ['nextAttemptAt', 'pendingStages', 'remaining'],
+    description: '选股周期输入未就绪，按 Runner 给出的复查时刻等待，缺口清空前置为未发布',
+  },
 });
 
 function waitReasonPolicy(reason, jobCode) {

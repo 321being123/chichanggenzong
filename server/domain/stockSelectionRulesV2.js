@@ -241,6 +241,7 @@ function resolveTtmStatus(facts) {
  * | PB>1.5，有效正 PE，乘积<22.5    | PASS  PB_PE_PRODUCT |
  * | PB>1.5，正 PE 但乘积≥22.5       | FAIL  VALUATION_FAILED（等于也不通过） |
  * | PB>1.5，PE≤0 且已核实利润事实   | FAIL  PE_NON_POSITIVE |
+ * | PB>1.5，PE 缺失且已核实亏损/零  | FAIL  PE_NON_POSITIVE（2026-11-10：缺失不等于待补） |
  * | PB>1.5，PE 缺失/无穷/口径不一致 | PENDING PE_PENDING（不回退静态 PE） |
  * | PB<0                            | FAIL  pb_negative_equity |
  * | PB=0 或可补异常                 | PENDING |
@@ -321,6 +322,23 @@ function evaluateValuationV2(facts, params) {
   }
   const peCmpZero = compareDecimal(peRaw, '0');
   if (peCmpZero === null) {
+    // PE 缺失但同一 T、同一权益范围的滚动十二个月利润已核实为亏损/零：
+    // 这是「明确不符合」，不是「待补」。源端对长期亏损公司本来就不给 PE（生产 2026-11-10 实证：
+    // 26 只科创板候选 ttm_profit_status 全为 loss、pe_ttm 长期为空），
+    // 判 PENDING 会让它们每天阻断整市场发布并触发重复补数，永远补不出一个不存在的数值。
+    // 注意：这不放宽任何阈值——只是把已核实的亏损事实用于「PB>1.5 必须正 PE」这条通道，
+    // 与下方「PE≤0 且已核实亏损 → FAIL」同一口径；PB≤1.5 的先通过通道不受影响。
+    if (ttm.status === 'loss' || ttm.status === 'zero') {
+      return Object.assign(base, {
+        rule: rule('R01', STATUS.FAIL, {
+          value: pb, threshold: params.maxPb, reason: 'PE_NON_POSITIVE',
+          ttmProfitStatus: ttm.status, detail: 'pe_unavailable_ttm_non_positive',
+        }),
+        valuationStatus: STATUS.FAIL,
+        valuationPass: false,
+        valuationPassReason: 'PE_NON_POSITIVE',
+      });
+    }
     return Object.assign(base, {
       rule: rule('R01', STATUS.PENDING, { value: pb, threshold: params.maxPb, reason: 'PE_PENDING' }),
       valuationStatus: STATUS.PENDING,

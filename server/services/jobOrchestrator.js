@@ -82,6 +82,46 @@ function selectionContextOf(claimed) {
   };
 }
 
+// 续批等待解析（方案 27.38 P1）。
+// Runner 已经能给出绝对复查时间 nextCheckAt（如选股"输入未就绪，30 分钟后再看"），
+// 但编排器此前只认间隔字段 nextAttemptInMinutes，取不到就退回 1 分钟——生产实测 11-09 的
+// 日选股槽在两小时内重复计算 466 次，每次都在等同一份尚未到达的估值事实，最后撞 24 小时止损。
+// 规则：
+//   ① 合法绝对时间（可解析、晚于现在、不超过续批止损上限）→ 直接用它，统一写回 nextAttemptAt；
+//   ② 缺失/非法/已过期 → 回退 nextAttemptInMinutes（默认 1 分钟），并记下回退原因；
+//   ③ 超过续批止损上限 → 截到上限，避免"等得比止损还久"把豁免窗口拉长；
+//   ④ 间隔永远不小于 1 分钟，避免零延迟热循环。
+function resolveContinuationWait(result = {}, options = {}) {
+  const source = result && typeof result === 'object' ? result : {};
+  const nowValue = options.now instanceof Date ? options.now : new Date(options.now || Date.now());
+  const now = Number.isNaN(nowValue.getTime()) ? new Date() : nowValue;
+  const maxAgeHours = Math.max(Number(source.continuationMaxAgeHours || options.maxAgeHours || 24), 1);
+  const fallbackMinutes = Math.max(Number(source.nextAttemptInMinutes || options.fallbackMinutes || 1), 1);
+  const fallbackAt = new Date(now.getTime() + fallbackMinutes * 60000);
+  const raw = source.nextCheckAt || source.nextAttemptAt;
+  const parsed = raw ? new Date(raw) : null;
+  const invalid = !parsed || Number.isNaN(parsed.getTime());
+  if (invalid) {
+    return { nextAttemptAt: fallbackAt, nextAttemptInMinutes: fallbackMinutes, rejected: raw ? 'next_check_at_invalid' : 'next_check_at_absent' };
+  }
+  if (parsed.getTime() <= now.getTime()) {
+    return { nextAttemptAt: fallbackAt, nextAttemptInMinutes: fallbackMinutes, rejected: 'next_check_at_past' };
+  }
+  const maxAt = new Date(now.getTime() + maxAgeHours * 3600000);
+  if (parsed.getTime() > maxAt.getTime()) {
+    return {
+      nextAttemptAt: maxAt,
+      nextAttemptInMinutes: Math.max(Math.round((maxAt.getTime() - now.getTime()) / 60000), 1),
+      rejected: 'next_check_at_beyond_max_age',
+    };
+  }
+  return {
+    nextAttemptAt: parsed,
+    nextAttemptInMinutes: Math.max(Math.round((parsed.getTime() - now.getTime()) / 60000), 1),
+    rejected: null,
+  };
+}
+
 // 本进程可同时执行的任务数；历史类最多占 historyCapacity，保证核心任务始终留得住槽位。
 const EXECUTOR_CAPACITY = Math.max(Number(process.env.JOB_EXECUTOR_CAPACITY) || 2, 1);
 // 历史类可占的并发上限：容量 >=2 时至少给核心留一个槽；容量为 1 时历史退化为串行执行
@@ -942,12 +982,18 @@ async function runSlot(slot, reason = reasonForSlot(slot)) {
         result.continuationBlocked = true;
         result.continuationStopReason = `续跑已超过${continuationMaxAgeHours}小时，已停止自动续批`;
       }
+      // 绝对复查时间优先（方案 27.38 P1）：Runner 给出的 nextCheckAt 必须在这里消费，
+      // 否则 30 分钟的复查节奏会被 1 分钟的普通续批覆盖，重复计算的根因就没有真正修掉。
+      const wait = resolveContinuationWait(result, { maxAgeHours: continuationMaxAgeHours });
+      result.nextAttemptAt = wait.nextAttemptAt.toISOString();
+      result.nextAttemptInMinutes = wait.nextAttemptInMinutes;
+      if (wait.rejected) result.nextCheckAtRejected = wait.rejected;
       await finishManagedRun(runId, claimed.job_code, true, result);
       if (result.continuationBlocked || result.continuationStopReason || result.blocked === true) {
         await completeSlot(claimed.slot_id, 'blocked', result,
           result.continuationStopReason || '续批达到停止条件，已暂停等待人工处理', runId, executionToken);
       } else {
-        await continueSlot(claimed.slot_id, result, result.nextAttemptInMinutes || 1, runId, executionToken);
+        await continueSlot(claimed.slot_id, result, result.nextAttemptInMinutes, runId, executionToken);
       }
       return { ok: true, result, continuation: true };
     }
@@ -1079,4 +1125,4 @@ async function stopDurableExecutor(timeoutMs = 5000) {
   }
 }
 
-module.exports = { startDurableExecutor, stopDurableExecutor, runDueSlots, runSlot, JOB_DEFINITIONS, touchSlot, runJobInIsolatedProcess, childErrorFromMessage, classifyFailure, recoverySchedule, resolveMaxAttempts, hasSkippedSignal, datasetPartitionKeyForSlot, buildDatasetDiagnosticAlerts, createDispatchScheduler, executionTier, slotTier, selectionContextOf, EXECUTOR_CAPACITY, HISTORY_CAPACITY };
+module.exports = { startDurableExecutor, stopDurableExecutor, runDueSlots, runSlot, JOB_DEFINITIONS, touchSlot, runJobInIsolatedProcess, childErrorFromMessage, classifyFailure, recoverySchedule, resolveMaxAttempts, hasSkippedSignal, datasetPartitionKeyForSlot, buildDatasetDiagnosticAlerts, createDispatchScheduler, executionTier, slotTier, selectionContextOf, resolveContinuationWait, EXECUTOR_CAPACITY, HISTORY_CAPACITY };

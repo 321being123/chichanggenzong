@@ -5407,6 +5407,86 @@
       ],
       "owner": "WorkBuddy",
       "status": "implemented"
+    },
+    {
+      "id": "JOB-CONTINUATION-RECHECK-001",
+      "title": "续批必须消费 Runner 给出的绝对复查时间：缺失/非法/过期回退间隔，超续批止损上限截断，间隔下限 1 分钟",
+      "implementation": {
+        "file": "server/services/jobOrchestrator.js",
+        "symbol": "resolveContinuationWait"
+      },
+      "tests": [
+        {
+          "file": "server/test/selection-wait-wakeup.test.js",
+          "pattern": "合法复查时间必须被直接采用"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "implemented"
+    },
+    {
+      "id": "JOB-WAIT-EVIDENCE-002",
+      "title": "日/周选股未就绪必须登记等待原因、待完成阶段、剩余数量与目标范围，且该原因只在证据齐备时算有效等待",
+      "implementation": {
+        "file": "server/services/jobRecoveryEvidence.js",
+        "symbol": "WAIT_REASON_POLICIES"
+      },
+      "tests": [
+        {
+          "file": "server/test/selection-wait-wakeup.test.js",
+          "pattern": "证据齐备的选股等待是有效等待"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "implemented"
+    },
+    {
+      "id": "JOB-SELECTION-INPUTS-DAILY-001",
+      "title": "选股输入必须有日常按需补排程：复用 selection_inputs 模式按市场与目标交易日补齐缺口，不新增任务/数据源",
+      "implementation": {
+        "file": "server/services/jobDefinitions.js",
+        "symbol": "additionalSchedules"
+      },
+      "tests": [
+        {
+          "file": "server/test/selection-inputs-daily-schedule.test.js",
+          "pattern": "选股输入必须有 CN/HK 两个日常触发"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "implemented"
+    },
+    {
+      "id": "JOB-SCHEDULE-TARGET-TRADE-DATE-002",
+      "title": "日常补数槽的目标交易日按本地交易日历取上一交易日，只认 open，查不到不生成槽位",
+      "implementation": {
+        "file": "server/services/jobScheduleSlots.js",
+        "symbol": "previousTradingDateOf"
+      },
+      "tests": [
+        {
+          "file": "server/test/selection-inputs-daily-schedule.test.js",
+          "pattern": "只认交易日历明确的 open"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "implemented"
+    },
+    {
+      "id": "STOCK-SELECTION-PE-MISSING-003",
+      "title": "PB>1.5 且 PE 缺失时，滚动十二个月利润已核实为亏损/零判 FAIL/PE_NON_POSITIVE，不再判待补",
+      "implementation": {
+        "file": "server/domain/stockSelectionRulesV2.js",
+        "symbol": "evaluateValuationV2"
+      },
+      "tests": [
+        {
+          "file": "server/test/selection-inputs-daily-schedule.test.js",
+          "pattern": "PB>1.5 且已核实亏损、PE 缺失必须判不通过"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "implemented"
     }
   ]
 }

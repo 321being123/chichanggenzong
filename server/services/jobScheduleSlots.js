@@ -138,6 +138,32 @@ function resolveDatasetPartitionDate(requirement = {}, slot = {}, definition = {
   return cursor;
 }
 
+// 排程级目标交易日（2026-11-10，方案 27.38 P0）。
+// 日常按需补数必须在「已收盘的交易日」上审计缺口：用当天会把未收盘的一天算成
+// "全市场缺一天"，所有证券都变成待补（生产 11-10 实证：HK 全市场无当日估值、A 股同样缺 T 日）。
+// 只认本地交易日历明确的 open；日历缺失或连续 20 个自然日都取不到就不生成槽位，
+// 不按"周一到周五"猜开市。
+async function previousTradingDateOf(market, businessDate) {
+  const normalized = normalizeBusinessDate(businessDate);
+  const marketCode = String(market || '').toUpperCase();
+  if (!normalized || !['CN', 'HK'].includes(marketCode)) return null;
+  const { getMarketState } = require('./marketState');
+  let cursor = previousDate(normalized);
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const state = await getMarketState({ market: marketCode, businessDate: cursor, time: '00:00' })
+      .catch(() => null);
+    if (state && String(state.status || '') === 'open') return cursor;
+    cursor = previousDate(cursor);
+  }
+  return null;
+}
+
+// 排程声明的 targetTradeDate 策略解析：目前只支持「按本地交易日历取上一交易日」。
+async function resolveScheduleTargetTradeDate(schedule = {}, businessDate) {
+  if (String(schedule.targetTradeDate || '') !== 'previous_trading_day') return null;
+  return previousTradingDateOf(schedule.market, businessDate);
+}
+
 async function ensureSlot(jobCode, scheduledFor, businessDate, triggerType = 'scheduled', requestPayload = {}) {
   if (!getRegisteredJobDefinition(jobCode)) {
     throw new Error(`未知任务 jobCode，禁止创建执行槽位：${jobCode}`);
@@ -344,6 +370,12 @@ async function expireContinuationSlot(slot, definition, now) {
   }
   const { rows } = await repository.update_ops_job_schedule_slots_1([slot.slot_id, message, version]);
   if (!rows[0]) return null;
+  // 方案 27.38 P1：告警摘要必须给出"在等什么"——目标市场/周期/目标日 + 剩余阶段与数量，
+  // 只有一句"未登记/剩余 -"时运维无法判断是数据没到还是代码卡住。
+  const waitContext = summary.waitContext && typeof summary.waitContext === 'object' ? summary.waitContext : null;
+  const contextText = waitContext
+    ? `，目标：${[waitContext.market, waitContext.periodKey || waitContext.targetDate].filter(Boolean).join(' / ') || '-'}`
+    : '';
   const { notifyJobFailure } = require('./jobAlertMailer');
   await notifyJobFailure({
     jobCode: slot.job_code,
@@ -351,7 +383,7 @@ async function expireContinuationSlot(slot, definition, now) {
     alertKey: `slot:${slot.slot_id}:continuation-expired`,
     alertType: 'failure',
     subject: `后台任务续批止损：${definition.label}`,
-    summary: `${message}。等待原因：${summary.waitReason || '未登记'}，剩余阶段：${(summary.pendingStages || []).join('/') || '-'}，剩余数量：${summary.remaining ?? '-'}`,
+    summary: `${message}。等待原因：${summary.waitReason || '未登记'}，剩余阶段：${(summary.pendingStages || []).join('/') || '-'}，剩余数量：${summary.remaining ?? '-'}${contextText}`,
   }).catch(error => console.warn('[job-alert] 续批止损告警失败:', error.message));
   return rows[0];
 }
@@ -564,7 +596,13 @@ async function syncScheduleSlots(now = new Date()) {
         const scheduledFor = scheduledDate(businessDate, resolvedSchedule.hour, resolvedSchedule.minute);
         const windowMinutes = definition.catchupWindowMinutes || definition.deadlineMinutes || 180;
         if (businessDate !== today && scheduledFor.getTime() + windowMinutes * 60000 < now.getTime()) continue;
+        // 日常补数槽必须带明确市场与目标交易日：缺目标交易日就不生成槽，
+        // 不能让 Runner 退回"业务日=当天"把未收盘的一天算成缺口。
+        const targetTradeDate = await resolveScheduleTargetTradeDate(resolvedSchedule, businessDate);
+        if (resolvedSchedule.targetTradeDate && !targetTradeDate) continue;
         const requestPayload = { mode: resolvedSchedule.mode || 'core' };
+        if (resolvedSchedule.market) requestPayload.market = String(resolvedSchedule.market).toUpperCase();
+        if (targetTradeDate) requestPayload.targetTradeDate = targetTradeDate;
         if (Object.prototype.hasOwnProperty.call(resolvedSchedule, 'freshnessGate')) requestPayload.freshnessGate = Boolean(resolvedSchedule.freshnessGate);
         const slot = await ensureSlot(definition.jobCode, scheduledFor, businessDate, 'scheduled', requestPayload);
         const current = await reconcileSlot(slot);
@@ -1213,6 +1251,7 @@ module.exports = {
   claimSlot, completeSlot, deferSlot, waitForExternalSlot, continueSlot, mergeSlotExternalCallSummary, touchSlot, recoverExpiredSlots, listDueSlots, retryJobSlot, acknowledgeSlot,
   listJobSlots, getJobSlot, validateJobSlot, heartbeat, getJobOverview, queryDataAsOf, isDataAsOfFresh, resolveDataAsOf, expectedDataDate,
   isSlotDayAllowed, isWeekday, previousDate, resolveScheduleForDate,
+  previousTradingDateOf, resolveScheduleTargetTradeDate,
   resolveDatasetPartitionDate, datasetDependencyState, recoverNavDependencies, attemptLimit, sweepStaleSlots,
   reconcileSlot, pendingNeedsTakeoverCheck, blockReasonOf,
 };

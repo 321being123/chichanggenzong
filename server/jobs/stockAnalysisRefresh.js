@@ -247,11 +247,24 @@ async function runSelectionMode(mode, reason, context) {
       stageComplete,
       stageCompletedKind,
       // 未就绪/未完成必须同时给出原因与下一次检查时刻，续跑由原等待语义承载（方案 27.6）。
+      // 方案 27.38 P1：等待必须可核验——登记等待原因、待完成阶段、剩余数量与目标范围，
+      // 否则续批止损告警只能写"等待原因未登记、剩余数量 -"，运维看不出在等什么。
       ...(stageComplete ? {} : {
         continuationRequired: true,
         reason: result.readinessStatus === 'not_ready' ? 'selection_not_ready' : 'selection_not_publishable',
         nextCheckAt: nextSelectionRecheckAt(),
-        ...(result.readinessStatus === 'not_ready' ? { missingDatasets: [datasetCode], readinessStatus: 'not_ready' } : {}),
+        pendingStages: ['selection_period_computation'],
+        remaining: Number(result.pendingCount || 0),
+        waitContext: {
+          market,
+          periodType,
+          periodKey: result.periodKey || context.periodKey || null,
+          targetDate: String(context.targetDate || context.businessDate || result.asOfDate || '').slice(0, 10) || null,
+          readinessStatus: result.readinessStatus || null,
+        },
+        ...(result.readinessStatus === 'not_ready'
+          ? { waitReason: 'selection_not_ready', missingDatasets: [datasetCode], readinessStatus: 'not_ready' }
+          : {}),
       }),
       ...(publicationFailed ? {
         error: `选股结果已记录但分区写入失败：${publication.error || publication.reason || 'unknown'}`,

@@ -245,3 +245,5 @@ Tushare 官方文档只把 `stock_basic.industry` 定义为“所属行业”，
 本轮 `jobOrchestrator` 的改动只涉及数据集断路收尾的执行令牌与租约校验，不触碰 IPO 行业事实、行业 PE 口径、`industry` 字段写入或下游消费；`stockSelectionRepository.loadUniverse` 的改动是给 PE/PB 现算补 `available_at` 可见时点与币种一致校验，与 ADR-0004 的"行业事实与行业 PE 隔离"是两个维度。因此本 ADR 的决策与实现边界不变，此处仅记录已核对、无需要修改的结论。
 
 > 2026-11-10 核对（港股证券分析第十四节实施）：本次只改个股分析的任务模式与上下文中市场参数透传，未触及 A 股 IPO 行业事实、行业 PE、`industry` 字段写入或下游消费；本 ADR 决策与实现边界仍不变。
+
+> 2026-11-10 核对（选股未就绪的续批复查节奏）：本次 `jobOrchestrator` 只改续批排期解析（`resolveContinuationWait`）与等待摘要，未触碰 IPO 行业事实、行业 PE 口径、`industry` 字段写入或下游消费；本 ADR 的决策与实现边界仍不变。

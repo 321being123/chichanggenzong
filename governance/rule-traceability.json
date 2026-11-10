@@ -5407,6 +5407,38 @@
       ],
       "owner": "WorkBuddy",
       "status": "implemented"
+    },
+    {
+      "id": "JOB-CONTINUATION-RECHECK-001",
+      "title": "续批必须消费 Runner 给出的绝对复查时间：缺失/非法/过期回退间隔，超续批止损上限截断，间隔下限 1 分钟",
+      "implementation": {
+        "file": "server/services/jobOrchestrator.js",
+        "symbol": "resolveContinuationWait"
+      },
+      "tests": [
+        {
+          "file": "server/test/selection-wait-wakeup.test.js",
+          "pattern": "合法复查时间必须被直接采用"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "implemented"
+    },
+    {
+      "id": "JOB-WAIT-EVIDENCE-002",
+      "title": "日/周选股未就绪必须登记等待原因、待完成阶段、剩余数量与目标范围，且该原因只在证据齐备时算有效等待",
+      "implementation": {
+        "file": "server/services/jobRecoveryEvidence.js",
+        "symbol": "WAIT_REASON_POLICIES"
+      },
+      "tests": [
+        {
+          "file": "server/test/selection-wait-wakeup.test.js",
+          "pattern": "证据齐备的选股等待是有效等待"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "implemented"
     }
   ]
 }

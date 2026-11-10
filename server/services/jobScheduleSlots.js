@@ -344,6 +344,12 @@ async function expireContinuationSlot(slot, definition, now) {
   }
   const { rows } = await repository.update_ops_job_schedule_slots_1([slot.slot_id, message, version]);
   if (!rows[0]) return null;
+  // 方案 27.38 P1：告警摘要必须给出"在等什么"——目标市场/周期/目标日 + 剩余阶段与数量，
+  // 只有一句"未登记/剩余 -"时运维无法判断是数据没到还是代码卡住。
+  const waitContext = summary.waitContext && typeof summary.waitContext === 'object' ? summary.waitContext : null;
+  const contextText = waitContext
+    ? `，目标：${[waitContext.market, waitContext.periodKey || waitContext.targetDate].filter(Boolean).join(' / ') || '-'}`
+    : '';
   const { notifyJobFailure } = require('./jobAlertMailer');
   await notifyJobFailure({
     jobCode: slot.job_code,
@@ -351,7 +357,7 @@ async function expireContinuationSlot(slot, definition, now) {
     alertKey: `slot:${slot.slot_id}:continuation-expired`,
     alertType: 'failure',
     subject: `后台任务续批止损：${definition.label}`,
-    summary: `${message}。等待原因：${summary.waitReason || '未登记'}，剩余阶段：${(summary.pendingStages || []).join('/') || '-'}，剩余数量：${summary.remaining ?? '-'}`,
+    summary: `${message}。等待原因：${summary.waitReason || '未登记'}，剩余阶段：${(summary.pendingStages || []).join('/') || '-'}，剩余数量：${summary.remaining ?? '-'}${contextText}`,
   }).catch(error => console.warn('[job-alert] 续批止损告警失败:', error.message));
   return rows[0];
 }

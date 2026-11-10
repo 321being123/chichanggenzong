@@ -4,6 +4,10 @@
 // - 入口层用统一身份服务确认对象存在，不按数字前缀自行猜市场。
 // - 不新增数据表、不触发外部采集、不写分析快照。
 const { canonicalizeSecurityCode, resolveInstrument } = require('./securityIdentity');
+const contract = require('../domain/securityAnalysisContract');
+
+const SHARE_CODE_RE = /^\/s\/security\/(bond|stock)\/(?:[0-9]{6}\.(?:SH|SZ|BJ)|[0-9]{5}\.HK)$/;
+const CANONICAL_RE = /^(?:\d{6}\.(?:SH|SZ|BJ)|\d{5}\.HK)$/;
 
 const SITE_NAME = '存在小站';
 const CONTENT_LABEL = '证券分析';
@@ -43,7 +47,7 @@ function isAllowedSignUrl(rawUrl) {
   if (target.hash) return false;
   const pathname = target.pathname;
   if (pathname === '/' || pathname === '/index.html') return true;
-  return /^\/s\/security\/(bond|stock)\/[0-9]{6}\.(SH|SZ|BJ)$/.test(pathname);
+  return SHARE_CODE_RE.test(pathname);
 }
 
 function isKnownContentType(contentType) {
@@ -73,8 +77,19 @@ async function resolveSecurity(kindValue, rawCodeValue) {
   const rawCode = String(rawCodeValue || '').trim();
   if (!rawCode || rawCode.length > 20) return { ok: false, status: 400, error: '证券代码不合法' };
 
-  const canonicalCode = canonicalizeSecurityCode(rawCode, KIND_ASSET_CLASS[kind]);
-  if (!canonicalCode || !/^\d{6}\.(SH|SZ|BJ)$/.test(canonicalCode)) {
+  let canonicalCode = null;
+  if (kind === 'bond') {
+    canonicalCode = canonicalizeSecurityCode(rawCode, 'convertible_bond');
+  } else {
+    const normalized = contract.normalizeAnalyzableCode(rawCode);
+    const candidate = normalized.ok ? normalized.code
+      : (normalized.reason === 'cn_code_needs_suffix' ? normalized.digits : null);
+    if (candidate) canonicalCode = canonicalizeSecurityCode(candidate, 'stock');
+  }
+  if (!canonicalCode || !CANONICAL_RE.test(canonicalCode)) {
+    return { ok: false, status: 400, error: '证券代码不合法' };
+  }
+  if (kind === 'bond' && !/^\d{6}\.(SH|SZ|BJ)$/.test(canonicalCode)) {
     return { ok: false, status: 400, error: '证券代码不合法' };
   }
 
@@ -90,6 +105,13 @@ async function resolveSecurity(kindValue, rawCodeValue) {
   if (String(instrument.asset_class || '') !== KIND_ASSET_CLASS[kind]) {
     return { ok: false, status: 404, error: '证券类型不匹配' };
   }
+  // 港股分享同样只登记主档可识别的普通股票，ETF/REIT/权证不因适配器有该类型而纳入。
+  if (contract.HK_CODE_RE.test(canonicalCode) && kind === 'stock') {
+    const classified = contract.classifyHkInstrument(Object.assign({}, instrument, { canonical_code: canonicalCode }));
+    if (!classified.ok || classified.reason === 'non_ordinary_security') {
+      return { ok: false, status: 404, error: '该证券不是可分享的港股普通股票' };
+    }
+  }
 
   const name = String(instrument.name || '').trim() || canonicalCode;
   return {
@@ -97,7 +119,7 @@ async function resolveSecurity(kindValue, rawCodeValue) {
     security: {
       kind,
       code: canonicalCode,
-      digits: canonicalCode.slice(0, 6),
+      digits: canonicalCode.split('.')[0],
       name,
     },
   };

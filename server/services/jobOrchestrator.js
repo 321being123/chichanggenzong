@@ -831,6 +831,9 @@ async function runSlot(slot, reason = reasonForSlot(slot)) {
     slotExternalCallsTotal: Number(claimed.result_summary && claimed.result_summary.slotExternalCallsTotal || 0),
     slotExternalCallsLimit: Number(definition.slotExternalCallsLimit || 0) || null,
     targetDate: claimed.result_summary && claimed.result_summary.targetDate || claimed.business_date,
+    // 港股单股刷新与 HK 定向计算模式：市场必须显式传入，HK 不得退回 CN。
+    ...(claimed.request_payload && ['CN', 'HK'].includes(String(claimed.request_payload.market || '').toUpperCase())
+      ? { market: String(claimed.request_payload.market).toUpperCase() } : {}),
     // 选股模式：market/quarter/requestId/targetDate 必须从 request_payload 带进上下文，
     // 否则任务在入口被判缺市场参数而直接阻断。放在 targetDate 之后，按请求里固定目标日覆盖。
     ...selectionContextOf(claimed),

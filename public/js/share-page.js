@@ -39,10 +39,11 @@
   function init() {
     var body = document.body;
     var kind = String(body.dataset.shareKind || '').trim();
-    var canonical = String(body.dataset.shareCode || '').trim();
-    var digits = canonical.replace(/\D/g, '').slice(0, 6);
+    // 使用服务端登记的完整标准身份（600519.SH / 110081.SH / 00700.HK），不截六位，避免 A/H 串券。
+    var canonical = String(body.dataset.shareCode || '').trim().toUpperCase();
+    var digits = canonical;
 
-    if (!kind || digits.length !== 6) {
+    if (!kind || !/^(?:\d{6}\.(?:SH|SZ|BJ)|\d{5}\.HK)$/.test(digits)) {
       return fail('证券分析', '分享地址不完整，无法读取该证券的分析数据。');
     }
 

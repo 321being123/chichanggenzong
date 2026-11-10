@@ -138,7 +138,8 @@ function stockAnalysisRender(d) {
   var updated = document.getElementById('stock-analysis-updated');
   if (updated) updated.textContent = '数据日期：' + (d.as_of || '--') + (d.quote && d.quote.quote_time ? ' · 行情：' + String(d.quote.quote_time).replace('T',' ').slice(0,19) : '');
   var summary = document.getElementById('stock-analysis-summary');
-  var industryInfo=d.industry_info||{},controller=d.actual_controller||{},priceUnit=d.quote&&d.quote.unit||'元';
+  var display=d.display||{},industryInfo=d.industry_info||{},controller=d.actual_controller||{};
+  var priceUnit=d.quote&&(d.quote.currency_name||d.quote.unit)||'元';
   var industryLabel=(industryInfo.level&&industryInfo.level!=='未标注级别'?(industryInfo.system||'')+industryInfo.level+' · ':'')+(industryInfo.name||d.industry||'--');
   if (summary) summary.innerHTML = '<strong>' + escapeHtml(d.name || d.ts_code) + '</strong><span>' + escapeHtml(d.ts_code || '') + '</span><span>当前价：' + escapeHtml(stockAnalysisNumber(d.quote && d.quote.price, 3)) + ' ' + escapeHtml(priceUnit) + '</span>';
   var v=d.valuation||{}, valuation=document.getElementById('stock-analysis-valuation');
@@ -170,10 +171,10 @@ function stockAnalysisRender(d) {
     stockAnalysisMetric('上市至今年化收益率',stockAnalysisPercent(v.annualized_return_since_listing),'复权价格 · 起始 '+stockAnalysisDate(v.return_start_date),v.annualized_return_since_listing<0)
     ]),
     infoGroup('市值结构',[
-    stockAnalysisMetric('总市值',stockAnalysisMoney(v.market_cap),'当前价格 × 总股本'),
-    stockAnalysisMetric('A股市值',stockAnalysisMoney(v.a_share_market_cap),'A股价格 × A股总股本'),
-    stockAnalysisMetric('流通市值',stockAnalysisMoney(v.circulating_market_cap),'当前价格 × 流通股本'),
-    stockAnalysisMetric('自由流通市值',stockAnalysisMoney(v.free_float_market_cap),'当前价格 × 自由流通股本')
+    stockAnalysisMetric(display.market_cap_label||'总市值',stockAnalysisMoney(v.market_cap),display.market==='HK'?'来源已验证的同一范围、同一币种估值，不用H股价格乘公司全体股本':'当前价格 × 总股本'),
+    display.market==='HK'?'':stockAnalysisMetric('A股市值',stockAnalysisMoney(v.a_share_market_cap),'A股价格 × A股总股本'),
+    stockAnalysisMetric(display.circulating_market_cap_label||'流通市值',stockAnalysisMoney(v.circulating_market_cap),display.market==='HK'?'港股暂无可靠等价字段':'当前价格 × 流通股本'),
+    display.market==='HK'?'':stockAnalysisMetric('自由流通市值',stockAnalysisMoney(v.free_float_market_cap),'当前价格 × 自由流通股本')
     ]),
     infoGroup('报告与业绩预期',[
     stockAnalysisMetric('最新报告',stockAnalysisDate(report.end_date)+' '+(report.type||''),'公告日期 '+stockAnalysisDate(report.ann_date)),
@@ -203,7 +204,7 @@ function stockAnalysisRender(d) {
   }, 'stock-analysis-quality');
 }
 
-function stockAnalysisRenderStability(s){var el=document.getElementById('stock-analysis-stability');if(!el)return;var reason=escapeHtml(s.reason||'');if(s.reason_url)reason+=' <a href="'+escapeHtml(s.reason_url)+'" target="_blank" rel="noopener noreferrer">查看公告</a>';el.innerHTML='<table class="biz-table biz-table--compact stock-analysis-table"><thead><tr><th>项目</th><th>结论</th><th>异常年度</th><th>说明</th></tr></thead><tbody><tr><td>'+analysisHelp('最近十年持续盈利',stockAnalysisLabelHelp('最近十年持续盈利'))+'</td><td>'+(s.profitable_each_year?'是':'否')+'</td><td>'+escapeHtml((s.no_profit_years||[]).join('、')||'无')+'</td><td>'+reason+'</td></tr><tr><td>'+analysisHelp('最近十年持续现金分红',stockAnalysisLabelHelp('最近十年持续现金分红'))+'</td><td>'+(s.dividend_each_year?'是':'否')+'</td><td>'+escapeHtml((s.no_dividend_years||[]).join('、')||'无')+'</td><td>'+reason+'</td></tr></tbody></table>';if(window.BusinessTable)window.BusinessTable.attach(el,{page:'#main-stock-analysis',sticky:false})}
+function stockAnalysisRenderStability(s){var el=document.getElementById('stock-analysis-stability');if(!el)return;var reason=escapeHtml(s.reason||'');if(s.covered_years!=null)reason+='（已核验 ' + s.covered_years + '/10 个可比财年）';if(s.reason_url)reason+=' <a href="'+escapeHtml(s.reason_url)+'" target="_blank" rel="noopener noreferrer">查看公告</a>';function verdict(flag){if(s.status&&s.status!=='available')return '资料不足';return flag?'是':'否';}el.innerHTML='<table class="biz-table biz-table--compact stock-analysis-table"><thead><tr><th>项目</th><th>结论</th><th>异常年度</th><th>说明</th></tr></thead><tbody><tr><td>'+analysisHelp('最近十年持续盈利',stockAnalysisLabelHelp('最近十年持续盈利'))+'</td><td>'+verdict(s.profitable_each_year)+'</td><td>'+escapeHtml((s.no_profit_years||[]).join('、')||'无')+'</td><td>'+reason+'</td></tr><tr><td>'+analysisHelp('最近十年持续现金分红',stockAnalysisLabelHelp('最近十年持续现金分红'))+'</td><td>'+verdict(s.dividend_each_year)+'</td><td>'+escapeHtml((s.no_dividend_years||[]).join('、')||'无')+'</td><td>'+reason+'</td></tr></tbody></table>';if(window.BusinessTable)window.BusinessTable.attach(el,{page:'#main-stock-analysis',sticky:false})}
 function stockAnalysisRenderPercentiles(p){var note=document.getElementById('stock-analysis-percentile-note');if(note)note.textContent=p.note||'';if(window.stockAnalysisRenderValuationChart)window.stockAnalysisRenderValuationChart(p)}
 function stockAnalysisRenderGrowth(g){var el=document.getElementById('stock-analysis-growth');if(!el)return;var rows=[];var t=g.ten_year_average||{},early=Number(t.early_average),late=Number(t.late_average),hasAverages=Number.isFinite(early)&&Number.isFinite(late)&&early!==0,averageGrowth=hasAverages?(late-early)/early:t.value;rows.push(['十年三年均值增长',stockAnalysisPercent(averageGrowth),hasAverages?'（近期三年均值－十年前三年均值）÷十年前三年均值':(t.method||'')]);[3,5,10].forEach(function(n){var p=(g.periods||{})[n]||{};rows.push(['归母净利润近'+n+'年',stockAnalysisPercent(p.parent&&p.parent.value),p.parent&&p.parent.method||'']);rows.push(['扣非净利润近'+n+'年',stockAnalysisPercent(p.deducted&&p.deducted.value),p.deducted&&p.deducted.method||''])});var i=g.latest_interim_yoy;if(i){rows.push(['最新报告期归母同比',stockAnalysisPercent(i.parent),i.end_date||'']);rows.push(['最新报告期扣非同比',stockAnalysisPercent(i.deducted),i.end_date||''])}el.innerHTML='<table class="biz-table biz-table--compact stock-analysis-table"><thead><tr><th>项目</th><th>结果</th><th>口径</th></tr></thead><tbody>'+rows.map(function(r){return '<tr><td>'+analysisHelp(r[0],stockAnalysisLabelHelp(r[0]))+'</td><td>'+escapeHtml(r[1])+'</td><td>'+escapeHtml(r[2])+'</td></tr>'}).join('')+'</tbody></table>';if(window.BusinessTable)window.BusinessTable.attach(el,{page:'#main-stock-analysis',sticky:false})}
 function stockAnalysisRenderSafety(s){var el=document.getElementById('stock-analysis-safety');if(el)el.innerHTML=stockAnalysisMetric('净现金安全额',stockAnalysisMoney(s.net_cash),s.report_end_date||'')+stockAnalysisMetric('利息保障倍数',stockAnalysisNumber(s.interest_coverage,2),'EBIT ÷ 利息费用',s.interest_coverage<0)+stockAnalysisMetric('市值 / 总负债',stockAnalysisNumber(s.market_cap_to_liability,2),s.industry_note||'',s.market_cap_to_liability<0)}

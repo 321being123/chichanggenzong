@@ -5343,6 +5343,70 @@
       ],
       "owner": "WorkBuddy",
       "status": "implemented"
+    },
+    {
+      "id": "HK-SECURITY-ANALYSIS-CONTRACT-001",
+      "title": "港股分析中立项：非12月财年 TTM、币种与股份范围、缺失值与负值样本不得伪造",
+      "implementation": {
+        "file": "server/domain/securityAnalysisContract.js",
+        "symbol": "ttmForFiscalYear"
+      },
+      "tests": [
+        {
+          "file": "server/test/hk-security-analysis-contract.test.js",
+          "pattern": "6 月财年 TTM"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "implemented"
+    },
+    {
+      "id": "HK-SECURITY-ANALYSIS-MODE-001",
+      "title": "港股定向计算模式按港交所日历触发，外采为0，不继承A股依赖与前一A股交易日",
+      "implementation": {
+        "file": "server/jobs/stockAnalysisRefresh.js",
+        "symbol": "runHkAnalysisMode"
+      },
+      "tests": [
+        {
+          "file": "server/test/hk-security-analysis-job.test.js",
+          "pattern": "HK 开市而 CN 休市"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "implemented"
+    },
+    {
+      "id": "HK-SECURITY-ANALYSIS-SCOPE-001",
+      "title": "核心数据集旧调用默认CN，港股必须显式传市场且不得退回CN；单股不发布市场全集分区",
+      "implementation": {
+        "file": "server/services/datasetPartitionRegistry.js",
+        "symbol": "marketPredicateFor"
+      },
+      "tests": [
+        {
+          "file": "server/test/hk-security-analysis-job.test.js",
+          "pattern": "四个核心数据集旧调用默认 CN"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "implemented"
+    },
+    {
+      "id": "HK-SECURITY-ANALYSIS-VERSION-001",
+      "title": "港股三表绑定报告与分析版本，版本不可读返回409并有界重读一次",
+      "implementation": {
+        "file": "server/services/hkStockStatements.js",
+        "symbol": "getHkStockStatements"
+      },
+      "tests": [
+        {
+          "file": "server/test/hk-security-analysis-job.test.js",
+          "pattern": "三表按版本只读"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "implemented"
     }
   ]
 }

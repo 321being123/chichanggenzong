@@ -259,7 +259,12 @@ function bondAnalysisListTable(headers, rows) {
     '</tr></thead><tbody>' + rows.map(function(row){return '<tr>'+row.map(function(value){return '<td>'+(value || '暂无数据')+'</td>';}).join('')+'</tr>';}).join('') + '</tbody></table></div>';
 }
 function bondAnalysisSet(id, html) { var el=document.getElementById(id); if(el) { el.innerHTML=html; if(window.BusinessTable) window.BusinessTable.attach(el,{page:'#main-stock-analysis',top:'.nav',sticky:!el.querySelector('.biz-table--detail')}); } }
-function securityAnalysisKind(code) { return /^(110|111|113|118|123|127|128)\d{3}$/.test(code) ? 'bond' : 'stock'; }
+function securityAnalysisKind(code) {
+  var text = String(code || '').toUpperCase();
+  if (/\.HK$/.test(text)) return 'stock';
+  var digits = text.replace(/\D/g, '');
+  return /^(110|111|113|118|123|127|128)\d{3}$/.test(digits) ? 'bond' : 'stock';
+}
 
 securityAnalysisInitSearch();
 

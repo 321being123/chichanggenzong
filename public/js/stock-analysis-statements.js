@@ -45,7 +45,12 @@ function stockAnalysisRenderStatements(data) {
   }
   if (message) message.style.display='none';
   var headYears = data.periods.map(function(period) {
-    var note = period.announced_at ? '<small>公告 ' + escapeHtml(period.announced_at) + '</small>' : '';
+    var notes = [];
+    if (period.end_date) notes.push('期末 ' + period.end_date);
+    if (period.report_type) notes.push(period.report_type);
+    if (period.currency) notes.push(period.currency);
+    if (period.announced_at) notes.push('公告 ' + period.announced_at);
+    var note = notes.length ? '<small>' + escapeHtml(notes.join(' · ')) + '</small>' : '';
     return '<th colspan="2">' + escapeHtml(period.year) + note + '</th>';
   }).join('');
   var subHead = data.periods.map(function() { return '<th>原值</th><th>同比</th>'; }).join('');
@@ -68,7 +73,7 @@ function stockAnalysisRenderStatements(data) {
     return sectionRow + '<tr class="' + rowClass + '"><th>' + branch + '<span>' + escapeHtml(field.label) + '</span>' + (field.unit ? '<small>' + escapeHtml(field.unit) + '</small>' : '') + '</th>' + cells + '</tr>';
   }).join('');
   wrap.classList.add('biz-table-scroll');
-  wrap.innerHTML = '<table class="biz-table biz-table--matrix stock-analysis-statements-table"><thead><tr><th rowspan="2">默认单位：亿元</th>' + headYears + '</tr><tr>' + subHead + '</tr></thead><tbody>' + rows + '</tbody></table>';
+  wrap.innerHTML = '<table class="biz-table biz-table--matrix stock-analysis-statements-table"><thead><tr><th rowspan="2">' + escapeHtml(data.unit_label || '默认单位：亿元') + '</th>' + headYears + '</tr><tr>' + subHead + '</tr></thead><tbody>' + rows + '</tbody></table>';
   wrap.style.display='block';
   if (window.BusinessTable) window.BusinessTable.attach(wrap, { page: '#main-stock-analysis', sticky: false });
 }

@@ -15,7 +15,15 @@ async function stockAnalysisLoadStatements(type) {
   if (stockStatementState.cache[key]) return stockAnalysisRenderStatements(stockStatementState.cache[key]);
   stockAnalysisShowStatementsLoading();
   try {
-    var response = await stockAnalysisApi.getStatements(code, type);
+    var detail = stockAnalysisState.data || {};
+    var version = detail.display ? detail.display.analysis_version : null;
+    // 版本冲突（409）最多重新读取一次整组本地内容；仍冲突则提示数据更新中，不拼接不同版本、不转外采。
+    var response = await stockAnalysisApi.getStatements(code, type, version);
+    if (response.status === 409) {
+      delete stockStatementState.cache[key];
+      response = await stockAnalysisApi.getStatements(code, type, null);
+      if (response.status === 409) throw new Error('分析数据更新中，请稍后重试');
+    }
     var payload = response.payload;
     if (requestToken !== stockStatementState.requestToken || selectToken !== stockAnalysisState.selectToken) return;
     if (!response.ok) throw new Error(payload.error || '三表读取失败');

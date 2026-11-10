@@ -233,10 +233,15 @@ async function listUserStockRows(params, tx) {
     `SELECT ts_code,MAX(name) AS name,BOOL_OR(source='watchlist') AS watchlisted,BOOL_OR(source='position') AS held FROM (
        SELECT w.ts_code,w.name,'watchlist'::text AS source FROM stock_watchlist w WHERE w.username=$1
        UNION ALL
-       SELECT CASE WHEN p.code ~ '^6' THEN p.code||'.SH' WHEN p.code ~ '^(4|8|92)' THEN p.code||'.BJ' ELSE p.code||'.SZ' END,
+       SELECT CASE
+                WHEN p.code ~ '^[0-9]{5}(\\.HK)?$' THEN lpad(replace(upper(p.code),'.HK',''),5,'0')||'.HK'
+                WHEN p.code ~ '^6' THEN p.code||'.SH'
+                WHEN p.code ~ '^(4|8|92)' THEN p.code||'.BJ'
+                ELSE p.code||'.SZ' END,
               MAX(p.name),'position'::text FROM positions p
-        WHERE p.username=$1 AND p.code ~ '^[0-9]{6}$' AND p.code !~ '^(110|111|113|118|123|127|128)'
-        GROUP BY p.code
+        WHERE p.username=$1 AND p.code ~ '^[0-9]{5,6}(\\.(HK|SH|SZ|BJ))?$'
+          AND p.code !~ '^(110|111|113|118|123|127|128)'
+        GROUP BY 1
      ) u GROUP BY ts_code ORDER BY held DESC,name,ts_code`,
     [params.username],
   );

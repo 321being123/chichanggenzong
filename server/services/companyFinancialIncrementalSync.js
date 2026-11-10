@@ -495,21 +495,41 @@ async function enqueueCompanyFinancialSyncByCode(rawCode, reason = 'request') {
 }
 
 // 用户明确刷新单股时复用财务 Runner；日常可转债正股目标集合保持原范围。
-async function enqueueStockAnalysisSync(rawCode) {
+// 港股同样走这一入口，显式带 market 与目标日，避免退回 A 股采集与前一 A 股交易日。
+async function enqueueStockAnalysisSync(rawCode, options = {}) {
   const { normalizeStockCode, isOrdinaryAStock } = require('./stockAnalysis');
   const tsCode = normalizeStockCode(rawCode);
-  if (!tsCode || !isOrdinaryAStock(tsCode)) throw new Error('仅支持A股普通股票');
-  const slot = await require('./jobScheduleSlots').enqueueManualJob(JOB_NAME,
-    { mode: 'stock_analysis', targetCodes: [tsCode], freshnessGate: false });
+  const isCn = Boolean(tsCode && isOrdinaryAStock(tsCode));
+  let code = tsCode, market = 'CN';
+  if (!isCn) {
+    const { normalizeAnalyzableStockCode } = require('./securityAnalysisIdentity');
+    code = normalizeAnalyzableStockCode(rawCode);
+    if (!code || !/\.HK$/.test(code)) throw new Error('仅支持A股或港股普通股票');
+    market = 'HK';
+  }
+  const payload = { mode: 'stock_analysis', targetCodes: [code], market, freshnessGate: false };
+  if (options.targetDate) payload.targetDate = options.targetDate;
+  // 只登记发起人账号，供普通用户在原任务查询层按本人投影读取进度，不向普通用户开放任意任务详情。
+  if (options.requestedBy) payload.requestedBy = String(options.requestedBy);
+  const slot = await require('./jobScheduleSlots').enqueueManualJob(JOB_NAME, payload);
   if (!slot) throw new Error('未能登记股票刷新任务，请稍后重试');
-  return { queued: true, tsCode, slotId: slot.slot_id };
+  return { queued: true, tsCode: code, market, slotId: slot.slot_id };
 }
 
 async function syncRequestedStockAnalysis(options) {
   const { normalizeStockCode, isOrdinaryAStock, refreshStockAnalysis, refreshEvents, refreshDividends } = require('./stockAnalysis');
   const codes = options.targetCodes;
   if (!Array.isArray(codes) || codes.length !== 1) throw new Error('单股刷新必须指定一只股票');
-  const tsCode = normalizeStockCode(codes[0]);
+  const rawCode = codes[0];
+  const isHk = String(options.market || '').toUpperCase() === 'HK' || /\.HK$/i.test(String(rawCode));
+  if (isHk) {
+    const { runHkSingleStockRefresh } = require('./hkSingleStockRefresh');
+    return runHkSingleStockRefresh({
+      tsCode: String(rawCode).toUpperCase(), targetDate: options.targetDate || options.asOfDate || null,
+      requestPayload: options,
+    });
+  }
+  const tsCode = normalizeStockCode(rawCode);
   if (!tsCode || !isOrdinaryAStock(tsCode)) throw new Error('仅支持A股普通股票');
   const rows = await financialRepository.findStockTargetRows({ tsCode });
   if (rows.length !== 1) throw new Error('股票基础档案缺失或公司关系不唯一，暂不能刷新');

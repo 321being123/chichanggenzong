@@ -387,7 +387,8 @@ async function getSnapshot(rawCode) {
 
 async function listUserStocks(username) {
   const rows = await stockAnalysisRepository.listUserStockRows({ username });
-  return rows.filter(row => isOrdinaryAStock(row.ts_code));
+  // 港股持仓/自选使用完整标准代码（NNNNN.HK），不再按六位 A 股规则过滤掉。
+  return rows.filter(row => isOrdinaryAStock(row.ts_code) || /^\d{5}\.HK$/i.test(String(row.ts_code)));
 }
 
 module.exports = { finite, normalizeStockCode, isOrdinaryAStock, stockExchange, growthMetric, threeYearAverageGrowth, percentile, quantile, selectDividendPlans, selectLatestByPeriod, eventRefreshStart, mergeOfficialEventSources, refreshEvents, refreshDividends, ranges,

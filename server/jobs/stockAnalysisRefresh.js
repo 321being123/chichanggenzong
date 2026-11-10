@@ -520,10 +520,63 @@ async function enqueueDueSelectionPeriods(now = new Date()) {
   return queued;
 }
 
+// HK 定向纯计算模式：复用原 Runner，外采为 0；按港交所日历触发与补偿，
+// HK 开市而 A 股休市也能运行，不继承默认 CN 依赖或前一 SSE 交易日。
+const HK_ANALYSIS_MODE = 'stock_analysis_hk';
+
+async function runHkAnalysisMode(reason, context) {
+  const targetDate = String(context.targetDate || context.businessDate || CoreDate.todayInZone('Asia/Shanghai')).slice(0, 10);
+  const { getMarketState } = require('../services/marketState');
+  const state = await getMarketState({ market: 'HK', businessDate: targetDate, time: '00:00' });
+  // 日历事实缺失或来源冲突时阻塞并说明，不能按周一至五猜开市。
+  if (!state || !['open', 'closed'].includes(String(state.status || ''))) {
+    return { ok: false, status: 'blocked', mode: HK_ANALYSIS_MODE, market: 'HK', targetDate,
+      reason: '港交所交易日历缺失或冲突，无法确认目标交易日', publishDatasets: false, publishDatasetCodes: [],
+      stageComplete: false, externalCalls: 0 };
+  }
+  const repo = require('../repositories/hkSecurityAnalysisRepository');
+  const codes = await repo.listTrackedHkCodes();
+  const hk = require('../services/hkSecurityAnalysis');
+  const results = [], remaining = [];
+  for (const code of codes) {
+    try {
+      const analysis = await hk.refreshHkAnalysis(code, { reason: `${reason}:hk`, isoToday: targetDate });
+      results.push({ code, ok: true, analysisVersion: analysis && analysis.display ? analysis.display.analysis_version : null });
+    } catch (error) {
+      remaining.push({ code, reason: error.message });
+    }
+  }
+  const stageComplete = remaining.length === 0;
+  return {
+    ok: true,
+    status: stageComplete ? 'succeeded' : 'partial',
+    mode: HK_ANALYSIS_MODE,
+    market: 'HK',
+    targetDate,
+    marketCalendarStatus: state.status,
+    targetSet: codes,
+    results,
+    remaining,
+    stageComplete,
+    dataAsOf: targetDate,
+    externalCalls: 0,
+    publishDatasets: false,
+    publishDatasetCodes: [],
+    datasetDiagnostics: {
+      coverage_status: codes.length ? 'targeted_scoped' : 'verified_no_change',
+      query_status: 'success',
+      market: 'HK', scope: codes.length ? `security:${codes.join(',')}` : 'market',
+    },
+    // 无跟踪对象是可留证的正常空跑，不是失败。
+    emptyReason: codes.length ? null : '当前没有持仓或显式自选的港股，正常空跑',
+  };
+}
+
 async function runStockAnalysisRefresh(reason = 'scheduled', context = {}) {
   const mode = String(context.mode || 'core');
   // 选股模式必须在原"目标日只能当天"的限制之前分流：它要支持历史目标日与季度回溯。
   if (SELECTION_MODES.includes(mode)) return runSelectionMode(mode, reason, context);
+  if (mode === HK_ANALYSIS_MODE) return runHkAnalysisMode(reason, context);
   const requestedDate = context.targetDate || context.businessDate || process.env.JOB_BUSINESS_DATE
     || CoreDate.todayInZone('Asia/Shanghai');
   const target = targetDateStatus(requestedDate);

@@ -150,10 +150,21 @@ function dateValue(value) {
   const short = text.slice(0, 10);
   return /^\d{4}-\d{2}-\d{2}$/.test(short) ? short : null;
 }
+// 这四个数据集按市场隔离：旧调用默认 CN，HK 必须显式传 market='HK' 且不得退回 CN。
+// 只在显式 HK 时追加市场过滤，历史 CN 调用的统计与新鲜度口径保持不变。
+const MARKET_SCOPED_DATASETS = new Set(['stock_daily','stock_valuation','stock_financial_reports','stock_analysis_snapshot']);
+function marketPredicateFor(datasetCode, market) {
+  if (market !== 'HK' || !MARKET_SCOPED_DATASETS.has(datasetCode)) return '';
+  if (datasetCode === 'stock_financial_reports') {
+    return `company_id IN (SELECT ci.company_id FROM core.company_instruments ci JOIN core.instruments i ON i.instrument_id=ci.instrument_id WHERE i.market='HK')`;
+  }
+  return `instrument_id IN (SELECT instrument_id FROM core.instruments WHERE market='HK')`;
+}
 function resolveDatasetScope(datasetCode,context={}) {
   const definition=DATASET_PARTITION_REGISTRY[datasetCode];
   if(definition?.scopeType==='account') return typeof context.username==='string'&&context.username&&typeof context.accountName==='string'&&context.accountName
     ? 'account:'+encodeURIComponent(context.username)+':'+encodeURIComponent(context.accountName):null;
+  if (MARKET_SCOPED_DATASETS.has(datasetCode) && String(context.market||'').toUpperCase()==='HK') return 'HK';
   return definition?.scopeKey||null;
 }
 
@@ -181,7 +192,10 @@ async function readSnapshot(datasetCode, optionsOrExecutor = {}, maybeExecutor =
     const row = result.rows[0] || {};
     return { published: false, datasetCode, scopeKey: definition.scopeKey, rowCount: Number(row.row_count || 0), dataAsOf: dateValue(row.data_as_of) };
   }
-  const from = ` FROM ${definition.table} ${definition.whereSql || ''}`;
+  const marketWhere = marketPredicateFor(datasetCode, String(options.market || '').toUpperCase());
+  const whereParts = [definition.whereSql || ''];
+  if (marketWhere) whereParts.push(whereParts[0] ? `AND ${marketWhere}` : `WHERE ${marketWhere}`);
+  const from = ` FROM ${definition.table} ${whereParts.join(' ')}`;
   const countResult = await executor(`${definition.countSql}${from}`);
   const dateResult = definition.dataAsOfStandaloneSql
     ? await executor(definition.dataAsOfStandaloneSql)
@@ -376,4 +390,4 @@ async function areJobDatasetsPublished(jobCode, businessDate, requestedDatasets 
   return areDatasetPartitionsPublished(datasets, businessDate,context);
 }
 
-module.exports = { DATASET_PARTITION_REGISTRY, readSnapshot, publishDatasetSnapshot, publishJobDatasets, areJobDatasetsPublished,resolveDatasetScope, isPublishedDatasetEvidence, STRICT_QUALITY_DATASETS };
+module.exports = { DATASET_PARTITION_REGISTRY, MARKET_SCOPED_DATASETS, marketPredicateFor, readSnapshot, publishDatasetSnapshot, publishJobDatasets, areJobDatasetsPublished,resolveDatasetScope, isPublishedDatasetEvidence, STRICT_QUALITY_DATASETS };

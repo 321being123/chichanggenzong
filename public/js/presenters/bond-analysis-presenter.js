@@ -81,7 +81,12 @@ async function securityAnalysisResolveName(keyword, ctx) {
 
 async function securityAnalysisSubmit(selectedCode, ctx) {
   var raw=String(selectedCode||securityAnalysisReadCodeValue(ctx)||'').trim().toUpperCase();
-  var match=raw.match(/^(\d{6})(?:\.(?:SH|SZ|BJ))?$/), code=match&&match[1];
+  // 完整标准身份：港股 00700 / 700.HK / 00700.HK 统一为 NNNNN.HK；六位数字仍按内地代码处理。
+  var hkMatch=raw.match(/^(\d{1,5})(?:\.HK)?$/);
+  var cnMatch=raw.match(/^(\d{6})(?:\.(SH|SZ|BJ))?$/);
+  var code=null;
+  if (hkMatch) code=hkMatch[1].padStart(5,'0')+'.HK';
+  else if (cnMatch) code=cnMatch[2] ? cnMatch[1]+'.'+cnMatch[2] : cnMatch[1];
   if (!code) return securityAnalysisResolveName(raw,ctx);
   securityAnalysisState.requestToken++;
   securityAnalysisState.loading=false;

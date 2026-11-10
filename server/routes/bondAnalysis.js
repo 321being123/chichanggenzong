@@ -28,7 +28,7 @@ router.get('/search/securities', asyncHandler(async (req, res) => {
   if (!keyword) return res.json({ data: [] });
   const like = `%${keyword}%`;
   const prefix = `${keyword}%`;
-  const rows = await bondAnalysisRepository.searchSecurities({ like, prefix });
+  const rows = await bondAnalysisRepository.searchSecurities({ like, prefix, exact: keyword });
   res.json({ data: rows });
 }));
 

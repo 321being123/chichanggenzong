@@ -419,6 +419,34 @@
       "note": "统一证券/公司身份解析唯一入口"
     },
     {
+      "path": "server/services/securityAnalysisIdentity.js",
+      "role": "application",
+      "batch": 0,
+      "status": "registered",
+      "note": "证券分析统一准入：归一、主档核对与普通股票类型闸门，SQL 在仓储层"
+    },
+    {
+      "path": "server/services/hkSecurityAnalysis.js",
+      "role": "application",
+      "batch": 0,
+      "status": "registered",
+      "note": "港股分析编排：市场中立输入、领域计算与已发布快照只读"
+    },
+    {
+      "path": "server/services/hkStockStatements.js",
+      "role": "application",
+      "batch": 0,
+      "status": "registered",
+      "note": "港股 HKFRS 三表按报告版本只读，SQL 在仓储层"
+    },
+    {
+      "path": "server/services/hkSingleStockRefresh.js",
+      "role": "application",
+      "batch": 0,
+      "status": "registered",
+      "note": "港股单股逐域刷新与失败续跑，不含 SQL 与外采直连"
+    },
+    {
       "path": "server/services/documentPdfCache.js",
       "role": "infrastructure",
       "batch": 0,

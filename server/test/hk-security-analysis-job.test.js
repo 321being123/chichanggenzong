@@ -102,6 +102,7 @@ test('港股详情只读已发布快照，公开响应裁剪运维字段', () =>
   assert.ok(/const PUBLIC_FIELDS = \[/.test(service));
   assert.ok(!/PUBLIC_FIELDS[\s\S]{0,400}diagnostics/.test(service), '白名单不得含 diagnostics');
   assert.ok(!/PUBLIC_FIELDS[\s\S]{0,400}needs_refresh/.test(service), '白名单不得含 needs_refresh');
+  assert.ok(/statement_analysis_versions/.test(service), '详情必须带三表各自版本，不能把详情公式版本直接当三表版本');
 });
 
 test('三表按版本只读，409 后最多有界重读一次', () => {
@@ -109,9 +110,13 @@ test('三表按版本只读，409 后最多有界重读一次', () => {
   assert.ok(/versionConflict\(requestedVersion, version\)/.test(statements));
   assert.ok(/error\.status = 409/.test(statements));
   assert.ok(/listHkStatementRows\(tsCode, type, table, columns, limit\)/.test(statements), 'SQL 必须留在仓储层');
-  assert.ok(/is_current_version=true/.test(read('server/repositories/hkSecurityAnalysisRepository.js')));
+  const repository = read('server/repositories/hkSecurityAnalysisRepository.js');
+  assert.ok(/is_current_version=true/.test(repository));
+  assert.ok(/NULLIF\(w\.period_type,'unknown'\)[\s\S]*NULLIF\(r\.period_type,'unknown'\)/.test(repository), '详情与三表必须共用真实报告期类型');
   const presenter = read('public/js/presenters/stock-analysis-statements-presenter.js');
   assert.ok(/response\.status === 409/.test(presenter));
+  assert.ok(/getSnapshot\(code\)/.test(presenter), '409 后必须整组重读详情再重试');
+  assert.ok(!/getStatements\(code, type, null/.test(presenter), '409 后不得无版本读取导致新旧报告混拼');
   assert.ok(/分析数据更新中/.test(presenter));
 });
 

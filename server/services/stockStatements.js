@@ -1,4 +1,4 @@
-const { listAnnualStatements } = require('../repositories/stockStatementsRepository');
+const statementService = require('./stockStatementService');
 
 const STATEMENTS = {
   balance: { name:'资产负债表', sections:[
@@ -43,11 +43,11 @@ function statementApiFields(type) {
 
 function finite(value){if(value===null||value===undefined||value==='')return null;const n=Number(value);return Number.isFinite(n)?n:null;}
 
-async function getStockStatements(tsCode,type='balance',limit=8){const definition=STATEMENTS[type];if(!definition)throw new Error('三表类型无效');const {rows}=await listAnnualStatements(tsCode,type,Math.max(3,Math.min(20,Number(limit)||8)));
-  const periods=rows.map(row=>({year:row.fiscal_year,announced_at:row.announced_at||'',data:row.raw_payload||{}}));
-  const visible=definition.fields.filter(([code])=>periods.some(period=>finite(period.data[code])!==null)),visibleCodes=new Set(visible.map(([code])=>code));
-  const parentCodes=new Set(visible.map(([, , , ,parent])=>parent).filter(parent=>parent&&visibleCodes.has(parent)));
-  const fields=visible.map(([code,label,section,level,parent])=>({code,label,section,level:parent&&visibleCodes.has(parent)?level:0,is_parent:parentCodes.has(code),unit:code.includes('eps')?'元':'亿元',values:periods.map((period,index)=>{const value=finite(period.data[code]),prior=finite(periods[index+1]?.data?.[code]);return {value:value==null?null:(code.includes('eps')?value:value/1e8),yoy:value==null||prior==null||prior===0?null:(value-prior)/Math.abs(prior)};})}));
-  return {type,name:definition.name,periods:periods.map(({year,announced_at})=>({year,announced_at})),fields};}
+async function getStockStatements(tsCode, type = 'balance', limit = 8, options = {}) {
+  return statementService.getStockStatements({
+    tsCode, market: 'CN', type, limit,
+    formulaVersion: 'stock-statements-2', ...options,
+  });
+}
 
 module.exports={STATEMENTS,statementApiFields,getStockStatements};

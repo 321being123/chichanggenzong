@@ -98,12 +98,14 @@ const REPORT_KINDS = Object.freeze(['income', 'balance', 'cashflow']);
 async function readHkReportFacts(tsCode, limit = 12, tx) {
   const runner = tx || pool;
   const results = await Promise.all(REPORT_KINDS.map(kind => runner.query(
-    `SELECT '${kind}' AS kind,to_char(w.period_end,'YYYY-MM-DD') AS period_end,w.period_type,
+    `SELECT '${kind}' AS kind,to_char(w.period_end,'YYYY-MM-DD') AS period_end,
+            COALESCE(NULLIF(w.period_type,'unknown'),NULLIF(r.period_type,'unknown'),CASE lower(r.raw_payload->>'report_period_label') WHEN 'annual_report' THEN 'annual' WHEN 'annual' THEN 'annual' WHEN 'year_report' THEN 'annual' WHEN 'semi_annual_report' THEN 'semiannual' WHEN 'semiannual_report' THEN 'semiannual' WHEN 'interim_report' THEN 'semiannual' WHEN 'second_quarterly_report' THEN 'semiannual' WHEN 'first_quarterly_report' THEN 'q1' WHEN 'quarterly_report' THEN 'q1' WHEN 'q1' THEN 'q1' WHEN 'third_quarterly_report' THEN 'q3' WHEN 'q3' THEN 'q3' WHEN 'fourth_quarterly_report' THEN 'annual' WHEN 'q4' THEN 'annual' END,'unknown') AS period_type,
             to_char(w.announced_at,'YYYY-MM-DD') AS announced_at,w.currency_code,
             w.source_version,w.report_id,w.company_id,${REPORT_SELECTS[kind]}
        FROM ${REPORT_TABLES[kind]} w
        JOIN core.company_instruments ci ON ci.company_id=w.company_id
        JOIN core.instruments i ON i.instrument_id=ci.instrument_id
+       JOIN fundamental.financial_reports r ON r.report_id=w.report_id AND r.is_current_version=true
       WHERE i.canonical_code=$1
       ORDER BY w.period_end DESC,w.announced_at DESC NULLS LAST,w.report_id DESC LIMIT $2`,
     [tsCode, limit]

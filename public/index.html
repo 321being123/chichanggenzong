@@ -535,7 +535,14 @@
         <section class="stock-analysis-section">
           <div class="stock-analysis-statements-head">
             <h3 id="stock-analysis-statements-title">资产负债表</h3>
+            <div class="stock-analysis-statements-controls" aria-label="财报筛选">
+              <label>报告期 <select id="stock-analysis-statement-period" data-act="stockAnalysisStatementFilterChanged" data-use-value><option value="all">全部</option><option value="annual">年报</option><option value="semiannual">中报</option><option value="q1">一季报</option><option value="q3">三季报</option><option value="unknown">未知</option></select></label>
+              <label>比较 <select id="stock-analysis-statement-compare" data-act="stockAnalysisStatementFilterChanged" data-use-value><option value="yoy">同比</option><option value="qoq">环比</option><option value="none">不比较</option></select></label>
+              <label>期间 <select id="stock-analysis-statement-range" data-act="stockAnalysisStatementFilterChanged" data-use-value><option value="5">近5期</option><option value="10" selected>近10期</option><option value="20">近20期</option></select></label>
+              <label>口径 <select id="stock-analysis-statement-scope" data-act="stockAnalysisStatementFilterChanged" data-use-value><option value="">全部已存口径</option><option value="consolidated">合并口径</option></select></label>
+            </div>
           </div>
+          <div id="stock-analysis-statements-meta" class="stock-analysis-statements-meta"></div>
           <div id="stock-analysis-statements-message" class="stock-analysis-chart-empty">请选择三表查看。</div>
           <div class="js-hidden stock-analysis-statements-wrap" id="stock-analysis-statements-wrap"></div>
         </section>

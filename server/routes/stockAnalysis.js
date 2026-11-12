@@ -9,7 +9,7 @@ const {
 } = require('../services/stockAnalysis');
 const { normalizeAnalyzableStockCode, resolveAnalysisSecurity } = require('../services/securityAnalysisIdentity');
 const hkAnalysis = require('../services/hkSecurityAnalysis');
-const { getHkStockStatements } = require('../services/hkStockStatements');
+const { getHkStockStatements, getHkStockStatementVersions } = require('../services/hkStockStatements');
 const { enqueueStockAnalysisSync } = require('../services/companyFinancialIncrementalSync');
 const { getStockStatements } = require('../services/stockStatements');
 const { getDatasetMetadata } = require('../services/datasetPartitions');
@@ -30,6 +30,7 @@ async function validStock(req, res, next) {
   req.stockTsCode = resolved.security.code;
   req.stockMarket = resolved.security.market;
   req.stockCurrency = resolved.security.currency;
+  req.stockReportTableType = resolved.security.reportTableType || null;
   next();
 }
 
@@ -101,9 +102,14 @@ router.delete('/watchlist/:ts_code', requireLogin, asyncHandler(async (req, res)
 
 router.get('/:ts_code/statements', asyncHandler(validStock), asyncHandler(async (req, res) => {
   const type = String(req.query.type || 'balance');
+  const statementOptions = {
+    periodType: req.query.period_type || req.query.periodType || 'all',
+    compare: req.query.compare || 'yoy',
+    scope: req.query.scope || null,
+  };
   if (req.stockMarket === 'HK') {
     try {
-      return res.json(await getHkStockStatements(req.stockTsCode, type, req.query.limit, req.query.analysis_version));
+      return res.json(await getHkStockStatements(req.stockTsCode, type, req.query.limit, req.query.analysis_version, statementOptions));
     } catch (error) {
       if (error.status === 409) {
         return res.status(409).json({ error: error.message, code: 'ANALYSIS_VERSION_CONFLICT', conflict: error.conflict });
@@ -111,7 +117,7 @@ router.get('/:ts_code/statements', asyncHandler(validStock), asyncHandler(async 
       throw error;
     }
   }
-  res.json(await getStockStatements(req.stockTsCode, type, req.query.limit));
+  res.json(await getStockStatements(req.stockTsCode, type, req.query.limit, statementOptions));
 }));
 
 router.get('/:ts_code', asyncHandler(validStock), asyncHandler(async (req, res) => {
@@ -119,7 +125,13 @@ router.get('/:ts_code', asyncHandler(validStock), asyncHandler(async (req, res) 
   if (req.stockMarket === 'HK') {
     const snapshot = await hkAnalysis.getHkSnapshot(req.stockTsCode);
     if (!snapshot) return res.status(404).json({ error: '该港股的分析资料尚未就绪', code: 'HK_ANALYSIS_NOT_READY' });
-    return res.json(hkAnalysis.publicSnapshotOf(snapshot));
+    const publicSnapshot = hkAnalysis.publicSnapshotOf(snapshot);
+    if (!publicSnapshot.display || !publicSnapshot.display.statement_analysis_versions) {
+      publicSnapshot.display = Object.assign({}, publicSnapshot.display, {
+        statement_analysis_versions: await getHkStockStatementVersions(req.stockTsCode),
+      });
+    }
+    return res.json(publicSnapshot);
   }
   const snapshot = await getSnapshot(req.stockTsCode);
   if (!snapshot) return res.status(404).json({ error: '尚未建档，请刷新该股票' });

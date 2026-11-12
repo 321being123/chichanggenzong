@@ -5,9 +5,11 @@
 const stockAnalysisRepository = require('../repositories/stockAnalysisRepository');
 const hkRepository = require('../repositories/hkSecurityAnalysisRepository');
 const { saveAnalysisResults } = require('./financialDataArchitecture');
+const statementService = require('./stockStatementService');
 const contract = require('../domain/securityAnalysisContract');
 
 const FORMULA_VERSION = 'hk-1';
+const STATEMENT_FORMULA_VERSION = 'hk-statements-1';
 
 // 港股 HKFRS 宽表字段对照（唯一登记位置）。现金流官方只有 7 个汇总项，没有资本开支，
 // 因此自由现金流恒为「不可计算」，绝不用 null→0 或退化成经营现金流。
@@ -35,7 +37,20 @@ function reportGroupKey(row) {
   return [row.period_end, row.currency_code || '', row.source_version || ''].join('|');
 }
 
-async function readHkReportFacts(tsCode, limit = 12) {
+function statementVersionRowsOf(facts, type) {
+  return facts.flatMap(group => (group.report_ids || [])
+    .filter(item => item.kind === type)
+    .map(item => ({
+      report_id: item.report_id, source_version: group.source_version,
+      period_end: group.period_end, period_type: group.period_type,
+      announced_at: group.announced_at,
+    })))
+    .sort((a, b) => String(b.period_end).localeCompare(String(a.period_end))
+      || String(b.announced_at || '').localeCompare(String(a.announced_at || ''))
+      || Number(b.report_id) - Number(a.report_id));
+}
+
+async function readHkReportFacts(tsCode, limit = 20) {
   const results = await hkRepository.readHkReportFacts(tsCode, limit);
   const groups = new Map();
   results.forEach(({ kind, rows }) => {
@@ -163,6 +178,13 @@ function buildHkAnalysis(data, options = {}) {
       dividends: dividends.length,
     },
   });
+  const statementAnalysisVersions = Object.fromEntries(['balance', 'income', 'cashflow'].map(type => [
+    type,
+    statementService.statementAnalysisVersionOf({
+      canonicalCode: options.tsCode, market: 'HK', type,
+      formulaVersion: STATEMENT_FORMULA_VERSION, rows: statementVersionRowsOf(facts, type),
+    }),
+  ]));
 
   return {
     ts_code: options.tsCode, name: meta.name || options.tsCode, market: 'HK',
@@ -184,6 +206,7 @@ function buildHkAnalysis(data, options = {}) {
       market: 'HK', currency, market_cap_label: '总市值（来源已验证范围）',
       circulating_market_cap_label: '流通市值', share_scope: cap.scope || null,
       field_status: fieldStatus, analysis_version: version, formula_version: FORMULA_VERSION,
+      statement_analysis_versions: statementAnalysisVersions,
       data_dates: { trade_date: latest.trade_date || null, report_end: latestFact ? latestFact.period_end : null },
     },
     valuation: {

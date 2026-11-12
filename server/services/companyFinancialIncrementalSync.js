@@ -205,6 +205,13 @@ async function fetchCompanyReports(target, options = {}) {
     if (!spec) continue;
     const apiName = preferVip ? spec.vipApi : spec.api;
     try {
+      const fsTableType = target.fsTableType || options.fsTableType;
+      if (/^\d{5}\.HK$/i.test(String(target.tsCode || '')) && !fsTableType) {
+        const error = new Error('港股财报类型待确认，暂不请求财报端点');
+        error.code = 'FINANCIAL_TYPE_UNKNOWN';
+        errors[kind] = { code: error.code, message: error.message };
+        continue;
+      }
       const params = requestParams(spec, target, options);
       // 财报属于「财务报表数据集」：只向数据层要，主备来源与口径换算由数据层完成；
       // 数据层取不到时返回 null，本函数继续走既有的批量取数链路。
@@ -212,6 +219,7 @@ async function fetchCompanyReports(target, options = {}) {
         const { readFinancialReportRows } = require('../dataAccess/marketDatasets');
         const primary = await readFinancialReportRows({
           tsCode: target.tsCode, kinds: [kind], startDate: params.start_date, endDate: params.end_date,
+          fsTableType,
         });
         if (primary && Array.isArray(primary[kind]) && primary[kind].length) {
           results[kind] = primary[kind];

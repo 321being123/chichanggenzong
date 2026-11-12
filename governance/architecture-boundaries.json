@@ -440,6 +440,13 @@
       "note": "港股 HKFRS 三表按报告版本只读，SQL 在仓储层"
     },
     {
+      "path": "server/services/stockStatementService.js",
+      "role": "application",
+      "batch": 0,
+      "status": "registered",
+      "note": "A/H 财报三表统一只读编排与版本/比较口径，SQL 在仓储层"
+    },
+    {
       "path": "server/services/hkSingleStockRefresh.js",
       "role": "application",
       "batch": 0,

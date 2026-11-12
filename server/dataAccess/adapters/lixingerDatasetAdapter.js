@@ -444,6 +444,7 @@ const HK_FINANCIAL_TABLE_TYPES = new Set(['bank', 'insurance', 'security', 'reit
 const HK_FINANCIAL_REPORT_METRICS = {
   income: { revenue: 'ps.oi', total_profit: 'ps.tp', n_income_attr_p: 'ps.npatoshopc' },
   balance: { total_assets: 'bs.ta', total_liab: 'bs.tl', total_hldr_eqy_exc_min_int: 'bs.tetoshopc' },
+  cashflow: { n_cashflow_act: 'cfs.ncffoa', n_cashflow_inv: 'cfs.ncffia', n_cash_flows_fnc_act: 'cfs.ncfffa' },
 };
 
 const HK_REPORT_METRICS = {
@@ -501,11 +502,19 @@ function hkValuationRow(rawRow, tsCode, fallbackDate) {
 // 只做一一对应映射，认不出的保持 null（上层落 'unknown'，不猜）。
 const REPORT_PERIOD_TYPES = {
   annual_report: 'annual',
+  annual: 'annual',
+  year_report: 'annual',
   semi_annual_report: 'semiannual',
   semiannual_report: 'semiannual',
+  interim_report: 'semiannual',
+  second_quarterly_report: 'semiannual',
+  first_quarterly_report: 'q1',
+  quarterly_report: 'q1',
   q1: 'q1',
   q2: 'semiannual',
+  third_quarterly_report: 'q3',
   q3: 'q3',
+  fourth_quarterly_report: 'annual',
   q4: 'annual',
 };
 
@@ -521,9 +530,14 @@ async function resolveFinancialReports({ tsCode, startDate, endDate, kinds = ['i
   if (!code || !start || !end) return null;
   const hk = isHkCode(tsCode);
   const market = hk ? 'HK' : 'CN';
-  // 财报类型决定端点与指标集；未识别或缺失时回落 non_financial，不猜成金融口径。
+  // 财报类型决定端点与指标集；未识别或缺失时拒绝请求，不猜成金融/非金融口径。
   const requestedType = String((options || {}).fsTableType || '');
-  const tableType = hk ? (HK_FINANCIAL_TABLE_TYPES.has(requestedType) ? requestedType : 'non_financial') : null;
+  if (hk && !HK_FINANCIAL_TABLE_TYPES.has(requestedType) && requestedType !== 'non_financial') {
+    const error = new Error('港股财报类型待确认，拒绝选择财报端点');
+    error.code = 'FINANCIAL_TYPE_UNKNOWN';
+    throw error;
+  }
+  const tableType = hk ? requestedType : null;
   const financialTable = Boolean(tableType && tableType !== 'non_financial');
   const mapping = hk ? (financialTable ? HK_FINANCIAL_REPORT_METRICS : HK_REPORT_METRICS) : REPORT_METRICS;
   const metrics = [];
@@ -558,6 +572,9 @@ async function resolveFinancialReports({ tsCode, startDate, endDate, kinds = ['i
     }
   }
   const rows = [...merged.values()];
+  const requestedMetricCodes = [...new Set([...metrics, ...extraBatches.flat()]
+    .map(code => String(code).replace(/^q\./, '').replace(/\.t$/, '')))]
+    .filter(code => /^(bs|ps|cfs)\.[a-z0-9_]+$/.test(code));
   const out = { income: [], balance: [], cashflow: [], indicator: [] };
   for (const item of rows) {
     const flat = flattenMetrics(item.q || {});
@@ -584,10 +601,20 @@ async function resolveFinancialReports({ tsCode, startDate, endDate, kinds = ['i
       comp_type: '1',
       // 官方报告类型原值留证；港股缺它就记 'unknown'，让上层按"年度未知"处理而不是按月份猜。
       report_period_label: item.reportType || null,
+      fiscal_year: item.fiscalYear || item.fiscal_year || null,
+      __statement_coverage: {
+        source: SOURCE,
+        market,
+        fs_table_type: tableType,
+        requested_metric_codes: requestedMetricCodes,
+        returned_metric_codes: Object.keys(statementMetrics),
+        requested_batch_count: 1 + extraBatches.length,
+        complete: true,
+      },
       // 三表全量科目随行返回，落库层据此写宽表；没有科目时不挂空对象，避免污染原始留证。
       ...(Object.keys(statementMetrics).length ? { __statement_metrics: statementMetrics } : {}),
-      ...(hk ? { period_type: reportPeriodType || 'unknown' } : {}),
-      currency: item.currency || (hk ? 'HKD' : 'CNY'),
+      period_type: reportPeriodType || 'unknown',
+      currency: item.currency || null,
       update_flag: '0',
       source_code: SOURCE,
     };

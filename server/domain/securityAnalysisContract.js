@@ -10,6 +10,8 @@ const FIELD_STATUS = Object.freeze({
   INSUFFICIENT_HISTORY: 'insufficient_history',
   NOT_APPLICABLE: 'not_applicable',
   SOURCE_UNAVAILABLE: 'source_unavailable',
+  SOURCE_NOT_DISCLOSED: 'source_not_disclosed',
+  COLLECTION_INCOMPLETE: 'collection_incomplete',
   MISSING: 'missing',
 });
 

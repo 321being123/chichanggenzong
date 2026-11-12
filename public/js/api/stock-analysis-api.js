@@ -16,10 +16,14 @@
     getSnapshot: function (code) {
       return request('/api/stock-analysis/' + encodeURIComponent(code));
     },
-    getStatements: function (code, type, analysisVersion) {
-      var path = '/api/stock-analysis/' + encodeURIComponent(code) + '/statements?type=' + encodeURIComponent(type) + '&limit=10';
+    getStatements: function (code, type, analysisVersion, options) {
+      options = options || {};
+      var path = '/api/stock-analysis/' + encodeURIComponent(code) + '/statements?type=' + encodeURIComponent(type) + '&limit=' + encodeURIComponent(options.limit || 10);
       // 港股三表按分析版本只读对应已存报告；旧 A 股调用不带该参数，保持兼容。
       if (analysisVersion) path += '&analysis_version=' + encodeURIComponent(analysisVersion);
+      if (options.periodType && options.periodType !== 'all') path += '&period_type=' + encodeURIComponent(options.periodType);
+      if (options.compare) path += '&compare=' + encodeURIComponent(options.compare);
+      if (options.scope) path += '&scope=' + encodeURIComponent(options.scope);
       return request(path);
     },
     requestRefresh: function (code) {

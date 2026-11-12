@@ -106,7 +106,7 @@ async function syncReportRows(client, rows, kind, companyId, sourceId, options =
     // 报告期类型与金额币种都必须来自事实本身（R2-03）：港股 3 月年报不能被月份推断成 q1，
     // USD 报表金额也不能落成 CNY。行里没有币种时按证券主档币种兜底，而不是一律 CNY。
     const rowPeriodType = resolvePeriodType(data);
-    const rowCurrency = String(data.currency || options.currency || 'CNY').toUpperCase();
+    const rowCurrency = String(data.currency || options.currency || (/\.(SH|SZ|BJ)$/i.test(String(options.tsCode || '')) ? 'CNY' : '')).toUpperCase() || null;
     let rawRecordId = null;
     if (options.runId && sourceId) {
       const rawKey = `${companyId}:${kind}:${asDate(data.end_date)}:${announced || ''}:${fAnnDate || ''}:${data.report_type || ''}:${data.update_flag || ''}`;

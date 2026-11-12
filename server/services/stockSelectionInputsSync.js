@@ -119,7 +119,7 @@ async function collectOne(gap, asOfDate) {
   const bundle = {};
   let anyFinancial = false;
   // 港股财报端点按公司财报类型分流（2026-11-05 实测：银行/保险/证券端点指标名与普通公司一致，
-  // 只是端点不同；类型取自 hk/company 档案，取不到就按普通公司处理并让上游留缺口）。
+  // 只是端点不同；类型取自 hk/company 档案，取不到就保留为未知，不猜成普通公司。
   let fsTableType = null;
   if (/^\d{5}\.HK$/i.test(String(meta.ts_code || ''))) {
     try {

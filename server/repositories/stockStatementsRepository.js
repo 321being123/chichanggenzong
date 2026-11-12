@@ -23,25 +23,26 @@ const LEGACY_CAS_FIELD_MAP = Object.freeze({
   'bs.ncldwioy': 'non_cur_liab_due_1y', 'bs.ocl': 'oth_cur_liab', 'bs.ltl': 'lt_borr',
   'bs.bp': 'bond_payable', 'bs.ltap': 'lt_payable', 'bs.sap': 'specific_payables',
   'bs.ncal': 'estimated_liab', 'bs.ditl': 'defer_tax_liab', 'bs.ltdi': 'defer_inc_non_cur_liab',
-  'bs.oncl': 'oth_ncl', 'bs.toe': 'total_hldr_eqy_inc_min_int', 'bs.tetoshopc': 'total_hldr_eqy_exc_min_int',
+  'bs.oncl': 'oth_ncl', 'bs.toe': 'total_hldr_eqy_inc_min_int', 'bs.tetshaoehopc': 'total_hldr_eqy_exc_min_int',
   'bs.etmsh': 'minority_int', 'bs.capr': 'cap_rese', 'bs.surr': 'surplus_rese',
   'bs.rtp': 'undistr_porfit', 'bs.is': 'treasury_share', 'bs.oci': 'oth_comp_income',
   'ps.toi': 'total_revenue', 'ps.oi': 'revenue', 'ps.ii': 'int_income', 'ps.ep': 'prem_earned',
-  'ps.faci': 'comm_income', 'ps.ooi': 'oth_b_income', 'ps.toc': 'total_cogs', 'ps.oc': 'oper_cost',
+  'ps.faci': 'comm_income', 'ps.ooi': 'oth_b_income', 'ps.oc': 'oper_cost',
   'ps.ie': 'int_exp', 'ps.face': 'comm_exp', 'ps.tas': 'biz_tax_surchg', 'ps.se': 'sell_exp',
   'ps.ae': 'admin_exp', 'ps.fe': 'fin_exp', 'ps.rade': 'rd_exp', 'ps.ailor': 'assets_impair_loss',
   'ps.cilor': 'credit_impa_loss', 'ps.ooe': 'other_bus_cost', 'ps.ciofv': 'fv_value_chg_gain',
   'ps.ivi': 'invest_income', 'ps.iifaajv': 'ass_invest_income', 'ps.ei': 'forex_gain',
   'ps.op': 'operate_profit', 'ps.noi': 'non_oper_income', 'ps.noe': 'non_oper_exp',
   'ps.ncadarl': 'nca_disploss', 'ps.tp': 'total_profit', 'ps.ite': 'income_tax', 'ps.np': 'n_income',
-  'ps.npfco': 'continued_net_profit', 'ps.npatoshopc': 'n_income_attr_p', 'ps.npatmsh': 'minority_gain',
-  'ps.natooci': 'oth_compr_income', 'ps.tci': 't_compr_income', 'ps.tciatoshopc': 'compr_inc_attr_p',
+  'ps.npfco': 'continued_net_profit', 'ps.npatshaoehopc': 'n_income_attr_p', 'ps.npatmsh': 'minority_gain',
+  'ps.natooci': 'oth_compr_income', 'ps.tci': 't_compr_income', 'ps.tciatshaoehopc': 'compr_inc_attr_p',
   'ps.tciatmsh': 'compr_inc_attr_m_s', 'ps.beps': 'basic_eps', 'ps.deps': 'diluted_eps',
   'ps.ebit': 'ebit', 'ps.ebitda': 'ebitda', 'ps.ieife': 'fin_exp_int_exp', 'ps.iiife': 'fin_exp_int_inc',
   'cfs.stciffoa': 'c_inf_fr_operate_a', 'cfs.crfscapls': 'c_fr_sale_sg', 'cfs.crfwbot': 'recp_tax_rends',
   'cfs.crrtooa': 'c_fr_oth_operate_a', 'cfs.stcoffoa': 'st_cash_out_act', 'cfs.cpfpcarls': 'c_paid_goods_s',
   'cfs.cptofe': 'c_paid_to_for_empl', 'cfs.cpft': 'c_paid_for_taxes', 'cfs.cprtooa': 'oth_cash_pay_oper_act',
-  'cfs.ncffoa': 'n_cashflow_act', 'cfs.stcifia': 'stot_inflows_inv_act', 'cfs.crfrci': 'c_recp_return_invest',
+  'cfs.ncffoa': 'n_cashflow_act', 'cfs.stcifia': 'stot_inflows_inv_act', 'cfs.crfrci': 'c_disp_withdrwl_invest',
+  'cfs.crfii': 'c_recp_return_invest',
   'cfs.crfdofiaolta': 'n_recp_disp_fiolta', 'cfs.crrtoia': 'oth_recp_ral_inv_act',
   'cfs.stcoffia': 'stot_out_inv_act', 'cfs.cpfpfiaolta': 'c_pay_acq_const_fiolta', 'cfs.cpfi': 'c_paid_invest',
   'cfs.cprtoia': 'oth_pay_ral_inv_act', 'cfs.ncffia': 'n_cashflow_inv_act',
@@ -52,18 +53,27 @@ const LEGACY_CAS_FIELD_MAP = Object.freeze({
   'cfs.ncfffa': 'n_cash_flows_fnc_act', 'cfs.iocacedtfier': 'eff_fx_flu_cash',
   'cfs.niicace': 'n_incr_cash_cash_equ', 'cfs.bocaceatpb': 'c_cash_equ_beg_period',
   'cfs.bocaceatpe': 'c_cash_equ_end_period', 'cfs.np': 'net_profit', 'cfs.fe': 'finan_exp',
-  'cfs.ioa': 'prov_depr_assets', 'cfs.dofx_dooaga_dopba': 'depr_fa_coga_dpba',
+  'cfs.dofx_dooaga_dopba': 'depr_fa_coga_dpba',
   'cfs.aoia': 'amort_intang_assets', 'cfs.aoltde': 'lt_amort_deferred_exp',
   'cfs.dii': 'decr_inventories', 'cfs.dior': 'decr_oper_payable', 'cfs.iiop': 'incr_oper_payable',
   'cfs.ncffoa_dup': 'im_net_cashflow_oper_act',
 });
 
+// Historical Tushare values previously copied into these columns can have a
+// different meaning from the official metric. Do not expose them as that metric.
+const UNVERIFIED_TUSHARE_WIDE = new Set(['bs.tetoshopc', 'ps.npatoshopc', 'ps.tciatoshopc', 'ps.toc', 'cfs.ioa']);
+
 function legacyMetricExpression(metric) {
   const column = dict.columnOf(metric.code);
   const field = LEGACY_CAS_FIELD_MAP[metric.code];
+  if (UNVERIFIED_TUSHARE_WIDE.has(metric.code)) {
+    return `CASE WHEN i.market='CN' AND ds.source_code='tushare' THEN NULL ELSE w.${column} END AS ${column}`;
+  }
   if (!field) return `w.${column} AS ${column}`;
   const raw = `NULLIF(NULLIF(r.raw_payload->>'${field}', ''), 'null')::numeric`;
-  return `COALESCE(w.${column}, CASE WHEN i.market='CN' THEN ${raw} END) AS ${column}`;
+  // Tushare's original report is authoritative for this mapping; an older
+  // synthesized wide value may have been populated with an incorrect mapping.
+  return `CASE WHEN i.market='CN' AND ds.source_code='tushare' THEN ${raw} ELSE w.${column} END AS ${column}`;
 }
 
 async function listStatementRows({ tsCode, market = 'CN', type = 'balance', limit = 8, periodType = null, scope = null, tx = null } = {}) {
@@ -95,7 +105,7 @@ async function listStatementRows({ tsCode, market = 'CN', type = 'balance', limi
        to_char(r.f_ann_date,'YYYY-MM-DD') AS f_ann_date,
        COALESCE(w.currency_code,NULLIF(r.raw_payload->>'currency',''),CASE WHEN i.market='CN' THEN 'CNY' END) AS currency_code,
        COALESCE(w.accounting_standard,CASE WHEN i.market='CN' THEN 'CAS' WHEN i.market='HK' THEN 'HKFRS' END) AS accounting_standard,
-       COALESCE(w.source_id,r.source_id) AS source_id,
+       COALESCE(w.source_id,r.source_id) AS source_id,ds.source_code,
        COALESCE(w.source_version,r.source_version) AS source_version,
        to_char(COALESCE(w.ingested_at,r.ingested_at) AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US') AS statement_revision,
        r.report_type,r.comp_type,r.update_flag,r.statement_scope,r.available_at,
@@ -107,6 +117,7 @@ async function listStatementRows({ tsCode, market = 'CN', type = 'balance', limi
     JOIN core.company_instruments ci ON ci.company_id=r.company_id
     JOIN core.instruments i ON i.instrument_id=ci.instrument_id
     LEFT JOIN ${table} w ON w.report_id=r.report_id
+     LEFT JOIN ops.data_sources ds ON ds.source_id=COALESCE(w.source_id,r.source_id)
     WHERE ${predicates.join(' AND ')}
     ORDER BY COALESCE(w.period_end,r.period_end) DESC,COALESCE(w.announced_at,r.announced_at) DESC NULLS LAST,r.report_id DESC
     LIMIT $${params.length}`, params);
@@ -120,4 +131,4 @@ async function listAnnualStatements(tsCode, type, limit) {
     WHERE i.canonical_code=$1 AND r.report_kind=$2 AND r.period_type='annual' AND r.is_current_version=true ORDER BY r.period_end DESC LIMIT $3`, [tsCode, type, limit]);
 }
 
-module.exports = { LEGACY_CAS_FIELD_MAP, legacyMetricExpression, listAnnualStatements, listStatementRows };
+module.exports = { LEGACY_CAS_FIELD_MAP, UNVERIFIED_TUSHARE_WIDE, legacyMetricExpression, listAnnualStatements, listStatementRows };

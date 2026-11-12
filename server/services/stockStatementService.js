@@ -83,9 +83,12 @@ function comparisonOf({ rows, index, metricCode, rawValue, statement, compare, m
   return { value: (rawValue - priorRaw) / Math.abs(priorRaw), status: contract.FIELD_STATUS.AVAILABLE, reason: null };
 }
 
-function valueStatus(raw, coverage, code) {
+function valueStatus(raw, coverage, code, sourceCode) {
   const value = contract.finite(raw);
   if (value !== null) return { value, status: contract.FIELD_STATUS.AVAILABLE, reason: null };
+  if (sourceCode === 'tushare' && repository.UNVERIFIED_TUSHARE_WIDE.has(code)) {
+    return { value: null, status: contract.FIELD_STATUS.SOURCE_UNAVAILABLE, reason: 'source_mapping_unverified' };
+  }
   const requested = new Set((coverage && coverage.requested_metric_codes) || []);
   if (coverage && coverage.complete === false) return { value: null, status: contract.FIELD_STATUS.COLLECTION_INCOMPLETE, reason: 'source_batch_incomplete' };
   if (requested.has(code)) return { value: null, status: contract.FIELD_STATUS.SOURCE_NOT_DISCLOSED, reason: 'source_not_disclosed' };
@@ -141,12 +144,15 @@ function buildStatementPayload({ market = 'CN', type = 'balance', rows = [], ver
   const returnedMetricCodes = [...new Set(coverageRows.flatMap(item => item.returned_metric_codes || []))];
   const analysisVersion = statementAnalysisVersionOf({ canonicalCode, market, type, formulaVersion, rows: versionRows });
   const fields = presentation.presentationOf(metrics, type, currencies.length === 1 ? currencies[0] : null)
-    .filter(field => rows.some(row => contract.finite(row[dict.columnOf(field.code)]) !== null) || requestedMetricCodes.includes(field.code))
+    .filter(field => rows.some(row => contract.finite(row[dict.columnOf(field.code)]) !== null)
+      || requestedMetricCodes.includes(field.code)
+      || (rows.some(row => row.source_code === 'tushare')
+        && (repository.UNVERIFIED_TUSHARE_WIDE.has(field.code) || field.code === 'cfs.crfrci')))
     .map(field => ({
       ...field,
       values: rows.map((row, index) => {
         const raw = contract.finite(row[dict.columnOf(field.code)]);
-        const state = valueStatus(raw, parseCoverage(row.statement_coverage), field.code);
+        const state = valueStatus(raw, parseCoverage(row.statement_coverage), field.code, row.source_code);
         const comparison = raw === null ? { value: null, status: state.status, reason: state.reason }
           : comparisonOf({ rows, index, metricCode: dict.columnOf(field.code), rawValue: raw, statement: type, compare: normalized.compare, measureType: field.measure_type });
         return {

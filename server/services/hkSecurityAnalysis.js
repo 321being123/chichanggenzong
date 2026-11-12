@@ -43,7 +43,7 @@ function statementVersionRowsOf(facts, type) {
     .map(item => ({
       report_id: item.report_id, source_version: group.source_version,
       period_end: group.period_end, period_type: group.period_type,
-      announced_at: group.announced_at,
+      announced_at: group.announced_at, statement_revision: item.statement_revision,
     })))
     .sort((a, b) => String(b.period_end).localeCompare(String(a.period_end))
       || String(b.announced_at || '').localeCompare(String(a.announced_at || ''))
@@ -63,7 +63,7 @@ async function readHkReportFacts(tsCode, limit = 20) {
         report_ids: [], profit: null, revenue: null, eps: null, equity: null,
         assets: null, liabilities: null, operating: null, capex: null,
       };
-      group.report_ids.push({ kind, report_id: row.report_id });
+      group.report_ids.push({ kind, report_id: row.report_id, statement_revision: row.statement_revision || null });
       for (const [field, names] of Object.entries(HK_FACT_COLUMNS[kind])) {
         if (names.length) group[field] = pick(row, names);
       }

@@ -16,6 +16,8 @@ const bondScript = fs.readFileSync(path.join(root, 'public', 'js', 'bond-analysi
 // 批次4：可转债侧取数/请求序号已拆入 Presenter（presenters/bond-analysis-presenter.js），断言跟随代码按职责覆盖 View＋Presenter。
 const bondPresenter = fs.readFileSync(path.join(root, 'public', 'js', 'presenters', 'bond-analysis-presenter.js'), 'utf8');
 const statementsScript = fs.readFileSync(path.join(root, 'public', 'js', 'stock-analysis-statements.js'), 'utf8');
+const vm = require('vm');
+const { JSDOM } = require('jsdom');
 // 批次4：三表已拆为 View（渲染）与 Presenter（缓存/请求序号/取数），断言按职责分别校验。
 const statementsPresenter = fs.readFileSync(path.join(root, 'public', 'js', 'presenters', 'stock-analysis-statements-presenter.js'), 'utf8');
 const dateRangeScript = fs.readFileSync(path.join(root, 'public', 'shared', 'date-range-control.js'), 'utf8');
@@ -45,6 +47,22 @@ for (const type of ['balance','income','cashflow']) assert.ok(html.includes(`dat
 assert.ok(statementsPresenter.includes('stockAnalysisApi.getStatements') && statementsScript.includes('同比'), '三表页面未接入年度原值和同比数据');
 assert.ok(statementsScript.includes('statement-section-'), '财务报表缺少分区展示');
 assert.ok(statementsScript.includes('statement-level-') && statementsScript.includes('statement-branch'), '财务科目缺少父子层级展示');
+{
+  const dom = new JSDOM('<div id="stock-analysis-statements-title"></div><div id="stock-analysis-statements-meta"></div><div id="stock-analysis-statements-message"></div><div id="stock-analysis-statements-wrap"></div>');
+  const view = { document: dom.window.document, window: dom.window,
+    escapeHtml: value => String(value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;'),
+    stockAnalysisNumber: value => String(value), stockAnalysisPercent: value => String(value) };
+  vm.runInNewContext(statementsScript, view);
+  view.stockAnalysisRenderStatements({ name: '资产负债表', type: 'balance', compare: 'yoy',
+    periods: [{ end_date: '2025-06-30' }], fields: [{ label: '资产', section: '资产', values: [
+      { value: 1, status: 'available', change: null, comparison_status: 'not_applicable', comparison_reason: 'comparison_method_unverified' }
+    ] }] });
+  const cell = dom.window.document.querySelector('td[aria-label]');
+  assert.ok(cell, '不可比较值要有可访问原因');
+  assert.strictEqual(cell.getAttribute('aria-label'), '该项目的比较口径尚未核实');
+  assert.strictEqual(cell.textContent, '—');
+  dom.window.close();
+}
 assert.ok(html.includes('css/stock-analysis.css'), '缺少股票分析样式引用');
 assert.ok(script.includes('PE为负通常代表公司亏损') === false, '分位点固定说明应由后端统一返回');
 // 批次2c：站内 HTTP 已收进 API 客户端；断言指向实际落点，并新增“View 不得直接 fetch”

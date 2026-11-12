@@ -32,8 +32,14 @@ function sameIdentity(current, prior) {
   const priorCurrency = String(prior && prior.currency_code || '').toUpperCase();
   return current && prior && currentCurrency && priorCurrency
     && currentCurrency === priorCurrency
-    && String(current.accounting_standard || '') === String(prior.accounting_standard || '')
-    && String(current.statement_scope || 'consolidated') === String(prior.statement_scope || 'consolidated');
+    && current.company_id && String(current.company_id) === String(prior.company_id || '')
+    && current.source_id && String(current.source_id) === String(prior.source_id || '')
+    && current.accounting_standard && String(current.accounting_standard) === String(prior.accounting_standard || '')
+    && current.statement_scope && String(current.statement_scope) === String(prior.statement_scope || '')
+    && current.comp_type && String(current.comp_type) === String(prior.comp_type || '')
+    // source_version is a per-report content hash, not a shared revision basis.
+    // An explicitly unadjusted pair is comparable; revisions need further evidence.
+    && String(current.update_flag ?? '') === '0' && String(prior.update_flag ?? '') === '0';
 }
 
 function sameYearMonthDay(current, prior) {
@@ -42,25 +48,38 @@ function sameYearMonthDay(current, prior) {
     && now.slice(5) === old.slice(5) && Number(now.slice(0, 4)) - Number(old.slice(0, 4)) === 1;
 }
 
-function nearestPrior(rows, index, predicate) {
-  const current = rows[index];
-  return rows.slice(index + 1).find(row => dateKey(row.period_end) < dateKey(current.period_end) && predicate(row));
+function isPreviousQuarter(current, prior) {
+  const now = dateKey(current.period_end), old = dateKey(prior.period_end);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(now) || !/^\d{4}-\d{2}-\d{2}$/.test(old)) return false;
+  const [y, m, day] = now.split('-').map(Number), [py, pm, pd] = old.split('-').map(Number);
+  if ((y - py) * 12 + m - pm !== 3) return false;
+  const endOfMonth = (year, month) => new Date(Date.UTC(year, month, 0)).getUTCDate();
+  if (day !== pd && !(day === endOfMonth(y, m) && pd === endOfMonth(py, pm))) return false;
+  const previous = { q1: 'annual', semiannual: 'q1', q3: 'semiannual', annual: 'q3' };
+  return previous[current.period_type] === prior.period_type;
 }
 
-function comparisonOf({ rows, index, metricCode, rawValue, statement, compare }) {
+function comparisonOf({ rows, index, metricCode, rawValue, statement, compare, measureType }) {
   if (compare === 'none') return { value: null, status: null, reason: null };
+  if (measureType !== 'currency') return { value: null, status: contract.FIELD_STATUS.NOT_APPLICABLE, reason: 'comparison_method_unverified' };
   const current = rows[index];
   if (compare === 'qoq' && statement !== 'balance') {
     return { value: null, status: contract.FIELD_STATUS.NOT_APPLICABLE, reason: 'cumulative_flow_qoq_not_supported' };
   }
+  // Current rows do not contain a verified period start/restatement basis for
+  // cumulative flows, so an identical end date alone cannot establish YOY.
+  if (compare === 'yoy' && statement !== 'balance') {
+    return { value: null, status: contract.FIELD_STATUS.NOT_APPLICABLE, reason: 'flow_period_basis_unverified' };
+  }
   const prior = compare === 'yoy'
-    ? rows.find((row, rowIndex) => rowIndex > index && sameIdentity(current, row)
+    ? rows.find((row, rowIndex) => rowIndex > index && current.period_type !== 'unknown' && Boolean(current.period_type) && sameIdentity(current, row)
       && String(row.period_type || '') === String(current.period_type || '') && sameYearMonthDay(current, row))
-    : nearestPrior(rows, index, row => sameIdentity(current, row));
+    : rows.find((row, rowIndex) => rowIndex > index && sameIdentity(current, row) && isPreviousQuarter(current, row));
   if (!prior) return { value: null, status: contract.FIELD_STATUS.INSUFFICIENT_HISTORY, reason: 'comparable_period_missing' };
   const priorRaw = contract.finite(prior[metricCode]);
   if (rawValue === null || priorRaw === null) return { value: null, status: contract.FIELD_STATUS.SOURCE_UNAVAILABLE, reason: 'comparable_value_missing' };
   if (priorRaw === 0) return { value: null, status: contract.FIELD_STATUS.NOT_APPLICABLE, reason: 'zero_denominator' };
+  if (priorRaw < 0 || rawValue < 0) return { value: null, status: contract.FIELD_STATUS.NOT_APPLICABLE, reason: 'negative_comparison_unverified' };
   return { value: (rawValue - priorRaw) / Math.abs(priorRaw), status: contract.FIELD_STATUS.AVAILABLE, reason: null };
 }
 
@@ -75,7 +94,7 @@ function valueStatus(raw, coverage, code) {
 }
 
 function reportDigestOf(rows) {
-  return rows.map(row => `${row.report_id}:${row.source_version || ''}:${row.period_end || ''}:${row.period_type || ''}`).join(',');
+  return rows.map(row => `${row.report_id}:${row.source_version || ''}:${row.period_end || ''}:${row.period_type || ''}:${row.statement_revision || ''}`).join(',');
 }
 
 function statementAnalysisVersionOf({ canonicalCode, market = 'CN', type = 'balance', formulaVersion = 'stock-statements-2', rows = [] } = {}) {
@@ -129,7 +148,7 @@ function buildStatementPayload({ market = 'CN', type = 'balance', rows = [], ver
         const raw = contract.finite(row[dict.columnOf(field.code)]);
         const state = valueStatus(raw, parseCoverage(row.statement_coverage), field.code);
         const comparison = raw === null ? { value: null, status: state.status, reason: state.reason }
-          : comparisonOf({ rows, index, metricCode: dict.columnOf(field.code), rawValue: raw, statement: type, compare: normalized.compare });
+          : comparisonOf({ rows, index, metricCode: dict.columnOf(field.code), rawValue: raw, statement: type, compare: normalized.compare, measureType: field.measure_type });
         return {
           value: presentation.normalizeMetricValue(raw, field, row.currency_code),
           status: state.status,

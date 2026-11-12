@@ -97,6 +97,7 @@ async function listStatementRows({ tsCode, market = 'CN', type = 'balance', limi
        COALESCE(w.accounting_standard,CASE WHEN i.market='CN' THEN 'CAS' WHEN i.market='HK' THEN 'HKFRS' END) AS accounting_standard,
        COALESCE(w.source_id,r.source_id) AS source_id,
        COALESCE(w.source_version,r.source_version) AS source_version,
+       to_char(COALESCE(w.ingested_at,r.ingested_at) AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US') AS statement_revision,
        r.report_type,r.comp_type,r.update_flag,r.statement_scope,r.available_at,
        r.raw_payload->>'report_period_label' AS report_type_label,
        r.raw_payload->>'fiscal_year' AS fiscal_year,

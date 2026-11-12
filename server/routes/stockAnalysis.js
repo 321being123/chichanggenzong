@@ -126,11 +126,11 @@ router.get('/:ts_code', asyncHandler(validStock), asyncHandler(async (req, res) 
     const snapshot = await hkAnalysis.getHkSnapshot(req.stockTsCode);
     if (!snapshot) return res.status(404).json({ error: '该港股的分析资料尚未就绪', code: 'HK_ANALYSIS_NOT_READY' });
     const publicSnapshot = hkAnalysis.publicSnapshotOf(snapshot);
-    if (!publicSnapshot.display || !publicSnapshot.display.statement_analysis_versions) {
-      publicSnapshot.display = Object.assign({}, publicSnapshot.display, {
-        statement_analysis_versions: await getHkStockStatementVersions(req.stockTsCode),
-      });
-    }
+    // The snapshot may predate a wide-row update. Bind the response to the
+    // current statement revisions so the bounded 409 retry can make progress.
+    publicSnapshot.display = Object.assign({}, publicSnapshot.display, {
+      statement_analysis_versions: await getHkStockStatementVersions(req.stockTsCode),
+    });
     return res.json(publicSnapshot);
   }
   const snapshot = await getSnapshot(req.stockTsCode);

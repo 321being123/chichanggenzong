@@ -51,6 +51,23 @@ function stockAnalysisShowStatementsError(error) {
   if (message) { message.style.display='block'; message.textContent=error.message || String(error); }
 }
 
+function stockAnalysisStatementReason(reason) {
+  var reasons = {
+    comparison_method_unverified: '该项目的比较口径尚未核实',
+    negative_comparison_unverified: '含负数的比较口径尚未核实',
+    comparable_period_missing: '缺少可确认口径一致的比较期',
+    comparable_value_missing: '比较期缺少数据',
+    cumulative_flow_qoq_not_supported: '累计值暂无已核实的单期环比',
+    flow_period_basis_unverified: '累计报告期起始日及重述口径尚未核实',
+    zero_denominator: '比较期为零，无法计算',
+    source_batch_incomplete: '来源采集不完整',
+    source_not_disclosed: '来源未披露',
+    metric_not_requested: '该项目尚未采集',
+    metric_missing: '暂无数据'
+  };
+  return reasons[reason] || '暂无可用数据';
+}
+
 function stockAnalysisRenderStatements(data) {
   var title = document.getElementById('stock-analysis-statements-title');
   var message = document.getElementById('stock-analysis-statements-message');
@@ -94,8 +111,10 @@ function stockAnalysisRenderStatements(data) {
       var value = item.value == null ? '—' : stockAnalysisNumber(item.value, 2);
       var change = item.change == null ? '—' : stockAnalysisPercent(item.change);
       var changeClass = item.change != null && item.change < 0 ? ' class="negative"' : '';
-      var valueStatus = item.status && item.status !== 'available' ? ' data-status="' + escapeHtml(item.status) + '" title="' + escapeHtml(item.reason || item.status) + '"' : '';
-      var comparisonStatus = item.comparison_status && item.comparison_status !== 'available' ? ' data-status="' + escapeHtml(item.comparison_status) + '" title="' + escapeHtml(item.comparison_reason || item.comparison_status) + '"' : '';
+      var valueReason = stockAnalysisStatementReason(item.reason);
+      var comparisonReason = stockAnalysisStatementReason(item.comparison_reason);
+      var valueStatus = item.status && item.status !== 'available' ? ' data-status="' + escapeHtml(item.status) + '" title="' + escapeHtml(valueReason) + '" aria-label="' + escapeHtml(valueReason) + '"' : '';
+      var comparisonStatus = item.comparison_status && item.comparison_status !== 'available' ? ' data-status="' + escapeHtml(item.comparison_status) + '" title="' + escapeHtml(comparisonReason) + '" aria-label="' + escapeHtml(comparisonReason) + '"' : '';
       return '<td class="statement-value"' + valueStatus + '>' + escapeHtml(value) + '</td><td' + changeClass + comparisonStatus + '>' + escapeHtml(change) + '</td>';
     }).join('');
     var rowClass = 'statement-item statement-level-' + (field.level || 0) + (field.is_parent ? ' statement-parent' : '');

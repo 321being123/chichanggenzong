@@ -51,6 +51,10 @@ const CASHFLOW_SECTIONS = Object.freeze({
 });
 
 function measureType(metric) {
+  if (metric.measure_type) return metric.measure_type;
+  // These are amounts or liquidity multiples, despite the Chinese word “率”.
+  if (metric.code === 'cfs.iocacedtfier') return 'currency';
+  if (metric.code === 'bs.tca_tcl_r' || metric.code === 'bs.q_r') return 'multiple';
   const text = `${metric.code} ${metric.name}`.toLowerCase();
   if (/eps|per_share|每股/.test(text)) return 'per_share';
   if (/_r(?:$|_)|margin|roe|roa|yield|率|比率/.test(text)) return 'percent';

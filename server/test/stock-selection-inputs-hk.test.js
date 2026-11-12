@@ -225,6 +225,79 @@ async function main() {
     assert.ok(calls[0].metricsList.includes('q.ps.toi.t'), '非金融保留营业总收入等原有指标');
   });
 
+  await check('财报分批：不同公告版本不能混拼，仅有扩展科目也必须保留并标明缺批', async () => {
+    let batch = 0;
+    stub('../services/lixingerOfficial', {
+      callEndpoint: async () => {
+        const n = batch++;
+        const make = (reportDate, q, standardDate = '2025-12-31') => ({
+          standardDate, date: standardDate, reportDate, reportType: 'annual_report',
+          stockCode: '600519', currency: 'CNY', q,
+        });
+        if (n === 0) return { rows: [
+          make('2026-03-01', { bs: { ta: { t: 100 } } }),
+          make('2026-04-01', { bs: { ta: { t: 200 } } }),
+        ] };
+        if (n === 1) return { rows: [
+          make('2026-03-01', { bs: { capr: { t: 10 } } }),
+          make('2026-04-01', { bs: { capr: { t: 20 } } }),
+          make('2025-03-01', { bs: { capr: { t: 30 } } }, '2024-12-31'),
+        ] };
+        return { rows: [make('2026-04-01', {})] };
+      },
+    });
+    const adapterPath = require.resolve('../dataAccess/adapters/lixingerDatasetAdapter');
+    delete require.cache[adapterPath];
+    const adapter = require(adapterPath);
+    const reports = await adapter.resolveFinancialReports({
+      tsCode: '600519.SH', startDate: '2024-01-01', endDate: '2025-12-31', kinds: ['balance'],
+    });
+    assert.strictEqual(reports.balance.length, 3, '两份版本和仅有扩展字段的报告都应保留');
+    const first = reports.balance.find(row => row.ann_date === '20260301');
+    const revised = reports.balance.find(row => row.ann_date === '20260401');
+    const partial = reports.balance.find(row => row.end_date === '20241231');
+    assert.strictEqual(first.total_assets, 100);
+    assert.strictEqual(first.update_flag, null, '来源未提供重述标志，不得造出未重述');
+    assert.strictEqual(first.__statement_metrics['bs.capr'], 10);
+    assert.strictEqual(revised.total_assets, 200);
+    assert.strictEqual(revised.__statement_metrics['bs.capr'], 20);
+    assert.strictEqual(first.__statement_coverage.complete, false, '缺失分批的版本不得标为完整');
+    assert.strictEqual(revised.__statement_coverage.complete, true);
+    assert.strictEqual(partial.__statement_metrics['bs.capr'], 30);
+    assert.strictEqual(partial.__statement_coverage.complete, false);
+  });
+
+  await check('港股金融标准事实不能用普通股专属科目冒充归母合计', async () => {
+    const calls = [];
+    stub('../services/lixingerOfficial', {
+      callEndpoint: async (endpoint, params) => {
+        calls.push({ endpoint, metrics: params.metricsList });
+        return { rows: [{ date: '2025-12-31', standardDate: '2025-12-31', reportDate: '2026-03-01',
+          reportType: 'annual_report', currency: 'USD', q: {
+            ps: { oi: { t: 1 }, npatoshopc: { t: 45 }, npatshaoehopc: { t: 55 } },
+            bs: { ta: { t: 2 }, tetoshopc: { t: 451 }, tetshaoehopc: { t: 551 } },
+          } }] };
+      },
+    });
+    const adapterPath = require.resolve('../dataAccess/adapters/lixingerDatasetAdapter');
+    delete require.cache[adapterPath];
+    const adapter = require(adapterPath);
+    const read = fsTableType => adapter.resolveFinancialReports({ tsCode: '00005.HK',
+      startDate: '2025-01-01', endDate: '2025-12-31', kinds: ['income', 'balance'], options: { fsTableType } });
+    const bank = await read('bank');
+    assert.strictEqual(bank.income[0].n_income_attr_p, 55);
+    assert.strictEqual(bank.balance[0].total_hldr_eqy_exc_min_int, 551);
+    assert.ok(calls[0].metrics.includes('q.ps.npatshaoehopc.t'));
+    assert.ok(calls[0].metrics.includes('q.bs.tetshaoehopc.t'));
+    assert.strictEqual(bank.income[0].__statement_metrics['ps.npatoshopc'], 45);
+    const insurance = await read('insurance');
+    assert.strictEqual(insurance.income[0].n_income_attr_p, undefined);
+    assert.strictEqual(insurance.balance[0].total_hldr_eqy_exc_min_int, undefined);
+    assert.ok(!calls[1].metrics.includes('q.ps.npatshaoehopc.t'));
+    assert.ok(!calls[1].metrics.includes('q.bs.tetshaoehopc.t'));
+    assert.strictEqual(insurance.balance[0].__statement_metrics['bs.tetoshopc'], 451);
+  });
+
   await check('港股通清单接口：按 isMutualMarketAhFlag 取数并解析每手股数与财报类型', async () => {
     let captured = null;
     stub('../services/lixingerOfficial', {

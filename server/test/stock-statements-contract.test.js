@@ -61,6 +61,7 @@ for (const [label, current, prior] of [
   ['来源未知', { source_id: null }, { source_id: null }],
   ['重述标志', { update_flag: '1' }, { update_flag: '0' }],
   ['修订标志未知', { update_flag: null }, { update_flag: null }],
+  ['理杏仁历史伪造的未重述标志', { source_code: 'lixinger_official', update_flag: '0' }, { source_code: 'lixinger_official', update_flag: '0' }],
   ['公司不同', { company_id: 9 }, { company_id: 10 }],
   ['不同币种', { currency_code: 'USD' }, { currency_code: 'HKD' }],
   ['不同范围', { statement_scope: 'consolidated' }, { statement_scope: 'parent' }],

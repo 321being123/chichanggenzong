@@ -37,6 +37,8 @@ function sameIdentity(current, prior) {
     && current.accounting_standard && String(current.accounting_standard) === String(prior.accounting_standard || '')
     && current.statement_scope && String(current.statement_scope) === String(prior.statement_scope || '')
     && current.comp_type && String(current.comp_type) === String(prior.comp_type || '')
+    // 历史理杏仁适配器曾把未知重述标志写成 0，不能把这些旧记录视为已确认未重述。
+    && current.source_code !== 'lixinger_official' && prior.source_code !== 'lixinger_official'
     // source_version is a per-report content hash, not a shared revision basis.
     // An explicitly unadjusted pair is comparable; revisions need further evidence.
     && String(current.update_flag ?? '') === '0' && String(prior.update_flag ?? '') === '0';

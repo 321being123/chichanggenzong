@@ -758,6 +758,16 @@ async function readFinancialReportRows({ tsCode, kinds, startDate, endDate, fsTa
   }
   const primary = await safeOfficial(() => official.resolveFinancialReports({ tsCode, startDate, endDate, kinds, options: { fsTableType } }), 'financial_reports');
   if (!primary.value) return null;
+  // 一个报告只返回部分指标批次时，不能让两个既有写入入口把它当完整采集成功。
+  // 官方原始响应由 Guard 留证；本次不发布标准事实，交由调用方记录失败并重试。
+  const incomplete = Object.values(primary.value).flatMap(rows => Array.isArray(rows) ? rows : [])
+    .filter(row => row && row.__statement_coverage && row.__statement_coverage.complete === false);
+  if (incomplete.length) {
+    const error = new Error(`财报存在 ${incomplete.length} 条分批未覆盖的报告，保留历史数据并重试`);
+    error.code = 'FINANCIAL_BATCH_INCOMPLETE';
+    error.retryable = true;
+    throw error;
+  }
   const hasAny = Object.values(primary.value).some(rows => Array.isArray(rows) && rows.length);
   if (!hasAny) return null;
   return primary.value;

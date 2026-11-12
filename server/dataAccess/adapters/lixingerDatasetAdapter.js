@@ -34,17 +34,13 @@ const REPORT_METRICS = {
     total_profit: 'ps.tp',
     ebit: 'ps.ebit',
     fin_exp_int_exp: 'ps.ieife',
-    // 归母净利：官方在个别年份只返回 ps.npatoshopc，不返回 ps.npatshaoehopc
-    // （2026-11-07 生产实测：601398 的 2018/2019、601658 的 2018 都是这种情形，
-    //  其余 10 个年度两个字段同时存在且逐期完全相等；港股归母口径本来也取 ps.npatoshopc）。
-    // 因此按序回退，不能因为主字段缺失就判成"这家公司没有归母净利润"——
-    // 那会把利润表明明齐全的年份误报成数据缺口，进而阻断整批选股发布。
-    n_income_attr_p: ['ps.npatshaoehopc', 'ps.npatoshopc'],
+    // 普通股股东净利润不包含其他权益持有者，不能回退充当归母净利润。
+    n_income_attr_p: 'ps.npatshaoehopc',
   },
   balance: {
     total_assets: 'bs.ta',
     total_liab: 'bs.tl',
-    total_hldr_eqy_exc_min_int: 'bs.tetoshopc',
+    total_hldr_eqy_exc_min_int: 'bs.tetshaoehopc',
     goodwill: 'bs.gw',
     money_cap: 'bs.cabb',
     trad_asset: 'bs.tfa',
@@ -91,10 +87,7 @@ function numberOrNull(value) {
   return Number.isFinite(number) ? number : null;
 }
 
-// 按候选顺序取第一个非空指标值。
-// 为什么需要它：官方对个别年份只返回同义字段中的另一个名字（2026-11-07 实测 601398 的
-// 2018/2019、601658 的 2018 只有 ps.npatoshopc，没有 ps.npatshaoehopc），
-// 只认单一字段名会把"利润表齐全"的年份误判成没有归母净利润。
+// 按已核实同口径的候选顺序取第一个非空指标值，不得把普通股专属字段当归母合计。
 function pickFirstMetric(flat, candidates) {
   const list = Array.isArray(candidates) ? candidates : [candidates];
   for (const candidate of list) {
@@ -436,14 +429,12 @@ function fillStaticPe(rows, annuals) {
 // 港股没有流通市值等价字段，cmc 不请求；tsc（总股本）本链路不用。
 const HK_VALUATION_METRICS = ['pe_ttm', 'pb', 'dyr', 'mc'];
 
-// 港股按财报类型分端点（2026-11-05 实测确认）：银行/保险/证券/REIT/其他金融各走自己那份端点，
-// 但**指标名与普通公司完全一致**（q.ps.npatoshopc.t、q.bs.tetoshopc.t、q.bs.ta.t 三类都取到真值，
-// 币种随行：友邦 USD、建行/中信证券 CNY）。之前全部 400 的原因不是指标名，而是漏了 q./.t 完整格式。
-// 金融类只取三表标准项：金融专属科目与 HKFRS 通用科目混发会被整批判非法，宽表分批一律不发。
+// 港股金融类型各走自己的端点；金融专属科目与 HKFRS 通用科目混发可能被整批判非法，故不做宽表分批。
+// 普通股专属指标仍可展示；银行的归母合计指标已对 00005.HK 实样验证，其他类型保留未核实缺口。
 const HK_FINANCIAL_TABLE_TYPES = new Set(['bank', 'insurance', 'security', 'reit', 'other_financial']);
 const HK_FINANCIAL_REPORT_METRICS = {
-  income: { revenue: 'ps.oi', total_profit: 'ps.tp', n_income_attr_p: 'ps.npatoshopc' },
-  balance: { total_assets: 'bs.ta', total_liab: 'bs.tl', total_hldr_eqy_exc_min_int: 'bs.tetoshopc' },
+  income: { revenue: 'ps.oi', total_profit: 'ps.tp' },
+  balance: { total_assets: 'bs.ta', total_liab: 'bs.tl' },
   cashflow: { n_cashflow_act: 'cfs.ncffoa', n_cashflow_inv: 'cfs.ncffia', n_cash_flows_fnc_act: 'cfs.ncfffa' },
 };
 
@@ -452,13 +443,12 @@ const HK_REPORT_METRICS = {
     total_revenue: 'ps.toi',
     revenue: 'ps.oi',
     total_profit: 'ps.tp',
-    // 港股按"归属于母公司普通股股东的净利润"取归母口径（与 A 股 n_income_attr_p 同义）。
-    n_income_attr_p: 'ps.npatoshopc',
+    n_income_attr_p: 'ps.npatshaoehopc',
   },
   balance: {
     total_assets: 'bs.ta',
     total_liab: 'bs.tl',
-    total_hldr_eqy_exc_min_int: 'bs.tetoshopc',
+    total_hldr_eqy_exc_min_int: 'bs.tetshaoehopc',
     goodwill: 'bs.gw',
     money_cap: 'bs.cabb',
   },
@@ -539,7 +529,12 @@ async function resolveFinancialReports({ tsCode, startDate, endDate, kinds = ['i
   }
   const tableType = hk ? requestedType : null;
   const financialTable = Boolean(tableType && tableType !== 'non_financial');
-  const mapping = hk ? (financialTable ? HK_FINANCIAL_REPORT_METRICS : HK_REPORT_METRICS) : REPORT_METRICS;
+  // 银行端点实样确认支持归母合计；其他金融类型权限尚未逐一核实，保留缺口。
+  const mapping = hk ? (financialTable ? (tableType === 'bank' ? {
+    ...HK_FINANCIAL_REPORT_METRICS,
+    income: { ...HK_FINANCIAL_REPORT_METRICS.income, n_income_attr_p: 'ps.npatshaoehopc' },
+    balance: { ...HK_FINANCIAL_REPORT_METRICS.balance, total_hldr_eqy_exc_min_int: 'bs.tetshaoehopc' },
+  } : HK_FINANCIAL_REPORT_METRICS) : HK_REPORT_METRICS) : REPORT_METRICS;
   const metrics = [];
   for (const kind of kinds) {
     for (const base of Object.values(mapping[kind] || {})) {
@@ -549,6 +544,9 @@ async function resolveFinancialReports({ tsCode, startDate, endDate, kinds = ['i
       else metrics.push(`q.${base}.t`);
     }
   }
+  // 已验证的普通股专属科目仍可展示，但不得写成归母合计标准事实。
+  if (financialTable && kinds.includes('income')) metrics.push('q.ps.npatoshopc.t');
+  if (financialTable && kinds.includes('balance')) metrics.push('q.bs.tetoshopc.t');
   if (!metrics.length) return null;
   const endpoint = hk ? `hk/company/fs/${tableType}` : 'cn/company/fs/non_financial';
   // 三表全量：官方同一接口按指标点菜，单只股票一次最多 128 个指标，
@@ -559,16 +557,23 @@ async function resolveFinancialReports({ tsCode, startDate, endDate, kinds = ['i
     .map(batch => batch.filter(code => !standardCodes.has(code)))
     .filter(batch => batch.length);
   const merged = new Map();
-  for (const list of [metrics, ...extraBatches]) {
+  const batches = [metrics, ...extraBatches];
+  for (const [batchIndex, list] of batches.entries()) {
     const { rows: batchRows } = await callEndpointRange(endpoint,
       { stockCodes: [code], metricsList: list }, start, end,
       { dataset: 'stock_financial_reports', targetDate: end, ...options });
     for (const item of batchRows) {
       // 同一份报告分散在多批响应里，必须按"报告身份"合并，不能按响应顺序拼接。
-      const key = [item.date, item.standardDate, item.reportType, item.stockCode].join('|');
+      // 公告日、币种和财年也是报告身份的一部分；同一报告期有重述或不同币种时不能跨批混拼。
+      const key = JSON.stringify([item.date || null, item.standardDate || null, item.reportType || null,
+        item.stockCode || null, item.reportDate || null, item.currency || null,
+        item.fiscalYear || item.fiscal_year || null]);
       const prev = merged.get(key);
-      if (!prev) merged.set(key, { ...item, q: { ...(item.q || {}) } });
-      else prev.q = mergeMetricTree(prev.q, item.q || {});
+      if (!prev) merged.set(key, { item: { ...item, q: { ...(item.q || {}) } }, batches: new Set([batchIndex]) });
+      else {
+        prev.item.q = mergeMetricTree(prev.item.q, item.q || {});
+        prev.batches.add(batchIndex);
+      }
     }
   }
   const rows = [...merged.values()];
@@ -576,7 +581,7 @@ async function resolveFinancialReports({ tsCode, startDate, endDate, kinds = ['i
     .map(code => String(code).replace(/^q\./, '').replace(/\.t$/, '')))]
     .filter(code => /^(bs|ps|cfs)\.[a-z0-9_]+$/.test(code));
   const out = { income: [], balance: [], cashflow: [], indicator: [] };
-  for (const item of rows) {
+  for (const { item, batches: returnedBatches } of rows) {
     const flat = flattenMetrics(item.q || {});
     // 三表原始科目：键形如 bs.ta.t / ps.toi.t / cfs.ncffoa.t，去掉粒度后缀后按代码交给落库层。
     // 只收 bs/ps/cfs（m.* 是衍生指标，由三表算得，不入库）。
@@ -608,14 +613,16 @@ async function resolveFinancialReports({ tsCode, startDate, endDate, kinds = ['i
         fs_table_type: tableType,
         requested_metric_codes: requestedMetricCodes,
         returned_metric_codes: Object.keys(statementMetrics),
-        requested_batch_count: 1 + extraBatches.length,
-        complete: true,
+        requested_batch_count: batches.length,
+        returned_batch_count: returnedBatches.size,
+        complete: returnedBatches.size === batches.length,
       },
       // 三表全量科目随行返回，落库层据此写宽表；没有科目时不挂空对象，避免污染原始留证。
       ...(Object.keys(statementMetrics).length ? { __statement_metrics: statementMetrics } : {}),
       period_type: reportPeriodType || 'unknown',
       currency: item.currency || null,
-      update_flag: '0',
+      // 官方响应未提供经核实的重述标志，不能人为标成未重述。
+      update_flag: null,
       source_code: SOURCE,
     };
     for (const kind of kinds) {
@@ -628,7 +635,11 @@ async function resolveFinancialReports({ tsCode, startDate, endDate, kinds = ['i
         row[field] = value;
         if (value !== null) filled += 1;
       }
-      if (filled) out[kind].push(row);
+      // 基础映射全空时，仍须保留字典中已返回的三表科目，不能把部分报告当空结果丢弃。
+      const hasStatementMetric = reportMetrics.STATEMENTS.includes(kind)
+        && reportMetrics.metricsByStatement(market, kind)
+          .some(metric => numberOrNull(statementMetrics[metric.code]) !== null);
+      if (filled || hasStatementMetric) out[kind].push(row);
     }
   }
   return out;

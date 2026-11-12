@@ -83,19 +83,35 @@ for (const name of rangeFunctions) {
       tsCode: '600519.SH', kinds: ['income'], startDate: '2001-08-27', endDate: '2026-11-01',
       options: { fetch: fakeFetch, sleep: async () => {} },
     });
-    assert.strictEqual(seen.length, 3, '25 年要拆成 3 次请求');
+    // 每个指标批次都应覆盖三个时间段；不能把指标分批误当成额外的时间段。
+    const expectedRanges = adapter.rangeChunks('2001-08-27', '2026-11-01');
+    const counts = expectedRanges.map(([startDate, endDate]) =>
+      seen.filter(call => call.startDate === startDate && call.endDate === endDate).length);
+    assert.ok(counts.every(count => count > 0 && count === counts[0]), '每个指标批次都必须覆盖三个时间段');
+    assert.strictEqual(seen.length, counts.reduce((sum, count) => sum + count, 0), '不得有多余或重复边界');
     for (const call of seen) {
       assert.ok(Number(call.endDate.slice(0, 4)) - Number(call.startDate.slice(0, 4)) <= 10,
         `单次请求跨年超限：${call.startDate}~${call.endDate}`);
     }
     assert.strictEqual(seen[0].startDate, '2001-08-27');
-    assert.strictEqual(seen[2].endDate, '2026-11-01');
+    assert.strictEqual(seen[seen.length - 1].endDate, '2026-11-01');
     assert.strictEqual(reports.income.length, 3, '三段结果必须合并，不能只留最后一段');
     assert.ok(reports.income.every(row => row.source_code === 'lixinger_official'));
+
+    // 数据集入口被公司同步和选股补数共用；缺批不能被任何入口视为完整成功。
+    const originalResolve = adapter.resolveFinancialReports;
+    try {
+      const datasets = require('../dataAccess/marketDatasets');
+      adapter.resolveFinancialReports = async () => ({ income: [{ __statement_coverage: { complete: false } }] });
+      await assert.rejects(() => datasets.readFinancialReportRows({ tsCode: '600519.SH', kinds: ['income'],
+        startDate: '2024-01-01', endDate: '2025-12-31' }), error => error.code === 'FINANCIAL_BATCH_INCOMPLETE' && error.retryable);
+      adapter.resolveFinancialReports = async () => ({ income: [{ __statement_coverage: { complete: true } }] });
+      assert.strictEqual((await datasets.readFinancialReportRows({ tsCode: '600519.SH', kinds: ['income'],
+        startDate: '2024-01-01', endDate: '2025-12-31' })).income.length, 1);
+    } finally { adapter.resolveFinancialReports = originalResolve; }
 
     console.log('lixinger-range-chunking：官方区间上限 10 年，适配层已分段并合并，通过');
   } finally {
     await pool.end().catch(() => {});
-    process.exit(0);
   }
-})().catch(error => { console.error(error); process.exit(1); });
+})().catch(error => { console.error(error); process.exitCode = 1; });

@@ -34,6 +34,13 @@ const MARKET_CONFIG = Object.freeze({
 // 风险名称：目标日已知的 ST/*ST、退市整理与明确退市风险。停牌另由停牌表判定。
 const RISK_NAME_SQL = `(i.name ~ '(^|\\s|\\*)ST' OR i.name LIKE '%退市%' OR i.name LIKE '%退' OR i.name ~* '(delist|suspended)')`;
 
+// 港股官方来源返回的非港币报告金额与原币年报不一致；只屏蔽不可信数值，保留报告身份与待补状态。
+// ts_code 来自原始报告，不按公司是否同时发行 A/H 股猜测来源市场。
+const UNVERIFIED_FINANCIAL_CURRENCY_SQL = `upper(COALESCE(r.raw_payload->>'ts_code','')) LIKE '%.HK'
+  AND upper(COALESCE(r.raw_payload->>'currency','')) <> 'HKD'
+  AND r.source_id = (SELECT source_id FROM ops.data_sources WHERE source_code='lixinger_official')`;
+const SAFE_FINANCIAL_FACT_SQL = `CASE WHEN ${UNVERIFIED_FINANCIAL_CURRENCY_SQL} THEN NULL ELSE f.numeric_value END`;
+
 function marketConfig(market) {
   const config = MARKET_CONFIG[String(market || '').toUpperCase()];
   if (!config) {
@@ -86,7 +93,7 @@ async function loadUniverse({ market, asOfDate, availableBefore = null }, tx) {
       -- 可见时点必须与 loadEquityFacts / loadAnnualProfits 同源（F09）：只按 announced_at 截断，
       -- 会让同一批计算里的 PE 和净资产规则落在不同版本的报表上。
       LEFT JOIN LATERAL (
-        SELECT f.numeric_value AS net_profit, f.currency_code AS net_profit_currency
+        SELECT ${SAFE_FINANCIAL_FACT_SQL} AS net_profit, f.currency_code AS net_profit_currency
           FROM fundamental.financial_reports r
           JOIN fundamental.financial_facts f ON f.report_id = r.report_id AND f.metric_code = 'net_profit_parent'
          WHERE r.company_id = ci.company_id
@@ -101,7 +108,7 @@ async function loadUniverse({ market, asOfDate, availableBefore = null }, tx) {
       -- 最近一期已公告归母净资产：源站对"净资产为负"的股票直接不给 PB（字段为空，不是没有这一行），
       -- 所以 PB 为空时要按同一定义式现算（总市值 ÷ 归母净资产），负值如实判为净资产为负。
       LEFT JOIN LATERAL (
-        SELECT f.numeric_value AS equity, f.currency_code AS equity_currency
+        SELECT ${SAFE_FINANCIAL_FACT_SQL} AS equity, f.currency_code AS equity_currency
           FROM fundamental.financial_reports r
           JOIN fundamental.financial_facts f ON f.report_id = r.report_id AND f.metric_code = 'equity_parent'
          WHERE r.company_id = ci.company_id
@@ -170,7 +177,8 @@ async function loadTtmInputs({ companyIds, asOfDate, availableBefore = null }, t
   const { rows } = await exec(`
     SELECT r.company_id, r.report_id, r.period_end::text AS period_end, r.period_type,
            r.announced_at::text AS announced_at,
-           f.numeric_value::text AS net_profit, f.currency_code
+           (${SAFE_FINANCIAL_FACT_SQL})::text AS net_profit, f.currency_code,
+           (${UNVERIFIED_FINANCIAL_CURRENCY_SQL}) AS currency_unverified
       FROM fundamental.financial_reports r
       JOIN fundamental.financial_facts f ON f.report_id = r.report_id AND f.metric_code = 'net_profit_parent'
      WHERE r.company_id = ANY($1::bigint[])
@@ -193,6 +201,7 @@ async function loadTtmInputs({ companyIds, asOfDate, availableBefore = null }, t
       announcedAt: row.announced_at || null,
       netProfit: row.net_profit === null ? null : Number(row.net_profit),
       currency: row.currency_code || null,
+      currencyUnverified: row.currency_unverified === true,
     });
   });
   return byCompany;
@@ -485,7 +494,8 @@ async function loadEquityFacts({ companyIds, asOfDate, availableBefore }, tx) {
     SELECT DISTINCT ON (r.company_id)
            r.company_id, r.report_id, r.period_end::text AS period_end, r.announced_at::text AS announced_at,
            r.available_at, r.availability_basis, r.source_version,
-           f.numeric_value, f.currency_code
+           ${SAFE_FINANCIAL_FACT_SQL} AS numeric_value, f.currency_code,
+           (${UNVERIFIED_FINANCIAL_CURRENCY_SQL}) AS currency_unverified
       FROM fundamental.financial_reports r
       JOIN fundamental.financial_facts f ON f.report_id = r.report_id AND f.metric_code = 'equity_parent'
      WHERE r.company_id = ANY($1::bigint[])
@@ -498,6 +508,7 @@ async function loadEquityFacts({ companyIds, asOfDate, availableBefore }, tx) {
     reportId: row.report_id,
     amount: row.numeric_value === null ? null : Number(row.numeric_value),
     currency: row.currency_code || null,
+    currencyUnverified: row.currency_unverified === true,
     periodEnd: row.period_end,
     announcedAt: row.announced_at,
     availableAt: row.available_at,
@@ -516,7 +527,7 @@ async function loadAnnualProfits({ companyIds, asOfDate, availableBefore }, tx) 
            date_part('year', r.period_end)::int AS fiscal_year,
            r.period_end::text AS period_end,
            r.source_version,
-           f.numeric_value, f.currency_code
+           ${SAFE_FINANCIAL_FACT_SQL} AS numeric_value, f.currency_code
       FROM fundamental.financial_reports r
       JOIN fundamental.financial_facts f ON f.report_id = r.report_id AND f.metric_code = 'net_profit_parent'
      WHERE r.company_id = ANY($1::bigint[])
@@ -2330,7 +2341,7 @@ async function listCandidatesForProjection({ runId, batchSize = 1000 }, tx) {
 }
 
 module.exports = {
-  MARKET_CONFIG,
+  MARKET_CONFIG, SAFE_FINANCIAL_FACT_SQL,
   loadUniverse, loadPbWindow, loadPbMissingDaysForCodes, loadEquityFacts, loadAnnualProfits, loadDividendWindow,
   loadAnnualDividends, loadIndustries, loadFxRatesForPairs, loadMarketValuation, loadLatestMarketValuation, loadCalendar,
   loadCalendarEvidence, findUniverseArtifact, insertUniverseArtifact, loadUniverseRoster, loadTtmInputs,

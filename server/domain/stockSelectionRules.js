@@ -185,6 +185,9 @@ function evaluateEquity(facts, params) {
   const fx = facts.fx || {};
   const base = { currency, periodEnd: equity.periodEnd || null, announcedAt: equity.announcedAt || null, reportId: equity.reportId || null, threshold: params.minEquityCny };
   if (amount === null) {
+    if (equity.currencyUnverified) {
+      return { rule: rule('R05', STATUS.PENDING, Object.assign({ value: null, reason: 'source_currency_unverified' }, base)), equityCny: null, fxRate: null, fxDate: null };
+    }
     // 一点财报事实都没有（新股上市不满一个财年、或该证券根本没人任何年报）：
     // 这是"客观上不可能判断"，不是"该补没补"——不入选，也不阻断整批发布（2026-11-04）。
     const years = (facts.annual && facts.annual.years) || [];

@@ -198,6 +198,10 @@ function shiftYearsText(date, years) {
  * 同一 period_end 有多个版本时取最新公告的一条，不混用不同修订版本。
  */
 function computeTtmFromReports(reports) {
+  // 币种未核实的最新或历史输入不能被过滤后回退为旧版 TTM。
+  if ((reports || []).some(item => item && item.currencyUnverified)) {
+    return { value: null, reason: 'source_currency_unverified', evidence: null };
+  }
   const list = (reports || []).filter(item => item && item.netProfit !== null && item.netProfit !== undefined);
   if (!list.length) return { value: null, reason: 'ttm_reports_missing', evidence: null };
   const byPeriod = new Map();
@@ -405,6 +409,7 @@ function buildRuleFacts(row, ctx) {
     equity: equity ? {
       amount: equity.amount, currency: equity.currency, periodEnd: equity.periodEnd,
       announcedAt: equity.announcedAt, reportId: equity.reportId,
+      currencyUnverified: equity.currencyUnverified === true,
       availabilityBasis: equity.availabilityBasis || 'announced_at',
     } : {},
     fx: fx || {},

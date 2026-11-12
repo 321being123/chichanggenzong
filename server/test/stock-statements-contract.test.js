@@ -38,6 +38,18 @@ assert.strictEqual(field(payload, 'bs.ta').values[0].status, 'available');
 assert.strictEqual(field(payload, 'bs.ta').values[0].yoy, -1, '同比分母应使用绝对值，且允许从正数变为 0');
 assert.strictEqual(field(payload, 'bs.ta').values[0].comparison_status, 'available');
 
+// 实源反例：HK 财报 currency=USD/CNY 时金额并非年报原币，不能贴原币标签展示。
+for (const currency of ['USD', 'CNY', null]) {
+  const unverified = buildStatementPayload({ market: 'HK', type: 'balance', canonicalCode: '00005.HK',
+    rows: [row({ source_code: 'lixinger_official', currency_code: currency, bs_ta: 164219984400, bs_tl_ta_r: 0.5 })] });
+  assert.strictEqual(field(unverified, 'bs.ta').values[0].value, null);
+  assert.strictEqual(field(unverified, 'bs.ta').values[0].reason, 'source_currency_unverified');
+  assert.strictEqual(field(unverified, 'bs.tl_ta_r').values[0].value, 50, '与币种无关的比例仍可显示');
+}
+const hkdStatement = buildStatementPayload({ market: 'HK', type: 'balance', canonicalCode: '00001.HK',
+  rows: [row({ source_code: 'lixinger_official', currency_code: 'HKD', bs_ta: 100000000 })] });
+assert.strictEqual(field(hkdStatement, 'bs.ta').values[0].value, 1, '港币报表不套用非港币保护');
+
 for (const [market, statement, code, raw, expected, unit] of [
   ['CN', 'balance', 'bs.tl_ta_r', 0.5, 50, '%'],
   ['CN', 'balance', 'bs.tetoshopc_ps', 0.5, 0.5, 'CNY/股'],
@@ -182,6 +194,43 @@ assert.strictEqual(field(flowYoy, 'ps.tp').values[0].comparison_reason, 'flow_pe
     const official = (await pool.query(sql, [JSON.stringify(raw), 'lixinger_official'])).rows[0];
     assert.strictEqual(Number(official.cfs_crfrci), 999, '官方宽表不能被旧来源原始字段覆盖');
     assert.strictEqual(Number(official.bs_tetoshopc), 999);
+
+    const selection = require('../repositories/stockSelectionRepository');
+    const factSql = `WITH r AS (SELECT jsonb_build_object('ts_code',$1::text,'currency',$2::text) AS raw_payload,
+      (SELECT source_id FROM ops.data_sources WHERE source_code=$3) AS source_id),
+      f AS (SELECT 123::numeric AS numeric_value, $2::text AS currency_code)
+      SELECT ${selection.SAFE_FINANCIAL_FACT_SQL} AS value FROM r,f`;
+    for (const [code, currency, source, expected] of [
+      ['00005.HK', 'USD', 'lixinger_official', null],
+      ['00386.HK', 'CNY', 'lixinger_official', null],
+      ['00005.HK', null, 'lixinger_official', null],
+      ['00001.HK', 'HKD', 'lixinger_official', 123],
+      ['000001.SZ', 'CNY', 'lixinger_official', 123],
+      ['00005.HK', 'USD', 'tushare', 123],
+    ]) {
+      const value = (await pool.query(factSql, [code, currency, source])).rows[0].value;
+      assert.strictEqual(value === null ? null : Number(value), expected, `${code}/${currency}/${source} 选股币种保护`);
+    }
+    const selectionSql = [];
+    const tx = { query: async text => { selectionSql.push(text); return { rows: [] }; } };
+    await selection.loadUniverse({ market: 'HK', asOfDate: '2026-11-01' }, tx);
+    await selection.loadEquityFacts({ companyIds: [1], asOfDate: '2026-11-01' }, tx);
+    await selection.loadAnnualProfits({ companyIds: [1], asOfDate: '2026-11-01' }, tx);
+    await selection.loadTtmInputs({ companyIds: [1], asOfDate: '2026-11-01' }, tx);
+    assert.strictEqual(selectionSql.length, 4);
+    for (const statement of selectionSql) assert.ok(statement.includes(selection.SAFE_FINANCIAL_FACT_SQL), '所有选股事实读取均需币种保护');
+    assert.strictEqual(selectionSql[0].split(selection.SAFE_FINANCIAL_FACT_SQL).length - 1, 2, 'PB 与静态 PE 两个分母都需保护');
+    const rules = require('../domain/stockSelectionRules');
+    const equity = rules.evaluateEquity({ equity: { amount: null, currency: 'USD', currencyUnverified: true },
+      annual: { years: [] } }, rules.DEFAULT_PARAMS);
+    assert.strictEqual(equity.rule.status, 'PENDING', '来源币种未核实不能当成无财报或正常值');
+    assert.strictEqual(equity.rule.reason, 'source_currency_unverified');
+    const ttm = require('../services/stockSelectionService').computeTtmFromReports([
+      { periodEnd: '2025-12-31', netProfit: null, currencyUnverified: true },
+      { periodEnd: '2024-12-31', netProfit: 100, currency: 'HKD', periodType: 'annual' },
+    ]);
+    assert.strictEqual(ttm.value, null, 'TTM 不得跳过来源币种未知的最新报告而回退旧值');
+    assert.strictEqual(ttm.reason, 'source_currency_unverified');
   } finally {
     await pool.end();
   }

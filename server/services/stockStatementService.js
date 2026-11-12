@@ -140,12 +140,15 @@ function buildStatementPayload({ market = 'CN', type = 'balance', rows = [], ver
   const normalized = normalizeOptions(options);
   const metrics = dict.metricsByStatement(market, type);
   const currencies = [...new Set(rows.map(row => String(row.currency_code || '').toUpperCase()).filter(Boolean))];
+  const currencyUnverified = row => market === 'HK' && row.source_code === 'lixinger_official'
+    && String(row.currency_code || '').toUpperCase() !== 'HKD';
+  const hasUnverifiedCurrency = rows.some(currencyUnverified);
   const periods = rows.map(row => metadataOf(row, market));
   const coverageRows = rows.map(row => parseCoverage(row.statement_coverage)).filter(Boolean);
   const requestedMetricCodes = [...new Set(coverageRows.flatMap(item => item.requested_metric_codes || []))];
   const returnedMetricCodes = [...new Set(coverageRows.flatMap(item => item.returned_metric_codes || []))];
   const analysisVersion = statementAnalysisVersionOf({ canonicalCode, market, type, formulaVersion, rows: versionRows });
-  const fields = presentation.presentationOf(metrics, type, currencies.length === 1 ? currencies[0] : null)
+  const fields = presentation.presentationOf(metrics, type, currencies.length === 1 && !hasUnverifiedCurrency ? currencies[0] : null)
     .filter(field => rows.some(row => contract.finite(row[dict.columnOf(field.code)]) !== null)
       || requestedMetricCodes.includes(field.code)
       || (rows.some(row => row.source_code === 'tushare')
@@ -153,8 +156,11 @@ function buildStatementPayload({ market = 'CN', type = 'balance', rows = [], ver
     .map(field => ({
       ...field,
       values: rows.map((row, index) => {
-        const raw = contract.finite(row[dict.columnOf(field.code)]);
-        const state = valueStatus(raw, parseCoverage(row.statement_coverage), field.code, row.source_code);
+        const observed = contract.finite(row[dict.columnOf(field.code)]);
+        const unverified = observed !== null && currencyUnverified(row) && ['currency', 'per_share'].includes(field.measure_type);
+        const raw = unverified ? null : observed;
+        const state = unverified ? { value: null, status: contract.FIELD_STATUS.SOURCE_UNAVAILABLE, reason: 'source_currency_unverified' }
+          : valueStatus(raw, parseCoverage(row.statement_coverage), field.code, row.source_code);
         const comparison = raw === null ? { value: null, status: state.status, reason: state.reason }
           : comparisonOf({ rows, index, metricCode: dict.columnOf(field.code), rawValue: raw, statement: type, compare: normalized.compare, measureType: field.measure_type });
         return {
@@ -177,7 +183,8 @@ function buildStatementPayload({ market = 'CN', type = 'balance', rows = [], ver
     standard: dict.standardOf(market),
     formula_version: formulaVersion,
     analysis_version: analysisVersion,
-    unit_label: `原值按${currencies.length === 1 ? currencies[0] : '报告币种'}展示；金额折算为亿元，比例/每股按字段标注`,
+    unit_label: hasUnverifiedCurrency ? '来源金额币种待核实；比例等按字段标注'
+      : `原值按${currencies.length === 1 ? currencies[0] : '报告币种'}展示；金额折算为亿元，比例/每股按字段标注`,
     currency: currencies.length === 1 ? currencies[0] : null,
     currency_mixed: currencies.length > 1,
     report_ids: rows.map(row => row.report_id),

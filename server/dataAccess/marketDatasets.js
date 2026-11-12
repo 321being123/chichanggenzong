@@ -768,6 +768,15 @@ async function readFinancialReportRows({ tsCode, kinds, startDate, endDate, fsTa
     error.retryable = true;
     throw error;
   }
+  // 00005.HK（USD）及 00386.HK（CNY）实样金额与原币年报不一致；转换合同未明前不能写成原币事实。
+  if (/^\d{5}\.HK$/i.test(String(tsCode || '')) && Object.values(primary.value)
+    .flatMap(rows => Array.isArray(rows) ? rows : [])
+    .some(row => row && row.source_code === 'lixinger_official' && String(row.currency || '').toUpperCase() !== 'HKD')) {
+    const error = new Error('港股财报金额的来源币种尚未核实，保留历史数据并等待来源口径');
+    error.code = 'FINANCIAL_CURRENCY_UNVERIFIED';
+    error.retryable = false;
+    throw error;
+  }
   const hasAny = Object.values(primary.value).some(rows => Array.isArray(rows) && rows.length);
   if (!hasAny) return null;
   return primary.value;

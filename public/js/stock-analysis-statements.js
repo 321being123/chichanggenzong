@@ -63,6 +63,7 @@ function stockAnalysisStatementReason(reason) {
     source_batch_incomplete: '来源采集不完整',
     source_not_disclosed: '来源未披露',
     source_mapping_unverified: '来源字段口径尚未核实',
+    source_currency_unverified: '来源金额币种尚未核实',
     metric_not_requested: '该项目尚未采集',
     metric_missing: '暂无数据'
   };

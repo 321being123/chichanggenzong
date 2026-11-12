@@ -8,7 +8,7 @@ const { saveAnalysisResults } = require('./financialDataArchitecture');
 const statementService = require('./stockStatementService');
 const contract = require('../domain/securityAnalysisContract');
 
-const FORMULA_VERSION = 'hk-1';
+const FORMULA_VERSION = 'hk-2';
 const STATEMENT_FORMULA_VERSION = 'hk-statements-1';
 
 // 港股 HKFRS 宽表字段对照（唯一登记位置）。现金流官方只有 7 个汇总项，没有资本开支，
@@ -50,8 +50,8 @@ function statementVersionRowsOf(facts, type) {
       || Number(b.report_id) - Number(a.report_id));
 }
 
-async function readHkReportFacts(tsCode, limit = 20) {
-  const results = await hkRepository.readHkReportFacts(tsCode, limit);
+async function readHkReportFacts(tsCode, limit = 20, tx) {
+  const results = await hkRepository.readHkReportFacts(tsCode, limit, tx);
   const groups = new Map();
   results.forEach(({ kind, rows }) => {
     for (const row of rows) {
@@ -61,11 +61,14 @@ async function readHkReportFacts(tsCode, limit = 20) {
         currency: String(row.currency_code || '').trim().toUpperCase() || null,
         source_version: row.source_version || null, company_id: row.company_id,
         report_ids: [], profit: null, revenue: null, eps: null, equity: null,
-        assets: null, liabilities: null, operating: null, capex: null,
+        assets: null, liabilities: null, operating: null, capex: null, currency_unverified: false,
       };
       group.report_ids.push({ kind, report_id: row.report_id, statement_revision: row.statement_revision || null });
+      const currencyUnverified = row.source_code === 'lixinger_official'
+        && String(row.currency_code || '').trim().toUpperCase() !== 'HKD';
+      group.currency_unverified ||= currencyUnverified;
       for (const [field, names] of Object.entries(HK_FACT_COLUMNS[kind])) {
-        if (names.length) group[field] = pick(row, names);
+        if (names.length) group[field] = currencyUnverified ? null : pick(row, names);
       }
       groups.set(key, group);
     }
@@ -115,7 +118,10 @@ function buildHkAnalysis(data, options = {}) {
     && String(group.period_end).slice(4) === String(latestInterim.period_end).slice(4)
     && group.period_type === latestInterim.period_type
     && Number(String(group.period_end).slice(0, 4)) === Number(String(latestInterim.period_end).slice(0, 4)) - 1) : null;
-  const ttm = latestInterim
+  const ttmCurrencyUnverified = [latestAnnual, latestInterim, priorComparable].some(group => group && group.currency_unverified);
+  const ttm = ttmCurrencyUnverified
+    ? contract.metric(null, contract.FIELD_STATUS.SOURCE_UNAVAILABLE, 'source_currency_unverified')
+    : latestInterim
     ? contract.ttmForFiscalYear({
       annual: latestAnnual && latestAnnual.profit,
       currentCumulative: latestInterim.profit,
@@ -274,7 +280,7 @@ async function refreshHkAnalysis(tsCode, options = {}) {
   const row = await stockAnalysisRepository.readLatestSnapshot({ tsCode });
   if (row && !hasCoreData(analysis) && hasCoreData(row.payload || {})) {
     // 失败保留上次可用快照：不用不完整新结果替换完整旧结果。
-    return row.payload;
+    return safeSnapshotOf(row.payload);
   }
   await saveAnalysisResults(tsCode, Object.assign({}, analysis, {
     diagnostics: { reason: options.reason || 'manual', read_only: true, market: 'HK' },
@@ -286,11 +292,29 @@ function hasCoreData(analysis) {
   return Boolean(analysis && analysis.valuation && (analysis.valuation.market_cap != null || analysis.valuation.pe_ttm != null));
 }
 
+// 旧快照没有逐财报的来源和币种证据，无法事后识别受影响的单个指标。
+// 保留行情等无关内容，暂时屏蔽财报派生结果，直至受保护的公式重新生成快照。
+function safeSnapshotOf(analysis) {
+  if (!analysis || (analysis.display && analysis.display.formula_version === FORMULA_VERSION)) return analysis;
+  const unavailable = { value: null, status: contract.FIELD_STATUS.SOURCE_UNAVAILABLE, reason: 'source_currency_unverified' };
+  const display = { ...(analysis.display || {}), field_status: {
+    ...((analysis.display && analysis.display.field_status) || {}),
+    ttm_profit: unavailable, ten_year_stability: unavailable,
+  } };
+  const stability = { ...(analysis.stability || {}), status: contract.FIELD_STATUS.SOURCE_UNAVAILABLE,
+    covered_years: 0, profitable_each_year: null, dividend_each_year: null,
+    no_profit_years: [], no_dividend_years: [], years: [], dividend_history: [], reason: 'source_currency_unverified' };
+  const cashflow = { ...(analysis.cashflow || {}), status: contract.FIELD_STATUS.SOURCE_UNAVAILABLE,
+    latest_year: { ...((analysis.cashflow && analysis.cashflow.latest_year) || {}), operating: null, free: null },
+    average_3y: { operating: null, free: null }, average_5y: { operating: null, free: null } };
+  return { ...analysis, display, stability, cashflow };
+}
+
 // GET 只读已发布快照；主档存在但无快照由路由返回明确的资料未就绪，游客不能通过读取排队。
 async function getHkSnapshot(tsCode) {
   const row = await stockAnalysisRepository.readLatestSnapshot({ tsCode });
   if (!row) return null;
-  return Object.assign({}, row.payload, { refreshed_at: row.created_at, source_updated_at: row.created_at });
+  return Object.assign({}, safeSnapshotOf(row.payload), { refreshed_at: row.created_at, source_updated_at: row.created_at });
 }
 
 // 公开字段白名单：运维字段、诊断、内部 freshness 不进 HTML 与公开接口。
@@ -301,6 +325,7 @@ const PUBLIC_FIELDS = [
 ];
 
 function publicSnapshotOf(analysis) {
+  analysis = safeSnapshotOf(analysis);
   const out = {};
   for (const key of PUBLIC_FIELDS) {
     if (analysis[key] !== undefined) out[key] = analysis[key];

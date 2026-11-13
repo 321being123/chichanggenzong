@@ -120,7 +120,8 @@ function buildHkAnalysis(data, options = {}) {
   const latestFact = facts[0] || null;
   const latestAnnual = annual[0] || null;
   const interimFacts = incomeFacts.filter(group => !isAnnual(group));
-  const latestInterim = interimFacts[0] || null;
+  // 年报已覆盖的旧中报不能再叠加到该年报；只有晚于最近年报的累计期才能参与 TTM。
+  const latestInterim = interimFacts.find(group => !latestAnnual || group.period_end > latestAnnual.period_end) || null;
   const sameCurrency = (a, b) => a && b && a.currency && a.currency === b.currency;
   const priorComparable = latestInterim ? incomeFacts.find(group => group !== latestInterim
     && String(group.period_end).slice(4) === String(latestInterim.period_end).slice(4)
@@ -134,9 +135,11 @@ function buildHkAnalysis(data, options = {}) {
       annual: latestAnnual && latestAnnual.profit,
       currentCumulative: latestInterim.profit,
       priorComparableCumulative: priorComparable && priorComparable.profit,
-      comparable: sameCurrency(latestAnnual, latestInterim) && sameCurrency(priorComparable, latestInterim),
-      fiscalYearChanged: Boolean(latestAnnual && latestAnnual.currency && latestInterim.currency
-        && latestAnnual.currency !== latestInterim.currency),
+      comparable: sameCurrency(latestAnnual, latestInterim) && sameCurrency(priorComparable, latestInterim)
+        && priorComparable.period_end < latestAnnual.period_end,
+      fiscalYearChanged: Boolean((latestAnnual && latestAnnual.currency && latestInterim.currency
+        && latestAnnual.currency !== latestInterim.currency)
+        || (priorComparable && latestAnnual && priorComparable.period_end >= latestAnnual.period_end)),
     })
     : contract.metric(latestAnnual ? latestAnnual.profit : null,
       latestAnnual ? contract.FIELD_STATUS.AVAILABLE : contract.FIELD_STATUS.INSUFFICIENT_HISTORY, 'no_annual_report');
@@ -189,7 +192,11 @@ function buildHkAnalysis(data, options = {}) {
   const version = contract.analysisVersionOf({
     canonicalCode: options.tsCode, formulaVersion: FORMULA_VERSION,
     inputs: {
-      trade_date: latest.trade_date || '', reports: facts.slice(0, 3).map(f => f.report_ids.map(r => r.report_id).join(':')).join(','),
+      trade_date: latest.trade_date || '', reports: JSON.stringify(facts.map(f => ({
+        period_end: f.period_end, period_type: f.period_type, currency: f.currency,
+        source_version: f.source_version, currency_unverified: f.currency_unverified,
+        report_ids: f.report_ids,
+      }))),
       dividends: dividends.length,
     },
   });

@@ -50,6 +50,26 @@ async function main() {
     { ...separated[0], period_end: '2025-06-30', period_type: 'semiannual', profit: 30 },
   ] }, { tsCode: '00005.HK' });
   assert.strictEqual(comparable.display.field_status.ttm_profit.value, 120, '半年报不得当成年报，TTM 使用可比三期');
+  const revisedHistory = hk.buildHkAnalysis({ reportFacts: [
+    { ...separated[0], period_end: '2026-06-30', period_type: 'semiannual', profit: 50 },
+    ...separated,
+    { ...separated[0], period_end: '2025-06-30', period_type: 'semiannual', profit: 30,
+      report_ids: [{ kind: 'income', report_id: 1, statement_revision: 'later' }] },
+  ] }, { tsCode: '00005.HK' });
+  assert.notStrictEqual(comparable.display.analysis_version, revisedHistory.display.analysis_version,
+    '所用历史报告的宽表修订应改变概览版本');
+  const alreadyCovered = hk.buildHkAnalysis({ reportFacts: [
+    ...separated,
+    { ...separated[0], period_end: '2025-06-30', period_type: 'semiannual', profit: 50 },
+    { ...separated[0], period_end: '2024-06-30', period_type: 'semiannual', profit: 30 },
+  ] }, { tsCode: '00005.HK' });
+  assert.strictEqual(alreadyCovered.display.field_status.ttm_profit.value, 100, '已被年报覆盖的半年报不得重复叠加');
+  const wrongFiscalYear = hk.buildHkAnalysis({ reportFacts: [
+    { ...separated[0], period_end: '2026-06-30', period_type: 'semiannual', profit: 50 },
+    { ...separated[0], period_end: '2025-06-30', period_type: 'semiannual', profit: 30 },
+    { ...separated[0], period_end: '2025-03-31', period_type: 'annual', profit: 100 },
+  ] }, { tsCode: '00005.HK' });
+  assert.strictEqual(wrongFiscalYear.display.field_status.ttm_profit.value, null, '去年同期晚于所选年报不能拼接 TTM');
   base.statement_coverage = null;
 
   base.currency_code = 'HKD';

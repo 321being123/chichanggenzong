@@ -102,8 +102,9 @@ function metricsByStatement(market, statement) {
 }
 
 // 官方要求 "q.<表>.<字段>.t"：q = 季度粒度，t = 报告期累计值（与既有落库口径一致）。
-function requestCodeOf(metricCode) {
-  return `q.${metricCode}.t`;
+function requestCodeOf(metricCode, expression = 't') {
+  if (!['t', 't_o'].includes(expression)) throw new Error(`不支持的财报表达式：${expression}`);
+  return `q.${metricCode}.${expression}`;
 }
 
 // 单只股票一次最多 128 个指标，超出必须分批；返回每批的官方请求串。
@@ -114,8 +115,8 @@ function metricsOfType(market, type) {
   return metrics;
 }
 
-function requestBatchesOf(market, size = MAX_METRICS_PER_REQUEST, type = 'non_financial') {
-  const codes = metricsOfType(market, type).map(item => requestCodeOf(item.code));
+function requestBatchesOf(market, size = MAX_METRICS_PER_REQUEST, type = 'non_financial', expression = 't') {
+  const codes = metricsOfType(market, type).map(item => requestCodeOf(item.code, expression));
   const limit = Math.max(Number(size) || MAX_METRICS_PER_REQUEST, 1);
   const batches = [];
   for (let index = 0; index < codes.length; index += limit) {

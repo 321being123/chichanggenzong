@@ -441,13 +441,35 @@ function evaluateAnnualAnomaly(annual, params = DEFAULT_PARAMS) {
     }
     return Object.assign(result, { status: STATUS.PENDING, reason: 'insufficient_fiscal_history', missingYears: missing.sort((a, b) => a - b), profitSum: null, dividendSum: null });
   }
+  const profitCurrencies = [current, ...needed.map(y => findYear(years, y))]
+    .filter(row => row && num(row.profit) !== null)
+    .map(row => row.profitCurrency ? String(row.profitCurrency).toUpperCase() : null);
+  const knownCurrencies = profitCurrencies.filter(Boolean);
+  if ((annual.requireProfitCurrency && (profitCurrencies.length !== needed.length + 1
+      || profitCurrencies.some(value => !value || !/^[A-Z]{3}$/.test(value))))
+      || (knownCurrencies.length && knownCurrencies.length !== profitCurrencies.length)) {
+    return Object.assign(result, { status: STATUS.PENDING, reason: 'annual_profit_currency_unknown',
+      profitSum: null, dividendSum: null, profitCurrencies });
+  }
+  if (new Set(knownCurrencies).size > 1) {
+    return Object.assign(result, { status: STATUS.PENDING, reason: 'annual_profit_currency_mismatch',
+      profitSum: null, dividendSum: null, profitCurrencies });
+  }
   const profitSum = needed.reduce((sum, y) => sum + (num(findYear(years, y).profit) || 0), 0);
   // 分红完整性独立判断：任一年 dividendKnown 不为真，整段分红比较不成立。
   const dividendUnknownYears = [latestYear, ...needed].filter(y => {
     const row = findYear(years, y);
     return !row || row.dividendKnown !== true || num(row.dividend) === null;
   }).sort((a, b) => a - b);
-  const dividendComparable = dividendUnknownYears.length === 0;
+  const dividendRows = [current, ...needed.map(y => findYear(years, y))];
+  const dividendCurrencies = dividendRows.flatMap(row => row && Array.isArray(row.dividendCurrencies) ? row.dividendCurrencies : [])
+    .map(value => String(value).toUpperCase());
+  const dividendCurrencyUnknown = annual.requireDividendCurrency && dividendRows.some(row => row &&
+    (row.dividendCurrencyUnknown || (num(row.dividend) !== null && num(row.dividend) !== 0
+      && (!Array.isArray(row.dividendCurrencies) || !row.dividendCurrencies.length))));
+  const dividendCurrencyMismatch = dividendCurrencies.some(value => !/^[A-Z]{3}$/.test(value))
+    || new Set(dividendCurrencies).size > 1;
+  const dividendComparable = dividendUnknownYears.length === 0 && !dividendCurrencyUnknown && !dividendCurrencyMismatch;
   const dividendSum = dividendComparable ? needed.reduce((sum, y) => sum + (num(findYear(years, y).dividend) || 0), 0) : null;
   if (result.profitY === null && result.dividendY === null) {
     return Object.assign(result, { status: STATUS.PENDING, reason: 'annual_facts_unavailable', profitSum, dividendSum });
@@ -463,7 +485,8 @@ function evaluateAnnualAnomaly(annual, params = DEFAULT_PARAMS) {
     : (dividendComparable ? STATUS.PASS : STATUS.PENDING);
   const reason = excluded
     ? (profitExceeded && dividendExceeded ? 'profit_and_dividend_exceed_decade' : profitExceeded ? 'profit_exceed_decade' : 'dividend_exceed_decade')
-    : (dividendComparable ? null : 'dividend_history_unknown');
+    : (dividendComparable ? null : dividendCurrencyUnknown ? 'annual_dividend_currency_unknown'
+      : dividendCurrencyMismatch ? 'annual_dividend_currency_mismatch' : 'dividend_history_unknown');
   return Object.assign(result, {
     status,
     reason,

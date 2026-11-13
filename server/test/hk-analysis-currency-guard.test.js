@@ -24,6 +24,34 @@ async function main() {
   assert.strictEqual(analysis.cashflow.latest_year.operating, null);
   assert.strictEqual(analysis.display.statement_analysis_versions.income != null, true);
 
+  base.statement_coverage = { value_basis: 'source_original_t_o' };
+  const original = await hk.readHkReportFacts('00005.HK', 20, tx);
+  assert.strictEqual(original[0].profit, 100, '经标记的原币原始报告可参与概览');
+  assert.strictEqual(original[0].operating, 40);
+  const separated = [
+    { ...original[0], source_version: 'income', report_ids: [{ kind: 'income', report_id: 1 }], operating: null },
+    { ...original[0], source_version: 'balance', report_ids: [{ kind: 'balance', report_id: 2 }], profit: null, operating: null },
+    { ...original[0], source_version: 'cashflow', report_ids: [{ kind: 'cashflow', report_id: 3 }], profit: null },
+  ];
+  const separatedAnalysis = hk.buildHkAnalysis({ reportFacts: separated }, { tsCode: '00005.HK' });
+  assert.strictEqual(separatedAnalysis.display.field_status.ttm_profit.value, 100);
+  assert.strictEqual(separatedAnalysis.display.field_status.ttm_profit.currency, 'USD');
+  assert.strictEqual(separatedAnalysis.cashflow.latest_year.operating, 40, '现金流应读取独立版本的现金流报告');
+  assert.strictEqual(separatedAnalysis.cashflow.latest_year.currency, 'USD');
+  const mixed = hk.buildHkAnalysis({ reportFacts: [
+    { ...separated[0], period_end: '2026-06-30', period_type: 'semiannual', currency: 'CNY', profit: 50 },
+    ...separated,
+    { ...separated[0], period_end: '2025-06-30', period_type: 'semiannual', currency: 'USD', profit: 30 },
+  ] }, { tsCode: '00005.HK' });
+  assert.strictEqual(mixed.display.field_status.ttm_profit.value, null, '不同币种不得合成 TTM');
+  const comparable = hk.buildHkAnalysis({ reportFacts: [
+    { ...separated[0], period_end: '2026-06-30', period_type: 'semiannual', profit: 50 },
+    ...separated,
+    { ...separated[0], period_end: '2025-06-30', period_type: 'semiannual', profit: 30 },
+  ] }, { tsCode: '00005.HK' });
+  assert.strictEqual(comparable.display.field_status.ttm_profit.value, 120, '半年报不得当成年报，TTM 使用可比三期');
+  base.statement_coverage = null;
+
   base.currency_code = 'HKD';
   const verified = await hk.readHkReportFacts('00005.HK', 20, tx);
   assert.strictEqual(verified[0].profit, 100);
@@ -52,7 +80,7 @@ async function main() {
     assert.strictEqual(snapshot.valuation.pe_ttm, 12);
     assert.strictEqual(old.cashflow.latest_year.operating, 40, '不能修改已保存的快照对象');
     assert.strictEqual(hk.publicSnapshotOf(old).cashflow.latest_year.operating, null);
-    assert.strictEqual(hk.publicSnapshotOf(analysis).display.formula_version, 'hk-2');
+    assert.strictEqual(hk.publicSnapshotOf(analysis).display.formula_version, 'hk-3');
     assert.strictEqual((await hk.refreshHkAnalysis('00005.HK')).cashflow.latest_year.operating, null);
   } finally {
     stockRepository.readLatestSnapshot = originalRead;

@@ -7,6 +7,7 @@
 const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
+const vm = require('vm');
 
 const root = path.join(__dirname, '..', '..');
 let pass = 0, fail = 0;
@@ -55,6 +56,21 @@ test('隔离失败时向控制台记录并给出可见占位，不静默留白',
   assert.ok(/console\.error/.test(renderBody), '渲染失败必须记录到控制台，便于定位');
   assert.ok(/该区块数据暂时无法展示/.test(renderBody), '失败区块应显示占位说明，不得空白');
   assert.ok(/runSection\s*=\s*function|function runSection/.test(renderBody), '应存在统一的 runSection 隔离器');
+});
+
+test('现金流按报告币种展示金额', () => {
+  const fn = name => {
+    const start = stockJs.indexOf('function ' + name + '(');
+    assert.ok(start >= 0, name);
+    const end = stockJs.indexOf('\nfunction ', start + 10);
+    return stockJs.slice(start, end < 0 ? undefined : end);
+  };
+  const element = {};
+  const context = { document: { getElementById: () => element }, window: {},
+    escapeHtml: value => String(value), analysisHelp: label => label, stockAnalysisLabelHelp: () => '' };
+  vm.runInNewContext(['stockAnalysisNumber', 'stockAnalysisMoney', 'stockAnalysisMetric', 'stockAnalysisRenderCashflow'].map(fn).join('\n') +
+    "\nstockAnalysisRenderCashflow({latest_year:{operating:21102000000,currency:'USD',end_date:'2025-12-31'}});", context);
+  assert.match(element.innerHTML, /211\.02亿美元/);
 });
 
 test('股票深链（?main=stock-analysis&code=）会触发分析', () => {

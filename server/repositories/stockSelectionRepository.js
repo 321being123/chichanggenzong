@@ -34,10 +34,12 @@ const MARKET_CONFIG = Object.freeze({
 // 风险名称：目标日已知的 ST/*ST、退市整理与明确退市风险。停牌另由停牌表判定。
 const RISK_NAME_SQL = `(i.name ~ '(^|\\s|\\*)ST' OR i.name LIKE '%退市%' OR i.name LIKE '%退' OR i.name ~* '(delist|suspended)')`;
 
-// 港股官方来源返回的非港币报告金额与原币年报不一致；只屏蔽不可信数值，保留报告身份与待补状态。
+// 港股旧 .t 非原币；只接受有明确币种的 HKD 值或标记为 .t_o 原始值的报告。
 // ts_code 来自原始报告，不按公司是否同时发行 A/H 股猜测来源市场。
 const UNVERIFIED_FINANCIAL_CURRENCY_SQL = `upper(COALESCE(r.raw_payload->>'ts_code','')) LIKE '%.HK'
-  AND upper(COALESCE(r.raw_payload->>'currency','')) <> 'HKD'
+  AND (upper(COALESCE(r.raw_payload->>'currency','')) !~ '^[A-Z]{3}$'
+       OR (upper(COALESCE(r.raw_payload->>'currency','')) <> 'HKD'
+           AND COALESCE(r.raw_payload->'__statement_coverage'->>'value_basis','') <> 'source_original_t_o'))
   AND r.source_id = (SELECT source_id FROM ops.data_sources WHERE source_code='lixinger_official')`;
 const SAFE_FINANCIAL_FACT_SQL = `CASE WHEN ${UNVERIFIED_FINANCIAL_CURRENCY_SQL} THEN NULL ELSE f.numeric_value END`;
 
@@ -64,8 +66,8 @@ async function loadUniverse({ market, asOfDate, availableBefore = null }, tx) {
            -- 这种情况宁可留 NULL 让规则判"待补/不可评估"，也不生成一个错误量纲的 PB。
            COALESCE(v.pb, CASE WHEN v.total_market_cap IS NOT NULL
                                 AND eq.equity IS NOT NULL AND eq.equity <> 0
-                                AND (eq.equity_currency IS NULL OR v.currency_code IS NULL
-                                     OR upper(eq.equity_currency) = upper(v.currency_code))
+                                AND eq.equity_currency IS NOT NULL AND v.currency_code IS NOT NULL
+                                AND upper(eq.equity_currency) = upper(v.currency_code)
                                THEN v.total_market_cap / eq.equity END) AS pb,
            eq.equity_currency,
            -- 官方估值接口不提供静态市盈率（实测 metricsList 报 (pe,pe_static) are invalid price metrics），
@@ -74,8 +76,8 @@ async function loadUniverse({ market, asOfDate, availableBefore = null }, tx) {
            -- 2026-11-05 起选股排名与页面展示统一使用 pe_ttm（滚动十二个月），静态 PE 只保留作排查参考。
            COALESCE(v.pe_static, CASE WHEN v.total_market_cap IS NOT NULL
                                         AND np.net_profit IS NOT NULL AND np.net_profit <> 0
-                                        AND (np.net_profit_currency IS NULL OR v.currency_code IS NULL
-                                             OR upper(np.net_profit_currency) = upper(v.currency_code))
+                                        AND np.net_profit_currency IS NOT NULL AND v.currency_code IS NOT NULL
+                                        AND upper(np.net_profit_currency) = upper(v.currency_code)
                                        THEN v.total_market_cap / np.net_profit END) AS pe_static,
            v.pe_ttm, v.dividend_yield_ttm, v.total_market_cap, v.currency_code AS valuation_currency,
            v.trade_date::text AS valuation_date,
@@ -777,6 +779,10 @@ async function loadAnnualDividends({ companyIds, asOfDate, availableBefore, mark
              date_part('year', ae.period_end)::int AS fiscal_year,
              ci.instrument_id,
              SUM(CASE WHEN ${implemented} THEN COALESCE(${amountExpr}, 0) ELSE 0 END) AS implemented_cash,
+             STRING_AGG(DISTINCT NULLIF(upper(trim(ca.currency_code)), ''), ',')
+               FILTER (WHERE ${implemented} AND COALESCE(${amountExpr}, 0) <> 0) AS dividend_currencies,
+             COUNT(ca.action_id) FILTER (WHERE ${implemented} AND COALESCE(${amountExpr}, 0) <> 0
+               AND COALESCE(trim(ca.currency_code), '') = '')::int AS dividend_currency_unknown_count,
              COUNT(ca.action_id) FILTER (WHERE ${implemented})::int AS implemented_count,
              -- 纯送转方案（只有送股/转增比例、没有一分现金）的现金分红就是 0，不算"金额缺失"：
              -- 2026-11-08 生产实测全库 804 条「实施但现金全空」里 800 条带送转比例
@@ -826,6 +832,8 @@ async function loadAnnualDividends({ companyIds, asOfDate, availableBefore, mark
     )
     SELECT company_id, fiscal_year,
            MAX(implemented_cash) AS implemented_cash,
+           STRING_AGG(DISTINCT dividend_currencies, ',') AS dividend_currencies,
+           SUM(dividend_currency_unknown_count)::int AS dividend_currency_unknown_count,
            SUM(implemented_count)::int AS implemented_count,
            SUM(amount_missing_count)::int AS amount_missing_count,
            SUM(amount_unknown_count)::int AS amount_unknown_count,
@@ -877,6 +885,8 @@ async function loadAnnualDividends({ companyIds, asOfDate, availableBefore, mark
       dividend: known ? Number(row.implemented_cash || 0) : null,
       eventCount: implementedCount + notImplemented,
       dividendKnown: known,
+      dividendCurrencies: [...new Set(String(row.dividend_currencies || '').split(',').filter(Boolean))],
+      dividendCurrencyUnknown: Number(row.dividend_currency_unknown_count || 0) > 0,
       // 留证：港股按每股现金、A 股按总额；同一公司内部同口径比较，不跨市场混用。
       amountBasis: perShareBasis ? 'per_share' : 'total_amount',
       dividendBasis: knownFromImplemented ? 'annual_implemented_amount'

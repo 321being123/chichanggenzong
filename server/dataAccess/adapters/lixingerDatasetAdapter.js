@@ -88,10 +88,10 @@ function numberOrNull(value) {
 }
 
 // 按已核实同口径的候选顺序取第一个非空指标值，不得把普通股专属字段当归母合计。
-function pickFirstMetric(flat, candidates) {
+function pickFirstMetric(flat, candidates, expression = 't') {
   const list = Array.isArray(candidates) ? candidates : [candidates];
   for (const candidate of list) {
-    const value = numberOrNull((flat || {})[`${candidate}.t`]);
+    const value = numberOrNull((flat || {})[`${candidate}.${expression}`]);
     if (value !== null) return value;
   }
   return null;
@@ -531,6 +531,8 @@ async function resolveFinancialReports({ tsCode, startDate, endDate, kinds = ['i
   if (!code || !start || !end) return null;
   const hk = isHkCode(tsCode);
   const market = hk ? 'HK' : 'CN';
+  // 港股 .t 会被来源换算；.t_o 为官方报告原始值。缺失时不得回退 .t 冒充原币。
+  const expression = hk ? 't_o' : 't';
   // 财报类型决定端点与指标集；未识别或缺失时拒绝请求，不猜成金融/非金融口径。
   const requestedType = String((options || {}).fsTableType || '');
   const allowedTypes = hk ? HK_FINANCIAL_TABLE_TYPES : new Set(['bank', 'insurance', 'security', 'other_financial']);
@@ -557,22 +559,22 @@ async function resolveFinancialReports({ tsCode, startDate, endDate, kinds = ['i
     for (const base of Object.values(mapping[kind] || {})) {
       // 映射值可以是「候选字段数组」（见 REPORT_METRICS.income.n_income_attr_p），
       // 数组里的每个候选都要请求，取值时再按顺序选第一个有值的。
-      if (Array.isArray(base)) base.forEach(item => metrics.push(`q.${item}.t`));
-      else metrics.push(`q.${base}.t`);
+      if (Array.isArray(base)) base.forEach(item => metrics.push(reportMetrics.requestCodeOf(item, expression)));
+      else metrics.push(reportMetrics.requestCodeOf(base, expression));
     }
   }
   // 已验证的普通股专属科目仍可展示，但不得写成归母合计标准事实。
-  if (financialTable && kinds.includes('income') && typeCodes.has('ps.npatoshopc')) metrics.push('q.ps.npatoshopc.t');
-  if (financialTable && kinds.includes('balance') && typeCodes.has('bs.tetoshopc')) metrics.push('q.bs.tetoshopc.t');
+  if (financialTable && kinds.includes('income') && typeCodes.has('ps.npatoshopc')) metrics.push(reportMetrics.requestCodeOf('ps.npatoshopc', expression));
+  if (financialTable && kinds.includes('balance') && typeCodes.has('bs.tetoshopc')) metrics.push(reportMetrics.requestCodeOf('bs.tetoshopc', expression));
   if (!metrics.length) return null;
   const endpoint = `${market.toLowerCase()}/company/fs/${tableType}`;
   // 三表全量：官方同一接口按指标点菜，单只股票一次最多 128 个指标，
   // 因此除标准 17 项外，再按字典（A股 CAS / 港股 HKFRS 各自一套）分批发全量科目。
   // 两套准则科目不同，字典按市场取，禁止互相套用。
   const standardCodes = new Set(metrics);
-  const extraBatches = reportMetrics.requestBatchesOf(market, undefined, tableType)
+  const extraBatches = reportMetrics.requestBatchesOf(market, undefined, tableType, expression)
     .map(batch => batch.filter(code => !standardCodes.has(code)
-      && kinds.includes(reportMetrics.statementOfMetricKey(code.slice(2, -2)))))
+      && kinds.includes(reportMetrics.statementOfMetricKey(code.replace(/^q\./, '').replace(/\.t(?:_o)?$/, '')))))
     .filter(batch => batch.length);
   const merged = new Map();
   const batches = [metrics, ...extraBatches];
@@ -596,7 +598,7 @@ async function resolveFinancialReports({ tsCode, startDate, endDate, kinds = ['i
   }
   const rows = [...merged.values()];
   const requestedMetricCodes = [...new Set([...metrics, ...extraBatches.flat()]
-    .map(code => String(code).replace(/^q\./, '').replace(/\.t$/, '')))]
+    .map(code => String(code).replace(/^q\./, '').replace(/\.t(?:_o)?$/, '')))]
     .filter(code => /^(bs|ps|cfs)\.[a-z0-9_]+$/.test(code));
   const out = { income: [], balance: [], cashflow: [], indicator: [] };
   for (const { item, batches: returnedBatches } of rows) {
@@ -605,7 +607,8 @@ async function resolveFinancialReports({ tsCode, startDate, endDate, kinds = ['i
     // 只收 bs/ps/cfs（m.* 是衍生指标，由三表算得，不入库）。
     const statementMetrics = {};
     for (const [key, value] of Object.entries(flat)) {
-      const match = /^((?:bs|ps|cfs)\.[a-z0-9_]+)\.t$/.exec(key);
+      const match = /^((?:bs|ps|cfs)\.[a-z0-9_]+)\.(t|t_o)$/.exec(key);
+      if (match && match[2] !== expression) continue;
       if (!match) continue;
       if (value === null || value === undefined || value === '') continue;
       statementMetrics[match[1]] = value;
@@ -630,6 +633,7 @@ async function resolveFinancialReports({ tsCode, startDate, endDate, kinds = ['i
         market,
         fs_table_type: tableType,
         fs_table_type_evidence: options.fsTableTypeEvidence || null,
+        value_basis: hk ? 'source_original_t_o' : 'source_t',
         requested_metric_codes: requestedMetricCodes,
         returned_metric_codes: Object.keys(statementMetrics),
         requested_batch_count: batches.length,
@@ -649,7 +653,7 @@ async function resolveFinancialReports({ tsCode, startDate, endDate, kinds = ['i
       let filled = 0;
       for (const [field, official] of Object.entries(mapping[kind] || {})) {
         // 候选字段按顺序取第一个非空值；全空才是真的没有这个指标。
-        const raw = pickFirstMetric(flat, official);
+        const raw = pickFirstMetric(flat, official, expression);
         const value = raw !== null && PERCENT_FIELDS.has(field) ? raw * 100 : raw;
         row[field] = value;
         if (value !== null) filled += 1;

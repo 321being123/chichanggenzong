@@ -114,6 +114,12 @@ for (const name of rangeFunctions) {
       adapter.resolveFinancialReports = async () => ({ income: [{ source_code: 'lixinger_official', currency: 'HKD', __statement_coverage: { complete: true } }] });
       assert.strictEqual((await datasets.readFinancialReportRows({ tsCode: '00001.HK', kinds: ['income'], fsTableType: 'non_financial',
         startDate: '2024-01-01', endDate: '2025-12-31' })).income.length, 1);
+      adapter.resolveFinancialReports = async () => ({ income: [{ source_code: 'lixinger_official', currency: 'USD', __statement_coverage: { complete: true, value_basis: 'source_original_t_o' } }] });
+      assert.strictEqual((await datasets.readFinancialReportRows({ tsCode: '00005.HK', kinds: ['income'], fsTableType: 'bank',
+        startDate: '2024-01-01', endDate: '2025-12-31' })).income.length, 1, '经标记的原币原始值可以入库');
+      adapter.resolveFinancialReports = async () => ({ income: [{ source_code: 'lixinger_official', currency: null, __statement_coverage: { complete: true, value_basis: 'source_original_t_o' } }] });
+      await assert.rejects(() => datasets.readFinancialReportRows({ tsCode: '00005.HK', kinds: ['income'], fsTableType: 'bank',
+        startDate: '2024-01-01', endDate: '2025-12-31' }), error => error.code === 'FINANCIAL_CURRENCY_UNVERIFIED');
     } finally { adapter.resolveFinancialReports = originalResolve; }
 
     console.log('lixinger-range-chunking：官方区间上限 10 年，适配层已分段并合并，通过');

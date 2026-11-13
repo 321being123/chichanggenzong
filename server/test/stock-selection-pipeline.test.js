@@ -256,7 +256,17 @@ async function main() {
       const rows = beforeDividend.get(String(firstCompany)) || [];
       assert.ok(rows.length >= 11, '11 个财年都应有可见的分红记录');
       rows.forEach(row => assert.strictEqual(row.dividendKnown, true, '有记录的年必须标 dividendKnown'));
+      assert.deepStrictEqual(rows.find(row => row.year === 2017).dividendCurrencies, ['CNY']);
     });
+
+    await pool.query(`UPDATE fundamental.corporate_actions SET currency_code='' WHERE instrument_id=$1 AND fiscal_period_end='2017-12-31'`, [firstInstrument]);
+    const missingCurrency = await repo.loadAnnualDividends({ companyIds: [firstCompany], asOfDate: AS_OF });
+    record('年度非零分红缺币种必须保留未知证据', () => {
+      const row = (missingCurrency.get(String(firstCompany)) || []).find(item => item.year === 2017);
+      assert.strictEqual(row.dividendCurrencyUnknown, true);
+      assert.deepStrictEqual(row.dividendCurrencies, []);
+    });
+    await pool.query(`UPDATE fundamental.corporate_actions SET currency_code='CNY' WHERE instrument_id=$1 AND fiscal_period_end='2017-12-31'`, [firstInstrument]);
 
     // 把最新财年的分红公告日推到目标日之后：旧季度不能再读到它。
     await pool.query(

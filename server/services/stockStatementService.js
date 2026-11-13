@@ -154,8 +154,13 @@ function buildStatementPayload({ market = 'CN', type = 'balance', rows = [], ver
   }
   const metrics = [...byCode.values()];
   const currencies = [...new Set(rows.map(row => String(row.currency_code || '').toUpperCase()).filter(Boolean))];
-  const currencyUnverified = row => market === 'HK' && row.source_code === 'lixinger_official'
-    && String(row.currency_code || '').toUpperCase() !== 'HKD';
+  const currencyUnverified = row => {
+    if (market !== 'HK' || row.source_code !== 'lixinger_official') return false;
+    const currency = String(row.currency_code || '').trim().toUpperCase();
+    const coverage = parseCoverage(row.statement_coverage);
+    return !/^[A-Z]{3}$/.test(currency) || (currency !== 'HKD'
+      && !(coverage && coverage.value_basis === 'source_original_t_o'));
+  };
   const hasUnverifiedCurrency = rows.some(currencyUnverified);
   const periods = rows.map(row => metadataOf(row, market));
   const coverageRows = rows.map(row => parseCoverage(row.statement_coverage)).filter(Boolean);

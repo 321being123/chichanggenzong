@@ -49,6 +49,15 @@ for (const currency of ['USD', 'CNY', null]) {
 const hkdStatement = buildStatementPayload({ market: 'HK', type: 'balance', canonicalCode: '00001.HK',
   rows: [row({ source_code: 'lixinger_official', currency_code: 'HKD', bs_ta: 100000000 })] });
 assert.strictEqual(field(hkdStatement, 'bs.ta').values[0].value, 1, '港币报表不套用非港币保护');
+const originalStatement = buildStatementPayload({ market: 'HK', type: 'balance', canonicalCode: '00005.HK',
+  rows: [row({ source_code: 'lixinger_official', currency_code: 'USD', bs_ta: 3233034000000,
+    statement_coverage: { value_basis: 'source_original_t_o' } })] });
+assert.strictEqual(field(originalStatement, 'bs.ta').values[0].value, 32330.34);
+assert.strictEqual(field(originalStatement, 'bs.ta').unit, 'USD·亿元');
+const noCurrency = buildStatementPayload({ market: 'HK', type: 'balance', canonicalCode: '00005.HK',
+  rows: [row({ source_code: 'lixinger_official', currency_code: null, bs_ta: 100000000,
+    statement_coverage: { value_basis: 'source_original_t_o' } })] });
+assert.strictEqual(field(noCurrency, 'bs.ta').values[0].value, null, '原始值缺少币种仍不可展示金额');
 
 for (const [market, statement, code, raw, expected, unit] of [
   ['CN', 'balance', 'bs.tl_ta_r', 0.5, 50, '%'],
@@ -201,19 +210,23 @@ assert.strictEqual(field(flowYoy, 'ps.tp').values[0].comparison_reason, 'flow_pe
     assert.strictEqual(Number(official.ps_ncadarl), 999, '正确来源的毁损报废损失仍可读取');
 
     const selection = require('../repositories/stockSelectionRepository');
-    const factSql = `WITH r AS (SELECT jsonb_build_object('ts_code',$1::text,'currency',$2::text) AS raw_payload,
+    const factSql = `WITH r AS (SELECT jsonb_build_object('ts_code',$1::text,'currency',$2::text,
+      '__statement_coverage',jsonb_build_object('value_basis',$4::text)) AS raw_payload,
       (SELECT source_id FROM ops.data_sources WHERE source_code=$3) AS source_id),
       f AS (SELECT 123::numeric AS numeric_value, $2::text AS currency_code)
       SELECT ${selection.SAFE_FINANCIAL_FACT_SQL} AS value FROM r,f`;
-    for (const [code, currency, source, expected] of [
-      ['00005.HK', 'USD', 'lixinger_official', null],
-      ['00386.HK', 'CNY', 'lixinger_official', null],
-      ['00005.HK', null, 'lixinger_official', null],
-      ['00001.HK', 'HKD', 'lixinger_official', 123],
-      ['000001.SZ', 'CNY', 'lixinger_official', 123],
-      ['00005.HK', 'USD', 'tushare', 123],
+    for (const [code, currency, source, expected, basis] of [
+      ['00005.HK', 'USD', 'lixinger_official', null, null],
+      ['00386.HK', 'CNY', 'lixinger_official', null, null],
+      ['00005.HK', null, 'lixinger_official', null, null],
+      ['00001.HK', 'HKD', 'lixinger_official', 123, null],
+      ['000001.SZ', 'CNY', 'lixinger_official', 123, null],
+      ['00005.HK', 'USD', 'tushare', 123, null],
+      ['00005.HK', 'USD', 'lixinger_official', 123, 'source_original_t_o'],
+      ['00386.HK', 'CNY', 'lixinger_official', 123, 'source_original_t_o'],
+      ['00005.HK', null, 'lixinger_official', null, 'source_original_t_o'],
     ]) {
-      const value = (await pool.query(factSql, [code, currency, source])).rows[0].value;
+      const value = (await pool.query(factSql, [code, currency, source, basis])).rows[0].value;
       assert.strictEqual(value === null ? null : Number(value), expected, `${code}/${currency}/${source} 选股币种保护`);
     }
     const selectionSql = [];
@@ -236,6 +249,32 @@ assert.strictEqual(field(flowYoy, 'ps.tp').values[0].comparison_reason, 'flow_pe
     ]);
     assert.strictEqual(ttm.value, null, 'TTM 不得跳过来源币种未知的最新报告而回退旧值');
     assert.strictEqual(ttm.reason, 'source_currency_unverified');
+    const stockSelectionService = require('../services/stockSelectionService');
+    const unknownTtm = stockSelectionService.computeTtmFromReports([
+      { periodEnd: '2026-06-30', periodType: 'semiannual', netProfit: 60, currency: 'CNY' },
+      { periodEnd: '2025-12-31', periodType: 'annual', netProfit: 100, currency: null },
+      { periodEnd: '2025-06-30', periodType: 'semiannual', netProfit: 40, currency: 'CNY' },
+    ]);
+    assert.strictEqual(unknownTtm.reason, 'ttm_currency_unknown');
+    const profits = Array.from({ length: 11 }, (_, index) => ({ year: 2015 + index, profit: 100,
+      currency: index === 0 ? 'HKD' : 'CNY' }));
+    const annual = stockSelectionService.annualFactsOf(profits, [], '00386.HK', null, '2000-01-01');
+    const anomaly = rules.evaluateAnnualAnomaly({ ...annual, market: 'HK' });
+    assert.strictEqual(anomaly.status, rules.STATUS.PENDING);
+    assert.strictEqual(anomaly.reason, 'annual_profit_currency_mismatch', '跨币种年度利润不能直接求和');
+    const unknownAnnual = stockSelectionService.annualFactsOf(profits.map(item => ({ ...item, currency: null })), [], '00386.HK', null, '2000-01-01');
+    assert.strictEqual(rules.evaluateAnnualAnomaly({ ...unknownAnnual, market: 'HK' }).reason, 'annual_profit_currency_unknown');
+    const sameProfits = profits.map(item => ({ ...item, currency: 'CNY' }));
+    const dividends = sameProfits.map((item, index) => ({ year: item.year, dividend: 1, dividendKnown: true,
+      dividendCurrencies: [index === 0 ? 'HKD' : 'CNY'], dividendCurrencyUnknown: false }));
+    const mixedDividends = stockSelectionService.annualFactsOf(sameProfits, dividends, '00386.HK', null, '2000-01-01');
+    assert.strictEqual(rules.evaluateAnnualAnomaly({ ...mixedDividends, market: 'HK' }).reason, 'annual_dividend_currency_mismatch');
+    dividends[0].dividendCurrencies = [];
+    const unknownDividends = stockSelectionService.annualFactsOf(sameProfits, dividends, '00386.HK', null, '2000-01-01');
+    assert.strictEqual(rules.evaluateAnnualAnomaly({ ...unknownDividends, market: 'HK' }).reason, 'annual_dividend_currency_unknown');
+    dividends[0].dividend = 0;
+    const zeroDividend = stockSelectionService.annualFactsOf(sameProfits, dividends, '00386.HK', null, '2000-01-01');
+    assert.strictEqual(rules.evaluateAnnualAnomaly({ ...zeroDividend, market: 'HK' }).status, rules.STATUS.PASS, '零分红不需要币种换算');
   } finally {
     await pool.end();
   }

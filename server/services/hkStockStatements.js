@@ -6,7 +6,7 @@ const dict = require('../dataAccess/lixingerReportMetrics');
 const contract = require('../domain/securityAnalysisContract');
 const statementService = require('./stockStatementService');
 
-const FORMULA_VERSION = 'hk-statements-2';
+const FORMULA_VERSION = 'hk-statements-3';
 const MIN_PERIODS = 3;
 const MAX_PERIODS = 20;
 

@@ -108,8 +108,8 @@ async function main() {
     const name = `财报类型回归-${Date.now()}`;
     const company = (await client.query('INSERT INTO core.companies(legal_name) VALUES($1) RETURNING company_id', [name])).rows[0].company_id;
     const code = '999998.SZ';
-    const instrument = (await client.query(`INSERT INTO core.instruments(canonical_code,name,asset_class,market,currency_code)
-      VALUES($1,$2,'stock','CN','CNY') RETURNING instrument_id`, [code, name])).rows[0].instrument_id;
+    const instrument = (await client.query(`INSERT INTO core.instruments(canonical_code,name,asset_class,market,exchange_code,currency_code)
+      VALUES($1,$2,'stock','CN','SZSE','CNY') RETURNING instrument_id`, [code, name])).rows[0].instrument_id;
     await client.query('INSERT INTO core.company_instruments(company_id,instrument_id) VALUES($1,$2)', [company, instrument]);
     const source = (await client.query("SELECT source_id FROM ops.data_sources WHERE source_code='lixinger_official'")).rows[0].source_id;
     const projection = require('../repositories/stockProjectionRepository');
@@ -138,6 +138,23 @@ async function main() {
       }
       if (kind === 'income') assert.strictEqual(payload.fields.find(field => field.code === 'ps.nii').section, '营业收入');
     }
+    const selection = require('../repositories/stockSelectionRepository');
+    await client.query(`INSERT INTO market.daily_bars(instrument_id,trade_date,source_id,close)
+      VALUES($1,'2026-11-12',$2,10)`, [instrument, source]);
+    await client.query(`INSERT INTO market.daily_valuations(instrument_id,trade_date,source_id,total_market_cap,currency_code)
+      VALUES($1,'2026-11-12',$2,1000,'CNY')`, [instrument, source]);
+    await client.query(`UPDATE fundamental.financial_facts SET currency_code=NULL WHERE report_id IN
+      (SELECT report_id FROM fundamental.financial_reports WHERE company_id=$1)
+      AND metric_code IN ('equity_parent','net_profit_parent')`, [company]);
+    let universe = (await selection.loadUniverse({ market: 'CN', asOfDate: '2026-11-13' }, client)).find(row => row.code === code);
+    assert.ok(universe);
+    assert.strictEqual(universe.pb, null, '报表币种未知时不能与估值相除');
+    assert.strictEqual(universe.pe_static, null, '利润币种未知时不能与估值相除');
+    await client.query(`UPDATE fundamental.financial_facts SET currency_code='CNY' WHERE report_id IN
+      (SELECT report_id FROM fundamental.financial_reports WHERE company_id=$1)
+      AND metric_code IN ('equity_parent','net_profit_parent')`, [company]);
+    universe = (await selection.loadUniverse({ market: 'CN', asOfDate: '2026-11-13' }, client)).find(row => row.code === code);
+    assert.ok(Number(universe.pb) > 0 && Number(universe.pe_static) > 0, '同币种的已知事实仍可计算');
   } finally {
     await client.query('ROLLBACK');
     client.release();

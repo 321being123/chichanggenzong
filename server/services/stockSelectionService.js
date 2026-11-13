@@ -153,8 +153,11 @@ function buildAnnualYears(profits, annualDividends) {
     return {
       year: item.year,
       profit: item.profit === undefined ? null : item.profit,
+      profitCurrency: item.currency ? String(item.currency).toUpperCase() : null,
       dividend: known ? Number(dividendRow.dividend) : null,
       dividendKnown: known,
+      dividendCurrencies: dividendRow && Array.isArray(dividendRow.dividendCurrencies) ? dividendRow.dividendCurrencies : [],
+      dividendCurrencyUnknown: !!(dividendRow && dividendRow.dividendCurrencyUnknown),
       complete: item.profit !== null && item.profit !== undefined,
       // 事实版本随年度一起保留：它是"这一年的利润有没有被更正过"的证据（R2-02）。
       sourceVersion: item.sourceVersion || null,
@@ -281,8 +284,12 @@ function computeTtmFromReports(reports) {
     };
   }
   const currencies = [priorAnnual.currency, latest.currency, priorSame.currency]
-    .map(value => (value ? String(value).toUpperCase() : null))
-    .filter(Boolean);
+    .map(value => (value ? String(value).toUpperCase() : null));
+  if (currencies.some(value => !value)) {
+    return { value: null, reason: 'ttm_currency_unknown',
+      evidence: { method: 'annual_plus_ytd_minus_prior_ytd', latest: pick(latest),
+        priorAnnual: pick(priorAnnual), priorSame: pick(priorSame), currencies } };
+  }
   if (new Set(currencies).size > 1) {
     return {
       value: null,
@@ -317,6 +324,8 @@ function annualFactsOf(profits, annualDividends, code, sourceGaps, listDate) {
     latestYear: years.length ? years[years.length - 1].year : null,
     years,
     currency: rows.length ? rows[0].currency : null,
+    requireProfitCurrency: true,
+    requireDividendCurrency: true,
     // 上市年份：判断「十年比较窗口」是否早于上市（2026-11-08）。
     // 上市前公司只在招股书里披露申报前 3 年，公开定期报告本就没有那些年份；
     // 拿库内最早年份当"历史够长"的证据会被这 3 年骗过（601528 有 2014—2016、缺 2017），
@@ -770,6 +779,7 @@ function inputsDigestOf(computed) {
       Number(row.year), row.profit === undefined ? null : row.profit,
       row.dividend === undefined ? null : row.dividend,
       row.dividendKnown === true, row.complete === true, row.sourceVersion || null,
+      row.profitCurrency || null, row.dividendCurrencies || [], row.dividendCurrencyUnknown === true,
     ]);
     const anomaly = anomalyById[item.instrumentId] || null;
     const anomalyEvidence = anomaly ? [

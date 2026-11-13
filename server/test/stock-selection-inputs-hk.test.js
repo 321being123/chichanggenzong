@@ -211,12 +211,12 @@ async function main() {
     assert.ok(calls.length >= 2, '金融类型目录必须按上限分批');
     assert.strictEqual(calls[0].endpoint, 'hk/company/fs/bank', '银行必须走银行端点，不能套非金融端点');
     const metrics = calls[0].metricsList;
-    assert.ok(metrics.includes('q.ps.npatoshopc.t'), '归母净利润用完整指标格式');
-    assert.ok(metrics.includes('q.bs.tetoshopc.t'), '归母股东权益要取，R05 依赖它');
-    assert.ok(metrics.includes('q.bs.ta.t'), '总资产要取');
-    assert.ok(!metrics.includes('q.ps.toi.t'), '金融类不发营业总收入，避免整批被判非法');
+    assert.ok(metrics.includes('q.ps.npatoshopc.t_o'), '普通股净利润必须取原始值');
+    assert.ok(metrics.includes('q.bs.tetoshopc.t_o'), '普通股权益必须取原始值');
+    assert.ok(metrics.includes('q.bs.ta.t_o'), '总资产必须取原始值');
+    assert.ok(!metrics.includes('q.ps.toi.t_o'), '金融类不发营业总收入，避免整批被判非法');
     const bankCodes = new Set(require('../dataAccess/lixingerReportMetrics').metricsOfType('HK', 'bank')
-      .map(item => `q.${item.code}.t`));
+      .map(item => `q.${item.code}.t_o`));
     assert.ok(calls.every(call => call.endpoint === 'hk/company/fs/bank'
       && call.metricsList.length <= 128 && call.metricsList.every(metric => bankCodes.has(metric))));
 
@@ -226,7 +226,7 @@ async function main() {
       kinds: ['income', 'balance'], options: { fsTableType: 'non_financial' },
     });
     assert.strictEqual(calls[0].endpoint, 'hk/company/fs/non_financial', '非金融仍走原端点');
-    assert.ok(calls[0].metricsList.includes('q.ps.toi.t'), '非金融保留营业总收入等原有指标');
+    assert.ok(calls[0].metricsList.includes('q.ps.toi.t_o'), '非金融保留营业总收入原始值');
   });
 
   await check('财报分批：不同公告版本不能混拼，仅有扩展科目也必须保留并标明缺批', async () => {
@@ -279,8 +279,8 @@ async function main() {
         calls.push({ endpoint, metrics: params.metricsList });
         return { rows: [{ date: '2025-12-31', standardDate: '2025-12-31', reportDate: '2026-03-01',
           reportType: 'annual_report', currency: 'USD', q: {
-            ps: { oi: { t: 1 }, npatoshopc: { t: 45 }, npatshaoehopc: { t: 55 } },
-            bs: { ta: { t: 2 }, tetoshopc: { t: 451 }, tetshaoehopc: { t: 551 } },
+            ps: { oi: { t: 7, t_o: 1 }, npatoshopc: { t: 350, t_o: 45 }, npatshaoehopc: { t: 428, t_o: 55 } },
+            bs: { ta: { t: 15, t_o: 2 }, tl: { t: 900 }, tetoshopc: { t: 3509, t_o: 451 }, tetshaoehopc: { t: 4287, t_o: 551 } },
           } }] };
       },
     });
@@ -292,15 +292,18 @@ async function main() {
     const bank = await read('bank');
     assert.strictEqual(bank.income[0].n_income_attr_p, 55);
     assert.strictEqual(bank.balance[0].total_hldr_eqy_exc_min_int, 551);
-    assert.ok(calls[0].metrics.includes('q.ps.npatshaoehopc.t'));
-    assert.ok(calls[0].metrics.includes('q.bs.tetshaoehopc.t'));
+    assert.strictEqual(bank.balance[0].total_liab, null, '原始值缺失不能回退换算后的 .t');
+    assert.strictEqual(bank.balance[0].__statement_metrics['bs.tl'], undefined);
+    assert.strictEqual(bank.balance[0].__statement_coverage.value_basis, 'source_original_t_o');
+    assert.ok(calls[0].metrics.includes('q.ps.npatshaoehopc.t_o'));
+    assert.ok(calls[0].metrics.includes('q.bs.tetshaoehopc.t_o'));
     assert.strictEqual(bank.income[0].__statement_metrics['ps.npatoshopc'], 45);
     const insuranceStart = calls.length;
     const insurance = await read('insurance');
     assert.strictEqual(insurance.income[0].n_income_attr_p, undefined);
     assert.strictEqual(insurance.balance[0].total_hldr_eqy_exc_min_int, undefined);
-    assert.ok(!calls[insuranceStart].metrics.includes('q.ps.npatshaoehopc.t'));
-    assert.ok(!calls[insuranceStart].metrics.includes('q.bs.tetshaoehopc.t'));
+    assert.ok(!calls[insuranceStart].metrics.includes('q.ps.npatshaoehopc.t_o'));
+    assert.ok(!calls[insuranceStart].metrics.includes('q.bs.tetshaoehopc.t_o'));
     assert.strictEqual(insurance.balance[0].__statement_metrics['bs.tetoshopc'], 451);
   });
 

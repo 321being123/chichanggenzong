@@ -8,7 +8,7 @@ const { saveAnalysisResults } = require('./financialDataArchitecture');
 const statementService = require('./stockStatementService');
 const contract = require('../domain/securityAnalysisContract');
 
-const FORMULA_VERSION = 'hk-2';
+const FORMULA_VERSION = 'hk-3';
 const { FORMULA_VERSION: STATEMENT_FORMULA_VERSION } = require('./hkStockStatements');
 
 // 港股 HKFRS 宽表字段对照（唯一登记位置）。现金流官方只有 7 个汇总项，没有资本开支，
@@ -64,8 +64,12 @@ async function readHkReportFacts(tsCode, limit = 20, tx) {
         assets: null, liabilities: null, operating: null, capex: null, currency_unverified: false,
       };
       group.report_ids.push({ kind, report_id: row.report_id, statement_revision: row.statement_revision || null });
+      const currency = String(row.currency_code || '').trim().toUpperCase();
+      let coverage = row.statement_coverage;
+      if (typeof coverage === 'string') { try { coverage = JSON.parse(coverage); } catch (_) { coverage = null; } }
       const currencyUnverified = row.source_code === 'lixinger_official'
-        && String(row.currency_code || '').trim().toUpperCase() !== 'HKD';
+        && (!/^[A-Z]{3}$/.test(currency) || (currency !== 'HKD'
+          && !(coverage && coverage.value_basis === 'source_original_t_o')));
       group.currency_unverified ||= currencyUnverified;
       for (const [field, names] of Object.entries(HK_FACT_COLUMNS[kind])) {
         if (names.length) group[field] = currencyUnverified ? null : pick(row, names);
@@ -77,7 +81,8 @@ async function readHkReportFacts(tsCode, limit = 20, tx) {
 }
 
 function isAnnual(group) {
-  return /annual|年报|年度|^fy/i.test(String(group.period_type || ''));
+  return /^(annual|annual_report|year|year_report|yearly|fy|a|q4|fourth_quarterly_report|年报|年度)$/i
+    .test(String(group.period_type || '').trim());
 }
 
 function statusOf(entry) {
@@ -108,13 +113,16 @@ function buildHkAnalysis(data, options = {}) {
   const peTtm = contract.finite(latest.pe_ttm);
   const pb = contract.finite(latest.pb);
 
-  const annual = facts.filter(isAnnual);
+  // 不同报表的 source_version 通常不同，必须按报表类型选取，不能假定同年报都在同一组。
+  const ofKind = (group, kind) => (group.report_ids || []).some(item => item.kind === kind);
+  const incomeFacts = facts.filter(group => ofKind(group, 'income'));
+  const annual = incomeFacts.filter(isAnnual);
   const latestFact = facts[0] || null;
   const latestAnnual = annual[0] || null;
-  const interimFacts = facts.filter(group => !isAnnual(group));
+  const interimFacts = incomeFacts.filter(group => !isAnnual(group));
   const latestInterim = interimFacts[0] || null;
   const sameCurrency = (a, b) => a && b && a.currency && a.currency === b.currency;
-  const priorComparable = latestInterim ? facts.find(group => group !== latestInterim
+  const priorComparable = latestInterim ? incomeFacts.find(group => group !== latestInterim
     && String(group.period_end).slice(4) === String(latestInterim.period_end).slice(4)
     && group.period_type === latestInterim.period_type
     && Number(String(group.period_end).slice(0, 4)) === Number(String(latestInterim.period_end).slice(0, 4)) - 1) : null;
@@ -169,11 +177,12 @@ function buildHkAnalysis(data, options = {}) {
   });
 
   const capexMissing = !HK_FACT_COLUMNS.cashflow.capex.length;
-  const operatingLatest = latestAnnual ? contract.finite(latestAnnual.operating) : null;
-  const freeCash = contract.freeCashFlowOf({ operating: operatingLatest, capex: capexMissing ? null : latestAnnual && latestAnnual.capex });
+  const latestAnnualCashflow = facts.find(group => isAnnual(group) && ofKind(group, 'cashflow')) || null;
+  const operatingLatest = latestAnnualCashflow ? contract.finite(latestAnnualCashflow.operating) : null;
+  const freeCash = contract.freeCashFlowOf({ operating: operatingLatest, capex: capexMissing ? null : latestAnnualCashflow && latestAnnualCashflow.capex });
   const fieldStatus = {
     market_cap: statusOf(cap), pe_ttm: statusOf(contract.metric(peTtm)), pb: statusOf(contract.metric(pb)),
-    ttm_profit: statusOf(ttm), dividend_yield: statusOf(dividend12m.yield),
+    ttm_profit: { ...statusOf(ttm), currency: ttm.value === null ? null : (latestInterim || latestAnnual).currency }, dividend_yield: statusOf(dividend12m.yield),
     free_cashflow: statusOf(freeCash), pe_percentile: { value: pePercentile.value, status: pePercentile.status },
     ten_year_stability: { value: stability.value, status: stability.status },
   };
@@ -247,7 +256,8 @@ function buildHkAnalysis(data, options = {}) {
     },
     cashflow: {
       status: freeCash.status,
-      latest_year: { end_date: latestAnnual ? latestAnnual.period_end : null, operating: operatingLatest, free: freeCash.value },
+      latest_year: { end_date: latestAnnualCashflow ? latestAnnualCashflow.period_end : null,
+        currency: latestAnnualCashflow ? latestAnnualCashflow.currency : null, operating: operatingLatest, free: freeCash.value },
       average_3y: { operating: null, free: null }, average_5y: { operating: null, free: null },
       note: capexMissing ? '港股官方现金流科目未提供资本开支，自由现金流不可计算' : '',
     },

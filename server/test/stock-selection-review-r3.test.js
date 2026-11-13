@@ -363,8 +363,8 @@ function annualDividendRows(key, overrides = {}) {
   return Array.from({ length: 11 }, (_, index) => {
     const year = 2015 + index;
     const custom = overrides[year];
-    if (custom) return Object.assign({ year, eventCount: 1, dividendBasis: 'annual_implemented_amount' }, custom);
-    return { year, dividend: 1e8, eventCount: 1, dividendKnown: true, dividendBasis: 'annual_implemented_amount' };
+    if (custom) return Object.assign({ year, eventCount: 1, dividendBasis: 'annual_implemented_amount', dividendCurrencies: ['CNY'] }, custom);
+    return { year, dividend: 1e8, eventCount: 1, dividendKnown: true, dividendBasis: 'annual_implemented_amount', dividendCurrencies: ['CNY'] };
   });
 }
 

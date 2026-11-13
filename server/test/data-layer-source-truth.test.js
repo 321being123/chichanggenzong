@@ -103,6 +103,14 @@ adapter.resolveAnnualNetProfits = async () => ([
   assert.ok(Math.abs(Number(d29.pe) - 21.1391) < 0.001, `静态市盈率必须按官方输入派生，实际 ${d29.pe}`);
   assert.strictEqual(d29.carried_fields, undefined, '官方六项齐备时不应出现 carried_fields');
 
+  const annualResolver = adapter.resolveAnnualNetProfits;
+  adapter.resolveAnnualNetProfits = async () => { throw Object.assign(new Error('财报分类不可用'), { code: 'FINANCIAL_TYPE_UNKNOWN' }); };
+  try {
+    const withoutAnnual = await datasets.readStockValuationHistory({ tsCode: '600519.SH', startDate: '2026-10-29', endDate: '2026-11-02' });
+    assert.strictEqual(Number(withoutAnnual.find(row => row.trade_date === '20261029').pe_ttm), 99,
+      '年报分类失败不能丢弃已获取的官方行情估值');
+  } finally { adapter.resolveAnnualNetProfits = annualResolver; }
+
   assert.strictEqual(Number(byDate.get('20261030').pe_ttm), 98, '第二天的官方数值同理会生效');
 
   const d31 = byDate.get('20261031');

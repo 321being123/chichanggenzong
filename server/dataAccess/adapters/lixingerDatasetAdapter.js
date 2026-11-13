@@ -377,7 +377,18 @@ async function resolveAnnualNetProfits({ tsCode, startDate, endDate } = {}) {
   const code = stockCodeOf(tsCode);
   const start = dashDate(startDate), end = dashDate(endDate);
   if (!code || !start || !end) return null;
-  const { rows } = await callEndpointRange('cn/company/fs/non_financial',
+  // 港股报告币种尚未闭合，不能把港币市值与未经核实的原币利润相除。
+  if (isHkCode(tsCode)) return [];
+  const profiles = await resolveCnCompanyProfiles({ codes: [tsCode] });
+  const type = profiles.length === 1 && profiles[0].fsTableType;
+  let supported = false;
+  try { supported = Boolean(type && reportMetrics.metricsOfType('CN', type).some(metric => metric.code === 'ps.npatshaoehopc')); } catch (_) { /* 未知类型保留缺口 */ }
+  if (!supported) {
+    const error = new Error('年报财报类型或归母利润字段待确认');
+    error.code = 'FINANCIAL_TYPE_UNKNOWN';
+    throw error;
+  }
+  const { rows } = await callEndpointRange(`cn/company/fs/${type}`,
     { stockCodes: [code], metricsList: ['q.ps.npatshaoehopc.t'] }, start, end,
     { dataset: 'stock_financial_reports', targetDate: end });
   return rows.map(item => {
@@ -392,7 +403,7 @@ async function resolveAnnualNetProfits({ tsCode, startDate, endDate } = {}) {
       netProfit,
     };
   }).filter(Boolean)
-    .filter(item => item.reportType === 'annual_report' || /1231$/.test(item.periodEnd))
+    .filter(item => item.reportType === 'annual_report')
     .sort((a, b) => (a.periodEnd < b.periodEnd ? -1 : a.periodEnd > b.periodEnd ? 1 : 0));
 }
 

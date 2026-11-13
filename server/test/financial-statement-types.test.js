@@ -8,6 +8,7 @@ const { migration194FinancialStatementTypeColumns } = require('../db/migrations/
 
 async function main() {
   const calls = [];
+  let addQuarterly = false;
   official.callEndpoint = async (endpoint, params) => {
     calls.push({ endpoint, params });
     if (endpoint === 'cn/company') return { rawRecordId: 321, rows: [
@@ -22,8 +23,9 @@ async function main() {
       (q[match[1]] ||= {})[match[2]] = { t: match[2] === 'cabwcb' ? 254225000000
         : match[2] === 'toe_ta_r' ? 0.25 : 123 };
     }
-    return { rows: [{ date: '2025-12-31', standardDate: '2025-12-31', reportDate: '2026-03-01',
-      reportType: 'annual_report', stockCode: '000001', currency: 'CNY', q }] };
+    const report = { date: '2025-12-31', standardDate: '2025-12-31', reportDate: '2026-03-01',
+      reportType: 'annual_report', stockCode: '000001', currency: 'CNY', q };
+    return { rows: addQuarterly ? [report, { ...report, reportType: 'fourth_quarterly_report' }] : [report] };
   };
   const adapter = require('../dataAccess/adapters/lixingerDatasetAdapter');
   const datasets = require('../dataAccess/marketDatasets');
@@ -49,6 +51,14 @@ async function main() {
   assert.deepStrictEqual(result.balance[0].__statement_coverage.fs_table_type_evidence,
     { source_code: 'lixinger_official', raw_record_id: 321, scope: 'current_company_profile' });
   assert.strictEqual(result.balance[0].__statement_coverage.complete, true);
+  calls.length = 0; addQuarterly = true;
+  const annuals = await adapter.resolveAnnualNetProfits({ tsCode: '000001.SZ', startDate: '2025-01-01', endDate: '2025-12-31' });
+  assert.strictEqual(annuals.length, 1, '年末但来源类型不是年报不能冒充年报');
+  assert.strictEqual(calls[1].endpoint, 'cn/company/fs/bank', '静态估值利润必须使用银行财报端点');
+  calls.length = 0;
+  assert.deepStrictEqual(await adapter.resolveAnnualNetProfits({ tsCode: '00005.HK', startDate: '2025-01-01', endDate: '2025-12-31' }), []);
+  assert.strictEqual(calls.length, 0, '港股币种待核实，不得请求或计算静态估值利润');
+  addQuarterly = false;
   await assert.rejects(() => datasets.readFinancialReportRows({ tsCode: '000001.SZ', fsTableType: 'unrecognized' }),
     error => error.code === 'FINANCIAL_TYPE_UNKNOWN');
   const oldProfile = adapter.resolveCnCompanyProfiles;

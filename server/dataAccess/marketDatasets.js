@@ -623,8 +623,8 @@ async function readStockValuationHistory({ tsCode, startDate, endDate, fields = 
     if (!rows.length) return rows;
     // 区间起点前两年的年报也要拿到，否则区间第一天没有「最近一期年报」可算静态市盈率。
     const annualStart = `${Number(from.slice(0, 4)) - 2}${from.slice(4)}`;
-    const annuals = await official.resolveAnnualNetProfits({ tsCode, startDate: annualStart, endDate: to });
-    return official.fillStaticPe(rows, annuals);
+    const annuals = await safeOfficial(() => official.resolveAnnualNetProfits({ tsCode, startDate: annualStart, endDate: to }), 'stock_annual_profit');
+    return official.fillStaticPe(rows, annuals.value || []);
   }, 'stock_valuation');
   const officialByDate = new Map(((primary.value || [])).map(row => [String(row.trade_date), row]));
   // 备源只负责收盘价与股本骨架：它失败（凭据失效/接口异常）不能把已经拿到的官方估值一起丢掉。

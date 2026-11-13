@@ -31,6 +31,7 @@ assert.ok((service + datasetsSource).includes('hold_amount,hold_ratio')
 assert.ok(!service.includes("top10_cb_holders', holderParams, 'ts_code,end_date,ann_date") && !service.includes("pledge_stat', pledgeParams, 'ts_code,end_date,pledge_amount"), '不得请求接口不支持的字段');
 assert.ok(service.includes('announced_at IS NOT NULL AND announced_at <= $2'), '历史评分必须按公告可见日隔离');
 assert.ok(service.includes('same report period') || service.includes('同一报告期'), '财务指标应锁定同一报告期');
+assert.ok(service.includes("upper(COALESCE(r.raw_payload->>'ts_code',''))=upper($3)"), '可转债动机财报必须锁定正股报告代码');
 assert.ok(html.includes('motive-inputs') && !html.includes('motive-sources') && html.includes('返回可转债监控'), '详情页结构不完整');
 assert.ok(html.includes('href="/?main=bond-safety&sub=revision"') && html.indexOf('bond-motive-back') < html.indexOf('bond-feature-hero'), '返回链接应位于蓝色标题外');
 assert.ok(script.includes('raw_value') && script.includes('input_snapshot') && script.includes('financialText') && script.includes('cycleText') && script.includes('holderText') && script.includes('controllerText') && !script.includes('proposalHistoryText') && !script.includes('motive-json'), '详情页原始输入展示不符合要求');

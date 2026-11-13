@@ -702,7 +702,7 @@ async function loadMotiveInput(tsCode, tradeDate, db = pool) {
     base.company_id ? repository.select_fundamental_company_pledge_snapshots([base.company_id, tradeDate]) : Promise.resolve({ rows: [] }),
     base.company_id ? repository.select_ops_sync_cursors([base.company_id, tradeDate]) : Promise.resolve({ rows: [] }),
     base.company_id ? repository.select_core_company_controllers([base.company_id, tradeDate]) : Promise.resolve({ rows: [] }),
-    base.company_id ? repository.select_fundamental_financial_reports([base.company_id, tradeDate]) : Promise.resolve({ rows: [] }),
+    base.company_id && base.stock_code ? repository.select_fundamental_financial_reports([base.company_id, tradeDate, base.stock_code]) : Promise.resolve({ rows: [] }),
     base.stock_code ? repository.select_bond_safety_financial_cache([base.stock_code, tradeDate]) : Promise.resolve({ rows: [] }),
     repository.select_bond_safety_snapshots([tradeDate]),
     base.instrument_id ? repository.select_analytics_analysis_snapshots([base.instrument_id, tradeDate]) : Promise.resolve({ rows: [] }),

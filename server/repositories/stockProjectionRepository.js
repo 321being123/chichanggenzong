@@ -152,7 +152,27 @@ async function syncReportRows(client, rows, kind, companyId, sourceId, options =
       });
     }
   }
-  await client.query(`WITH ranked AS (SELECT report_id,row_number() OVER(PARTITION BY company_id,report_kind,period_end ORDER BY CASE WHEN report_type='1' THEN 0 ELSE 1 END,announced_at DESC NULLS LAST,ingested_at DESC,report_id DESC) rn FROM fundamental.financial_reports WHERE company_id=$1 AND report_kind=$2) UPDATE fundamental.financial_reports r SET is_current_version=(ranked.rn=1) FROM ranked WHERE r.report_id=ranked.report_id`, [companyId, kind]);
+  // is_current_version 仍是旧兼容字段，但不能再按公司全局排名：同一发行人可能同时有 A/H 报告，
+  // 也可能有合并/母公司范围。新读取端按市场和范围独立选版；这里至少让兼容标记与同一市场、同一范围一致。
+  await client.query(`WITH ranked AS (
+      SELECT report_id,row_number() OVER(
+        PARTITION BY company_id,report_kind,period_end,
+          COALESCE(statement_scope,'consolidated'),
+          CASE
+            WHEN upper(COALESCE(raw_payload->>'ts_code','')) LIKE '%.HK' THEN 'HK'
+            WHEN upper(COALESCE(raw_payload->>'ts_code','')) ~ '^[0-9]{6}[.](SH|SZ|BJ)$' THEN 'CN'
+            ELSE 'UNKNOWN'
+          END
+        ORDER BY CASE WHEN report_type='1' THEN 0 ELSE 1 END,
+          announced_at DESC NULLS LAST,ingested_at DESC,report_id DESC
+      ) rn
+      FROM fundamental.financial_reports
+      WHERE company_id=$1 AND report_kind=$2
+    )
+    UPDATE fundamental.financial_reports r
+       SET is_current_version=(ranked.rn=1)
+      FROM ranked
+     WHERE r.report_id=ranked.report_id`, [companyId, kind]);
 }
 
 // formulaVersion 由编排层传入，仓储不依赖 services 常量模块。

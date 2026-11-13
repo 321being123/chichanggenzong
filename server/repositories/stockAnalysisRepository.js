@@ -81,10 +81,11 @@ async function loadAnalysisInputs(params, tx) {
       JOIN core.company_instruments ci ON ci.instrument_id=i.instrument_id
       LEFT JOIN core.company_industry_memberships m ON m.company_id=ci.company_id AND m.is_current
       LEFT JOIN core.industry_nodes n ON n.industry_node_id=m.industry_node_id WHERE i.canonical_code=$1 LIMIT 1`, [tsCode]),
-    runner.query(`SELECT r.raw_payload data FROM fundamental.financial_reports r JOIN core.company_instruments ci ON ci.company_id=r.company_id JOIN core.instruments i ON i.instrument_id=ci.instrument_id WHERE i.canonical_code=$1 AND r.report_kind='income'`, [tsCode]),
-    runner.query(`SELECT r.raw_payload data FROM fundamental.financial_reports r JOIN core.company_instruments ci ON ci.company_id=r.company_id JOIN core.instruments i ON i.instrument_id=ci.instrument_id WHERE i.canonical_code=$1 AND r.report_kind='balance'`, [tsCode]),
-    runner.query(`SELECT r.raw_payload data FROM fundamental.financial_reports r JOIN core.company_instruments ci ON ci.company_id=r.company_id JOIN core.instruments i ON i.instrument_id=ci.instrument_id WHERE i.canonical_code=$1 AND r.report_kind='cashflow'`, [tsCode]),
-    runner.query(`SELECT r.raw_payload data FROM fundamental.financial_reports r JOIN core.company_instruments ci ON ci.company_id=r.company_id JOIN core.instruments i ON i.instrument_id=ci.instrument_id WHERE i.canonical_code=$1 AND r.report_kind='indicator'`, [tsCode]),
+    // 公司关系是多市场的，旧分析入口必须按报告本身的证券代码收窄，不能把同公司另一市场报告带入。
+    runner.query(`SELECT r.raw_payload data FROM fundamental.financial_reports r JOIN core.company_instruments ci ON ci.company_id=r.company_id JOIN core.instruments i ON i.instrument_id=ci.instrument_id WHERE i.canonical_code=$1 AND r.report_kind='income' AND upper(COALESCE(r.raw_payload->>'ts_code',''))=upper($1)`, [tsCode]),
+    runner.query(`SELECT r.raw_payload data FROM fundamental.financial_reports r JOIN core.company_instruments ci ON ci.company_id=r.company_id JOIN core.instruments i ON i.instrument_id=ci.instrument_id WHERE i.canonical_code=$1 AND r.report_kind='balance' AND upper(COALESCE(r.raw_payload->>'ts_code',''))=upper($1)`, [tsCode]),
+    runner.query(`SELECT r.raw_payload data FROM fundamental.financial_reports r JOIN core.company_instruments ci ON ci.company_id=r.company_id JOIN core.instruments i ON i.instrument_id=ci.instrument_id WHERE i.canonical_code=$1 AND r.report_kind='cashflow' AND upper(COALESCE(r.raw_payload->>'ts_code',''))=upper($1)`, [tsCode]),
+    runner.query(`SELECT r.raw_payload data FROM fundamental.financial_reports r JOIN core.company_instruments ci ON ci.company_id=r.company_id JOIN core.instruments i ON i.instrument_id=ci.instrument_id WHERE i.canonical_code=$1 AND r.report_kind='indicator' AND upper(COALESCE(r.raw_payload->>'ts_code',''))=upper($1)`, [tsCode]),
     runner.query(`SELECT a.raw_payload data FROM fundamental.corporate_actions a JOIN core.instruments i ON i.instrument_id=a.instrument_id WHERE i.canonical_code=$1 AND a.action_type='dividend'`, [tsCode]),
     runner.query(`SELECT g.raw_payload data FROM fundamental.earnings_guidance g JOIN core.company_instruments ci ON ci.company_id=g.company_id JOIN core.instruments i ON i.instrument_id=ci.instrument_id WHERE i.canonical_code=$1`, [tsCode]),
     runner.query(`SELECT DISTINCT ON (v.trade_date) to_char(v.trade_date,'YYYYMMDD') trade_date,b.close,a.adj_factor,v.pe_static pe,v.pe_ttm,v.pb,v.dividend_yield_ttm*100 dv_ttm,
@@ -193,8 +194,8 @@ async function readCoverageFlags(params, tx) {
   const { rows } = await runner.query(`SELECT
     EXISTS(SELECT 1 FROM market.daily_valuations v JOIN core.instruments i ON i.instrument_id=v.instrument_id WHERE i.canonical_code=$1) has_daily,
     (SELECT min(to_char(v.trade_date,'YYYYMMDD')) FROM market.daily_valuations v JOIN core.instruments i ON i.instrument_id=v.instrument_id WHERE i.canonical_code=$1) first_daily,
-    EXISTS(SELECT 1 FROM fundamental.financial_reports r JOIN core.company_instruments ci ON ci.company_id=r.company_id JOIN core.instruments i ON i.instrument_id=ci.instrument_id WHERE i.canonical_code=$1 AND r.report_kind='indicator') has_indicator,
-    EXISTS(SELECT 1 FROM fundamental.financial_reports r JOIN core.company_instruments ci ON ci.company_id=r.company_id JOIN core.instruments i ON i.instrument_id=ci.instrument_id WHERE i.canonical_code=$1 AND r.report_kind='income') has_reports`, [params.tsCode]);
+    EXISTS(SELECT 1 FROM fundamental.financial_reports r JOIN core.company_instruments ci ON ci.company_id=r.company_id JOIN core.instruments i ON i.instrument_id=ci.instrument_id WHERE i.canonical_code=$1 AND r.report_kind='indicator' AND upper(COALESCE(r.raw_payload->>'ts_code',''))=upper($1)) has_indicator,
+    EXISTS(SELECT 1 FROM fundamental.financial_reports r JOIN core.company_instruments ci ON ci.company_id=r.company_id JOIN core.instruments i ON i.instrument_id=ci.instrument_id WHERE i.canonical_code=$1 AND r.report_kind='income' AND upper(COALESCE(r.raw_payload->>'ts_code',''))=upper($1)) has_reports`, [params.tsCode]);
   return rows[0] || {};
 }
 
@@ -213,8 +214,8 @@ async function readSnapshotFreshnessInputs(params, tx) {
   const { rows } = await runner.query(
     `SELECT
         (SELECT max(trade_date) FROM market.daily_valuations WHERE instrument_id=$1) AS trade_date,
-        (SELECT max(period_end) FROM fundamental.financial_reports r JOIN core.company_instruments ci ON ci.company_id=r.company_id WHERE ci.instrument_id=$1) AS financial_end,
-        (SELECT max(announced_at) FROM fundamental.financial_reports r JOIN core.company_instruments ci ON ci.company_id=r.company_id WHERE ci.instrument_id=$1) AS financial_ann,
+        (SELECT max(r.period_end) FROM fundamental.financial_reports r JOIN core.company_instruments ci ON ci.company_id=r.company_id JOIN core.instruments target ON target.instrument_id=ci.instrument_id WHERE ci.instrument_id=$1 AND upper(COALESCE(r.raw_payload->>'ts_code',''))=upper(target.canonical_code)) AS financial_end,
+        (SELECT max(r.announced_at) FROM fundamental.financial_reports r JOIN core.company_instruments ci ON ci.company_id=r.company_id JOIN core.instruments target ON target.instrument_id=ci.instrument_id WHERE ci.instrument_id=$1 AND upper(COALESCE(r.raw_payload->>'ts_code',''))=upper(target.canonical_code)) AS financial_ann,
         (SELECT max(announced_at) FROM fundamental.corporate_actions WHERE instrument_id=$1 AND action_type='dividend') AS dividend_ann,
         (SELECT max(ex_date) FROM fundamental.corporate_actions WHERE instrument_id=$1 AND action_type='dividend') AS dividend_ex,
         (SELECT max(announced_at) FROM fundamental.earnings_guidance g JOIN core.company_instruments ci ON ci.company_id=g.company_id WHERE ci.instrument_id=$1) AS guidance_ann,

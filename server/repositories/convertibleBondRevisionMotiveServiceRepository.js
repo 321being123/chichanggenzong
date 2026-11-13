@@ -154,7 +154,12 @@ async function select_core_company_controllers(params, client = pool) {
 }
 
 async function select_fundamental_financial_reports(params, client = pool) {
-  return client.query(`SELECT report_kind,period_end,announced_at,raw_payload,ingested_at FROM fundamental.financial_reports WHERE company_id=$1 AND period_end <= $2::date AND announced_at IS NOT NULL AND announced_at <= $2::date ORDER BY period_end DESC,announced_at DESC,report_id DESC LIMIT 20`, params);
+  return client.query(`SELECT r.report_kind,r.period_end,r.announced_at,r.raw_payload,r.ingested_at
+      FROM fundamental.financial_reports r
+      WHERE r.company_id=$1 AND r.period_end <= $2::date
+        AND r.announced_at IS NOT NULL AND r.announced_at <= $2::date
+        AND upper(COALESCE(r.raw_payload->>'ts_code',''))=upper($3)
+      ORDER BY r.period_end DESC,r.announced_at DESC,r.report_id DESC LIMIT 20`, params);
 }
 
 async function select_bond_safety_financial_cache(params, client = pool) {

@@ -40,6 +40,7 @@ async function listCompanyReportRows(params, tx) {
             f_ann_date::text AS f_ann_date,report_type,is_current_version
        FROM fundamental.financial_reports
       WHERE company_id=ANY($1::bigint[]) AND is_current_version=true
+        AND upper(COALESCE(raw_payload->>'ts_code','')) ~ '^[0-9]{6}[.](SH|SZ|BJ)$'
       ORDER BY company_id,period_end DESC,announced_at DESC NULLS LAST`, [params.companyIds]
   );
   return rows;

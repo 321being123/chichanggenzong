@@ -61,12 +61,13 @@ test('四个核心数据集旧调用默认 CN，HK 必须显式传市场且不�
   assert.strictEqual(registry.marketPredicateFor('stock_daily', 'CN'), '');
   assert.ok(registry.marketPredicateFor('stock_daily', 'HK').includes("market='HK'"));
   assert.ok(registry.marketPredicateFor('stock_financial_reports', 'HK').includes('company_instruments'));
+  assert.match(registry.marketPredicateFor('stock_financial_reports', 'CN'), /ts_code/);
   assert.strictEqual(registry.marketPredicateFor('other', 'HK'), '');
 });
 
 test('分区统计只在显式 HK 时按市场过滤，A 股统计口径不变', () => {
   const source = read('server/services/datasetPartitionRegistry.js');
-  assert.ok(/const marketWhere = marketPredicateFor\(datasetCode, String\(options\.market/.test(source));
+  assert.ok(/const requestedMarket = String\(options\.market/.test(source));
   assert.ok(/whereParts\[0\] \? `AND \$\{marketWhere\}` : `WHERE \$\{marketWhere\}`/.test(source));
 });
 

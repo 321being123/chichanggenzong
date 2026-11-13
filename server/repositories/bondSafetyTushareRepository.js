@@ -96,13 +96,14 @@ function loadBondSafetyFacts(params, client = pool) { return client.query(`
           FROM fundamental.financial_reports r
          WHERE r.company_id=ci.company_id AND r.report_kind IN ('income','balance','indicator')
            AND r.report_type='1' AND r.is_current_version
+           AND upper(COALESCE(r.raw_payload->>'ts_code','')) ~ '^[0-9]{6}[.](SH|SZ|BJ)$'
          GROUP BY r.period_end
         HAVING COUNT(DISTINCT r.report_kind)=3
          ORDER BY r.period_end DESC LIMIT 1
       ) fp ON true
-      LEFT JOIN LATERAL (SELECT r.raw_payload,r.period_end FROM fundamental.financial_reports r WHERE r.company_id=ci.company_id AND r.report_kind='indicator' AND r.report_type='1' AND r.is_current_version AND r.period_end=fp.period_end ORDER BY r.announced_at DESC NULLS LAST LIMIT 1) ind ON true
-      LEFT JOIN LATERAL (SELECT r.raw_payload,r.period_end FROM fundamental.financial_reports r WHERE r.company_id=ci.company_id AND r.report_kind='balance' AND r.report_type='1' AND r.is_current_version AND r.period_end=fp.period_end ORDER BY r.announced_at DESC NULLS LAST LIMIT 1) bal ON true
-      LEFT JOIN LATERAL (SELECT r.raw_payload,r.period_end FROM fundamental.financial_reports r WHERE r.company_id=ci.company_id AND r.report_kind='income' AND r.report_type='1' AND r.is_current_version AND r.period_end=fp.period_end ORDER BY r.announced_at DESC NULLS LAST LIMIT 1) inc ON true
+      LEFT JOIN LATERAL (SELECT r.raw_payload,r.period_end FROM fundamental.financial_reports r WHERE r.company_id=ci.company_id AND r.report_kind='indicator' AND r.report_type='1' AND r.is_current_version AND r.period_end=fp.period_end AND upper(COALESCE(r.raw_payload->>'ts_code','')) ~ '^[0-9]{6}[.](SH|SZ|BJ)$' ORDER BY r.announced_at DESC NULLS LAST LIMIT 1) ind ON true
+      LEFT JOIN LATERAL (SELECT r.raw_payload,r.period_end FROM fundamental.financial_reports r WHERE r.company_id=ci.company_id AND r.report_kind='balance' AND r.report_type='1' AND r.is_current_version AND r.period_end=fp.period_end AND upper(COALESCE(r.raw_payload->>'ts_code','')) ~ '^[0-9]{6}[.](SH|SZ|BJ)$' ORDER BY r.announced_at DESC NULLS LAST LIMIT 1) bal ON true
+      LEFT JOIN LATERAL (SELECT r.raw_payload,r.period_end FROM fundamental.financial_reports r WHERE r.company_id=ci.company_id AND r.report_kind='income' AND r.report_type='1' AND r.is_current_version AND r.period_end=fp.period_end AND upper(COALESCE(r.raw_payload->>'ts_code','')) ~ '^[0-9]{6}[.](SH|SZ|BJ)$' ORDER BY r.announced_at DESC NULLS LAST LIMIT 1) inc ON true
       LEFT JOIN LATERAL (SELECT n.industry_name FROM core.company_industry_memberships m JOIN core.industry_nodes n ON n.industry_node_id=m.industry_node_id WHERE m.company_id=ci.company_id AND m.is_current ORDER BY m.announced_at DESC NULLS LAST LIMIT 1) n ON true
     WHERE NOT EXISTS (SELECT 1 FROM fundamental.convertible_bond_issuance issuance
       WHERE issuance.instrument_id=b.instrument_id AND issuance.issue_type IN ('定向','私募'))

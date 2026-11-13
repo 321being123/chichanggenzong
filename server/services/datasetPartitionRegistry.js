@@ -154,11 +154,16 @@ function dateValue(value) {
 // 只在显式 HK 时追加市场过滤，历史 CN 调用的统计与新鲜度口径保持不变。
 const MARKET_SCOPED_DATASETS = new Set(['stock_daily','stock_valuation','stock_financial_reports','stock_analysis_snapshot']);
 function marketPredicateFor(datasetCode, market) {
-  if (market !== 'HK' || !MARKET_SCOPED_DATASETS.has(datasetCode)) return '';
+  if (!MARKET_SCOPED_DATASETS.has(datasetCode) || !['CN', 'HK'].includes(market)) return '';
+  if (datasetCode !== 'stock_financial_reports' && market !== 'HK') return '';
   if (datasetCode === 'stock_financial_reports') {
-    return `company_id IN (SELECT ci.company_id FROM core.company_instruments ci JOIN core.instruments i ON i.instrument_id=ci.instrument_id WHERE i.market='HK')`;
+    const codePredicate = market === 'HK'
+      ? "upper(COALESCE(raw_payload->>'ts_code','')) LIKE '%.HK'"
+      : "upper(COALESCE(raw_payload->>'ts_code','')) ~ '^[0-9]{6}[.](SH|SZ|BJ)$'";
+    const companyMarket = `company_id IN (SELECT ci.company_id FROM core.company_instruments ci JOIN core.instruments i ON i.instrument_id=ci.instrument_id WHERE i.market='${market}')`;
+    return `(${companyMarket} AND ${codePredicate})`;
   }
-  return `instrument_id IN (SELECT instrument_id FROM core.instruments WHERE market='HK')`;
+  return `instrument_id IN (SELECT instrument_id FROM core.instruments WHERE market='${market}')`;
 }
 function resolveDatasetScope(datasetCode,context={}) {
   const definition=DATASET_PARTITION_REGISTRY[datasetCode];
@@ -192,7 +197,8 @@ async function readSnapshot(datasetCode, optionsOrExecutor = {}, maybeExecutor =
     const row = result.rows[0] || {};
     return { published: false, datasetCode, scopeKey: definition.scopeKey, rowCount: Number(row.row_count || 0), dataAsOf: dateValue(row.data_as_of) };
   }
-  const marketWhere = marketPredicateFor(datasetCode, String(options.market || '').toUpperCase());
+  const requestedMarket = String(options.market || (definition.scopeKey === 'CN' ? 'CN' : '')).toUpperCase();
+  const marketWhere = marketPredicateFor(datasetCode, requestedMarket);
   const whereParts = [definition.whereSql || ''];
   if (marketWhere) whereParts.push(whereParts[0] ? `AND ${marketWhere}` : `WHERE ${marketWhere}`);
   const from = ` FROM ${definition.table} ${whereParts.join(' ')}`;

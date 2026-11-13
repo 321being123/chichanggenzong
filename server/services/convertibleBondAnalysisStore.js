@@ -1049,7 +1049,8 @@ async function latestStockFinancialEnd(stockTsCode) {
        FROM fundamental.financial_reports fr
        JOIN core.company_instruments ci ON ci.company_id = fr.company_id
        JOIN core.instruments i ON i.instrument_id = ci.instrument_id
-      WHERE i.canonical_code = $1`, [stockTsCode]
+      WHERE i.canonical_code = $1
+        AND upper(COALESCE(fr.raw_payload->>'ts_code','')) = upper(i.canonical_code)`, [stockTsCode]
   );
   return rows[0] && rows[0].report_end_date || null;
 }

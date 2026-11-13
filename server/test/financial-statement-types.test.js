@@ -210,13 +210,19 @@ async function main() {
       __statement_metrics: { 'bs.ta': 200000000 } }], 'balance', company, source, { tsCode: freeHkCode });
     const currentDiagnostic = await client.query(`SELECT raw_payload->>'ts_code' AS code,is_current_version
       FROM fundamental.financial_reports WHERE company_id=$1 AND report_kind='balance' AND period_end='2025-12-31' ORDER BY code`, [company]);
-    assert.strictEqual(currentDiagnostic.rows.filter(item => item.is_current_version).length, 1, '先复现 A/H 共用全局标记');
+    assert.strictEqual(currentDiagnostic.rows.filter(item => item.is_current_version).length, 2, 'A/H 同期报告的兼容当前标记必须按市场分别保留');
     const cnSamePeriod = await repository.listStatementRows({ tsCode: code, market: 'CN', type: 'balance', tx: client });
     const hkSamePeriod = await repository.listStatementRows({ tsCode: freeHkCode, market: 'HK', type: 'balance', tx: client });
     assert.ok(cnSamePeriod.some(item => item.period_end === '2025-12-31' && item.source_currency === 'CNY'), 'A 股同期报告不能被港股全局标记遮蔽');
     assert.ok(hkSamePeriod.some(item => item.period_end === '2025-12-31' && item.source_currency === 'USD'), '港股同期报告应独立可读');
     const hkSamePeriodGroups = await hkAnalysis.readHkReportFacts(freeHkCode, 20, client);
     assert.ok(hkSamePeriodGroups.some(group => group.period_end === '2025-12-31' && group.assets === 200000000), '概览应读取独立港股版本');
+    const legacyAnalysis = require('../repositories/stockAnalysisRepository');
+    const hkLegacyInputs = await legacyAnalysis.loadAnalysisInputs({ tsCode: freeHkCode }, client);
+    for (const kind of ['income', 'balance', 'cashflow', 'indicators']) {
+      assert.ok(hkLegacyInputs[kind].every(row => String(row.ts_code || '').toUpperCase() === freeHkCode),
+        `旧股票分析 ${kind} 入口不得混入同公司的 A 股报告`);
+    }
     await projection.syncReportRows(client, [{ ts_code: freeHkCode, end_date: '2025-12-31', ann_date: '2026-04-02',
       report_type: '1', period_type: 'annual', currency: 'USD', record_marker: 'parent',
       __statement_coverage: { market: 'HK', value_basis: 'source_original_t_o' },

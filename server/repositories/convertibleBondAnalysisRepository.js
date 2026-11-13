@@ -29,7 +29,10 @@ async function select_market_convertible_bond_daily_metrics(params, client = poo
 async function select_fundamental_financial_reports(params, client = pool) {
   return client.query(`SELECT r.report_kind,r.period_end::text,r.raw_payload FROM fundamental.financial_reports r
       JOIN core.company_instruments ci ON ci.company_id=r.company_id
-      WHERE ci.instrument_id=$1 AND r.announced_at<=$2::date AND r.period_end<=$2::date
+      JOIN core.instruments stock ON stock.instrument_id=ci.instrument_id
+      WHERE ci.instrument_id=$1
+        AND upper(COALESCE(r.raw_payload->>'ts_code',''))=upper(stock.canonical_code)
+        AND r.announced_at<=$2::date AND r.period_end<=$2::date
       ORDER BY r.period_end DESC,r.announced_at DESC`, params);
 }
 
@@ -83,7 +86,9 @@ async function select_market_daily_bars(params, client = pool) {
             (SELECT max(trade_date) FROM market.daily_bars WHERE instrument_id=$2) AS stock_date,
             (SELECT max(period_end) FROM fundamental.financial_reports fr
                JOIN core.company_instruments ci ON ci.company_id=fr.company_id
-               WHERE ci.instrument_id=$2) AS report_end_date`, params);
+               JOIN core.instruments stock ON stock.instrument_id=ci.instrument_id
+               WHERE ci.instrument_id=$2
+                 AND upper(COALESCE(fr.raw_payload->>'ts_code',''))=upper(stock.canonical_code)) AS report_end_date`, params);
 }
 
 module.exports = {

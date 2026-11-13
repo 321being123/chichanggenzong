@@ -7,6 +7,13 @@ const {
 } = require('../services/convertibleBondAnalysis');
 const { tsDateStr } = require('../services/market');
 const { sourceForUrl } = require('../services/stockAnalysis');
+const fs = require('fs');
+const path = require('path');
+
+const convertibleRepositorySource = fs.readFileSync(path.join(__dirname, '..', 'repositories', 'convertibleBondAnalysisRepository.js'), 'utf8');
+const convertibleStoreSource = fs.readFileSync(path.join(__dirname, '..', 'services', 'convertibleBondAnalysisStore.js'), 'utf8');
+assert.ok(convertibleRepositorySource.includes("upper(COALESCE(r.raw_payload->>'ts_code',''))=upper(stock.canonical_code)"), '可转债分析财报必须按正股证券代码隔离');
+assert.ok(convertibleStoreSource.includes("upper(COALESCE(fr.raw_payload->>'ts_code','')) = upper(i.canonical_code)"), '可转债分析水位必须按正股证券代码隔离');
 
 assert.strictEqual(normalizeBondCode('113001'), '113001.SH');
 assert.strictEqual(normalizeBondCode('123001.SZ'), '123001.SZ');

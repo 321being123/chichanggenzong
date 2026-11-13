@@ -97,6 +97,9 @@ const unavailableEquity = buildStatementPayload({ market: 'CN', type: 'balance',
   rows: [row({ source_code: 'tushare', bs_tetshaoehopc: 551, bs_tetoshopc: null })], options: { compare: 'none' } });
 assert.strictEqual(field(unavailableEquity, 'bs.tetoshopc').values[0].value, null, '不能隐藏普通股权益缺口');
 assert.strictEqual(field(unavailableEquity, 'bs.tetoshopc').values[0].reason, 'source_mapping_unverified');
+const unavailableDisposal = buildStatementPayload({ market: 'CN', type: 'income', canonicalCode: '000858.SZ',
+  rows: [row({ source_code: 'tushare', ps_ncadarl: null })], options: { compare: 'none' } });
+assert.strictEqual(field(unavailableDisposal, 'ps.ncadarl').values[0].reason, 'source_mapping_unverified');
 const missingRedemption = buildStatementPayload({ market: 'CN', type: 'cashflow', canonicalCode: '000001.SZ',
   rows: [row({ source_code: 'tushare', cfs_crfii: 20, cfs_crfrci: null })], options: { compare: 'none' } });
 assert.strictEqual(field(missingRedemption, 'cfs.crfrci').values[0].value, null, '未采集的收回投资要作为缺口保留');
@@ -168,16 +171,16 @@ assert.strictEqual(field(flowYoy, 'ps.tp').values[0].comparison_reason, 'flow_pe
   try {
     const database = await pool.query('SELECT current_database() AS name');
     assert.match(database.rows[0].name, /(^|_)(test|migtest)(_|$)/i, '只允许在隔离测试库核对 SQL');
-    const expressions = ['cfs.crfrci', 'cfs.crfii', 'bs.tetoshopc', 'bs.tetshaoehopc', 'ps.npatoshopc', 'ps.npatshaoehopc', 'ps.tciatoshopc', 'ps.tciatshaoehopc', 'ps.toc', 'cfs.ioa']
+    const expressions = ['cfs.crfrci', 'cfs.crfii', 'bs.tetoshopc', 'bs.tetshaoehopc', 'ps.npatoshopc', 'ps.npatshaoehopc', 'ps.tciatoshopc', 'ps.tciatshaoehopc', 'ps.toc', 'ps.ncadarl', 'cfs.ioa']
       .map(code => repository.legacyMetricExpression({ code })).join(',');
     const sql = `WITH w AS (SELECT 999::numeric AS cfs_crfrci, 999::numeric AS cfs_crfii,
       999::numeric AS bs_tetoshopc, 999::numeric AS bs_tetshaoehopc, 999::numeric AS ps_npatoshopc,
       999::numeric AS ps_npatshaoehopc, 999::numeric AS ps_tciatoshopc, 999::numeric AS ps_tciatshaoehopc,
-      999::numeric AS ps_toc, 999::numeric AS cfs_ioa),
+      999::numeric AS ps_toc, 999::numeric AS ps_ncadarl, 999::numeric AS cfs_ioa),
       r AS (SELECT $1::jsonb AS raw_payload), i AS (SELECT 'CN'::text AS market), ds AS (SELECT $2::text AS source_code)
       SELECT ${expressions} FROM w,r,i,ds`;
     const raw = { c_disp_withdrwl_invest: 100, c_recp_return_invest: 20, total_hldr_eqy_exc_min_int: 551,
-      n_income_attr_p: 42, compr_inc_attr_p: 40 };
+      n_income_attr_p: 42, compr_inc_attr_p: 40, nca_disploss: 1658018.71 };
     const original = (await pool.query(sql, [JSON.stringify(raw), 'tushare'])).rows[0];
     assert.strictEqual(Number(original.cfs_crfrci), 100, '收回投资不得错用投资收益');
     assert.strictEqual(Number(original.cfs_crfii), 20, '投资收益应读原始对应字段');
@@ -188,12 +191,14 @@ assert.strictEqual(field(flowYoy, 'ps.tp').values[0].comparison_reason, 'flow_pe
     assert.strictEqual(original.ps_tciatoshopc, null, '归母综合收益不能无依据冒充普通股综合收益');
     assert.strictEqual(Number(original.ps_tciatshaoehopc), 40);
     assert.strictEqual(original.ps_toc, null, '不同来源口径未核实时不能沿用旧宽表');
+    assert.strictEqual(original.ps_ncadarl, null, '处置净损失不能冒充毁损报废损失');
     assert.strictEqual(original.cfs_ioa, null, '减值准备口径未核实时不能沿用旧宽表');
     const missing = (await pool.query(sql, [JSON.stringify({ c_recp_return_invest: 20 }), 'tushare'])).rows[0];
     assert.strictEqual(missing.cfs_crfrci, null, '正确字段缺失时不能回用错写宽表');
     const official = (await pool.query(sql, [JSON.stringify(raw), 'lixinger_official'])).rows[0];
     assert.strictEqual(Number(official.cfs_crfrci), 999, '官方宽表不能被旧来源原始字段覆盖');
     assert.strictEqual(Number(official.bs_tetoshopc), 999);
+    assert.strictEqual(Number(official.ps_ncadarl), 999, '正确来源的毁损报废损失仍可读取');
 
     const selection = require('../repositories/stockSelectionRepository');
     const factSql = `WITH r AS (SELECT jsonb_build_object('ts_code',$1::text,'currency',$2::text) AS raw_payload,

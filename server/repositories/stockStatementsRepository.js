@@ -33,7 +33,7 @@ const LEGACY_CAS_FIELD_MAP = Object.freeze({
   'ps.cilor': 'credit_impa_loss', 'ps.ooe': 'other_bus_cost', 'ps.ciofv': 'fv_value_chg_gain',
   'ps.ivi': 'invest_income', 'ps.iifaajv': 'ass_invest_income', 'ps.ei': 'forex_gain',
   'ps.op': 'operate_profit', 'ps.noi': 'non_oper_income', 'ps.noe': 'non_oper_exp',
-  'ps.ncadarl': 'nca_disploss', 'ps.tp': 'total_profit', 'ps.ite': 'income_tax', 'ps.np': 'n_income',
+  'ps.tp': 'total_profit', 'ps.ite': 'income_tax', 'ps.np': 'n_income',
   'ps.npfco': 'continued_net_profit', 'ps.npatshaoehopc': 'n_income_attr_p', 'ps.npatmsh': 'minority_gain',
   'ps.natooci': 'oth_compr_income', 'ps.tci': 't_compr_income', 'ps.tciatshaoehopc': 'compr_inc_attr_p',
   'ps.tciatmsh': 'compr_inc_attr_m_s', 'ps.beps': 'basic_eps', 'ps.deps': 'diluted_eps',
@@ -61,7 +61,7 @@ const LEGACY_CAS_FIELD_MAP = Object.freeze({
 
 // Historical Tushare values previously copied into these columns can have a
 // different meaning from the official metric. Do not expose them as that metric.
-const UNVERIFIED_TUSHARE_WIDE = new Set(['bs.tetoshopc', 'ps.npatoshopc', 'ps.tciatoshopc', 'ps.toc', 'cfs.ioa']);
+const UNVERIFIED_TUSHARE_WIDE = new Set(['bs.tetoshopc', 'ps.npatoshopc', 'ps.tciatoshopc', 'ps.toc', 'ps.ncadarl', 'cfs.ioa']);
 
 function legacyMetricExpression(metric) {
   const column = dict.columnOf(metric.code);

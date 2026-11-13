@@ -4,7 +4,7 @@ const dict = require('../dataAccess/lixingerReportMetrics');
 const contract = require('../domain/securityAnalysisContract');
 const presentation = require('../domain/statementPresentation');
 const repository = require('../repositories/stockStatementsRepository');
-const FORMULA_VERSION = 'stock-statements-3';
+const FORMULA_VERSION = 'stock-statements-4';
 
 const PERIOD_TYPES = new Set(['all', 'annual', 'semiannual', 'q1', 'q3', 'unknown']);
 const COMPARES = new Set(['yoy', 'qoq', 'none']);

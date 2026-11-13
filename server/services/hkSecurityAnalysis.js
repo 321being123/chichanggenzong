@@ -9,7 +9,7 @@ const statementService = require('./stockStatementService');
 const contract = require('../domain/securityAnalysisContract');
 
 const FORMULA_VERSION = 'hk-2';
-const STATEMENT_FORMULA_VERSION = 'hk-statements-1';
+const { FORMULA_VERSION: STATEMENT_FORMULA_VERSION } = require('./hkStockStatements');
 
 // 港股 HKFRS 宽表字段对照（唯一登记位置）。现金流官方只有 7 个汇总项，没有资本开支，
 // 因此自由现金流恒为「不可计算」，绝不用 null→0 或退化成经营现金流。

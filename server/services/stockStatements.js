@@ -46,7 +46,7 @@ function finite(value){if(value===null||value===undefined||value==='')return nul
 async function getStockStatements(tsCode, type = 'balance', limit = 8, options = {}) {
   return statementService.getStockStatements({
     tsCode, market: 'CN', type, limit,
-    formulaVersion: 'stock-statements-2', ...options,
+    formulaVersion: statementService.FORMULA_VERSION, ...options,
   });
 }
 

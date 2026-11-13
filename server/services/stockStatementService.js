@@ -4,6 +4,7 @@ const dict = require('../dataAccess/lixingerReportMetrics');
 const contract = require('../domain/securityAnalysisContract');
 const presentation = require('../domain/statementPresentation');
 const repository = require('../repositories/stockStatementsRepository');
+const FORMULA_VERSION = 'stock-statements-3';
 
 const PERIOD_TYPES = new Set(['all', 'annual', 'semiannual', 'q1', 'q3', 'unknown']);
 const COMPARES = new Set(['yoy', 'qoq', 'none']);
@@ -102,7 +103,7 @@ function reportDigestOf(rows) {
   return rows.map(row => `${row.report_id}:${row.source_version || ''}:${row.period_end || ''}:${row.period_type || ''}:${row.statement_revision || ''}`).join(',');
 }
 
-function statementAnalysisVersionOf({ canonicalCode, market = 'CN', type = 'balance', formulaVersion = 'stock-statements-2', rows = [] } = {}) {
+function statementAnalysisVersionOf({ canonicalCode, market = 'CN', type = 'balance', formulaVersion = FORMULA_VERSION, rows = [] } = {}) {
   return contract.analysisVersionOf({
     canonicalCode, formulaVersion,
     inputs: { market, type, reports: reportDigestOf(rows) },
@@ -138,7 +139,7 @@ function metadataOf(row, market) {
   });
 }
 
-function buildStatementPayload({ market = 'CN', type = 'balance', rows = [], versionRows = rows, options = {}, formulaVersion = 'stock-statements-2', canonicalCode } = {}) {
+function buildStatementPayload({ market = 'CN', type = 'balance', rows = [], versionRows = rows, options = {}, formulaVersion = FORMULA_VERSION, canonicalCode } = {}) {
   const normalized = normalizeOptions(options);
   const types = [...new Set(rows.map(row => parseCoverage(row.statement_coverage))
     .map(coverage => coverage && coverage.fs_table_type).filter(Boolean))];
@@ -211,7 +212,7 @@ function buildStatementPayload({ market = 'CN', type = 'balance', rows = [], ver
   };
 }
 
-async function getStockStatements({ tsCode, market = 'CN', type = 'balance', limit = 8, requestedVersion = null, formulaVersion = 'stock-statements-2', ...options } = {}) {
+async function getStockStatements({ tsCode, market = 'CN', type = 'balance', limit = 8, requestedVersion = null, formulaVersion = FORMULA_VERSION, ...options } = {}) {
   if (!dict.STATEMENTS.includes(type)) throw new Error('三表类型无效');
   const normalized = normalizeOptions({ ...options, limit });
   const [rows, versionRows] = await Promise.all([
@@ -229,7 +230,7 @@ async function getStockStatements({ tsCode, market = 'CN', type = 'balance', lim
   return payload;
 }
 
-async function getStockStatementVersions({ tsCode, market = 'CN', formulaVersion = 'stock-statements-2' } = {}) {
+async function getStockStatementVersions({ tsCode, market = 'CN', formulaVersion = FORMULA_VERSION } = {}) {
   const entries = await Promise.all(dict.STATEMENTS.map(async type => {
     const rows = await repository.listStatementRows({ tsCode, market, type, limit: 20, periodType: null, scope: null });
     return [type, statementAnalysisVersionOf({ canonicalCode: tsCode, market, type, formulaVersion, rows })];
@@ -238,6 +239,6 @@ async function getStockStatementVersions({ tsCode, market = 'CN', formulaVersion
 }
 
 module.exports = {
-  PERIOD_TYPES, COMPARES, normalizeOptions, buildStatementPayload,
+  FORMULA_VERSION, PERIOD_TYPES, COMPARES, normalizeOptions, buildStatementPayload,
   reportDigestOf, statementAnalysisVersionOf, getStockStatements, getStockStatementVersions,
 };

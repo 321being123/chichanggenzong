@@ -7,6 +7,18 @@ const { pool } = require('../db/connection');
 const { migration194FinancialStatementTypeColumns } = require('../db/migrations/era11FinancialStatements');
 
 async function main() {
+  const statementService = require('../services/stockStatementService');
+  const hkStatements = require('../services/hkStockStatements');
+  const hkAnalysis = require('../services/hkSecurityAnalysis');
+  const versionRows = [{ report_id: 1, period_end: '2025-12-31', period_type: 'annual',
+    source_version: 'v1', statement_revision: 'r1' }];
+  const versionParams = { canonicalCode: '00005.HK', market: 'HK', type: 'income', rows: versionRows };
+  assert.notStrictEqual(statementService.statementAnalysisVersionOf({ ...versionParams, formulaVersion: hkStatements.FORMULA_VERSION }),
+    statementService.statementAnalysisVersionOf({ ...versionParams, formulaVersion: 'hk-statements-1' }), '展示和度量合同变化必须产生新版本');
+  const overview = hkAnalysis.buildHkAnalysis({ reportFacts: [{ ...versionRows[0], currency: 'HKD',
+    report_ids: [{ kind: 'income', report_id: 1, statement_revision: 'r1' }] }] }, { tsCode: '00005.HK' });
+  assert.strictEqual(overview.display.statement_analysis_versions.income,
+    statementService.statementAnalysisVersionOf({ ...versionParams, formulaVersion: hkStatements.FORMULA_VERSION }), '概览与三表必须使用同一版本');
   const calls = [];
   let addQuarterly = false;
   official.callEndpoint = async (endpoint, params) => {

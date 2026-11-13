@@ -19,7 +19,8 @@ async function main() {
     for (const metric of params.metricsList) {
       const match = /^q\.([a-z]+)\.([a-z0-9_]+)\.t$/.exec(metric);
       assert.ok(match, metric);
-      (q[match[1]] ||= {})[match[2]] = { t: match[2] === 'cabwcb' ? 254225000000 : 123 };
+      (q[match[1]] ||= {})[match[2]] = { t: match[2] === 'cabwcb' ? 254225000000
+        : match[2] === 'toe_ta_r' ? 0.25 : 123 };
     }
     return { rows: [{ date: '2025-12-31', standardDate: '2025-12-31', reportDate: '2026-03-01',
       reportType: 'annual_report', stockCode: '000001', currency: 'CNY', q }] };
@@ -100,8 +101,17 @@ async function main() {
         assert.strictEqual(cash.values[0].value, 2542.25);
         assert.strictEqual(employees.values[0].value, 123);
         assert.strictEqual(employees.unit, '人');
+        assert.strictEqual(employees.section, '员工情况');
+        const cashDetail = payload.fields.find(field => field.code === 'bs.c');
+        assert.strictEqual(cashDetail.label, '(其中)现金');
+        assert.strictEqual(cashDetail.section, '资产总计');
+        assert.strictEqual(cashDetail.parent, 'bs.cabwcb');
+        assert.strictEqual(cashDetail.level, 1);
+        const equityRatio = payload.fields.find(field => field.code === 'bs.toe_ta_r');
+        assert.strictEqual(equityRatio.values[0].value, 25);
+        assert.strictEqual(equityRatio.unit, '%');
       }
-      if (kind === 'income') assert.ok(payload.fields.some(field => field.code === 'ps.nii'));
+      if (kind === 'income') assert.strictEqual(payload.fields.find(field => field.code === 'ps.nii').section, '营业收入');
     }
   } finally {
     await client.query('ROLLBACK');

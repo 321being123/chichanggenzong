@@ -3,15 +3,16 @@
 // 三表展示元数据只依赖调用方传入的版本化科目元数据，不取数、不访问数据库。
 
 const PARENT_CODES = new Set([
-  'bs.ta', 'bs.tca', 'bs.tnca', 'bs.tl', 'bs.tcl', 'bs.tncl', 'bs.toe', 'bs.tetoshopc',
+  'bs.ta', 'bs.tca', 'bs.tnca', 'bs.tl', 'bs.tcl', 'bs.tncl', 'bs.toe', 'bs.tetoshopc', 'bs.cabwcb',
   'ps.toi', 'ps.oi', 'ps.toc', 'ps.tc', 'ps.op', 'ps.tp', 'ps.npatoshopc',
-  'cfs.stciffoa', 'cfs.stcoffoa', 'cfs.ncffoa',
+  'cfs.stciffoa', 'cfs.stcoffoa', 'cfs.ncffoa', 'cfs.niicdadfbaofi',
   'cfs.stcifia', 'cfs.stcoffia', 'cfs.ncffia',
   'cfs.stcifffa', 'cfs.stcofffa', 'cfs.ncfffa', 'cfs.niicace',
 ]);
 
 const PARENT_HINTS = Object.freeze({
   'bs.tca': 'bs.ta', 'bs.tnca': 'bs.ta',
+  'bs.c': 'bs.cabwcb', 'bs.bwcb': 'bs.cabwcb',
   'bs.tl': null, 'bs.tcl': 'bs.tl', 'bs.tncl': 'bs.tl',
   'bs.toe': null, 'bs.tetshaoehopc': 'bs.toe', 'bs.tetoshopc': 'bs.toe',
   'ps.oi': 'ps.toi', 'ps.toc': null, 'ps.op': null, 'ps.tp': null,
@@ -24,6 +25,7 @@ const PARENT_HINTS = Object.freeze({
   'ps.tci': 'ps.tp', 'ps.tciatshaoehopc': 'ps.tci', 'ps.tciatoshopc': 'ps.tci', 'ps.tciatmsh': 'ps.tci',
   'cfs.crfscapls': 'cfs.stciffoa', 'cfs.ndilaatc': 'cfs.stciffoa', 'cfs.niicdadfbaofi': 'cfs.stciffoa',
   'cfs.niibfcb': 'cfs.stciffoa', 'cfs.niipfofi': 'cfs.stciffoa', 'cfs.crfp': 'cfs.stciffoa',
+  'cfs.niicd': 'cfs.niicdadfbaofi', 'cfs.niidfbaofi': 'cfs.niicdadfbaofi',
   'cfs.ncrfrib': 'cfs.stciffoa', 'cfs.niiphd': 'cfs.stciffoa', 'cfs.ndifahftp': 'cfs.stciffoa',
   'cfs.niipfbaofi': 'cfs.stciffoa', 'cfs.niifasurpaioa': 'cfs.stciffoa', 'cfs.crfifac': 'cfs.stciffoa',
   'cfs.ncrfstoa': 'cfs.stciffoa', 'cfs.crfwbot': 'cfs.stciffoa', 'cfs.crrtooa': 'cfs.stciffoa',
@@ -55,9 +57,10 @@ function measureType(metric) {
   // These are amounts or liquidity multiples, despite the Chinese word “率”.
   if (metric.code === 'cfs.iocacedtfier') return 'currency';
   if (metric.code === 'bs.tca_tcl_r' || metric.code === 'bs.q_r') return 'multiple';
-  const text = `${metric.code} ${metric.name}`.toLowerCase();
+  const code = String(metric.code || '').toLowerCase();
+  const text = `${code} ${metric.name}`.toLowerCase();
   if (/eps|per_share|每股/.test(text)) return 'per_share';
-  if (/_r(?:$|_)|margin|roe|roa|yield|率|比率/.test(text)) return 'percent';
+  if (/_r(?:$|_)/.test(code) || /margin|roe|roa|yield|率|比率|比例|占比|利差/.test(text)) return 'percent';
   if (/days|day|天数|周转天数/.test(text)) return 'days';
   if (/turnover|tor|倍数|倍/.test(text)) return 'multiple';
   if (/count|number|数量|股数|人数|户数/.test(text)) return 'count';
@@ -65,6 +68,7 @@ function measureType(metric) {
 }
 
 function sectionOf(metric, statement) {
+  if (metric.source_section) return metric.source_section;
   const text = String(metric.name || '');
   if (statement === 'cashflow') {
     if (CASHFLOW_SECTIONS.operating.has(metric.code)) return '经营活动现金流';
@@ -112,15 +116,20 @@ function presentationOf(metrics, statement, currency) {
     const hintedParent = Object.prototype.hasOwnProperty.call(PARENT_HINTS, metric.code) ? PARENT_HINTS[metric.code] : null;
     const parent = hintedParent
       ? metrics.find(candidate => candidate.code === hintedParent) || null
-      : (child ? metrics.find(candidate => candidate !== metric && sectionOf(candidate, statement) === sectionOf(metric, statement) && PARENT_CODES.has(candidate.code)) : null);
+      : (child && metric.source_prefix === undefined
+        ? metrics.find(candidate => candidate !== metric && sectionOf(candidate, statement) === sectionOf(metric, statement) && PARENT_CODES.has(candidate.code)) : null);
+    // 官方文档将“其中”“加”“减”等前缀与科目名称分开；保留原文，不据此猜测父科目。
+    const sourcePrefix = String(metric.source_prefix || '').replace(/^#\s*/, '');
+    const labelPrefix = /其中|备注|^加|^减/.test(sourcePrefix) ? sourcePrefix : '';
     return {
       code: metric.code,
-      label: metric.name,
+      label: labelPrefix && !String(metric.name).startsWith(labelPrefix) ? `${labelPrefix}${metric.name}` : metric.name,
       source_label: metric.name,
+      source_prefix: metric.source_prefix || null,
       section: sectionOf(metric, statement),
       level: parent ? 1 : 0,
       parent: parent ? parent.code : null,
-      is_parent: parents.has(metric.code),
+      is_parent: metric.source_heading === true || parents.has(metric.code),
       measure_type: measureType(metric),
       unit: unitOf(metric, currency),
     };

@@ -14,6 +14,7 @@ const path = require('path');
 const FILE = path.join(__dirname, 'catalog', 'lixingerReportMetrics.txt');
 // 版本化快照：不同财报类型只能请求其对应公司接口声明的科目。
 const TYPE_FILE = path.join(__dirname, 'catalog', 'lixingerCompanyStatementTypes_20261113.txt');
+const LAYOUT_FILE = path.join(__dirname, 'catalog', 'lixingerCompanyStatementLayout_20261113.txt');
 
 // 市场 → 会计准则体系（落库时用于隔离两套科目）
 const MARKET_STANDARD = Object.freeze({ CN: 'CAS', HK: 'HKFRS' });
@@ -41,6 +42,15 @@ function load() {
     if (!/^(bs|ps|cfs)\.[a-z0-9_]+$/.test(code)) continue;
     rows.push(Object.freeze({ market, standard: MARKET_STANDARD[market], statement, code, name: name || code }));
   }
+  const layouts = new Map();
+  for (const raw of fs.readFileSync(LAYOUT_FILE, 'utf8').split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line || line.startsWith('#')) continue;
+    const [market, type, statement, code, section, prefix, heading, extra] = line.split('|');
+    const key = `${market}|${type}|${statement}|${code}`;
+    if (extra !== undefined || !['0', '1'].includes(heading) || layouts.has(key)) throw new Error(`财报布局字典行无效：${line}`);
+    layouts.set(key, { source_section: section, source_prefix: prefix, source_heading: heading === '1' });
+  }
   const byType = {};
   const existing = new Set(rows.map(row => `${row.market}|${row.code}`));
   for (const raw of fs.readFileSync(TYPE_FILE, 'utf8').split(/\r?\n/)) {
@@ -52,7 +62,11 @@ function load() {
         || !/^(bs|ps|cfs)\.[a-z0-9_]+$/.test(code) || !name || extra !== undefined) {
       throw new Error(`财报类型字典行无效：${line}`);
     }
-    const item = Object.freeze({ market, standard: MARKET_STANDARD[market], statement, code, name });
+    const layoutKey = `${market}|${type}|${statement}|${code}`;
+    const layout = layouts.get(layoutKey);
+    if (!layout) throw new Error(`财报类型缺少官方布局：${layoutKey}`);
+    layouts.delete(layoutKey);
+    const item = Object.freeze({ market, standard: MARKET_STANDARD[market], statement, code, name, ...layout });
     const key = `${market}|${type}`;
     (byType[key] ||= []).push(item);
     if (!existing.has(`${market}|${code}`)) {
@@ -60,6 +74,7 @@ function load() {
       existing.add(`${market}|${code}`);
     }
   }
+  if (layouts.size) throw new Error('财报布局存在未登记的科目');
   const byMarket = {};
   for (const market of Object.keys(MARKET_STANDARD)) {
     byMarket[market] = rows.filter(row => row.market === market);
@@ -141,6 +156,7 @@ function statsOf(market) {
 module.exports = {
   FILE,
   TYPE_FILE,
+  LAYOUT_FILE,
   MARKET_STANDARD,
   STATEMENTS,
   STATEMENT_LABEL,

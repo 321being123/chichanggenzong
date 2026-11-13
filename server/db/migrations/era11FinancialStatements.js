@@ -52,4 +52,31 @@ async function migration186FinancialStatementWide(pg) {
   return created;
 }
 
-module.exports = { migration186FinancialStatementWide, ensureStatementTable };
+// 194 使用固定日期版本的公司财报类型目录；已建的 186 宽表不会因字典变化自动扩列。
+// 只添加可空列，既有值和报告身份不变；空库若在 186 已创建这些列则幂等跳过。
+async function migration194FinancialStatementTypeColumns(pg) {
+  const snapshot = require('fs').readFileSync(require('path').join(__dirname, '../../dataAccess/catalog/lixingerCompanyStatementTypes_20261113.txt'), 'utf8');
+  const columnsByTable = new Map();
+  for (const raw of snapshot.split(/\r?\n/)) {
+    if (!raw || raw.startsWith('#')) continue;
+    const [market, , statement, code] = raw.split('|');
+    if (!dict.MARKET_STANDARD[market] || !dict.STATEMENTS.includes(statement)
+        || !code.startsWith({ balance: 'bs.', income: 'ps.', cashflow: 'cfs.' }[statement])) {
+      throw new Error(`迁移 194 的财报字段无效：${raw}`);
+    }
+    const key = `${market}|${statement}`;
+    if (!columnsByTable.has(key)) columnsByTable.set(key, new Set());
+    columnsByTable.get(key).add(dict.columnOf(code));
+  }
+  for (const market of Object.keys(dict.MARKET_STANDARD)) {
+    for (const statement of dict.STATEMENTS) {
+      const table = dict.tableNameOf(market, statement);
+      const fields = columnsByTable.get(`${market}|${statement}`);
+      if (!fields || !fields.size) throw new Error(`迁移 194 缺少字段：${market}/${statement}`);
+      const columns = [...fields].map(column => `ADD COLUMN IF NOT EXISTS ${column} NUMERIC`);
+      await pg.query(`ALTER TABLE ${table} ${columns.join(', ')}`);
+    }
+  }
+}
+
+module.exports = { migration186FinancialStatementWide, migration194FinancialStatementTypeColumns, ensureStatementTable };

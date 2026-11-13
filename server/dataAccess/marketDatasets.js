@@ -749,14 +749,27 @@ async function readFinancialStatementSeries({ tsCode, kind, startDate, endDate, 
 
 // 财报（按报表类型）：官方优先；官方无数据时返回 null，由调用方沿用既有批量取数链路。
 async function readFinancialReportRows({ tsCode, kinds, startDate, endDate, fsTableType } = {}) {
-  // 港股财报端点按公司财报类型分流（bank/insurance/security/reit/other_financial/non_financial），
-  // 类型由调用方按 hk/company 档案给出；缺省时由官方适配器拒绝，不猜。
-  if (/^\d{5}\.HK$/i.test(String(tsCode || '')) && !fsTableType) {
-    const error = new Error('港股财报类型待确认，暂不请求财报端点');
+  let fsTableTypeEvidence = null;
+  // 港股档案由上游提供；A 股缺类型时向 cn/company 核对完整证券身份。
+  if (/^\d{6}\.(SH|SZ|BJ)$/i.test(String(tsCode || '')) && !fsTableType) {
+    const profiles = await safeOfficial(() => official.resolveCnCompanyProfiles({ codes: [tsCode] }), 'cn_company_profile');
+    const matched = (profiles.value || []).filter(row => String(row.code || '').toUpperCase() === String(tsCode).toUpperCase());
+    if (matched.length === 1) {
+      fsTableType = matched[0].fsTableType;
+      fsTableTypeEvidence = matched[0].fsTableTypeEvidence || null;
+    }
+  }
+  const market = /\.HK$/i.test(String(tsCode || '')) ? 'HK' : 'CN';
+  let supported = false;
+  if (fsTableType) {
+    try { require('./lixingerReportMetrics').metricsOfType(market, fsTableType); supported = true; } catch (_) { /* 类型不在版本化目录中 */ }
+  }
+  if (!supported) {
+    const error = new Error('财报类型待确认，暂不请求财报端点');
     error.code = 'FINANCIAL_TYPE_UNKNOWN';
     throw error;
   }
-  const primary = await safeOfficial(() => official.resolveFinancialReports({ tsCode, startDate, endDate, kinds, options: { fsTableType } }), 'financial_reports');
+  const primary = await safeOfficial(() => official.resolveFinancialReports({ tsCode, startDate, endDate, kinds, options: { fsTableType, fsTableTypeEvidence } }), 'financial_reports');
   if (!primary.value) return null;
   // 一个报告只返回部分指标批次时，不能让两个既有写入入口把它当完整采集成功。
   // 官方原始响应由 Guard 留证；本次不发布标准事实，交由调用方记录失败并重试。

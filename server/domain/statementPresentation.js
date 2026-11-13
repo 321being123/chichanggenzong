@@ -60,7 +60,7 @@ function measureType(metric) {
   if (/_r(?:$|_)|margin|roe|roa|yield|率|比率/.test(text)) return 'percent';
   if (/days|day|天数|周转天数/.test(text)) return 'days';
   if (/turnover|tor|倍数|倍/.test(text)) return 'multiple';
-  if (/count|number|数量|股数/.test(text)) return 'count';
+  if (/count|number|数量|股数|人数|户数/.test(text)) return 'count';
   return 'currency';
 }
 
@@ -95,7 +95,12 @@ function unitOf(metric, currency) {
   if (kind === 'percent') return '%';
   if (kind === 'days') return '天';
   if (kind === 'multiple') return '倍';
-  if (kind === 'count') return '个';
+  if (kind === 'count') {
+    if (/人数/.test(metric.name)) return '人';
+    if (/户数/.test(metric.name)) return '户';
+    if (/股数/.test(metric.name)) return '股';
+    return '个';
+  }
   return currency ? `${currency}·亿元` : '原币·亿元';
 }
 

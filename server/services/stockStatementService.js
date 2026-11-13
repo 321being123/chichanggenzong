@@ -110,6 +110,7 @@ function statementAnalysisVersionOf({ canonicalCode, market = 'CN', type = 'bala
 }
 
 function metadataOf(row, market) {
+  const coverage = parseCoverage(row.statement_coverage);
   const meta = contract.statementMetadataOf({
     report_id: row.report_id,
     period_end: dateKey(row.period_end),
@@ -128,6 +129,7 @@ function metadataOf(row, market) {
     report_type: row.report_type_label || row.period_type || row.report_type || meta.report_type,
     report_type_label: meta.report_type,
     source_report_type: row.report_type || null,
+    fs_table_type: coverage && coverage.fs_table_type || null,
     scope: row.statement_scope || 'consolidated',
     source_id: row.source_id || null,
     source_version: row.source_version || null,
@@ -138,7 +140,18 @@ function metadataOf(row, market) {
 
 function buildStatementPayload({ market = 'CN', type = 'balance', rows = [], versionRows = rows, options = {}, formulaVersion = 'stock-statements-2', canonicalCode } = {}) {
   const normalized = normalizeOptions(options);
-  const metrics = dict.metricsByStatement(market, type);
+  const types = [...new Set(rows.map(row => parseCoverage(row.statement_coverage))
+    .map(coverage => coverage && coverage.fs_table_type).filter(Boolean))];
+  const ordered = [];
+  for (const tableType of types) {
+    try { ordered.push(...dict.metricsOfType(market, tableType).filter(metric => metric.statement === type)); }
+    catch (_) { /* 旧记录类型无法识别时不猜测 */ }
+  }
+  const byCode = new Map();
+  for (const metric of [...ordered, ...dict.metricsByStatement(market, type)]) {
+    if (!byCode.has(metric.code)) byCode.set(metric.code, metric);
+  }
+  const metrics = [...byCode.values()];
   const currencies = [...new Set(rows.map(row => String(row.currency_code || '').toUpperCase()).filter(Boolean))];
   const currencyUnverified = row => market === 'HK' && row.source_code === 'lixinger_official'
     && String(row.currency_code || '').toUpperCase() !== 'HKD';

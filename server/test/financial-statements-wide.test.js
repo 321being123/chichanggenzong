@@ -54,9 +54,13 @@ async function main() {
       assert.ok(batch.length <= 128, `单批超过 128 个指标：${batch.length}`);
       assert.ok(batch.every(code => /^q\.(bs|ps|cfs)\.[a-z0-9_]+\.t$/.test(code)), '请求串格式必须是 q.<表>.<字段>.t');
     }
-    // 每个市场各自都要被完整请求到（两市场有同名科目，不能合并去重）
-    assert.strictEqual(new Set(cnBatches.flat()).size, CN.total, 'A股分批后指标总数应与字典一致');
-    assert.strictEqual(new Set(hkBatches.flat()).size, HK.total, '港股分批后指标总数应与字典一致');
+    // 分批必须覆盖对应报表类型，不能将其他类型的字段混入请求。
+    assert.strictEqual(new Set(cnBatches.flat()).size, dict.metricsOfType('CN', 'non_financial').length);
+    assert.strictEqual(new Set(hkBatches.flat()).size, dict.metricsOfType('HK', 'non_financial').length);
+    const bankBatches = dict.requestBatchesOf('CN', 128, 'bank');
+    assert.strictEqual(new Set(bankBatches.flat()).size, dict.metricsOfType('CN', 'bank').length);
+    assert.ok(bankBatches.flat().includes('q.bs.cabwcb.t'));
+    assert.ok(!bankBatches.flat().includes('q.bs.tfa.t'));
   });
 
   await check('列名映射：代码转下划线且拒绝非法代码', () => {

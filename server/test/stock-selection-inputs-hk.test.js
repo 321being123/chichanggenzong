@@ -193,7 +193,7 @@ async function main() {
     assert.strictEqual(pool.fsTableTypes.length, 6, '支持的财报类型要列全');
   });
 
-  await check('港股财报：金融类型走对应端点，且只发三表标准项不带宽表分批', async () => {
+  await check('港股财报：金融类型走对应端点且按该类型科目分批', async () => {
     const calls = [];
     stub('../services/lixingerOfficial', {
       callEndpoint: async (endpoint, params) => {
@@ -208,13 +208,17 @@ async function main() {
       tsCode: '00939.HK', startDate: '2024-01-01', endDate: '2026-11-04',
       kinds: ['income', 'balance', 'cashflow', 'indicator'], options: { fsTableType: 'bank' },
     });
-    assert.strictEqual(calls.length, 1, '金融类只发一批标准项，不得再发宽表分批');
+    assert.ok(calls.length >= 2, '金融类型目录必须按上限分批');
     assert.strictEqual(calls[0].endpoint, 'hk/company/fs/bank', '银行必须走银行端点，不能套非金融端点');
     const metrics = calls[0].metricsList;
     assert.ok(metrics.includes('q.ps.npatoshopc.t'), '归母净利润用完整指标格式');
     assert.ok(metrics.includes('q.bs.tetoshopc.t'), '归母股东权益要取，R05 依赖它');
     assert.ok(metrics.includes('q.bs.ta.t'), '总资产要取');
     assert.ok(!metrics.includes('q.ps.toi.t'), '金融类不发营业总收入，避免整批被判非法');
+    const bankCodes = new Set(require('../dataAccess/lixingerReportMetrics').metricsOfType('HK', 'bank')
+      .map(item => `q.${item.code}.t`));
+    assert.ok(calls.every(call => call.endpoint === 'hk/company/fs/bank'
+      && call.metricsList.length <= 128 && call.metricsList.every(metric => bankCodes.has(metric))));
 
     calls.length = 0;
     await adapter.resolveFinancialReports({
@@ -251,6 +255,7 @@ async function main() {
     const adapter = require(adapterPath);
     const reports = await adapter.resolveFinancialReports({
       tsCode: '600519.SH', startDate: '2024-01-01', endDate: '2025-12-31', kinds: ['balance'],
+      options: { fsTableType: 'non_financial' },
     });
     assert.strictEqual(reports.balance.length, 3, '两份版本和仅有扩展字段的报告都应保留');
     const first = reports.balance.find(row => row.ann_date === '20260301');
@@ -290,11 +295,12 @@ async function main() {
     assert.ok(calls[0].metrics.includes('q.ps.npatshaoehopc.t'));
     assert.ok(calls[0].metrics.includes('q.bs.tetshaoehopc.t'));
     assert.strictEqual(bank.income[0].__statement_metrics['ps.npatoshopc'], 45);
+    const insuranceStart = calls.length;
     const insurance = await read('insurance');
     assert.strictEqual(insurance.income[0].n_income_attr_p, undefined);
     assert.strictEqual(insurance.balance[0].total_hldr_eqy_exc_min_int, undefined);
-    assert.ok(!calls[1].metrics.includes('q.ps.npatshaoehopc.t'));
-    assert.ok(!calls[1].metrics.includes('q.bs.tetshaoehopc.t'));
+    assert.ok(!calls[insuranceStart].metrics.includes('q.ps.npatshaoehopc.t'));
+    assert.ok(!calls[insuranceStart].metrics.includes('q.bs.tetshaoehopc.t'));
     assert.strictEqual(insurance.balance[0].__statement_metrics['bs.tetoshopc'], 451);
   });
 

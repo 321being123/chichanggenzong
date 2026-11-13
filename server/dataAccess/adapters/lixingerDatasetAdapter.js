@@ -429,7 +429,7 @@ function fillStaticPe(rows, annuals) {
 // 港股没有流通市值等价字段，cmc 不请求；tsc（总股本）本链路不用。
 const HK_VALUATION_METRICS = ['pe_ttm', 'pb', 'dyr', 'mc'];
 
-// 港股金融类型各走自己的端点；金融专属科目与 HKFRS 通用科目混发可能被整批判非法，故不做宽表分批。
+// 港股金融类型各走自己的端点；只使用该类型的官方科目目录，禁止混发非金融类型科目。
 // 普通股专属指标仍可展示；银行的归母合计指标已对 00005.HK 实样验证，其他类型保留未核实缺口。
 const HK_FINANCIAL_TABLE_TYPES = new Set(['bank', 'insurance', 'security', 'reit', 'other_financial']);
 const HK_FINANCIAL_REPORT_METRICS = {
@@ -513,7 +513,7 @@ function periodTypeOfReportType(reportType) {
   return REPORT_PERIOD_TYPES[key] || null;
 }
 
-// 财务三表：官方 cn/company/fs/non_financial。指标表（ROE/ROA 等）口径与 Tushare 不同，不在此映射。
+// 财务三表按公司已核实的报表类型选择官方端点；未知类型不能猜测。
 async function resolveFinancialReports({ tsCode, startDate, endDate, kinds = ['income', 'balance', 'cashflow', 'indicator'], options = {} } = {}) {
   const code = stockCodeOf(tsCode);
   const start = dashDate(startDate), end = dashDate(endDate);
@@ -522,19 +522,25 @@ async function resolveFinancialReports({ tsCode, startDate, endDate, kinds = ['i
   const market = hk ? 'HK' : 'CN';
   // 财报类型决定端点与指标集；未识别或缺失时拒绝请求，不猜成金融/非金融口径。
   const requestedType = String((options || {}).fsTableType || '');
-  if (hk && !HK_FINANCIAL_TABLE_TYPES.has(requestedType) && requestedType !== 'non_financial') {
-    const error = new Error('港股财报类型待确认，拒绝选择财报端点');
+  const allowedTypes = hk ? HK_FINANCIAL_TABLE_TYPES : new Set(['bank', 'insurance', 'security', 'other_financial']);
+  if (!allowedTypes.has(requestedType) && requestedType !== 'non_financial') {
+    const error = new Error(`${market} 财报类型待确认，拒绝选择财报端点`);
     error.code = 'FINANCIAL_TYPE_UNKNOWN';
     throw error;
   }
-  const tableType = hk ? requestedType : null;
+  const tableType = requestedType;
   const financialTable = Boolean(tableType && tableType !== 'non_financial');
+  const typeCodes = new Set(reportMetrics.metricsOfType(market, tableType).map(item => item.code));
   // 银行端点实样确认支持归母合计；其他金融类型权限尚未逐一核实，保留缺口。
-  const mapping = hk ? (financialTable ? (tableType === 'bank' ? {
+  const rawMapping = hk ? (financialTable ? (tableType === 'bank' ? {
     ...HK_FINANCIAL_REPORT_METRICS,
     income: { ...HK_FINANCIAL_REPORT_METRICS.income, n_income_attr_p: 'ps.npatshaoehopc' },
     balance: { ...HK_FINANCIAL_REPORT_METRICS.balance, total_hldr_eqy_exc_min_int: 'bs.tetshaoehopc' },
   } : HK_FINANCIAL_REPORT_METRICS) : HK_REPORT_METRICS) : REPORT_METRICS;
+  // A 股金融类型不能混入非金融科目；m.* 衍生项沿用已有映射，三表项必须在对应端点目录中。
+  const mapping = hk || !financialTable ? rawMapping : Object.fromEntries(Object.entries(rawMapping).map(([kind, fields]) => [kind,
+    Object.fromEntries(Object.entries(fields).filter(([, code]) => (Array.isArray(code) ? code : [code])
+      .every(item => item.startsWith('m.') || typeCodes.has(item))))]));
   const metrics = [];
   for (const kind of kinds) {
     for (const base of Object.values(mapping[kind] || {})) {
@@ -545,16 +551,17 @@ async function resolveFinancialReports({ tsCode, startDate, endDate, kinds = ['i
     }
   }
   // 已验证的普通股专属科目仍可展示，但不得写成归母合计标准事实。
-  if (financialTable && kinds.includes('income')) metrics.push('q.ps.npatoshopc.t');
-  if (financialTable && kinds.includes('balance')) metrics.push('q.bs.tetoshopc.t');
+  if (financialTable && kinds.includes('income') && typeCodes.has('ps.npatoshopc')) metrics.push('q.ps.npatoshopc.t');
+  if (financialTable && kinds.includes('balance') && typeCodes.has('bs.tetoshopc')) metrics.push('q.bs.tetoshopc.t');
   if (!metrics.length) return null;
-  const endpoint = hk ? `hk/company/fs/${tableType}` : 'cn/company/fs/non_financial';
+  const endpoint = `${market.toLowerCase()}/company/fs/${tableType}`;
   // 三表全量：官方同一接口按指标点菜，单只股票一次最多 128 个指标，
   // 因此除标准 17 项外，再按字典（A股 CAS / 港股 HKFRS 各自一套）分批发全量科目。
   // 两套准则科目不同，字典按市场取，禁止互相套用。
   const standardCodes = new Set(metrics);
-  const extraBatches = financialTable ? [] : reportMetrics.requestBatchesOf(market)
-    .map(batch => batch.filter(code => !standardCodes.has(code)))
+  const extraBatches = reportMetrics.requestBatchesOf(market, undefined, tableType)
+    .map(batch => batch.filter(code => !standardCodes.has(code)
+      && kinds.includes(reportMetrics.statementOfMetricKey(code.slice(2, -2)))))
     .filter(batch => batch.length);
   const merged = new Map();
   const batches = [metrics, ...extraBatches];
@@ -611,6 +618,7 @@ async function resolveFinancialReports({ tsCode, startDate, endDate, kinds = ['i
         source: SOURCE,
         market,
         fs_table_type: tableType,
+        fs_table_type_evidence: options.fsTableTypeEvidence || null,
         requested_metric_codes: requestedMetricCodes,
         returned_metric_codes: Object.keys(statementMetrics),
         requested_batch_count: batches.length,
@@ -905,6 +913,32 @@ async function resolveCompanyProfiles({ codes = [], maxAgeMs = 6 * 60 * 60 * 100
   return rows;
 }
 
+// A 股分类只接受官方公司档案中的代码和交易所均与目标一致的记录。
+async function resolveCnCompanyProfiles({ codes = [], maxAgeMs = 6 * 60 * 60 * 1000 } = {}) {
+  const targets = new Map();
+  for (const input of codes || []) {
+    const canonical = String(input || '').trim().toUpperCase();
+    const match = /^(\d{6})\.(SH|SZ|BJ)$/.exec(canonical);
+    if (match) targets.set(`${match[1]}|${match[2]}`, canonical);
+  }
+  const bareCodes = [...new Set([...targets.keys()].map(key => key.split('|')[0]))];
+  const rows = [];
+  for (let i = 0; i < bareCodes.length; i += 100) {
+    const result = await callEndpoint('cn/company', { stockCodes: bareCodes.slice(i, i + 100) },
+      { dataset: 'stock_financial_reports', maxAgeMs });
+    for (const item of result.rows || []) {
+      const key = `${String(item.stockCode || '').trim()}|${String(item.exchange || '').trim().toUpperCase()}`;
+      const code = targets.get(key);
+      if (!code) continue;
+      rows.push({ code, name: item.name || null, fsTableType: item.fsTableType || null,
+        listingStatus: item.listingStatus || null, ipoDate: dashDate(item.ipoDate), source_code: SOURCE,
+        fsTableTypeEvidence: { source_code: SOURCE, raw_record_id: result.rawRecordId || null,
+          scope: 'current_company_profile' } });
+    }
+  }
+  return rows;
+}
+
 /**
  * 港股通标的清单（2026-11-05 实测确认）：
  * 官方 `hk/company` 支持 `isMutualMarketAhFlag: true` 直接筛出全部互联互通（港股通）标的，
@@ -1003,6 +1037,7 @@ module.exports = {
   resolveIndexConstituents,
   resolveMutualMarketCompanies,
   resolveCompanyProfiles,
+  resolveCnCompanyProfiles,
   resolveIndexValuation,
   resolveMoneySupply,
   resolveSovereignYield10y,

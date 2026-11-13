@@ -81,7 +81,7 @@ for (const name of rangeFunctions) {
     };
     const reports = await adapter.resolveFinancialReports({
       tsCode: '600519.SH', kinds: ['income'], startDate: '2001-08-27', endDate: '2026-11-01',
-      options: { fetch: fakeFetch, sleep: async () => {} },
+      options: { fsTableType: 'non_financial', fetch: fakeFetch, sleep: async () => {} },
     });
     // 每个指标批次都应覆盖三个时间段；不能把指标分批误当成额外的时间段。
     const expectedRanges = adapter.rangeChunks('2001-08-27', '2026-11-01');
@@ -104,10 +104,10 @@ for (const name of rangeFunctions) {
       const datasets = require('../dataAccess/marketDatasets');
       adapter.resolveFinancialReports = async () => ({ income: [{ __statement_coverage: { complete: false } }] });
       await assert.rejects(() => datasets.readFinancialReportRows({ tsCode: '600519.SH', kinds: ['income'],
-        startDate: '2024-01-01', endDate: '2025-12-31' }), error => error.code === 'FINANCIAL_BATCH_INCOMPLETE' && error.retryable);
+        startDate: '2024-01-01', endDate: '2025-12-31', fsTableType: 'non_financial' }), error => error.code === 'FINANCIAL_BATCH_INCOMPLETE' && error.retryable);
       adapter.resolveFinancialReports = async () => ({ income: [{ __statement_coverage: { complete: true } }] });
       assert.strictEqual((await datasets.readFinancialReportRows({ tsCode: '600519.SH', kinds: ['income'],
-        startDate: '2024-01-01', endDate: '2025-12-31' })).income.length, 1);
+        startDate: '2024-01-01', endDate: '2025-12-31', fsTableType: 'non_financial' })).income.length, 1);
       adapter.resolveFinancialReports = async () => ({ income: [{ source_code: 'lixinger_official', currency: 'USD', __statement_coverage: { complete: true } }] });
       await assert.rejects(() => datasets.readFinancialReportRows({ tsCode: '00005.HK', kinds: ['income'], fsTableType: 'bank',
         startDate: '2024-01-01', endDate: '2025-12-31' }), error => error.code === 'FINANCIAL_CURRENCY_UNVERIFIED');

@@ -94,6 +94,8 @@ function stockAnalysisRenderStatements(data) {
     var notes = [];
     if (period.end_date) notes.push('期末 ' + period.end_date);
     if (period.report_type_label || period.report_type) notes.push(period.report_type_label || period.report_type);
+    var tableTypes = { non_financial:'非金融', bank:'银行', insurance:'保险', security:'证券', other_financial:'其他金融', reit:'房地产投资信托' };
+    notes.push(tableTypes[period.fs_table_type] ? '报表类型：' + tableTypes[period.fs_table_type] : '报表类型待确认');
     if (period.currency) notes.push(period.currency);
     if (period.announced_at) notes.push('公告 ' + period.announced_at);
     var note = notes.length ? '<small>' + escapeHtml(notes.join(' · ')) + '</small>' : '';

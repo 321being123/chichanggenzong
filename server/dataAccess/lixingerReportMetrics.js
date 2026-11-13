@@ -12,6 +12,8 @@ const fs = require('fs');
 const path = require('path');
 
 const FILE = path.join(__dirname, 'catalog', 'lixingerReportMetrics.txt');
+// 版本化快照：不同财报类型只能请求其对应公司接口声明的科目。
+const TYPE_FILE = path.join(__dirname, 'catalog', 'lixingerCompanyStatementTypes_20261113.txt');
 
 // 市场 → 会计准则体系（落库时用于隔离两套科目）
 const MARKET_STANDARD = Object.freeze({ CN: 'CAS', HK: 'HKFRS' });
@@ -39,11 +41,30 @@ function load() {
     if (!/^(bs|ps|cfs)\.[a-z0-9_]+$/.test(code)) continue;
     rows.push(Object.freeze({ market, standard: MARKET_STANDARD[market], statement, code, name: name || code }));
   }
+  const byType = {};
+  const existing = new Set(rows.map(row => `${row.market}|${row.code}`));
+  for (const raw of fs.readFileSync(TYPE_FILE, 'utf8').split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line || line.startsWith('#')) continue;
+    const [market, type, statement, code, name, extra] = line.split('|');
+    if (!MARKET_STANDARD[market] || !/^(non_financial|bank|insurance|security|other_financial|reit)$/.test(type)
+        || PREFIX_STATEMENT[String(code || '').split('.')[0]] !== statement
+        || !/^(bs|ps|cfs)\.[a-z0-9_]+$/.test(code) || !name || extra !== undefined) {
+      throw new Error(`财报类型字典行无效：${line}`);
+    }
+    const item = Object.freeze({ market, standard: MARKET_STANDARD[market], statement, code, name });
+    const key = `${market}|${type}`;
+    (byType[key] ||= []).push(item);
+    if (!existing.has(`${market}|${code}`)) {
+      rows.push(item);
+      existing.add(`${market}|${code}`);
+    }
+  }
   const byMarket = {};
   for (const market of Object.keys(MARKET_STANDARD)) {
     byMarket[market] = rows.filter(row => row.market === market);
   }
-  cache = { rows, byMarket };
+  cache = { rows, byMarket, byType };
   return cache;
 }
 
@@ -71,8 +92,15 @@ function requestCodeOf(metricCode) {
 }
 
 // 单只股票一次最多 128 个指标，超出必须分批；返回每批的官方请求串。
-function requestBatchesOf(market, size = MAX_METRICS_PER_REQUEST) {
-  const codes = metricsOf(market).map(item => requestCodeOf(item.code));
+function metricsOfType(market, type) {
+  const key = `${String(market || '').toUpperCase()}|${String(type || '')}`;
+  const metrics = load().byType[key];
+  if (!metrics) throw new Error(`不支持的财报类型：${key}`);
+  return metrics;
+}
+
+function requestBatchesOf(market, size = MAX_METRICS_PER_REQUEST, type = 'non_financial') {
+  const codes = metricsOfType(market, type).map(item => requestCodeOf(item.code));
   const limit = Math.max(Number(size) || MAX_METRICS_PER_REQUEST, 1);
   const batches = [];
   for (let index = 0; index < codes.length; index += limit) {
@@ -112,6 +140,7 @@ function statsOf(market) {
 
 module.exports = {
   FILE,
+  TYPE_FILE,
   MARKET_STANDARD,
   STATEMENTS,
   STATEMENT_LABEL,
@@ -119,6 +148,7 @@ module.exports = {
   columnOf,
   metricsByStatement,
   metricsOf,
+  metricsOfType,
   requestBatchesOf,
   requestCodeOf,
   standardOf,

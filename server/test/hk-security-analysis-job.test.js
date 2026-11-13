@@ -111,7 +111,8 @@ test('三表按版本只读，409 后最多有界重读一次', () => {
   assert.ok(/error\.status = 409/.test(statements));
   assert.ok(/listHkStatementRows\(tsCode, type, table, columns, limit\)/.test(statements), 'SQL 必须留在仓储层');
   const repository = read('server/repositories/hkSecurityAnalysisRepository.js');
-  assert.ok(/is_current_version=true/.test(repository));
+  assert.ok(/latestMarketReportPredicate\('r',/.test(repository), '港股详情必须按市场/范围独立选版，不能依赖公司级当前标记');
+  assert.ok(/statement_scope/.test(repository), '港股详情版本选择必须保留报告范围');
   assert.ok(/NULLIF\(w\.period_type,'unknown'\)[\s\S]*NULLIF\(r\.period_type,'unknown'\)/.test(repository), '详情与三表必须共用真实报告期类型');
   const presenter = read('public/js/presenters/stock-analysis-statements-presenter.js');
   assert.ok(/response\.status === 409/.test(presenter));

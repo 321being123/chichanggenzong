@@ -4,7 +4,7 @@ const dict = require('../dataAccess/lixingerReportMetrics');
 const contract = require('../domain/securityAnalysisContract');
 const presentation = require('../domain/statementPresentation');
 const repository = require('../repositories/stockStatementsRepository');
-const FORMULA_VERSION = 'stock-statements-4';
+const FORMULA_VERSION = 'stock-statements-5';
 
 const PERIOD_TYPES = new Set(['all', 'annual', 'semiannual', 'q1', 'q3', 'unknown']);
 const COMPARES = new Set(['yoy', 'qoq', 'none']);
@@ -15,7 +15,7 @@ function normalizeOptions(options = {}) {
   return {
     periodType: PERIOD_TYPES.has(periodType) ? periodType : 'all',
     compare: COMPARES.has(compare) ? compare : 'yoy',
-    scope: options.scope ? String(options.scope) : null,
+    scope: options.scope ? String(options.scope) : 'consolidated',
     limit: Math.max(3, Math.min(20, Number(options.limit) || 8)),
   };
 }
@@ -157,8 +157,9 @@ function buildStatementPayload({ market = 'CN', type = 'balance', rows = [], ver
   const currencyUnverified = row => {
     if (market !== 'HK' || row.source_code !== 'lixinger_official') return false;
     const currency = String(row.currency_code || '').trim().toUpperCase();
+    const sourceCurrency = String(row.source_currency || '').trim().toUpperCase();
     const coverage = parseCoverage(row.statement_coverage);
-    return !/^[A-Z]{3}$/.test(currency) || (currency !== 'HKD'
+    return !/^[A-Z]{3}$/.test(currency) || currency !== sourceCurrency || (currency !== 'HKD'
       && !(coverage && coverage.value_basis === 'source_original_t_o'));
   };
   const hasUnverifiedCurrency = rows.some(currencyUnverified);
@@ -193,8 +194,9 @@ function buildStatementPayload({ market = 'CN', type = 'balance', rows = [], ver
         };
       }),
     }));
-  const availablePeriodTypes = [...new Set(periods.map(period => period.period_type).filter(Boolean))];
-  const availableScopes = [...new Set(periods.map(period => period.scope).filter(Boolean))];
+  const availablePeriods = versionRows.map(row => metadataOf(row, market));
+  const availablePeriodTypes = [...new Set(availablePeriods.map(period => period.period_type).filter(Boolean))];
+  const availableScopes = [...new Set(availablePeriods.map(period => period.scope).filter(Boolean))];
   return {
     market,
     type,
@@ -221,7 +223,8 @@ async function getStockStatements({ tsCode, market = 'CN', type = 'balance', lim
   if (!dict.STATEMENTS.includes(type)) throw new Error('三表类型无效');
   const normalized = normalizeOptions({ ...options, limit });
   const [rows, versionRows] = await Promise.all([
-    repository.listStatementRows({ tsCode, market, type, limit: normalized.limit, periodType: normalized.periodType, scope: normalized.scope }),
+    repository.listStatementRows({ tsCode, market, type, limit: normalized.limit, periodType: normalized.periodType,
+      scope: normalized.scope === 'all' ? null : normalized.scope }),
     repository.listStatementRows({ tsCode, market, type, limit: 20, periodType: null, scope: null }),
   ]);
   const payload = buildStatementPayload({ market, type, rows, versionRows, options: normalized, formulaVersion, canonicalCode: tsCode });

@@ -14,7 +14,7 @@ function coverage(codes, complete = true) {
 function row(overrides) {
   return Object.assign({
     report_id: 1, company_id: 9, period_end: '2025-06-30', period_type: 'semiannual',
-    currency_code: 'HKD', accounting_standard: 'HKFRS', source_id: 1, source_version: 'v1', update_flag: '0', comp_type: '1',
+    currency_code: 'HKD', source_currency: 'HKD', accounting_standard: 'HKFRS', source_id: 1, source_version: 'v1', update_flag: '0', comp_type: '1',
     statement_scope: 'consolidated', announced_at: '2025-08-20',
     bs_ta: null, bs_tl: null, statement_coverage: coverage(['bs.ta', 'bs.tl']),
   }, overrides);
@@ -50,10 +50,17 @@ const hkdStatement = buildStatementPayload({ market: 'HK', type: 'balance', cano
   rows: [row({ source_code: 'lixinger_official', currency_code: 'HKD', bs_ta: 100000000 })] });
 assert.strictEqual(field(hkdStatement, 'bs.ta').values[0].value, 1, '港币报表不套用非港币保护');
 const originalStatement = buildStatementPayload({ market: 'HK', type: 'balance', canonicalCode: '00005.HK',
-  rows: [row({ source_code: 'lixinger_official', currency_code: 'USD', bs_ta: 3233034000000,
+  rows: [row({ source_code: 'lixinger_official', currency_code: 'USD', source_currency: 'USD', bs_ta: 3233034000000,
     statement_coverage: { value_basis: 'source_original_t_o' } })] });
 assert.strictEqual(field(originalStatement, 'bs.ta').values[0].value, 32330.34);
 assert.strictEqual(field(originalStatement, 'bs.ta').unit, 'USD·亿元');
+const mismatchCurrency = buildStatementPayload({ market: 'HK', type: 'balance', canonicalCode: '00005.HK',
+  rows: [row({ source_code: 'lixinger_official', currency_code: 'HKD', source_currency: 'USD', bs_ta: 100000000,
+    statement_coverage: { value_basis: 'source_original_t_o' } })] });
+assert.strictEqual(field(mismatchCurrency, 'bs.ta').values[0].value, null, '宽表币种与来源币种不一致时不能展示金额');
+const missingSourceCurrency = buildStatementPayload({ market: 'HK', type: 'balance', canonicalCode: '00005.HK',
+  rows: [row({ source_code: 'lixinger_official', currency_code: 'HKD', source_currency: null, bs_ta: 100000000 })] });
+assert.strictEqual(field(missingSourceCurrency, 'bs.ta').values[0].value, null, '缺来源币种不能把主档默认币种当报告币种');
 const noCurrency = buildStatementPayload({ market: 'HK', type: 'balance', canonicalCode: '00005.HK',
   rows: [row({ source_code: 'lixinger_official', currency_code: null, bs_ta: 100000000,
     statement_coverage: { value_basis: 'source_original_t_o' } })] });
@@ -212,7 +219,7 @@ assert.strictEqual(field(flowYoy, 'ps.tp').values[0].comparison_reason, 'flow_pe
     const selection = require('../repositories/stockSelectionRepository');
     const factSql = `WITH r AS (SELECT jsonb_build_object('ts_code',$1::text,'currency',$2::text,
       '__statement_coverage',jsonb_build_object('value_basis',$4::text)) AS raw_payload,
-      (SELECT source_id FROM ops.data_sources WHERE source_code=$3) AS source_id),
+      (SELECT source_id FROM ops.data_sources WHERE source_code=$3) AS source_id, NULL::bigint AS company_id),
       f AS (SELECT 123::numeric AS numeric_value, $2::text AS currency_code)
       SELECT ${selection.SAFE_FINANCIAL_FACT_SQL} AS value FROM r,f`;
     for (const [code, currency, source, expected, basis] of [

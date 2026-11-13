@@ -2,19 +2,19 @@
 // 职责：持有三表缓存与请求序号、决定何时取数、何时把结果交给 View。
 // 边界：本文件不直接操作 DOM（静态门禁按 role=presenter、allowDom=false 校验），
 //       需要改界面时只调用 View 暴露的入口；View 不取数，只渲染并上报用户操作。
-var stockStatementState = { type:'balance', loadedCode:'', cache:{}, requestToken:0, filters:{ periodType:'all', compare:'yoy', scope:'', limit:10 } };
+var stockStatementState = { type:'balance', loadedCode:'', cache:{}, requestToken:0, filters:{ periodType:'all', compare:'yoy', scope:'consolidated', limit:10 } };
 
 function stockAnalysisStatementFilters() {
-  stockStatementState.filters = stockStatementState.filters || { periodType:'all', compare:'yoy', scope:'', limit:10 };
+  stockStatementState.filters = stockStatementState.filters || { periodType:'all', compare:'yoy', scope:'consolidated', limit:10 };
   return stockStatementState.filters;
 }
 
 async function stockAnalysisSetStatementFilter(name, value) {
-  var filters = stockStatementState.filters || (stockStatementState.filters = { periodType:'all', compare:'yoy', scope:'', limit:10 });
+  var filters = stockStatementState.filters || (stockStatementState.filters = { periodType:'all', compare:'yoy', scope:'consolidated', limit:10 });
   if (name === 'periodType' && ['all','annual','semiannual','q1','q3','unknown'].indexOf(value) < 0) value = 'all';
   if (name === 'compare' && ['yoy','qoq','none'].indexOf(value) < 0) value = 'yoy';
   if (name === 'limit' && [5,10,20,'5','10','20'].indexOf(value) < 0) value = 10;
-  if (name === 'scope' && value == null) value = '';
+  if (name === 'scope' && value == null) value = 'consolidated';
   if (filters[name] === value) return;
   filters[name] = value;
   stockStatementState.requestToken++;
@@ -31,7 +31,7 @@ async function stockAnalysisLoadStatements(type) {
   if (!code) return;
   var requestToken = ++stockStatementState.requestToken;
   var selectToken = stockAnalysisState.selectToken;
-  var filters = stockStatementState.filters || (stockStatementState.filters = { periodType:'all', compare:'yoy', scope:'', limit:10 });
+  var filters = stockStatementState.filters || (stockStatementState.filters = { periodType:'all', compare:'yoy', scope:'consolidated', limit:10 });
   var key = code + ':' + type + ':' + (filters.periodType || 'all') + ':' + (filters.compare || 'yoy') + ':' + (filters.scope || '') + ':' + (filters.limit || 10);
   if (stockStatementState.cache[key]) return stockAnalysisRenderStatements(stockStatementState.cache[key]);
   stockAnalysisShowStatementsLoading();

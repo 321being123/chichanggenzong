@@ -8,7 +8,7 @@ const { saveAnalysisResults } = require('./financialDataArchitecture');
 const statementService = require('./stockStatementService');
 const contract = require('../domain/securityAnalysisContract');
 
-const FORMULA_VERSION = 'hk-3';
+const FORMULA_VERSION = 'hk-4';
 const { FORMULA_VERSION: STATEMENT_FORMULA_VERSION } = require('./hkStockStatements');
 
 // 港股 HKFRS 宽表字段对照（唯一登记位置）。现金流官方只有 7 个汇总项，没有资本开支，
@@ -34,7 +34,7 @@ function pick(row, names) {
 }
 
 function reportGroupKey(row) {
-  return [row.period_end, row.currency_code || '', row.source_version || ''].join('|');
+  return [row.period_end, row.statement_scope || 'consolidated', row.currency_code || '', row.source_version || ''].join('|');
 }
 
 function statementVersionRowsOf(facts, type) {
@@ -58,6 +58,7 @@ async function readHkReportFacts(tsCode, limit = 20, tx) {
       const key = reportGroupKey(row);
       const group = groups.get(key) || {
         period_end: row.period_end, period_type: row.period_type, announced_at: row.announced_at,
+        statement_scope: row.statement_scope || 'consolidated',
         currency: String(row.currency_code || '').trim().toUpperCase() || null,
         source_version: row.source_version || null, company_id: row.company_id,
         report_ids: [], profit: null, revenue: null, eps: null, equity: null,
@@ -65,10 +66,11 @@ async function readHkReportFacts(tsCode, limit = 20, tx) {
       };
       group.report_ids.push({ kind, report_id: row.report_id, statement_revision: row.statement_revision || null });
       const currency = String(row.currency_code || '').trim().toUpperCase();
+      const sourceCurrency = String(row.source_currency || '').trim().toUpperCase();
       let coverage = row.statement_coverage;
       if (typeof coverage === 'string') { try { coverage = JSON.parse(coverage); } catch (_) { coverage = null; } }
       const currencyUnverified = row.source_code === 'lixinger_official'
-        && (!/^[A-Z]{3}$/.test(currency) || (currency !== 'HKD'
+        && (!/^[A-Z]{3}$/.test(currency) || currency !== sourceCurrency || (currency !== 'HKD'
           && !(coverage && coverage.value_basis === 'source_original_t_o')));
       group.currency_unverified ||= currencyUnverified;
       for (const [field, names] of Object.entries(HK_FACT_COLUMNS[kind])) {
@@ -97,6 +99,7 @@ function buildHkAnalysis(data, options = {}) {
   const meta = data.meta || {};
   const valuations = data.valuations || [];
   const facts = data.reportFacts || [];
+  const consolidatedFacts = facts.filter(group => !group.statement_scope || group.statement_scope === 'consolidated');
   const dividends = data.dividends || [];
   const events = data.events || [];
   const latest = valuations[valuations.length - 1] || {};
@@ -115,9 +118,9 @@ function buildHkAnalysis(data, options = {}) {
 
   // 不同报表的 source_version 通常不同，必须按报表类型选取，不能假定同年报都在同一组。
   const ofKind = (group, kind) => (group.report_ids || []).some(item => item.kind === kind);
-  const incomeFacts = facts.filter(group => ofKind(group, 'income'));
+  const incomeFacts = consolidatedFacts.filter(group => ofKind(group, 'income'));
   const annual = incomeFacts.filter(isAnnual);
-  const latestFact = facts[0] || null;
+  const latestFact = consolidatedFacts[0] || null;
   const latestAnnual = annual[0] || null;
   const interimFacts = incomeFacts.filter(group => !isAnnual(group));
   // 年报已覆盖的旧中报不能再叠加到该年报；只有晚于最近年报的累计期才能参与 TTM。
@@ -180,7 +183,7 @@ function buildHkAnalysis(data, options = {}) {
   });
 
   const capexMissing = !HK_FACT_COLUMNS.cashflow.capex.length;
-  const latestAnnualCashflow = facts.find(group => isAnnual(group) && ofKind(group, 'cashflow')) || null;
+  const latestAnnualCashflow = consolidatedFacts.find(group => isAnnual(group) && ofKind(group, 'cashflow')) || null;
   const operatingLatest = latestAnnualCashflow ? contract.finite(latestAnnualCashflow.operating) : null;
   const freeCash = contract.freeCashFlowOf({ operating: operatingLatest, capex: capexMissing ? null : latestAnnualCashflow && latestAnnualCashflow.capex });
   const fieldStatus = {
@@ -193,7 +196,7 @@ function buildHkAnalysis(data, options = {}) {
     canonicalCode: options.tsCode, formulaVersion: FORMULA_VERSION,
     inputs: {
       trade_date: latest.trade_date || '', reports: JSON.stringify(facts.map(f => ({
-        period_end: f.period_end, period_type: f.period_type, currency: f.currency,
+        period_end: f.period_end, period_type: f.period_type, statement_scope: f.statement_scope, currency: f.currency,
         source_version: f.source_version, currency_unverified: f.currency_unverified,
         report_ids: f.report_ids,
       }))),

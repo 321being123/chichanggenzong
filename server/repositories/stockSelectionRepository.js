@@ -4,6 +4,7 @@
 'use strict';
 
 const { pool } = require('../db/connection');
+const reportMetrics = require('../dataAccess/lixingerReportMetrics');
 
 function executorOf(tx) {
   if (!tx) return (sql, params) => pool.query(sql, params);
@@ -34,14 +35,69 @@ const MARKET_CONFIG = Object.freeze({
 // 风险名称：目标日已知的 ST/*ST、退市整理与明确退市风险。停牌另由停牌表判定。
 const RISK_NAME_SQL = `(i.name ~ '(^|\\s|\\*)ST' OR i.name LIKE '%退市%' OR i.name LIKE '%退' OR i.name ~* '(delist|suspended)')`;
 
-// 港股旧 .t 非原币；只接受有明确币种的 HKD 值或标记为 .t_o 原始值的报告。
-// ts_code 来自原始报告，不按公司是否同时发行 A/H 股猜测来源市场。
-const UNVERIFIED_FINANCIAL_CURRENCY_SQL = `upper(COALESCE(r.raw_payload->>'ts_code','')) LIKE '%.HK'
-  AND (upper(COALESCE(r.raw_payload->>'currency','')) !~ '^[A-Z]{3}$'
-       OR (upper(COALESCE(r.raw_payload->>'currency','')) <> 'HKD'
+// 港股旧 .t 非原币。报告身份不明但发行人关联港股时宁可屏蔽，不能猜成 A 股；
+// 有明确 A 股代码且未标记港股来源的报告保持原口径，A/H 公司身份不能自行证明来源。
+const UNVERIFIED_FINANCIAL_CURRENCY_SQL = `(upper(COALESCE(r.raw_payload->>'ts_code','')) LIKE '%.HK'
+    OR upper(COALESCE(r.raw_payload->'__statement_coverage'->>'market','')) = 'HK'
+    OR (upper(COALESCE(r.raw_payload->>'ts_code','')) !~ '^[0-9]{6}\\.(SH|SZ|BJ)$'
+        AND EXISTS (SELECT 1 FROM core.company_instruments currency_ci
+          JOIN core.instruments currency_i ON currency_i.instrument_id=currency_ci.instrument_id
+          WHERE currency_ci.company_id=r.company_id AND currency_i.market='HK')))
+  AND (upper(COALESCE(trim(r.raw_payload->>'currency'),'')) !~ '^[A-Z]{3}$'
+       OR upper(COALESCE(trim(f.currency_code),'')) <> upper(COALESCE(trim(r.raw_payload->>'currency'),''))
+       OR (upper(COALESCE(trim(r.raw_payload->>'currency'),'')) <> 'HKD'
            AND COALESCE(r.raw_payload->'__statement_coverage'->>'value_basis','') <> 'source_original_t_o'))
   AND r.source_id = (SELECT source_id FROM ops.data_sources WHERE source_code='lixinger_official')`;
 const SAFE_FINANCIAL_FACT_SQL = `CASE WHEN ${UNVERIFIED_FINANCIAL_CURRENCY_SQL} THEN NULL ELSE f.numeric_value END`;
+
+// A/H 同一公司可能各有一份同期期报。原始报告有明确代码/覆盖标记时必须与目标市场一致；
+// 身份不明的报告只有对应市场专用宽表能证明归属，否则保留为候选但把事实置空，不能回退到旧报告。
+function reportMarketParts(report, market, wideTable) {
+  const code = `upper(COALESCE(${report}.raw_payload->>'ts_code',''))`;
+  const sourceMarket = `upper(COALESCE(${report}.raw_payload->'__statement_coverage'->>'market',''))`;
+  const target = String(market || '').toUpperCase();
+  const oppositeCode = target === 'HK' ? `${code} ~ '^[0-9]{6}[.](SH|SZ|BJ)$'` : `${code} LIKE '%.HK'`;
+  const targetCode = target === 'HK' ? `${code} LIKE '%.HK'` : `${code} ~ '^[0-9]{6}[.](SH|SZ|BJ)$'`;
+  const explicit = `((${targetCode} OR ${sourceMarket}='${target}') AND NOT (${oppositeCode}))`;
+  const unknown = `(${code} NOT LIKE '%.HK' AND ${code} !~ '^[0-9]{6}[.](SH|SZ|BJ)$'
+    AND ${sourceMarket} NOT IN ('CN','HK'))`;
+  const wideExists = `EXISTS (SELECT 1 FROM ${wideTable} market_wide WHERE market_wide.report_id=${report}.report_id)`;
+  return {
+    candidate: `(${explicit} OR ${unknown})`,
+    matched: `(${explicit} OR (${unknown} AND ${wideExists}))`,
+    unverified: `(${unknown} AND NOT ${wideExists})`,
+  };
+}
+
+function marketFinancialPredicate(report, statement, marketExpression = null) {
+  const clauses = ['CN', 'HK'].map(market => {
+    const parts = reportMarketParts(report, market, reportMetrics.tableNameOf(market, statement));
+    const prefix = marketExpression ? `(${marketExpression}='${market}' AND ` : '';
+    return `${prefix}${parts.candidate}${marketExpression ? ')' : ''}`;
+  });
+  return `(${clauses.join(' OR ')})`;
+}
+
+function marketFinancialUnverifiedPredicate(report, statement, marketExpression = null) {
+  const clauses = ['CN', 'HK'].map(market => {
+    const parts = reportMarketParts(report, market, reportMetrics.tableNameOf(market, statement));
+    const prefix = marketExpression ? `(${marketExpression}='${market}' AND ` : '';
+    return `${prefix}${parts.unverified}${marketExpression ? ')' : ''}`;
+  });
+  return `(${clauses.join(' OR ')})`;
+}
+
+function marketFinancialMatchPredicate(report, market, statement) {
+  return reportMarketParts(report, market, reportMetrics.tableNameOf(market, statement)).matched;
+}
+
+function marketFinancialCandidatePredicate(report, market, statement) {
+  return reportMarketParts(report, market, reportMetrics.tableNameOf(market, statement)).candidate;
+}
+
+function marketFinancialUnverifiedForMarket(report, market, statement) {
+  return reportMarketParts(report, market, reportMetrics.tableNameOf(market, statement)).unverified;
+}
 
 function marketConfig(market) {
   const config = MARKET_CONFIG[String(market || '').toUpperCase()];
@@ -95,13 +151,16 @@ async function loadUniverse({ market, asOfDate, availableBefore = null }, tx) {
       -- 可见时点必须与 loadEquityFacts / loadAnnualProfits 同源（F09）：只按 announced_at 截断，
       -- 会让同一批计算里的 PE 和净资产规则落在不同版本的报表上。
       LEFT JOIN LATERAL (
-        SELECT ${SAFE_FINANCIAL_FACT_SQL} AS net_profit, f.currency_code AS net_profit_currency
+        SELECT CASE WHEN ${marketFinancialUnverifiedPredicate('r', 'income', 'i.market')}
+                    THEN NULL ELSE ${SAFE_FINANCIAL_FACT_SQL} END AS net_profit,
+               f.currency_code AS net_profit_currency
           FROM fundamental.financial_reports r
           JOIN fundamental.financial_facts f ON f.report_id = r.report_id AND f.metric_code = 'net_profit_parent'
          WHERE r.company_id = ci.company_id
            AND r.report_kind = 'income'
            AND r.period_type = 'annual'
            AND r.statement_scope = 'consolidated'
+           AND ${marketFinancialPredicate('r', 'income', 'i.market')}
            AND r.announced_at IS NOT NULL AND r.announced_at < $2::date
            AND ($4::timestamptz IS NULL OR r.available_at IS NULL OR r.available_at < $4::timestamptz)
          ORDER BY r.period_end DESC, r.announced_at DESC
@@ -110,12 +169,15 @@ async function loadUniverse({ market, asOfDate, availableBefore = null }, tx) {
       -- 最近一期已公告归母净资产：源站对"净资产为负"的股票直接不给 PB（字段为空，不是没有这一行），
       -- 所以 PB 为空时要按同一定义式现算（总市值 ÷ 归母净资产），负值如实判为净资产为负。
       LEFT JOIN LATERAL (
-        SELECT ${SAFE_FINANCIAL_FACT_SQL} AS equity, f.currency_code AS equity_currency
+        SELECT CASE WHEN ${marketFinancialUnverifiedPredicate('r', 'balance', 'i.market')}
+                    THEN NULL ELSE ${SAFE_FINANCIAL_FACT_SQL} END AS equity,
+               f.currency_code AS equity_currency
           FROM fundamental.financial_reports r
           JOIN fundamental.financial_facts f ON f.report_id = r.report_id AND f.metric_code = 'equity_parent'
          WHERE r.company_id = ci.company_id
            AND r.report_kind = 'balance'
            AND r.statement_scope = 'consolidated'
+           AND ${marketFinancialPredicate('r', 'balance', 'i.market')}
            AND r.announced_at IS NOT NULL AND r.announced_at < $2::date
            AND ($4::timestamptz IS NULL OR r.available_at IS NULL OR r.available_at < $4::timestamptz)
          ORDER BY r.period_end DESC, r.announced_at DESC
@@ -173,19 +235,23 @@ async function loadUniverse({ market, asOfDate, availableBefore = null }, tx) {
  * 覆盖「完整年度＋本期累计−上年同期累计」所需的三段。可见时点与净资产/PE 同一口径，
  * 只按 announced_at 与 available_at 截断，不用今天的最新投影补历史。
  */
-async function loadTtmInputs({ companyIds, asOfDate, availableBefore = null }, tx) {
+async function loadTtmInputs({ companyIds, asOfDate, availableBefore = null, market = null }, tx) {
   if (!companyIds.length) return new Map();
   const exec = executorOf(tx);
+  const marketPredicate = market ? marketFinancialCandidatePredicate('r', market, 'income') : 'TRUE';
+  const marketUnverified = market ? marketFinancialUnverifiedForMarket('r', market, 'income') : 'FALSE';
   const { rows } = await exec(`
     SELECT r.company_id, r.report_id, r.period_end::text AS period_end, r.period_type,
            r.announced_at::text AS announced_at,
-           (${SAFE_FINANCIAL_FACT_SQL})::text AS net_profit, f.currency_code,
-           (${UNVERIFIED_FINANCIAL_CURRENCY_SQL}) AS currency_unverified
+           (CASE WHEN ${marketUnverified} THEN NULL ELSE ${SAFE_FINANCIAL_FACT_SQL} END)::text AS net_profit,
+           f.currency_code,
+           ((${UNVERIFIED_FINANCIAL_CURRENCY_SQL}) OR ${marketUnverified}) AS currency_unverified
       FROM fundamental.financial_reports r
       JOIN fundamental.financial_facts f ON f.report_id = r.report_id AND f.metric_code = 'net_profit_parent'
      WHERE r.company_id = ANY($1::bigint[])
        AND r.report_kind = 'income'
        AND r.statement_scope = 'consolidated'
+       AND ${marketPredicate}
        AND r.period_end >= ($2::date - INTERVAL '3 years')
        AND r.period_end <= $2::date
        AND r.announced_at IS NOT NULL AND r.announced_at < $2::date
@@ -489,18 +555,22 @@ async function loadPbMissingDaysForCodes({ market, codes = [], windowStart, asOf
 }
 
 /** 最新可见归母权益（按公告日严格早于目标日，目录日期不当作公告日）。 */
-async function loadEquityFacts({ companyIds, asOfDate, availableBefore }, tx) {
+async function loadEquityFacts({ companyIds, asOfDate, availableBefore, market = null }, tx) {
   if (!companyIds.length) return new Map();
   const exec = executorOf(tx);
+  const marketPredicate = market ? marketFinancialCandidatePredicate('r', market, 'balance') : 'TRUE';
+  const marketUnverified = market ? marketFinancialUnverifiedForMarket('r', market, 'balance') : 'FALSE';
   const { rows } = await exec(`
     SELECT DISTINCT ON (r.company_id)
            r.company_id, r.report_id, r.period_end::text AS period_end, r.announced_at::text AS announced_at,
            r.available_at, r.availability_basis, r.source_version,
-           ${SAFE_FINANCIAL_FACT_SQL} AS numeric_value, f.currency_code,
-           (${UNVERIFIED_FINANCIAL_CURRENCY_SQL}) AS currency_unverified
+           CASE WHEN ${marketUnverified} THEN NULL ELSE ${SAFE_FINANCIAL_FACT_SQL} END AS numeric_value,
+           f.currency_code,
+           ((${UNVERIFIED_FINANCIAL_CURRENCY_SQL}) OR ${marketUnverified}) AS currency_unverified
       FROM fundamental.financial_reports r
       JOIN fundamental.financial_facts f ON f.report_id = r.report_id AND f.metric_code = 'equity_parent'
      WHERE r.company_id = ANY($1::bigint[])
+       AND ${marketPredicate}
        AND r.statement_scope = 'consolidated'
        AND r.announced_at IS NOT NULL
        AND r.announced_at < $2::date
@@ -520,19 +590,24 @@ async function loadEquityFacts({ companyIds, asOfDate, availableBefore }, tx) {
 }
 
 /** 年度归母利润（只取年报口径），同一财年取最新公告版本。 */
-async function loadAnnualProfits({ companyIds, asOfDate, availableBefore }, tx) {
+async function loadAnnualProfits({ companyIds, asOfDate, availableBefore, market = null }, tx) {
   if (!companyIds.length) return new Map();
   const exec = executorOf(tx);
+  const marketPredicate = market ? marketFinancialCandidatePredicate('r', market, 'income') : 'TRUE';
+  const marketUnverified = market ? marketFinancialUnverifiedForMarket('r', market, 'income') : 'FALSE';
   const { rows } = await exec(`
     SELECT DISTINCT ON (r.company_id, date_part('year', r.period_end))
            r.company_id,
            date_part('year', r.period_end)::int AS fiscal_year,
            r.period_end::text AS period_end,
            r.source_version,
-           ${SAFE_FINANCIAL_FACT_SQL} AS numeric_value, f.currency_code
+           CASE WHEN ${marketUnverified} THEN NULL ELSE ${SAFE_FINANCIAL_FACT_SQL} END AS numeric_value,
+           f.currency_code,
+           ((${UNVERIFIED_FINANCIAL_CURRENCY_SQL}) OR ${marketUnverified}) AS currency_unverified
       FROM fundamental.financial_reports r
       JOIN fundamental.financial_facts f ON f.report_id = r.report_id AND f.metric_code = 'net_profit_parent'
      WHERE r.company_id = ANY($1::bigint[])
+       AND ${marketPredicate}
        AND r.report_kind = 'income'
        AND r.period_type = 'annual'
        AND r.statement_scope = 'consolidated'
@@ -550,6 +625,7 @@ async function loadAnnualProfits({ companyIds, asOfDate, availableBefore }, tx) 
       periodEnd: row.period_end,
       profit: row.numeric_value === null ? null : Number(row.numeric_value),
       currency: row.currency_code || null,
+      currencyUnverified: row.currency_unverified === true,
       // 事实版本进入输入指纹（R2-02）：同一财年被更正后版本会变，不能继续命中旧快照。
       sourceVersion: row.source_version || null,
     });
@@ -686,6 +762,11 @@ async function loadDividendWindow({ instrumentIds, windowStart, asOfDate, market
 async function loadAnnualDividends({ companyIds, asOfDate, availableBefore, market }, tx) {
   if (!companyIds.length) return new Map();
   const exec = executorOf(tx);
+  const normalizedMarket = market ? String(market).toUpperCase() : null;
+  const marketReportPredicate = normalizedMarket
+    ? marketFinancialMatchPredicate('r', normalizedMarket, 'income')
+    : 'TRUE';
+  const instrumentMarketPredicate = normalizedMarket ? `AND div_i.market='${normalizedMarket}'` : '';
   // 金额口径按市场分流（2026-11-05 生产实证）：港股分红多数只有「每股现金」、没有总额，
   // 沿用 A 股的 total_cash_amount 会被判成「已实施但金额缺失」→ 永远待补
   // （01919.HK 46 笔分红全部有每股现金、只有 10 笔有总额）。港股改用每股现金同口径累计：
@@ -723,6 +804,7 @@ async function loadAnnualDividends({ companyIds, asOfDate, availableBefore, mark
          AND r.report_kind = 'income'
          AND r.period_type = 'annual'
          AND r.statement_scope = 'consolidated'
+         AND ${marketReportPredicate}
          AND r.announced_at IS NOT NULL
          AND r.announced_at < $2::date
          AND ($3::timestamptz IS NULL OR r.available_at IS NULL OR r.available_at < $3::timestamptz)
@@ -820,6 +902,7 @@ async function loadAnnualDividends({ companyIds, asOfDate, availableBefore, mark
              BOOL_OR(ae.period_end <= ($2::date - INTERVAL '1 year')) AS fiscal_year_settled
         FROM annual_ends ae
         JOIN core.company_instruments ci ON ci.company_id = ae.company_id AND ci.relation_type = 'issued_by'
+        JOIN core.instruments div_i ON div_i.instrument_id = ci.instrument_id ${instrumentMarketPredicate}
         -- 按「证券 + 财年」关联，而不是按 period_end 精确相等（R5-02）：
         -- 中期分红的 fiscal_period_end 是期中日期，精确相等会让它以"该财年一笔记录都没有"的身份消失，
         -- 于是"只有中期记录"被误判成"该财年零分红"。

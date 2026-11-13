@@ -624,15 +624,15 @@ async function computeSelection(input, tx) {
   // 信息可见截止（knowledgeCutoff）已在宇宙查询前算好：同一批计算共用同一个截止时刻。
   const [pbWindow, equity, profits, dividends, annualDividends, industries, ttmReports] = await runBatched([
     () => repo.loadPbWindow({ market, windowStart, asOfDate }, tx),
-    () => repo.loadEquityFacts({ companyIds, asOfDate, availableBefore: knowledgeCutoff }, tx),
-    () => repo.loadAnnualProfits({ companyIds, asOfDate, availableBefore: knowledgeCutoff }, tx),
+    () => repo.loadEquityFacts({ companyIds, asOfDate, availableBefore: knowledgeCutoff, market }, tx),
+    () => repo.loadAnnualProfits({ companyIds, asOfDate, availableBefore: knowledgeCutoff, market }, tx),
     () => repo.loadDividendWindow({ instrumentIds, windowStart: dividendWindowStart, asOfDate, market }, tx),
     // R5-02：年度分红与利润、权益共用同一个信息截止（目标日收盘时刻），
     // 否则"目标日之后才可取到"的年报版本会把旧季度分红从待补变成通过。
     () => repo.loadAnnualDividends({ companyIds, asOfDate, availableBefore: knowledgeCutoff, market }, tx),
     () => repo.loadIndustries({ companyIds, market, asOfDate }, tx),
     // 自算 TTM 的三段报表：与权益/年度利润同一可见截止，不用今天的最新投影补历史。
-    () => repo.loadTtmInputs({ companyIds, asOfDate, availableBefore: knowledgeCutoff }, tx),
+    () => repo.loadTtmInputs({ companyIds, asOfDate, availableBefore: knowledgeCutoff, market }, tx),
   ], tx);
   // 逐公司先算一次 TTM，供 buildRuleFacts 直接取用（不在每只股票里重复算）。
   const ttm = new Map();

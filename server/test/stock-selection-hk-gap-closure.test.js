@@ -49,9 +49,9 @@ async function withHkDividendFixture(fn) {
     const report = await pool.query(
       `INSERT INTO fundamental.financial_reports
          (company_id, report_kind, period_end, period_type, statement_scope, announced_at,
-          source_id, source_version, update_flag, is_current_version, report_type)
-       VALUES ($1,'income',$2::date,'annual','consolidated',$3::date,$4,'v1','',true,'1') RETURNING report_id`,
-      [companyId, `${year}-12-31`, `${year + 1}-03-31`, sourceId]);
+          source_id, raw_payload, source_version, update_flag, is_current_version, report_type)
+       VALUES ($1,'income',$2::date,'annual','consolidated',$3::date,$4,$5::jsonb,'v1','',true,'1') RETURNING report_id`,
+      [companyId, `${year}-12-31`, `${year + 1}-03-31`, sourceId, JSON.stringify({ ts_code: TEST_CODE, currency: 'HKD' })]);
     await pool.query(
       `INSERT INTO fundamental.financial_facts
          (report_id, statement_type, metric_code, numeric_value, unit_code, currency_code, source_field, is_calculated)
@@ -138,15 +138,12 @@ async function main() {
     });
   });
 
-  await check('同一批数据按 A 股总额口径仍判未知（市场分流真的生效，不是一刀切放行）', async () => {
+  await check('港股报告不会被 A 股市场事实查询误读（市场隔离优先于口径回退）', async () => {
     await withHkDividendFixture(async ({ companyId }) => {
       const repo = require('../repositories/stockSelectionRepository');
       const rows = (await repo.loadAnnualDividends({ companyIds: [companyId], asOfDate: '2026-09-30', market: 'CN' }))
         .get(String(companyId)) || [];
-      const y2025 = rows.find(row => row.year === 2025);
-      assert.strictEqual(y2025.dividendKnown, false, '缺分红总额时 A 股口径必须保持未知');
-      assert.strictEqual(y2025.dividend, null);
-      assert.strictEqual(y2025.amountBasis, 'total_amount');
+      assert.strictEqual(rows.length, 0, '港股年报不能作为 A 股年度分红事实');
     });
   });
 

@@ -76,6 +76,29 @@ function legacyMetricExpression(metric) {
   return `CASE WHEN i.market='CN' AND ds.source_code='tushare' THEN ${raw} ELSE w.${column} END AS ${column}`;
 }
 
+// 来源代码能识别时不能跨 A/H 市场；身份不明仅在该市场专用宽表存在时可识别。
+// 参数均为仓储内部固定 SQL 标识，表名仅来自受控字典。
+function reportMarketPredicate(report, wide, market) {
+  const code = `upper(COALESCE(${report}.raw_payload->>'ts_code',''))`;
+  return `((${code} LIKE '%.HK' AND ${market}='HK')
+    OR (${code} ~ '^[0-9]{6}[.](SH|SZ|BJ)$' AND ${market}='CN')
+    OR (${code} NOT LIKE '%.HK' AND ${code} !~ '^[0-9]{6}[.](SH|SZ|BJ)$' AND ${wide}.report_id IS NOT NULL))`;
+}
+
+// is_current_version 是公司全局标记，A/H 同期会互相覆盖；读取按市场、范围和同一排序独立选版。
+function latestMarketReportPredicate(report, market, table) {
+  return `${report}.report_id = (SELECT market_version.report_id
+    FROM fundamental.financial_reports market_version
+    LEFT JOIN ${table} market_wide ON market_wide.report_id=market_version.report_id
+    WHERE market_version.company_id=${report}.company_id AND market_version.report_kind=${report}.report_kind
+      AND market_version.period_end=${report}.period_end
+      AND COALESCE(market_version.statement_scope,'consolidated')=COALESCE(${report}.statement_scope,'consolidated')
+      AND (market_version.available_at IS NULL OR market_version.available_at <= now())
+      AND ${reportMarketPredicate('market_version', 'market_wide', market)}
+    ORDER BY CASE WHEN market_version.report_type='1' THEN 0 ELSE 1 END,
+      market_version.announced_at DESC NULLS LAST,market_version.ingested_at DESC,market_version.report_id DESC LIMIT 1)`;
+}
+
 async function listStatementRows({ tsCode, market = 'CN', type = 'balance', limit = 8, periodType = null, scope = null, tx = null } = {}) {
   const runner = tx || pool;
   const metrics = dict.metricsByStatement(market, type);
@@ -87,8 +110,9 @@ async function listStatementRows({ tsCode, market = 'CN', type = 'balance', limi
     'upper(i.canonical_code)=upper($1)',
     'i.market=$2',
     'r.report_kind=$3',
-    'r.is_current_version=true',
     '(r.available_at IS NULL OR r.available_at <= now())',
+    reportMarketPredicate('r', 'w', 'i.market'),
+    latestMarketReportPredicate('r', 'i.market', table),
   ];
   if (periodType && periodType !== 'all') {
     params.push(periodType);
@@ -104,6 +128,7 @@ async function listStatementRows({ tsCode, market = 'CN', type = 'balance', limi
        to_char(COALESCE(w.announced_at,r.announced_at),'YYYY-MM-DD') AS announced_at,
        to_char(r.f_ann_date,'YYYY-MM-DD') AS f_ann_date,
        COALESCE(w.currency_code,NULLIF(r.raw_payload->>'currency',''),CASE WHEN i.market='CN' THEN 'CNY' END) AS currency_code,
+       r.raw_payload->>'currency' AS source_currency,
        COALESCE(w.accounting_standard,CASE WHEN i.market='CN' THEN 'CAS' WHEN i.market='HK' THEN 'HKFRS' END) AS accounting_standard,
        COALESCE(w.source_id,r.source_id) AS source_id,ds.source_code,
        COALESCE(w.source_version,r.source_version) AS source_version,
@@ -131,4 +156,4 @@ async function listAnnualStatements(tsCode, type, limit) {
     WHERE i.canonical_code=$1 AND r.report_kind=$2 AND r.period_type='annual' AND r.is_current_version=true ORDER BY r.period_end DESC LIMIT $3`, [tsCode, type, limit]);
 }
 
-module.exports = { LEGACY_CAS_FIELD_MAP, UNVERIFIED_TUSHARE_WIDE, legacyMetricExpression, listAnnualStatements, listStatementRows };
+module.exports = { LEGACY_CAS_FIELD_MAP, UNVERIFIED_TUSHARE_WIDE, legacyMetricExpression, reportMarketPredicate, latestMarketReportPredicate, listAnnualStatements, listStatementRows };

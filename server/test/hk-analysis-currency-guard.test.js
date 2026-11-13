@@ -6,7 +6,7 @@ const stockRepository = require('../repositories/stockAnalysisRepository');
 const hkRepository = require('../repositories/hkSecurityAnalysisRepository');
 
 async function main() {
-  const base = { period_end: '2025-12-31', period_type: 'annual', currency_code: 'USD',
+  const base = { period_end: '2025-12-31', period_type: 'annual', currency_code: 'USD', source_currency: 'USD',
     source_version: 'v1', company_id: 1, source_code: 'lixinger_official', report_id: 1 };
   const tx = { query: async sql => {
     assert.match(sql, /LEFT JOIN ops\.data_sources ds/);
@@ -72,11 +72,15 @@ async function main() {
   assert.strictEqual(wrongFiscalYear.display.field_status.ttm_profit.value, null, '去年同期晚于所选年报不能拼接 TTM');
   base.statement_coverage = null;
 
-  base.currency_code = 'HKD';
+  base.currency_code = 'HKD'; base.source_currency = 'HKD';
   const verified = await hk.readHkReportFacts('00005.HK', 20, tx);
   assert.strictEqual(verified[0].profit, 100);
   assert.strictEqual(verified[0].operating, 40);
-  base.currency_code = 'USD'; base.source_code = 'other_source';
+  base.source_currency = 'USD';
+  assert.strictEqual((await hk.readHkReportFacts('00005.HK', 20, tx))[0].profit, null, '宽表币种与原始币种冲突时隐藏');
+  base.source_currency = null;
+  assert.strictEqual((await hk.readHkReportFacts('00005.HK', 20, tx))[0].profit, null, '来源无币种时不可使用默认币种');
+  base.source_currency = 'USD'; base.currency_code = 'USD'; base.source_code = 'other_source';
   const other = await hk.readHkReportFacts('00005.HK', 20, tx);
   assert.strictEqual(other[0].profit, 100);
   base.source_code = 'lixinger_official'; base.currency_code = null;
@@ -100,7 +104,7 @@ async function main() {
     assert.strictEqual(snapshot.valuation.pe_ttm, 12);
     assert.strictEqual(old.cashflow.latest_year.operating, 40, '不能修改已保存的快照对象');
     assert.strictEqual(hk.publicSnapshotOf(old).cashflow.latest_year.operating, null);
-    assert.strictEqual(hk.publicSnapshotOf(analysis).display.formula_version, 'hk-3');
+    assert.strictEqual(hk.publicSnapshotOf(analysis).display.formula_version, 'hk-4');
     assert.strictEqual((await hk.refreshHkAnalysis('00005.HK')).cashflow.latest_year.operating, null);
   } finally {
     stockRepository.readLatestSnapshot = originalRead;

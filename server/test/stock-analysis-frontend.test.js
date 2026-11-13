@@ -63,6 +63,19 @@ assert.ok(statementsScript.includes('statement-level-') && statementsScript.incl
   assert.strictEqual(cell.textContent, '—');
   dom.window.close();
 }
+{
+  const dom = new JSDOM('<select id="stock-analysis-statement-scope"></select>');
+  const view = { document: dom.window.document, window: dom.window,
+    escapeHtml: value => String(value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;'),
+    stockAnalysisStatementFilters: () => ({ scope: 'consolidated' }) };
+  vm.runInNewContext(statementsScript, view);
+  view.stockAnalysisRenderStatementFilters({ available_filters: { scopes: ['parent'] } });
+  const scope = dom.window.document.getElementById('stock-analysis-statement-scope');
+  assert.strictEqual(scope.value, 'consolidated', '缺少合并数据时仍保持默认范围并显示空状态');
+  assert.ok(scope.options[1].disabled && /合并口径/.test(scope.options[1].textContent));
+  assert.strictEqual(scope.options[2].value, 'parent', '母公司范围仍应可选');
+  dom.window.close();
+}
 assert.ok(html.includes('css/stock-analysis.css'), '缺少股票分析样式引用');
 assert.ok(script.includes('PE为负通常代表公司亏损') === false, '分位点固定说明应由后端统一返回');
 // 批次2c：站内 HTTP 已收进 API 客户端；断言指向实际落点，并新增“View 不得直接 fetch”

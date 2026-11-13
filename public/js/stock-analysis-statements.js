@@ -39,11 +39,15 @@ function stockAnalysisRenderStatementFilters(data) {
   var scope = document.getElementById('stock-analysis-statement-scope');
   var scopes = data && data.available_filters && data.available_filters.scopes || [];
   if (!scope || !scopes.length) return;
-  var current = scope.value;
-  scope.innerHTML = '<option value="">全部已存口径</option>' + scopes.map(function(value) {
-    return '<option value="' + escapeHtml(value) + '">' + escapeHtml(value === 'consolidated' ? '合并口径' : value) + '</option>';
+  var current = typeof stockAnalysisStatementFilters === 'function' ? stockAnalysisStatementFilters().scope : scope.value;
+  var optionScopes = ['consolidated'].concat(scopes.filter(function(value) { return value !== 'consolidated'; }));
+  scope.innerHTML = '<option value="all">全部已存口径</option>' + optionScopes.map(function(value) {
+    var absent = scopes.indexOf(value) < 0;
+    var label = value === 'consolidated' ? '合并口径' : value;
+    return '<option value="' + escapeHtml(value) + '"' + (absent ? ' disabled' : '') + '>'
+      + escapeHtml(absent ? label + '（暂无）' : label) + '</option>';
   }).join('');
-  scope.value = scopes.indexOf(current) >= 0 ? current : '';
+  scope.value = current === 'all' || scopes.indexOf(current) >= 0 ? current : 'consolidated';
 }
 
 function stockAnalysisShowStatementsError(error) {
@@ -81,7 +85,8 @@ function stockAnalysisRenderStatements(data) {
     var filterText = data.compare === 'qoq' ? '环比' : data.compare === 'none' ? '不比较' : '同比';
     var coverage = data.coverage && data.coverage.complete === false ? '采集不完整'
       : data.coverage && data.coverage.complete === true ? '来源覆盖已记录' : '覆盖证据未提供';
-    meta.textContent = [data.market || '', data.standard || '', data.currency || '多币种/原币', data.scope || '合并口径', filterText, coverage].filter(Boolean).join(' · ');
+    var scopeText = data.scope === 'all' ? '全部已存口径' : data.scope === 'parent' ? '母公司口径' : data.scope === 'consolidated' || !data.scope ? '合并口径' : data.scope;
+    meta.textContent = [data.market || '', data.standard || '', data.currency || '多币种/原币', scopeText, filterText, coverage].filter(Boolean).join(' · ');
   }
   if (!wrap) return;
   if (!data.periods || !data.periods.length || !data.fields || !data.fields.length) {

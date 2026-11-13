@@ -153,9 +153,9 @@ async function seed(pool) {
     for (let year = 2015; year <= 2025; year++) {
       const report = await pool.query(
         `INSERT INTO fundamental.financial_reports
-           (company_id, report_kind, period_end, period_type, statement_scope, announced_at, source_id, source_version, update_flag, is_current_version, report_type)
-         VALUES ($1,'income',$2::date,'annual','consolidated',$3::date,$4,'v1','',true,'1') RETURNING report_id`,
-        [companyId, `${year}-12-31`, `${year + 1}-03-31`, sourceId]);
+           (company_id, report_kind, period_end, period_type, statement_scope, announced_at, source_id, raw_payload, source_version, update_flag, is_current_version, report_type)
+         VALUES ($1,'income',$2::date,'annual','consolidated',$3::date,$4,$5::jsonb,'v1','',true,'1') RETURNING report_id`,
+        [companyId, `${year}-12-31`, `${year + 1}-03-31`, sourceId, JSON.stringify({ ts_code: code })]);
       const reportId = report.rows[0].report_id;
       await pool.query(
         `INSERT INTO fundamental.financial_facts (report_id, statement_type, metric_code, numeric_value, unit_code, currency_code, source_field, is_calculated)
@@ -203,9 +203,9 @@ async function seed(pool) {
      VALUES ($1,$2::date,$3,10,10,10,10,1000,10000)`, [gapInstrumentId, AS_OF, sourceId]);
   const gapReport = await pool.query(
     `INSERT INTO fundamental.financial_reports
-       (company_id, report_kind, period_end, period_type, statement_scope, announced_at, source_id, source_version, update_flag, is_current_version, report_type)
-     VALUES ($1,'income','2025-12-31','annual','consolidated','2026-03-31',$2,'v1','',true,'1') RETURNING report_id`,
-    [gapCompanyId, sourceId]);
+       (company_id, report_kind, period_end, period_type, statement_scope, announced_at, source_id, raw_payload, source_version, update_flag, is_current_version, report_type)
+     VALUES ($1,'income','2025-12-31','annual','consolidated','2026-03-31',$2,$3::jsonb,'v1','',true,'1') RETURNING report_id`,
+    [gapCompanyId, sourceId, JSON.stringify({ ts_code: GAP_CODE })]);
   // 必须同时有归母净利：R01 的判据是"有财报但缺 PB → 待补"，而"有财报"是按年度利润事实判定的；
   // 只给净资产会让它落进"一条财报都没有 → 不可评估"，缺口就造不出来。
   await pool.query(

@@ -15,7 +15,7 @@ async function main() {
   const versionParams = { canonicalCode: '00005.HK', market: 'HK', type: 'income', rows: versionRows };
   const cnVersion = { canonicalCode: '000858.SZ', market: 'CN', type: 'income', rows: versionRows };
   assert.notStrictEqual(statementService.statementAnalysisVersionOf(cnVersion),
-    statementService.statementAnalysisVersionOf({ ...cnVersion, formulaVersion: 'stock-statements-3' }), '来源映射变化必须产生新版本');
+    statementService.statementAnalysisVersionOf({ ...cnVersion, formulaVersion: 'stock-statements-4' }), '跨市场报告选择变化必须产生新版本');
   assert.notStrictEqual(statementService.statementAnalysisVersionOf({ ...versionParams, formulaVersion: hkStatements.FORMULA_VERSION }),
     statementService.statementAnalysisVersionOf({ ...versionParams, formulaVersion: 'hk-statements-1' }), '展示和度量合同变化必须产生新版本');
   const overview = hkAnalysis.buildHkAnalysis({ reportFacts: [{ ...versionRows[0], currency: 'HKD',
@@ -155,6 +155,121 @@ async function main() {
       AND metric_code IN ('equity_parent','net_profit_parent')`, [company]);
     universe = (await selection.loadUniverse({ market: 'CN', asOfDate: '2026-11-13' }, client)).find(row => row.code === code);
     assert.ok(Number(universe.pb) > 0 && Number(universe.pe_static) > 0, '同币种的已知事实仍可计算');
+
+    const freeHkCode = (await client.query(`SELECT lpad(n::text,5,'0')||'.HK' AS code FROM generate_series(80000,89999) n
+      WHERE NOT EXISTS (SELECT 1 FROM core.instruments i WHERE i.canonical_code=lpad(n::text,5,'0')||'.HK') LIMIT 1`)).rows[0].code;
+    const hkInstrument = (await client.query(`INSERT INTO core.instruments(canonical_code,name,asset_class,market,exchange_code,currency_code)
+      VALUES($1,$2,'stock','HK','HKEX','HKD') RETURNING instrument_id`, [freeHkCode, name])).rows[0].instrument_id;
+    await client.query('INSERT INTO core.company_instruments(company_id,instrument_id) VALUES($1,$2)', [company, hkInstrument]);
+    const safeFact = `WITH r AS (SELECT $1::bigint company_id,$2::smallint source_id,$3::jsonb raw_payload),
+      f AS (SELECT 123::numeric numeric_value,$4::text currency_code)
+      SELECT ${selection.SAFE_FINANCIAL_FACT_SQL} AS value FROM r,f`;
+    const valueOf = async (payload, factCurrency) => (await client.query(safeFact,
+      [company, source, JSON.stringify(payload), factCurrency])).rows[0].value;
+    assert.strictEqual(await valueOf({ currency: 'USD' }, 'USD'), null, '身份不明且关联港股的旧外币事实必须保护');
+    assert.strictEqual(await valueOf({ ts_code: '000001.SZ', currency: 'CNY' }, 'CNY'), '123', '明确 A 股来源不因关联港股而受阻');
+    assert.strictEqual(await valueOf({ currency: 'USD', __statement_coverage: { value_basis: 'source_original_t_o' } }, 'USD'), '123', '原始值和币种均有证据时允许读取');
+    assert.strictEqual(await valueOf({ ts_code: '00005.HK', currency: 'USD', __statement_coverage: { value_basis: 'source_original_t_o' } }, 'HKD'), null, '标准事实与报告币种不一致不得放行');
+    assert.strictEqual(await valueOf({ ts_code: '00005.HK', currency: 'USD', __statement_coverage: { value_basis: 'source_original_t_o' } }, null), null, '事实币种未知不得放行');
+
+    await projection.syncReportRows(client, [{ ts_code: freeHkCode, end_date: '2024-12-31', ann_date: '2025-03-01',
+      report_type: '1', period_type: 'annual', currency: 'USD', total_assets: 200000000,
+      __statement_coverage: { value_basis: 'source_original_t_o', market: 'HK', fs_table_type: 'bank' },
+      __statement_metrics: { 'bs.ta': 200000000, 'bs.tetoshopc': 100000000 } }], 'balance', company, source, { tsCode: freeHkCode });
+    const legacySource = (await client.query("SELECT source_id FROM ops.data_sources WHERE source_code='tushare'")).rows[0].source_id;
+    const legacyReport = (await client.query(`INSERT INTO fundamental.financial_reports
+      (company_id,report_kind,period_end,period_type,announced_at,source_id,source_version,raw_payload)
+      VALUES($1,'balance','2023-12-31','annual','2024-03-01',$2,'legacy-market-test',$3::jsonb) RETURNING report_id`,
+    [company, legacySource, JSON.stringify({ ts_code: code, total_assets: 123000000, currency: 'CNY' })])).rows[0].report_id;
+    const hkReport = (await client.query(`SELECT report_id FROM fundamental.financial_reports
+      WHERE company_id=$1 AND report_kind='balance' AND period_end='2024-12-31'`, [company])).rows[0].report_id;
+    const hkMarketRows = await repository.listStatementRows({ tsCode: freeHkCode, market: 'HK', type: 'balance', tx: client });
+    assert.strictEqual(hkMarketRows.length, 1, '关联 A 股报告不能挤入港股三表期间');
+    assert.strictEqual(String(hkMarketRows[0].report_id), String(hkReport));
+    const cnMarketRows = await repository.listStatementRows({ tsCode: code, market: 'CN', type: 'balance', tx: client });
+    assert.ok(cnMarketRows.length > 0 && cnMarketRows.every(item => String(item.report_id) !== String(hkReport)), '关联港股报告不能挤入 A 股三表期间');
+    const legacyRow = cnMarketRows.find(item => String(item.report_id) === String(legacyReport));
+    assert.ok(legacyRow, '有明确 A 股代码的无宽表历史报告仍可读取');
+    assert.strictEqual(service.buildStatementPayload({ market: 'CN', type: 'balance', rows: [legacyRow], canonicalCode: code })
+      .fields.find(item => item.code === 'bs.ta').values[0].value, 1.23, '旧 A 股原始字段回退必须保留');
+    const readBalance = async () => (await repository.listStatementRows({ tsCode: freeHkCode, market: 'HK', type: 'balance', tx: client }))
+      .find(item => String(item.report_id) === String(hkReport));
+    let hkRow = await readBalance();
+    assert.strictEqual(hkRow.source_currency, 'USD', '三表仓储必须读出原报告币种');
+    assert.strictEqual(service.buildStatementPayload({ market: 'HK', type: 'balance', rows: [hkRow], canonicalCode: freeHkCode })
+      .fields.find(item => item.code === 'bs.ta').values[0].value, 2);
+
+    await client.query(`UPDATE fundamental.statement_balance_hkfrs SET currency_code='HKD' WHERE report_id=$1`, [hkReport]);
+    hkRow = await readBalance();
+    assert.strictEqual(service.buildStatementPayload({ market: 'HK', type: 'balance', rows: [hkRow], canonicalCode: freeHkCode })
+      .fields.find(item => item.code === 'bs.ta').values[0].value, null, '真实宽表币种错配不得展示');
+    const hkGroups = await hkAnalysis.readHkReportFacts(freeHkCode, 20, client);
+    assert.strictEqual(hkGroups.find(group => group.period_end === '2024-12-31').assets, null, '概览读取同样隐藏错配金额');
+    await projection.syncReportRows(client, [{ ts_code: freeHkCode, end_date: '2025-12-31', ann_date: '2026-04-01',
+      report_type: '1', period_type: 'annual', currency: 'USD', __statement_coverage: { market: 'HK', value_basis: 'source_original_t_o' },
+      __statement_metrics: { 'bs.ta': 200000000 } }], 'balance', company, source, { tsCode: freeHkCode });
+    const currentDiagnostic = await client.query(`SELECT raw_payload->>'ts_code' AS code,is_current_version
+      FROM fundamental.financial_reports WHERE company_id=$1 AND report_kind='balance' AND period_end='2025-12-31' ORDER BY code`, [company]);
+    assert.strictEqual(currentDiagnostic.rows.filter(item => item.is_current_version).length, 1, '先复现 A/H 共用全局标记');
+    const cnSamePeriod = await repository.listStatementRows({ tsCode: code, market: 'CN', type: 'balance', tx: client });
+    const hkSamePeriod = await repository.listStatementRows({ tsCode: freeHkCode, market: 'HK', type: 'balance', tx: client });
+    assert.ok(cnSamePeriod.some(item => item.period_end === '2025-12-31' && item.source_currency === 'CNY'), 'A 股同期报告不能被港股全局标记遮蔽');
+    assert.ok(hkSamePeriod.some(item => item.period_end === '2025-12-31' && item.source_currency === 'USD'), '港股同期报告应独立可读');
+    const hkSamePeriodGroups = await hkAnalysis.readHkReportFacts(freeHkCode, 20, client);
+    assert.ok(hkSamePeriodGroups.some(group => group.period_end === '2025-12-31' && group.assets === 200000000), '概览应读取独立港股版本');
+    await projection.syncReportRows(client, [{ ts_code: freeHkCode, end_date: '2025-12-31', ann_date: '2026-04-02',
+      report_type: '1', period_type: 'annual', currency: 'USD', record_marker: 'parent',
+      __statement_coverage: { market: 'HK', value_basis: 'source_original_t_o' },
+      __statement_metrics: { 'bs.ta': 900000000 } }], 'balance', company, source, { tsCode: freeHkCode });
+    await client.query(`UPDATE fundamental.financial_reports SET statement_scope='parent'
+      WHERE company_id=$1 AND raw_payload->>'record_marker'='parent'`, [company]);
+    const bothScopes = await repository.listStatementRows({ tsCode: freeHkCode, market: 'HK', type: 'balance', tx: client });
+    assert.strictEqual(bothScopes.filter(item => item.period_end === '2025-12-31').length, 2, '同市场同报告期的不同范围独立选版');
+    const consolidatedOnly = await repository.listStatementRows({ tsCode: freeHkCode, market: 'HK', type: 'balance', scope: 'consolidated', tx: client });
+    const parentOnly = await repository.listStatementRows({ tsCode: freeHkCode, market: 'HK', type: 'balance', scope: 'parent', tx: client });
+    assert.strictEqual(parentOnly.length, 1);
+    assert.ok(consolidatedOnly.every(item => item.statement_scope === 'consolidated'));
+    const visible = service.buildStatementPayload({ market: 'HK', type: 'balance', rows: consolidatedOnly, versionRows: bothScopes, canonicalCode: freeHkCode });
+    assert.strictEqual(visible.scope, 'consolidated', '默认仅显示合并口径');
+    assert.ok(visible.available_filters.scopes.includes('parent'), '可用筛选须包括未选中的其他范围');
+    const groupsWithParent = await hkAnalysis.readHkReportFacts(freeHkCode, 20, client);
+    const overviewWithParent = hkAnalysis.buildHkAnalysis({ reportFacts: groupsWithParent }, { tsCode: freeHkCode });
+    assert.strictEqual(overviewWithParent.latest_report.end_date, '2025-12-31');
+    assert.strictEqual(groupsWithParent.find(group => group.statement_scope === 'parent').assets, 900000000);
+    assert.ok(!overviewWithParent.latest_report.report_ids.some(item => String(item.report_id) === String(parentOnly[0].report_id)), '概览不能把母公司报告当合并报告');
+    assert.strictEqual(overviewWithParent.display.statement_analysis_versions.balance,
+      service.statementAnalysisVersionOf({ canonicalCode: freeHkCode, market: 'HK', type: 'balance',
+        formulaVersion: hkStatements.FORMULA_VERSION, rows: bothScopes }), '概览和三表版本都须涵盖可选范围');
+
+    // 选股侧也必须按市场取标准事实，不能因为 A/H 共用 company_id 就把另一市场的最新报告带进来。
+    const insertSelectionReport = async ({ kind, periodEnd, announcedAt, tsCode, metricCode, value }) => {
+      const row = (await client.query(`INSERT INTO fundamental.financial_reports
+        (company_id,report_kind,period_end,period_type,statement_scope,announced_at,source_id,raw_payload,source_version,update_flag,is_current_version,report_type)
+        VALUES($1,$2,$3::date,'annual','consolidated',$4::date,$5,$6::jsonb,$7,'',true,'1') RETURNING report_id`,
+      [company, kind, periodEnd, announcedAt, source, JSON.stringify({ ts_code: tsCode, currency: tsCode.endsWith('.HK') ? 'HKD' : 'CNY' }),
+        `market-isolation-${tsCode === 'unknown-source' ? 'unknown' : (tsCode.endsWith('.HK') ? 'hk' : 'cn')}`])).rows[0];
+      await client.query(`INSERT INTO fundamental.financial_facts
+        (report_id,statement_type,metric_code,numeric_value,unit_code,currency_code,source_field,is_calculated)
+        VALUES($1,$2,$3,$4,$5,$6,'market_isolation',false)`,
+      [row.report_id, kind, metricCode, value, tsCode.endsWith('.HK') ? 'HKD' : 'CNY', tsCode.endsWith('.HK') ? 'HKD' : 'CNY']);
+      return row.report_id;
+    };
+    await insertSelectionReport({ kind: 'balance', periodEnd: '2026-06-30', announcedAt: '2026-08-01', tsCode: code, metricCode: 'equity_parent', value: 111 });
+    await insertSelectionReport({ kind: 'balance', periodEnd: '2026-06-30', announcedAt: '2026-08-02', tsCode: freeHkCode, metricCode: 'equity_parent', value: 222 });
+    await insertSelectionReport({ kind: 'income', periodEnd: '2024-12-31', announcedAt: '2025-03-01', tsCode: code, metricCode: 'net_profit_parent', value: 11 });
+    await insertSelectionReport({ kind: 'income', periodEnd: '2024-12-31', announcedAt: '2025-03-02', tsCode: freeHkCode, metricCode: 'net_profit_parent', value: 22 });
+    const cnEquity = await selection.loadEquityFacts({ companyIds: [company], asOfDate: '2026-11-13', market: 'CN' }, client);
+    const hkEquity = await selection.loadEquityFacts({ companyIds: [company], asOfDate: '2026-11-13', market: 'HK' }, client);
+    assert.strictEqual(Number(cnEquity.get(String(company)).amount), 111, 'A 股权益不能取港股报告');
+    assert.strictEqual(Number(hkEquity.get(String(company)).amount), 222, '港股权益不能取 A 股报告');
+    const cnProfits = await selection.loadAnnualProfits({ companyIds: [company], asOfDate: '2026-11-13', market: 'CN' }, client);
+    const hkProfits = await selection.loadAnnualProfits({ companyIds: [company], asOfDate: '2026-11-13', market: 'HK' }, client);
+    assert.strictEqual(Number(cnProfits.get(String(company))[0].profit), 11, 'A 股年度利润不能取港股报告');
+    assert.strictEqual(Number(hkProfits.get(String(company))[0].profit), 22, '港股年度利润不能取 A 股报告');
+    await insertSelectionReport({ kind: 'balance', periodEnd: '2026-06-30', announcedAt: '2026-08-03', tsCode: 'unknown-source', metricCode: 'equity_parent', value: 333 });
+    const guardedEquity = await selection.loadEquityFacts({ companyIds: [company], asOfDate: '2026-11-13', market: 'CN' }, client);
+    assert.strictEqual(guardedEquity.get(String(company)).amount, null, '身份不明的最新报告不得回退为旧市场事实');
+    assert.strictEqual(guardedEquity.get(String(company)).currencyUnverified, true);
   } finally {
     await client.query('ROLLBACK');
     client.release();

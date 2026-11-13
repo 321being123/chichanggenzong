@@ -227,9 +227,10 @@ async function main() {
     const neReport = await pool.query(
       `INSERT INTO fundamental.financial_reports
          (company_id, report_kind, period_end, period_type, statement_scope, announced_at,
-          source_id, source_version, update_flag, is_current_version, report_type)
-       VALUES ($1,'balance','2026-06-30'::date,'interim','consolidated','2026-08-20'::date,$2,'v1','',true,'2')
-       RETURNING report_id`, [negativeFromSource.companyId, sourceId]);
+          source_id, raw_payload, source_version, update_flag, is_current_version, report_type)
+       VALUES ($1,'balance','2026-06-30'::date,'interim','consolidated','2026-08-20'::date,$2,$3::jsonb,'v1','',true,'2')
+       RETURNING report_id`, [negativeFromSource.companyId, sourceId,
+        JSON.stringify({ ts_code: negativeFromSource.code })]);
     await pool.query(
       `INSERT INTO fundamental.financial_facts
          (report_id, statement_type, metric_code, numeric_value, unit_code, currency_code, source_field, is_calculated)

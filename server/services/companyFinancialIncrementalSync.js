@@ -437,7 +437,7 @@ async function runCompanyFinancialIncrementalSync(reason = 'scheduled', options 
     if (!queue.length) {
       const latest = await latestFinancialDataAsOf(options);
       await finishJobRun(runId, true, '无新增财报、缺口或重试对象，未调用财务接口');
-      return { ok: true, status: 'succeeded', changed: false, targetDate: options.targetTradeDate || options.targetDate || options.asOfDate || null, externalCallCount: 0, publishDatasets: false, dataAsOf: latest.dataAsOf,
+      return { ok: true, status: 'succeeded', changed: false, market: options.market || 'CN', targetDate: options.targetTradeDate || options.targetDate || options.asOfDate || null, externalCallCount: 0, publishDatasets: false, dataAsOf: latest.dataAsOf,
         datasetDiagnostics: { stock_financial_reports: {
           partition_row_count: latest.rowCount, valid_report_rows: latest.rowCount, target_count: targets.length,
           queue_count: 0, changed_rows: 0, query_status: 'success', coverage_status: 'verified_no_change',
@@ -474,7 +474,7 @@ async function runCompanyFinancialIncrementalSync(reason = 'scheduled', options 
       ? options.continuationStartedAt || new Date().toISOString() : options.continuationStartedAt || null;
     const continuationAgeExceeded = continuationStartedAt
       && Date.now() - new Date(continuationStartedAt).getTime() >= 24 * 60 * 60 * 1000;
-    const result = { ok, status: complete ? 'succeeded' : ok ? 'partial' : 'degraded', changed: changed > 0, targetDate: options.targetTradeDate || options.targetDate || options.asOfDate || null, dataAsOf: latest.dataAsOf,
+    const result = { ok, status: complete ? 'succeeded' : ok ? 'partial' : 'degraded', changed: changed > 0, market: options.market || 'CN', targetDate: options.targetTradeDate || options.targetDate || options.asOfDate || null, dataAsOf: latest.dataAsOf,
       publishDatasets: complete && changed > 0, externalCallCount: null, processed: batch.length, queued: queue.length, remaining,
       failures, reason, continuationRequired, continuationCount, initialRemaining, lastRemaining, noProgressCount,
       continuationMaxBatches, pendingStages: continuationRequired ? ['financialReports'] : [],

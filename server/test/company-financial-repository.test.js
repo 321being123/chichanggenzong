@@ -37,8 +37,9 @@ const service = require('../services/companyFinancialIncrementalSync');
         (company_id,report_kind,period_end,period_type,statement_scope,announced_at,source_id,source_version,report_type,is_current_version,raw_payload)
       VALUES
         ($1,'income','2099-12-31','annual','consolidated','2099-12-31',$2,$3,'1',true,$4::jsonb),
-        ($1,'income','2099-11-30','annual','consolidated','2099-11-30',$2,$3 || '-hk','1',true,$5::jsonb)
-    `, [target.companyId, source.source_id, version, JSON.stringify({ ts_code: '600000.SH' }), JSON.stringify({ ts_code: '00700.HK' })]);
+        ($1,'income','2099-11-30','annual','consolidated','2099-11-30',$2,$3 || '-hk','1',true,$5::jsonb),
+        ($1,'income','2100-01-01','annual','consolidated','2100-01-01',$2,$3 || '-non-current','2',true,$6::jsonb)
+    `, [target.companyId, source.source_id, version, JSON.stringify({ ts_code: '600000.SH' }), JSON.stringify({ ts_code: '00700.HK' }), JSON.stringify({ ts_code: '600000.SH' })]);
     const cn = await repo.readLatestFinancialData({ market: 'CN' }, tx);
     const hk = await repo.readLatestFinancialData({ market: 'HK' }, tx);
     assert.strictEqual(cn.data_as_of, '2099-12-31', 'A股水位不得被港股报告改变');

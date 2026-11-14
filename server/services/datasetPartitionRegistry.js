@@ -179,15 +179,16 @@ async function readSnapshot(datasetCode, optionsOrExecutor = {}, maybeExecutor =
   const definition = DATASET_PARTITION_REGISTRY[datasetCode];
   if (!definition) return { published: false, reason: 'not_registered', datasetCode };
   if(definition.scopeType==='account') return {published:false,reason:'account_runner_evidence_required',datasetCode,scopeKey:resolveDatasetScope(datasetCode,options)};
+  const scopeKey = resolveDatasetScope(datasetCode, options);
   const partitionKey = dateValue(options.partitionKey);
   if (definition.partitionedCountSql) {
-    if (!partitionKey) return { published: false, datasetCode, scopeKey: definition.scopeKey, reason: 'partition_key_required', rowCount: 0, dataAsOf: null };
+    if (!partitionKey) return { published: false, datasetCode, scopeKey, reason: 'partition_key_required', rowCount: 0, dataAsOf: null };
     const countResult = await executor(definition.partitionedCountSql, [partitionKey]);
     const dateResult = await executor(definition.partitionedDataAsOfSql, [partitionKey]);
     return {
       published: false,
       datasetCode,
-      scopeKey: definition.scopeKey,
+      scopeKey,
       rowCount: Number(countResult.rows[0]?.row_count || 0),
       dataAsOf: dateValue(dateResult.rows[0]?.data_as_of),
     };
@@ -195,7 +196,7 @@ async function readSnapshot(datasetCode, optionsOrExecutor = {}, maybeExecutor =
   if (definition.snapshotSql) {
     const result = await executor(definition.snapshotSql);
     const row = result.rows[0] || {};
-    return { published: false, datasetCode, scopeKey: definition.scopeKey, rowCount: Number(row.row_count || 0), dataAsOf: dateValue(row.data_as_of) };
+    return { published: false, datasetCode, scopeKey, rowCount: Number(row.row_count || 0), dataAsOf: dateValue(row.data_as_of) };
   }
   const requestedMarket = String(options.market || (definition.scopeKey === 'CN' ? 'CN' : '')).toUpperCase();
   const marketWhere = marketPredicateFor(datasetCode, requestedMarket);
@@ -208,12 +209,13 @@ async function readSnapshot(datasetCode, optionsOrExecutor = {}, maybeExecutor =
     : await executor(definition.dataAsOfSql + from);
   const rowCount = Number(countResult.rows[0]?.row_count || 0);
   const dataAsOf = dateValue(dateResult.rows[0]?.data_as_of);
-  return { published: false, datasetCode, scopeKey: definition.scopeKey, rowCount, dataAsOf };
+  return { published: false, datasetCode, scopeKey, rowCount, dataAsOf };
 }
 
 async function publishDatasetSnapshot(datasetCode, options = {}, executor = pool.query.bind(pool)) {
   const requestedPartitionKey = dateValue(options.partitionKey);
-  const snapshot = await readSnapshot(datasetCode, { partitionKey: requestedPartitionKey }, executor);
+  const snapshot = await readSnapshot(datasetCode, { ...options, partitionKey: requestedPartitionKey }, executor);
+  const scopeKey = resolveDatasetScope(datasetCode, options) || snapshot.scopeKey;
   const dataAsOf = dateValue(options.dataAsOf) || snapshot.dataAsOf;
   const rowCount = Number.isFinite(Number(options.rowCount)) ? Number(options.rowCount) : snapshot.rowCount;
   const diagnostics = options.diagnostics || {};
@@ -226,7 +228,7 @@ async function publishDatasetSnapshot(datasetCode, options = {}, executor = pool
     || ['verified_no_suspension', 'verified_no_change'].includes(diagnostics.coverage_status);
   if (!dataAsOf || (rowCount <= 0 && !allowEmpty)) return { ...snapshot, reason: 'empty_or_no_date' };
   const partitionKey = dateValue(options.partitionKey) || snapshot.dataAsOf;
-  const published = await publishDatasetPartition(datasetCode, snapshot.scopeKey, {
+  const published = await publishDatasetPartition(datasetCode, scopeKey, {
     partitionKey,
     dataAsOf,
     rowCount,
@@ -238,7 +240,7 @@ async function publishDatasetSnapshot(datasetCode, options = {}, executor = pool
       ...diagnostics,
     },
   }, executor);
-  return { ...snapshot, dataAsOf, rowCount, published: Boolean(published), partitionKey };
+  return { ...snapshot, scopeKey, dataAsOf, rowCount, published: Boolean(published), partitionKey };
 }
 
 async function publishJobDatasets(jobCode, businessDate, result) {
@@ -285,6 +287,7 @@ async function publishJobDatasets(jobCode, businessDate, result) {
           const diagnostics = result.datasetDiagnostics[code] || {};
           return publishDatasetSnapshot(code, {
             partitionKey: businessDate,
+            market: result.market,
             dataAsOf: result.dataAsOf || result.data_as_of,
             rowCount: diagnostics.valid_report_rows ?? diagnostics.partition_row_count,
             diagnostics,
@@ -310,6 +313,7 @@ async function publishJobDatasets(jobCode, businessDate, result) {
       const diagnostics = result && result.datasetDiagnostics && result.datasetDiagnostics[datasetCode] || {};
       const publication = await publishDatasetSnapshot(datasetCode, {
         partitionKey: businessDate,
+        market: result && result.market,
         dataAsOf: result && (result.dataAsOf || result.data_as_of),
         rowCount: diagnostics.partition_row_count,
         allowEmpty: diagnostics.coverage_status === 'verified_no_suspension',

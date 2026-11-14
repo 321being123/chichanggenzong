@@ -310,8 +310,14 @@ async function persistCompanyReports(target, reportResult, options = {}) {
   });
 }
 
-async function latestFinancialDataAsOf(client = pool) {
-  const row = await financialRepository.readLatestFinancialData({}, client);
+async function latestFinancialDataAsOf(options = {}, client = pool) {
+  // core 模式的目标集合是 A 股可转债正股；只有显式传入 HK 才统计港股，不能把混合事实表直接取 MAX/COUNT。
+  if (options && typeof options.query === 'function') {
+    client = options;
+    options = {};
+  }
+  const market = String(options.market || 'CN').trim().toUpperCase();
+  const row = await financialRepository.readLatestFinancialData({ market }, client);
   return { dataAsOf: row && row.data_as_of ? String(row.data_as_of).slice(0, 10) : null, rowCount: Number(row && row.row_count || 0) };
 }
 
@@ -429,7 +435,7 @@ async function runCompanyFinancialIncrementalSync(reason = 'scheduled', options 
     }) : [];
     const queue = disclosureRows.length ? await buildSyncQueue(targets, { ...options, reportPeriods, disclosureRows }) : localQueue;
     if (!queue.length) {
-      const latest = await latestFinancialDataAsOf();
+      const latest = await latestFinancialDataAsOf(options);
       await finishJobRun(runId, true, '无新增财报、缺口或重试对象，未调用财务接口');
       return { ok: true, status: 'succeeded', changed: false, targetDate: options.targetTradeDate || options.targetDate || options.asOfDate || null, externalCallCount: 0, publishDatasets: false, dataAsOf: latest.dataAsOf,
         datasetDiagnostics: { stock_financial_reports: {
@@ -453,7 +459,7 @@ async function runCompanyFinancialIncrementalSync(reason = 'scheduled', options 
       }
     }
     const remaining = Math.max(queue.length - batch.length, 0);
-    const latest = await latestFinancialDataAsOf();
+    const latest = await latestFinancialDataAsOf(options);
     const complete = failures.length === 0 && remaining === 0;
     const ok = failures.length === 0;
     const continuationRequired = ok && remaining > 0;

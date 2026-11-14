@@ -3,7 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const {
   currentReportPeriods, isDisclosureSeason, stateForTarget, fetchCompanyReports,
-  selectCompanyBatch, shouldAbortFinancialBatch, buildSyncQueue,
+  selectCompanyBatch, shouldAbortFinancialBatch, buildSyncQueue, latestFinancialDataAsOf,
 } = require('../services/companyFinancialIncrementalSync');
 const { rowVersion } = require('../services/financialDataArchitecture');
 const { publicationQualityGate, financialPeriodMismatches } = require('../services/bondSafetyService');
@@ -113,6 +113,17 @@ else process.env.JOB_EXTERNAL_CALL_LIMIT = previousLimit;
   );
   assert.strictEqual(result.results.indicator.length, 1);
   assert.strictEqual(result.results.indicator[0].report_type, '1');
+  const seenQueries = [];
+  const diagnosticClient = { query: async sql => {
+    seenQueries.push(sql);
+    return { rows: [{ data_as_of: '2026-10-31', row_count: '7' }] };
+  } };
+  const defaultMarket = await latestFinancialDataAsOf({}, diagnosticClient);
+  const hkMarket = await latestFinancialDataAsOf({ market: 'HK' }, diagnosticClient);
+  assert.match(seenQueries[0], /\^\[0-9\]\{6\}\[\.\]\(SH\|SZ\|BJ\)/, '默认水位查询必须隔离A股');
+  assert.match(seenQueries[1], /LIKE '\%\.HK'/, '显式港股水位查询必须隔离港股');
+  assert.deepStrictEqual(defaultMarket, { dataAsOf: '2026-10-31', rowCount: 7 });
+  assert.deepStrictEqual(hkMarket, { dataAsOf: '2026-10-31', rowCount: 7 });
   console.log('company financial incremental tests passed');
 })().catch(error => {
   console.error(error);

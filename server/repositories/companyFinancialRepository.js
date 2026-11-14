@@ -79,11 +79,19 @@ async function finishFinancialIngestion(params, tx) {
     [params.runId, params.status, params.rowCount, params.errorMessage]);
 }
 
-async function readLatestFinancialData(_params, tx) {
+function financialMarketPredicate(market) {
+  const normalized = String(market || '').trim().toUpperCase();
+  if (normalized === 'CN') return "upper(COALESCE(raw_payload->>'ts_code','')) ~ '^[0-9]{6}[.](SH|SZ|BJ)$'";
+  if (normalized === 'HK') return "upper(COALESCE(raw_payload->>'ts_code','')) LIKE '%.HK'";
+  return '';
+}
+
+async function readLatestFinancialData(params = {}, tx) {
+  const marketPredicate = financialMarketPredicate(params.market);
   const { rows } = await (tx || pool).query(
     `SELECT MAX(COALESCE(f_ann_date,announced_at,period_end))::text AS data_as_of,
             COUNT(*) FILTER (WHERE report_type='1' AND is_current_version=true)::int AS row_count
-       FROM fundamental.financial_reports`
+       FROM fundamental.financial_reports${marketPredicate ? ` WHERE ${marketPredicate}` : ''}`
   );
   return rows[0];
 }

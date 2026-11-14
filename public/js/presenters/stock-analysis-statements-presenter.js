@@ -44,6 +44,9 @@ async function stockAnalysisLoadStatements(type) {
     if (response.status === 409) {
       delete stockStatementState.cache[key];
       var refreshedDetail = await stockAnalysisApi.getSnapshot(code);
+      if (requestToken !== stockStatementState.requestToken
+        || selectToken !== stockAnalysisState.selectToken
+        || stockAnalysisState.selected !== code) return;
       if (!refreshedDetail.ok) throw new Error((refreshedDetail.payload && refreshedDetail.payload.error) || '分析数据更新中，请稍后重试');
       stockAnalysisState.data = refreshedDetail.payload;
       var refreshedVersions = refreshedDetail.payload.display && refreshedDetail.payload.display.statement_analysis_versions;

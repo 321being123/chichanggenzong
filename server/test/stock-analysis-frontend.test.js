@@ -47,6 +47,7 @@ for (const type of ['balance','income','cashflow']) assert.ok(html.includes(`dat
 assert.ok(statementsPresenter.includes('stockAnalysisApi.getStatements') && statementsScript.includes('同比'), '三表页面未接入年度原值和同比数据');
 assert.ok(statementsScript.includes('statement-section-'), '财务报表缺少分区展示');
 assert.ok(statementsScript.includes('statement-level-') && statementsScript.includes('statement-branch'), '财务科目缺少父子层级展示');
+assert.ok(statementsPresenter.includes('stockAnalysisState.selected !== code'), '409 重读未在写入共享快照前确认证券仍为当前证券');
 {
   const dom = new JSDOM('<div id="stock-analysis-statements-title"></div><div id="stock-analysis-statements-meta"></div><div id="stock-analysis-statements-message"></div><div id="stock-analysis-statements-wrap"></div>');
   const view = { document: dom.window.document, window: dom.window,
@@ -61,6 +62,23 @@ assert.ok(statementsScript.includes('statement-level-') && statementsScript.incl
   assert.ok(cell, '不可比较值要有可访问原因');
   assert.strictEqual(cell.getAttribute('aria-label'), '该项目的比较口径尚未核实');
   assert.strictEqual(cell.textContent, '—');
+  dom.window.close();
+}
+{
+  const dom = new JSDOM('<div id="stock-analysis-statements-title"></div><div id="stock-analysis-statements-meta"></div><div id="stock-analysis-statements-message"></div><div id="stock-analysis-statements-wrap"></div>');
+  const view = { document: dom.window.document, window: dom.window,
+    escapeHtml: value => String(value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;'),
+    stockAnalysisNumber: value => String(value), stockAnalysisPercent: value => String(value),
+    BusinessTable: { attach() {} } };
+  vm.runInNewContext(statementsScript, view);
+  view.stockAnalysisRenderStatements({ name: '资产负债表', type: 'balance', compare: 'none', unit_label: '原值', periods: [
+    { end_date: '2025-12-31', scope: 'consolidated', fs_table_type: 'non_financial', currency: 'CNY' },
+    { end_date: '2025-12-31', scope: 'parent', fs_table_type: 'non_financial', currency: 'CNY' }
+  ], fields: [{ label: '资产', section: '资产', values: [
+    { value: 1, status: 'available', change: null }, { value: 2, status: 'available', change: null }
+  ] }] });
+  const headers = [...dom.window.document.querySelectorAll('thead th')].map(cell => cell.textContent).join(' ');
+  assert.ok(headers.includes('合并口径') && headers.includes('母公司口径'), '全部口径报告列必须显示各自报表口径');
   dom.window.close();
 }
 {

@@ -250,7 +250,7 @@ async function recordNav(retried) {
       // 只同步服务端确认的资产/现金标量，保留刚刷新的逐笔持仓报价。
       ['cash', 'hkRate', 'totalAsset', 'authoritativeTotalAsset', 'authoritativePositionValue', 'authoritativeCash',
         'authoritativeInvested', 'cashConfirmed', 'cashEstimatedDelta', 'cashIncludesEstimates', 'cashDataIncomplete',
-        'cashIncomeState', 'cashIncomePolicy'].forEach(function (key) {
+        'cashIncomeState', 'cashIncomePolicy', 'valuation', 'totalAssetComplete'].forEach(function (key) {
         if (Object.prototype.hasOwnProperty.call(_j2.data, key)) data[key] = _j2.data[key];
       });
       if (typeof TOTAL_ASSET !== 'undefined') TOTAL_ASSET = _j2.data.totalAsset;

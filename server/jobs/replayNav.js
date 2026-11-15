@@ -36,6 +36,13 @@ function historicalKindFor(code, position = {}) {
 
 // 港股日线补价：腾讯 web.ifzq 日 K（与 hkDailyCoverage 同源，无需积分）。
 // 返回的每行是 [日期, 开, 收, 高, 低, 量]，收盘取第 3 位。
+// 历史补录的收盘价来自各品种历史日线接口，取到的是该交易日已完成的终盘事实，
+// 因此直接以“已确认收盘”准入写入；它不是浏览器自报价格，也不冒充当日盘中报价。
+const HISTORY_BACKFILL_EVIDENCE = {
+  source: 'history_backfill', quality: 'confirmed', isFinal: true,
+  evidence: { origin: 'daily_bar_history' },
+};
+
 async function backfillHkDailyPrices(username, accountName, code, start, end) {
   // 港股日线属于「行情数据集」：只向数据层要序列，主备来源由数据层决定。
   const { readStockDailySeries } = require('../dataAccess/marketDatasets');
@@ -51,7 +58,10 @@ async function backfillHkDailyPrices(username, accountName, code, start, end) {
   }
   let any = false;
   for (const date of Object.keys(byDate)) {
-    try { await saveDailyPrices(username, accountName, date, byDate[date]); any = true; } catch (e) { /* 单日失败不阻断其余日期 */ }
+    try {
+      await saveDailyPrices(username, accountName, date, byDate[date], HISTORY_BACKFILL_EVIDENCE);
+      any = true;
+    } catch (e) { /* 单日失败不阻断其余日期 */ }
   }
   return any;
 }
@@ -79,7 +89,10 @@ async function backfillDailyPrices(username, accountName, code, start, end, posi
   }
   let any = false;
   for (const d of Object.keys(byDate)) {
-    try { await saveDailyPrices(username, accountName, d, byDate[d]); any = true; } catch (e) {}
+    try {
+      await saveDailyPrices(username, accountName, d, byDate[d], HISTORY_BACKFILL_EVIDENCE);
+      any = true;
+    } catch (e) {}
   }
   return any;
 }

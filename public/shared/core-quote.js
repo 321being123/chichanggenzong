@@ -277,8 +277,14 @@ async function refreshAllPrices(marketsToRefresh, operationScope) {
   } else {
     showToast('行情刷新完成: ' + ok + ' 只已取得当日行情');
   }
-  // 记录每日收盘价
-  saveDailyPricesToDB(validatedPriceQuotes, scope);
+  // 2026-11-15 统一估值合同：浏览器不再写收盘价（服务端收盘任务为唯一写入入口）。
+  // 刷新成功后整批重读服务端结果，页面只展示同一批 effectivePrice 的总资产与持仓价。
+  if (pricesSaved && typeof loadData === 'function') {
+    await loadData(currentAccount);
+    if (typeof renderAll === 'function') renderAll();
+    if (typeof renderStats === 'function') renderStats();
+    renderReturnsChart();
+  }
 }
 
 /**
@@ -378,43 +384,6 @@ async function doAutoRefresh() {
   if (!isHoldingsRefreshScopeCurrent(scope)) return { ok: false, stale: true };
   if (afterClose) markAutoQuoteRefreshDoneToday(refreshMarkets);
   return result;
-}
-
-async function saveDailyPricesToDB(validatedQuotes, operationScope) {
-  const scope = operationScope || captureHoldingsRefreshScope();
-  try {
-    // 按每只证券所属市场判断是否已收盘，只保存当天有效行情。
-    if (typeof refreshMarketStateSnapshot === 'function') await refreshMarketStateSnapshot();
-    if (!isHoldingsRefreshScopeCurrent(scope)) return;
-    var writeDate = todayCN();
-    if (!validatedQuotes || validatedQuotes.size === 0) return;
-    var pricesByMarket = { CN: [], HK: [] };
-    Array.from(validatedQuotes.entries()).map(function(entry) {
-      var quote = entry[1] || {};
-      return { code: entry[0], name: quote.name || '', price: quote.price || 0, quote_time: quote.quote_time || null, quote_currency: quote.quote_currency || null };
-    }).filter(function(p) {
-      var position = data.positions.find(function (item) { return item.code === p.code; });
-      var market = marketForPosition(position);
-      var state = marketStateSnapshot && marketStateSnapshot.markets && marketStateSnapshot.markets[market];
-      if (!p.code || !(p.price > 0) || quoteDateCN(p.quote_time) !== writeDate || !state || state.businessDate !== writeDate || state.status !== 'open' || !state.isAfterMarketClose) return false;
-      var savedKey = '_dailyPricesSaved_' + currentAccount + '_' + market;
-      try { if (localStorage.getItem(savedKey) === writeDate) return false; } catch (e) {}
-      pricesByMarket[market].push(p);
-      return true;
-    });
-    for (var market of ['CN', 'HK']) {
-      if (!pricesByMarket[market].length) continue;
-      var response = await window.holdingsQuoteApi.saveDailyPrices(scope.account, writeDate, pricesByMarket[market]);
-      if (!isHoldingsRefreshScopeCurrent(scope)) return;
-      if (!response.ok) throw new Error('收盘价保存失败：HTTP ' + response.status);
-      try { localStorage.setItem('_dailyPricesSaved_' + currentAccount + '_' + market, writeDate); } catch(e) {}
-    }
-    if (Object.keys(holdingMarketStates()).every(function (market) {
-      var state = marketStateSnapshot.markets[market];
-      if (!state || state.status !== 'open') return true;
-      try { return localStorage.getItem('_dailyPricesSaved_' + currentAccount + '_' + market) === writeDate; } catch (e) { return false; }
-    })) data._dailyPricesSaved = writeDate;
-  } catch(e) {}
 }
 
 // ===================== 代码输入处理 =====================

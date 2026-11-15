@@ -693,15 +693,19 @@
     },
     {
       "id": "HOLDINGS-NAV-CLOSED-003",
-      "title": "休市估值校准须逐证券取证且不得吞掉未知残差",
+      "title": "同一估值时点只能有一个生效价格；不得以校准项吞掉真实残差",
       "implementation": {
-        "file": "server/services/navAttribution.js",
-        "symbol": "computeNavAttribution"
+        "file": "server/services/effectivePrice.js",
+        "symbol": "resolveEffectivePrices"
       },
       "tests": [
         {
           "file": "server/test/cross-market-calendar-nav.test.js",
-          "pattern": "CLOSED-VALUATION-001"
+          "pattern": "UNIFIED-PRICE-001"
+        },
+        {
+          "file": "server/test/effective-price-contract.test.js",
+          "pattern": "持仓统一估值价格合同回归"
         },
         {
           "file": "server/test/holdings-summary-refresh.test.js",

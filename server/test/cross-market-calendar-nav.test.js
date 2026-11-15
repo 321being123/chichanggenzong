@@ -233,30 +233,30 @@ async function main() {
     assert.strictEqual(Math.round(attribution.fxImpact), 22, '港币汇率影响应为 22 元');
     assert.ok(Math.abs(attribution.snapshotDrift) < 0.01, '价格与汇率归因应闭合');
 
-    // CLOSED-VALUATION-001：总资产使用当前持仓价，休市价格差须有逐证券证据。
+    // UNIFIED-PRICE-001：统一估值后 positions[].price 已等于同批 effectivePrice，
+    // 因此不再出现“休市行情校准”，同批价格下差额必须直接闭合。
     const correctedData = { ...data, positions: [
-      { code: '600000', subtype: '沪市', price: 9, quantity: 60 },
-      { code: '600000', subtype: '沪市', price: 9, quantity: 40 },
+      { code: '600000', subtype: '沪市', price: 10, quantity: 60 },
+      { code: '600000', subtype: '沪市', price: 10, quantity: 40 },
       data.positions[1],
     ] };
-    const corrected = await computeNavAttribution('fixture-user', 'fixture-account', correctedData, 3902);
+    const corrected = await computeNavAttribution('fixture-user', 'fixture-account', correctedData, 4002);
     assert.strictEqual(corrected.complete, true);
-    assert.strictEqual(Math.round(corrected.priceImpact), 180, 'A股休市价格校准不得冒充今日涨跌');
+    assert.strictEqual(Math.round(corrected.priceImpact), 180, '休市证券不得把价格差冒充今日涨跌');
     assert.strictEqual(Math.round(corrected.fxImpact), 22, '港股交易时仍须计算真实汇率影响');
-    assert.strictEqual(corrected.valuationAdjustment, -100, '分批持仓须合并计算休市估值校准');
-    assert.strictEqual(corrected.closedPriceCorrections.length, 1);
-    assert.strictEqual(corrected.closedPriceCorrections[0].quantity, 100);
-    assert.strictEqual(corrected.closedPriceCorrections[0].priceDate, '2026-09-24');
-    assert.ok(Math.abs(corrected.snapshotDrift) < 0.01, '休市估值差异必须与总资产闭合');
-    const unexplained = await computeNavAttribution('fixture-user', 'fixture-account', correctedData, 3950);
-    assert.strictEqual(Math.round(unexplained.snapshotDrift), 48, '真实未知差额不得被校准项吞掉');
-    const unchangedFx = await computeNavAttribution('fixture-user', 'fixture-account', { ...correctedData, hkRate: 0.90 }, 3880);
+    assert.ok(!('valuationAdjustment' in corrected), '统一估值后不得再输出休市行情校准项');
+    assert.ok(!('closedPriceCorrections' in corrected), '统一估值后不得再输出逐证券校准列表');
+    assert.ok(Array.isArray(corrected.priceEvidence) && corrected.priceEvidence.length >= 2, '必须给出逐证券价格与来源证据');
+    assert.ok(Math.abs(corrected.snapshotDrift) < 0.01, '同一批价格下必须闭合');
+    const unexplained = await computeNavAttribution('fixture-user', 'fixture-account', correctedData, 4050);
+    assert.strictEqual(Math.round(unexplained.snapshotDrift), 48, '真实未知差额必须显式可见，不得被任何校准项吞掉');
+    const unchangedFx = await computeNavAttribution('fixture-user', 'fixture-account', { ...correctedData, hkRate: 0.90 }, 3980);
     assert.strictEqual(unchangedFx.fxImpact, 0, '相同汇率的零影响是合法结果');
     assert.ok(Math.abs(unchangedFx.snapshotDrift) < 0.01);
     const brokerExact = await computeNavAttribution('fixture-user', 'fixture-account', {
       ...correctedData, totalAssetSource: 'broker_exact',
-    }, 3902);
-    assert.strictEqual(brokerExact.valuationAdjustment, 0, '券商精确总资产不消费当前持仓价，不得加入系统估值校准');
+    }, 4002);
+    assert.ok(!('valuationAdjustment' in brokerExact), '券商精确总资产同样不再产生系统估值校准');
 
     // CLOSED-TODAY-004：两市休市仍用今日估值和最新快照计算，不回退旧区间。
     const closedNow = realDate.parse('2026-09-27T04:00:00.000Z');
@@ -335,16 +335,17 @@ async function main() {
     const hkClosed = await computeNavAttribution('fixture-user', 'fixture-account', {
       ...data, positions: [
         { code: '600000', subtype: '沪市', price: 11, quantity: 100 },
-        { code: '00700', subtype: '港股', price: 19, quantity: 100 },
+        { code: '00700', subtype: '港股', price: 20, quantity: 100 },
       ], navHistory: [
         { date: '2026-06-29', totalAsset: 3800, hkRate: 0.90 },
         { date: '2026-06-30', totalAsset: 3800, hkRate: 0.90 },
       ],
-    }, 3829);
+    }, 3920);
     assert.strictEqual(Math.round(hkClosed.priceImpact), 100, '港股休市时只计A股价格变动');
     assert.strictEqual(Math.round(hkClosed.fxImpact), 20, '休市港股的人民币估值仍受汇率影响');
-    assert.strictEqual(Math.round(hkClosed.valuationAdjustment), -91);
-    assert.strictEqual(hkClosed.closedPriceCorrections[0].market, 'HK');
+    assert.ok(!('valuationAdjustment' in hkClosed), '休市不再以估值校准项兜底');
+    const hkEvidence = hkClosed.priceEvidence.find(row => row.code === '00700');
+    assert.ok(hkEvidence && hkEvidence.quality === 'legacy_unverified', '休市港股价格必须带证据质量，不能假装已确认收盘');
     assert.ok(Math.abs(hkClosed.snapshotDrift) < 0.01, '两种单市场开市方向均须闭合');
 
     console.log('cross-market calendar and NAV regression tests passed');

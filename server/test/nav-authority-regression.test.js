@@ -100,7 +100,9 @@ const previousCloseDate = (() => {
     assert.strictEqual(imported.calcStatus, 'broker_previous_close', '使用前一完整收盘日时必须标记状态');
     assert.strictEqual(imported.diagnostics.position_price_date, previousCloseDate, '必须记录实际使用的行情日期');
     const after = await loadAccountData(U, A);
-    assert.strictEqual(Math.round(after.authoritativeTotalAsset), 1435, '导入次日起当前总资产必须使用系统持仓绝对市值加锚定现金');
+    // 统一估值后当前市值由同批 effectivePrice 决定（周末取最近有效交易日收盘价 100），
+    // 兼容持仓价 110 不再参与正常证券估值。
+    assert.strictEqual(Math.round(after.authoritativeTotalAsset), 1350, '导入次日起当前总资产必须使用系统统一估值市值加锚定现金');
     const repeat = await fetch(base + '/nav/import?version=' + after.version, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     const repeatJson = await repeat.json();
     assert.strictEqual(repeat.status, 200, '同文件重复导入应成功幂等返回');
@@ -108,21 +110,29 @@ const previousCloseDate = (() => {
     const batchCount = await pool.query('SELECT count(*)::int AS c FROM nav_import_batches WHERE username=$1 AND account_name=$2', [U, A]);
     assert.strictEqual(batchCount.rows[0].c, 1, '同文件不得新增第二个导入批次');
 
-    await upsertNav(U, A, { date: todayCN(), nav: 1.025, totalAsset: 1435, invested: 1000, hkRate: 0.85 });
-    // 该归因断言要求当日港股行情使用实时持仓价；测试库日历可能尚未同步当年安排，
-    // 因此在进程内提供确定的开市事实，避免依赖业务库的日历数据。
-    invalidateMarketStateCache({ market: 'HK', businessDate: todayCN() });
-    await prefetchMarketFacts('HK', [todayCN()], async () => ({ rows: [{
-      trade_date: todayCN(), is_open: true, source_code: 'test_fixture',
-      raw_payload: { official_schedule: { is_open: true, session_type: 'full_day', close_time: '16:10', source: 'test_fixture' } },
-    }] }));
+    await upsertNav(U, A, { date: todayCN(), nav: 1.025, totalAsset: 1350, invested: 1000, hkRate: 0.85 });
+    // 港股日历缺失会让“最近应有收盘日”变成未知，从而只能标注过期参考价。
+    // 这里在进程内提供确定的市场事实（最近交易日开市、周末休市），
+    // 使周末场景能按同一批已落库收盘价完成完整归因，不依赖业务库日历。
+    invalidateMarketStateCache({ market: 'HK' });
+    const hkOpenDates = [previousCloseDate];
+    await prefetchMarketFacts('HK', [previousCloseDate, yesterday, todayCN()], async (sql, params = []) => {
+      const dates = Array.isArray(params[0]) ? params[0] : [params[0]].filter(Boolean);
+      return { rows: dates.map(value => {
+        const date = String(value).slice(0, 10);
+        const isOpen = hkOpenDates.includes(date);
+        return { trade_date: date, is_open: isOpen, source_code: 'test_fixture',
+          raw_payload: { official_schedule: { is_open: isOpen, session_type: 'full_day', close_time: '16:10', source: 'test_fixture' } } };
+      }) };
+    });
     const closed = await loadAccountData(U, A);
     assert.ok(closed.navAttribution && closed.navAttribution.complete, '导入日到今天应能完整归因：' + JSON.stringify(closed.navAttribution));
-    assert.strictEqual(Math.round(closed.navAttribution.priceImpact), 90, '价格影响应为90');
-    assert.strictEqual(Math.round(closed.navAttribution.fxImpact), -55, '汇率影响应为-55');
-    assert.strictEqual(Math.round(closed.navAttribution.totalChange), 30, '导入日到系统计算日的总资产变化应包含一次性口径切换');
+    assert.strictEqual(Math.round(closed.navAttribution.priceImpact), 0, '周末价格未变化，不得用兼容持仓价冒充当日股价涨跌');
+    assert.strictEqual(Math.round(closed.navAttribution.fxImpact), -50, '汇率影响应为-50');
+    assert.strictEqual(Math.round(closed.navAttribution.totalChange), -55, '导入日到系统计算日的总资产变化应包含一次性口径切换');
     assert.strictEqual(Math.round(closed.navAttribution.importBasisAdjustment), -5, '券商持仓比系统导入时点估值高5元，应显示-5元口径切换差异');
-    assert.strictEqual(Math.round(closed.navAttribution.priceImpact + closed.navAttribution.fxImpact + closed.navAttribution.ledgerChange + closed.navAttribution.importBasisAdjustment), 30, '价格、汇率、账本和一次性口径切换必须闭合');
+    assert.strictEqual(Math.round(closed.navAttribution.priceImpact + closed.navAttribution.fxImpact + closed.navAttribution.ledgerChange + closed.navAttribution.importBasisAdjustment), -55, '价格、汇率、账本和一次性口径切换必须闭合');
+    assert.ok(!('valuationAdjustment' in closed.navAttribution), '统一估值后不得再输出休市估值校准项');
 
     const latest = await loadAccountData(U, A);
     const batchId = firstJson.data.navHistory.find(n => n.date === yesterday).importBatchId;

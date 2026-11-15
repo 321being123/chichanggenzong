@@ -5,7 +5,7 @@ function setup(){const c={window:{},console,Set,Map,Promise,Date,Intl,setTimeout
 (async()=>{
  let c=setup(),gate=deferred(),calls=0,quoteStarted=deferred();c.window.holdingsQuoteApi.quotes=async()=>{calls++;quoteStarted.resolve();return gate.promise};let p=c.refreshAllPrices();await quoteStarted.promise;c.currentAccount='B';c.generation++;c.data={positions:[{code:'600000',price:50}],hkRate:1};gate.resolve({ok:true,payload:{'600000':{price:20}}});await p;assert.equal(c.data.positions[0].price,50);assert.equal(calls,1);
  c=setup();gate=deferred();let started=deferred();let nav=0;c.window.holdingsQuoteApi.savePrices=async()=>{started.resolve();return gate.promise};c.recordNav=async()=>{nav++};p=c.refreshAllPrices();await started.promise;c.currentAccount='B';c.generation++;c.data={positions:[]};gate.resolve({ok:true,payload:{version:8}});await p;assert.equal(c.dataVersion,1,'旧行情响应不能覆盖新账户版本');assert.equal(nav,0,'旧行情不得触发新账户净值');
- c=setup();gate=deferred();c.refreshMarketStateSnapshot=()=>gate.promise;let writes=0;c.window.holdingsQuoteApi.saveDailyPrices=async()=>{writes++;return {ok:true}};p=c.saveDailyPricesToDB(new Map([['600000',{price:10,quote_time:'2026-10-29T10:00:00+08:00'}]]));c.currentAccount='B';c.generation++;c.data={positions:[]};gate.resolve();await p;assert.equal(writes,0,'切换账户后不得写新账户收盘价');
+ c=setup();assert.equal(typeof c.saveDailyPricesToDB,'undefined','浏览器不得再持有收盘价写入入口（服务端收盘任务为唯一写入）');assert.equal(typeof c.refreshAllPrices,'function','行情刷新入口仍然保留');
  c=setup();gate=deferred();quoteStarted=deferred();c.window.holdingsQuoteApi.quotes=()=>{quoteStarted.resolve();return gate.promise};p=c.refreshAllPrices();await quoteStarted.promise;c.currentAccount='B';c.generation++;c.currentAccount='A';c.generation++;gate.resolve({ok:true,payload:{}});const result=await p;assert(result.stale,'A→B→A 必须丢弃旧请求');
- console.log('行情及收盘价跨账户旧响应隔离通过');
+ console.log('行情跨账户旧响应隔离及收盘价写入收口通过');
 })().catch(e=>{console.error(e);process.exitCode=1});

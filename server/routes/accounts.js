@@ -7,12 +7,12 @@ const asyncHandler = require('../middleware/async');
 const { requireLogin, assertOwnership, requireAdmin } = require('../middleware/auth');
 const rateLimit = require('../middleware/rateLimit');
 const { validateAccountData, isValidAccountName } = require('../middleware/validate');
-const { loadUser, updateUserAccounts, loadAccountData, loadAccountSummary, saveAccountData, migrateToStructured, saveDailyPrices, syncUserAccounts, loadBrokers, isValidBroker, getAccountBrokers, updateAccountBroker, backupNavHistory, restoreNavHistory, clearNavHistory, deleteAccountData, renameAccountData, upsertNav } = require('../db');
+const { loadUser, updateUserAccounts, loadAccountData, loadAccountSummary, saveAccountData, migrateToStructured, syncUserAccounts, loadBrokers, isValidBroker, getAccountBrokers, updateAccountBroker, backupNavHistory, restoreNavHistory, clearNavHistory, deleteAccountData, renameAccountData, upsertNav } = require('../db');
 const { round } = require('../db/util');
 const { withTransaction } = require('../db/transaction');
 const accountsRepository = require('../repositories/accountsRepository');
 const navImportRepository = require('../repositories/navImportRepository');
-const { fetchQuotesByCodes, todayCN, isCnTradingDate, toTsCode, validateDailyPriceBatch } = require('../services/market');
+const { fetchQuotesByCodes, todayCN, isCnTradingDate, toTsCode } = require('../services/market');
 const { recomputeNav } = require('../jobs/replayNav');
 const { getValuationByCodes } = require('../services/convertibleBondValuationService');
 const { applyPrivateCache } = require('../middleware/publicCache');
@@ -547,19 +547,16 @@ router.get('/export/:name', requireLogin, asyncHandler(assertOwnership), asyncHa
 }));
 
 // ========== 每日收盘价记录 ==========
+// 2026-11-15 统一估值合同（方案第 8 节）：收盘事实只能由服务端收盘任务产出，
+// 浏览器自报价格不再成为权威。旧客户端仍会调用本接口，返回明确 409 和升级提示，
+// 不写入任何候选或正式日价（鉴权与账户归属检查在此之前已执行）。
 router.post('/daily-prices/:name', requireLogin, asyncHandler(assertOwnership), rateLimit({ prefix: 'save', windowMs: 60000, max: 30, getKey: (r) => r.session.user || r.ip, message: '保存过于频繁，请稍后再试' }), asyncHandler(async (req, res) => {
-  try {
-    const name = req.params.name;
-    const { prices, date } = req.body;
-    if (!prices || !prices.length) return res.json({ ok: true });
-    const targetDate = date || todayCN();
-    const validation = await validateDailyPriceBatch(targetDate, prices);
-    if (!validation.ok) return res.status(400).json(validation);
-    await saveDailyPrices(req.session.user, name, validation.date, prices);
-    res.json({ ok: true });
-  } catch(e) {
-    res.status(500).json({ error: e.message });
-  }
+  return res.status(409).json({
+    error: '收盘价已改由服务端收盘任务统一写入，浏览器写入通道已关闭；请刷新页面使用最新版本',
+    code: 'DAILY_PRICE_WRITE_RETIRED',
+    upgradeRequired: true,
+    replacement: 'market_close_task',
+  });
 }));
 
 // ========== 历史净值备份/还原/清理（导入前自动拍快照，误导入可一键还原） ==========
@@ -616,6 +613,8 @@ router.get('/accounts/:name/nav-history-backup-info', requireLogin, asyncHandler
 
 // 2-5 行情价格批量更新：PATCH /api/positions/prices
 // body={ prices: [{ code, price }], account }
+// 2026-11-15 统一估值合同：本接口只维护“兼容持仓价”缓存，不再是正常证券的估值权威；
+// 当前资产与涨跌一律由服务端 effectivePrice 解析，客户端价格不写入 daily_prices。
 router.patch('/positions/prices', requireLogin, asyncHandler(assertOwnership), requireVersion, rateLimit({ prefix: 'save', windowMs: 60000, max: 30, getKey: (r) => r.session.user || r.ip, message: '保存过于频繁，请稍后再试' }), asyncHandler(async (req, res) => {
   const prices = req.body && req.body.prices;
   if (!Array.isArray(prices) || prices.length === 0) return res.status(400).json({ error: '缺少 prices 数组' });
@@ -635,7 +634,8 @@ router.patch('/positions/prices', requireLogin, asyncHandler(assertOwnership), r
       const upV = await accountsRepository.bumpPositionVersion({ username, accountName }, tx);
       return upV.rows[0] ? Number(upV.rows[0].version) : null;
     });
-    res.json({ ok: true, version });
+    // compatCacheOnly：明确告知调用方这里写的是兼容缓存，不是收盘事实。
+    res.json({ ok: true, version, compatCacheOnly: true });
   } catch (e) {
     res.status(e.status || 500).json({ error: e.message });
   }

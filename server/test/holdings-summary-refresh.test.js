@@ -73,7 +73,8 @@ assert.ok(quote.includes('fetchQuoteBatch') && quote.includes('retryCodes'), '�
 assert.ok(!quote.includes('return await fetchQuote(c, true)'), '持仓批量失败后不得退化成逐只行情请求');
 assert.ok(!quote.includes('syncIndexPoints().catch(function(){});'), '持仓刷新不得在浏览器侧同步外部指数行情');
 assert.ok(!returns.includes('/api/kline') && !returns.includes('fetchIndexKline'), '收益图缺失指数快照时不得在页面侧回源外部行情');
-assert.ok(quote.includes('Array.from(validatedQuotes.entries())') && quote.includes('quote_time: quote.quote_time') && quote.includes('if (!response.ok) throw new Error'), '页面必须按代码去重后把行情时间交给服务端复核，且保存失败不得标记完成');
+assert.ok(!quote.includes('saveDailyPricesToDB') && !quote.includes("holdingsQuoteApi.saveDailyPrices"), '浏览器不得再写收盘价：收盘事实只能由服务端收盘任务落库');
+assert.ok(quote.includes('await loadData(currentAccount)') && quote.includes('renderAll()'), '刷新成功后必须整批重读服务端统一估值结果，不再保留浏览器自算资产');
 assert.ok(quote.includes('matchingPositions.forEach(function(position)'), '同一证券存在多条持仓时必须统一更新为同一份最新行情');
 const incompleteTip = context.buildChangeTipHtml(100, 1, 0, 0, null, null, null, null, true);
 assert.ok(incompleteTip.includes('归因不完整，未进行明细加总'), '归因不完整时必须明确提示未进行明细加总');
@@ -82,9 +83,11 @@ const partialTip = context.buildChangeTipHtml(100, 1, null, null, null, null, nu
 assert.ok(partialTip.includes('404002') && partialTip.includes('—'), '归因不完整时必须显示缺失标的并以破折号表示未计算项');
 const driftTip = context.buildChangeTipHtml(100, 1, 70, 20, 0, null, 10, null, false);
 assert.ok(driftTip.includes('未归因差额') && driftTip.includes('合计 = 股价影响 + 汇率影响 + 其他变动 + 未归因差额'), '存在明显残差时必须在浮框中展示并纳入合计');
-const correctedTip = context.buildChangeTipHtml(102, 1, 180, 22, 0, null, 0, null, false, [], null, -100, [{ code: '600000' }]);
-assert.ok(correctedTip.includes('休市行情校准') && correctedTip.includes('涉及 1 只持仓'), '须说明休市估值校准及可核对范围');
-assert.ok(correctedTip.includes(' + 休市行情校准 = ') && !correctedTip.includes('未归因差额'), '已核实校准应参与合计且不再冒充未知残差');
+const incompleteValuationTip = context.buildChangeTipHtml(102, 1, 180, 22, 0, null, 0, null, false, [], null, { complete: false, missingCount: 2 });
+assert.ok(incompleteValuationTip.includes('当前估值不完整') && incompleteValuationTip.includes('2 只证券'), '价格证据不足时必须显式说明缺失范围，而不是用校准金额凑平');
+assert.ok(!incompleteValuationTip.includes('休市行情校准'), '统一估值后不得再出现休市行情校准项');
+const completeValuationTip = context.buildChangeTipHtml(102, 1, 180, 22, 0, null, 0, null, false, [], null, { complete: true, missingCount: 0 });
+assert.ok(!completeValuationTip.includes('当前估值不完整'), '估值完整时不得提示缺失');
 
 const summaryElements = new Map();
 const statsContainer = { innerHTML: '', querySelector: () => null };

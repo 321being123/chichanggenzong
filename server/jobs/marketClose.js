@@ -1,5 +1,5 @@
 // ========== 自动记录每日收盘价（按市场收盘时刻精准触发 + 休市识别 + 缺失补漏） ==========
-const { pool, loadAccountData, saveDailyPrices, tryClaimJob, releaseJob, startJobRun, finishJobRun } = require('../db');
+const { pool, loadAccountData, saveDailyPrices, syncConfirmedCloseToPositions, tryClaimJob, releaseJob, startJobRun, finishJobRun } = require('../db');
 const { fetchQuoteByCode } = require('../services/market');
 const { getMarketState, isCnTradingDate, prefetchMarketFacts, shanghaiDateTime, parseClock } = require('../services/marketState');
 const { runNavSnapshotJob } = require('./navSnapshot');
@@ -127,6 +127,26 @@ function pickMissingCodes(positions, existingCodes, matchFn) {
 // 幂等到「代码」级别：只抓取当日该市场持仓中【尚未记录】的代码，
 // 因此 A 股先写入后，可转债/ETF 不会被整体跳过；部分缺失也能补齐。
 // 返回 { recorded, failed, error }；error=true 表示有持仓却全部抓取失败
+// 收盘写入准入（合同 8.3.1-4）：只有“当日交易日且已过当地收市时刻”才允许写已确认终盘价；
+// 其余情况（含盘中、待确认）只能写候选，已存在的确认价不会被候选覆盖（条件写入在仓储层）。
+async function closeWriteEvidence(label, market, cnDate) {
+  if (cnDate !== cnDateStr()) {
+    // 历史补录走各品种历史日线接口，取到的是该日已完成的收盘事实。
+    return { quality: 'confirmed', isFinal: true, source: `history_backfill:${label}`, evidence: { businessDate: cnDate, backfill: true } };
+  }
+  const state = await getMarketState({ market, businessDate: cnDate, time: shanghaiDateTime().time });
+  const confirmed = state.status === 'open' && state.isAfterMarketClose === true;
+  return {
+    quality: confirmed ? 'confirmed' : 'candidate',
+    isFinal: confirmed ? true : null,
+    source: `market_close_task:${label}`,
+    evidence: {
+      businessDate: cnDate, marketState: state.status,
+      isAfterMarketClose: state.isAfterMarketClose === true, closeQuoteTime: state.closeQuoteTime || null,
+    },
+  };
+}
+
 async function recordCloseOne(username, accountName, label, matchFn, dateStr, requestBudget, context = {}) {
   const cnDate = dateStr || cnDateStr();
 
@@ -170,13 +190,17 @@ async function recordCloseOne(username, accountName, label, matchFn, dateStr, re
   for (const pos of missing) {
     const q = await fetchWithRetry(pos.code, 2, requestBudget, cnDate, context.quoteMap || null);
     if (q && q.price) {
-      prices.push({ code: pos.code, name: pos.name || q.name || '', price: q.price });
+      prices.push({ code: pos.code, name: pos.name || q.name || '', price: q.price, quote_time: q.quote_time || null });
       recorded++;
     } else {
       failed++;
     }
   }
-  if (prices.length > 0) await saveDailyPrices(username, accountName, cnDate, prices);
+  if (prices.length > 0) {
+    const market = (MARKET_CLOSE_TIMES.find(item => item.label === label) || {}).market || 'CN';
+    const evidence = await closeWriteEvidence(label, market, cnDate);
+    await saveDailyPrices(username, accountName, cnDate, prices, evidence);
+  }
   const error = recorded === 0 && failed > 0;
   return { recorded, failed, skipped, error };
 }
@@ -239,7 +263,16 @@ async function recordMarketClose(label, matchFn, dateStr, context = {}) {
     error.externalCalls = getExternalCallStats().total;
     throw error;
   }
-  return { recorded, failed, skipped, verifiedNoChange: recorded === 0 && skipped === 0, externalCalls: getExternalCallStats().total };
+  // 已确认收盘价同步到兼容持仓价：仅作过渡缓存，不作为另一套估值权威；
+  // 读路径仍以统一 effectivePrice 为准。
+  let positionCacheSynced = 0;
+  if (recorded > 0) {
+    for (const account of accounts) {
+      const synced = await syncConfirmedCloseToPositions(account.username, account.account_name, cnDate).catch(() => null);
+      if (synced) positionCacheSynced += Number(synced.updated) || 0;
+    }
+  }
+  return { recorded, failed, skipped, positionCacheSynced, verifiedNoChange: recorded === 0 && skipped === 0, externalCalls: getExternalCallStats().total };
 }
 
 async function recentMarketDays(count) {

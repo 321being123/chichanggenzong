@@ -69,7 +69,7 @@ context.renderAll = () => {
 };
 context.recordNav = async () => {};
 context.renderReturnsChart = () => {};
-context.saveDailyPricesToDB = async () => {};
+// 浏览器不再写收盘价：服务端收盘任务是唯一写入入口（2026-11-15 统一估值合同）
 
 let startedPatch;
 const patchStarted = new Promise(resolve => { startedPatch = resolve; });

@@ -450,9 +450,11 @@ async function computeNavAttribution(username, accountName, data, currentTotal, 
   const priceImpact = { value: 0 };
   const fxImpact = { value: 0 };
   const quantityImpact = { value: 0 };
-  const valuationAdjustment = { value: 0 };
-  const closedPriceCorrections = [];
   const previousMarketValue = { value: 0, complete: true };
+  // 当前时点的统一估值证据（与总资产同一批 effectivePrice）。
+  // 休市不再另设“估值校准”：当前资产与归因必须指向同一批价格。
+  const currentValuation = data.valuation && data.valuation.prices ? data.valuation.prices : null;
+  const priceEvidence = [];
   const missing = [];
   const manualPriceCodes = [];
   const codes = relevantCodes;
@@ -477,8 +479,11 @@ async function computeNavAttribution(username, accountName, data, currentTotal, 
     const tradePrice = tradePriceAtEnd(data, code, prevDate, currentDate, prevAt, lastAt);
     const currentMarketState = currentDate === todayDate ? todayMarketStates[isHk ? 'HK' : 'CN'] : null;
     const marketOpenOnCurrentDate = currentMarketState ? currentMarketState.status === 'open' : true;
-    const lastPrice = liveEnd && marketOpenOnCurrentDate && p
-      ? Number(p.price) : (storedCurrentRow && storedCurrentRow.price);
+    const evidenceRow = liveEnd && currentValuation ? currentValuation[code] : null;
+    const lastPrice = evidenceRow && Number(evidenceRow.price) > 0
+      ? Number(evidenceRow.price)
+      : (liveEnd && marketOpenOnCurrentDate && p
+        ? Number(p.price) : (storedCurrentRow && storedCurrentRow.price));
     const endPrice = lastPrice > 0 ? lastPrice : (tradePrice > 0 ? tradePrice : fixedDelistedPrice);
     const currentQty = p ? Number(p.quantity) || 0 : 0;
     if (fixedDelistedPrice != null && (storedPrevPrice == null || !(storedPrevPrice > 0) || !(lastPrice > 0))) {
@@ -499,18 +504,17 @@ async function computeNavAttribution(username, accountName, data, currentTotal, 
     }
     // 数量变化归入交易/数量影响：新买入不要求基准日价格，清仓也不要求当前行情。
     quantityImpact.value += (currentQty - qty) * endPrice * endFx;
-    // 休市时总资产仍按当前持仓价估值，而价格涨跌按落库收盘价计算。
-    // 两份价格不同是可核查的估值校准，不能冒充休市日涨跌或留作未知残差。
-    if (liveEnd && data.totalAssetSource !== 'broker_exact' && currentMarketState?.status === 'closed' && currentQty > 0 &&
-        Number(p?.price) > 0 && storedCurrentRow?.price > 0) {
-      const adjustment = (Number(p.price) - endPrice) * currentQty * endFx;
-      valuationAdjustment.value += adjustment;
-      if (Math.abs(adjustment) >= 0.005) closedPriceCorrections.push({
-        code, market: isHk ? 'HK' : 'CN', priceDate: storedCurrentRow.date,
-        closePrice: endPrice, valuationPrice: Number(p.price), quantity: currentQty,
-        amount: adjustment,
-      });
-    }
+    priceEvidence.push({
+      code,
+      market: isHk ? 'HK' : 'CN',
+      basisPrice: prevPrice > 0 ? prevPrice : null,
+      basisPriceDate: storedPrevRow ? storedPrevRow.date : null,
+      currentPrice: endPrice > 0 ? endPrice : null,
+      currentPriceKind: evidenceRow ? evidenceRow.priceKind : (storedCurrentRow ? 'close' : null),
+      currentPriceDate: evidenceRow ? evidenceRow.tradeDate : (storedCurrentRow ? storedCurrentRow.date : null),
+      quality: evidenceRow ? evidenceRow.quality : (storedCurrentRow ? 'legacy_unverified' : null),
+      sourceRef: evidenceRow ? evidenceRow.sourceRef : null,
+    });
   }
   const ledgerChange = { value: 0 };
   let cashIncomeImpact = 0;
@@ -549,7 +553,6 @@ async function computeNavAttribution(username, accountName, data, currentTotal, 
     if (rebuilt != null) previousTotal = rebuilt;
   }
   const totalChange = lastTotal - previousTotal;
-  const complete = missing.length === 0 && !currencyIncomplete;
   // 仅在“券商导入日 → 首个系统计算日”展示一次口径切换差异。
   // 正数表示系统导入时点持仓估值高于券商持仓总值，负数反之；后续不再保留此差额。
   const importBasisAdjustment = previous.snapshotSource === 'imported' && (liveEnd || last.snapshotSource !== 'imported') && currentDate > prevDate &&
@@ -557,11 +560,18 @@ async function computeNavAttribution(username, accountName, data, currentTotal, 
     ? Number(previous.systemMarketValueAtSnapshot) - Number(previous.marketValueCny)
     : null;
   const tradeImpact = ledgerChange.value + quantityImpact.value;
+  const valuationIncomplete = liveEnd && data.valuation && data.valuation.complete === false;
+  const complete = missing.length === 0 && !currencyIncomplete && !valuationIncomplete;
   const drift = complete ? totalChange - priceImpact.value - fxImpact.value - tradeImpact - cashIncomeImpact -
-    valuationAdjustment.value - (importBasisAdjustment || 0) : null;
+    (importBasisAdjustment || 0) : null;
+  const reasonCodes = [];
+  if (currencyIncomplete) reasonCodes.push('missing_trade_currency_settlement');
+  if (missing.length) reasonCodes.push('missing_exact_price_or_fx');
+  if (valuationIncomplete) reasonCodes.push('current_valuation_incomplete');
   return {
     complete,
-    reason: complete ? null : (currencyIncomplete ? 'missing_trade_currency_settlement' : 'missing_exact_price_or_fx'),
+    reason: complete ? null : (reasonCodes[0] || 'incomplete'),
+    reasonCodes,
     missingCodes: [...new Set(missing)],
     manualPriceCodes: [...new Set(manualPriceCodes)],
     previousDate: prevDate,
@@ -574,10 +584,10 @@ async function computeNavAttribution(username, accountName, data, currentTotal, 
     quantityImpact: quantityImpact.value,
     tradeImpact,
     cashIncomeImpact,
-    valuationAdjustment: valuationAdjustment.value,
-    closedPriceCorrections,
     importBasisAdjustment,
     snapshotDrift: drift,
+    priceEvidence,
+    currentValuationRevision: liveEnd && data.valuation ? data.valuation.revision : null,
     authorityMode: data.authoritativeTotalAsset != null,
   };
 }

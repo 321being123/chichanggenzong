@@ -12,6 +12,7 @@ const { investedAt, chainNav, cashAt, isExternalTransfer } = require('../../publ
 const CoreDate = require('../../public/shared/core-date.js');
 const classifyCode = require('../../public/js/code-classify');
 const repository = require('../repositories/navSnapshotRepository.js');
+const { selectHistoricalClosePrice } = require('../services/effectivePrice');
 
 // 东八区日期 YYYY-MM-DD
 function cnDate(d) {
@@ -229,16 +230,17 @@ async function recordNavSnapshots(username, accountName, hkRateOverride = null, 
   }
   async function effectivePrice(code, market, date, marketStatus) {
     const exact = dpMap.get(code + '|' + date);
-    if (marketStatus === 'open') return exact > 0 ? { price: exact, date } : null;
-    if (marketStatus !== 'closed') return null;
     const candidates = pricesByCode.get(code) || [];
-    for (let index = candidates.length - 1; index >= 0; index--) {
-      const candidate = candidates[index];
-      if (candidate.date >= date || !(candidate.price > 0)) continue;
-      const candidateState = await stateFor(market, candidate.date);
-      if (candidateState.status === 'open') return candidate;
+    const statusByDate = new Map();
+    for (const candidate of candidates) {
+      if (statusByDate.has(candidate.date)) continue;
+      statusByDate.set(candidate.date, (await stateFor(market, candidate.date)).status);
     }
-    return null;
+    // 历史重算与实时估值共用同一支选价算法（services/effectivePrice），不再各写一套。
+    return selectHistoricalClosePrice({
+      exactPrice: exact, candidates, targetDate: date, marketStatus,
+      tradingStatusOf: candidateDate => statusByDate.get(candidateDate) || 'unknown',
+    });
   }
   for (const d of datesToProcess) {
     const anchor = latestPositionAnchor(d);

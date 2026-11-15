@@ -815,6 +815,25 @@ body:has(.nav) { padding-top: var(--site-nav-height, 52px); }
 .nt-detail-meta { font-size: 12px; color: #8b93a4; }
 .nt-detail-body { font-size: 14px; color: #273142; line-height: 1.7; overflow-wrap: anywhere; }
 
+/* 提醒设置面板（2026-11-15，评论通知与反馈完成通知的个人开关） */
+.nt-settings {
+  display: flex; flex-direction: column; gap: 12px; align-items: stretch;
+  padding: 18px; background: #fff; border: 1px solid #e3e8f0; border-radius: 8px;
+}
+.nt-settings-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.nt-settings-title { margin: 0; font-size: 16px; color: #171c2a; }
+.nt-setting-row {
+  display: flex; align-items: flex-start; gap: 10px;
+  padding: 10px; border: 1px solid #eef1f6; border-radius: 7px; cursor: pointer;
+}
+.nt-setting-row:hover { border-color: #d3dae8; }
+.nt-setting-row input { width: 18px; height: 18px; margin-top: 1px; flex: 0 0 auto; }
+.nt-setting-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.nt-setting-text strong { font-size: 13px; color: #171c2a; font-weight: 600; }
+.nt-setting-text small { font-size: 12px; color: #8b93a4; line-height: 1.5; }
+.nt-settings-note { margin: 0; font-size: 12px; color: #8b93a4; line-height: 1.6; }
+.nt-settings-actions { display: flex; justify-content: flex-end; }
+
 @media (max-width: 760px) {
   .nt-page { padding-top: 12px; }
   .nt-toolbar { gap: 8px; }
@@ -822,6 +841,9 @@ body:has(.nav) { padding-top: var(--site-nav-height, 52px); }
   .nt-item { padding: 12px; }
   .nt-item-body { font-size: 14px; }
   .nt-detail { padding: 14px; }
+  .nt-settings { padding: 14px; }
+  .nt-setting-row { min-height: 44px; }
+  .nt-setting-text strong { font-size: 14px; }
 }
 
 /* ===== 首页工作台 ===== */

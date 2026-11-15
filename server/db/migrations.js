@@ -212,6 +212,8 @@ const MIGRATIONS = [
   { version: '192_stock_selection_universe_artifact_columns', up: () => require('./migrations/era13StockSelectionV2').migration192StockSelectionUniverseArtifactColumns(pool) },
   { version: '193_stock_selection_ux_request_bindings', up: () => require('./migrations/era14StockSelectionUx').migration193StockSelectionUx(pool) },
   { version: '194_financial_statement_type_columns', up: () => require('./migrations/era11FinancialStatements').migration194FinancialStatementTypeColumns(pool) },
+  { version: '195_comment_notification', up: () => require('./migrations/era15CommentNotifications').migration195CommentNotification(pool) },
+  { version: '196_notification_preferences', up: () => require('./migrations/era15CommentNotifications').migration196NotificationPreferences(pool) },
 ];
 
 async function ensureMigrationsTable() {

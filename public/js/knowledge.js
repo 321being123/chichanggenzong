@@ -315,10 +315,15 @@ function ksPaintArticle(a) {
     if (!username) {
       commentForm.innerHTML = '<div class="ks-comment-login-tip">请 <a href="' + api('/login.html?redirect=' + encodeURIComponent('/?main=knowledge')) + '">登录</a> 后发表评论</div>';
     } else {
-      commentForm.innerHTML = '<textarea id="ks-comment" placeholder="写下你的评论…"></textarea>' +
-        '<button class="ks-btn ks-btn-primary" id="ks-comment-submit">发表评论</button>';
+      commentForm.innerHTML = '<div class="ks-comment-editor">'
+        + '<textarea id="ks-comment" placeholder="写下你的评论…输入 @ 可以提到某人"></textarea>'
+        + '<div class="ks-mention-chips" id="ks-comment-chips" hidden></div>'
+        + '<div class="ks-mention-panel" id="ks-comment-mentions" role="listbox" hidden></div>'
+        + '<button class="ks-btn ks-btn-primary" id="ks-comment-submit">发表评论</button>'
+        + '</div>';
+      ksInitMentionBox('main', ksEl('ks-comment'), ksEl('ks-comment-mentions'), ksEl('ks-comment-chips'));
       const btn = ksEl('ks-comment-submit');
-      if (btn) btn.addEventListener('click', function () { ksSubmitComment(null, ksEl('ks-comment').value); });
+      if (btn) btn.addEventListener('click', function () { ksSubmitComment(null, ksEl('ks-comment').value, 'main'); });
     }
   }
 }
@@ -332,6 +337,201 @@ function ksCopyShare(token) {
   } else {
     projectPrompt('请复制下面的分享链接', { title: '复制分享链接', value: link, confirmText: '完成' });
   }
+}
+
+// ---------- 评论 @ 选择（2026-11-15） ----------
+// 规则：只有「输入 @ 后在候选列表里明确选中」才产生 @ 关系；正文里手打的普通 @昵称 不触发。
+// 提交时按最终正文重算区间（编辑后自动跟随），正文里已删除的选择视为撤销。
+// 候选只来自登录接口，服务端会按账号主体复核，前端昵称/用户名不参与收件人判定。
+const ksMentionBoxes = {};
+
+function ksMentionBox(boxKey) { return ksMentionBoxes[boxKey] || null; }
+
+function ksInitMentionBox(boxKey, textarea, panel, chips) {
+  if (!boxKey || !textarea || !panel) return;
+  ksMentionBoxes[boxKey] = {
+    textarea: textarea, panel: panel, chips: chips || null,
+    mentions: [], items: [], active: -1, anchor: -1, timer: null, seq: 0,
+  };
+  textarea.addEventListener('input', function () { ksMentionInput(boxKey); });
+  textarea.addEventListener('keydown', function (e) { ksMentionKeydown(boxKey, e); });
+  textarea.addEventListener('blur', function () {
+    // 失焦后稍等再收起，让点击候选有机会响应
+    setTimeout(function () { ksCloseMentionPanel(boxKey); }, 150);
+  });
+  panel.addEventListener('click', function (e) {
+    const btn = e.target.closest('[data-mention-idx]');
+    if (!btn) return;
+    const idx = parseInt(btn.getAttribute('data-mention-idx'), 10);
+    const box = ksMentionBox(boxKey);
+    if (box && box.items[idx]) ksApplyMention(boxKey, box.items[idx]);
+  });
+  if (chips) {
+    chips.addEventListener('click', function (e) {
+      const btn = e.target.closest('[data-mention-remove]');
+      if (!btn) return;
+      const idx = parseInt(btn.getAttribute('data-mention-remove'), 10);
+      const box = ksMentionBox(boxKey);
+      if (!box) return;
+      box.mentions.splice(idx, 1);
+      ksPaintMentionChips(boxKey);
+    });
+  }
+}
+
+function ksCloseMentionPanel(boxKey) {
+  const box = ksMentionBox(boxKey);
+  if (!box) return;
+  box.items = [];
+  box.active = -1;
+  box.panel.hidden = true;
+  box.panel.innerHTML = '';
+}
+
+function ksMentionInput(boxKey) {
+  const box = ksMentionBox(boxKey);
+  if (!box) return;
+  const ta = box.textarea;
+  const pos = ta.selectionStart;
+  const before = ta.value.slice(0, pos);
+  const at = before.lastIndexOf('@');
+  if (at < 0) { ksCloseMentionPanel(boxKey); return; }
+  const prevCh = at === 0 ? '' : before.charAt(at - 1);
+  const query = before.slice(at + 1);
+  // @ 必须独立出现（开头或空白之后），且与光标之间没有空白或第二个 @
+  if (prevCh && !/\s/.test(prevCh)) { ksCloseMentionPanel(boxKey); return; }
+  if (/[\s@]/.test(query)) { ksCloseMentionPanel(boxKey); return; }
+  box.anchor = at;
+  if (!query) { ksRenderMentionPanel(boxKey, [], '继续输入昵称或用户名搜索'); return; }
+  clearTimeout(box.timer);
+  box.timer = setTimeout(function () { ksSearchMentions(boxKey, query); }, 250);
+}
+
+async function ksSearchMentions(boxKey, query) {
+  const box = ksMentionBox(boxKey);
+  if (!box) return;
+  const seq = ++box.seq;
+  try {
+    const r = await window.siteApi.get('/api/knowledge/mention-candidates?q=' + encodeURIComponent(query));
+    if (seq !== box.seq) return;
+    const list = Array.isArray(r.payload) ? r.payload : [];
+    ksRenderMentionPanel(boxKey, list, list.length ? '' : '没有匹配的用户');
+  } catch (e) {
+    if (seq === box.seq) ksRenderMentionPanel(boxKey, [], '搜索失败，请重试');
+  }
+}
+
+function ksRenderMentionPanel(boxKey, items, hint) {
+  const box = ksMentionBox(boxKey);
+  if (!box) return;
+  box.items = items.slice();
+  box.active = items.length ? 0 : -1;
+  let html = '';
+  items.forEach(function (it, idx) {
+    const cls = 'ks-mention-item' + (idx === box.active ? ' is-active' : '');
+    html += '<button type="button" class="' + cls + '" role="option" data-mention-idx="' + idx + '"'
+      + ' aria-selected="' + (idx === box.active ? 'true' : 'false') + '">'
+      + '<strong>' + escapeHtml(it.nickname) + '</strong>'
+      + '<small>@' + escapeHtml(it.username) + '</small></button>';
+  });
+  if (hint) html += '<div class="ks-mention-hint">' + escapeHtml(hint) + '</div>';
+  box.panel.innerHTML = html;
+  box.panel.hidden = !items.length && !hint;
+}
+
+function ksMentionKeydown(boxKey, e) {
+  const box = ksMentionBox(boxKey);
+  if (!box || box.panel.hidden) return;
+  if (e.key === 'Escape') { ksCloseMentionPanel(boxKey); return; }
+  if (!box.items.length) return;
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    e.preventDefault();
+    const step = e.key === 'ArrowDown' ? 1 : -1;
+    box.active = (box.active + step + box.items.length) % box.items.length;
+    ksRenderMentionPanel(boxKey, box.items, '');
+    return;
+  }
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    if (box.items[box.active]) ksApplyMention(boxKey, box.items[box.active]);
+  }
+}
+
+// 用「@昵称 」替换光标前的 @查询词，并登记这条选择
+function ksApplyMention(boxKey, item) {
+  const box = ksMentionBox(boxKey);
+  if (!box) return;
+  const ta = box.textarea;
+  const pos = ta.selectionStart;
+  const anchor = box.anchor >= 0 ? box.anchor : pos;
+  const token = '@' + item.nickname;
+  const before = ta.value.slice(0, anchor);
+  const after = ta.value.slice(pos);
+  ta.value = before + token + ' ' + after;
+  const caret = before.length + token.length + 1;
+  ta.selectionStart = caret;
+  ta.selectionEnd = caret;
+  box.mentions.push({ subjectId: item.subjectId, text: token, nickname: item.nickname, username: item.username });
+  ksPaintMentionChips(boxKey);
+  ksCloseMentionPanel(boxKey);
+  ta.focus();
+}
+
+function ksPaintMentionChips(boxKey) {
+  const box = ksMentionBox(boxKey);
+  if (!box || !box.chips) return;
+  if (!box.mentions.length) { box.chips.hidden = true; box.chips.innerHTML = ''; return; }
+  box.chips.hidden = false;
+  box.chips.innerHTML = box.mentions.map(function (m, idx) {
+    return '<span class="ks-mention-chip">@' + escapeHtml(m.nickname)
+      + '<button type="button" data-mention-remove="' + idx + '" aria-label="取消提到 '
+      + escapeHtml(m.nickname) + '">×</button></span>';
+  }).join('');
+}
+
+// 提交前按最终正文重算区间：文本被删掉的选择自动撤销，重叠区间跳过
+function ksReadMentions(boxKey, text) {
+  const box = ksMentionBox(boxKey);
+  if (!box || !box.mentions.length) return [];
+  const taken = [];
+  const out = [];
+  let from = 0;
+  box.mentions.forEach(function (m) {
+    if (!m.text) return;
+    let idx = text.indexOf(m.text, from);
+    while (idx >= 0 && taken.some(function (r) { return idx < r.end && r.start < idx + m.text.length; })) {
+      idx = text.indexOf(m.text, idx + 1);
+    }
+    if (idx < 0) return;
+    const rec = { subjectId: m.subjectId, text: m.text, start: idx, end: idx + m.text.length };
+    taken.push(rec);
+    out.push(rec);
+    from = idx + m.text.length;
+  });
+  return out;
+}
+
+function ksResetMentions(boxKey) {
+  const box = ksMentionBox(boxKey);
+  if (!box) return;
+  box.mentions = [];
+  box.seq++;
+  ksPaintMentionChips(boxKey);
+  ksCloseMentionPanel(boxKey);
+}
+
+// 通知深链定位：命中则高亮并聚焦，缺失（已删除/无权）返回 false 由调用方提示「内容已不可用」
+function ksFocusComment(commentId) {
+  const box = ksEl('ks-comment-list');
+  if (!box || !commentId) return false;
+  const el = box.querySelector('[data-cid="' + String(commentId).replace(/"/g, '') + '"]');
+  if (!el) return false;
+  el.classList.add('ks-comment-focus');
+  if (el.scrollIntoView) el.scrollIntoView({ block: 'center' });
+  const focusable = el.querySelector('.ks-reply-btn') || el;
+  if (focusable && focusable.focus) focusable.focus({ preventScroll: true });
+  setTimeout(function () { el.classList.remove('ks-comment-focus'); }, 2400);
+  return true;
 }
 
 // ---------- 评论（楼中楼嵌套）渲染（ksLoadComments 的 DOM 段，取数在 Presenter） ----------
@@ -355,10 +555,15 @@ function ksPaintComments(list) {
       wrap.className = 'ks-reply-box';
       wrap.dataset.pid = cid;
       wrap.innerHTML = '<textarea class="ks-reply-text" placeholder="回复 @' + escapeHtml(btn.dataset.nick) + '…"></textarea>' +
+        '<div class="ks-mention-chips" hidden></div>' +
+        '<div class="ks-mention-panel" role="listbox" hidden></div>' +
         '<button class="ks-btn ks-btn-primary ks-reply-submit" data-pid="' + cid + '">回复</button>';
       btn.parentElement.appendChild(wrap);
+      const replyBoxKey = 'reply-' + cid;
+      ksInitMentionBox(replyBoxKey, wrap.querySelector('.ks-reply-text'),
+        wrap.querySelector('.ks-mention-panel'), wrap.querySelector('.ks-mention-chips'));
       wrap.querySelector('.ks-reply-submit').addEventListener('click', function () {
-        ksSubmitComment(parseInt(cid, 10), wrap.querySelector('.ks-reply-text').value);
+        ksSubmitComment(parseInt(cid, 10), wrap.querySelector('.ks-reply-text').value, replyBoxKey);
       });
     });
   });
@@ -376,7 +581,7 @@ function ksRenderComments(list, depth) {
   list.forEach(c => {
     const t = (c.created_at || '').toString().slice(0, 19).replace('T', ' ');
     const nick = escapeHtml(c.nickname);
-    html += '<div class="ks-comment-item' + (depth > 0 ? ' ks-comment-child' : '') + '">' +
+    html += '<div class="ks-comment-item' + (depth > 0 ? ' ks-comment-child' : '') + '" data-cid="' + c.id + '">' +
       '<div class="ks-comment-head"><b>' + nick + '</b><span>' + t + '</span>' +
       (c.can_delete ? '<button class="ks-comment-del" data-id="' + c.id + '">删除</button>' : '') +
       '</div>' +
@@ -1022,7 +1227,7 @@ function initKnowledgeEvents() {
   bind('ks-edit-cancel', 'click', function () { ksShowView('list'); });
   bind('ks-search', 'input', function () { clearTimeout(ksState._t); ksState._t = setTimeout(ksLoadArticles, 300); });
   bind('ks-filter', 'change', ksLoadArticles);
-  bind('ks-comment-submit', 'click', function () { ksSubmitComment(null, ksEl('ks-comment').value); });
+  bind('ks-comment-submit', 'click', function () { ksSubmitComment(null, ksEl('ks-comment').value, 'main'); });
   // 导入
   bind('ks-import-url', 'click', function () { ksToggleImport('url'); });
   bind('ks-import-file', 'click', function () { ksToggleImport('file'); });

@@ -101,7 +101,15 @@ function setupMainNav() {
   });
   window.addEventListener('popstate', function () {
     var params = new URLSearchParams(window.location.search);
-    switchMain(params.get('main') || 'home', true);
+    var main = params.get('main') || 'home';
+    // 前进/后退回到评论通知深链时，按地址栏重新打开文章并定位评论（失败即「内容已不可用」）
+    switchMain(main, true).then(function () {
+      if (main !== 'knowledge') return;
+      var article = parseInt(params.get('article'), 10);
+      if (article > 0 && typeof ksOpenArticle === 'function') {
+        ksOpenArticle(article, params.get('comment'));
+      }
+    });
   });
 }
 

@@ -334,13 +334,14 @@
   </div>
 </div>
 
-<!-- 站内通知（一级页：全部 / 反馈 / 系统），入口为右上角铃铛 -->
+<!-- 站内通知（一级页：全部 / 反馈 / 系统 / 评论），入口为右上角铃铛；评论通知 2026-11-15 -->
 <div class="main-page" id="main-notifications">
   <div class="bond-header">
     <nav class="bond-sub-nav nt-sub-nav" aria-label="通知子栏目">
       <button type="button" class="bond-sub-tab active" role="tab" aria-selected="true" data-nt-sub="all" data-nt-act="sub">全部</button>
       <button type="button" class="bond-sub-tab" role="tab" aria-selected="false" data-nt-sub="feedback" data-nt-act="sub">反馈</button>
       <button type="button" class="bond-sub-tab" role="tab" aria-selected="false" data-nt-sub="system" data-nt-act="sub">系统</button>
+      <button type="button" class="bond-sub-tab" role="tab" aria-selected="false" data-nt-sub="comment" data-nt-act="sub">评论</button>
     </nav>
   </div>
   <div class="nt-page feature-page-shell">
@@ -1785,6 +1786,25 @@ document.addEventListener('DOMContentLoaded', function () { (async function init
       var stockReqCode = startParams.get('code');
       if (stockReqCode && typeof securityAnalysisKind === 'function' && securityAnalysisKind(stockReqCode) !== 'bond') {
         setTimeout(function(){ securityAnalysisSubmit(stockReqCode, 'stock'); }, 200);
+      }
+    }
+    // 评论通知深链：/?main=knowledge&article=<id>&comment=<id>&notification=<id>
+    // 打开文章并定位评论；只有定位成功才回标该通知已读，失败保持未读可重试。
+    if (initialMain === 'knowledge') {
+      var deepArticle = parseInt(startParams.get('article'), 10);
+      var deepComment = startParams.get('comment');
+      var deepNotice = startParams.get('notification');
+      if (deepArticle > 0 && typeof ksOpenArticle === 'function') {
+        setTimeout(function () {
+          Promise.resolve(ksOpenArticle(deepArticle, deepComment)).then(function (ok) {
+            if (!ok || !deepNotice) return;
+            window.siteApi.post('/api/notifications/' + encodeURIComponent(deepNotice) + '/read', {})
+              .then(function () {
+                if (typeof refreshUnreadCount === 'function') refreshUnreadCount();
+              })
+              .catch(function () {});
+          });
+        }, 200);
       }
     }
   });

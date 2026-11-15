@@ -1290,6 +1290,107 @@ body > svg[version="1.1"] {
   resize: vertical;
 }
 
+/* ---------- 评论 @ 选择与通知定位（2026-11-15） ---------- */
+.ks-comment-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ks-mention-panel {
+  display: flex;
+  flex-direction: column;
+  max-height: 240px;
+  overflow-y: auto;
+  border: 1px solid #dfe2e8;
+  border-radius: 7px;
+  background: #fff;
+  box-shadow: 0 6px 18px rgba(20,30,60,.08);
+}
+
+.ks-mention-panel[hidden] { display: none; }
+
+.ks-mention-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 40px;
+  padding: 8px 12px;
+  border: 0;
+  border-bottom: 1px solid #f2f3f7;
+  background: transparent;
+  font-family: inherit;
+  font-size: 13px;
+  color: #303746;
+  text-align: left;
+  cursor: pointer;
+}
+
+.ks-mention-item:last-child { border-bottom: 0; }
+
+.ks-mention-item:hover,
+.ks-mention-item.is-active {
+  background: #eef1fb;
+}
+
+.ks-mention-item strong { font-weight: 600; }
+
+.ks-mention-item small {
+  color: #9ca3af;
+  font-size: 12px;
+}
+
+.ks-mention-hint {
+  padding: 9px 12px;
+  color: #9ca3af;
+  font-size: 12px;
+}
+
+.ks-mention-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.ks-mention-chips[hidden] { display: none; }
+
+.ks-mention-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 4px 2px 8px;
+  border-radius: 999px;
+  background: #eef1fb;
+  color: #3f51b5;
+  font-size: 12px;
+  line-height: 20px;
+}
+
+.ks-mention-chip button {
+  width: 20px;
+  height: 20px;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: #5c6bc0;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.ks-mention-chip button:hover { background: #dfe4f7; }
+
+.ks-comment-focus {
+  background: #fffdf0;
+  box-shadow: inset 0 0 0 2px #ffd54f;
+  border-radius: 6px;
+}
+
+@media (max-width: 760px) {
+  .ks-mention-item { min-height: 44px; font-size: 14px; }
+  .ks-mention-chip button { width: 28px; height: 28px; font-size: 16px; }
+}
+
 /* 编辑器 */
 .ks-edit-topbar {
   min-height: 42px;

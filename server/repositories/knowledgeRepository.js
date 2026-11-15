@@ -379,7 +379,67 @@ async function updateArticleSortOrder({ sortOrder, id }, client = pool) {
   return client.query('UPDATE articles SET sort_order=$1 WHERE id=$2', [sortOrder, id]);
 }
 
+// ---------- 评论（通知事务用到的加锁读取，2026-11-15） ----------
+// 发表评论必须在同一事务内复核文章状态与作者：共享锁阻止并发撤回/删除在提交前改状态。
+async function lockArticleForComment(params, tx) {
+  const runner = tx || pool;
+  const { rows } = await runner.query(
+    `SELECT id, status, author_username, title FROM articles WHERE id=$1 FOR SHARE`,
+    [params.id],
+  );
+  return rows[0] || null;
+}
+
+// 显式父评论：不存在、跨文章都按失败处理，不再悄悄降为一级评论
+async function lockCommentParentFull(params, tx) {
+  const runner = tx || pool;
+  const { rows } = await runner.query(
+    `SELECT id, article_id, root_id, author_username
+       FROM article_comments WHERE id=$1 FOR SHARE`,
+    [params.id],
+  );
+  return rows[0] || null;
+}
+
+async function readCommentBrief(params, tx) {
+  const runner = tx || pool;
+  const { rows } = await runner.query(
+    `SELECT id, article_id, parent_id, root_id, nickname, content, author_username, created_at
+       FROM article_comments WHERE id=$1`,
+    [params.id],
+  );
+  return rows[0] || null;
+}
+
+// 删除会级联子评论：先收集整棵子树，用于同事务失效对应通知
+async function listCommentSubtreeIds(params, tx) {
+  const runner = tx || pool;
+  const { rows } = await runner.query(
+    `WITH RECURSIVE sub AS (
+       SELECT id FROM article_comments WHERE id=$1
+       UNION ALL
+       SELECT c.id FROM article_comments c JOIN sub ON c.parent_id = sub.id
+     )
+     SELECT id FROM sub`,
+    [params.id],
+  );
+  return rows.map(function (r) { return r.id; });
+}
+
+async function listArticleCommentIds(params, tx) {
+  const runner = tx || pool;
+  const { rows } = await runner.query(
+    'SELECT id FROM article_comments WHERE article_id=$1', [params.articleId]
+  );
+  return rows.map(function (r) { return r.id; });
+}
+
 module.exports = {
+  lockArticleForComment,
+  lockCommentParentFull,
+  readCommentBrief,
+  listCommentSubtreeIds,
+  listArticleCommentIds,
   lockCategoryForOwner,
   listSiblingCategoryIds,
   listChildCategoryIds,

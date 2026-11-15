@@ -121,10 +121,15 @@ async function ksCardOp(act, id) {
 }
 
 // ---------- 阅读视图 ----------
-async function ksOpenArticle(id) {
+// focusCommentId：评论通知深链带来的目标评论，加载完成后定位；缺失（已删除/无权）提示内容已不可用
+async function ksOpenArticle(id, focusCommentId) {
   ksState.readingId = id;
   const r = await window.siteApi.get('/api/knowledge/articles/' + id);
-  if (!r.ok) { ksState.readingId = null; showToast('文章不存在或未发布'); return; }
+  if (!r.ok) {
+    ksState.readingId = null;
+    showToast(focusCommentId ? '内容已不可用' : '文章不存在或未发布');
+    return false;
+  }
   const a = r.payload || {};
   ksState.currentArticle = a;
   if (window.SiteTelemetry) {
@@ -135,7 +140,12 @@ async function ksOpenArticle(id) {
   window.siteApi.post('/api/knowledge/articles/' + id + '/view', {});
   window.ksPaintArticle(a);
   window.ksShowView('read');
-  ksLoadComments(id);
+  await ksLoadComments(id);
+  if (focusCommentId) {
+    const found = window.ksFocusComment(String(focusCommentId));
+    if (!found) { showToast('内容已不可用'); return false; }
+  }
+  return true;
 }
 
 async function ksDeleteArticle(id) {
@@ -169,20 +179,46 @@ async function ksDeleteComment(commentId) {
   }
 }
 
-async function ksSubmitComment(parentId, textInput) {
+// 评论请求标识：网络结果未知（拿不到状态码）时保留同一标识重试，服务端据此幂等返回原评论；
+// 内容或父评论变了、或服务端明确拒绝时换新标识。
+let ksPendingComment = null;
+
+function ksNewRequestId() {
+  if (window.crypto && typeof window.crypto.randomUUID === 'function') return window.crypto.randomUUID();
+  return 'c-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10);
+}
+
+function ksCommentRequestId(text, parentId) {
+  const key = (parentId || '') + '|' + text;
+  if (!ksPendingComment || ksPendingComment.key !== key) {
+    ksPendingComment = { key: key, id: ksNewRequestId() };
+  }
+  return ksPendingComment.id;
+}
+
+async function ksSubmitComment(parentId, textInput, boxKey) {
   const a = ksState.currentArticle;
   if (!a) return;
   const text = (textInput || '').trim();
   if (!text) { showToast('评论内容不能为空'); return; }
-  const body = { content: text };
+  // @ 区间按最终正文重算；正文里已删掉的 @ 自动不再提交
+  const mentions = (boxKey && typeof window.ksReadMentions === 'function')
+    ? window.ksReadMentions(boxKey, text) : [];
+  const body = { content: text, client_request_id: ksCommentRequestId(text, parentId) };
   if (parentId) body.parent_id = parentId;
+  if (mentions.length) body.mentions = mentions;
   const r = await window.siteApi.post('/api/knowledge/articles/' + a.id + '/comments', body);
   if (!r.ok) {
     if (!r.status) { showToast('网络异常，请检查后重试'); return; }
-    if (r.status === 400 || r.status === 429) { const d = r.payload || {}; showToast(d.error || ksWriteErrMsg(r.status)); }
+    // 服务端明确拒绝：同一标识不再复用，避免下次重放命中旧的失败请求
+    ksPendingComment = null;
+    const d = r.payload || {};
+    if (r.status === 400 || r.status === 409 || r.status === 429) showToast(d.error || ksWriteErrMsg(r.status));
     else showToast(ksWriteErrMsg(r.status));
     return;
   }
+  ksPendingComment = null;
+  if (boxKey && typeof window.ksResetMentions === 'function') window.ksResetMentions(boxKey);
   // 刷新并清空主评论框
   window.ksClearCommentInput();
   ksLoadComments(a.id);

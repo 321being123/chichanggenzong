@@ -14,6 +14,8 @@ const {
 const { backfillMissingCloses } = require('../jobs/marketClose');
 const adminRepository = require('../repositories/adminRepository');
 const knowledgeRepository = require('../repositories/knowledgeRepository');
+// 评论与文章删除/撤回必须与评论通知失效同事务（后台入口同样适用）
+const commentService = require('../services/commentService');
 const { ensureHolidaysCurrent, saveManualHolidays } = require('../jobs/holidaySync');
 const { loadHolidays } = require('../config/holidays');
 const { getModels, saveModels, maskKey, recordStatus, getStatus } = require('../services/aiModels');
@@ -572,7 +574,7 @@ router.get('/knowledge/articles', asyncHandler(async (req, res) => {
 // 删除文章
 router.delete('/knowledge/articles/:id', asyncHandler(async (req, res) => {
   const id = parseInt(req.params.id, 10);
-  await knowledgeRepository.deleteArticle({ id });
+  await commentService.deleteArticle(id);
   await audit(req, 'ks_article_delete', id, { detail: '后台删除投资笔记文章' });
   res.json({ ok: true });
 }));
@@ -587,7 +589,7 @@ router.put('/knowledge/articles/:id/status', asyncHandler(async (req, res) => {
     const token = curRow.share_token || crypto.randomBytes(24).toString('hex');
     await knowledgeRepository.publishArticle({ token, id });
   } else {
-    await knowledgeRepository.unpublishArticle({ id });
+    await commentService.unpublishArticle(id);
   }
   await audit(req, 'ks_article_status', id, { detail: status === 'published' ? '发布' : '撤回' });
   res.json({ ok: true });
@@ -608,7 +610,7 @@ router.get('/knowledge/comments', asyncHandler(async (req, res) => {
 // 删除评论
 router.delete('/knowledge/comments/:id', asyncHandler(async (req, res) => {
   const id = parseInt(req.params.id, 10);
-  await knowledgeRepository.deleteComment({ id });
+  await commentService.deleteComment(id);
   await audit(req, 'ks_comment_delete', id, { detail: '后台删除评论' });
   res.json({ ok: true });
 }));

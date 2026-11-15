@@ -1,17 +1,24 @@
-// ============== 站内通知收件箱（2026-10-25） ==============
-// 一级栏目「通知」的三个子页：全部 / 反馈 / 系统。
-// 契约见 docs/意见反馈与版本发布闭环研发方案_20261023.md 第 14.3 节。
+// ============== 站内通知收件箱（2026-10-25；评论通知与提醒设置 2026-11-15） ==============
+// 一级栏目「通知」的四个子页：全部 / 反馈 / 系统 / 评论，另有个人提醒设置面板。
+// 契约见 docs/意见反馈与版本发布闭环研发方案_20261023.md 第 14.3 / 14.13 节。
 // 约定：CSP 已关闭内联脚本属性，所有交互走 data-nt-act 事件委托；
-// 打开列表不自动已读，只有真正打开反馈详情或系统正文后才标记已读。
+// 打开列表不自动已读，只有真正打开反馈详情、评论定位或系统正文后才标记已读。
 // 批次4 View／Presenter 分离：取数、列表/详情状态与请求序号（state.seq/owner）在
 // presenters/notifications-presenter.js，本文件只做 DOM/HTML 渲染、地址栏与快照，
 // 取数经 window.appNotificationsPresenter 转调，state 经 window.appNotificationsPresenter.state 读写。
 (function () {
   'use strict';
 
-  var SUBS = ['all', 'feedback', 'system'];
-  var SUB_LABELS = { all: '全部', feedback: '反馈', system: '系统' };
+  var SUBS = ['all', 'feedback', 'system', 'comment'];
+  var SUB_LABELS = { all: '全部', feedback: '反馈', system: '系统', comment: '评论' };
   var SNAPSHOT_KEY = 'nt-state-v1';
+  // 提醒设置四项：键名与接口一致，顺序即展示顺序；说明文字面向非技术用户
+  var PREF_ITEMS = [
+    { key: 'articleComment', label: '我的文章收到新评论', hint: '别人评论你发布的文章时提醒' },
+    { key: 'commentReply', label: '有人回复我的评论', hint: '直接回复你的评论时提醒' },
+    { key: 'commentMention', label: '有人在评论中提到我', hint: '在评论里明确选择你时提醒' },
+    { key: 'feedbackImplemented', label: '自己反馈的处理结果', hint: '反馈确认解决并随版本发布时提醒' },
+  ];
 
   function esc(v) { return escapeHtml(String(v == null ? '' : v)); }
   function byId(id) { return document.getElementById(id); }
@@ -102,10 +109,55 @@
     html += '<label class="nt-toggle"><input type="checkbox" data-nt-act="unread"'
       + (state.unreadOnly ? ' checked' : '') + '> 只看未读</label>';
     html += '<span class="nt-toolbar-spacer"></span>';
+    html += '<button type="button" class="btn btn-outline btn-sm" data-nt-act="settings">提醒设置</button>';
     html += '<button type="button" class="btn btn-outline btn-sm" data-nt-act="readall">全部已读</button>';
     html += '<button type="button" class="btn btn-outline btn-sm" data-nt-act="refresh">刷新</button>';
     html += '</div>';
     return html;
+  }
+
+  // 提醒设置面板：四项独立开关；保存失败不伪装成功，跨设备冲突由 Presenter 重新获取
+  function settingsHtml() {
+    var state = window.appNotificationsPresenter.state;
+    var prefs = state.prefs;
+    var html = '<div class="nt-settings" role="group" aria-label="提醒设置">';
+    html += '<div class="nt-settings-head">';
+    html += '<button type="button" class="btn btn-outline btn-sm" data-nt-act="prefs-back">← 返回列表</button>';
+    html += '<h3 class="nt-settings-title">提醒设置</h3>';
+    html += '</div>';
+    if (state.prefsError) {
+      html += '<p class="nt-error">' + esc(state.prefsError) + '</p>';
+      html += '<button type="button" class="btn btn-outline btn-sm" data-nt-act="prefs-retry">重新加载</button></div>';
+      return html;
+    }
+    if (state.prefsLoading || !prefs) {
+      html += '<p class="nt-empty">加载中…</p></div>';
+      return html;
+    }
+    PREF_ITEMS.forEach(function (it) {
+      html += '<label class="nt-setting-row">';
+      html += '<input type="checkbox" data-nt-pref="' + it.key + '"'
+        + (prefs[it.key] !== false ? ' checked' : '') + '>';
+      html += '<span class="nt-setting-text"><strong>' + esc(it.label) + '</strong>'
+        + '<small>' + esc(it.hint) + '</small></span>';
+      html += '</label>';
+    });
+    html += '<p class="nt-settings-note">关闭后只影响之后新的互动，已有通知不会删除或标记已读；'
+      + '重新打开也不会补发关闭期间的通知。</p>';
+    html += '<div class="nt-settings-actions">'
+      + '<button type="button" class="btn btn-primary btn-sm" data-nt-act="prefs-save">保存设置</button>'
+      + '</div></div>';
+    return html;
+  }
+
+  function readPrefValues() {
+    var host = byId('nt-body');
+    var values = {};
+    PREF_ITEMS.forEach(function (it) {
+      var el = host && host.querySelector('[data-nt-pref="' + it.key + '"]');
+      values[it.key] = !!(el && el.checked);
+    });
+    return values;
   }
 
   function itemHtml(it) {
@@ -126,9 +178,15 @@
       if (it.feedback.title) meta.push(esc(it.feedback.title));
       if (it.feedback.version) meta.push('版本 ' + esc(it.feedback.version));
     }
+    if (it.target && it.target.kind === 'article_comment' && it.target.commentId) {
+      meta.push('评论 #' + esc(it.target.commentId));
+    }
     meta.push(fmtTime(it.createdAt));
     html += '<div class="nt-item-meta">' + meta.map(function (m) { return '<span>' + m + '</span>'; }).join('') + '</div>';
-    if (it.invalidated) html += '<div class="nt-item-invalid">处理状态已更新</div>';
+    if (it.invalidated) {
+      html += '<div class="nt-item-invalid">'
+        + esc(it.target && it.target.kind === 'article_comment' ? '内容已不可用' : '处理状态已更新') + '</div>';
+    }
     html += '</div></div>';
     return html + '</article>';
   }
@@ -142,7 +200,11 @@
     html += '<h3 class="nt-detail-title">' + esc(d.title) + '</h3>';
     html += '<div class="nt-detail-meta">' + fmtTime(d.createdAt) + '</div>';
     html += '<div class="nt-detail-body">' + esc(d.body).replace(/\n/g, '<br>') + '</div>';
-    if (d.invalidated) html += '<div class="nt-item-invalid">处理状态已更新，最新状态请看反馈详情</div>';
+    if (d.invalidated) {
+      html += '<div class="nt-item-invalid">'
+        + esc(d.target && d.target.kind === 'article_comment'
+          ? '内容已不可用' : '处理状态已更新，最新状态请看反馈详情') + '</div>';
+    }
     html += '</div>';
     return html;
   }
@@ -151,6 +213,7 @@
     var state = window.appNotificationsPresenter.state;
     var host = byId('nt-body');
     if (!host) return;
+    if (state.prefsOpen) { host.innerHTML = settingsHtml(); return; }
     if (state.detailId) { host.innerHTML = detailHtml(); return; }
     var html = headerHtml();
     if (!loggedIn()) {
@@ -187,7 +250,16 @@
       if (String(state.items[i].id) === String(id)) { item = state.items[i]; break; }
     }
     if (!item) return;
-    if (item.target && item.target.kind === 'feedback' && item.target.feedbackId) {
+    var target = item.target || {};
+    // 评论互动：先跳到目标（文章 + 评论定位），由目标页在加载并定位成功后才回标已读；
+    // 加载失败或内容已不可用时通知保持未读，可以重试——不能用「点过」冒充「看到」。
+    if (target.kind === 'article_comment' && target.commentId) {
+      saveSnapshot();
+      window.location.href = api(target.path);
+      return;
+    }
+    // 反馈完成：先标记已读再跳回原反馈详情（详情页自身有权限校验）
+    if (target.kind === 'feedback' && target.feedbackId) {
       // 先标记已读再跳回原反馈详情（复用既有详情链路，不另建反馈详情页）；
       // 标记失败不阻断跳转，详情页自身有权限校验，回来可重试
       var seq = state.seq;
@@ -232,6 +304,10 @@
     var state = window.appNotificationsPresenter.state;
     if (act === 'sub') { switchSub(el.getAttribute('data-nt-sub')); return; }
     if (act === 'unread') { state.unreadOnly = !!el.checked; syncUrl(true); window.appNotificationsPresenter.loadFirst(); return; }
+    if (act === 'settings') { window.appNotificationsPresenter.openPreferences(); return; }
+    if (act === 'prefs-back') { window.appNotificationsPresenter.closePreferences(); return; }
+    if (act === 'prefs-retry') { window.appNotificationsPresenter.loadPreferences(); return; }
+    if (act === 'prefs-save') { window.appNotificationsPresenter.savePreferences(readPrefValues()); return; }
     if (act === 'readall') { window.appNotificationsPresenter.markAllRead(); return; }
     if (act === 'refresh') { window.appNotificationsPresenter.loadFirst(); return; }
     if (act === 'retry') { window.appNotificationsPresenter.loadFirst(); return; }
@@ -290,9 +366,16 @@
       state.loading = false;
       state.detailId = null;
       state.detail = null;
+      // 上一个人的提醒设置不能留在页面上
+      state.prefsOpen = false;
+      state.prefs = null;
+      state.prefsVersion = 0;
+      state.prefsError = '';
       state.seq++;
       clearSnapshot();
     }
+    // 设置面板是页内临时模式：每次进入通知页都回到列表
+    state.prefsOpen = false;
     readUrl();
     // 换账号后地址栏里残留的通知编号属于上一个人，不能继续沿用
     if (switched && state.detailId) {
@@ -327,6 +410,10 @@
     state.loading = false;
     state.detailId = null;
     state.detail = null;
+    state.prefsOpen = false;
+    state.prefs = null;
+    state.prefsVersion = 0;
+    state.prefsError = '';
     state.seq++;
     state.owner = undefined;
     render();

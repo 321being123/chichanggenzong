@@ -20,6 +20,12 @@
     detail: null,
     seq: 0,
     owner: undefined,   // 当前列表属于哪个登录名：首次挂载不视为换人，之后变化即整体丢弃
+    // 提醒设置（2026-11-15）：prefsOpen 是页内模式，不进入地址栏；prefs 为服务端返回的完整设置
+    prefsOpen: false,
+    prefs: null,
+    prefsVersion: 0,
+    prefsLoading: false,
+    prefsError: '',
   };
   var PAGE_SIZE = 20;
 
@@ -180,6 +186,74 @@
     }
   }
 
+  // ---------- 提醒设置 ----------
+  // 只读写会话主体（服务端按账号主体取），前端不传账号标识；保存用版本号条件更新，
+  // 冲突（其他设备先改过）不强行覆盖，重新获取后再由用户决定。
+  async function openPreferences() {
+    state.prefsOpen = true;
+    state.detailId = null;
+    state.detail = null;
+    await loadPreferences();
+  }
+
+  function closePreferences() {
+    state.prefsOpen = false;
+    state.prefsError = '';
+    window.appNotificationsRender();
+  }
+
+  async function loadPreferences() {
+    state.prefsLoading = true;
+    state.prefsError = '';
+    window.appNotificationsRender();
+    var seq = ++state.seq;
+    var owner = ownerKey();
+    try {
+      var data = await requestJson('/api/notifications/preferences');
+      if (!currentRequest(seq, owner)) return;
+      state.prefs = data;
+      state.prefsVersion = Number(data.version) || 0;
+    } catch (e) {
+      if (!currentRequest(seq, owner)) return;
+      state.prefsError = e.message || '读取提醒设置失败';
+    } finally {
+      if (currentRequest(seq, owner)) { state.prefsLoading = false; window.appNotificationsRender(); }
+    }
+  }
+
+  async function savePreferences(values) {
+    var seq = state.seq;
+    var owner = ownerKey();
+    try {
+      var data = await requestJson('/api/notifications/preferences', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          version: state.prefsVersion,
+          articleComment: !!values.articleComment,
+          commentReply: !!values.commentReply,
+          commentMention: !!values.commentMention,
+          feedbackImplemented: !!values.feedbackImplemented,
+        }),
+      });
+      if (!currentRequest(seq, owner)) return false;
+      state.prefs = data;
+      state.prefsVersion = Number(data.version) || 0;
+      window.appNotificationsRender();
+      window.appNotificationsToast('提醒设置已保存');
+      return true;
+    } catch (e) {
+      if (!currentRequest(seq, owner)) return false;
+      if (e.status === 409) {
+        window.appNotificationsToast('设置已在其他设备更新，正在重新获取');
+        await loadPreferences();
+        return false;
+      }
+      window.appNotificationsToast('保存失败：' + (e.message || '请重试'));
+      return false;
+    }
+  }
+
   // 最小桥：View（含 HTML 与 window.AppNotifications）经此转调取数；state 供 View 读写列表/详情与序号
   window.appNotificationsPresenter = {
     state: state,
@@ -192,5 +266,9 @@
     markRead: markRead,
     markAllRead: markAllRead,
     refreshDetail: refreshDetail,
+    openPreferences: openPreferences,
+    closePreferences: closePreferences,
+    loadPreferences: loadPreferences,
+    savePreferences: savePreferences,
   };
 })();

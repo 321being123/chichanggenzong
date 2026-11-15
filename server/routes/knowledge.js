@@ -7,6 +7,7 @@ const net = require('net');
 const dns = require('dns').promises;
 const { pool, auditLog } = require('../db');
 const knowledgeRepository = require('../repositories/knowledgeRepository');
+const commentService = require('../services/commentService');
 const { requireLogin, optionalLogin, isAdminIdentity } = require('../middleware/auth');
 const rateLimit = require('../middleware/rateLimit');
 const { redis } = require('../config');
@@ -487,7 +488,8 @@ router.put('/articles/:id', requireLogin, requireArticleOwner, asyncHandler(asyn
       : req.body.status === 'draft' ? 'draft' : curRow.status;
     // P1-2：已发布文章普通编辑保留原发布时间；草稿首次发布才设为 now()
     const publishedAtSql = (status === 'published' && !curRow.published_at) ? 'now()' : 'published_at';
-    await knowledgeRepository.updateArticle({
+    // 编辑同时可能改状态：改草稿时在通知同事务内失效（commentService.updateArticle）
+    await commentService.updateArticle({
       title, content, summary, hasCategoryId, categoryId, status, id,
       setPublishedNow: publishedAtSql === 'now()',
     });
@@ -502,7 +504,8 @@ router.put('/articles/:id', requireLogin, requireArticleOwner, asyncHandler(asyn
 router.delete('/articles/:id', requireLogin, requireArticleOwner, asyncHandler(async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
-    await knowledgeRepository.deleteArticle({ id });
+    // 删除会级联带走评论：先在通知同事务内失效，再删除（commentService.deleteArticle）
+    await commentService.deleteArticle(id);
     await auditLog(req.session.user, 'ks_article_delete', id, '删除文章').catch(() => {});
     res.json({ ok: true });
   } catch (e) {
@@ -529,7 +532,8 @@ router.post('/articles/:id/publish', requireLogin, requireArticleOwner, asyncHan
 router.post('/articles/:id/unpublish', requireLogin, requireArticleOwner, asyncHandler(async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
-    await knowledgeRepository.unpublishArticle({ id });
+    // 撤回为草稿：同事务失效该文章的评论通知（重新发布不自动恢复）
+    await commentService.unpublishArticle(id);
     await auditLog(req.session.user, 'ks_article_unpublish', id, '撤回文章').catch(() => {});
     res.json({ ok: true });
   } catch (e) {
@@ -597,42 +601,56 @@ router.post('/articles/:id/comments', requireLogin,
     message: '评论太频繁，请稍后再试',
   }),
   asyncHandler(async (req, res) => {
+    // 正文与 @ 区间必须按同一份文本校验：trim 会移动偏移，所以只在没有 @ 时沿用旧的首尾裁剪。
+    const rawContent = String(req.body.content == null ? '' : req.body.content);
+    const hasMentions = Array.isArray(req.body.mentions) && req.body.mentions.length > 0;
+    const content = hasMentions ? rawContent : rawContent.trim();
+    if (!content.trim()) return res.status(400).json({ error: '评论内容不能为空' });
+    if (content.length > LIMITS.comment) return res.status(400).json({ error: '评论内容过长' });
     try {
-      const id = parseInt(req.params.id, 10);
-      const articleRow = await knowledgeRepository.readArticleStatus({ id });
-      if (!articleRow || articleRow.status !== 'published') {
-        return res.status(404).json({ error: '文章不存在或未发布' });
-      }
-      const content = String(req.body.content || '').trim();
-      if (!content) return res.status(400).json({ error: '评论内容不能为空' });
-      if (content.length > LIMITS.comment) return res.status(400).json({ error: '评论内容过长' });
+      // P0-3：作者由会话确定；昵称只作展示，不参与收件人判定
       const userRow = await knowledgeRepository.readUserNickname({ username: req.session.user });
       if (!userRow) return res.status(401).json({ error: '登录状态已失效' });
       const nickname = resolveCommentNickname(userRow.nickname, req.session.user);
-      const ipHash = hashIp(clientIp(req));
-      // 处理楼中楼：parent_id 指向某条已有评论
-      let parentId = null;
-      let rootId = null;
-      if (req.body.parent_id) {
-        const pid = parseInt(req.body.parent_id, 10);
-        const pr = await knowledgeRepository.readCommentParent({ id: pid, articleId: id });
-        if (pr) {
-          parentId = pr.id;
-          rootId = pr.root_id || pr.id;
-        }
-      }
-      // P0-3：author_username 从会话写入，不接受前端传入
-      const inserted = await knowledgeRepository.insertComment({
-        articleId: id, parentId, rootId, nickname, content, ipHash, authorUsername: req.session.user,
+      const result = await commentService.createComment({
+        articleId: req.params.id,
+        authorUsername: req.session.user,
+        authorSubjectId: (req.authUser && req.authUser.subject_identity) || null,
+        content: content,
+        parentId: req.body.parent_id || null,
+        mentions: req.body.mentions,
+        clientRequestId: req.body.client_request_id || '',
+        ipHash: hashIp(clientIp(req)),
+        nickname: nickname,
       });
-      res.json(inserted);
+      const payload = Object.assign({}, result.comment);
+      if (result.reused) payload.reused = true;
+      res.json(payload);
     } catch (e) {
+      if (e && e.status) return res.status(e.status).json({ error: e.message });
       res.status(500).json({ error: '发表评论失败' });
     }
   }
 ));
 
-// P0-3：删除评论——仅作者或管理员
+// @ 候选：仅登录可见、限流、非空查询；只返回 active 账号的必要标识与显示名
+router.get('/mention-candidates', requireLogin,
+  rateLimit({
+    prefix: 'ks-mention', windowMs: 60 * 1000, max: 30,
+    getKey: req => req.session.user || req.ip || '',
+    message: '搜索太频繁，请稍后再试',
+  }),
+  asyncHandler(async (req, res) => {
+    try {
+      res.json(await commentService.listMentionCandidates(req.query.q));
+    } catch (e) {
+      if (e && e.status) return res.status(e.status).json({ error: e.message });
+      res.status(500).json({ error: '读取候选用户失败' });
+    }
+  })
+);
+
+// P0-3：删除评论——仅作者或管理员（失效通知与删除同事务，见 commentService.deleteComment）
 router.delete('/comments/:id', requireLogin, asyncHandler(async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
@@ -642,9 +660,10 @@ router.delete('/comments/:id', requireLogin, asyncHandler(async (req, res) => {
     if (!me.isAdmin && authorRow.author_username !== req.session.user) {
       return res.status(403).json({ error: '无权删除该评论' });
     }
-    await knowledgeRepository.deleteComment({ id });
+    await commentService.deleteComment(id);
     res.json({ ok: true });
   } catch (e) {
+    if (e && e.status) return res.status(e.status).json({ error: e.message });
     res.status(500).json({ error: '删除评论失败' });
   }
 }));

@@ -9,6 +9,8 @@ const NOTIFICATION_COLUMNS = `
   n.target_kind AS "targetKind", n.target_id AS "targetId",
   n.feedback_id::text AS "feedbackId",
   n.release_run_id::text AS "releaseRunId",
+  -- 评论通知的站内定位需要文章编号（只取必要字段，不整体暴露 payload）
+  n.payload->>'articleId' AS "targetArticleId",
   n.schema_version AS "schemaVersion",
   n.created_at AS "createdAt",
   (n.invalidated_at IS NOT NULL) AS invalidated,
@@ -84,12 +86,13 @@ async function findActiveFeedbackNotification(db, feedbackId, releaseRunId) {
 async function insertRecipient(db, row) {
   const { rows } = await db.query(
     `INSERT INTO public.notification_recipients
-       (notification_id, recipient_slot_key, recipient_username, recipient_identity, status, delivered_at, skip_reason)
-     VALUES ($1,$2,$3,$4,$5,$6,$7)
+       (notification_id, recipient_slot_key, recipient_username, recipient_identity,
+        recipient_subject_id, status, delivered_at, skip_reason)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
      ON CONFLICT (notification_id, recipient_slot_key) DO NOTHING
      RETURNING id::text AS id, status`,
     [row.notificationId, row.recipientSlotKey, row.recipientUsername || null,
-      row.recipientIdentity || '', row.status || 'pending',
+      row.recipientIdentity || '', row.recipientSubjectId || null, row.status || 'pending',
       row.status === 'delivered' ? new Date() : null, row.skipReason || '']
   );
   return rows[0] || null;
@@ -158,7 +161,8 @@ async function scanRecipients(db, notificationId, afterId, limit, scanRound) {
 async function getActiveAccount(db, username) {
   if (!username) return null;
   const { rows } = await db.query(
-    `SELECT u.username, COALESCE(extract(epoch FROM u.created_at)::text, '') AS identity
+    `SELECT u.username, COALESCE(extract(epoch FROM u.created_at)::text, '') AS identity,
+            u.subject_id::text AS "subjectId"
        FROM public.users u
       WHERE u.username = $1 AND u.status = 'active'`,
     [username]
@@ -182,9 +186,18 @@ async function countRecipients(db, notificationId) {
 }
 
 // ---------- 本人收件箱 ----------
-async function listInbox(db, username, filter, limit) {
+// 可见性谓词：只比用户名不够——删号后同名重注册会看到上一个人的私密通知。
+// 有主体快照的行（新评论通知）必须主体一致；历史 feedback/system 行主体为空，按原规则只比用户名。
+// 会话拿不到主体时传 null：只放行历史空主体行，新类型通知一律不可见（fail-closed）。
+function pushSubjectScope(where, params, subjectId) {
+  params.push(subjectId || null);
+  where.push('(r.recipient_subject_id IS NULL OR r.recipient_subject_id = $' + params.length + ')');
+}
+
+async function listInbox(db, username, subjectId, filter, limit) {
   const params = [username];
   const where = [`r.recipient_username = $1`, `r.status = 'delivered'`];
+  pushSubjectScope(where, params, subjectId);
   if (filter.category && filter.category !== 'all') { params.push(filter.category); where.push('n.type = $' + params.length); }
   if (filter.unreadOnly) where.push('r.read_at IS NULL');
   if (filter.afterId) { params.push(filter.afterId); where.push('r.id < $' + params.length); }
@@ -203,64 +216,75 @@ async function listInbox(db, username, filter, limit) {
 }
 
 // 未读只统计本人 delivered、read_at 为空且未失效记录；铃铛为全部类型总数
-async function unreadCounts(db, username) {
+async function unreadCounts(db, username, subjectId) {
+  const params = [username];
+  const where = [`r.recipient_username = $1 AND r.status='delivered'`, `r.read_at IS NULL`, 'n.invalidated_at IS NULL'];
+  pushSubjectScope(where, params, subjectId);
   const { rows } = await db.query(
     `SELECT n.type, count(*)::int AS count
        ${INBOX_FROM}
-      WHERE r.recipient_username = $1 AND r.status='delivered'
-        AND r.read_at IS NULL AND n.invalidated_at IS NULL
+      WHERE ${where.join(' AND ')}
       GROUP BY n.type`,
-    [username]
+    params
   );
-  const byType = { feedback: 0, system: 0 };
+  const byType = { feedback: 0, system: 0, comment: 0 };
   let total = 0;
   rows.forEach(function (r) {
     if (byType[r.type] === undefined) byType[r.type] = 0;
     byType[r.type] += r.count;
     total += r.count;
   });
-  return { total: total, feedback: byType.feedback || 0, system: byType.system || 0, byType: byType };
+  return {
+    total: total, feedback: byType.feedback || 0, system: byType.system || 0,
+    comment: byType.comment || 0, byType: byType,
+  };
 }
 
 // 本人单条：只读已投递；无权/未投递一律按「不存在」处理，不泄露他人存在性
-async function getInboxItem(db, notificationId, username) {
+async function getInboxItem(db, notificationId, username, subjectId) {
+  const params = [notificationId, username];
+  const where = ['n.id = $1', 'r.recipient_username = $2', `r.status = 'delivered'`];
+  pushSubjectScope(where, params, subjectId);
   const { rows } = await db.query(
     `SELECT r.id::text AS "recipientId", ${NOTIFICATION_COLUMNS}, ${FEEDBACK_BRIEF},
             r.delivered_at AS "deliveredAt", r.read_at AS "readAt"
        ${INBOX_FROM}
-      WHERE n.id = $1 AND r.recipient_username = $2 AND r.status = 'delivered'`,
-    [notificationId, username]
+      WHERE ${where.join(' AND ')}`,
+    params
   );
   return rows[0] || null;
 }
 
 // 单条已读：幂等并保留首次 read_at
-async function markRead(db, notificationId, username) {
+async function markRead(db, notificationId, username, subjectId) {
+  const params = [notificationId, username];
+  const where = ['n.id = r.notification_id', 'r.notification_id = $1', 'r.recipient_username = $2', `r.status = 'delivered'`];
+  pushSubjectScope(where, params, subjectId);
   const { rows } = await db.query(
     `UPDATE public.notification_recipients r
         SET read_at = COALESCE(r.read_at, now()), updated_at = now()
        FROM public.notifications n
-      WHERE n.id = r.notification_id AND r.notification_id = $1
-        AND r.recipient_username = $2 AND r.status = 'delivered'
+      WHERE ${where.join(' AND ')}
       RETURNING r.read_at AS "readAt"`,
-    [notificationId, username]
+    params
   );
   return rows[0] || null;
 }
 
 // 全部已读：单条条件 UPDATE 在数据库快照内处理当时可见的 delivered 记录，
 // 请求之后新投递的收件保持未读；返回实际改变的条数。
-async function markAllRead(db, username, category) {
+async function markAllRead(db, username, subjectId, category) {
   const params = [username];
-  let typeFilter = '';
-  if (category && category !== 'all') { params.push(category); typeFilter = ' AND n.type = $' + params.length; }
+  const where = ['n.id = r.notification_id', 'r.recipient_username = $1',
+    `r.status = 'delivered'`, 'r.read_at IS NULL'];
+  pushSubjectScope(where, params, subjectId);
+  if (category && category !== 'all') { params.push(category); where.push('n.type = $' + params.length); }
   const { rows } = await db.query(
     `WITH updated AS (
        UPDATE public.notification_recipients r
           SET read_at = now(), updated_at = now()
          FROM public.notifications n
-        WHERE n.id = r.notification_id AND r.recipient_username = $1
-          AND r.status = 'delivered' AND r.read_at IS NULL${typeFilter}
+        WHERE ${where.join(' AND ')}
         RETURNING r.id
      )
      SELECT count(*)::int AS count FROM updated`,
@@ -534,6 +558,179 @@ async function insertRecipientsBulk(db, notificationId, entries) {
   return rowCount;
 }
 
+// ---------- 评论通知失效（文章评论/回复/@，2026-11-15） ----------
+// 失效保留历史与已读，只标记「内容已不可用」；不做删除，不恢复旧通知。
+async function invalidateCommentNotificationsByComments(db, commentIds, reason) {
+  if (!commentIds || !commentIds.length) return 0;
+  const { rowCount } = await db.query(
+    `UPDATE public.notifications
+        SET invalidated_at = COALESCE(invalidated_at, now()), invalidation_reason = $2
+      WHERE target_kind = 'article_comment'
+        AND target_id = ANY($1::text[])
+        AND invalidated_at IS NULL`,
+    [commentIds.map(String), String(reason || '').slice(0, 200)]
+  );
+  return rowCount;
+}
+
+// 文章级失效：文章删除/撤回/改草稿时，按文章下所有评论定位（必须在评论级联删除之前执行）
+async function invalidateCommentNotificationsByArticle(db, articleId, reason) {
+  const { rowCount } = await db.query(
+    `UPDATE public.notifications n
+        SET invalidated_at = COALESCE(n.invalidated_at, now()), invalidation_reason = $2
+       FROM public.article_comments c
+      WHERE n.target_kind = 'article_comment'
+        AND n.target_id = c.id::text
+        AND c.article_id = $1
+        AND n.invalidated_at IS NULL`,
+    [articleId, String(reason || '').slice(0, 200)]
+  );
+  return rowCount;
+}
+
+// ---------- 提醒偏好（四项独立开关，按账号主体单行） ----------
+const PREFERENCE_COLUMNS = `
+  subject_id::text AS "subjectId",
+  article_comment AS "articleComment",
+  comment_reply AS "commentReply",
+  comment_mention AS "commentMention",
+  feedback_implemented AS "feedbackImplemented",
+  version::text AS version,
+  updated_at AS "updatedAt"`;
+
+async function readPreferences(db, subjectId) {
+  if (!subjectId) return null;
+  const { rows } = await db.query(
+    `SELECT ${PREFERENCE_COLUMNS} FROM public.notification_preferences WHERE subject_id = $1`,
+    [subjectId]
+  );
+  return rows[0] || null;
+}
+
+// 无行先幂等插入默认行再锁定：并发下同一主体最多一条默认记录。
+// 按主体排序加锁，保证与评论事务、反馈完成事务的锁顺序一致，不产生环形等待。
+async function lockPreferences(db, subjectIds) {
+  const ids = Array.from(new Set((subjectIds || []).filter(Boolean))).sort();
+  if (!ids.length) return [];
+  await db.query(
+    `INSERT INTO public.notification_preferences (subject_id)
+     SELECT s FROM unnest($1::uuid[]) AS s
+     ON CONFLICT (subject_id) DO NOTHING`,
+    [ids]
+  );
+  const { rows } = await db.query(
+    `SELECT ${PREFERENCE_COLUMNS} FROM public.notification_preferences
+      WHERE subject_id = ANY($1::uuid[]) ORDER BY subject_id FOR UPDATE`,
+    [ids]
+  );
+  return rows;
+}
+
+// 条件更新：版本不匹配返回 null（调用方按 409 处理，要求重新获取，避免覆盖其他设备改动）
+async function updatePreferences(db, subjectId, values, expectedVersion) {
+  const { rows } = await db.query(
+    `UPDATE public.notification_preferences
+        SET article_comment = $2, comment_reply = $3, comment_mention = $4,
+            feedback_implemented = $5, version = version + 1, updated_at = now()
+      WHERE subject_id = $1 AND version = $6
+      RETURNING ${PREFERENCE_COLUMNS}`,
+    [subjectId, values.articleComment, values.commentReply, values.commentMention,
+      values.feedbackImplemented, expectedVersion]
+  );
+  return rows[0] || null;
+}
+
+async function insertPreferences(db, subjectId, values) {
+  const { rows } = await db.query(
+    `INSERT INTO public.notification_preferences
+       (subject_id, article_comment, comment_reply, comment_mention, feedback_implemented)
+     VALUES ($1,$2,$3,$4,$5)
+     ON CONFLICT (subject_id) DO NOTHING
+     RETURNING ${PREFERENCE_COLUMNS}`,
+    [subjectId, values.articleComment, values.commentReply, values.commentMention,
+      values.feedbackImplemented]
+  );
+  return rows[0] || null;
+}
+
+// ---------- 评论请求幂等 ----------
+async function findCommentRequest(db, subjectId, clientRequestId) {
+  if (!subjectId || !clientRequestId) return null;
+  const { rows } = await db.query(
+    `SELECT id::text AS id, request_hash AS "requestHash", comment_id AS "commentId"
+       FROM public.article_comment_requests
+      WHERE subject_id = $1 AND client_request_id = $2`,
+    [subjectId, clientRequestId]
+  );
+  return rows[0] || null;
+}
+
+async function insertCommentRequest(db, row) {
+  const { rows } = await db.query(
+    `INSERT INTO public.article_comment_requests
+       (subject_id, client_request_id, request_hash, comment_id)
+     VALUES ($1,$2,$3,$4)
+     ON CONFLICT (subject_id, client_request_id) DO NOTHING
+     RETURNING id::text AS id`,
+    [row.subjectId, row.clientRequestId, row.requestHash || '', row.commentId || null]
+  );
+  return rows[0] || null;
+}
+
+// ---------- 账号主体（评论通知的候选收件人） ----------
+const ACCOUNT_SUBJECT_SQL = `
+  u.subject_id::text AS "subjectId",
+  u.username,
+  COALESCE(NULLIF(BTRIM(u.nickname), ''), u.username) AS nickname,
+  u.status,
+  COALESCE(extract(epoch FROM u.created_at)::text, '') AS identity`;
+
+async function listAccountsByUsernames(db, usernames) {
+  const list = (usernames || []).filter(Boolean);
+  if (!list.length) return [];
+  const { rows } = await db.query(
+    `SELECT ${ACCOUNT_SUBJECT_SQL} FROM public.users u
+      WHERE u.username = ANY($1::text[]) ORDER BY u.username ASC`,
+    [list]
+  );
+  return rows;
+}
+
+async function listAccountsBySubjects(db, subjectIds) {
+  const list = (subjectIds || []).filter(Boolean);
+  if (!list.length) return [];
+  const { rows } = await db.query(
+    `SELECT ${ACCOUNT_SUBJECT_SQL} FROM public.users u
+      WHERE u.subject_id = ANY($1::uuid[]) ORDER BY u.subject_id ASC`,
+    [list]
+  );
+  return rows;
+}
+
+async function readAccountByUsername(db, username) {
+  if (!username) return null;
+  const { rows } = await db.query(
+    `SELECT ${ACCOUNT_SUBJECT_SQL} FROM public.users u WHERE u.username = $1`, [username]
+  );
+  return rows[0] || null;
+}
+
+// @ 候选：只返回 active 账号的必要标识与显示名，不返回邮箱、权限或完整账号列表。
+// LIKE 通配符由调用方转义后传入，这里只做参数化匹配。
+async function listMentionCandidates(db, pattern, limit) {
+  const { rows } = await db.query(
+    `SELECT u.subject_id::text AS "subjectId", u.username,
+            COALESCE(NULLIF(BTRIM(u.nickname), ''), u.username) AS nickname
+       FROM public.users u
+      WHERE u.status = 'active'
+        AND (u.username ILIKE $1 ESCAPE '\\' OR COALESCE(u.nickname, '') ILIKE $1 ESCAPE '\\')
+      ORDER BY u.username ASC
+      LIMIT $2`,
+    [pattern, limit]
+  );
+  return rows;
+}
+
 module.exports = {
   insertNotification, getNotification, invalidateNotification, findActiveFeedbackNotification,
   insertRecipient, resetRecipientScanRound, deliverRecipient, skipRecipient, failRecipient,
@@ -542,4 +739,8 @@ module.exports = {
   insertBatch, lockBatch, getBatch, listBatches, updateBatch, updateBatchGuarded, listBatchRecipients,
   findOperation, insertOperation, listActiveUsernames,
   searchUsers, listAudience, insertRecipientsBulk, listActiveAccounts,
+  invalidateCommentNotificationsByComments, invalidateCommentNotificationsByArticle,
+  readPreferences, lockPreferences, updatePreferences, insertPreferences,
+  findCommentRequest, insertCommentRequest,
+  listAccountsByUsernames, listAccountsBySubjects, readAccountByUsername, listMentionCandidates,
 };

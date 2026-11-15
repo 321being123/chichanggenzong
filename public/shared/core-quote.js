@@ -105,6 +105,15 @@ function captureHoldingsRefreshScope() {
     identity: typeof accountIdentity === 'string' ? accountIdentity : '',
     generation: typeof captureSmartImportScope === 'function' ? captureSmartImportScope() : null };
 }
+// 重读账户成功后 data 会被整体替换成服务端返回的新对象，此时不能再按“同一个 data 引用”判断；
+// 仍必须绑定账户、登录身份与导入代次，避免把别的账户/已被取代的刷新结果写回页面。
+function isHoldingsRefreshScopeSameAccount(scope) {
+  return !!scope && scope.account === currentAccount &&
+    scope.user === (typeof username === 'string' ? username : '') &&
+    scope.identity === (typeof accountIdentity === 'string' ? accountIdentity : '') &&
+    (!scope.generation || (typeof isSmartImportScopeCurrent === 'function' && isSmartImportScopeCurrent(scope.generation)));
+}
+
 function isHoldingsRefreshScopeCurrent(scope) {
   return !!scope && scope.account === currentAccount && scope.dataRef === data &&
     scope.user === (typeof username === 'string' ? username : '') &&
@@ -221,11 +230,11 @@ async function refreshAllPrices(marketsToRefresh, operationScope) {
   let refreshed = false;
   if (typeof loadData === 'function') {
     await loadData(currentAccount);
-    if (!current()) return { ok: false, stale: true };
+    if (!isHoldingsRefreshScopeSameAccount(scope)) return { ok: false, stale: true };
     refreshed = true;
   }
   if (refreshed && typeof recordNav === 'function') await recordNav();
-  if (!current()) return { ok: false, stale: true };
+  if (!isHoldingsRefreshScopeSameAccount(scope)) return { ok: false, stale: true };
   if (refreshed && typeof renderAll === 'function') renderAll();
   if (refreshed && typeof renderStats === 'function') renderStats();
   renderReturnsChart();

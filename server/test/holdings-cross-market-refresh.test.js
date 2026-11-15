@@ -74,11 +74,12 @@ const loadStartedPromise = new Promise(resolve => { loadStarted = resolve; });
 let finishLoad;
 const loadDone = new Promise(resolve => { finishLoad = resolve; });
 // 统一估值：刷新后整批重读服务端结果；用 gate 模拟服务端返回时机，验证“重读前不改页面资产”。
+// 与真实 loadData 一致：成功后会整体替换 data 对象（不是原地修改），
+// 用于验证刷新链路不会因为“换了对象”被误判成过期响应。
 context.loadData = async () => {
   loadDataCalls += 1;
   if (loadDataCalls === 1) { loadStarted(); await loadDone; }
-  context.data.totalAsset = 4002;
-  context.data.valuation = { complete: true, missingCount: 0 };
+  context.data = { ...context.data, totalAsset: 4002, valuation: { complete: true, missingCount: 0 } };
   return context.data;
 };
 context.recordNav = async () => { navRecords += 1; };

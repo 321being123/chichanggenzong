@@ -250,6 +250,8 @@ async function computeNavHistoryTotals(username, accountName, data, query = pool
   const { rows } = await layerRepository.listHistoryPrices(query, [username, accountName, dateKey(navs[navs.length - 1].date)]);
   const { rows: fxRows } = await layerRepository.listHistoryFxRates(query, [dateKey(navs[navs.length - 1].date)]);
   const fx = new Map(fxRows.map(r => [dateKey(r.rate_date), Number(r.rate)]));
+  // 历史价格同样按资格推进：只有已确认收盘（或明确终盘）才允许用于历史资产重建，
+  // 候选价与遗留未核验价只保留缺口，不参与计算。
   const prices = new Map();
   const currentPositions = aggregateCurrentPositions(data.positions);
   let cursor = 0;
@@ -257,7 +259,11 @@ async function computeNavHistoryTotals(username, accountName, data, query = pool
   for (const nav of navs) {
     const date = dateKey(nav.date);
     while (cursor < rows.length && dateKey(rows[cursor].date) <= date) {
-      prices.set(String(rows[cursor].code), Number(rows[cursor].price));
+      const row = rows[cursor];
+      prices.set(String(row.code), {
+        price: Number(row.price),
+        qualified: String(row.quality || 'legacy_unverified') === 'confirmed' || row.is_final === true,
+      });
       cursor++;
     }
     if (nav.snapshotSource === 'manual_carry_forward' && !isAuthoritativeSnapshot(nav)) {
@@ -271,8 +277,10 @@ async function computeNavHistoryTotals(username, accountName, data, query = pool
     }
     const rate = Number(nav.hkRate) > 0 ? Number(nav.hkRate) : fx.get(date);
     totals[date] = snapshotTotal(data, nav, quantityAsOf(data, date, nav.snapshot_at), (code, isHk) => {
-      const price = prices.get(code) || (isHk && /^\d{5}$/.test(code) ? prices.get(code.padStart(6, '0')) : null);
-      return price > 0 ? price : manualDelistedPrice(data, code, currentPositions.get(code));
+      const row = prices.get(code) || (isHk && /^\d{5}$/.test(code) ? prices.get(code.padStart(6, '0')) : null);
+      if (row && row.qualified && row.price > 0) return row.price;
+      // 未确认价格不能冒充历史收盘价；只有明确的人工退市估值可作为兜底。
+      return manualDelistedPrice(data, code, currentPositions.get(code));
     }, rate);
   }
   return totals;
@@ -323,6 +331,8 @@ async function buildNavPerformance(data, totals, options = {}) {
   if (live?.complete && live.currentDate === today && live.previousTotalAsset > 0) {
     bases[live.previousDate] = Number(live.previousTotalAsset);
   }
+  // 当前估值不完整时，当日总资产只是“可用部分金额”，不能据此续出正式净值。
+  const valuationIncomplete = Boolean(data.valuation && data.valuation.complete === false);
   const rows = [];
   for (const n of navs) {
     const date = dateKey(n.date);
@@ -348,7 +358,14 @@ async function buildNavPerformance(data, totals, options = {}) {
       }
     }
     if (previous && base > 0 && currentTotal != null && !gap) dayChange = (currentTotal - base) / base;
-    if (date === today && options.requireLive !== false) {
+    // 不完整估值一律阻断当日续链：保留缺口原因，不产出看似完整的净值。
+    if (date === today && !imported && valuationIncomplete) {
+      nav = null;
+      dayChange = null;
+      basis = null;
+      reason = 'valuation_incomplete';
+    }
+    if (date === today && options.requireLive !== false && !(valuationIncomplete && !imported)) {
       dayChange = live?.complete && live.currentDate === today && live.previousTotalAsset > 0 && live.totalChange != null
         ? Number(live.totalChange) / Number(live.previousTotalAsset) : null;
       if (nav == null || dayChange == null) reason = live?.reason || 'missing_nav_basis';

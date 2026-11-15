@@ -75,6 +75,11 @@ assert.ok(quote.includes('fetchQuoteBatch') && quote.includes('retryCodes'), '�
 assert.ok(!quote.includes('return await fetchQuote(c, true)'), '持仓批量失败后不得退化成逐只行情请求');
 assert.ok(!quote.includes('syncIndexPoints().catch(function(){});'), '持仓刷新不得在浏览器侧同步外部指数行情');
 assert.ok(!returns.includes('/api/kline') && !returns.includes('fetchIndexKline'), '收益图缺失指数快照时不得在页面侧回源外部行情');
+const home = fs.readFileSync('public/js/home-dashboard.js', 'utf8');
+assert.ok(home.includes('data.totalAsset') && home.includes("data.valuation.complete === false"),
+  '首页必须消费服务端总资产与完整性状态，不能只用前端累加金额');
+assert.ok(!home.includes('homeSetText(\'home-total-asset\', fmt(summary.total))'),
+  '首页总资产不得再直接显示前端自算结果');
 assert.ok(!quote.includes('saveDailyPricesToDB') && !quote.includes("holdingsQuoteApi.saveDailyPrices"), '浏览器不得再写收盘价：收盘事实只能由服务端收盘任务落库');
 assert.ok(quote.includes('await loadData(currentAccount)') && quote.includes('renderAll()'), '刷新成功后必须整批重读服务端统一估值结果，不再保留浏览器自算资产');
 assert.ok(quote.includes('validatedPriceQuotes.set(c,'), '同一证券多条持仓只记录一份行情（按代码去重）');

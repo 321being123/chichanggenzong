@@ -60,10 +60,24 @@ function marketOf(code, subtype, quoteCurrency) {
   return info.isHK || info.subtype === '港股' ? 'HK' : 'CN';
 }
 
+const MARKET_OPEN_CLOCK = '09:30';
+
+// 交易时段阶段：盘前、连续竞价中、盘中休息（午休/港股午后未开）、已收盘、非交易日、未知。
+// 盘前当日还没有收盘价，最近“应有收盘日”是上一交易日；午休仍属当日，只是最新行情停在上午。
+function sessionPhase(live, nowClock) {
+  if (!live || live.status === 'unknown') return 'unknown';
+  if (live.status === 'closed') return 'closed_day';
+  if (live.isAfterMarketClose === true) return 'after_close';
+  if (live.isTradingNow === true) return 'in_session';
+  return nowClock && nowClock < MARKET_OPEN_CLOCK ? 'pre_open' : 'break';
+}
+
 // 最近一个“应有收盘价”的交易日：从 asOf 往前找该市场真实开市日。
+// phase 决定起点：盘前与非交易日从上一日开始找，盘中/休息/收盘后从当日开始找。
 // 市场日历缺失返回 null（未知），不用星期几猜开市。
-async function expectedCloseDateFor(market, asOfDate, query, cache) {
-  for (let offset = 0; offset <= CLOSE_DATE_LOOKBACK_DAYS; offset++) {
+async function expectedCloseDateFor(market, asOfDate, query, cache, phase) {
+  const startOffset = phase === 'pre_open' || phase === 'closed_day' ? 1 : 0;
+  for (let offset = startOffset; offset <= CLOSE_DATE_LOOKBACK_DAYS; offset++) {
     const date = shiftDate(asOfDate, -offset);
     const key = `${market}|${date}`;
     let state = cache.get(key);
@@ -128,13 +142,19 @@ async function resolveEffectivePrices(options = {}) {
   const stateCache = new Map();
   const marketByCode = new Map();
   const expectedByMarket = new Map();
+  const phaseByMarket = new Map();
   const isToday = asOf === dateKey(new Date());
+  const nowClock = shanghaiClock(nowAt);
   for (const subject of subjects) {
     const market = subject.market || marketOf(subject.code, subject.subtype, subject.quoteCurrency);
     marketByCode.set(subject.code, market);
     if (!expectedByMarket.has(market)) {
-      expectedByMarket.set(market, await expectedCloseDateFor(market, asOf, query, stateCache));
-      if (mode === 'current' && isToday) await liveMarketStateFor(market, asOf, nowAt, query, stateCache);
+      const live = mode === 'current' && isToday
+        ? await liveMarketStateFor(market, asOf, nowAt, query, stateCache)
+        : null;
+      const phase = live ? sessionPhase(live, nowClock) : 'historical';
+      phaseByMarket.set(market, phase);
+      expectedByMarket.set(market, await expectedCloseDateFor(market, asOf, query, stateCache, phase));
     }
   }
 
@@ -179,6 +199,7 @@ async function resolveEffectivePrices(options = {}) {
     const resolved = resolveOne({
       code, market, isHk, expectedCloseDate, mode, asOf, nowAt, isToday,
       ownRows, cacheRows, positionRows, stateCache, variants,
+      phase: phaseByMarket.get(market) || 'historical',
     });
     if (resolved.conflict) conflicts.push(resolved.conflict);
     if (resolved.price) {
@@ -239,7 +260,9 @@ function isTrustworthyPrice(row, stateCache, mode, isToday, asOf) {
   if (row.quality !== 'candidate') return false;
   if (mode !== 'current' || !isToday) return false;
   const live = stateCache.get(`${row.market}|${asOf}|live`);
-  return Boolean(live && live.status === 'open' && live.isTradingNow === true);
+  if (!live || live.status !== 'open') return false;
+  // 盘中与盘中休息都允许用当日最新行情作为“当前价”，盘中休息时它就是上午最后成交。
+  return live.isTradingNow === true || (row.priceKind === 'intraday_last' && live.isAfterMarketClose !== true);
 }
 
 function dedupeSubjects(subjects) {
@@ -275,7 +298,7 @@ function buildRevision({ username, accountName, mode, asOf, prices, policy }) {
 
 // 单只证券的取价判定：按合同 8.3 的时段表给出价格类型，缺证据时明确缺失原因。
 function resolveOne(context) {
-  const { code, market, isHk, expectedCloseDate, mode, asOf, nowAt, isToday, ownRows, cacheRows, positionRows, stateCache, variants } = context;
+  const { code, market, isHk, expectedCloseDate, mode, asOf, nowAt, isToday, ownRows, cacheRows, positionRows, stateCache, variants, phase } = context;
   const currency = isHk ? 'HKD' : 'CNY';
   const empty = reason => ({ missing: { code, market, currency, expectedCloseDate, reason } });
 
@@ -300,8 +323,11 @@ function resolveOne(context) {
     marketState = stateCache.get(`${market}|${asOf}|live`) || null;
   }
 
-  if (mode === 'current' && marketState && marketState.status === 'open' && marketState.isTradingNow) {
-    // 交易中：只接受来源报价时刻落在当日、且报价时间不晚于估值截止的实时候选。
+  // 盘中与盘中休息（午休/午后未开）都用当日最新有效报价：休息时最新报价就是上午最后成交价，
+  // 不能因为此刻不在连续竞价就退回上一交易日的收盘价。
+  const intraday = phase === 'in_session' || phase === 'break';
+  if (mode === 'current' && marketState && marketState.status === 'open' && intraday) {
+    // 只接受来源报价时刻落在当日、且报价时间不晚于估值截止的实时候选。
     const todayCache = cacheRows
       .filter(row => variants.includes(String(row.code)))
       .filter(row => row.price > 0)
@@ -313,9 +339,9 @@ function resolveOne(context) {
       selected = {
         price: Number(row.price), tradeDate: asOf, quoteAt: row.quote_time || row.fetched_at,
         sourceRef: `market_quote_cache:${row.source}`, quality: 'candidate', revision: 0,
-        priceKind: 'realtime',
+        priceKind: phase === 'break' ? 'intraday_last' : 'realtime',
       };
-      priceKind = 'realtime';
+      priceKind = selected.priceKind;
     }
   }
 
@@ -437,6 +463,7 @@ function selectHistoricalClosePrice({ exactPrice, candidates, targetDate, market
 module.exports = {
   resolveEffectivePrices,
   selectHistoricalClosePrice,
+  sessionPhase,
   expectedCloseDateFor,
   marketOf,
   dateKey,

@@ -1,6 +1,7 @@
 'use strict';
 
-function listHistoryPrices(executor, ...args) { return executor(`SELECT date, code, price::float8 AS price FROM daily_prices
+// 历史投影同样要带证据字段：只按价格数字推进会把候选价/未核实价当成历史收盘价。
+function listHistoryPrices(executor, ...args) { return executor(`SELECT date, code, price::float8 AS price, quality, is_final FROM daily_prices
     WHERE username=$1 AND account_name=$2 AND date::date <= $3::date ORDER BY date, code`, ...args); }
 
 function listHistoryFxRates(executor, ...args) { return executor(`SELECT DISTINCT ON (rate_date) rate_date, rate::float8 AS rate

@@ -28,9 +28,16 @@ function renderHomeHoldings() {
     return;
   }
   if (!data || !Array.isArray(data.positions)) return;
+  // 首页必须与持仓页消费同一批服务端估值：总额取服务端金额，缺价/未确认时就地标注，
+  // 不再用前端按 positions.price 自行累加，避免两个页面显示不同总额。
   var summary = calcSummary();
-  homeSetText('home-total-asset', fmt(summary.total));
-  homeSetText('home-position-count', data.positions.length + ' 项持仓');
+  var serverTotal = typeof data.totalAsset === 'number' && Number.isFinite(data.totalAsset) ? Number(data.totalAsset) : null;
+  var displayTotal = serverTotal != null ? serverTotal : summary.total;
+  var valuationIncomplete = Boolean(data.valuation && data.valuation.complete === false);
+  var valuationMissing = data.valuation && Number(data.valuation.missingCount) > 0 ? Number(data.valuation.missingCount) : 0;
+  homeSetText('home-total-asset', fmt(displayTotal));
+  homeSetText('home-position-count', data.positions.length + ' 项持仓' +
+    (valuationIncomplete ? ' · ⚠ 估值不完整' + (valuationMissing > 0 ? '（' + valuationMissing + ' 只缺价或未确认）' : '') : ''));
   homeSetText('home-cash-value', '现金 ' + fmt(summary.cash));
 }
 

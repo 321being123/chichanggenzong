@@ -276,7 +276,7 @@ async function recordMarketClose(label, matchFn, dateStr, context = {}) {
     mergeQuoteMaps(quoteMap, refreshed);
   } : null;
   const { rows: accounts } = await repository.select_accounts();
-  let recorded = 0, failed = 0, skipped = 0;
+  let recorded = 0, failed = 0, skipped = 0, pendingConfirmation = 0;
   for (const account of accounts) {
     const r = await recordCloseOne(account.username, account.account_name, label, matchFn, cnDate, requestBudget, { quoteMap, refreshMissingQuotes })
       .catch(error => {
@@ -289,6 +289,8 @@ async function recordMarketClose(label, matchFn, dateStr, context = {}) {
     recorded += Number(r && r.recorded || 0);
     failed += Number(r && r.failed || 0);
     skipped += Number(r && r.skipped || 0);
+    // 只拿到候选（未确认终盘）的证券必须计入缺口：不能因为“写进去了”就报成功。
+    pendingConfirmation += Number(r && r.candidateCount || 0);
   }
   if (failed > 0) {
     // 失败必须按统一执行器重试：if (failed > 0) throw new Error(...)
@@ -298,7 +300,11 @@ async function recordMarketClose(label, matchFn, dateStr, context = {}) {
   }
   // 兼容持仓价的回写已在 recordCloseOne 的同一事务内完成（日价 + 持仓价原子提交）；
   // 任务级不再单独补一次，避免事务外二次写入与“回写失败仍报成功”。
-  return { recorded, failed, skipped, verifiedNoChange: recorded === 0 && skipped === 0, externalCalls: getExternalCallStats().total };
+  return {
+    recorded, failed, skipped, pendingConfirmation,
+    verifiedNoChange: recorded === 0 && skipped === 0 && pendingConfirmation === 0,
+    externalCalls: getExternalCallStats().total,
+  };
 }
 
 async function recentMarketDays(count) {
@@ -387,6 +393,12 @@ async function runMarketCloseJob(label, matchFn, dateStr, context = {}) {
   const runId = await startJobRun('market_close:' + label);
   try {
     const result = await recordMarketClose(label, matchFn, dateStr, context);
+    // 仍有候选未确认终盘时不得报成功：转成待补缺口，交给统一执行器重试与告警。
+    if (Number(result.pendingConfirmation) > 0) {
+      const message = `收盘价待确认 (${label} ${dateStr || ''})：候选 ${result.pendingConfirmation}，已确认 ${result.recorded - result.pendingConfirmation}，请等待终盘价或重新取价`;
+      await finishJobRun(runId, false, message);
+      return { ok: false, label, errorType: 'pending_confirmation', error: message, ...result };
+    }
     await finishJobRun(runId, true, `写入 ${result.recorded}，跳过 ${result.skipped || 0}，失败 0`);
     return { ok: true, label, ...result };
   } catch (e) {

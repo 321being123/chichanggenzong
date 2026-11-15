@@ -5,8 +5,12 @@ async function select_accounts(params, client = pool) {
   return client.query(`SELECT cash_base::float8 AS cash_base FROM accounts WHERE username=$1 AND account_name=$2`, params);
 }
 
+// 快照预检查必须能判断价格资格：只有已确认终盘价才允许作为历史资产的价格依据。
 async function select_daily_prices(params, client = pool) {
-  return client.query(`SELECT date, code, price::float8 AS price FROM daily_prices WHERE username=$1 AND account_name=$2`, params);
+  return client.query(
+    `SELECT date, code, price::float8 AS price, quality, is_final FROM daily_prices WHERE username=$1 AND account_name=$2`,
+    params
+  );
 }
 
 async function select_market_fx_rates(params, client = pool) {

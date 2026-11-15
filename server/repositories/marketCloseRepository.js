@@ -22,8 +22,14 @@ async function select_daily_prices_1(params, client = pool) {
   return client.query(`SELECT MIN(date)::text AS first_date FROM daily_prices WHERE username=$1 AND account_name=$2`, params);
 }
 
+// 补漏的“已覆盖”判据同样只认已确认终盘：候选行存在不能让该日退出待补集合。
 async function select_daily_prices_2(params, client = pool) {
-  return client.query(`SELECT date::text AS date FROM daily_prices WHERE username=$1 AND account_name=$2 AND date BETWEEN $3 AND $4`, params);
+  return client.query(
+    `SELECT DISTINCT date::text AS date FROM daily_prices
+      WHERE username=$1 AND account_name=$2 AND date BETWEEN $3 AND $4
+        AND quality = 'confirmed' AND is_final = true`,
+    params
+  );
 }
 
 module.exports = {

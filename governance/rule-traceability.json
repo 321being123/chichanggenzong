@@ -783,6 +783,10 @@
         {
           "file": "ipo-report/test_ipo_unit.py",
           "pattern": "日历业务日期固定按上海时区"
+        },
+        {
+          "file": "server/test/valuation-integrity-guard.test.js",
+          "pattern": "盘中时段判定"
         }
       ],
       "owner": "日期边界治理",

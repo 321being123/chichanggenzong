@@ -55,7 +55,11 @@ async function selectAccountId(params, client = pool) {
   return client.query('SELECT id FROM accounts WHERE username=$1 AND account_name=$2', params);
 }
 
-// 条件写入：已确认收盘价不允许被较低资格（候选/遗留）覆盖，只能接受同级更正或更高资格。
+// 条件写入：
+// ①已确认收盘价不允许被较低资格（候选/遗留）覆盖；
+// ②同级 confirmed 更正必须“来源时刻更新”或“同时刻但价格确实不同”才允许，
+//   迟到的旧终盘不能覆盖更新的修订；
+// ③完全相同（同质量、同价、同来源时刻）视为幂等重复，不更新也不递增 revision。
 // previous_price / revision 保留可追溯性与“合法更正使版本变化”的语义。
 async function upsertDailyPrice(params, client = pool) {
   const [row] = params;
@@ -76,7 +80,14 @@ async function upsertDailyPrice(params, client = pool) {
        quality = EXCLUDED.quality,
        evidence = EXCLUDED.evidence
      WHERE daily_prices.quality <> 'confirmed'
-        OR EXCLUDED.quality = 'confirmed'
+        OR (EXCLUDED.quality = 'confirmed'
+            AND (
+              -- 来源时刻更新：允许合法更正
+              COALESCE(EXCLUDED.quote_at, 'epoch'::timestamptz) > COALESCE(daily_prices.quote_at, 'epoch'::timestamptz)
+              -- 同一来源时刻但价格不同：来源更正，允许
+              OR (EXCLUDED.quote_at IS NOT DISTINCT FROM daily_prices.quote_at
+                  AND EXCLUDED.price IS DISTINCT FROM daily_prices.price)
+            ))
      RETURNING date::text AS date, code, revision, quality, is_final`,
     [row.username, row.accountName, row.accountId, row.date, row.code, row.name || '',
       row.price, row.source || null, row.quoteAt || null, row.isFinal == null ? null : !!row.isFinal,

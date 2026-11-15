@@ -201,17 +201,25 @@ let ksPendingComments = null;
 function ksPendingStore() {
   if (ksPendingComments) return ksPendingComments;
   ksPendingComments = {};
+  let dropped = 0;
   try {
     const raw = sessionStorage.getItem(KS_PENDING_KEY);
     const parsed = raw ? JSON.parse(raw) : null;
     if (parsed && typeof parsed === 'object') {
-      // 存储里只可能装「身份可确认」的记录（写入时已过滤），载入时再补一次标记
       Object.keys(parsed).forEach(function (k) {
         const record = parsed[k];
-        if (record && record.id) ksPendingComments[k] = record;
+        // 只认「写入时身份可确认」的记录：更早版本没有 persistable 标记，
+        // 其键可能在身份缺失时退化成 u:用户名|id:，载入就会把旧账号草稿恢复给同名新账号。
+        if (record && record.id && record.persistable === true) {
+          ksPendingComments[k] = record;
+        } else {
+          dropped++;
+        }
       });
     }
   } catch (e) { /* 存储不可用：只用内存副本 */ }
+  // 丢弃了遗留记录就顺手把存储洗干净，避免每次载入都再判一次
+  if (dropped) ksPersistPendingStore();
   return ksPendingComments;
 }
 

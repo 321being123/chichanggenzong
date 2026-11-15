@@ -785,6 +785,62 @@ async function multiplePendingReplies() {
   } finally { await tick(); dom.window.close(); }
 }
 
+// ---------- 13. 旧版本遗留的待确认记录不得恢复 ----------
+async function legacyPendingIgnored() {
+  const dom = new JSDOM(
+    '<textarea id="ks-comment"></textarea><div id="panel" role="listbox" hidden></div><div id="chips" hidden></div>'
+    + '<div id="ks-comment-notice" hidden></div><div id="ks-comment-list"></div>',
+    { url: 'https://example.test/?main=knowledge', runScripts: 'outside-only' }
+  );
+  const w = dom.window;
+  try {
+    const posts = [];
+    w.username = 'alice';
+    w.accountIdentity = '';   // 身份缺失：同名重建无法区分
+    w.escapeHtml = escaper();
+    w.showToast = function () {};
+    // 更早版本写入的遗留记录：键已退化成 u:用户名|id:，且没有 persistable 标记
+    w.sessionStorage.setItem('ks-pending-comments', JSON.stringify({
+      'u:alice|id:|7|': {
+        id: 'legacy-id', owner: 'u:alice|id:', articleId: '7', parentId: null,
+        content: '旧版本遗留的草稿', mentions: [],
+      },
+    }));
+    w.siteApi = {
+      get: async function () { return { ok: true, status: 200, payload: { id: 7, title: '文章', status: 'published' } }; },
+      post: async function (url, body) {
+        if (url.indexOf('/view') >= 0) return { ok: true, status: 200, payload: {} };
+        posts.push(body);
+        return { ok: false, status: 502, payload: null };
+      },
+    };
+    w.eval(read('public/js/knowledge.js'));
+    w.ksPaintArticle = function () {};
+    w.ksShowView = function () {};
+    w.ksPaintCommentsPrepare = function () { return false; };
+    w.ksPaintComments = function () {};
+    w.eval(read('public/js/presenters/knowledge-presenter.js'));
+    // 主评论框必须在打开文章前就存在：否则恢复函数拿不到输入框，测出来的「没恢复」是假象
+    const ta = w.document.getElementById('ks-comment');
+    w.ksInitMentionBox('main', ta, w.document.getElementById('panel'), w.document.getElementById('chips'));
+    await w.ksOpenArticle(7);
+
+    assert.strictEqual(ta.value, '', '身份缺失时不得恢复旧版本遗留的草稿');
+    assert.strictEqual(w.document.getElementById('ks-comment-notice').hidden, true, '不得显示遗留草稿的提示');
+    const afterLoad = w.sessionStorage.getItem('ks-pending-comments');
+    assert.ok(!afterLoad || Object.keys(JSON.parse(afterLoad)).length === 0,
+      '遗留记录应在载入时被清掉，不能一直留在存储里');
+
+    // 本页新提交仍然只留内存：结果不明也不落盘
+    await w.ksSubmitComment(null, '新的评论', 'main');
+    assert.strictEqual(posts.length, 1);
+    const afterSubmit = w.sessionStorage.getItem('ks-pending-comments');
+    assert.ok(!afterSubmit || Object.keys(JSON.parse(afterSubmit)).length === 0,
+      '身份缺失时新提交也不得写入会话存储');
+    pass++;
+  } finally { await tick(); dom.window.close(); }
+}
+
 (async () => {
   const suites = [
     ['@ 区间随编辑平移与失效（同昵称可区分）', mentionRanges],
@@ -799,6 +855,7 @@ async function multiplePendingReplies() {
     ['回复的待确认内容可恢复、原样重试与放弃', pendingReplyDraft],
     ['身份缺失时只在本页保留，不跨会话恢复', identityMissingPending],
     ['同一文章多条待确认回复都能恢复与放弃', multiplePendingReplies],
+    ['旧版本遗留的待确认记录不得恢复', legacyPendingIgnored],
   ];
   let failed = 0;
   for (const [name, fn] of suites) {

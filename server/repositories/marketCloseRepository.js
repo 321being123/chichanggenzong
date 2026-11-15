@@ -1,8 +1,13 @@
 const { pool } = require('../db/connection');
 
 // 自 server/jobs/marketClose.js 抽取的 SQL 执行函数：语句原样搬迁，返回 pg 原始结果（rows/rowCount），调用方零改动。
+// 收盘幂等的判定依据必须是“已确认的终盘价”，不能只看当天有没有任意一条记录：
+// 盘中候选或遗留未核验价存在时，收盘任务仍需重新取价并升级。
 async function select_daily_prices(params, client = pool) {
-  return client.query(`SELECT code FROM daily_prices WHERE username=$1 AND account_name=$2 AND date=$3`, params);
+  return client.query(
+    `SELECT code, quality, is_final FROM daily_prices WHERE username=$1 AND account_name=$2 AND date=$3`,
+    params
+  );
 }
 
 async function select_positions(params, client = pool) {

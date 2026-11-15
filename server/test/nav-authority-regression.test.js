@@ -54,10 +54,11 @@ const previousCloseDate = (() => {
        VALUES ('HKD','CNY',$1,$3,0.90,now()),('HKD','CNY',$2,$3,0.85,now())
        ON CONFLICT (base_currency,quote_currency,rate_date) DO UPDATE SET rate=EXCLUDED.rate,fetched_at=EXCLUDED.fetched_at`, [yesterday, todayCN(), sourceRow.source_id]
     );
+    // 已确认收盘价：统一估值要求基准价与当前价都具备“已确认”资格，才允许判为完整。
     await pool.query(
-      `INSERT INTO daily_prices (username,account_name,date,code,name,price)
-       VALUES ($1,$2,$3,'00700','腾讯控股',100)
-       ON CONFLICT (username,account_name,date,code) DO UPDATE SET price=EXCLUDED.price`, [U, A, previousCloseDate]
+      `INSERT INTO daily_prices (username,account_name,date,code,name,price,quality,is_final,source)
+       VALUES ($1,$2,$3,'00700','腾讯控股',100,'confirmed',true,'test_close_task')
+       ON CONFLICT (username,account_name,date,code) DO UPDATE SET price=EXCLUDED.price, quality=EXCLUDED.quality, is_final=EXCLUDED.is_final, source=EXCLUDED.source`, [U, A, previousCloseDate]
     );
 
     const app = express();
@@ -73,9 +74,9 @@ const previousCloseDate = (() => {
        VALUES ('partial_anchor_position',$1,$2,$3,'00005','汇丰控股',20,10,20,'股权','港股','')`, [U, A, accountId]
     );
     await pool.query(
-      `INSERT INTO daily_prices (username,account_name,date,code,name,price)
-       VALUES ($1,$2,$3,'00005','汇丰控股',20),($1,$2,$4,'00700','腾讯控股',99)
-       ON CONFLICT (username,account_name,date,code) DO UPDATE SET price=EXCLUDED.price`, [U, A, previousCloseDate, yesterday]
+      `INSERT INTO daily_prices (username,account_name,date,code,name,price,quality,is_final,source)
+       VALUES ($1,$2,$3,'00005','汇丰控股',20,'confirmed',true,'test_close_task'),($1,$2,$4,'00700','腾讯控股',99,'candidate',NULL,'test_close_task')
+       ON CONFLICT (username,account_name,date,code) DO UPDATE SET price=EXCLUDED.price, quality=EXCLUDED.quality, is_final=EXCLUDED.is_final, source=EXCLUDED.source`, [U, A, previousCloseDate, yesterday]
     );
     const partialPreview = await fetch(base + '/nav/import/preview', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ account: A, records: [{ date: yesterday, nav: 1, totalAsset: 1400, invested: 1000, cash: 500 }] }) });
     const partialPreviewJson = await partialPreview.json();
@@ -126,7 +127,13 @@ const previousCloseDate = (() => {
       }) };
     });
     const closed = await loadAccountData(U, A);
-    assert.ok(closed.navAttribution && closed.navAttribution.complete, '导入日到今天应能完整归因：' + JSON.stringify(closed.navAttribution));
+    // 导入日的价格是“前一完整收盘日固化到导入日”的派生价，不是该日收盘证据：
+    // 归因数值必须闭合，但不允许把它标成完整收盘基准。
+    assert.ok(closed.navAttribution && Array.isArray(closed.navAttribution.priceEvidence) && closed.navAttribution.priceEvidence.length > 0,
+      '归因必须给出逐证券价格证据：' + JSON.stringify(closed.navAttribution));
+    assert.strictEqual(closed.navAttribution.complete, false, '导入日固化价不能冒充完整收盘基准');
+    assert.ok(closed.navAttribution.reasonCodes.includes('basis_price_not_confirmed'), '必须标注基准价未确认');
+    assert.strictEqual(closed.navAttribution.priceEvidence[0].basisQualified, false, '逐证券证据里必须标明基准价不可信');
     assert.strictEqual(Math.round(closed.navAttribution.priceImpact), 0, '周末价格未变化，不得用兼容持仓价冒充当日股价涨跌');
     assert.strictEqual(Math.round(closed.navAttribution.fxImpact), -50, '汇率影响应为-50');
     assert.strictEqual(Math.round(closed.navAttribution.totalChange), -55, '导入日到系统计算日的总资产变化应包含一次性口径切换');

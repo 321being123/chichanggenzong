@@ -625,7 +625,9 @@ async function saveDailyPrices(username, accountName, date, prices, options = {}
     ? new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(date)
     : String(date || '').slice(0, 10);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(normalizedDate)) throw new Error('收盘价日期必须是 YYYY-MM-DD');
-  const { rows: aRows } = await pool.query(
+  // options.client：调用方的受控事务连接（日价与兼容持仓价必须同事务提交）。
+  const runner = options.client || pool;
+  const { rows: aRows } = await runner.query(
     'SELECT id FROM accounts WHERE username=$1 AND account_name=$2', [username, accountName]
   );
   const accountId = aRows[0] ? aRows[0].id : null;
@@ -649,7 +651,7 @@ async function saveDailyPrices(username, accountName, date, prices, options = {}
       isFinal,
       quality,
       evidence: p.evidence || options.evidence || {},
-    }]);
+    }], runner);
     results.push({ code: p.code, written: result.rowCount > 0, revision: result.rows[0] ? result.rows[0].revision : null });
   }
   return results;
@@ -660,7 +662,8 @@ async function saveDailyPrices(username, accountName, date, prices, options = {}
 async function syncConfirmedCloseToPositions(username, accountName, date, options = {}) {
   const normalizedDate = String(date || '').slice(0, 10);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(normalizedDate)) return { updated: 0 };
-  const { rows } = await pool.query(
+  const runner = options.client || pool;
+  const { rows } = await runner.query(
     `UPDATE positions p
         SET price = d.price
        FROM daily_prices d
@@ -673,6 +676,18 @@ async function syncConfirmedCloseToPositions(username, accountName, date, option
       RETURNING p.code, p.price::float8 AS price`,
     [username, accountName, normalizedDate, options.codes || null]
   );
+  // 兼容持仓价变化必须计入持仓数据集版本：否则旧页面带着旧 pos_version 全量保存，
+  // 会把刚同步的收盘价覆盖回旧值。语句与仓储 bumpPositionVersion 一致，
+  // 但这里直接执行以避免 db 层反向 require 仓储造成的循环依赖。
+  if (rows.length) {
+    await runner.query(
+      `INSERT INTO account_data (username, account_name, data, version, pos_version)
+       VALUES ($1,$2,'{}',0,0)
+       ON CONFLICT (username, account_name) DO UPDATE
+         SET pos_version = account_data.pos_version + 1, version = account_data.version + 1`,
+      [username, accountName]
+    );
+  }
   return { updated: rows.length, codes: rows.map(row => row.code) };
 }
 

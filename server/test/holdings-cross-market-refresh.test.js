@@ -63,18 +63,28 @@ context.marketStateSnapshot = {
 };
 context.refreshMarketStateSnapshot = async () => context.marketStateSnapshot;
 context.renderAll = () => {
-  const total = context.calcSummary().total;
+  const total = context.data.totalAsset != null ? Number(context.data.totalAsset) : context.calcSummary().total;
   element('stat-total').textContent = String(total);
   element('home-total-asset').textContent = String(total);
 };
-context.recordNav = async () => {};
+let navRecords = 0;
+let loadDataCalls = 0;
+let loadStarted;
+const loadStartedPromise = new Promise(resolve => { loadStarted = resolve; });
+let finishLoad;
+const loadDone = new Promise(resolve => { finishLoad = resolve; });
+// 统一估值：刷新后整批重读服务端结果；用 gate 模拟服务端返回时机，验证“重读前不改页面资产”。
+context.loadData = async () => {
+  loadDataCalls += 1;
+  if (loadDataCalls === 1) { loadStarted(); await loadDone; }
+  context.data.totalAsset = 4002;
+  context.data.valuation = { complete: true, missingCount: 0 };
+  return context.data;
+};
+context.recordNav = async () => { navRecords += 1; };
 context.renderReturnsChart = () => {};
 // 浏览器不再写收盘价：服务端收盘任务是唯一写入入口（2026-11-15 统一估值合同）
 
-let startedPatch;
-const patchStarted = new Promise(resolve => { startedPatch = resolve; });
-let finishPatch;
-const patchGate = new Promise(resolve => { finishPatch = resolve; });
 const requests = [];
 const toastMessages = [];
 let staleHkQuote = false;
@@ -96,11 +106,7 @@ context.fetch = async (url, options = {}) => {
     };
   }
   if (url === '/api/hkrate?realtime=1') return { ok: true, async json() { return { rate: 0.91 }; } };
-  if (url.startsWith('/api/positions/prices?')) {
-    startedPatch();
-    await patchGate;
-    return { ok: true, async json() { return { version: 2 }; } };
-  }
+  // 统一估值后浏览器不再提交持仓价；一旦出现该请求即视为契约破坏（落到底部抛错）。
   throw new Error(`unexpected request: ${url}`);
 };
 
@@ -108,14 +114,21 @@ context.fetch = async (url, options = {}) => {
   try {
     assert.strictEqual(context.calcSummary().total, 3800, '普通账户初始总资产应为 3800 元');
     const refresh = context.refreshAllPrices();
-    await patchStarted;
+    await loadStartedPromise;
     assert.ok(requests.some(request => request.url === '/api/hkrate?realtime=1'), 'A 股休市、港股开市时应请求实时港币汇率');
-    assert.strictEqual(context.calcSummary().total, 4002, '港股价格和汇率更新后本次计算应为 4002 元');
-    assert.strictEqual(Number(element('stat-total').textContent), 4002, '持仓页总资产应在 PATCH 完成前显示 4002 元');
-    assert.strictEqual(Number(element('home-total-asset').textContent), 4002, '首页总资产应在 PATCH 完成前显示 4002 元');
+    // 重读服务端之前：页面必须保留上一批正式结果，不能用临时网络报价改写持仓或重算总资产。
+    assert.strictEqual(context.data.positions.find(position => position.code === '00700').price, 20,
+      '刷新期间不得把临时网络报价写入持仓价');
+    assert.strictEqual(context.data.totalAsset, undefined, '刷新期间不得把前端自算结果写成正式总资产');
+    assert.ok(!requests.some(request => request.url.startsWith('/api/positions/prices')),
+      '浏览器不得再提交持仓价格（统一估值由服务端计算）');
 
-    finishPatch();
+    finishLoad();
     await refresh;
+    assert.strictEqual(loadDataCalls, 1, '刷新完成后必须整批重读服务端统一估值');
+    assert.strictEqual(Number(element('stat-total').textContent), 4002, '重读后总资产显示服务端统一估值金额');
+    assert.strictEqual(Number(element('home-total-asset').textContent), 4002, '首页总资产与持仓页一致');
+    assert.strictEqual(navRecords, 1, '服务端估值到齐后才记录当日净值');
 
     let autoRefreshCalls = 0;
     context.doRefresh = async () => { autoRefreshCalls++; return { ok: true }; };
@@ -151,12 +164,13 @@ context.fetch = async (url, options = {}) => {
     assert.strictEqual(Array.from(selectedMarkets || []).join(','), 'HK', 'A 股已收盘刷新后，港股日历恢复确认时仍应独立完成港股收盘刷新');
 
     const requestStart = requests.length;
+    const loadStart = loadDataCalls;
     await context.refreshAllPrices(['CN']);
     const cnRequests = requests.slice(requestStart);
     const cnQuoteRequest = cnRequests.find(request => request.url.startsWith('/api/quotes?'));
     assert.ok(cnQuoteRequest && decodeURIComponent(cnQuoteRequest.url).includes('codes=600000'), '指定市场刷新必须只请求该市场证券');
-    const cnPatch = cnRequests.find(request => request.url.startsWith('/api/positions/prices?'));
-    assert.deepStrictEqual(JSON.parse(cnPatch.options.body).prices.map(price => price.code), ['600000'], '指定市场刷新必须只保存该市场证券价格');
+    assert.ok(!cnRequests.some(request => request.url.startsWith('/api/positions/prices')), '指定市场刷新也不再提交持仓价格');
+    assert.strictEqual(loadDataCalls, loadStart + 1, '指定市场刷新后仍整批重读服务端统一估值');
 
     context.marketStateSnapshot = {
       businessDate: '2026-09-25',
@@ -169,7 +183,7 @@ context.fetch = async (url, options = {}) => {
     const toastStart = toastMessages.length;
     await context.refreshAllPrices(['HK']);
     const staleToast = toastMessages.slice(toastStart).join(' ');
-    assert.strictEqual(context.data.positions.find(position => position.code === '00700').price, 22, '开市日收到前一日港股报价时不得覆盖已有价格');
+    assert.strictEqual(context.data.positions.find(position => position.code === '00700').price, 20, '开市日收到前一日港股报价时不得写入持仓价');
     assert.ok(staleToast.includes('00700') && staleToast.includes('未取得当日行情'), '开市日的过期报价必须显示为失败代码');
     assert.ok(!staleToast.includes('全部成功'), '过期报价不得提示全部成功');
 

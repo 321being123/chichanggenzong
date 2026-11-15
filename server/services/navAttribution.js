@@ -434,7 +434,8 @@ async function computeNavAttribution(username, accountName, data, currentTotal, 
     layerRepository.listEarlierBasisPrices(query, [username, accountName, [...relevantCodes], currentDate]),
   ]);
   const priceRowsByCode = (rows) => new Map(rows.map(row => [String(row.code), {
-    date: dateKey(row.date), price: Number(row.price)
+    date: dateKey(row.date), price: Number(row.price),
+    quality: String(row.quality || 'legacy_unverified'), isFinal: row.is_final === true,
   }]));
   const previousPriceByCode = priceRowsByCode(previousPricesResult.rows);
   const currentPriceByCode = priceRowsByCode(currentPricesResult.rows);
@@ -457,6 +458,8 @@ async function computeNavAttribution(username, accountName, data, currentTotal, 
   const priceEvidence = [];
   const missing = [];
   const manualPriceCodes = [];
+  // 基准价不可信的证券：数值照算，但不允许把结果当成完整收益基准（避免未确认价格冒充收盘价）。
+  const unqualifiedBasisCodes = [];
   const codes = relevantCodes;
   function marketPrice(priceMap, code, isHk) {
     const variants = [code];
@@ -504,11 +507,20 @@ async function computeNavAttribution(username, accountName, data, currentTotal, 
     }
     // 数量变化归入交易/数量影响：新买入不要求基准日价格，清仓也不要求当前行情。
     quantityImpact.value += (currentQty - qty) * endPrice * endFx;
+    // 基准价资格：已确认收盘或明确人工估值（退市债固定价）才算可信；
+    // 盘中候选、遗留未核验价只能作为数值参考，不能让归因标成完整。
+    const basisFromDaily = storedPrevPrice > 0;
+    const basisQualified = basisFromDaily
+      ? (storedPrevRow.quality === 'confirmed' || storedPrevRow.isFinal === true)
+      : fixedDelistedPrice != null;
+    if (qty > 0 && !basisQualified) unqualifiedBasisCodes.push(code);
     priceEvidence.push({
       code,
       market: isHk ? 'HK' : 'CN',
       basisPrice: prevPrice > 0 ? prevPrice : null,
       basisPriceDate: storedPrevRow ? storedPrevRow.date : null,
+      basisQuality: basisFromDaily ? storedPrevRow.quality : (fixedDelistedPrice != null ? 'manual_delisted' : null),
+      basisQualified,
       currentPrice: endPrice > 0 ? endPrice : null,
       currentPriceKind: evidenceRow ? evidenceRow.priceKind : (storedCurrentRow ? 'close' : null),
       currentPriceDate: evidenceRow ? evidenceRow.tradeDate : (storedCurrentRow ? storedCurrentRow.date : null),
@@ -561,18 +573,21 @@ async function computeNavAttribution(username, accountName, data, currentTotal, 
     : null;
   const tradeImpact = ledgerChange.value + quantityImpact.value;
   const valuationIncomplete = liveEnd && data.valuation && data.valuation.complete === false;
-  const complete = missing.length === 0 && !currencyIncomplete && !valuationIncomplete;
+  const basisIncomplete = unqualifiedBasisCodes.length > 0;
+  const complete = missing.length === 0 && !currencyIncomplete && !valuationIncomplete && !basisIncomplete;
   const drift = complete ? totalChange - priceImpact.value - fxImpact.value - tradeImpact - cashIncomeImpact -
     (importBasisAdjustment || 0) : null;
   const reasonCodes = [];
   if (currencyIncomplete) reasonCodes.push('missing_trade_currency_settlement');
   if (missing.length) reasonCodes.push('missing_exact_price_or_fx');
   if (valuationIncomplete) reasonCodes.push('current_valuation_incomplete');
+  if (basisIncomplete) reasonCodes.push('basis_price_not_confirmed');
   return {
     complete,
     reason: complete ? null : (reasonCodes[0] || 'incomplete'),
     reasonCodes,
     missingCodes: [...new Set(missing)],
+    unqualifiedBasisCodes: [...new Set(unqualifiedBasisCodes)],
     manualPriceCodes: [...new Set(manualPriceCodes)],
     previousDate: prevDate,
     currentDate,

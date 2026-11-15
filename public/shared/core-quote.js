@@ -129,8 +129,7 @@ async function refreshAllPrices(marketsToRefresh, operationScope) {
   showToast('正在获取 ' + codes.length + ' 只行情...');
   let ok = 0, reused = 0, fail = 0;
   var reusedCodes = new Set();
-  // 导入日按行情增量更新券商持仓总值；次日起直接切到系统绝对持仓市值。
-  var systemPositionValueBeforeRefresh = getSystemPositionValue();
+  // 统一估值后总资产只由服务端计算：刷新过程不再维护“刷新前系统持仓值”这类本地基准。
 
   // 批量拉取行情（A股走Tushare实时，港股走腾讯）
   // 页面刷新只允许一次批量请求；批量异常时最多再做一次同样的批量重试，
@@ -185,21 +184,13 @@ async function refreshAllPrices(marketsToRefresh, operationScope) {
           var quoteIsToday = quoteDate === today;
           var marketOpenToday = marketState && marketState.businessDate === today && marketState.status === 'open';
           // 市场休市或日历未知时，不用旧行情覆盖页面上的最新价格；开市时只采纳当日行情。
+          // 统一估值：浏览器只负责“取到报价并让服务端落缓存”，不把报价写进持仓、也不重算资产。
           if (marketOpenToday && quoteIsToday) {
-            var price = result.price;
-            matchingPositions.forEach(function(position) {
-              position.price = price;
-              if (result.name && !position.name) position.name = result.name;
-            });
             priceChangeMap[c] = result.change;
-            validatedPriceQuotes.set(c, { price: price, name: result.name || pos.name || '', quote_time: result.quote_time, quote_currency: market === 'HK' ? 'HKD' : 'CNY' });
+            validatedPriceQuotes.set(c, { price: result.price, name: result.name || pos.name || '', quote_time: result.quote_time, quote_currency: market === 'HK' ? 'HKD' : 'CNY' });
             ok++;
           } else if (marketState && marketState.businessDate === today && marketState.status !== 'open' && quoteDate && quoteDate <= today) {
-            // 休市或日历未知时，手动刷新仍可读取最近有效价参与估值，但不伪装成今日涨跌或收盘价。
-            matchingPositions.forEach(function(position) {
-              position.price = result.price;
-              if (result.name && !position.name) position.name = result.name;
-            });
+            // 休市或日历未知时，手动刷新仍可读取最近有效价，但不伪装成今日涨跌或收盘价。
             priceChangeMap[c] = null;
             reused++;
             reusedCodes.add(c);
@@ -224,66 +215,28 @@ async function refreshAllPrices(marketsToRefresh, operationScope) {
   }
   // 保存涨跌幅到数据文件，页面刷新后自动恢复
   data.changes = {}; Object.keys(priceChangeMap).forEach(function(k) { data.changes[k] = priceChangeMap[k]; });
-  // 指数对比线同步已移至渲染之后（见下方 renderAll 之后），不再阻塞总资产计算
-  applyAuthoritativeMarketDelta(systemPositionValueBeforeRefresh);
-  data.totalAsset = calcSummary().total;
-  if (typeof TOTAL_ASSET !== 'undefined') TOTAL_ASSET = data.totalAsset;
-  // 行情到齐后立即显示新价格和总资产；保存价格、记录净值等网络请求不再阻塞页面。
-  renderAll();
-  // 阶段二-5：行情价格用局部 PATCH 接口，不触发 saveData 全量保存
-  var requestedCodes = new Set(codes);
-  var pricesToSave = data.positions.filter(function(p) { return requestedCodes.has(p.code); })
-    .map(function(p) { return { code: p.code, price: p.price }; }).filter(function(p) { return p.code && p.price != null; });
-  var pricesSaved = false;
-  try {
-    var pr = await window.holdingsQuoteApi.savePrices(scope.account, dataVersion, pricesToSave);
+  // 统一估值合同（2026-11-15）：刷新期间保留上一批正式结果，
+  // 不用临时网络报价重算并替换总资产；报价已由服务端行情接口落共享缓存，
+  // 这里直接整批重读服务端统一估值，再记录当日净值并重绘。
+  let refreshed = false;
+  if (typeof loadData === 'function') {
+    await loadData(currentAccount);
     if (!current()) return { ok: false, stale: true };
-    var pj = pr.payload;
-    // 2026-08-04 阻断修复：必须检查保存状态，否则 400/500 时仍提示"刷新完成"，下次打开价格回退旧值
-    if (!pr.ok) {
-      console.warn('[refreshAllPrices] 价格保存失败', pr.status, pj.error || '');
-      var saveError = '行情已获取，但价格保存失败：' + (pj.error || ('HTTP ' + pr.status)) + '（请刷新后重试）';
-      showToast(saveError);
-      window._priceSaveError = saveError;
-    } else if (typeof pj.version === 'number') {
-      // 同步新版本号，避免紧接着的第二次操作误报"其他窗口已修改"（2026-08-04 第二轮修复）
-      dataVersion = pj.version;
-      pricesSaved = true;
-    } else {
-      pricesSaved = true;
-    }
-  } catch(e) {
-    if (!current()) return { ok: false, stale: true };
-    console.warn('[refreshAllPrices] 价格保存异常', e);
-      var saveError = '行情已获取，但价格保存失败（' + (e.message || e) + '）';
-      showToast(saveError);
-      window._priceSaveError = saveError;
+    refreshed = true;
   }
-  // 净值必须在新价格成功落库后记录，防止保存旧持仓价对应的新总资产。
-  if (pricesSaved) await recordNav();
+  if (refreshed && typeof recordNav === 'function') await recordNav();
   if (!current()) return { ok: false, stale: true };
-  // recordNav 会返回最新归因；重新绑定总资产浮框，使首次口径切换说明立即生效。
-  if (pricesSaved && typeof renderStats === 'function') renderStats();
+  if (refreshed && typeof renderAll === 'function') renderAll();
+  if (refreshed && typeof renderStats === 'function') renderStats();
   renderReturnsChart();
   // 指数对比线由 Worker 的 index_recent 任务增量入库，页面只读取账户数据快照。
   const failedCodes = codes.filter(c => fail > 0 && !validatedPriceQuotes.has(c) && !reusedCodes.has(c));
-  if (window._priceSaveError) {
-    showToast(window._priceSaveError);
-    window._priceSaveError = null;
-  } else if (failedCodes.length > 0 || reused > 0) {
+  if (failedCodes.length > 0 || reused > 0) {
     showToast('行情刷新: ' + ok + ' 只当日行情, ' + reused + ' 只旧价或日期未确认, ' + fail + ' 只未取得当日行情: ' +
       failedCodes.slice(0, 6).join(',') +
       (failedCodes.length > 6 ? '...' : ''));
   } else {
     showToast('行情刷新完成: ' + ok + ' 只已取得当日行情');
-  }
-  // 2026-11-15 统一估值合同：浏览器不再写收盘价（服务端收盘任务为唯一写入入口）。
-  // 刷新成功后整批重读服务端结果，页面只展示同一批 effectivePrice 的总资产与持仓价。
-  if (pricesSaved && typeof loadData === 'function') {
-    await loadData(currentAccount);
-    if (typeof renderAll === 'function') renderAll();
-    if (typeof renderStats === 'function') renderStats();
-    renderReturnsChart();
   }
 }
 

@@ -109,6 +109,46 @@ check('msUntil 落点固定为北京时间 h:m（不受主机时区影响）', (
   }
 });
 
+console.log('C. 收盘确认准入 —— 报价必须是当日且不早于收市时刻');
+const closedCN = { status: 'open', isAfterMarketClose: true, closeTime: '15:00' };
+const quoteAt = (date, time) => `${date}T${time}:00+08:00`;
+check('已收盘 + 收盘后报价 -> 已确认终盘', () => {
+  const q = mc.qualifyCloseQuote(closedCN, quoteAt('2026-09-24', '15:00'), '2026-09-24', '15:00');
+  assert.strictEqual(q.quality, 'confirmed');
+  assert.strictEqual(q.isFinal, true);
+  assert.strictEqual(q.reason, null);
+});
+check('已收盘但拿到当天上午报价 -> 只能候选，不得写成终盘', () => {
+  const q = mc.qualifyCloseQuote(closedCN, quoteAt('2026-09-24', '10:05'), '2026-09-24', '15:00');
+  assert.strictEqual(q.quality, 'candidate', '上午报价在收盘任务里仍可能被拿到，不能当终盘');
+  assert.strictEqual(q.isFinal, null);
+  assert.strictEqual(q.reason, 'quote_before_close');
+});
+check('缺少报价时刻 -> 不能确认为终盘', () => {
+  const q = mc.qualifyCloseQuote(closedCN, null, '2026-09-24', '15:00');
+  assert.strictEqual(q.quality, 'candidate');
+  assert.strictEqual(q.reason, 'quote_time_missing');
+});
+check('报价不属于目标交易日 -> 不能确认为终盘', () => {
+  const q = mc.qualifyCloseQuote(closedCN, quoteAt('2026-09-23', '15:00'), '2026-09-24', '15:00');
+  assert.strictEqual(q.quality, 'candidate');
+  assert.strictEqual(q.reason, 'quote_not_same_day');
+});
+check('市场未过收市时刻 -> 不能确认为终盘', () => {
+  const q = mc.qualifyCloseQuote({ status: 'open', isAfterMarketClose: false, closeTime: '15:00' },
+    quoteAt('2026-09-24', '15:00'), '2026-09-24', '15:00');
+  assert.strictEqual(q.quality, 'candidate');
+  assert.strictEqual(q.reason, 'market_not_closed');
+});
+check('已有候选价不阻止收盘升级：只有已确认记录才算已处理', () => {
+  const codes = mc.confirmedExistingCodes([
+    { code: '600000', quality: 'candidate', is_final: null },
+    { code: '600519', quality: 'legacy_unverified', is_final: null },
+    { code: '000001', quality: 'confirmed', is_final: true },
+  ]);
+  assert.deepStrictEqual([...codes], ['000001'], '候选与遗留价必须留在待升级集合里');
+});
+
 const failed = results.filter(r => r[0] === 'FAIL');
 console.log('\n========================================');
 console.log(`P0-3/P0-4 回归：共 ${results.length} 项，通过 ${results.length - failed.length}，失败 ${failed.length}`);

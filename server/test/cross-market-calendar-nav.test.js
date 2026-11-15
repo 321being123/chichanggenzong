@@ -205,8 +205,8 @@ async function main() {
       if (sql.includes('FROM daily_prices')) {
         const cutoff = String(params[3]).slice(0, 10);
         return { rows: cutoff < '2026-09-25'
-          ? [{ date: '2026-09-24', code: '600000', price: 10 }, { date: '2026-09-24', code: '00700', price: 20 }]
-          : [{ date: '2026-09-24', code: '600000', price: 10 }, { date: '2026-09-25', code: '00700', price: 22 }] };
+          ? [{ date: '2026-09-24', code: '600000', price: 10, quality: 'confirmed', is_final: true }, { date: '2026-09-24', code: '00700', price: 20, quality: 'confirmed', is_final: true }]
+          : [{ date: '2026-09-24', code: '600000', price: 10, quality: 'confirmed', is_final: true }, { date: '2026-09-25', code: '00700', price: 22, quality: 'confirmed', is_final: true }] };
       }
       if (sql.includes('FROM market.fx_rates')) return { rows: [] };
       throw new Error(`unexpected attribution query: ${sql}`);
@@ -271,8 +271,8 @@ async function main() {
         return { rows: dates.map(d => calendarRow(String(d).slice(0, 10))).filter(Boolean) };
       }
       if (sql.includes('FROM daily_prices')) return { rows: [
-        { code: '600000', date: '2026-09-25', price: 10 },
-        { code: '00700', date: '2026-09-25', price: 20 },
+        { code: '600000', date: '2026-09-25', price: 10, quality: 'confirmed', is_final: true },
+        { code: '00700', date: '2026-09-25', price: 20, quality: 'confirmed', is_final: true },
       ] };
       if (sql.includes('FROM market.fx_rates')) return { rows: [] };
       throw new Error(`unexpected closed-day query: ${sql}`);
@@ -326,8 +326,8 @@ async function main() {
     pool.query = async (sql, params = []) => {
       if (sql.includes('FROM market.trade_calendar')) return { rows: [calendarRow('2026-07-01')] };
       if (sql.includes('FROM daily_prices')) return { rows: [
-        { code: '600000', date: params[3] === '2026-07-01' ? '2026-07-01' : '2026-06-30', price: params[3] === '2026-07-01' ? 11 : 10 },
-        { code: '00700', date: '2026-06-30', price: 20 },
+        { code: '600000', date: params[3] === '2026-07-01' ? '2026-07-01' : '2026-06-30', price: params[3] === '2026-07-01' ? 11 : 10, quality: 'confirmed', is_final: true },
+        { code: '00700', date: '2026-06-30', price: 20, quality: 'confirmed', is_final: true },
       ] };
       if (sql.includes('FROM market.fx_rates')) return { rows: [] };
       throw new Error(`unexpected CN-only query: ${sql}`);

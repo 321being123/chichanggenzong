@@ -717,7 +717,7 @@
     },
     {
       "id": "HOLDINGS-REFRESH-003",
-      "title": "港股开市时刷新须即时更新持仓页与首页总资产",
+      "title": "港股开市时刷新后整批重读服务端估值，持仓页与首页总资产一致且不本地重算",
       "implementation": {
         "file": "public/shared/core-quote.js",
         "symbol": "refreshAllPrices"
@@ -725,7 +725,7 @@
       "tests": [
         {
           "file": "server/test/holdings-cross-market-refresh.test.js",
-          "pattern": "持仓页总资产应在 PATCH 完成前显示 4002 元"
+          "pattern": "重读后总资产显示服务端统一估值金额"
         }
       ],
       "owner": "持仓管理",

@@ -51,13 +51,15 @@ context.data = {
 };
 assert.strictEqual(context.calcSummary().total, 700, '普通账户总资产必须等于实时持仓市值加现金');
 
-const renderAt = quote.indexOf('renderAll();', quote.indexOf('async function refreshAllPrices'));
-const saveAt = quote.indexOf('window.holdingsQuoteApi.savePrices(', renderAt);
-const navAt = quote.indexOf('if (pricesSaved) await recordNav();', saveAt);
-const attributionRenderAt = quote.indexOf("if (pricesSaved && typeof renderStats === 'function') renderStats();", navAt);
-assert.ok(renderAt >= 0 && saveAt > renderAt, '行情到齐后应先刷新页面，再等待价格落库');
-assert.ok(navAt > saveAt, '净值必须在新价格落库后记录');
-assert.ok(attributionRenderAt > navAt, '净值归因返回后必须立即刷新总资产浮框');
+// 统一估值：刷新链路必须是「取行情 → 整批重读服务端 → 记录净值 → 重绘」，浏览器不再提交持仓价。
+const reloadAt = quote.indexOf('await loadData(currentAccount)', quote.indexOf('async function refreshAllPrices'));
+const navAt = quote.indexOf('await recordNav()', reloadAt);
+const renderAt = quote.indexOf('renderAll();', navAt);
+const attributionRenderAt = quote.indexOf('renderStats();', navAt);
+assert.ok(reloadAt >= 0, '刷新后必须整批重读服务端统一估值');
+assert.ok(!quote.includes('window.holdingsQuoteApi.savePrices('), '浏览器不得再提交持仓价格');
+assert.ok(navAt > reloadAt, '净值必须在服务端估值返回后记录');
+assert.ok(renderAt > navAt && attributionRenderAt > navAt, '净值归因返回后必须立即重绘总资产');
 assert.ok(quote.includes("Number(data.hkRate) > 0 ? Number(data.hkRate) : 0.868"), '汇率接口失败时必须保留账户上一份有效汇率');
 assert.ok(returns.includes('data.navAttribution = _j2.data.navAttribution'), '记录净值后未同步最新导入口径归因');
 assert.ok(tables.includes('导入口径切换差异') && tables.includes('importBasisAdjustment'), '涨跌浮框未展示首次口径切换差异');
@@ -75,7 +77,8 @@ assert.ok(!quote.includes('syncIndexPoints().catch(function(){});'), '持仓刷�
 assert.ok(!returns.includes('/api/kline') && !returns.includes('fetchIndexKline'), '收益图缺失指数快照时不得在页面侧回源外部行情');
 assert.ok(!quote.includes('saveDailyPricesToDB') && !quote.includes("holdingsQuoteApi.saveDailyPrices"), '浏览器不得再写收盘价：收盘事实只能由服务端收盘任务落库');
 assert.ok(quote.includes('await loadData(currentAccount)') && quote.includes('renderAll()'), '刷新成功后必须整批重读服务端统一估值结果，不再保留浏览器自算资产');
-assert.ok(quote.includes('matchingPositions.forEach(function(position)'), '同一证券存在多条持仓时必须统一更新为同一份最新行情');
+assert.ok(quote.includes('validatedPriceQuotes.set(c,'), '同一证券多条持仓只记录一份行情（按代码去重）');
+assert.ok(!quote.includes('position.price = price'), '浏览器不得再改写持仓价：同批价格由服务端统一返回');
 const incompleteTip = context.buildChangeTipHtml(100, 1, 0, 0, null, null, null, null, true);
 assert.ok(incompleteTip.includes('归因不完整，未进行明细加总'), '归因不完整时必须明确提示未进行明细加总');
 assert.ok(!incompleteTip.includes('合计 = 股价影响 + 汇率影响'), '归因不完整时不得伪装成明细已闭合');

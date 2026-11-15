@@ -173,13 +173,17 @@ async function upsertImportedNav(params, client = pool) {
   );
 }
 
-// 前一完整收盘日的价格固化到导入日（可被之后真实收盘价覆盖）
+// 前一完整收盘日的价格固化到导入日（可被之后真实收盘价覆盖）。
+// 固化价是派生值，不是该日的收盘事实：必须自带独立质量标记，且不得覆盖已确认收盘价，
+// 否则归因会把“导入日锚点价”当成真实收盘证据。
 async function upsertAnchorDailyPrice(params, client = pool) {
   return client.query(
-    `INSERT INTO daily_prices (username, account_name, account_id, date, code, name, price)
-               VALUES ($1,$2,$3,$4,$5,$6,$7)
-               ON CONFLICT (username, account_name, date, code) DO UPDATE SET
-                 name=EXCLUDED.name, price=EXCLUDED.price`, params,
+    `INSERT INTO daily_prices (username, account_name, account_id, date, code, name, price, source, is_final, quality)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,'nav_import_anchor',NULL,'anchor_carry_forward')
+       ON CONFLICT (username, account_name, date, code) DO UPDATE SET
+         name=EXCLUDED.name, price=EXCLUDED.price,
+         source=EXCLUDED.source, is_final=EXCLUDED.is_final, quality=EXCLUDED.quality
+       WHERE daily_prices.quality <> 'confirmed'`, params,
   );
 }
 

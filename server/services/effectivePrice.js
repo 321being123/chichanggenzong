@@ -118,8 +118,11 @@ async function resolveEffectivePrices(options = {}) {
   const nowAt = options.at ? new Date(options.at) : new Date();
 
   const empty = { asOf, mode, revision: null, prices: new Map(), missing: [], conflicts: [],
-    status: { complete: false, partial: true, confirmed: 0, candidate: 0, unverified: 0,
-      missingCount: 0, expectedCloseDates: {}, reasonCodes: [] } };
+    status: { complete: true, partial: false, confirmed: 0, candidate: 0, unverified: 0,
+      stale: 0, legacy: 0, untrusted: 0, conflictCount: 0, missingCount: 0,
+      expectedCloseDates: {}, reasonCodes: [] } };
+  // 纯现金账户（没有任何需要报价的正数量证券）并不缺价，不能因此判成估值不完整。
+  // 空集合的完整性由“没有需要定价的持仓”本身证明，而不是靠有没有价格记录。
   if (!subjects.length) return empty;
 
   const stateCache = new Map();
@@ -187,10 +190,20 @@ async function resolveEffectivePrices(options = {}) {
     }
   }
 
+  // 完整性按“价格资格”判定，而不是按“有没有拿到一个数字”判定：
+  // 只有已确认收盘价，或当日正在交易时段的实时候选，才算可信；
+  // 遗留未核验价、收盘后仍未确认终盘的候选、过期价、兼容持仓价都不构成完整估值。
   const counts = countQuality(prices);
+  const untrusted = [];
+  for (const [code, row] of prices.entries()) {
+    if (!isTrustworthyPrice(row, stateCache, mode, isToday, asOf)) untrusted.push(code);
+  }
   const missingCount = missing.length;
-  const complete = missingCount === 0 && counts.unverified === 0 && counts.stale === 0;
+  const conflictCount = conflicts.length;
+  const complete = missingCount === 0 && untrusted.length === 0 && conflictCount === 0;
   const partial = !complete;
+  if (untrusted.length) reasonCodes.add('price_not_confirmed');
+  if (conflictCount) reasonCodes.add('cross_account_price_conflict');
   const revision = buildRevision({ username, accountName, mode, asOf, prices, policy: POLICY_VERSION });
 
   return {
@@ -208,11 +221,25 @@ async function resolveEffectivePrices(options = {}) {
       candidate: counts.candidate,
       unverified: counts.unverified,
       stale: counts.stale,
+      legacy: counts.legacy,
+      untrusted: untrusted.length,
+      untrustedCodes: untrusted,
+      conflictCount,
       missingCount,
       expectedCloseDates: Object.fromEntries([...expectedByMarket.entries()].map(([market, date]) => [market, date])),
       reasonCodes: [...reasonCodes],
     },
   };
+}
+
+// 价格资格：已确认收盘一律可信；当日交易时段内的实时候选属于“当前价”，可参与当前估值；
+// 其余（收盘后仍未确认终盘的候选、遗留未核验、过期、兼容持仓价）都不可信。
+function isTrustworthyPrice(row, stateCache, mode, isToday, asOf) {
+  if (row.quality === 'confirmed') return true;
+  if (row.quality !== 'candidate') return false;
+  if (mode !== 'current' || !isToday) return false;
+  const live = stateCache.get(`${row.market}|${asOf}|live`);
+  return Boolean(live && live.status === 'open' && live.isTradingNow === true);
 }
 
 function dedupeSubjects(subjects) {
@@ -226,9 +253,10 @@ function dedupeSubjects(subjects) {
 }
 
 function countQuality(prices) {
-  const counts = { confirmed: 0, candidate: 0, unverified: 0, stale: 0 };
+  const counts = { confirmed: 0, candidate: 0, unverified: 0, stale: 0, legacy: 0 };
   for (const row of prices.values()) {
     if (row.quality === 'confirmed') counts.confirmed += 1;
+    else if (row.quality === 'legacy_unverified') counts.legacy += 1;
     else if (row.quality === 'stale_reference' || row.priceKind === 'stale_close') counts.stale += 1;
     else if (row.quality === 'unverified_reference') counts.unverified += 1;
     else counts.candidate += 1;

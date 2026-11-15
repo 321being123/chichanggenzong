@@ -62,15 +62,24 @@ function renderStats() {
   
   // 更新数值
   var el = function(id) { return document.getElementById(id); };
+  // 总资产对外只显示服务端同一批估值的金额；估值不完整时在金额正下方直接标注，
+  // 不依赖“今日涨跌”浮框（归因不完整时那个浮框根本不会绑定）。
+  var serverTotal = (data && typeof data.totalAsset === 'number' && Number.isFinite(data.totalAsset)) ? Number(data.totalAsset) : null;
+  var displayTotal = serverTotal != null ? serverTotal : s.total;
+  var valuationIncomplete = Boolean(data && data.valuation && data.valuation.complete === false);
+  var valuationMissing = data && data.valuation && Number(data.valuation.missingCount) > 0 ? Number(data.valuation.missingCount) : 0;
   if (el('stat-total')) {
-    el('stat-total').textContent = fmt(s.total);
+    el('stat-total').textContent = fmt(displayTotal);
     // 涨跌颜色
     if (hasChange) {
       var isUp = changeAmt >= 0;
       el('stat-total').style.color = isUp ? '#d93025' : '#137333';
     }
   }
-  if (el('stat-total-sub')) el('stat-total-sub').textContent = '持仓市值 ' + fmt(s.total - s.cash) + ' + 现金 ' + fmt(s.cash);
+  if (el('stat-total-sub')) {
+    el('stat-total-sub').textContent = '持仓市值 ' + fmt(displayTotal - s.cash) + ' + 现金 ' + fmt(s.cash) +
+      (valuationIncomplete ? ' · ⚠ 估值不完整' + (valuationMissing > 0 ? '（' + valuationMissing + ' 只缺价或未确认）' : '') : '');
+  }
   if (el('stat-change')) {
     var scEl = el('stat-change');
     if (hasChange) {

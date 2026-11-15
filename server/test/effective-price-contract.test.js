@@ -193,6 +193,52 @@ async function run() {
     assert.strictEqual(closeDate, CLOSE_DATE);
   }
 
+  // 11. 遗留未核验日价（存量老数据）不得被当成完整估值。
+  {
+    const resolved = await resolveEffectivePrices({
+      username: 'fixture-user', accountName: '账户甲', asOf: WEEKEND, mode: 'current',
+      subjects: subjects(['600000']),
+      query: fakeQuery({
+        daily: [{ code: '600000', date: CLOSE_DATE, price: 10, quality: 'legacy_unverified' }],
+      }),
+    });
+    assert.strictEqual(resolved.prices.get('600000').quality, 'legacy_unverified');
+    assert.strictEqual(resolved.status.complete, false, '未核验的遗留日价不能构成完整估值');
+    assert.strictEqual(resolved.status.legacy, 1);
+    assert.ok(resolved.status.reasonCodes.includes('price_not_confirmed'));
+    assert.ok(resolved.status.untrustedCodes.includes('600000'));
+  }
+
+  // 12. 未解决的跨账户同日价冲突必须阻断完整性（不能两边各自“完整”）。
+  {
+    const resolved = await resolveEffectivePrices({
+      username: 'fixture-user', accountName: '账户甲', asOf: WEEKEND, mode: 'current',
+      subjects: subjects(['600000']),
+      query: fakeQuery({
+        daily: [
+          { code: '600000', date: CLOSE_DATE, price: 10, quality: 'confirmed', isFinal: true, accountName: '账户甲' },
+          { code: '600000', date: CLOSE_DATE, price: 11, quality: 'confirmed', isFinal: true, accountName: '账户乙' },
+        ],
+      }),
+    });
+    assert.strictEqual(resolved.conflicts.length, 1);
+    assert.strictEqual(resolved.status.complete, false, '同日价冲突未解决时不得判为完整');
+    assert.strictEqual(resolved.status.conflictCount, 1);
+    assert.ok(resolved.status.reasonCodes.includes('cross_account_price_conflict'));
+  }
+
+  // 13. 纯现金账户（没有任何需要定价的持仓）不因“没有价格”被判估值不完整。
+  {
+    const resolved = await resolveEffectivePrices({
+      username: 'fixture-user', accountName: '现金账户', asOf: WEEKEND, mode: 'current',
+      subjects: [], query: fakeQuery({}),
+    });
+    assert.strictEqual(resolved.prices.size, 0);
+    assert.strictEqual(resolved.missing.length, 0);
+    assert.strictEqual(resolved.status.complete, true, '纯现金账户没有缺价，不能判成估值不完整');
+    assert.strictEqual(resolved.status.partial, false);
+  }
+
   // 10. 旧机制收口：浏览器不再写收盘价、页面不再有休市校准、归因不再产出校准项。
   {
     const quote = read('public/shared/core-quote.js');

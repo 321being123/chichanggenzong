@@ -277,6 +277,17 @@ function ksPendingRecord(articleId, parentId) {
   return record;
 }
 
+// 未确认记录按账号分开计数：别的账号留下的记录既不该挡住这个人发评论，
+// 这个人也没有入口去处理别人的记录（原样重试/放弃都只作用于自己的键）。
+function ksPendingCountForOwner(ownerKey) {
+  if (!ownerKey) return 0;
+  const map = ksPendingStore();
+  return Object.keys(map).filter(function (k) {
+    const record = map[k];
+    return record && record.id && record.owner === ownerKey;
+  }).length;
+}
+
 function ksSavePendingRecord(articleId, parentId, record) {
   const owner = ksPendingOwner();
   const key = ksPendingKey(articleId, parentId);
@@ -284,8 +295,8 @@ function ksSavePendingRecord(articleId, parentId, record) {
   const map = ksPendingStore();
   // 新增一条会超过上限时直接拒绝，而不是悄悄删掉最早那条：
   // 被删的记录若其实已经提交，用户之后重试就会拿新编号再发一条。
-  if (!map[key] && Object.keys(map).length >= KS_PENDING_MAX) {
-    return { ok: false, reason: 'limit' };
+  if (!map[key] && ksPendingCountForOwner(owner.key) >= KS_PENDING_MAX) {
+    return { ok: false, reason: 'limit', pendingCount: ksPendingCountForOwner(owner.key) };
   }
   map[key] = Object.assign({}, record, {
     owner: owner.key, persistable: owner.persistable,
@@ -297,13 +308,20 @@ function ksSavePendingRecord(articleId, parentId, record) {
   return { ok: true, persisted: map[key].persisted };
 }
 
-function ksClearPendingRecord(articleId, parentId) {
-  const key = ksPendingKey(articleId, parentId);
-  if (!key) return;
+// 按「发起请求那一刻的账号」清除记录，而不是按「响应回来时的当前账号」：
+// 用户可能在请求飞行中切换了账号，用当前账号算键就会清掉新账号在同一位置的待确认记录。
+// 若那条记录其实已经提交、记录却被清掉，用户之后重试就会用新编号再发一条。
+function ksClearPendingRecordByOwner(ownerKey, articleId, parentId) {
+  if (!ownerKey) return;
+  const key = ownerKey + '|' + String(articleId) + '|' + (parentId || '');
   const map = ksPendingStore();
   if (!map[key]) return;
   delete map[key];
   ksPersistPendingStore();
+}
+
+function ksClearPendingRecord(articleId, parentId) {
+  ksClearPendingRecordByOwner(ksPendingOwner().key, articleId, parentId);
 }
 
 // 当前账号在这篇文章下所有未确认的提交（一级 + 各条回复），用于打开文章时统一恢复
@@ -436,10 +454,13 @@ async function ksSubmitComment(parentId, textInput, boxKey) {
   } else {
     requestId = ksNewRequestId();
   }
+  // 请求发出前把归属固定下来：await 期间用户可能切换账号
+  const ownerAtSend = ksPendingOwner();
   const saved = ksSavePendingRecord(a.id, parentId, { id: requestId, content: text, mentions: mentions });
   if (!saved || saved.ok !== true) {
     if (saved && saved.reason === 'limit') {
-      showToast('还有 ' + KS_PENDING_MAX + ' 条评论结果没确认，请先处理（原样重试或放弃）后再发新的（不会重复发布）');
+      const cap = saved.pendingCount || KS_PENDING_MAX;
+      showToast('当前账号还有 ' + cap + ' 条评论结果没确认，请先处理（原样重试或放弃）后再发新的（不会重复发布）');
       return;
     }
     showToast('请先登录后再评论');
@@ -450,21 +471,26 @@ async function ksSubmitComment(parentId, textInput, boxKey) {
   if (parentId) body.parent_id = parentId;
   if (mentions.length) body.mentions = mentions;
   const r = await window.siteApi.post('/api/knowledge/articles/' + a.id + '/comments', body);
+  // 响应回来时账号可能已经换人：记录一律按发起时的账号处理，界面（提示、草稿、列表）只在同一账号下更新，
+  // 否则旧账号的成功/失败会作用到新账号的页面与记录上。
+  const sameOwner = !!ownerAtSend.key && ksPendingOwner().key === ownerAtSend.key;
   if (!r.ok) {
     if (ksMayHaveCommitted(r.status)) {
       // 保留整份待确认记录：服务端可能已提交，重试会拿回原评论而不是再发一条
-      showToast(ksUnknownOutcomeTip(r.status, saved));
+      if (sameOwner) showToast(ksUnknownOutcomeTip(r.status, saved));
       return;
     }
-    // 服务端明确拒绝：丢弃记录，避免下次重放命中这条失败请求
-    ksClearPendingRecord(a.id, parentId);
+    // 服务端明确拒绝：丢弃这条失败请求的记录（只清发起时的账号，不碰当前账号）
+    ksClearPendingRecordByOwner(ownerAtSend.key, a.id, parentId);
+    if (!sameOwner) return;
     if (typeof window.ksHideCommentNotice === 'function') window.ksHideCommentNotice(boxKey || 'main');
     const d = r.payload || {};
     if (r.status === 400 || r.status === 409 || r.status === 429) showToast(d.error || ksWriteErrMsg(r.status));
     else showToast(ksWriteErrMsg(r.status));
     return;
   }
-  ksClearPendingRecord(a.id, parentId);
+  ksClearPendingRecordByOwner(ownerAtSend.key, a.id, parentId);
+  if (!sameOwner) return;
   // 清掉该输入框的草稿与提示（一级清主框，回复清对应楼层）
   if (typeof window.ksClearCommentDraft === 'function') window.ksClearCommentDraft(parentId || null);
   ksLoadComments(a.id);

@@ -1008,6 +1008,137 @@ async function pendingLimitKeepsOldRecords() {
   } finally { await tick(); dom.window.close(); }
 }
 
+// ---------- 17. 请求飞行中切换账号：旧响应不得动新账号的记录 ----------
+async function ownerSwitchDuringRequest() {
+  const dom = new JSDOM(
+    '<textarea id="ks-comment"></textarea><div id="panel" role="listbox" hidden></div><div id="chips" hidden></div>'
+    + '<div id="ks-comment-notice" hidden></div><div id="ks-comment-list"></div>',
+    { url: 'https://example.test/?main=knowledge', runScripts: 'outside-only' }
+  );
+  const w = dom.window;
+  try {
+    const toasts = [];
+    const posts = [];
+    let releaseFirst = null;
+    w.username = 'alice';
+    w.accountIdentity = '100';
+    w.escapeHtml = escaper();
+    w.showToast = function (m) { toasts.push(String(m)); };
+    w.siteApi = {
+      get: async function () { return { ok: true, status: 200, payload: { id: 7, title: '文章', status: 'published' } }; },
+      post: function (url, body) {
+        if (url.indexOf('/view') >= 0) return Promise.resolve({ ok: true, status: 200, payload: {} });
+        posts.push(body);
+        // 第一个请求挂起，模拟「A 的响应在切号之后才回来」
+        if (posts.length === 1) {
+          return new Promise(function (resolve) { releaseFirst = resolve; });
+        }
+        return Promise.resolve({ ok: false, status: 502, payload: null });
+      },
+    };
+    w.eval(read('public/js/knowledge.js'));
+    w.ksPaintArticle = function () {};
+    w.ksShowView = function () {};
+    w.ksPaintCommentsPrepare = function () { return false; };
+    w.ksPaintComments = function () {};
+    w.eval(read('public/js/presenters/knowledge-presenter.js'));
+    await w.ksOpenArticle(7);
+
+    // A 提交（请求挂起，没有返回）
+    const pendingA = w.ksSubmitComment(null, '甲账号的评论', null);
+    assert.strictEqual(posts.length, 1, 'A 的请求应已发出');
+    const idA = posts[0].client_request_id;
+
+    // 切到 B，并在同一位置发一条：结果不明，必须保留 B 的待确认记录
+    w.username = 'bob';
+    w.accountIdentity = '200';
+    await w.ksSubmitComment(null, '乙账号的评论', null);
+    assert.strictEqual(posts.length, 2);
+    const idB = posts[1].client_request_id;
+    assert.notStrictEqual(idB, idA, '不同账号不能用同一个请求编号');
+
+    // A 的成功响应此刻才回来：只能清 A 自己那条记录，不能清 B 的
+    releaseFirst({ ok: true, status: 200, payload: { id: 99 } });
+    await pendingA;
+
+    const stored = JSON.parse(w.sessionStorage.getItem('ks-pending-comments') || '{}');
+    const rows = Object.keys(stored).map(function (k) { return stored[k]; });
+    assert.ok(rows.some(function (r) { return r.owner === 'u:bob|id:200' && r.id === idB; }),
+      'B 的待确认记录必须还在，不能被 A 的响应清掉');
+    assert.ok(!rows.some(function (r) { return r.owner === 'u:alice|id:100'; }),
+      'A 已成功的记录应被清掉（它按发起时的账号清）');
+    assert.ok(!toasts.some(function (m) { return m.indexOf('评论已发表') >= 0; }),
+      'A 的成功结果不能提示到 B 的页面上');
+
+    // B 原样重试：必须复用自己原来的编号（否则第一次若已落库就会多一条）
+    await w.ksSubmitComment(null, '乙账号的评论', null);
+    assert.strictEqual(posts.length, 3);
+    assert.strictEqual(posts[2].client_request_id, idB, 'B 重试必须沿用自己原来的请求编号');
+    pass++;
+  } finally { await tick(); dom.window.close(); }
+}
+
+// ---------- 18. 待确认上限按账号分别计算 ----------
+async function pendingLimitPerAccount() {
+  const dom = new JSDOM(
+    '<textarea id="ks-comment"></textarea><div id="panel" role="listbox" hidden></div><div id="chips" hidden></div>'
+    + '<div id="ks-comment-notice" hidden></div><div id="ks-comment-list"></div>',
+    { url: 'https://example.test/?main=knowledge', runScripts: 'outside-only' }
+  );
+  const w = dom.window;
+  try {
+    const toasts = [];
+    const posts = [];
+    w.username = 'alice';
+    w.accountIdentity = '100';
+    w.escapeHtml = escaper();
+    w.showToast = function (m) { toasts.push(String(m)); };
+    w.siteApi = {
+      get: async function () { return { ok: true, status: 200, payload: { id: 7, title: '文章', status: 'published' } }; },
+      post: async function (url, body) {
+        if (url.indexOf('/view') >= 0) return { ok: true, status: 200, payload: {} };
+        posts.push(body);
+        return { ok: false, status: 502, payload: null };
+      },
+    };
+    w.eval(read('public/js/knowledge.js'));
+    w.ksPaintArticle = function () {};
+    w.ksShowView = function () {};
+    w.ksPaintCommentsPrepare = function () { return false; };
+    w.ksPaintComments = function () {};
+    w.eval(read('public/js/presenters/knowledge-presenter.js'));
+    await w.ksOpenArticle(7);
+
+    // A 用自己的 10 条占满上限
+    for (let i = 1; i <= 10; i++) {
+      await w.ksSubmitComment(1000 + i, '甲的未确认回复 ' + i, null);
+    }
+    assert.strictEqual(posts.length, 10);
+    await w.ksSubmitComment(2000, '甲的第 11 条', null);
+    assert.strictEqual(posts.length, 10, 'A 自己超过上限仍应被拒绝');
+    assert.ok(toasts.some(function (m) { return m.indexOf('当前账号还有 10 条') >= 0; }),
+      '拒绝提示应说明是「当前账号」的未确认记录');
+
+    // 切到 B：他自己的待确认是 0，不能被 A 的记录挡住
+    w.username = 'bob';
+    w.accountIdentity = '200';
+    toasts.length = 0;
+    await w.ksSubmitComment(null, '乙账号的第一条评论', null);
+    assert.strictEqual(posts.length, 11, 'B 的未确认数为 0，必须允许发表');
+    assert.ok(!toasts.some(function (m) { return m.indexOf('当前账号还有') >= 0; }),
+      'B 不应收到「已达上限」的提示');
+
+    // 两个账号的记录各自保留，互不影响
+    const stored = JSON.parse(w.sessionStorage.getItem('ks-pending-comments') || '{}');
+    const rows = Object.keys(stored).map(function (k) { return stored[k]; });
+    assert.strictEqual(rows.filter(function (r) { return r.owner === 'u:alice|id:100'; }).length, 10,
+      'A 的 10 条记录必须都还在');
+    assert.strictEqual(rows.filter(function (r) { return r.owner === 'u:bob|id:200'; }).length, 1,
+      'B 自己只有 1 条');
+    pass++;
+  } finally { await tick(); dom.window.close(); }
+}
+
 (async () => {
   const suites = [
     ['@ 区间随编辑平移与失效（同昵称可区分）', mentionRanges],
@@ -1026,6 +1157,8 @@ async function pendingLimitKeepsOldRecords() {
     ['回复框收起与列表刷新后待确认内容仍可见', pendingReplySurvivesPaint],
     ['存储写不进去时提示刷新风险', storageWriteFailureTip],
     ['超过待确认上限不静默丢弃最早记录', pendingLimitKeepsOldRecords],
+    ['请求飞行中切换账号，旧响应不得清除新账号的记录', ownerSwitchDuringRequest],
+    ['待确认上限按账号分别计算', pendingLimitPerAccount],
   ];
   let failed = 0;
   for (const [name, fn] of suites) {

@@ -677,6 +677,18 @@ async function insertCommentRequest(db, row) {
   return rows[0] || null;
 }
 
+// 清掉已无回放价值的请求记录（评论被删除后 comment_id 会置空）：
+// 留着它会让同编号既不能回放、又撞唯一键，重试永远卡住。
+async function deleteCommentRequest(db, subjectId, clientRequestId) {
+  if (!subjectId || !clientRequestId) return 0;
+  const { rowCount } = await db.query(
+    `DELETE FROM public.article_comment_requests
+      WHERE subject_id = $1 AND client_request_id = $2`,
+    [subjectId, clientRequestId]
+  );
+  return rowCount;
+}
+
 // ---------- 账号主体（评论通知的候选收件人） ----------
 const ACCOUNT_SUBJECT_SQL = `
   u.subject_id::text AS "subjectId",
@@ -741,6 +753,6 @@ module.exports = {
   searchUsers, listAudience, insertRecipientsBulk, listActiveAccounts,
   invalidateCommentNotificationsByComments, invalidateCommentNotificationsByArticle,
   readPreferences, lockPreferences, updatePreferences, insertPreferences,
-  findCommentRequest, insertCommentRequest,
+  findCommentRequest, insertCommentRequest, deleteCommentRequest,
   listAccountsByUsernames, listAccountsBySubjects, readAccountByUsername, listMentionCandidates,
 };

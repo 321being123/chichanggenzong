@@ -377,6 +377,9 @@ function ksMayHaveCommitted(status) {
 // 若它其实是「上次结果不明」的重试，丢掉原编号后第三次提交就会再发一条。
 // 409 还要看服务端给的 code：「该请求已处理」（并发下另一事务先写入）说明评论已经存在，
 // 属于「已提交」而不是「明确没提交」，同样必须保留编号。
+// 404 之所以能当「明确没提交」，前提是服务端 `createComment` 先按请求编号回放、再判文章状态：
+// 文章在结果不明期间被撤回/删除时，原请求仍会被认出来（或确认已无评论可回放），不会误报 404。
+// 若把服务端这两步的顺序调换，这里就必须改成「重试遇 404 保留编号」。
 function ksServerSaysProcessed(payload) {
   return !!payload && payload.code === 'request_already_processed';
 }

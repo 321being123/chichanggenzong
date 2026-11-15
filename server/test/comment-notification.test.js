@@ -567,6 +567,54 @@ function baseConfig() {
       assert.strictEqual(count.rows[0].c, 1, '并发同标识只能落一条评论');
     });
 
+    // 结果不明后文章被撤回：重试必须先按编号认出「上次已提交」，不能因为文章不是 published 就 404。
+    // 否则前端会把 404 当成没提交、丢掉编号，文章重新发布后再提交就多发一条。
+    await test('文章撤回后同编号重放仍返回原评论，不受文章状态拦截', async function () {
+      const article4 = await seedArticle(uAuthor);
+      const requestId = 'req-draft-' + suffix;
+      const first = await comment(article4, uReader, '撤回前的评论', { clientRequestId: requestId });
+      assert.strictEqual(first.reused, false);
+
+      await comments.unpublishArticle(article4);
+      const stillDraft = await pool.query('SELECT status FROM public.articles WHERE id=$1', [article4]);
+      assert.strictEqual(stillDraft.rows[0].status, 'draft', '前置条件：文章已撤回为草稿');
+
+      const replay = await comment(article4, uReader, '撤回前的评论', { clientRequestId: requestId });
+      assert.strictEqual(replay.reused, true, '同编号必须回放原评论，而不是报文章未发布');
+      assert.strictEqual(replay.comment.id, first.comment.id);
+      const count = await pool.query(
+        'SELECT count(*)::int AS c FROM public.article_comments WHERE content=$1', ['撤回前的评论']
+      );
+      assert.strictEqual(count.rows[0].c, 1, '重放不能产生第二条评论');
+
+      // 撤回后换新编号提交仍然被文章状态拦住（回放只认原编号，不放开新评论）
+      await assert.rejects(
+        comment(article4, uReader, '撤回后的新评论', { clientRequestId: 'req-new-' + suffix }),
+        function (e) { return e.status === 404; }
+      );
+    });
+
+    // 评论被删（含文章删除级联）后同编号不再卡死：清掉陈旧请求记录，按正常流程新建
+    await test('评论被删除后同编号重放不再卡冲突，按新评论创建', async function () {
+      const article5 = await seedArticle(uAuthor);
+      const requestId = 'req-stale-' + suffix;
+      const first = await comment(article5, uReader, '会被删除的评论', { clientRequestId: requestId });
+      await comments.deleteComment(first.comment.id);
+      const gone = await pool.query(
+        'SELECT comment_id FROM public.article_comment_requests WHERE client_request_id=$1', [requestId]
+      );
+      assert.strictEqual(gone.rows.length, 1, '前置条件：请求记录还在');
+      assert.strictEqual(gone.rows[0].comment_id, null, '前置条件：评论号已置空');
+
+      const again = await comment(article5, uReader, '会被删除的评论', { clientRequestId: requestId });
+      assert.strictEqual(again.reused, false, '原评论已不存在，应按新评论创建而不是回放空结果');
+      assert.ok(again.comment && again.comment.id, '必须返回真实评论，不能是空对象');
+      const count = await pool.query(
+        'SELECT count(*)::int AS c FROM public.article_comments WHERE content=$1', ['会被删除的评论']
+      );
+      assert.strictEqual(count.rows[0].c, 1);
+    });
+
     // ===== 失效与可见性 =====
     await test('删除评论后其通知失效，且不再计入未读', async function () {
       const created = await comment(articleId, uReader, '待删除的评论');

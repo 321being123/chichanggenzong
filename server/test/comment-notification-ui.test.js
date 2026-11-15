@@ -1456,6 +1456,58 @@ async function reopenSameArticleIsNewPage() {
   } finally { await tick(); dom.window.close(); }
 }
 
+// ---------- 24. 结果不明后文章被撤回：重试仍用原编号，服务端回放后清记录 ----------
+async function retractedArticleReplay() {
+  const dom = new JSDOM(
+    '<textarea id="ks-comment"></textarea><div id="panel" role="listbox" hidden></div><div id="chips" hidden></div>'
+    + '<div id="ks-comment-notice" hidden></div><div id="ks-comment-list"></div>',
+    { url: 'https://example.test/?main=knowledge', runScripts: 'outside-only' }
+  );
+  const w = dom.window;
+  try {
+    const toasts = [];
+    const posts = [];
+    const replies = [
+      { ok: false, status: 502, payload: null },
+      // 服务端先按请求编号认出「上次已提交」并回放原评论（文章此时已是草稿）
+      { ok: true, status: 200, payload: { id: 1, reused: true } },
+    ];
+    w.username = 'alice';
+    w.accountIdentity = '100';
+    w.escapeHtml = escaper();
+    w.showToast = function (m) { toasts.push(String(m)); };
+    w.siteApi = {
+      get: async function () { return { ok: true, status: 200, payload: { id: 7, title: '文章', status: 'published' } }; },
+      post: async function (url, body) {
+        if (url.indexOf('/view') >= 0) return { ok: true, status: 200, payload: {} };
+        posts.push(body);
+        return replies[posts.length - 1] || { ok: false, status: 500, payload: null };
+      },
+    };
+    w.eval(read('public/js/knowledge.js'));
+    w.ksPaintArticle = function () {};
+    w.ksShowView = function () {};
+    w.ksPaintCommentsPrepare = function () { return false; };
+    w.ksPaintComments = function () {};
+    w.eval(read('public/js/presenters/knowledge-presenter.js'));
+    await w.ksOpenArticle(7);
+
+    await w.ksSubmitComment(null, '文章撤回前发的评论', null);
+    const id1 = posts[0].client_request_id;
+    let stored = JSON.parse(w.sessionStorage.getItem('ks-pending-comments') || '{}');
+    assert.strictEqual(Object.keys(stored).length, 1, '结果不明时记录必须保留');
+
+    // 文章被撤回又发布后重试：编号不变，服务端回放原评论 → 成功
+    await w.ksSubmitComment(null, '文章撤回前发的评论', null);
+    assert.strictEqual(posts.length, 2);
+    assert.strictEqual(posts[1].client_request_id, id1, '重试不能换新编号（换了就可能发第二条）');
+    stored = JSON.parse(w.sessionStorage.getItem('ks-pending-comments') || '{}');
+    assert.strictEqual(Object.keys(stored).length, 0, '回放成功后才清记录');
+    assert.ok(toasts.some(function (m) { return m.indexOf('评论已发表') >= 0; }), '回放成功按已发表处理');
+    pass++;
+  } finally { await tick(); dom.window.close(); }
+}
+
 (async () => {
   const suites = [
     ['@ 区间随编辑平移与失效（同昵称可区分）', mentionRanges],
@@ -1481,6 +1533,7 @@ async function reopenSameArticleIsNewPage() {
     ['切换文章后旧文章的评论列表不得画到当前页面', staleCommentsNotPainted],
     ['同编号并发提交的「已处理」409 保留原请求编号', processedConflictKeepsRequestId],
     ['离开后重新打开同一篇文章算新页面，旧响应不得改动', reopenSameArticleIsNewPage],
+    ['结果不明后文章被撤回，重试仍用原编号并由服务端回放', retractedArticleReplay],
   ];
   let failed = 0;
   for (const [name, fn] of suites) {

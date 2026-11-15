@@ -106,6 +106,29 @@ async function createComment(params) {
     if (!author || author.status !== 'active') throw createError(401, '登录状态已失效');
     if (p.authorSubjectId && author.subjectId !== p.authorSubjectId) throw createError(401, '登录状态已失效');
 
+    // 请求编号查重必须在文章状态检查之前：重试时文章可能已被撤回成草稿或被删，
+    // 若先判文章状态就会返回 404，而 404 无法区分「上次根本没提交」与「上次已提交、之后文章被撤回」，
+    // 前端会据此丢掉请求编号，文章重新发布后再提交就换了新编号，同一条评论被发两次。
+    // 这里先按编号取上次结果：找到且评论仍在就直接回放，不看文章当前状态。
+    if (clientRequestId) {
+      const existing = await store.findCommentRequest(client, author.subjectId, clientRequestId);
+      if (existing) {
+        if (existing.requestHash !== requestHash) {
+          throw createError(409, '同一请求标识不能提交不同内容', 'request_conflict');
+        }
+        const replay = existing.commentId
+          ? await knowledgeRepository.readCommentBrief({ id: existing.commentId }, client)
+          : null;
+        if (replay) {
+          await txControl.commit(client);
+          return { comment: replay, reused: true, notified: 0 };
+        }
+        // 评论已被删除（含文章删除的级联）：这条记录既不能回放、复用同编号还会撞唯一键，
+        // 清掉后按正常流程走，避免重试永远卡在冲突上。
+        await store.deleteCommentRequest(client, author.subjectId, clientRequestId);
+      }
+    }
+
     // 文章共享锁：阻止并发撤回/删除在本次提交前把文章改走
     const article = await knowledgeRepository.lockArticleForComment({ id: articleId }, client);
     if (!article || article.status !== 'published') throw createError(404, '文章不存在或未发布');
@@ -119,18 +142,6 @@ async function createComment(params) {
         throw createError(409, '回复的评论已删除或不属于该文章，请刷新后重试');
       }
       rootId = parent.root_id || parent.id;
-    }
-
-    if (clientRequestId) {
-      const existing = await store.findCommentRequest(client, author.subjectId, clientRequestId);
-      if (existing) {
-        if (existing.requestHash !== requestHash) {
-          throw createError(409, '同一请求标识不能提交不同内容', 'request_conflict');
-        }
-        const replay = await knowledgeRepository.readCommentBrief({ id: existing.commentId }, client);
-        await txControl.commit(client);
-        return { comment: replay, reused: true, notified: 0 };
-      }
     }
 
     const mentionAccounts = await resolveMentionAccounts(client, mentions, author.subjectId);

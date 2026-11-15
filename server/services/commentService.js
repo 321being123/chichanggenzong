@@ -123,9 +123,10 @@ async function createComment(params) {
           await txControl.commit(client);
           return { comment: replay, reused: true, notified: 0 };
         }
-        // 评论已被删除（含文章删除的级联）：这条记录既不能回放、复用同编号还会撞唯一键，
-        // 清掉后按正常流程走，避免重试永远卡在冲突上。
-        await store.deleteCommentRequest(client, author.subjectId, clientRequestId);
+        // 原请求确实处理过，但评论随后被删除（作者/管理员删除，或文章删除的级联）：
+        // 这是「已处理 + 已删除」的终态，不能借同编号再发一条——那等于把用户删掉的评论和通知又造回来。
+        // 请求记录保留作墓碑（comment_id 被置空），重试一律返回同一结论，由前端如实告知用户。
+        throw createError(409, '这条评论已经发表过，之后被删除，不会重复发表', 'request_comment_deleted');
       }
     }
 

@@ -594,25 +594,67 @@ function baseConfig() {
       );
     });
 
-    // 评论被删（含文章删除级联）后同编号不再卡死：清掉陈旧请求记录，按正常流程新建
-    await test('评论被删除后同编号重放不再卡冲突，按新评论创建', async function () {
+    // 评论被删除（作者或管理员删）后同编号重试：绝不能借同编号把评论和通知再造回来。
+    // 这是「已处理 + 已删除」的终态，服务端保留请求记录作墓碑，重试返回同一个结论。
+    await test('评论被删除后同编号重试不再重新发表，也不重发通知', async function () {
       const article5 = await seedArticle(uAuthor);
-      const requestId = 'req-stale-' + suffix;
+      const before = await pool.query(
+        `SELECT count(*)::int AS c FROM public.notifications
+          WHERE target_kind='article_comment' AND target_id IN (
+            SELECT id::text FROM public.article_comments WHERE article_id=$1)`,
+        [article5]
+      );
+      const requestId = 'req-deleted-' + suffix;
       const first = await comment(article5, uReader, '会被删除的评论', { clientRequestId: requestId });
+      const noticesAfterCreate = await noticesOf(first.comment.id);
+      assert.ok(noticesAfterCreate.length >= 1, '前置条件：首次发表产生了通知');
+
+      // 作者删除（管理员走同一个 deleteComment，删除语义一致）
       await comments.deleteComment(first.comment.id);
       const gone = await pool.query(
         'SELECT comment_id FROM public.article_comment_requests WHERE client_request_id=$1', [requestId]
       );
-      assert.strictEqual(gone.rows.length, 1, '前置条件：请求记录还在');
+      assert.strictEqual(gone.rows.length, 1, '前置条件：请求记录保留为墓碑');
       assert.strictEqual(gone.rows[0].comment_id, null, '前置条件：评论号已置空');
 
-      const again = await comment(article5, uReader, '会被删除的评论', { clientRequestId: requestId });
-      assert.strictEqual(again.reused, false, '原评论已不存在，应按新评论创建而不是回放空结果');
-      assert.ok(again.comment && again.comment.id, '必须返回真实评论，不能是空对象');
+      // 同编号同内容重试：明确告知「已发表过、之后被删除」，不重新发表
+      await assert.rejects(
+        comment(article5, uReader, '会被删除的评论', { clientRequestId: requestId }),
+        function (e) { return e.status === 409 && e.code === 'request_comment_deleted'; }
+      );
       const count = await pool.query(
         'SELECT count(*)::int AS c FROM public.article_comments WHERE content=$1', ['会被删除的评论']
       );
-      assert.strictEqual(count.rows[0].c, 1);
+      assert.strictEqual(count.rows[0].c, 0, '重试不得把用户删掉的评论造回来');
+
+      // 通知也不能重发：原来那条已失效，不能新增
+      const noticesNow = await noticesOf(first.comment.id);
+      assert.strictEqual(noticesNow.length, noticesAfterCreate.length, '不得为新评论生成通知');
+      assert.ok(noticesNow.every(function (r) { return r.invalidatedAt; }), '原有通知保持失效状态');
+      const after = await pool.query(
+        `SELECT count(*)::int AS c FROM public.notifications
+          WHERE target_kind='article_comment' AND target_id IN (
+            SELECT id::text FROM public.article_comments WHERE article_id=$1)`,
+        [article5]
+      );
+      assert.strictEqual(after.rows[0].c, before.rows[0].c, '该文章的通知总数不得增加');
+    });
+
+    // 文章被删除（评论随级联消失）后同编号重试，同样是终态：不能凭空再造一条评论
+    await test('文章删除后同编号重试同样不再重新发表', async function () {
+      const article6 = await seedArticle(uAuthor);
+      const requestId = 'req-gone-' + suffix;
+      const first = await comment(article6, uReader, '随文章一起没的评论', { clientRequestId: requestId });
+      assert.ok(first.comment.id);
+      await comments.deleteArticle(article6);
+      await assert.rejects(
+        comment(article6, uReader, '随文章一起没的评论', { clientRequestId: requestId }),
+        function (e) { return e.status === 409 && e.code === 'request_comment_deleted'; }
+      );
+      const count = await pool.query(
+        'SELECT count(*)::int AS c FROM public.article_comments WHERE content=$1', ['随文章一起没的评论']
+      );
+      assert.strictEqual(count.rows[0].c, 0, '文章删除后重试不得重建评论');
     });
 
     // ===== 失效与可见性 =====

@@ -1508,6 +1508,69 @@ async function retractedArticleReplay() {
   } finally { await tick(); dom.window.close(); }
 }
 
+// ---------- 25. 评论已发表后被删除：重试只告知，不重新发表 ----------
+async function deletedCommentTerminalState() {
+  const dom = new JSDOM(
+    '<textarea id="ks-comment"></textarea><div id="panel" role="listbox" hidden></div><div id="chips" hidden></div>'
+    + '<div id="ks-comment-notice" hidden></div><div id="ks-comment-list"></div>',
+    { url: 'https://example.test/?main=knowledge', runScripts: 'outside-only' }
+  );
+  const w = dom.window;
+  try {
+    const toasts = [];
+    const posts = [];
+    const replies = [
+      { ok: false, status: 502, payload: null },
+      // 服务端认出原请求已处理、但评论之后被作者删了：终态，不会再发表
+      {
+        ok: false, status: 409,
+        payload: { error: '这条评论已经发表过，之后被删除，不会重复发表', code: 'request_comment_deleted' },
+      },
+      { ok: true, status: 200, payload: { id: 2 } },
+    ];
+    w.username = 'alice';
+    w.accountIdentity = '100';
+    w.escapeHtml = escaper();
+    w.showToast = function (m) { toasts.push(String(m)); };
+    w.siteApi = {
+      get: async function () { return { ok: true, status: 200, payload: { id: 7, title: '文章', status: 'published' } }; },
+      post: async function (url, body) {
+        if (url.indexOf('/view') >= 0) return { ok: true, status: 200, payload: {} };
+        posts.push(body);
+        return replies[posts.length - 1] || { ok: false, status: 500, payload: null };
+      },
+    };
+    w.eval(read('public/js/knowledge.js'));
+    w.ksPaintArticle = function () {};
+    w.ksShowView = function () {};
+    w.ksPaintCommentsPrepare = function () { return false; };
+    w.ksPaintComments = function () {};
+    w.eval(read('public/js/presenters/knowledge-presenter.js'));
+    await w.ksOpenArticle(7);
+
+    await w.ksSubmitComment(null, '发过又被删的评论', null);
+    const id1 = posts[0].client_request_id;
+    let stored = JSON.parse(w.sessionStorage.getItem('ks-pending-comments') || '{}');
+    assert.strictEqual(Object.keys(stored).length, 1);
+
+    // 重试：服务端明确告知「已发表过、之后被删除」
+    await w.ksSubmitComment(null, '发过又被删的评论', null);
+    assert.strictEqual(posts[1].client_request_id, id1, '重试仍沿用原编号');
+    stored = JSON.parse(w.sessionStorage.getItem('ks-pending-comments') || '{}');
+    assert.strictEqual(Object.keys(stored).length, 0, '终态下记录清掉，不再反复重试');
+    assert.ok(toasts.some(function (m) { return m.indexOf('已经发表过') >= 0; }),
+      '必须如实告知已发表过并被删除');
+    assert.ok(!toasts.some(function (m) { return m.indexOf('评论已发表') >= 0; }),
+      '不能报成功，避免用户以为评论还在');
+
+    // 用户之后主动再发同样内容，属于他自己的新评论：必须用新编号
+    await w.ksSubmitComment(null, '发过又被删的评论', null);
+    assert.strictEqual(posts.length, 3);
+    assert.notStrictEqual(posts[2].client_request_id, id1, '用户主动重发应是新的一次提交');
+    pass++;
+  } finally { await tick(); dom.window.close(); }
+}
+
 (async () => {
   const suites = [
     ['@ 区间随编辑平移与失效（同昵称可区分）', mentionRanges],
@@ -1534,6 +1597,7 @@ async function retractedArticleReplay() {
     ['同编号并发提交的「已处理」409 保留原请求编号', processedConflictKeepsRequestId],
     ['离开后重新打开同一篇文章算新页面，旧响应不得改动', reopenSameArticleIsNewPage],
     ['结果不明后文章被撤回，重试仍用原编号并由服务端回放', retractedArticleReplay],
+    ['评论已发表后被删除，重试只告知不重新发表', deletedCommentTerminalState],
   ];
   let failed = 0;
   for (const [name, fn] of suites) {

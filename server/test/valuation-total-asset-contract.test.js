@@ -4,9 +4,9 @@
 const assert = require('assert');
 const crypto = require('crypto');
 const { pool } = require('../db/connection');
-const { loadAccountData } = require('../db');
+const { loadAccountData, resolveHkRateEvidence } = require('../db');
 const { buildPositionExport } = require('../services/positionExport');
-const { summarizeBackfill } = require('../jobs/marketClose');
+const { summarizeBackfill, findMissingCloseDates } = require('../jobs/marketClose');
 const { isCnTradingDate, invalidateMarketStateCache } = require('../services/marketState');
 
 const USER = 'valuation_total_contract';
@@ -136,6 +136,77 @@ async function main() {
   assert.ok(withBlocked.message.includes('待授权修订 2 条'));
   const withError = summarizeBackfill({ accounts: 1, missingDates: 1, recorded: 0, errors: 1 });
   assert.strictEqual(withError.incomplete, true, '被捕获的异常同样不得报成功');
+
+  // 6. 汇率证据：只有市场汇率库的值才算已确认，账户默认值不算。
+  {
+    const noFx = resolveHkRateEvidence({ fx_rate: null, account_hk_rate: 0.868 });
+    assert.strictEqual(noFx.hkRateConfirmed, false, '账户默认汇率不得被当作已确认汇率');
+    assert.strictEqual(noFx.hkRateSource, 'account_default');
+    assert.strictEqual(noFx.hkRate, 0.868, '默认值仍可作为显示兜底');
+    const withFx = resolveHkRateEvidence({ fx_rate: 0.873, fx_rate_date: '2026-11-13', account_hk_rate: 0.868 });
+    assert.strictEqual(withFx.hkRateConfirmed, true, '市场汇率库有值时才算已确认');
+    assert.strictEqual(withFx.hkRateSource, 'market_fx');
+    assert.strictEqual(withFx.hkRateDate, '2026-11-13', '汇率必须带日期证据');
+    assert.strictEqual(withFx.hkRate, 0.873);
+  }
+
+  // 7. 导出：汇率未确认时港股不得输出确定的人民币市值。
+  {
+    const unconfirmed = buildPositionExport({
+      hkRate: 0.868,
+      hkRateConfirmed: false,
+      valuation: { complete: false },
+      positions: [
+        { code: '00700', subtype: '港股', quantity: 100, price: 10, priceQuality: 'confirmed' },
+        { code: '600000', subtype: '沪市', quantity: 10, price: 10, priceQuality: 'confirmed' },
+      ],
+    });
+    const hkRow = unconfirmed.rows.find(row => row[0] === '00700');
+    assert.ok(String(hkRow[3]).includes('汇率未确认'), '缺汇率必须在导出里标注：' + String(hkRow[3]));
+    assert.strictEqual(hkRow[5], null, '缺汇率时不得输出人民币市值（不能拿 0.868 顶）');
+    assert.strictEqual(hkRow[6], null, '缺汇率时不得输出比例');
+    assert.deepStrictEqual(unconfirmed.fxMissingCodes, ['00700']);
+    const cnRow = unconfirmed.rows.find(row => row[0] === '600000');
+    assert.strictEqual(cnRow[5], 100, 'A 股不依赖港币汇率，市值照常给出');
+
+    const confirmed = buildPositionExport({
+      hkRate: 0.9, hkRateConfirmed: true,
+      valuation: { complete: true }, totalAsset: 1000,
+      positions: [{ code: '00700', subtype: '港股', quantity: 100, price: 10, priceQuality: 'confirmed' }],
+    });
+    assert.strictEqual(confirmed.rows.find(row => row[0] === '00700')[5], 900, '汇率确认后才算人民币市值');
+    assert.deepStrictEqual(confirmed.fxMissingCodes, []);
+  }
+
+  // 8. 补漏：同一天部分证券缺价也必须算缺口（不能因“当天有任意一条确认价”就跳过）。
+  {
+    // 找最近一个 A 股交易日，在该日只给一只证券确认价，另一只缺失。
+    const day = expectedCloseDate();
+    await pool.query('DELETE FROM daily_prices WHERE username=$1', [USER]);
+    await pool.query('DELETE FROM positions WHERE username=$1', [USER]);
+    await pool.query(
+      `INSERT INTO positions (id, username, account_name, account_id, code, name, price, quantity, cost, type, subtype)
+       VALUES ($1,$2,$3,$4,'600000','测试证券',10,100,5,'股权','沪市'),
+              ($5,$2,$3,$4,'600519','测试证券二',10,100,5,'股权','沪市')`,
+      [crypto.randomUUID(), USER, ACCOUNT, ACCOUNT_ID, crypto.randomUUID()]
+    );
+    await pool.query(
+      `INSERT INTO daily_prices (username, account_name, account_id, date, code, name, price, market, quality, is_final, source)
+       VALUES ($1,$2,$3,$4,'600000','测试证券',10,'CN','confirmed',true,'test_close_task')`,
+      [USER, ACCOUNT, ACCOUNT_ID, day]
+    );
+    const gaps = await findMissingCloseDates(USER, ACCOUNT);
+    assert.ok(gaps.includes(day), '同一天有一只证券缺确认价时该日必须仍算缺口：' + JSON.stringify(gaps));
+
+    // 两只都补齐后该日不再是缺口。
+    await pool.query(
+      `INSERT INTO daily_prices (username, account_name, account_id, date, code, name, price, market, quality, is_final, source)
+       VALUES ($1,$2,$3,$4,'600519','测试证券二',10,'CN','confirmed',true,'test_close_task')`,
+      [USER, ACCOUNT, ACCOUNT_ID, day]
+    );
+    const filled = await findMissingCloseDates(USER, ACCOUNT);
+    assert.ok(!filled.includes(day), '逐证券补齐后该日不应再列为缺口');
+  }
 
   console.log('估值输出口径合同回归通过');
 }

@@ -8,10 +8,13 @@ const HEADER = ['代码', '代码', '正股/转债名称', '现价', '持有数�
 
 function buildPositionExport(result) {
   const data = result || {};
-  const hkRate = Number(data.hkRate) > 0 ? Number(data.hkRate) : 0.868;
+  // 汇率必须是服务端可核实的同批汇率：账户默认值（0.868 之类）不能拿来算人民币市值。
+  const rateConfirmed = data.hkRateConfirmed === true;
+  const hkRate = Number(data.hkRate) > 0 ? Number(data.hkRate) : null;
   const positions = (data.positions || []).filter(position => Number(position.quantity) > 0);
   const rows = [HEADER.slice()];
   const missingCodes = [];
+  const fxMissingCodes = [];
   let positionValue = 0;
 
   for (const position of positions) {
@@ -36,7 +39,16 @@ function buildPositionExport(result) {
         position.type || '', position.subtype || '']);
       continue;
     }
-    const marketValue = price * quantity * (position.subtype === '港股' ? hkRate : 1);
+    const isHk = position.subtype === '港股';
+    if (isHk && (!rateConfirmed || !(hkRate > 0))) {
+      // 缺汇率/汇率未确认：只能给出原币价格，人民币市值与比例一律留空并说明原因。
+      fxMissingCodes.push(code);
+      rows.push([code, code + suffix, position.name || '',
+        'HK$' + price.toFixed(2) + '（汇率未确认）', quantity, null, null,
+        position.type || '', position.subtype || '']);
+      continue;
+    }
+    const marketValue = price * quantity * (isHk ? hkRate : 1);
     positionValue += marketValue;
     rows.push([code, code + suffix, position.name || '',
       position.subtype === '港股' ? 'HK$' + price.toFixed(2) : price.toFixed(2),
@@ -58,13 +70,14 @@ function buildPositionExport(result) {
   rows.push([null, null, null, null, null, Math.round(cash * 100) / 100,
     totalAsset > 0 ? Math.round(cash / totalAsset * 10000) / 10000 : null, '债权', '现金']);
   if (!complete) {
-    const gap = missingCodes.length > 0
-      ? missingCodes.length + ' 只证券缺价或价格未确认'
-      : '估值数据不完整';
+    const parts = [];
+    if (missingCodes.length > 0) parts.push(missingCodes.length + ' 只证券缺价或价格未确认');
+    if (fxMissingCodes.length > 0) parts.push(fxMissingCodes.length + ' 只港股缺可核实的港币汇率');
+    const gap = parts.length > 0 ? parts.join('，') : '估值数据不完整';
     rows.push([null, null, '⚠ 估值不完整：' + gap + '，合计与比例未计算', null, null, null, null, '提示', '']);
   }
 
-  return { rows, complete, missingCodes, positionValue, totalAsset };
+  return { rows, complete, missingCodes, fxMissingCodes, positionValue, totalAsset };
 }
 
 module.exports = { buildPositionExport, EXPORT_HEADER: HEADER };

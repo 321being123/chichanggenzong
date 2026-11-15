@@ -57,11 +57,41 @@ function codeVariants(code, isHk) {
 
 // 市场归一：日价存 HK/CN，行情缓存存 hk/sh/sz/bj；同一段代码在不同市场是不同证券，
 // 港股 00001 补零后与 A 股 000001 同形，只有市场一起匹配才不会串价。
-// 日价行缺 market 时（迁移前的旧行/未带市场的写入）按代码长度推断：5 位港股、6 位 A 股，
-// 与迁移回填规则一致。这是“失败关闭”的推断：6 位的港股补零行会被当作 A 股而不匹配港股持仓，
-// 结果是缺价（明确缺口），绝不会拿另一只证券的价格顶上。
+// 统一价格键：市场 + 规范代码。同一账户可能同时持有 6 位 A 股与补零同形的港股，
+// 只按代码做键会丢一只（或把两只的价格混成一只），因此结果与持仓映射都必须带上市场。
+function priceKey(market, code) {
+  return `${normalizeMarket(market) || 'UNKNOWN'}|${String(code || '').trim()}`;
+}
+
+// 来源标签本身带市场（收盘任务写 market_close_task:港股 / 历史补录按品种写），
+// 这是可核实的凭据，比单纯按代码形状推断可靠。
+function marketFromSource(source) {
+  const text = String(source || '');
+  if (!text) return null;
+  if (/港股|\bHK\b|'HK'|market_close_task:港股/.test(text)) return 'HK';
+  if (/A股|沪市|深市|京市|\bCN\b/.test(text)) return 'CN';
+  return null;
+}
+
+// 日价行属于哪个市场：优先来源标签（可核实），其次 market 列（需有回填依据），
+// 最后才是代码形状（5 位→HK；6 位不以 00 开头→CN）。
+// 6 位以 00 开头存在“A 股 000001 vs 港股 00001 补零”的同形歧义：
+// 没有可核实凭据时返回 UNKNOWN —— 身份不明就是缺口，绝不猜成 A 股。
 function dailyRowMarketOf(row) {
-  return normalizeMarket(row && row.market) || (String(row && row.code || '').length === 5 ? 'HK' : 'CN');
+  const fromSource = marketFromSource(row && row.source);
+  const fromColumn = normalizeMarket(row && row.market);
+  const code = String(row && row.code || '');
+  if (fromSource && fromColumn && fromSource !== fromColumn) return 'UNKNOWN';
+  if (fromSource) return fromSource;
+  const basis = String((row && row.evidence && row.evidence.market_basis) || '');
+  if (fromColumn) {
+    const ambiguous = code.length === 6 && code.startsWith('00');
+    if (ambiguous && !basis) return 'UNKNOWN';
+    return fromColumn;
+  }
+  if (code.length === 5) return 'HK';
+  if (code.length === 6 && !code.startsWith('00')) return 'CN';
+  return 'UNKNOWN';
 }
 
 // 持仓行没有 subtype 时（历史数据/兼容调用）按代码长度推断，避免把港股持仓当成 A 股。
@@ -166,14 +196,13 @@ async function resolveEffectivePrices(options = {}) {
   if (!subjects.length) return empty;
 
   const stateCache = new Map();
-  const marketByCode = new Map();
   const expectedByMarket = new Map();
   const phaseByMarket = new Map();
   const isToday = asOf === dateKey(new Date());
   const nowClock = shanghaiClock(nowAt);
   for (const subject of subjects) {
     const market = subject.market || marketOf(subject.code, subject.subtype, subject.quoteCurrency);
-    marketByCode.set(subject.code, market);
+    subject.market = market;
     if (!expectedByMarket.has(market)) {
       const live = mode === 'current' && isToday
         ? await liveMarketStateFor(market, asOf, nowAt, query, stateCache)
@@ -184,11 +213,9 @@ async function resolveEffectivePrices(options = {}) {
     }
   }
 
-  const codes = subjects.map(subject => subject.code);
   const lookupCodes = new Set();
   for (const subject of subjects) {
-    const market = marketByCode.get(subject.code);
-    codeVariants(subject.code, market === 'HK').forEach(code => lookupCodes.add(code));
+    codeVariants(subject.code, subject.market === 'HK').forEach(code => lookupCodes.add(code));
   }
   const lookupList = [...lookupCodes];
 
@@ -218,7 +245,8 @@ async function resolveEffectivePrices(options = {}) {
 
   for (const subject of subjects) {
     const code = subject.code;
-    const market = marketByCode.get(code);
+    // 市场必须取自主体本身（同形代码可能一只 CN 一只 HK），不能再按代码回查。
+    const market = subject.market;
     const isHk = market === 'HK';
     const expectedCloseDate = expectedByMarket.get(market) || null;
     const variants = codeVariants(code, isHk);
@@ -238,7 +266,7 @@ async function resolveEffectivePrices(options = {}) {
     });
     if (resolved.conflict) conflicts.push(resolved.conflict);
     if (resolved.price) {
-      prices.set(code, resolved.price);
+      prices.set(priceKey(market, code), resolved.price);
       (resolved.price.reasonCodes || []).forEach(reason => reasonCodes.add(reason));
     } else {
       missing.push(resolved.missing);
@@ -251,8 +279,8 @@ async function resolveEffectivePrices(options = {}) {
   // 遗留未核验价、收盘后仍未确认终盘的候选、过期价、兼容持仓价都不构成完整估值。
   const counts = countQuality(prices);
   const untrusted = [];
-  for (const [code, row] of prices.entries()) {
-    if (!isTrustworthyPrice(row, stateCache, mode, isToday, asOf)) untrusted.push(code);
+  for (const [key, row] of prices.entries()) {
+    if (!isTrustworthyPrice(row, stateCache, mode, isToday, asOf)) untrusted.push(key);
   }
   const missingCount = missing.length;
   const conflictCount = conflicts.length;
@@ -305,7 +333,10 @@ function dedupeSubjects(subjects) {
   for (const subject of (subjects || [])) {
     const code = String(subject && subject.code || '').trim();
     if (!code) continue;
-    if (!seen.has(code)) seen.set(code, { ...subject, code });
+    // 键必须带市场：6 位 A 股与补零同形港股是两只证券，不能合成一只。
+    const market = subject.market || marketOf(code, subject.subtype, subject.quoteCurrency);
+    const key = priceKey(market, code);
+    if (!seen.has(key)) seen.set(key, { ...subject, code, market });
   }
   return [...seen.values()];
 }
@@ -324,9 +355,10 @@ function countQuality(prices) {
 
 function buildRevision({ username, accountName, mode, asOf, prices, policy }) {
   const parts = [policy, mode, asOf, username || '', accountName || ''];
-  for (const code of [...prices.keys()].sort()) {
-    const row = prices.get(code);
-    parts.push([code, row.price, row.tradeDate, row.quality, row.revision, row.sourceRef].join(':'));
+  // 键本身就是「市场|代码」，直接参与摘要，避免同形代码互相覆盖版本。
+  for (const key of [...prices.keys()].sort()) {
+    const row = prices.get(key);
+    parts.push([key, row.price, row.tradeDate, row.quality, row.revision, row.sourceRef].join(':'));
   }
   return crypto.createHash('sha1').update(parts.join('|')).digest('hex').slice(0, 16);
 }
@@ -446,7 +478,7 @@ function resolveOne(context) {
   // 冲突只针对“本次选中的那个交易日”：更早日期历史价不一致属于历史审计，
   // 不应当把当前已经一致的估值标成不完整。
   const conflict = fromDaily && selected.tradeDate
-    ? detectConflictOnDate(code, shared, selected.tradeDate, selected.quality)
+    ? detectConflictOnDate(code, market, shared, selected.tradeDate, selected.quality)
     : null;
 
   const reasonCodes = [];
@@ -487,7 +519,7 @@ function normalizeDailyRow(row) {
 // 只与选中价格同一资格档次的行比较（已确认与已确认比较），避免候选价把确认价拖成冲突。
 // 冲突结果只描述市场事实本身（有哪些价格），**不带出任何账户或用户标识**：
 // 账户接口不能因为核对公开行情而泄露别人的持仓关联信息。
-function detectConflictOnDate(code, rows, date, quality) {
+function detectConflictOnDate(code, market, rows, date, quality) {
   const tier = quality === 'confirmed' ? 'confirmed' : 'unconfirmed';
   const prices = new Set();
   for (const row of rows) {
@@ -498,7 +530,7 @@ function detectConflictOnDate(code, rows, date, quality) {
     prices.add(Number(row.price));
   }
   if (prices.size < 2) return null;
-  return { code, date, priceCount: prices.size, prices: [...prices].sort((a, b) => a - b) };
+  return { code, market, date, priceCount: prices.size, prices: [...prices].sort((a, b) => a - b) };
 }
 
 // 历史投影选价（纯函数）：目标日已有落库价就用它；否则在“当日市场确有交易”的历史候选里取最近一条。
@@ -521,6 +553,9 @@ function selectHistoricalClosePrice({ exactPrice, candidates, targetDate, market
 
 module.exports = {
   resolveEffectivePrices,
+  priceKey,
+  marketFromSource,
+  dailyRowMarketOf,
   normalizeMarket,
   selectHistoricalClosePrice,
   sessionPhase,

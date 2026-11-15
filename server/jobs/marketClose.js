@@ -353,8 +353,17 @@ async function findMissingCloseDates(username, accountName) {
   const lastDate = (await recentMarketDays(1))[0];
   if (!firstDate || !lastDate || firstDate > lastDate) return [];
 
-  const existing = await repository.select_daily_prices_2([username, accountName, firstDate, lastDate]);
-  const existingDates = new Set(existing.rows.map(row => row.date));
+  const [existing, scope] = await Promise.all([
+    repository.select_daily_prices_2([username, accountName, firstDate, lastDate]),
+    repository.select_position_scope([username, accountName]),
+  ]);
+  // 缺口精确到证券：某天只要有一只该市场持仓没有已确认收盘价，这一天就算未补齐。
+  const confirmedByDate = new Map();
+  for (const row of existing.rows) {
+    if (!confirmedByDate.has(row.date)) confirmedByDate.set(row.date, new Set());
+    confirmedByDate.get(row.date).add(String(row.code));
+  }
+  const heldPositions = (scope.rows || []).map(row => ({ code: String(row.code), subtype: row.subtype }));
   const missingDates = [];
   const cursor = new Date(firstDate + 'T12:00:00Z');
   const end = new Date(lastDate + 'T12:00:00Z');
@@ -364,7 +373,17 @@ async function findMissingCloseDates(username, accountName) {
   while (cursor <= end) {
     const date = fmtCN(cursor);
     const hkOpen = await isMarketTradingDate('HK', date);
-    if ((isCnTradingDate(date) || hkOpen) && !existingDates.has(date)) missingDates.push(date);
+    if (isCnTradingDate(date) || hkOpen) {
+      const confirmedCodes = confirmedByDate.get(date) || new Set();
+      let gap = false;
+      for (const marketRule of MARKET_CLOSE_TIMES) {
+        if (marketRule.label === '非标准证券') continue;
+        if (!(await isMarketTradingDate(marketRule.market, date))) continue;
+        const required = heldPositions.filter(position => marketRule.match(position.code, position));
+        if (required.some(position => !confirmedCodes.has(position.code))) { gap = true; break; }
+      }
+      if (gap) missingDates.push(date);
+    }
     cursor.setUTCDate(cursor.getUTCDate() + 1);
   }
   return missingDates;

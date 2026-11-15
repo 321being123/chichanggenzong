@@ -5499,6 +5499,66 @@
       ],
       "owner": "WorkBuddy",
       "status": "implemented"
+    },
+    {
+      "id": "HOLDINGS-PRICE-MARKET-001",
+      "title": "同一代码在不同市场是不同证券：取价与持仓映射按「市场+规范身份」，身份不明保留缺口",
+      "implementation": {
+        "file": "server/services/effectivePrice.js",
+        "symbol": "priceKey"
+      },
+      "tests": [
+        {
+          "file": "server/test/effective-price-contract.test.js",
+          "pattern": "同形代码必须各自取价"
+        },
+        {
+          "file": "server/test/effective-price-contract.test.js",
+          "pattern": "无依据的同形代码必须按身份不明处理"
+        },
+        {
+          "file": "server/test/effective-price-contract.test.js",
+          "pattern": "来源标明港股的行不得被 A 股持仓选中"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "implemented"
+    },
+    {
+      "id": "HOLDINGS-FX-EVIDENCE-001",
+      "title": "港币汇率必须有市场汇率库证据才算确认；缺汇率不得折算人民币资产或导出确定市值",
+      "implementation": {
+        "file": "server/db/accounts.js",
+        "symbol": "resolveHkRateEvidence"
+      },
+      "tests": [
+        {
+          "file": "server/test/valuation-total-asset-contract.test.js",
+          "pattern": "账户默认汇率不得被当作已确认汇率"
+        },
+        {
+          "file": "server/test/valuation-total-asset-contract.test.js",
+          "pattern": "缺汇率时不得输出人民币市值"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "implemented"
+    },
+    {
+      "id": "HOLDINGS-CLOSE-GAP-001",
+      "title": "收盘补漏按账户、市场、证券、交易日逐只核对缺口，同日部分证券缺价亦算未补齐",
+      "implementation": {
+        "file": "server/jobs/marketClose.js",
+        "symbol": "findMissingCloseDates"
+      },
+      "tests": [
+        {
+          "file": "server/test/valuation-total-asset-contract.test.js",
+          "pattern": "同一天有一只证券缺确认价时该日必须仍算缺口"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "implemented"
     }
   ]
 }

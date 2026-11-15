@@ -515,6 +515,8 @@ router.get('/export/:name', requireLogin, asyncHandler(assertOwnership), asyncHa
     // 让调用方也能从响应头判断完整性，而不是只看表格里的数字。
     res.setHeader('X-Valuation-Complete', complete ? 'true' : 'false');
     res.setHeader('X-Valuation-Missing-Codes', missingCodes.join(','));
+    res.setHeader('X-Valuation-Fx-Missing-Codes', exported.fxMissingCodes.join(','));
+    res.setHeader('X-Hk-Rate-Confirmed', result.hkRateConfirmed === true ? 'true' : 'false');
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', 'attachment; filename="export.xlsx"');
     res.send(buf);

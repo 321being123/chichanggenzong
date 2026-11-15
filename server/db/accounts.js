@@ -7,7 +7,7 @@ const classifyCode = require('../../public/js/code-classify');
 const NavMath = require('../../public/shared/nav-math');
 const CoreDate = require('../../public/shared/core-date');
 const { loadCashState } = require('../services/accountCash');
-const { resolveEffectivePrices } = require('../services/effectivePrice');
+const { resolveEffectivePrices, marketOf, priceKey } = require('../services/effectivePrice');
 const priceRepository = require('../repositories/effectivePriceRepository');
 const { ACCOUNT_SCOPED_TABLES, ACCOUNT_METADATA_TABLE, listAccountScopedTables, findAccountNameLeftovers } = require('./accountScopedTables');
 
@@ -48,6 +48,21 @@ async function readAccountConsistently(reader, username, accountName) {
 
 // 账户估值统一入口：同一批 effectivePrice 同时决定持仓显示价、持仓市值与总资产。
 // 不允许总资产与归因各自选价，也不允许浏览器自报价格成为正常证券的估值权威。
+// 汇率证据：只有市场汇率库（market.fx_rates）里确实有可用汇率才算“已确认”。
+// accounts.hk_rate 是账户默认值（默认 0.868），它只能当兜底显示，不能让估值变成完整。
+function resolveHkRateEvidence(row) {
+  const fxRate = Number(row && row.fx_rate);
+  const accountRate = Number(row && row.account_hk_rate);
+  const fallback = accountRate > 0 ? accountRate : Number(row && row.hk_rate);
+  const confirmed = fxRate > 0;
+  return {
+    hkRate: confirmed ? fxRate : (fallback > 0 ? fallback : 0.868),
+    hkRateConfirmed: confirmed,
+    hkRateSource: confirmed ? 'market_fx' : 'account_default',
+    hkRateDate: (row && row.fx_rate_date) || null,
+  };
+}
+
 async function applyUnifiedValuation({ username, accountName, positions, query, hkRate, hkRateConfirmed, asOf }) {
   const list = Array.isArray(positions) ? positions : [];
   const held = list.filter(position => position && position.code && Number(position.quantity) > 0);
@@ -65,7 +80,10 @@ async function applyUnifiedValuation({ username, accountName, positions, query, 
   let missingFxCodes = [];
   for (const position of list) {
     const code = String(position.code || '');
-    const priceRow = code ? resolved.prices.get(code) : null;
+    // 同一账户可能同时持有 6 位 A 股与补零同形的港股，取价必须按「市场 + 代码」查。
+    const positionMarket = marketOf(position.code, position.subtype,
+      position.quoteCurrency || position.quote_currency);
+    const priceRow = code ? resolved.prices.get(priceKey(positionMarket, code)) : null;
     const quantity = Number(position.quantity) || 0;
     if (!priceRow && quantity > 0) {
       // 没有统一价格时不得继续对外返回旧持仓价：那等于给同一证券留了第二套正式价格，
@@ -189,20 +207,31 @@ async function loadAccountDataInSession(username, accountName, client) {
   // 账户元数据（期初本金/汇率/税费设置/乐观锁版本）：唯一来源 accounts 表 + account_data.version
   try {
     const { rows: am } = await client.query(
-      `SELECT cash_base::float8 AS cash_base,
-              COALESCE((SELECT rate::float8 FROM market.fx_rates
-                          WHERE base_currency='HKD' AND quote_currency='CNY'
-                            AND rate_date <= (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai')::date
-                          ORDER BY rate_date DESC, fetched_at DESC LIMIT 1), hk_rate::float8) AS hk_rate,
-              fee_settings, cash_income_policy, cash_income_state
-         FROM accounts WHERE username=$1 AND account_name=$2`,
+      `SELECT a.cash_base::float8 AS cash_base,
+              COALESCE(fx.rate::float8, a.hk_rate::float8) AS hk_rate,
+              fx.rate::float8 AS fx_rate,
+              fx.rate_date::text AS fx_rate_date,
+              a.hk_rate::float8 AS account_hk_rate,
+              a.fee_settings, a.cash_income_policy, a.cash_income_state
+         FROM accounts a
+         LEFT JOIN LATERAL (
+           SELECT rate, rate_date FROM market.fx_rates
+            WHERE base_currency='HKD' AND quote_currency='CNY'
+              AND rate_date <= (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai')::date
+            ORDER BY rate_date DESC, fetched_at DESC LIMIT 1
+         ) fx ON TRUE
+        WHERE a.username=$1 AND a.account_name=$2`,
       [username, accountName]
     );
     if (am[0]) {
       result.cashIncomePolicy = am[0].cash_income_policy;
       result.cashIncomeState = am[0].cash_income_state;
       if (typeof am[0].cash_base === 'number') result.cashBase = am[0].cash_base;
-      if (typeof am[0].hk_rate === 'number' && am[0].hk_rate > 0) { result.hkRate = am[0].hk_rate; result.hkRateConfirmed = true; }
+      const hkEvidence = resolveHkRateEvidence(am[0]);
+      result.hkRate = hkEvidence.hkRate;
+      result.hkRateConfirmed = hkEvidence.hkRateConfirmed;
+      result.hkRateSource = hkEvidence.hkRateSource;
+      result.hkRateDate = hkEvidence.hkRateDate;
       if (am[0].fee_settings && typeof am[0].fee_settings === 'object') result.feeSettings = am[0].fee_settings;
     }
   } catch (e) { console.warn('[loadAccountData] accounts 元数据读取失败:', e.message); }
@@ -321,6 +350,14 @@ async function loadAccountSummaryInSession(username, accountName, client) {
                           WHERE base_currency='HKD' AND quote_currency='CNY'
                             AND rate_date <= (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai')::date
                           ORDER BY rate_date DESC, fetched_at DESC LIMIT 1), a.hk_rate::float8) AS hk_rate,
+              (SELECT rate::float8 FROM market.fx_rates
+                WHERE base_currency='HKD' AND quote_currency='CNY'
+                  AND rate_date <= (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai')::date
+                ORDER BY rate_date DESC, fetched_at DESC LIMIT 1) AS fx_rate,
+              (SELECT rate_date::text FROM market.fx_rates
+                WHERE base_currency='HKD' AND quote_currency='CNY'
+                  AND rate_date <= (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai')::date
+                ORDER BY rate_date DESC, fetched_at DESC LIMIT 1) AS fx_rate_date,
               a.broker, b.import_unit, a.cash_income_policy, a.cash_income_state
          FROM accounts a LEFT JOIN brokers b ON a.broker=b.code
         WHERE a.username=$1 AND a.account_name=$2`,
@@ -336,7 +373,11 @@ async function loadAccountSummaryInSession(username, accountName, client) {
   const nav = navResult.rows[0] || {};
   const versions = versionResult.rows[0] || {};
   const cashBase = Number(account.cash_base) || 0;
-  const hkRate = Number(account.hk_rate) > 0 ? Number(account.hk_rate) : 0.868;
+  const hkEvidence = resolveHkRateEvidence(account);
+  const hkRate = hkEvidence.hkRate;
+  const hkRateConfirmed = hkEvidence.hkRateConfirmed;
+  const hkRateSource = hkEvidence.hkRateSource;
+  const hkRateDate = hkEvidence.hkRateDate;
   const cash = cashState.value;
   const today = CoreDate.todayInZone('Asia/Shanghai');
   const anchor = cashState.anchor;
@@ -344,7 +385,7 @@ async function loadAccountSummaryInSession(username, accountName, client) {
   // 摘要与完整读取必须消费同一批 effectivePrice：同一证券、同一时点只有一个生效价格。
   const valuationResult = await applyUnifiedValuation({
     username, accountName, positions: positionsResult.rows, query: client.query.bind(client),
-    hkRate, hkRateConfirmed: Number(account.hk_rate) > 0, asOf: today,
+    hkRate, hkRateConfirmed, asOf: today,
   });
   const positionValue = valuationResult.marketValue;
   return {
@@ -358,6 +399,9 @@ async function loadAccountSummaryInSession(username, accountName, client) {
     cash,
     cashBase,
     hkRate,
+    hkRateConfirmed,
+    hkRateSource,
+    hkRateDate,
     // 与完整读取同一口径：不完整时 totalAsset 为空，部分金额进 totalAssetPartial。
     totalAsset: (isImportDay || valuationResult.valuation.complete)
       ? cash + (isImportDay ? Number(anchor.marketValueCny) : positionValue) : null,
@@ -1175,6 +1219,7 @@ module.exports = {
   loadAccountSummary,
   saveAccountData,
   buildInstrumentIdMap,
+  resolveHkRateEvidence,
   saveDailyPrices,
   syncConfirmedCloseToPositions,
   loadDailyPrices,

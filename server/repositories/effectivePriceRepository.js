@@ -12,9 +12,9 @@ async function listRecentDailyPriceCandidates(params, client = pool) {
   const [username, codes, upperDate, privateSources, dateWindow] = params;
   return client.query(
     `SELECT code, market, date::text AS date, price::float8 AS price, username, account_name,
-            quality, is_final, source, quote_at, revision
+            quality, is_final, source, quote_at, revision, evidence
        FROM (
-         SELECT code, market, date, price, username, account_name, quality, is_final, source, quote_at, revision,
+         SELECT code, market, date, price, username, account_name, quality, is_final, source, quote_at, revision, evidence,
                 DENSE_RANK() OVER (PARTITION BY market, code ORDER BY date DESC) AS date_rank
            FROM daily_prices
           WHERE code = ANY($2::text[])
@@ -89,7 +89,10 @@ async function upsertDailyPrice(params, client = pool) {
        quote_at = EXCLUDED.quote_at,
        is_final = EXCLUDED.is_final,
        quality = EXCLUDED.quality,
-       evidence = EXCLUDED.evidence
+       evidence = EXCLUDED.evidence,
+       -- 市场必须与价格/质量在同一条语句里一起更新：否则一次过期写入就能把
+       -- “已被错标成 A 股的港股行”继续保留错误市场，随后被 A 股持仓选中。
+       market = EXCLUDED.market
      WHERE daily_prices.quality <> 'confirmed'
         OR (EXCLUDED.quality = 'confirmed'
             AND EXCLUDED.source IS NOT DISTINCT FROM daily_prices.source

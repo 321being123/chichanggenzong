@@ -557,7 +557,10 @@ async function computeNavAttribution(username, accountName, data, currentTotal, 
     const tradePrice = tradePriceAtEnd(data, code, prevDate, currentDate, prevAt, lastAt);
     const currentMarketState = currentDate === todayDate ? todayMarketStates[isHk ? 'HK' : 'CN'] : null;
     const marketOpenOnCurrentDate = currentMarketState ? currentMarketState.status === 'open' : true;
-    const evidenceRow = liveEnd && currentValuation ? currentValuation[code] : null;
+    // 统一估值结果按「市场|代码」为键，同形代码（A 股 000001 / 港股 00001）不会互相取到。
+    const evidenceRow = liveEnd && currentValuation
+      ? (currentValuation[`${isHk ? 'HK' : 'CN'}|${code}`] || null)
+      : null;
     const lastPrice = evidenceRow && Number(evidenceRow.price) > 0
       ? Number(evidenceRow.price)
       : (liveEnd && marketOpenOnCurrentDate && p

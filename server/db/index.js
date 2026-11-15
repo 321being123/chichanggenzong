@@ -61,6 +61,7 @@ module.exports = {
   saveAccountData: accounts.saveAccountData,
   buildInstrumentIdMap: accounts.buildInstrumentIdMap,
   saveDailyPrices: accounts.saveDailyPrices,
+  resolveHkRateEvidence: accounts.resolveHkRateEvidence,
   syncConfirmedCloseToPositions: accounts.syncConfirmedCloseToPositions,
   loadDailyPrices: accounts.loadDailyPrices,
   upsertNav: accounts.upsertNav,

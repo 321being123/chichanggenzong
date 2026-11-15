@@ -4,7 +4,7 @@
 const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
-const { resolveEffectivePrices, selectHistoricalClosePrice, expectedCloseDateFor } = require('../services/effectivePrice');
+const { resolveEffectivePrices, selectHistoricalClosePrice, expectedCloseDateFor, priceKey } = require('../services/effectivePrice');
 const { isCnTradingDate, invalidateMarketStateCache } = require('../services/marketState');
 
 const rootDir = path.join(__dirname, '..', '..');
@@ -31,6 +31,7 @@ function fakeQuery({ daily = [], cache = [], positions = [] } = {}) {
             quality: row.quality || 'legacy_unverified',
             is_final: row.isFinal === undefined ? null : row.isFinal,
             source: row.source || null, quote_at: row.quoteAt || null, revision: row.revision || 1,
+            evidence: row.evidence || {},
           })),
       };
     }
@@ -69,7 +70,7 @@ async function run() {
         positions: [{ code: '600000', price: 12, quantity: 100 }],
       }),
     });
-    const row = resolved.prices.get('600000');
+    const row = resolved.prices.get(priceKey('CN', '600000'));
     assert.strictEqual(row.price, 10, '同一时点只能使用已确认收盘价，不能被兼容持仓价覆盖');
     assert.strictEqual(row.quality, 'confirmed');
     assert.strictEqual(row.priceKind, 'close');
@@ -87,7 +88,7 @@ async function run() {
       subjects: subjects(['600000']),
       query: fakeQuery({ positions: [{ code: '600000', price: 12, quantity: 100 }] }),
     });
-    const row = resolved.prices.get('600000');
+    const row = resolved.prices.get(priceKey('CN', '600000'));
     assert.strictEqual(row.quality, 'unverified_reference');
     assert.strictEqual(row.priceKind, 'position_cache');
     assert.strictEqual(resolved.status.complete, false, '缺少行情证据时不能把旧持仓价当成完整资产');
@@ -104,7 +105,7 @@ async function run() {
         daily: [{ code: '600000', date: EARLIER_DATE, price: 9, quality: 'confirmed', isFinal: true }],
       }),
     });
-    const row = resolved.prices.get('600000');
+    const row = resolved.prices.get(priceKey('CN', '600000'));
     assert.strictEqual(row.priceKind, 'stale_close');
     assert.strictEqual(row.quality, 'stale_reference');
     assert.strictEqual(row.tradeDate, EARLIER_DATE);
@@ -124,7 +125,7 @@ async function run() {
         ],
       }),
     });
-    const row = resolved.prices.get('600000');
+    const row = resolved.prices.get(priceKey('CN', '600000'));
     assert.strictEqual(row.price, 10, '已确认收盘价必须优先于候选');
     assert.strictEqual(row.quality, 'confirmed');
   }
@@ -143,7 +144,7 @@ async function run() {
     });
     assert.strictEqual(resolved.conflicts.length, 1, '跨账户同日价格不一致必须报告冲突');
     assert.strictEqual(resolved.conflicts[0].prices.length, 2);
-    assert.ok(resolved.prices.get('600000').reasonCodes.includes('cross_account_price_conflict'));
+    assert.ok(resolved.prices.get(priceKey('CN', '600000')).reasonCodes.includes('cross_account_price_conflict'));
   }
 
   // 6. 历史模式：只取目标日及之前的价格，不使用更晚的收盘价。
@@ -158,8 +159,8 @@ async function run() {
         ],
       }),
     });
-    assert.strictEqual(resolved.prices.get('600000').price, 10, '历史目标日应取当日收盘价');
-    assert.strictEqual(resolved.prices.get('600000').tradeDate, CLOSE_DATE);
+    assert.strictEqual(resolved.prices.get(priceKey('CN', '600000')).price, 10, '历史目标日应取当日收盘价');
+    assert.strictEqual(resolved.prices.get(priceKey('CN', '600000')).tradeDate, CLOSE_DATE);
   }
 
   // 7. 历史模式缺价 → 明确缺失原因，不回退到实时或持仓缓存。
@@ -215,11 +216,11 @@ async function run() {
         daily: [{ code: '600000', date: CLOSE_DATE, price: 10, quality: 'legacy_unverified' }],
       }),
     });
-    assert.strictEqual(resolved.prices.get('600000').quality, 'legacy_unverified');
+    assert.strictEqual(resolved.prices.get(priceKey('CN', '600000')).quality, 'legacy_unverified');
     assert.strictEqual(resolved.status.complete, false, '未核验的遗留日价不能构成完整估值');
     assert.strictEqual(resolved.status.legacy, 1);
     assert.ok(resolved.status.reasonCodes.includes('price_not_confirmed'));
-    assert.ok(resolved.status.untrustedCodes.includes('600000'));
+    assert.ok(resolved.status.untrustedCodes.includes(priceKey('CN', '600000')));
   }
 
   // 12. 未解决的跨账户同日价冲突必须阻断完整性（不能两边各自“完整”）。
@@ -266,7 +267,7 @@ async function run() {
       username: 'user-b', accountName: '账户乙', asOf: WEEKEND, mode: 'current',
       subjects: subjects(['600000']), query: fakeQuery({ daily: sharedDaily }),
     });
-    assert.strictEqual(first.prices.get('600000').price, second.prices.get('600000').price,
+    assert.strictEqual(first.prices.get(priceKey('CN', '600000')).price, second.prices.get(priceKey('CN', '600000')).price,
       '同一证券同一交易日的收盘价必须收敛到同一份市场事实');
     assert.strictEqual(first.status.complete, true);
     assert.strictEqual(second.status.complete, true);
@@ -305,7 +306,7 @@ async function run() {
       username: 'user-a', accountName: '账户甲', asOf: WEEKEND, mode: 'current',
       subjects: subjects(['600000']), query: fakeQuery({ daily: [anchorRow] }),
     });
-    assert.strictEqual(own.prices.get('600000').quality, 'derived_reference');
+    assert.strictEqual(own.prices.get(priceKey('CN', '600000')).quality, 'derived_reference');
     assert.strictEqual(own.status.complete, false, '派生价不构成完整估值');
     assert.ok(own.status.reasonCodes.includes('price_derived_from_import_anchor'));
 
@@ -338,7 +339,7 @@ async function run() {
         { code: '000001', date: CLOSE_DATE, price: 12, quality: 'confirmed', isFinal: true, market: 'CN' },
       ] }),
     });
-    assert.strictEqual(hkOnly.prices.get('00001').price, 55, '港股必须取港股自己的收盘价');
+    assert.strictEqual(hkOnly.prices.get(priceKey('HK', '00001')).price, 55, '港股必须取港股自己的收盘价');
     assert.strictEqual(hkOnly.status.complete, true);
   }
 
@@ -358,6 +359,80 @@ async function run() {
     assert.ok(!payload.includes('别人账户'), '冲突不得包含其他用户的账户名：' + payload);
     assert.deepStrictEqual(resolved.conflicts[0].prices, [10, 12], '冲突只描述市场上有哪些价格');
     assert.strictEqual(resolved.status.complete, false);
+  }
+
+  // 19. 同一账户同时持有 6 位 A 股与补零同形港股：两只各自取价，不能合成一只。
+  {
+    const resolved = await resolveEffectivePrices({
+      username: 'fixture-user', accountName: '账户甲', asOf: WEEKEND, mode: 'current',
+      subjects: [
+        { code: '000001', subtype: '深市' },
+        { code: '000001', subtype: '港股' },
+      ],
+      query: fakeQuery({ daily: [
+        // 迁移回填会为同形 A 股代码写入 market_basis（行情缓存/持仓核实），这里保持一致。
+        { code: '000001', market: 'CN', date: CLOSE_DATE, price: 12, quality: 'confirmed', isFinal: true,
+          evidence: { market_basis: 'quote_cache' } },
+        { code: '00001', market: 'HK', date: CLOSE_DATE, price: 55, quality: 'confirmed', isFinal: true },
+      ] }),
+    });
+    assert.strictEqual(resolved.prices.size, 2, '同形代码必须各自取价，不能只返回一只：' + JSON.stringify([...resolved.prices.keys()]));
+    assert.strictEqual(resolved.prices.get(priceKey('CN', '000001')).price, 12, 'A 股用 A 股价格');
+    assert.strictEqual(resolved.prices.get(priceKey('HK', '000001')).price, 55, '港股用港股价格');
+    assert.strictEqual(resolved.status.complete, true);
+    assert.strictEqual(resolved.missing.length, 0);
+  }
+
+  // 20. 来源标签与 market 列冲突：来源（可核实）优先，且不能被别的市场拿去用。
+  {
+    const conflicted = { code: '000002', market: 'CN', date: CLOSE_DATE, price: 30, quality: 'confirmed',
+      isFinal: true, source: 'market_close_task:港股' };
+    const cn = await resolveEffectivePrices({
+      username: 'fixture-user', accountName: '账户甲', asOf: WEEKEND, mode: 'current',
+      subjects: [{ code: '000002', subtype: '深市' }],
+      query: fakeQuery({ daily: [conflicted] }),
+    });
+    assert.strictEqual(cn.prices.size, 0, '来源标明港股的行不得被 A 股持仓选中');
+    assert.strictEqual(cn.status.complete, false);
+
+    // 证据互相矛盾（来源说港股、market 列说 A 股）时按“身份不明”处理：两边都不用，保留缺口。
+    const hkConflict = await resolveEffectivePrices({
+      username: 'fixture-user', accountName: '账户甲', asOf: WEEKEND, mode: 'current',
+      subjects: [{ code: '00002', subtype: '港股' }],
+      query: fakeQuery({ daily: [{ ...conflicted, code: '00002' }] }),
+    });
+    assert.strictEqual(hkConflict.prices.size, 0, '证据冲突的行不得被任何市场使用');
+
+    // 来源明确、market 列未填：以来源为准归港股。
+    const hkFromSource = await resolveEffectivePrices({
+      username: 'fixture-user', accountName: '账户甲', asOf: WEEKEND, mode: 'current',
+      subjects: [{ code: '00002', subtype: '港股' }],
+      query: fakeQuery({ daily: [{ ...conflicted, code: '00002', market: null }] }),
+    });
+    assert.strictEqual(hkFromSource.prices.get(priceKey('HK', '00002')).price, 30, '来源标明港股的行应归港股');
+  }
+
+  // 21. 6 位 00 开头且无任何可核实依据：身份不明 → 缺口，绝不猜成 A 股。
+  {
+    const unresolved = await resolveEffectivePrices({
+      username: 'fixture-user', accountName: '账户甲', asOf: WEEKEND, mode: 'current',
+      subjects: [{ code: '000003', subtype: '深市' }],
+      query: fakeQuery({ daily: [
+        { code: '000003', market: 'CN', date: CLOSE_DATE, price: 8, quality: 'confirmed', isFinal: true },
+      ] }),
+    });
+    assert.strictEqual(unresolved.prices.size, 0, '无依据的同形代码必须按身份不明处理');
+    assert.strictEqual(unresolved.status.complete, false);
+
+    const verified = await resolveEffectivePrices({
+      username: 'fixture-user', accountName: '账户甲', asOf: WEEKEND, mode: 'current',
+      subjects: [{ code: '000003', subtype: '深市' }],
+      query: fakeQuery({ daily: [
+        { code: '000003', market: 'CN', date: CLOSE_DATE, price: 8, quality: 'confirmed', isFinal: true,
+          evidence: { market_basis: 'quote_cache' } },
+      ] }),
+    });
+    assert.strictEqual(verified.prices.get(priceKey('CN', '000003')).price, 8, '有核实依据的 A 股行可以正常使用');
   }
 
   // 10. 旧机制收口：浏览器不再写收盘价、页面不再有休市校准、归因不再产出校准项。

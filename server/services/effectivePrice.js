@@ -8,14 +8,18 @@ const { getMarketState } = require('./marketState');
 const classifyCode = require('../../public/js/code-classify');
 
 const POLICY_VERSION = 'effective-price-v1';
-const CANDIDATE_PER_CODE = 12;
+// 最近多少个交易日参与选价/冲突核对（同一证券同一交易日的跨账户/跨用户记录都会读到）。
+const RECENT_DATE_WINDOW = 6;
 const CLOSE_DATE_LOOKBACK_DAYS = 15;
+// 账户私有派生价来源：这类行不是市场事实，只回给其所属账户，不参与跨用户选价与冲突核对。
+const PRIVATE_SOURCES = ['nav_import_anchor'];
 const SHANGHAI_TIME_ZONE = 'Asia/Shanghai';
 
 const QUALITY_RANK = {
   confirmed: 3,
   candidate: 2,
   legacy_unverified: 1,
+  derived_reference: 1,
   stale_reference: 0,
   unverified_reference: -1,
 };
@@ -170,7 +174,8 @@ async function resolveEffectivePrices(options = {}) {
   const clientLike = query ? { query } : undefined;
   const [dailyRes, cacheRes, positionRes] = await Promise.all([
     query
-      ? repository.listRecentDailyPriceCandidates([username, lookupList, asOf, CANDIDATE_PER_CODE], clientLike)
+      ? repository.listRecentDailyPriceCandidates(
+          [username, lookupList, asOf, PRIVATE_SOURCES, RECENT_DATE_WINDOW], clientLike)
       : { rows: [] },
     mode === 'current'
       ? repository.listQuoteCacheCandidates([lookupList, options.quoteSources || null], clientLike)
@@ -195,10 +200,16 @@ async function resolveEffectivePrices(options = {}) {
     const isHk = market === 'HK';
     const expectedCloseDate = expectedByMarket.get(market) || null;
     const variants = codeVariants(code, isHk);
-    const ownRows = dailyRows.filter(row => variants.includes(String(row.code)));
+    const rowsForCode = dailyRows.filter(row => variants.includes(String(row.code)));
+    // 普通证券的收盘价是公开市场事实：跨账户、跨用户都读同一批行，不再按用户各选一份。
+    const sharedRows = rowsForCode.filter(row => !PRIVATE_SOURCES.includes(String(row.source || '')));
+    // 账户私有派生价（导入锚点固化价等）只允许本账户兜底使用，不冒充市场收盘价。
+    const ownPrivateRows = rowsForCode.filter(row => PRIVATE_SOURCES.includes(String(row.source || ''))
+      && String(row.username || '') === String(username || '')
+      && String(row.account_name || '') === String(accountName || ''));
     const resolved = resolveOne({
       code, market, isHk, expectedCloseDate, mode, asOf, nowAt, isToday,
-      ownRows, cacheRows, positionRows, stateCache, variants,
+      sharedRows, ownPrivateRows, cacheRows, positionRows, stateCache, variants,
       phase: phaseByMarket.get(market) || 'historical',
     });
     if (resolved.conflict) conflicts.push(resolved.conflict);
@@ -279,7 +290,7 @@ function countQuality(prices) {
   const counts = { confirmed: 0, candidate: 0, unverified: 0, stale: 0, legacy: 0 };
   for (const row of prices.values()) {
     if (row.quality === 'confirmed') counts.confirmed += 1;
-    else if (row.quality === 'legacy_unverified') counts.legacy += 1;
+    else if (row.quality === 'legacy_unverified' || row.quality === 'derived_reference') counts.legacy += 1;
     else if (row.quality === 'stale_reference' || row.priceKind === 'stale_close') counts.stale += 1;
     else if (row.quality === 'unverified_reference') counts.unverified += 1;
     else counts.candidate += 1;
@@ -298,25 +309,21 @@ function buildRevision({ username, accountName, mode, asOf, prices, policy }) {
 
 // 单只证券的取价判定：按合同 8.3 的时段表给出价格类型，缺证据时明确缺失原因。
 function resolveOne(context) {
-  const { code, market, isHk, expectedCloseDate, mode, asOf, nowAt, isToday, ownRows, cacheRows, positionRows, stateCache, variants, phase } = context;
+  const { code, market, isHk, expectedCloseDate, mode, asOf, nowAt, isToday,
+    sharedRows, ownPrivateRows, cacheRows, positionRows, stateCache, variants, phase } = context;
   const currency = isHk ? 'HKD' : 'CNY';
-  const empty = reason => ({ missing: { code, market, currency, expectedCloseDate, reason } });
+  const empty = reason => ({ missing: { code, market, currency, expectedCloseDate, reason }, conflict: null });
 
-  // 同一证券同一交易日出现不同账户价格时报告冲突：普通市场价格与账户刷新顺序无关，
-  // 不能各自给出不同的完整估值。
-  const conflict = detectConflict(code, variants, ownRows);
-  const result = conflict ? { conflict } : {};
+  const shared = sharedRows.filter(row => variants.includes(String(row.code))).map(normalizeDailyRow);
+  const derived = ownPrivateRows.filter(row => variants.includes(String(row.code))).map(normalizeDailyRow);
 
-  const rowsForCode = ownRows
-    .filter(row => variants.includes(String(row.code)))
-    .map(row => ({ ...row, quality: String(row.quality || 'legacy_unverified') }));
-
-  if (!rowsForCode.length && !cacheRows.length && !positionRows.length) {
-    return { ...result, ...empty(mode === 'historical' ? 'historical_price_not_recorded' : 'price_not_recorded') };
+  if (!shared.length && !derived.length && !cacheRows.length && !positionRows.length) {
+    return empty(mode === 'historical' ? 'historical_price_not_recorded' : 'price_not_recorded');
   }
 
   let selected = null;
   let priceKind = null;
+  let fromDaily = false;
   let marketState = null;
 
   if (mode === 'current' && isToday) {
@@ -346,29 +353,43 @@ function resolveOne(context) {
   }
 
   if (!selected) {
-    // 收盘/休市/历史：只认已落库日价；当日确认收盘优先，其次当日候选，再次最近有效收盘（标注过期）。
-    const dayRows = rowsForCode.filter(row => dateKey(row.date) === expectedCloseDate);
+    // 收盘/休市/历史：只认已落库的共享市场日价；当日确认收盘优先，其次最近有效收盘（标注过期）。
+    const dayRows = shared.filter(row => dateKey(row.date) === expectedCloseDate);
     const exact = pickBestByQuality(dayRows);
     if (exact) {
       selected = {
         price: Number(exact.price), tradeDate: dateKey(exact.date),
         quoteAt: exact.quote_at || null, sourceRef: exact.source || 'daily_prices',
-        quality: exact.quality === 'confirmed' ? 'confirmed' : (exact.quality === 'legacy_unverified' ? 'legacy_unverified' : 'candidate'),
-        revision: Number(exact.revision || 1),
-        priceKind: 'close',
+        quality: exact.quality, revision: Number(exact.revision || 1),
+        priceKind: 'close', accounts: accountsOf(exact),
       };
       priceKind = 'close';
     } else {
-      const fallback = pickBestByQuality(rowsForCode);
+      const fallback = pickBestByQuality(shared);
       if (fallback && Number(fallback.price) > 0) {
         selected = {
           price: Number(fallback.price), tradeDate: dateKey(fallback.date),
           quoteAt: fallback.quote_at || null, sourceRef: fallback.source || 'daily_prices',
           quality: 'stale_reference', revision: Number(fallback.revision || 1),
-          priceKind: 'stale_close',
+          priceKind: 'stale_close', accounts: accountsOf(fallback),
         };
         priceKind = 'stale_close';
       }
+    }
+    fromDaily = Boolean(selected);
+  }
+
+  if (!selected) {
+    // 账户私有派生价（导入锚点固化价等）：仅本账户可用，且明确标为派生参考价，不构成完整估值。
+    const anchor = pickBestByQuality(derived);
+    if (anchor && Number(anchor.price) > 0) {
+      selected = {
+        price: Number(anchor.price), tradeDate: dateKey(anchor.date),
+        quoteAt: anchor.quote_at || null, sourceRef: anchor.source || 'nav_import_anchor',
+        quality: 'derived_reference', revision: Number(anchor.revision || 1),
+        priceKind: 'derived_close',
+      };
+      priceKind = 'derived_close';
     }
   }
 
@@ -387,20 +408,27 @@ function resolveOne(context) {
   }
 
   if (!selected) {
-    if (marketState && marketState.status === 'unknown') return { ...result, ...empty('market_calendar_unknown') };
-    if (expectedCloseDate == null) return { ...result, ...empty('expected_close_date_unknown') };
-    if (mode === 'historical') return { ...result, ...empty('historical_price_not_recorded') };
-    return { ...result, ...empty('no_qualified_price') };
+    if (marketState && marketState.status === 'unknown') return empty('market_calendar_unknown');
+    if (expectedCloseDate == null) return empty('expected_close_date_unknown');
+    if (mode === 'historical') return empty('historical_price_not_recorded');
+    return empty('no_qualified_price');
   }
+
+  // 冲突只针对“本次选中的那个交易日”：更早日期历史价不一致属于历史审计，
+  // 不应当把当前已经一致的估值标成不完整。
+  const conflict = fromDaily && selected.tradeDate
+    ? detectConflictOnDate(code, shared, selected.tradeDate, selected.quality)
+    : null;
 
   const reasonCodes = [];
   if (selected.priceKind === 'stale_close') reasonCodes.push('price_date_before_expected_close');
+  if (selected.priceKind === 'derived_close') reasonCodes.push('price_derived_from_import_anchor');
   if (selected.quality === 'unverified_reference') reasonCodes.push('price_unverified_reference');
   if (selected.quality === 'legacy_unverified') reasonCodes.push('price_legacy_unverified');
   if (conflict) reasonCodes.push('cross_account_price_conflict');
 
   return {
-    ...result,
+    conflict,
     price: {
       code,
       price: selected.price,
@@ -418,28 +446,39 @@ function resolveOne(context) {
   };
 }
 
-// 同一证券同一交易日跨账户价格不一致 → 报告冲突（不静默各用各的）。
-function detectConflict(code, variants, rows) {
-  const byDate = new Map();
+function normalizeDailyRow(row) {
+  const quality = String(row.quality || 'legacy_unverified');
+  return {
+    ...row,
+    quality: quality === 'anchor_carry_forward' ? 'derived_reference' : quality,
+  };
+}
+
+function accountsOf(row) {
+  const owner = [row.username, row.account_name].filter(Boolean).join('/');
+  return owner ? [owner] : [];
+}
+
+// 指定交易日上的价格冲突：同一证券同一交易日，不同账户给出不同价格即算未解决。
+// 只与选中价格同一资格档次的行比较（已确认与已确认比较），避免候选价把确认价拖成冲突。
+function detectConflictOnDate(code, rows, date, quality) {
+  const tier = quality === 'confirmed' ? 'confirmed' : 'unconfirmed';
+  const byPrice = new Map();
   for (const row of rows) {
-    if (!variants.includes(String(row.code))) continue;
-    const date = dateKey(row.date);
-    if (!date || !(Number(row.price) > 0)) continue;
-    if (!byDate.has(date)) byDate.set(date, new Map());
-    const bucket = byDate.get(date);
-    const key = Number(row.price);
-    if (!bucket.has(key)) bucket.set(key, new Set());
-    if (row.account_name) bucket.get(key).add(String(row.account_name));
+    if (dateKey(row.date) !== date) continue;
+    if (!(Number(row.price) > 0)) continue;
+    const rowTier = row.quality === 'confirmed' ? 'confirmed' : 'unconfirmed';
+    if (rowTier !== tier) continue;
+    const price = Number(row.price);
+    if (!byPrice.has(price)) byPrice.set(price, new Set());
+    accountsOf(row).forEach(owner => byPrice.get(price).add(owner));
   }
-  for (const date of [...byDate.keys()].sort().reverse()) {
-    const bucket = byDate.get(date);
-    if (bucket.size < 2) continue;
-    return {
-      code, date,
-      prices: [...bucket.entries()].map(([price, accounts]) => ({ price, accounts: [...accounts] })),
-    };
-  }
-  return null;
+  if (byPrice.size < 2) return null;
+  return {
+    code,
+    date,
+    prices: [...byPrice.entries()].map(([price, accounts]) => ({ price, accounts: [...accounts] })),
+  };
 }
 
 // 历史投影选价（纯函数）：目标日已有落库价就用它；否则在“当日市场确有交易”的历史候选里取最近一条。

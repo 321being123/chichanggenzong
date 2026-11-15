@@ -343,7 +343,9 @@ async function doAutoRefresh() {
   }
   var refreshMarkets = marketOpen ? tradingMarkets : afterCloseMarkets;
   var result = await doRefresh(refreshMarkets);
-  if (!isHoldingsRefreshScopeCurrent(scope)) return { ok: false, stale: true };
+  // doRefresh 成功后 loadData 会整体替换 data 对象，这里不能再要求同一个 data 引用，
+  // 否则每次成功刷新都被判成过期，“今日已刷新”永远记不上、定时器反复触发。
+  if (!isHoldingsRefreshScopeSameAccount(scope)) return { ok: false, stale: true };
   if (afterClose) markAutoQuoteRefreshDoneToday(refreshMarkets);
   return result;
 }

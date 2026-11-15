@@ -25,6 +25,7 @@ function fakeQuery({ daily = [], cache = [], positions = [] } = {}) {
           .filter(row => wanted.includes(row.code) && String(row.date) <= String(upperDate))
           .map(row => ({
             code: row.code, date: row.date, price: row.price,
+            username: row.username || 'fixture-user',
             account_name: row.accountName || '账户甲',
             quality: row.quality || 'legacy_unverified',
             is_final: row.isFinal === undefined ? null : row.isFinal,
@@ -237,6 +238,71 @@ async function run() {
     assert.strictEqual(resolved.missing.length, 0);
     assert.strictEqual(resolved.status.complete, true, '纯现金账户没有缺价，不能判成估值不完整');
     assert.strictEqual(resolved.status.partial, false);
+  }
+
+  // 14. 同一证券同一交易日是公开市场事实：两位用户读到同一份收盘价，并且价差必须报告冲突。
+  {
+    const sharedDaily = [
+      { code: '600000', date: CLOSE_DATE, price: 10, quality: 'confirmed', isFinal: true, source: 'market_close_task:A股', username: 'user-a', accountName: '账户甲' },
+      { code: '600000', date: CLOSE_DATE, price: 10, quality: 'confirmed', isFinal: true, source: 'market_close_task:A股', username: 'user-b', accountName: '账户乙' },
+    ];
+    const first = await resolveEffectivePrices({
+      username: 'user-a', accountName: '账户甲', asOf: WEEKEND, mode: 'current',
+      subjects: subjects(['600000']), query: fakeQuery({ daily: sharedDaily }),
+    });
+    const second = await resolveEffectivePrices({
+      username: 'user-b', accountName: '账户乙', asOf: WEEKEND, mode: 'current',
+      subjects: subjects(['600000']), query: fakeQuery({ daily: sharedDaily }),
+    });
+    assert.strictEqual(first.prices.get('600000').price, second.prices.get('600000').price,
+      '同一证券同一交易日的收盘价必须收敛到同一份市场事实');
+    assert.strictEqual(first.status.complete, true);
+    assert.strictEqual(second.status.complete, true);
+    assert.strictEqual(first.conflicts.length, 0, '价格一致时不得报告冲突');
+
+    const diverged = await resolveEffectivePrices({
+      username: 'user-b', accountName: '账户乙', asOf: WEEKEND, mode: 'current',
+      subjects: subjects(['600000']),
+      query: fakeQuery({ daily: [sharedDaily[0], { ...sharedDaily[1], price: 12 }] }),
+    });
+    assert.strictEqual(diverged.conflicts.length, 1, '跨用户同日价不一致必须报告冲突');
+    assert.strictEqual(diverged.status.complete, false, '跨用户同日价不一致不得判为完整');
+    assert.ok(diverged.status.reasonCodes.includes('cross_account_price_conflict'));
+  }
+
+  // 15. 旧日期的历史冲突不得阻断当前已经一致的估值（冲突只看选中交易日）。
+  {
+    const resolved = await resolveEffectivePrices({
+      username: 'fixture-user', accountName: '账户甲', asOf: WEEKEND, mode: 'current',
+      subjects: subjects(['600000']),
+      query: fakeQuery({ daily: [
+        { code: '600000', date: CLOSE_DATE, price: 10, quality: 'confirmed', isFinal: true, accountName: '账户甲' },
+        { code: '600000', date: CLOSE_DATE, price: 10, quality: 'confirmed', isFinal: true, accountName: '账户乙' },
+        { code: '600000', date: EARLIER_DATE, price: 9, quality: 'confirmed', isFinal: true, accountName: '账户甲' },
+        { code: '600000', date: EARLIER_DATE, price: 9.5, quality: 'confirmed', isFinal: true, accountName: '账户乙' },
+      ] }),
+    });
+    assert.strictEqual(resolved.conflicts.length, 0, '历史日期的价差不属于当前估值冲突');
+    assert.strictEqual(resolved.status.complete, true, '当前交易日价格一致时必须判为完整');
+  }
+
+  // 16. 导入锚点固化价属于账户私有派生价：不能被别的账户当成市场收盘价。
+  {
+    const anchorRow = { code: '600000', date: CLOSE_DATE, price: 11, quality: 'anchor_carry_forward', source: 'nav_import_anchor', username: 'user-a', accountName: '账户甲' };
+    const own = await resolveEffectivePrices({
+      username: 'user-a', accountName: '账户甲', asOf: WEEKEND, mode: 'current',
+      subjects: subjects(['600000']), query: fakeQuery({ daily: [anchorRow] }),
+    });
+    assert.strictEqual(own.prices.get('600000').quality, 'derived_reference');
+    assert.strictEqual(own.status.complete, false, '派生价不构成完整估值');
+    assert.ok(own.status.reasonCodes.includes('price_derived_from_import_anchor'));
+
+    const other = await resolveEffectivePrices({
+      username: 'user-b', accountName: '账户乙', asOf: WEEKEND, mode: 'current',
+      subjects: subjects(['600000']), query: fakeQuery({ daily: [anchorRow] }),
+    });
+    assert.strictEqual(other.prices.size, 0, '别的账户不得读到本账户的派生价');
+    assert.strictEqual(other.missing.length, 1);
   }
 
   // 10. 旧机制收口：浏览器不再写收盘价、页面不再有休市校准、归因不再产出校准项。

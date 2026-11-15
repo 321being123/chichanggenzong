@@ -9,7 +9,7 @@ const USER = 'daily_price_guard';
 const ACCOUNT = '日价写保护账户';
 const DATE = '2026-11-13';
 
-function row({ price, quality, quoteAt, isFinal }) {
+function row({ price, quality, quoteAt, isFinal, source = 'test_close_task' }) {
   return [{
     username: USER,
     accountName: ACCOUNT,
@@ -18,7 +18,7 @@ function row({ price, quality, quoteAt, isFinal }) {
     code: '600000',
     name: '测试证券',
     price,
-    source: 'test_close_task',
+    source,
     quoteAt,
     isFinal,
     quality,
@@ -90,6 +90,30 @@ async function main() {
     [USER, '600000', DATE]
   )).rows[0];
   assert.strictEqual(Number(afterLate.price), 10.5, '价格必须保持在更新的修订上');
+
+  // 6. 不同来源但同一报价时刻：无法核验谁更新，不得互相覆盖（冲突留待人工核验）。
+  const otherSource = await priceRepository.upsertDailyPrice(row({
+    price: 12, quality: 'confirmed', quoteAt: `${DATE}T15:10:00+08:00`, isFinal: true, source: 'test_other_source',
+  }));
+  assert.strictEqual(otherSource.rowCount, 0, '不同来源在同一报价时刻不得覆盖已确认价');
+  const keptSource = (await pool.query(
+    'SELECT price::float8 AS price, source FROM daily_prices WHERE username=$1 AND code=$2 AND date=$3',
+    [USER, '600000', DATE]
+  )).rows[0];
+  assert.strictEqual(Number(keptSource.price), 10.5, '价格必须保持原来源的修订值');
+  assert.strictEqual(keptSource.source, 'test_close_task', '来源不得被无证据的写入替换');
+
+  // 7. 缺失报价时刻的两条日线（例如旧日线接口）一律不得互相覆盖。
+  const nullQuoteA = await priceRepository.upsertDailyPrice([{
+    ...row({ price: 13, quality: 'confirmed', quoteAt: null, isFinal: true })[0],
+    code: '600519',
+  }]);
+  assert.strictEqual(nullQuoteA.rowCount, 1, '首次无时刻写入可以落库');
+  const nullQuoteB = await priceRepository.upsertDailyPrice([{
+    ...row({ price: 14, quality: 'confirmed', quoteAt: null, isFinal: true })[0],
+    code: '600519',
+  }]);
+  assert.strictEqual(nullQuoteB.rowCount, 0, '缺失报价时刻时不得反复改写正式收盘价');
 
   console.log('日价条件写入保护回归通过');
 }

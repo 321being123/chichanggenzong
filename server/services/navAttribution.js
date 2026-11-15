@@ -254,6 +254,10 @@ async function computeNavHistoryTotals(username, accountName, data, query = pool
   // 候选价与遗留未核验价只保留缺口，不参与计算。
   const prices = new Map();
   const currentPositions = aggregateCurrentPositions(data.positions);
+  // 历史重建必须按“该市场在该日的最近应有收盘日”核对价格日期：
+  // 否则周四缺收盘价时会被周三的确认价静默填上，算出看似完整的历史资产。
+  const { expectedCloseDateFor } = require('./effectivePrice');
+  const marketStateCache = new Map();
   let cursor = 0;
   const totals = {};
   for (const nav of navs) {
@@ -261,6 +265,7 @@ async function computeNavHistoryTotals(username, accountName, data, query = pool
     while (cursor < rows.length && dateKey(rows[cursor].date) <= date) {
       const row = rows[cursor];
       prices.set(String(row.code), {
+        date: dateKey(row.date),
         price: Number(row.price),
         qualified: String(row.quality || 'legacy_unverified') === 'confirmed' || row.is_final === true,
       });
@@ -276,9 +281,21 @@ async function computeNavHistoryTotals(username, accountName, data, query = pool
       continue;
     }
     const rate = Number(nav.hkRate) > 0 ? Number(nav.hkRate) : fx.get(date);
-    totals[date] = snapshotTotal(data, nav, quantityAsOf(data, date, nav.snapshot_at), (code, isHk) => {
+    const quantities = quantityAsOf(data, date, nav.snapshot_at);
+    // 按当日实际持有的市场逐个算出“最近应有收盘日”，停牌/缺价一律保持缺口（不拿更早价格顶替）。
+    const expectedByMarket = new Map();
+    for (const [code, row] of quantities) {
+      if (!(Number(row.quantity) > 0)) continue;
+      const isHk = row.subtype === '港股' || currentPositions.get(code)?.subtype === '港股';
+      const market = isHk ? 'HK' : 'CN';
+      if (expectedByMarket.has(market)) continue;
+      expectedByMarket.set(market, await expectedCloseDateFor(market, date, query, marketStateCache, 'historical'));
+    }
+    totals[date] = snapshotTotal(data, nav, quantities, (code, isHk) => {
       const row = prices.get(code) || (isHk && /^\d{5}$/.test(code) ? prices.get(code.padStart(6, '0')) : null);
-      if (row && row.qualified && row.price > 0) return row.price;
+      const expected = expectedByMarket.get(isHk ? 'HK' : 'CN');
+      // 价格必须正是该市场当日的应有收盘价：日期不符（含缺当日价）即为缺口。
+      if (row && row.qualified && row.price > 0 && expected && row.date === expected) return row.price;
       // 未确认价格不能冒充历史收盘价；只有明确的人工退市估值可作为兜底。
       return manualDelistedPrice(data, code, currentPositions.get(code));
     }, rate);

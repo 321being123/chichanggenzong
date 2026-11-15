@@ -197,6 +197,35 @@ context.fetch = async (url, options = {}) => {
     assert.deepStrictEqual(rendered,['positions-table','topn-table'],'休市状态到齐后必须重绘明细和首页持仓');
     assert.strictEqual(summaryRenders,1,'休市状态到齐后必须重绘总资产卡片');
     assert.strictEqual(requests.length,beforeClosedRequests,'休市展示更新不得新增行情请求');
+    // 收盘后自动刷新：doRefresh 成功会整体替换 data 对象，仍必须记上“今日已刷新”，
+    // 否则定时器每次都会再刷新一次（合成反例：连续两次调用都真正刷新）。
+    {
+      context.marketStateSnapshot = {
+        businessDate: '2026-09-25',
+        markets: {
+          CN: { businessDate: '2026-09-25', status: 'open', isTradingNow: false, isAfterMarketClose: true },
+          HK: { businessDate: '2026-09-25', status: 'closed', isTradingNow: false, isAfterMarketClose: false },
+        },
+      };
+      // 清掉前面用例可能留下的“今日已刷新”标记，确保本用例从零开始。
+      ['CN', 'HK'].forEach(market => localValues.delete('_autoQuoteRefresh_普通账户_' + market));
+      if (context.data && context.data._autoQuoteRefreshDates) context.data._autoQuoteRefreshDates = {};
+      let realRefreshCalls = 0;
+      // 模拟真实 doRefresh：成功后用服务端结果整体替换 data 对象。
+      context.doRefresh = async () => {
+        realRefreshCalls += 1;
+        context.data = { ...context.data, totalAsset: 4002, valuation: { complete: true, missingCount: 0 } };
+        return { ok: true };
+      };
+      const first = await context.doAutoRefresh();
+      assert.strictEqual(first.ok, true, '收盘后第一次自动刷新应成功：' + JSON.stringify(first));
+      assert.strictEqual(realRefreshCalls, 1, '收盘后应实际刷新一次');
+      assert.strictEqual(context.data._autoQuoteRefreshDates && context.data._autoQuoteRefreshDates.CN, '2026-09-25',
+        '重读替换 data 后仍必须记录今日已刷新');
+      const second = await context.doAutoRefresh();
+      assert.strictEqual(realRefreshCalls, 1, '当天已刷新过不得再次触发刷新');
+      assert.strictEqual(second.reason, 'market_closed', '已完成后应安静返回，不重复采集');
+    }
     console.log('holdings cross-market refresh regression tests passed');
   } catch (error) {
     console.error(error);

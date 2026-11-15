@@ -105,6 +105,33 @@ async function main() {
     assert.strictEqual(legacy['2026-09-23'], null, '遗留未核实价不得用于历史资产重建');
   }
 
+  // 6. 历史交易日缺当日收盘价时，不得用前一交易日的确认价顶上（否则会算出假完整的历史资产）。
+  {
+    const wednesday = '2026-09-23';
+    const thursday = '2026-09-24';
+    assert.ok(isCnTradingDate(wednesday) && isCnTradingDate(thursday), '夹具日期必须是连续两个 A 股交易日');
+    const query = async (sql) => {
+      if (sql.includes('FROM daily_prices')) {
+        // 只有周三的确认价，周四缺价。
+        return { rows: [{ date: wednesday, code: '600000', price: 10, quality: 'confirmed', is_final: true }] };
+      }
+      if (sql.includes('FROM market.fx_rates')) return { rows: [] };
+      throw new Error('unexpected history query: ' + sql);
+    };
+    const data = {
+      positions: [{ code: '600000', price: 10, quantity: 100, subtype: '沪市' }],
+      cashFlows: [],
+      navHistory: [
+        { date: wednesday, totalAsset: 1000, hkRate: 1, snapshotSource: 'legacy', snapshot_at: wednesday + 'T08:00:00.000Z' },
+        { date: thursday, totalAsset: null, hkRate: 1, snapshotSource: 'legacy', snapshot_at: thursday + 'T08:00:00.000Z' },
+      ],
+      positionSnapshots: [{ snapshotId: 'imp-1', snapshotDate: wednesday, code: '600000', quantity: 100, quoteCurrency: 'CNY', source: 'manual_reconciliation' }],
+    };
+    const totals = await computeNavHistoryTotals('u', 'a', data, query);
+    assert.strictEqual(Math.round(totals[wednesday]), 1000, '周三有当日确认价时应能重建');
+    assert.strictEqual(totals[thursday], null, '周四缺当日收盘价时必须保留缺口，不能沿用周三价格');
+  }
+
   console.log('统一估值完整性守卫回归通过');
 }
 

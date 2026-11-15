@@ -169,6 +169,9 @@ async function recordCloseOne(username, accountName, label, matchFn, dateStr, re
   // 否则当天先有一条候选价，收盘后的确认价就永远写不进来（条件写入在仓储层按质量放行）。
   const { rows: existingRows } = await repository.select_daily_prices([username, accountName, cnDate]);
   const existingCodes = confirmedExistingCodes(existingRows);
+  // 同一天是否已经有任何记录（含迁移后统一标记为未核验的存量行）：
+  // 历史补漏据此区分“缺行补齐”与“改写既有历史日价”两类动作。
+  const existingAnyCodes = new Set((existingRows || []).map(row => String(row.code)));
 
   // 仅抓取缺失代码（按代码去重，避免同一代码因多条持仓记录而重复抓取）
   const missingCodes = pickMissingCodes(positions, existingCodes, matchFn);
@@ -188,13 +191,20 @@ async function recordCloseOne(username, accountName, label, matchFn, dateStr, re
     return { recorded, failed, skipped, error: false };
   }
   // 历史补漏必须走对应证券类型的历史接口，不能把当前实时价写入过去日期。
+  // 但“缺行补齐”和“改写既有历史日价”是两件事：迁移把存量行统一标成未核验，
+  // 直接重写等于在没有只读审计的情况下替换历史事实，因此默认禁止，
+  // 只有显式授权（context.allowHistoricalRevision 或 MARKET_CLOSE_ALLOW_HISTORY_REVISION=1）才允许修订。
   if (cnDate !== cnDateStr()) {
+    const allowRevision = context.allowHistoricalRevision === true
+      || String(process.env.MARKET_CLOSE_ALLOW_HISTORY_REVISION || '') === '1';
+    const plan = splitHistoricalBackfill(missing.map(pos => pos.code), existingAnyCodes, allowRevision);
     for (const pos of missing) {
+      if (plan.blocked.includes(String(pos.code))) continue;
       const ok = await backfillDailyPrices(username, accountName, pos.code, cnDate, cnDate, pos);
       if (ok) recorded++;
       else failed++;
     }
-    return { recorded, failed, skipped, error: recorded === 0 && failed > 0 };
+    return { recorded, failed, skipped, blockedRevision: plan.blocked.length, error: recorded === 0 && failed > 0 };
   }
   if (context.quoteMap && context.refreshMissingQuotes) {
     await context.refreshMissingQuotes(missing.map(pos => pos.code));
@@ -276,9 +286,11 @@ async function recordMarketClose(label, matchFn, dateStr, context = {}) {
     mergeQuoteMaps(quoteMap, refreshed);
   } : null;
   const { rows: accounts } = await repository.select_accounts();
-  let recorded = 0, failed = 0, skipped = 0, pendingConfirmation = 0;
+  let recorded = 0, failed = 0, skipped = 0, pendingConfirmation = 0, blockedRevision = 0;
   for (const account of accounts) {
-    const r = await recordCloseOne(account.username, account.account_name, label, matchFn, cnDate, requestBudget, { quoteMap, refreshMissingQuotes })
+    const r = await recordCloseOne(account.username, account.account_name, label, matchFn, cnDate, requestBudget, {
+      quoteMap, refreshMissingQuotes, allowHistoricalRevision: context.allowHistoricalRevision === true,
+    })
       .catch(error => {
         if (error && ['RATE_LIMIT', 'QUOTA_EXHAUSTED', 'CIRCUIT_OPEN', 'DATASET_LOCKED'].includes(error.code)) {
           error.externalCalls = getExternalCallStats().total;
@@ -291,6 +303,8 @@ async function recordMarketClose(label, matchFn, dateStr, context = {}) {
     skipped += Number(r && r.skipped || 0);
     // 只拿到候选（未确认终盘）的证券必须计入缺口：不能因为“写进去了”就报成功。
     pendingConfirmation += Number(r && r.candidateCount || 0);
+    // 需要授权才能改写的历史日价同样要计数：既不能静默覆盖，也不能当成补写成功。
+    blockedRevision += Number(r && r.blockedRevision || 0);
   }
   if (failed > 0) {
     // 失败必须按统一执行器重试：if (failed > 0) throw new Error(...)
@@ -301,8 +315,8 @@ async function recordMarketClose(label, matchFn, dateStr, context = {}) {
   // 兼容持仓价的回写已在 recordCloseOne 的同一事务内完成（日价 + 持仓价原子提交）；
   // 任务级不再单独补一次，避免事务外二次写入与“回写失败仍报成功”。
   return {
-    recorded, failed, skipped, pendingConfirmation,
-    verifiedNoChange: recorded === 0 && skipped === 0 && pendingConfirmation === 0,
+    recorded, failed, skipped, pendingConfirmation, blockedRevision,
+    verifiedNoChange: recorded === 0 && skipped === 0 && pendingConfirmation === 0 && blockedRevision === 0,
     externalCalls: getExternalCallStats().total,
   };
 }
@@ -360,7 +374,7 @@ async function backfillMissingCloses(options) {
   const scanAllMissingDates = !!(options && options.scanAllMissingDates);
   const recentDays = scanAllMissingDates ? null : await recentMarketDays(6);
   const { rows: accounts } = await repository.select_accounts();
-  let accountCount = 0, missingDates = 0, recorded = 0, failed = 0, skipped = 0;
+  let accountCount = 0, missingDates = 0, recorded = 0, failed = 0, skipped = 0, blockedRevision = 0;
   for (const account of accounts) {
     const accountName = account.account_name;
     const days = scanAllMissingDates
@@ -380,11 +394,12 @@ async function backfillMissingCloses(options) {
           recorded += result.recorded || 0;
           failed += result.failed || 0;
           skipped += result.skipped || 0;
+          blockedRevision += result.blockedRevision || 0;
         }
       }
     }
   }
-  return { accounts: accountCount, missingDates, recorded, failed, skipped };
+  return { accounts: accountCount, missingDates, recorded, failed, skipped, blockedRevision };
 }
 
 // 带幂等锁与执行记录的收盘任务（跨实例单跑，失败留痕供告警）
@@ -394,6 +409,12 @@ async function runMarketCloseJob(label, matchFn, dateStr, context = {}) {
   try {
     const result = await recordMarketClose(label, matchFn, dateStr, context);
     // 仍有候选未确认终盘时不得报成功：转成待补缺口，交给统一执行器重试与告警。
+    if (Number(result.blockedRevision) > 0) {
+      const message = `历史日价待授权修订 (${label} ${dateStr || ''})：需改写 ${result.blockedRevision} 条既有历史日价，`
+        + '默认不改写存量历史，须先做只读审计并显式授权（MARKET_CLOSE_ALLOW_HISTORY_REVISION=1）';
+      await finishJobRun(runId, false, message);
+      return { ok: false, label, errorType: 'historical_revision_blocked', error: message, ...result };
+    }
     if (Number(result.pendingConfirmation) > 0) {
       const message = `收盘价待确认 (${label} ${dateStr || ''})：候选 ${result.pendingConfirmation}，已确认 ${result.recorded - result.pendingConfirmation}，请等待终盘价或重新取价`;
       await finishJobRun(runId, false, message);
@@ -529,6 +550,18 @@ function scheduleAllMarketCloses() {
   }
 }
 
+// 历史补漏目标拆分：缺行补齐（可以直接写）与存量历史修订（需显式授权）必须分开。
+// 迁移把存量日价统一标成未核验，若把它们当“缺失”直接重写，就等于在没有只读审计的情况下替换历史事实。
+function splitHistoricalBackfill(missingCodes, existingAnyCodes, allowRevision) {
+  const writable = [];
+  const blocked = [];
+  for (const code of (missingCodes || [])) {
+    if (!allowRevision && existingAnyCodes && existingAnyCodes.has(String(code))) blocked.push(String(code));
+    else writable.push(String(code));
+  }
+  return { writable, blocked };
+}
+
 // 从当日已有记录中筛出“已确认终盘”的证券代码；候选与遗留价不参与幂等跳过。
 function confirmedExistingCodes(rows) {
   return new Set((rows || [])
@@ -536,4 +569,4 @@ function confirmedExistingCodes(rows) {
     .map(row => row.code));
 }
 
-module.exports = { qualifyCloseQuote, confirmedExistingCodes, scheduleAllMarketCloses, runMarketCloseByLabel, backfillMissingCloses, findMissingCloseDates, isTradingDay, isMarketTradingDate, nextMarketCloseDelay, fmtCN, pickMissingCodes, isUncoveredPosition, cnWeekday, msUntil, nextRunDelay, quoteForCode, isUsableQuote, mergeQuoteMaps, shouldRunLegacyNavAfterHkClose, runLegacyPostCloseCycle };
+module.exports = { qualifyCloseQuote, confirmedExistingCodes, splitHistoricalBackfill, scheduleAllMarketCloses, runMarketCloseByLabel, backfillMissingCloses, findMissingCloseDates, isTradingDay, isMarketTradingDate, nextMarketCloseDelay, fmtCN, pickMissingCodes, isUncoveredPosition, cnWeekday, msUntil, nextRunDelay, quoteForCode, isUsableQuote, mergeQuoteMaps, shouldRunLegacyNavAfterHkClose, runLegacyPostCloseCycle };

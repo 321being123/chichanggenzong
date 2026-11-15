@@ -149,6 +149,23 @@ check('已有候选价不阻止收盘升级：只有已确认记录才算已处�
   assert.deepStrictEqual([...codes], ['000001'], '候选与遗留价必须留在待升级集合里');
 });
 
+console.log('D. 历史补漏授权门禁 —— 缺行补齐可直接写，改写存量历史日价必须显式授权');
+check('没有既有记录 -> 直接补齐', () => {
+  const plan = mc.splitHistoricalBackfill(['600000', '000001'], new Set(), false);
+  assert.deepStrictEqual(plan.writable, ['600000', '000001']);
+  assert.deepStrictEqual(plan.blocked, []);
+});
+check('已有未核验存量行 -> 默认不改写，计入待授权', () => {
+  const plan = mc.splitHistoricalBackfill(['600000', '000001'], new Set(['600000']), false);
+  assert.deepStrictEqual(plan.writable, ['000001'], '只有缺行的那只可以补写');
+  assert.deepStrictEqual(plan.blocked, ['600000'], '存量历史日价必须留待授权');
+});
+check('显式授权后允许修订存量历史日价', () => {
+  const plan = mc.splitHistoricalBackfill(['600000'], new Set(['600000']), true);
+  assert.deepStrictEqual(plan.writable, ['600000']);
+  assert.deepStrictEqual(plan.blocked, []);
+});
+
 const failed = results.filter(r => r[0] === 'FAIL');
 console.log('\n========================================');
 console.log(`P0-3/P0-4 回归：共 ${results.length} 项，通过 ${results.length - failed.length}，失败 ${failed.length}`);

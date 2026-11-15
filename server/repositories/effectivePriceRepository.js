@@ -4,25 +4,26 @@ const { pool } = require('../db/connection');
 // 只做 SQL，不做业务判断：来源白名单、质量分级、市场时段与缺失原因都在 services/effectivePrice 内决定。
 // 所有查询都接受外层事务连接，避免在一次账户读取里另开连接池连接造成口径分裂。
 
-// 按证券取逐账户最近候选（窗口函数限流，避免历史账户把全表读进来）。
-// 同一证券在不同账户的同日记录都会返回：上层据此判定“同一证券同一时点只有一个价格”，
-// 冲突时报告并核验，而不是各账户各自给出不同的完整估值。
+// 按证券取最近若干交易日的日价候选，跨用户读取普通市场事实：
+// 同一证券同一交易日的收盘价是公开市场事实，不属于某个账户，因此不能按用户各选一份，
+// 否则两位用户持有同一证券会各自得到“完整”但不同的价格。
+// 账户私有的派生价（导入锚点等，见 $4 排除名单）只回给其所属账户，保持人工/派生估值隔离。
 async function listRecentDailyPriceCandidates(params, client = pool) {
-  const [username, codes, upperDate, perCode] = params;
+  const [username, codes, upperDate, privateSources, dateWindow] = params;
   return client.query(
-    `SELECT code, date::text AS date, price::float8 AS price, account_name,
+    `SELECT code, date::text AS date, price::float8 AS price, username, account_name,
             quality, is_final, source, quote_at, revision
        FROM (
-         SELECT code, date, price, account_name, quality, is_final, source, quote_at, revision,
-                ROW_NUMBER() OVER (PARTITION BY code ORDER BY date DESC, revision DESC) AS rn
+         SELECT code, date, price, username, account_name, quality, is_final, source, quote_at, revision,
+                DENSE_RANK() OVER (PARTITION BY code ORDER BY date DESC) AS date_rank
            FROM daily_prices
-          WHERE username = $1
-            AND code = ANY($2::text[])
+          WHERE code = ANY($2::text[])
             AND date::date <= $3::date
+            AND (COALESCE(source, '') <> ALL($4::text[]) OR username = $1)
        ) ranked
-      WHERE rn <= $4
+      WHERE date_rank <= $5
       ORDER BY code, date DESC, revision DESC`,
-    [username, codes, upperDate, perCode]
+    [username, codes, upperDate, privateSources, dateWindow]
   );
 }
 
@@ -56,9 +57,11 @@ async function selectAccountId(params, client = pool) {
 }
 
 // 条件写入：
-// ①已确认收盘价不允许被较低资格（候选/遗留）覆盖；
-// ②同级 confirmed 更正必须“来源时刻更新”或“同时刻但价格确实不同”才允许，
-//   迟到的旧终盘不能覆盖更新的修订；
+// ①已确认收盘价不允许被较低资格（候选/遗留/派生）覆盖；
+// ②同级 confirmed 更正必须能核验修订关系，只认两种情形：
+//   a) 同一已准入来源、报价时刻严格更新（正常修订/重取）；
+//   b) 同一已准入来源、同一报价时刻但价格确实不同（来源侧更正）。
+//   报价时刻缺失，或来源不同且时刻相同（迟到响应/来源打架）一律不写，冲突留待人工核验；
 // ③完全相同（同质量、同价、同来源时刻）视为幂等重复，不更新也不递增 revision。
 // previous_price / revision 保留可追溯性与“合法更正使版本变化”的语义。
 async function upsertDailyPrice(params, client = pool) {
@@ -81,11 +84,14 @@ async function upsertDailyPrice(params, client = pool) {
        evidence = EXCLUDED.evidence
      WHERE daily_prices.quality <> 'confirmed'
         OR (EXCLUDED.quality = 'confirmed'
+            AND EXCLUDED.source IS NOT DISTINCT FROM daily_prices.source
             AND (
-              -- 来源时刻更新：允许合法更正
-              COALESCE(EXCLUDED.quote_at, 'epoch'::timestamptz) > COALESCE(daily_prices.quote_at, 'epoch'::timestamptz)
-              -- 同一来源时刻但价格不同：来源更正，允许
-              OR (EXCLUDED.quote_at IS NOT DISTINCT FROM daily_prices.quote_at
+              -- a) 同来源、报价时刻严格更新
+              (EXCLUDED.quote_at IS NOT NULL
+                AND (daily_prices.quote_at IS NULL OR EXCLUDED.quote_at > daily_prices.quote_at))
+              -- b) 同来源、同一报价时刻但价格不同：来源侧更正
+              OR (daily_prices.quote_at IS NOT NULL
+                  AND EXCLUDED.quote_at IS NOT DISTINCT FROM daily_prices.quote_at
                   AND EXCLUDED.price IS DISTINCT FROM daily_prices.price)
             ))
      RETURNING date::text AS date, code, revision, quality, is_final`,

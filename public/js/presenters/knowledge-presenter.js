@@ -191,23 +191,32 @@ function ksNewRequestId() {
   return 'c-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10);
 }
 
-function ksReadPendingMap() {
+// 请求标识的权威副本放在页面内存里，sessionStorage 只做「跨刷新」的持久化副本。
+// 存储被禁用/隐私模式/配额满时读写都会抛错，此时必须仍然保留内存副本，
+// 否则「结果不明 → 重试」会拿到新标识，服务端无法幂等，变成第二条评论和通知。
+let ksPendingComments = null;
+
+function ksPendingStore() {
+  if (ksPendingComments) return ksPendingComments;
+  ksPendingComments = {};
   try {
     const raw = sessionStorage.getItem(KS_PENDING_KEY);
-    const map = raw ? JSON.parse(raw) : {};
-    return map && typeof map === 'object' ? map : {};
-  } catch (e) { return {}; }
+    const parsed = raw ? JSON.parse(raw) : null;
+    if (parsed && typeof parsed === 'object') ksPendingComments = parsed;
+  } catch (e) { /* 存储不可用：只用内存副本 */ }
+  return ksPendingComments;
 }
 
-function ksWritePendingMap(map) {
+function ksPersistPendingStore() {
+  const map = ksPendingStore();
+  const keys = Object.keys(map);
+  if (keys.length > KS_PENDING_MAX) {
+    // 只保留最近写入的若干条，避免长期占用会话存储
+    keys.slice(0, keys.length - KS_PENDING_MAX).forEach(function (k) { delete map[k]; });
+  }
   try {
-    const keys = Object.keys(map);
-    if (keys.length > KS_PENDING_MAX) {
-      // 只保留最近写入的若干条，避免长期占用会话存储
-      keys.slice(0, keys.length - KS_PENDING_MAX).forEach(function (k) { delete map[k]; });
-    }
     sessionStorage.setItem(KS_PENDING_KEY, JSON.stringify(map));
-  } catch (e) { /* 隐私模式下降级为仅本页内存 */ }
+  } catch (e) { /* 写不进去也算保留：内存副本仍然生效 */ }
 }
 
 function ksPendingKey(articleId, text, parentId) {
@@ -216,20 +225,20 @@ function ksPendingKey(articleId, text, parentId) {
 
 function ksCommentRequestId(articleId, text, parentId) {
   const key = ksPendingKey(articleId, text, parentId);
-  const map = ksReadPendingMap();
+  const map = ksPendingStore();
   if (map[key]) return map[key];
   const id = ksNewRequestId();
   map[key] = id;
-  ksWritePendingMap(map);
+  ksPersistPendingStore();
   return id;
 }
 
 function ksClearCommentRequestId(articleId, text, parentId) {
   const key = ksPendingKey(articleId, text, parentId);
-  const map = ksReadPendingMap();
+  const map = ksPendingStore();
   if (!map[key]) return;
   delete map[key];
-  ksWritePendingMap(map);
+  ksPersistPendingStore();
 }
 
 // 结果不明：保留标识，提示用户可安全重试（重试不会产生第二条评论）
@@ -240,11 +249,15 @@ function ksMayHaveCommitted(status) {
 async function ksSubmitComment(parentId, textInput, boxKey) {
   const a = ksState.currentArticle;
   if (!a) return;
-  const text = (textInput || '').trim();
+  const rawText = String(textInput || '');
+  // 正文提交前要去掉首尾空白，但 @ 的区间是基于输入框原文的：必须按「去掉的首部字符数」平移，
+  // 否则开头有空格时复核失败，用户明明选了人却一个 @ 都不提交（通知收不到，也没有报错）。
+  const leading = rawText.length - rawText.replace(/^\s+/, '').length;
+  const text = rawText.slice(leading).replace(/\s+$/, '');
   if (!text) { showToast('评论内容不能为空'); return; }
   // @ 区间按最终正文重算；正文里已删掉的 @ 自动不再提交
   const mentions = (boxKey && typeof window.ksReadMentions === 'function')
-    ? window.ksReadMentions(boxKey, text) : [];
+    ? window.ksReadMentions(boxKey, text, leading) : [];
   const body = { content: text, client_request_id: ksCommentRequestId(a.id, text, parentId) };
   if (parentId) body.parent_id = parentId;
   if (mentions.length) body.mentions = mentions;
@@ -264,7 +277,8 @@ async function ksSubmitComment(parentId, textInput, boxKey) {
     else showToast(ksWriteErrMsg(r.status));
     return;
   }
-  ksClearCommentRequestId(a.id, text, parentId);  if (boxKey && typeof window.ksResetMentions === 'function') window.ksResetMentions(boxKey);
+  ksClearCommentRequestId(a.id, text, parentId);
+  if (boxKey && typeof window.ksResetMentions === 'function') window.ksResetMentions(boxKey);
   // 刷新并清空主评论框
   window.ksClearCommentInput();
   ksLoadComments(a.id);

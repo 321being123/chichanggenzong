@@ -271,12 +271,114 @@ async function invalidatedItem() {
   } finally { await tick(); dom.window.close(); }
 }
 
+// ---------- 5. 正文首尾空格不能丢 @ ----------
+async function leadingSpaceMention() {
+  const dom = new JSDOM(
+    '<textarea id="ta"></textarea><div id="panel" role="listbox" hidden></div><div id="chips" hidden></div><div id="ks-comment-list"></div>',
+    { url: 'https://example.test/?main=knowledge', runScripts: 'outside-only' }
+  );
+  const w = dom.window;
+  try {
+    const posts = [];
+    w.username = 'alice';
+    w.escapeHtml = escaper();
+    w.showToast = function () {};
+    w.siteApi = {
+      get: async function () { return { ok: true, status: 200, payload: { id: 7, title: '文章', status: 'published' } }; },
+      post: async function (url, body) {
+        if (url.indexOf('/view') >= 0) return { ok: true, status: 200, payload: {} };
+        posts.push(body);
+        return { ok: true, status: 200, payload: { id: 1 } };
+      },
+    };
+    w.eval(read('public/js/knowledge.js'));
+    // 函数声明会覆盖预先挂到 window 上的桩，加载脚本后再替换阅读视图与评论渲染
+    w.ksPaintArticle = function () {};
+    w.ksShowView = function () {};
+    w.ksPaintCommentsPrepare = function () { return false; };
+    w.ksPaintComments = function () {};
+    w.ksClearCommentInput = function () {};
+    w.eval(read('public/js/presenters/knowledge-presenter.js'));
+    await w.ksOpenArticle(7);
+
+    const ta = w.document.getElementById('ta');
+    w.ksInitMentionBox('main', ta, w.document.getElementById('panel'), w.document.getElementById('chips'));
+    // 先打两个空格再输入 @ 并从候选选中「读者」
+    ta.value = '  ';
+    ta.selectionStart = ta.selectionEnd = 2;
+    input(w, ta);
+    ta.value = '  @';
+    ta.selectionStart = ta.selectionEnd = 3;
+    input(w, ta);
+    w.ksApplyMention('main', { subjectId: '11111111-1111-1111-1111-111111111111', nickname: '读者', username: 'reader_a' });
+    assert.strictEqual(ta.value, '  @读者 ', '前置空格应保留在输入框里');
+    assert.strictEqual(w.ksReadMentions('main', ta.value).length, 1);
+
+    // 提交：正文会去掉首尾空格，@ 的区间必须同步平移
+    await w.ksSubmitComment(null, ta.value, 'main');
+    assert.strictEqual(posts.length, 1);
+    assert.strictEqual(posts[0].content, '@读者', '提交正文应去首尾空格');
+    assert.ok(Array.isArray(posts[0].mentions) && posts[0].mentions.length === 1,
+      '开头有空格时也不能丢掉已选的 @');
+    assert.strictEqual(posts[0].mentions[0].start, 0, '区间必须按去掉的首部字符数平移');
+    assert.strictEqual(posts[0].mentions[0].end, 3);
+    assert.strictEqual(posts[0].content.slice(posts[0].mentions[0].start, posts[0].mentions[0].end), '@读者',
+      '提交的区间必须与提交的正文一致，否则服务端会拒绝或漏发');
+    pass++;
+  } finally { await tick(); dom.window.close(); }
+}
+
+// ---------- 6. 会话存储不可用时的标识兜底 ----------
+async function storageUnavailable() {
+  const dom = new JSDOM('<div id="ks-comment-list"></div>', {
+    url: 'https://example.test/?main=knowledge', runScripts: 'outside-only',
+  });
+  const w = dom.window;
+  try {
+    const posts = [];
+    const toasts = [];
+    w.username = 'alice';
+    w.showToast = function (m) { toasts.push(String(m)); };
+    w.ksPaintArticle = function () {};
+    w.ksShowView = function () {};
+    w.ksPaintCommentsPrepare = function () { return false; };
+    w.ksPaintComments = function () {};
+    w.ksClearCommentInput = function () {};
+    w.siteApi = {
+      get: async function () { return { ok: true, status: 200, payload: { id: 7, title: '文章', status: 'published' } }; },
+      post: async function (url, body) {
+        if (url.indexOf('/view') >= 0) return { ok: true, status: 200, payload: {} };
+        posts.push(body);
+        return { ok: false, status: 502, payload: null };
+      },
+    };
+    w.eval(read('public/js/presenters/knowledge-presenter.js'));
+    // 模拟隐私模式/存储被禁用：任何访问 sessionStorage 都抛错
+    Object.defineProperty(w, 'sessionStorage', {
+      configurable: true,
+      get: function () { throw new Error('storage denied'); },
+    });
+    await w.ksOpenArticle(7);
+
+    await w.ksSubmitComment(null, '存储不可用时的评论', null);
+    await w.ksSubmitComment(null, '存储不可用时的评论', null);
+    assert.strictEqual(posts.length, 2);
+    assert.ok(posts[0].client_request_id, '第一次提交必须带请求标识');
+    assert.strictEqual(posts[1].client_request_id, posts[0].client_request_id,
+      '存储不可用时仍要靠内存副本复用同一标识，否则重试会重复发表');
+    assert.ok(toasts.some(function (m) { return m.indexOf('可能已提交') >= 0; }));
+    pass++;
+  } finally { await tick(); dom.window.close(); }
+}
+
 (async () => {
   const suites = [
     ['@ 区间随编辑平移与失效（同昵称可区分）', mentionRanges],
     ['提醒设置面板读写与版本冲突', settingsPanel],
     ['结果不明时保留并持久化请求标识', retryRequestId],
     ['失效通知只显示内容已不可用', invalidatedItem],
+    ['正文首尾空格时 @ 不丢失', leadingSpaceMention],
+    ['会话存储不可用时仍复用请求标识', storageUnavailable],
   ];
   let failed = 0;
   for (const [name, fn] of suites) {

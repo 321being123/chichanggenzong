@@ -530,18 +530,23 @@ function ksPaintMentionChips(boxKey) {
   }).join('');
 }
 
-// 提交时直接使用登记好的区间（不再按文字搜索），并复核该段文字仍与选择一致
-function ksReadMentions(boxKey, text) {
+// 提交时直接使用登记好的区间（不再按文字搜索），并复核该段文字仍与选择一致。
+// shiftChars：正文提交前被去掉的首部空白字符数——不减去它，开头有空格时区间会整体错位，
+// 复核失败后该 @ 会被静默丢弃（用户明明选了人，通知却发不出去）。
+function ksReadMentions(boxKey, text, shiftChars) {
   const box = ksMentionBox(boxKey);
   if (!box || !box.mentions.length) return [];
+  const shift = Number.isInteger(shiftChars) ? shiftChars : 0;
   return box.mentions
+    .map(function (m) {
+      const start = m.start - shift;
+      const end = m.end - shift;
+      return { subjectId: m.subjectId, text: m.text, start: start, end: end };
+    })
     .filter(function (m) {
       return m.text && Number.isInteger(m.start) && Number.isInteger(m.end)
         && m.start >= 0 && m.end <= text.length
         && text.slice(m.start, m.end) === m.text;
-    })
-    .map(function (m) {
-      return { subjectId: m.subjectId, text: m.text, start: m.start, end: m.end };
     })
     .sort(function (a, b) { return a.start - b.start; });
 }

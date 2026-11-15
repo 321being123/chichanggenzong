@@ -7,6 +7,7 @@ let ksState = {
   articles: [],
   loaded: false,   // 已完成一次进入页面的数据加载；返回本页不再全量重拉（2026-10-21 审查 U-3）
   readingId: null, // 阅读意图：打开文章时立即置位，防止并行的 loadKnowledge 把用户踢回列表
+  commentsSeq: 0,  // 评论列表请求序号：切文章后旧请求的响应不得画到当前页面
   currentCategory: null,
   currentArticle: null,
   editingId: null,   // 正在编辑的文章 id（新建为 null）
@@ -161,9 +162,14 @@ async function ksDeleteArticle(id) {
 }
 
 // ---------- 评论（楼中楼嵌套） ----------
+// 列表请求是异步的：返回时用户可能已经切到别的文章，必须按序号与目标文章双重校验，
+// 否则上一篇文章的评论会被画到当前页面上（正在看 B，却显示 A 的评论）。
 async function ksLoadComments(id) {
+  const seq = ++ksState.commentsSeq;
   if (!window.ksPaintCommentsPrepare()) return;
   const r = await window.siteApi.get('/api/knowledge/articles/' + id + '/comments');
+  if (seq !== ksState.commentsSeq) return;
+  if (!ksStillOnArticle(id)) return;
   const list = r.payload || [];
   window.ksPaintComments(list);
 }
@@ -362,6 +368,23 @@ function ksMayHaveCommitted(status) {
   return status === 0 || status >= 500;
 }
 
+// 只有服务端「真的看过这条请求并明确拒绝」的状态才能断言没落库：
+// 400 参数不合法、404 文章不存在、409 编号冲突或父评论失效、413/422 内容被拒。
+// 429 限流、401/403 登录状态或权限、408/499 客户端中断都不代表这次请求被处理过——
+// 若它其实是「上次结果不明」的重试，丢掉原编号后第三次提交就会再发一条。
+function ksDefinitelyRejected(status) {
+  return status === 400 || status === 404 || status === 409
+    || status === 413 || status === 422;
+}
+
+// 响应回来时页面可能已经换了人，也可能换了文章：
+// 记录按发起时的归属清除，界面更新只允许作用在「同一账号 + 仍在读发起时那篇文章」上。
+function ksStillOnArticle(articleId) {
+  const cur = ksState.currentArticle;
+  if (!cur || String(cur.id) !== String(articleId)) return false;
+  return String(ksState.readingId || '') === String(articleId);
+}
+
 // 回到文章时把未确认的提交还原成草稿（正文 + @ 一起）：
 // 一级评论回到主输入框，每条回复回到对应楼层的回复框，都在该位置带「放弃这条」入口。
 function ksResumePendingComment(articleId, options) {
@@ -454,7 +477,8 @@ async function ksSubmitComment(parentId, textInput, boxKey) {
   } else {
     requestId = ksNewRequestId();
   }
-  // 请求发出前把归属固定下来：await 期间用户可能切换账号
+  // 请求发出前把归属固定下来：await 期间用户可能切换账号或翻到别的文章
+  const isRetry = !!pending;
   const ownerAtSend = ksPendingOwner();
   const saved = ksSavePendingRecord(a.id, parentId, { id: requestId, content: text, mentions: mentions });
   if (!saved || saved.ok !== true) {
@@ -471,18 +495,23 @@ async function ksSubmitComment(parentId, textInput, boxKey) {
   if (parentId) body.parent_id = parentId;
   if (mentions.length) body.mentions = mentions;
   const r = await window.siteApi.post('/api/knowledge/articles/' + a.id + '/comments', body);
-  // 响应回来时账号可能已经换人：记录一律按发起时的账号处理，界面（提示、草稿、列表）只在同一账号下更新，
-  // 否则旧账号的成功/失败会作用到新账号的页面与记录上。
+  // 响应回来时可能已经换了账号、也可能已经翻到别的文章：
+  // 记录一律按发起时的账号与文章清除，界面（提示、清草稿、刷列表）只在「同一账号 + 仍在读这篇」时更新。
   const sameOwner = !!ownerAtSend.key && ksPendingOwner().key === ownerAtSend.key;
+  const samePage = sameOwner && ksStillOnArticle(a.id);
   if (!r.ok) {
-    if (ksMayHaveCommitted(r.status)) {
-      // 保留整份待确认记录：服务端可能已提交，重试会拿回原评论而不是再发一条
-      if (sameOwner) showToast(ksUnknownOutcomeTip(r.status, saved));
+    // 结果不明：服务端可能已提交，重试会拿回原评论而不是再发一条，必须保留整份记录。
+    // 另外：如果这次本身就是「上次结果不明」的重试，那么限流/登录状态被拦也不能证明上次没落库
+    // （请求可能根本没进到处理逻辑），此时同样要保留原编号，否则第三次提交就会用新编号再发一条。
+    const uncertain = ksMayHaveCommitted(r.status)
+      || (isRetry && !ksDefinitelyRejected(r.status));
+    if (uncertain) {
+      if (samePage) showToast(ksUnknownOutcomeTip(r.status, saved));
       return;
     }
     // 服务端明确拒绝：丢弃这条失败请求的记录（只清发起时的账号，不碰当前账号）
     ksClearPendingRecordByOwner(ownerAtSend.key, a.id, parentId);
-    if (!sameOwner) return;
+    if (!samePage) return;
     if (typeof window.ksHideCommentNotice === 'function') window.ksHideCommentNotice(boxKey || 'main');
     const d = r.payload || {};
     if (r.status === 400 || r.status === 409 || r.status === 429) showToast(d.error || ksWriteErrMsg(r.status));
@@ -490,7 +519,7 @@ async function ksSubmitComment(parentId, textInput, boxKey) {
     return;
   }
   ksClearPendingRecordByOwner(ownerAtSend.key, a.id, parentId);
-  if (!sameOwner) return;
+  if (!samePage) return;
   // 清掉该输入框的草稿与提示（一级清主框，回复清对应楼层）
   if (typeof window.ksClearCommentDraft === 'function') window.ksClearCommentDraft(parentId || null);
   ksLoadComments(a.id);

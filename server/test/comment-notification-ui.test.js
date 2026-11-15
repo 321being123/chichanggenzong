@@ -1139,6 +1139,184 @@ async function pendingLimitPerAccount() {
   } finally { await tick(); dom.window.close(); }
 }
 
+// ---------- 19. 请求飞行中切换文章：旧响应不得改动当前文章页面 ----------
+async function articleSwitchDuringRequest() {
+  const dom = new JSDOM(
+    '<textarea id="ks-comment"></textarea><div id="panel" role="listbox" hidden></div><div id="chips" hidden></div>'
+    + '<div id="ks-comment-notice" hidden></div><div id="ks-comment-list"></div>',
+    { url: 'https://example.test/?main=knowledge', runScripts: 'outside-only' }
+  );
+  const w = dom.window;
+  try {
+    const toasts = [];
+    const posts = [];
+    const painted = [];
+    let releaseFirst = null;
+    w.username = 'alice';
+    w.accountIdentity = '100';
+    w.escapeHtml = escaper();
+    w.showToast = function (m) { toasts.push(String(m)); };
+    w.siteApi = {
+      get: async function (url) {
+        const m = /\/articles\/(\d+)(\/comments)?$/.exec(url);
+        const id = m ? Number(m[1]) : 0;
+        return {
+          ok: true, status: 200,
+          payload: m && m[2] ? [{ id: 'c' + id }] : { id: id, title: '文章' + id, status: 'published' },
+        };
+      },
+      post: function (url, body) {
+        if (url.indexOf('/view') >= 0) return Promise.resolve({ ok: true, status: 200, payload: {} });
+        posts.push(body);
+        if (posts.length === 1) return new Promise(function (resolve) { releaseFirst = resolve; });
+        return Promise.resolve({ ok: true, status: 200, payload: { id: 1 } });
+      },
+    };
+    w.eval(read('public/js/knowledge.js'));
+    w.ksPaintArticle = function () {};
+    w.ksShowView = function () {};
+    w.ksPaintCommentsPrepare = function () { return true; };
+    w.ksPaintComments = function (list) { painted.push(list); };
+    w.eval(read('public/js/presenters/knowledge-presenter.js'));
+
+    await w.ksOpenArticle(7);
+    const ta = w.document.getElementById('ks-comment');
+    w.ksInitMentionBox('main', ta, w.document.getElementById('panel'), w.document.getElementById('chips'));
+
+    // 在文章 7 发表评论（请求挂起）
+    const pendingA = w.ksSubmitComment(null, '文章七的评论', null);
+    assert.strictEqual(posts.length, 1);
+
+    // 请求还没回来就翻到文章 8，并在主评论框里写下半截草稿
+    await w.ksOpenArticle(8);
+    painted.length = 0;
+    ta.value = '文章八的草稿';
+    ta.selectionStart = ta.selectionEnd = ta.value.length;
+
+    // 文章 7 的评论此刻才提交成功
+    releaseFirst({ ok: true, status: 200, payload: { id: 1 } });
+    await pendingA;
+
+    assert.strictEqual(ta.value, '文章八的草稿', '旧文章的成功响应不能清掉当前文章的评论草稿');
+    assert.strictEqual(painted.length, 0, '旧文章的评论列表不能画到当前文章页面上');
+    assert.ok(!toasts.some(function (m) { return m.indexOf('评论已发表') >= 0; }),
+      '文章 7 的成功结果不能提示在文章 8 的页面上');
+
+    // 文章 7 的记录该清还是要清（它确实提交成功了）
+    const stored = JSON.parse(w.sessionStorage.getItem('ks-pending-comments') || '{}');
+    assert.strictEqual(Object.keys(stored).length, 0, '成功的记录应按发起时的文章清掉');
+    pass++;
+  } finally { await tick(); dom.window.close(); }
+}
+
+// ---------- 20. 结果不明后遇到限流，重试必须继续沿用原编号 ----------
+async function rateLimitKeepsRequestId() {
+  const dom = new JSDOM(
+    '<textarea id="ks-comment"></textarea><div id="panel" role="listbox" hidden></div><div id="chips" hidden></div>'
+    + '<div id="ks-comment-notice" hidden></div><div id="ks-comment-list"></div>',
+    { url: 'https://example.test/?main=knowledge', runScripts: 'outside-only' }
+  );
+  const w = dom.window;
+  try {
+    const toasts = [];
+    const posts = [];
+    const replies = [
+      { ok: false, status: 502, payload: null },
+      { ok: false, status: 429, payload: { error: '评论太频繁，请稍后再试' } },
+      { ok: true, status: 200, payload: { id: 1 } },
+    ];
+    w.username = 'alice';
+    w.accountIdentity = '100';
+    w.escapeHtml = escaper();
+    w.showToast = function (m) { toasts.push(String(m)); };
+    w.siteApi = {
+      get: async function () { return { ok: true, status: 200, payload: { id: 7, title: '文章', status: 'published' } }; },
+      post: async function (url, body) {
+        if (url.indexOf('/view') >= 0) return { ok: true, status: 200, payload: {} };
+        posts.push(body);
+        return replies[posts.length - 1] || { ok: false, status: 500, payload: null };
+      },
+    };
+    w.eval(read('public/js/knowledge.js'));
+    w.ksPaintArticle = function () {};
+    w.ksShowView = function () {};
+    w.ksPaintCommentsPrepare = function () { return false; };
+    w.ksPaintComments = function () {};
+    w.eval(read('public/js/presenters/knowledge-presenter.js'));
+    await w.ksOpenArticle(7);
+
+    // 第一次：结果不明（502），记录与编号保留
+    await w.ksSubmitComment(null, '可能已提交的评论', null);
+    assert.strictEqual(posts.length, 1);
+    const id1 = posts[0].client_request_id;
+
+    // 原样重试：这次被限流（429）。限流不能证明上一次没落库，编号必须继续保留
+    await w.ksSubmitComment(null, '可能已提交的评论', null);
+    assert.strictEqual(posts.length, 2);
+    assert.strictEqual(posts[1].client_request_id, id1, '重试必须沿用原编号');
+    const stored = JSON.parse(w.sessionStorage.getItem('ks-pending-comments') || '{}');
+    assert.strictEqual(Object.keys(stored).length, 1, '限流不应丢弃待确认记录');
+    assert.ok(toasts.some(function (m) { return m.indexOf('可能已提交') >= 0; }),
+      '限流时应说明结果仍未确认，而不是当作明确失败');
+
+    // 第三次提交：仍用原编号（服务端幂等返回原评论，不会多出一条）
+    await w.ksSubmitComment(null, '可能已提交的评论', null);
+    assert.strictEqual(posts.length, 3);
+    assert.strictEqual(posts[2].client_request_id, id1, '第三次也必须沿用原编号');
+    const after = JSON.parse(w.sessionStorage.getItem('ks-pending-comments') || '{}');
+    assert.strictEqual(Object.keys(after).length, 0, '确认成功后才清记录');
+    pass++;
+  } finally { await tick(); dom.window.close(); }
+}
+
+// ---------- 21. 快速切换文章时，旧文章的评论列表不得画到当前页面 ----------
+async function staleCommentsNotPainted() {
+  const dom = new JSDOM(
+    '<textarea id="ks-comment"></textarea><div id="panel" role="listbox" hidden></div><div id="chips" hidden></div>'
+    + '<div id="ks-comment-notice" hidden></div><div id="ks-comment-list"></div>',
+    { url: 'https://example.test/?main=knowledge', runScripts: 'outside-only' }
+  );
+  const w = dom.window;
+  try {
+    const painted = [];
+    let releaseSeven = null;
+    w.username = 'alice';
+    w.accountIdentity = '100';
+    w.escapeHtml = escaper();
+    w.showToast = function () {};
+    w.siteApi = {
+      get: function (url) {
+        const m = /\/articles\/(\d+)(\/comments)?$/.exec(url);
+        const id = m ? Number(m[1]) : 0;
+        if (m && m[2]) {
+          // 文章 7 的评论请求挂起，模拟「还没回来就翻到文章 8」
+          if (id === 7) return new Promise(function (resolve) { releaseSeven = resolve; });
+          return Promise.resolve({ ok: true, status: 200, payload: [{ id: 'c' + id }] });
+        }
+        return Promise.resolve({ ok: true, status: 200, payload: { id: id, title: '文章' + id, status: 'published' } });
+      },
+      post: async function () { return { ok: true, status: 200, payload: {} }; },
+    };
+    w.eval(read('public/js/knowledge.js'));
+    w.ksPaintArticle = function () {};
+    w.ksShowView = function () {};
+    w.ksPaintCommentsPrepare = function () { return true; };
+    w.ksPaintComments = function (list) { painted.push(list); };
+    w.eval(read('public/js/presenters/knowledge-presenter.js'));
+
+    const openSeven = w.ksOpenArticle(7);
+    await w.ksOpenArticle(8);
+    painted.length = 0;
+
+    // 文章 7 的评论现在才回来：不能画到正在看的文章 8 上
+    releaseSeven({ ok: true, status: 200, payload: [{ id: 'c7' }] });
+    await openSeven;
+
+    assert.strictEqual(painted.length, 0, '上一篇文章的评论列表不得画到当前页面');
+    pass++;
+  } finally { await tick(); dom.window.close(); }
+}
+
 (async () => {
   const suites = [
     ['@ 区间随编辑平移与失效（同昵称可区分）', mentionRanges],
@@ -1159,6 +1337,9 @@ async function pendingLimitPerAccount() {
     ['超过待确认上限不静默丢弃最早记录', pendingLimitKeepsOldRecords],
     ['请求飞行中切换账号，旧响应不得清除新账号的记录', ownerSwitchDuringRequest],
     ['待确认上限按账号分别计算', pendingLimitPerAccount],
+    ['请求飞行中切换文章，旧响应不得改动当前文章页面', articleSwitchDuringRequest],
+    ['结果不明后遇到限流，重试仍沿用原请求编号', rateLimitKeepsRequestId],
+    ['切换文章后旧文章的评论列表不得画到当前页面', staleCommentsNotPainted],
   ];
   let failed = 0;
   for (const [name, fn] of suites) {

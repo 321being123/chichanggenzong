@@ -320,6 +320,25 @@ function ksSavePendingRecord(articleId, parentId, record) {
 // 按「发起请求那一刻的账号」清除记录，而不是按「响应回来时的当前账号」：
 // 用户可能在请求飞行中切换了账号，用当前账号算键就会清掉新账号在同一位置的待确认记录。
 // 若那条记录其实已经提交、记录却被清掉，用户之后重试就会用新编号再发一条。
+// 同一请求编号可能被并发提交（连点、或重试时上一次还没回来）：记录「这个编号还有几个请求在飞」。
+// 只要同编号还有请求没回来，任何一个请求的「明确拒绝」都不足以清掉待确认记录——
+// 另一个请求可能已经落库（限流/认证被拦只说明这次没被处理，不说明别人没成功）。
+const ksInflight = {};
+
+function ksInflightStart(requestId) {
+  if (!requestId) return;
+  ksInflight[requestId] = (ksInflight[requestId] || 0) + 1;
+}
+
+// 返回「同编号还剩几个请求在飞」
+function ksInflightEnd(requestId) {
+  if (!requestId) return 0;
+  const left = (ksInflight[requestId] || 1) - 1;
+  if (left > 0) ksInflight[requestId] = left;
+  else delete ksInflight[requestId];
+  return Math.max(left, 0);
+}
+
 // 记录是否仍属于这次请求：放弃旧评论后重发会换新编号，两者共用同一个「账号+文章+位置」键，
 // 旧响应对不上编号就不能动这条记录（否则会把新评论的待确认记录一起删掉）。
 function ksRecordBelongsTo(ownerKey, articleId, parentId, requestId) {
@@ -528,7 +547,10 @@ async function ksSubmitComment(parentId, textInput, boxKey) {
   const body = { content: text, client_request_id: requestId };
   if (parentId) body.parent_id = parentId;
   if (mentions.length) body.mentions = mentions;
+  ksInflightStart(requestId);
   const r = await window.siteApi.post('/api/knowledge/articles/' + a.id + '/comments', body);
+  // 同编号还有别的请求没回来时，「明确拒绝」也不能清记录（那个请求可能已经提交成功）
+  const stillInflight = ksInflightEnd(requestId);
   // 响应回来时可能已经换了账号、换了文章、离开后又回到同一篇，或者已经「放弃旧评论并重新提交」：
   // 记录一律按发起时的账号与文章清除，且只清**仍属于这次请求编号**的那条；
   // 界面（提示、清草稿、刷列表）只在「同一账号 + 同一个文章页面实例 + 记录仍属于这次请求」时才更新。
@@ -550,8 +572,9 @@ async function ksSubmitComment(parentId, textInput, boxKey) {
       }
       return;
     }
-    // 服务端明确拒绝：丢弃这条失败请求的记录（只清仍属于这次编号的那条，不碰后来重发的）
-    ksClearPendingRecordByOwner(ownerAtSend.key, a.id, parentId, requestId);
+    // 服务端明确拒绝：丢弃这条失败请求的记录（只清仍属于这次编号的那条，不碰后来重发的）。
+    // 但同一编号还有请求在飞时不清：那个请求可能已经落库，清掉后重试就会换新编号重复发表。
+    if (stillInflight === 0) ksClearPendingRecordByOwner(ownerAtSend.key, a.id, parentId, requestId);
     if (!samePage) return;
     if (typeof window.ksHideCommentNotice === 'function') window.ksHideCommentNotice(boxKey || 'main');
     const d = r.payload || {};

@@ -1651,6 +1651,73 @@ async function lateResponseAfterDiscard() {
   } finally { await tick(); dom.window.close(); }
 }
 
+// ---------- 27. 同编号并发提交：一个先失败也不能清掉仍在飞的另一个的待确认 ----------
+async function concurrentSameIdKeepRecord() {
+  const dom = new JSDOM(
+    '<textarea id="ks-comment"></textarea><div id="panel" role="listbox" hidden></div><div id="chips" hidden></div>'
+    + '<div id="ks-comment-notice" hidden></div><div id="ks-comment-list"></div>',
+    { url: 'https://example.test/?main=knowledge', runScripts: 'outside-only' }
+  );
+  const w = dom.window;
+  try {
+    const posts = [];
+    const pending = [];   // 每个 post 手工放行的 resolve
+    w.username = 'alice';
+    w.accountIdentity = '100';
+    w.escapeHtml = escaper();
+    w.showToast = function () {};
+    w.siteApi = {
+      get: async function () { return { ok: true, status: 200, payload: { id: 7, title: '文章', status: 'published' } }; },
+      post: function (url, body) {
+        if (url.indexOf('/view') >= 0) return Promise.resolve({ ok: true, status: 200, payload: {} });
+        posts.push(body);
+        // 前三次请求都挂起，由测试按顺序放行（模拟同编号并发 + 之后的重试）
+        if (posts.length <= 3) {
+          return new Promise(function (resolve) { pending.push(resolve); });
+        }
+        return Promise.resolve({ ok: true, status: 200, payload: { id: 9 } });
+      },
+    };
+    w.eval(read('public/js/knowledge.js'));
+    w.ksPaintArticle = function () {};
+    w.ksShowView = function () {};
+    w.ksPaintCommentsPrepare = function () { return false; };
+    w.ksPaintComments = function () {};
+    w.eval(read('public/js/presenters/knowledge-presenter.js'));
+    await w.ksOpenArticle(7);
+
+    // 连点两次：两个请求都用同一个编号
+    const first = w.ksSubmitComment(null, '同一评论', null);
+    const second = w.ksSubmitComment(null, '同一评论', null);
+    assert.strictEqual(posts.length, 2);
+    const id = posts[0].client_request_id;
+    assert.strictEqual(posts[1].client_request_id, id, '并发提交必须共用同一编号');
+
+    // 第一个先回 429（限流 = 这次没被处理），但第二个仍在飞
+    pending[0]({ ok: false, status: 429, payload: { error: '评论太频繁，请稍后再试' } });
+    await first;
+    let stored = JSON.parse(w.sessionStorage.getItem('ks-pending-comments') || '{}');
+    assert.strictEqual(Object.keys(stored).length, 1,
+      '同编号还有请求在飞时，一个请求的明确拒绝不能清掉待确认记录');
+
+    // 第二个回 502（结果不明）→ 记录继续保留
+    pending[1]({ ok: false, status: 502, payload: null });
+    await second;
+    stored = JSON.parse(w.sessionStorage.getItem('ks-pending-comments') || '{}');
+    assert.strictEqual(Object.keys(stored).length, 1, '结果不明时记录必须保留');
+
+    // 之后重试仍用原编号：服务端按编号幂等，不会多发一条
+    const retry = w.ksSubmitComment(null, '同一评论', null);
+    assert.strictEqual(posts.length, 3);
+    assert.strictEqual(posts[2].client_request_id, id, '重试必须沿用原编号，不能因为并发里有个失败就换号');
+    pending[2]({ ok: true, status: 200, payload: { id: 9 } });
+    await retry;
+    stored = JSON.parse(w.sessionStorage.getItem('ks-pending-comments') || '{}');
+    assert.strictEqual(Object.keys(stored).length, 0, '确认成功后才清记录');
+    pass++;
+  } finally { await tick(); dom.window.close(); }
+}
+
 (async () => {
   const suites = [
     ['@ 区间随编辑平移与失效（同昵称可区分）', mentionRanges],
@@ -1679,6 +1746,7 @@ async function lateResponseAfterDiscard() {
     ['结果不明后文章被撤回，重试仍用原编号并由服务端回放', retractedArticleReplay],
     ['评论已发表后被删除，重试只告知不重新发表', deletedCommentTerminalState],
     ['放弃旧评论重发后，旧请求迟到的成功不清新记录', lateResponseAfterDiscard],
+    ['同编号并发提交，一个失败不清掉仍在飞的记录', concurrentSameIdKeepRecord],
   ];
   let failed = 0;
   for (const [name, fn] of suites) {

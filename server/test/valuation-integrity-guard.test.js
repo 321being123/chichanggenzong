@@ -169,7 +169,10 @@ async function main() {
 
   // 8. 同形代码（A 股 000001 / 港股 00001 补零）在归因里必须按身份分开，不能合并成一只。
   {
-    const frozen = realDate.parse('2026-09-28T04:00:00.000Z');
+    // 冻结时点取「最后一条快照当日」（2026-09-25 周五 12:00 北京时间）：基准日与当前日相邻，
+    // 中间没有待核对的交易日，用例因此不依赖库里港股交易日历是否覆盖周末——本用例只验身份分离，
+    // 不该因为新建测试库缺少 09-26/27 的日历行而判「日历未知」。
+    const frozen = realDate.parse('2026-09-25T04:00:00.000Z');
     global.Date = class FrozenDate2 extends realDate {
       constructor(...args) { super(...(args.length ? args : [frozen])); }
       static now() { return frozen; }

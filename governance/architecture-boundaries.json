@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "lastReviewed": "2026-11-03",
+  "lastReviewed": "2026-11-16",
   "rulesVersion": "layer-coupling-5",
   "defaultRole": "pending_contract",
   "scan": {
@@ -1734,6 +1734,20 @@
       "batch": 4,
       "status": "registered",
       "note": "选股中心页面脚本：尚未拆分 Presenter/View，按存量前端登记"
+    },
+    {
+      "path": "server/services/commentService.js",
+      "role": "application",
+      "batch": 7,
+      "status": "registered",
+      "note": "评论用例编排：评论事务、@ 身份核对、失效与可见性、通知投递同事务；SQL 在仓储，本文件 0 SQL/0 联网/0 DOM"
+    },
+    {
+      "path": "server/services/notificationPreferenceService.js",
+      "role": "application",
+      "batch": 7,
+      "status": "registered",
+      "note": "个人提醒设置读写与版本条件更新；按登录主体取偏好，SQL 在仓储，本文件 0 SQL/0 联网/0 DOM"
     }
   ],
   "globalContracts": {

@@ -57,11 +57,27 @@ async function selectAccountId(params, client = pool) {
 }
 
 // 写入时必须带市场：港股 00001 与 A 股 000001 是两只不同证券，缺了市场就无法区分。
-// 调用方未显式给出时按代码长度兜底（港股 5 位、A 股 6 位，与生产库实际分布一致）。
+// 判定顺序：调用方显式给出（收盘任务按市场规则、补录按品种）→ 代码形状（5 位只在港股、
+// 6 位不以 00 开头只在 A 股）→ 其余无法判定，写 'UNKNOWN'（身份不明，取价层按缺口处理）。
 function dailyPriceMarket(market, code) {
   const text = String(market || '').toUpperCase();
   if (text === 'HK' || text === 'CN') return text;
-  return String(code || '').length === 5 ? 'HK' : 'CN';
+  const codeText = String(code || '');
+  if (codeText.length === 5) return 'HK';
+  if (codeText.length === 6 && !codeText.startsWith('00')) return 'CN';
+  return 'UNKNOWN';
+}
+
+// 市场依据：写入时同时留下“凭什么这么判”，取价层对同形代码要求有依据才接受。
+function dailyPriceMarketBasis(market, code, evidence) {
+  const declared = evidence && evidence.market_basis;
+  if (declared) return String(declared);
+  const text = String(market || '').toUpperCase();
+  if (text === 'HK' || text === 'CN') return 'writer_declared';
+  const codeText = String(code || '');
+  if (codeText.length === 5) return 'code_length_5';
+  if (codeText.length === 6 && !codeText.startsWith('00')) return 'code_shape';
+  return 'unverified';
 }
 
 // 条件写入：
@@ -78,7 +94,7 @@ async function upsertDailyPrice(params, client = pool) {
     `INSERT INTO daily_prices
        (username, account_name, account_id, date, code, name, price, source, quote_at, is_final, quality, revision, evidence, market)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,1,$12::jsonb,$13)
-     ON CONFLICT (username, account_name, date, code) DO UPDATE SET
+     ON CONFLICT (username, account_name, date, market, code) DO UPDATE SET
        name = EXCLUDED.name,
        previous_price = CASE
          WHEN daily_prices.price IS DISTINCT FROM EXCLUDED.price THEN daily_prices.price
@@ -108,12 +124,18 @@ async function upsertDailyPrice(params, client = pool) {
      RETURNING date::text AS date, code, revision, quality, is_final`,
     [row.username, row.accountName, row.accountId, row.date, row.code, row.name || '',
       row.price, row.source || null, row.quoteAt || null, row.isFinal == null ? null : !!row.isFinal,
-      row.quality || 'candidate', JSON.stringify(row.evidence || {}), dailyPriceMarket(row.market, row.code)]
+      row.quality || 'candidate',
+      JSON.stringify({
+        ...(row.evidence || {}),
+        market_basis: dailyPriceMarketBasis(row.market, row.code, row.evidence),
+      }),
+      dailyPriceMarket(row.market, row.code)]
   );
 }
 
 module.exports = {
   dailyPriceMarket,
+  dailyPriceMarketBasis,
   listRecentDailyPriceCandidates,
   listQuoteCacheCandidates,
   listPositionPriceCache,

@@ -100,6 +100,22 @@ function latestImportedPositionAnchor(data, date) {
   return { anchorDate, rows };
 }
 
+// 证券身份：市场 + 代码。同一段代码在不同市场是两只证券（A 股 000001 / 港股 00001 补零），
+// 归因的持仓数量、交易与快照都必须按身份合并，只按代码会把两只证券合成一只。
+function instrumentMarket(code, subtype, currency) {
+  const text = String(subtype || '');
+  if (text === '港股' || String(currency || '').toUpperCase() === 'HKD') return 'HK';
+  if (text) return 'CN';
+  const codeText = String(code || '');
+  if (codeText.length === 5) return 'HK';
+  if (codeText.length === 6 && !codeText.startsWith('00')) return 'CN';
+  return 'UNKNOWN';
+}
+
+function identityOf(code, subtype, currency) {
+  return `${instrumentMarket(code, subtype, currency)}|${String(code || '')}`;
+}
+
 function quantityAsOf(data, date, snapshotAt) {
   const map = new Map();
   const trades = (data.trades || []).slice().sort((a, b) => {
@@ -107,6 +123,14 @@ function quantityAsOf(data, date, snapshotAt) {
     const bd = String(b.trade_date || b.date || '').slice(0, 10);
     return ad.localeCompare(bd) || String(a.executed_at || a.date || '').localeCompare(String(b.executed_at || b.date || ''));
   });
+  // 交易/快照没写 subtype 时，只有该代码在已知持仓里唯一时才能借用其身份；
+  // 否则保持 UNKNOWN（身份不明），不猜成 A 股。
+  const resolveIdentity = (code, subtype, currency) => {
+    const direct = identityOf(code, subtype, currency);
+    if (!direct.startsWith('UNKNOWN|')) return direct;
+    const matches = [...map.keys()].filter(key => key.endsWith(`|${code}`));
+    return matches.length === 1 ? matches[0] : direct;
+  };
   // 券商导入快照是该时点的持仓事实；历史交易可能包含旧导入重复行，
   // 因此只能从快照之后重放交易，不能把快照之前的账本再次累加。
   const importedAnchor = latestImportedPositionAnchor(data, date);
@@ -114,7 +138,10 @@ function quantityAsOf(data, date, snapshotAt) {
     for (const s of importedAnchor.rows) {
       const code = String(s.code || s.instrumentCode || '');
       if (!code) continue;
-      map.set(code, { quantity: Number(s.quantity) || 0, subtype: String(s.quoteCurrency || '').toUpperCase() === 'HKD' ? '港股' : '' });
+      const currency = String(s.quoteCurrency || '').toUpperCase();
+      const key = identityOf(code, currency === 'HKD' ? '港股' : '', currency);
+      map.set(key, { code, market: instrumentMarket(code, currency === 'HKD' ? '港股' : '', currency),
+        quantity: Number(s.quantity) || 0, subtype: currency === 'HKD' ? '港股' : '' });
     }
   }
   if (trades.length) {
@@ -124,47 +151,59 @@ function quantityAsOf(data, date, snapshotAt) {
       if (!eventAtOrBefore(t, td, date, snapshotAt)) continue;
       const code = String(t.code || '');
       if (!code) continue;
-      const row = map.get(code) || { quantity: 0, subtype: t.subtype || '' };
+      const key = resolveIdentity(code, t.subtype, t.quote_currency);
+      const row = map.get(key) || { code, market: key.split('|')[0], quantity: 0, subtype: t.subtype || '' };
       if (t.direction === 'sell') row.quantity -= Number(t.quantity) || 0;
       else if (t.direction === 'adjust') row.quantity = Math.max(0, Number(t.quantity) || 0);
       else row.quantity += Number(t.quantity) || 0;
       row.subtype = t.subtype || row.subtype;
-      map.set(code, row);
+      map.set(key, row);
     }
   }
   // 没有完整交易历史的持仓，按当前持仓补入；但基准日之后已经发生过交易的代码
   // 不能这样补入，否则会把“基准日后的新买入”错误地算成基准日已有持仓。
   for (const p of (data.positions || [])) {
     const code = String(p.code || '');
-    if (!code || map.has(code)) continue;
+    if (!code) continue;
+    const key = identityOf(code, p.subtype, p.quoteCurrency || p.quote_currency);
+    if (map.has(key)) continue;
     const hasFutureTrade = trades.some((t) => String(t.code || '') === code &&
       String(t.trade_date || t.date || '').slice(0, 10) > date);
-    if (!hasFutureTrade) map.set(code, { quantity: Number(p.quantity) || 0, subtype: p.subtype || '' });
+    if (!hasFutureTrade) {
+      map.set(key, { code, market: instrumentMarket(code, p.subtype, p.quoteCurrency || p.quote_currency),
+        quantity: Number(p.quantity) || 0, subtype: p.subtype || '' });
+    }
   }
   // 导入快照是历史锚点；若锚点之后到基准日没有交易，而当前持仓已被校正，
   // 以当前持仓现状为准，避免旧快照数量把合法的子账户拆分重复误判为重复交易。
   if (importedAnchor) {
     // 同一证券可能因分批持仓/导入拆分而有多行，必须先合并数量，
     // 不能逐行覆盖基准数量（否则最后一行会丢掉前面批次）。
-    const currentByCode = aggregateCurrentPositions(data.positions);
-    for (const [code, p] of currentByCode) {
-      if (!code) continue;
-      const changedAfter = trades.some((t) => String(t.trade_date || t.date || '').slice(0, 10) > date && String(t.code || '') === code);
+    const currentByIdentity = aggregateCurrentPositions(data.positions);
+    for (const [key, p] of currentByIdentity) {
+      if (!key) continue;
+      const changedAfter = trades.some((t) => String(t.trade_date || t.date || '').slice(0, 10) > date &&
+        String(t.code || '') === p.code &&
+        (identityOf(t.code, t.subtype, t.quote_currency).startsWith('UNKNOWN|') || identityOf(t.code, t.subtype, t.quote_currency) === key));
       if (changedAfter) continue;
       const currentQuantity = Number(p.quantity) || 0;
-      const row = map.get(code);
+      const row = map.get(key);
       if (!row || Math.abs((Number(row.quantity) || 0) - currentQuantity) > 0.0001) {
-        map.set(code, { quantity: currentQuantity, subtype: p.subtype || (row && row.subtype) || '' });
+        map.set(key, { code: p.code, market: p.market, quantity: currentQuantity,
+          subtype: p.subtype || (row && row.subtype) || '' });
       }
     }
   }
   // 当前持仓表是现状权威：若某证券当前已不存在，且基准日之后没有交易，
   // 交易历史中的残余数量不能被继续当成基准日持仓（典型是券商数量单位修正后留下的 1 股尾差）。
-  const currentCodes = new Set((data.positions || []).map((p) => String(p.code || '')).filter(Boolean));
-  for (const code of [...map.keys()]) {
-    if (currentCodes.has(code)) continue;
-    const changedAfter = trades.some((t) => String(t.trade_date || t.date || '').slice(0, 10) > date && String(t.code || '') === code);
-    if (!changedAfter) map.delete(code);
+  const currentIdentities = new Set([...aggregateCurrentPositions(data.positions).keys()]);
+  for (const key of [...map.keys()]) {
+    if (currentIdentities.has(key)) continue;
+    const row = map.get(key);
+    const changedAfter = trades.some((t) => String(t.trade_date || t.date || '').slice(0, 10) > date &&
+      String(t.code || '') === (row && row.code) &&
+      (identityOf(t.code, t.subtype, t.quote_currency).startsWith('UNKNOWN|') || identityOf(t.code, t.subtype, t.quote_currency) === key));
+    if (!changedAfter) map.delete(key);
   }
   return map;
 }
@@ -174,9 +213,11 @@ function aggregateCurrentPositions(positions) {
   for (const p of (positions || [])) {
     const code = String(p.code || '');
     if (!code) continue;
-    const current = map.get(code);
+    const market = instrumentMarket(code, p.subtype, p.quoteCurrency || p.quote_currency);
+    const key = `${market}|${code}`;
+    const current = map.get(key);
     if (!current) {
-      map.set(code, { ...p, code, quantity: Number(p.quantity) || 0 });
+      map.set(key, { ...p, code, market, quantity: Number(p.quantity) || 0 });
       continue;
     }
     current.quantity += Number(p.quantity) || 0;
@@ -237,14 +278,14 @@ function snapshotTotal(data, nav, quantities, priceFor, rate) {
   }
   const cash = cashAtSnapshot(data, dateKey(nav.date), nav.snapshot_at);
   if (cash.incomplete) return null;
-  const currentPositions = aggregateCurrentPositions(data.positions);
   let total = cash.value;
-  for (const [code, row] of quantities) {
+  for (const row of quantities.values()) {
     const quantity = Number(row.quantity) || 0;
     if (quantity < 0) return null;
     if (!quantity) continue;
-    const isHk = row.subtype === '港股' || currentPositions.get(code)?.subtype === '港股';
-    const price = priceFor(code, isHk);
+    // 市场取自持仓身份本身：同形代码（A 股 000001 / 港股 00001）不能互相顶替。
+    const isHk = row.market === 'HK' || row.subtype === '港股';
+    const price = priceFor(row.code, isHk);
     if (!(price > 0) || (isHk && !(rate > 0))) return null;
     total += quantity * price * (isHk ? rate : 1);
   }
@@ -477,7 +518,9 @@ async function computeNavAttribution(username, accountName, data, currentTotal, 
     }
   }
   const prevQty = quantityAsOf(data, prevDate, previous.snapshot_at);
-  const relevantCodes = new Set([...prevQty.keys(), ...currentByCode.keys()]);
+  // 身份键是「市场|代码」；SQL 只按代码取候选行，市场过滤在本地按身份做。
+  const relevantIdentities = [...new Set([...prevQty.keys(), ...currentByCode.keys()])];
+  const relevantCodes = new Set(relevantIdentities.map(key => key.split('|').slice(1).join('|')));
   const [previousPricesResult, currentPricesResult] = await Promise.all([
     layerRepository.listBasisPrices(query, [username, accountName, [...relevantCodes], prevDate]),
     layerRepository.listEarlierBasisPrices(query, [username, accountName, [...relevantCodes], currentDate]),
@@ -521,7 +564,8 @@ async function computeNavAttribution(username, accountName, data, currentTotal, 
   const manualPriceCodes = [];
   // 基准价不可信的证券：数值照算，但不允许把结果当成完整收益基准（避免未确认价格冒充收盘价）。
   const unqualifiedBasisCodes = [];
-  const codes = relevantCodes;
+  // 逐个「证券身份」核对：CN|600000 与 HK|00001 是两只证券，不能按代码合并。
+  const identities = relevantIdentities;
   // 基准时点各市场的「最近应有收盘日」：用已落库交易日历回看，不按星期几猜。
   const { expectedCloseDateFor } = require('./effectivePrice');
   const basisStateCache = new Map();
@@ -544,11 +588,13 @@ async function computeNavAttribution(username, accountName, data, currentTotal, 
     }
     return null;
   }
-  for (const code of codes) {
-    const q = prevQty.get(code) || { quantity: 0, subtype: (currentByCode.get(code) || {}).subtype || '' };
+  for (const identity of identities) {
+    const p = currentByCode.get(identity);
+    const q = prevQty.get(identity) || { quantity: 0, subtype: (p || {}).subtype || '', market: (p || {}).market };
     const qty = Number(q.quantity) || 0;
-    const p = currentByCode.get(code);
-    const isHk = q.subtype === '港股' || (p && p.subtype === '港股');
+    const market = (p && p.market) || q.market || identity.split('|')[0];
+    const code = (p && p.code) || q.code || identity.split('|').slice(1).join('|');
+    const isHk = market === 'HK' || q.subtype === '港股' || (p && p.subtype === '港股');
     const storedPrevRow = marketPrice(previousPriceByCode, code, isHk);
     const storedCurrentRow = marketPrice(currentPriceByCode, code, isHk);
     const storedPrevPrice = storedPrevRow && storedPrevRow.price;
@@ -572,6 +618,13 @@ async function computeNavAttribution(username, accountName, data, currentTotal, 
     }
     if ((qty > 0 && (!(prevPrice > 0) || !(endPrice > 0))) || (currentQty > 0 && !(endPrice > 0)) ||
       ((qty > 0 || currentQty > 0) && isHk && !(prevRate > 0 && lastRate > 0))) {
+      missing.push(code);
+      previousMarketValue.complete = false;
+      continue;
+    }
+    // 身份不明（既无 subtype 也无法由代码形状判定）时不允许继续合并计算，
+    // 否则同形代码会被当成一只证券算出“完整”但错误的涨跌。
+    if (market === 'UNKNOWN') {
       missing.push(code);
       previousMarketValue.complete = false;
       continue;

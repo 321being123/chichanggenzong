@@ -167,6 +167,58 @@ async function main() {
     assert.strictEqual(evidence.basisPriceDate, '2026-09-23', '用于对比的旧价格日期要如实披露');
   }
 
+  // 8. 同形代码（A 股 000001 / 港股 00001 补零）在归因里必须按身份分开，不能合并成一只。
+  {
+    const frozen = realDate.parse('2026-09-28T04:00:00.000Z');
+    global.Date = class FrozenDate2 extends realDate {
+      constructor(...args) { super(...(args.length ? args : [frozen])); }
+      static now() { return frozen; }
+    };
+    invalidateMarketStateCache();
+    const query = async (sql) => {
+      if (sql.includes('trade_calendar')) {
+        return { rows: [{ trade_date: '2026-09-24', is_open: true, source_code: 'test_fixture',
+          raw_payload: { official_schedule: { is_open: true, session_type: 'full_day', close_time: '16:10', source: 'test_fixture' } } }] };
+      }
+      if (sql.includes('FROM daily_prices')) {
+        return { rows: [
+          { date: '2026-09-24', code: '000001', market: 'CN', price: 10, quality: 'confirmed', is_final: true },
+          { date: '2026-09-24', code: '00001', market: 'HK', price: 20, quality: 'confirmed', is_final: true },
+        ] };
+      }
+      if (sql.includes('FROM market.fx_rates')) return { rows: [] };
+      throw new Error('unexpected identity query: ' + sql);
+    };
+    const data = {
+      cashBase: 0,
+      cashFlows: [],
+      trades: [],
+      hkRate: 1,
+      positions: [
+        { code: '000001', subtype: '深市', price: 10, quantity: 100 },
+        { code: '00001', subtype: '港股', price: 20, quantity: 100 },
+      ],
+      navHistory: [
+        { date: '2026-09-23', totalAsset: 3000, hkRate: 1, snapshotSource: 'legacy', snapshot_at: '2026-09-23T08:00:00.000Z' },
+        { date: '2026-09-24', totalAsset: 3000, hkRate: 1, snapshotSource: 'legacy', snapshot_at: '2026-09-24T08:00:00.000Z' },
+        // 再补一条 09-25 快照，避免“中间交易日缺快照”分支先于价格核对返回（夹具需要连续快照）。
+        { date: '2026-09-25', totalAsset: 3000, hkRate: 1, snapshotSource: 'legacy', snapshot_at: '2026-09-25T08:00:00.000Z' },
+      ],
+      // 历史重建要求有持仓锚点；这里两只证券各给一条（港股用 HKD 标明身份）。
+      positionSnapshots: [
+        { snapshotId: 'imp-1', snapshotDate: '2026-09-23', code: '000001', quantity: 100, quoteCurrency: 'CNY', source: 'manual_reconciliation' },
+        { snapshotId: 'imp-2', snapshotDate: '2026-09-23', code: '00001', quantity: 100, quoteCurrency: 'HKD', source: 'manual_reconciliation' },
+      ],
+    };
+    const attribution = await computeNavAttribution('u', 'a', data, 3000, query);
+    const evidenced = (attribution.priceEvidence || []);
+    assert.strictEqual(evidenced.length, 2, '同形代码必须作为两只证券分别取证：' + JSON.stringify(evidenced));
+    assert.deepStrictEqual(evidenced.map(row => row.market).sort(), ['CN', 'HK'], '两只证券的市场必须分别标注');
+    assert.deepStrictEqual(evidenced.map(row => row.basisPrice).sort((a, b) => a - b), [10, 20],
+      '各自的基准价必须来自各自市场，不能相互覆盖');
+    assert.strictEqual(attribution.previousTotalAsset, 3000, '期初资产按两只证券合并计算（100×10 + 100×20）');
+  }
+
   console.log('统一估值完整性守卫回归通过');
 }
 

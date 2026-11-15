@@ -39,10 +39,27 @@ function historicalKindFor(code, position = {}) {
 // 历史补录的收盘价来自各品种历史日线接口，取到的是该交易日已完成的终盘事实，
 // 因此直接以“已确认收盘”准入写入；它不是浏览器自报价格，也不冒充当日盘中报价。
 // 市场必须显式落到日价行上：港股与 A 股可能同形（00001 / 000001），缺市场会串价。
-const historyBackfillEvidence = market => ({
-  source: 'history_backfill', quality: 'confirmed', isFinal: true,
-  market, evidence: { origin: 'daily_bar_history' },
-});
+// 来源与复权口径要逐行保留（理杏仁 / 腾讯日K / Tushare），否则事后无法追溯；
+// 口径不是“不复权”的行一律不写成已确认收盘价。
+function historyBackfillRow({ code, price, market, provider, adjust }) {
+  const providerName = String(provider || 'unknown');
+  const adjustBasis = String(adjust || 'unknown');
+  const qualified = adjustBasis === 'none';
+  return {
+    code, name: '', price, market,
+    source: `history_backfill:${providerName}`,
+    quality: qualified ? 'confirmed' : 'candidate',
+    is_final: qualified ? true : null,
+    evidence: {
+      origin: 'daily_bar_history',
+      provider: providerName,
+      price_adjust: adjustBasis,
+      // 市场依据：写入时由品种决定，属可核实凭据，取价层据此接受该行。
+      market_basis: market === 'HK' ? 'history_provider_hk' : 'history_provider_cn',
+      qualification: qualified ? 'unadjusted' : 'adjustment_unverified',
+    },
+  };
+}
 
 async function backfillHkDailyPrices(username, accountName, code, start, end) {
   // 港股日线属于「行情数据集」：只向数据层要序列，主备来源由数据层决定。
@@ -55,12 +72,14 @@ async function backfillHkDailyPrices(username, accountName, code, start, end) {
     const date = normDate(row.trade_date);
     const close = Number(row.close);
     if (!date || !(close > 0)) continue;
-    (byDate[date] = byDate[date] || []).push({ code, name: '', price: close, market: 'HK' });
+    (byDate[date] = byDate[date] || []).push(historyBackfillRow({
+      code, price: close, market: 'HK', provider: row.source_code, adjust: row.price_adjust,
+    }));
   }
   let any = false;
   for (const date of Object.keys(byDate)) {
     try {
-      await saveDailyPrices(username, accountName, date, byDate[date], historyBackfillEvidence('HK'));
+      await saveDailyPrices(username, accountName, date, byDate[date], { market: 'HK' });
       any = true;
     } catch (e) { /* 单日失败不阻断其余日期 */ }
   }
@@ -86,12 +105,14 @@ async function backfillDailyPrices(username, accountName, code, start, end, posi
     const d = normDate(r.trade_date);
     const c = parseFloat(r.close);
     if (!d || isNaN(c) || c <= 0) continue;
-    (byDate[d] = byDate[d] || []).push({ code, name: '', price: c, market: 'CN' });
+    (byDate[d] = byDate[d] || []).push(historyBackfillRow({
+      code, price: c, market: 'CN', provider: r.source_code, adjust: r.price_adjust,
+    }));
   }
   let any = false;
   for (const d of Object.keys(byDate)) {
     try {
-      await saveDailyPrices(username, accountName, d, byDate[d], historyBackfillEvidence('CN'));
+      await saveDailyPrices(username, accountName, d, byDate[d], { market: 'CN' });
       any = true;
     } catch (e) {}
   }
@@ -257,4 +278,4 @@ async function recomputeNav(username, accountName, fromDate) {
   return { ok: missingDates.length === 0, status: missingDates.length ? 'partial' : 'succeeded', days: affected, missingDates: [...new Set(missingDates)] };
 }
 
-module.exports = { recomputeNav, backfillDailyPrices, historicalKindFor, isTradingDay, cnDate };
+module.exports = { recomputeNav, backfillDailyPrices, historicalKindFor, historyBackfillRow, isTradingDay, cnDate };

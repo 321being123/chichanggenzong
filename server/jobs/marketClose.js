@@ -1,6 +1,6 @@
 // ========== 自动记录每日收盘价（按市场收盘时刻精准触发 + 休市识别 + 缺失补漏） ==========
 const { pool, loadAccountData, saveDailyPrices, syncConfirmedCloseToPositions, tryClaimJob, releaseJob, startJobRun, finishJobRun } = require('../db');
-const { fetchQuoteByCode } = require('../services/market');
+const { fetchQuoteByCode, toTsCode } = require('../services/market');
 const { getMarketState, isCnTradingDate, prefetchMarketFacts, shanghaiDateTime, parseClock } = require('../services/marketState');
 const { runNavSnapshotJob } = require('./navSnapshot');
 const { runIndexRecentJob } = require('./indexBaseline');
@@ -158,6 +158,42 @@ function qualifyCloseQuote(state, quoteTime, cnDate, closeTime) {
   return { quality: 'confirmed', isFinal: true, reason: null };
 }
 
+// 收盘后拿到一条实时报价，并不等于它就是最终收盘价（可能是收盘瞬间或缓存里的旧报价）。
+// 因此要求用已准入的**不复权日线**核对：同一交易日、同一价格、口径为不复权，才算终盘证据。
+// 拿不到证据时保持候选（不是确认），宁可让任务报待确认，也不把盘中价写成收盘价。
+const TERMINAL_EVIDENCE_TOLERANCE = 0.005;
+const STOCK_SUBTYPES = new Set(['沪市', '深市', '京市', '港股', 'A股']);
+
+function dateOnlyOf(value) {
+  const text = String(value || '');
+  if (/^\d{4}-\d{2}-\d{2}$/.test(text)) return text;
+  const digits = text.replace(/-/g, '');
+  return digits.length === 8 ? `${digits.slice(0, 4)}-${digits.slice(4, 6)}-${digits.slice(6, 8)}` : '';
+}
+
+async function verifyTerminalClose({ code, subtype, market, date, price, fetchSeries }) {
+  if (!STOCK_SUBTYPES.has(String(subtype || ''))) return { ok: false, reason: 'terminal_evidence_not_applicable' };
+  try {
+    // fetchSeries 只用于测试注入；生产走数据层的「官方不复权优先、备源同口径」入口。
+    const readSeries = fetchSeries || require('../dataAccess/marketDatasets').readStockDailySeries;
+    const isHk = market === 'HK' || subtype === '港股';
+    const bare = String(code || '').replace(/\.HK$/i, '');
+    const tsCode = isHk ? `${bare.padStart(5, '0')}.HK` : toTsCode(bare);
+    const rows = await readSeries({ tsCode, market: isHk ? 'hk' : 'cn', startDate: date, endDate: date });
+    const row = (rows || []).find(item => dateOnlyOf(item.trade_date) === date);
+    if (!row) return { ok: false, reason: 'terminal_bar_missing' };
+    if (String(row.price_adjust || '') !== 'none') return { ok: false, reason: 'terminal_bar_adjusted' };
+    const close = Number(row.close);
+    if (!(close > 0)) return { ok: false, reason: 'terminal_bar_missing' };
+    if (Math.abs(close - Number(price)) > TERMINAL_EVIDENCE_TOLERANCE) {
+      return { ok: false, reason: 'terminal_bar_mismatch', close, provider: row.source_code || null };
+    }
+    return { ok: true, reason: null, close, provider: row.source_code || null, adjust: row.price_adjust };
+  } catch (e) {
+    return { ok: false, reason: 'terminal_evidence_unavailable', detail: e.message };
+  }
+}
+
 async function recordCloseOne(username, accountName, label, matchFn, dateStr, requestBudget, context = {}) {
   const cnDate = dateStr || cnDateStr();
 
@@ -221,23 +257,44 @@ async function recordCloseOne(username, accountName, label, matchFn, dateStr, re
   let confirmedCount = 0, candidateCount = 0;
   if (prices.length > 0) {
     const marketRule = MARKET_CLOSE_TIMES.find(item => item.label === label) || {};
-    const state = await getMarketState({ market: marketRule.market || 'CN', businessDate: cnDate, time: shanghaiDateTime().time });
-    const rows = prices.map(row => {
+    const market = marketRule.market || 'CN';
+    const state = await getMarketState({ market, businessDate: cnDate, time: shanghaiDateTime().time });
+    const subtypeByCode = new Map(missing.map(pos => [String(pos.code), String(pos.subtype || '')]));
+    const rows = [];
+    for (const row of prices) {
       const qualification = qualifyCloseQuote(state, row.quote_time, cnDate, state.closeTime || null);
-      if (qualification.quality === 'confirmed') confirmedCount += 1; else candidateCount += 1;
-      return {
+      let quality = qualification.quality;
+      let isFinal = qualification.isFinal;
+      let reason = qualification.reason;
+      let terminal = null;
+      if (quality === 'confirmed') {
+        // 只有拿到该交易日的不复权日线、且价格一致，才允许写成“已确认收盘价”。
+        terminal = await verifyTerminalClose({
+          code: row.code, subtype: subtypeByCode.get(String(row.code)), market, date: cnDate, price: row.price,
+        });
+        if (!terminal.ok) {
+          quality = 'candidate';
+          isFinal = null;
+          reason = terminal.reason;
+        }
+      }
+      if (quality === 'confirmed') confirmedCount += 1; else candidateCount += 1;
+      rows.push({
         ...row,
-        quality: qualification.quality,
-        is_final: qualification.isFinal,
-        market: marketRule.market || 'CN',
+        quality,
+        is_final: isFinal,
+        market,
         source: `market_close_task:${label}`,
         evidence: {
           businessDate: cnDate, marketState: state.status, closeTime: state.closeTime || null,
           isAfterMarketClose: state.isAfterMarketClose === true,
-          quoteAt: row.quote_time || null, qualification: qualification.reason || 'confirmed',
+          quoteAt: row.quote_time || null, qualification: reason || 'confirmed',
+          terminalProvider: terminal && terminal.provider ? terminal.provider : null,
+          terminalClose: terminal && terminal.ok ? terminal.close : null,
+          terminalEvidence: terminal ? (terminal.ok ? 'unadjusted_bar_match' : terminal.reason) : null,
         },
-      };
-    });
+      });
+    }
     // 日价写入与兼容持仓价回写同一事务：任一失败整体回滚，任务如实失败，
     // 不留“日价有了、持仓价没更新”的半成品状态。
     await withTransaction(async tx => {
@@ -610,4 +667,4 @@ function confirmedExistingCodes(rows) {
     .map(row => row.code));
 }
 
-module.exports = { qualifyCloseQuote, confirmedExistingCodes, splitHistoricalBackfill, summarizeBackfill, scheduleAllMarketCloses, runMarketCloseByLabel, backfillMissingCloses, findMissingCloseDates, isTradingDay, isMarketTradingDate, nextMarketCloseDelay, fmtCN, pickMissingCodes, isUncoveredPosition, cnWeekday, msUntil, nextRunDelay, quoteForCode, isUsableQuote, mergeQuoteMaps, shouldRunLegacyNavAfterHkClose, runLegacyPostCloseCycle };
+module.exports = { qualifyCloseQuote, verifyTerminalClose, confirmedExistingCodes, splitHistoricalBackfill, summarizeBackfill, scheduleAllMarketCloses, runMarketCloseByLabel, backfillMissingCloses, findMissingCloseDates, isTradingDay, isMarketTradingDate, nextMarketCloseDelay, fmtCN, pickMissingCodes, isUncoveredPosition, cnWeekday, msUntil, nextRunDelay, quoteForCode, isUsableQuote, mergeQuoteMaps, shouldRunLegacyNavAfterHkClose, runLegacyPostCloseCycle };

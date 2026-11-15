@@ -4,8 +4,8 @@
 // 回填只采用**可核实的证券身份**，不按长度一刀切：
 // - 5 位代码只可能是港股（A 股/基金/债券代码均为 6 位）；
 // - 6 位且不以 00 开头不可能是港股补零（港股都以 0 开头，补零后必然是 00 开头）；
-// - 6 位且以 00 开头存在同形歧义：必须用行情缓存的交易所、或本账户持仓的 subtype 核实是 A 股；
-// - 核实不了的保持 NULL（身份不明），由取价层按“缺口”处理，绝不猜。
+// - 6 位且以 00 开头存在同形歧义：本迁移不猜（缓存/持仓都不能证明“这一行”的身份），
+//   留给 197 用该行自身来源标签复核，仍不能证明就保持未知，由取价层按“缺口”处理。
 // 每次判定同时把依据写进 evidence.market_basis，便于事后审计。
 async function migration196DailyPriceMarket(pool) {
   await pool.query(`
@@ -28,31 +28,10 @@ async function migration196DailyPriceMarket(pool) {
      WHERE market IS NULL AND length(code) = 6 AND code NOT LIKE '00%';
   `);
 
-  // 6 位以 00 开头：用行情缓存的交易所核实 A 股身份。
-  await pool.query(`
-    UPDATE daily_prices d
-       SET market = 'CN',
-           evidence = COALESCE(d.evidence, '{}'::jsonb) || '{"market_basis":"quote_cache"}'::jsonb
-     WHERE d.market IS NULL AND length(d.code) = 6 AND d.code LIKE '00%'
-       AND EXISTS (
-         SELECT 1 FROM market_quote_cache m
-          WHERE m.code = d.code AND m.market IN ('sh', 'sz', 'bj')
-       );
-  `);
-
-  // 仍无法核实的：用本账户持仓的 subtype 核实（非港股 subtype 即 A 股）。
-  await pool.query(`
-    UPDATE daily_prices d
-       SET market = 'CN',
-           evidence = COALESCE(d.evidence, '{}'::jsonb) || '{"market_basis":"account_position"}'::jsonb
-     WHERE d.market IS NULL AND length(d.code) = 6 AND d.code LIKE '00%'
-       AND EXISTS (
-         SELECT 1 FROM positions p
-          WHERE p.username = d.username AND p.account_name = d.account_name
-            AND p.code = d.code AND COALESCE(p.subtype, '') <> '港股'
-       );
-  `);
-
+  // 6 位以 00 开头存在“A 股 000001 / 港股 00001 补零”的同形歧义。
+  // 这里**不**用行情缓存或账户持仓去推断：缓存里有同码 A 股并不能证明某账户某天那条价格属于 A 股，
+  // 它也可能是补零存储的港股。这类行保持未知（market 由 199 迁移写成 'UNKNOWN'），
+  // 由取价层按缺口处理；只有该行自身带来源标签时（197 迁移）才认定市场。
   // 统一取价按“市场 + 代码 + 业务日”跨账户读取，需要市场维度索引支持。
   await pool.query(`
     CREATE INDEX IF NOT EXISTS idx_daily_prices_market_code_date

@@ -5559,6 +5559,46 @@
       ],
       "owner": "WorkBuddy",
       "status": "implemented"
+    },
+    {
+      "id": "HOLDINGS-DAILY-ADJUST-001",
+      "title": "收盘价只接受不复权日线：备源不得退回前复权，收盘任务须有同交易日不复权日线作终盘证据",
+      "implementation": {
+        "file": "server/dataAccess/marketDatasets.js",
+        "symbol": "readStockDailySeries"
+      },
+      "tests": [
+        {
+          "file": "server/test/stock-daily-adjust-guard.test.js",
+          "pattern": "只有前复权日线时不得返回价格"
+        },
+        {
+          "file": "server/test/stock-daily-adjust-guard.test.js",
+          "pattern": "复权口径的日线不得作为终盘证据"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "implemented"
+    },
+    {
+      "id": "HOLDINGS-INSTRUMENT-IDENTITY-001",
+      "title": "持仓、交易、日价与归因统一按「市场｜代码」身份聚合，同形代码不得合并",
+      "implementation": {
+        "file": "server/services/navAttribution.js",
+        "symbol": "aggregateCurrentPositions"
+      },
+      "tests": [
+        {
+          "file": "server/test/valuation-integrity-guard.test.js",
+          "pattern": "同形代码必须作为两只证券分别取证"
+        },
+        {
+          "file": "server/test/valuation-total-asset-contract.test.js",
+          "pattern": "写入时必须留下市场依据"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "implemented"
     }
   ]
 }

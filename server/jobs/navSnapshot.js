@@ -70,7 +70,11 @@ async function recordNavSnapshots(username, accountName, hkRateOverride = null, 
     const code = classifyCode.normalizeCode(r.code, positionNames.get(r.code)) || r.code;
     const qualified = String(r.quality || 'legacy_unverified') === 'confirmed' || r.is_final === true;
     // 按「市场 + 代码」建索引：港股 00001 与 A 股 000001 同形，只按代码会互相顶替。
-    const market = String(r.market || (String(r.code || '').length === 5 ? 'HK' : 'CN')).toUpperCase();
+    // market 为 UNKNOWN（身份不明）时按代码形状兜底：5 位只可能港股、6 位不以 00 开头只可能 A 股。
+    const marketText = String(r.market || '').toUpperCase();
+    const market = marketText === 'HK' || marketText === 'CN'
+      ? marketText
+      : (String(r.code || '').length === 5 ? 'HK' : 'CN');
     const key = market + '|' + code;
     dpMap.set(key + '|' + d, { price: Number(r.price), qualified });
     priceDates.add(d);

@@ -56,9 +56,10 @@ const previousCloseDate = (() => {
     );
     // 已确认收盘价：统一估值要求基准价与当前价都具备“已确认”资格，才允许判为完整。
     await pool.query(
-      `INSERT INTO daily_prices (username,account_name,date,code,name,price,quality,is_final,source)
-       VALUES ($1,$2,$3,'00700','腾讯控股',100,'confirmed',true,'test_close_task')
-       ON CONFLICT (username,account_name,date,code) DO UPDATE SET price=EXCLUDED.price, quality=EXCLUDED.quality, is_final=EXCLUDED.is_final, source=EXCLUDED.source`, [U, A, previousCloseDate]
+      // 主键已含市场（migration 199）：同形代码的日价不再互相覆盖。
+      `INSERT INTO daily_prices (username,account_name,date,code,name,price,quality,is_final,source,market)
+       VALUES ($1,$2,$3,'00700','腾讯控股',100,'confirmed',true,'test_close_task','HK')
+       ON CONFLICT (username,account_name,date,market,code) DO UPDATE SET price=EXCLUDED.price, quality=EXCLUDED.quality, is_final=EXCLUDED.is_final, source=EXCLUDED.source`, [U, A, previousCloseDate]
     );
 
     const app = express();
@@ -74,9 +75,9 @@ const previousCloseDate = (() => {
        VALUES ('partial_anchor_position',$1,$2,$3,'00005','汇丰控股',20,10,20,'股权','港股','')`, [U, A, accountId]
     );
     await pool.query(
-      `INSERT INTO daily_prices (username,account_name,date,code,name,price,quality,is_final,source)
-       VALUES ($1,$2,$3,'00005','汇丰控股',20,'confirmed',true,'test_close_task'),($1,$2,$4,'00700','腾讯控股',99,'candidate',NULL,'test_close_task')
-       ON CONFLICT (username,account_name,date,code) DO UPDATE SET price=EXCLUDED.price, quality=EXCLUDED.quality, is_final=EXCLUDED.is_final, source=EXCLUDED.source`, [U, A, previousCloseDate, yesterday]
+      `INSERT INTO daily_prices (username,account_name,date,code,name,price,quality,is_final,source,market)
+       VALUES ($1,$2,$3,'00005','汇丰控股',20,'confirmed',true,'test_close_task','HK'),($1,$2,$4,'00700','腾讯控股',99,'candidate',NULL,'test_close_task','HK')
+       ON CONFLICT (username,account_name,date,market,code) DO UPDATE SET price=EXCLUDED.price, quality=EXCLUDED.quality, is_final=EXCLUDED.is_final, source=EXCLUDED.source`, [U, A, previousCloseDate, yesterday]
     );
     const partialPreview = await fetch(base + '/nav/import/preview', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ account: A, records: [{ date: yesterday, nav: 1, totalAsset: 1400, invested: 1000, cash: 500 }] }) });
     const partialPreviewJson = await partialPreview.json();

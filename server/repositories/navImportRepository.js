@@ -181,7 +181,7 @@ async function upsertAnchorDailyPrice(params, client = pool) {
     `INSERT INTO daily_prices (username, account_name, account_id, date, code, name, price, source, is_final, quality, market)
        VALUES ($1,$2,$3,$4,$5,$6,$7,'nav_import_anchor',NULL,'anchor_carry_forward',
                COALESCE($8, CASE WHEN length($5) = 5 THEN 'HK' ELSE 'CN' END))
-       ON CONFLICT (username, account_name, date, code) DO UPDATE SET
+       ON CONFLICT (username, account_name, date, market, code) DO UPDATE SET
          name=EXCLUDED.name, price=EXCLUDED.price,
          source=EXCLUDED.source, is_final=EXCLUDED.is_final, quality=EXCLUDED.quality,
          market=EXCLUDED.market

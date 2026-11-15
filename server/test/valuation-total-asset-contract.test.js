@@ -7,6 +7,7 @@ const { pool } = require('../db/connection');
 const { loadAccountData, resolveHkRateEvidence } = require('../db');
 const { buildPositionExport } = require('../services/positionExport');
 const { summarizeBackfill, findMissingCloseDates } = require('../jobs/marketClose');
+const priceRepository = require('../repositories/effectivePriceRepository');
 const { isCnTradingDate, invalidateMarketStateCache } = require('../services/marketState');
 
 const USER = 'valuation_total_contract';
@@ -206,6 +207,38 @@ async function main() {
     );
     const filled = await findMissingCloseDates(USER, ACCOUNT);
     assert.ok(!filled.includes(day), '逐证券补齐后该日不应再列为缺口');
+  }
+
+  // 9. 新补录的日价必须自带市场依据，否则同形代码会被取价层判成身份不明。
+  {
+    await pool.query('DELETE FROM daily_prices WHERE username=$1', [USER]);
+    const written = await priceRepository.upsertDailyPrice([{
+      username: USER, accountName: ACCOUNT, accountId: ACCOUNT_ID,
+      date: expectedCloseDate(), code: '000001', name: '测试A股', price: 10,
+      source: 'history_backfill:lixinger', quoteAt: null, isFinal: true, quality: 'confirmed',
+      market: 'CN', evidence: { origin: 'daily_bar_history', provider: 'lixinger', price_adjust: 'none' },
+    }]);
+    assert.strictEqual(written.rowCount, 1, '补录写入应成功');
+    const stored = (await pool.query(
+      'SELECT market, evidence FROM daily_prices WHERE username=$1 AND code=$2', [USER, '000001']
+    )).rows[0];
+    assert.strictEqual(stored.market, 'CN');
+    assert.strictEqual(stored.evidence.market_basis, 'writer_declared',
+      '写入时必须留下市场依据，否则同形代码会被判身份不明：' + JSON.stringify(stored.evidence));
+    assert.strictEqual(stored.evidence.provider, 'lixinger', '来源与口径必须随行保存');
+    assert.strictEqual(stored.evidence.price_adjust, 'none');
+
+    // 无法判定市场的代码：写 UNKNOWN 且不带可核实依据（失败关闭）。
+    await priceRepository.upsertDailyPrice([{
+      username: USER, accountName: ACCOUNT, accountId: ACCOUNT_ID,
+      date: expectedCloseDate(), code: '000777', name: '身份不明', price: 5,
+      source: null, quoteAt: null, isFinal: null, quality: 'candidate', market: null, evidence: {},
+    }]);
+    const unknown = (await pool.query(
+      'SELECT market, evidence FROM daily_prices WHERE username=$1 AND code=$2', [USER, '000777']
+    )).rows[0];
+    assert.strictEqual(unknown.market, 'UNKNOWN', '身份无法判定时必须写 UNKNOWN');
+    assert.strictEqual(unknown.evidence.market_basis, 'unverified');
   }
 
   console.log('估值输出口径合同回归通过');

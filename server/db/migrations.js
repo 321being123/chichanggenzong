@@ -216,6 +216,8 @@ const MIGRATIONS = [
   { version: '196_daily_price_market', up: () => require('./migrations/era15DailyPriceMarket').migration196DailyPriceMarket(pool) },
   { version: '197_daily_price_market_reverify', up: () => require('./migrations/era15DailyPriceMarketReverify').migration197DailyPriceMarketReverify(pool) },
   { version: '198_daily_price_market_basis', up: () => require('./migrations/era15DailyPriceMarketBasis').migration198DailyPriceMarketBasis(pool) },
+  { version: '199_daily_price_market_key', up: () => require('./migrations/era15DailyPriceMarketKey').migration199DailyPriceMarketKey(pool) },
+  { version: '200_daily_price_market_evidence', up: () => require('./migrations/era15DailyPriceMarketEvidence').migration200DailyPriceMarketEvidence(pool) },
 ];
 
 async function ensureMigrationsTable() {

@@ -167,10 +167,11 @@ async function checkAsync(name, fn) {
     await checkAsync('净值导入：按日期 upsert 且版本提升', async () => {
       // 历史锚点必须使用导入日收盘价；测试显式准备两只现有持仓的基准价格。
       await pool.query(
-        `INSERT INTO daily_prices (username, account_name, date, code, name, price)
-         VALUES ($1,$2,'2026-08-02','600519','贵州茅台',1000),
-                ($1,$2,'2026-08-02','000858','五粮液',100)
-         ON CONFLICT (username, account_name, date, code) DO UPDATE SET price=EXCLUDED.price`, [U, A]
+        // 主键含市场（migration 199）：同形代码日价按市场分开存放。
+        `INSERT INTO daily_prices (username, account_name, date, code, name, price, market)
+         VALUES ($1,$2,'2026-08-02','600519','贵州茅台',1000,'CN'),
+                ($1,$2,'2026-08-02','000858','五粮液',100,'CN')
+         ON CONFLICT (username, account_name, date, market, code) DO UPDATE SET price=EXCLUDED.price`, [U, A]
       );
       // 导入后只应清理最新导入日期之前的非导入快照；更晚的非导入快照保留。
       await pool.query(

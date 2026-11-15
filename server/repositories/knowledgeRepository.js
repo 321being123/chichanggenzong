@@ -390,6 +390,16 @@ async function lockArticleForComment(params, tx) {
   return rows[0] || null;
 }
 
+// 顶层文章排它锁：评论创建持共享锁（lockArticleForComment），删除/撤回/改草稿持排它锁，
+// 两者互斥才不会有「先失效、后插入」的竞态（并发回复插在子树查询之后、被级联删除但通知仍有效）。
+async function lockArticleForWrite(params, tx) {
+  const runner = tx || pool;
+  const { rows } = await runner.query(
+    'SELECT id, status FROM articles WHERE id=$1 FOR UPDATE', [params.id],
+  );
+  return rows[0] || null;
+}
+
 // 显式父评论：不存在、跨文章都按失败处理，不再悄悄降为一级评论
 async function lockCommentParentFull(params, tx) {
   const runner = tx || pool;
@@ -436,6 +446,7 @@ async function listArticleCommentIds(params, tx) {
 
 module.exports = {
   lockArticleForComment,
+  lockArticleForWrite,
   lockCommentParentFull,
   readCommentBrief,
   listCommentSubtreeIds,

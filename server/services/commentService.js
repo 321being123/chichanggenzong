@@ -57,7 +57,9 @@ function normalizeMentions(raw, content) {
   return items;
 }
 
-// 事务内复核 @ 目标：必须存在、active、非本人；身份或显示名变化时要求重新选择
+// 事务内复核 @ 目标：必须存在、active、非本人；并用「当前昵称」核对正文里那段文字。
+// 只校验正文与区间一致还不够：客户端可以拿别人的 subjectId 配任意文字，
+// 因此这里要求该段文字必须正好是所选账号的当前显示名（选择后改名/身份变化一律要求重选）。
 async function resolveMentionAccounts(client, mentions, authorSubjectId) {
   if (!mentions.length) return [];
   const accounts = await store.listAccountsBySubjects(client, mentions.map(function (m) { return m.subjectId; }));
@@ -68,6 +70,9 @@ async function resolveMentionAccounts(client, mentions, authorSubjectId) {
     if (!account) throw createError(400, '被提到的账号不存在，请重新选择');
     if (account.status !== 'active') throw createError(400, '被提到的账号已不可用，请重新选择');
     if (account.subjectId === authorSubjectId) throw createError(400, '不能提到自己');
+    if (m.text !== '@' + account.nickname) {
+      throw createError(400, '正文里的 @ 与所选账号的当前昵称不一致，请重新选择');
+    }
     return account;
   });
 }
@@ -174,13 +179,19 @@ async function createComment(params) {
   }
 }
 
-// 删除评论（含子树）：先失效对应通知再删除，失败整体回滚
+// 删除评论（含子树）：先取文章排它锁再收集子树、失效通知、删除。
+// 锁顺序与创建评论一致（先文章行）：创建评论持共享锁，删除持排它锁，二者互斥，
+// 因此不会出现「子树查询之后又插入一条回复、被级联删除但通知仍有效」。
 async function deleteComment(commentId) {
   const id = parseInt(commentId, 10);
   if (!Number.isInteger(id) || id <= 0) throw createError(404, '评论不存在');
   const client = await pool.connect();
   try {
     await txControl.begin(client);
+    const brief = await knowledgeRepository.readCommentBrief({ id: id }, client);
+    if (!brief) throw createError(404, '评论不存在');
+    await knowledgeRepository.lockArticleForWrite({ id: brief.article_id }, client);
+    // 取得排它锁后重新收集：此前并发提交的回复此时已可见，不会漏在子树之外
     const ids = await knowledgeRepository.listCommentSubtreeIds({ id: id }, client);
     if (!ids.length) throw createError(404, '评论不存在');
     await store.invalidateCommentNotificationsByComments(client, ids, INVALIDATED_REASON);
@@ -195,12 +206,15 @@ async function deleteComment(commentId) {
   }
 }
 
-// 文章删除：级联删除会带走评论，必须先按文章失效通知
+// 文章删除：级联删除会带走评论，必须先按文章失效通知。
+// 同样先取文章排它锁，挡住正在提交的评论（否则失效之后才插入的评论通知会变成孤儿）。
 async function deleteArticle(articleId) {
   const id = parseInt(articleId, 10);
   const client = await pool.connect();
   try {
     await txControl.begin(client);
+    const locked = await knowledgeRepository.lockArticleForWrite({ id: id }, client);
+    if (!locked) { await txControl.rollback(client); return { ok: true, missing: true }; }
     await store.invalidateCommentNotificationsByArticle(client, id, INVALIDATED_REASON);
     await knowledgeRepository.deleteArticle({ id: id }, client);
     await txControl.commit(client);
@@ -219,6 +233,8 @@ async function unpublishArticle(articleId) {
   const client = await pool.connect();
   try {
     await txControl.begin(client);
+    const locked = await knowledgeRepository.lockArticleForWrite({ id: id }, client);
+    if (!locked) { await txControl.rollback(client); return { ok: true, missing: true }; }
     await store.invalidateCommentNotificationsByArticle(client, id, INVALIDATED_REASON);
     await knowledgeRepository.unpublishArticle({ id: id }, client);
     await txControl.commit(client);
@@ -231,13 +247,16 @@ async function unpublishArticle(articleId) {
   }
 }
 
-// 编辑文章：状态改为草稿时同事务失效评论通知，其余编辑不动通知
+// 编辑文章：状态改为草稿时同事务失效评论通知，其余编辑不动通知。
+// 涉及状态变化时先取文章排它锁，避免「撤回期间提交的评论」在失效之后落库。
 async function updateArticle(params) {
   const p = params || {};
   const client = await pool.connect();
   try {
     await txControl.begin(client);
     if (p.status === 'draft') {
+      const locked = await knowledgeRepository.lockArticleForWrite({ id: p.id }, client);
+      if (!locked) { await txControl.rollback(client); return { ok: true, missing: true }; }
       await store.invalidateCommentNotificationsByArticle(client, p.id, INVALIDATED_REASON);
     }
     await knowledgeRepository.updateArticle(p, client);

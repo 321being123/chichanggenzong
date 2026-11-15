@@ -341,8 +341,9 @@ function ksCopyShare(token) {
 
 // ---------- 评论 @ 选择（2026-11-15） ----------
 // 规则：只有「输入 @ 后在候选列表里明确选中」才产生 @ 关系；正文里手打的普通 @昵称 不触发。
-// 提交时按最终正文重算区间（编辑后自动跟随），正文里已删除的选择视为撤销。
-// 候选只来自登录接口，服务端会按账号主体复核，前端昵称/用户名不参与收件人判定。
+// 区间必须精确跟随编辑：不能靠「搜索同样文字」重算位置——同昵称或重复出现的文字会关联到错误账号。
+// 因此每次输入都用「改动区间」平移/失效已有选择，选中的那一段文字一旦被编辑即视为撤销。
+// 候选只来自登录接口，服务端会按账号主体与当前昵称复核，前端昵称/用户名不参与收件人判定。
 const ksMentionBoxes = {};
 
 function ksMentionBox(boxKey) { return ksMentionBoxes[boxKey] || null; }
@@ -350,8 +351,10 @@ function ksMentionBox(boxKey) { return ksMentionBoxes[boxKey] || null; }
 function ksInitMentionBox(boxKey, textarea, panel, chips) {
   if (!boxKey || !textarea || !panel) return;
   ksMentionBoxes[boxKey] = {
+    key: boxKey,
     textarea: textarea, panel: panel, chips: chips || null,
     mentions: [], items: [], active: -1, anchor: -1, timer: null, seq: 0,
+    lastValue: textarea.value || '',
   };
   textarea.addEventListener('input', function () { ksMentionInput(boxKey); });
   textarea.addEventListener('keydown', function (e) { ksMentionKeydown(boxKey, e); });
@@ -379,6 +382,36 @@ function ksInitMentionBox(boxKey, textarea, panel, chips) {
   }
 }
 
+// 按「旧文本 → 新文本」的公共前后缀定位改动区间，平移其后的选择、丢弃与之相交的选择
+function ksSyncMentionRanges(box) {
+  if (!box) return;
+  const textarea = box.textarea;
+  const oldValue = box.lastValue || '';
+  const newValue = textarea.value || '';
+  box.lastValue = newValue;
+  if (oldValue === newValue || !box.mentions.length) return;
+  const oldLen = oldValue.length;
+  const newLen = newValue.length;
+  let prefix = 0;
+  while (prefix < oldLen && prefix < newLen && oldValue.charAt(prefix) === newValue.charAt(prefix)) prefix++;
+  let suffix = 0;
+  while (suffix < oldLen - prefix && suffix < newLen - prefix
+    && oldValue.charAt(oldLen - 1 - suffix) === newValue.charAt(newLen - 1 - suffix)) suffix++;
+  const changeStart = prefix;
+  const changeEndOld = oldLen - suffix;
+  const delta = newLen - oldLen;
+  box.mentions = box.mentions.filter(function (m) {
+    if (m.end <= changeStart) return true;                                  // 完全在改动之前
+    if (m.start >= changeEndOld) {                                          // 完全在改动之后：整体平移
+      m.start += delta;
+      m.end += delta;
+      return true;
+    }
+    return false;                                                           // 与改动相交：该选择作废
+  });
+  ksPaintMentionChips(box.key);
+}
+
 function ksCloseMentionPanel(boxKey) {
   const box = ksMentionBox(boxKey);
   if (!box) return;
@@ -391,6 +424,8 @@ function ksCloseMentionPanel(boxKey) {
 function ksMentionInput(boxKey) {
   const box = ksMentionBox(boxKey);
   if (!box) return;
+  // 先按这次输入平移/失效已登记的 @ 区间，再决定是否弹出候选
+  ksSyncMentionRanges(box);
   const ta = box.textarea;
   const pos = ta.selectionStart;
   const before = ta.value.slice(0, pos);
@@ -457,7 +492,7 @@ function ksMentionKeydown(boxKey, e) {
   }
 }
 
-// 用「@昵称 」替换光标前的 @查询词，并登记这条选择
+// 用「@昵称 」替换光标前的 @查询词，并按真实插入位置登记这条选择
 function ksApplyMention(boxKey, item) {
   const box = ksMentionBox(boxKey);
   if (!box) return;
@@ -468,10 +503,16 @@ function ksApplyMention(boxKey, item) {
   const before = ta.value.slice(0, anchor);
   const after = ta.value.slice(pos);
   ta.value = before + token + ' ' + after;
+  // 先把已有选择按这次替换平移（`@查询词` 那一段通常没有已登记的选择）
+  ksSyncMentionRanges(box);
   const caret = before.length + token.length + 1;
   ta.selectionStart = caret;
   ta.selectionEnd = caret;
-  box.mentions.push({ subjectId: item.subjectId, text: token, nickname: item.nickname, username: item.username });
+  box.mentions.push({
+    subjectId: item.subjectId, text: token,
+    nickname: item.nickname, username: item.username,
+    start: before.length, end: before.length + token.length,
+  });
   ksPaintMentionChips(boxKey);
   ksCloseMentionPanel(boxKey);
   ta.focus();
@@ -489,26 +530,20 @@ function ksPaintMentionChips(boxKey) {
   }).join('');
 }
 
-// 提交前按最终正文重算区间：文本被删掉的选择自动撤销，重叠区间跳过
+// 提交时直接使用登记好的区间（不再按文字搜索），并复核该段文字仍与选择一致
 function ksReadMentions(boxKey, text) {
   const box = ksMentionBox(boxKey);
   if (!box || !box.mentions.length) return [];
-  const taken = [];
-  const out = [];
-  let from = 0;
-  box.mentions.forEach(function (m) {
-    if (!m.text) return;
-    let idx = text.indexOf(m.text, from);
-    while (idx >= 0 && taken.some(function (r) { return idx < r.end && r.start < idx + m.text.length; })) {
-      idx = text.indexOf(m.text, idx + 1);
-    }
-    if (idx < 0) return;
-    const rec = { subjectId: m.subjectId, text: m.text, start: idx, end: idx + m.text.length };
-    taken.push(rec);
-    out.push(rec);
-    from = idx + m.text.length;
-  });
-  return out;
+  return box.mentions
+    .filter(function (m) {
+      return m.text && Number.isInteger(m.start) && Number.isInteger(m.end)
+        && m.start >= 0 && m.end <= text.length
+        && text.slice(m.start, m.end) === m.text;
+    })
+    .map(function (m) {
+      return { subjectId: m.subjectId, text: m.text, start: m.start, end: m.end };
+    })
+    .sort(function (a, b) { return a.start - b.start; });
 }
 
 function ksResetMentions(boxKey) {
@@ -516,6 +551,7 @@ function ksResetMentions(boxKey) {
   if (!box) return;
   box.mentions = [];
   box.seq++;
+  box.lastValue = box.textarea.value || '';
   ksPaintMentionChips(boxKey);
   ksCloseMentionPanel(boxKey);
 }

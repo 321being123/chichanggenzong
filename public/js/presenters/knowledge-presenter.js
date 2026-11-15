@@ -179,21 +179,62 @@ async function ksDeleteComment(commentId) {
   }
 }
 
-// 评论请求标识：网络结果未知（拿不到状态码）时保留同一标识重试，服务端据此幂等返回原评论；
-// 内容或父评论变了、或服务端明确拒绝时换新标识。
-let ksPendingComment = null;
+// 评论请求标识：只要「结果可能已落库」就保留同一标识，服务端据此幂等返回原评论。
+// 触发保留的情况：拿不到状态码（断网/超时）、网关或服务端 5xx（评论可能已提交但响应失败）、
+// 以及页面刷新（标识存 sessionStorage，按文章+父评论+正文定位）。
+// 只有服务端明确拒绝（4xx）才丢弃标识，避免下次重放永远撞旧失败。
+const KS_PENDING_KEY = 'ks-pending-comments';
+const KS_PENDING_MAX = 10;
 
 function ksNewRequestId() {
   if (window.crypto && typeof window.crypto.randomUUID === 'function') return window.crypto.randomUUID();
   return 'c-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10);
 }
 
-function ksCommentRequestId(text, parentId) {
-  const key = (parentId || '') + '|' + text;
-  if (!ksPendingComment || ksPendingComment.key !== key) {
-    ksPendingComment = { key: key, id: ksNewRequestId() };
-  }
-  return ksPendingComment.id;
+function ksReadPendingMap() {
+  try {
+    const raw = sessionStorage.getItem(KS_PENDING_KEY);
+    const map = raw ? JSON.parse(raw) : {};
+    return map && typeof map === 'object' ? map : {};
+  } catch (e) { return {}; }
+}
+
+function ksWritePendingMap(map) {
+  try {
+    const keys = Object.keys(map);
+    if (keys.length > KS_PENDING_MAX) {
+      // 只保留最近写入的若干条，避免长期占用会话存储
+      keys.slice(0, keys.length - KS_PENDING_MAX).forEach(function (k) { delete map[k]; });
+    }
+    sessionStorage.setItem(KS_PENDING_KEY, JSON.stringify(map));
+  } catch (e) { /* 隐私模式下降级为仅本页内存 */ }
+}
+
+function ksPendingKey(articleId, text, parentId) {
+  return String(articleId) + '|' + (parentId || '') + '|' + text;
+}
+
+function ksCommentRequestId(articleId, text, parentId) {
+  const key = ksPendingKey(articleId, text, parentId);
+  const map = ksReadPendingMap();
+  if (map[key]) return map[key];
+  const id = ksNewRequestId();
+  map[key] = id;
+  ksWritePendingMap(map);
+  return id;
+}
+
+function ksClearCommentRequestId(articleId, text, parentId) {
+  const key = ksPendingKey(articleId, text, parentId);
+  const map = ksReadPendingMap();
+  if (!map[key]) return;
+  delete map[key];
+  ksWritePendingMap(map);
+}
+
+// 结果不明：保留标识，提示用户可安全重试（重试不会产生第二条评论）
+function ksMayHaveCommitted(status) {
+  return status === 0 || status >= 500;
 }
 
 async function ksSubmitComment(parentId, textInput, boxKey) {
@@ -204,21 +245,26 @@ async function ksSubmitComment(parentId, textInput, boxKey) {
   // @ 区间按最终正文重算；正文里已删掉的 @ 自动不再提交
   const mentions = (boxKey && typeof window.ksReadMentions === 'function')
     ? window.ksReadMentions(boxKey, text) : [];
-  const body = { content: text, client_request_id: ksCommentRequestId(text, parentId) };
+  const body = { content: text, client_request_id: ksCommentRequestId(a.id, text, parentId) };
   if (parentId) body.parent_id = parentId;
   if (mentions.length) body.mentions = mentions;
   const r = await window.siteApi.post('/api/knowledge/articles/' + a.id + '/comments', body);
   if (!r.ok) {
-    if (!r.status) { showToast('网络异常，请检查后重试'); return; }
-    // 服务端明确拒绝：同一标识不再复用，避免下次重放命中旧的失败请求
-    ksPendingComment = null;
+    if (ksMayHaveCommitted(r.status)) {
+      // 保留请求标识：服务端可能已提交，重试会拿回原评论而不是再发一条
+      showToast(r.status
+        ? '服务器繁忙，评论可能已提交，请稍后重试（不会重复发布）'
+        : '网络异常，评论可能已提交，请稍后重试（不会重复发布）');
+      return;
+    }
+    // 服务端明确拒绝：丢弃标识，避免下次重放命中这条失败请求
+    ksClearCommentRequestId(a.id, text, parentId);
     const d = r.payload || {};
     if (r.status === 400 || r.status === 409 || r.status === 429) showToast(d.error || ksWriteErrMsg(r.status));
     else showToast(ksWriteErrMsg(r.status));
     return;
   }
-  ksPendingComment = null;
-  if (boxKey && typeof window.ksResetMentions === 'function') window.ksResetMentions(boxKey);
+  ksClearCommentRequestId(a.id, text, parentId);  if (boxKey && typeof window.ksResetMentions === 'function') window.ksResetMentions(boxKey);
   // 刷新并清空主评论框
   window.ksClearCommentInput();
   ksLoadComments(a.id);

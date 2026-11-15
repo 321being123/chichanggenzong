@@ -394,6 +394,124 @@ function baseConfig() {
       );
     });
 
+    await test('@ 文字必须是所选账号的当前昵称（伪造主体配别人昵称被拒）', async function () {
+      // 正文写的是「另一位」，却把主体指成读者（昵称「读者」）：只校验区间一致会漏掉这种情况
+      await assert.rejects(
+        comment(articleId, uAdmin, '@另一位 你好', {
+          mentions: [{ subjectId: subjReader, text: '@另一位', start: 0, end: 4 }],
+        }),
+        function (e) { return e.status === 400 && /昵称/.test(e.message); }
+      );
+    });
+
+    await test('同昵称两个账号：同一段文字按区间绑定各自主体，不靠文字搜索', async function () {
+      const dupName = 'cmt_dup_' + suffix;
+      await pool.query(
+        `INSERT INTO public.users (username, password, role, status, nickname)
+         VALUES ($1,'x','user','active','读者')`, [dupName]
+      );
+      const subjDup = await subjectOf(dupName);
+      const content = '@读者 和 @读者 都看一下';
+      const created = await comment(articleId, uOther, content, {
+        mentions: [
+          { subjectId: subjReader, text: '@读者', start: 0, end: 3 },
+          { subjectId: subjDup, text: '@读者', start: 6, end: 9 },
+        ],
+      });
+      const rows = await noticesOf(created.comment.id);
+      const mentionedUsers = rows
+        .filter(function (r) { return (r.payload.reasons || []).indexOf('comment_mention') >= 0; })
+        .map(function (r) { return r.recipientUsername; })
+        .sort();
+      assert.deepStrictEqual(mentionedUsers, [uReader, dupName].sort(),
+        '两个同昵称账号必须各自收到通知，不能只按文字匹配到一个人');
+    });
+
+    await test('对方改昵称后，旧文字的 @ 必须重新选择（返回 400）', async function () {
+      await pool.query("UPDATE public.users SET nickname='读者甲' WHERE username=$1", [uReader]);
+      try {
+        await assert.rejects(
+          comment(articleId, uOther, '@读者 你好', {
+            mentions: [{ subjectId: subjReader, text: '@读者', start: 0, end: 3 }],
+          }),
+          function (e) { return e.status === 400; }
+        );
+      } finally {
+        await pool.query("UPDATE public.users SET nickname='读者' WHERE username=$1", [uReader]);
+      }
+    });
+
+    await test('删除评论会等文章行写锁：并发回复不会被漏失效', async function () {
+      const art = await seedArticle(uAuthor);
+      const target = await comment(art, uReader, '要被删除的评论');
+      const holder = await pool.connect();
+      let finished = false;
+      let pending = null;
+      try {
+        await holder.query('BEGIN');
+        await holder.query('SELECT id FROM articles WHERE id=$1 FOR UPDATE', [art]);
+        pending = comments.deleteComment(target.comment.id).then(function () { finished = true; });
+        await new Promise(function (r) { setTimeout(r, 300); });
+        assert.strictEqual(finished, false, '持文章写锁期间删除必须排队，不能先查子树再删');
+        await holder.query('ROLLBACK');
+        await pending;
+      } finally {
+        // 断言失败时也要把持锁事务结束，否则污染连接池后续用例
+        await holder.query('ROLLBACK').catch(function () {});
+        holder.release();
+      }
+      const rows = await noticesOf(target.comment.id);
+      assert.ok(rows.length === 1 && rows[0].invalidatedAt, '删除完成后通知必须失效');
+    });
+
+    await test('撤回持锁期间的新评论必须排队，撤回提交后按未发布拒绝', async function () {
+      const art = await seedArticle(uAuthor);
+      const holder = await pool.connect();
+      let finished = false;
+      let error = null;
+      try {
+        await holder.query('BEGIN');
+        await holder.query('SELECT id FROM articles WHERE id=$1 FOR UPDATE', [art]);
+        // 同一事务内把文章改草稿（模拟撤回），提交前新的评论请求必须等待
+        await holder.query("UPDATE articles SET status='draft', published_at=NULL WHERE id=$1", [art]);
+        comment(art, uReader, '撤回期间提交的评论')
+          .then(function () { finished = true; })
+          .catch(function (e) { finished = true; error = e; });
+        await new Promise(function (r) { setTimeout(r, 300); });
+        assert.strictEqual(finished, false, '撤回未提交时新评论不得落库');
+        await holder.query('COMMIT');
+        await new Promise(function (r) { setTimeout(r, 200); });
+      } finally {
+        // 断言失败时也要结束事务，避免持锁连接被后续用例复用
+        await holder.query('ROLLBACK').catch(function () {});
+        holder.release();
+      }
+      assert.ok(error && error.status === 404, '撤回提交后评论必须被拒（而不是留下没有失效的通知）');
+      const left = await pool.query('SELECT count(*)::int AS c FROM public.article_comments WHERE article_id=$1', [art]);
+      assert.strictEqual(left.rows[0].c, 0);
+    });
+
+    await test('失效后的评论通知不再回传正文与跳转目标', async function () {
+      const art = await seedArticle(uAuthor);
+      const created = await comment(art, uReader, '失效前的评论');
+      const before = await ns.listInbox(uAuthor, { category: 'comment' }, subjAuthor);
+      const hit = before.items.find(function (it) {
+        return it.target && String(it.target.commentId) === String(created.comment.id);
+      });
+      assert.ok(hit && hit.body, '失效前应有正文');
+      await comments.unpublishArticle(art);
+      const after = await ns.listInbox(uAuthor, { category: 'comment' }, subjAuthor);
+      const gone = after.items.find(function (it) { return String(it.id) === String(hit.id); });
+      assert.ok(gone, '历史通知仍保留在列表');
+      assert.strictEqual(gone.invalidated, true);
+      assert.strictEqual(gone.unavailable, true);
+      assert.strictEqual(gone.body, '', '失效后不得继续回传原正文（含文章标题）');
+      assert.strictEqual(gone.target.kind, 'none', '失效后不提供跳转目标');
+      const detail = await ns.detail(uAuthor, gone.id, subjAuthor);
+      assert.strictEqual(detail.body, '');
+      assert.strictEqual(detail.unavailable, true);
+    });
+
     await test('@ 候选只返回 active 账号必要字段，并转义 LIKE 通配符', async function () {
       const list = await comments.listMentionCandidates('读者');
       assert.ok(list.length >= 1);

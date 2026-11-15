@@ -78,19 +78,25 @@ function buildTarget(row) {
 }
 
 function projectInboxItem(row) {
+  const invalidated = row.invalidated === true;
+  // 评论通知的正文含文章标题：失效（评论/文章已删或撤回）后不再回传正文与跳转目标，
+  // 只保留「内容已不可用」的结论，避免用已失效标题泄露原内容。
+  const isComment = row.targetKind === 'article_comment';
+  const hideContent = invalidated && isComment;
   return {
     id: row.notificationId,
     recipientId: row.recipientId,
     type: row.type,
     category: row.type,
     title: row.title,
-    body: row.body,
+    body: hideContent ? '' : row.body,
     createdAt: row.createdAt,
     deliveredAt: row.deliveredAt,
     readAt: row.readAt,
     read: !!row.readAt,
-    invalidated: row.invalidated === true,
+    invalidated: invalidated,
     invalidationReason: row.invalidationReason || '',
+    unavailable: hideContent,
     feedback: row.feedbackId
       ? {
         id: row.feedbackId,
@@ -99,7 +105,7 @@ function projectInboxItem(row) {
         version: row.feedbackVersion || '',
       }
       : null,
-    target: buildTarget(row),
+    target: hideContent ? { kind: 'none' } : buildTarget(row),
   };
 }
 

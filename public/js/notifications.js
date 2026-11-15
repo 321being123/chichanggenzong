@@ -171,7 +171,7 @@
       + '<strong class="nt-item-title">' + esc(it.title) + '</strong>'
       + '<span class="nt-item-type">' + esc(SUB_LABELS[it.category] || it.category) + '</span>'
       + '</div>';
-    html += '<p class="nt-item-body">' + esc(it.body) + '</p>';
+    html += '<p class="nt-item-body">' + esc(it.unavailable ? '内容已不可用' : it.body) + '</p>';
     var meta = [];
     if (it.feedback && it.feedback.id) {
       meta.push('反馈 #' + esc(it.feedback.id));
@@ -199,7 +199,8 @@
     html += '<button type="button" class="btn btn-outline btn-sm" data-nt-act="back">← 返回列表</button>';
     html += '<h3 class="nt-detail-title">' + esc(d.title) + '</h3>';
     html += '<div class="nt-detail-meta">' + fmtTime(d.createdAt) + '</div>';
-    html += '<div class="nt-detail-body">' + esc(d.body).replace(/\n/g, '<br>') + '</div>';
+    html += '<div class="nt-detail-body">'
+      + (d.unavailable ? '内容已不可用' : esc(d.body).replace(/\n/g, '<br>')) + '</div>';
     if (d.invalidated) {
       html += '<div class="nt-item-invalid">'
         + esc(d.target && d.target.kind === 'article_comment'
@@ -251,6 +252,8 @@
     }
     if (!item) return;
     var target = item.target || {};
+    // 已失效的评论通知不再跳转（服务端已隐藏正文与目标），只给结论
+    if (item.unavailable) { toast('内容已不可用'); return; }
     // 评论互动：先跳到目标（文章 + 评论定位），由目标页在加载并定位成功后才回标已读；
     // 加载失败或内容已不可用时通知保持未读，可以重试——不能用「点过」冒充「看到」。
     if (target.kind === 'article_comment' && target.commentId) {

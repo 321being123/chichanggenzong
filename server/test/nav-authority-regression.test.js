@@ -54,10 +54,12 @@ const previousCloseDate = (() => {
        VALUES ('HKD','CNY',$1,$3,0.90,now()),('HKD','CNY',$2,$3,0.85,now())
        ON CONFLICT (base_currency,quote_currency,rate_date) DO UPDATE SET rate=EXCLUDED.rate,fetched_at=EXCLUDED.fetched_at`, [yesterday, todayCN(), sourceRow.source_id]
     );
+    // 已确认收盘价：统一估值要求基准价与当前价都具备“已确认”资格，才允许判为完整。
     await pool.query(
-      `INSERT INTO daily_prices (username,account_name,date,code,name,price)
-       VALUES ($1,$2,$3,'00700','腾讯控股',100)
-       ON CONFLICT (username,account_name,date,code) DO UPDATE SET price=EXCLUDED.price`, [U, A, previousCloseDate]
+      // 主键已含市场（migration 199）：同形代码的日价不再互相覆盖。
+      `INSERT INTO daily_prices (username,account_name,date,code,name,price,quality,is_final,source,market)
+       VALUES ($1,$2,$3,'00700','腾讯控股',100,'confirmed',true,'test_close_task','HK')
+       ON CONFLICT (username,account_name,date,market,code) DO UPDATE SET price=EXCLUDED.price, quality=EXCLUDED.quality, is_final=EXCLUDED.is_final, source=EXCLUDED.source`, [U, A, previousCloseDate]
     );
 
     const app = express();
@@ -73,9 +75,9 @@ const previousCloseDate = (() => {
        VALUES ('partial_anchor_position',$1,$2,$3,'00005','汇丰控股',20,10,20,'股权','港股','')`, [U, A, accountId]
     );
     await pool.query(
-      `INSERT INTO daily_prices (username,account_name,date,code,name,price)
-       VALUES ($1,$2,$3,'00005','汇丰控股',20),($1,$2,$4,'00700','腾讯控股',99)
-       ON CONFLICT (username,account_name,date,code) DO UPDATE SET price=EXCLUDED.price`, [U, A, previousCloseDate, yesterday]
+      `INSERT INTO daily_prices (username,account_name,date,code,name,price,quality,is_final,source,market)
+       VALUES ($1,$2,$3,'00005','汇丰控股',20,'confirmed',true,'test_close_task','HK'),($1,$2,$4,'00700','腾讯控股',99,'candidate',NULL,'test_close_task','HK')
+       ON CONFLICT (username,account_name,date,market,code) DO UPDATE SET price=EXCLUDED.price, quality=EXCLUDED.quality, is_final=EXCLUDED.is_final, source=EXCLUDED.source`, [U, A, previousCloseDate, yesterday]
     );
     const partialPreview = await fetch(base + '/nav/import/preview', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ account: A, records: [{ date: yesterday, nav: 1, totalAsset: 1400, invested: 1000, cash: 500 }] }) });
     const partialPreviewJson = await partialPreview.json();
@@ -100,7 +102,9 @@ const previousCloseDate = (() => {
     assert.strictEqual(imported.calcStatus, 'broker_previous_close', '使用前一完整收盘日时必须标记状态');
     assert.strictEqual(imported.diagnostics.position_price_date, previousCloseDate, '必须记录实际使用的行情日期');
     const after = await loadAccountData(U, A);
-    assert.strictEqual(Math.round(after.authoritativeTotalAsset), 1435, '导入次日起当前总资产必须使用系统持仓绝对市值加锚定现金');
+    // 统一估值后当前市值由同批 effectivePrice 决定（周末取最近有效交易日收盘价 100），
+    // 兼容持仓价 110 不再参与正常证券估值。
+    assert.strictEqual(Math.round(after.authoritativeTotalAsset), 1350, '导入次日起当前总资产必须使用系统统一估值市值加锚定现金');
     const repeat = await fetch(base + '/nav/import?version=' + after.version, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     const repeatJson = await repeat.json();
     assert.strictEqual(repeat.status, 200, '同文件重复导入应成功幂等返回');
@@ -108,21 +112,35 @@ const previousCloseDate = (() => {
     const batchCount = await pool.query('SELECT count(*)::int AS c FROM nav_import_batches WHERE username=$1 AND account_name=$2', [U, A]);
     assert.strictEqual(batchCount.rows[0].c, 1, '同文件不得新增第二个导入批次');
 
-    await upsertNav(U, A, { date: todayCN(), nav: 1.025, totalAsset: 1435, invested: 1000, hkRate: 0.85 });
-    // 该归因断言要求当日港股行情使用实时持仓价；测试库日历可能尚未同步当年安排，
-    // 因此在进程内提供确定的开市事实，避免依赖业务库的日历数据。
-    invalidateMarketStateCache({ market: 'HK', businessDate: todayCN() });
-    await prefetchMarketFacts('HK', [todayCN()], async () => ({ rows: [{
-      trade_date: todayCN(), is_open: true, source_code: 'test_fixture',
-      raw_payload: { official_schedule: { is_open: true, session_type: 'full_day', close_time: '16:10', source: 'test_fixture' } },
-    }] }));
+    await upsertNav(U, A, { date: todayCN(), nav: 1.025, totalAsset: 1350, invested: 1000, hkRate: 0.85 });
+    // 港股日历缺失会让“最近应有收盘日”变成未知，从而只能标注过期参考价。
+    // 这里在进程内提供确定的市场事实（最近交易日开市、周末休市），
+    // 使周末场景能按同一批已落库收盘价完成完整归因，不依赖业务库日历。
+    invalidateMarketStateCache({ market: 'HK' });
+    const hkOpenDates = [previousCloseDate];
+    await prefetchMarketFacts('HK', [previousCloseDate, yesterday, todayCN()], async (sql, params = []) => {
+      const dates = Array.isArray(params[0]) ? params[0] : [params[0]].filter(Boolean);
+      return { rows: dates.map(value => {
+        const date = String(value).slice(0, 10);
+        const isOpen = hkOpenDates.includes(date);
+        return { trade_date: date, is_open: isOpen, source_code: 'test_fixture',
+          raw_payload: { official_schedule: { is_open: isOpen, session_type: 'full_day', close_time: '16:10', source: 'test_fixture' } } };
+      }) };
+    });
     const closed = await loadAccountData(U, A);
-    assert.ok(closed.navAttribution && closed.navAttribution.complete, '导入日到今天应能完整归因：' + JSON.stringify(closed.navAttribution));
-    assert.strictEqual(Math.round(closed.navAttribution.priceImpact), 90, '价格影响应为90');
-    assert.strictEqual(Math.round(closed.navAttribution.fxImpact), -55, '汇率影响应为-55');
-    assert.strictEqual(Math.round(closed.navAttribution.totalChange), 30, '导入日到系统计算日的总资产变化应包含一次性口径切换');
+    // 导入日的价格是“前一完整收盘日固化到导入日”的派生价，不是该日收盘证据：
+    // 归因数值必须闭合，但不允许把它标成完整收盘基准。
+    assert.ok(closed.navAttribution && Array.isArray(closed.navAttribution.priceEvidence) && closed.navAttribution.priceEvidence.length > 0,
+      '归因必须给出逐证券价格证据：' + JSON.stringify(closed.navAttribution));
+    assert.strictEqual(closed.navAttribution.complete, false, '导入日固化价不能冒充完整收盘基准');
+    assert.ok(closed.navAttribution.reasonCodes.includes('basis_price_not_confirmed'), '必须标注基准价未确认');
+    assert.strictEqual(closed.navAttribution.priceEvidence[0].basisQualified, false, '逐证券证据里必须标明基准价不可信');
+    assert.strictEqual(Math.round(closed.navAttribution.priceImpact), 0, '周末价格未变化，不得用兼容持仓价冒充当日股价涨跌');
+    assert.strictEqual(Math.round(closed.navAttribution.fxImpact), -50, '汇率影响应为-50');
+    assert.strictEqual(Math.round(closed.navAttribution.totalChange), -55, '导入日到系统计算日的总资产变化应包含一次性口径切换');
     assert.strictEqual(Math.round(closed.navAttribution.importBasisAdjustment), -5, '券商持仓比系统导入时点估值高5元，应显示-5元口径切换差异');
-    assert.strictEqual(Math.round(closed.navAttribution.priceImpact + closed.navAttribution.fxImpact + closed.navAttribution.ledgerChange + closed.navAttribution.importBasisAdjustment), 30, '价格、汇率、账本和一次性口径切换必须闭合');
+    assert.strictEqual(Math.round(closed.navAttribution.priceImpact + closed.navAttribution.fxImpact + closed.navAttribution.ledgerChange + closed.navAttribution.importBasisAdjustment), -55, '价格、汇率、账本和一次性口径切换必须闭合');
+    assert.ok(!('valuationAdjustment' in closed.navAttribution), '统一估值后不得再输出休市估值校准项');
 
     const latest = await loadAccountData(U, A);
     const batchId = firstJson.data.navHistory.find(n => n.date === yesterday).importBatchId;

@@ -7,12 +7,13 @@ const asyncHandler = require('../middleware/async');
 const { requireLogin, assertOwnership, requireAdmin } = require('../middleware/auth');
 const rateLimit = require('../middleware/rateLimit');
 const { validateAccountData, isValidAccountName } = require('../middleware/validate');
-const { loadUser, updateUserAccounts, loadAccountData, loadAccountSummary, saveAccountData, migrateToStructured, saveDailyPrices, syncUserAccounts, loadBrokers, isValidBroker, getAccountBrokers, updateAccountBroker, backupNavHistory, restoreNavHistory, clearNavHistory, deleteAccountData, renameAccountData, upsertNav } = require('../db');
+const { loadUser, updateUserAccounts, loadAccountData, loadAccountSummary, saveAccountData, migrateToStructured, syncUserAccounts, loadBrokers, isValidBroker, getAccountBrokers, updateAccountBroker, backupNavHistory, restoreNavHistory, clearNavHistory, deleteAccountData, renameAccountData, upsertNav } = require('../db');
 const { round } = require('../db/util');
+const { buildPositionExport } = require('../services/positionExport');
 const { withTransaction } = require('../db/transaction');
 const accountsRepository = require('../repositories/accountsRepository');
 const navImportRepository = require('../repositories/navImportRepository');
-const { fetchQuotesByCodes, todayCN, isCnTradingDate, toTsCode, validateDailyPriceBatch } = require('../services/market');
+const { fetchQuotesByCodes, todayCN, isCnTradingDate, toTsCode } = require('../services/market');
 const { recomputeNav } = require('../jobs/replayNav');
 const { getValuationByCodes } = require('../services/convertibleBondValuationService');
 const { applyPrivateCache } = require('../middleware/publicCache');
@@ -498,39 +499,12 @@ router.get('/export/:name', requireLogin, asyncHandler(assertOwnership), asyncHa
   try {
     const name = req.params.name;
     const result = await loadAccountData(req.session.user, name);
-    const positions = (result.positions || []).filter((p) => Number(p.quantity) > 0);
-    const hkRate = result.hkRate || 0.868;
 
-    const rows = [['代码', '代码', '正股/转债名称', '现价', '持有数量', '人民币市值', '持仓比例', '类型', '细类']];
-    var totalRmb = 0;
-
-    positions.forEach(function (p) {
-      var code = p.code || '';
-      var canonicalCode = toTsCode(code);
-      var suffix = canonicalCode.startsWith(code) ? canonicalCode.slice(code.length) : '';
-
-      var price = Number(p.price) || 0;
-      var qty = Number(p.quantity) || 0;
-      var mv = price * qty;
-      if (p.subtype === '港股') { mv = mv * hkRate; }
-
-      var priceDisplay = p.subtype === '港股' ? 'HK$' + price.toFixed(2) : price.toFixed(2);
-      totalRmb += mv;
-
-      rows.push([code, code + suffix, p.name || '', priceDisplay, qty, Math.round(mv * 100) / 100, 0, p.type || '', p.subtype || '']);
-    });
-
-    // 计算比例
-    var totalAsset = result.totalAsset > 0 ? result.totalAsset : totalRmb;
-    for (var i = 1; i < rows.length; i++) {
-      rows[i][6] = totalAsset > 0 ? Math.round(rows[i][5] / totalAsset * 10000) / 10000 : 0;
-    }
-
-    // 尾部加入现金行
-    var cash = Number(result.cash) || 0;
-    var totalWithCash = totalAsset;
-    var cashPct = totalWithCash > 0 ? Math.round(cash / totalWithCash * 10000) / 10000 : 0;
-    rows.push([null, null, null, null, null, Math.round(cash * 100) / 100, cashPct, '债权', '现金']);
+    // 导出与页面同源：行装配交给纯函数，缺价、部分金额与比例口径都在里面统一处理。
+    const exported = buildPositionExport(result);
+    const rows = exported.rows;
+    const complete = exported.complete;
+    const missingCodes = exported.missingCodes;
 
     var wb = new ExcelJS.Workbook();
     var ws = wb.addWorksheet('Sheet1');
@@ -538,6 +512,11 @@ router.get('/export/:name', requireLogin, asyncHandler(assertOwnership), asyncHa
     ws.addRows(rows);
 
     var buf = await wb.xlsx.writeBuffer();
+    // 让调用方也能从响应头判断完整性，而不是只看表格里的数字。
+    res.setHeader('X-Valuation-Complete', complete ? 'true' : 'false');
+    res.setHeader('X-Valuation-Missing-Codes', missingCodes.join(','));
+    res.setHeader('X-Valuation-Fx-Missing-Codes', exported.fxMissingCodes.join(','));
+    res.setHeader('X-Hk-Rate-Confirmed', result.hkRateConfirmed === true ? 'true' : 'false');
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', 'attachment; filename="export.xlsx"');
     res.send(buf);
@@ -547,19 +526,16 @@ router.get('/export/:name', requireLogin, asyncHandler(assertOwnership), asyncHa
 }));
 
 // ========== 每日收盘价记录 ==========
+// 2026-11-15 统一估值合同（方案第 8 节）：收盘事实只能由服务端收盘任务产出，
+// 浏览器自报价格不再成为权威。旧客户端仍会调用本接口，返回明确 409 和升级提示，
+// 不写入任何候选或正式日价（鉴权与账户归属检查在此之前已执行）。
 router.post('/daily-prices/:name', requireLogin, asyncHandler(assertOwnership), rateLimit({ prefix: 'save', windowMs: 60000, max: 30, getKey: (r) => r.session.user || r.ip, message: '保存过于频繁，请稍后再试' }), asyncHandler(async (req, res) => {
-  try {
-    const name = req.params.name;
-    const { prices, date } = req.body;
-    if (!prices || !prices.length) return res.json({ ok: true });
-    const targetDate = date || todayCN();
-    const validation = await validateDailyPriceBatch(targetDate, prices);
-    if (!validation.ok) return res.status(400).json(validation);
-    await saveDailyPrices(req.session.user, name, validation.date, prices);
-    res.json({ ok: true });
-  } catch(e) {
-    res.status(500).json({ error: e.message });
-  }
+  return res.status(409).json({
+    error: '收盘价已改由服务端收盘任务统一写入，浏览器写入通道已关闭；请刷新页面使用最新版本',
+    code: 'DAILY_PRICE_WRITE_RETIRED',
+    upgradeRequired: true,
+    replacement: 'market_close_task',
+  });
 }));
 
 // ========== 历史净值备份/还原/清理（导入前自动拍快照，误导入可一键还原） ==========
@@ -616,6 +592,8 @@ router.get('/accounts/:name/nav-history-backup-info', requireLogin, asyncHandler
 
 // 2-5 行情价格批量更新：PATCH /api/positions/prices
 // body={ prices: [{ code, price }], account }
+// 2026-11-15 统一估值合同：本接口只维护“兼容持仓价”缓存，不再是正常证券的估值权威；
+// 当前资产与涨跌一律由服务端 effectivePrice 解析，客户端价格不写入 daily_prices。
 router.patch('/positions/prices', requireLogin, asyncHandler(assertOwnership), requireVersion, rateLimit({ prefix: 'save', windowMs: 60000, max: 30, getKey: (r) => r.session.user || r.ip, message: '保存过于频繁，请稍后再试' }), asyncHandler(async (req, res) => {
   const prices = req.body && req.body.prices;
   if (!Array.isArray(prices) || prices.length === 0) return res.status(400).json({ error: '缺少 prices 数组' });
@@ -635,7 +613,8 @@ router.patch('/positions/prices', requireLogin, asyncHandler(assertOwnership), r
       const upV = await accountsRepository.bumpPositionVersion({ username, accountName }, tx);
       return upV.rows[0] ? Number(upV.rows[0].version) : null;
     });
-    res.json({ ok: true, version });
+    // compatCacheOnly：明确告知调用方这里写的是兼容缓存，不是收盘事实。
+    res.json({ ok: true, version, compatCacheOnly: true });
   } catch (e) {
     res.status(e.status || 500).json({ error: e.message });
   }
@@ -956,7 +935,9 @@ router.post('/nav/import', requireLogin, asyncHandler(assertOwnership), requireV
             const price = dayPrices.get(String(p.code));
             if (!(price > 0)) continue;
             await navImportRepository.upsertAnchorDailyPrice(
-              [username, accountName, accountId, requestedAnchorDate, p.code, p.name || '', price], client,
+              [username, accountName, accountId, requestedAnchorDate, p.code, p.name || '', price,
+                // 只对明确港股给 HK；其余交给仓储按代码长度兜底（5 位港股、6 位 A 股）。
+                p.subtype === '港股' ? 'HK' : null], client,
             );
           }
         }

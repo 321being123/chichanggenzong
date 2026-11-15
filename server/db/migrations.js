@@ -212,8 +212,17 @@ const MIGRATIONS = [
   { version: '192_stock_selection_universe_artifact_columns', up: () => require('./migrations/era13StockSelectionV2').migration192StockSelectionUniverseArtifactColumns(pool) },
   { version: '193_stock_selection_ux_request_bindings', up: () => require('./migrations/era14StockSelectionUx').migration193StockSelectionUx(pool) },
   { version: '194_financial_statement_type_columns', up: () => require('./migrations/era11FinancialStatements').migration194FinancialStatementTypeColumns(pool) },
-  { version: '195_comment_notification', up: () => require('./migrations/era15CommentNotifications').migration195CommentNotification(pool) },
-  { version: '196_notification_preferences', up: () => require('./migrations/era15CommentNotifications').migration196NotificationPreferences(pool) },
+  { version: '195_valuation_price_evidence', up: () => require('./migrations/era15ValuationPriceEvidence').migration195ValuationPriceEvidence(pool) },
+  { version: '196_daily_price_market', up: () => require('./migrations/era15DailyPriceMarket').migration196DailyPriceMarket(pool) },
+  { version: '197_daily_price_market_reverify', up: () => require('./migrations/era15DailyPriceMarketReverify').migration197DailyPriceMarketReverify(pool) },
+  { version: '198_daily_price_market_basis', up: () => require('./migrations/era15DailyPriceMarketBasis').migration198DailyPriceMarketBasis(pool) },
+  { version: '199_daily_price_market_key', up: () => require('./migrations/era15DailyPriceMarketKey').migration199DailyPriceMarketKey(pool) },
+  { version: '200_daily_price_market_evidence', up: () => require('./migrations/era15DailyPriceMarketEvidence').migration200DailyPriceMarketEvidence(pool) },
+  { version: '201_daily_bar_evidence', up: () => require('./migrations/era15DailyBarEvidence').migration201DailyBarEvidence(pool) },
+  { version: '202_daily_bar_evidence_guard', up: () => require('./migrations/era15DailyBarEvidenceGuard').migration202DailyBarEvidenceGuard(pool) },
+  { version: '203_market_close_bar_gaps', up: () => require('./migrations/era15MarketCloseBarGaps').migration203MarketCloseBarGaps(pool) },
+  { version: '204_comment_notification', up: () => require('./migrations/era15CommentNotifications').migration204CommentNotification(pool) },
+  { version: '205_notification_preferences', up: () => require('./migrations/era15CommentNotifications').migration205NotificationPreferences(pool) },
 ];
 
 async function ensureMigrationsTable() {

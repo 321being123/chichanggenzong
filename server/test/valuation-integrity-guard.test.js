@@ -1,0 +1,228 @@
+// 统一估值完整性守卫回归（2026-11-15 第二轮验收反例）
+// 覆盖：不完整估值不得续出正式净值、盘前/午休取价、历史投影拒绝候选价、已确认收盘价的写入保护。
+const assert = require('assert');
+const { buildNavPerformance, computeNavHistoryTotals, computeNavAttribution } = require('../services/navAttribution');
+const { sessionPhase, expectedCloseDateFor } = require('../services/effectivePrice');
+const { isCnTradingDate, invalidateMarketStateCache } = require('../services/marketState');
+
+// 固定时钟：本文件只断言纯函数与账户级投影，不依赖真实当前时刻。
+const realDate = global.Date;
+
+function dateKey(value) {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(value);
+}
+function shiftDate(date, days) {
+  const base = new Date(date + 'T00:00:00Z');
+  base.setUTCDate(base.getUTCDate() + days);
+  return base.toISOString().slice(0, 10);
+}
+const TODAY = dateKey(new realDate());
+const YESTERDAY = shiftDate(TODAY, -1);
+
+async function main() {
+  // 1. 当前估值不完整时，当日不得续出正式净值。
+  {
+    const data = {
+      totalAsset: 500,
+      valuation: { complete: false, missingCount: 1, reasonCodes: ['price_not_confirmed'] },
+      positions: [{ code: '600000', price: 10, quantity: 100, subtype: '沪市' }],
+      cashFlows: [],
+      navHistory: [
+        { date: YESTERDAY, nav: 1, totalAsset: 1500, snapshotSource: 'imported', isLocked: true, snapshot_at: YESTERDAY + 'T08:00:00.000Z' },
+      ],
+    };
+    data.navHistory.push({ date: TODAY, nav: null, totalAsset: null, snapshotSource: 'live', snapshot_at: new realDate().toISOString() });
+    const rows = await buildNavPerformance(data, { [YESTERDAY]: 1500 }, { requireLive: false });
+    const todayRow = rows.find(row => row.date === TODAY);
+    assert.ok(todayRow, '必须产出当日行');
+    assert.strictEqual(todayRow.nav, null, '估值不完整时不得产出净值');
+    assert.strictEqual(todayRow.basisStatus, 'valuation_incomplete', '必须明确标注估值不完整，而不是 complete');
+    assert.strictEqual(todayRow.dayChange, null, '估值不完整时不得给出当日涨跌');
+  }
+
+  // 2. 估值完整时仍应正常续链（避免上面把正常路径也堵死）。
+  {
+    const data = {
+      totalAsset: 1600,
+      valuation: { complete: true, missingCount: 0 },
+      positions: [{ code: '600000', price: 10, quantity: 100, subtype: '沪市' }],
+      cashFlows: [],
+      navHistory: [
+        { date: YESTERDAY, nav: 1, totalAsset: 1500, snapshotSource: 'imported', isLocked: true, snapshot_at: YESTERDAY + 'T08:00:00.000Z' },
+      ],
+    };
+    data.navHistory.push({ date: TODAY, nav: null, totalAsset: null, snapshotSource: 'live', snapshot_at: new realDate().toISOString() });
+    const rows = await buildNavPerformance(data, { [YESTERDAY]: 1500 }, { requireLive: false });
+    const todayRow = rows.find(row => row.date === TODAY);
+    assert.ok(todayRow && todayRow.nav > 0, '估值完整时必须能续出净值：' + JSON.stringify(todayRow));
+    assert.strictEqual(todayRow.basisStatus, 'complete');
+  }
+
+  // 3. 盘中时段判定：盘前 / 午休 / 收盘后 / 非交易日。
+  {
+    assert.strictEqual(sessionPhase({ status: 'open', isTradingNow: false, isAfterMarketClose: false }, '09:00'), 'pre_open');
+    assert.strictEqual(sessionPhase({ status: 'open', isTradingNow: true, isAfterMarketClose: false }, '10:00'), 'in_session');
+    assert.strictEqual(sessionPhase({ status: 'open', isTradingNow: false, isAfterMarketClose: false }, '12:00'), 'break');
+    assert.strictEqual(sessionPhase({ status: 'open', isTradingNow: false, isAfterMarketClose: true }, '15:30'), 'after_close');
+    assert.strictEqual(sessionPhase({ status: 'closed', isTradingNow: false, isAfterMarketClose: false }, '12:00'), 'closed_day');
+    assert.strictEqual(sessionPhase({ status: 'unknown' }, '12:00'), 'unknown');
+  }
+
+  // 4. 盘前取“上一交易日”的收盘价，盘中才取当日。
+  {
+    invalidateMarketStateCache();
+    const friday = '2026-11-13';
+    const thursday = '2026-11-12';
+    assert.ok(isCnTradingDate(friday) && isCnTradingDate(thursday), '夹具日期必须是 A 股交易日');
+    assert.strictEqual(await expectedCloseDateFor('CN', friday, null, new Map(), 'pre_open'), thursday,
+      '盘前应回退到上一交易日，不能要求当日收盘价');
+    assert.strictEqual(await expectedCloseDateFor('CN', friday, null, new Map(), 'in_session'), friday,
+      '盘中/收盘后应取当日');
+    assert.strictEqual(await expectedCloseDateFor('CN', friday, null, new Map(), 'break'), friday,
+      '午休仍属当日');
+  }
+
+  // 5. 历史资产投影拒绝候选价与遗留未核实价（保留缺口，不用未确认价格重建）。
+  {
+    const makeQuery = quality => async (sql, params = []) => {
+      if (sql.includes('FROM daily_prices')) {
+        return { rows: [{ date: '2026-09-23', code: '600000', price: 10, quality, is_final: quality === 'confirmed' }] };
+      }
+      if (sql.includes('FROM market.fx_rates')) return { rows: [] };
+      throw new Error('unexpected history query: ' + sql);
+    };
+    const data = {
+      positions: [{ code: '600000', price: 10, quantity: 100, subtype: '沪市' }],
+      cashFlows: [],
+      navHistory: [{ date: '2026-09-23', totalAsset: 1000, hkRate: 1, snapshotSource: 'legacy', snapshot_at: '2026-09-23T08:00:00.000Z' }],
+      positionSnapshots: [{ snapshotId: 'imp-1', snapshotDate: '2026-09-23', code: '600000', quantity: 100, quoteCurrency: 'CNY', source: 'manual_reconciliation' }],
+    };
+    const confirmed = await computeNavHistoryTotals('u', 'a', data, makeQuery('confirmed'));
+    assert.strictEqual(Math.round(confirmed['2026-09-23']), 1000, '已确认收盘价应能重建历史资产');
+    const candidate = await computeNavHistoryTotals('u', 'a', data, makeQuery('candidate'));
+    assert.strictEqual(candidate['2026-09-23'], null, '候选价不得用于历史资产重建');
+    const legacy = await computeNavHistoryTotals('u', 'a', data, makeQuery('legacy_unverified'));
+    assert.strictEqual(legacy['2026-09-23'], null, '遗留未核实价不得用于历史资产重建');
+  }
+
+  // 6. 历史交易日缺当日收盘价时，不得用前一交易日的确认价顶上（否则会算出假完整的历史资产）。
+  {
+    const wednesday = '2026-09-23';
+    const thursday = '2026-09-24';
+    assert.ok(isCnTradingDate(wednesday) && isCnTradingDate(thursday), '夹具日期必须是连续两个 A 股交易日');
+    const query = async (sql) => {
+      if (sql.includes('FROM daily_prices')) {
+        // 只有周三的确认价，周四缺价。
+        return { rows: [{ date: wednesday, code: '600000', price: 10, quality: 'confirmed', is_final: true }] };
+      }
+      if (sql.includes('FROM market.fx_rates')) return { rows: [] };
+      throw new Error('unexpected history query: ' + sql);
+    };
+    const data = {
+      positions: [{ code: '600000', price: 10, quantity: 100, subtype: '沪市' }],
+      cashFlows: [],
+      navHistory: [
+        { date: wednesday, totalAsset: 1000, hkRate: 1, snapshotSource: 'legacy', snapshot_at: wednesday + 'T08:00:00.000Z' },
+        { date: thursday, totalAsset: null, hkRate: 1, snapshotSource: 'legacy', snapshot_at: thursday + 'T08:00:00.000Z' },
+      ],
+      positionSnapshots: [{ snapshotId: 'imp-1', snapshotDate: wednesday, code: '600000', quantity: 100, quoteCurrency: 'CNY', source: 'manual_reconciliation' }],
+    };
+    const totals = await computeNavHistoryTotals('u', 'a', data, query);
+    assert.strictEqual(Math.round(totals[wednesday]), 1000, '周三有当日确认价时应能重建');
+    assert.strictEqual(totals[thursday], null, '周四缺当日收盘价时必须保留缺口，不能沿用周三价格');
+  }
+
+  // 7. 基准日缺价不得产生“今日涨跌”：基准价必须是该市场基准时点最近应有收盘日的价格。
+  {
+    const frozen = realDate.parse('2026-09-28T04:00:00.000Z');
+    global.Date = class FrozenDate extends realDate {
+      constructor(...args) { super(...(args.length ? args : [frozen])); }
+      static now() { return frozen; }
+    };
+    invalidateMarketStateCache();
+    const query = async (sql) => {
+      if (sql.includes('FROM daily_prices')) {
+        // 只有周三（09-23）的确认价；周四（09-24，实际持有的最近快照日）缺价。
+        return { rows: [{ date: '2026-09-23', code: '600000', market: 'CN', price: 10, quality: 'confirmed', is_final: true }] };
+      }
+      if (sql.includes('FROM market.fx_rates')) return { rows: [] };
+      throw new Error('unexpected basis query: ' + sql);
+    };
+    const data = {
+      cashBase: 1000,
+      cashFlows: [],
+      trades: [],
+      positions: [{ code: '600000', subtype: '沪市', price: 11, quantity: 100 }],
+      navHistory: [
+        { date: '2026-09-23', totalAsset: 1900, snapshotSource: 'legacy', snapshot_at: '2026-09-23T08:00:00.000Z' },
+        { date: '2026-09-24', totalAsset: 2000, snapshotSource: 'legacy', snapshot_at: '2026-09-24T08:00:00.000Z' },
+      ],
+    };
+    const attribution = await computeNavAttribution('u', 'a', data, 2100, query);
+    assert.strictEqual(attribution.complete, false, '基准日缺当日收盘价时不得给出完整涨跌');
+    assert.ok(attribution.reasonCodes.includes('basis_price_not_confirmed'), '必须标注基准价未确认');
+    const evidence = attribution.priceEvidence.find(row => row.code === '600000');
+    assert.strictEqual(evidence.basisQualified, false, '逐证券证据必须标明基准价不可信');
+    assert.strictEqual(evidence.basisExpectedDate, '2026-09-24', '必须给出基准时点最近应有收盘日');
+    assert.strictEqual(evidence.basisPriceDate, '2026-09-23', '用于对比的旧价格日期要如实披露');
+  }
+
+  // 8. 同形代码（A 股 000001 / 港股 00001 补零）在归因里必须按身份分开，不能合并成一只。
+  {
+    const frozen = realDate.parse('2026-09-28T04:00:00.000Z');
+    global.Date = class FrozenDate2 extends realDate {
+      constructor(...args) { super(...(args.length ? args : [frozen])); }
+      static now() { return frozen; }
+    };
+    invalidateMarketStateCache();
+    const query = async (sql) => {
+      if (sql.includes('trade_calendar')) {
+        return { rows: [{ trade_date: '2026-09-24', is_open: true, source_code: 'test_fixture',
+          raw_payload: { official_schedule: { is_open: true, session_type: 'full_day', close_time: '16:10', source: 'test_fixture' } } }] };
+      }
+      if (sql.includes('FROM daily_prices')) {
+        return { rows: [
+          { date: '2026-09-24', code: '000001', market: 'CN', price: 10, quality: 'confirmed', is_final: true },
+          { date: '2026-09-24', code: '00001', market: 'HK', price: 20, quality: 'confirmed', is_final: true },
+        ] };
+      }
+      if (sql.includes('FROM market.fx_rates')) return { rows: [] };
+      throw new Error('unexpected identity query: ' + sql);
+    };
+    const data = {
+      cashBase: 0,
+      cashFlows: [],
+      trades: [],
+      hkRate: 1,
+      positions: [
+        { code: '000001', subtype: '深市', price: 10, quantity: 100 },
+        { code: '00001', subtype: '港股', price: 20, quantity: 100 },
+      ],
+      navHistory: [
+        { date: '2026-09-23', totalAsset: 3000, hkRate: 1, snapshotSource: 'legacy', snapshot_at: '2026-09-23T08:00:00.000Z' },
+        { date: '2026-09-24', totalAsset: 3000, hkRate: 1, snapshotSource: 'legacy', snapshot_at: '2026-09-24T08:00:00.000Z' },
+        // 再补一条 09-25 快照，避免“中间交易日缺快照”分支先于价格核对返回（夹具需要连续快照）。
+        { date: '2026-09-25', totalAsset: 3000, hkRate: 1, snapshotSource: 'legacy', snapshot_at: '2026-09-25T08:00:00.000Z' },
+      ],
+      // 历史重建要求有持仓锚点；这里两只证券各给一条（港股用 HKD 标明身份）。
+      positionSnapshots: [
+        { snapshotId: 'imp-1', snapshotDate: '2026-09-23', code: '000001', quantity: 100, quoteCurrency: 'CNY', source: 'manual_reconciliation' },
+        { snapshotId: 'imp-2', snapshotDate: '2026-09-23', code: '00001', quantity: 100, quoteCurrency: 'HKD', source: 'manual_reconciliation' },
+      ],
+    };
+    const attribution = await computeNavAttribution('u', 'a', data, 3000, query);
+    const evidenced = (attribution.priceEvidence || []);
+    assert.strictEqual(evidenced.length, 2, '同形代码必须作为两只证券分别取证：' + JSON.stringify(evidenced));
+    assert.deepStrictEqual(evidenced.map(row => row.market).sort(), ['CN', 'HK'], '两只证券的市场必须分别标注');
+    assert.deepStrictEqual(evidenced.map(row => row.basisPrice).sort((a, b) => a - b), [10, 20],
+      '各自的基准价必须来自各自市场，不能相互覆盖');
+    assert.strictEqual(attribution.previousTotalAsset, 3000, '期初资产按两只证券合并计算（100×10 + 100×20）');
+  }
+
+  console.log('统一估值完整性守卫回归通过');
+}
+
+main().catch(error => {
+  console.error(error);
+  process.exitCode = 1;
+}).finally(() => { global.Date = realDate; });

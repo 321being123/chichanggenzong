@@ -67,6 +67,24 @@ const DATASET_PARTITION_REGISTRY = Object.freeze({
   },
   bond_daily: { scopeKey: 'CN', table: 'market.convertible_bond_daily_metrics', countSql: 'SELECT COUNT(*)::int AS row_count', dataAsOfSql: 'SELECT MAX(trade_date)::text AS data_as_of' },
   stock_daily: { scopeKey: 'CN', table: 'market.daily_bars', countSql: 'SELECT COUNT(*)::int AS row_count', dataAsOfSql: 'SELECT MAX(trade_date)::text AS data_as_of' },
+  // 收盘任务亲自核验并落库的日终收盘价（证券级证据）：只登记「本任务核验通过的证券只数」，
+  // 与全市场 stock_daily 分区语义不同，互不顶替。两市场各自一个数据集，港股不得借用 A 股分区。
+  position_close_bars_cn: {
+    scopeKey: 'CN', table: 'market.daily_bars',
+    partitionedCountSql: `SELECT COUNT(*)::int AS row_count
+        FROM market.daily_bars b JOIN core.instruments i ON i.instrument_id=b.instrument_id
+       WHERE b.trade_date=$1::date AND i.market='CN'
+         AND b.bar_status='terminal' AND b.price_adjust='none' AND b.quality_status='passed'`,
+    partitionedDataAsOfSql: 'SELECT $1::text AS data_as_of',
+  },
+  position_close_bars_hk: {
+    scopeKey: 'HK', table: 'market.daily_bars',
+    partitionedCountSql: `SELECT COUNT(*)::int AS row_count
+        FROM market.daily_bars b JOIN core.instruments i ON i.instrument_id=b.instrument_id
+       WHERE b.trade_date=$1::date AND i.market='HK'
+         AND b.bar_status='terminal' AND b.price_adjust='none' AND b.quality_status='passed'`,
+    partitionedDataAsOfSql: 'SELECT $1::text AS data_as_of',
+  },
   stock_valuation: { scopeKey: 'CN', table: 'market.daily_valuations', countSql: 'SELECT COUNT(*)::int AS row_count', dataAsOfSql: 'SELECT MAX(trade_date)::text AS data_as_of' },
   stock_adj_factor: { scopeKey: 'CN', table: 'market.adjustment_factors', countSql: 'SELECT COUNT(*)::int AS row_count', dataAsOfSql: 'SELECT MAX(trade_date)::text AS data_as_of' },
   stock_financial_reports: { scopeKey: 'CN', table: 'fundamental.financial_reports', whereSql: "WHERE report_type='1' AND is_current_version=true", countSql: 'SELECT COUNT(*)::int AS row_count', dataAsOfSql: "SELECT MAX(COALESCE(f_ann_date,announced_at,period_end))::text AS data_as_of" },

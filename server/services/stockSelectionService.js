@@ -563,6 +563,16 @@ async function loadUniverseWithArtifact({ market, asOfDate, knowledgeCutoff, wri
   return { rows, artifact: saved, drift, evidence };
 }
 
+/**
+ * 名单漂移是否阻断本次计算（方案 27.11 的发布边界）：
+ * 固化名单与新主档不一致时仍使用固化集合，差异只作证据，不静默换池；
+ * 只有生产/预览发布路径显式放行，才不把新股/退市这类正常生命周期变化当质量阻断。
+ * 回测与 G0 审计默认严格阻断，避免用今天的主档篡改历史池。
+ */
+function shouldBlockUniverseDrift(drift, allowUniverseDrift) {
+  return Boolean(drift) && allowUniverseDrift !== true;
+}
+
 async function computeSelection(input, tx) {
   const market = normalizeMarket(input.market);
   const asOfDate = String(input.asOfDate || '');
@@ -712,8 +722,11 @@ async function computeSelection(input, tx) {
   const reasons = [];
   if (!gate.eligible) reasons.push(gate.reason || 'market_not_eligible');
   if (!universe.length) reasons.push('universe_empty');
-  // 固化股票池与新主档不一致：保留旧集合，但把差异当阻断，不能静默换池（方案 27.11）。
-  if (universeLoad.evidence.drift) reasons.push('universe_drift');
+  // 固化股票池与新主档不一致：保留旧集合、差异留证，不静默换池（方案 27.11）。
+  // 生产发布路径只留证据不阻断：名单漂移不是数据缺口，若当成永久阻断，同一目标日
+  // 一旦名单变化就永远发不出结果，后台选股槽每天撞 24 小时止损告警（2026-11-10～11-14 线上实证）。
+  // 回测与 G0 审计直接调 computeSelection，仍按原口径严格阻断。
+  if (shouldBlockUniverseDrift(universeLoad.evidence.drift, input.allowUniverseDrift)) reasons.push('universe_drift');
   if (pendingCount > 0) reasons.push('pending_objects_in_ranking_pool');
   // 行业源本身不给（北交所新股、已合并主体）只让该股不可评估，不阻断整批：
   // buildPortfolio 已经把 industry 为空的证券 skip 掉（reason=industry_unverified），
@@ -911,7 +924,8 @@ async function computeAndPersist(input) {
     throw error;
   }
   return withTransaction(async tx => {
-    const computed = await computeSelection(input, tx);
+    // 生产/预览发布路径：名单漂移只留证、不永久阻断发布；回测与审计不经过这里，仍严格。
+    const computed = await computeSelection(Object.assign({}, input, { allowUniverseDrift: true }), tx);
     const isV2 = computed.strategyCode === RULES_V2.STRATEGY_CODE_V2;
     const strategyVersion = input.strategyVersion || (isV2 ? 'v2' : STRATEGY_VERSION);
     const strategyId = await repo.upsertStrategy(tx, {
@@ -2255,6 +2269,17 @@ async function listBacktests({ market, limit, offset }) {
 }
 
 /**
+ * 已退市证券不再进选股输入缺口队列：旧主档 delist_date 常为空、status 仍写 listed，
+ * 但交易所简称会改成「XX退」「退市XX」「摘牌XX」，这是本地可核验的退市事实。
+ * 退市后上游不会再给行业/财报/行情，继续排队只会永远补不到、把补数槽锁死。
+ * 只认名称里的明确退市标记；正常证券不受影响，港股名称没有这类标记也不受影响。
+ */
+function isDelistedSecurityName(name) {
+  const text = String(name || '').replace(/\s+/g, '');
+  return /(退市|摘牌)/.test(text) || /退$/.test(text);
+}
+
+/**
  * 缺口的数据集归属（R2-04）：每个原因必须能落到"补什么"，
  * 补不了的（估值由共享行情任务负责）也要显式分类，不能变成"没有原因"。
  */
@@ -2309,7 +2334,12 @@ function gapDomainsOf(item, anomaly) {
 async function auditInputs({ market, asOfDate, strategyCode }) {
   const computed = await computeSelection({ market, asOfDate, positionRatio: 1, strategyCode });
   const gaps = [];
+  const excludedDelisted = [];
   computed.evaluated.forEach(item => {
+    if (isDelistedSecurityName(item.name)) {
+      excludedDelisted.push({ code: item.code, name: item.name });
+      return;
+    }
     const anomaly = computed.anomalyById ? computed.anomalyById[item.instrumentId] : null;
     const pending = item.filterStatus === RULES.STATUS.PENDING;
     const rankBlocked = item.filterStatus === RULES.STATUS.PASS && item.rankReady === false;
@@ -2337,6 +2367,7 @@ async function auditInputs({ market, asOfDate, strategyCode }) {
     universeCount: computed.coverage.universeCount,
     gapCount: gaps.length,
     domainCounts,
+    excludedDelisted,
     coverage: computed.coverage,
     quality: computed.quality,
     // 全量保存：补齐任务与续跑判定都依赖完整队列，截断会让"剩余数量"失真。
@@ -2344,7 +2375,7 @@ async function auditInputs({ market, asOfDate, strategyCode }) {
     truncated: false,
   };
   const queueId = await repo.saveInputGapQueue({ market: computed.market, payload });
-  return { queueId, gapCount: gaps.length, domainCounts, coverage: computed.coverage, quality: computed.quality, gaps };
+  return { queueId, gapCount: gaps.length, domainCounts, excludedDelisted, coverage: computed.coverage, quality: computed.quality, gaps };
 }
 
 /** 行业下拉：只读库内合法一级分类，不现场调用行业源（方案 27.10）。 */
@@ -2385,6 +2416,7 @@ module.exports = {
   periodStatus,
   knowledgeCutoffFor,
   computeSelection,
+  shouldBlockUniverseDrift,
   buildAnnualYears,
   computeTtmFromReports,
   computeAndPersist,
@@ -2405,6 +2437,7 @@ module.exports = {
   listBacktests,
   backtestEnvelope,
   auditInputs,
+  isDelistedSecurityName,
   getSettings,
   saveSettings,
   createSimulation,

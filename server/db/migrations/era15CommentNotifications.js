@@ -6,7 +6,7 @@ const { pool } = require('../connection');
 
 // 195：通知类型扩到 comment（文章评论/回复/@），目标类型扩到 article_comment；
 // 收件人补不可复用主体快照 recipient_subject_id（与 username 一起判定「是不是同一个账号实例」）。
-async function migration195CommentNotification() {
+async function migration204CommentNotification() {
   await pool.query(`
     -- type 即前端分类：feedback（反馈完成）/ system（后台群发）/ comment（文章评论互动）
     ALTER TABLE public.notifications DROP CONSTRAINT IF EXISTS notifications_type_check;
@@ -48,7 +48,7 @@ async function migration195CommentNotification() {
 
 // 196：个人提醒偏好（四项独立开关），按账号主体单行存储。
 // 主键挂 users.subject_id：删号即随外键清理，同名重注册不会继承上一个人的设置。
-async function migration196NotificationPreferences() {
+async function migration205NotificationPreferences() {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS public.notification_preferences (
       subject_id UUID PRIMARY KEY REFERENCES public.users(subject_id) ON DELETE CASCADE,
@@ -63,4 +63,4 @@ async function migration196NotificationPreferences() {
   `);
 }
 
-module.exports = { migration195CommentNotification, migration196NotificationPreferences };
+module.exports = { migration204CommentNotification, migration205NotificationPreferences };

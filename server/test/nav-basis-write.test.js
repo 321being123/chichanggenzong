@@ -30,8 +30,12 @@ let server;
       ($1,$2,'2026-09-23',2.04,200,100,1,'2026-09-23T07:00:00Z','legacy',0,false,NULL,NULL,NULL)`,[U,A]);
   await pool.query(`INSERT INTO nav_position_snapshots(snapshot_id,username,account_name,snapshot_date,instrument_code,quantity,price,quote_currency,fx_rate_to_cny,market_value_cny,source)
     VALUES('canonical-anchor',$1,$2,'2026-09-22','600000',10,10,'CNY',1,100,'manual_reconciliation')`,[U,A]);
-  await pool.query(`INSERT INTO daily_prices(username,account_name,date,code,name,price)
-    VALUES($1,$2,'2026-09-22','600000','测试证券',10),($1,$2,'2026-09-23','600000','测试证券',11),($1,$2,'2026-09-24','600000','测试证券',12)`,[U,A]);
+  // 已确认收盘价：历史资产重建只接受具备收盘证据的价格。
+  // market 必须显式声明：该列默认为 UNKNOWN（身份不明），按真实写入契约（收盘任务）声明市场才可参与重建。
+  await pool.query(`INSERT INTO daily_prices(username,account_name,date,code,name,price,quality,is_final,source,market)
+    VALUES($1,$2,'2026-09-22','600000','测试证券',10,'confirmed',true,'test_close_task','CN'),
+          ($1,$2,'2026-09-23','600000','测试证券',11,'confirmed',true,'test_close_task','CN'),
+          ($1,$2,'2026-09-24','600000','测试证券',12,'confirmed',true,'test_close_task','CN')`,[U,A]);
   const app = express();app.use(express.json());
   app.use(async (req,res,next)=>{ try { req.session = await testSession(U); next(); } catch (e) { next(e); } }); app.use('/api',router);
   server = await new Promise(resolve=>{const s=app.listen(0,'127.0.0.1',()=>resolve(s));});

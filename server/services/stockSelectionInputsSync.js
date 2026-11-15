@@ -384,6 +384,24 @@ async function resolveHkTargetPool({ asOfDate, fsTableTypes = ['non_financial', 
 }
 
 /**
+ * 目标池里「客观补不到」的标的分类（生产实证 2026-11-15）：
+ * - 主档里根本没有：恒生成分含非股票资产，如 00823.HK 领展房产基金（REIT）；
+ * - 曾经有行情、近 60 天完全没有：长期停牌/退市，如 2026-09-01 起集体停牌的微创系。
+ * 判据沿用选股池既有的「近 60 天无行情即停止交易」口径；从未有过行情的新上市标的
+ * 仍保留为真实待补，不把缺口伪装成完成。只分类，不取数、不写库。
+ */
+function classifyUnavailableHkCodes({ pending, metaByCode, everTraded }) {
+  const excluded = [];
+  const eligible = [];
+  for (const code of pending || []) {
+    if (!metaByCode.get(code)) { excluded.push({ code, reason: 'instrument_missing' }); continue; }
+    if (everTraded.has(code)) { excluded.push({ code, reason: 'no_recent_bars_suspended_or_delisted' }); continue; }
+    eligible.push(code);
+  }
+  return { excluded, eligible };
+}
+
+/**
  * 港股目标池预补收盘价（2026-11-05）。
  *
  * 为什么必须先补行情再审计缺口：`loadUniverse` 只把"目标日前 60 天内有日线"的证券当成可评估对象，
@@ -403,18 +421,33 @@ async function syncHkTargetPoolBars({ asOfDate, maxCodes } = {}) {
     profileError: pool.profileError || null,
   };
   if (!codes.length) {
-    return Object.assign({ codes: [], targetSetHash: pool.targetSetHash || null, targetCount: 0, pending: 0, processed: 0, succeeded: 0, reason: pool.reason || 'target_pool_empty', results: [] }, poolMeta);
+    return Object.assign({ codes: [], excludedUnavailable: [], targetSetHash: pool.targetSetHash || null, targetCount: 0, pending: 0, processed: 0, succeeded: 0, reason: pool.reason || 'target_pool_empty', results: [] }, poolMeta);
   }
   const covered = await repo.listCodesWithRecentBars({ codes, asOfDate, days: 60 });
   const pending = codes.filter(code => !covered.has(code));
-  const cap = Number.isFinite(Number(maxCodes)) && Number(maxCodes) > 0 ? Math.floor(Number(maxCodes)) : pending.length;
-  const batch = pending.slice(0, cap);
+  // 主档缺失（REIT 等非股票资产）与「曾有行情、近 60 天全无」的停牌/退市标的再取数也补不到，
+  // 却会一直占住剩余量把补数槽锁死。这里只把这两类排除并留证；从未有过行情的新股仍是真实待补。
+  const everTraded = pending.length
+    ? await repo.listCodesWithRecentBars({ codes: pending, asOfDate, days: 3650 })
+    : new Set();
+  const metaByCode = new Map();
+  for (const code of pending) {
+    const meta = await readMeta(code);
+    if (meta) metaByCode.set(code, meta);
+  }
+  const { excluded: excludedUnavailable, eligible: eligiblePending } =
+    classifyUnavailableHkCodes({ pending, metaByCode, everTraded });
+  const excludedCodes = new Set(excludedUnavailable.map(item => item.code));
+  // 收敛后的清单同时供批后复核使用，避免「批前排除了、批后又算回来」。
+  const eligibleCodes = codes.filter(code => !excludedCodes.has(code));
+  const cap = Number.isFinite(Number(maxCodes)) && Number(maxCodes) > 0 ? Math.floor(Number(maxCodes)) : eligiblePending.length;
+  const batch = eligiblePending.slice(0, cap);
   const { readStockDailySeries } = require('../dataAccess/marketDatasets');
   const store = require('./convertibleBondAnalysisStore');
   const sources = await store.sourceIds();
   const officialId = sources.lixinger_official;
   if (!officialId) {
-    return Object.assign({ codes, targetSetHash: pool.targetSetHash || null, targetCount: codes.length, pending: pending.length, processed: 0, succeeded: 0, reason: 'valuation_source_missing', results: [] }, poolMeta);
+    return Object.assign({ codes: eligibleCodes, excludedUnavailable, targetSetHash: pool.targetSetHash || null, targetCount: eligibleCodes.length, pending: eligiblePending.length, processed: 0, succeeded: 0, reason: 'valuation_source_missing', results: [] }, poolMeta);
   }
   const priceStart = dashDate(shiftYears(asOfDate, HK_PRICE_YEARS)) || asOfDate;
   const results = [];
@@ -431,10 +464,11 @@ async function syncHkTargetPoolBars({ asOfDate, maxCodes } = {}) {
     }
   }
   return Object.assign({
-    codes,
+    codes: eligibleCodes,
+    excludedUnavailable,
     targetSetHash: pool.targetSetHash || null,
-    targetCount: codes.length,
-    pending: pending.length,
+    targetCount: eligibleCodes.length,
+    pending: eligiblePending.length,
     processed: batch.length,
     succeeded: results.filter(item => item.ok).length,
     results,
@@ -683,4 +717,5 @@ function blockedOnlyByValuation(remaining) {
 module.exports = {
   syncSelectionInputs, collectOne, collectIndustryOne, classifyGaps, REPORT_KINDS, HISTORY_YEARS,
   collectHkMarketData, syncHkTargetPoolBars, resolveHkTargetPool, writeHkBars,
+  classifyUnavailableHkCodes,
 };

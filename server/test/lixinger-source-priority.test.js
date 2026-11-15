@@ -36,6 +36,9 @@ const DAY = '2026-10-30';
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    // 共享测试库里可能已有同交易日的其他取证数据，因此按“插入前后的增量”判定，
+    // 不假设该日期为空：增量仍是 900 才说明取到官方那条、且这只证券只计一次。
+    const before = await stockRepository.totalMarketCap({ tradeDate: DAY }, client);
     const instrument = await client.query(
       `INSERT INTO core.instruments(canonical_code,name,asset_class,market)
        VALUES($1,'优先级测试股票','stock','SH') RETURNING instrument_id`,
@@ -50,8 +53,14 @@ const DAY = '2026-10-30';
       [instrumentId, DAY],
     );
     const cap = await stockRepository.totalMarketCap({ tradeDate: DAY }, client);
-    assert.strictEqual(Math.round(Number(cap.total_cap)), 900, '同一天两来源并存时必须取官方那条（priority 小的）');
-    assert.strictEqual(Number(cap.stock_count), 1, '同一证券只能计一次，不能把两个来源都累加进去');
+    assert.strictEqual(
+      Math.round(Number(cap.total_cap)) - Math.round(Number(before.total_cap)), 900,
+      '同一天两来源并存时必须取官方那条（priority 小的）',
+    );
+    assert.strictEqual(
+      Number(cap.stock_count) - Number(before.stock_count), 1,
+      '同一证券只能计一次，不能把两个来源都累加进去',
+    );
     await client.query('ROLLBACK');
   } catch (error) {
     await client.query('ROLLBACK').catch(() => {});

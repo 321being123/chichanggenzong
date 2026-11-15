@@ -45,9 +45,15 @@ assert.ok(
   tables.includes("filter(function(p) { return Number(p.quantity) > 0; })"),
   '持仓列表未过滤数量为0的历史记录'
 );
+// 导出行的装配已收口到纯函数（services/positionExport），过滤与缺价规则都在那里。
+const exportService = fs.readFileSync(path.join(root, 'server/services/positionExport.js'), 'utf8');
 assert.ok(
-  accountsRoute.includes("filter((p) => Number(p.quantity) > 0)"),
+  exportService.includes('filter(position => Number(position.quantity) > 0)'),
   '持仓导出未过滤数量为0的历史记录'
+);
+assert.ok(
+  accountsRoute.includes('buildPositionExport(result)'),
+  '导出接口必须消费统一的导出装配，而不是自己再算一套价格与比例'
 );
 // 2026-08-03 账本整改：清仓由服务端统一交易事务处理（recomputeSecurity 重放后数量为 0 → 删除持仓行）。
 // 前端不再自行实现清仓逻辑（删除原前端断言的旧实现）。

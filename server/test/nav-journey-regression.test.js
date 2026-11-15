@@ -98,9 +98,12 @@ function approx(actual, expected, tolerance, message) {
       `INSERT INTO accounts(id, username, account_name, cash_base, hk_rate, version, updated_at)
        VALUES($1,$2,$3,100000,0.868,0,to_char(now(),'YYYY-MM-DD HH24:MI:SS'))
        ON CONFLICT (username, account_name) DO NOTHING`, [USER + '-acc', USER, ACCOUNT]);
+    // 历史资产重建只接受已确认收盘价，测试夹具必须带收盘证据。
+    // market 必须显式声明（该列默认 UNKNOWN＝身份不明），与收盘任务的写入契约一致。
     const price = (date, code, value) => pool.query(
-      'INSERT INTO daily_prices(username, account_name, date, code, price) VALUES($1,$2,$3,$4,$5)',
-      [USER, ACCOUNT, date, code, value]);
+      `INSERT INTO daily_prices(username, account_name, date, code, price, quality, is_final, source, market)
+       VALUES($1,$2,$3,$4,$5,'confirmed',true,'test_close_task',$6)`,
+      [USER, ACCOUNT, date, code, value, String(code).length === 5 ? 'HK' : 'CN']);
     const holding = async code => (await pool.query(
       'SELECT quantity::float8 AS q, cost::float8 AS c FROM positions WHERE username=$1 AND account_name=$2 AND code=$3',
       [USER, ACCOUNT, code])).rows[0] || null;

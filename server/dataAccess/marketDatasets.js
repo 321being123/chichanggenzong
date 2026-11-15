@@ -463,29 +463,45 @@ async function readTotalAShareMarketCap({ day, minUnifiedCount = 1000 } = {}) {
 
 // ---------- 正股行情与估值 ----------
 
-// 单只日线序列：官方不复权优先，备源 A股 Tushare、港股腾讯日 K。
-// 返回 Tushare 形状的行（含 source_code），可直接落 market.daily_bars。
+// 港股证券代码的唯一规范化入口：港股规范代码是 5 位（00001），而持仓/落库可能出现六位补零（000001）。
+// 只做 padStart(5) 不会缩短六位，会把 000001 当成另一只证券，供应商日线与共享日线都查不到。
+// 规则：去除非数字 → 去掉前导零 → 补足五位。空值/纯零返回空串，由调用方判缺口。
+function normalizeHkSecurityCode(code) {
+  const digits = String(code || '').replace(/\D/g, '');
+  if (!digits) return '';
+  return digits.replace(/^0+/, '').padStart(5, '0');
+}
+
+// 单只日线序列：官方不复权优先，备源 A股 Tushare、港股腾讯**不复权**日 K。
+// 返回 Tushare 形状的行（含 source_code 与 price_adjust），可直接落 market.daily_bars。
+// 口径铁律：只接受不复权（ex_rights / day）收盘价。复权价不能当收盘价用。
 async function readStockDailySeries({ tsCode, startDate, endDate, market = 'cn' } = {}) {
   const primary = await safeOfficial(() => official.resolveStockDaily({ tsCode, startDate, endDate, market }), 'stock_daily');
-  if (primary.value && primary.value.length) return primary.value;
+  if (primary.value && primary.value.length) {
+    return primary.value.map(row => ({ ...row, price_adjust: row.price_adjust || 'none' }));
+  }
 
   if (market === 'hk') {
-    const bare = String(tsCode || '').replace(/\.HK$/i, '').padStart(5, '0');
+    const bare = normalizeHkSecurityCode(tsCode);
     const payload = await require('../services/tencentQuote').requestTencentHkKline(bare, startDate, endDate);
     const node = payload && payload.data && payload.data[('hk' + bare).toLowerCase()];
-    const dayRows = node && (node.qfqday || node.day);
+    // 只认腾讯日 K 的 `day`（不复权）。`qfqday` 是前复权价，
+    // 拿它当收盘价会直接算错历史资产，因此没有 day 时保持缺口，绝不退而求其次。
+    const dayRows = node && node.day;
     if (!Array.isArray(dayRows)) return [];
     return dayRows.map(item => ({
       ts_code: tsCode,
       trade_date: String(normDate(item && item[0]) || '').replace(/-/g, ''),
       close: parseFloat(item && item[2]),
-      source_code: 'tencent',
+      source_code: 'tencent_day',
+      price_adjust: 'none',
     })).filter(row => row.trade_date && row.close > 0);
   }
   const data = await tushareQuery('daily', {
     ts_code: tsCode, start_date: String(startDate).replace(/-/g, ''), end_date: String(endDate).replace(/-/g, ''),
   }, 'ts_code,trade_date,open,high,low,close,vol,amount', { allowEmpty: true });
-  return tsRows(data).map(row => ({ ...row, source_code: 'tushare' }));
+  // Tushare `daily` 本身是不复权口径。
+  return tsRows(data).map(row => ({ ...row, source_code: 'tushare', price_adjust: 'none' }));
 }
 
 // 批量日线（按需求集合）：官方逐只优先，官方没覆盖的代码由 Tushare 按代码补。
@@ -698,9 +714,17 @@ async function readHistoricalCloseSeries({ tsCode, kind = 'stock', startDate, en
   const to = String(endDate).replace(/-/g, '');
   // 正股：与行情数据集同一入口（官方不复权优先，官方没覆盖的区间由备源补并标回来源）。
   if (kind === 'stock') {
-    const rows = await readStockDailySeries({ tsCode, startDate: from, endDate: to });
+    // 港股代码必须带 market='hk' 才会走港股入口；否则会拿 .HK 代码去查 A 股接口，永远空。
+    const isHk = /\.HK$/i.test(String(tsCode || ''));
+    const rows = await readStockDailySeries({ tsCode, market: isHk ? 'hk' : 'cn', startDate: from, endDate: to });
+    // 来源与复权口径必须一路带到落库证据里，否则事后无法判断这条收盘价来自哪里、是不是不复权。
     return rows
-      .map(row => ({ trade_date: String(row.trade_date || '').replace(/-/g, ''), close: row.close, source_code: row.source_code || 'tushare' }))
+      .map(row => ({
+        trade_date: String(row.trade_date || '').replace(/-/g, ''),
+        close: row.close,
+        source_code: row.source_code || 'tushare',
+        price_adjust: row.price_adjust || 'none',
+      }))
       .filter(row => row.trade_date && Number(row.close) > 0);
   }
   // 指数：与页面指数线同一入口（官方优先 → 备源）。
@@ -719,7 +743,7 @@ async function readHistoricalCloseSeries({ tsCode, kind = 'stock', startDate, en
     start_date: from,
     end_date: to,
   }, 'trade_date,close', { allowEmpty: true });
-  return tsRows(data).map(row => ({ ...row, source_code: 'tushare' }));
+  return tsRows(data).map(row => ({ ...row, source_code: 'tushare', price_adjust: 'none' }));
 }
 
 // 财务报表全字段序列（分析页用）：官方指标字典目前只映射到收入 7 项、资产 6 项、现金流 2 项、指标 4 项，
@@ -897,6 +921,7 @@ module.exports = {
   readStockDailyBatch,
   readStockDailyByDate,
   readStockDailySeries,
+  normalizeHkSecurityCode,
   readStockValuationHistory,
   readStockValuationRows,
   readStockValuationSeriesBatch,

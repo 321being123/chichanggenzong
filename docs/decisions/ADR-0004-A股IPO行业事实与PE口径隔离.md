@@ -249,3 +249,5 @@ Tushare 官方文档只把 `stock_basic.industry` 定义为“所属行业”，
 > 2026-11-10 核对（选股未就绪的续批复查节奏）：本次 `jobOrchestrator` 只改续批排期解析（`resolveContinuationWait`）与等待摘要，未触碰 IPO 行业事实、行业 PE 口径、`industry` 字段写入或下游消费；本 ADR 的决策与实现边界仍不变。
 
 > 2026-11-10 核对（选股输入日常按需补 + R01 PE 缺失口径）：`jobDefinitions` 只给 `company_financial_incremental_sync` 增加两个 `selection_inputs` 日常排程（CN/HK 08:40/08:45，同一 Runner 与缺口队列），`stockSelectionRulesV2` 只改「PB>1.5 且 PE 缺失但利润已核实亏损/零」这一条判为 FAIL；两处都不触碰 A 股 IPO 行业事实、行业 PE 口径、`industry` 字段写入或下游消费。本 ADR 决策与实现边界仍不变。
+
+> 2026-11-15 核对（收盘任务终盘核验按品种接证据）：本次 `jobDefinitions` 只给四个 `market_close:*` 任务补齐终盘核验的接口与 `stock_daily` 消费声明，`marketClose`/`accounts`/`navAttribution`/`navSnapshot` 的改动限于收盘证据、市场身份与日价回写，未触碰 A 股 IPO 行业事实、行业 PE 口径、`industry` 字段写入或下游消费。本 ADR 决策与实现边界仍不变。

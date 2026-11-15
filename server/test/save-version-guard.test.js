@@ -80,7 +80,9 @@ function payload(over) {
       const res = await fetch(snapUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload({ positions: [{ id: 'p1', code: '600519', name: '贵州茅台', price: 888, quantity: 10, cost: 900, type: '股票', subtype: 'A股', note: '' }] })) });
       assert.strictEqual(res.status, 200, 'import-snapshot 应成功，状态=' + res.status);
       const d2 = await loadAccountData(U, A);
-      assert.strictEqual(d2.positions[0].price, 888, '快照导入后持仓价格应被覆盖');
+      // 快照导入会把数据写进账户快照，但持仓现价只能来自统一生效价格：
+      // 导入的 888 是"快照里的历史价"，不能盖掉已确认的行情价（否则导出与页面会出现两套正式价格）。
+      assert.strictEqual(d2.positions[0].price, 1000, '快照导入不得覆盖统一生效价格');
       assert.ok(!d2.navHistory.some(n => n.date === '2026-08-02'), '快照导入以导入数据为准（08-02 后台净值被覆盖）');
     });
 

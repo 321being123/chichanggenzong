@@ -1673,6 +1673,20 @@
       "note": "仅转发 dataAccess/valuationQualityIssues，保留原 require 路径；本文件不含 SQL"
     },
     {
+      "path": "server/services/effectivePrice.js",
+      "role": "application",
+      "batch": 3,
+      "status": "registered",
+      "note": "持仓统一估值价格用例：按「账户+证券身份+市场+估值时点」批量选唯一生效价格并裁决冲突；SQL 全部在 effectivePriceRepository，本文件 0 SQL/0 联网/0 DOM"
+    },
+    {
+      "path": "server/services/positionExport.js",
+      "role": "application",
+      "batch": 3,
+      "status": "registered",
+      "note": "持仓导出纯函数装配：只消费服务端统一估值结果，缺价如实留空；0 SQL/0 联网/0 DOM"
+    },
+    {
       "path": "server/services/buildIdentity.js",
       "role": "infrastructure",
       "batch": 3,

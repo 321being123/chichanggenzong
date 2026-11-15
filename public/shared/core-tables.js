@@ -62,15 +62,27 @@ function renderStats() {
   
   // 更新数值
   var el = function(id) { return document.getElementById(id); };
+  // 总资产对外只显示服务端同一批估值的金额；估值不完整时在金额正下方直接标注，
+  // 不依赖“今日涨跌”浮框（归因不完整时那个浮框根本不会绑定）。
+  // 服务端只在估值完整时给出 totalAsset；不完整时该字段为空，另有 totalAssetPartial。
+  // 页面因此必须显式区分“完整金额”与“部分金额”，不能把部分金额当完整值展示。
+  var valuationIncomplete = Boolean(data && data.valuation && data.valuation.complete === false);
+  var completeTotal = (data && typeof data.totalAsset === 'number' && Number.isFinite(data.totalAsset)) ? Number(data.totalAsset) : null;
+  var partialTotal = (data && typeof data.totalAssetPartial === 'number' && Number.isFinite(data.totalAssetPartial)) ? Number(data.totalAssetPartial) : null;
+  var displayTotal = completeTotal != null ? completeTotal : (partialTotal != null ? partialTotal : s.total);
+  var valuationMissing = data && data.valuation && Number(data.valuation.missingCount) > 0 ? Number(data.valuation.missingCount) : 0;
   if (el('stat-total')) {
-    el('stat-total').textContent = fmt(s.total);
+    el('stat-total').textContent = (valuationIncomplete && completeTotal == null ? '≈ ' : '') + fmt(displayTotal);
     // 涨跌颜色
     if (hasChange) {
       var isUp = changeAmt >= 0;
       el('stat-total').style.color = isUp ? '#d93025' : '#137333';
     }
   }
-  if (el('stat-total-sub')) el('stat-total-sub').textContent = '持仓市值 ' + fmt(s.total - s.cash) + ' + 现金 ' + fmt(s.cash);
+  if (el('stat-total-sub')) {
+    el('stat-total-sub').textContent = '持仓市值 ' + fmt(displayTotal - s.cash) + ' + 现金 ' + fmt(s.cash) +
+      (valuationIncomplete ? ' · ⚠ 估值不完整' + (valuationMissing > 0 ? '（' + valuationMissing + ' 只缺价或未确认）' : '') : '');
+  }
   if (el('stat-change')) {
     var scEl = el('stat-change');
     if (hasChange) {
@@ -146,7 +158,7 @@ function bindChangeTip(el, changeAmt, changePct) {
   }
   el.style.cursor = 'help';
   el.onmouseenter = function () {
-    tip.innerHTML = buildChangeTipHtml(changeAmt, changePct, priceImpact, fxImpact, otherChange, importBasisAdjustment, snapshotDrift, authorityMode, !attribution.complete, attribution.missingCodes, attribution.reason, attribution.valuationAdjustment, attribution.closedPriceCorrections);
+    tip.innerHTML = buildChangeTipHtml(changeAmt, changePct, priceImpact, fxImpact, otherChange, importBasisAdjustment, snapshotDrift, authorityMode, !attribution.complete, attribution.missingCodes, attribution.reason, data.valuation);
     tip.style.display = 'block';
     var r = el.getBoundingClientRect();
     var left = r.left;
@@ -162,7 +174,7 @@ function bindChangeTip(el, changeAmt, changePct) {
 
 }
 
-function buildChangeTipHtml(changeAmt, changePct, priceImpact, fxImpact, otherChange, importBasisAdjustment, snapshotDrift, authorityMode, attributionIncomplete, missingCodes, incompleteReason, valuationAdjustment, closedPriceCorrections) {
+function buildChangeTipHtml(changeAmt, changePct, priceImpact, fxImpact, otherChange, importBasisAdjustment, snapshotDrift, authorityMode, attributionIncomplete, missingCodes, incompleteReason, valuationStatus) {
   var sign = function (v) { return (v >= 0 ? '+' : '-') + fmt(Math.abs(v)); };
   var arrow = function (v) { return v >= 0 ? '▲' : '▼'; };
   var col = function (v) { return v >= 0 ? '#f28b82' : '#81c995'; }; // 红涨绿跌
@@ -170,7 +182,10 @@ function buildChangeTipHtml(changeAmt, changePct, priceImpact, fxImpact, otherCh
   var total = (changeAmt >= 0 ? '+' : '-') + fmt(Math.abs(changeAmt)) + ' (' + (changeAmt >= 0 ? '+' : '') + changePct.toFixed(2) + '%)';
   // 低于分币级别的残差属于浮点/四舍五入误差，不在浮框中制造噪音。
   var visibleDrift = snapshotDrift != null && Math.abs(snapshotDrift) >= 0.005 ? snapshotDrift : null;
-  var visibleAdjustment = Number.isFinite(Number(valuationAdjustment)) && Math.abs(Number(valuationAdjustment)) >= 0.005 ? Number(valuationAdjustment) : null;
+  // 统一估值后不再存在双价格校准项：当前资产与涨跌必须指向同一批价格。
+  // 价格证据不足时显式说明缺什么，而不是用一个无来源的校准金额把等式凑平。
+  var valuationIncomplete = valuationStatus && valuationStatus.complete === false;
+  var valuationMissing = valuationStatus && Number(valuationStatus.missingCount) > 0 ? Number(valuationStatus.missingCount) : 0;
   var html = '' +
     '<div data-style="font-weight:600;margin-bottom:6px;">总资产今日涨跌：<span data-style="color:' + col(changeAmt) + ';">' + arrow(changeAmt) + ' ' + total + '</span></div>' +
     '<div class="u-divider-dark">' +
@@ -186,10 +201,9 @@ function buildChangeTipHtml(changeAmt, changePct, priceImpact, fxImpact, otherCh
     html += '<div>导入口径切换差异：<span data-style="color:#fbbc04;">' + sign(importBasisAdjustment) + '</span></div>' +
       '<div class="u-badge-hint">导入当天使用券商持仓总值；从本日开始改用系统价格、数量和汇率计算。该差异通常来自汇率或收盘价更新时间不同，仅在首次切换时说明，后续不再保留。</div>';
   }
-  if (visibleAdjustment != null) {
-    html += '<div>休市行情校准：' + impact(visibleAdjustment) + '</div>' +
-      '<div class="u-badge-hint">休市证券当前持仓价与最近落库收盘价的估值差异，不属于当日市场涨跌。涉及 ' +
-      (Array.isArray(closedPriceCorrections) ? closedPriceCorrections.length : 0) + ' 只持仓。</div>';
+  if (valuationIncomplete) {
+    html += '<div class="u-badge-warn">当前估值不完整：' + (valuationMissing > 0 ? valuationMissing + ' 只证券缺价或价格未确认' : '存在未核实的价格来源') +
+      '；总资产为可用部分金额，不是完整精确值。</div>';
   }
   if (authorityMode) {
     html += '<div class="u-badge-warn">' + (authorityMode === 'broker_exact'
@@ -206,7 +220,7 @@ function buildChangeTipHtml(changeAmt, changePct, priceImpact, fxImpact, otherCh
   if (attributionIncomplete) {
     html += '<div class="u-divider-dark">合计：<span data-style="color:' + col(changeAmt) + ';">' + sign(changeAmt) + '</span>（归因不完整，未进行明细加总）</div>';
   } else {
-    html += '<div class="u-divider-dark">合计 = 股价影响 + 汇率影响' + (otherChange != null ? ' + 其他变动' : '') + (visibleAdjustment != null ? ' + 休市行情校准' : '') + (importBasisAdjustment != null ? ' + 导入口径切换差异' : '') + (visibleDrift != null ? ' + 未归因差额' : '') + ' = <span data-style="color:' + col(changeAmt) + ';">' + sign(changeAmt) + '</span></div>';
+    html += '<div class="u-divider-dark">合计 = 股价影响 + 汇率影响' + (otherChange != null ? ' + 其他变动' : '') + (importBasisAdjustment != null ? ' + 导入口径切换差异' : '') + (visibleDrift != null ? ' + 未归因差额' : '') + ' = <span data-style="color:' + col(changeAmt) + ';">' + sign(changeAmt) + '</span></div>';
   }
   if (visibleDrift != null) {
     html += '<div class="u-badge-warn">未归因差额：' + sign(visibleDrift) + '（请检查行情、汇率或账本数据）</div>';

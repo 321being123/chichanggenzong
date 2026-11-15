@@ -25,9 +25,10 @@ assert(read('public/index.html').includes('shared/core-earnings.js?v=__APP_VERSI
   const totals = await computeNavHistoryTotals('u', 'a', fixture, async sql => {
     queries++;
     if (sql.includes('FROM market.fx_rates')) return { rows: [] };
+    // 历史重建只接受已确认收盘价（第 2 轮起的合同），夹具必须带收盘证据。
     return { rows: [
-      { date: '2026-10-12', code: '600000', price: 11 },
-      { date: '2026-10-13', code: '600000', price: 12 }
+      { date: '2026-10-12', code: '600000', market: 'CN', price: 11, quality: 'confirmed', is_final: true },
+      { date: '2026-10-13', code: '600000', market: 'CN', price: 12, quality: 'confirmed', is_final: true }
     ] };
   });
   assert.strictEqual(queries, 2, '所有历史日期共用批量本地查询');
@@ -37,7 +38,7 @@ assert(read('public/index.html').includes('shared/core-earnings.js?v=__APP_VERSI
   assert.strictEqual(totals['2026-10-14'], null, '人工沿用值不能冒充已核验资产');
   const missing = await computeNavHistoryTotals('u', 'a', fixture, async () => ({ rows: [] }));
   assert.strictEqual(missing['2026-10-12'], null, '缺价格不能用当前报价或旧快照补值');
-  const noAnchor = await computeNavHistoryTotals('u','a',{ ...fixture,positionSnapshots:[] },async sql=>({ rows: sql.includes('FROM daily_prices') ? [{date:'2026-10-12',code:'600000',price:11}] : [] }));
+  const noAnchor = await computeNavHistoryTotals('u','a',{ ...fixture,positionSnapshots:[] },async sql=>({ rows: sql.includes('FROM daily_prices') ? [{date:'2026-10-12',code:'600000',market:'CN',price:11,quality:'confirmed',is_final:true}] : [] }));
   assert.strictEqual(noAnchor['2026-10-12'],null,'历史缺持仓锚点不得用当前持仓冒充可重建事实');
   const hkData = { cashBase: 100, cashFlows: [],
     positionSnapshots: [{ snapshotDate: '2026-10-09', code: '00700', quantity: 10, source: 'manual_reconciliation' }],
@@ -45,10 +46,30 @@ assert(read('public/index.html').includes('shared/core-earnings.js?v=__APP_VERSI
     positions: [{ code: '00700', quantity: 10, subtype: '港股' }],
     navHistory: [{ date: '2026-10-12', totalAsset: 200, snapshotSource: 'legacy', hkRate: 0.8 }]
   };
-  const hkQuery = async sql => ({ rows: sql.includes('FROM daily_prices')
-    ? [{ date: '2026-10-12', code: '000700', price: 10 }] : [] });
+  // 港股日历查询必须回真实形状：否则市场事实会被日价行污染，取价一律变成 unknown。
+  const hkCalendar = (sql, params) => {
+    const dates = Array.isArray(params && params[0]) ? params[0] : [params && params[0]].filter(Boolean);
+    return { rows: dates.map(value => {
+      const date = String(value).slice(0, 10);
+      return { trade_date: date, is_open: true, source_code: 'test_fixture',
+        raw_payload: { official_schedule: { is_open: true, session_type: 'full_day', close_time: '16:10', source: 'test_fixture' } } };
+    }) };
+  };
+  const hkQuery = async (sql, params) => {
+    if (String(sql).includes('trade_calendar')) return hkCalendar(sql, params);
+    return { rows: sql.includes('FROM daily_prices')
+      ? [{ date: '2026-10-12', code: '00700', market: 'HK', price: 10, quality: 'confirmed', is_final: true }] : [] };
+  };
   const hkTotals = await computeNavHistoryTotals('u', 'a', hkData, hkQuery);
-  assert.strictEqual(hkTotals['2026-10-12'], 180, '港股历史数量缺市场时复用当前市场身份，兼容既有六位别名并计汇率');
+  assert.strictEqual(hkTotals['2026-10-12'], 180, '港股历史价按港股自己的代码取值并计汇率');
+  // 六位补零别名（000700）与 A 股 000700 同形：没有市场证据时绝不能被港股拿去用（失败关闭）。
+  const aliasQuery = async (sql, params) => {
+    if (String(sql).includes('trade_calendar')) return hkCalendar(sql, params);
+    return { rows: sql.includes('FROM daily_prices')
+      ? [{ date: '2026-10-12', code: '000700', price: 10, quality: 'confirmed', is_final: true }] : [] };
+  };
+  assert.strictEqual((await computeNavHistoryTotals('u', 'a', hkData, aliasQuery))['2026-10-12'], null,
+    '港股不得使用六位补零的 A 股同形代码价格');
   hkData.navHistory[0].hkRate = null;
   assert.strictEqual((await computeNavHistoryTotals('u', 'a', hkData, hkQuery))['2026-10-12'], null, '历史缺汇率不得采用当前汇率');
 

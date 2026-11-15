@@ -196,6 +196,10 @@ let indexVisibility = {
  *   （含今天、不含上次净值日，避免漏算未开 App 那几天的出入金，也不重复计入已结算日）
  * - 现金流的金额同时累加到 data.cash 上，确保总资产正确
  */
+function _isFiniteNumber(value) {
+  return typeof value === 'number' && isFinite(value);
+}
+
 async function recordNav(retried) {
   const scope = typeof captureSmartImportScope === 'function' ? captureSmartImportScope() : null;
   const account = currentAccount;
@@ -250,10 +254,15 @@ async function recordNav(retried) {
       // 只同步服务端确认的资产/现金标量，保留刚刷新的逐笔持仓报价。
       ['cash', 'hkRate', 'totalAsset', 'authoritativeTotalAsset', 'authoritativePositionValue', 'authoritativeCash',
         'authoritativeInvested', 'cashConfirmed', 'cashEstimatedDelta', 'cashIncludesEstimates', 'cashDataIncomplete',
-        'cashIncomeState', 'cashIncomePolicy'].forEach(function (key) {
+        'cashIncomeState', 'cashIncomePolicy', 'valuation', 'totalAssetComplete', 'totalAssetPartial'].forEach(function (key) {
         if (Object.prototype.hasOwnProperty.call(_j2.data, key)) data[key] = _j2.data[key];
       });
-      if (typeof TOTAL_ASSET !== 'undefined') TOTAL_ASSET = _j2.data.totalAsset;
+      if (typeof TOTAL_ASSET !== 'undefined') {
+        // 完整优先，其次部分金额（不完整时服务端把 totalAsset 置空）。
+        var _syncTotal = _j2.data.totalAsset != null ? Number(_j2.data.totalAsset)
+          : (_j2.data.totalAssetPartial != null ? Number(_j2.data.totalAssetPartial) : null);
+        if (_isFiniteNumber(_syncTotal)) TOTAL_ASSET = _syncTotal;
+      }
       if (_j2.data.navAttribution) data.navAttribution = _j2.data.navAttribution;
       if (_j2.data.totalAssetSource) data.totalAssetSource = _j2.data.totalAssetSource;
     }

@@ -67,7 +67,9 @@ const T = (over) => Object.assign({
       assert.ok(pos, '应有持仓');
       assert.strictEqual(pos.quantity, 100);
       assert.strictEqual(pos.cost, 1000, '首笔买入成本=成交价');
-      assert.strictEqual(pos.price, 0, '新持仓等待行情刷新，不能把成交价当现价');
+      // 统一生效价格落地后，没有已确认价格的持仓现价为空（不是 0）：
+      // 0 会被当成一个真实价格参与市值与比例计算，空值才表示"待行情确认"。
+      assert.strictEqual(pos.price, null, '新持仓等待行情刷新，不能把成交价当现价');
       // 现金 = 1,000,000 - (100000 + 5 + 0.2) = 899994.8
       assert.strictEqual(d.cash, 899994.8, '现金应扣除成交额+费用');
       // 交易含 trade_date
@@ -82,7 +84,7 @@ const T = (over) => Object.assign({
       assert.strictEqual(pos.quantity, 200);
       // 成本 = (1000*100 + 1100*100)/200 = 1050
       assert.strictEqual(pos.cost, 1050, '移动加权成本应为 1050');
-      assert.strictEqual(pos.price, 0, '没有行情刷新时现价仍应保持待刷新');
+      assert.strictEqual(pos.price, null, '没有行情刷新时现价仍应保持待刷新（空值，不是 0）');
     });
 
     // ---------- 3) 部分卖出 ----------

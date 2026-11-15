@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "lastReviewed": "2026-11-10",
+  "lastReviewed": "2026-11-15",
   "rules": [
     {
       "id": "BOND-PROSPECTUS-SELECTION-059",
@@ -693,19 +693,27 @@
     },
     {
       "id": "HOLDINGS-NAV-CLOSED-003",
-      "title": "休市估值校准须逐证券取证且不得吞掉未知残差",
+      "title": "同一估值时点只能有一个生效价格：按「市场+规范代码」取价，不完整时总资产为空；不得以校准项或旧价吞掉真实残差",
       "implementation": {
-        "file": "server/services/navAttribution.js",
-        "symbol": "computeNavAttribution"
+        "file": "server/services/effectivePrice.js",
+        "symbol": "resolveEffectivePrices"
       },
       "tests": [
         {
           "file": "server/test/cross-market-calendar-nav.test.js",
-          "pattern": "CLOSED-VALUATION-001"
+          "pattern": "UNIFIED-PRICE-001"
+        },
+        {
+          "file": "server/test/effective-price-contract.test.js",
+          "pattern": "持仓统一估值价格合同回归"
         },
         {
           "file": "server/test/holdings-summary-refresh.test.js",
           "pattern": "休市行情校准"
+        },
+        {
+          "file": "server/test/valuation-total-asset-contract.test.js",
+          "pattern": "估值输出口径合同回归"
         }
       ],
       "owner": "持仓管理",
@@ -713,7 +721,7 @@
     },
     {
       "id": "HOLDINGS-REFRESH-003",
-      "title": "港股开市时刷新须即时更新持仓页与首页总资产",
+      "title": "港股开市时刷新后整批重读服务端估值，持仓页与首页总资产一致且不本地重算",
       "implementation": {
         "file": "public/shared/core-quote.js",
         "symbol": "refreshAllPrices"
@@ -721,7 +729,7 @@
       "tests": [
         {
           "file": "server/test/holdings-cross-market-refresh.test.js",
-          "pattern": "持仓页总资产应在 PATCH 完成前显示 4002 元"
+          "pattern": "重读后总资产显示服务端统一估值金额"
         }
       ],
       "owner": "持仓管理",
@@ -779,6 +787,10 @@
         {
           "file": "ipo-report/test_ipo_unit.py",
           "pattern": "日历业务日期固定按上海时区"
+        },
+        {
+          "file": "server/test/valuation-integrity-guard.test.js",
+          "pattern": "盘中时段判定"
         }
       ],
       "owner": "日期边界治理",
@@ -5483,6 +5495,318 @@
         {
           "file": "server/test/selection-inputs-daily-schedule.test.js",
           "pattern": "PB>1.5 且已核实亏损、PE 缺失必须判不通过"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "implemented"
+    },
+    {
+      "id": "HOLDINGS-PRICE-MARKET-001",
+      "title": "同一代码在不同市场是不同证券：取价与持仓映射按「市场+规范身份」，身份不明保留缺口",
+      "implementation": {
+        "file": "server/services/effectivePrice.js",
+        "symbol": "priceKey"
+      },
+      "tests": [
+        {
+          "file": "server/test/marketclose.test.js",
+          "pattern": "同形证券按身份判定缺口"
+        },
+        {
+          "file": "server/test/effective-price-contract.test.js",
+          "pattern": "同形代码必须各自取价"
+        },
+        {
+          "file": "server/test/effective-price-contract.test.js",
+          "pattern": "无依据的同形代码必须按身份不明处理"
+        },
+        {
+          "file": "server/test/effective-price-contract.test.js",
+          "pattern": "来源标明港股的行不得被 A 股持仓选中"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "implemented"
+    },
+    {
+      "id": "HOLDINGS-FX-EVIDENCE-001",
+      "title": "港币汇率必须有市场汇率库证据才算确认；缺汇率不得折算人民币资产或导出确定市值",
+      "implementation": {
+        "file": "server/db/accounts.js",
+        "symbol": "resolveHkRateEvidence"
+      },
+      "tests": [
+        {
+          "file": "server/test/valuation-total-asset-contract.test.js",
+          "pattern": "账户默认汇率不得被当作已确认汇率"
+        },
+        {
+          "file": "server/test/valuation-total-asset-contract.test.js",
+          "pattern": "缺汇率时不得输出人民币市值"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "implemented"
+    },
+    {
+      "id": "HOLDINGS-TERMINAL-EVIDENCE-004",
+      "title": "收盘终盘确认按品种取不复权日线证据（正股/港股、可转债、基金/ETF），确认后只落经核验的日线收盘价；共享日线必须带行级口径/终盘/质量证据且所属分区已发布才可采信，外采到的终盘日线写回共享日线并发布分区复用；按「市场+证券+交易日」去重",
+      "implementation": {
+        "file": "server/jobs/marketClose.js",
+        "symbol": "verifyTerminalClose"
+      },
+      "tests": [
+        {
+          "file": "server/test/stock-daily-adjust-guard.test.js",
+          "pattern": "确认后必须存经核验的日线收盘价"
+        },
+        {
+          "file": "server/test/stock-daily-adjust-guard.test.js",
+          "pattern": "可转债应能用不复权可转债日线确认终盘"
+        },
+        {
+          "file": "server/test/stock-daily-adjust-guard.test.js",
+          "pattern": "命中共享日线时必须以共享日线作证据"
+        },
+        {
+          "file": "server/test/stock-daily-adjust-guard.test.js",
+          "pattern": "同表里可转债同步写入的腾讯实时报价没有终盘证据"
+        },
+        {
+          "file": "server/test/stock-daily-adjust-guard.test.js",
+          "pattern": "外采成功后必须写回共享日线"
+        },
+        {
+          "file": "server/test/stock-daily-adjust-guard.test.js",
+          "pattern": "日价证据里必须记下"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "implemented"
+    },
+    {
+      "id": "HOLDINGS-DAILY-BAR-EVIDENCE-GUARD-007",
+      "title": "共享日线价格一旦被改写，旧的口径/终盘/质量证据必须同时失效并留痕：写入方只更新 close 时由数据库触发器降级证据",
+      "implementation": {
+        "file": "server/db/migrations/era15DailyBarEvidenceGuard.js",
+        "symbol": "migration202DailyBarEvidenceGuard"
+      },
+      "tests": [
+        {
+          "file": "server/test/daily-price-write-guard.test.js",
+          "pattern": "价格被改写后旧终盘证据必须失效"
+        },
+        {
+          "file": "server/test/stock-daily-adjust-guard.test.js",
+          "pattern": "必须有触发器保证价格变更与证据失效原子完成"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "implemented"
+    },
+    {
+      "id": "HOLDINGS-CLOSE-JOB-CONTRACT-009",
+      "title": "收盘任务把「收盘价已记录」与「共享日线已写完」分开裁决：后者未完成时返回 partial（非成功）并保留失败对象、原因与可续跑状态，同时声明本任务实际发布的数据集",
+      "implementation": {
+        "file": "server/jobs/marketClose.js",
+        "symbol": "resolveCloseJobOutcome"
+      },
+      "tests": [
+        {
+          "file": "server/test/marketclose.test.js",
+          "pattern": "共享日线未完成不得返回 ok=true"
+        },
+        {
+          "file": "server/test/marketclose.test.js",
+          "pattern": "A股收盘任务必须声明共享日线证据分区"
+        },
+        {
+          "file": "server/test/marketclose.test.js",
+          "pattern": "缺口未销账不得报成功"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "implemented"
+    },
+    {
+      "id": "HOLDINGS-CLOSE-BAR-GAP-010",
+      "title": "共享日线写库失败必须作为独立缺口落库：重跑时即使账户日价已确认也要继续核验补齐，缺口销账且分区发布成功后才算完成",
+      "implementation": {
+        "file": "server/repositories/marketCloseRepository.js",
+        "symbol": "upsert_bar_gap"
+      },
+      "tests": [
+        {
+          "file": "server/test/market-close-bar-gap.test.js",
+          "pattern": "重跑必须继续核验共享日线缺口"
+        },
+        {
+          "file": "server/test/market-close-bar-gap.test.js",
+          "pattern": "缺口仍在时第二次运行也不能报成功"
+        },
+        {
+          "file": "server/test/market-close-bar-gap.test.js",
+          "pattern": "缺口表不可用时第二次运行绝不能报成功"
+        },
+        {
+          "file": "server/test/marketclose.test.js",
+          "pattern": "缺口重试必须发生在遍历账户之前"
+        },
+        {
+          "file": "server/test/marketclose.test.js",
+          "pattern": "缺口表不可用时不得报成功"
+        },
+        {
+          "file": "server/test/market-close-bar-gap.test.js",
+          "pattern": "命中已发布日线也必须销账"
+        },
+        {
+          "file": "server/test/marketclose.test.js",
+          "pattern": "命中已发布日线也必须销账"
+        },
+        {
+          "file": "server/test/marketclose.test.js",
+          "pattern": "重建缺口必须按品种过滤"
+        },
+        {
+          "file": "server/test/market-close-bar-gap.test.js",
+          "pattern": "A 股任务不得去取可转债日线"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "implemented"
+    },
+    {
+      "id": "HOLDINGS-CLOSE-BAR-PUBLISH-011",
+      "title": "共享日线证据分区每次运行都要核对并补发布：日线已落库但发布失败时，重跑不得因为「本次无新增日线、无待重试缺口」而报成功或 not_needed",
+      "implementation": {
+        "file": "server/jobs/marketClose.js",
+        "symbol": "publishCloseBarPartition"
+      },
+      "tests": [
+        {
+          "file": "server/test/market-close-bar-gap.test.js",
+          "pattern": "已有合格日线必须被补发布"
+        },
+        {
+          "file": "server/test/marketclose.test.js",
+          "pattern": "每次运行都要核对并补发布已有合格日线"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "implemented"
+    },
+    {
+      "id": "HOLDINGS-HK-IDENTITY-008",
+      "title": "同一港股的五位与六位补零代码必须落到同一个证券身份：缺口判定、幂等跳过与历史修订门禁使用同一套规范化",
+      "implementation": {
+        "file": "server/jobs/marketClose.js",
+        "symbol": "identityOf"
+      },
+      "tests": [
+        {
+          "file": "server/test/marketclose.test.js",
+          "pattern": "六位补零的港股持仓必须与五位写法同身份"
+        },
+        {
+          "file": "server/test/stock-daily-adjust-guard.test.js",
+          "pattern": "六位补零持仓遇上五位代码的存量日价时"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "implemented"
+    },
+    {
+      "id": "HOLDINGS-HK-CODE-005",
+      "title": "港股证券代码在取日线证据前必须规范为五位：六位补零持仓不得被当成另一只证券去查",
+      "implementation": {
+        "file": "server/dataAccess/marketDatasets.js",
+        "symbol": "normalizeHkSecurityCode"
+      },
+      "tests": [
+        {
+          "file": "server/test/stock-daily-adjust-guard.test.js",
+          "pattern": "六位补零港股必须缩短为五位"
+        },
+        {
+          "file": "server/test/stock-daily-adjust-guard.test.js",
+          "pattern": "六位补零港股的共享日线与外采请求都必须用规范代码"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "implemented"
+    },
+    {
+      "id": "HOLDINGS-HISTORY-AUTH-006",
+      "title": "历史补漏的授权门禁按「市场+代码」证券身份判断：另一市场存在同形代码不得阻断缺行补齐",
+      "implementation": {
+        "file": "server/jobs/marketClose.js",
+        "symbol": "splitHistoricalBackfill"
+      },
+      "tests": [
+        {
+          "file": "server/test/marketclose.test.js",
+          "pattern": "同形代码属于另一只证券，不能判成需要授权修订"
+        },
+        {
+          "file": "server/test/marketclose.test.js",
+          "pattern": "历史补漏授权判定必须按「市场+代码」身份"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "implemented"
+    },
+    {
+      "id": "HOLDINGS-CLOSE-GAP-001",
+      "title": "收盘补漏按账户、市场、证券、交易日逐只核对缺口，同日部分证券缺价亦算未补齐",
+      "implementation": {
+        "file": "server/jobs/marketClose.js",
+        "symbol": "findMissingCloseDates"
+      },
+      "tests": [
+        {
+          "file": "server/test/valuation-total-asset-contract.test.js",
+          "pattern": "同一天有一只证券缺确认价时该日必须仍算缺口"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "implemented"
+    },
+    {
+      "id": "HOLDINGS-DAILY-ADJUST-001",
+      "title": "收盘价只接受不复权日线：备源不得退回前复权，收盘任务须有同交易日不复权日线作终盘证据",
+      "implementation": {
+        "file": "server/dataAccess/marketDatasets.js",
+        "symbol": "readStockDailySeries"
+      },
+      "tests": [
+        {
+          "file": "server/test/stock-daily-adjust-guard.test.js",
+          "pattern": "只有前复权日线时不得返回价格"
+        },
+        {
+          "file": "server/test/stock-daily-adjust-guard.test.js",
+          "pattern": "复权口径的日线不得作为终盘证据"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "implemented"
+    },
+    {
+      "id": "HOLDINGS-INSTRUMENT-IDENTITY-001",
+      "title": "持仓、交易、日价与归因统一按「市场｜代码」身份聚合，同形代码不得合并",
+      "implementation": {
+        "file": "server/services/navAttribution.js",
+        "symbol": "aggregateCurrentPositions"
+      },
+      "tests": [
+        {
+          "file": "server/test/valuation-integrity-guard.test.js",
+          "pattern": "同形代码必须作为两只证券分别取证"
+        },
+        {
+          "file": "server/test/valuation-total-asset-contract.test.js",
+          "pattern": "写入时必须留下市场依据"
         }
       ],
       "owner": "WorkBuddy",

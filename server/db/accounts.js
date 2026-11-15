@@ -7,6 +7,8 @@ const classifyCode = require('../../public/js/code-classify');
 const NavMath = require('../../public/shared/nav-math');
 const CoreDate = require('../../public/shared/core-date');
 const { loadCashState } = require('../services/accountCash');
+const { resolveEffectivePrices, marketOf, priceKey } = require('../services/effectivePrice');
+const priceRepository = require('../repositories/effectivePriceRepository');
 const { ACCOUNT_SCOPED_TABLES, ACCOUNT_METADATA_TABLE, listAccountScopedTables, findAccountNameLeftovers } = require('./accountScopedTables');
 
 // 按唯一键去重：同 key 只保留最后一条（前序被后序覆盖，与旧版逐条 INSERT 的覆盖语义一致）。
@@ -42,6 +44,110 @@ async function readAccountConsistently(reader, username, accountName) {
     return result;
   } catch (e) { await client.query('ROLLBACK'); throw e; }
   finally { client.release(); }
+}
+
+// 账户估值统一入口：同一批 effectivePrice 同时决定持仓显示价、持仓市值与总资产。
+// 不允许总资产与归因各自选价，也不允许浏览器自报价格成为正常证券的估值权威。
+// 汇率证据：只有市场汇率库（market.fx_rates）里确实有可用汇率才算“已确认”。
+// accounts.hk_rate 是账户默认值（默认 0.868），它只能当兜底显示，不能让估值变成完整。
+function resolveHkRateEvidence(row) {
+  const fxRate = Number(row && row.fx_rate);
+  const accountRate = Number(row && row.account_hk_rate);
+  const fallback = accountRate > 0 ? accountRate : Number(row && row.hk_rate);
+  const confirmed = fxRate > 0;
+  return {
+    hkRate: confirmed ? fxRate : (fallback > 0 ? fallback : 0.868),
+    hkRateConfirmed: confirmed,
+    hkRateSource: confirmed ? 'market_fx' : 'account_default',
+    hkRateDate: (row && row.fx_rate_date) || null,
+  };
+}
+
+async function applyUnifiedValuation({ username, accountName, positions, query, hkRate, hkRateConfirmed, asOf }) {
+  const list = Array.isArray(positions) ? positions : [];
+  const held = list.filter(position => position && position.code && Number(position.quantity) > 0);
+  const resolved = await resolveEffectivePrices({
+    username, accountName, asOf, query, mode: 'current',
+    subjects: held.map(position => ({
+      code: position.code,
+      subtype: position.subtype,
+      quoteCurrency: position.quoteCurrency || position.quote_currency,
+    })),
+  });
+  const rate = Number(hkRate) > 0 ? Number(hkRate) : null;
+  let marketValue = 0;
+  let unpricedCodes = [];
+  let missingFxCodes = [];
+  for (const position of list) {
+    const code = String(position.code || '');
+    // 同一账户可能同时持有 6 位 A 股与补零同形的港股，取价必须按「市场 + 代码」查。
+    const positionMarket = marketOf(position.code, position.subtype,
+      position.quoteCurrency || position.quote_currency);
+    const priceRow = code ? resolved.prices.get(priceKey(positionMarket, code)) : null;
+    const quantity = Number(position.quantity) || 0;
+    if (!priceRow && quantity > 0) {
+      // 没有统一价格时不得继续对外返回旧持仓价：那等于给同一证券留了第二套正式价格，
+      // 导出/比例计算会直接把它当成有效市值。价格字段留空并标明缺失。
+      position.price = null;
+      position.priceKind = 'missing';
+      position.priceQuality = null;
+      position.priceTradeDate = null;
+      position.priceQuoteAt = null;
+      position.priceSource = null;
+    }
+    if (priceRow) {
+      // 兼容响应语义：positions[].price 统一映射为同批 effectivePrice，并附质量与日期。
+      position.price = priceRow.price;
+      position.priceKind = priceRow.priceKind;
+      position.priceQuality = priceRow.quality;
+      position.priceTradeDate = priceRow.tradeDate;
+      position.priceQuoteAt = priceRow.quoteAt;
+      position.priceSource = priceRow.sourceRef;
+    }
+    if (!(quantity > 0)) continue; // 零数量持仓不需要当前价格，缺价不能阻断当前资产
+    if (!priceRow) { unpricedCodes.push(code); continue; }
+    const isHk = position.subtype === '港股' || priceRow.currency === 'HKD';
+    if (isHk && !rate) { missingFxCodes.push(code); continue; }
+    marketValue += priceRow.price * quantity * (isHk ? rate : 1);
+  }
+  unpricedCodes = [...new Set(unpricedCodes)];
+  missingFxCodes = [...new Set(missingFxCodes)];
+  const reasonCodes = new Set(resolved.status.reasonCodes);
+  if (unpricedCodes.length) reasonCodes.add('position_price_missing');
+  if (missingFxCodes.length) reasonCodes.add('position_fx_missing');
+  const needsHkRate = list.some(position => Number(position.quantity) > 0 &&
+    (position.subtype === '港股' || String(position.quoteCurrency || position.quote_currency || '').toUpperCase() === 'HKD'));
+  // 没有可核实的港币汇率时不能用 0.868 之类的固定值生成“完整”资产。
+  if (needsHkRate && hkRateConfirmed === false) reasonCodes.add('fx_rate_fallback');
+  const complete = resolved.status.complete && unpricedCodes.length === 0 && missingFxCodes.length === 0 &&
+    !(needsHkRate && hkRateConfirmed === false);
+  return {
+    marketValue,
+    rate,
+    valuation: {
+      asOf: resolved.asOf,
+      revision: resolved.revision,
+      policyVersion: resolved.policyVersion,
+      complete,
+      partial: !complete,
+      confirmed: resolved.status.confirmed,
+      candidate: resolved.status.candidate,
+      unverified: resolved.status.unverified,
+      stale: resolved.status.stale,
+      missingCount: resolved.status.missingCount + unpricedCodes.length + missingFxCodes.length,
+      expectedCloseDates: resolved.status.expectedCloseDates,
+      reasonCodes: [...reasonCodes],
+      missing: resolved.missing.concat(
+        unpricedCodes.map(code => ({ code, reason: 'position_price_missing' })),
+        missingFxCodes.map(code => ({ code, reason: 'position_fx_missing' }))
+      ),
+      conflicts: resolved.conflicts,
+      prices: Object.fromEntries([...resolved.prices.entries()].map(([code, row]) => [code, {
+        price: row.price, currency: row.currency, priceKind: row.priceKind, tradeDate: row.tradeDate,
+        quoteAt: row.quoteAt, quality: row.quality, sourceRef: row.sourceRef, revision: row.revision,
+      }])),
+    },
+  };
 }
 async function loadAccountData(username, accountName) {
   return readAccountConsistently(loadAccountDataInSession, username, accountName);
@@ -101,20 +207,31 @@ async function loadAccountDataInSession(username, accountName, client) {
   // 账户元数据（期初本金/汇率/税费设置/乐观锁版本）：唯一来源 accounts 表 + account_data.version
   try {
     const { rows: am } = await client.query(
-      `SELECT cash_base::float8 AS cash_base,
-              COALESCE((SELECT rate::float8 FROM market.fx_rates
-                          WHERE base_currency='HKD' AND quote_currency='CNY'
-                            AND rate_date <= (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai')::date
-                          ORDER BY rate_date DESC, fetched_at DESC LIMIT 1), hk_rate::float8) AS hk_rate,
-              fee_settings, cash_income_policy, cash_income_state
-         FROM accounts WHERE username=$1 AND account_name=$2`,
+      `SELECT a.cash_base::float8 AS cash_base,
+              COALESCE(fx.rate::float8, a.hk_rate::float8) AS hk_rate,
+              fx.rate::float8 AS fx_rate,
+              fx.rate_date::text AS fx_rate_date,
+              a.hk_rate::float8 AS account_hk_rate,
+              a.fee_settings, a.cash_income_policy, a.cash_income_state
+         FROM accounts a
+         LEFT JOIN LATERAL (
+           SELECT rate, rate_date FROM market.fx_rates
+            WHERE base_currency='HKD' AND quote_currency='CNY'
+              AND rate_date <= (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai')::date
+            ORDER BY rate_date DESC, fetched_at DESC LIMIT 1
+         ) fx ON TRUE
+        WHERE a.username=$1 AND a.account_name=$2`,
       [username, accountName]
     );
     if (am[0]) {
       result.cashIncomePolicy = am[0].cash_income_policy;
       result.cashIncomeState = am[0].cash_income_state;
       if (typeof am[0].cash_base === 'number') result.cashBase = am[0].cash_base;
-      if (typeof am[0].hk_rate === 'number' && am[0].hk_rate > 0) result.hkRate = am[0].hk_rate;
+      const hkEvidence = resolveHkRateEvidence(am[0]);
+      result.hkRate = hkEvidence.hkRate;
+      result.hkRateConfirmed = hkEvidence.hkRateConfirmed;
+      result.hkRateSource = hkEvidence.hkRateSource;
+      result.hkRateDate = hkEvidence.hkRateDate;
       if (am[0].fee_settings && typeof am[0].fee_settings === 'object') result.feeSettings = am[0].fee_settings;
     }
   } catch (e) { console.warn('[loadAccountData] accounts 元数据读取失败:', e.message); }
@@ -143,12 +260,20 @@ async function loadAccountDataInSession(username, accountName, client) {
     cashEstimatedDelta: cashState.cashEstimatedDelta, cashIncludesEstimates: cashState.cashIncludesEstimates,
     cashDataIncomplete: cashState.incomplete });
   // 当前系统持仓总值用于归因：页面显示的是最新行情，不能把旧净值快照当作当前总资产。
-  const systemPositionValue = (positions || []).reduce((sum, p) => {
-    const mv = (Number(p.price) || 0) * (Number(p.quantity) || 0);
-    return sum + (p.subtype === '港股' ? mv * (Number(result.hkRate) || 0.868) : mv);
-  }, 0);
+  // 2026-11-15 统一估值：市值只由同批 effectivePrice 决定，positions.price 不再是估值权威。
+  const valuationResult = await applyUnifiedValuation({
+    username, accountName, positions, query: client.query.bind(client), hkRate: result.hkRate,
+    hkRateConfirmed: result.hkRateConfirmed === true, asOf: todayCn,
+  });
+  const systemPositionValue = valuationResult.marketValue;
   const systemTotalAsset = systemPositionValue + ledgerCash;
-  result.totalAsset = systemTotalAsset;
+  result.valuation = valuationResult.valuation;
+  // 方案 8.2：totalAsset 只承载“完整总资产”，估值不完整时必须为空；
+  // 可用的部分金额单独放 totalAssetPartial，并保留缺口清单。
+  // 这样任何调用方（页面、导出、比例计算）都不可能把部分金额当成完整资产继续用。
+  result.totalAssetComplete = valuationResult.valuation.complete;
+  result.totalAsset = valuationResult.valuation.complete ? systemTotalAsset : null;
+  result.totalAssetPartial = valuationResult.valuation.complete ? null : systemTotalAsset;
 
   // 权威券商导入锚点：持仓数量仍来自 positions；现金从导入余额续算，持仓市值次日起切回系统绝对值。
   // 这里只使用 snapshot_source=imported 的最新一条；旧快照不参与，避免把遗留数据误当锚点。
@@ -167,7 +292,15 @@ async function loadAccountDataInSession(username, accountName, client) {
     result.authoritativeTotalAsset = effectiveCash + effectivePosition;
     result.authoritativeInvested = effectiveInvested;
     // 账户总资产对外读取也切到同一权威口径，避免页面初始化阶段短暂使用旧 nav_history.total_asset。
-    result.totalAsset = result.authoritativeTotalAsset;
+    // 导入当天持仓市值来自券商精确事实，因此即使系统取价不完整，这一天的总资产仍然是完整的。
+    if (isImportDay || valuationResult.valuation.complete) {
+      result.totalAsset = result.authoritativeTotalAsset;
+      result.totalAssetComplete = true;
+      result.totalAssetPartial = null;
+    } else {
+      result.totalAsset = null;
+      result.totalAssetPartial = result.authoritativeTotalAsset;
+    }
     result.totalAssetSource = isImportDay ? 'broker_exact' : 'system_calculated';
     result.anchorImportDate = anchor.date;
   }
@@ -177,7 +310,9 @@ async function loadAccountDataInSession(username, accountName, client) {
       : systemTotalAsset;
     result.navAttribution = await computeNavAttribution(username, accountName, result, attributionTotal, client.query.bind(client));
   } catch (e) {
-    result.navAttribution = { complete: false, reason: 'attribution_unavailable' };
+    // 归因失败不能中断读取，但必须留下可诊断原因（不是静默兜底）。
+    console.warn('[loadAccountData] 归因计算失败:', e.message);
+    result.navAttribution = { complete: false, reason: 'attribution_unavailable', detail: e.message };
   }
   try {
     result.navReturnTotals = await computeNavHistoryTotals(username, accountName, result, client.query.bind(client));
@@ -215,6 +350,14 @@ async function loadAccountSummaryInSession(username, accountName, client) {
                           WHERE base_currency='HKD' AND quote_currency='CNY'
                             AND rate_date <= (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai')::date
                           ORDER BY rate_date DESC, fetched_at DESC LIMIT 1), a.hk_rate::float8) AS hk_rate,
+              (SELECT rate::float8 FROM market.fx_rates
+                WHERE base_currency='HKD' AND quote_currency='CNY'
+                  AND rate_date <= (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai')::date
+                ORDER BY rate_date DESC, fetched_at DESC LIMIT 1) AS fx_rate,
+              (SELECT rate_date::text FROM market.fx_rates
+                WHERE base_currency='HKD' AND quote_currency='CNY'
+                  AND rate_date <= (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai')::date
+                ORDER BY rate_date DESC, fetched_at DESC LIMIT 1) AS fx_rate_date,
               a.broker, b.import_unit, a.cash_income_policy, a.cash_income_state
          FROM accounts a LEFT JOIN brokers b ON a.broker=b.code
         WHERE a.username=$1 AND a.account_name=$2`,
@@ -230,12 +373,21 @@ async function loadAccountSummaryInSession(username, accountName, client) {
   const nav = navResult.rows[0] || {};
   const versions = versionResult.rows[0] || {};
   const cashBase = Number(account.cash_base) || 0;
-  const hkRate = Number(account.hk_rate) > 0 ? Number(account.hk_rate) : 0.868;
+  const hkEvidence = resolveHkRateEvidence(account);
+  const hkRate = hkEvidence.hkRate;
+  const hkRateConfirmed = hkEvidence.hkRateConfirmed;
+  const hkRateSource = hkEvidence.hkRateSource;
+  const hkRateDate = hkEvidence.hkRateDate;
   const cash = cashState.value;
   const today = CoreDate.todayInZone('Asia/Shanghai');
   const anchor = cashState.anchor;
   const isImportDay = anchor && anchor.date === today && anchor.marketValueCny != null;
-  const positionValue = positionsResult.rows.reduce((sum,p) => sum + (Number(p.price)||0)*(Number(p.quantity)||0)*(p.subtype === '港股' ? hkRate : 1),0);
+  // 摘要与完整读取必须消费同一批 effectivePrice：同一证券、同一时点只有一个生效价格。
+  const valuationResult = await applyUnifiedValuation({
+    username, accountName, positions: positionsResult.rows, query: client.query.bind(client),
+    hkRate, hkRateConfirmed, asOf: today,
+  });
+  const positionValue = valuationResult.marketValue;
   return {
     summary: true,
     positions: positionsResult.rows,
@@ -247,7 +399,16 @@ async function loadAccountSummaryInSession(username, accountName, client) {
     cash,
     cashBase,
     hkRate,
-    totalAsset: cash + (isImportDay ? Number(anchor.marketValueCny) : positionValue),
+    hkRateConfirmed,
+    hkRateSource,
+    hkRateDate,
+    // 与完整读取同一口径：不完整时 totalAsset 为空，部分金额进 totalAssetPartial。
+    totalAsset: (isImportDay || valuationResult.valuation.complete)
+      ? cash + (isImportDay ? Number(anchor.marketValueCny) : positionValue) : null,
+    totalAssetPartial: (isImportDay || valuationResult.valuation.complete)
+      ? null : cash + positionValue,
+    totalAssetComplete: isImportDay ? true : valuationResult.valuation.complete,
+    valuation: valuationResult.valuation,
     invested: cashState.invested,
     authoritativeInvested: anchor ? cashState.invested : null,
     authoritativeCash: anchor ? cash : null,
@@ -353,6 +514,13 @@ async function saveAccountData(username, accountName, data, expectedVersion = nu
 
     // positions（P2-4：批量写入，原单条 INSERT 循环改为一次性批量）
     if (allow.positions) {
+      // 价格不是客户端权威（合同 8.4）：已有持仓保留库内价格，只有本次真正新建的持仓才接受录入初始价。
+      // 正常证券的当前估值由统一 effectivePrice 解析，客户端回传价既不能改写收盘事实也不能改写兼容缓存。
+      const { rows: existingPriceRows } = await client.query(
+        'SELECT id, price::float8 AS price FROM positions WHERE username=$1 AND account_name=$2',
+        [username, accountName]
+      );
+      const priceById = new Map(existingPriceRows.map((row) => [String(row.id), Number(row.price)]));
       await client.query('DELETE FROM positions WHERE username=$1 AND account_name=$2', [username, accountName]);
       const posRows = data.positions || [];
       // 仓位对比：保存时按 code 重新关联 instrument_id（避免 DELETE+重建把回填映射清空；未匹配写 NULL 不报错）
@@ -360,7 +528,12 @@ async function saveAccountData(username, accountName, data, expectedVersion = nu
       await bulkInsert(client, 'positions',
         ['id', 'username', 'account_name', 'account_id', 'code', 'name', 'price', 'quantity', 'cost', 'type', 'subtype', 'note', 'instrument_id'],
         posRows,
-        (p) => [p.id, username, accountName, accountId, p.code || '', p.name || '', round(p.price, 4), round(p.quantity, 4), round(p.cost, 4), p.type || '', p.subtype || '', p.note || '', instIdMap.get(String(p.code || '').trim()) || null]
+        (p) => {
+          const keptPrice = priceById.has(String(p.id)) ? priceById.get(String(p.id)) : undefined;
+          return [p.id, username, accountName, accountId, p.code || '', p.name || '',
+            round(keptPrice === undefined ? p.price : keptPrice, 4), round(p.quantity, 4), round(p.cost, 4),
+            p.type || '', p.subtype || '', p.note || '', instIdMap.get(String(p.code || '').trim()) || null];
+        }
       );
     }
     // trades
@@ -517,21 +690,80 @@ async function saveAccountData(username, accountName, data, expectedVersion = nu
 
 // ====== 每日收盘价 ======
 
-async function saveDailyPrices(username, accountName, date, prices) {
+async function saveDailyPrices(username, accountName, date, prices, options = {}) {
   const normalizedDate = date instanceof Date
     ? new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(date)
     : String(date || '').slice(0, 10);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(normalizedDate)) throw new Error('收盘价日期必须是 YYYY-MM-DD');
-  const { rows: aRows } = await pool.query(
+  // options.client：调用方的受控事务连接（日价与兼容持仓价必须同事务提交）。
+  const runner = options.client || pool;
+  const { rows: aRows } = await runner.query(
     'SELECT id FROM accounts WHERE username=$1 AND account_name=$2', [username, accountName]
   );
   const accountId = aRows[0] ? aRows[0].id : null;
-  for (const p of prices) {
-    await pool.query(
-      'INSERT INTO daily_prices (username, account_name, account_id, date, code, name, price) VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT (username, account_name, date, code) DO UPDATE SET name = EXCLUDED.name, price = EXCLUDED.price',
-      [username, accountName, accountId, normalizedDate, p.code, p.name || '', round(p.price, 4)]
+  const results = [];
+  for (const p of (prices || [])) {
+    if (!p || !p.code) continue;
+    // 证据由服务端产出：来源白名单、是否终盘、质量分级都不接受浏览器自证。
+    const quality = p.quality || options.quality || 'candidate';
+    const isFinal = p.is_final !== undefined ? p.is_final
+      : (p.isFinal !== undefined ? p.isFinal : (options.isFinal === undefined ? null : options.isFinal));
+    const result = await priceRepository.upsertDailyPrice([{
+      username,
+      accountName,
+      accountId,
+      date: normalizedDate,
+      code: p.code,
+      name: p.name || '',
+      price: round(p.price, 4),
+      source: p.source || options.source || null,
+      quoteAt: p.quote_at || p.quoteAt || options.quoteAt || null,
+      isFinal,
+      quality,
+      // 市场必须随行落库：港股 00001 与 A 股 000001 同形，缺市场就会串价。
+      market: p.market || options.market || null,
+      evidence: p.evidence || options.evidence || {},
+    }], runner);
+    results.push({ code: p.code, written: result.rowCount > 0, revision: result.rows[0] ? result.rows[0].revision : null });
+  }
+  return results;
+}
+
+// 已确认收盘价的过渡兼容缓存：只回写同账户当前持有证券的兼容持仓价，不作为另一套权威。
+// 人工/退市估值与非当日价格不在此覆盖范围内（收盘任务本身不会为它们产出已确认日价）。
+async function syncConfirmedCloseToPositions(username, accountName, date, options = {}) {
+  const normalizedDate = String(date || '').slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(normalizedDate)) return { updated: 0 };
+  const runner = options.client || pool;
+  const { rows } = await runner.query(
+    `UPDATE positions p
+        SET price = d.price
+       FROM daily_prices d
+      WHERE p.username = $1 AND p.account_name = $2
+        AND d.username = $1 AND d.account_name = $2
+        AND d.date = $3 AND d.code = p.code
+        AND d.quality = 'confirmed' AND d.is_final = true AND d.price > 0
+        -- 市场必须与持仓身份一致：A 股 000001 与港股 00001 同形，只按代码会把另一市场的价格写上。
+        -- market 非空（默认 'UNKNOWN'），身份不明（UNKNOWN）的行不得回写任何持仓——失败关闭，保留缺口。
+        AND COALESCE(d.market, '') = (CASE WHEN COALESCE(p.subtype, '') = '港股' OR length(COALESCE(p.code, '')) = 5 THEN 'HK' ELSE 'CN' END)
+        AND p.quantity > 0
+        AND ($4::text[] IS NULL OR p.code = ANY($4::text[]))
+      RETURNING p.code, p.price::float8 AS price`,
+    [username, accountName, normalizedDate, options.codes || null]
+  );
+  // 兼容持仓价变化必须计入持仓数据集版本：否则旧页面带着旧 pos_version 全量保存，
+  // 会把刚同步的收盘价覆盖回旧值。语句与仓储 bumpPositionVersion 一致，
+  // 但这里直接执行以避免 db 层反向 require 仓储造成的循环依赖。
+  if (rows.length) {
+    await runner.query(
+      `INSERT INTO account_data (username, account_name, data, version, pos_version)
+       VALUES ($1,$2,'{}',0,0)
+       ON CONFLICT (username, account_name) DO UPDATE
+         SET pos_version = account_data.pos_version + 1, version = account_data.version + 1`,
+      [username, accountName]
     );
   }
+  return { updated: rows.length, codes: rows.map(row => row.code) };
 }
 
 async function loadDailyPrices(username, accountName, date) {
@@ -990,7 +1222,9 @@ module.exports = {
   loadAccountSummary,
   saveAccountData,
   buildInstrumentIdMap,
+  resolveHkRateEvidence,
   saveDailyPrices,
+  syncConfirmedCloseToPositions,
   loadDailyPrices,
   upsertNav,
   upsertIndexPoints,

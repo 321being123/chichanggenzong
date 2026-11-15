@@ -12,6 +12,7 @@ const { investedAt, chainNav, cashAt, isExternalTransfer } = require('../../publ
 const CoreDate = require('../../public/shared/core-date.js');
 const classifyCode = require('../../public/js/code-classify');
 const repository = require('../repositories/navSnapshotRepository.js');
+const { selectHistoricalClosePrice } = require('../services/effectivePrice');
 
 // 东八区日期 YYYY-MM-DD
 function cnDate(d) {
@@ -32,6 +33,16 @@ function buildFxByDate(rows) {
 
 function dateText(value) {
   return value instanceof Date ? cnDate(value) : String(value || '').slice(0, 10);
+}
+
+// 退市债没有后续行情，价格固定为持仓/快照/成交里保留的最后退市价（与净值归因同一口径）。
+// 只认明确标记为退市债的证券；普通证券缺行情仍按缺口处理。不抓行情、不猜价格。
+function fixedDelistedPrice(data, code, fallbackRow) {
+  const { manualDelistedPrice } = require('../services/navAttribution');
+  const currentPosition = (data.positions || []).find(position =>
+    String(position.code || '') === String(code)
+    || classifyCode.normalizeCode(position.code, position.name) === code);
+  return manualDelistedPrice(data, code, currentPosition || fallbackRow || { code });
 }
 
 // 为单个账户填补缺失交易日的净值快照（幂等：已有记录跳过、只新增缺失日）
@@ -67,10 +78,19 @@ async function recordNavSnapshots(username, accountName, hkRateOverride = null, 
   dpRows.forEach(function (r) {
     const d = dateText(r.date);
     const code = classifyCode.normalizeCode(r.code, positionNames.get(r.code)) || r.code;
-    dpMap.set(code + '|' + d, Number(r.price));
+    const qualified = String(r.quality || 'legacy_unverified') === 'confirmed' || r.is_final === true;
+    // 按「市场 + 代码」建索引：港股 00001 与 A 股 000001 同形，只按代码会互相顶替。
+    // market 为 UNKNOWN（身份不明）时不能再按代码形状兜底：六位代码也可能是补零后的港股，
+    // 猜成 A 股会把另一只证券的价格算进资产；身份键保留 UNKNOWN 即永不等于持仓市场，价格成为缺口。
+    const marketText = String(r.market || '').toUpperCase();
+    const market = marketText === 'HK' || marketText === 'CN'
+      ? marketText
+      : (marketText ? 'UNKNOWN' : (String(r.code || '').length === 5 ? 'HK' : 'CN'));
+    const key = market + '|' + code;
+    dpMap.set(key + '|' + d, { price: Number(r.price), qualified });
     priceDates.add(d);
-    if (!pricesByCode.has(code)) pricesByCode.set(code, []);
-    pricesByCode.get(code).push({ date: d, price: Number(r.price) });
+    if (!pricesByCode.has(key)) pricesByCode.set(key, []);
+    pricesByCode.get(key).push({ date: d, price: Number(r.price), qualified });
   });
   for (const rows of pricesByCode.values()) rows.sort((a, b) => a.date.localeCompare(b.date));
   const targetDate = dateText(targetDateInput);
@@ -205,6 +225,7 @@ async function recordNavSnapshots(username, accountName, hkRateOverride = null, 
 
   let affected = 0;
   const incompleteDates = [];
+  const fixedDelistedCodes = new Set();
   let currentPerformance = data.performanceHistory;
   async function saveCanonical(rec) {
     try {
@@ -228,17 +249,21 @@ async function recordNavSnapshots(username, accountName, hkRateOverride = null, 
     return stateCache.get(key);
   }
   async function effectivePrice(code, market, date, marketStatus) {
-    const exact = dpMap.get(code + '|' + date);
-    if (marketStatus === 'open') return exact > 0 ? { price: exact, date } : null;
-    if (marketStatus !== 'closed') return null;
-    const candidates = pricesByCode.get(code) || [];
-    for (let index = candidates.length - 1; index >= 0; index--) {
-      const candidate = candidates[index];
-      if (candidate.date >= date || !(candidate.price > 0)) continue;
-      const candidateState = await stateFor(market, candidate.date);
-      if (candidateState.status === 'open') return candidate;
+    // 只有已确认终盘价可用；候选/遗留价不进入历史资产重建，保留为缺口。
+    const key = market + '|' + code;
+    const exactRow = dpMap.get(key + '|' + date);
+    const exact = exactRow && exactRow.qualified ? exactRow.price : null;
+    const candidates = (pricesByCode.get(key) || []).filter(row => row.qualified);
+    const statusByDate = new Map();
+    for (const candidate of candidates) {
+      if (statusByDate.has(candidate.date)) continue;
+      statusByDate.set(candidate.date, (await stateFor(market, candidate.date)).status);
     }
-    return null;
+    // 历史重算与实时估值共用同一支选价算法（services/effectivePrice），不再各写一套。
+    return selectHistoricalClosePrice({
+      exactPrice: exact, candidates, targetDate: date, marketStatus,
+      tradingStatusOf: candidateDate => statusByDate.get(candidateDate) || 'unknown',
+    });
   }
   for (const d of datesToProcess) {
     const anchor = latestPositionAnchor(d);
@@ -283,7 +308,15 @@ async function recordNavSnapshots(username, accountName, hkRateOverride = null, 
       if (info.qty === 0) continue;
       const market = info.subtype === '港股' ? 'HK' : 'CN';
       const state = marketStates[market] || await stateFor(market, d);
-      const price = await effectivePrice(code, market, d, state.status);
+      let price = await effectivePrice(code, market, d, state.status);
+      if (!price) {
+        // 退市债不抓行情：用持仓里已固定的最后退市价，并留痕（与净值归因同一口径）。
+        const fixed = fixedDelistedPrice(data, code, { code, name: info.name });
+        if (fixed != null) {
+          price = { price: fixed, date: null };
+          fixedDelistedCodes.add(code);
+        }
+      }
       if (!price) { incomplete = true; missingCodes.push(state.status === 'unknown' ? `${code}:交易日历未知` : code); continue; }
       usedDateByCode[code] = price.date;
       if (market === 'HK' && !(hkRate > 0)) { incomplete = true; missingCodes.push(code + ':HKD汇率'); continue; }
@@ -327,6 +360,7 @@ async function recordNavSnapshots(username, accountName, hkRateOverride = null, 
     missingCodes: [...new Set(incompleteDates.flatMap(item => item.missingCodes))],
     diagnostics: incompleteDates,
     usedPriceDates,
+    ...(fixedDelistedCodes.size ? { fixedDelistedPriceCodes: [...fixedDelistedCodes] } : {}),
     ...(incompleteDates.length ? {
       error: '账户净值快照存在缺失行情或汇率：' + incompleteDates.map(item => item.date + '（' + item.missingCodes.join('、') + '）').join('；'),
       errorType: 'data_quality',
@@ -416,4 +450,4 @@ function isCashIncomeDependencyWait(failedAccounts,repoRates){
     &&waits.every(p=>['missing_repo_daily_rate','bond_interest_window_not_verified','dividend_window_not_verified','missing_hk_dividend_facts'].includes(p.reason))
     &&(repoRates?.ok!==false||repoRates?.failures?.length>0&&repoRates.failures.every(f=>f.code==='EMPTY_DATA'));
 }
-module.exports = { recordNavSnapshots, runNavSnapshotJob, cnDate, buildFxByDate, isCashIncomeDependencyWait };
+module.exports = { recordNavSnapshots, runNavSnapshotJob, cnDate, buildFxByDate, isCashIncomeDependencyWait, fixedDelistedPrice };

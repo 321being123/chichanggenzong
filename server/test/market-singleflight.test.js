@@ -69,14 +69,16 @@ async function main() {
     assert.strictEqual((await validateDailyPriceBatch('2026-08-24', [{ code: '600000', quote_time: '2026-08-24T15:00:00+08:00' }])).ok, true);
   });
 
-  await check('行情与收盘价路由接入日期校验', async () => {
+  await check('行情路由接入日期校验且收盘写入已收口', async () => {
     const routesDir = path.join(__dirname, '..', 'routes');
     const servicesDir = path.join(__dirname, '..', 'services');
     const marketRoute = fs.readFileSync(path.join(routesDir, 'market.js'), 'utf8');
     const marketService = fs.readFileSync(path.join(servicesDir, 'market.js'), 'utf8');
     const accountsRoute = fs.readFileSync(path.join(routesDir, 'accounts.js'), 'utf8');
     assert.ok(marketService.includes("quote_time: quote ? quote.quote_time : (d && d.quote_time || null)"), '批量行情回退未透传 Tushare 日期');
-    assert.ok(accountsRoute.includes('validateDailyPriceBatch(targetDate, prices)'), '收盘价写接口未执行服务端日期校验');
+    // 2026-11-15 统一估值合同：浏览器收盘写入收口，旧接口返回 409 且不写任何日价。
+    assert.ok(accountsRoute.includes('DAILY_PRICE_WRITE_RETIRED'), '关闭浏览器收盘写入时必须返回明确的状态码与提示');
+    assert.ok(!accountsRoute.includes('saveDailyPrices(req.session.user'), '旧收盘写接口不得再写 daily_prices');
     assert.ok(accountsRoute.includes('isCnTradingDate(todayCN())'), '休市日不应读取并展示最近交易日涨跌');
   });
 

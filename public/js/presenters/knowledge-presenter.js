@@ -339,6 +339,25 @@ function ksInflightEnd(requestId) {
   return Math.max(left, 0);
 }
 
+// 同编号是否「曾出现结果不明」：两个并发请求里，先回来的那个 502 说明它可能已落库，
+// 后回来的那个即使被明确拒绝（例如文章被撤回时 404），也只说明它自己没发表，
+// 不能据此清记录——否则前一个若已落库，重试就会换新编号重复发表。
+// 标记在一次「同编号已无在飞请求」的拒绝响应后消费掉：下一轮重试是孤立的单请求，
+// 它的结果才会被当作确定结论（已提交则回放、没提交才清记录），既不重复也能收敛。
+const ksUncertainIds = {};
+
+function ksMarkUncertain(requestId) {
+  if (requestId) ksUncertainIds[requestId] = true;
+}
+
+function ksHadUncertain(requestId) {
+  return !!requestId && ksUncertainIds[requestId] === true;
+}
+
+function ksForgetUncertain(requestId) {
+  if (requestId) delete ksUncertainIds[requestId];
+}
+
 // 记录是否仍属于这次请求：放弃旧评论后重发会换新编号，两者共用同一个「账号+文章+位置」键，
 // 旧响应对不上编号就不能动这条记录（否则会把新评论的待确认记录一起删掉）。
 function ksRecordBelongsTo(ownerKey, articleId, parentId, requestId) {
@@ -414,6 +433,13 @@ function ksMayHaveCommitted(status) {
 // 若把服务端这两步的顺序调换，这里就必须改成「重试遇 404 保留编号」。
 function ksServerSaysProcessed(payload) {
   return !!payload && payload.code === 'request_already_processed';
+}
+
+// 服务端对「这个编号本身」给出的终态答复：结论已定，不必再等并发结果
+// （request_conflict：同编号已提交过别的正文；request_comment_deleted：已处理且之后被删除）
+function ksTerminalPayload(payload) {
+  return !!payload
+    && (payload.code === 'request_conflict' || payload.code === 'request_comment_deleted');
 }
 
 function ksDefinitelyRejected(status, payload) {
@@ -565,6 +591,8 @@ async function ksSubmitComment(parentId, textInput, boxKey) {
       || (isRetry && !ksDefinitelyRejected(r.status, r.payload))
       || ksServerSaysProcessed(r.payload);
     if (uncertain) {
+      // 这个编号的结果还没确认：记住它，后面同编号的「明确拒绝」不能拿来清记录
+      ksMarkUncertain(requestId);
       if (samePage) {
         showToast(ksServerSaysProcessed(r.payload)
           ? '这条评论服务器已经在处理了，请稍后原样重试查看结果（不会重复发布）'
@@ -573,8 +601,22 @@ async function ksSubmitComment(parentId, textInput, boxKey) {
       return;
     }
     // 服务端明确拒绝：丢弃这条失败请求的记录（只清仍属于这次编号的那条，不碰后来重发的）。
-    // 但同一编号还有请求在飞时不清：那个请求可能已经落库，清掉后重试就会换新编号重复发表。
-    if (stillInflight === 0) ksClearPendingRecordByOwner(ownerAtSend.key, a.id, parentId, requestId);
+    // 分四种情况：
+    // ①服务端给的是「关于这个编号本身」的终态答复（内容冲突 / 已处理且已删除）→ 直接清，结论已经确定；
+    // ②同编号还有请求在飞 → 留着，等最后一个结果（那个请求可能已经落库）；
+    // ③同编号曾有请求结果不明 → 这次的拒绝只说明自己没发表，标记消费掉但记录保留，
+    //   下一轮是同编号的孤立单请求，它的结果才作为确定结论（已提交会回放，不会重复）；
+    // ④其余情况（孤立请求被明确拒绝）→ 清记录。
+    if (ksTerminalPayload(r.payload)) {
+      ksClearPendingRecordByOwner(ownerAtSend.key, a.id, parentId, requestId);
+      ksForgetUncertain(requestId);
+    } else if (stillInflight > 0) {
+      /* 等最后一个结果 */
+    } else if (ksHadUncertain(requestId)) {
+      ksForgetUncertain(requestId);
+    } else {
+      ksClearPendingRecordByOwner(ownerAtSend.key, a.id, parentId, requestId);
+    }
     if (!samePage) return;
     if (typeof window.ksHideCommentNotice === 'function') window.ksHideCommentNotice(boxKey || 'main');
     const d = r.payload || {};
@@ -583,6 +625,8 @@ async function ksSubmitComment(parentId, textInput, boxKey) {
     return;
   }
   ksClearPendingRecordByOwner(ownerAtSend.key, a.id, parentId, requestId);
+  // 这个编号已经有确定结论（提交成功），不再残留「结果不明」标记
+  ksForgetUncertain(requestId);
   if (!samePage) return;
   // 清掉该输入框的草稿与提示（一级清主框，回复清对应楼层）
   if (typeof window.ksClearCommentDraft === 'function') window.ksClearCommentDraft(parentId || null);

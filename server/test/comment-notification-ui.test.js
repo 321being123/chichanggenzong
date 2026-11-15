@@ -1718,6 +1718,114 @@ async function concurrentSameIdKeepRecord() {
   } finally { await tick(); dom.window.close(); }
 }
 
+// ---------- 28. 相反顺序：同编号先 502 再 404，不能因后一个拒绝就清记录 ----------
+async function uncertainThenRejectedKeepsRecord() {
+  const dom = new JSDOM(
+    '<textarea id="ks-comment"></textarea><div id="panel" role="listbox" hidden></div><div id="chips" hidden></div>'
+    + '<div id="ks-comment-notice" hidden></div><div id="ks-comment-list"></div>',
+    { url: 'https://example.test/?main=knowledge', runScripts: 'outside-only' }
+  );
+  const w = dom.window;
+  try {
+    const posts = [];
+    const gates = [];
+    w.username = 'alice';
+    w.accountIdentity = '100';
+    w.escapeHtml = escaper();
+    w.showToast = function () {};
+    w.siteApi = {
+      get: async function () { return { ok: true, status: 200, payload: { id: 7, title: '文章', status: 'published' } }; },
+      post: function (url, body) {
+        if (url.indexOf('/view') >= 0) return Promise.resolve({ ok: true, status: 200, payload: {} });
+        posts.push(body);
+        // 前两个请求挂起，由测试按「先 502、后 404」的顺序放行；第三个直接成功
+        if (posts.length <= 2) return new Promise(function (resolve) { gates.push(resolve); });
+        return Promise.resolve({ ok: true, status: 200, payload: { id: 3, reused: true } });
+      },
+    };
+    w.eval(read('public/js/knowledge.js'));
+    w.ksPaintArticle = function () {};
+    w.ksShowView = function () {};
+    w.ksPaintCommentsPrepare = function () { return false; };
+    w.ksPaintComments = function () {};
+    w.eval(read('public/js/presenters/knowledge-presenter.js'));
+    await w.ksOpenArticle(7);
+
+    // 同编号的两个并发提交：先 502（结果不明），后 404（明确拒绝）
+    const first = w.ksSubmitComment(null, '并发评论', null);
+    const second = w.ksSubmitComment(null, '并发评论', null);
+    assert.strictEqual(posts.length, 2);
+    assert.strictEqual(posts[0].client_request_id, posts[1].client_request_id);
+    gates[0]({ ok: false, status: 502, payload: null });
+    await first;
+    let stored = JSON.parse(w.sessionStorage.getItem('ks-pending-comments') || '{}');
+    assert.strictEqual(Object.keys(stored).length, 1, '502 后记录必须保留');
+    gates[1]({ ok: false, status: 404, payload: { error: '文章不存在或未发布' } });
+    await second;
+    stored = JSON.parse(w.sessionStorage.getItem('ks-pending-comments') || '{}');
+    assert.strictEqual(Object.keys(stored).length, 1,
+      '后一个 404 只说明它自己没发表，不能据此清掉前一个可能已落库的记录');
+
+    // 重试仍用原编号，由服务端回放确认
+    await w.ksSubmitComment(null, '并发评论', null);
+    assert.strictEqual(posts[2].client_request_id, posts[0].client_request_id, '重试必须沿用原编号');
+    stored = JSON.parse(w.sessionStorage.getItem('ks-pending-comments') || '{}');
+    assert.strictEqual(Object.keys(stored).length, 0, '确认后才清');
+    pass++;
+  } finally { await tick(); dom.window.close(); }
+}
+
+// ---------- 29. 502 → 404 → 再 404：该收敛，不能永久卡住 ----------
+async function uncertainThenRejectedConverges() {
+  const dom = new JSDOM(
+    '<textarea id="ks-comment"></textarea><div id="panel" role="listbox" hidden></div><div id="chips" hidden></div>'
+    + '<div id="ks-comment-notice" hidden></div><div id="ks-comment-list"></div>',
+    { url: 'https://example.test/?main=knowledge', runScripts: 'outside-only' }
+  );
+  const w = dom.window;
+  try {
+    const posts = [];
+    const gates = [];
+    w.username = 'alice';
+    w.accountIdentity = '100';
+    w.escapeHtml = escaper();
+    w.showToast = function () {};
+    w.siteApi = {
+      get: async function () { return { ok: true, status: 200, payload: { id: 7, title: '文章', status: 'published' } }; },
+      post: function (url, body) {
+        if (url.indexOf('/view') >= 0) return Promise.resolve({ ok: true, status: 200, payload: {} });
+        posts.push(body);
+        if (posts.length <= 2) return new Promise(function (resolve) { gates.push(resolve); });
+        return Promise.resolve({ ok: false, status: 404, payload: { error: '文章不存在或未发布' } });
+      },
+    };
+    w.eval(read('public/js/knowledge.js'));
+    w.ksPaintArticle = function () {};
+    w.ksShowView = function () {};
+    w.ksPaintCommentsPrepare = function () { return false; };
+    w.ksPaintComments = function () {};
+    w.eval(read('public/js/presenters/knowledge-presenter.js'));
+    await w.ksOpenArticle(7);
+
+    const first = w.ksSubmitComment(null, '并发评论', null);
+    const second = w.ksSubmitComment(null, '并发评论', null);
+    assert.strictEqual(posts.length, 2);
+    gates[0]({ ok: false, status: 502, payload: null });
+    await first;
+    gates[1]({ ok: false, status: 404, payload: { error: '文章不存在或未发布' } });
+    await second;
+    let stored = JSON.parse(w.sessionStorage.getItem('ks-pending-comments') || '{}');
+    assert.strictEqual(Object.keys(stored).length, 1, '这一轮必须保留（前一个结果不明）');
+
+    // 第三次是孤立的单请求，仍被明确拒绝 → 结论确定，可以清，避免永久卡住
+    await w.ksSubmitComment(null, '并发评论', null);
+    assert.strictEqual(posts[2].client_request_id, posts[0].client_request_id, '收敛前仍复用原编号');
+    stored = JSON.parse(w.sessionStorage.getItem('ks-pending-comments') || '{}');
+    assert.strictEqual(Object.keys(stored).length, 0, '孤立请求拿到明确拒绝后应清记录，不能永久卡住');
+    pass++;
+  } finally { await tick(); dom.window.close(); }
+}
+
 (async () => {
   const suites = [
     ['@ 区间随编辑平移与失效（同昵称可区分）', mentionRanges],
@@ -1747,6 +1855,8 @@ async function concurrentSameIdKeepRecord() {
     ['评论已发表后被删除，重试只告知不重新发表', deletedCommentTerminalState],
     ['放弃旧评论重发后，旧请求迟到的成功不清新记录', lateResponseAfterDiscard],
     ['同编号并发提交，一个失败不清掉仍在飞的记录', concurrentSameIdKeepRecord],
+    ['同编号先 502 再 404，后一个拒绝不清前一个的记录', uncertainThenRejectedKeepsRecord],
+    ['同编号先 502 再 404 后，孤立重试被拒时应收敛清记录', uncertainThenRejectedConverges],
   ];
   let failed = 0;
   for (const [name, fn] of suites) {

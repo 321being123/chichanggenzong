@@ -320,11 +320,22 @@ function ksSavePendingRecord(articleId, parentId, record) {
 // 按「发起请求那一刻的账号」清除记录，而不是按「响应回来时的当前账号」：
 // 用户可能在请求飞行中切换了账号，用当前账号算键就会清掉新账号在同一位置的待确认记录。
 // 若那条记录其实已经提交、记录却被清掉，用户之后重试就会用新编号再发一条。
-function ksClearPendingRecordByOwner(ownerKey, articleId, parentId) {
+// 记录是否仍属于这次请求：放弃旧评论后重发会换新编号，两者共用同一个「账号+文章+位置」键，
+// 旧响应对不上编号就不能动这条记录（否则会把新评论的待确认记录一起删掉）。
+function ksRecordBelongsTo(ownerKey, articleId, parentId, requestId) {
+  if (!ownerKey || !requestId) return false;
+  const key = ownerKey + '|' + String(articleId) + '|' + (parentId || '');
+  const record = ksPendingStore()[key];
+  return !!record && record.id === requestId;
+}
+
+// 清除时若给了 requestId，只在记录仍是这次请求时才删（编号变了说明已被新一次提交占用）
+function ksClearPendingRecordByOwner(ownerKey, articleId, parentId, requestId) {
   if (!ownerKey) return;
   const key = ownerKey + '|' + String(articleId) + '|' + (parentId || '');
   const map = ksPendingStore();
   if (!map[key]) return;
+  if (requestId && map[key].id !== requestId) return;
   delete map[key];
   ksPersistPendingStore();
 }
@@ -518,10 +529,12 @@ async function ksSubmitComment(parentId, textInput, boxKey) {
   if (parentId) body.parent_id = parentId;
   if (mentions.length) body.mentions = mentions;
   const r = await window.siteApi.post('/api/knowledge/articles/' + a.id + '/comments', body);
-  // 响应回来时可能已经换了账号、换了文章，甚至离开后又回到同一篇：
-  // 记录一律按发起时的账号与文章清除，界面（提示、清草稿、刷列表）只在「同一账号 + 同一个文章页面实例」时更新。
+  // 响应回来时可能已经换了账号、换了文章、离开后又回到同一篇，或者已经「放弃旧评论并重新提交」：
+  // 记录一律按发起时的账号与文章清除，且只清**仍属于这次请求编号**的那条；
+  // 界面（提示、清草稿、刷列表）只在「同一账号 + 同一个文章页面实例 + 记录仍属于这次请求」时才更新。
   const sameOwner = !!ownerAtSend.key && ksPendingOwner().key === ownerAtSend.key;
-  const samePage = sameOwner && ksSameArticleInstance(a.id, articleSeqAtSend);
+  const ownsRecord = ksRecordBelongsTo(ownerAtSend.key, a.id, parentId, requestId);
+  const samePage = sameOwner && ownsRecord && ksSameArticleInstance(a.id, articleSeqAtSend);
   if (!r.ok) {
     // 结果不明：服务端可能已提交，重试会拿回原评论而不是再发一条，必须保留整份记录。
     // 另外：如果这次本身就是「上次结果不明」的重试，那么限流/登录状态被拦也不能证明上次没落库
@@ -537,8 +550,8 @@ async function ksSubmitComment(parentId, textInput, boxKey) {
       }
       return;
     }
-    // 服务端明确拒绝：丢弃这条失败请求的记录（只清发起时的账号，不碰当前账号）
-    ksClearPendingRecordByOwner(ownerAtSend.key, a.id, parentId);
+    // 服务端明确拒绝：丢弃这条失败请求的记录（只清仍属于这次编号的那条，不碰后来重发的）
+    ksClearPendingRecordByOwner(ownerAtSend.key, a.id, parentId, requestId);
     if (!samePage) return;
     if (typeof window.ksHideCommentNotice === 'function') window.ksHideCommentNotice(boxKey || 'main');
     const d = r.payload || {};
@@ -546,7 +559,7 @@ async function ksSubmitComment(parentId, textInput, boxKey) {
     else showToast(ksWriteErrMsg(r.status));
     return;
   }
-  ksClearPendingRecordByOwner(ownerAtSend.key, a.id, parentId);
+  ksClearPendingRecordByOwner(ownerAtSend.key, a.id, parentId, requestId);
   if (!samePage) return;
   // 清掉该输入框的草稿与提示（一级清主框，回复清对应楼层）
   if (typeof window.ksClearCommentDraft === 'function') window.ksClearCommentDraft(parentId || null);

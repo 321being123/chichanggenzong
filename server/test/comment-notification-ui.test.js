@@ -1571,6 +1571,86 @@ async function deletedCommentTerminalState() {
   } finally { await tick(); dom.window.close(); }
 }
 
+// ---------- 26. 放弃旧评论并重发后，旧请求迟到的成功不得清掉新记录的待确认 ----------
+async function lateResponseAfterDiscard() {
+  const dom = new JSDOM(
+    '<textarea id="ks-comment"></textarea><div id="panel" role="listbox" hidden></div><div id="chips" hidden></div>'
+    + '<div id="ks-comment-notice" hidden></div><div id="ks-comment-list"></div>',
+    { url: 'https://example.test/?main=knowledge', runScripts: 'outside-only' }
+  );
+  const w = dom.window;
+  try {
+    const toasts = [];
+    const posts = [];
+    let releaseRetry = null;
+    w.username = 'alice';
+    w.accountIdentity = '100';
+    w.escapeHtml = escaper();
+    w.showToast = function (m) { toasts.push(String(m)); };
+    w.siteApi = {
+      get: async function () { return { ok: true, status: 200, payload: { id: 7, title: '文章', status: 'published' } }; },
+      post: function (url, body) {
+        if (url.indexOf('/view') >= 0) return Promise.resolve({ ok: true, status: 200, payload: {} });
+        posts.push(body);
+        // 第 2 个请求（原样重试）挂起，模拟「用户等不及又发起新评论」
+        if (posts.length === 2) return new Promise(function (resolve) { releaseRetry = resolve; });
+        if (posts.length === 4) return Promise.resolve({ ok: true, status: 200, payload: { id: 2 } });
+        return Promise.resolve({ ok: false, status: 502, payload: null });
+      },
+    };
+    w.eval(read('public/js/knowledge.js'));
+    w.ksPaintArticle = function () {};
+    w.ksShowView = function () {};
+    w.ksPaintCommentsPrepare = function () { return false; };
+    w.ksPaintComments = function () {};
+    w.eval(read('public/js/presenters/knowledge-presenter.js'));
+    await w.ksOpenArticle(7);
+    const ta = w.document.getElementById('ks-comment');
+    const notice = w.document.getElementById('ks-comment-notice');
+
+    // 1) 旧评论结果不明
+    await w.ksSubmitComment(null, '旧评论', null);
+    const oldId = posts[0].client_request_id;
+
+    // 2) 原样重试（挂起）
+    const retrying = w.ksSubmitComment(null, '旧评论', null);
+    assert.strictEqual(posts.length, 2);
+
+    // 3) 放弃旧评论，并提交新评论（结果不明）
+    w.ksDiscardPendingComment(null);
+    let stored = JSON.parse(w.sessionStorage.getItem('ks-pending-comments') || '{}');
+    assert.strictEqual(Object.keys(stored).length, 0, '放弃后旧记录应清掉');
+    ta.value = '新评论';
+    await w.ksSubmitComment(null, '新评论', null);
+    const newId = posts[2].client_request_id;
+    assert.notStrictEqual(newId, oldId, '新评论必须是新编号');
+    stored = JSON.parse(w.sessionStorage.getItem('ks-pending-comments') || '{}');
+    assert.strictEqual(Object.keys(stored).length, 1, '新评论结果不明，记录保留');
+
+    // 4) 旧重试此刻才成功返回
+    const noticeBefore = notice.hidden;
+    toasts.length = 0;
+    releaseRetry({ ok: true, status: 200, payload: { id: 1 } });
+    await retrying;
+
+    stored = JSON.parse(w.sessionStorage.getItem('ks-pending-comments') || '{}');
+    const rows = Object.keys(stored).map(function (k) { return stored[k]; });
+    assert.strictEqual(rows.length, 1, '旧请求的迟到成功不能删掉新评论的待确认记录');
+    assert.strictEqual(rows[0].id, newId, '留下的必须是新评论的记录');
+    assert.strictEqual(ta.value, '新评论', '旧响应不能清掉新评论的草稿');
+    assert.strictEqual(notice.hidden, noticeBefore, '旧响应不得改变新评论提示条的显示状态');
+    assert.ok(!toasts.some(function (m) { return m.indexOf('评论已发表') >= 0; }),
+      '旧请求的结果不能当作新评论成功来提示');
+
+    // 5) 新评论重试仍用新编号
+    await w.ksSubmitComment(null, '新评论', null);
+    assert.strictEqual(posts[3].client_request_id, newId, '新评论重试必须沿用新编号');
+    stored = JSON.parse(w.sessionStorage.getItem('ks-pending-comments') || '{}');
+    assert.strictEqual(Object.keys(stored).length, 0, '新评论确认成功后才清记录');
+    pass++;
+  } finally { await tick(); dom.window.close(); }
+}
+
 (async () => {
   const suites = [
     ['@ 区间随编辑平移与失效（同昵称可区分）', mentionRanges],
@@ -1598,6 +1678,7 @@ async function deletedCommentTerminalState() {
     ['离开后重新打开同一篇文章算新页面，旧响应不得改动', reopenSameArticleIsNewPage],
     ['结果不明后文章被撤回，重试仍用原编号并由服务端回放', retractedArticleReplay],
     ['评论已发表后被删除，重试只告知不重新发表', deletedCommentTerminalState],
+    ['放弃旧评论重发后，旧请求迟到的成功不清新记录', lateResponseAfterDiscard],
   ];
   let failed = 0;
   for (const [name, fn] of suites) {

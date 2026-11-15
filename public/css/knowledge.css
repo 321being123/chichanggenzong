@@ -1297,6 +1297,37 @@ body > svg[version="1.1"] {
   gap: 8px;
 }
 
+/* 结果未确认的提交：恢复草稿时的提示与放弃入口 */
+.ks-comment-notice {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 8px 10px;
+  border: 1px solid #ffe0a3;
+  border-radius: 7px;
+  background: #fffaf0;
+  color: #8a5a00;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.ks-comment-notice[hidden] { display: none; }
+
+.ks-comment-notice-btn {
+  min-height: 28px;
+  padding: 2px 10px;
+  border: 1px solid #e6c98a;
+  border-radius: 999px;
+  background: #fff;
+  color: #8a5a00;
+  font-family: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.ks-comment-notice-btn:hover { background: #fff3da; }
+
 .ks-mention-panel {
   display: flex;
   flex-direction: column;

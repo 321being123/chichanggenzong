@@ -220,8 +220,8 @@ async function retryRequestId() {
     const firstId = posts[0].client_request_id;
     assert.ok(firstId, '提交必须带请求标识');
     const stored = JSON.parse(w.sessionStorage.getItem('ks-pending-comments') || '{}');
-    assert.ok(Object.keys(stored).some(function (k) { return stored[k] === firstId; }),
-      '结果不明时标识必须持久化（刷新后仍能复用）');
+    assert.ok(Object.keys(stored).some(function (k) { return stored[k] && stored[k].id === firstId; }),
+      '结果不明时待确认记录必须持久化（刷新后仍能复用同一标识）');
 
     // 第二次同样内容：必须复用同一标识（服务端据此返回原评论，不重复发表）
     await w.ksSubmitComment(null, '这条评论', null);
@@ -371,6 +371,138 @@ async function storageUnavailable() {
   } finally { await tick(); dom.window.close(); }
 }
 
+// ---------- 7. 待确认提交的完整内容与 @ 目标 ----------
+async function pendingDraftWithMentions() {
+  const dom = new JSDOM(
+    '<textarea id="ks-comment"></textarea><div id="panel" role="listbox" hidden></div><div id="chips" hidden></div>'
+    + '<div id="ks-comment-notice" hidden></div><div id="ks-comment-list"></div>',
+    { url: 'https://example.test/?main=knowledge', runScripts: 'outside-only' }
+  );
+  const w = dom.window;
+  try {
+    const toasts = [];
+    const posts = [];
+    let response = { ok: false, status: 502, payload: null };
+    w.username = 'alice';
+    w.escapeHtml = escaper();
+    w.showToast = function (m) { toasts.push(String(m)); };
+    w.siteApi = {
+      get: async function () { return { ok: true, status: 200, payload: { id: 7, title: '文章', status: 'published' } }; },
+      post: async function (url, body) {
+        if (url.indexOf('/view') >= 0) return { ok: true, status: 200, payload: {} };
+        posts.push(body);
+        const r = response;
+        response = { ok: true, status: 200, payload: { id: 99 } };
+        return r;
+      },
+    };
+    w.eval(read('public/js/knowledge.js'));
+    // 函数声明会覆盖预设桩，加载脚本后再替换阅读视图与评论渲染
+    w.ksPaintArticle = function () {};
+    w.ksShowView = function () {};
+    w.ksPaintCommentsPrepare = function () { return false; };
+    w.ksPaintComments = function () {};
+    w.ksClearCommentInput = function () { w.document.getElementById('ks-comment').value = ''; };
+    w.eval(read('public/js/presenters/knowledge-presenter.js'));
+    await w.ksOpenArticle(7);
+
+    const ta = w.document.getElementById('ks-comment');
+    w.ksInitMentionBox('main', ta, w.document.getElementById('panel'), w.document.getElementById('chips'));
+    ta.value = '@';
+    ta.selectionStart = ta.selectionEnd = 1;
+    input(w, ta);
+    w.ksApplyMention('main', { subjectId: '11111111-1111-1111-1111-111111111111', nickname: '读者', username: 'reader_a' });
+    ta.value = ta.value + '请看这条';
+    ta.selectionStart = ta.selectionEnd = ta.value.length;
+    input(w, ta);
+
+    // 第一次提交：502（结果不明），待确认记录必须带 @ 目标
+    await w.ksSubmitComment(null, ta.value, 'main');
+    assert.strictEqual(posts.length, 1);
+    assert.strictEqual(posts[0].mentions.length, 1, '第一条提交应带 1 条 @');
+    const stored = JSON.parse(w.sessionStorage.getItem('ks-pending-comments') || '{}');
+    const record = Object.keys(stored).map(function (k) { return stored[k]; })[0];
+    assert.ok(record && record.id === posts[0].client_request_id, '待确认记录应保存编号');
+    assert.ok(Array.isArray(record.mentions) && record.mentions.length === 1,
+      '待确认记录必须连 @ 目标一起保存，不能只存编号');
+    assert.strictEqual(record.content, posts[0].content);
+
+    // 用户移除了 @ 选择后重试：必须拒绝，不能换编号，也不能静默改内容
+    w.ksResetMentions('main');
+    await w.ksSubmitComment(null, ta.value, 'main');
+    assert.strictEqual(posts.length, 1, '结果未确认期间不得再发一条');
+    assert.ok(toasts.some(function (m) { return m.indexOf('还没确认') >= 0; }), '应提示先原样重试或放弃');
+
+    // 刷新/重新进入文章：正文与 @ 选择都要恢复
+    await w.ksOpenArticle(7);
+    assert.strictEqual(ta.value, record.content, '应把未确认的正文恢复为草稿');
+    const restored = w.ksReadMentions('main', record.content);
+    assert.strictEqual(restored.length, 1, '恢复草稿时 @ 选择必须一起回来');
+    assert.strictEqual(restored[0].subjectId, '11111111-1111-1111-1111-111111111111');
+    assert.strictEqual(w.document.getElementById('ks-comment-notice').hidden, false, '应提示这是未确认的草稿');
+
+    // 原样重试：复用同一编号
+    await w.ksSubmitComment(null, ta.value, 'main');
+    assert.strictEqual(posts.length, 2);
+    assert.strictEqual(posts[1].client_request_id, posts[0].client_request_id, '原样重试必须复用编号');
+    assert.deepStrictEqual(posts[1].mentions, posts[0].mentions, '@ 目标也必须原样带上');
+
+    // 成功之后记录被清掉，再发新内容就是新编号
+    assert.ok(!w.sessionStorage.getItem('ks-pending-comments') || Object.keys(JSON.parse(w.sessionStorage.getItem('ks-pending-comments'))).length === 0,
+      '提交成功后不能留下待确认记录');
+    await w.ksSubmitComment(null, '第二条完全不同的评论', 'main');
+    assert.notStrictEqual(posts[2].client_request_id, posts[0].client_request_id);
+    pass++;
+  } finally { await tick(); dom.window.close(); }
+}
+
+// ---------- 8. 明确放弃未确认提交 ----------
+async function discardPending() {
+  const dom = new JSDOM(
+    '<textarea id="ks-comment"></textarea><div id="panel" role="listbox" hidden></div><div id="chips" hidden></div>'
+    + '<div id="ks-comment-notice" hidden></div><div id="ks-comment-list"></div>',
+    { url: 'https://example.test/?main=knowledge', runScripts: 'outside-only' }
+  );
+  const w = dom.window;
+  try {
+    const posts = [];
+    w.username = 'alice';
+    w.escapeHtml = escaper();
+    w.showToast = function () {};
+    w.siteApi = {
+      get: async function () { return { ok: true, status: 200, payload: { id: 7, title: '文章', status: 'published' } }; },
+      post: async function (url, body) {
+        if (url.indexOf('/view') >= 0) return { ok: true, status: 200, payload: {} };
+        posts.push(body);
+        return { ok: false, status: 502, payload: null };
+      },
+    };
+    w.eval(read('public/js/knowledge.js'));
+    w.ksPaintArticle = function () {};
+    w.ksShowView = function () {};
+    w.ksPaintCommentsPrepare = function () { return false; };
+    w.ksPaintComments = function () {};
+    w.eval(read('public/js/presenters/knowledge-presenter.js'));
+    await w.ksOpenArticle(7);
+
+    const ta = w.document.getElementById('ks-comment');
+    w.ksInitMentionBox('main', ta, w.document.getElementById('panel'), w.document.getElementById('chips'));
+    await w.ksSubmitComment(null, '要放弃的评论', 'main');
+    assert.strictEqual(posts.length, 1);
+
+    w.ksDiscardPendingComment();
+    const stored = w.sessionStorage.getItem('ks-pending-comments');
+    assert.ok(!stored || Object.keys(JSON.parse(stored)).length === 0, '放弃后必须清掉待确认记录');
+    assert.strictEqual(w.document.getElementById('ks-comment-notice').hidden, true, '放弃后提示应消失');
+
+    // 放弃之后再发新内容：允许，且用新编号
+    await w.ksSubmitComment(null, '放弃后的新评论', 'main');
+    assert.strictEqual(posts.length, 2);
+    assert.notStrictEqual(posts[1].client_request_id, posts[0].client_request_id);
+    pass++;
+  } finally { await tick(); dom.window.close(); }
+}
+
 (async () => {
   const suites = [
     ['@ 区间随编辑平移与失效（同昵称可区分）', mentionRanges],
@@ -379,6 +511,8 @@ async function storageUnavailable() {
     ['失效通知只显示内容已不可用', invalidatedItem],
     ['正文首尾空格时 @ 不丢失', leadingSpaceMention],
     ['会话存储不可用时仍复用请求标识', storageUnavailable],
+    ['待确认提交连同 @ 目标一起保存并可原样重试', pendingDraftWithMentions],
+    ['明确放弃未确认提交后可用新编号重发', discardPending],
   ];
   let failed = 0;
   for (const [name, fn] of suites) {

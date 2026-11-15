@@ -141,6 +141,8 @@ async function ksOpenArticle(id, focusCommentId) {
   window.ksPaintArticle(a);
   window.ksShowView('read');
   await ksLoadComments(id);
+  // 有结果未确认的提交时，把正文与 @ 选择还原成草稿（刷新后也能原样重试，不会重复发布）
+  ksResumePendingComment(id);
   if (focusCommentId) {
     const found = window.ksFocusComment(String(focusCommentId));
     if (!found) { showToast('内容已不可用'); return false; }
@@ -179,10 +181,10 @@ async function ksDeleteComment(commentId) {
   }
 }
 
-// 评论请求标识：只要「结果可能已落库」就保留同一标识，服务端据此幂等返回原评论。
-// 触发保留的情况：拿不到状态码（断网/超时）、网关或服务端 5xx（评论可能已提交但响应失败）、
-// 以及页面刷新（标识存 sessionStorage，按文章+父评论+正文定位）。
-// 只有服务端明确拒绝（4xx）才丢弃标识，避免下次重放永远撞旧失败。
+// 待确认的评论提交：必须整份保存「正文 + @ 目标 + 编号」，不能只存编号。
+// 只存编号会有两个漏洞：①用户改了 @ 却仍复用原编号，服务端按请求摘要判定为「同标识不同内容」返回 409，
+// 前端若随后丢掉编号重发，就可能出现第二条评论；②刷新后没有 @ 目标，无法把选择还回输入框。
+// 规则：结果未确认期间只允许「原样重试」（服务端按编号幂等返回原评论），要改内容需先放弃这条。
 const KS_PENDING_KEY = 'ks-pending-comments';
 const KS_PENDING_MAX = 10;
 
@@ -191,7 +193,7 @@ function ksNewRequestId() {
   return 'c-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10);
 }
 
-// 请求标识的权威副本放在页面内存里，sessionStorage 只做「跨刷新」的持久化副本。
+// 待确认记录的权威副本放在页面内存里，sessionStorage 只做「跨刷新」的持久化副本。
 // 存储被禁用/隐私模式/配额满时读写都会抛错，此时必须仍然保留内存副本，
 // 否则「结果不明 → 重试」会拿到新标识，服务端无法幂等，变成第二条评论和通知。
 let ksPendingComments = null;
@@ -219,31 +221,76 @@ function ksPersistPendingStore() {
   } catch (e) { /* 写不进去也算保留：内存副本仍然生效 */ }
 }
 
-function ksPendingKey(articleId, text, parentId) {
-  return String(articleId) + '|' + (parentId || '') + '|' + text;
+// 键只按「文章 + 父评论」定位：同一次提交的内容与 @ 存在记录里，不再参与键，
+// 否则改了 @ 就查不到旧记录，等于又把编号丢了。
+function ksPendingKey(articleId, parentId) {
+  return String(articleId) + '|' + (parentId || '');
 }
 
-function ksCommentRequestId(articleId, text, parentId) {
-  const key = ksPendingKey(articleId, text, parentId);
+function ksPendingRecord(articleId, parentId) {
+  const record = ksPendingStore()[ksPendingKey(articleId, parentId)];
+  return record && record.id ? record : null;
+}
+
+function ksSavePendingRecord(articleId, parentId, record) {
   const map = ksPendingStore();
-  if (map[key]) return map[key];
-  const id = ksNewRequestId();
-  map[key] = id;
+  map[ksPendingKey(articleId, parentId)] = record;
   ksPersistPendingStore();
-  return id;
 }
 
-function ksClearCommentRequestId(articleId, text, parentId) {
-  const key = ksPendingKey(articleId, text, parentId);
+function ksClearPendingRecord(articleId, parentId) {
   const map = ksPendingStore();
+  const key = ksPendingKey(articleId, parentId);
   if (!map[key]) return;
   delete map[key];
   ksPersistPendingStore();
 }
 
-// 结果不明：保留标识，提示用户可安全重试（重试不会产生第二条评论）
+// 是否就是同一次提交：正文与每条 @ 的主体、区间、文字都要一致
+function ksSameMentions(left, right) {
+  const norm = function (list) {
+    return (list || []).map(function (m) {
+      return {
+        subjectId: String(m.subjectId || ''), text: String(m.text || ''),
+        start: Number(m.start), end: Number(m.end),
+      };
+    }).sort(function (a, b) {
+      return a.start - b.start || (a.subjectId < b.subjectId ? -1 : a.subjectId > b.subjectId ? 1 : 0);
+    });
+  };
+  const a = norm(left);
+  const b = norm(right);
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i].subjectId !== b[i].subjectId || a[i].text !== b[i].text
+      || a[i].start !== b[i].start || a[i].end !== b[i].end) return false;
+  }
+  return true;
+}
+
+// 结果不明：保留记录，提示用户可安全原样重试（重试不会产生第二条评论）
 function ksMayHaveCommitted(status) {
   return status === 0 || status >= 500;
+}
+
+// 回到文章时把未确认的提交还原成草稿（正文 + @ 一起），刷新后也能原样重试
+function ksResumePendingComment(articleId) {
+  const pending = ksPendingRecord(articleId, null);
+  if (!pending) return;
+  const restored = (typeof window.ksRestoreCommentDraft === 'function')
+    ? window.ksRestoreCommentDraft('main', pending.content, pending.mentions) : false;
+  if (restored) showToast('上一条评论结果还没确认，已恢复为草稿；再次提交不会重复发布');
+}
+
+// 放弃未确认的提交（用户明确不要了）：清记录与草稿，之后按新评论重新开始
+function ksDiscardPendingComment() {
+  const a = ksState.currentArticle;
+  if (!a) return;
+  ksClearPendingRecord(a.id, null);
+  if (typeof window.ksResetMentions === 'function') window.ksResetMentions('main');
+  if (typeof window.ksClearCommentInput === 'function') window.ksClearCommentInput();
+  if (typeof window.ksHideCommentNotice === 'function') window.ksHideCommentNotice();
+  showToast('已放弃未确认的评论');
 }
 
 async function ksSubmitComment(parentId, textInput, boxKey) {
@@ -258,26 +305,44 @@ async function ksSubmitComment(parentId, textInput, boxKey) {
   // @ 区间按最终正文重算；正文里已删掉的 @ 自动不再提交
   const mentions = (boxKey && typeof window.ksReadMentions === 'function')
     ? window.ksReadMentions(boxKey, text, leading) : [];
-  const body = { content: text, client_request_id: ksCommentRequestId(a.id, text, parentId) };
+
+  // 上一次结果还没确认时，只允许「原样重试」。换编号或换内容都可能在第一次已落库的情况下多发一条，
+  // 因此这里直接拒绝并提示：要么原样重试，要么先放弃这条。
+  const pending = ksPendingRecord(a.id, parentId);
+  let requestId;
+  if (pending) {
+    if (pending.content !== text || !ksSameMentions(pending.mentions, mentions)) {
+      showToast('上一条评论结果还没确认：请先原样重试，或点「放弃这条」后再发新的（不会重复发布）');
+      return;
+    }
+    requestId = pending.id;
+  } else {
+    requestId = ksNewRequestId();
+  }
+  ksSavePendingRecord(a.id, parentId, { id: requestId, content: text, mentions: mentions });
+
+  const body = { content: text, client_request_id: requestId };
   if (parentId) body.parent_id = parentId;
   if (mentions.length) body.mentions = mentions;
   const r = await window.siteApi.post('/api/knowledge/articles/' + a.id + '/comments', body);
   if (!r.ok) {
     if (ksMayHaveCommitted(r.status)) {
-      // 保留请求标识：服务端可能已提交，重试会拿回原评论而不是再发一条
+      // 保留整份待确认记录：服务端可能已提交，重试会拿回原评论而不是再发一条
       showToast(r.status
         ? '服务器繁忙，评论可能已提交，请稍后重试（不会重复发布）'
         : '网络异常，评论可能已提交，请稍后重试（不会重复发布）');
       return;
     }
-    // 服务端明确拒绝：丢弃标识，避免下次重放命中这条失败请求
-    ksClearCommentRequestId(a.id, text, parentId);
+    // 服务端明确拒绝：丢弃记录，避免下次重放命中这条失败请求
+    ksClearPendingRecord(a.id, parentId);
+    if (typeof window.ksHideCommentNotice === 'function') window.ksHideCommentNotice();
     const d = r.payload || {};
     if (r.status === 400 || r.status === 409 || r.status === 429) showToast(d.error || ksWriteErrMsg(r.status));
     else showToast(ksWriteErrMsg(r.status));
     return;
   }
-  ksClearCommentRequestId(a.id, text, parentId);
+  ksClearPendingRecord(a.id, parentId);
+  if (typeof window.ksHideCommentNotice === 'function') window.ksHideCommentNotice();
   if (boxKey && typeof window.ksResetMentions === 'function') window.ksResetMentions(boxKey);
   // 刷新并清空主评论框
   window.ksClearCommentInput();

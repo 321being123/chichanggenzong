@@ -316,6 +316,10 @@ function ksPaintArticle(a) {
       commentForm.innerHTML = '<div class="ks-comment-login-tip">请 <a href="' + api('/login.html?redirect=' + encodeURIComponent('/?main=knowledge')) + '">登录</a> 后发表评论</div>';
     } else {
       commentForm.innerHTML = '<div class="ks-comment-editor">'
+        + '<div class="ks-comment-notice" id="ks-comment-notice" hidden>'
+        + '<span>上一条评论结果还没确认，已恢复为草稿；再次提交不会重复发布。</span>'
+        + '<button type="button" class="ks-comment-notice-btn" data-ks-draft="discard">放弃这条</button>'
+        + '</div>'
         + '<textarea id="ks-comment" placeholder="写下你的评论…输入 @ 可以提到某人"></textarea>'
         + '<div class="ks-mention-chips" id="ks-comment-chips" hidden></div>'
         + '<div class="ks-mention-panel" id="ks-comment-mentions" role="listbox" hidden></div>'
@@ -324,6 +328,15 @@ function ksPaintArticle(a) {
       ksInitMentionBox('main', ksEl('ks-comment'), ksEl('ks-comment-mentions'), ksEl('ks-comment-chips'));
       const btn = ksEl('ks-comment-submit');
       if (btn) btn.addEventListener('click', function () { ksSubmitComment(null, ksEl('ks-comment').value, 'main'); });
+      const notice = ksEl('ks-comment-notice');
+      if (notice) {
+        notice.addEventListener('click', function (e) {
+          const el = e.target.closest('[data-ks-draft="discard"]');
+          if (!el) return;
+          // 放弃这条未确认的提交：清掉待重试记录与本页草稿，允许重新开始
+          if (typeof ksDiscardPendingComment === 'function') ksDiscardPendingComment();
+        });
+      }
     }
   }
 }
@@ -559,6 +572,38 @@ function ksResetMentions(boxKey) {
   box.lastValue = box.textarea.value || '';
   ksPaintMentionChips(boxKey);
   ksCloseMentionPanel(boxKey);
+}
+
+// 恢复「结果未确认」的评论草稿：正文与 @ 选择一起还原，让用户原样重试（服务端按编号幂等，不会重复发布）
+function ksRestoreCommentDraft(boxKey, content, mentions) {
+  const box = ksMentionBox(boxKey);
+  if (!box) return false;
+  const ta = box.textarea;
+  ta.value = String(content == null ? '' : content);
+  box.mentions = [];
+  box.seq++;
+  box.lastValue = ta.value;
+  (mentions || []).forEach(function (m) {
+    if (!m || !m.text || !Number.isInteger(m.start) || !Number.isInteger(m.end)) return;
+    box.mentions.push({
+      subjectId: m.subjectId,
+      text: m.text,
+      nickname: m.nickname || String(m.text).replace(/^@/, ''),
+      username: m.username || '',
+      start: m.start,
+      end: m.end,
+    });
+  });
+  ksPaintMentionChips(boxKey);
+  ta.selectionStart = ta.selectionEnd = ta.value.length;
+  const notice = ksEl('ks-comment-notice');
+  if (notice) notice.hidden = false;
+  return true;
+}
+
+function ksHideCommentNotice() {
+  const notice = ksEl('ks-comment-notice');
+  if (notice) notice.hidden = true;
 }
 
 // 通知深链定位：命中则高亮并聚焦，缺失（已删除/无权）返回 false 由调用方提示「内容已不可用」

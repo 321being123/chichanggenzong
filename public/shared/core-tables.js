@@ -64,12 +64,15 @@ function renderStats() {
   var el = function(id) { return document.getElementById(id); };
   // 总资产对外只显示服务端同一批估值的金额；估值不完整时在金额正下方直接标注，
   // 不依赖“今日涨跌”浮框（归因不完整时那个浮框根本不会绑定）。
-  var serverTotal = (data && typeof data.totalAsset === 'number' && Number.isFinite(data.totalAsset)) ? Number(data.totalAsset) : null;
-  var displayTotal = serverTotal != null ? serverTotal : s.total;
+  // 服务端只在估值完整时给出 totalAsset；不完整时该字段为空，另有 totalAssetPartial。
+  // 页面因此必须显式区分“完整金额”与“部分金额”，不能把部分金额当完整值展示。
   var valuationIncomplete = Boolean(data && data.valuation && data.valuation.complete === false);
+  var completeTotal = (data && typeof data.totalAsset === 'number' && Number.isFinite(data.totalAsset)) ? Number(data.totalAsset) : null;
+  var partialTotal = (data && typeof data.totalAssetPartial === 'number' && Number.isFinite(data.totalAssetPartial)) ? Number(data.totalAssetPartial) : null;
+  var displayTotal = completeTotal != null ? completeTotal : (partialTotal != null ? partialTotal : s.total);
   var valuationMissing = data && data.valuation && Number(data.valuation.missingCount) > 0 ? Number(data.valuation.missingCount) : 0;
   if (el('stat-total')) {
-    el('stat-total').textContent = fmt(displayTotal);
+    el('stat-total').textContent = (valuationIncomplete && completeTotal == null ? '≈ ' : '') + fmt(displayTotal);
     // 涨跌颜色
     if (hasChange) {
       var isUp = changeAmt >= 0;

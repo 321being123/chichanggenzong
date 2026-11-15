@@ -38,10 +38,11 @@ function historicalKindFor(code, position = {}) {
 // 返回的每行是 [日期, 开, 收, 高, 低, 量]，收盘取第 3 位。
 // 历史补录的收盘价来自各品种历史日线接口，取到的是该交易日已完成的终盘事实，
 // 因此直接以“已确认收盘”准入写入；它不是浏览器自报价格，也不冒充当日盘中报价。
-const HISTORY_BACKFILL_EVIDENCE = {
+// 市场必须显式落到日价行上：港股与 A 股可能同形（00001 / 000001），缺市场会串价。
+const historyBackfillEvidence = market => ({
   source: 'history_backfill', quality: 'confirmed', isFinal: true,
-  evidence: { origin: 'daily_bar_history' },
-};
+  market, evidence: { origin: 'daily_bar_history' },
+});
 
 async function backfillHkDailyPrices(username, accountName, code, start, end) {
   // 港股日线属于「行情数据集」：只向数据层要序列，主备来源由数据层决定。
@@ -54,12 +55,12 @@ async function backfillHkDailyPrices(username, accountName, code, start, end) {
     const date = normDate(row.trade_date);
     const close = Number(row.close);
     if (!date || !(close > 0)) continue;
-    (byDate[date] = byDate[date] || []).push({ code, name: '', price: close });
+    (byDate[date] = byDate[date] || []).push({ code, name: '', price: close, market: 'HK' });
   }
   let any = false;
   for (const date of Object.keys(byDate)) {
     try {
-      await saveDailyPrices(username, accountName, date, byDate[date], HISTORY_BACKFILL_EVIDENCE);
+      await saveDailyPrices(username, accountName, date, byDate[date], historyBackfillEvidence('HK'));
       any = true;
     } catch (e) { /* 单日失败不阻断其余日期 */ }
   }
@@ -85,12 +86,12 @@ async function backfillDailyPrices(username, accountName, code, start, end, posi
     const d = normDate(r.trade_date);
     const c = parseFloat(r.close);
     if (!d || isNaN(c) || c <= 0) continue;
-    (byDate[d] = byDate[d] || []).push({ code, name: '', price: c });
+    (byDate[d] = byDate[d] || []).push({ code, name: '', price: c, market: 'CN' });
   }
   let any = false;
   for (const d of Object.keys(byDate)) {
     try {
-      await saveDailyPrices(username, accountName, d, byDate[d], HISTORY_BACKFILL_EVIDENCE);
+      await saveDailyPrices(username, accountName, d, byDate[d], historyBackfillEvidence('CN'));
       any = true;
     } catch (e) {}
   }

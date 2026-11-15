@@ -25,6 +25,7 @@ function fakeQuery({ daily = [], cache = [], positions = [] } = {}) {
           .filter(row => wanted.includes(row.code) && String(row.date) <= String(upperDate))
           .map(row => ({
             code: row.code, date: row.date, price: row.price,
+            market: row.market || (String(row.code).length === 5 ? 'HK' : 'CN'),
             username: row.username || 'fixture-user',
             account_name: row.accountName || '账户甲',
             quality: row.quality || 'legacy_unverified',
@@ -32,6 +33,17 @@ function fakeQuery({ daily = [], cache = [], positions = [] } = {}) {
             source: row.source || null, quote_at: row.quoteAt || null, revision: row.revision || 1,
           })),
       };
+    }
+    if (/market\.trade_calendar/.test(sql)) {
+      // 港股日历夹具：工作日开市、周末休市（本文件只用到 2026-09 的短窗口）。
+      const dates = Array.isArray(params[0]) ? params[0] : [params[0]].filter(Boolean);
+      return { rows: dates.map(value => {
+        const date = String(value).slice(0, 10);
+        // 与本文件 A 股夹具保持一致：同一批日期里 A 股开市的日子才视为港股开市。
+        const isOpen = isCnTradingDate(date);
+        return { trade_date: date, is_open: isOpen, source_code: 'test_fixture',
+          raw_payload: { official_schedule: { is_open: isOpen, session_type: 'full_day', close_time: '16:10', source: 'test_fixture' } } };
+      }) };
     }
     if (/FROM market_quote_cache/.test(sql)) return { rows: cache };
     if (/FROM positions/.test(sql)) return { rows: positions };
@@ -303,6 +315,49 @@ async function run() {
     });
     assert.strictEqual(other.prices.size, 0, '别的账户不得读到本账户的派生价');
     assert.strictEqual(other.missing.length, 1);
+  }
+
+  // 17. 港股 00001 与 A 股 000001 同形但不同证券：不得串价。
+  {
+    const resolved = await resolveEffectivePrices({
+      username: 'fixture-user', accountName: '账户甲', asOf: WEEKEND, mode: 'current',
+      subjects: [{ code: '00001', subtype: '港股' }],
+      query: fakeQuery({ daily: [
+        { code: '000001', date: CLOSE_DATE, price: 12, quality: 'confirmed', isFinal: true, market: 'CN' },
+      ] }),
+    });
+    assert.strictEqual(resolved.prices.size, 0, '港股 00001 不得使用 A 股 000001 的价格');
+    assert.strictEqual(resolved.missing.length, 1);
+    assert.strictEqual(resolved.status.complete, false, '跨市场串价必须表现为缺价，而不是完整');
+
+    const hkOnly = await resolveEffectivePrices({
+      username: 'fixture-user', accountName: '账户甲', asOf: WEEKEND, mode: 'current',
+      subjects: [{ code: '00001', subtype: '港股' }],
+      query: fakeQuery({ daily: [
+        { code: '00001', date: CLOSE_DATE, price: 55, quality: 'confirmed', isFinal: true, market: 'HK' },
+        { code: '000001', date: CLOSE_DATE, price: 12, quality: 'confirmed', isFinal: true, market: 'CN' },
+      ] }),
+    });
+    assert.strictEqual(hkOnly.prices.get('00001').price, 55, '港股必须取港股自己的收盘价');
+    assert.strictEqual(hkOnly.status.complete, true);
+  }
+
+  // 18. 冲突结果不得泄露其他用户/账户标识。
+  {
+    const resolved = await resolveEffectivePrices({
+      username: 'user-a', accountName: '账户甲', asOf: WEEKEND, mode: 'current',
+      subjects: subjects(['600000']),
+      query: fakeQuery({ daily: [
+        { code: '600000', date: CLOSE_DATE, price: 10, quality: 'confirmed', isFinal: true, username: 'user-a', accountName: '账户甲' },
+        { code: '600000', date: CLOSE_DATE, price: 12, quality: 'confirmed', isFinal: true, username: 'user-b', accountName: '别人账户' },
+      ] }),
+    });
+    assert.strictEqual(resolved.conflicts.length, 1);
+    const payload = JSON.stringify(resolved.conflicts);
+    assert.ok(!payload.includes('user-b'), '冲突不得包含其他用户的用户名：' + payload);
+    assert.ok(!payload.includes('别人账户'), '冲突不得包含其他用户的账户名：' + payload);
+    assert.deepStrictEqual(resolved.conflicts[0].prices, [10, 12], '冲突只描述市场上有哪些价格');
+    assert.strictEqual(resolved.status.complete, false);
   }
 
   // 10. 旧机制收口：浏览器不再写收盘价、页面不再有休市校准、归因不再产出校准项。

@@ -200,7 +200,9 @@ async function main() {
     marketState.invalidateMarketStateCache({ market: 'HK', businessDate: '2026-09-25' });
     pool.query = async (sql, params = []) => {
       if (sql.includes("FROM market.trade_calendar") && sql.includes("exchange='HKEX'")) {
-        return { rows: [calendarRow('2026-09-25')] };
+        // 基准价资格会回看基准时点的最近应有收盘日，必须对请求的每个日期都给出日历事实。
+        const dates = Array.isArray(params[0]) ? params[0] : [params[0]].filter(Boolean);
+        return { rows: dates.map(value => calendarRow(String(value).slice(0, 10))).filter(Boolean) };
       }
       if (sql.includes('FROM daily_prices')) {
         const cutoff = String(params[3]).slice(0, 10);
@@ -270,8 +272,10 @@ async function main() {
         const dates = Array.isArray(params[0]) ? params[0] : [params[0]];
         return { rows: dates.map(d => calendarRow(String(d).slice(0, 10))).filter(Boolean) };
       }
+      // 2026-09-25 是 A 股休市日、港股开市日：A 股基准价必须落在 09-24（最近应有收盘日），
+      // 港股基准价落在 09-25。基准价日期与市场最近应有收盘日不一致时归因不算完整。
       if (sql.includes('FROM daily_prices')) return { rows: [
-        { code: '600000', date: '2026-09-25', price: 10, quality: 'confirmed', is_final: true },
+        { code: '600000', date: '2026-09-24', price: 10, quality: 'confirmed', is_final: true },
         { code: '00700', date: '2026-09-25', price: 20, quality: 'confirmed', is_final: true },
       ] };
       if (sql.includes('FROM market.fx_rates')) return { rows: [] };

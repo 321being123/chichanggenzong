@@ -229,6 +229,7 @@ async function recordCloseOne(username, accountName, label, matchFn, dateStr, re
         ...row,
         quality: qualification.quality,
         is_final: qualification.isFinal,
+        market: marketRule.market || 'CN',
         source: `market_close_task:${label}`,
         evidence: {
           businessDate: cnDate, marketState: state.status, closeTime: state.closeTime || null,
@@ -374,7 +375,7 @@ async function backfillMissingCloses(options) {
   const scanAllMissingDates = !!(options && options.scanAllMissingDates);
   const recentDays = scanAllMissingDates ? null : await recentMarketDays(6);
   const { rows: accounts } = await repository.select_accounts();
-  let accountCount = 0, missingDates = 0, recorded = 0, failed = 0, skipped = 0, blockedRevision = 0;
+  let accountCount = 0, missingDates = 0, recorded = 0, failed = 0, skipped = 0, blockedRevision = 0, errors = 0;
   for (const account of accounts) {
     const accountName = account.account_name;
     const days = scanAllMissingDates
@@ -389,7 +390,12 @@ async function backfillMissingCloses(options) {
       for (const mkt of MARKET_CLOSE_TIMES) {
         if (!(await isMarketTradingDate(mkt.market, day))) continue;
         const result = await recordCloseOne(account.username, accountName, mkt.label, mkt.match, day)
-          .catch(e => { console.warn('[backfill] ' + day + ' ' + accountName + ' 失败:', e.message); return null; });
+          .catch(e => {
+            // 异常必须计数并带回调用方：吞掉异常会让“补漏失败”看起来像“补漏成功”。
+            console.warn('[backfill] ' + day + ' ' + accountName + ' 失败:', e.message);
+            errors += 1;
+            return null;
+          });
         if (result) {
           recorded += result.recorded || 0;
           failed += result.failed || 0;
@@ -399,7 +405,7 @@ async function backfillMissingCloses(options) {
       }
     }
   }
-  return { accounts: accountCount, missingDates, recorded, failed, skipped, blockedRevision };
+  return { accounts: accountCount, missingDates, recorded, failed, skipped, blockedRevision, errors };
 }
 
 // 带幂等锁与执行记录的收盘任务（跨实例单跑，失败留痕供告警）
@@ -550,6 +556,22 @@ function scheduleAllMarketCloses() {
   }
 }
 
+// 补漏结果判定：失败、待授权改写、被捕获的异常都算“未完成”，
+// 任务记录与接口状态必须据此给出 ok:false，不能因为返回了统计就当成补齐成功。
+function summarizeBackfill(result) {
+  const data = result || {};
+  const failed = Number(data.failed || 0);
+  const blockedRevision = Number(data.blockedRevision || 0);
+  const errors = Number(data.errors || 0);
+  const incomplete = failed > 0 || blockedRevision > 0 || errors > 0;
+  const message = '检查 ' + Number(data.accounts || 0) + ' 个账户，发现 ' + Number(data.missingDates || 0)
+    + ' 个缺失交易日，补写 ' + Number(data.recorded || 0) + ' 条价格'
+    + (incomplete
+      ? '；失败 ' + failed + ' 条，待授权修订 ' + blockedRevision + ' 条，异常 ' + errors + ' 次（历史日价默认不改写）'
+      : '');
+  return { incomplete, failed, blockedRevision, errors, message };
+}
+
 // 历史补漏目标拆分：缺行补齐（可以直接写）与存量历史修订（需显式授权）必须分开。
 // 迁移把存量日价统一标成未核验，若把它们当“缺失”直接重写，就等于在没有只读审计的情况下替换历史事实。
 function splitHistoricalBackfill(missingCodes, existingAnyCodes, allowRevision) {
@@ -569,4 +591,4 @@ function confirmedExistingCodes(rows) {
     .map(row => row.code));
 }
 
-module.exports = { qualifyCloseQuote, confirmedExistingCodes, splitHistoricalBackfill, scheduleAllMarketCloses, runMarketCloseByLabel, backfillMissingCloses, findMissingCloseDates, isTradingDay, isMarketTradingDate, nextMarketCloseDelay, fmtCN, pickMissingCodes, isUncoveredPosition, cnWeekday, msUntil, nextRunDelay, quoteForCode, isUsableQuote, mergeQuoteMaps, shouldRunLegacyNavAfterHkClose, runLegacyPostCloseCycle };
+module.exports = { qualifyCloseQuote, confirmedExistingCodes, splitHistoricalBackfill, summarizeBackfill, scheduleAllMarketCloses, runMarketCloseByLabel, backfillMissingCloses, findMissingCloseDates, isTradingDay, isMarketTradingDate, nextMarketCloseDelay, fmtCN, pickMissingCodes, isUncoveredPosition, cnWeekday, msUntil, nextRunDelay, quoteForCode, isUsableQuote, mergeQuoteMaps, shouldRunLegacyNavAfterHkClose, runLegacyPostCloseCycle };

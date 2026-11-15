@@ -66,6 +66,17 @@ async function applyUnifiedValuation({ username, accountName, positions, query, 
   for (const position of list) {
     const code = String(position.code || '');
     const priceRow = code ? resolved.prices.get(code) : null;
+    const quantity = Number(position.quantity) || 0;
+    if (!priceRow && quantity > 0) {
+      // 没有统一价格时不得继续对外返回旧持仓价：那等于给同一证券留了第二套正式价格，
+      // 导出/比例计算会直接把它当成有效市值。价格字段留空并标明缺失。
+      position.price = null;
+      position.priceKind = 'missing';
+      position.priceQuality = null;
+      position.priceTradeDate = null;
+      position.priceQuoteAt = null;
+      position.priceSource = null;
+    }
     if (priceRow) {
       // 兼容响应语义：positions[].price 统一映射为同批 effectivePrice，并附质量与日期。
       position.price = priceRow.price;
@@ -75,7 +86,6 @@ async function applyUnifiedValuation({ username, accountName, positions, query, 
       position.priceQuoteAt = priceRow.quoteAt;
       position.priceSource = priceRow.sourceRef;
     }
-    const quantity = Number(position.quantity) || 0;
     if (!(quantity > 0)) continue; // 零数量持仓不需要当前价格，缺价不能阻断当前资产
     if (!priceRow) { unpricedCodes.push(code); continue; }
     const isHk = position.subtype === '港股' || priceRow.currency === 'HKD';
@@ -229,10 +239,12 @@ async function loadAccountDataInSession(username, accountName, client) {
   const systemPositionValue = valuationResult.marketValue;
   const systemTotalAsset = systemPositionValue + ledgerCash;
   result.valuation = valuationResult.valuation;
-  // totalAsset 表示“可用的有效部分金额”，是否完整由 valuation.complete 明确表达；
-  // 缺价时不得让页面误以为存在完整精确资产，也不把差额藏进校准项。
+  // 方案 8.2：totalAsset 只承载“完整总资产”，估值不完整时必须为空；
+  // 可用的部分金额单独放 totalAssetPartial，并保留缺口清单。
+  // 这样任何调用方（页面、导出、比例计算）都不可能把部分金额当成完整资产继续用。
   result.totalAssetComplete = valuationResult.valuation.complete;
-  result.totalAsset = systemTotalAsset;
+  result.totalAsset = valuationResult.valuation.complete ? systemTotalAsset : null;
+  result.totalAssetPartial = valuationResult.valuation.complete ? null : systemTotalAsset;
 
   // 权威券商导入锚点：持仓数量仍来自 positions；现金从导入余额续算，持仓市值次日起切回系统绝对值。
   // 这里只使用 snapshot_source=imported 的最新一条；旧快照不参与，避免把遗留数据误当锚点。
@@ -251,7 +263,15 @@ async function loadAccountDataInSession(username, accountName, client) {
     result.authoritativeTotalAsset = effectiveCash + effectivePosition;
     result.authoritativeInvested = effectiveInvested;
     // 账户总资产对外读取也切到同一权威口径，避免页面初始化阶段短暂使用旧 nav_history.total_asset。
-    result.totalAsset = result.authoritativeTotalAsset;
+    // 导入当天持仓市值来自券商精确事实，因此即使系统取价不完整，这一天的总资产仍然是完整的。
+    if (isImportDay || valuationResult.valuation.complete) {
+      result.totalAsset = result.authoritativeTotalAsset;
+      result.totalAssetComplete = true;
+      result.totalAssetPartial = null;
+    } else {
+      result.totalAsset = null;
+      result.totalAssetPartial = result.authoritativeTotalAsset;
+    }
     result.totalAssetSource = isImportDay ? 'broker_exact' : 'system_calculated';
     result.anchorImportDate = anchor.date;
   }
@@ -261,7 +281,9 @@ async function loadAccountDataInSession(username, accountName, client) {
       : systemTotalAsset;
     result.navAttribution = await computeNavAttribution(username, accountName, result, attributionTotal, client.query.bind(client));
   } catch (e) {
-    result.navAttribution = { complete: false, reason: 'attribution_unavailable' };
+    // 归因失败不能中断读取，但必须留下可诊断原因（不是静默兜底）。
+    console.warn('[loadAccountData] 归因计算失败:', e.message);
+    result.navAttribution = { complete: false, reason: 'attribution_unavailable', detail: e.message };
   }
   try {
     result.navReturnTotals = await computeNavHistoryTotals(username, accountName, result, client.query.bind(client));
@@ -336,7 +358,11 @@ async function loadAccountSummaryInSession(username, accountName, client) {
     cash,
     cashBase,
     hkRate,
-    totalAsset: cash + (isImportDay ? Number(anchor.marketValueCny) : positionValue),
+    // 与完整读取同一口径：不完整时 totalAsset 为空，部分金额进 totalAssetPartial。
+    totalAsset: (isImportDay || valuationResult.valuation.complete)
+      ? cash + (isImportDay ? Number(anchor.marketValueCny) : positionValue) : null,
+    totalAssetPartial: (isImportDay || valuationResult.valuation.complete)
+      ? null : cash + positionValue,
     totalAssetComplete: isImportDay ? true : valuationResult.valuation.complete,
     valuation: valuationResult.valuation,
     invested: cashState.invested,
@@ -650,6 +676,8 @@ async function saveDailyPrices(username, accountName, date, prices, options = {}
       quoteAt: p.quote_at || p.quoteAt || options.quoteAt || null,
       isFinal,
       quality,
+      // 市场必须随行落库：港股 00001 与 A 股 000001 同形，缺市场就会串价。
+      market: p.market || options.market || null,
       evidence: p.evidence || options.evidence || {},
     }], runner);
     results.push({ code: p.code, written: result.rowCount > 0, revision: result.rows[0] ? result.rows[0].revision : null });

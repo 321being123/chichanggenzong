@@ -9,6 +9,7 @@ const rateLimit = require('../middleware/rateLimit');
 const { validateAccountData, isValidAccountName } = require('../middleware/validate');
 const { loadUser, updateUserAccounts, loadAccountData, loadAccountSummary, saveAccountData, migrateToStructured, syncUserAccounts, loadBrokers, isValidBroker, getAccountBrokers, updateAccountBroker, backupNavHistory, restoreNavHistory, clearNavHistory, deleteAccountData, renameAccountData, upsertNav } = require('../db');
 const { round } = require('../db/util');
+const { buildPositionExport } = require('../services/positionExport');
 const { withTransaction } = require('../db/transaction');
 const accountsRepository = require('../repositories/accountsRepository');
 const navImportRepository = require('../repositories/navImportRepository');
@@ -498,39 +499,12 @@ router.get('/export/:name', requireLogin, asyncHandler(assertOwnership), asyncHa
   try {
     const name = req.params.name;
     const result = await loadAccountData(req.session.user, name);
-    const positions = (result.positions || []).filter((p) => Number(p.quantity) > 0);
-    const hkRate = result.hkRate || 0.868;
 
-    const rows = [['代码', '代码', '正股/转债名称', '现价', '持有数量', '人民币市值', '持仓比例', '类型', '细类']];
-    var totalRmb = 0;
-
-    positions.forEach(function (p) {
-      var code = p.code || '';
-      var canonicalCode = toTsCode(code);
-      var suffix = canonicalCode.startsWith(code) ? canonicalCode.slice(code.length) : '';
-
-      var price = Number(p.price) || 0;
-      var qty = Number(p.quantity) || 0;
-      var mv = price * qty;
-      if (p.subtype === '港股') { mv = mv * hkRate; }
-
-      var priceDisplay = p.subtype === '港股' ? 'HK$' + price.toFixed(2) : price.toFixed(2);
-      totalRmb += mv;
-
-      rows.push([code, code + suffix, p.name || '', priceDisplay, qty, Math.round(mv * 100) / 100, 0, p.type || '', p.subtype || '']);
-    });
-
-    // 计算比例
-    var totalAsset = result.totalAsset > 0 ? result.totalAsset : totalRmb;
-    for (var i = 1; i < rows.length; i++) {
-      rows[i][6] = totalAsset > 0 ? Math.round(rows[i][5] / totalAsset * 10000) / 10000 : 0;
-    }
-
-    // 尾部加入现金行
-    var cash = Number(result.cash) || 0;
-    var totalWithCash = totalAsset;
-    var cashPct = totalWithCash > 0 ? Math.round(cash / totalWithCash * 10000) / 10000 : 0;
-    rows.push([null, null, null, null, null, Math.round(cash * 100) / 100, cashPct, '债权', '现金']);
+    // 导出与页面同源：行装配交给纯函数，缺价、部分金额与比例口径都在里面统一处理。
+    const exported = buildPositionExport(result);
+    const rows = exported.rows;
+    const complete = exported.complete;
+    const missingCodes = exported.missingCodes;
 
     var wb = new ExcelJS.Workbook();
     var ws = wb.addWorksheet('Sheet1');
@@ -538,6 +512,9 @@ router.get('/export/:name', requireLogin, asyncHandler(assertOwnership), asyncHa
     ws.addRows(rows);
 
     var buf = await wb.xlsx.writeBuffer();
+    // 让调用方也能从响应头判断完整性，而不是只看表格里的数字。
+    res.setHeader('X-Valuation-Complete', complete ? 'true' : 'false');
+    res.setHeader('X-Valuation-Missing-Codes', missingCodes.join(','));
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', 'attachment; filename="export.xlsx"');
     res.send(buf);
@@ -956,7 +933,9 @@ router.post('/nav/import', requireLogin, asyncHandler(assertOwnership), requireV
             const price = dayPrices.get(String(p.code));
             if (!(price > 0)) continue;
             await navImportRepository.upsertAnchorDailyPrice(
-              [username, accountName, accountId, requestedAnchorDate, p.code, p.name || '', price], client,
+              [username, accountName, accountId, requestedAnchorDate, p.code, p.name || '', price,
+                // 只对明确港股给 HK；其余交给仓储按代码长度兜底（5 位港股、6 位 A 股）。
+                p.subtype === '港股' ? 'HK' : null], client,
             );
           }
         }

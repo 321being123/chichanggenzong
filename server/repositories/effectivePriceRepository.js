@@ -11,18 +11,18 @@ const { pool } = require('../db/connection');
 async function listRecentDailyPriceCandidates(params, client = pool) {
   const [username, codes, upperDate, privateSources, dateWindow] = params;
   return client.query(
-    `SELECT code, date::text AS date, price::float8 AS price, username, account_name,
+    `SELECT code, market, date::text AS date, price::float8 AS price, username, account_name,
             quality, is_final, source, quote_at, revision
        FROM (
-         SELECT code, date, price, username, account_name, quality, is_final, source, quote_at, revision,
-                DENSE_RANK() OVER (PARTITION BY code ORDER BY date DESC) AS date_rank
+         SELECT code, market, date, price, username, account_name, quality, is_final, source, quote_at, revision,
+                DENSE_RANK() OVER (PARTITION BY market, code ORDER BY date DESC) AS date_rank
            FROM daily_prices
           WHERE code = ANY($2::text[])
             AND date::date <= $3::date
             AND (COALESCE(source, '') <> ALL($4::text[]) OR username = $1)
        ) ranked
       WHERE date_rank <= $5
-      ORDER BY code, date DESC, revision DESC`,
+      ORDER BY market, code, date DESC, revision DESC`,
     [username, codes, upperDate, privateSources, dateWindow]
   );
 }
@@ -56,6 +56,14 @@ async function selectAccountId(params, client = pool) {
   return client.query('SELECT id FROM accounts WHERE username=$1 AND account_name=$2', params);
 }
 
+// 写入时必须带市场：港股 00001 与 A 股 000001 是两只不同证券，缺了市场就无法区分。
+// 调用方未显式给出时按代码长度兜底（港股 5 位、A 股 6 位，与生产库实际分布一致）。
+function dailyPriceMarket(market, code) {
+  const text = String(market || '').toUpperCase();
+  if (text === 'HK' || text === 'CN') return text;
+  return String(code || '').length === 5 ? 'HK' : 'CN';
+}
+
 // 条件写入：
 // ①已确认收盘价不允许被较低资格（候选/遗留/派生）覆盖；
 // ②同级 confirmed 更正必须能核验修订关系，只认两种情形：
@@ -68,8 +76,8 @@ async function upsertDailyPrice(params, client = pool) {
   const [row] = params;
   return client.query(
     `INSERT INTO daily_prices
-       (username, account_name, account_id, date, code, name, price, source, quote_at, is_final, quality, revision, evidence)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,1,$12::jsonb)
+       (username, account_name, account_id, date, code, name, price, source, quote_at, is_final, quality, revision, evidence, market)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,1,$12::jsonb,$13)
      ON CONFLICT (username, account_name, date, code) DO UPDATE SET
        name = EXCLUDED.name,
        previous_price = CASE
@@ -97,11 +105,12 @@ async function upsertDailyPrice(params, client = pool) {
      RETURNING date::text AS date, code, revision, quality, is_final`,
     [row.username, row.accountName, row.accountId, row.date, row.code, row.name || '',
       row.price, row.source || null, row.quoteAt || null, row.isFinal == null ? null : !!row.isFinal,
-      row.quality || 'candidate', JSON.stringify(row.evidence || {})]
+      row.quality || 'candidate', JSON.stringify(row.evidence || {}), dailyPriceMarket(row.market, row.code)]
   );
 }
 
 module.exports = {
+  dailyPriceMarket,
   listRecentDailyPriceCandidates,
   listQuoteCacheCandidates,
   listPositionPriceCache,

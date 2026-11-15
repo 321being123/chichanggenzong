@@ -55,6 +55,28 @@ function codeVariants(code, isHk) {
   return list;
 }
 
+// 市场归一：日价存 HK/CN，行情缓存存 hk/sh/sz/bj；同一段代码在不同市场是不同证券，
+// 港股 00001 补零后与 A 股 000001 同形，只有市场一起匹配才不会串价。
+// 日价行缺 market 时（迁移前的旧行/未带市场的写入）按代码长度推断：5 位港股、6 位 A 股，
+// 与迁移回填规则一致。这是“失败关闭”的推断：6 位的港股补零行会被当作 A 股而不匹配港股持仓，
+// 结果是缺价（明确缺口），绝不会拿另一只证券的价格顶上。
+function dailyRowMarketOf(row) {
+  return normalizeMarket(row && row.market) || (String(row && row.code || '').length === 5 ? 'HK' : 'CN');
+}
+
+// 持仓行没有 subtype 时（历史数据/兼容调用）按代码长度推断，避免把港股持仓当成 A 股。
+function positionMarketOf(row) {
+  return normalizeMarket(row && row.subtype) || (String(row && row.code || '').length === 5 ? 'HK' : 'CN');
+}
+
+function normalizeMarket(value) {
+  const text = String(value || '').trim().toLowerCase();
+  if (!text) return null;
+  if (text === 'hk' || text === '港股') return 'HK';
+  if (['sh', 'sz', 'bj', 'cn', '沪市', '深市', '北交所', 'a股'].includes(text)) return 'CN';
+  return null;
+}
+
 function marketOf(code, subtype, quoteCurrency) {
   const text = String(subtype || '');
   const currency = String(quoteCurrency || '').toUpperCase();
@@ -200,7 +222,9 @@ async function resolveEffectivePrices(options = {}) {
     const isHk = market === 'HK';
     const expectedCloseDate = expectedByMarket.get(market) || null;
     const variants = codeVariants(code, isHk);
-    const rowsForCode = dailyRows.filter(row => variants.includes(String(row.code)));
+    // 市场 + 代码变体共同匹配：只按代码会把 A 股 000001 当成港股 00001 的候选。
+    const rowsForCode = dailyRows.filter(row =>
+      variants.includes(String(row.code)) && dailyRowMarketOf(row) === market);
     // 普通证券的收盘价是公开市场事实：跨账户、跨用户都读同一批行，不再按用户各选一份。
     const sharedRows = rowsForCode.filter(row => !PRIVATE_SOURCES.includes(String(row.source || '')));
     // 账户私有派生价（导入锚点固化价等）只允许本账户兜底使用，不冒充市场收盘价。
@@ -317,7 +341,11 @@ function resolveOne(context) {
   const shared = sharedRows.filter(row => variants.includes(String(row.code))).map(normalizeDailyRow);
   const derived = ownPrivateRows.filter(row => variants.includes(String(row.code))).map(normalizeDailyRow);
 
-  if (!shared.length && !derived.length && !cacheRows.length && !positionRows.length) {
+  const marketCacheRows = cacheRows.filter(row =>
+    variants.includes(String(row.code)) && normalizeMarket(row.market) === market);
+  const marketPositionRows = positionRows.filter(row =>
+    variants.includes(String(row.code)) && positionMarketOf(row) === market);
+  if (!shared.length && !derived.length && !marketCacheRows.length && !marketPositionRows.length) {
     return empty(mode === 'historical' ? 'historical_price_not_recorded' : 'price_not_recorded');
   }
 
@@ -336,7 +364,7 @@ function resolveOne(context) {
   if (mode === 'current' && marketState && marketState.status === 'open' && intraday) {
     // 只接受来源报价时刻落在当日、且报价时间不晚于估值截止的实时候选。
     const todayCache = cacheRows
-      .filter(row => variants.includes(String(row.code)))
+      .filter(row => variants.includes(String(row.code)) && normalizeMarket(row.market) === market)
       .filter(row => row.price > 0)
       .filter(row => dateKey(row.quote_time) === asOf)
       .filter(row => !row.quote_time || new Date(row.quote_time).getTime() <= nowAt.getTime())
@@ -361,7 +389,7 @@ function resolveOne(context) {
         price: Number(exact.price), tradeDate: dateKey(exact.date),
         quoteAt: exact.quote_at || null, sourceRef: exact.source || 'daily_prices',
         quality: exact.quality, revision: Number(exact.revision || 1),
-        priceKind: 'close', accounts: accountsOf(exact),
+        priceKind: 'close',
       };
       priceKind = 'close';
     } else {
@@ -371,7 +399,7 @@ function resolveOne(context) {
           price: Number(fallback.price), tradeDate: dateKey(fallback.date),
           quoteAt: fallback.quote_at || null, sourceRef: fallback.source || 'daily_prices',
           quality: 'stale_reference', revision: Number(fallback.revision || 1),
-          priceKind: 'stale_close', accounts: accountsOf(fallback),
+          priceKind: 'stale_close',
         };
         priceKind = 'stale_close';
       }
@@ -396,7 +424,8 @@ function resolveOne(context) {
   if (!selected && mode === 'current') {
     // 最后兜底：内部持仓兼容价。只在完全没有行情证据时使用，且明确标为未核实参考价，
     // 不参与“完整估值”，也不作为收盘事实。
-    const cached = positionRows.find(row => variants.includes(String(row.code)) && row.price > 0);
+    const cached = positionRows.find(row =>
+      variants.includes(String(row.code)) && row.price > 0 && positionMarketOf(row) === market);
     if (cached) {
       selected = {
         price: Number(cached.price), tradeDate: null, quoteAt: null,
@@ -454,31 +483,22 @@ function normalizeDailyRow(row) {
   };
 }
 
-function accountsOf(row) {
-  const owner = [row.username, row.account_name].filter(Boolean).join('/');
-  return owner ? [owner] : [];
-}
-
 // 指定交易日上的价格冲突：同一证券同一交易日，不同账户给出不同价格即算未解决。
 // 只与选中价格同一资格档次的行比较（已确认与已确认比较），避免候选价把确认价拖成冲突。
+// 冲突结果只描述市场事实本身（有哪些价格），**不带出任何账户或用户标识**：
+// 账户接口不能因为核对公开行情而泄露别人的持仓关联信息。
 function detectConflictOnDate(code, rows, date, quality) {
   const tier = quality === 'confirmed' ? 'confirmed' : 'unconfirmed';
-  const byPrice = new Map();
+  const prices = new Set();
   for (const row of rows) {
     if (dateKey(row.date) !== date) continue;
     if (!(Number(row.price) > 0)) continue;
     const rowTier = row.quality === 'confirmed' ? 'confirmed' : 'unconfirmed';
     if (rowTier !== tier) continue;
-    const price = Number(row.price);
-    if (!byPrice.has(price)) byPrice.set(price, new Set());
-    accountsOf(row).forEach(owner => byPrice.get(price).add(owner));
+    prices.add(Number(row.price));
   }
-  if (byPrice.size < 2) return null;
-  return {
-    code,
-    date,
-    prices: [...byPrice.entries()].map(([price, accounts]) => ({ price, accounts: [...accounts] })),
-  };
+  if (prices.size < 2) return null;
+  return { code, date, priceCount: prices.size, prices: [...prices].sort((a, b) => a - b) };
 }
 
 // 历史投影选价（纯函数）：目标日已有落库价就用它；否则在“当日市场确有交易”的历史候选里取最近一条。
@@ -501,6 +521,7 @@ function selectHistoricalClosePrice({ exactPrice, candidates, targetDate, market
 
 module.exports = {
   resolveEffectivePrices,
+  normalizeMarket,
   selectHistoricalClosePrice,
   sessionPhase,
   expectedCloseDateFor,

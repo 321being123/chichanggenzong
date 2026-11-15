@@ -213,6 +213,7 @@ const MIGRATIONS = [
   { version: '193_stock_selection_ux_request_bindings', up: () => require('./migrations/era14StockSelectionUx').migration193StockSelectionUx(pool) },
   { version: '194_financial_statement_type_columns', up: () => require('./migrations/era11FinancialStatements').migration194FinancialStatementTypeColumns(pool) },
   { version: '195_valuation_price_evidence', up: () => require('./migrations/era15ValuationPriceEvidence').migration195ValuationPriceEvidence(pool) },
+  { version: '196_daily_price_market', up: () => require('./migrations/era15DailyPriceMarket').migration196DailyPriceMarket(pool) },
 ];
 
 async function ensureMigrationsTable() {

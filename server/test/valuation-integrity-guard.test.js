@@ -1,7 +1,7 @@
 // 统一估值完整性守卫回归（2026-11-15 第二轮验收反例）
 // 覆盖：不完整估值不得续出正式净值、盘前/午休取价、历史投影拒绝候选价、已确认收盘价的写入保护。
 const assert = require('assert');
-const { buildNavPerformance, computeNavHistoryTotals } = require('../services/navAttribution');
+const { buildNavPerformance, computeNavHistoryTotals, computeNavAttribution } = require('../services/navAttribution');
 const { sessionPhase, expectedCloseDateFor } = require('../services/effectivePrice');
 const { isCnTradingDate, invalidateMarketStateCache } = require('../services/marketState');
 
@@ -130,6 +130,41 @@ async function main() {
     const totals = await computeNavHistoryTotals('u', 'a', data, query);
     assert.strictEqual(Math.round(totals[wednesday]), 1000, '周三有当日确认价时应能重建');
     assert.strictEqual(totals[thursday], null, '周四缺当日收盘价时必须保留缺口，不能沿用周三价格');
+  }
+
+  // 7. 基准日缺价不得产生“今日涨跌”：基准价必须是该市场基准时点最近应有收盘日的价格。
+  {
+    const frozen = realDate.parse('2026-09-28T04:00:00.000Z');
+    global.Date = class FrozenDate extends realDate {
+      constructor(...args) { super(...(args.length ? args : [frozen])); }
+      static now() { return frozen; }
+    };
+    invalidateMarketStateCache();
+    const query = async (sql) => {
+      if (sql.includes('FROM daily_prices')) {
+        // 只有周三（09-23）的确认价；周四（09-24，实际持有的最近快照日）缺价。
+        return { rows: [{ date: '2026-09-23', code: '600000', market: 'CN', price: 10, quality: 'confirmed', is_final: true }] };
+      }
+      if (sql.includes('FROM market.fx_rates')) return { rows: [] };
+      throw new Error('unexpected basis query: ' + sql);
+    };
+    const data = {
+      cashBase: 1000,
+      cashFlows: [],
+      trades: [],
+      positions: [{ code: '600000', subtype: '沪市', price: 11, quantity: 100 }],
+      navHistory: [
+        { date: '2026-09-23', totalAsset: 1900, snapshotSource: 'legacy', snapshot_at: '2026-09-23T08:00:00.000Z' },
+        { date: '2026-09-24', totalAsset: 2000, snapshotSource: 'legacy', snapshot_at: '2026-09-24T08:00:00.000Z' },
+      ],
+    };
+    const attribution = await computeNavAttribution('u', 'a', data, 2100, query);
+    assert.strictEqual(attribution.complete, false, '基准日缺当日收盘价时不得给出完整涨跌');
+    assert.ok(attribution.reasonCodes.includes('basis_price_not_confirmed'), '必须标注基准价未确认');
+    const evidence = attribution.priceEvidence.find(row => row.code === '600000');
+    assert.strictEqual(evidence.basisQualified, false, '逐证券证据必须标明基准价不可信');
+    assert.strictEqual(evidence.basisExpectedDate, '2026-09-24', '必须给出基准时点最近应有收盘日');
+    assert.strictEqual(evidence.basisPriceDate, '2026-09-23', '用于对比的旧价格日期要如实披露');
   }
 
   console.log('统一估值完整性守卫回归通过');

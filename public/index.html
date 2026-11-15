@@ -1646,7 +1646,11 @@ async function loadData(accountName) {
   if (!data.cashType) data.cashType = '现金';
   if (!data.cashSubtype) data.cashSubtype = '现金';
   if (!data.valuation_map) data.valuation_map = {}; // 可转债估值对照表（缺失则渲染为 —）
-  if (data.totalAsset > 0) TOTAL_ASSET = data.totalAsset; // 更新总资产
+  // 服务端只在估值完整时给 totalAsset；不完整时用 totalAssetPartial（页面另标注不完整），
+  // 不能因为字段为空就继续沿用旧的总资产。
+  var _serverTotal = data.totalAsset != null ? Number(data.totalAsset)
+    : (data.totalAssetPartial != null ? Number(data.totalAssetPartial) : null);
+  if (_serverTotal > 0) TOTAL_ASSET = _serverTotal; // 更新总资产
   // 恢复上次的涨跌幅缓存
   if (data.changes) {
     priceChangeMap = {};
@@ -1710,7 +1714,11 @@ document.addEventListener('DOMContentLoaded', function () { (async function init
       await loadData(currentAccount);
       // 恢复 _dailyPricesSaved（阶段一：改用 localStorage 持久化页面状态）
       try { var dps = localStorage.getItem('_dailyPricesSaved_' + currentAccount); if (dps) data._dailyPricesSaved = dps; } catch(e) {}
-      if (data && data.totalAsset > 0) TOTAL_ASSET = data.totalAsset;
+      if (data) {
+        var _reloadTotal = data.totalAsset != null ? Number(data.totalAsset)
+          : (data.totalAssetPartial != null ? Number(data.totalAssetPartial) : null);
+        if (_reloadTotal > 0) TOTAL_ASSET = _reloadTotal;
+      }
       renderAccountSelect();
       var activePage = document.querySelector('.main-page.active');
       if (activePage && activePage.id === 'main-holdings') renderAll();

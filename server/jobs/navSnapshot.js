@@ -69,10 +69,13 @@ async function recordNavSnapshots(username, accountName, hkRateOverride = null, 
     const d = dateText(r.date);
     const code = classifyCode.normalizeCode(r.code, positionNames.get(r.code)) || r.code;
     const qualified = String(r.quality || 'legacy_unverified') === 'confirmed' || r.is_final === true;
-    dpMap.set(code + '|' + d, { price: Number(r.price), qualified });
+    // 按「市场 + 代码」建索引：港股 00001 与 A 股 000001 同形，只按代码会互相顶替。
+    const market = String(r.market || (String(r.code || '').length === 5 ? 'HK' : 'CN')).toUpperCase();
+    const key = market + '|' + code;
+    dpMap.set(key + '|' + d, { price: Number(r.price), qualified });
     priceDates.add(d);
-    if (!pricesByCode.has(code)) pricesByCode.set(code, []);
-    pricesByCode.get(code).push({ date: d, price: Number(r.price), qualified });
+    if (!pricesByCode.has(key)) pricesByCode.set(key, []);
+    pricesByCode.get(key).push({ date: d, price: Number(r.price), qualified });
   });
   for (const rows of pricesByCode.values()) rows.sort((a, b) => a.date.localeCompare(b.date));
   const targetDate = dateText(targetDateInput);
@@ -231,9 +234,10 @@ async function recordNavSnapshots(username, accountName, hkRateOverride = null, 
   }
   async function effectivePrice(code, market, date, marketStatus) {
     // 只有已确认终盘价可用；候选/遗留价不进入历史资产重建，保留为缺口。
-    const exactRow = dpMap.get(code + '|' + date);
+    const key = market + '|' + code;
+    const exactRow = dpMap.get(key + '|' + date);
     const exact = exactRow && exactRow.qualified ? exactRow.price : null;
-    const candidates = (pricesByCode.get(code) || []).filter(row => row.qualified);
+    const candidates = (pricesByCode.get(key) || []).filter(row => row.qualified);
     const statusByDate = new Map();
     for (const candidate of candidates) {
       if (statusByDate.has(candidate.date)) continue;

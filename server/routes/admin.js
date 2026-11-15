@@ -11,7 +11,7 @@ const {
   getConfig, setConfig,
   auditEvent, listAudit, AUDIT_MODULES
 } = require('../db');
-const { backfillMissingCloses } = require('../jobs/marketClose');
+const { backfillMissingCloses, summarizeBackfill } = require('../jobs/marketClose');
 const adminRepository = require('../repositories/adminRepository');
 const knowledgeRepository = require('../repositories/knowledgeRepository');
 const { ensureHolidaysCurrent, saveManualHolidays } = require('../jobs/holidaySync');
@@ -364,12 +364,24 @@ router.post('/jobs/backfill', asyncHandler(async (req, res) => {
   const id = await startJobRun('manual_backfill');
   try {
     const result = await backfillMissingCloses({ scanAllMissingDates: true });
-    await finishJobRun(id, true, '检查 ' + result.accounts + ' 个账户，发现 ' + result.missingDates + ' 个缺失交易日，补写 ' + result.recorded + ' 条价格');
+    // 失败、需要授权改写的存量历史、以及被捕获的异常都必须反映到任务记录与接口状态，
+    // 否则“补漏返回 200”会被当成历史价格已经补齐。
+    const summary = summarizeBackfill(result);
+    const { incomplete, failed, blockedRevision: blocked, errors, message } = summary;
+    await finishJobRun(id, !incomplete, message);
     await audit(req, 'job_backfill', 'manual_backfill', {
+      result: incomplete ? 'partial' : 'success',
       detail: '手动补漏收盘数据',
-      metadata: { accounts: result.accounts, missingDates: result.missingDates, recorded: result.recorded },
+      metadata: {
+        accounts: result.accounts, missingDates: result.missingDates, recorded: result.recorded,
+        failed, blockedRevision: blocked, errors, incomplete,
+      },
     });
-    res.json({ ok: true });
+    res.status(incomplete ? 409 : 200).json({
+      ok: !incomplete, incomplete, message,
+      accounts: result.accounts, missingDates: result.missingDates, recorded: result.recorded,
+      failed, blockedRevision: blocked, errors,
+    });
   } catch (e) {
     await finishJobRun(id, false, e.message || String(e));
     await audit(req, 'job_backfill', 'manual_backfill', { result: 'failure', detail: e.message || String(e) });

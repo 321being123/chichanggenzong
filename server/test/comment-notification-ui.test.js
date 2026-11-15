@@ -1317,6 +1317,145 @@ async function staleCommentsNotPainted() {
   } finally { await tick(); dom.window.close(); }
 }
 
+// ---------- 22. 同编号并发提交的 409「已处理」不能当作明确未提交 ----------
+async function processedConflictKeepsRequestId() {
+  const dom = new JSDOM(
+    '<textarea id="ks-comment"></textarea><div id="panel" role="listbox" hidden></div><div id="chips" hidden></div>'
+    + '<div id="ks-comment-notice" hidden></div><div id="ks-comment-list"></div>',
+    { url: 'https://example.test/?main=knowledge', runScripts: 'outside-only' }
+  );
+  const w = dom.window;
+  try {
+    const toasts = [];
+    const posts = [];
+    const replies = [
+      { ok: false, status: 502, payload: null },
+      { ok: false, status: 409, payload: { error: '该请求已处理，请刷新后查看', code: 'request_already_processed' } },
+      { ok: true, status: 200, payload: { id: 1 } },
+      // 后面用于对照「真正明确拒绝」的 409：同编号不同内容
+      { ok: false, status: 502, payload: null },
+      { ok: false, status: 409, payload: { error: '同一请求标识不能提交不同内容', code: 'request_conflict' } },
+    ];
+    w.username = 'alice';
+    w.accountIdentity = '100';
+    w.escapeHtml = escaper();
+    w.showToast = function (m) { toasts.push(String(m)); };
+    w.siteApi = {
+      get: async function () { return { ok: true, status: 200, payload: { id: 7, title: '文章', status: 'published' } }; },
+      post: async function (url, body) {
+        if (url.indexOf('/view') >= 0) return { ok: true, status: 200, payload: {} };
+        posts.push(body);
+        return replies[posts.length - 1] || { ok: false, status: 500, payload: null };
+      },
+    };
+    w.eval(read('public/js/knowledge.js'));
+    w.ksPaintArticle = function () {};
+    w.ksShowView = function () {};
+    w.ksPaintCommentsPrepare = function () { return false; };
+    w.ksPaintComments = function () {};
+    w.eval(read('public/js/presenters/knowledge-presenter.js'));
+    await w.ksOpenArticle(7);
+
+    // 第一次结果不明
+    await w.ksSubmitComment(null, '并发提交的评论', null);
+    const id1 = posts[0].client_request_id;
+    // 原样重试：服务端并发返回「该请求已处理」——评论已存在，编号必须保留
+    await w.ksSubmitComment(null, '并发提交的评论', null);
+    assert.strictEqual(posts[1].client_request_id, id1);
+    let stored = JSON.parse(w.sessionStorage.getItem('ks-pending-comments') || '{}');
+    assert.strictEqual(Object.keys(stored).length, 1,
+      '「该请求已处理」说明评论已存在，不能当成明确未提交而丢掉编号');
+    assert.ok(toasts.some(function (m) { return m.indexOf('已经在处理') >= 0; }),
+      '应提示已在处理，让用户原样重试查看结果');
+
+    // 第三次仍用原编号：服务端按编号幂等返回原评论
+    await w.ksSubmitComment(null, '并发提交的评论', null);
+    assert.strictEqual(posts[2].client_request_id, id1, '第三次也必须沿用原编号');
+    stored = JSON.parse(w.sessionStorage.getItem('ks-pending-comments') || '{}');
+    assert.strictEqual(Object.keys(stored).length, 0, '确认成功后才清记录');
+
+    // 对照：同编号不同内容的 409 是真的明确拒绝，记录应被清掉（不能让人无限撞同一冲突）
+    await w.ksSubmitComment(null, '另一条评论', null);           // 502
+    const id2 = posts[3].client_request_id;
+    await w.ksSubmitComment(null, '另一条评论', null);           // 409 request_conflict
+    const after = JSON.parse(w.sessionStorage.getItem('ks-pending-comments') || '{}');
+    assert.strictEqual(Object.keys(after).length, 0, '内容冲突属于明确拒绝，记录应清掉');
+    assert.ok(!toasts.some(function (m) { return m.indexOf('已经在处理') >= 0 && posts.length === 4; }));
+    pass++;
+  } finally { await tick(); dom.window.close(); }
+}
+
+// ---------- 23. A→B→再回 A：旧响应不得动新一次打开的页面 ----------
+async function reopenSameArticleIsNewPage() {
+  const dom = new JSDOM(
+    '<textarea id="ks-comment"></textarea><div id="panel" role="listbox" hidden></div><div id="chips" hidden></div>'
+    + '<div id="ks-comment-notice" hidden></div><div id="ks-comment-list"></div>',
+    { url: 'https://example.test/?main=knowledge', runScripts: 'outside-only' }
+  );
+  const w = dom.window;
+  try {
+    const toasts = [];
+    const posts = [];
+    const painted = [];
+    let releaseFirst = null;
+    w.username = 'alice';
+    w.accountIdentity = '100';
+    w.escapeHtml = escaper();
+    w.showToast = function (m) { toasts.push(String(m)); };
+    w.siteApi = {
+      get: async function (url) {
+        const m = /\/articles\/(\d+)(\/comments)?$/.exec(url);
+        const id = m ? Number(m[1]) : 0;
+        return {
+          ok: true, status: 200,
+          payload: m && m[2] ? [{ id: 'c' + id }] : { id: id, title: '文章' + id, status: 'published' },
+        };
+      },
+      post: function (url, body) {
+        if (url.indexOf('/view') >= 0) return Promise.resolve({ ok: true, status: 200, payload: {} });
+        posts.push(body);
+        if (posts.length === 1) return new Promise(function (resolve) { releaseFirst = resolve; });
+        return Promise.resolve({ ok: true, status: 200, payload: { id: 1 } });
+      },
+    };
+    w.eval(read('public/js/knowledge.js'));
+    w.ksPaintArticle = function () {};
+    w.ksShowView = function () {};
+    w.ksPaintCommentsPrepare = function () { return true; };
+    w.ksPaintComments = function (list) { painted.push(list); };
+    w.eval(read('public/js/presenters/knowledge-presenter.js'));
+
+    await w.ksOpenArticle(7);
+    const ta = w.document.getElementById('ks-comment');
+    w.ksInitMentionBox('main', ta, w.document.getElementById('panel'), w.document.getElementById('chips'));
+
+    // 文章 7 发出评论（挂起）
+    const pendingA = w.ksSubmitComment(null, '文章七的评论', null);
+    assert.strictEqual(posts.length, 1);
+
+    // 离开到文章 8，再回到文章 7：编号相同、账号相同，但这是新的一次打开
+    await w.ksOpenArticle(8);
+    await w.ksOpenArticle(7);
+    painted.length = 0;
+    toasts.length = 0;
+    ta.value = '回来之后新写的草稿';
+    ta.selectionStart = ta.selectionEnd = ta.value.length;
+
+    // 上一次打开的请求此刻才成功
+    releaseFirst({ ok: true, status: 200, payload: { id: 1 } });
+    await pendingA;
+
+    assert.strictEqual(ta.value, '回来之后新写的草稿',
+      '离开后重新回到同一篇文章，旧响应不能清掉这次的草稿');
+    assert.strictEqual(painted.length, 0, '旧响应也不能重绘这次的评论列表');
+    assert.ok(!toasts.some(function (m) { return m.indexOf('评论已发表') >= 0; }),
+      '旧响应的成功提示不能出现在新一次打开的页面上');
+    const stored = JSON.parse(w.sessionStorage.getItem('ks-pending-comments') || '{}');
+    assert.strictEqual(Object.keys(stored).length, 0, '记录仍按发起时的文章清掉（它确实提交成功）');
+    pass++;
+  } finally { await tick(); dom.window.close(); }
+}
+
 (async () => {
   const suites = [
     ['@ 区间随编辑平移与失效（同昵称可区分）', mentionRanges],
@@ -1340,6 +1479,8 @@ async function staleCommentsNotPainted() {
     ['请求飞行中切换文章，旧响应不得改动当前文章页面', articleSwitchDuringRequest],
     ['结果不明后遇到限流，重试仍沿用原请求编号', rateLimitKeepsRequestId],
     ['切换文章后旧文章的评论列表不得画到当前页面', staleCommentsNotPainted],
+    ['同编号并发提交的「已处理」409 保留原请求编号', processedConflictKeepsRequestId],
+    ['离开后重新打开同一篇文章算新页面，旧响应不得改动', reopenSameArticleIsNewPage],
   ];
   let failed = 0;
   for (const [name, fn] of suites) {

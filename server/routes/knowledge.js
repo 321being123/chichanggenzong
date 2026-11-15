@@ -627,7 +627,12 @@ router.post('/articles/:id/comments', requireLogin,
       if (result.reused) payload.reused = true;
       res.json(payload);
     } catch (e) {
-      if (e && e.status) return res.status(e.status).json({ error: e.message });
+      if (e && e.status) {
+        // code 让前端区分「同编号已处理」与「明确拒绝」，不改变 HTTP 状态与文案
+        const body = { error: e.message };
+        if (e.code) body.code = e.code;
+        return res.status(e.status).json(body);
+      }
       res.status(500).json({ error: '发表评论失败' });
     }
   }

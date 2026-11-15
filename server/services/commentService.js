@@ -13,9 +13,12 @@ const MAX_MENTIONS = 10;
 const MENTION_RESULT_LIMIT = 8;
 const INVALIDATED_REASON = '内容已不可用';
 
-function createError(status, message) {
+// code 供前端判断错误的性质（例如「同编号已处理」不能当成「明确没提交」），
+// 不改变 HTTP 语义与既有 error 文案。
+function createError(status, message, code) {
   const err = new Error(message);
   err.status = status;
+  if (code) err.code = code;
   return err;
 }
 
@@ -122,7 +125,7 @@ async function createComment(params) {
       const existing = await store.findCommentRequest(client, author.subjectId, clientRequestId);
       if (existing) {
         if (existing.requestHash !== requestHash) {
-          throw createError(409, '同一请求标识不能提交不同内容');
+          throw createError(409, '同一请求标识不能提交不同内容', 'request_conflict');
         }
         const replay = await knowledgeRepository.readCommentBrief({ id: existing.commentId }, client);
         await txControl.commit(client);
@@ -155,8 +158,12 @@ async function createComment(params) {
         requestHash: requestHash,
         commentId: inserted.id,
       });
-      // 并发同标识：另一事务已先写入，本次回滚，交由调用方按 409 提示刷新
-      if (!record) throw createError(409, '该请求已处理，请刷新后查看');
+      // 并发同标识：另一事务已先写入，本次回滚，交由调用方按 409 提示刷新。
+      // 这条 409 的含义是「这条请求已经处理过」，不是「明确没提交」——前端必须保留原编号，
+      // 否则第三次提交换了新编号，就会在第一条已落库的情况下再发一条。
+      if (!record) {
+        throw createError(409, '该请求已处理，请刷新后查看', 'request_already_processed');
+      }
     }
 
     const notices = await notificationService.createCommentNotices(client, {

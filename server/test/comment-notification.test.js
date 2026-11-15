@@ -538,8 +538,33 @@ function baseConfig() {
       assert.strictEqual(notices.length, 1, '重放不能再产生通知');
       await assert.rejects(
         comment(articleId, uReader, '幂等测试评论（改了内容）', { clientRequestId: requestId }),
-        function (e) { return e.status === 409; }
+        function (e) { return e.status === 409 && e.code === 'request_conflict'; }
       );
+    });
+
+    // 并发同编号：两个事务同时插入评论，靠唯一索引让其中一个回滚。
+    // 这一条 409 的含义是「请求已被处理过」（评论已存在），前端必须靠 code 区分，
+    // 不能当成「明确没提交」而丢掉编号，否则第三次提交换新编号就会再发一条。
+    await test('并发同编号竞争：被挤掉的一方返回 409 且带 request_already_processed', async function () {
+      const requestId = 'req-race-' + suffix;
+      const attempts = await Promise.allSettled([
+        comment(articleId, uReader, '并发同编号评论', { clientRequestId: requestId }),
+        comment(articleId, uReader, '并发同编号评论', { clientRequestId: requestId }),
+        comment(articleId, uReader, '并发同编号评论', { clientRequestId: requestId }),
+      ]);
+      const ok = attempts.filter(function (a) { return a.status === 'fulfilled'; });
+      const failed = attempts.filter(function (a) { return a.status === 'rejected'; });
+      assert.ok(ok.length >= 1, '至少要有一次成功');
+      failed.forEach(function (a) {
+        assert.strictEqual(a.reason.status, 409);
+        assert.strictEqual(a.reason.code, 'request_already_processed',
+          '「已处理」的 409 必须带 request_already_processed，前端据此保留原编号');
+      });
+      // 无论竞争结果如何，同标识都不能产生第二条评论
+      const count = await pool.query(
+        'SELECT count(*)::int AS c FROM public.article_comments WHERE content=$1', ['并发同编号评论']
+      );
+      assert.strictEqual(count.rows[0].c, 1, '并发同标识只能落一条评论');
     });
 
     // ===== 失效与可见性 =====

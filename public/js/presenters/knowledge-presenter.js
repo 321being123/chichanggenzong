@@ -8,6 +8,7 @@ let ksState = {
   loaded: false,   // 已完成一次进入页面的数据加载；返回本页不再全量重拉（2026-10-21 审查 U-3）
   readingId: null, // 阅读意图：打开文章时立即置位，防止并行的 loadKnowledge 把用户踢回列表
   commentsSeq: 0,  // 评论列表请求序号：切文章后旧请求的响应不得画到当前页面
+  articleSeq: 0,   // 文章页面实例序号：每次打开自增，A→B→A 也算新页面
   currentCategory: null,
   currentArticle: null,
   editingId: null,   // 正在编辑的文章 id（新建为 null）
@@ -125,6 +126,8 @@ async function ksCardOp(act, id) {
 // focusCommentId：评论通知深链带来的目标评论，加载完成后定位；缺失（已删除/无权）提示内容已不可用
 async function ksOpenArticle(id, focusCommentId) {
   ksState.readingId = id;
+  // 每次打开都是一个新页面实例：A→B→再回 A 时编号虽相同，旧的评论请求/结果也不得作用在这里
+  ksState.articleSeq++;
   const r = await window.siteApi.get('/api/knowledge/articles/' + id);
   if (!r.ok) {
     ksState.readingId = null;
@@ -372,7 +375,14 @@ function ksMayHaveCommitted(status) {
 // 400 参数不合法、404 文章不存在、409 编号冲突或父评论失效、413/422 内容被拒。
 // 429 限流、401/403 登录状态或权限、408/499 客户端中断都不代表这次请求被处理过——
 // 若它其实是「上次结果不明」的重试，丢掉原编号后第三次提交就会再发一条。
-function ksDefinitelyRejected(status) {
+// 409 还要看服务端给的 code：「该请求已处理」（并发下另一事务先写入）说明评论已经存在，
+// 属于「已提交」而不是「明确没提交」，同样必须保留编号。
+function ksServerSaysProcessed(payload) {
+  return !!payload && payload.code === 'request_already_processed';
+}
+
+function ksDefinitelyRejected(status, payload) {
+  if (ksServerSaysProcessed(payload)) return false;
   return status === 400 || status === 404 || status === 409
     || status === 413 || status === 422;
 }
@@ -383,6 +393,13 @@ function ksStillOnArticle(articleId) {
   const cur = ksState.currentArticle;
   if (!cur || String(cur.id) !== String(articleId)) return false;
   return String(ksState.readingId || '') === String(articleId);
+}
+
+// 只比文章编号不够：文章 A → B → 再回 A 时编号相同、账号相同，但这是新的一次打开，
+// 旧响应不能动这次的草稿。用每次打开都自增的 articleSeq 区分「页面实例」。
+function ksSameArticleInstance(articleId, seq) {
+  if (!ksStillOnArticle(articleId)) return false;
+  return ksState.articleSeq === seq;
 }
 
 // 回到文章时把未确认的提交还原成草稿（正文 + @ 一起）：
@@ -477,9 +494,10 @@ async function ksSubmitComment(parentId, textInput, boxKey) {
   } else {
     requestId = ksNewRequestId();
   }
-  // 请求发出前把归属固定下来：await 期间用户可能切换账号或翻到别的文章
+  // 请求发出前把归属固定下来：await 期间用户可能切换账号、翻到别的文章，或离开后又回到同一篇
   const isRetry = !!pending;
   const ownerAtSend = ksPendingOwner();
+  const articleSeqAtSend = ksState.articleSeq;
   const saved = ksSavePendingRecord(a.id, parentId, { id: requestId, content: text, mentions: mentions });
   if (!saved || saved.ok !== true) {
     if (saved && saved.reason === 'limit') {
@@ -495,18 +513,23 @@ async function ksSubmitComment(parentId, textInput, boxKey) {
   if (parentId) body.parent_id = parentId;
   if (mentions.length) body.mentions = mentions;
   const r = await window.siteApi.post('/api/knowledge/articles/' + a.id + '/comments', body);
-  // 响应回来时可能已经换了账号、也可能已经翻到别的文章：
-  // 记录一律按发起时的账号与文章清除，界面（提示、清草稿、刷列表）只在「同一账号 + 仍在读这篇」时更新。
+  // 响应回来时可能已经换了账号、换了文章，甚至离开后又回到同一篇：
+  // 记录一律按发起时的账号与文章清除，界面（提示、清草稿、刷列表）只在「同一账号 + 同一个文章页面实例」时更新。
   const sameOwner = !!ownerAtSend.key && ksPendingOwner().key === ownerAtSend.key;
-  const samePage = sameOwner && ksStillOnArticle(a.id);
+  const samePage = sameOwner && ksSameArticleInstance(a.id, articleSeqAtSend);
   if (!r.ok) {
     // 结果不明：服务端可能已提交，重试会拿回原评论而不是再发一条，必须保留整份记录。
     // 另外：如果这次本身就是「上次结果不明」的重试，那么限流/登录状态被拦也不能证明上次没落库
     // （请求可能根本没进到处理逻辑），此时同样要保留原编号，否则第三次提交就会用新编号再发一条。
     const uncertain = ksMayHaveCommitted(r.status)
-      || (isRetry && !ksDefinitelyRejected(r.status));
+      || (isRetry && !ksDefinitelyRejected(r.status, r.payload))
+      || ksServerSaysProcessed(r.payload);
     if (uncertain) {
-      if (samePage) showToast(ksUnknownOutcomeTip(r.status, saved));
+      if (samePage) {
+        showToast(ksServerSaysProcessed(r.payload)
+          ? '这条评论服务器已经在处理了，请稍后原样重试查看结果（不会重复发布）'
+          : ksUnknownOutcomeTip(r.status, saved));
+      }
       return;
     }
     // 服务端明确拒绝：丢弃这条失败请求的记录（只清发起时的账号，不碰当前账号）

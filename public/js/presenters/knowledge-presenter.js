@@ -221,20 +221,40 @@ function ksPersistPendingStore() {
   } catch (e) { /* 写不进去也算保留：内存副本仍然生效 */ }
 }
 
-// 键只按「文章 + 父评论」定位：同一次提交的内容与 @ 存在记录里，不再参与键，
-// 否则改了 @ 就查不到旧记录，等于又把编号丢了。
+// 键必须同时绑「账号 + 文章 + 父评论」：
+// 只按文章+父评论索引，同一浏览器换账号后会把上一个人的草稿（含正文与 @ 目标）恢复给下一个人。
+// 账号用「登录名 + 不可复用身份」双维度（与通知缓存一致）：只比用户名漏掉删号后同名重注册，
+// 只比建号时间会把建号时间落在同一刻的不同账号判成同一人。
+function ksPendingOwner() {
+  const who = (typeof username === 'string' && username) ? username
+    : (typeof window.username === 'string' ? window.username : '');
+  const identity = (typeof accountIdentity === 'string' && accountIdentity) ? accountIdentity
+    : (typeof window.accountIdentity === 'string' ? window.accountIdentity : '');
+  if (!who) return '';
+  return 'u:' + who + '|id:' + identity;
+}
+
+// 内容与 @ 不参与键（改了也要能找到旧记录），但账号必须参与
 function ksPendingKey(articleId, parentId) {
-  return String(articleId) + '|' + (parentId || '');
+  return ksPendingOwner() + '|' + String(articleId) + '|' + (parentId || '');
 }
 
 function ksPendingRecord(articleId, parentId) {
+  const owner = ksPendingOwner();
+  if (!owner) return null;
   const record = ksPendingStore()[ksPendingKey(articleId, parentId)];
-  return record && record.id ? record : null;
+  // 双保险：记录内再存一份归属，键被手工篡改或旧数据缺归属时不还原
+  if (!record || !record.id || record.owner !== owner) return null;
+  return record;
 }
 
 function ksSavePendingRecord(articleId, parentId, record) {
+  const owner = ksPendingOwner();
+  if (!owner) return;
   const map = ksPendingStore();
-  map[ksPendingKey(articleId, parentId)] = record;
+  map[ksPendingKey(articleId, parentId)] = Object.assign({}, record, {
+    owner: owner, articleId: String(articleId), parentId: parentId || null,
+  });
   ksPersistPendingStore();
 }
 
@@ -244,6 +264,17 @@ function ksClearPendingRecord(articleId, parentId) {
   if (!map[key]) return;
   delete map[key];
   ksPersistPendingStore();
+}
+
+// 当前账号在这篇文章下所有未确认的提交（一级 + 各条回复），用于打开文章时统一恢复
+function ksPendingRecordsForArticle(articleId) {
+  const owner = ksPendingOwner();
+  if (!owner) return [];
+  const map = ksPendingStore();
+  return Object.keys(map).map(function (k) { return map[k]; })
+    .filter(function (r) {
+      return r && r.id && r.owner === owner && String(r.articleId) === String(articleId);
+    });
 }
 
 // 是否就是同一次提交：正文与每条 @ 的主体、区间、文字都要一致
@@ -273,23 +304,35 @@ function ksMayHaveCommitted(status) {
   return status === 0 || status >= 500;
 }
 
-// 回到文章时把未确认的提交还原成草稿（正文 + @ 一起），刷新后也能原样重试
+// 回到文章时把未确认的提交还原成草稿（正文 + @ 一起）：
+// 一级评论回到主输入框，每条回复回到对应楼层的回复框，都在该位置带「放弃这条」入口。
 function ksResumePendingComment(articleId) {
-  const pending = ksPendingRecord(articleId, null);
-  if (!pending) return;
-  const restored = (typeof window.ksRestoreCommentDraft === 'function')
-    ? window.ksRestoreCommentDraft('main', pending.content, pending.mentions) : false;
-  if (restored) showToast('上一条评论结果还没确认，已恢复为草稿；再次提交不会重复发布');
+  const records = ksPendingRecordsForArticle(articleId);
+  if (!records.length) return;
+  let restored = 0;
+  records.forEach(function (pending) {
+    if (pending.parentId) {
+      const ok = (typeof window.ksRestoreReplyDraft === 'function')
+        ? window.ksRestoreReplyDraft(pending.parentId, pending.content, pending.mentions) : false;
+      if (ok) restored++;
+      return;
+    }
+    const okMain = (typeof window.ksRestoreCommentDraft === 'function')
+      ? window.ksRestoreCommentDraft('main', pending.content, pending.mentions) : false;
+    if (okMain) restored++;
+  });
+  if (restored) showToast('有 ' + restored + ' 条评论结果还没确认，已恢复为草稿；再次提交不会重复发布');
 }
 
-// 放弃未确认的提交（用户明确不要了）：清记录与草稿，之后按新评论重新开始
-function ksDiscardPendingComment() {
+// 放弃未确认的提交（用户明确不要了）：清记录与对应草稿，之后可按新评论重新开始。
+// parentId 为空表示一级评论，否则是某条评论下的回复。
+function ksDiscardPendingComment(parentId) {
   const a = ksState.currentArticle;
   if (!a) return;
-  ksClearPendingRecord(a.id, null);
-  if (typeof window.ksResetMentions === 'function') window.ksResetMentions('main');
-  if (typeof window.ksClearCommentInput === 'function') window.ksClearCommentInput();
-  if (typeof window.ksHideCommentNotice === 'function') window.ksHideCommentNotice();
+  const pid = parentId ? parseInt(parentId, 10) : null;
+  ksClearPendingRecord(a.id, pid);
+  if (typeof window.ksClearCommentDraft === 'function') window.ksClearCommentDraft(pid);
+  else if (typeof window.ksResetMentions === 'function') window.ksResetMentions('main');
   showToast('已放弃未确认的评论');
 }
 
@@ -335,17 +378,15 @@ async function ksSubmitComment(parentId, textInput, boxKey) {
     }
     // 服务端明确拒绝：丢弃记录，避免下次重放命中这条失败请求
     ksClearPendingRecord(a.id, parentId);
-    if (typeof window.ksHideCommentNotice === 'function') window.ksHideCommentNotice();
+    if (typeof window.ksHideCommentNotice === 'function') window.ksHideCommentNotice(boxKey || 'main');
     const d = r.payload || {};
     if (r.status === 400 || r.status === 409 || r.status === 429) showToast(d.error || ksWriteErrMsg(r.status));
     else showToast(ksWriteErrMsg(r.status));
     return;
   }
   ksClearPendingRecord(a.id, parentId);
-  if (typeof window.ksHideCommentNotice === 'function') window.ksHideCommentNotice();
-  if (boxKey && typeof window.ksResetMentions === 'function') window.ksResetMentions(boxKey);
-  // 刷新并清空主评论框
-  window.ksClearCommentInput();
+  // 清掉该输入框的草稿与提示（一级清主框，回复清对应楼层）
+  if (typeof window.ksClearCommentDraft === 'function') window.ksClearCommentDraft(parentId || null);
   ksLoadComments(a.id);
   showToast('评论已发表');
 }

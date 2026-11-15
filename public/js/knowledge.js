@@ -596,13 +596,13 @@ function ksRestoreCommentDraft(boxKey, content, mentions) {
   });
   ksPaintMentionChips(boxKey);
   ta.selectionStart = ta.selectionEnd = ta.value.length;
-  const notice = ksEl('ks-comment-notice');
+  const notice = ksNoticeFor(boxKey);
   if (notice) notice.hidden = false;
   return true;
 }
 
-function ksHideCommentNotice() {
-  const notice = ksEl('ks-comment-notice');
+function ksHideCommentNotice(boxKey) {
+  const notice = ksNoticeFor(boxKey || 'main');
   if (notice) notice.hidden = true;
 }
 
@@ -636,21 +636,7 @@ function ksPaintComments(list) {
       const cid = btn.dataset.id;
       const exist = box.querySelector('.ks-reply-box[data-pid="' + cid + '"]');
       if (exist) { exist.remove(); return; }
-      box.querySelectorAll('.ks-reply-box').forEach(b => b.remove());
-      const wrap = document.createElement('div');
-      wrap.className = 'ks-reply-box';
-      wrap.dataset.pid = cid;
-      wrap.innerHTML = '<textarea class="ks-reply-text" placeholder="回复 @' + escapeHtml(btn.dataset.nick) + '…"></textarea>' +
-        '<div class="ks-mention-chips" hidden></div>' +
-        '<div class="ks-mention-panel" role="listbox" hidden></div>' +
-        '<button class="ks-btn ks-btn-primary ks-reply-submit" data-pid="' + cid + '">回复</button>';
-      btn.parentElement.appendChild(wrap);
-      const replyBoxKey = 'reply-' + cid;
-      ksInitMentionBox(replyBoxKey, wrap.querySelector('.ks-reply-text'),
-        wrap.querySelector('.ks-mention-panel'), wrap.querySelector('.ks-mention-chips'));
-      wrap.querySelector('.ks-reply-submit').addEventListener('click', function () {
-        ksSubmitComment(parseInt(cid, 10), wrap.querySelector('.ks-reply-text').value, replyBoxKey);
-      });
+      ksEnsureReplyBox(cid);
     });
   });
   // 绑定删除（已登录且有权限时按钮存在）；删除取数在 Presenter 的 ksDeleteComment
@@ -659,6 +645,75 @@ function ksPaintComments(list) {
       ksDeleteComment(btn.dataset.id);
     });
   });
+}
+
+// 回复框的唯一构造入口：点「回复」与「恢复未确认的回复草稿」都走这里，
+// 避免两处各写一份 DOM（否则恢复出来的框缺提示、缺放弃入口、事件也没绑）。
+function ksEnsureReplyBox(cid) {
+  const box = ksEl('ks-comment-list');
+  if (!box) return null;
+  const id = String(cid);
+  const existing = box.querySelector('.ks-reply-box[data-pid="' + id + '"]');
+  if (existing) return existing;
+  const btn = box.querySelector('.ks-reply-btn[data-id="' + id + '"]');
+  if (!btn) return null;
+  box.querySelectorAll('.ks-reply-box').forEach(b => b.remove());
+  const wrap = document.createElement('div');
+  wrap.className = 'ks-reply-box';
+  wrap.dataset.pid = id;
+  wrap.innerHTML = '<div class="ks-comment-notice" hidden>'
+    + '<span>上一条回复结果还没确认，已恢复为草稿；再次提交不会重复发布。</span>'
+    + '<button type="button" class="ks-comment-notice-btn" data-ks-draft="discard" data-pid="' + id + '">放弃这条</button>'
+    + '</div>'
+    + '<textarea class="ks-reply-text" placeholder="回复 @' + escapeHtml(btn.dataset.nick || '') + '…"></textarea>'
+    + '<div class="ks-mention-chips" hidden></div>'
+    + '<div class="ks-mention-panel" role="listbox" hidden></div>'
+    + '<button class="ks-btn ks-btn-primary ks-reply-submit" data-pid="' + id + '">回复</button>';
+  btn.parentElement.appendChild(wrap);
+  const replyBoxKey = 'reply-' + id;
+  ksInitMentionBox(replyBoxKey, wrap.querySelector('.ks-reply-text'),
+    wrap.querySelector('.ks-mention-panel'), wrap.querySelector('.ks-mention-chips'));
+  wrap.querySelector('.ks-reply-submit').addEventListener('click', function () {
+    ksSubmitComment(parseInt(id, 10), wrap.querySelector('.ks-reply-text').value, replyBoxKey);
+  });
+  const notice = wrap.querySelector('.ks-comment-notice');
+  if (notice) {
+    notice.addEventListener('click', function (e) {
+      const el = e.target.closest('[data-ks-draft="discard"]');
+      if (!el) return;
+      if (typeof ksDiscardPendingComment === 'function') ksDiscardPendingComment(parseInt(id, 10));
+    });
+  }
+  return wrap;
+}
+
+// 未确认提示条的定位：一级评论用页面上的 #ks-comment-notice，回复用所在回复框里的那条
+function ksNoticeFor(boxKey) {
+  if (!boxKey || boxKey === 'main') return ksEl('ks-comment-notice');
+  const pid = String(boxKey).replace(/^reply-/, '');
+  const box = ksEl('ks-comment-list');
+  if (!box) return null;
+  const wrap = box.querySelector('.ks-reply-box[data-pid="' + pid + '"]');
+  return wrap ? wrap.querySelector('.ks-comment-notice') : null;
+}
+
+// 恢复未确认的回复草稿：先确保回复框存在，再还原正文与 @ 选择
+function ksRestoreReplyDraft(parentId, content, mentions) {
+  const wrap = ksEnsureReplyBox(parentId);
+  if (!wrap) return false;
+  return ksRestoreCommentDraft('reply-' + parentId, content, mentions);
+}
+
+// 放弃后清空对应输入框与提示（一级或某条回复）
+function ksClearCommentDraft(parentId) {
+  const boxKey = parentId ? ('reply-' + parentId) : 'main';
+  if (typeof ksResetMentions === 'function') ksResetMentions(boxKey);
+  const ta = parentId
+    ? (ksEl('ks-comment-list') || { querySelector: function () { return null; } })
+      .querySelector('.ks-reply-box[data-pid="' + parentId + '"] .ks-reply-text')
+    : ksEl('ks-comment');
+  if (ta) ta.value = '';
+  ksHideCommentNotice(boxKey);
 }
 
 // 递归渲染评论树（最多缩进 3 层）

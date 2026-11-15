@@ -503,6 +503,152 @@ async function discardPending() {
   } finally { await tick(); dom.window.close(); }
 }
 
+// ---------- 9. 待确认草稿必须绑定账号 ----------
+async function pendingBoundToAccount() {
+  const dom = new JSDOM(
+    '<textarea id="ks-comment"></textarea><div id="panel" role="listbox" hidden></div><div id="chips" hidden></div>'
+    + '<div id="ks-comment-notice" hidden></div><div id="ks-comment-list"></div>',
+    { url: 'https://example.test/?main=knowledge', runScripts: 'outside-only' }
+  );
+  const w = dom.window;
+  try {
+    const posts = [];
+    w.username = 'alice';
+    w.accountIdentity = '100';
+    w.escapeHtml = escaper();
+    w.showToast = function () {};
+    w.siteApi = {
+      get: async function () { return { ok: true, status: 200, payload: { id: 7, title: '文章', status: 'published' } }; },
+      post: async function (url, body) {
+        if (url.indexOf('/view') >= 0) return { ok: true, status: 200, payload: {} };
+        posts.push(body);
+        return { ok: false, status: 502, payload: null };
+      },
+    };
+    w.eval(read('public/js/knowledge.js'));
+    w.ksPaintArticle = function () {};
+    w.ksShowView = function () {};
+    w.ksPaintCommentsPrepare = function () { return false; };
+    w.ksPaintComments = function () {};
+    w.eval(read('public/js/presenters/knowledge-presenter.js'));
+    await w.ksOpenArticle(7);
+
+    const ta = w.document.getElementById('ks-comment');
+    w.ksInitMentionBox('main', ta, w.document.getElementById('panel'), w.document.getElementById('chips'));
+    ta.value = '@';
+    ta.selectionStart = ta.selectionEnd = 1;
+    input(w, ta);
+    w.ksApplyMention('main', { subjectId: '11111111-1111-1111-1111-111111111111', nickname: '读者', username: 'reader_a' });
+    ta.value = ta.value + '甲账号的草稿';
+    ta.selectionStart = ta.selectionEnd = ta.value.length;
+    input(w, ta);
+    await w.ksSubmitComment(null, ta.value, 'main');
+    assert.strictEqual(posts.length, 1);
+    const pendingContent = posts[0].content;
+
+    // 切到另一个账号（不同身份）再看同一篇文章：上一个人的草稿不能出现
+    w.username = 'bob';
+    w.accountIdentity = '200';
+    ta.value = '';
+    w.ksResetMentions('main');
+    w.document.getElementById('ks-comment-notice').hidden = true;
+    await w.ksOpenArticle(7);
+    assert.strictEqual(ta.value, '', '换账号后不得恢复上一个账号的草稿正文');
+    assert.strictEqual(w.ksReadMentions('main', ta.value || '').length, 0, '也不得恢复上一个人的 @ 选择');
+    assert.strictEqual(w.document.getElementById('ks-comment-notice').hidden, true, '不得显示他人草稿的提示');
+
+    // 换回原账号：草稿仍在（记录没被其他人的访问破坏）
+    w.username = 'alice';
+    w.accountIdentity = '100';
+    await w.ksOpenArticle(7);
+    assert.strictEqual(ta.value, pendingContent, '原账号回来应能恢复自己的草稿');
+    assert.strictEqual(w.ksReadMentions('main', ta.value).length, 1);
+    pass++;
+  } finally { await tick(); dom.window.close(); }
+}
+
+// ---------- 10. 回复的待确认内容可恢复 / 重试 / 放弃 ----------
+async function pendingReplyDraft() {
+  const dom = new JSDOM(
+    '<textarea id="ks-comment"></textarea><div id="panel" role="listbox" hidden></div><div id="chips" hidden></div>'
+    + '<div id="ks-comment-notice" hidden></div>'
+    + '<div id="ks-comment-list"><div class="ks-comment-item" data-cid="55">'
+    + '<button class="ks-reply-btn" data-id="55" data-nick="读者">回复</button></div></div>',
+    { url: 'https://example.test/?main=knowledge', runScripts: 'outside-only' }
+  );
+  const w = dom.window;
+  try {
+    const toasts = [];
+    const posts = [];
+    let response = { ok: false, status: 502, payload: null };
+    w.username = 'alice';
+    w.accountIdentity = '100';
+    w.escapeHtml = escaper();
+    w.showToast = function (m) { toasts.push(String(m)); };
+    w.siteApi = {
+      get: async function () { return { ok: true, status: 200, payload: { id: 7, title: '文章', status: 'published' } }; },
+      post: async function (url, body) {
+        if (url.indexOf('/view') >= 0) return { ok: true, status: 200, payload: {} };
+        posts.push(body);
+        const r = response;
+        response = { ok: true, status: 200, payload: { id: 99 } };
+        return r;
+      },
+    };
+    w.eval(read('public/js/knowledge.js'));
+    w.ksPaintArticle = function () {};
+    w.ksShowView = function () {};
+    w.ksPaintCommentsPrepare = function () { return false; };
+    w.ksPaintComments = function () {};
+    w.eval(read('public/js/presenters/knowledge-presenter.js'));
+    await w.ksOpenArticle(7);
+
+    // 打开 55 号评论的回复框并选中一个 @，提交（502 结果不明）
+    const wrap = w.ksEnsureReplyBox(55);
+    assert.ok(wrap, '应能创建回复框');
+    const replyText = wrap.querySelector('.ks-reply-text');
+    replyText.value = '@';
+    replyText.selectionStart = replyText.selectionEnd = 1;
+    input(w, replyText);
+    w.ksApplyMention('reply-55', { subjectId: '11111111-1111-1111-1111-111111111111', nickname: '读者', username: 'reader_a' });
+    replyText.value = replyText.value + '这条回复很重要';
+    replyText.selectionStart = replyText.selectionEnd = replyText.value.length;
+    input(w, replyText);
+    await w.ksSubmitComment(55, replyText.value, 'reply-55');
+    assert.strictEqual(posts.length, 1);
+    assert.strictEqual(posts[0].parent_id, 55, '回复必须带父评论编号');
+    const replyContent = posts[0].content;
+
+    // 模拟刷新/重新进入文章：回复不能消失，也不能只剩一个「必须原样重试」的死胡同
+    w.document.getElementById('ks-comment-list').innerHTML = ''
+      + '<div class="ks-comment-item" data-cid="55">'
+      + '<button class="ks-reply-btn" data-id="55" data-nick="读者">回复</button></div>';
+    await w.ksOpenArticle(7);
+    const restoredWrap = w.document.querySelector('.ks-reply-box[data-pid="55"]');
+    assert.ok(restoredWrap, '重新进入文章时应自动恢复未确认的回复框');
+    assert.strictEqual(restoredWrap.querySelector('.ks-reply-text').value, replyContent, '回复正文应恢复');
+    assert.strictEqual(w.ksReadMentions('reply-55', replyContent).length, 1, '回复里的 @ 选择也应恢复');
+    assert.strictEqual(restoredWrap.querySelector('.ks-comment-notice').hidden, false, '应提示这是未确认的回复');
+
+    // 改内容重试：必须被拒（否则可能重复）
+    const changed = replyContent + '（改了）';
+    restoredWrap.querySelector('.ks-reply-text').value = changed;
+    input(w, restoredWrap.querySelector('.ks-reply-text'));
+    await w.ksSubmitComment(55, changed, 'reply-55');
+    assert.strictEqual(posts.length, 1, '回复结果未确认期间不得再发一条');
+    assert.ok(toasts.some(function (m) { return m.indexOf('还没确认') >= 0; }));
+
+    // 放弃这条回复：记录与草稿都清掉，之后可以按新回复重发
+    restoredWrap.querySelector('[data-ks-draft="discard"]').click();
+    assert.strictEqual(restoredWrap.querySelector('.ks-comment-notice').hidden, true, '放弃后提示应消失');
+    assert.strictEqual(restoredWrap.querySelector('.ks-reply-text').value, '', '放弃后草稿应清空');
+    await w.ksSubmitComment(55, '放弃后重新写的回复', 'reply-55');
+    assert.strictEqual(posts.length, 2);
+    assert.notStrictEqual(posts[1].client_request_id, posts[0].client_request_id, '放弃后应使用新编号');
+    pass++;
+  } finally { await tick(); dom.window.close(); }
+}
+
 (async () => {
   const suites = [
     ['@ 区间随编辑平移与失效（同昵称可区分）', mentionRanges],
@@ -513,6 +659,8 @@ async function discardPending() {
     ['会话存储不可用时仍复用请求标识', storageUnavailable],
     ['待确认提交连同 @ 目标一起保存并可原样重试', pendingDraftWithMentions],
     ['明确放弃未确认提交后可用新编号重发', discardPending],
+    ['待确认草稿绑定账号，换账号不得串用', pendingBoundToAccount],
+    ['回复的待确认内容可恢复、原样重试与放弃', pendingReplyDraft],
   ];
   let failed = 0;
   for (const [name, fn] of suites) {

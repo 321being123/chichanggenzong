@@ -204,7 +204,13 @@ function ksPendingStore() {
   try {
     const raw = sessionStorage.getItem(KS_PENDING_KEY);
     const parsed = raw ? JSON.parse(raw) : null;
-    if (parsed && typeof parsed === 'object') ksPendingComments = parsed;
+    if (parsed && typeof parsed === 'object') {
+      // 存储里只可能装「身份可确认」的记录（写入时已过滤），载入时再补一次标记
+      Object.keys(parsed).forEach(function (k) {
+        const record = parsed[k];
+        if (record && record.id) ksPendingComments[k] = record;
+      });
+    }
   } catch (e) { /* 存储不可用：只用内存副本 */ }
   return ksPendingComments;
 }
@@ -216,8 +222,15 @@ function ksPersistPendingStore() {
     // 只保留最近写入的若干条，避免长期占用会话存储
     keys.slice(0, keys.length - KS_PENDING_MAX).forEach(function (k) { delete map[k]; });
   }
+  // 身份不可确认的记录只留在本页内存：它无法区分「删号后同名重建」的前后两个账号，
+  // 一旦写进存储，下次开会话就可能把旧账号的草稿恢复给新账号。
+  const persisted = {};
+  Object.keys(map).forEach(function (k) {
+    const record = map[k];
+    if (record && record.persistable === true) persisted[k] = record;
+  });
   try {
-    sessionStorage.setItem(KS_PENDING_KEY, JSON.stringify(map));
+    sessionStorage.setItem(KS_PENDING_KEY, JSON.stringify(persisted));
   } catch (e) { /* 写不进去也算保留：内存副本仍然生效 */ }
 }
 
@@ -225,42 +238,53 @@ function ksPersistPendingStore() {
 // 只按文章+父评论索引，同一浏览器换账号后会把上一个人的草稿（含正文与 @ 目标）恢复给下一个人。
 // 账号用「登录名 + 不可复用身份」双维度（与通知缓存一致）：只比用户名漏掉删号后同名重注册，
 // 只比建号时间会把建号时间落在同一刻的不同账号判成同一人。
+// 身份缺失时返回 persistable=false：本页仍可安全重试（同一账号同一页面），但不跨会话保存/恢复。
 function ksPendingOwner() {
   const who = (typeof username === 'string' && username) ? username
     : (typeof window.username === 'string' ? window.username : '');
   const identity = (typeof accountIdentity === 'string' && accountIdentity) ? accountIdentity
     : (typeof window.accountIdentity === 'string' ? window.accountIdentity : '');
-  if (!who) return '';
-  return 'u:' + who + '|id:' + identity;
+  if (!who) return { key: '', persistable: false };
+  return {
+    key: 'u:' + who + '|id:' + identity,
+    persistable: !!identity,
+  };
 }
 
 // 内容与 @ 不参与键（改了也要能找到旧记录），但账号必须参与
 function ksPendingKey(articleId, parentId) {
-  return ksPendingOwner() + '|' + String(articleId) + '|' + (parentId || '');
+  const owner = ksPendingOwner();
+  if (!owner.key) return '';
+  return owner.key + '|' + String(articleId) + '|' + (parentId || '');
 }
 
 function ksPendingRecord(articleId, parentId) {
   const owner = ksPendingOwner();
-  if (!owner) return null;
-  const record = ksPendingStore()[ksPendingKey(articleId, parentId)];
+  const key = ksPendingKey(articleId, parentId);
+  if (!owner.key || !key) return null;
+  const record = ksPendingStore()[key];
   // 双保险：记录内再存一份归属，键被手工篡改或旧数据缺归属时不还原
-  if (!record || !record.id || record.owner !== owner) return null;
+  if (!record || !record.id || record.owner !== owner.key) return null;
   return record;
 }
 
 function ksSavePendingRecord(articleId, parentId, record) {
   const owner = ksPendingOwner();
-  if (!owner) return;
+  const key = ksPendingKey(articleId, parentId);
+  if (!owner.key || !key) return false;
   const map = ksPendingStore();
-  map[ksPendingKey(articleId, parentId)] = Object.assign({}, record, {
-    owner: owner, articleId: String(articleId), parentId: parentId || null,
+  map[key] = Object.assign({}, record, {
+    owner: owner.key, persistable: owner.persistable,
+    articleId: String(articleId), parentId: parentId || null,
   });
   ksPersistPendingStore();
+  return true;
 }
 
 function ksClearPendingRecord(articleId, parentId) {
-  const map = ksPendingStore();
   const key = ksPendingKey(articleId, parentId);
+  if (!key) return;
+  const map = ksPendingStore();
   if (!map[key]) return;
   delete map[key];
   ksPersistPendingStore();
@@ -269,11 +293,11 @@ function ksClearPendingRecord(articleId, parentId) {
 // 当前账号在这篇文章下所有未确认的提交（一级 + 各条回复），用于打开文章时统一恢复
 function ksPendingRecordsForArticle(articleId) {
   const owner = ksPendingOwner();
-  if (!owner) return [];
+  if (!owner.key) return [];
   const map = ksPendingStore();
   return Object.keys(map).map(function (k) { return map[k]; })
     .filter(function (r) {
-      return r && r.id && r.owner === owner && String(r.articleId) === String(articleId);
+      return r && r.id && r.owner === owner.key && String(r.articleId) === String(articleId);
     });
 }
 
@@ -309,19 +333,26 @@ function ksMayHaveCommitted(status) {
 function ksResumePendingComment(articleId) {
   const records = ksPendingRecordsForArticle(articleId);
   if (!records.length) return;
+  const owner = ksPendingOwner();
   let restored = 0;
+  let failed = 0;
   records.forEach(function (pending) {
     if (pending.parentId) {
       const ok = (typeof window.ksRestoreReplyDraft === 'function')
         ? window.ksRestoreReplyDraft(pending.parentId, pending.content, pending.mentions) : false;
-      if (ok) restored++;
+      if (ok) restored++; else failed++;
       return;
     }
     const okMain = (typeof window.ksRestoreCommentDraft === 'function')
       ? window.ksRestoreCommentDraft('main', pending.content, pending.mentions) : false;
-    if (okMain) restored++;
+    if (okMain) restored++; else failed++;
   });
-  if (restored) showToast('有 ' + restored + ' 条评论结果还没确认，已恢复为草稿；再次提交不会重复发布');
+  if (restored) {
+    showToast('有 ' + restored + ' 条评论结果还没确认，已恢复为草稿；再次提交不会重复发布'
+      + (owner.persistable ? '' : '（当前无法确认账号身份，这份草稿只在本次页面有效）'));
+  }
+  // 回复的目标评论已被删除时无法恢复，需要明确告知，不能让用户以为已经没有了
+  if (failed) showToast('有 ' + failed + ' 条未确认的回复所在评论已不存在，无法恢复');
 }
 
 // 放弃未确认的提交（用户明确不要了）：清记录与对应草稿，之后可按新评论重新开始。
@@ -370,10 +401,13 @@ async function ksSubmitComment(parentId, textInput, boxKey) {
   const r = await window.siteApi.post('/api/knowledge/articles/' + a.id + '/comments', body);
   if (!r.ok) {
     if (ksMayHaveCommitted(r.status)) {
-      // 保留整份待确认记录：服务端可能已提交，重试会拿回原评论而不是再发一条
-      showToast(r.status
+      // 保留整份待确认记录：服务端可能已提交，重试会拿回原评论而不是再发一条。
+      // 身份不可确认时记录只在本页内存，必须明确告诉用户不要刷新，否则无法安全重试。
+      const persistable = ksPendingOwner().persistable;
+      showToast((r.status
         ? '服务器繁忙，评论可能已提交，请稍后重试（不会重复发布）'
-        : '网络异常，评论可能已提交，请稍后重试（不会重复发布）');
+        : '网络异常，评论可能已提交，请稍后重试（不会重复发布）')
+        + (persistable ? '' : '；当前无法确认账号身份，请在本次页面内重试，不要刷新'));
       return;
     }
     // 服务端明确拒绝：丢弃记录，避免下次重放命中这条失败请求

@@ -195,6 +195,7 @@ async function retryRequestId() {
     const posts = [];
     let nextResult = { ok: false, status: 502, payload: null };
     w.username = 'alice';
+    w.accountIdentity = '100';
     w.showToast = function (m) { toasts.push(String(m)); };
     w.ksPaintArticle = function () {};
     w.ksShowView = function () {};
@@ -384,6 +385,7 @@ async function pendingDraftWithMentions() {
     const posts = [];
     let response = { ok: false, status: 502, payload: null };
     w.username = 'alice';
+    w.accountIdentity = '100';
     w.escapeHtml = escaper();
     w.showToast = function (m) { toasts.push(String(m)); };
     w.siteApi = {
@@ -467,6 +469,7 @@ async function discardPending() {
   try {
     const posts = [];
     w.username = 'alice';
+    w.accountIdentity = '100';
     w.escapeHtml = escaper();
     w.showToast = function () {};
     w.siteApi = {
@@ -649,6 +652,139 @@ async function pendingReplyDraft() {
   } finally { await tick(); dom.window.close(); }
 }
 
+// ---------- 11. 账号身份缺失时只在本页保留 ----------
+async function identityMissingPending() {
+  const dom = new JSDOM(
+    '<textarea id="ks-comment"></textarea><div id="panel" role="listbox" hidden></div><div id="chips" hidden></div>'
+    + '<div id="ks-comment-notice" hidden></div><div id="ks-comment-list"></div>',
+    { url: 'https://example.test/?main=knowledge', runScripts: 'outside-only' }
+  );
+  const w = dom.window;
+  try {
+    const toasts = [];
+    const posts = [];
+    let response = { ok: false, status: 502, payload: null };
+    w.username = 'alice';
+    w.accountIdentity = '';   // 身份缺失：无法区分「删号后同名重建」
+    w.escapeHtml = escaper();
+    w.showToast = function (m) { toasts.push(String(m)); };
+    w.siteApi = {
+      get: async function () { return { ok: true, status: 200, payload: { id: 7, title: '文章', status: 'published' } }; },
+      post: async function (url, body) {
+        if (url.indexOf('/view') >= 0) return { ok: true, status: 200, payload: {} };
+        posts.push(body);
+        const r = response;
+        response = { ok: true, status: 200, payload: { id: 99 } };
+        return r;
+      },
+    };
+    w.eval(read('public/js/knowledge.js'));
+    w.ksPaintArticle = function () {};
+    w.ksShowView = function () {};
+    w.ksPaintCommentsPrepare = function () { return false; };
+    w.ksPaintComments = function () {};
+    w.eval(read('public/js/presenters/knowledge-presenter.js'));
+    await w.ksOpenArticle(7);
+
+    const ta = w.document.getElementById('ks-comment');
+    w.ksInitMentionBox('main', ta, w.document.getElementById('panel'), w.document.getElementById('chips'));
+    await w.ksSubmitComment(null, '身份缺失时的评论', 'main');
+    assert.strictEqual(posts.length, 1);
+    assert.ok(toasts.some(function (m) { return m.indexOf('不要刷新') >= 0; }),
+      '身份缺失时必须明确提示只能在本页重试');
+
+    // 不能写进会话存储：同名重建的账号下次会拿不到身份，无法区分新旧
+    const stored = w.sessionStorage.getItem('ks-pending-comments');
+    assert.ok(!stored || Object.keys(JSON.parse(stored)).length === 0,
+      '身份缺失的待确认记录不得跨会话保存');
+
+    // 同一页面内仍可恢复并可安全重试
+    ta.value = '';
+    w.ksResetMentions('main');
+    await w.ksOpenArticle(7);
+    assert.strictEqual(ta.value, '身份缺失时的评论', '本页内仍应恢复草稿');
+
+    // 换成同名但拿到身份的账号：不得看到上一条草稿
+    w.username = 'alice';
+    w.accountIdentity = '999';
+    ta.value = '';
+    w.ksResetMentions('main');
+    await w.ksOpenArticle(7);
+    assert.strictEqual(ta.value, '', '身份不同（同名重建）不得恢复旧草稿');
+
+    // 回到身份缺失的同一页面：记录还在内存里，仍可原样重试
+    w.accountIdentity = '';
+    await w.ksOpenArticle(7);
+    assert.strictEqual(ta.value, '身份缺失时的评论');
+    await w.ksSubmitComment(null, ta.value, 'main');
+    assert.strictEqual(posts[1].client_request_id, posts[0].client_request_id, '本页重试必须复用同一编号');
+    pass++;
+  } finally { await tick(); dom.window.close(); }
+}
+
+// ---------- 12. 同一文章多条待确认回复都要能恢复 ----------
+async function multiplePendingReplies() {
+  const dom = new JSDOM(
+    '<textarea id="ks-comment"></textarea><div id="panel" role="listbox" hidden></div><div id="chips" hidden></div>'
+    + '<div id="ks-comment-notice" hidden></div>'
+    + '<div id="ks-comment-list">'
+    + '<div class="ks-comment-item" data-cid="55"><button class="ks-reply-btn" data-id="55" data-nick="甲">回复</button></div>'
+    + '<div class="ks-comment-item" data-cid="66"><button class="ks-reply-btn" data-id="66" data-nick="乙">回复</button></div>'
+    + '</div>',
+    { url: 'https://example.test/?main=knowledge', runScripts: 'outside-only' }
+  );
+  const w = dom.window;
+  try {
+    const posts = [];
+    w.username = 'alice';
+    w.accountIdentity = '100';
+    w.escapeHtml = escaper();
+    w.showToast = function () {};
+    w.siteApi = {
+      get: async function () { return { ok: true, status: 200, payload: { id: 7, title: '文章', status: 'published' } }; },
+      post: async function (url, body) {
+        if (url.indexOf('/view') >= 0) return { ok: true, status: 200, payload: {} };
+        posts.push(body);
+        return { ok: false, status: 502, payload: null };
+      },
+    };
+    w.eval(read('public/js/knowledge.js'));
+    w.ksPaintArticle = function () {};
+    w.ksShowView = function () {};
+    w.ksPaintCommentsPrepare = function () { return false; };
+    w.ksPaintComments = function () {};
+    w.eval(read('public/js/presenters/knowledge-presenter.js'));
+    await w.ksOpenArticle(7);
+
+    // 两条不同楼层的回复都提交，结果都不明
+    await w.ksSubmitComment(55, '对甲的回复', 'reply-55');
+    assert.strictEqual(posts.length, 1);
+    w.ksEnsureReplyBox(55);
+    w.document.querySelector('.ks-reply-box[data-pid="55"] .ks-reply-text').value = '对甲的回复';
+    await w.ksSubmitComment(66, '对乙的回复', 'reply-66');
+    assert.strictEqual(posts.length, 2);
+
+    // 重新进入文章：两条回复都必须各自恢复，不能只剩最后一条
+    await w.ksOpenArticle(7);
+    const boxA = w.document.querySelector('.ks-reply-box[data-pid="55"]');
+    const boxB = w.document.querySelector('.ks-reply-box[data-pid="66"]');
+    assert.ok(boxA, '第一条回复的框必须恢复');
+    assert.ok(boxB, '第二条回复的框必须恢复');
+    assert.strictEqual(boxA.querySelector('.ks-reply-text').value, '对甲的回复');
+    assert.strictEqual(boxB.querySelector('.ks-reply-text').value, '对乙的回复');
+    assert.strictEqual(boxA.querySelector('.ks-comment-notice').hidden, false, '第一条也要有提示与放弃入口');
+    assert.strictEqual(boxB.querySelector('.ks-comment-notice').hidden, false);
+
+    // 放弃第一条：只清第一条，第二条保持
+    boxA.querySelector('[data-ks-draft="discard"]').click();
+    assert.strictEqual(boxA.querySelector('.ks-comment-notice').hidden, true);
+    assert.strictEqual(boxA.querySelector('.ks-reply-text').value, '');
+    assert.strictEqual(boxB.querySelector('.ks-reply-text').value, '对乙的回复', '放弃一条不得波及另一条');
+    assert.strictEqual(boxB.querySelector('.ks-comment-notice').hidden, false);
+    pass++;
+  } finally { await tick(); dom.window.close(); }
+}
+
 (async () => {
   const suites = [
     ['@ 区间随编辑平移与失效（同昵称可区分）', mentionRanges],
@@ -661,6 +797,8 @@ async function pendingReplyDraft() {
     ['明确放弃未确认提交后可用新编号重发', discardPending],
     ['待确认草稿绑定账号，换账号不得串用', pendingBoundToAccount],
     ['回复的待确认内容可恢复、原样重试与放弃', pendingReplyDraft],
+    ['身份缺失时只在本页保留，不跨会话恢复', identityMissingPending],
+    ['同一文章多条待确认回复都能恢复与放弃', multiplePendingReplies],
   ];
   let failed = 0;
   for (const [name, fn] of suites) {

@@ -649,7 +649,8 @@ function ksPaintComments(list) {
 
 // 回复框的唯一构造入口：点「回复」与「恢复未确认的回复草稿」都走这里，
 // 避免两处各写一份 DOM（否则恢复出来的框缺提示、缺放弃入口、事件也没绑）。
-function ksEnsureReplyBox(cid) {
+// keepOthers=true 用于批量恢复：同一文章可能有多条未确认回复，恢复时不能互相顶掉。
+function ksEnsureReplyBox(cid, keepOthers) {
   const box = ksEl('ks-comment-list');
   if (!box) return null;
   const id = String(cid);
@@ -657,7 +658,14 @@ function ksEnsureReplyBox(cid) {
   if (existing) return existing;
   const btn = box.querySelector('.ks-reply-btn[data-id="' + id + '"]');
   if (!btn) return null;
-  box.querySelectorAll('.ks-reply-box').forEach(b => b.remove());
+  if (!keepOthers) {
+    // 手动点「回复」保持单框体验，但带未确认提示的框不能删——删掉提示条就没了放弃入口
+    box.querySelectorAll('.ks-reply-box').forEach(function (b) {
+      const notice = b.querySelector('.ks-comment-notice');
+      if (notice && !notice.hidden) return;
+      b.remove();
+    });
+  }
   const wrap = document.createElement('div');
   wrap.className = 'ks-reply-box';
   wrap.dataset.pid = id;
@@ -699,7 +707,7 @@ function ksNoticeFor(boxKey) {
 
 // 恢复未确认的回复草稿：先确保回复框存在，再还原正文与 @ 选择
 function ksRestoreReplyDraft(parentId, content, mentions) {
-  const wrap = ksEnsureReplyBox(parentId);
+  const wrap = ksEnsureReplyBox(parentId, true);
   if (!wrap) return false;
   return ksRestoreCommentDraft('reply-' + parentId, content, mentions);
 }

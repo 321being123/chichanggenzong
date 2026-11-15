@@ -223,13 +223,11 @@ function ksPendingStore() {
   return ksPendingComments;
 }
 
+// 返回是否真的写进了会话存储：写不进去（隐私模式/配额满）时内存副本仍有效，但刷新后会丢，
+// 提交结果不明时必须据此告诉用户「不要刷新」。
+// 这里不再按数量截断：静默删掉最早一条会丢掉它的请求编号，重试就可能重复发表。
 function ksPersistPendingStore() {
   const map = ksPendingStore();
-  const keys = Object.keys(map);
-  if (keys.length > KS_PENDING_MAX) {
-    // 只保留最近写入的若干条，避免长期占用会话存储
-    keys.slice(0, keys.length - KS_PENDING_MAX).forEach(function (k) { delete map[k]; });
-  }
   // 身份不可确认的记录只留在本页内存：它无法区分「删号后同名重建」的前后两个账号，
   // 一旦写进存储，下次开会话就可能把旧账号的草稿恢复给新账号。
   const persisted = {};
@@ -239,7 +237,10 @@ function ksPersistPendingStore() {
   });
   try {
     sessionStorage.setItem(KS_PENDING_KEY, JSON.stringify(persisted));
-  } catch (e) { /* 写不进去也算保留：内存副本仍然生效 */ }
+    return true;
+  } catch (e) {
+    return false;
+  }
 }
 
 // 键必须同时绑「账号 + 文章 + 父评论」：
@@ -281,12 +282,19 @@ function ksSavePendingRecord(articleId, parentId, record) {
   const key = ksPendingKey(articleId, parentId);
   if (!owner.key || !key) return false;
   const map = ksPendingStore();
+  // 新增一条会超过上限时直接拒绝，而不是悄悄删掉最早那条：
+  // 被删的记录若其实已经提交，用户之后重试就会拿新编号再发一条。
+  if (!map[key] && Object.keys(map).length >= KS_PENDING_MAX) {
+    return { ok: false, reason: 'limit' };
+  }
   map[key] = Object.assign({}, record, {
     owner: owner.key, persistable: owner.persistable,
     articleId: String(articleId), parentId: parentId || null,
   });
-  ksPersistPendingStore();
-  return true;
+  const written = ksPersistPendingStore();
+  // persisted 表示「刷新后这条还在」：身份不可确认或存储写不进去时为 false
+  map[key].persisted = owner.persistable && written;
+  return { ok: true, persisted: map[key].persisted };
 }
 
 function ksClearPendingRecord(articleId, parentId) {
@@ -338,7 +346,8 @@ function ksMayHaveCommitted(status) {
 
 // 回到文章时把未确认的提交还原成草稿（正文 + @ 一起）：
 // 一级评论回到主输入框，每条回复回到对应楼层的回复框，都在该位置带「放弃这条」入口。
-function ksResumePendingComment(articleId) {
+function ksResumePendingComment(articleId, options) {
+  const silent = !!(options && options.silent);
   const records = ksPendingRecordsForArticle(articleId);
   if (!records.length) return;
   const owner = ksPendingOwner();
@@ -355,6 +364,7 @@ function ksResumePendingComment(articleId) {
       ? window.ksRestoreCommentDraft('main', pending.content, pending.mentions) : false;
     if (okMain) restored++; else failed++;
   });
+  if (silent) return;
   if (restored) {
     showToast('有 ' + restored + ' 条评论结果还没确认，已恢复为草稿；再次提交不会重复发布'
       + (owner.persistable ? '' : '（当前无法确认账号身份，这份草稿只在本次页面有效）'));
@@ -362,6 +372,15 @@ function ksResumePendingComment(articleId) {
   // 回复的目标评论已被删除时无法恢复，需要明确告知，不能让用户以为已经没有了
   if (failed) showToast('有 ' + failed + ' 条未确认的回复所在评论已不存在，无法恢复');
 }
+
+// 评论列表被整块重绘后（View 调这里）：按待确认记录把草稿重新渲染出来。
+// 重绘会销毁回复框，不重放一次恢复就等于把未确认的回复弄丢了。
+function ksResumePendingAfterPaint() {
+  const a = ksState.currentArticle;
+  if (!a) return;
+  ksResumePendingComment(a.id, { silent: true });
+}
+window.ksResumePendingAfterPaint = ksResumePendingAfterPaint;
 
 // 放弃未确认的提交（用户明确不要了）：清记录与对应草稿，之后可按新评论重新开始。
 // parentId 为空表示一级评论，否则是某条评论下的回复。
@@ -373,6 +392,22 @@ function ksDiscardPendingComment(parentId) {
   if (typeof window.ksClearCommentDraft === 'function') window.ksClearCommentDraft(pid);
   else if (typeof window.ksResetMentions === 'function') window.ksResetMentions('main');
   showToast('已放弃未确认的评论');
+}
+
+// 结果不明时的提示：只有「记录真的落到了存储」时才能说「稍后重试」，否则必须提醒不要刷新。
+// 两种情况要分开说：身份不可确认、浏览器存储写不进去，刷新都会丢掉请求编号。
+function ksUnknownOutcomeTip(status, saved) {
+  const base = status
+    ? '服务器繁忙，评论可能已提交，请稍后重试（不会重复发布）'
+    : '网络异常，评论可能已提交，请稍后重试（不会重复发布）';
+  const owner = ksPendingOwner();
+  if (!owner.persistable) {
+    return base + '；当前无法确认账号身份，请在本次页面内重试，不要刷新';
+  }
+  if (!saved || saved.persisted !== true) {
+    return base + '；当前浏览器存储不可用，请在本次页面内重试，刷新会丢失这条待确认记录';
+  }
+  return base;
 }
 
 async function ksSubmitComment(parentId, textInput, boxKey) {
@@ -401,7 +436,15 @@ async function ksSubmitComment(parentId, textInput, boxKey) {
   } else {
     requestId = ksNewRequestId();
   }
-  ksSavePendingRecord(a.id, parentId, { id: requestId, content: text, mentions: mentions });
+  const saved = ksSavePendingRecord(a.id, parentId, { id: requestId, content: text, mentions: mentions });
+  if (!saved || saved.ok !== true) {
+    if (saved && saved.reason === 'limit') {
+      showToast('还有 ' + KS_PENDING_MAX + ' 条评论结果没确认，请先处理（原样重试或放弃）后再发新的（不会重复发布）');
+      return;
+    }
+    showToast('请先登录后再评论');
+    return;
+  }
 
   const body = { content: text, client_request_id: requestId };
   if (parentId) body.parent_id = parentId;
@@ -409,13 +452,8 @@ async function ksSubmitComment(parentId, textInput, boxKey) {
   const r = await window.siteApi.post('/api/knowledge/articles/' + a.id + '/comments', body);
   if (!r.ok) {
     if (ksMayHaveCommitted(r.status)) {
-      // 保留整份待确认记录：服务端可能已提交，重试会拿回原评论而不是再发一条。
-      // 身份不可确认时记录只在本页内存，必须明确告诉用户不要刷新，否则无法安全重试。
-      const persistable = ksPendingOwner().persistable;
-      showToast((r.status
-        ? '服务器繁忙，评论可能已提交，请稍后重试（不会重复发布）'
-        : '网络异常，评论可能已提交，请稍后重试（不会重复发布）')
-        + (persistable ? '' : '；当前无法确认账号身份，请在本次页面内重试，不要刷新'));
+      // 保留整份待确认记录：服务端可能已提交，重试会拿回原评论而不是再发一条
+      showToast(ksUnknownOutcomeTip(r.status, saved));
       return;
     }
     // 服务端明确拒绝：丢弃记录，避免下次重放命中这条失败请求

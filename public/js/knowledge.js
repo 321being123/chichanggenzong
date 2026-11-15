@@ -628,14 +628,30 @@ function ksPaintCommentsPrepare() {
 function ksPaintComments(list) {
   const box = ksEl('ks-comment-list');
   if (!box) return;
-  if (!list.length) { box.innerHTML = '<div class="ks-comment-empty">暂无评论</div>'; return; }
+  if (!list.length) {
+    box.innerHTML = '<div class="ks-comment-empty">暂无评论</div>';
+    ksRestorePendingAfterPaint();
+    return;
+  }
   box.innerHTML = ksRenderComments(list, 0);
   // 绑定回复按钮与提交
   box.querySelectorAll('.ks-reply-btn').forEach(btn => {
     btn.addEventListener('click', function () {
       const cid = btn.dataset.id;
       const exist = box.querySelector('.ks-reply-box[data-pid="' + cid + '"]');
-      if (exist) { exist.remove(); return; }
+      if (exist) {
+        // 带未确认提示的框不能收起：收起后正文与「放弃这条」都没了，
+        // 用户再输别的内容又会被「请先原样重试」拦住，等于没有出口。
+        const notice = exist.querySelector('.ks-comment-notice');
+        if (notice && !notice.hidden) {
+          const ta = exist.querySelector('.ks-reply-text');
+          if (ta && ta.focus) ta.focus();
+          if (typeof showToast === 'function') showToast('这条回复结果还没确认：请原样重试，或点「放弃这条」');
+          return;
+        }
+        exist.remove();
+        return;
+      }
       ksEnsureReplyBox(cid);
     });
   });
@@ -645,6 +661,15 @@ function ksPaintComments(list) {
       ksDeleteComment(btn.dataset.id);
     });
   });
+  // 列表被整块重绘后回复框会随旧 DOM 一起销毁：重绘完立刻按待确认记录恢复，
+  // 否则用户刷新评论后只能看到「请先原样重试」却看不到原文与放弃入口。
+  ksRestorePendingAfterPaint();
+}
+
+// 列表整块重绘由 View 触发，但「当前文章 + 待确认记录」属 Presenter，经它的入口转调，
+// 避免 View 直接读 Presenter 的状态（也避免 View 在无 Presenter 时抛错）。
+function ksRestorePendingAfterPaint() {
+  if (typeof window.ksResumePendingAfterPaint === 'function') window.ksResumePendingAfterPaint();
 }
 
 // 回复框的唯一构造入口：点「回复」与「恢复未确认的回复草稿」都走这里，

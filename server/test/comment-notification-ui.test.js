@@ -841,6 +841,173 @@ async function legacyPendingIgnored() {
   } finally { await tick(); dom.window.close(); }
 }
 
+// ---------- 14. 收起回复框 / 刷新评论列表后仍可恢复 ----------
+async function pendingReplySurvivesPaint() {
+  const dom = new JSDOM(
+    '<textarea id="ks-comment"></textarea><div id="panel" role="listbox" hidden></div><div id="chips" hidden></div>'
+    + '<div id="ks-comment-notice" hidden></div>'
+    + '<div id="ks-comment-list">'
+    + '<div class="ks-comment-item" data-cid="55"><button class="ks-reply-btn" data-id="55" data-nick="甲">回复</button></div>'
+    + '</div>',
+    { url: 'https://example.test/?main=knowledge', runScripts: 'outside-only' }
+  );
+  const w = dom.window;
+  try {
+    const toasts = [];
+    const posts = [];
+    w.username = 'alice';
+    w.accountIdentity = '100';
+    w.escapeHtml = escaper();
+    w.showToast = function (m) { toasts.push(String(m)); };
+    w.siteApi = {
+      get: async function () { return { ok: true, status: 200, payload: { id: 7, title: '文章', status: 'published' } }; },
+      post: async function (url, body) {
+        if (url.indexOf('/view') >= 0) return { ok: true, status: 200, payload: {} };
+        posts.push(body);
+        return { ok: false, status: 502, payload: null };
+      },
+    };
+    w.eval(read('public/js/knowledge.js'));
+    w.ksPaintArticle = function () {};
+    w.ksShowView = function () {};
+    w.ksPaintCommentsPrepare = function () { return false; };
+    w.eval(read('public/js/presenters/knowledge-presenter.js'));
+    await w.ksOpenArticle(7);
+
+    await w.ksSubmitComment(55, '待确认的回复', 'reply-55');
+    assert.strictEqual(posts.length, 1);
+
+    const box = () => w.document.querySelector('.ks-reply-box[data-pid="55"]');
+    const paintList = () => w.ksPaintComments([{
+      id: 55, nickname: '甲', content: '父评论', created_at: '2026-11-15T02:00:00Z',
+      can_delete: false, replies: [],
+    }]);
+
+    // 评论列表刷新（整块重绘会销毁回复框）：恢复必须跟着重建，而且重绘时按钮才是真绑定
+    paintList();
+    assert.ok(box(), '列表刷新后仍要恢复未确认的回复框');
+    assert.strictEqual(box().querySelector('.ks-reply-text').value, '待确认的回复');
+    assert.strictEqual(box().querySelector('.ks-comment-notice').hidden, false);
+
+    // 连点两次「回复」：不能把待确认的框收起（收起后正文与放弃入口都没了）
+    const replyBtn = w.document.querySelector('.ks-reply-btn[data-id="55"]');
+    replyBtn.click();
+    assert.ok(box(), '第一次点「回复」不得收起未确认的框');
+    replyBtn.click();
+    assert.ok(box(), '第二次点「回复」也不得收起未确认的框');
+    assert.strictEqual(box().querySelector('.ks-reply-text').value, '待确认的回复', '正文必须还在');
+    assert.strictEqual(box().querySelector('.ks-comment-notice').hidden, false, '放弃入口必须还在');
+    assert.ok(toasts.some(function (m) { return m.indexOf('还没确认') >= 0; }), '应提示先重试或放弃');
+
+    // 再刷新一次：仍然恢复
+    paintList();
+    assert.ok(box(), '再次刷新列表后仍要恢复');
+    assert.strictEqual(box().querySelector('.ks-reply-text').value, '待确认的回复');
+    pass++;
+  } finally { await tick(); dom.window.close(); }
+}
+
+// ---------- 15. 存储写入失败时提示刷新风险 ----------
+async function storageWriteFailureTip() {
+  const dom = new JSDOM(
+    '<textarea id="ks-comment"></textarea><div id="panel" role="listbox" hidden></div><div id="chips" hidden></div>'
+    + '<div id="ks-comment-notice" hidden></div><div id="ks-comment-list"></div>',
+    { url: 'https://example.test/?main=knowledge', runScripts: 'outside-only' }
+  );
+  const w = dom.window;
+  try {
+    const toasts = [];
+    const posts = [];
+    w.username = 'alice';
+    w.accountIdentity = '100';   // 身份可用：单看身份会误判成「可以放心刷新」
+    w.escapeHtml = escaper();
+    w.showToast = function (m) { toasts.push(String(m)); };
+    w.siteApi = {
+      get: async function () { return { ok: true, status: 200, payload: { id: 7, title: '文章', status: 'published' } }; },
+      post: async function (url, body) {
+        if (url.indexOf('/view') >= 0) return { ok: true, status: 200, payload: {} };
+        posts.push(body);
+        return { ok: false, status: 502, payload: null };
+      },
+    };
+    w.eval(read('public/js/knowledge.js'));
+    w.ksPaintArticle = function () {};
+    w.ksShowView = function () {};
+    w.ksPaintCommentsPrepare = function () { return false; };
+    w.ksPaintComments = function () {};
+    w.eval(read('public/js/presenters/knowledge-presenter.js'));
+    // 模拟配额满/隐私模式：能读到存储对象，但 setItem 抛错
+    Object.defineProperty(w, 'sessionStorage', {
+      configurable: true,
+      get: function () {
+        return {
+          getItem: function () { return null; },
+          setItem: function () { throw new Error('QuotaExceededError'); },
+        };
+      },
+    });
+    await w.ksOpenArticle(7);
+    await w.ksSubmitComment(null, '存储写不进去的评论', 'main');
+
+    assert.strictEqual(posts.length, 1);
+    const tip = toasts.filter(function (m) { return m.indexOf('可能已提交') >= 0; }).join(' ');
+    assert.ok(tip.indexOf('刷新') >= 0, '存储不可用时必须提醒刷新会丢：' + tip);
+    assert.ok(tip.indexOf('不要刷新') >= 0 || tip.indexOf('刷新会丢失') >= 0, '提示要写明刷新风险');
+    pass++;
+  } finally { await tick(); dom.window.close(); }
+}
+
+// ---------- 16. 超过上限不得静默丢弃最早记录 ----------
+async function pendingLimitKeepsOldRecords() {
+  const dom = new JSDOM(
+    '<textarea id="ks-comment"></textarea><div id="panel" role="listbox" hidden></div><div id="chips" hidden></div>'
+    + '<div id="ks-comment-notice" hidden></div><div id="ks-comment-list"></div>',
+    { url: 'https://example.test/?main=knowledge', runScripts: 'outside-only' }
+  );
+  const w = dom.window;
+  try {
+    const toasts = [];
+    const posts = [];
+    w.username = 'alice';
+    w.accountIdentity = '100';
+    w.escapeHtml = escaper();
+    w.showToast = function (m) { toasts.push(String(m)); };
+    w.siteApi = {
+      get: async function () { return { ok: true, status: 200, payload: { id: 7, title: '文章', status: 'published' } }; },
+      post: async function (url, body) {
+        if (url.indexOf('/view') >= 0) return { ok: true, status: 200, payload: {} };
+        posts.push(body);
+        return { ok: false, status: 502, payload: null };
+      },
+    };
+    w.eval(read('public/js/knowledge.js'));
+    w.ksPaintArticle = function () {};
+    w.ksShowView = function () {};
+    w.ksPaintCommentsPrepare = function () { return false; };
+    w.ksPaintComments = function () {};
+    w.eval(read('public/js/presenters/knowledge-presenter.js'));
+    await w.ksOpenArticle(7);
+
+    for (let i = 1; i <= 10; i++) {
+      await w.ksSubmitComment(1000 + i, '未确认的回复 ' + i, null);
+    }
+    assert.strictEqual(posts.length, 10);
+    const firstId = posts[0].client_request_id;
+    const stored = JSON.parse(w.sessionStorage.getItem('ks-pending-comments') || '{}');
+    assert.strictEqual(Object.keys(stored).length, 10, '应存满 10 条');
+
+    // 第 11 条：必须被拒绝并说明原因，不能悄悄丢掉最早那条
+    await w.ksSubmitComment(2000, '第 11 条', null);
+    assert.strictEqual(posts.length, 10, '超过上限时不得再发请求');
+    assert.ok(toasts.some(function (m) { return m.indexOf('没确认') >= 0; }), '应提示先处理未确认的评论');
+    const after = JSON.parse(w.sessionStorage.getItem('ks-pending-comments') || '{}');
+    assert.strictEqual(Object.keys(after).length, 10, '不得因超限删除记录');
+    assert.ok(Object.keys(after).some(function (k) { return after[k].id === firstId; }),
+      '最早那条记录必须还在，否则它若已提交、重试就会重复发表');
+    pass++;
+  } finally { await tick(); dom.window.close(); }
+}
+
 (async () => {
   const suites = [
     ['@ 区间随编辑平移与失效（同昵称可区分）', mentionRanges],
@@ -856,6 +1023,9 @@ async function legacyPendingIgnored() {
     ['身份缺失时只在本页保留，不跨会话恢复', identityMissingPending],
     ['同一文章多条待确认回复都能恢复与放弃', multiplePendingReplies],
     ['旧版本遗留的待确认记录不得恢复', legacyPendingIgnored],
+    ['回复框收起与列表刷新后待确认内容仍可见', pendingReplySurvivesPaint],
+    ['存储写不进去时提示刷新风险', storageWriteFailureTip],
+    ['超过待确认上限不静默丢弃最早记录', pendingLimitKeepsOldRecords],
   ];
   let failed = 0;
   for (const [name, fn] of suites) {

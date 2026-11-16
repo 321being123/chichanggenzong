@@ -50,8 +50,11 @@ assert.ok(statementsScript.includes('statement-section-'), '财务报表缺少�
 assert.ok(statementsScript.includes('statement-level-') && statementsScript.includes('statement-branch'), '财务科目缺少父子层级展示');
 assert.ok(statementsScript.includes('comparisonEnabled = data.compare !== \'none\''), '不比较模式必须收起空比较列');
 assert.ok(analysisCss.includes('height:30px') && analysisCss.includes('statement-level-2') && analysisCss.includes('statement-unit'), '三表矩阵缺少紧凑行高、深层级与同行单位样式');
+assert.ok(analysisCss.includes('.statement-status-help') && analysisCss.includes('min-width:44px') && analysisCss.includes('min-height:44px'), '缺失字段必须有可触达的状态说明入口');
+assert.ok(analysisCss.includes('.biz-table-floating-head .stock-analysis-statements-table thead') && analysisCss.includes('height:auto'), '浮动表头必须解除共享表头的固定行高');
 assert.ok(businessTableScript.includes('floating.className = table.className + \' biz-table-floating-table\''), '浮动表头必须保留业务矩阵样式');
 assert.ok(businessTableScript.includes('aria-hidden\', \'true\''), '浮动表头副本必须对读屏隐藏');
+assert.ok(businessTableScript.includes('cells.filter(function (item) { return item.span === 1; })'), '浮动表头宽度必须优先采用真实叶列宽度');
 assert.ok(statementsPresenter.includes('stockAnalysisState.selected !== code'), '409 重读未在写入共享快照前确认证券仍为当前证券');
 {
   const dom = new JSDOM('<div id="stock-analysis-statements-title"></div><div id="stock-analysis-statements-meta"></div><div id="stock-analysis-statements-message"></div><div id="stock-analysis-statements-wrap"></div>');
@@ -67,6 +70,9 @@ assert.ok(statementsPresenter.includes('stockAnalysisState.selected !== code'), 
   assert.ok(cell, '不可比较值要有可访问原因');
   assert.strictEqual(cell.getAttribute('aria-label'), '该项目的比较口径尚未核实');
   assert.strictEqual(cell.textContent, '—');
+  const statusHelp = dom.window.document.querySelector('details.statement-status-help');
+  assert.ok(statusHelp, '不可比较字段要有触摸可打开的状态说明');
+  assert.match(statusHelp.textContent, /比较口径尚未核实/);
   dom.window.close();
 }
 {

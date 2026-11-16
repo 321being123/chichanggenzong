@@ -4,10 +4,12 @@
 
 const PARENT_CODES = new Set([
   'bs.ta', 'bs.tca', 'bs.tnca', 'bs.tl', 'bs.tcl', 'bs.tncl', 'bs.toe', 'bs.tetoshopc', 'bs.cabwcb',
-  'ps.toi', 'ps.oi', 'ps.toc', 'ps.tc', 'ps.op', 'ps.tp', 'ps.npatoshopc',
+  'bs.nraar', 'bs.or', 'bs.i', 'bs.fa', 'bs.cip', 'bs.ia', 'bs.rade', 'bs.npaap', 'bs.oap', 'bs.bp', 'bs.ltap', 'bs.oei',
+  'ps.toi', 'ps.oi', 'ps.toc', 'ps.tc', 'ps.op', 'ps.tp', 'ps.np', 'ps.fe', 'ps.ivi', 'ps.noi', 'ps.noe',
   'cfs.stciffoa', 'cfs.stcoffoa', 'cfs.ncffoa', 'cfs.niicdadfbaofi',
   'cfs.stcifia', 'cfs.stcoffia', 'cfs.ncffia',
   'cfs.stcifffa', 'cfs.stcofffa', 'cfs.ncfffa', 'cfs.niicace',
+  'cfs.ncrfdossajvaou', 'cfs.ncpfbssajvaou', 'cfs.crfai', 'cfs.cpfdapdoi',
 ]);
 
 const PARENT_HINTS = Object.freeze({
@@ -19,10 +21,10 @@ const PARENT_HINTS = Object.freeze({
   'ps.oc': 'ps.toc', 'ps.ie': 'ps.toc', 'ps.face': 'ps.toc', 'ps.s': 'ps.toc',
   'ps.ce': 'ps.toc', 'ps.iiicr': 'ps.toc', 'ps.phdrfpip': 'ps.toc', 'ps.rie': 'ps.toc',
   'ps.tas': 'ps.toc', 'ps.se': 'ps.toc', 'ps.ae': 'ps.toc', 'ps.rade': 'ps.toc',
-  'ps.crade': 'ps.toc', 'ps.fe': 'ps.toc', 'ps.ooe': 'ps.toc', 'ps.cilor': 'ps.toc',
-  'ps.ailor': 'ps.toc', 'ps.oail': 'ps.toc',
-  'ps.npatshaoehopc': 'ps.tp', 'ps.npatoshopc': 'ps.tp', 'ps.npatmsh': 'ps.tp',
-  'ps.tci': 'ps.tp', 'ps.tciatshaoehopc': 'ps.tci', 'ps.tciatoshopc': 'ps.tci', 'ps.tciatmsh': 'ps.tci',
+  'ps.ooe': 'ps.toc', 'ps.oail': 'ps.toc',
+  // 净利润归属是净利润的分类维度；综合收益不属于利润总额的普通明细。
+  'ps.npatshaoehopc': 'ps.np', 'ps.npatoshopc': 'ps.np', 'ps.npatmsh': 'ps.np',
+  'ps.tci': null, 'ps.tciatshaoehopc': 'ps.tci', 'ps.tciatoshopc': 'ps.tci', 'ps.tciatmsh': 'ps.tci',
   'cfs.crfscapls': 'cfs.stciffoa', 'cfs.ndilaatc': 'cfs.stciffoa', 'cfs.niicdadfbaofi': 'cfs.stciffoa',
   'cfs.niibfcb': 'cfs.stciffoa', 'cfs.niipfofi': 'cfs.stciffoa', 'cfs.crfp': 'cfs.stciffoa',
   'cfs.niicd': 'cfs.niicdadfbaofi', 'cfs.niidfbaofi': 'cfs.niicdadfbaofi',
@@ -35,14 +37,49 @@ const PARENT_HINTS = Object.freeze({
   'cfs.cpfifac': 'cfs.stcoffoa', 'cfs.cptofe': 'cfs.stcoffoa', 'cfs.cpft': 'cfs.stcoffoa',
   'cfs.cprtooa': 'cfs.stcoffoa',
   'cfs.crfrci': 'cfs.stcifia', 'cfs.crfii': 'cfs.stcifia', 'cfs.crfdofiaolta': 'cfs.stcifia',
-  'cfs.ncrfdossajvaou': 'cfs.stcifia', 'cfs.ncrfdossaou': 'cfs.stcifia', 'cfs.ncrfdoaajv': 'cfs.stcifia',
-  'cfs.crrtoia': 'cfs.stcifia', 'cfs.cpfpfiaolta': 'cfs.stcoffia', 'cfs.cpfi': 'cfs.stcoffia',
-  'cfs.niipl': 'cfs.stcoffia', 'cfs.ncpfbssajvaou': 'cfs.stcoffia', 'cfs.ncpfbssaou': 'cfs.stcoffia',
-  'cfs.ncpfbajv': 'cfs.stcoffia', 'cfs.cprtoia': 'cfs.stcoffia',
-  'cfs.crfai': 'cfs.stcifffa', 'cfs.crfamshibss': 'cfs.stcifffa', 'cfs.crfl': 'cfs.stcifffa',
+  'cfs.crrtoia': 'cfs.stcifia',
+  'cfs.cpfpfiaolta': 'cfs.stcoffia', 'cfs.cpfi': 'cfs.stcoffia',
+  'cfs.niipl': 'cfs.stcoffia', 'cfs.cprtoia': 'cfs.stcoffia',
+  'cfs.crfai': 'cfs.stcifffa', 'cfs.crfl': 'cfs.stcifffa',
   'cfs.crfib': 'cfs.stcifffa', 'cfs.crrtofa': 'cfs.stcifffa', 'cfs.cpfbrp': 'cfs.stcofffa',
-  'cfs.cpfdapdoi': 'cfs.stcofffa', 'cfs.cpfdapomshpbss': 'cfs.stcofffa', 'cfs.cprtofa': 'cfs.stcofffa',
+  'cfs.cpfdapdoi': 'cfs.stcofffa', 'cfs.cprtofa': 'cfs.stcofffa',
   'cfs.ncffoa': null, 'cfs.ncffia': null, 'cfs.ncfffa': null, 'cfs.niicace': null,
+});
+
+// 仅对已取得同类型来源证据的“其中”关系启用父子树；未提供类型上下文时保持无父项，避免把一个类型的排列语义外推到其他类型。
+const VERIFIED_RELATIONS = Object.freeze({
+  'bs.nr': { parent: 'bs.nraar', contexts: ['CN|non_financial', 'HK|non_financial'] },
+  'bs.ar': { parent: 'bs.nraar', contexts: ['CN|non_financial', 'HK|non_financial'] },
+  'bs.ir': { parent: 'bs.or', contexts: ['CN|non_financial'] },
+  'bs.dr': { parent: 'bs.or', contexts: ['CN|non_financial'] },
+  'bs.i_dr': { parent: 'bs.i', contexts: ['CN|non_financial'] },
+  'bs.dofa': { parent: 'bs.fa', contexts: ['CN|non_financial'] },
+  'bs.es': { parent: 'bs.cip', contexts: ['CN|non_financial'] },
+  'bs.ia_dr': { parent: 'bs.ia', contexts: ['CN|non_financial', 'CN|security'] },
+  'bs.rade_dr': { parent: 'bs.rade', contexts: ['CN|non_financial'] },
+  'bs.np': { parent: 'bs.npaap', contexts: ['CN|non_financial', 'HK|non_financial'] },
+  'bs.ap': { parent: 'bs.npaap', contexts: ['CN|non_financial', 'HK|non_financial'] },
+  'bs.intp': { parent: 'bs.oap', contexts: ['CN|non_financial'] },
+  'bs.dp': { parent: 'bs.oap', contexts: ['CN|non_financial'] },
+  'bs.psibp': { parent: 'bs.bp', contexts: ['CN|non_financial'] },
+  'bs.pcsibp': { parent: 'bs.bp', contexts: ['CN|non_financial'] },
+  'bs.sap': { parent: 'bs.ltap', contexts: ['CN|non_financial'] },
+  'bs.psioei': { parent: 'bs.oei', contexts: ['CN|non_financial', 'CN|insurance', 'CN|security', 'CN|other_financial', 'HK|non_financial', 'HK|other_financial'] },
+  'bs.pcsioei': { parent: 'bs.oei', contexts: ['CN|non_financial', 'CN|insurance', 'CN|security', 'CN|other_financial', 'HK|non_financial', 'HK|other_financial'] },
+  'ps.ieife': { parent: 'ps.fe', contexts: ['CN|non_financial'] },
+  'ps.iiife': { parent: 'ps.fe', contexts: ['CN|non_financial', 'HK|non_financial'] },
+  'ps.iifaajv': { parent: 'ps.ivi', contexts: ['CN|non_financial', 'CN|insurance', 'CN|security', 'CN|other_financial'] },
+  'ps.iftdofamaac': { parent: 'ps.ivi', contexts: ['CN|non_financial', 'CN|insurance', 'CN|security', 'CN|other_financial'] },
+  'ps.ncadarg': { parent: 'ps.noi', contexts: ['CN|non_financial'] },
+  'ps.ncadarl': { parent: 'ps.noe', contexts: ['CN|non_financial'] },
+  'cfs.ncrfdossajvaou': { parent: 'cfs.stcifia', contexts: ['CN|non_financial', 'CN|insurance', 'CN|security', 'CN|other_financial'] },
+  'cfs.ncrfdossaou': { parent: 'cfs.ncrfdossajvaou', contexts: ['CN|non_financial', 'CN|insurance', 'CN|security', 'CN|other_financial'] },
+  'cfs.ncrfdoaajv': { parent: 'cfs.ncrfdossajvaou', contexts: ['CN|non_financial', 'CN|insurance', 'CN|security', 'CN|other_financial'] },
+  'cfs.ncpfbssajvaou': { parent: 'cfs.stcoffia', contexts: ['CN|non_financial', 'CN|insurance', 'CN|security', 'CN|other_financial'] },
+  'cfs.ncpfbssaou': { parent: 'cfs.ncpfbssajvaou', contexts: ['CN|non_financial', 'CN|insurance', 'CN|security', 'CN|other_financial'] },
+  'cfs.ncpfbajv': { parent: 'cfs.ncpfbssajvaou', contexts: ['CN|non_financial', 'CN|insurance', 'CN|security', 'CN|other_financial'] },
+  'cfs.crfamshibss': { parent: 'cfs.crfai', contexts: ['CN|non_financial', 'CN|insurance', 'CN|security', 'CN|other_financial'] },
+  'cfs.cpfdapomshpbss': { parent: 'cfs.cpfdapdoi', contexts: ['CN|non_financial', 'CN|insurance', 'CN|security', 'CN|other_financial'] },
 });
 
 const CASHFLOW_SECTIONS = Object.freeze({
@@ -108,16 +145,29 @@ function unitOf(metric, currency) {
   return currency ? `${currency}·亿元` : '原币·亿元';
 }
 
+function relationHintOf(metric) {
+  const code = metric && metric.code;
+  if (Object.prototype.hasOwnProperty.call(VERIFIED_RELATIONS, code)) {
+    const relation = VERIFIED_RELATIONS[code];
+    const contexts = Array.isArray(metric.relation_contexts) ? metric.relation_contexts.filter(Boolean) : [];
+    // 没有类型上下文，或同一响应混有未核验类型时，明确阻断关系，不能回退到相邻字段猜测。
+    return contexts.length && contexts.every(context => relation.contexts.includes(context)) ? relation.parent : null;
+  }
+  if (Object.prototype.hasOwnProperty.call(PARENT_HINTS, code)) return PARENT_HINTS[code];
+  return undefined;
+}
+
 function presentationOf(metrics, statement, currency) {
   if (!Array.isArray(metrics)) throw new TypeError('三表展示需要受控科目元数据');
-  const parents = new Set(metrics.filter(metric => PARENT_CODES.has(metric.code)).map(metric => metric.code));
-  return metrics.map(metric => {
+  const byCode = new Map(metrics.map(metric => [metric.code, metric]));
+  const presented = metrics.map(metric => {
     const child = /其中|其中：|其中:/.test(String(metric.name || ''));
-    const hintedParent = Object.prototype.hasOwnProperty.call(PARENT_HINTS, metric.code) ? PARENT_HINTS[metric.code] : null;
-    const parent = hintedParent
-      ? metrics.find(candidate => candidate.code === hintedParent) || null
-      : (child && metric.source_prefix === undefined
-        ? metrics.find(candidate => candidate !== metric && sectionOf(candidate, statement) === sectionOf(metric, statement) && PARENT_CODES.has(candidate.code)) : null);
+    const hintedParent = relationHintOf(metric);
+    const inferredParent = child && metric.source_prefix === undefined
+      ? metrics.find(candidate => candidate !== metric && sectionOf(candidate, statement) === sectionOf(metric, statement) && PARENT_CODES.has(candidate.code))
+      : null;
+    const parentCode = hintedParent !== undefined ? hintedParent : (inferredParent ? inferredParent.code : null);
+    const parent = parentCode ? byCode.get(parentCode) || null : null;
     // 官方文档将“其中”“加”“减”等前缀与科目名称分开；保留原文，不据此猜测父科目。
     const sourcePrefix = String(metric.source_prefix || '').replace(/^#\s*/, '');
     const labelPrefix = /其中|备注|^加|^减/.test(sourcePrefix) ? sourcePrefix : '';
@@ -127,13 +177,28 @@ function presentationOf(metrics, statement, currency) {
       source_label: metric.name,
       source_prefix: metric.source_prefix || null,
       section: sectionOf(metric, statement),
-      level: parent ? 1 : 0,
       parent: parent ? parent.code : null,
-      is_parent: metric.source_heading === true || parents.has(metric.code),
+      level: 0,
+      is_parent: metric.source_heading === true || PARENT_CODES.has(metric.code),
       measure_type: measureType(metric),
       unit: unitOf(metric, currency),
     };
   });
+  const parentByCode = new Map(presented.map(item => [item.code, item.parent]));
+  const depthOf = (code, trail = new Set()) => {
+    if (!code || trail.has(code)) return 0;
+    const parent = parentByCode.get(code);
+    if (!parent || !byCode.has(parent)) return 0;
+    const next = new Set(trail);
+    next.add(code);
+    return Math.min(8, depthOf(parent, next) + 1);
+  };
+  const parents = new Set([...PARENT_CODES, ...presented.map(item => item.parent).filter(Boolean)]);
+  return presented.map(item => ({
+    ...item,
+    level: depthOf(item.code),
+    is_parent: item.is_parent || parents.has(item.code),
+  }));
 }
 
 function normalizeMetricValue(raw, metric, currency) {

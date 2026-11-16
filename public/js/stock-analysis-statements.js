@@ -120,6 +120,18 @@ function stockAnalysisRenderStatements(data) {
     var sectionRow = '';
     var sectionChanged = field.section !== currentSection;
     var fieldHasValue = Array.isArray(field.values) && field.values.some(function(item) { return item && item.value != null; });
+    var statusMessages = [];
+    function addStatusMessage(prefix, reason) {
+      var message = stockAnalysisStatementReason(reason);
+      var text = prefix + '：' + message;
+      if (statusMessages.indexOf(text) < 0) statusMessages.push(text);
+    }
+    (field.values || []).forEach(function(item) {
+      if (item && item.status && item.status !== 'available') addStatusMessage('原值', item.reason);
+      if (comparisonEnabled && item && item.comparison_status && item.comparison_status !== 'available') {
+        addStatusMessage(comparisonLabel, item.comparison_reason);
+      }
+    });
     if (field.section !== currentSection) {
       currentSection = field.section;
       // 来源已经给出同名且有值的总计时，直接把它作为分组首行，避免“分组标题＋总计”重复占行。
@@ -146,7 +158,10 @@ function stockAnalysisRenderStatements(data) {
     var parentAttr = field.parent ? ' data-parent-code="' + escapeHtml(field.parent) + '"' : '';
     var codeAttr = field.code ? ' data-statement-code="' + escapeHtml(field.code) + '"' : '';
     var unit = field.unit ? '<small class="statement-unit">' + escapeHtml(field.unit) + '</small>' : '';
-    return sectionRow + '<tr class="' + rowClass + '" data-statement-level="' + level + '"' + codeAttr + parentAttr + '><th scope="row">' + branch + '<span class="statement-label">' + escapeHtml(field.label) + '</span>' + unit + '</th>' + cells + '</tr>';
+    var statusHelp = statusMessages.length
+      ? '<details class="statement-status-help"><summary aria-label="查看该字段状态说明">!</summary><div class="statement-status-help-text">' + escapeHtml(statusMessages.join('；')) + '</div></details>'
+      : '';
+    return sectionRow + '<tr class="' + rowClass + '" data-statement-level="' + level + '"' + codeAttr + parentAttr + '><th scope="row">' + branch + '<span class="statement-label">' + escapeHtml(field.label) + '</span>' + unit + statusHelp + '</th>' + cells + '</tr>';
   }).join('');
   wrap.classList.add('biz-table-scroll');
   wrap.innerHTML = '<table class="biz-table biz-table--matrix stock-analysis-statements-table" aria-label="' + escapeHtml((data.name || '财务三表') + '，' + (data.unit_label || '默认单位：亿元')) + '"><thead><tr><th rowspan="2" scope="col">' + escapeHtml(data.unit_label || '默认单位：亿元') + '</th>' + headYears + '</tr><tr>' + subHead + '</tr></thead><tbody>' + rows + '</tbody></table>';

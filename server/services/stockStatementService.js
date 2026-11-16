@@ -8,6 +8,7 @@ const FORMULA_VERSION = 'stock-statements-5';
 
 const PERIOD_TYPES = new Set(['all', 'annual', 'semiannual', 'q1', 'q3', 'unknown']);
 const COMPARES = new Set(['yoy', 'qoq', 'none']);
+const STATEMENT_TYPES = new Set(['non_financial', 'bank', 'insurance', 'security', 'other_financial', 'reit']);
 
 function normalizeOptions(options = {}) {
   const periodType = String(options.periodType || options.period_type || 'all').toLowerCase();
@@ -143,14 +144,28 @@ function buildStatementPayload({ market = 'CN', type = 'balance', rows = [], ver
   const normalized = normalizeOptions(options);
   const types = [...new Set(rows.map(row => parseCoverage(row.statement_coverage))
     .map(coverage => coverage && coverage.fs_table_type).filter(Boolean))];
+  const hasUnknownType = rows.length > 0 && rows.some(row => {
+    const coverage = parseCoverage(row.statement_coverage);
+    return !coverage || !STATEMENT_TYPES.has(String(coverage.fs_table_type || '').toLowerCase());
+  });
   const ordered = [];
   for (const tableType of types) {
-    try { ordered.push(...dict.metricsOfType(market, tableType).filter(metric => metric.statement === type)); }
+    try {
+      const relationContext = `${market}|${tableType}`;
+      ordered.push(...dict.metricsOfType(market, tableType)
+        .filter(metric => metric.statement === type)
+        .map(metric => ({ ...metric, relation_contexts: [relationContext, ...(hasUnknownType ? [`${market}|unknown`] : [])] })));
+    }
     catch (_) { /* 旧记录类型无法识别时不猜测 */ }
   }
   const byCode = new Map();
-  for (const metric of [...ordered, ...dict.metricsByStatement(market, type)]) {
-    if (!byCode.has(metric.code)) byCode.set(metric.code, metric);
+  for (const metric of [...ordered, ...dict.metricsByStatement(market, type).map(item => ({ ...item, relation_contexts: [] }))]) {
+    const existing = byCode.get(metric.code);
+    if (!existing) {
+      byCode.set(metric.code, metric);
+    } else if (metric.relation_contexts && metric.relation_contexts.length) {
+      existing.relation_contexts = [...new Set([...(existing.relation_contexts || []), ...metric.relation_contexts])];
+    }
   }
   const metrics = [...byCode.values()];
   const currencies = [...new Set(rows.map(row => String(row.currency_code || '').toUpperCase()).filter(Boolean))];

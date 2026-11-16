@@ -158,6 +158,18 @@ async function tables() {
   ok(host.querySelectorAll('.biz-table-scroll-hint').length === 1 && host.querySelector('td.biz-identity'), '筛选重绘后恢复提示与身份列');
   d.getElementById('main-bond-safety').classList.remove('active'); w.BusinessTable.sync(); await tick();
   ok(floating.hidden, '切离页面后隐藏浮动表头');
+  d.getElementById('main-bond-safety').classList.add('active');
+  const matrix = d.createElement('div');
+  matrix.innerHTML = '<div class="biz-table-scroll"><table class="biz-table stock-analysis-statements-table"><thead><tr><th rowspan="2">项目</th><th colspan="2">2025</th></tr><tr><th>原值</th><th>同比</th></tr></thead><tbody><tr><th>总计</th><td>1</td><td>2</td></tr></tbody></table></div>';
+  d.getElementById('main-bond-safety').appendChild(matrix);
+  const matrixHeadCells = matrix.querySelectorAll('thead th');
+  matrixHeadCells[0].getBoundingClientRect = () => ({ top: 0, bottom: 30, left: 0, right: 140, width: 140, height: 30 });
+  matrixHeadCells[1].getBoundingClientRect = () => ({ top: 0, bottom: 30, left: 0, right: 300, width: 300, height: 30 });
+  matrixHeadCells[2].getBoundingClientRect = () => ({ top: 0, bottom: 30, left: 0, right: 100, width: 100, height: 30 });
+  matrixHeadCells[3].getBoundingClientRect = () => ({ top: 0, bottom: 30, left: 0, right: 200, width: 200, height: 30 });
+  w.BusinessTable.attach(matrix, { page: '#main-bond-safety', sticky: true }); await tick();
+  const matrixCols = [...matrix.__bizTableInstance.headHost.querySelectorAll('col')].map(col => parseFloat(col.style.width));
+  ok(JSON.stringify(matrixCols) === JSON.stringify([140, 100, 200]), '矩阵浮动表头优先采用不等宽真实叶列');
   w.close();
 }
 

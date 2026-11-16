@@ -148,10 +148,17 @@
     });
     var widthCount = grid.reduce(function (max, row) { return Math.max(max, row.length); }, 0);
     var widths = Array(widthCount).fill(0);
-    cells.forEach(function (item) {
+    // 真实叶列宽度是唯一权威；合并表头的平均宽度只用于填补没有叶单元格宽度的列，不能把不等宽列强行拉成等宽。
+    cells.filter(function (item) { return item.span === 1; }).forEach(function (item) {
+      var rect = item.cell.getBoundingClientRect();
+      if (rect.width > 0) widths[item.start] = Math.max(widths[item.start], rect.width);
+    });
+    cells.filter(function (item) { return item.span > 1; }).forEach(function (item) {
       var rect = item.cell.getBoundingClientRect();
       var perLeaf = rect.width > 0 ? rect.width / item.span : 0;
-      for (var i = item.start; i < item.start + item.span; i++) widths[i] = Math.max(widths[i], perLeaf);
+      for (var i = item.start; i < item.start + item.span; i++) {
+        if (!widths[i] && perLeaf > 0) widths[i] = perLeaf;
+      }
     });
     return widths;
   }

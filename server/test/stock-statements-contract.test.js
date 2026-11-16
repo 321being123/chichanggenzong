@@ -156,6 +156,65 @@ assert.strictEqual(presentation.find(item => item.code === 'ps.oc').parent, 'ps.
 assert.strictEqual(sectionOf({ code: 'cfs.crfscapls', name: '销售商品提供劳务收到的现金' }, 'cashflow'), '经营活动现金流', '经营现金流明细不能落到补充资料');
 assert.strictEqual(presentation.find(item => item.code === 'cfs.crfscapls').parent, 'cfs.stciffoa', '经营现金流入明细应挂到流入小计');
 
+const verifiedIncome = presentationOf([
+  { code: 'ps.fe', name: '财务费用' },
+  { code: 'ps.ieife', name: '利息费用', relation_contexts: ['CN|non_financial'] },
+  { code: 'ps.crade', name: '资本化研发支出' },
+  { code: 'ps.toc', name: '营业总成本' },
+], 'income', 'CNY');
+assert.strictEqual(verifiedIncome.find(item => item.code === 'ps.ieife').parent, 'ps.fe', '有来源上下文的财务费用明细应挂到财务费用');
+assert.strictEqual(verifiedIncome.find(item => item.code === 'ps.crade').parent, null, '备注项目不能被猜成营业总成本子项');
+assert.strictEqual(verifiedIncome.find(item => item.code === 'ps.crade').level, 0);
+
+const unverifiedIncome = presentationOf([
+  { code: 'ps.ivi', name: '投资收益' },
+  { code: 'ps.iifaajv', name: '对联营企业及合营企业的投资收益', relation_contexts: ['CN|bank'] },
+], 'income', 'CNY');
+assert.strictEqual(unverifiedIncome.find(item => item.code === 'ps.iifaajv').parent, null, '未核验类型不能复用其他类型的投资收益父项');
+const profitHierarchy = presentationOf([
+  { code: 'ps.tp', name: '利润总额' },
+  { code: 'ps.np', name: '净利润' },
+  { code: 'ps.npatshaoehopc', name: '归属于母公司股东及其他权益持有者的净利润' },
+  { code: 'ps.tci', name: '综合收益总额' },
+], 'income', 'CNY');
+assert.strictEqual(profitHierarchy.find(item => item.code === 'ps.npatshaoehopc').parent, 'ps.np', '归母净利润应挂到净利润分类维度');
+assert.strictEqual(profitHierarchy.find(item => item.code === 'ps.tci').parent, null, '综合收益总额不能挂到利润总额');
+
+const verifiedCashflow = presentationOf([
+  { code: 'cfs.stcifia', name: '投资活动现金流入小计' },
+  { code: 'cfs.ncrfdossajvaou', name: '处置子公司、合营联营企业等收到的现金净额', relation_contexts: ['CN|non_financial'] },
+  { code: 'cfs.ncrfdossaou', name: '处置子公司或其他营业单位收到的现金净额', relation_contexts: ['CN|non_financial'] },
+], 'cashflow', 'CNY');
+assert.strictEqual(verifiedCashflow.find(item => item.code === 'cfs.ncrfdossajvaou').parent, 'cfs.stcifia');
+assert.strictEqual(verifiedCashflow.find(item => item.code === 'cfs.ncrfdossaou').parent, 'cfs.ncrfdossajvaou');
+assert.strictEqual(verifiedCashflow.find(item => item.code === 'cfs.ncrfdossaou').level, 2, '中间父项下的现金流明细必须展示二级层级');
+
+const unverifiedCashflow = presentationOf([
+  { code: 'cfs.stcifia', name: '投资活动现金流入小计' },
+  { code: 'cfs.ncrfdossaou', name: '处置子公司或其他营业单位收到的现金净额', relation_contexts: ['CN|bank'] },
+], 'cashflow', 'CNY');
+assert.strictEqual(unverifiedCashflow.find(item => item.code === 'cfs.ncrfdossaou').parent, null, '银行类型未核验时不能直接挂投资流入小计');
+
+const integratedCashflow = buildStatementPayload({
+  market: 'CN', type: 'cashflow', options: { compare: 'none' }, canonicalCode: '600000.SH',
+  rows: [row({ accounting_standard: 'CAS', currency_code: 'CNY', source_currency: 'CNY', source_code: 'lixinger_official',
+    cfs_stcifia: 10, cfs_ncrfdossajvaou: 2, cfs_ncrfdossaou: 1,
+    statement_coverage: { fs_table_type: 'non_financial', requested_metric_codes: ['cfs.stcifia', 'cfs.ncrfdossajvaou', 'cfs.ncrfdossaou'], returned_metric_codes: ['cfs.stcifia', 'cfs.ncrfdossajvaou', 'cfs.ncrfdossaou'], complete: true } })],
+});
+assert.strictEqual(field(integratedCashflow, 'cfs.ncrfdossajvaou').parent, 'cfs.stcifia', '服务层必须把报表类型上下文传给关系展示层');
+assert.strictEqual(field(integratedCashflow, 'cfs.ncrfdossaou').parent, 'cfs.ncrfdossajvaou');
+assert.strictEqual(field(integratedCashflow, 'cfs.ncrfdossaou').level, 2);
+const mixedTypeCashflow = buildStatementPayload({
+  market: 'CN', type: 'cashflow', options: { compare: 'none' }, canonicalCode: '600000.SH',
+  rows: [
+    row({ accounting_standard: 'CAS', currency_code: 'CNY', source_currency: 'CNY', source_code: 'lixinger_official',
+      cfs_stcifia: 10, cfs_ncrfdossajvaou: 2, cfs_ncrfdossaou: 1,
+      statement_coverage: { fs_table_type: 'non_financial', requested_metric_codes: ['cfs.stcifia', 'cfs.ncrfdossajvaou', 'cfs.ncrfdossaou'], returned_metric_codes: ['cfs.stcifia', 'cfs.ncrfdossajvaou', 'cfs.ncrfdossaou'], complete: true } }),
+    row({ cfs_stcifia: 8, cfs_ncrfdossajvaou: 1, cfs_ncrfdossaou: 1 }),
+  ],
+});
+assert.strictEqual(field(mixedTypeCashflow, 'cfs.ncrfdossaou').parent, null, '混有未知报表类型时必须关闭已核验关系');
+
 const flow = buildStatementPayload({
   market: 'CN', type: 'income',
   rows: [

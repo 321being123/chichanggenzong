@@ -444,11 +444,11 @@ assert.strictEqual(field(flowYoy, 'ps.tp').values[0].comparison_reason, 'flow_pe
   ]);
   assert.strictEqual(field(mixedSource, 'bs.nr').level, 1, '混来源不应否定字典级展示结构');
 
-  // 整表没有任何理杏仁报告时仍阻断，避免把未核验来源一起美化
+  // 来源只决定金额口径（Tushare 历史金额由 UNVERIFIED_TUSHARE_WIDE 单独屏蔽），不参与展示结构
   const onlyTushare = cnPayloadOf([
     cnRow({ report_id: 40, period_end: '2025-12-31', industry: '白酒', source_code: 'tushare', bs_nraar: 180, bs_nr: 110, bs_ar: 70 }),
   ]);
-  assert.strictEqual(field(onlyTushare, 'bs.nr').level, 0, '全部为非理杏仁来源时保持平级');
+  assert.strictEqual(field(onlyTushare, 'bs.nr').level, 1, '纯 Tushare 历史表格仍按字典展示层级，金额另由来源白名单屏蔽');
 
   console.log('stock statements contract tests passed');
 })().catch(error => {

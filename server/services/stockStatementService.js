@@ -9,6 +9,8 @@ const FORMULA_VERSION = 'stock-statements-5';
 const PERIOD_TYPES = new Set(['all', 'annual', 'semiannual', 'q1', 'q3', 'unknown']);
 const COMPARES = new Set(['yoy', 'qoq', 'none']);
 const STATEMENT_TYPES = new Set(['non_financial', 'bank', 'insurance', 'security', 'other_financial', 'reit']);
+// 展示结构只对已登记的来源启用：理杏仁官方，以及字段映射受控的 Tushare 历史。
+const RELATION_SOURCE_WHITELIST = new Set(['lixinger_official', 'tushare']);
 
 function normalizeOptions(options = {}) {
   const periodType = String(options.periodType || options.period_type || 'all').toLowerCase();
@@ -157,9 +159,13 @@ function buildStatementPayload({ market = 'CN', type = 'balance', rows = [], ver
   // 关系描述适用于整张多期表，不能只检查包含该字段的类型；其他期的类型也参与门禁。
   const relationContexts = effectiveTypes.map(tableType => `${market}|${String(tableType).toLowerCase()}`);
   if (hasUnknownType && !inferredType) relationContexts.push(`${market}|unknown`);
-  // 混来源只说明数值口径需按来源分别核验（另有 UNVERIFIED_TUSHARE_WIDE 单独屏蔽金额），
-  // 并不否定字典级的展示结构；只有整表都没有理杏仁报告时才阻断关系。
-  if (rows.every(row => row.source_code !== 'lixinger_official')) relationContexts.push(`${market}|unverified_source`);
+  // 报告来源只决定金额口径，不决定展示结构：父子关系来自按 `市场|报表类型` 核验的字典，
+  // 金额的口径问题由 UNVERIFIED_TUSHARE_WIDE 单独屏蔽。因此结构只要求来源是可追溯登记过的
+  // （理杏仁官方、Tushare 受控映射）；出现未登记来源时仍整表关闭，不让未知来源继承已核验层级。
+  // 早前按「非理杏仁即阻断」会把最近几期恰好都来自 Tushare 的证券（如 600519.SH）整表压平。
+  if (!rows.every(row => RELATION_SOURCE_WHITELIST.has(String(row.source_code || '')))) {
+    relationContexts.push(`${market}|unverified_source`);
+  }
   const ordered = [];
   for (const tableType of effectiveTypes) {
     try {

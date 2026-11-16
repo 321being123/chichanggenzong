@@ -16,6 +16,7 @@ const bondScript = fs.readFileSync(path.join(root, 'public', 'js', 'bond-analysi
 // 批次4：可转债侧取数/请求序号已拆入 Presenter（presenters/bond-analysis-presenter.js），断言跟随代码按职责覆盖 View＋Presenter。
 const bondPresenter = fs.readFileSync(path.join(root, 'public', 'js', 'presenters', 'bond-analysis-presenter.js'), 'utf8');
 const statementsScript = fs.readFileSync(path.join(root, 'public', 'js', 'stock-analysis-statements.js'), 'utf8');
+const businessTableScript = fs.readFileSync(path.join(root, 'public', 'shared', 'business-table.js'), 'utf8');
 const vm = require('vm');
 const { JSDOM } = require('jsdom');
 // 批次4：三表已拆为 View（渲染）与 Presenter（缓存/请求序号/取数），断言按职责分别校验。
@@ -47,6 +48,10 @@ for (const type of ['balance','income','cashflow']) assert.ok(html.includes(`dat
 assert.ok(statementsPresenter.includes('stockAnalysisApi.getStatements') && statementsScript.includes('同比'), '三表页面未接入年度原值和同比数据');
 assert.ok(statementsScript.includes('statement-section-'), '财务报表缺少分区展示');
 assert.ok(statementsScript.includes('statement-level-') && statementsScript.includes('statement-branch'), '财务科目缺少父子层级展示');
+assert.ok(statementsScript.includes('comparisonEnabled = data.compare !== \'none\''), '不比较模式必须收起空比较列');
+assert.ok(analysisCss.includes('height:30px') && analysisCss.includes('statement-level-2') && analysisCss.includes('statement-unit'), '三表矩阵缺少紧凑行高、深层级与同行单位样式');
+assert.ok(businessTableScript.includes('floating.className = table.className + \' biz-table-floating-table\''), '浮动表头必须保留业务矩阵样式');
+assert.ok(businessTableScript.includes('aria-hidden\', \'true\''), '浮动表头副本必须对读屏隐藏');
 assert.ok(statementsPresenter.includes('stockAnalysisState.selected !== code'), '409 重读未在写入共享快照前确认证券仍为当前证券');
 {
   const dom = new JSDOM('<div id="stock-analysis-statements-title"></div><div id="stock-analysis-statements-meta"></div><div id="stock-analysis-statements-message"></div><div id="stock-analysis-statements-wrap"></div>');
@@ -62,6 +67,26 @@ assert.ok(statementsPresenter.includes('stockAnalysisState.selected !== code'), 
   assert.ok(cell, '不可比较值要有可访问原因');
   assert.strictEqual(cell.getAttribute('aria-label'), '该项目的比较口径尚未核实');
   assert.strictEqual(cell.textContent, '—');
+  dom.window.close();
+}
+{
+  const dom = new JSDOM('<div id="stock-analysis-statements-title"></div><div id="stock-analysis-statements-meta"></div><div id="stock-analysis-statements-message"></div><div id="stock-analysis-statements-wrap"></div>');
+  const view = { document: dom.window.document, window: dom.window,
+    escapeHtml: value => String(value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;'),
+    stockAnalysisNumber: value => String(value), stockAnalysisPercent: value => String(value),
+    BusinessTable: { attach() {} } };
+  vm.runInNewContext(statementsScript, view);
+  view.stockAnalysisRenderStatements({ name: '利润表', type: 'income', compare: 'none', unit_label: 'CNY·亿元', periods: [
+    { end_date: '2025-12-31', scope: 'consolidated', fs_table_type: 'non_financial', currency: 'CNY' }
+  ], fields: [
+    { code: 'ps.toi', label: '营业收入', section: '营业收入', level: 0, is_parent: true, values: [{ value: 10, status: 'available' }] },
+    { code: 'ps.oc', label: '营业成本', section: '成本及费用', level: 1, parent: 'ps.toc', unit: 'CNY·亿元', values: [{ value: 5, status: 'available' }] }
+  ] });
+  const table = dom.window.document.querySelector('table');
+  assert.strictEqual(table.querySelectorAll('thead tr:first-child th').length, 2, '不比较模式每期只能保留一个分组列');
+  assert.strictEqual(table.querySelectorAll('thead tr:nth-child(2) th').length, 1, '不比较模式不能渲染空比较列');
+  assert.ok(table.querySelector('tr.statement-section-total[data-statement-level="0"]'), '同名有值分组应合并为带值总计行');
+  assert.ok(table.querySelector('tr[data-parent-code="ps.toc"] .statement-unit'), '层级字段应保留父项标识和同行单位');
   dom.window.close();
 }
 {

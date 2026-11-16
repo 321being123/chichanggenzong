@@ -95,6 +95,10 @@ function stockAnalysisRenderStatements(data) {
     return;
   }
   if (message) message.style.display='none';
+  var comparisonEnabled = data.compare !== 'none';
+  var comparisonLabel = data.compare === 'qoq' ? '环比' : '同比';
+  var columnsPerPeriod = comparisonEnabled ? 2 : 1;
+  var columnCount = data.periods.length * columnsPerPeriod + 1;
   var headYears = data.periods.map(function(period) {
     var notes = [];
     if (period.end_date) notes.push('期末 ' + period.end_date);
@@ -106,34 +110,46 @@ function stockAnalysisRenderStatements(data) {
     if (period.currency) notes.push(period.currency);
     if (period.announced_at) notes.push('公告 ' + period.announced_at);
     var note = notes.length ? '<small>' + escapeHtml(notes.join(' · ')) + '</small>' : '';
-    return '<th colspan="2">' + escapeHtml(period.fiscal_year || period.year || period.end_date || '') + note + '</th>';
+    return '<th class="statement-period" scope="colgroup" colspan="' + columnsPerPeriod + '">' + escapeHtml(period.fiscal_year || period.year || period.end_date || '') + note + '</th>';
   }).join('');
-  var comparisonLabel = data.compare === 'qoq' ? '环比' : data.compare === 'none' ? '' : '同比';
-  var subHead = data.periods.map(function() { return '<th>原值</th><th>' + escapeHtml(comparisonLabel) + '</th>'; }).join('');
+  var subHead = data.periods.map(function() {
+    return '<th scope="col">原值</th>' + (comparisonEnabled ? '<th scope="col">' + escapeHtml(comparisonLabel) + '</th>' : '');
+  }).join('');
   var currentSection = '';
-  var columnCount = data.periods.length * 2 + 1;
   var rows = data.fields.map(function(field) {
     var sectionRow = '';
+    var sectionChanged = field.section !== currentSection;
+    var fieldHasValue = Array.isArray(field.values) && field.values.some(function(item) { return item && item.value != null; });
     if (field.section !== currentSection) {
       currentSection = field.section;
-      sectionRow = '<tr class="statement-section statement-section-' + escapeHtml(data.type) + '"><th colspan="' + columnCount + '">' + escapeHtml(currentSection) + '</th></tr>';
+      // 来源已经给出同名且有值的总计时，直接把它作为分组首行，避免“分组标题＋总计”重复占行。
+      if (!(String(field.label || '') === String(currentSection || '') && fieldHasValue)) {
+        sectionRow = '<tr class="statement-section statement-section-' + escapeHtml(data.type) + '"><th colspan="' + columnCount + '" scope="colgroup">' + escapeHtml(currentSection) + '</th></tr>';
+      }
     }
     var cells = field.values.map(function(item) {
       var value = item.value == null ? '—' : stockAnalysisNumber(item.value, 2);
+      var valueReason = stockAnalysisStatementReason(item.reason);
+      var valueStatus = item.status && item.status !== 'available' ? ' data-status="' + escapeHtml(item.status) + '" title="' + escapeHtml(valueReason) + '" aria-label="' + escapeHtml(valueReason) + '"' : '';
+      var valueCell = '<td class="statement-value"' + valueStatus + '>' + escapeHtml(value) + '</td>';
+      if (!comparisonEnabled) return valueCell;
       var change = item.change == null ? '—' : stockAnalysisPercent(item.change);
       var changeClass = item.change != null && item.change < 0 ? ' class="negative"' : '';
-      var valueReason = stockAnalysisStatementReason(item.reason);
       var comparisonReason = stockAnalysisStatementReason(item.comparison_reason);
-      var valueStatus = item.status && item.status !== 'available' ? ' data-status="' + escapeHtml(item.status) + '" title="' + escapeHtml(valueReason) + '" aria-label="' + escapeHtml(valueReason) + '"' : '';
       var comparisonStatus = item.comparison_status && item.comparison_status !== 'available' ? ' data-status="' + escapeHtml(item.comparison_status) + '" title="' + escapeHtml(comparisonReason) + '" aria-label="' + escapeHtml(comparisonReason) + '"' : '';
-      return '<td class="statement-value"' + valueStatus + '>' + escapeHtml(value) + '</td><td' + changeClass + comparisonStatus + '>' + escapeHtml(change) + '</td>';
+      return valueCell + '<td' + changeClass + comparisonStatus + '>' + escapeHtml(change) + '</td>';
     }).join('');
-    var rowClass = 'statement-item statement-level-' + (field.level || 0) + (field.is_parent ? ' statement-parent' : '');
-    var branch = field.level ? '<span class="statement-branch">└</span>' : '';
-    return sectionRow + '<tr class="' + rowClass + '"><th>' + branch + '<span>' + escapeHtml(field.label) + '</span>' + (field.unit ? '<small>' + escapeHtml(field.unit) + '</small>' : '') + '</th>' + cells + '</tr>';
+    var level = Math.max(0, Number(field.level) || 0);
+    var rowClass = 'statement-item statement-level-' + level + (field.is_parent ? ' statement-parent statement-total' : '')
+      + (sectionChanged && String(field.label || '') === String(currentSection || '') && fieldHasValue ? ' statement-section-total' : '');
+    var branch = level ? '<span class="statement-branch" aria-hidden="true">└</span>' : '';
+    var parentAttr = field.parent ? ' data-parent-code="' + escapeHtml(field.parent) + '"' : '';
+    var codeAttr = field.code ? ' data-statement-code="' + escapeHtml(field.code) + '"' : '';
+    var unit = field.unit ? '<small class="statement-unit">' + escapeHtml(field.unit) + '</small>' : '';
+    return sectionRow + '<tr class="' + rowClass + '" data-statement-level="' + level + '"' + codeAttr + parentAttr + '><th scope="row">' + branch + '<span class="statement-label">' + escapeHtml(field.label) + '</span>' + unit + '</th>' + cells + '</tr>';
   }).join('');
   wrap.classList.add('biz-table-scroll');
-  wrap.innerHTML = '<table class="biz-table biz-table--matrix stock-analysis-statements-table"><thead><tr><th rowspan="2">' + escapeHtml(data.unit_label || '默认单位：亿元') + '</th>' + headYears + '</tr><tr>' + subHead + '</tr></thead><tbody>' + rows + '</tbody></table>';
+  wrap.innerHTML = '<table class="biz-table biz-table--matrix stock-analysis-statements-table" aria-label="' + escapeHtml((data.name || '财务三表') + '，' + (data.unit_label || '默认单位：亿元')) + '"><thead><tr><th rowspan="2" scope="col">' + escapeHtml(data.unit_label || '默认单位：亿元') + '</th>' + headYears + '</tr><tr>' + subHead + '</tr></thead><tbody>' + rows + '</tbody></table>';
   wrap.style.display='block';
   if (window.BusinessTable) window.BusinessTable.attach(wrap, { page: '#main-stock-analysis', sticky: true });
 }

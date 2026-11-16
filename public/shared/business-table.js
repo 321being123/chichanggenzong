@@ -108,6 +108,8 @@
     if (!instance.headHost) {
       instance.headHost = document.createElement('div');
       instance.headHost.className = 'biz-table-floating-head';
+      // 浮动副本只负责视觉跟随，原表头保留唯一读屏语义和键盘焦点。
+      instance.headHost.setAttribute('aria-hidden', 'true');
       instance.headHost.hidden = true;
       document.body.appendChild(instance.headHost);
     }
@@ -125,6 +127,51 @@
     }
   }
 
+  function measureHeaderLeafWidths(head) {
+    if (!head || !head.rows || !head.rows.length) return [];
+    var grid = [];
+    var cells = [];
+    Array.from(head.rows).forEach(function (row, rowIndex) {
+      grid[rowIndex] = grid[rowIndex] || [];
+      var column = 0;
+      Array.from(row.cells).forEach(function (cell) {
+        while (grid[rowIndex][column]) column++;
+        var colSpan = Math.max(1, cell.colSpan || 1);
+        var rowSpan = Math.max(1, cell.rowSpan || 1);
+        cells.push({ cell: cell, start: column, span: colSpan });
+        for (var r = rowIndex; r < rowIndex + rowSpan; r++) {
+          grid[r] = grid[r] || [];
+          for (var c = column; c < column + colSpan; c++) grid[r][c] = cell;
+        }
+        column += colSpan;
+      });
+    });
+    var widthCount = grid.reduce(function (max, row) { return Math.max(max, row.length); }, 0);
+    var widths = Array(widthCount).fill(0);
+    cells.forEach(function (item) {
+      var rect = item.cell.getBoundingClientRect();
+      var perLeaf = rect.width > 0 ? rect.width / item.span : 0;
+      for (var i = item.start; i < item.start + item.span; i++) widths[i] = Math.max(widths[i], perLeaf);
+    });
+    return widths;
+  }
+
+  function applyFloatingLeafWidths(floating, widths) {
+    if (!floating || !widths || !widths.length) return;
+    var colgroup = floating.querySelector('colgroup.biz-table-floating-colgroup');
+    if (!colgroup) {
+      colgroup = document.createElement('colgroup');
+      colgroup.className = 'biz-table-floating-colgroup';
+      floating.insertBefore(colgroup, floating.firstChild);
+    }
+    colgroup.innerHTML = widths.map(function (width) {
+      var col = document.createElement('col');
+      col.style.width = Math.max(1, width) + 'px';
+      col.style.minWidth = Math.max(1, width) + 'px';
+      return col;
+    }).map(function (col) { return col.outerHTML; }).join('');
+  }
+
   function rebuild(instance) {
     var table = findWithin(instance.root, instance.tableSelector || '.biz-table');
     var scroll = findWithin(instance.root, instance.scrollSelector || '.biz-table-scroll');
@@ -137,18 +184,24 @@
     instance.scroll = scroll;
     instance.headHost.innerHTML = '';
     var floating = table.cloneNode(false);
-    floating.className = 'biz-table biz-table-floating-table';
+    // 保留业务表格类名（尤其是财务矩阵的紧凑/固定首列样式），再叠加共享浮动类。
+    floating.className = table.className + ' biz-table-floating-table';
+    floating.setAttribute('aria-hidden', 'true');
+    floating.setAttribute('tabindex', '-1');
     floating.style.width = table.getBoundingClientRect().width + 'px';
     var floatingHead = head.cloneNode(true);
     var sourceCells = head.querySelectorAll('th');
     floatingHead.querySelectorAll('th').forEach(function (cell, index) {
       cell.removeAttribute('id');
+      cell.setAttribute('tabindex', '-1');
+      cell.setAttribute('aria-hidden', 'true');
       if (sourceCells[index]) {
         cell.onclick = function () { sourceCells[index].click(); };
         cell.style.width = sourceCells[index].getBoundingClientRect().width + 'px';
         cell.style.minWidth = sourceCells[index].getBoundingClientRect().width + 'px';
       }
     });
+    applyFloatingLeafWidths(floating, measureHeaderLeafWidths(head));
     floating.appendChild(floatingHead);
     instance.headHost.appendChild(floating);
     instance.scrollHost.querySelector('.biz-table-floating-scroll-inner').style.width = scroll.scrollWidth + 'px';
@@ -171,6 +224,7 @@
       cell.style.width = width;
       cell.style.minWidth = width;
     });
+    applyFloatingLeafWidths(floating, measureHeaderLeafWidths(head));
     var inner = instance.scrollHost && instance.scrollHost.querySelector('.biz-table-floating-scroll-inner');
     if (inner) inner.style.width = scroll.scrollWidth + 'px';
   }

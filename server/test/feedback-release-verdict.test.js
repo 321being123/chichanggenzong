@@ -19,8 +19,14 @@ function resolvePython() {
     path.join(root, 'venv', 'bin', 'python'),
   ].filter(Boolean);
   const found = candidates.find(item => fs.existsSync(item));
-  if (!found) throw new Error('找不到可用的 Python 解释器，无法执行部署判定函数');
-  return found;
+  if (found) return found;
+  // 独立 worktree 通常不随 Git 检出 venv；与全量测试 Runner 保持一致，
+  // 允许使用 PATH 上已核验的 Python，而不是把环境缺失误报成判定逻辑失败。
+  for (const command of ['python', 'python3']) {
+    const probe = spawnSync(command, ['--version'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    if (probe.status === 0) return command;
+  }
+  throw new Error('找不到可用的 Python 解释器，无法执行部署判定函数');
 }
 
 // 一次性把全部判定结果算出来，避免每条用例都启一次解释器。

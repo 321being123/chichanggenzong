@@ -19,21 +19,34 @@ function cnDate(value) {
 }
 
 // 最近一个「应有收盘价」的 A 股交易日。
-// 当日收盘价只有收盘后（15:00 之后）才可能存在：盘前、盘中、午休一律回退到上一交易日，
-// 与统一取价的 phase 口径保持一致；否则凌晨/盘中跑本用例会拿一个还不存在的“今日收盘价”断言完整。
+// 取价服务的 phase 口径是：盘前/非交易日回退上一交易日，盘中、午休和收盘后要求当日；
+// 测试夹具必须与该口径一致，不能在盘中写入上一交易日再断言当日估值完整。
 function expectedCloseDate() {
   const now = new Date();
   const clock = new Intl.DateTimeFormat('en-GB', {
     timeZone: 'Asia/Shanghai', hour: '2-digit', minute: '2-digit', hour12: false,
   }).format(now);
   const [hour, minute] = clock.split(':').map(Number);
-  const closedToday = hour * 60 + minute >= 15 * 60;
-  for (let offset = closedToday ? 0 : 1; offset <= 11; offset++) {
+  const today = cnDate(now);
+  const beforeOpen = hour * 60 + minute < 9 * 60 + 30;
+  const startOffset = isCnTradingDate(today) && !beforeOpen ? 0 : 1;
+  for (let offset = startOffset; offset <= 11; offset++) {
     const day = new Date(now.getTime() - offset * 86400000);
     const text = cnDate(day);
     if (isCnTradingDate(text)) return text;
   }
   throw new Error('未能定位最近 A 股交易日');
+}
+
+// 补漏扫描只覆盖最近一个已结束交易日（findMissingCloseDates 的同一口径），
+// 因此这些夹具不能使用盘中仍在进行的当日。
+function lastCompletedCloseDate() {
+  const now = new Date();
+  for (let offset = 1; offset <= 11; offset++) {
+    const day = cnDate(new Date(now.getTime() - offset * 86400000));
+    if (isCnTradingDate(day)) return day;
+  }
+  throw new Error('未能定位最近已结束 A 股交易日');
 }
 
 async function cleanup() {
@@ -189,7 +202,7 @@ async function main() {
   // 8. 补漏：同一天部分证券缺价也必须算缺口（不能因“当天有任意一条确认价”就跳过）。
   {
     // 找最近一个 A 股交易日，在该日只给一只证券确认价，另一只缺失。
-    const day = expectedCloseDate();
+    const day = lastCompletedCloseDate();
     await pool.query('DELETE FROM daily_prices WHERE username=$1', [USER]);
     await pool.query('DELETE FROM positions WHERE username=$1', [USER]);
     await pool.query(
@@ -221,7 +234,7 @@ async function main() {
     await pool.query('DELETE FROM daily_prices WHERE username=$1', [USER]);
     const written = await priceRepository.upsertDailyPrice([{
       username: USER, accountName: ACCOUNT, accountId: ACCOUNT_ID,
-      date: expectedCloseDate(), code: '000001', name: '测试A股', price: 10,
+      date: lastCompletedCloseDate(), code: '000001', name: '测试A股', price: 10,
       source: 'history_backfill:lixinger', quoteAt: null, isFinal: true, quality: 'confirmed',
       market: 'CN', evidence: { origin: 'daily_bar_history', provider: 'lixinger', price_adjust: 'none' },
     }]);
@@ -238,7 +251,7 @@ async function main() {
     // 无法判定市场的代码：写 UNKNOWN 且不带可核实依据（失败关闭）。
     await priceRepository.upsertDailyPrice([{
       username: USER, accountName: ACCOUNT, accountId: ACCOUNT_ID,
-      date: expectedCloseDate(), code: '000777', name: '身份不明', price: 5,
+      date: lastCompletedCloseDate(), code: '000777', name: '身份不明', price: 5,
       source: null, quoteAt: null, isFinal: null, quality: 'candidate', market: null, evidence: {},
     }]);
     const unknown = (await pool.query(

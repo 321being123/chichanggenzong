@@ -130,8 +130,8 @@ async function main() {
         const cashDetail = payload.fields.find(field => field.code === 'bs.c');
         assert.strictEqual(cashDetail.label, '(其中)现金');
         assert.strictEqual(cashDetail.section, '资产总计');
-        assert.strictEqual(cashDetail.parent, 'bs.cabwcb');
-        assert.strictEqual(cashDetail.level, 1);
+        assert.strictEqual(cashDetail.parent, null, '银行现金父项只有发行人样本，来源类型关系未核实时保持平级');
+        assert.strictEqual(cashDetail.level, 0);
         const equityRatio = payload.fields.find(field => field.code === 'bs.toe_ta_r');
         assert.strictEqual(equityRatio.values[0].value, 25);
         assert.strictEqual(equityRatio.unit, '%');

@@ -73,6 +73,16 @@ assert.ok(statementsPresenter.includes('stockAnalysisState.selected !== code'), 
   const statusHelp = dom.window.document.querySelector('details.statement-status-help');
   assert.ok(statusHelp, '不可比较字段要有触摸可打开的状态说明');
   assert.match(statusHelp.textContent, /比较口径尚未核实/);
+  view.stockAnalysisRenderStatements({ name: '资产负债表', type: 'balance', compare: 'yoy',
+    periods: [{ end_date: '2025-12-31' }, { end_date: '2024-12-31' }], fields: [{ label: '资产', section: '资产', values: [
+      { value: null, status: 'source_not_disclosed', reason: 'source_not_disclosed', comparison_status: 'not_applicable', comparison_reason: 'comparison_method_unverified' },
+      { value: null, status: 'collection_incomplete', reason: 'collection_incomplete', comparison_status: 'not_applicable', comparison_reason: 'comparison_method_unverified' }
+    ] }] });
+  const multiPeriodHelp = dom.window.document.querySelector('details.statement-status-help').textContent;
+  assert.match(multiPeriodHelp, /2025-12-31 原值：/);
+  assert.match(multiPeriodHelp, /2024-12-31 原值：/);
+  assert.match(multiPeriodHelp, /2025-12-31 同比：/);
+  assert.match(multiPeriodHelp, /2024-12-31 同比：/);
   dom.window.close();
 }
 {

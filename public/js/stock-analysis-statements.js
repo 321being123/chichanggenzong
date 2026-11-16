@@ -121,15 +121,17 @@ function stockAnalysisRenderStatements(data) {
     var sectionChanged = field.section !== currentSection;
     var fieldHasValue = Array.isArray(field.values) && field.values.some(function(item) { return item && item.value != null; });
     var statusMessages = [];
-    function addStatusMessage(prefix, reason) {
+    function addStatusMessage(index, prefix, reason) {
       var message = stockAnalysisStatementReason(reason);
-      var text = prefix + '：' + message;
+      var period = data.periods[index] || {};
+      var periodLabel = period.end_date || period.fiscal_year || period.year || ('第' + (index + 1) + '期');
+      var text = periodLabel + ' ' + prefix + '：' + message;
       if (statusMessages.indexOf(text) < 0) statusMessages.push(text);
     }
-    (field.values || []).forEach(function(item) {
-      if (item && item.status && item.status !== 'available') addStatusMessage('原值', item.reason);
+    (field.values || []).forEach(function(item, index) {
+      if (item && item.status && item.status !== 'available') addStatusMessage(index, '原值', item.reason);
       if (comparisonEnabled && item && item.comparison_status && item.comparison_status !== 'available') {
-        addStatusMessage(comparisonLabel, item.comparison_reason);
+        addStatusMessage(index, comparisonLabel, item.comparison_reason);
       }
     });
     if (field.section !== currentSection) {

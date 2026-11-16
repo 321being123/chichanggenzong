@@ -148,13 +148,16 @@ function buildStatementPayload({ market = 'CN', type = 'balance', rows = [], ver
     const coverage = parseCoverage(row.statement_coverage);
     return !coverage || !STATEMENT_TYPES.has(String(coverage.fs_table_type || '').toLowerCase());
   });
+  // 关系描述适用于整张多期表，不能只检查包含该字段的类型；其他期的类型也参与门禁。
+  const relationContexts = types.map(tableType => `${market}|${String(tableType).toLowerCase()}`);
+  if (hasUnknownType) relationContexts.push(`${market}|unknown`);
+  if (rows.some(row => row.source_code !== 'lixinger_official')) relationContexts.push(`${market}|unverified_source`);
   const ordered = [];
   for (const tableType of types) {
     try {
-      const relationContext = `${market}|${tableType}`;
       ordered.push(...dict.metricsOfType(market, tableType)
         .filter(metric => metric.statement === type)
-        .map(metric => ({ ...metric, relation_contexts: [relationContext, ...(hasUnknownType ? [`${market}|unknown`] : [])] })));
+        .map(metric => ({ ...metric, relation_contexts: relationContexts })));
     }
     catch (_) { /* 旧记录类型无法识别时不猜测 */ }
   }
@@ -183,12 +186,12 @@ function buildStatementPayload({ market = 'CN', type = 'balance', rows = [], ver
   const requestedMetricCodes = [...new Set(coverageRows.flatMap(item => item.requested_metric_codes || []))];
   const returnedMetricCodes = [...new Set(coverageRows.flatMap(item => item.returned_metric_codes || []))];
   const analysisVersion = statementAnalysisVersionOf({ canonicalCode, market, type, formulaVersion, rows: versionRows });
-  const fields = presentation.presentationOf(metrics, type, currencies.length === 1 && !hasUnverifiedCurrency ? currencies[0] : null)
+  const visibleFields = presentation.presentationOf(metrics, type, currencies.length === 1 && !hasUnverifiedCurrency ? currencies[0] : null)
     .filter(field => rows.some(row => contract.finite(row[dict.columnOf(field.code)]) !== null)
       || requestedMetricCodes.includes(field.code)
       || (rows.some(row => row.source_code === 'tushare')
-        && (repository.UNVERIFIED_TUSHARE_WIDE.has(field.code) || field.code === 'cfs.crfrci')))
-    .map(field => ({
+        && (repository.UNVERIFIED_TUSHARE_WIDE.has(field.code) || field.code === 'cfs.crfrci')));
+  const fields = presentation.rebaseVisibleHierarchy(visibleFields).map(field => ({
       ...field,
       values: rows.map((row, index) => {
         const observed = contract.finite(row[dict.columnOf(field.code)]);

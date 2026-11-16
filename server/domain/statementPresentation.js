@@ -153,20 +153,16 @@ function relationHintOf(metric) {
     // 没有类型上下文，或同一响应混有未核验类型时，明确阻断关系，不能回退到相邻字段猜测。
     return contexts.length && contexts.every(context => relation.contexts.includes(context)) ? relation.parent : null;
   }
-  if (Object.prototype.hasOwnProperty.call(PARENT_HINTS, code)) return PARENT_HINTS[code];
-  return undefined;
+  // 旧通用映射仅供现金流分区使用，没有逐类型证据时不能作为父子关系。
+  return null;
 }
 
 function presentationOf(metrics, statement, currency) {
   if (!Array.isArray(metrics)) throw new TypeError('三表展示需要受控科目元数据');
   const byCode = new Map(metrics.map(metric => [metric.code, metric]));
   const presented = metrics.map(metric => {
-    const child = /其中|其中：|其中:/.test(String(metric.name || ''));
     const hintedParent = relationHintOf(metric);
-    const inferredParent = child && metric.source_prefix === undefined
-      ? metrics.find(candidate => candidate !== metric && sectionOf(candidate, statement) === sectionOf(metric, statement) && PARENT_CODES.has(candidate.code))
-      : null;
-    const parentCode = hintedParent !== undefined ? hintedParent : (inferredParent ? inferredParent.code : null);
+    const parentCode = hintedParent;
     const parent = parentCode ? byCode.get(parentCode) || null : null;
     // 官方文档将“其中”“加”“减”等前缀与科目名称分开；保留原文，不据此猜测父科目。
     const sourcePrefix = String(metric.source_prefix || '').replace(/^#\s*/, '');
@@ -201,6 +197,22 @@ function presentationOf(metrics, statement, currency) {
   }));
 }
 
+// 过滤无值字段后重新计算深度，避免返回不可见的父项和错误缩进。
+function rebaseVisibleHierarchy(fields) {
+  const visible = new Map(fields.map(field => [field.code, field]));
+  function depth(field, trail = new Set()) {
+    if (!field.parent || !visible.has(field.parent) || trail.has(field.code)) return 0;
+    const next = new Set(trail);
+    next.add(field.code);
+    return Math.min(8, depth(visible.get(field.parent), next) + 1);
+  }
+  return fields.map(field => ({
+    ...field,
+    parent: visible.has(field.parent) ? field.parent : null,
+    level: depth(field),
+  }));
+}
+
 function normalizeMetricValue(raw, metric, currency) {
   if (raw === null || raw === undefined || raw === '') return null;
   const value = Number(raw);
@@ -211,4 +223,4 @@ function normalizeMetricValue(raw, metric, currency) {
   return value;
 }
 
-module.exports = { measureType, sectionOf, unitOf, presentationOf, normalizeMetricValue };
+module.exports = { measureType, sectionOf, unitOf, presentationOf, rebaseVisibleHierarchy, normalizeMetricValue };

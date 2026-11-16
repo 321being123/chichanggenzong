@@ -152,9 +152,9 @@ const presentation = presentationOf([
   { code: 'cfs.crfscapls', name: '销售商品提供劳务收到的现金' },
 ], 'income', 'CNY');
 assert.strictEqual(presentation.find(item => item.code === 'ps.toc').parent, null, '营业总成本不能挂到营业总收入');
-assert.strictEqual(presentation.find(item => item.code === 'ps.oc').parent, 'ps.toc', '营业成本应挂到营业总成本');
+assert.strictEqual(presentation.find(item => item.code === 'ps.oc').parent, null, '缺少类型证据时营业成本不能套用通用父项');
 assert.strictEqual(sectionOf({ code: 'cfs.crfscapls', name: '销售商品提供劳务收到的现金' }, 'cashflow'), '经营活动现金流', '经营现金流明细不能落到补充资料');
-assert.strictEqual(presentation.find(item => item.code === 'cfs.crfscapls').parent, 'cfs.stciffoa', '经营现金流入明细应挂到流入小计');
+assert.strictEqual(presentation.find(item => item.code === 'cfs.crfscapls').parent, null, '缺少类型证据时现金流明细不能套用通用父项');
 
 const verifiedIncome = presentationOf([
   { code: 'ps.fe', name: '财务费用' },
@@ -174,11 +174,21 @@ assert.strictEqual(unverifiedIncome.find(item => item.code === 'ps.iifaajv').par
 const profitHierarchy = presentationOf([
   { code: 'ps.tp', name: '利润总额' },
   { code: 'ps.np', name: '净利润' },
-  { code: 'ps.npatshaoehopc', name: '归属于母公司股东及其他权益持有者的净利润' },
+  { code: 'ps.npatshaoehopc', name: '归属于母公司股东及其他权益持有者的净利润', relation_contexts: ['CN|non_financial'] },
   { code: 'ps.tci', name: '综合收益总额' },
 ], 'income', 'CNY');
-assert.strictEqual(profitHierarchy.find(item => item.code === 'ps.npatshaoehopc').parent, 'ps.np', '归母净利润应挂到净利润分类维度');
+assert.strictEqual(profitHierarchy.find(item => item.code === 'ps.npatshaoehopc').parent, null, '仅有发行人样本而缺来源类型合同的归母净利润应保持平级');
 assert.strictEqual(profitHierarchy.find(item => item.code === 'ps.tci').parent, null, '综合收益总额不能挂到利润总额');
+
+const unknownHints = presentationOf([
+  { code: 'ps.toc', name: '营业总成本' },
+  { code: 'ps.ie', name: '利息支出', relation_contexts: ['CN|unknown'] },
+  { code: 'ps.oc', name: '营业成本', relation_contexts: ['CN|non_financial', 'CN|bank'] },
+  { code: 'ps.example', name: '其中：其他费用', relation_contexts: ['CN|unknown'] },
+], 'income', 'CNY');
+for (const code of ['ps.ie', 'ps.oc', 'ps.example']) {
+  assert.strictEqual(unknownHints.find(item => item.code === code).parent, null, `${code} 未获逐类型证据不得推断父项`);
+}
 
 const verifiedCashflow = presentationOf([
   { code: 'cfs.stcifia', name: '投资活动现金流入小计' },
@@ -204,6 +214,15 @@ const integratedCashflow = buildStatementPayload({
 assert.strictEqual(field(integratedCashflow, 'cfs.ncrfdossajvaou').parent, 'cfs.stcifia', '服务层必须把报表类型上下文传给关系展示层');
 assert.strictEqual(field(integratedCashflow, 'cfs.ncrfdossaou').parent, 'cfs.ncrfdossajvaou');
 assert.strictEqual(field(integratedCashflow, 'cfs.ncrfdossaou').level, 2);
+const filteredCashflow = buildStatementPayload({
+  market: 'CN', type: 'cashflow', options: { compare: 'none' }, canonicalCode: '600000.SH',
+  rows: [row({ source_code: 'lixinger_official', cfs_ncrfdossajvaou: 2, cfs_ncrfdossaou: 1,
+    statement_coverage: { fs_table_type: 'non_financial', requested_metric_codes: ['cfs.ncrfdossajvaou', 'cfs.ncrfdossaou'], returned_metric_codes: ['cfs.ncrfdossajvaou', 'cfs.ncrfdossaou'], complete: true } })],
+});
+assert.strictEqual(field(filteredCashflow, 'cfs.ncrfdossajvaou').parent, null, '父项被过滤时保留字段且安全提升');
+assert.strictEqual(field(filteredCashflow, 'cfs.ncrfdossajvaou').level, 0);
+assert.strictEqual(field(filteredCashflow, 'cfs.ncrfdossaou').parent, 'cfs.ncrfdossajvaou');
+assert.strictEqual(field(filteredCashflow, 'cfs.ncrfdossaou').level, 1, '提升父项后重新计算子项深度');
 const mixedTypeCashflow = buildStatementPayload({
   market: 'CN', type: 'cashflow', options: { compare: 'none' }, canonicalCode: '600000.SH',
   rows: [
@@ -214,6 +233,21 @@ const mixedTypeCashflow = buildStatementPayload({
   ],
 });
 assert.strictEqual(field(mixedTypeCashflow, 'cfs.ncrfdossaou').parent, null, '混有未知报表类型时必须关闭已核验关系');
+
+const mixedKnownIncome = buildStatementPayload({
+  market: 'CN', type: 'income', options: { compare: 'none' }, canonicalCode: '600000.SH',
+  rows: [
+    row({ source_code: 'lixinger_official', ps_fe: 10, ps_ieife: 1, statement_coverage: { fs_table_type: 'non_financial', requested_metric_codes: ['ps.fe', 'ps.ieife'], returned_metric_codes: ['ps.fe', 'ps.ieife'], complete: true } }),
+    row({ source_code: 'lixinger_official', ps_fe: 5, statement_coverage: { fs_table_type: 'bank', requested_metric_codes: ['ps.fe'], returned_metric_codes: ['ps.fe'], complete: true } }),
+  ],
+});
+assert.strictEqual(field(mixedKnownIncome, 'ps.ieife').parent, null, '另一报告期类型未列此字段时也必须参与关系门禁');
+const otherSourceIncome = buildStatementPayload({
+  market: 'CN', type: 'income', options: { compare: 'none' }, canonicalCode: '600000.SH',
+  rows: [row({ source_code: 'other', ps_fe: 10, ps_ieife: 1,
+    statement_coverage: { fs_table_type: 'non_financial', requested_metric_codes: ['ps.fe', 'ps.ieife'], returned_metric_codes: ['ps.fe', 'ps.ieife'], complete: true } })],
+});
+assert.strictEqual(field(otherSourceIncome, 'ps.ieife').parent, null, '其他来源不能继承理杏仁的已核验层级');
 
 const flow = buildStatementPayload({
   market: 'CN', type: 'income',

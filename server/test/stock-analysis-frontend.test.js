@@ -83,6 +83,15 @@ assert.ok(statementsPresenter.includes('stockAnalysisState.selected !== code'), 
   assert.match(multiPeriodHelp, /2024-12-31 原值：/);
   assert.match(multiPeriodHelp, /2025-12-31 同比：/);
   assert.match(multiPeriodHelp, /2024-12-31 同比：/);
+  view.stockAnalysisRenderStatements({ name: '资产负债表', type: 'balance', compare: 'none',
+    periods: [{ end_date: '2025-12-31', scope: 'consolidated' }, { end_date: '2025-12-31', scope: 'parent' }],
+    fields: [{ label: '资产', section: '资产', values: [
+      { value: null, status: 'source_not_disclosed', reason: 'source_not_disclosed' },
+      { value: null, status: 'collection_incomplete', reason: 'collection_incomplete' }
+    ] }] });
+  const sameDateHelp = dom.window.document.querySelector('details.statement-status-help').textContent;
+  assert.match(sameDateHelp, /2025-12-31 合并口径 原值：/);
+  assert.match(sameDateHelp, /2025-12-31 母公司口径 原值：/);
   dom.window.close();
 }
 {

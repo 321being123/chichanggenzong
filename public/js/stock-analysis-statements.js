@@ -125,6 +125,9 @@ function stockAnalysisRenderStatements(data) {
       var message = stockAnalysisStatementReason(reason);
       var period = data.periods[index] || {};
       var periodLabel = period.end_date || period.fiscal_year || period.year || ('第' + (index + 1) + '期');
+      var scopeLabels = { consolidated: '合并口径', parent: '母公司口径' };
+      if (period.report_type_label || period.report_type) periodLabel += ' ' + (period.report_type_label || period.report_type);
+      if (period.scope) periodLabel += ' ' + (scopeLabels[period.scope] || period.scope);
       var text = periodLabel + ' ' + prefix + '：' + message;
       if (statusMessages.indexOf(text) < 0) statusMessages.push(text);
     }

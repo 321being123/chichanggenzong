@@ -145,6 +145,40 @@ function unitOf(metric, currency) {
   return currency ? `${currency}·亿元` : '原币·亿元';
 }
 
+// A 股财报历史上没有写入 __statement_coverage，采集侧的公司行业分类是唯一可核验的类型依据。
+// 只做保守映射：金融类行业按各自类型返回，其余视为非金融；行业缺失或多值一律不推断。
+// 精确值之外再按关键词兜底（生产 2026-11-16 实测为 证券/银行/多元金融/保险 四种写法，
+// 但分类标准可能带 Ⅰ/Ⅱ/Ⅲ 后缀或改写），认错方向只会更保守（金融类保持平级），不会错挂父子。
+const INDUSTRY_TABLE_TYPES = Object.freeze({
+  '银行': 'bank',
+  '保险': 'insurance',
+  '证券': 'security',
+  '多元金融': 'other_financial',
+  '信托': 'other_financial',
+  '其他金融': 'other_financial',
+});
+
+const INDUSTRY_TABLE_PATTERNS = Object.freeze([
+  [/银行/, 'bank'],
+  [/保险/, 'insurance'],
+  [/证券/, 'security'],
+  [/金融|信托|期货|基金|租赁/, 'other_financial'],
+]);
+
+function inferTableTypeFromIndustry(market, industries) {
+  if (String(market || '').toUpperCase() !== 'CN') return null;
+  const list = [...new Set((Array.isArray(industries) ? industries : [])
+    .map(item => String(item || '').trim()).filter(Boolean))];
+  // 多值或缺值都说明依据不唯一，不能推断。
+  if (list.length !== 1) return null;
+  const industry = list[0];
+  if (Object.prototype.hasOwnProperty.call(INDUSTRY_TABLE_TYPES, industry)) {
+    return INDUSTRY_TABLE_TYPES[industry];
+  }
+  const matched = INDUSTRY_TABLE_PATTERNS.find(([pattern]) => pattern.test(industry));
+  return matched ? matched[1] : 'non_financial';
+}
+
 function relationHintOf(metric) {
   const code = metric && metric.code;
   if (Object.prototype.hasOwnProperty.call(VERIFIED_RELATIONS, code)) {
@@ -223,4 +257,4 @@ function normalizeMetricValue(raw, metric, currency) {
   return value;
 }
 
-module.exports = { measureType, sectionOf, unitOf, presentationOf, rebaseVisibleHierarchy, normalizeMetricValue };
+module.exports = { measureType, sectionOf, unitOf, presentationOf, rebaseVisibleHierarchy, normalizeMetricValue, inferTableTypeFromIndustry };

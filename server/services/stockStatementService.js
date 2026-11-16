@@ -148,12 +148,18 @@ function buildStatementPayload({ market = 'CN', type = 'balance', rows = [], ver
     const coverage = parseCoverage(row.statement_coverage);
     return !coverage || !STATEMENT_TYPES.has(String(coverage.fs_table_type || '').toLowerCase());
   });
+  // A 股财报历史未写 __statement_coverage：仅在整表完全没有类型证据时，才用公司行业分类
+  // 做一次保守推断；已有类型但混有未知期（港股现状）仍按 unknown 阻断，不靠推断补齐。
+  const inferredType = types.length
+    ? null
+    : presentation.inferTableTypeFromIndustry(market, rows.map(row => row.industry));
+  const effectiveTypes = types.length ? types : (inferredType ? [inferredType] : []);
   // 关系描述适用于整张多期表，不能只检查包含该字段的类型；其他期的类型也参与门禁。
-  const relationContexts = types.map(tableType => `${market}|${String(tableType).toLowerCase()}`);
-  if (hasUnknownType) relationContexts.push(`${market}|unknown`);
+  const relationContexts = effectiveTypes.map(tableType => `${market}|${String(tableType).toLowerCase()}`);
+  if (hasUnknownType && !inferredType) relationContexts.push(`${market}|unknown`);
   if (rows.some(row => row.source_code !== 'lixinger_official')) relationContexts.push(`${market}|unverified_source`);
   const ordered = [];
-  for (const tableType of types) {
+  for (const tableType of effectiveTypes) {
     try {
       ordered.push(...dict.metricsOfType(market, tableType)
         .filter(metric => metric.statement === type)

@@ -137,12 +137,14 @@ async function listStatementRows({ tsCode, market = 'CN', type = 'balance', limi
        r.raw_payload->>'report_period_label' AS report_type_label,
        r.raw_payload->>'fiscal_year' AS fiscal_year,
        r.raw_payload->'__statement_coverage' AS statement_coverage,
+       c.raw_data->>'industry' AS industry,
        ${selectedMetrics}
     FROM fundamental.financial_reports r
     JOIN core.company_instruments ci ON ci.company_id=r.company_id
     JOIN core.instruments i ON i.instrument_id=ci.instrument_id
-    LEFT JOIN ${table} w ON w.report_id=r.report_id
+     LEFT JOIN ${table} w ON w.report_id=r.report_id
      LEFT JOIN ops.data_sources ds ON ds.source_id=COALESCE(w.source_id,r.source_id)
+     LEFT JOIN core.companies c ON c.company_id=r.company_id
     WHERE ${predicates.join(' AND ')}
     ORDER BY COALESCE(w.period_end,r.period_end) DESC,COALESCE(w.announced_at,r.announced_at) DESC NULLS LAST,r.report_id DESC
     LIMIT $${params.length}`, params);

@@ -389,6 +389,54 @@ assert.strictEqual(field(flowYoy, 'ps.tp').values[0].comparison_reason, 'flow_pe
   } finally {
     repository.listStatementRows = original;
   }
+  // A 股历史报告没有 __statement_coverage：按公司行业分类保守推断报表类型（2026-11-16）
+  const { inferTableTypeFromIndustry } = require('../domain/statementPresentation');
+  assert.strictEqual(inferTableTypeFromIndustry('CN', ['白酒']), 'non_financial', '非金融行业推断为非金融');
+  assert.strictEqual(inferTableTypeFromIndustry('CN', ['白酒Ⅲ']), 'non_financial', '带分类后缀的非金融行业仍推断为非金融');
+  assert.strictEqual(inferTableTypeFromIndustry('CN', ['银行']), 'bank', '银行行业推断为银行口径');
+  assert.strictEqual(inferTableTypeFromIndustry('CN', ['国有大型银行Ⅲ']), 'bank', '带后缀的银行写法也必须识别为银行，不得落到非金融');
+  assert.strictEqual(inferTableTypeFromIndustry('CN', ['保险']), 'insurance');
+  assert.strictEqual(inferTableTypeFromIndustry('CN', ['证券']), 'security');
+  assert.strictEqual(inferTableTypeFromIndustry('CN', ['多元金融']), 'other_financial');
+  assert.strictEqual(inferTableTypeFromIndustry('CN', []), null, '缺行业不得推断');
+  assert.strictEqual(inferTableTypeFromIndustry('CN', ['白酒', '银行']), null, '报告期行业不一致不得推断');
+  assert.strictEqual(inferTableTypeFromIndustry('HK', ['白酒']), null, '推断只用于 A 股');
+
+  function cnRow(overrides) {
+    return Object.assign({
+      report_id: 30, company_id: 31, period_end: '2025-12-31', period_type: 'annual',
+      currency_code: 'CNY', source_currency: 'CNY', accounting_standard: 'CAS', source_id: 3,
+      source_version: 'v1', update_flag: null, comp_type: '1', statement_scope: 'consolidated',
+      announced_at: '2026-03-20', source_code: 'lixinger_official',
+      statement_coverage: null, industry: null,
+      bs_nraar: null, bs_nr: null, bs_ar: null,
+    }, overrides);
+  }
+  const cnPayloadOf = rows => buildStatementPayload({ market: 'CN', type: 'balance', rows, canonicalCode: '600519.SH' });
+
+  const nonFinancial = cnPayloadOf([
+    cnRow({ report_id: 32, period_end: '2024-12-31', industry: '白酒', bs_nraar: 150, bs_nr: 90, bs_ar: 60 }),
+    cnRow({ report_id: 31, period_end: '2025-12-31', industry: '白酒', bs_nraar: 180, bs_nr: 110, bs_ar: 70 }),
+  ]);
+  assert.strictEqual(field(nonFinancial, 'bs.nr').level, 1, 'A 股非金融按行业推断后应收票据应缩进一级');
+  assert.strictEqual(field(nonFinancial, 'bs.nr').parent, 'bs.nraar', '父项必须指向应收票据及应收账款');
+
+  const bank = cnPayloadOf([
+    cnRow({ report_id: 34, period_end: '2025-12-31', industry: '银行', bs_nraar: 180, bs_nr: 110, bs_ar: 70 }),
+  ]);
+  assert.strictEqual(field(bank, 'bs.nr').level, 0, '银行不得套用非金融父子关系');
+
+  const noIndustry = cnPayloadOf([
+    cnRow({ report_id: 35, period_end: '2025-12-31', industry: null, bs_nraar: 180, bs_nr: 110, bs_ar: 70 }),
+  ]);
+  assert.strictEqual(field(noIndustry, 'bs.nr').level, 0, '行业缺失时必须保持平级');
+
+  const mixedType = cnPayloadOf([
+    cnRow({ report_id: 36, period_end: '2025-12-31', industry: '白酒', statement_coverage: { fs_table_type: 'non_financial' }, bs_nraar: 180, bs_nr: 110, bs_ar: 70 }),
+    cnRow({ report_id: 37, period_end: '2024-12-31', industry: '白酒', bs_nraar: 150, bs_nr: 90, bs_ar: 60 }),
+  ]);
+  assert.strictEqual(field(mixedType, 'bs.nr').level, 0, '已有类型却混有未知期时不得用行业补齐');
+
   console.log('stock statements contract tests passed');
 })().catch(error => {
   console.error(error);

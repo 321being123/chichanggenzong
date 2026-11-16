@@ -160,6 +160,13 @@ function qualifyCloseQuote(state, quoteTime, cnDate, closeTime) {
   return { quality: 'confirmed', isFinal: true, reason: null };
 }
 
+// 同一天的共享报价也可能来自开市期间；收盘重试必须刷新这种旧报价。
+function quoteNeedsCloseRefresh(quote, state, cnDate) {
+  if (!isUsableQuote(quote, cnDate)) return true;
+  if (!state || state.status !== 'open' || state.isAfterMarketClose !== true) return false;
+  return qualifyCloseQuote(state, quote.quote_time, cnDate, state.closeTime).quality !== 'confirmed';
+}
+
 // 收盘后拿到一条实时报价，并不等于它就是最终收盘价（可能是收盘瞬间或缓存里的旧报价）。
 // 因此要求用已准入的**不复权日线**核对：同一交易日、同一价格、口径为不复权，才算终盘证据。
 // 拿不到证据时保持候选（不是确认），宁可让任务报待确认，也不把盘中价写成收盘价。
@@ -641,9 +648,12 @@ async function recordMarketClose(label, matchFn, dateStr, context = {}) {
       () => loadTerminalBar({ code: gap.code, kind: gap.kind, date: cnDate }));
   }
   const refreshAttempted = new Set();
+  const quoteState = quoteMap
+    ? await getMarketState({ market: market.market, businessDate: cnDate, time: shanghaiDateTime().time })
+    : null;
   const refreshMissingQuotes = quoteMap ? async codes => {
     const candidates = [...new Set((codes || []).map(code => String(code || '').trim()).filter(Boolean))]
-      .filter(code => !refreshAttempted.has(code) && !isUsableQuote(quoteForCode(quoteMap, code), cnDate));
+      .filter(code => !refreshAttempted.has(code) && quoteNeedsCloseRefresh(quoteForCode(quoteMap, code), quoteState, cnDate));
     candidates.forEach(code => refreshAttempted.add(code));
     if (!candidates.length) return;
     const { readRealtimeQuotes } = require('../dataAccess/marketDatasets');
@@ -1154,7 +1164,7 @@ function confirmedExistingCodes(rows) {
   return set;
 }
 
-module.exports = { qualifyCloseQuote, verifyTerminalClose, loadTerminalBar, buildCloseRecord, confirmedExistingCodes, hasConfirmedGap, splitHistoricalBackfill, summarizeBackfill, scheduleAllMarketCloses, runMarketCloseByLabel, backfillMissingCloses, findMissingCloseDates, isTradingDay, isMarketTradingDate, nextMarketCloseDelay, fmtCN, pickMissingCodes, pickMissingPositions, positionIdentityKey, dailyPriceRowMarket, resolveTerminalKind, isUncoveredPosition, cnWeekday, msUntil, nextRunDelay, quoteForCode, isUsableQuote, mergeQuoteMaps, shouldRunLegacyNavAfterHkClose, runLegacyPostCloseCycle,
+module.exports = { qualifyCloseQuote, quoteNeedsCloseRefresh, verifyTerminalClose, loadTerminalBar, buildCloseRecord, confirmedExistingCodes, hasConfirmedGap, splitHistoricalBackfill, summarizeBackfill, scheduleAllMarketCloses, runMarketCloseByLabel, backfillMissingCloses, findMissingCloseDates, isTradingDay, isMarketTradingDate, nextMarketCloseDelay, fmtCN, pickMissingCodes, pickMissingPositions, positionIdentityKey, dailyPriceRowMarket, resolveTerminalKind, isUncoveredPosition, cnWeekday, msUntil, nextRunDelay, quoteForCode, isUsableQuote, mergeQuoteMaps, shouldRunLegacyNavAfterHkClose, runLegacyPostCloseCycle,
   // 第七轮验收新增的可回归纯函数/入口：港股代码规范化、共享日线证据裁决、外采日线落库与分区发布。
   normalizeHkCode, terminalSeriesCode, isTerminalBarEvidence, pickTerminalBarRow, persistTerminalBar, publishCloseBarPartition, readPublishedDailyBar,
   // 第八轮验收：同一港股的五位/六位代码必须落到同一个身份，身份里不做规范化就会当成两只证券。

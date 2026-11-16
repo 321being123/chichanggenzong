@@ -162,7 +162,9 @@ assert(/test -L \/etc\/systemd\/system\/\$unit/.test(deployScript) && /cp -a \/e
   && /test -L \$backup_dir\/\$unit/.test(deployScript), 'systemd masked 符号链接必须被原样备份和恢复');
 assert(/if \(failed > 0\) throw new Error/.test(marketClose) && /失败 \$\{failed\}/.test(marketClose), '收盘任务任一证券失败都必须进入统一重试，不能以部分成功掩盖缺数');
 assert(/market_close:A股/.test(slots) && /market_close:港股/.test(slots) && /market_close:可转债/.test(slots)
-  && /market_close:LOF\/ETF/.test(slots) && /COUNT\(dp\.code\)=COUNT\(\*\)/.test(slots), '收盘任务数据水位必须按对应市场逐项核对持仓价格');
+  && /market_close:LOF\/ETF/.test(slots) && /NOT EXISTS/.test(slots)
+  && /dp\.quality='confirmed' AND dp\.is_final=true/.test(slots), '收盘任务数据水位必须按对应市场逐项核对确认的持仓价格');
+assert(/!claimed\.job_code\.startsWith\('market_close:'\)/.test(orchestrator), '已有确认价不能让收盘 Runner 跳过共享日线缺口重建和分区发布');
 assert(/const sourceResults = Object\.keys\(sync\.SCOPES\)/.test(arbitrageJob) && /const errors = sourceResults\.flatMap/.test(arbitrageJob) && /if \(errors\.length\)/.test(arbitrageJob)
   && /parsePendingNotDue/.test(arbitrageJob) && /continuationBlocked/.test(arbitrageJob)
   && /finishJobRun\(runId, false, error\)/.test(arbitrageJob), '套利任一公告源局部失败必须记失败，PDF未到期等待，耗尽后转人工');

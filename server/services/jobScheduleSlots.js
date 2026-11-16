@@ -889,16 +889,28 @@ async function queryDataAsOf(jobCode, businessDate) {
   const marketClosePredicates = {
     'market_close:A股': `p.code ~ '^(00|30|60|68|4|8)' AND char_length(p.code)>=6 AND COALESCE(p.subtype,'') <> '港股' AND COALESCE(p.name,'') !~ '(债|转债)'`,
     'market_close:港股': `(p.subtype='港股' OR char_length(p.code)=5)`,
-    'market_close:可转债': `p.code ~ '^(11|12)'`,
-    'market_close:LOF/ETF': `p.code ~ '${classifyCode.FUND_ETF_SQL_PREFIX}' AND char_length(p.code)=6`,
+    'market_close:可转债': `p.code ~ '^(11|12)' AND COALESCE(p.subtype,'') <> '港股'`,
+    'market_close:LOF/ETF': `p.code ~ '${classifyCode.FUND_ETF_SQL_PREFIX}' AND char_length(p.code)=6 AND COALESCE(p.subtype,'') <> '港股'`,
   };
   const marketPredicate = marketClosePredicates[jobCode];
+  const isHkClose = jobCode === 'market_close:港股';
+  // 收盘水位必须使用同一账户、市场和证券的已确认终盘价。候选价、旧价或
+  // UNKNOWN 市场不能让编排器跳过 Runner；港股五位与六位前导零代码属于同一身份。
+  const priceIdentity = isHkClose
+    ? `dp.market='HK' AND (dp.code=p.code OR (dp.code ~ '^[0-9]{5,6}$' AND p.code ~ '^[0-9]{5,6}$'
+        AND dp.code ~ '[1-9]' AND p.code ~ '[1-9]'
+        AND regexp_replace(dp.code, '^0+', '')=regexp_replace(p.code, '^0+', '')))`
+    : `dp.market='CN' AND dp.code=p.code`;
   const sql = queries[jobCode] || (marketPredicate
-    ? `SELECT CASE WHEN COUNT(*)=0 OR COUNT(dp.code)=COUNT(*) THEN $1::text ELSE NULL END AS data_as_of
+    ? `SELECT CASE WHEN NOT EXISTS (
+         SELECT 1
          FROM positions p
-         LEFT JOIN daily_prices dp ON dp.username=p.username AND dp.account_name=p.account_name
-              AND dp.code=p.code AND dp.date=$1
-        WHERE ${marketPredicate}`
+        WHERE (${marketPredicate}) AND NOT EXISTS (
+          SELECT 1 FROM daily_prices dp
+           WHERE dp.username=p.username AND dp.account_name=p.account_name AND dp.date=$1
+             AND ${priceIdentity} AND dp.quality='confirmed' AND dp.is_final=true
+        )
+      ) THEN $1::text ELSE NULL END AS data_as_of`
     : null);
   if (!sql) return null;
   const normalizedBusinessDate = normalizeBusinessDate(businessDate);

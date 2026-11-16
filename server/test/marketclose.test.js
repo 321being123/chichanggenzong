@@ -122,6 +122,17 @@ check('共享行情缺失时支持按代码读取后续补取结果', () => {
   mc.mergeQuoteMaps(quoteMap, new Map([['160719.SZ', { code: '160719', price: 1.91 }]]));
   assert.strictEqual(quoteMap.get('160719.SZ').price, 1.91);
 });
+check('收盘重试刷新盘前旧报价，合格报价不重复取', () => {
+  const date = '2026-11-16';
+  const closed = { status: 'open', isAfterMarketClose: true, closeTime: '16:10' };
+  const before = { price: 3.95, quote_time: '2026-11-16T16:08:17+08:00' };
+  const after = { price: 3.95, quote_time: '2026-11-16T16:11:00+08:00' };
+  assert.strictEqual(mc.quoteNeedsCloseRefresh(before, closed, date), true);
+  assert.strictEqual(mc.quoteNeedsCloseRefresh(after, closed, date), false);
+  assert.strictEqual(mc.quoteNeedsCloseRefresh(null, closed, date), true);
+  assert.strictEqual(mc.quoteNeedsCloseRefresh({ price: 1 }, closed, date), true);
+  assert.strictEqual(mc.quoteNeedsCloseRefresh(before, { ...closed, isAfterMarketClose: false }, date), false);
+});
 check('批量行情缺失只允许一次有界补取，不能重复检查同一份空 Map', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'jobs', 'marketClose.js'), 'utf8')
     + fs.readFileSync(path.join(__dirname, '..', 'repositories', 'marketCloseRepository.js'), 'utf8');

@@ -3,6 +3,42 @@
   "lastReviewed": "2026-11-15",
   "rules": [
     {
+      "id": "HOLDINGS-CLOSE-WATERMARK-012",
+      "title": "收盘水位只认同账户同市场同证券的确认终盘价；候选与未知市场不得短路，Runner 仍核查共享日线缺口",
+      "implementation": {
+        "file": "server/services/jobScheduleSlots.js",
+        "symbol": "queryDataAsOf"
+      },
+      "tests": [
+        {
+          "file": "server/test/market-close-watermark-quality.test.js",
+          "pattern": "HOLDINGS-CLOSE-WATERMARK-012"
+        },
+        {
+          "file": "server/test/job-orchestration-regression.test.js",
+          "pattern": "已有确认价不能让收盘 Runner 跳过共享日线缺口重建和分区发布"
+        }
+      ],
+      "owner": "Codex",
+      "status": "implemented"
+    },
+    {
+      "id": "HOLDINGS-CLOSE-QUOTE-REFRESH-013",
+      "title": "收盘重试按证券刷新收市前的旧报价，每次运行对同证券最多刷新一次",
+      "implementation": {
+        "file": "server/jobs/marketClose.js",
+        "symbol": "quoteNeedsCloseRefresh"
+      },
+      "tests": [
+        {
+          "file": "server/test/marketclose.test.js",
+          "pattern": "收盘重试刷新盘前旧报价"
+        }
+      ],
+      "owner": "Codex",
+      "status": "implemented"
+    },
+    {
       "id": "BOND-PROSPECTUS-SELECTION-059",
       "title": "正式通用招股书标题只在原发行窗口选择，正文封面须确认债种与发行人；提示公告和股票不替代",
       "implementation": {

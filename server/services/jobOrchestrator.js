@@ -905,7 +905,8 @@ async function runSlot(slot, reason = reasonForSlot(slot)) {
 
   try {
     runId = await startManagedRun(claimed, reason);
-    if (freshnessGateEnabled && !runContext.force && !['prediction_ready', 'enrichment', 'targeted','analysis_inputs','analysis_inputs_targeted','stock_lifecycle'].includes(runContext.mode)) {
+    // 收盘 Runner 还负责重建共享日线缺口及补发布；账户确认价全部存在也不能代替这些阶段。
+    if (freshnessGateEnabled && !claimed.job_code.startsWith('market_close:') && !runContext.force && !['prediction_ready', 'enrichment', 'targeted','analysis_inputs','analysis_inputs_targeted','stock_lifecycle'].includes(runContext.mode)) {
       const dataAsOf = await queryDataAsOf(claimed.job_code, claimed.business_date).catch(() => null);
       const partitionDate = expectedDataDate(claimed.job_code, claimed.business_date);
       const datasetsPublished = !definition.strictDatasetPublication

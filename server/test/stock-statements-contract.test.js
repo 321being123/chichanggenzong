@@ -437,6 +437,19 @@ assert.strictEqual(field(flowYoy, 'ps.tp').values[0].comparison_reason, 'flow_pe
   ]);
   assert.strictEqual(field(mixedType, 'bs.nr').level, 0, '已有类型却混有未知期时不得用行业补齐');
 
+  // 混来源：报告期分别来自理杏仁与 Tushare 时，展示结构仍适用（金额可信度另由来源白名单处理）
+  const mixedSource = cnPayloadOf([
+    cnRow({ report_id: 38, period_end: '2025-12-31', industry: '白酒', bs_nraar: 180, bs_nr: 110, bs_ar: 70 }),
+    cnRow({ report_id: 39, period_end: '2024-12-31', industry: '白酒', source_code: 'tushare', bs_nraar: 150, bs_nr: 90, bs_ar: 60 }),
+  ]);
+  assert.strictEqual(field(mixedSource, 'bs.nr').level, 1, '混来源不应否定字典级展示结构');
+
+  // 整表没有任何理杏仁报告时仍阻断，避免把未核验来源一起美化
+  const onlyTushare = cnPayloadOf([
+    cnRow({ report_id: 40, period_end: '2025-12-31', industry: '白酒', source_code: 'tushare', bs_nraar: 180, bs_nr: 110, bs_ar: 70 }),
+  ]);
+  assert.strictEqual(field(onlyTushare, 'bs.nr').level, 0, '全部为非理杏仁来源时保持平级');
+
   console.log('stock statements contract tests passed');
 })().catch(error => {
   console.error(error);

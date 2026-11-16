@@ -157,7 +157,9 @@ function buildStatementPayload({ market = 'CN', type = 'balance', rows = [], ver
   // 关系描述适用于整张多期表，不能只检查包含该字段的类型；其他期的类型也参与门禁。
   const relationContexts = effectiveTypes.map(tableType => `${market}|${String(tableType).toLowerCase()}`);
   if (hasUnknownType && !inferredType) relationContexts.push(`${market}|unknown`);
-  if (rows.some(row => row.source_code !== 'lixinger_official')) relationContexts.push(`${market}|unverified_source`);
+  // 混来源只说明数值口径需按来源分别核验（另有 UNVERIFIED_TUSHARE_WIDE 单独屏蔽金额），
+  // 并不否定字典级的展示结构；只有整表都没有理杏仁报告时才阻断关系。
+  if (rows.every(row => row.source_code !== 'lixinger_official')) relationContexts.push(`${market}|unverified_source`);
   const ordered = [];
   for (const tableType of effectiveTypes) {
     try {

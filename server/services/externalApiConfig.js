@@ -108,7 +108,7 @@ function safeTestMessage(message, token) {
 
 function probeStatus(error) {
   const code = String(error && error.code || '').toUpperCase();
-  if (code === 'PERMISSION_DENIED') return 'permission_denied';
+  if (code === 'PERMISSION_DENIED' || code === 'AUTH_ERROR') return 'permission_denied';
   if (code === 'RATE_LIMIT' || code === 'QUOTA_EXHAUSTED' || code === 'BUDGET_WAIT' || code === 'CIRCUIT_OPEN') return 'rate_limited';
   if (code === 'EMPTY_DATA') return 'empty_but_accepted';
   return 'error';
@@ -197,6 +197,8 @@ async function testProviderAvailability(provider = 'tushare', role = 'current', 
   const token = runtime[targetRole];
   const checkedAt = new Date().toISOString();
   let result;
+  let probeAttempted = false;
+  let credentialAuthError = false;
   if (!token) {
     result = {
       ok: false,
@@ -219,6 +221,7 @@ async function testProviderAvailability(provider = 'tushare', role = 'current', 
         `permission_probe:${requestedApi}`,
         null,
         async (guardClient, guardResult) => {
+          probeAttempted = true;
           const health = await capability.probe(token, requestedApi);
           // 适配器完成业务级成功校验后，仅恢复同凭据的旧认证拒绝。
           await recoverCredentialAuthentication(provider, targetRole, tokenFingerprint(token),
@@ -239,6 +242,7 @@ async function testProviderAvailability(provider = 'tushare', role = 'current', 
         api_name: requestedApi,
       };
     } catch (error) {
+      credentialAuthError = probeAttempted && error && error.code === 'AUTH_ERROR';
       result = {
         ok: false,
         status: probeStatus(error),
@@ -265,8 +269,10 @@ async function testProviderAvailability(provider = 'tushare', role = 'current', 
     };
   }
   await recordProviderTestResult(provider, targetRole, requestedApi, result);
-  if (capability && capability.recordEndpointPermission && requestedApi) {
-    await recordEndpointPermission(provider, targetRole, requestedApi, token ? tokenFingerprint(token) : 'none', result);
+  const hasPermissionEvidence = result.ok === true || ['permission_denied', 'not_configured'].includes(result.status);
+  if (capability && capability.recordEndpointPermission && requestedApi && (!token || probeAttempted) && hasPermissionEvidence) {
+    await recordEndpointPermission(provider, targetRole, credentialAuthError ? '*' : requestedApi,
+      token ? tokenFingerprint(token) : 'none', credentialAuthError ? { ...result, message: `AUTH_ERROR: ${result.message}` } : result);
   }
   return result;
 }

@@ -13,6 +13,7 @@
         { "file": "server/test/credential-auth-recovery.test.js", "pattern": "CREDENTIAL-AUTH-RECOVERY-001" },
         { "file": "server/test/python-credential-recovery.test.js", "pattern": "CREDENTIAL-AUTH-RECOVERY-001" },
         { "file": "server/test/tushare-auth-evidence.test.js", "pattern": "CREDENTIAL-AUTH-RECOVERY-001" },
+        { "file": "server/test/external-api-probe-scope.test.js", "pattern": "CREDENTIAL-AUTH-RECOVERY-001" },
         { "file": "ipo-report/test_unit_fixes.py", "pattern": "CREDENTIAL-AUTH-RECOVERY-001" }
       ],
       "owner": "Codex",

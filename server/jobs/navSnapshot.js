@@ -12,7 +12,7 @@ const { investedAt, chainNav, cashAt, isExternalTransfer } = require('../../publ
 const CoreDate = require('../../public/shared/core-date.js');
 const classifyCode = require('../../public/js/code-classify');
 const repository = require('../repositories/navSnapshotRepository.js');
-const { selectHistoricalClosePrice } = require('../services/effectivePrice');
+const { selectHistoricalClosePrice, expectedCloseDateFor, resolveSuspendedReference } = require('../services/effectivePrice');
 
 // 东八区日期 YYYY-MM-DD
 function cnDate(d) {
@@ -87,10 +87,13 @@ async function recordNavSnapshots(username, accountName, hkRateOverride = null, 
       ? marketText
       : (marketText ? 'UNKNOWN' : (String(r.code || '').length === 5 ? 'HK' : 'CN'));
     const key = market + '|' + code;
-    dpMap.set(key + '|' + d, { price: Number(r.price), qualified });
+    const candidate = { date: d, price: Number(r.price), qualified,
+      quality: String(r.quality || 'legacy_unverified'), isFinal: r.is_final === true,
+      source: r.source || null, evidence: r.evidence || {} };
+    dpMap.set(key + '|' + d, candidate);
     priceDates.add(d);
     if (!pricesByCode.has(key)) pricesByCode.set(key, []);
-    pricesByCode.get(key).push({ date: d, price: Number(r.price), qualified });
+    pricesByCode.get(key).push(candidate);
   });
   for (const rows of pricesByCode.values()) rows.sort((a, b) => a.date.localeCompare(b.date));
   const targetDate = dateText(targetDateInput);
@@ -240,7 +243,10 @@ async function recordNavSnapshots(username, accountName, hkRateOverride = null, 
     }
   }
   const usedPriceDates = {};
+  const usedSuspensionReferences = {};
   const stateCache = new Map();
+  const historyCalendarCache = new Map();
+  const suspensionCache = new Map();
   async function stateFor(market, date) {
     const key = market + '|' + date;
     if (!stateCache.has(key)) {
@@ -260,10 +266,20 @@ async function recordNavSnapshots(username, accountName, hkRateOverride = null, 
       statusByDate.set(candidate.date, (await stateFor(market, candidate.date)).status);
     }
     // 历史重算与实时估值共用同一支选价算法（services/effectivePrice），不再各写一套。
-    return selectHistoricalClosePrice({
+    const selected = selectHistoricalClosePrice({
       exactPrice: exact, candidates, targetDate: date, marketStatus,
       tradingStatusOf: candidateDate => statusByDate.get(candidateDate) || 'unknown',
     });
+    if (market !== 'CN') return selected;
+    const expected = await expectedCloseDateFor('CN', date, pool.query.bind(pool), historyCalendarCache, 'historical');
+    if (selected && selected.date === expected) return selected;
+    if (!expected) return null;
+    const lastConfirmed = candidates.slice().reverse().find(row => row.date < expected &&
+      row.quality === 'confirmed' && row.isFinal === true);
+    const reference = await resolveSuspendedReference({ code, market, candidate: lastConfirmed,
+      targetDate: expected, query: pool.query.bind(pool), cache: suspensionCache });
+    return reference ? { price: reference.price, date: reference.tradeDate,
+      priceKind: reference.priceKind, suspensionEvidence: reference } : null;
   }
   for (const d of datesToProcess) {
     const anchor = latestPositionAnchor(d);
@@ -319,6 +335,10 @@ async function recordNavSnapshots(username, accountName, hkRateOverride = null, 
       }
       if (!price) { incomplete = true; missingCodes.push(state.status === 'unknown' ? `${code}:交易日历未知` : code); continue; }
       usedDateByCode[code] = price.date;
+      if (price.suspensionEvidence) {
+        if (!usedSuspensionReferences[d]) usedSuspensionReferences[d] = {};
+        usedSuspensionReferences[d][code] = price.suspensionEvidence;
+      }
       if (market === 'HK' && !(hkRate > 0)) { incomplete = true; missingCodes.push(code + ':HKD汇率'); continue; }
       mvs.push(price.price * info.qty * (market === 'HK' ? hkRate : 1));
     }
@@ -360,6 +380,7 @@ async function recordNavSnapshots(username, accountName, hkRateOverride = null, 
     missingCodes: [...new Set(incompleteDates.flatMap(item => item.missingCodes))],
     diagnostics: incompleteDates,
     usedPriceDates,
+    ...(Object.keys(usedSuspensionReferences).length ? { usedSuspensionReferences } : {}),
     ...(fixedDelistedCodes.size ? { fixedDelistedPriceCodes: [...fixedDelistedCodes] } : {}),
     ...(incompleteDates.length ? {
       error: '账户净值快照存在缺失行情或汇率：' + incompleteDates.map(item => item.date + '（' + item.missingCodes.join('、') + '）').join('；'),

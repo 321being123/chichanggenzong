@@ -171,7 +171,12 @@ function renderEarningsTable(sorted) {
   const trendColor = function (v) { return v > 0 ? '#d93025' : (v < 0 ? '#137333' : '#888'); };
   const trendClass = function (color) { return color === '#d93025' ? 'positive' : (color === '#137333' ? 'negative' : ''); };
   const cols = [
-    { t: '日期', get: function (r) { return r.date || '-'; } },
+    { t: '日期', get: function (r) {
+        const references = Array.isArray(r.suspensionReferencePrices) ? r.suspensionReferencePrices : [];
+        return escapeHtml(r.date || '-') + references.map(function (ref) {
+          return '<br>停牌参考：' + escapeHtml(String(ref.code || '')) + '（成交 ' + escapeHtml(String(ref.tradeDate || '')) + '）';
+        }).join('');
+      } },
     { t: '总资产(万元)', get: function (r) { return wan(r.totalMarketValue); } },
     { t: '投入本金(万元)', get: function (r) { return wan(r.totalInvested); } },
     { t: '净值', get: function (r) { return r.nav == null ? '—' : Number(r.nav).toFixed(4); } },

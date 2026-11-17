@@ -56,6 +56,61 @@ async function selectAccountId(params, client = pool) {
   return client.query('SELECT id FROM accounts WHERE username=$1 AND account_name=$2', params);
 }
 
+// 只读核对最后成交日至目标日之间每个自然日的交易日历，以及每个开市日的停牌事实和分区质量。
+// 不把停牌参考价写入 daily_prices；退市日及之后的换股过渡期不适用。
+const suspensionIntervalSql = `SELECT i.instrument_id, i.exchange_code,
+            ($3::date - $2::date)::int AS calendar_days,
+            COUNT(DISTINCT c.trade_date)::int AS known_days,
+            COUNT(DISTINCT c.trade_date) FILTER (WHERE c.is_open)::int AS open_days,
+            COUNT(DISTINCT c.trade_date) FILTER (WHERE c.is_open AND EXISTS (
+              SELECT 1 FROM market.stock_suspend_calendar s
+              JOIN ops.dataset_partitions p ON p.dataset_code='stock_suspend_calendar'
+                AND p.scope_key='CN' AND p.partition_key=s.trade_date
+              WHERE s.instrument_id=i.instrument_id AND s.trade_date=c.trade_date AND s.suspend_type='S'
+                AND p.status='published' AND NOT COALESCE(p.is_stale,false)
+                AND p.diagnostics->>'query_status'='success'
+                AND COALESCE(p.diagnostics->>'quality_status','passed')='passed'
+            ) AND NOT EXISTS (
+              SELECT 1 FROM market.stock_suspend_calendar resumed
+              WHERE resumed.instrument_id=i.instrument_id AND resumed.trade_date=c.trade_date
+                AND resumed.suspend_type='R'
+            ))::int AS verified_days,
+            NOT EXISTS (
+              SELECT 1 FROM daily_prices d
+              WHERE d.code=$5 AND d.market='CN' AND d.date::text=$2::text
+                AND d.quality='confirmed' AND d.is_final=true AND d.price>0
+                AND COALESCE(d.source,'') <> ALL($6::text[])
+                AND d.price IS DISTINCT FROM $4::numeric
+            ) AS no_price_conflict
+       FROM core.instruments i
+       LEFT JOIN market.trade_calendar c ON c.exchange=i.exchange_code
+         AND c.trade_date>$2::date AND c.trade_date<=$3::date
+      WHERE upper(i.canonical_code)=upper($1) AND i.asset_class='stock' AND i.market='CN'
+        AND i.exchange_code IN ('SSE','SZSE')
+        AND EXISTS (SELECT 1 FROM market.trade_calendar first_day
+          WHERE first_day.exchange=i.exchange_code AND first_day.trade_date=$2::date AND first_day.is_open)
+        AND NOT EXISTS (SELECT 1 FROM fundamental.corporate_actions action
+          WHERE action.instrument_id=i.instrument_id AND action.ex_date>$2::date AND action.ex_date<=$3::date)
+        AND (i.list_date IS NULL OR i.list_date<=$2::date)
+        AND (i.delist_date IS NULL OR i.delist_date>$3::date)
+        AND (i.status<>'delisted' OR i.delist_date IS NOT NULL)
+      GROUP BY i.instrument_id,i.exchange_code`;
+async function inspectSuspensionInterval(params, client = pool) {
+  return client.query(suspensionIntervalSql, params);
+}
+
+// 历史投影一次传入全部实际缺价区间，不按证券和日期逐次往返数据库。
+async function inspectSuspensionIntervals(requests, privateSources, client = pool) {
+  const sql = suspensionIntervalSql
+    .replaceAll('$1', 'req.canonical').replaceAll('$2', 'req.actual_date')
+    .replaceAll('$3', 'req.target_date').replaceAll('$4', 'req.price')
+    .replaceAll('$5', 'req.code').replaceAll('$6', '$2');
+  return client.query(`WITH requests AS (
+    SELECT * FROM jsonb_to_recordset($1::jsonb) AS r(id int, canonical text, actual_date text, target_date text, price numeric, code text)
+  ) SELECT req.id, proof.* FROM requests req CROSS JOIN LATERAL (${sql}) proof`,
+  [JSON.stringify(requests), privateSources]);
+}
+
 // 写入时必须带市场：港股 00001 与 A 股 000001 是两只不同证券，缺了市场就无法区分。
 // 判定顺序：调用方显式给出（收盘任务按市场规则、补录按品种）→ 代码形状（5 位只在港股、
 // 6 位不以 00 开头只在 A 股）→ 其余无法判定，写 'UNKNOWN'（身份不明，取价层按缺口处理）。
@@ -140,5 +195,7 @@ module.exports = {
   listQuoteCacheCandidates,
   listPositionPriceCache,
   selectAccountId,
+  inspectSuspensionInterval,
+  inspectSuspensionIntervals,
   upsertDailyPrice,
 };

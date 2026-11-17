@@ -232,6 +232,7 @@ function buildRealReturnsSeries() {
     cf.forEach(function (c) { if (c.date === n.date) nc += (c.amount || 0); });
     return {
       date: n.date,
+      suspensionReferencePrices: n.basis && n.basis.suspensionReferencePrices && n.basis.suspensionReferencePrices.current || [],
       isLive: n.isLive === true,
       totalMarketValue: totalAsset,
       totalInvested: invested,

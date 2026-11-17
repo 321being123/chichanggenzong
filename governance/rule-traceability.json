@@ -1,7 +1,18 @@
 {
   "schemaVersion": 1,
-  "lastReviewed": "2026-11-15",
+  "lastReviewed": "2026-11-17",
   "rules": [
+    {
+      "id": "HOLDINGS-NAV-SUSPENSION-001",
+      "title": "历史停牌估值须完整逐日证据并保留真实成交日，退市及已知除权除息不沿用",
+      "implementation": { "file": "server/services/effectivePrice.js", "symbol": "resolveSuspendedReference" },
+      "tests": [
+        { "file": "server/test/suspension-reference-valuation.test.js", "pattern": "HOLDINGS-NAV-SUSPENSION-001" },
+        { "file": "server/test/suspension-snapshot-integration.test.js", "pattern": "HOLDINGS-NAV-SUSPENSION-001" }
+      ],
+      "owner": "持仓估值",
+      "status": "implemented"
+    },
     {
       "id": "CREDENTIAL-AUTH-RECOVERY-001",
       "title": "同一凭据的后续已验证业务成功可恢复旧认证拒绝；接口权限、主备、管理员修改和新拒绝不得串扰",

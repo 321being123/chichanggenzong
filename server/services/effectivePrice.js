@@ -6,6 +6,7 @@ const crypto = require('crypto');
 const repository = require('../repositories/effectivePriceRepository');
 const { getMarketState } = require('./marketState');
 const classifyCode = require('../../public/js/code-classify');
+const { canonicalizeSecurityCode } = require('./securityIdentity');
 
 const POLICY_VERSION = 'effective-price-v1';
 // 最近多少个交易日参与选价/冲突核对（同一证券同一交易日的跨账户/跨用户记录都会读到）。
@@ -551,6 +552,69 @@ function selectHistoricalClosePrice({ exactPrice, candidates, targetDate, market
   return null;
 }
 
+// 停牌参考估值：只使用已核验的不复权终盘成交价，且该价之后的每个开市日均有停牌证据。
+// 真实成交日与估值日分开返回；退市日、日历/分区不完整、来源冲突均不兜底。
+function suspensionRequest({ code, market, candidate, targetDate }) {
+  const actualDate = dateKey(candidate && candidate.date);
+  const target = dateKey(targetDate);
+  const evidence = candidate && candidate.evidence || {};
+  const isUnadjusted = evidence.price_adjust === 'none' || evidence.terminalEvidence === 'unadjusted_bar_match';
+  if (market !== 'CN' || !/^\d{6}$/.test(String(code || '')) || !actualDate || !target || actualDate >= target ||
+      !(Number(candidate && candidate.price) > 0) || candidate.quality !== 'confirmed' ||
+      candidate.isFinal !== true || !candidate.source || PRIVATE_SOURCES.includes(candidate.source) || !isUnadjusted) return null;
+  const canonical = canonicalizeSecurityCode(code, 'stock');
+  if (!canonical) return null;
+  return { canonical, actual_date: actualDate, target_date: target, code: String(code),
+    price: Number(candidate.price), source: candidate.source };
+}
+function suspensionResult(request, row) {
+  if (!row || Number(row.calendar_days) <= 0 || Number(row.known_days) !== Number(row.calendar_days) ||
+      Number(row.open_days) <= 0 || Number(row.verified_days) !== Number(row.open_days) || row.no_price_conflict !== true) return null;
+  return { code: request.code, price: request.price, priceKind: 'suspension_reference', tradeDate: request.actual_date,
+    asOfDate: request.target_date, sourceRef: request.source, instrumentId: row.instrument_id,
+    suspensionThrough: request.target_date, suspensionOpenDays: Number(row.open_days) };
+}
+async function resolveSuspendedReference({ code, market, candidate, targetDate, query, cache }) {
+  const request = suspensionRequest({ code, market, candidate, targetDate });
+  if (!request) return null;
+  const { canonical, actual_date: actualDate, target_date: target } = request;
+  const key = `${canonical}|${actualDate}|${target}|${Number(candidate.price)}`;
+  if (cache && cache.has(key)) return cache.get(key);
+  const load = async () => {
+    try {
+      const result = await repository.inspectSuspensionInterval(
+        [canonical, actualDate, target, Number(candidate.price), String(code), PRIVATE_SOURCES],
+        query ? { query } : undefined);
+      return suspensionResult(request, result.rows[0]);
+    } catch (_) {
+      return null;
+    }
+  };
+  const pending = load();
+  if (cache) cache.set(key, pending);
+  return pending;
+}
+
+async function resolveSuspendedReferencesBatch(inputs, query) {
+  const requests = [];
+  inputs.forEach((input, id) => {
+    const request = suspensionRequest(input);
+    if (request) requests.push({ ...request, id });
+  });
+  const results = new Map();
+  if (!requests.length) return results;
+  const requestsById = new Map(requests.map(request => [request.id, request]));
+  try {
+    const { rows } = await repository.inspectSuspensionIntervals(requests, PRIVATE_SOURCES, query ? { query } : undefined);
+    for (const row of rows) {
+      const request = requestsById.get(row.id);
+      const reference = request && suspensionResult(request, row);
+      if (reference) results.set(row.id, reference);
+    }
+  } catch (_) { /* 查询失败不得把停牌证据视为完整 */ }
+  return results;
+}
+
 module.exports = {
   resolveEffectivePrices,
   priceKey,
@@ -558,6 +622,8 @@ module.exports = {
   dailyRowMarketOf,
   normalizeMarket,
   selectHistoricalClosePrice,
+  resolveSuspendedReference,
+  resolveSuspendedReferencesBatch,
   sessionPhase,
   expectedCloseDateFor,
   marketOf,

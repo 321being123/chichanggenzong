@@ -265,12 +265,12 @@ def _consume(conn, source, dataset, circuit_source=None, api_name=None, token_fi
             cur.execute(
                 """SELECT allowed,reason,wait_until,day_count,minute_count,
                               effective_daily_limit,effective_minute_limit,timeout_ms,
-                              retry_policy,empty_policy,concurrency_slot
+                              retry_policy,empty_policy,concurrency_slot,clock_timestamp()::text
                      FROM ops.reserve_external_call(%s,%s,%s,%s)""",
                 (budget_source, api_name, credential_profile, fingerprint),
             )
-            budget = cur.fetchone() or (False, "policy_missing", None, 0, 0, None, None, 30000, {}, "preserve_last_success", None)
-            allowed, reason, wait_until, day_count, minute_count, day_limit, minute_limit, timeout_ms, retry_policy, empty_policy, concurrency_slot = budget
+            budget = cur.fetchone() or (False, "policy_missing", None, 0, 0, None, None, 30000, {}, "preserve_last_success", None, None)
+            allowed, reason, wait_until, day_count, minute_count, day_limit, minute_limit, timeout_ms, retry_policy, empty_policy, concurrency_slot, request_started_at = budget
             if not allowed:
                 if reason in {"policy_missing", "policy_disabled"}:
                     conn.commit()
@@ -296,7 +296,7 @@ def _consume(conn, source, dataset, circuit_source=None, api_name=None, token_fi
             "day_count": int(day_count or 0), "minute_count": int(minute_count or 0),
             "timeout_ms": int(timeout_ms or 30000), "retry_policy": retry_policy or {},
             "empty_policy": empty_policy or "preserve_last_success",
-            "concurrency_slot": concurrency_slot,
+            "concurrency_slot": concurrency_slot, "request_started_at": request_started_at,
         }
     except Exception:
         conn.rollback()
@@ -364,6 +364,59 @@ def open_external_circuit(source, api_name, token_fingerprint_value, code, detai
     _open_circuit(source, detail, api_name, token_fingerprint_value, code)
 
 
+def record_endpoint_permission(source, api_name, token_fingerprint_value, message):
+    """认证拒绝绑定凭据通配作用域；接口拒绝只停用该接口。"""
+    profile = _credential_profile(source)
+    conn = _db_connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """INSERT INTO ops.source_endpoint_policies
+                     (source_id,api_name,credential_profile,credential_fingerprint,permission_status,last_verified_at,verification_message,enabled)
+                   SELECT ds.source_id,%s,%s,%s,'permission_denied',now(),%s,false
+                     FROM ops.data_sources ds WHERE ds.source_code=%s
+                   ON CONFLICT(source_id,api_name,credential_profile) DO UPDATE SET
+                     credential_fingerprint=EXCLUDED.credential_fingerprint,permission_status='permission_denied',
+                     last_verified_at=EXCLUDED.last_verified_at,verification_message=EXCLUDED.verification_message,
+                     enabled=false,updated_at=now()""",
+                (str(api_name or '*')[:64], profile, str(token_fingerprint_value or 'none'),
+                 str(message or '')[:240], _budget_source(source)),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def recover_credential_authentication(source, token_fingerprint_value, request_started_at):
+    """仅供已验证上游业务响应成功的适配器调用，不能以 HTTP 200 代替。"""
+    profile = _credential_profile(source)
+    fingerprint = str(token_fingerprint_value or "none")
+    if profile not in {"primary", "backup"} or fingerprint == "none" or not request_started_at:
+        return False
+    conn = _db_connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """UPDATE ops.source_endpoint_policies p
+                      SET enabled=true,permission_status='available',last_verified_at=clock_timestamp(),
+                          verification_message='同一凭据的后续接口认证成功',updated_at=clock_timestamp()
+                     FROM ops.data_sources ds
+                    WHERE p.source_id=ds.source_id AND ds.source_code=%s
+                      AND p.credential_profile=%s AND p.api_name='*' AND p.credential_fingerprint=%s
+                      AND p.enabled=false AND p.permission_status='permission_denied'
+                      AND p.last_verified_at IS NOT NULL AND p.last_verified_at < %s::timestamptz
+                      AND p.updated_at=p.last_verified_at
+                      AND p.verification_message ~* '(AUTH_ERROR|token.{0,20}(不对|错误|无效|invalid|expired)|invalid.{0,10}token|HTTP 401)'
+                    RETURNING p.policy_id""",
+                (_budget_source(source), profile, fingerprint, request_started_at),
+            )
+            recovered = bool(cur.fetchone())
+        conn.commit()
+        return recovered
+    finally:
+        conn.close()
+
+
 def close_external_circuit(source, api_name, token_fingerprint_value, probe_token=None):
     conn = _db_connect()
     try:
@@ -418,7 +471,7 @@ def release_external_call_slot(source, api_name, token_fingerprint_value="none",
             client.close()
 
 
-def with_external_call_guard(source, dataset, fn, circuit_source=None, api_name=None, token_fingerprint_value="none"):
+def with_external_call_guard(source, dataset, fn, circuit_source=None, api_name=None, token_fingerprint_value="none", guard_context=None):
     if not enabled():
         return fn()
     conn = _db_connect()
@@ -431,6 +484,8 @@ def with_external_call_guard(source, dataset, fn, circuit_source=None, api_name=
         if not locked:
             raise ExternalCallGuardError("DATASET_LOCKED", "同一数据集正在由其他 Worker 请求中", _source_key(source), dataset)
         probe = _consume(conn, source, dataset, circuit_source, api_name, token_fingerprint_value)
+        if guard_context is not None:
+            guard_context["request_started_at"] = probe.get("request_started_at")
         _record(source)
         result = fn()
         if probe.get("probe_token"):
@@ -495,7 +550,7 @@ def _dataset(url, params=None, body=None):
     return normalized[:1000]
 
 
-def guarded_urlopen(request, timeout=30, source=None, dataset=None, api_name=None, token_fingerprint_value="none"):
+def guarded_urlopen(request, timeout=30, source=None, dataset=None, api_name=None, token_fingerprint_value="none", guard_context=None):
     """在不修改 urllib 全局行为的前提下保护单次请求。"""
     if not enabled():
         from urllib.request import urlopen
@@ -520,7 +575,11 @@ def guarded_urlopen(request, timeout=30, source=None, dataset=None, api_name=Non
                         f"{source} 接口 {endpoint} HTTP 403" + ("，连续 5 次后进入每日恢复探针" if state["blocked"] else "，等待退避后探测"),
                         source, dataset, endpoint, token_fingerprint_value, state["recover_at"]) from error
                 code = "AUTH_ERROR" if error.code == 401 else "PERMISSION_DENIED"
-                _open_circuit(source, str(error), "*" if code == "AUTH_ERROR" else endpoint, token_fingerprint_value, code)
+                if _source_key(source).lower() in {"tushare", "tushare_backup"}:
+                    record_endpoint_permission(source, "*" if code == "AUTH_ERROR" else endpoint,
+                                               token_fingerprint_value, f"{code}: HTTP {error.code}")
+                else:
+                    _open_circuit(source, str(error), "*" if code == "AUTH_ERROR" else endpoint, token_fingerprint_value, code)
                 raise ExternalCallGuardError(code, f"{source} 接口 HTTP {error.code}", source, dataset, endpoint, token_fingerprint_value) from error
             if error.code >= 500:
                 raise ExternalCallGuardError("UPSTREAM_5XX", f"{source} 接口 HTTP {error.code}", source, dataset, api_name or _api_name(source, dataset), token_fingerprint_value) from error
@@ -537,13 +596,17 @@ def guarded_urlopen(request, timeout=30, source=None, dataset=None, api_name=Non
                     f"{source} 接口 {endpoint} HTTP 403" + ("，连续 5 次后进入每日恢复探针" if state["blocked"] else "，等待退避后探测"),
                     source, dataset, endpoint, token_fingerprint_value, state["recover_at"])
             code = "AUTH_ERROR" if status == 401 else "PERMISSION_DENIED"
-            _open_circuit(source, f"HTTP {status}", "*" if code == "AUTH_ERROR" else endpoint, token_fingerprint_value, code)
+            if _source_key(source).lower() in {"tushare", "tushare_backup"}:
+                record_endpoint_permission(source, "*" if code == "AUTH_ERROR" else endpoint,
+                                           token_fingerprint_value, f"{code}: HTTP {status}")
+            else:
+                _open_circuit(source, f"HTTP {status}", "*" if code == "AUTH_ERROR" else endpoint, token_fingerprint_value, code)
             raise ExternalCallGuardError(code, f"{source} 接口 HTTP {status}", source, dataset, endpoint, token_fingerprint_value)
         if status >= 500:
             raise ExternalCallGuardError("UPSTREAM_5XX", f"{source} 接口 HTTP {status}", source, dataset, api_name or _api_name(source, dataset), token_fingerprint_value)
         return response
 
-    return with_external_call_guard(source, dataset, perform, api_name=api_name, token_fingerprint_value=token_fingerprint_value)
+    return with_external_call_guard(source, dataset, perform, api_name=api_name, token_fingerprint_value=token_fingerprint_value, guard_context=guard_context)
 
 
 def install_requests_guard():

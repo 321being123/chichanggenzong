@@ -24,6 +24,9 @@ from external_call_guard import (
     close_external_circuit,
     release_external_circuit_probe,
     token_fingerprint,
+    recover_credential_authentication,
+    record_endpoint_permission,
+    _recover_at,
     enabled,
 )
 
@@ -128,7 +131,7 @@ def _emit_tushare_failover(api_name, error):
 
 def _classify_tushare_error(code, message):
     text = str(message or "")
-    if code in {401, 40101} or re.search(r"token\s*(无效|错误)|无效 token|invalid token", text, re.I):
+    if code in {401, 40101} or re.search(r"token\s*(无效|错误|不对)|无效 token|invalid token", text, re.I):
         return "AUTH_ERROR"
     if code == 2002 or re.search(r"权限|permission|积分不足|没有接口|无权限", text, re.I):
         return "PERMISSION_DENIED"
@@ -167,19 +170,23 @@ def _tushare(api_name, params, fields):
         )
         try:
             fingerprint = token_fingerprint(token)
+            guard_context = {}
             with guarded_urlopen(
                 request, timeout=30, source=source, dataset=dataset,
-                api_name=api_name, token_fingerprint_value=fingerprint,
+                api_name=api_name, token_fingerprint_value=fingerprint, guard_context=guard_context,
             ) as response:
                 payload = json.loads(response.read().decode("utf-8"))
             if payload.get("code") != 0:
                 message = payload.get("msg") or payload.get("code")
                 error_code = _classify_tushare_error(payload.get("code"), message)
                 recover_at = _recover_at(error_code) if enabled() else None
-                if enabled() and error_code in {"AUTH_ERROR", "PERMISSION_DENIED", "RATE_LIMIT", "QUOTA_EXHAUSTED"}:
+                if enabled() and error_code in {"AUTH_ERROR", "PERMISSION_DENIED"}:
+                    record_endpoint_permission(source, "*" if error_code == "AUTH_ERROR" else api_name,
+                                               fingerprint, f"{error_code}: {message}")
+                elif enabled() and error_code in {"RATE_LIMIT", "QUOTA_EXHAUSTED"}:
                     open_external_circuit(
                         source,
-                        "*" if error_code == "AUTH_ERROR" else api_name,
+                        api_name,
                         fingerprint,
                         error_code,
                         f"Tushare {api_name} 错误: {message}",
@@ -199,6 +206,10 @@ def _tushare(api_name, params, fields):
                 raise RuntimeError(f"Tushare {api_name} 字段与数据列数不一致")
             if enabled():
                 close_external_circuit(source, api_name, fingerprint)
+                try:
+                    recover_credential_authentication(source, fingerprint, guard_context.get("request_started_at"))
+                except Exception:
+                    print("[Tushare] 凭据恢复检查失败，本次业务结果不受影响", file=sys.stderr)
             if source == "tushare_backup" and primary_failure is not None:
                 _emit_tushare_failover(api_name, primary_failure)
             return [dict(zip(fields_out, row)) for row in items]

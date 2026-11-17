@@ -4,7 +4,7 @@ const tushareHealthSource = require('./tushareHealthSource');
 const { SECRET } = require('../config');
 const { getConfig, setConfig } = require('../db/config');
 const { withExternalCallGuard, tokenFingerprint } = require('./externalCallGuard');
-const { listSourceEndpointPolicies, syncCredentialFingerprint, recordEndpointPermission } = require('./sourceEndpointPolicy');
+const { listSourceEndpointPolicies, syncCredentialFingerprint, recordEndpointPermission, recoverCredentialAuthentication } = require('./sourceEndpointPolicy');
 
 const CONFIG_KEY = 'external_api_configs';
 // 供应商注册表：这家支持什么测试、凭据变更要同步什么，都由这一条描述决定。
@@ -218,7 +218,14 @@ async function testProviderAvailability(provider = 'tushare', role = 'current', 
         guardSource,
         `permission_probe:${requestedApi}`,
         null,
-        () => capability.probe(token, requestedApi),
+        async (guardClient, guardResult) => {
+          const health = await capability.probe(token, requestedApi);
+          // 适配器完成业务级成功校验后，仅恢复同凭据的旧认证拒绝。
+          await recoverCredentialAuthentication(provider, targetRole, tokenFingerprint(token),
+            guardResult && guardResult.requestStartedAt, guardClient)
+            .catch(() => console.warn('[外部 API] 凭据恢复检查失败，本次探测结果不受影响'));
+          return health;
+        },
         { circuitSource: guardSource, apiName: requestedApi, tokenFingerprint: tokenFingerprint(token) }
       );
       result = {

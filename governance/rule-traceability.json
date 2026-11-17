@@ -3,6 +3,22 @@
   "lastReviewed": "2026-11-15",
   "rules": [
     {
+      "id": "CREDENTIAL-AUTH-RECOVERY-001",
+      "title": "同一凭据的后续已验证业务成功可恢复旧认证拒绝；接口权限、主备、管理员修改和新拒绝不得串扰",
+      "implementation": {
+        "file": "server/services/sourceEndpointPolicy.js",
+        "symbol": "recoverCredentialAuthentication"
+      },
+      "tests": [
+        { "file": "server/test/credential-auth-recovery.test.js", "pattern": "CREDENTIAL-AUTH-RECOVERY-001" },
+        { "file": "server/test/python-credential-recovery.test.js", "pattern": "CREDENTIAL-AUTH-RECOVERY-001" },
+        { "file": "server/test/tushare-auth-evidence.test.js", "pattern": "CREDENTIAL-AUTH-RECOVERY-001" },
+        { "file": "ipo-report/test_unit_fixes.py", "pattern": "CREDENTIAL-AUTH-RECOVERY-001" }
+      ],
+      "owner": "Codex",
+      "status": "implemented"
+    },
+    {
       "id": "HOLDINGS-CLOSE-WATERMARK-012",
       "title": "收盘水位只认同账户同市场同证券的确认终盘价；候选与未知市场不得短路，Runner 仍核查共享日线缺口",
       "implementation": {

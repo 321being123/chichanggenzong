@@ -273,7 +273,7 @@ async function consumeExternalCall(source, dataset = '', providedClient = null, 
     const probe = await assertCircuitAvailable(client, key, guardOptions.apiName, guardOptions.tokenFingerprint, dataset);
     // 旧 ops.consume_external_call_budget 仅保留迁移兼容；实际限额由 reserve_external_call 读取策略。
     const { rows: budgetRows } = await client.query(
-      'SELECT * FROM ops.reserve_external_call($1,$2,$3,$4)',
+      'SELECT r.*,clock_timestamp()::text AS request_started_at FROM ops.reserve_external_call($1,$2,$3,$4) r',
       [guardOptions.budgetSource, guardOptions.apiName, guardOptions.credentialProfile, guardOptions.tokenFingerprint]
     );
     const budget = budgetRows[0] || {};
@@ -322,6 +322,7 @@ async function consumeExternalCall(source, dataset = '', providedClient = null, 
       dayCount: Number(budget.day_count || item.dayCount),
       concurrencySlot: providedClient ? concurrencySlot : null,
       timeoutMs: budget.timeout_ms == null ? 30000 : Number(budget.timeout_ms),
+      requestStartedAt: budget.request_started_at || null,
       retryPolicy: budget.retry_policy || {}, emptyPolicy: budget.empty_policy || 'preserve_last_success',
       ...(probe || {}),
     };

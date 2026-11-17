@@ -7,7 +7,7 @@ const {
   tokenFingerprint,
 } = require('./externalCallGuard');
 const { getProviderRuntime } = require('./externalApiConfig');
-const { recordEndpointPermission } = require('./sourceEndpointPolicy');
+const { recordEndpointPermission, recoverCredentialAuthentication } = require('./sourceEndpointPolicy');
 
 const API_URL = 'https://api.tushare.pro';
 const PRIMARY_SOURCE = 'tushare';
@@ -70,7 +70,7 @@ class TushareRequestError extends Error {
 function classifyUpstreamError(payload, statusCode, apiName) {
   const code = payload && payload.code;
   const message = String(payload && (payload.msg || payload.message) || `Tushare HTTP ${statusCode || 'error'}`);
-  if (statusCode === 401 || code === 401 || code === 40101 || /token\s*(无效|错误)|无效 token|invalid token|token is invalid/i.test(message)) {
+  if (statusCode === 401 || code === 401 || code === 40101 || /token\s*(无效|错误|不对)|无效 token|invalid token|token is invalid/i.test(message)) {
     return new TushareRequestError('AUTH_ERROR', message,
       { errorType: 'permission', statusCode, apiName, upstreamCode: code });
   }
@@ -133,7 +133,7 @@ function requestWithToken(apiName, params, fields, token, guardSource, dataset, 
             const profile = guardSource === BACKUP_SOURCE ? 'backup' : 'primary';
             await recordEndpointPermission(PRIMARY_SOURCE, profile,
               error.code === 'AUTH_ERROR' ? '*' : apiName, fingerprint,
-              { status: 'permission_denied', message: error.message }).catch(() => {});
+              { status: 'permission_denied', message: error.code === 'AUTH_ERROR' ? `AUTH_ERROR: ${error.message}` : error.message }).catch(() => {});
           }
           error.source = guardSource;
           error.tokenFingerprint = fingerprint;
@@ -147,6 +147,11 @@ function requestWithToken(apiName, params, fields, token, guardSource, dataset, 
         if (data.items.some(row => !Array.isArray(row) || row.length !== data.fields.length)) {
           return reject(new TushareRequestError('INVALID_RESPONSE', `Tushare ${apiName} 数据列数不一致`, { apiName, statusCode: response.statusCode }));
         }
+        // code=0 且结构完整已证明认证成功；空结果仍不代表该数据集完整。
+        const profile = guardSource === BACKUP_SOURCE ? 'backup' : 'primary';
+        await recoverCredentialAuthentication(PRIMARY_SOURCE, profile, fingerprint,
+          guardResult && guardResult.requestStartedAt, guardClient)
+          .catch(() => console.warn('[Tushare] 凭据恢复检查失败，本次业务结果不受影响'));
         if (data.items.length === 0 && !options.allowEmpty) {
           return reject(new TushareRequestError('EMPTY_DATA', `Tushare ${apiName} 返回空数据`, { errorType: 'empty_data', apiName, statusCode: response.statusCode }));
         }

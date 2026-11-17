@@ -41,7 +41,7 @@ function readTushareHealth(token, probeName, probe) {
         if (response.statusCode !== 200 || !payload || payload.code !== 0) {
           const upstreamCode = payload && payload.code != null ? `（代码 ${payload.code}）` : '';
           const error = new Error(`${payload && (payload.msg || payload.message) || `HTTP ${response.statusCode || '未知'}`}${upstreamCode}`);
-          error.code = response.statusCode === 401 || /token\s*(无效|错误)|invalid token|无效 token/i.test(error.message)
+          error.code = response.statusCode === 401 || /token\s*(无效|错误|不对)|invalid token|无效 token/i.test(error.message)
             ? 'AUTH_ERROR' : response.statusCode === 403 || /权限|permission|积分不足|没有接口|无权限/i.test(error.message)
               ? 'PERMISSION_DENIED' : /当日|每日|次数.*耗尽|额度.*耗尽|配额.*耗尽/i.test(error.message)
                 ? 'QUOTA_EXHAUSTED' : /429|频率|频次|限速|配额|rate.?limit|quota/i.test(error.message)

@@ -29,6 +29,8 @@ function historicalKindFor(code, position = {}) {
   const subtype = String(position.subtype || (info && info.subtype) || '');
   const type = String(position.type || (info && info.type) || '');
   if (subtype === '港股' || /^\d{5}$/.test(rawCode)) return 'hk_stock';
+  // 统一代码分类优先于旧持仓中的“股权/沪市”标签，避免基金走股票日线。
+  if (classifyCode.isFundEtfCode(rawCode)) return 'fund';
   if (subtype === '可转债' || type === '债权' || /债/.test(String(position.name || '')) || /^(11|12)\d{4}$/.test(rawCode)) return 'bond';
   if (subtype.indexOf('基金') >= 0 || subtype.indexOf('ETF') >= 0 || type === '基金') return 'fund';
   return 'stock';

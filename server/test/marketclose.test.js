@@ -151,6 +151,9 @@ check('历史回补按证券类型路由，禁止统一走股票日线', () => {
   assert.strictEqual(historicalKindFor('00762', { subtype: '港股' }), 'hk_stock');
   assert.strictEqual(historicalKindFor('113575', { subtype: '可转债' }), 'bond');
   assert.strictEqual(historicalKindFor('510900', { subtype: '基金/ETF' }), 'fund');
+  assert.strictEqual(historicalKindFor('160719', { subtype: '沪市', type: '股权' }), 'fund');
+  assert.strictEqual(historicalKindFor('511880', { subtype: '沪市', type: '现金' }), 'fund');
+  assert.strictEqual(historicalKindFor('00005', { subtype: '港股' }), 'hk_stock');
   assert.strictEqual(historicalKindFor('600000', { subtype: '沪市' }), 'stock');
 });
 

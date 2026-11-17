@@ -206,11 +206,33 @@ async function recordEndpointPermission(sourceCode, credentialProfile, apiName, 
   );
 }
 
+// 仅适配器验证上游业务成功后调用；普通 HTTP 200 不代表认证成功。
+// 发送前数据库时间防止迟到的成功覆盖更新的拒绝或管理员修改。
+async function recoverCredentialAuthentication(sourceCode, credentialProfile, fingerprint, startedAt, executor = pool) {
+  if (!sourceCode || !['primary', 'backup'].includes(credentialProfile)
+      || !fingerprint || fingerprint === 'none' || !startedAt) return false;
+  const { rows } = await executor.query(
+    `UPDATE ops.source_endpoint_policies p
+        SET enabled=true, permission_status='available', last_verified_at=clock_timestamp(),
+            verification_message='同一凭据的后续接口认证成功', updated_at=clock_timestamp()
+       FROM ops.data_sources ds
+      WHERE p.source_id=ds.source_id AND ds.source_code=$1
+        AND p.credential_profile=$2 AND p.api_name='*' AND p.credential_fingerprint=$3
+        AND p.enabled=false AND p.permission_status='permission_denied'
+        AND p.last_verified_at IS NOT NULL AND p.last_verified_at < $4::timestamptz
+        AND p.updated_at=p.last_verified_at
+        AND p.verification_message ~* '(AUTH_ERROR|token.{0,20}(不对|错误|无效|invalid|expired)|invalid.{0,10}token|HTTP 401)'
+      RETURNING p.policy_id`, [sourceCode, credentialProfile, fingerprint, startedAt]
+  );
+  return rows.length > 0;
+}
+
 module.exports = {
   listSourceEndpointPolicies,
   upsertSourceEndpointPolicy,
   syncCredentialFingerprint,
   recordEndpointPermission,
+  recoverCredentialAuthentication,
   claimPermissionProbes,
   PERMISSION_PROBE_INTERVAL_MS,
   normalizePolicyInput,

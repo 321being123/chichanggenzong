@@ -67,6 +67,8 @@ check("HTTP 200当日次数耗尽分类为QUOTA_EXHAUSTED",
       _classify_tushare_error(40203, "当日调用次数已耗尽") == "QUOTA_EXHAUSTED")
 check("HTTP 200 Token 数字错误码分类为AUTH_ERROR",
       _classify_tushare_error(401, "Unauthorized") == "AUTH_ERROR")
+check("上游 token 不对识别为凭据级错误",
+      _classify_tushare_error(-1, "您的token不对，请确认。") == "AUTH_ERROR")
 check("HTTP 200权限数字错误码分类为PERMISSION_DENIED",
       _classify_tushare_error(2002, "接口不可用") == "PERMISSION_DENIED")
 check("上游接口日额度保持接口级熔断",
@@ -336,6 +338,95 @@ finally:
         os.environ.pop("EXTERNAL_CALL_GUARD", None)
     else:
         os.environ["EXTERNAL_CALL_GUARD"] = original_guard_enabled
+
+# Python HTTP 401/403 与业务码使用同一权限策略，不落无恢复时间的 open 熔断。
+import urllib.request
+original_urlopen = urllib.request.urlopen
+original_with_guard = call_guard.with_external_call_guard
+original_guard_enabled_fn = call_guard.enabled
+original_guard_record = call_guard.record_endpoint_permission
+original_guard_open = call_guard._open_circuit
+try:
+    captured_http_denials, captured_http_circuits = [], []
+    call_guard.enabled = lambda: True
+    call_guard.with_external_call_guard = lambda _source, _dataset, fn, **_kwargs: fn()
+    call_guard.record_endpoint_permission = lambda *args: captured_http_denials.append(args)
+    call_guard._open_circuit = lambda *args: captured_http_circuits.append(args)
+    response_401 = _FakeResponse({}); response_401.status = 401
+    urllib.request.urlopen = lambda *_args, **_kwargs: response_401
+    try:
+        call_guard.guarded_urlopen('https://api.tushare.pro', source='tushare_backup', api_name='daily', token_fingerprint_value='fp')
+    except Exception:
+        pass
+    response_403 = _FakeResponse({}); response_403.status = 403
+    urllib.request.urlopen = lambda *_args, **_kwargs: response_403
+    try:
+        call_guard.guarded_urlopen('https://api.tushare.pro', source='tushare_backup', api_name='daily', token_fingerprint_value='fp')
+    except Exception:
+        pass
+    check("Python HTTP 401 按备用凭据通配拒绝", len(captured_http_denials) == 2
+          and captured_http_denials[0][0:3] == ('tushare_backup', '*', 'fp'))
+    check("Python HTTP 403 只按接口拒绝且不留永久熔断", len(captured_http_denials) == 2
+          and captured_http_denials[1][1] == 'daily' and not captured_http_circuits)
+finally:
+    urllib.request.urlopen = original_urlopen
+    call_guard.with_external_call_guard = original_with_guard
+    call_guard.enabled = original_guard_enabled_fn
+    call_guard.record_endpoint_permission = original_guard_record
+    call_guard._open_circuit = original_guard_open
+
+# CREDENTIAL-AUTH-RECOVERY-001：只能在业务响应验证成功后提交同凭据认证证据。
+original_recover_auth = common.recover_credential_authentication
+original_record_permission = common.record_endpoint_permission
+original_close = common.close_external_circuit
+original_enabled_fn = common.enabled
+original_open = common.open_external_circuit
+original_release = common.release_external_circuit_probe
+original_guarded_urlopen = common.guarded_urlopen
+original_primary_token = common.TUSHARE_TOKEN
+original_backup_token = common.TUSHARE_BACKUP_TOKEN
+original_token_mode = common.TUSHARE_TOKEN_MODE
+try:
+    captured_recoveries, captured_denials = [], []
+    common.TUSHARE_TOKEN, common.TUSHARE_BACKUP_TOKEN, common.TUSHARE_TOKEN_MODE = "unit-primary", "", "primary"
+    common.enabled = lambda: True
+    common.close_external_circuit = lambda *_args: None
+    common.open_external_circuit = lambda *_args: None
+    common.release_external_circuit_probe = lambda *_args: None
+    common.recover_credential_authentication = lambda *args: captured_recoveries.append(args)
+    common.record_endpoint_permission = lambda *args: captured_denials.append(args)
+    def fake_urlopen(*_args, **kwargs):
+        kwargs["guard_context"]["request_started_at"] = "2026-11-17 01:00:00+00"
+        return _FakeResponse({"code": 0, "data": {"fields": ["close"], "items": [[10]]}})
+    common.guarded_urlopen = fake_urlopen
+    common._tushare("daily", {}, "close")
+    check("认证恢复只接收验证成功的业务响应", len(captured_recoveries) == 1
+          and captured_recoveries[0][0] == "tushare"
+          and captured_recoveries[0][2] == "2026-11-17 01:00:00+00")
+    common.guarded_urlopen = lambda *_args, **_kwargs: _FakeResponse({"code": 2002, "msg": "无权限"})
+    try:
+        common._tushare("restricted", {}, "")
+    except Exception:
+        pass
+    check("接口拒绝不能恢复凭据策略", len(captured_recoveries) == 1)
+    check("Python 接口权限拒绝只影响对应接口", len(captured_denials) == 1 and captured_denials[0][1] == "restricted", repr(captured_denials))
+    common.guarded_urlopen = lambda *_args, **_kwargs: _FakeResponse({"code": -1, "msg": "您的token不对，请确认。"})
+    try:
+        common._tushare("daily", {}, "")
+    except Exception:
+        pass
+    check("Python 认证失败仅记录凭据通配策略", len(captured_denials) == 2 and captured_denials[1][1] == "*", repr(captured_denials))
+finally:
+    common.recover_credential_authentication = original_recover_auth
+    common.record_endpoint_permission = original_record_permission
+    common.close_external_circuit = original_close
+    common.enabled = original_enabled_fn
+    common.open_external_circuit = original_open
+    common.release_external_circuit_probe = original_release
+    common.guarded_urlopen = original_guarded_urlopen
+    common.TUSHARE_TOKEN = original_primary_token
+    common.TUSHARE_BACKUP_TOKEN = original_backup_token
+    common.TUSHARE_TOKEN_MODE = original_token_mode
 
 
 # ---------- 测试1：_extract_controller_names 收紧正则（隔离「后缀命中」路径） ----------

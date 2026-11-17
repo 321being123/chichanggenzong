@@ -26,6 +26,8 @@ const source = require('../services/tushareHealthSource');
     assert.deepStrictEqual(captured.body.params, { exchange: 'SSE' });
     nextResponse = { status: 403, body: JSON.stringify({ code: 2002, msg: 'permission' }) };
     await assert.rejects(source.readTushareHealth('test-only', 'trade_cal', { params: {}, fields: '' }), error => error.code === 'PERMISSION_DENIED');
+    nextResponse = { status: 200, body: JSON.stringify({ code: -1, msg: '您的token不对，请确认。' }) };
+    await assert.rejects(source.readTushareHealth('test-only', 'trade_cal', { params: {}, fields: '' }), error => error.code === 'AUTH_ERROR');
     nextResponse = { status: 200, body: '{bad' };
     await assert.rejects(source.readTushareHealth('test-only', 'trade_cal', { params: {}, fields: '' }), /无法解析/);
     console.log('Tushare health source: request, response, permission and malformed data passed');

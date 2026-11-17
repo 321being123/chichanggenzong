@@ -233,6 +233,7 @@ function buildRealReturnsSeries() {
     return {
       date: n.date,
       suspensionReferencePrices: n.basis && n.basis.suspensionReferencePrices && n.basis.suspensionReferencePrices.current || [],
+      swapReferencePrices: n.basis && n.basis.swapReferencePrices && n.basis.swapReferencePrices.current || [],
       isLive: n.isLive === true,
       totalMarketValue: totalAsset,
       totalInvested: invested,

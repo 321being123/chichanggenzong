@@ -23,6 +23,11 @@ async function select_fundamental_corporate_actions(params, client = pool) {
     WHERE a.action_type='dividend' AND a.instrument_id=ANY($1::bigint[]) AND a.pay_date <= $2::date ORDER BY a.action_id`, params);
 }
 
+async function selectKnownDividendDocument(params, client = pool) {
+  return client.query(`SELECT d.document_id,d.title,d.url,d.announced_at::text,d.source_id,d.raw_payload,s.source_code
+    FROM event.documents d JOIN ops.data_sources s ON s.source_id=d.source_id WHERE d.document_id=$1`, params);
+}
+
 async function select_account_cash_income_pending(params, client = pool) {
   return client.query(`SELECT event_key FROM account_cash_income_pending WHERE account_id=$1 AND state='excluded_by_user' AND event_key IS NOT NULL`, params);
 }
@@ -103,6 +108,7 @@ module.exports = {
   select_cash_flows,
   select_positions,
   select_fundamental_corporate_actions,
+  selectKnownDividendDocument,
   select_account_cash_income_pending,
   select_ops_sync_cursors,
   select_market_fx_rates,

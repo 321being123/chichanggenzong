@@ -1,7 +1,26 @@
 {
   "schemaVersion": 1,
-  "lastReviewed": "2026-11-17",
+  "lastReviewed": "2026-11-18",
   "rules": [
+    {
+      "id": "HOLDINGS-NAV-SWAP-014",
+      "title": "换股过渡参考估值须同时验证已实施结算单、官方公告、账本和合并方确认终盘，并保留实际记账日",
+      "implementation": { "file": "server/services/effectivePrice.js", "symbol": "resolveSwapReference" },
+      "tests": [
+        { "file": "server/test/swap-reference-valuation.test.js", "pattern": "HOLDINGS-NAV-SWAP-014" },
+        { "file": "server/test/swap-snapshot-integration.test.js", "pattern": "HOLDINGS-NAV-SWAP-014" }
+      ],
+      "owner": "持仓估值",
+      "status": "implemented"
+    },
+    {
+      "id": "CASH-DIVIDEND-REPROCESS-001",
+      "title": "单份官方分红公告重解析必须核对身份且不得发布全局分区",
+      "implementation": { "file": "server/services/cashDividendFacts.js", "symbol": "reprocessKnownDividendDocument" },
+      "tests": [ { "file": "server/test/cash-dividend-reprocess-contract.test.js", "pattern": "CASH-DIVIDEND-REPROCESS-001" } ],
+      "owner": "现金收益",
+      "status": "implemented"
+    },
     {
       "id": "HOLDINGS-NAV-SUSPENSION-001",
       "title": "历史停牌估值须完整逐日证据并保留真实成交日，退市及已知除权除息不沿用",

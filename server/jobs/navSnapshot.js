@@ -12,7 +12,7 @@ const { investedAt, chainNav, cashAt, isExternalTransfer } = require('../../publ
 const CoreDate = require('../../public/shared/core-date.js');
 const classifyCode = require('../../public/js/code-classify');
 const repository = require('../repositories/navSnapshotRepository.js');
-const { selectHistoricalClosePrice, expectedCloseDateFor, resolveSuspendedReference } = require('../services/effectivePrice');
+const { selectHistoricalClosePrice, expectedCloseDateFor, resolveSuspendedReference, loadSwapReferenceCandidates, resolveSwapReference } = require('../services/effectivePrice');
 
 // 东八区日期 YYYY-MM-DD
 function cnDate(d) {
@@ -244,6 +244,9 @@ async function recordNavSnapshots(username, accountName, hkRateOverride = null, 
   }
   const usedPriceDates = {};
   const usedSuspensionReferences = {};
+  const usedSwapReferences = {};
+  const swapCandidates = (data.trades || []).some(t => t.direction === 'adjust')
+    ? await loadSwapReferenceCandidates(username, accountName, pool.query.bind(pool)) : [];
   const stateCache = new Map();
   const historyCalendarCache = new Map();
   const suspensionCache = new Map();
@@ -254,7 +257,7 @@ async function recordNavSnapshots(username, accountName, hkRateOverride = null, 
     }
     return stateCache.get(key);
   }
-  async function effectivePrice(code, market, date, marketStatus) {
+  async function effectivePrice(code, market, date, marketStatus, quantity) {
     // 只有已确认终盘价可用；候选/遗留价不进入历史资产重建，保留为缺口。
     const key = market + '|' + code;
     const exactRow = dpMap.get(key + '|' + date);
@@ -274,6 +277,8 @@ async function recordNavSnapshots(username, accountName, hkRateOverride = null, 
     const expected = await expectedCloseDateFor('CN', date, pool.query.bind(pool), historyCalendarCache, 'historical');
     if (selected && selected.date === expected) return selected;
     if (!expected) return null;
+    const swap=resolveSwapReference({code,market,quantity,valuationDate:date,expectedCloseDate:expected,candidates:swapCandidates});
+    if(swap) return {price:swap.price,date:swap.tradeDate,priceKind:swap.priceKind,swapEvidence:swap};
     const lastConfirmed = candidates.slice().reverse().find(row => row.date < expected &&
       row.quality === 'confirmed' && row.isFinal === true);
     const reference = await resolveSuspendedReference({ code, market, candidate: lastConfirmed,
@@ -324,7 +329,7 @@ async function recordNavSnapshots(username, accountName, hkRateOverride = null, 
       if (info.qty === 0) continue;
       const market = info.subtype === '港股' ? 'HK' : 'CN';
       const state = marketStates[market] || await stateFor(market, d);
-      let price = await effectivePrice(code, market, d, state.status);
+      let price = await effectivePrice(code, market, d, state.status, info.qty);
       if (!price) {
         // 退市债不抓行情：用持仓里已固定的最后退市价，并留痕（与净值归因同一口径）。
         const fixed = fixedDelistedPrice(data, code, { code, name: info.name });
@@ -338,6 +343,10 @@ async function recordNavSnapshots(username, accountName, hkRateOverride = null, 
       if (price.suspensionEvidence) {
         if (!usedSuspensionReferences[d]) usedSuspensionReferences[d] = {};
         usedSuspensionReferences[d][code] = price.suspensionEvidence;
+      }
+      if (price.swapEvidence) {
+        if (!usedSwapReferences[d]) usedSwapReferences[d] = {};
+        usedSwapReferences[d][code] = price.swapEvidence;
       }
       if (market === 'HK' && !(hkRate > 0)) { incomplete = true; missingCodes.push(code + ':HKD汇率'); continue; }
       mvs.push(price.price * info.qty * (market === 'HK' ? hkRate : 1));
@@ -381,6 +390,7 @@ async function recordNavSnapshots(username, accountName, hkRateOverride = null, 
     diagnostics: incompleteDates,
     usedPriceDates,
     ...(Object.keys(usedSuspensionReferences).length ? { usedSuspensionReferences } : {}),
+    ...(Object.keys(usedSwapReferences).length ? { usedSwapReferences } : {}),
     ...(fixedDelistedCodes.size ? { fixedDelistedPriceCodes: [...fixedDelistedCodes] } : {}),
     ...(incompleteDates.length ? {
       error: '账户净值快照存在缺失行情或汇率：' + incompleteDates.map(item => item.date + '（' + item.missingCodes.join('、') + '）').join('；'),

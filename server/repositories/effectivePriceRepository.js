@@ -111,6 +111,47 @@ async function inspectSuspensionIntervals(requests, privateSources, client = poo
   [JSON.stringify(requests), privateSources]);
 }
 
+// 已实施换股的历史参考：结算单、官方实施公告、同账户两条账本和合并方确认终盘必须一致。
+// 该查询只读取既有事实；估值期间不回写交易、持仓或旧证券日价。
+async function listSwapReferenceCandidates(username, accountName, client = pool) {
+  return client.query(`SELECT s.settlement_id,s.case_id,split_part(old.canonical_code,'.',1) AS source_code,
+      split_part(new.canonical_code,'.',1) AS target_code,old.delist_date::text AS delist_date,
+      s.settlement_date::text AS settlement_date,src.trade_date::text AS execution_date,
+      s.source_quantity::float8 AS source_quantity,s.target_quantity::float8 AS target_quantity,
+      s.ratio_applied::float8 AS ratio,s.evidence_document_id,doc.announced_at::text AS evidence_date,
+      p.date::text AS price_date,p.price::float8 AS target_price,p.source AS price_source
+    FROM event.stock_swap_settlements s
+    JOIN event.arbitrage_cases c ON c.case_id=s.case_id AND c.target_instrument_id=s.source_instrument_id
+      AND c.reference_instrument_id=s.target_instrument_id AND c.strategy_type='a_share_swap' AND c.swap_ratio=s.ratio_applied
+    JOIN core.instruments old ON old.instrument_id=s.source_instrument_id AND old.market='CN' AND old.asset_class='stock'
+    JOIN core.instruments new ON new.instrument_id=s.target_instrument_id AND new.market='CN' AND new.asset_class='stock'
+    JOIN event.documents doc ON doc.document_id=s.evidence_document_id AND doc.announced_at=s.settlement_date
+    JOIN ops.data_sources ds ON ds.source_id=doc.source_id AND ds.source_code IN ('sse','szse')
+    JOIN trades src ON src.username=s.username AND src.account_name=s.account_name
+      AND src.id=s.applied_trade_ids->>0 AND src.code=split_part(old.canonical_code,'.',1)
+      AND src.direction='adjust' AND src.quantity=0
+    JOIN trades dst ON dst.username=s.username AND dst.account_name=s.account_name
+      AND dst.id=s.applied_trade_ids->>1 AND dst.code=split_part(new.canonical_code,'.',1)
+      AND dst.direction='adjust' AND dst.trade_date=src.trade_date
+      AND dst.quantity=s.target_quantity+COALESCE(s.existing_target_quantity,0)
+    JOIN daily_prices p ON p.username=s.username AND p.account_name=s.account_name AND p.market='CN'
+      AND p.code=split_part(new.canonical_code,'.',1) AND p.date::date>=old.delist_date
+      AND p.date::date<src.trade_date::date AND p.quality='confirmed' AND p.is_final=true AND p.price>0
+      AND p.source IS NOT NULL AND p.source<>'nav_import_anchor'
+      AND (p.evidence->>'price_adjust'='none' OR p.evidence->>'terminalEvidence'='unadjusted_bar_match')
+    WHERE s.username=$1 AND s.account_name=$2 AND s.status='applied'
+      AND jsonb_typeof(s.applied_trade_ids)='array' AND jsonb_array_length(s.applied_trade_ids)=2
+      AND old.delist_date IS NOT NULL AND s.source_quantity>0 AND s.target_quantity>0 AND s.ratio_applied>0
+      AND s.settlement_date<=src.trade_date::date
+      AND (doc.title LIKE '%换股实施结果%' OR doc.title LIKE '%实施情况暨新增股份上市%' OR doc.title LIKE '%证券变更登记完成%')
+      AND EXISTS (SELECT 1 FROM event.arbitrage_case_documents cd WHERE cd.case_id=s.case_id AND cd.document_id=doc.document_id)
+      AND floor(s.source_quantity*s.ratio_applied+0.00000001)=s.target_quantity
+      AND NOT EXISTS (SELECT 1 FROM daily_prices other WHERE other.market='CN' AND other.code=p.code
+        AND other.date=p.date AND other.quality='confirmed' AND other.is_final=true AND other.price>0
+        AND COALESCE(other.source,'')<>'nav_import_anchor' AND other.price IS DISTINCT FROM p.price)
+    ORDER BY s.settlement_id,p.date`, [username,accountName]);
+}
+
 // 写入时必须带市场：港股 00001 与 A 股 000001 是两只不同证券，缺了市场就无法区分。
 // 判定顺序：调用方显式给出（收盘任务按市场规则、补录按品种）→ 代码形状（5 位只在港股、
 // 6 位不以 00 开头只在 A 股）→ 其余无法判定，写 'UNKNOWN'（身份不明，取价层按缺口处理）。
@@ -197,5 +238,6 @@ module.exports = {
   selectAccountId,
   inspectSuspensionInterval,
   inspectSuspensionIntervals,
+  listSwapReferenceCandidates,
   upsertDailyPrice,
 };

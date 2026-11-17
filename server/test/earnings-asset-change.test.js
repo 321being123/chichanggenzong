@@ -117,6 +117,9 @@ assert(read('public/index.html').includes('shared/core-earnings.js?v=__APP_VERSI
     w.data.performanceHistory = [{ date:'2026-10-15',nav:3,totalAsset:200,basis:{suspensionReferencePrices:{current:[{code:'601059',tradeDate:'2026-09-14'}]}} }];
     w.renderEarningsTable(w.buildRealReturnsSeries());
     assert(w.document.getElementById('earnings-table').textContent.includes('停牌参考：601059（成交 2026-09-14）'), '停牌估值必须直接展示实际成交日');
+    w.data.performanceHistory[0].basis.swapReferencePrices={current:[{code:'601059',targetCode:'601995',tradeDate:'2026-10-15',executionDate:'2026-10-29'}]};
+    w.renderEarningsTable(w.buildRealReturnsSeries());
+    assert(w.document.getElementById('earnings-table').textContent.includes('换股估值（估算）：601059 → 601995（行情 2026-10-15；记账 2026-10-29）'), '换股估算须展示行情与实际记账日期');
     delete w.data.performanceHistory;
     assert.strictEqual(JSON.stringify(w.data), before, '渲染不得改写净值或历史事实');
     w.document.body.insertAdjacentHTML('beforeend','<div id="modal-nav-edit"><span id="nav-edit-title"></span><input id="nav-edit-date"><input id="nav-edit-nav"><input id="nav-edit-total"><input id="nav-edit-invested"></div>');

@@ -164,6 +164,25 @@ async function storeDocument(identity,ann,sourceId) {
     await txControl.commit(client);return {ok:!fact.reason,fact,url,code:identity.code};
   }catch(e){await txControl.rollback(client);throw e;}finally{client.release();}
 }
+
+// 定向重解析已发现的官方公告，仅写该公告及其事实，不改全局分区或来源覆盖游标。
+// 启用账户持仓/交易范围、交易所、证券代码、公告类型和 URL 均须可核验。
+async function reprocessKnownDividendDocument({documentId,code}, dependencies={}) {
+  if (!/^\d+$/.test(String(documentId || '')) || !/^\d{6}$/.test(String(code || ''))) throw new Error('公告或证券身份无效');
+  const identities=await (dependencies.cohort||cohort)();
+  const matches=identities.filter(i=>String(i.code)===String(code)&&i.market==='CN'&&i.asset_class==='stock');
+  if(matches.length!==1) throw new Error('证券不属于唯一的启用账户范围');
+  const {rows}=await (dependencies.findDocument||require('../repositories/cashIncomeRepository').selectKnownDividendDocument)([documentId]);
+  if(rows.length!==1) throw new Error('公告不存在或不唯一');
+  const doc=rows[0], identity=matches[0], source=identity.exchange_code==='SSE'?'sse':identity.exchange_code==='SZSE'?'szse':null;
+  let url;try{url=new URL(doc.url);}catch(_){throw new Error('公告地址无效');}
+  const expectedHost=source==='sse'?'sse.com.cn':source==='szse'?'szse.cn':null;
+  const registeredCode=String(doc.raw_payload?.SECURITY_CODE || doc.raw_payload?.security_Code || doc.raw_payload?.stockCode || doc.raw_payload?.stock_code || '');
+  if(!source||doc.source_code!==source||!expectedHost||url.protocol!=='https:'||!(url.hostname===expectedHost||url.hostname.endsWith('.'+expectedHost))||
+    !/\.pdf$/i.test(url.pathname)||registeredCode!==String(code)||!/(?:权益分派|利润分配).*实施公告/.test(doc.title||'')||
+    !dateValue(doc.announced_at)||dateValue(doc.announced_at)>CoreDate.todayInZone('Asia/Shanghai')) throw new Error('公告来源、证券、日期或类型未核验');
+  return (dependencies.storeDocument||storeDocument)(identity,{url:doc.url,title:doc.title,announcedAt:dateValue(doc.announced_at),sourceKey:doc.url},doc.source_id);
+}
 function sameDividendPeriod(a,b) {
   return a.period && a.dividendType && a.period===b.period && a.dividendType===b.dividendType && a.currency===b.currency && a.amount===b.amount && (!a.dividendNature||!b.dividendNature||a.dividendNature===b.dividendNature);
 }
@@ -227,4 +246,4 @@ async function syncCashDividends({targetDate=CoreDate.todayInZone('Asia/Shanghai
   await require('./datasetPartitions').publishDatasetPartition('stock_cash_dividend_facts','GLOBAL',{partitionKey:targetDate,dataAsOf:targetDate,status:result.ok?'published':'rejected',rowCount:result.documents.filter(d=>d.ok).length,diagnostics:{...result,quality_status:result.ok?'passed':'failed',verified_no_change:result.ok&&!result.documents.length}});
   return result;
 }
-module.exports={parseDividend,parseBondInterest,dateValue,syncCashDividends,cohort,PARSER,sameDividendPeriod,normalizeChineseDates,resolveHkRelatedDocument};
+module.exports={parseDividend,parseBondInterest,dateValue,syncCashDividends,reprocessKnownDividendDocument,cohort,PARSER,sameDividendPeriod,normalizeChineseDates,resolveHkRelatedDocument};

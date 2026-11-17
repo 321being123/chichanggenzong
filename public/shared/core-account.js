@@ -175,6 +175,9 @@ function renderEarningsTable(sorted) {
         const references = Array.isArray(r.suspensionReferencePrices) ? r.suspensionReferencePrices : [];
         return escapeHtml(r.date || '-') + references.map(function (ref) {
           return '<br>停牌参考：' + escapeHtml(String(ref.code || '')) + '（成交 ' + escapeHtml(String(ref.tradeDate || '')) + '）';
+        }).join('') + (Array.isArray(r.swapReferencePrices) ? r.swapReferencePrices : []).map(function (ref) {
+          return '<br>换股估值（估算）：' + escapeHtml(String(ref.code || '')) + ' → ' + escapeHtml(String(ref.targetCode || '')) +
+            '（行情 ' + escapeHtml(String(ref.tradeDate || '')) + '；记账 ' + escapeHtml(String(ref.executionDate || '')) + '）';
         }).join('');
       } },
     { t: '总资产(万元)', get: function (r) { return wan(r.totalMarketValue); } },

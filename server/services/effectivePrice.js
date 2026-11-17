@@ -615,6 +615,26 @@ async function resolveSuspendedReferencesBatch(inputs, query) {
   return results;
 }
 
+async function loadSwapReferenceCandidates(username, accountName, query) {
+  try {
+    const { rows } = await repository.listSwapReferenceCandidates(username, accountName, query ? { query } : undefined);
+    return rows;
+  } catch (_) { return []; }
+}
+function resolveSwapReference({ code, market, quantity, valuationDate, expectedCloseDate, candidates }) {
+  if (market !== 'CN' || !(Number(quantity)>0) || !expectedCloseDate || !valuationDate) return null;
+  const matches=(candidates||[]).filter(row => row.source_code===String(code) &&
+    Number(row.source_quantity)===Number(quantity) && row.price_date===expectedCloseDate &&
+    row.delist_date<=valuationDate && valuationDate<row.execution_date && Number(row.target_quantity)>0 && Number(row.target_price)>0);
+  if (matches.length!==1) return null;
+  const row=matches[0];
+  return {code:String(code),price:Number(row.target_price)*Number(row.target_quantity)/Number(row.source_quantity),
+    priceKind:'swap_reference',estimated:true,targetCode:row.target_code,targetQuantity:Number(row.target_quantity),
+    targetPrice:Number(row.target_price),tradeDate:row.price_date,asOfDate:valuationDate,
+    settlementDate:row.settlement_date,executionDate:row.execution_date,evidenceDate:row.evidence_date,
+    documentId:row.evidence_document_id,settlementId:row.settlement_id,sourceRef:row.price_source};
+}
+
 module.exports = {
   resolveEffectivePrices,
   priceKey,
@@ -624,6 +644,8 @@ module.exports = {
   selectHistoricalClosePrice,
   resolveSuspendedReference,
   resolveSuspendedReferencesBatch,
+  loadSwapReferenceCandidates,
+  resolveSwapReference,
   sessionPhase,
   expectedCloseDateFor,
   marketOf,

@@ -309,14 +309,18 @@ async function computeNavHistoryTotals(username, accountName, data, query = pool
   const currentPositions = aggregateCurrentPositions(data.positions);
   // 历史重建必须按“该市场在该日的最近应有收盘日”核对价格日期：
   // 否则周四缺收盘价时会被周三的确认价静默填上，算出看似完整的历史资产。
-  const { expectedCloseDateFor, resolveSuspendedReferencesBatch } = require('./effectivePrice');
+  const { expectedCloseDateFor, resolveSuspendedReferencesBatch, loadSwapReferenceCandidates, resolveSwapReference } = require('./effectivePrice');
+  const swapCandidates = (data.trades || []).some(t => t.direction === 'adjust')
+    ? await loadSwapReferenceCandidates(username, accountName, query) : [];
   const marketStateCache = new Map();
   const suspensionRequests = [];
   const pendingTotals = [];
   let cursor = 0;
   const totals = {};
   const suspensionEvidence = {};
+  const swapEvidence = {};
   Object.defineProperty(totals, 'suspensionEvidence', { value: suspensionEvidence, enumerable: false });
+  Object.defineProperty(totals, 'swapEvidence', { value: swapEvidence, enumerable: false });
   for (const nav of navs) {
     const date = dateKey(nav.date);
     while (cursor < rows.length && dateKey(rows[cursor].date) <= date) {
@@ -355,6 +359,7 @@ async function computeNavHistoryTotals(username, accountName, data, query = pool
       expectedByMarket.set(market, await expectedCloseDateFor(market, date, query, marketStateCache, 'historical'));
     }
     const requestedPrices = new Map();
+    const swapPrices = new Map();
     if (!isAuthoritativeSnapshot(nav)) {
       for (const row of quantities.values()) {
         if (!(Number(row.quantity) > 0) || row.market !== 'CN') continue;
@@ -362,18 +367,22 @@ async function computeNavHistoryTotals(username, accountName, data, query = pool
         const expected = expectedByMarket.get('CN');
         const exact = prices.get(key);
         if (!expected || (exact && exact.qualified && exact.date === expected)) continue;
+        const swap = resolveSwapReference({code:row.code,market:'CN',quantity:row.quantity,
+          valuationDate:date,expectedCloseDate:expected,candidates:swapCandidates});
+        if (swap) { swapPrices.set(key,swap); continue; }
         requestedPrices.set(key, suspensionRequests.length);
         suspensionRequests.push({ code: row.code, market: 'CN', candidate: confirmedPrices.get(key), targetDate: expected });
       }
     }
-    pendingTotals.push({ date, nav, quantities, rate, expectedByMarket, requestedPrices, pricesAtDate: new Map(prices) });
+    pendingTotals.push({ date, nav, quantities, rate, expectedByMarket, requestedPrices, swapPrices, pricesAtDate: new Map(prices) });
   }
   const references = await resolveSuspendedReferencesBatch(suspensionRequests, query);
-  for (const { date, nav, quantities, rate, expectedByMarket, requestedPrices, pricesAtDate } of pendingTotals) {
+  for (const { date, nav, quantities, rate, expectedByMarket, requestedPrices, swapPrices, pricesAtDate } of pendingTotals) {
     const suspensionPrices = new Map([...requestedPrices].map(([key, index]) => [key, references.get(index)]).filter(([, value]) => value));
     if (suspensionPrices.size) suspensionEvidence[date] = [...suspensionPrices.entries()].map(([key, value]) => ({
       code: key.slice(3), market: 'CN', ...value,
     }));
+    if (swapPrices.size) swapEvidence[date]=[...swapPrices.values()];
     totals[date] = snapshotTotal(data, nav, quantities, (code, isHk) => {
       const market = isHk ? 'HK' : 'CN';
       const row = pricesAtDate.get(`${market}|${code}`) ||
@@ -383,6 +392,8 @@ async function computeNavHistoryTotals(username, accountName, data, query = pool
       if (row && row.qualified && row.price > 0 && expected && row.date === expected) return row.price;
       const suspended = suspensionPrices.get(`${market}|${code}`);
       if (suspended) return suspended.price;
+      const swap = swapPrices.get(`${market}|${code}`);
+      if (swap) return swap.price;
       // 未确认价格不能冒充历史收盘价；仅明确人工退市估值可作为其他兜底。
       return manualDelistedPrice(data, code, currentPositions.get(code));
     }, rate);
@@ -482,6 +493,11 @@ async function buildNavPerformance(data, totals, options = {}) {
       const current = totals.suspensionEvidence[date] || [];
       const prior = previous ? (totals.suspensionEvidence[previous.date] || []) : [];
       if (current.length || prior.length) basis.suspensionReferencePrices = { current, previous: prior };
+    }
+    if (basis && totals.swapEvidence) {
+      const current=totals.swapEvidence[date]||[];
+      const prior=previous?(totals.swapEvidence[previous.date]||[]):[];
+      if(current.length||prior.length) basis.swapReferencePrices={current,previous:prior};
     }
     if (nav == null) reason = reason || (gap ? 'missing_intermediate_snapshot' : 'missing_nav_basis');
     bases[date] = currentTotal == null || !Number.isFinite(currentTotal) ? null : currentTotal;

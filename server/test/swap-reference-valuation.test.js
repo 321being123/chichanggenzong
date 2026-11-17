@@ -1,0 +1,35 @@
+// 已实施换股过渡期的参考估值：真实 PG 证据及失败关闭边界。
+const assert=require('assert');
+const {pool}=require('../db/connection');
+const {loadSwapReferenceCandidates,resolveSwapReference}=require('../services/effectivePrice');
+const {computeNavHistoryTotals,buildNavPerformance}=require('../services/navAttribution');
+(async()=>{const c=await pool.connect();try{
+  await c.query('BEGIN');
+  await c.query(`CREATE TEMP TABLE daily_prices(username text,account_name text,date text,code text,market text,price numeric,quality text,is_final boolean,source text,evidence jsonb) ON COMMIT DROP`);
+  await c.query(`CREATE TEMP TABLE trades(id text,username text,account_name text,code text,direction text,quantity numeric,trade_date text) ON COMMIT DROP`);
+  const src=(await c.query(`SELECT source_id FROM ops.data_sources WHERE source_code='sse'`)).rows[0];assert(src);
+  const old=(await c.query(`INSERT INTO core.instruments(canonical_code,name,asset_class,market,exchange_code,status,delist_date) VALUES('699992.SH','旧股','stock','CN','SSE','delisted','2026-10-19') RETURNING instrument_id`)).rows[0];
+  const target=(await c.query(`INSERT INTO core.instruments(canonical_code,name,asset_class,market,exchange_code,status) VALUES('699993.SH','新股','stock','CN','SSE','listed') RETURNING instrument_id`)).rows[0];
+  const ca=(await c.query(`INSERT INTO event.arbitrage_cases(market,strategy_type,source_id,source_key,target_instrument_id,reference_instrument_id,swap_ratio,event_status,review_status) VALUES('CN','a_share_swap',$1,'swap_reference_fixture',$2,$3,0.5,'completed','approved') RETURNING case_id`,[src.source_id,old.instrument_id,target.instrument_id])).rows[0];
+  const doc=(await c.query(`INSERT INTO event.documents(document_type,title,announced_at,url,source_id) VALUES('announcement','换股实施结果','2026-10-27','https://fixture.invalid/swap',$1) RETURNING document_id`,[src.source_id])).rows[0];
+  await c.query(`INSERT INTO event.arbitrage_case_documents(case_id,document_id,relation_type,announced_at) VALUES($1,$2,'announcement','2026-10-27')`,[ca.case_id,doc.document_id]);
+  await c.query(`INSERT INTO trades VALUES('old-leg','fixture','account','699992','adjust',0,'2026-10-29'),('new-leg','fixture','account','699993','adjust',70,'2026-10-29')`);
+  const settlement=(await c.query(`INSERT INTO event.stock_swap_settlements(case_id,username,account_name,source_instrument_id,target_instrument_id,settlement_date,ratio_applied,source_quantity,target_quantity,existing_target_quantity,cost_total_before,cost_unit_after,status,applied_trade_ids,evidence_document_id) VALUES($1,'fixture','account',$2,$3,'2026-10-27',0.5,100,50,20,1000,10,'applied','["old-leg","new-leg"]',$4) RETURNING settlement_id`,[ca.case_id,old.instrument_id,target.instrument_id,doc.document_id])).rows[0];
+  await c.query(`INSERT INTO market.trade_calendar(exchange,trade_date,is_open,source_code) SELECT 'SSE',d::date,EXTRACT(ISODOW FROM d)<6,'test' FROM generate_series('2026-10-16'::date,'2026-10-19'::date,interval '1 day') d ON CONFLICT(exchange,trade_date) DO UPDATE SET is_open=EXCLUDED.is_open,source_code='test'`);
+  await c.query(`INSERT INTO daily_prices VALUES('fixture','account','2026-10-19','699993','CN',30,'confirmed',true,'history_backfill:test','{"price_adjust":"none"}')`);
+  const query=c.query.bind(c);let candidates=await loadSwapReferenceCandidates('fixture','account',query);
+  const input={code:'699992',market:'CN',quantity:100,valuationDate:'2026-10-19',expectedCloseDate:'2026-10-19'};
+  const resolve=(override={})=>resolveSwapReference({...input,candidates,...override});
+  assert.strictEqual(candidates.length,1);const ref=resolve();assert(ref);assert.strictEqual(ref.price,15);assert.strictEqual(ref.targetQuantity,50);assert.strictEqual(ref.executionDate,'2026-10-29');assert.strictEqual(ref.settlementDate,'2026-10-27');assert.strictEqual(ref.estimated,true);
+  assert.strictEqual(resolve({quantity:101}),null,'数量变化不能套用最终结算');assert.strictEqual(resolve({valuationDate:'2026-10-29'}),null,'实际记账日不得重复计算权益');assert.strictEqual(resolve({market:'HK'}),null);
+  const data={cashBase:0,cashFlows:[],trades:[{id:'old-leg',code:'699992',direction:'adjust',quantity:0,trade_date:'2026-10-29',subtype:'沪市'},{id:'new-leg',code:'699993',direction:'adjust',quantity:70,trade_date:'2026-10-29',subtype:'沪市'}],positions:[{code:'699993',quantity:70,subtype:'沪市'}],positionSnapshots:[{snapshotId:'import',snapshotDate:'2026-10-16',code:'699992',quantity:100,quoteCurrency:'CNY'},{snapshotId:'import',snapshotDate:'2026-10-16',code:'699993',quantity:20,quoteCurrency:'CNY'}],navHistory:[{date:'2026-10-16',nav:1,totalAsset:2400,snapshotSource:'imported',isLocked:true,importBatchId:'import'},{date:'2026-10-19',snapshotSource:'system'}]};
+  const totals=await computeNavHistoryTotals('fixture','account',data,query);assert.strictEqual(totals['2026-10-19'],2100,'原持股20股与换得50股只计一次');
+  assert.strictEqual(totals.swapEvidence['2026-10-19'][0].executionDate,'2026-10-29');
+  const performance=await buildNavPerformance(data,totals,{requireLive:false});assert.strictEqual(performance.at(-1).nav,0.875);assert.strictEqual(performance.at(-1).basis.swapReferencePrices.current[0].targetCode,'699993');
+  await c.query(`UPDATE event.stock_swap_settlements SET status='pending' WHERE settlement_id=$1`,[settlement.settlement_id]);assert.strictEqual((await loadSwapReferenceCandidates('fixture','account',query)).length,0,'未实施不能估算');
+  await c.query(`UPDATE event.stock_swap_settlements SET status='applied' WHERE settlement_id=$1`,[settlement.settlement_id]);
+  await c.query(`UPDATE trades SET quantity=71 WHERE id='new-leg'`);assert.strictEqual((await loadSwapReferenceCandidates('fixture','account',query)).length,0,'账本不一致不能估算');await c.query(`UPDATE trades SET quantity=70 WHERE id='new-leg'`);
+  await c.query(`UPDATE daily_prices SET quality='candidate'`);assert.strictEqual((await loadSwapReferenceCandidates('fixture','account',query)).length,0,'候选价不可使用');await c.query(`UPDATE daily_prices SET quality='confirmed'`);
+  await c.query(`INSERT INTO daily_prices VALUES('other','account','2026-10-19','699993','CN',31,'confirmed',true,'history_backfill:test','{"price_adjust":"none"}')`);assert.strictEqual((await loadSwapReferenceCandidates('fixture','account',query)).length,0,'同日确认价冲突必须保留缺口');
+  console.log('HOLDINGS-NAV-SWAP-014: real PG settlement, NAV projection and failure boundaries passed');
+}finally{await c.query('ROLLBACK');c.release();await pool.end();}})().catch(e=>{console.error(e);process.exitCode=1});

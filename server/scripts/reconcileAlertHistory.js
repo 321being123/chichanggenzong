@@ -38,9 +38,10 @@ function previewCandidates(candidates, ids) {
   return ids.length ? candidates.filter(item => ids.includes(item.alertId)) : candidates;
 }
 
-// 已确认记录默认不参与自动转换，只有显式 --include-acknowledged 才纳入。
+// 已解决记录只供历史复核；已确认记录默认不参与自动转换。
 function closableCandidates(candidates, includeAcknowledged) {
-  return candidates.filter(item => includeAcknowledged || item.status !== 'acknowledged');
+  return candidates.filter(item => item.status !== 'resolved'
+    && (includeAcknowledged || item.status !== 'acknowledged'));
 }
 
 // 兼容历史脚本和既有测试；判断规则统一由 jobAlertMailer 提供。
@@ -186,6 +187,7 @@ async function main() {
   );
   const candidates = [];
   const unresolved = [];
+  const alreadyResolved = [];
   const summary = Object.fromEntries(Object.keys(ALERT_DISPOSITION_LABELS).map(key => [key, 0]));
   for (const alert of alerts) {
     const verification = await verifyScope(alert);
@@ -196,7 +198,8 @@ async function main() {
       disposition: disposition.disposition, dispositionLabel: ALERT_DISPOSITION_LABELS[disposition.disposition] || disposition.disposition,
       dispositionReason: disposition.reason, ...verification,
     };
-    if (verification.recovered) candidates.push(item);
+    if (alert.status === 'resolved') alreadyResolved.push(item);
+    else if (verification.recovered) candidates.push(item);
     else unresolved.push(item);
   }
   const selected = candidates.filter(item => ids.includes(item.alertId));
@@ -212,9 +215,10 @@ async function main() {
     : { closed: [], refused: [] };
   console.log(JSON.stringify({ mode: APPLY ? 'apply' : 'dry-run', scanned: alerts.length,
     previewScope: ids.length ? 'selected_ids' : 'all_unresolved',
-    candidateCount: candidates.length, selectedCount: selected.length, appliedCount: applicable.length,
+    candidateCount: candidates.length, selectedCount: selected.length,
+    attemptedCount: APPLY ? applicable.length : 0, appliedCount: applied.closed.length,
     skippedAcknowledged, readyAlertIds, closed: applied.closed, refused: applied.refused, dispositionSummary: summary,
-    candidates: preview, skipped: unresolved }, null, 2));
+    candidates: preview, alreadyResolved, skipped: unresolved }, null, 2));
 }
 
 if (require.main === module) {

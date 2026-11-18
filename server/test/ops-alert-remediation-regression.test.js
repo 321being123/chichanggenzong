@@ -119,6 +119,7 @@ const alertPreviewFixtures = [
   { alertId: 11, status: 'open' },
   { alertId: 12, status: 'acknowledged' },
   { alertId: 13, status: 'open' },
+  { alertId: 14, status: 'resolved' },
 ];
 assert.deepStrictEqual(previewCandidates(alertPreviewFixtures, []), alertPreviewFixtures,
   '不带告警 ID 的全量预览必须输出全部候选明细');
@@ -127,7 +128,7 @@ assert.deepStrictEqual(previewCandidates(alertPreviewFixtures, [13]), [alertPrev
 assert.deepStrictEqual(closableCandidates(previewCandidates(alertPreviewFixtures, []), false).map(item => item.alertId),
   [11, 13], '已确认记录默认不进入可关闭清单');
 assert.deepStrictEqual(closableCandidates(previewCandidates(alertPreviewFixtures, []), true).map(item => item.alertId),
-  [11, 12, 13], '显式包含已确认记录时才全部纳入');
+  [11, 12, 13], '显式包含已确认记录时纳入已确认记录，但不纳入已解决记录');
 assert.deepStrictEqual(closableCandidates(previewCandidates(alertPreviewFixtures, [11, 12, 13]), false).map(item => item.alertId),
   [11, 13], '逐 ID 复核的写入范围不受全量预览影响');
 
@@ -144,6 +145,8 @@ function runAlertPreviewCli(cliArgs) {
       scope_type: 'slot', scope_key: '2', last_seen_at: null, acknowledged_at: null },
     { alert_id: 13, alert_key: 'k13', alert_type: 'job_failure', status: 'open', job_code: 'j', slot_id: 3,
       scope_type: 'slot', scope_key: '3', last_seen_at: null, acknowledged_at: null },
+    { alert_id: 14, alert_key: 'k14', alert_type: 'job_failure', status: 'resolved', job_code: 'j', slot_id: 4,
+      scope_type: 'slot', scope_key: '4', last_seen_at: null, acknowledged_at: null },
   ];
   fs.writeFileSync(mockFile, [
     "const Module = require('module');",
@@ -152,7 +155,14 @@ function runAlertPreviewCli(cliArgs) {
     'Module._load = function (request, parent, isMain) {',
     "  const isCli = /reconcileAlertHistory\\.js$/.test((parent && parent.filename) || '');",
     "  if (isCli && request === '../db/connection') {",
-    '    return { pool: { query: async () => ({ rows: alerts }), end: async () => {} } };',
+    '    const client = {',
+    '      query: async (sql, args = []) => {',
+    "        if (sql.includes('FOR UPDATE')) return { rows: args[0] === 13 ? [] : alerts.filter(a => a.alert_id === args[0] && a.status !== 'resolved') };",
+    "        if (sql.includes('RETURNING alert_id')) return { rows: [{ alert_id: args[0] }] };",
+    '        return { rows: [] };',
+    '      }, release: () => {}',
+    '    };',
+    '    return { pool: { query: async (sql, args) => ({ rows: sql.includes(\'ANY($1::bigint[])\') ? alerts.filter(a => args[0].includes(a.alert_id)) : alerts.filter(a => a.status !== \'resolved\') }), connect: async () => client, end: async () => {} } };',
     '  }',
     "  if (isCli && request === '../db') return { auditEvent: async () => {} };",
     "  if (isCli && request === '../services/jobAlertMailer') {",
@@ -185,6 +195,21 @@ const scopedPreview = runAlertPreviewCli(['--alert-ids', '11,12']);
 assert.strictEqual(scopedPreview.previewScope, 'selected_ids', '显式传 ID 时仍走逐条复核语义');
 assert.deepStrictEqual(scopedPreview.candidates.map(item => item.alertId), [11, 12],
   '指定 ID 时只回显该批候选');
+const mixedPreview = runAlertPreviewCli(['--alert-ids', '11,12,13,14']);
+assert.deepStrictEqual(mixedPreview.candidates.map(item => item.alertId), [11, 12, 13]);
+assert.deepStrictEqual(mixedPreview.alreadyResolved.map(item => item.alertId), [14], '已解决记录仍可逐条复核');
+assert.deepStrictEqual(mixedPreview.readyAlertIds, [11, 13], '已解决记录不得进入可关闭清单');
+assert.strictEqual(mixedPreview.skippedAcknowledged, 1, '已解决记录不得误计为已确认记录');
+assert.strictEqual(mixedPreview.attemptedCount, 0, '预览没有执行关闭');
+assert.strictEqual(mixedPreview.appliedCount, 0, '预览没有实际关闭');
+const mixedApply = runAlertPreviewCli(['--apply', '--alert-ids', '11,12,13,14']);
+assert.strictEqual(mixedApply.attemptedCount, 2);
+assert.strictEqual(mixedApply.appliedCount, 1, '并发状态变化导致拒绝时，只计算实际关闭数');
+assert.deepStrictEqual(mixedApply.closed, [11]);
+assert.deepStrictEqual(mixedApply.refused, [{ alertId: 13, reason: 'alert_status_changed' }]);
+const includeAcknowledged = runAlertPreviewCli(['--include-acknowledged', '--alert-ids', '11,12,13,14']);
+assert.deepStrictEqual(includeAcknowledged.readyAlertIds, [11, 12, 13], '显式包含已确认记录也不得包含已解决记录');
+assert.strictEqual(includeAcknowledged.skippedAcknowledged, 0);
 
 const cninfoPy = read('ipo-report/external_call_guard.py');
 assert(cninfoPy.includes('def _record_forbidden'));

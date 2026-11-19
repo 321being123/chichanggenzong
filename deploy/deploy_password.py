@@ -265,6 +265,34 @@ def code_tree_hash(rev):
     return hashlib.sha256(result.stdout).hexdigest()
 
 
+def worktree_code_tree_hash():
+    """与 server/test/lib/codeTreeHash.js 的工作区指纹保持一致。"""
+    paths = _code_tree_paths()
+
+    def git_paths(args):
+        result = subprocess.run(['git'] + args, cwd=str(ROOT), capture_output=True)
+        if result.returncode != 0:
+            raise SystemExit('发布前置校验失败：读取工作区代码树失败（' + result.stderr.decode('utf-8', 'replace').strip()[:300] + '）')
+        return [item for item in result.stdout.split(b'\0') if item]
+
+    head_entries = git_paths(['ls-tree', '-r', '-z', 'HEAD', '--'] + paths)
+    head_paths = [item.split(b'\t', 1)[1].decode('utf-8') for item in head_entries if b'\t' in item]
+    current_paths = [item.decode('utf-8') for item in git_paths(['ls-files', '-co', '--exclude-standard', '-z', '--'] + paths)]
+    all_paths = sorted(set(head_paths + current_paths))
+    digest = hashlib.sha256()
+    for relative in all_paths:
+        digest.update(relative.encode('utf-8'))
+        digest.update(b'\0')
+        file_path = ROOT / relative
+        try:
+            content = file_path.read_bytes()
+        except FileNotFoundError:
+            content = b'__DELETED__'
+        digest.update(content)
+        digest.update(b'\0')
+    return digest.hexdigest()
+
+
 def verify_local_test_evidence(commit):
     """本地全量测试证据必须属于当前代码树（F15）。
 
@@ -293,7 +321,7 @@ def verify_local_test_evidence(commit):
     if skipped > 0:
         # 必需真库段默认开启；任何跳过都要解释，不能"跳过了但算绿"。
         problems.append(f"有 {skipped} 项被跳过（必需用例不允许跳过）")
-    expected = code_tree_hash(commit)
+    expected = worktree_code_tree_hash()
     actual = str(evidence.get('codeTreeHash') or '')
     if actual != expected:
         problems.append(f'测试证据绑定的代码树 {actual[:12] or "空"} 与本次发布 {expected[:12]} 不一致')

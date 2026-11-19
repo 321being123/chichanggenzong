@@ -36,10 +36,42 @@ function codeTreeHash(rev = 'HEAD', cwd = process.cwd()) {
   return crypto.createHash('sha256').update(result.stdout).digest('hex');
 }
 
+// 工作区指纹：全量测试必须绑定“实际被执行的源码”，不能在未提交改动时只写 HEAD 的树。
+// 取 HEAD 文件集合与当前工作区（含未跟踪代码文件）的并集，按路径+内容排序哈希；
+// 发布后工作区干净时，该值仍稳定绑定提交后的文件内容，发布脚本使用同一算法复核。
+function worktreeCodeTreeHash(cwd = process.cwd()) {
+  const list = args => {
+    const result = spawnSync('git', args, { cwd, encoding: 'buffer', maxBuffer: 64 * 1024 * 1024 });
+    if (result.error) throw new Error('读取工作区代码树失败：' + result.error.message);
+    if (result.status !== 0) throw new Error('读取工作区代码树失败：' + String(result.stderr || '').trim().slice(0, 300));
+    return String(result.stdout || '').split('\0').filter(Boolean);
+  };
+  const headEntries = list(['ls-tree', '-r', '-z', 'HEAD', '--', ...CODE_TREE_PATHS]);
+  const headPaths = headEntries.map(entry => entry.slice(entry.indexOf('\t') + 1)).filter(Boolean);
+  const currentPaths = list(['ls-files', '-co', '--exclude-standard', '-z', '--', ...CODE_TREE_PATHS]);
+  const paths = [...new Set([...headPaths, ...currentPaths])].sort();
+  const hash = crypto.createHash('sha256');
+  for (const relativePath of paths) {
+    hash.update(Buffer.from(relativePath, 'utf8'));
+    hash.update(Buffer.from([0]));
+    const absolutePath = require('path').join(cwd, relativePath);
+    let content;
+    try {
+      content = require('fs').readFileSync(absolutePath);
+    } catch (error) {
+      if (error && error.code !== 'ENOENT') throw error;
+      content = Buffer.from('__DELETED__', 'utf8');
+    }
+    hash.update(content);
+    hash.update(Buffer.from([0]));
+  }
+  return hash.digest('hex');
+}
+
 function headCommit(cwd = process.cwd()) {
   const result = spawnSync('git', ['rev-parse', 'HEAD'], { cwd, encoding: 'utf8' });
   if (result.status !== 0) return null;
   return String(result.stdout || '').trim() || null;
 }
 
-module.exports = { codeTreeHash, headCommit, CODE_TREE_PATHS };
+module.exports = { codeTreeHash, worktreeCodeTreeHash, headCommit, CODE_TREE_PATHS };

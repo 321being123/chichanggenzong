@@ -20,10 +20,12 @@ const { listDueSlots } = require('../services/jobScheduleSlots');
     await client.query("UPDATE ops.job_schedule_slots SET status='blocked'");
     pool.query = client.query.bind(client);
     let minute = 0;
+    // 重试资格判定（迁移 206）以 fail_count 为准，夹具必须两列同步写：
+    // attempt_count 只保留旧字段语义，写它而不写 fail_count 等于"没失败过"。
     async function insert(status, attempts, job = 'hk_rate') {
       const { rows } = await client.query(`INSERT INTO ops.job_schedule_slots
-        (job_code,business_date,scheduled_for,status,attempt_count,next_attempt_at)
-        VALUES ($1,'2001-01-01','2001-01-01 00:00:00+08'::timestamptz + $2 * interval '1 minute',$3,$4,now()-interval '1 hour')
+        (job_code,business_date,scheduled_for,status,attempt_count,fail_count,next_attempt_at)
+        VALUES ($1,'2001-01-01','2001-01-01 00:00:00+08'::timestamptz + $2 * interval '1 minute',$3,$4,$4,now()-interval '1 hour')
         RETURNING slot_id`, [job, minute++, status, attempts]);
       return String(rows[0].slot_id);
     }

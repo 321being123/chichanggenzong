@@ -11,7 +11,11 @@ const classifyCode = require('../../public/js/code-classify');
 const repository = require('../repositories/marketCloseRepository.js');
 const { withTransaction } = require('../db/transaction');
 const { isPublishedDatasetEvidence } = require('../services/datasetPartitionRegistry');
-const { publishDatasetPartition } = require('../services/datasetPartitions');
+const { publishCoveragePartition } = require('../services/datasetPartitions');
+// 就绪检查点：与调度共用同一份时间换算（jobReadiness），保证"15:10 只做候选预览、
+// 首查时刻之后才请求外部终盘"两处口径不会漂移。
+const { terminalFetchWindowOpen } = require('../services/jobReadiness');
+const { getJobDefinition } = require('../services/jobDefinitions');
 const sharedQuotePromises = new Map();
 const legacyFinalTasks = new Map();
 
@@ -168,9 +172,8 @@ function quoteNeedsCloseRefresh(quote, state, cnDate) {
 }
 
 // 收盘后拿到一条实时报价，并不等于它就是最终收盘价（可能是收盘瞬间或缓存里的旧报价）。
-// 因此要求用已准入的**不复权日线**核对：同一交易日、同一价格、口径为不复权，才算终盘证据。
+// 因此要求用已准入的**不复权日线**核对：同一交易日、同一证券身份且口径为不复权，才算终盘证据。
 // 拿不到证据时保持候选（不是确认），宁可让任务报待确认，也不把盘中价写成收盘价。
-const TERMINAL_EVIDENCE_TOLERANCE = 0.005;
 
 // 品种 → 历史收盘数据集类型。判定复用历史补录的同一入口（historicalKindFor），
 // 避免收盘核验与历史补录各写一套品种规则；三个类型在数据层都只给不复权收盘价：
@@ -239,34 +242,43 @@ function resolveTerminalKind({ code, position, subtype, name, type, market }) {
 // ①该行口径是不复权；②该行状态是终盘（不是盘中/实时报价）；③该行质量通过；
 // ④该交易日该市场「收盘任务核验日线」分区已发布、未失真、质量通过。
 // 只看来源名会把可转债同步写进同表的腾讯实时报价当成收盘价。
-function isTerminalBarEvidence(row, datasetCode) {
+function isTerminalBarEvidence(row, datasetCode, coverageKind = null) {
   if (!row) return false;
   if (String(row.bar_status || '') !== 'terminal') return false;
   if (String(row.price_adjust || '') !== 'none') return false;
   if (String(row.quality_status || '') !== 'passed') return false;
+  const diagnostics = row.partition_diagnostics || {};
+  if (coverageKind && (!Array.isArray(diagnostics.coverage_kinds) || !diagnostics.coverage_kinds.includes(coverageKind))) return false;
+  // 整行 quality_status 是所有品种的合并结论：某品种未补齐会让整行 failed，
+  // 不能因此把另一品种已经完整发布的日线也否掉。品种级结论存在时以它为准。
+  const kindCoverage = coverageKind && diagnostics.coverage_by_kind
+    ? diagnostics.coverage_by_kind[coverageKind] : null;
+  const kindQuality = kindCoverage && kindCoverage.status
+    ? (kindCoverage.status === 'complete' || kindCoverage.status === 'no_target' ? 'passed' : 'failed')
+    : undefined;
   return isPublishedDatasetEvidence({
     status: row.partition_status,
     is_stale: row.partition_is_stale === true,
-    diagnostics: row.partition_diagnostics || {},
-  }, datasetCode, { requireQuality: true });
+    diagnostics,
+  }, datasetCode, kindQuality ? { requireQuality: true, qualityStatus: kindQuality } : { requireQuality: true });
 }
 
 // 从候选行里挑出唯一可用的终盘证据：repository 已按来源优先级排序，这里只做资格裁决。
 // 抽成纯函数是为了能离线回归"没有终盘证据的行不得被采信"。
-function pickTerminalBarRow(rows, datasetCode) {
+function pickTerminalBarRow(rows, datasetCode, coverageKind = null) {
   for (const row of (rows || [])) {
-    if (!isTerminalBarEvidence(row, datasetCode)) continue;
+    if (!isTerminalBarEvidence(row, datasetCode, coverageKind)) continue;
     return { close: Number(row.close), source_code: row.source_code, price_adjust: row.price_adjust };
   }
   return null;
 }
 
-async function readPublishedDailyBar({ tsCode, tradeDate, market }) {
+async function readPublishedDailyBar({ tsCode, tradeDate, market, kind }) {
   const datasetCode = CLOSE_BAR_DATASET[String(market || '').toUpperCase()];
   if (!datasetCode) return null;
   try {
     const { rows } = await repository.select_published_daily_bar([tsCode, tradeDate, PUBLISHED_BAR_SOURCES, datasetCode]);
-    return pickTerminalBarRow(rows, datasetCode);
+    return pickTerminalBarRow(rows, datasetCode, kind || null);
   } catch (_) {
     // 共享日线读不到（表缺失/权限）不是终盘结论，交给外采路径判定，不在这里认定"无日线"。
     return null;
@@ -304,28 +316,71 @@ async function persistTerminalBar({ tsCode, tradeDate, close, provider, market }
 // 分区行数必须来自实际证据行：写进去几条由查询复核，不能用"本次采到几条"自报。
 // 返回值必须区分三件事：有没有合格日线（rowCount）、发布是否成功（published）、失败原因（error）。
 // 只返回"发布对象或 null"会让"发布失败"和"没有日线"看起来一样，重跑就会误判成 not_needed。
-async function publishCloseBarPartition(market, tradeDate) {
+// 分区质量必须同时满足"有合格日线"和"该品种目标证券齐全"：
+// 旧实现只拦 rowCount<=0，单条转债终盘行就能把整类分区标成 quality_status=passed，
+// 调度重验读分区就判 ready，部分覆盖被当成整类恢复。目标集合用本任务范围内
+// 已确认的账户日价并上当前持仓（按品种过滤）——不含未确认候选的旧口径会把
+// "连账户日价都没落地"的证券漏出分母，分母偏小同样会误判完整。
+// 同一 CN 分区由 A股/转债/基金三类任务共用，质量状态必须按品种分别记录，
+// 不能拿最后一次发布（例如基金补齐）覆盖掉另一品种的未就绪结论。
+async function publishCloseBarPartition(market, tradeDate, label = '', accounts = null) {
   const datasetCode = CLOSE_BAR_DATASET[String(market || '').toUpperCase()];
   if (!datasetCode) return { rowCount: 0, published: false, status: null, error: 'dataset_not_registered' };
+  const coverageKind = LABEL_TERMINAL_KINDS[label] && LABEL_TERMINAL_KINDS[label][0];
+  const scopeUsers = Array.isArray(accounts) && accounts.length
+    ? [...new Set(accounts.map(item => (item && item.username) || item).filter(Boolean).map(String))]
+    : null;
   let rowCount = null;
   try {
-    const { rows } = await repository.count_position_close_bars([tradeDate, market]);
+    const { rows } = await repository.count_position_close_bars([tradeDate, market, coverageKind || null]);
     rowCount = Number(rows[0] && rows[0].row_count) || 0;
   } catch (error) {
     // 数不清就不能声称"没有日线"：按发布失败处理，任务必须报未完成。
     console.warn('[market_close] 日线证据行数读取失败 ' + market + ' ' + tradeDate + '：' + (error && error.message));
-    return { rowCount: null, published: false, status: null, error: error && error.message };
+    return { rowCount: null, published: false, status: null, error: error && error.message, coverage: null };
   }
-  if (rowCount <= 0) return { rowCount: 0, published: false, status: null, error: null };
+  if (rowCount <= 0) return { rowCount: 0, published: false, status: null, error: null, coverage: null };
+  let coverage = null;
   try {
-    const published = await publishDatasetPartition(datasetCode, market, {
+    const { rows } = await repository.count_close_bar_coverage([tradeDate, market, coverageKind || null, scopeUsers]);
+    const expected = Number(rows[0] && rows[0].expected_count) || 0;
+    const covered = Number(rows[0] && rows[0].covered_count) || 0;
+    coverage = {
+      expected,
+      covered,
+      // no_target：当天该品种没有目标证券（如该品种无持仓且无已确认日价），
+      // 此时只能沿用原行数口径，不能凭空判成"部分覆盖"。
+      status: expected === 0 ? 'no_target' : (covered >= expected ? 'complete' : 'partial'),
+    };
+  } catch (error) {
+    // 覆盖算不出来同样不能声称已就绪：按发布失败处理，让任务重跑并保留上一份失败原因。
+    console.warn('[market_close] 日线覆盖对账失败 ' + market + ' ' + tradeDate + '：' + (error && error.message));
+    return { rowCount, published: false, status: null, error: `coverage_check_failed: ${error.message}`, coverage: null };
+  }
+  // 品种结论的合并与整行质量判定全部在数据库端完成（publishCoveragePartition）：
+  // 这里若"先读旧分区再整体写回"，转债与基金并发发布时会互相覆盖——
+  // 转债写 partial 后，基金拿着读到的旧 complete 提交就把它冲掉，调度重验随即误判就绪。
+  try {
+    const published = await publishCoveragePartition(datasetCode, market, {
       partitionKey: tradeDate, dataAsOf: tradeDate, rowCount,
-      diagnostics: { quality_status: 'passed', query_status: 'success', reason: 'job:market_close', market },
+      coverageKind: coverageKind || null,
+      coverage,
+      diagnostics: {
+        query_status: 'success', reason: 'job:market_close', market,
+        coverage_status: coverage.status, expected_count: coverage.expected, covered_count: coverage.covered,
+      },
     });
-    return { rowCount, published: Boolean(published), status: published ? published.status : null, error: published ? null : 'publish_returned_empty' };
+    const mergedDiagnostics = (published && published.diagnostics) || {};
+    const mergedByKind = mergedDiagnostics.coverage_by_kind && typeof mergedDiagnostics.coverage_by_kind === 'object'
+      ? mergedDiagnostics.coverage_by_kind : {};
+    return {
+      rowCount, published: Boolean(published), status: published ? published.status : null,
+      error: published ? null : 'publish_returned_empty',
+      coverage, qualityStatus: mergedDiagnostics.quality_status || null, coverageByKind: mergedByKind,
+    };
   } catch (error) {
     console.warn('[market_close] 日线证据分区发布失败 ' + market + ' ' + tradeDate + '：' + (error && error.message));
-    return { rowCount, published: false, status: null, error: error && error.message };
+    return { rowCount, published: false, status: null, error: error && error.message, coverage };
   }
 }
 
@@ -340,7 +395,7 @@ async function loadTerminalBar({ code, kind, date, fetchSeries, readPublishedBar
   // 测试注入 fetchSeries / readPublishedBar 时不读写库，保证终盘核验逻辑可离线回归。
   const readPublished = readPublishedBar === undefined ? (fetchSeries ? null : readPublishedDailyBar) : readPublishedBar;
   if (readPublished) {
-    const published = await Promise.resolve(readPublished({ tsCode, tradeDate: date, market })).catch(() => null);
+    const published = await Promise.resolve(readPublished({ tsCode, tradeDate: date, market, kind })).catch(() => null);
     const close = Number(published && published.close);
     if (close > 0) {
       return {
@@ -373,14 +428,40 @@ async function loadTerminalBar({ code, kind, date, fetchSeries, readPublishedBar
       code: String(code || ''), kind, tsCode, market, tradeDate: date,
     };
   } catch (e) {
-    return { ok: false, reason: 'terminal_evidence_unavailable', detail: e.message };
+    return {
+      ok: false,
+      reason: 'terminal_evidence_error',
+      detail: e && e.message ? e.message : String(e),
+      terminalError: terminalFailureDetails(e),
+    };
   }
 }
 
-// 报价与日线的一致性裁决。确认时对外只暴露“经核验的唯一收盘价”，
-// 报价只作为准入证据：容差内一律以日线收盘价为准（报价 10.004、日线 10 不能落成 10.004）。
+// 终盘日线请求失败与“上游尚未发布该交易日数据”是两种不同事实。
+// 失败必须把统一执行器可识别的分类一路带回去，不能在候选价路径被降级成 pending_confirmation。
+function terminalFailureDetails(error) {
+  const message = String(error && error.message || error || '终盘日线请求失败');
+  const rawCode = error && (error.code || error.errorCode);
+  const code = rawCode ? String(rawCode).toUpperCase()
+    : (/\b5\d\d\b|上游.*5\d\d|timeout|超时/i.test(message) ? 'UPSTREAM_5XX' : 'TERMINAL_EVIDENCE_ERROR');
+  const errorType = error && (error.errorType || error.type)
+    ? String(error.errorType || error.type)
+    : (/\b5\d\d\b|上游.*5\d\d|timeout|超时/i.test(message) ? 'network' : 'upstream');
+  return {
+    code,
+    errorType,
+    retryable: error && typeof error.retryable === 'boolean' ? error.retryable : true,
+    source: error && error.source ? String(error.source) : null,
+    apiName: error && error.apiName ? String(error.apiName) : null,
+    recoverAt: error && error.recoverAt ? error.recoverAt : null,
+    message: message.slice(0, 500),
+  };
+}
+
+// 报价与日线的终盘裁决。确认时对外只暴露“经核验的唯一收盘价”，
+// 报价只作为准入证据，最终价格一律取同日不复权日线收盘价。
 async function verifyTerminalClose({
-  code, position, subtype, name, type, market, date, price, kind,
+  code, position, subtype, name, type, market, date, kind,
   fetchSeries, readPublishedBar, readBar,
 }) {
   const resolvedKind = kind || resolveTerminalKind({ code, position, subtype, name, type, market });
@@ -390,9 +471,6 @@ async function verifyTerminalClose({
     ? await readBar(`${String(market || '').toUpperCase()}|${terminalSeriesCode(code, resolvedKind)}|${date}`, load)
     : await load();
   if (!bar || !bar.ok) return bar || { ok: false, reason: 'terminal_evidence_unavailable' };
-  if (Math.abs(bar.close - Number(price)) > TERMINAL_EVIDENCE_TOLERANCE) {
-    return { ok: false, reason: 'terminal_bar_mismatch', close: bar.close, provider: bar.provider };
-  }
   return {
     ok: true, reason: null, close: bar.close, provider: bar.provider, adjust: bar.adjust, via: bar.via,
     // 共享日线的持久化结果必须一路带上去：只统计成功条数会让"全部保存失败"看起来像"无需发布"，
@@ -408,7 +486,7 @@ async function verifyTerminalClose({
 // 单条收盘价的最终落库形态。抽成独立函数便于回归两件事：
 // ①确认后落库的必须是经核验的日线收盘价（不是容差内的实时报价）；
 // ②拿不到日线证据时只能降为候选，不能写成终盘。
-async function buildCloseRecord({ row, position, market, label, state, cnDate, readBar }) {
+async function buildCloseRecord({ row, position, market, label, state, cnDate, readBar, allowTerminalFetch = true }) {
   const qualification = qualifyCloseQuote(state, row.quote_time, cnDate, state.closeTime || null);
   let quality = qualification.quality;
   let isFinal = qualification.isFinal;
@@ -416,17 +494,49 @@ async function buildCloseRecord({ row, position, market, label, state, cnDate, r
   let terminal = null;
   // 确认后的唯一价格：默认用报价；一旦拿到该交易日的不复权日线，就以日线收盘价为准。
   let closePrice = row.price;
-  if (quality === 'confirmed') {
-    terminal = await verifyTerminalClose({
-      code: row.code, position, market, date: cnDate, price: row.price, readBar,
-    });
-    if (!terminal.ok) {
-      quality = 'candidate';
-      isFinal = null;
-      reason = terminal.reason;
-    } else {
-      closePrice = terminal.close;
-    }
+  const candidateRecord = extra => ({
+    ...row,
+    price: closePrice,
+    quality: 'candidate',
+    is_final: null,
+    market,
+    source: `market_close_task:${label}`,
+    ...(terminal && terminal.terminalError ? { terminalFailure: terminal.terminalError } : {}),
+    evidence: {
+      businessDate: cnDate, marketState: state.status, closeTime: state.closeTime || null,
+      isAfterMarketClose: state.isAfterMarketClose === true,
+      quoteAt: row.quote_time || null,
+      // 报价准入结论单独留证：终盘可能由独立日线确认，但"这条报价当时不是终盘"仍要可查。
+      qualification: qualification.reason || 'readiness_window_closed',
+      quoteQualification: qualification.reason || null,
+      quotePrice: row.price,
+      terminalProvider: null, terminalClose: null, terminalVia: null,
+      terminalPersisted: null, terminalPersistReason: null,
+      terminalTsCode: null, terminalKind: null,
+      priceBasis: 'quote_candidate',
+      terminalEvidence: 'readiness_checkpoint_pending',
+      ...extra,
+    },
+  });
+  // 首查时刻之前只做候选预览，不请求外部终盘日线：15:10 请求 cb_daily/fund_daily 必然
+  // 拿不到当日数据，既浪费外采又占失败预算。窗口开启后由调度检查点重新唤醒同一 Runner。
+  if (!allowTerminalFetch || state.status !== 'open' || state.isAfterMarketClose !== true) {
+    return candidateRecord();
+  }
+  // 腾讯报价的时间戳只决定候选准入，不再拦截独立日线核验：
+  // 16:08 的旧报价配合合格的同日不复权日线，同样能确认终盘（生产复发路径）。
+  terminal = await verifyTerminalClose({
+    code: row.code, position, market, date: cnDate, price: row.price, readBar,
+  });
+  if (terminal && terminal.ok) {
+    quality = 'confirmed';
+    isFinal = true;
+    closePrice = terminal.close;
+    reason = qualification.quality === 'confirmed' ? null : 'terminal_bar_confirmed';
+  } else if (quality === 'confirmed') {
+    quality = 'candidate';
+    isFinal = null;
+    reason = terminal ? terminal.reason : 'terminal_evidence_unavailable';
   }
   return {
     ...row,
@@ -435,10 +545,12 @@ async function buildCloseRecord({ row, position, market, label, state, cnDate, r
     is_final: isFinal,
     market,
     source: `market_close_task:${label}`,
+    ...(terminal && terminal.terminalError ? { terminalFailure: terminal.terminalError } : {}),
     evidence: {
       businessDate: cnDate, marketState: state.status, closeTime: state.closeTime || null,
       isAfterMarketClose: state.isAfterMarketClose === true,
       quoteAt: row.quote_time || null, qualification: reason || 'confirmed',
+      quoteQualification: qualification.reason || null,
       quotePrice: row.price,
       terminalProvider: terminal && terminal.provider ? terminal.provider : null,
       terminalClose: terminal && terminal.ok ? terminal.close : null,
@@ -455,6 +567,7 @@ async function buildCloseRecord({ row, position, market, label, state, cnDate, r
         ? (Number(closePrice) === Number(row.price) ? 'bar_match' : 'bar_close')
         : 'quote_candidate',
       terminalEvidence: terminal ? (terminal.ok ? 'unadjusted_bar_match' : terminal.reason) : null,
+      terminalError: terminal && terminal.terminalError ? terminal.terminalError : null,
     },
   };
 }
@@ -517,10 +630,17 @@ async function recordCloseOne(username, accountName, label, matchFn, dateStr, re
     }
   }
   let confirmedCount = 0, candidateCount = 0;
+  const terminalFailures = [];
   if (prices.length > 0) {
     const marketRule = MARKET_CLOSE_TIMES.find(item => item.label === label) || {};
     const market = marketRule.market || 'CN';
     const state = await getMarketState({ market, businessDate: cnDate, time: shanghaiDateTime().time });
+    // 首查时刻之前不开外部终盘窗口：15:10 那次只写候选预览，不请求 cb_daily/fund_daily。
+    // 窗口由任务定义的 readinessCheckpoints 决定，未声明检查点的任务恒为 true（行为不变）。
+    const allowTerminalFetch = terminalFetchWindowOpen(getJobDefinition(`market_close:${label}`), cnDate,
+      context.readinessNow || new Date())
+      && state.status === 'open'
+      && state.isAfterMarketClose === true;
     // 品种判定需要持仓本身（subtype/名称/类型），不能只拿 subtype，否则可转债与基金/ETF 会被当成股票。
     const positionByCode = new Map(missing.map(pos => [String(pos.code), pos]));
     const rows = [];
@@ -528,8 +648,11 @@ async function recordCloseOne(username, accountName, label, matchFn, dateStr, re
       const record = await buildCloseRecord({
         row, position: positionByCode.get(String(row.code)) || null,
         market, label, state, cnDate, readBar: context.readTerminalBar || null,
+        allowTerminalFetch,
       });
-      if (record.quality === 'confirmed') confirmedCount += 1; else candidateCount += 1;
+      if (record.quality === 'confirmed') confirmedCount += 1;
+      else if (record.terminalFailure) terminalFailures.push(record.terminalFailure);
+      else candidateCount += 1;
       rows.push(record);
     }
     // 日价写入与兼容持仓价回写同一事务：任一失败整体回滚，任务如实失败，
@@ -540,7 +663,7 @@ async function recordCloseOne(username, accountName, label, matchFn, dateStr, re
     });
   }
   const error = recorded === 0 && failed > 0;
-  return { recorded, failed, skipped, error, confirmedCount, candidateCount };
+  return { recorded, failed, skipped, error, confirmedCount, candidateCount, terminalFailures };
 }
 
 // 同一交易日四个市场收盘任务共用一次腾讯批量行情结果；后续市场只读本进程缓存。
@@ -578,6 +701,15 @@ async function recordMarketClose(label, matchFn, dateStr, context = {}) {
   let persistedBars = 0;
   // 外采后没写回共享日线的对象及原因：只统计成功条数会让"全部失败"看起来像"无需发布"。
   const persistFailures = [];
+  const terminalFailures = [];
+  const terminalFailureKeys = new Set();
+  const noteTerminalFailure = failure => {
+    if (!failure) return;
+    const key = [failure.code, failure.apiName, failure.message].join('|');
+    if (terminalFailureKeys.has(key)) return;
+    terminalFailureKeys.add(key);
+    terminalFailures.push(failure);
+  };
   // 缺口表本身出问题时（登记/销账/读取/计数失败）不能降级成"没有缺口"：
   // 那会让下一次运行只看得到"账户已确认"，把没补齐的共享日线报成成功。
   let gapStoreError = null;
@@ -589,6 +721,7 @@ async function recordMarketClose(label, matchFn, dateStr, context = {}) {
     if (!terminalBarCache.has(key)) {
       terminalBarCache.set(key, Promise.resolve().then(loader)
         .then(async result => {
+          if (result && result.terminalError) noteTerminalFailure(result.terminalError);
           if (result && result.ok && result.via === 'series') {
             if (result.persisted) {
               persistedBars += 1;
@@ -613,10 +746,23 @@ async function recordMarketClose(label, matchFn, dateStr, context = {}) {
           }
           return result;
         })
-        .catch(error => ({ ok: false, reason: 'terminal_evidence_unavailable', detail: error && error.message })));
+        .catch(error => ({
+          ok: false,
+          reason: 'terminal_evidence_error',
+          detail: error && error.message,
+          terminalError: terminalFailureDetails(error),
+        })));
     }
     return terminalBarCache.get(key);
   };
+  const readinessDefinition = getJobDefinition(`market_close:${label}`);
+  const marketState = await getMarketState({
+    market: market.market, businessDate: cnDate, time: shanghaiDateTime().time,
+  });
+  const allowTerminalFetch = terminalFetchWindowOpen(readinessDefinition, cnDate,
+    context.readinessNow || new Date())
+    && marketState.status === 'open'
+    && marketState.isAfterMarketClose === true;
   // 缺口重建：账户日价证据里写着"这条终盘证据没写回共享日线"，它是缺口表写不进去时
   // 唯一可恢复的事实来源。每次运行先据此补登记，避免登记失败后状态彻底丢失。
   // 必须按本任务的品种范围筛选：同一市场下 A股/可转债/基金各有自己的任务与日线入口，
@@ -644,6 +790,7 @@ async function recordMarketClose(label, matchFn, dateStr, context = {}) {
   const openGapsBefore = await repository.select_open_bar_gaps([label, cnDate])
     .catch(error => { noteGapStoreError('读取', error); return { rows: [] }; });
   for (const gap of (openGapsBefore.rows || [])) {
+    if (!allowTerminalFetch) break;
     await readTerminalBar(`${gap.market}|${gap.ts_code}|${cnDate}`,
       () => loadTerminalBar({ code: gap.code, kind: gap.kind, date: cnDate }));
   }
@@ -669,9 +816,10 @@ async function recordMarketClose(label, matchFn, dateStr, context = {}) {
   for (const account of accounts) {
     const r = await recordCloseOne(account.username, account.account_name, label, matchFn, cnDate, requestBudget, {
       quoteMap, refreshMissingQuotes, allowHistoricalRevision: context.allowHistoricalRevision === true, readTerminalBar,
+      readinessNow: context.readinessNow || new Date(),
     })
       .catch(error => {
-        if (error && ['RATE_LIMIT', 'QUOTA_EXHAUSTED', 'CIRCUIT_OPEN', 'DATASET_LOCKED'].includes(error.code)) {
+        if (error && (error.terminalFailure || ['RATE_LIMIT', 'QUOTA_EXHAUSTED', 'CIRCUIT_OPEN', 'DATASET_LOCKED'].includes(error.code))) {
           error.externalCalls = getExternalCallStats().total;
           throw error;
         }
@@ -684,6 +832,21 @@ async function recordMarketClose(label, matchFn, dateStr, context = {}) {
     pendingConfirmation += Number(r && r.candidateCount || 0);
     // 需要授权才能改写的历史日价同样要计数：既不能静默覆盖，也不能当成补写成功。
     blockedRevision += Number(r && r.blockedRevision || 0);
+    for (const failure of (r && r.terminalFailures || [])) noteTerminalFailure(failure);
+  }
+  if (terminalFailures.length) {
+    const first = terminalFailures[0];
+    const error = new Error(`终盘日线请求失败 (${label} ${cnDate})：${first.message}`);
+    error.code = first.code;
+    error.errorType = first.errorType;
+    error.retryable = first.retryable;
+    error.source = first.source;
+    error.apiName = first.apiName;
+    error.recoverAt = first.recoverAt;
+    error.terminalFailure = true;
+    error.terminalFailures = terminalFailures.slice(0, 20);
+    error.externalCalls = getExternalCallStats().total;
+    throw error;
   }
   if (failed > 0) {
     // 失败必须按统一执行器重试：if (failed > 0) throw new Error(...)
@@ -695,7 +858,7 @@ async function recordMarketClose(label, matchFn, dateStr, context = {}) {
   // 而这一次没有任何新增日线、也没有待重试缺口——若只在有写入时才发布，
   // 重跑就会把未发布的分区报成 not_needed 并成功。发布本身是幂等 upsert，代价极小。
   const gapRetried = (openGapsBefore.rows || []).length;
-  const barPartition = await publishCloseBarPartition(market.market, cnDate);
+  const barPartition = await publishCloseBarPartition(market.market, cnDate, label, accounts);
   // 一条都没写进去时不能报"无需发布"：共享日线发布本身就是未完成，
   // 下一次任务会重复外采同一批证券。这里把失败对象和原因一并带回去。
   const persistFailed = persistFailures.length;
@@ -746,6 +909,10 @@ async function recordMarketClose(label, matchFn, dateStr, context = {}) {
       rowCount: barPartition.rowCount,
       published: barPartition.published,
       error: barPartition.error || null,
+      // 覆盖对账结果随任务结果返回：只报"分区已发布"看不出部分覆盖，
+      // 三交易日观察需要能直接读到 expected/covered。
+      coverage: barPartition.coverage || null,
+      qualityStatus: barPartition.qualityStatus || null,
     },
     // 分区没发布出去就意味着下次还会重复外采，必须在结果里可见，不能只留在日志。
     barPartitionStatus,
@@ -937,7 +1104,11 @@ async function runMarketCloseJob(label, matchFn, dateStr, context = {}) {
       error: e.message || String(e),
       errorCode: e.code,
       errorType: e.errorType || e.type,
+      retryable: e.retryable,
+      recoverAt: e.recoverAt,
       source: e.source,
+      apiName: e.apiName,
+      terminalFailures: e.terminalFailures || [],
       externalCalls: Number(e.externalCalls || context.externalCallCount || 0),
     };
   } finally {

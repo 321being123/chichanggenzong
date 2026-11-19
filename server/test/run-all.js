@@ -341,14 +341,14 @@ async function runWorker() {
 // 只覆盖影响运行结果的目录（见 lib/codeTreeHash.js），因此纯文档变更可复用有效证据，
 // 源码一改指纹就变、必须重跑。写失败不改变本轮结论，但会让发布时缺少证据而阻断。
 try {
-  const { codeTreeHash, headCommit } = require('./lib/codeTreeHash');
+  const { worktreeCodeTreeHash, headCommit } = require('./lib/codeTreeHash');
   const evidenceDir = path.join(rootDir, 'data', 'test-evidence');
   fs.mkdirSync(evidenceDir, { recursive: true });
   const evidence = {
     command: 'node server/test/run-all.js',
     finishedAt: new Date().toISOString(),
     sha: headCommit(rootDir),
-    codeTreeHash: codeTreeHash('HEAD', rootDir),
+    codeTreeHash: worktreeCodeTreeHash(rootDir),
     node: process.version,
     pass, fail, skip, partialSkip,
     failedFiles: failed.slice(0, 200),

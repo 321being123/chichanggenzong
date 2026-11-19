@@ -76,12 +76,11 @@ async function main() {
   assert.strictEqual(missing.ok, false);
   assert.strictEqual(missing.reason, 'terminal_bar_missing', '没有日线时只能保持候选');
 
-  const mismatch = await verifyTerminalClose({
+  const independentBar = await verifyTerminalClose({
     code: '600000', subtype: '沪市', market: 'CN', date, price: 10.5,
     fetchSeries: okSeries,
   });
-  assert.strictEqual(mismatch.ok, false, '报价与终盘日线不一致时不得确认');
-  assert.strictEqual(mismatch.reason, 'terminal_bar_mismatch');
+  assert.strictEqual(independentBar.ok, true, '独立不复权日线是终盘价格依据，不应被旧报价价格拦截');
 
   // 4a. 可转债与基金/ETF 必须各自有终盘确认路径，不能一律“不适用”把收盘任务降为候选。
   const askedKinds = [];

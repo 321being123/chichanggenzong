@@ -261,12 +261,70 @@ async function publishDatasetSnapshot(datasetCode, options = {}, executor = pool
   return { ...snapshot, scopeKey, dataAsOf, rowCount, published: Boolean(published), partitionKey };
 }
 
+// 允许"本阶段无发布对象"的任务/阶段白名单：目前只有回购利率在历史休市日会出现。
+// 其他任务或阶段即使自报 skipDatasetPublication 也必须正常走发布门禁。
+const SKIP_PUBLICATION_CONTRACT = Object.freeze({
+  convertible_bond_universe_refresh: Object.freeze(['repo_daily']),
+});
+
+// 严格校验业务日：必须是真实存在的 YYYY-MM-DD（13 月、2 月 30 日、平年 2 月 29 日都不算）。
+// 用月天数与闰年规则纯算术判断，不做时区换算，避免把非法日期当成"某个交易日"。
+const MONTH_DAYS = Object.freeze([31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]);
+function isLeapYear(year) {
+  return (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
+}
+function strictBusinessDate(value) {
+  const matched = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(value == null ? '' : value).trim());
+  if (!matched) return null;
+  const year = Number(matched[1]);
+  const month = Number(matched[2]);
+  const day = Number(matched[3]);
+  if (month < 1 || month > 12 || day < 1) return null;
+  const monthDays = month === 2 && isLeapYear(year) ? 29 : MONTH_DAYS[month - 1];
+  if (day > monthDays) return null;
+  return `${matched[1]}-${matched[2]}-${matched[3]}`;
+}
+
+// 独立核验业务日是否交易日（与利率采集同一份日历口径）。
+// 调用方必须先通过 strictBusinessDate：说不清日期就不允许跳过发布。
+function isTradingBusinessDate(date) {
+  const { tradingDates } = require('./repoDailyRates');
+  return tradingDates(date, date).length > 0;
+}
+
 async function publishJobDatasets(jobCode, businessDate, result) {
   const definition = getJobDefinition(jobCode);
   const declaredDatasets = definition.producesDatasets || [];
   const requestedDatasets = result && Array.isArray(result.publishDatasetCodes)
     ? result.publishDatasetCodes : declaredDatasets;
   const phaseMode = String(result && result.mode || 'core');
+  // 本阶段确实没有可发布对象（例如回购利率落在历史休市日）时由 Runner 显式声明跳过。
+  // 例外必须收窄：只允许登记过的任务+阶段，且业务日要在这里独立核验确实是休市日——
+  // 不能只凭 Runner 自报，否则任何任务都能拿这个标记绕过发布门禁。
+  // 同时必须提交空发布清单，防止"声明跳过却仍在真发布"。
+  if (result && result.skipDatasetPublication === true) {
+    const allowedPhases = SKIP_PUBLICATION_CONTRACT[jobCode] || [];
+    if (!allowedPhases.includes(phaseMode)) {
+      throw new Error(`${jobCode}/${phaseMode} 未登记可跳过发布，不能以 skipDatasetPublication 绕过发布门禁`);
+    }
+    // 必须显式提交空数组：省略字段或传非数组（字符串/对象/null）一律拒绝，
+    // 不能把"没想清楚要发什么"当成"没有要发的东西"。
+    if (!Array.isArray(result.publishDatasetCodes)) {
+      throw new Error(`${jobCode}/${phaseMode} 跳过发布必须显式提交空发布清单（publishDatasetCodes: []）`);
+    }
+    if (result.publishDatasetCodes.length) {
+      throw new Error(`${jobCode}/${phaseMode} 声明跳过发布却仍提交了发布清单`);
+    }
+    // 日期先严格校验真伪，再交给交易日历：非法日期不能借"休市"名义通过。
+    const businessDay = strictBusinessDate(businessDate);
+    if (!businessDay) {
+      throw new Error(`${jobCode}/${phaseMode} 业务日无效（${businessDate}），不得跳过发布`);
+    }
+    if (isTradingBusinessDate(businessDay)) {
+      throw new Error(`${jobCode}/${phaseMode} 业务日 ${businessDay} 是交易日，不得跳过发布`);
+    }
+    return [];
+  }
   const phaseContract = definition.datasetPublicationByMode
     ? definition.datasetPublicationByMode[phaseMode] : null;
   if (definition.strictDatasetPublication && definition.datasetPublicationByMode && !phaseContract) {
@@ -379,7 +437,10 @@ function isPublishedDatasetEvidence(row, code, options = {}) {
   if (!row || row.status !== 'published' || row.is_stale) return false;
   const diagnostics = row.diagnostics && typeof row.diagnostics === 'object' ? row.diagnostics : {};
   const requireQuality = options.requireQuality === true || STRICT_QUALITY_DATASETS.has(String(code || ''));
-  if (requireQuality && diagnostics.quality_status !== 'passed') return false;
+  // qualityStatus 允许调用方按维度（例如共享分区的品种）给出结论：
+  // 整行 quality_status 是多维度合并结果，不能代表某一个维度是否完整。
+  const qualityStatus = options.qualityStatus !== undefined ? options.qualityStatus : diagnostics.quality_status;
+  if (requireQuality && qualityStatus !== 'passed') return false;
   const query = diagnostics.query_status;
   // 明确写了"没查成"就不是恢复证据；字段缺省只说明该数据集不上报这条，不等于通过也不等于失败。
   if (query !== undefined && query !== null && String(query).trim() !== ''

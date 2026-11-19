@@ -8,6 +8,7 @@ const repository = require('../repositories/jobOrchestratorRepository.js');
 const {
   WORKER_ID, syncScheduleSlots, recoverExpiredSlots, listDueSlots, sweepStaleSlots,
   claimSlot, completeSlot, deferSlot, waitForExternalSlot, continueSlot, mergeSlotExternalCallSummary, touchSlot, queryDataAsOf, isDataAsOfFresh, expectedDataDate,
+  waitForReadinessSlot, isReadinessPilot, retryProgressOf,
 } = require('./jobScheduleSlots');
 
 let executorStarted = false;
@@ -542,7 +543,9 @@ async function notifyDatasetDiagnostics(slot, result = {}) {
 async function startManagedRun(slot, reason) {
   const runId = await startJobRun(slot.job_code);
   if (!runId) return null;
-  await repository.update_job_runs([runId, slot.slot_id, slot.attempt_count, triggerType(reason), WORKER_ID]);
+  // 运行序号取领取序号（claim_count）：同一槽被租约回收后再次领取会得到新序号，
+  // 不再像旧 attempt_count 那样在"领取+1、释放-1"之间反复得到重复的 attempt_no。
+  await repository.update_job_runs([runId, slot.slot_id, Number(slot.claim_count || slot.attempt_count || 1), triggerType(reason), WORKER_ID]);
   return runId;
 }
 
@@ -572,7 +575,7 @@ async function finishManagedRun(runId, jobCode, ok, result = {}, failure = null)
 }
 
 async function linkLatestRun(slot, startedAt, reason) {
-  const { rows } = await repository.update_job_runs_2([slot.slot_id, slot.attempt_count, triggerType(reason), WORKER_ID, slot.job_code, startedAt]);
+  const { rows } = await repository.update_job_runs_2([slot.slot_id, Number(slot.claim_count || slot.attempt_count || 1), triggerType(reason), WORKER_ID, slot.job_code, startedAt]);
   return rows[0] ? rows[0].id : null;
 }
 
@@ -679,8 +682,40 @@ async function failOrRetry(slot, error, runId, result = {}, executionToken = nul
     ...result, error: message, errorCode: failure.code, errorType: failure.type, apiName: failure.apiName,
   }, result.externalCalls);
   normalized.slotExternalCallsLimit = Number(definition.slotExternalCallsLimit || 0) || null;
-  // Runner 明确返回未完成数据集，说明已经发生真实采集尝试；限流/额度错误也必须累计。
-  // freshnessGate 自身不会进入 failOrRetry，因此只读检查未命中不会被误计为失败。
+  // 数据集锁争用（DATASET_LOCKED）是零外采的等待：别的执行正在占同一数据集分区，
+  // 本次连上游请求都没发出。按普通 failed 处理会白吃失败预算（生产 2568029 两次即此），
+  // 所以试点任务转 waiting_readiness/lock，到期由统一重验入口放行原槽。
+  if (failure.code === 'DATASET_LOCKED' && definition.retryPolicy !== 'no_retry' && isReadinessPilot(definition)) {
+    await finishManagedRun(runId, slot.job_code, false, normalized, failure).catch(() => {});
+    const waiting = await waitForReadinessSlot(slot.slot_id, {
+      waitKind: 'lock',
+      errorMessage: message,
+      resultSummary: { ...sanitizeJobResult(normalized), readinessTarget: String(failure.dataset || '').slice(0, 200) },
+    }, runId, executionToken);
+    if (waiting) return waiting;
+    // 写入被拒（执行资格已失效）：退回普通失败路径，由租约与接管机制处理，不吞掉错误。
+  }
+  // 终盘未就绪不是执行失败：15:10 拿到的是候选价，合格终盘要等共享日线发布之后
+  // （可转债 cb_daily 约 17:00 后更新，基金 fund_daily 类似）。旧实现把它当普通失败，
+  // 每天前几次尝试必然白占失败预算。试点任务转 waiting_readiness/publication，
+  // 到期由统一重验入口放行原槽，只补剩余缺口。
+  const pendingTerminalClose = String(failure.type || '') === 'pending_confirmation'
+    || /收盘价待确认|待确认终盘/.test(String(failure.message || ''));
+  if (pendingTerminalClose && definition.retryPolicy !== 'no_retry' && isReadinessPilot(definition)) {
+    await finishManagedRun(runId, slot.job_code, false, normalized, failure).catch(() => {});
+    const waiting = await waitForReadinessSlot(slot.slot_id, {
+      waitKind: 'publication',
+      errorMessage: message,
+      resultSummary: {
+        ...sanitizeJobResult(normalized),
+        pendingConfirmation: Number(result && result.pendingConfirmation || 0) || null,
+      },
+      target: `${slot.job_code}@${slot.business_date}`,
+    }, runId, executionToken);
+    if (waiting) return waiting;
+  }
+  // 确认没有进入就绪等待后，才把 Runner 返回的缺口视为真实采集失败。
+  // 否则 DATASET_LOCKED/终盘未发布会先写数据集告警或触发熔断，造成等待与告警语义串线。
   await notifyDatasetDiagnostics(slot, normalized);
   await notifyIncompleteDataset(slot, normalized);
   const blocked = await applyDatasetFailureBreaker(slot, runId, normalized, failure, executionToken);
@@ -758,9 +793,9 @@ async function failOrRetry(slot, error, runId, result = {}, executionToken = nul
     }).catch(mailError => console.warn('[job-alert] 无权限阻塞告警失败:', mailError.message));
     return completed;
   }
-  if (noRetry || Number(slot.attempt_count || 0) >= maxAttempts) {
+  if (noRetry || retryProgressOf(slot).current >= maxAttempts) {
     await finishManagedRun(runId, slot.job_code, false, normalized, failure).catch(() => {});
-    const completed = await completeSlot(slot.slot_id, 'failed', { ...sanitizeJobResult(normalized), attempts: slot.attempt_count }, message, runId, executionToken);
+    const completed = await completeSlot(slot.slot_id, 'failed', { ...sanitizeJobResult(normalized), attempts: retryProgressOf(slot).current }, message, runId, executionToken);
     const { notifyJobFailure } = require('./jobAlertMailer');
     await notifyJobFailure({
       jobCode: slot.job_code,
@@ -776,10 +811,12 @@ async function failOrRetry(slot, error, runId, result = {}, executionToken = nul
     return completed;
   }
   const delays = Array.isArray(definition.retryDelaysMinutes) ? definition.retryDelaysMinutes : [5, 15, 45];
-  const delay = Number(failure.delayMinutes || delays[Math.min(Number(slot.attempt_count || 1) - 1, delays.length - 1)] || 15);
+  // 退避档位按"已真实失败次数"取，等待与续批不再占用档位（legacy 槽按旧领取次数取值）。
+  const progress = retryProgressOf(slot);
+  const delay = Number(failure.delayMinutes || delays[Math.min(progress.delayIndex, delays.length - 1)] || 15);
   await finishManagedRun(runId, slot.job_code, false, normalized, failure).catch(() => {});
   const deferred = await deferSlot(slot.slot_id, message, { ...sanitizeJobResult(normalized), retryInMinutes: delay, errorType: failure.type }, delay, runId, executionToken);
-  if (Number(slot.attempt_count || 0) === 2) {
+  if (progress.current === 2) {
     const { notifyJobFailure } = require('./jobAlertMailer');
     await notifyJobFailure({
       jobCode: slot.job_code,
@@ -967,6 +1004,20 @@ async function runSlot(slot, reason = reasonForSlot(slot)) {
       await completeSlot(claimed.slot_id, 'skipped', result, '当前任务未配置，保留上一份有效数据', runId, executionToken);
       return result;
     }
+    // Runner 明确表示"目标数据集当日还没就绪"（如逆回购利率未发布）时，
+    // 试点任务按任务定义的检查点进入 waiting_readiness，由统一重验按分区证据唤醒；
+    // 不再用 60 分钟续跑自行轮询，也不占失败预算。真实执行失败不走这里。
+    if (result && result.readinessWait && isReadinessPilot(definition)) {
+      const waitKind = result.readinessWait.waitKind === 'publication' ? 'publication' : 'dependency';
+      await finishManagedRun(runId, claimed.job_code, false, result).catch(() => {});
+      const waiting = await waitForReadinessSlot(claimed.slot_id, {
+        waitKind,
+        errorMessage: result.error || '等待目标数据集就绪',
+        resultSummary: { ...sanitizeJobResult(result) },
+        target: result.readinessWait.target,
+      }, runId, executionToken);
+      if (waiting) return { ok: true, result, readiness: true };
+    }
     if (result && result.continuationRequired === true) {
       const slotLimit = Number(definition.slotExternalCallsLimit || 0);
       const slotTotal = Number(runContext.slotExternalCallsTotal || 0) + Number(result.attemptExternalCalls || result.externalCalls || 0);
@@ -1008,7 +1059,13 @@ async function runSlot(slot, reason = reasonForSlot(slot)) {
     }
     await finishManagedRun(runId, claimed.job_code, true, result);
     await notifyDatasetDiagnostics(claimed, result);
-    await completeSlot(claimed.slot_id, 'succeeded', result || { ok: true }, null, runId, executionToken);
+    // 本阶段按"正常跳过"收尾时（回购利率落在休市日）不能记成 succeeded：
+    // 后台要能区分"确实采到并发布了"与"这天本来无需采集"。
+    const skippedPhase = Boolean(result && (result.skipDatasetPublication === true
+      || result.partitionPublication === 'skipped_non_trading_day'));
+    await completeSlot(claimed.slot_id, skippedPhase ? 'skipped' : 'succeeded', result || { ok: true },
+      skippedPhase ? (result.skipReason || '目标日休市：本阶段无需发布数据集，按跳过收尾') : null,
+      runId, executionToken);
     return { ok: true, result };
   } catch (error) {
     const timedOut = controller.signal.aborted;

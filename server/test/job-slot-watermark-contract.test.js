@@ -8,11 +8,12 @@
 const assert = require('assert');
 
 const repo = require('../repositories/jobScheduleSlotsRepository');
+const alertRepo = require('../repositories/jobAlertMailerRepository');
 const slotService = require('../services/jobScheduleSlots');
 
 const originals = {
   selectDataAsOfDate: repo.selectDataAsOfDate,
-  countAlertsByStatus: repo.countAlertsByStatus,
+  countAlertGroupsByStatus: alertRepo.countAlertGroupsByStatus,
   selectSlotsToday: repo.select_ops_job_schedule_slots_9,
   selectSlotsList: repo.select_ops_job_schedule_slots_10,
   workerHeartbeats: repo.with_ops_worker_heartbeats,
@@ -36,20 +37,20 @@ const originals = {
     const empty = await slotService.queryDataAsOf('market_close:A股', '2026-11-03');
     assert.strictEqual(empty, null, '查不到水位时必须是 null，交给上层判降级');
 
-    // 2) 总览告警计数：countAlertsByStatus 返回数组，接口必须原样给出数组。
-    repo.countAlertsByStatus = async () => [{ status: 'sent', count: 3 }, { status: 'pending', count: 2 }];
+    // 2) 总览告警计数：按 listAlertPage 的同一根因键返回归并组数组。
+    alertRepo.countAlertGroupsByStatus = async () => ({ rows: [{ status: 'sent', count: 1 }, { status: 'pending', count: 1 }] });
     repo.select_ops_job_schedule_slots_9 = async () => ({ rows: [] });
     repo.select_ops_job_schedule_slots_10 = async () => ({ rows: [] });
     repo.with_ops_worker_heartbeats = async () => ({ rows: [] });
     const overview = await slotService.getJobOverview();
     assert.ok(Array.isArray(overview.alerts), '总览 alerts 必须是数组');
     assert.strictEqual(overview.alerts.length, 2);
-    assert.strictEqual(overview.alerts.reduce((sum, item) => sum + Number(item.count || 0), 0), 5);
+    assert.strictEqual(overview.alerts.reduce((sum, item) => sum + Number(item.count || 0), 0), 2);
 
     console.log('job slot watermark contract: data-as-of and overview alerts passed');
   } finally {
     repo.selectDataAsOfDate = originals.selectDataAsOfDate;
-    repo.countAlertsByStatus = originals.countAlertsByStatus;
+    alertRepo.countAlertGroupsByStatus = originals.countAlertGroupsByStatus;
     repo.select_ops_job_schedule_slots_9 = originals.selectSlotsToday;
     repo.select_ops_job_schedule_slots_10 = originals.selectSlotsList;
     repo.with_ops_worker_heartbeats = originals.workerHeartbeats;

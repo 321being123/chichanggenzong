@@ -398,8 +398,9 @@ check('缺口必须独立落库并在重跑时继续处理（源码守卫）', (
   // 否则"日线写完、发布成功、只有销账失败"的场景会让缺口永久留着、任务一直 partial。
   assert.ok(source.includes("result.via === 'published_bar' && result.tsCode"), '命中已发布日线也必须销账');
   // 分区发布必须每次都核对，不能只在"本次有新增日线"时才发布（否则重跑补不上发布失败）。
-  assert.ok(source.includes('const barPartition = await publishCloseBarPartition(market.market, cnDate);'),
-    '每次运行都要核对并补发布已有合格日线');
+  // 2026-11-19：发布同时按任务账户范围对账覆盖，避免分母混入其他任务的账户。
+  assert.ok(/const barPartition = await publishCloseBarPartition\(market\.market, cnDate, label, accounts\);/.test(source),
+    '每次运行都要核对并按品种补发布已有合格日线（覆盖对账按任务账户范围）');
   // 缺口表登记的是证券 + 日线代码 + 交易日，与账户无关。
   const migration = fs.readFileSync(path.join(__dirname, '..', 'db', 'migrations', 'era15MarketCloseBarGaps.js'), 'utf8');
   assert.ok(migration.includes('UNIQUE(job_label, ts_code, trade_date)'),

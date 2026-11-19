@@ -87,6 +87,36 @@ assert.deepStrictEqual(directTransportCalls('window.adminFetchMe()'), ['adminFet
   await w.loadJobsData();
   assert(w.document.getElementById('jobs-summary').textContent.includes('今日计划'));
   assert(w.document.getElementById('jobs-slots-tbody').textContent.includes('暂无计划'));
+  w.adminPaintJobs([
+    { counts: [], alerts: [], workers: [], health: {} },
+    { list: [{ slot_id: 1, job_code: 'market_close:可转债', scheduled_for: '2026-11-19T09:00:00Z', status: 'waiting_readiness', attempt_count: 1, max_attempts: 3, waiting_state: { waiting: true, label: '等待终盘分区' } }] },
+    { recent: [] },
+    { list: [{ alert_id: 1, job_code: 'market_close:可转债', status: 'pending', last_seen_at: '2026-11-19T10:00:00Z', summary: '终盘缺口', group_count: 2, group_items: [{ summary: '第一条', scopeType: 'dataset' }, { summary: '第二条', scopeType: 'dataset' }] }] },
+    { list: [] },
+  ]);
+  assert(w.document.getElementById('jobs-slots-tbody').textContent.includes('等待复查'), 'waiting_readiness 必须显示为等待复查');
+  assert(w.document.getElementById('jobs-alerts-tbody').textContent.includes('归并 2 条告警'), '归并告警必须保留可展开入口');
+  assert(w.document.getElementById('jobs-summary').textContent.includes('告警组数'), '汇总必须使用归并组口径');
+  // 告警组数必须取总览的归并组合计，不能取列表长度：列表有上限（页面按 30 组拉取），
+  // 31 组时任务页会显示 30，与运营分析对不上（2026-11-19 复验 P2）。
+  const statValue = label => {
+    const card = Array.from(w.document.querySelectorAll('#jobs-summary .stat-card'))
+      .find(node => node.querySelector('.label') && node.querySelector('.label').textContent === label);
+    return card && card.querySelector('.value') ? String(card.querySelector('.value').textContent).trim() : null;
+  };
+  w.adminPaintJobs([
+    { counts: [{ status: 'succeeded', count: 2 }], alerts: [{ status: 'pending', count: 31 }], workers: [], health: {} },
+    { list: [] },
+    { recent: [] },
+    {
+      list: Array.from({ length: 30 }, (_, index) => ({
+        alert_id: 900 + index, job_code: 'market_close:可转债', status: 'pending',
+        last_seen_at: '2026-11-19T10:00:00Z', summary: '分组告警 ' + index,
+      })),
+    },
+    { list: [] },
+  ]);
+  assert.strictEqual(statValue('告警组数'), '31', '告警组数必须取总览归并组合计，不被列表 30 条上限截断');
   w.renderAudit(); await tick();
   assert(w.document.getElementById('audit-tbody').textContent.includes('tester'));
   w.document.getElementById('audit-filter-actor').value = 'actor';

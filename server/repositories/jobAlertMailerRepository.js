@@ -94,18 +94,46 @@ async function insert_ops_alert_notifications(params, client = pool) {
      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,now(),now())
      ON CONFLICT(alert_key) DO UPDATE SET
        summary=EXCLUDED.summary, subject=EXCLUDED.subject,
+       alert_type=CASE
+         WHEN EXCLUDED.severity='critical' AND ops.alert_notifications.severity<>'critical'
+           THEN EXCLUDED.alert_type
+         ELSE ops.alert_notifications.alert_type
+       END,
+       severity=CASE
+         WHEN EXCLUDED.severity='critical' THEN 'critical'
+         ELSE ops.alert_notifications.severity
+       END,
        scope_type=COALESCE(EXCLUDED.scope_type,ops.alert_notifications.scope_type),
        scope_key=COALESCE(EXCLUDED.scope_key,ops.alert_notifications.scope_key), last_seen_at=now(),
        occurrence_count=ops.alert_notifications.occurrence_count+1,
-       status=CASE WHEN ops.alert_notifications.status IN ('acknowledged','resolved') THEN 'pending' ELSE ops.alert_notifications.status END,
+       status=CASE
+         WHEN EXCLUDED.severity='critical' AND ops.alert_notifications.severity<>'critical' THEN 'pending'
+         WHEN ops.alert_notifications.status IN ('acknowledged','resolved') THEN 'pending'
+         ELSE ops.alert_notifications.status
+       END,
        resolved_at=CASE WHEN ops.alert_notifications.status IN ('acknowledged','resolved') THEN NULL ELSE ops.alert_notifications.resolved_at END,
        acknowledged_at=CASE WHEN ops.alert_notifications.status IN ('acknowledged','resolved') THEN NULL ELSE ops.alert_notifications.acknowledged_at END,
-       send_attempts=CASE WHEN ops.alert_notifications.status IN ('acknowledged','resolved') THEN 0 ELSE ops.alert_notifications.send_attempts END,
+       send_attempts=CASE WHEN ops.alert_notifications.status IN ('acknowledged','resolved') THEN 0
+         WHEN EXCLUDED.severity='critical' AND ops.alert_notifications.severity<>'critical' THEN 0
+         ELSE ops.alert_notifications.send_attempts
+       END,
        recovery_attempts=CASE WHEN ops.alert_notifications.status IN ('acknowledged','resolved') THEN 0 ELSE ops.alert_notifications.recovery_attempts END,
-       last_send_error=CASE WHEN ops.alert_notifications.status IN ('acknowledged','resolved') THEN NULL ELSE ops.alert_notifications.last_send_error END,
-       sending_started_at=CASE WHEN ops.alert_notifications.status IN ('acknowledged','resolved') THEN NULL ELSE ops.alert_notifications.sending_started_at END,
+       last_send_error=CASE
+         WHEN EXCLUDED.severity='critical' AND ops.alert_notifications.severity<>'critical' THEN NULL
+         WHEN ops.alert_notifications.status IN ('acknowledged','resolved') THEN NULL
+         ELSE ops.alert_notifications.last_send_error
+       END,
+       sending_started_at=CASE
+         WHEN EXCLUDED.severity='critical' AND ops.alert_notifications.severity<>'critical' THEN NULL
+         WHEN ops.alert_notifications.status IN ('acknowledged','resolved') THEN NULL
+         ELSE ops.alert_notifications.sending_started_at
+       END,
        last_sent_at=CASE WHEN ops.alert_notifications.status IN ('acknowledged','resolved') THEN NULL ELSE ops.alert_notifications.last_sent_at END,
-       next_send_at=CASE WHEN ops.alert_notifications.status IN ('acknowledged','resolved') THEN now() ELSE ops.alert_notifications.next_send_at END,
+       next_send_at=CASE
+         WHEN EXCLUDED.severity='critical' AND ops.alert_notifications.severity<>'critical' THEN now()
+         WHEN ops.alert_notifications.status IN ('acknowledged','resolved') THEN now()
+         ELSE ops.alert_notifications.next_send_at
+       END,
        next_check_at=now(),
        updated_at=now()
      RETURNING *`, params);
@@ -363,15 +391,80 @@ const ACTIVE_ALERT_WHERE = `status NOT IN ('resolved','acknowledged')
              AND blocker.status NOT IN ('resolved','acknowledged')
         ))`;
 
-// 告警列表分页：待处理/历史两种口径，活动告警口径由 ACTIVE_ALERT_WHERE 定义
+function activeAlertWhereForAlias(alias) {
+  return ACTIVE_ALERT_WHERE
+    .replace(/ops\.alert_notifications\./g, `${alias}.`)
+    .replace(/(?<![.\w])status\b/g, `${alias}.status`);
+}
+
+// 告警列表分页：待处理/历史两种口径，活动告警口径由 ACTIVE_ALERT_WHERE 定义。
+// 同一来源/接口或数据集、业务日和故障类型只返回最新一条代表记录，
+// 其余记录放进 group_items，页面可以展开查看受影响槽位和作用域。
 async function listAlertPage(params, client = pool) {
+  const activeWhere = activeAlertWhereForAlias('a');
   return client.query(
-    `SELECT * FROM ops.alert_notifications
-      WHERE ($1::boolean = false OR (${ACTIVE_ALERT_WHERE}))
-        AND ($2::text IS NULL OR status=$2)
-        AND ($3::boolean = false OR status IN ('resolved','acknowledged'))
-      ORDER BY last_seen_at DESC LIMIT $4`,
+    `WITH candidate AS (
+       SELECT a.*, s.business_date::text AS business_date,
+              CASE
+                WHEN a.scope_type IN ('source_endpoint','dataset') THEN concat_ws('|', a.scope_type, a.scope_key,
+                  COALESCE(s.business_date::text, ''), CASE WHEN a.alert_type='failure_warning' THEN 'failure' ELSE a.alert_type END)
+                ELSE concat_ws('|', COALESCE(a.scope_type, a.job_code, ''), COALESCE(a.scope_key, a.job_code, ''),
+                  COALESCE(s.business_date::text, ''), CASE WHEN a.alert_type='failure_warning' THEN 'failure' ELSE a.alert_type END)
+              END AS root_cause_group_key
+         FROM ops.alert_notifications a
+         LEFT JOIN (SELECT slot_id, business_date FROM ops.job_schedule_slots) s ON s.slot_id=a.slot_id
+        WHERE ($1::boolean = false OR (${activeWhere}))
+          AND ($2::text IS NULL OR a.status=$2)
+          AND ($3::boolean = false OR a.status IN ('resolved','acknowledged'))
+     ), grouped AS (
+       SELECT root_cause_group_key,
+              COUNT(*)::int AS group_count,
+              ARRAY_AGG(alert_id ORDER BY last_seen_at DESC, alert_id DESC) AS group_alert_ids,
+              MAX(last_seen_at) AS group_last_seen_at,
+              JSONB_AGG(JSONB_BUILD_OBJECT(
+                'alertId', alert_id, 'alertKey', alert_key, 'alertType', alert_type,
+                'severity', severity, 'status', status, 'jobCode', job_code,
+                'slotId', slot_id, 'scopeType', scope_type, 'scopeKey', scope_key,
+                'businessDate', business_date, 'subject', subject, 'summary', summary,
+                'lastSeenAt', last_seen_at
+              ) ORDER BY last_seen_at DESC, alert_id DESC) AS group_items
+         FROM candidate
+        GROUP BY root_cause_group_key
+     )
+     SELECT c.*, g.group_count, g.group_alert_ids, g.group_items
+       FROM candidate c
+       JOIN grouped g USING (root_cause_group_key)
+      WHERE c.alert_id = (
+        SELECT c2.alert_id FROM candidate c2
+         WHERE c2.root_cause_group_key=c.root_cause_group_key
+         ORDER BY c2.last_seen_at DESC, c2.alert_id DESC LIMIT 1
+      )
+      ORDER BY g.group_last_seen_at DESC, c.alert_id DESC LIMIT $4`,
     [params.open, params.exact, params.history, params.limit],
+  );
+}
+
+// 后台任务总览按“归并组”计数，必须与 listAlertPage 使用同一根因键和活动告警口径，
+// 否则页面显示一行、汇总却按原始告警条数统计，运维无法对账。
+async function countAlertGroupsByStatus(client = pool) {
+  const activeWhere = activeAlertWhereForAlias('a');
+  return client.query(
+    `WITH candidate AS (
+       SELECT a.status, a.alert_id, a.last_seen_at,
+              CASE
+                WHEN a.scope_type IN ('source_endpoint','dataset') THEN concat_ws('|', a.scope_type, a.scope_key,
+                  COALESCE(s.business_date::text, ''), CASE WHEN a.alert_type='failure_warning' THEN 'failure' ELSE a.alert_type END)
+                ELSE concat_ws('|', COALESCE(a.scope_type, a.job_code, ''), COALESCE(a.scope_key, a.job_code, ''),
+                  COALESCE(s.business_date::text, ''), CASE WHEN a.alert_type='failure_warning' THEN 'failure' ELSE a.alert_type END)
+              END AS root_cause_group_key
+         FROM ops.alert_notifications a
+         LEFT JOIN (SELECT slot_id, business_date FROM ops.job_schedule_slots) s ON s.slot_id=a.slot_id
+        WHERE ${activeWhere}
+     ), grouped AS (
+       SELECT root_cause_group_key, (array_agg(status ORDER BY last_seen_at DESC, alert_id DESC))[1] AS status
+         FROM candidate GROUP BY root_cause_group_key
+     )
+     SELECT status, COUNT(*)::int AS count FROM grouped GROUP BY status ORDER BY status`,
   );
 }
 
@@ -453,6 +546,7 @@ module.exports = {
   runQuery,
   ACTIVE_ALERT_WHERE,
   listAlertPage,
+  countAlertGroupsByStatus,
   claimAlertDelivery,
   claimRecoverySummaryAlerts,
   loadResolutionCandidates,

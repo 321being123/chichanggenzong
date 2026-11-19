@@ -14,6 +14,30 @@ const classifyCode = require('../../public/js/code-classify');
 const repository = require('../repositories/navSnapshotRepository.js');
 const { selectHistoricalClosePrice, expectedCloseDateFor, resolveSuspendedReference, loadSwapReferenceCandidates, resolveSwapReference } = require('../services/effectivePrice');
 
+// 逆回购利率只有这些失败原因属于"上游尚未发布/缺行"，可以进就绪等待；
+// 超时、5xx、限流、权限等必须走失败计数与退避，不能被当成"还没发布"。
+const RATE_PUBLICATION_WAIT_CODES = new Set([
+  'EMPTY_DATA', 'DATASET_INCOMPLETE', 'NOT_PUBLISHED', 'PENDING_PUBLICATION',
+]);
+
+// 净值任务自己负责发布的数据集。`repo_daily_rates` 由 repoDailyRates 在采集或补发时
+// 一次性写入，不能出现在这里——否则每次运行都会重写同一天分区。
+const NAV_PUBLISH_DATASETS = Object.freeze(['nav_snapshot']);
+
+// 只有"上游尚未发布/缺行"才是就绪等待；返回 true 表示可以进 waiting_readiness。
+// 抽成纯函数便于离线回归：一次 TIMEOUT 不能被当成"还没发布"。
+// 落库/发布异常会带 errorCode 返回（如分区写入失败），同样不算未发布；
+// 没有任何失败证据时，必须明确"缺目标日数据"（remainingCount>0）才成立。
+function isRatePublicationWait(repoRates, failedAccounts) {
+  if (!repoRates || repoRates.ok !== false) return false;
+  if (Array.isArray(failedAccounts) && failedAccounts.length) return false;
+  const errorCode = repoRates.errorCode ? String(repoRates.errorCode).toUpperCase() : null;
+  if (errorCode && !RATE_PUBLICATION_WAIT_CODES.has(errorCode)) return false;
+  const failures = Array.isArray(repoRates.failures) ? repoRates.failures : [];
+  if (!failures.length) return Number(repoRates.remainingCount || 0) > 0;
+  return failures.every(item => RATE_PUBLICATION_WAIT_CODES.has(String((item && item.code) || 'DATASET_INCOMPLETE').toUpperCase()));
+}
+
 // 东八区日期 YYYY-MM-DD
 function cnDate(d) {
   const businessDate = CoreDate.normalizeBusinessDate(d);
@@ -449,19 +473,26 @@ async function runNavSnapshotJob({ targetDate = cnDate(new Date()), fromDate = n
       currentDate: { date: targetDate, complete: currentComplete, accounts: currentAccounts },
       dataAsOf: currentComplete ? targetDate : null,
       repoRates,
-      publishDatasetCodes:repoRates?.ok?['nav_snapshot','repo_daily_rates']:['nav_snapshot'],
-      datasetDiagnostics:{nav_snapshot:currentDiagnostics,...(repoRates?.ok?{repo_daily_rates:{...repoRates,query_status:'success',quality_status:'passed'}}:{})},
+      // 回购利率分区由利率服务（sync / 补发）负责写入，净值任务不能再交给通用发布器：
+      // 重复发布会刷新 published_at、把既有 source_id 覆盖成 NULL，看起来像"新数据到达"。
+      publishDatasetCodes:[...NAV_PUBLISH_DATASETS],
+      datasetDiagnostics:{nav_snapshot:currentDiagnostics},
       datasets: currentPublication?.published ? [currentPublication] : [],
       missingDates: [...new Set(failedAccounts.flatMap(item => item.missingDates || []))],
       failedDatasets: [...(failedAccounts.length ? ['nav_snapshot'] : []),...(repoRates?.ok===false?['repo_daily_rates']:[])],
       ...(repoRates?.ok===false?{error:'目标日回购利率未通过质量核验',errorType:'data_quality',pendingStages:['repoDailyRates']}:{}),
       ...(failedAccounts.length ? { error: '部分账户净值快照未完成', errorType: 'data_quality' } : {}),
     };
-    if(!result.ok&&isCashIncomeDependencyWait(failedAccounts,repoRates)){
-      result.continuationRequired=true;
-      result.nextAttemptInMinutes=60;
-      result.pendingStages=['cashIncomeDependencies'];
-      result.waitReason='cash_income_dependencies_incomplete';
+    // 只是"目标日还没就绪"时不再每 60 分钟自行续跑：逆回购利率当日未发布（无账户失败），
+    // 或账户现金收益等待的依赖未就绪（含 missing_repo_daily_rate），都交给编排器转
+    // waiting_readiness，由 18:30 检查点后的统一重验按 repo_daily_rates 分区证据唤醒。
+    // 但只有"上游尚未发布/缺行"才算未就绪：超时、5xx、限流、权限等真实失败必须走
+    // 失败计数与退避，不能被这里吞成就绪等待（否则一次 TIMEOUT 也能永久挂在等待队列）。
+    const ratePublicationPending = isRatePublicationWait(repoRates, failedAccounts);
+    if (result.ok === false && (ratePublicationPending || isCashIncomeDependencyWait(failedAccounts, repoRates))) {
+      result.readinessWait = { waitKind: 'dependency', target: `repo_daily_rates/204001.SH/${targetDate}` };
+      if (!Array.isArray(result.pendingStages) || !result.pendingStages.length) result.pendingStages = ['repoDailyRates'];
+      result.waitReason = 'target_dataset_not_ready';
     }
     await finishJobRun(runId, result.ok, result.ok ? ('补' + total + '条 / ' + accountCount + '账户') : JSON.stringify(result));
     return result;
@@ -481,4 +512,4 @@ function isCashIncomeDependencyWait(failedAccounts,repoRates){
     &&waits.every(p=>['missing_repo_daily_rate','bond_interest_window_not_verified','dividend_window_not_verified','missing_hk_dividend_facts'].includes(p.reason))
     &&(repoRates?.ok!==false||repoRates?.failures?.length>0&&repoRates.failures.every(f=>f.code==='EMPTY_DATA'));
 }
-module.exports = { recordNavSnapshots, runNavSnapshotJob, cnDate, buildFxByDate, isCashIncomeDependencyWait, fixedDelistedPrice };
+module.exports = { recordNavSnapshots, runNavSnapshotJob, cnDate, buildFxByDate, isCashIncomeDependencyWait, isRatePublicationWait, NAV_PUBLISH_DATASETS, fixedDelistedPrice };

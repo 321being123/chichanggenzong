@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "lastReviewed": "2026-11-18",
+  "lastReviewed": "2026-11-19",
   "rules": [
     {
       "id": "HOLDINGS-NAV-SWAP-014",
@@ -64,6 +64,10 @@
         {
           "file": "server/test/job-orchestration-regression.test.js",
           "pattern": "已有确认价不能让收盘 Runner 跳过共享日线缺口重建和分区发布"
+        },
+        {
+          "file": "server/test/job-readiness-no-dependency.test.js",
+          "pattern": "no false readiness observation"
         }
       ],
       "owner": "Codex",
@@ -5773,7 +5777,7 @@
         },
         {
           "file": "server/test/marketclose.test.js",
-          "pattern": "每次运行都要核对并补发布已有合格日线"
+          "pattern": "每次运行都要核对并按品种补发布已有合格日线"
         }
       ],
       "owner": "WorkBuddy",
@@ -5894,6 +5898,278 @@
       ],
       "owner": "WorkBuddy",
       "status": "implemented"
+    },
+    {
+      "id": "JOB-READINESS-003",
+      "title": "终盘分区质量必须按目标证券覆盖判定，单条记录不得代表整类就绪",
+      "implementation": {
+        "file": "server/jobs/marketClose.js",
+        "symbol": "publishCloseBarPartition"
+      },
+      "tests": [
+        {
+          "file": "server/test/market-close-bar-gap.test.js",
+          "pattern": "部分覆盖不得标成质量通过"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "local_verified"
+    },
+    {
+      "id": "JOB-READINESS-004",
+      "title": "自产分区唤醒与升级告警不得互斥：越过升级时刻仍缺失必须告警一次",
+      "implementation": {
+        "file": "server/services/jobScheduleSlots.js",
+        "symbol": "readinessEscalationPlan"
+      },
+      "tests": [
+        {
+          "file": "server/test/job-readiness-wait.test.js",
+          "pattern": "自产分区越过升级时刻必须升级告警"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "local_verified"
+    },
+    {
+      "id": "JOB-READINESS-005",
+      "title": "净值与逆回购缺口接入统一就绪重验，不再按 60 分钟自行续跑",
+      "implementation": {
+        "file": "server/jobs/navSnapshot.js",
+        "symbol": "result.readinessWait"
+      },
+      "tests": [
+        {
+          "file": "server/test/job-readiness-wait.test.js",
+          "pattern": "利率分区发布后必须唤醒原净值槽"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "local_verified"
+    },
+    {
+      "id": "ALERT-COUNT-PARITY-001",
+      "title": "运营分析与任务页的待处理告警必须同源同口径：按根因归并组数，不取列表长度",
+      "implementation": {
+        "file": "server/repositories/siteAnalyticsRepository.js",
+        "symbol": "countAlertGroupsByStatus"
+      },
+      "tests": [
+        {
+          "file": "server/test/admin-layer-presenter.test.js",
+          "pattern": "告警组数必须取总览归并组合计，不被列表 30 条上限截断"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "local_verified"
+    },
+    {
+      "id": "JOB-READINESS-006",
+      "title": "共享终盘分区的覆盖与质量必须按品种隔离，且在数据库端原子合并；覆盖分母包含持仓证券",
+      "implementation": {
+        "file": "server/services/datasetPartitions.js",
+        "symbol": "publishCoveragePartition"
+      },
+      "tests": [
+        {
+          "file": "server/test/market-close-bar-gap.test.js",
+          "pattern": "共享分区按品种保留覆盖结论"
+        },
+        {
+          "file": "server/test/market-close-bar-gap.test.js",
+          "pattern": "并发发布原子合并"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "local_verified"
+    },
+    {
+      "id": "JOB-READINESS-007",
+      "title": "只有上游未发布/缺行才进就绪等待，超时等真实失败仍走失败预算与退避",
+      "implementation": {
+        "file": "server/jobs/navSnapshot.js",
+        "symbol": "isRatePublicationWait"
+      },
+      "tests": [
+        {
+          "file": "server/test/job-readiness-wait.test.js",
+          "pattern": "超时不得被当作未发布"
+        },
+        {
+          "file": "server/test/job-readiness-wait.test.js",
+          "pattern": "没有失败证据也没有缺行时不得进就绪等待"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "local_verified"
+    },
+    {
+      "id": "JOB-READINESS-008",
+      "title": "利率落库或分区写入异常、以及上游返回无效利率，都必须保留失败分类，不得被当作数据未发布",
+      "implementation": {
+        "file": "server/services/repoDailyRates.js",
+        "symbol": "invalidDataError"
+      },
+      "tests": [
+        {
+          "file": "server/test/job-readiness-wait.test.js",
+          "pattern": "利率服务捕获异常时必须保留失败分类"
+        },
+        {
+          "file": "server/test/nav-repo-eod.test.js",
+          "pattern": "缺利率字段必须按无效数据分类"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "local_verified"
+    },
+    {
+      "id": "JOB-READINESS-009",
+      "title": "事实已落库但同日分区缺失时，重试只补发分区，不再请求上游",
+      "implementation": {
+        "file": "server/services/repoDailyRates.js",
+        "symbol": "republishRepoDailyPartition"
+      },
+      "tests": [
+        {
+          "file": "server/test/nav-repo-eod.test.js",
+          "pattern": "事实在库但分区缺失时必须返回补发结果"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "local_verified"
+    },
+    {
+      "id": "JOB-READINESS-010",
+      "title": "分区就绪判定必须按目标日精确查询，合格分区零写入，净值任务不得重发利率分区",
+      "implementation": {
+        "file": "server/services/repoDailyRates.js",
+        "symbol": "readRepoPartitionState"
+      },
+      "tests": [
+        {
+          "file": "server/test/job-readiness-wait.test.js",
+          "pattern": "目标日分区已发布时必须判就绪，不能被更晚日期的分区带偏"
+        },
+        {
+          "file": "server/test/job-readiness-wait.test.js",
+          "pattern": "净值任务只发布自己的快照数据集"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "local_verified"
+    },
+    {
+      "id": "JOB-READINESS-011",
+      "title": "共享采集任务不得把利率分区交回通用发布器；利率事实齐且分区合格时零写入",
+      "implementation": {
+        "file": "server/services/repoDailyRates.js",
+        "symbol": "shouldRepublishRepoReport"
+      },
+      "tests": [
+        {
+          "file": "server/test/nav-repo-eod.test.js",
+          "pattern": "事实齐且分区已合格时不得重复发布"
+        },
+        {
+          "file": "server/test/job-readiness-wait.test.js",
+          "pattern": "阶段不得由通用发布器写回购利率分区"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "local_verified"
+    },
+    {
+      "id": "JOB-READINESS-012",
+      "title": "单日分区状态必须按目标日自身判定，历史缺口不得把合格分区降级",
+      "implementation": {
+        "file": "server/services/repoDailyRates.js",
+        "symbol": "repoReportPublication"
+      },
+      "tests": [
+        {
+          "file": "server/test/nav-repo-eod.test.js",
+          "pattern": "更早日期的缺口不得把目标日分区降为 rejected"
+        },
+        {
+          "file": "server/test/nav-repo-eod.test.js",
+          "pattern": "历史缺口必须保留续跑节奏"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "local_verified"
+    },
+    {
+      "id": "JOB-READINESS-013",
+      "title": "历史休市日不外采、不发布分区：区间交易日为 0 不得当成已齐全",
+      "implementation": {
+        "file": "server/services/repoDailyRates.js",
+        "symbol": "targetDateIsTradingDay"
+      },
+      "tests": [
+        {
+          "file": "server/test/nav-repo-eod.test.js",
+          "pattern": "休市日必须跳过发布，不能写出 published/passed"
+        },
+        {
+          "file": "server/test/nav-repo-eod.test.js",
+          "pattern": "休市日不外采、不发布分区"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "local_verified"
+    },
+    {
+      "id": "JOB-READINESS-014",
+      "title": "无发布对象时的跳过必须限定任务与阶段，要求显式空清单，并由门禁严格校验日期后独立核验休市",
+      "implementation": {
+        "file": "server/services/datasetPartitionRegistry.js",
+        "symbol": "SKIP_PUBLICATION_CONTRACT"
+      },
+      "tests": [
+        {
+          "file": "server/test/nav-repo-eod.test.js",
+          "pattern": "休市日不得被发布门禁判成未发布"
+        },
+        {
+          "file": "server/test/nav-repo-eod.test.js",
+          "pattern": "未登记可跳过发布"
+        },
+        {
+          "file": "server/test/nav-repo-eod.test.js",
+          "pattern": "是交易日，不得跳过发布"
+        },
+        {
+          "file": "server/test/nav-repo-eod.test.js",
+          "pattern": "跳过发布必须显式提交空发布清单"
+        },
+        {
+          "file": "server/test/nav-repo-eod.test.js",
+          "pattern": "业务日无效"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "local_verified"
+    },
+    {
+      "id": "JOB-READINESS-015",
+      "title": "正常跳过的阶段必须收尾为 skipped，不得记成 succeeded",
+      "implementation": {
+        "file": "server/services/jobOrchestrator.js",
+        "symbol": "skippedPhase"
+      },
+      "tests": [
+        {
+          "file": "server/test/job-readiness-wait.test.js",
+          "pattern": "休市阶段必须落为 skipped，不能记成 succeeded"
+        },
+        {
+          "file": "server/test/job-readiness-wait.test.js",
+          "pattern": "编排器收尾必须按跳过写 skipped"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "local_verified"
     }
   ]
 }

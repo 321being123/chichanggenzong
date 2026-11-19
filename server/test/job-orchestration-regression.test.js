@@ -65,7 +65,8 @@ assert(/function productionAlertsEnabled\(\)/.test(alertMailer + alertMailerSql)
 assert(/NODE_ENV: 'test'/.test(testRunner) && /ALERT_EMAIL_TO: ''/.test(testRunner), '完整测试入口必须清空真实告警收件人');
 assert(!/\['worker_offline', 'late', 'dependency_blocked'\]\.includes\(input\.alertType\)/.test(alertMailer + alertMailerSql), '持续异常不得绕过去重周期重复发信');
 assert(!/force:\s*true/.test(health), '健康检查不得强制重复发送逾期告警');
-assert(/attempt_count \|\| 0\) === 2/.test(orchestrator) && /retry-warning/.test(orchestrator), '任务连续第二次失败必须发送预警');
+assert(/const progress = retryProgressOf\(slot\)/.test(orchestrator) && /progress\.current === 2/.test(orchestrator)
+  && /retry-warning/.test(orchestrator), '任务连续第二次真实失败必须发送预警，等待上游恢复与续批不得计入');
 assert(/code === 'JOB_BUDGET_EXCEEDED' \|\| type === 'non_retryable'/.test(orchestrator), '任务批次预算边界不得进入自动重试');
 assert(/failure\.code === 'PERMISSION_DENIED'/.test(orchestrator)
   && /requiresManualAction: true/.test(orchestrator)
@@ -220,7 +221,8 @@ assert(/requiresDataWatermark: false/.test(definitions) && /getJobDefinition\(sl
 assert(/const lockKey = JOB_CODE/.test(read('server/jobs/arbitrageReparse.js')), '参数化重新解析任务必须按任务代码全局串行，避免多 Worker 将运行记录关联到错误计划实例');
 assert(/migration067JobRequestPayload/.test(migrations) && /request_payload JSONB NOT NULL DEFAULT '\{\}'::jsonb/.test(migrations), '人工参数化任务必须使用数据库字段持久化请求参数');
 assert(/pg_advisory_xact_lock\(hashtext\('manual_job:' \|\| \$1 \|\| ':' \|\| \$2\)\)/.test(slots)
-  && /COALESCE\(next_attempt_at,scheduled_for\) <= now\(\) AND attempt_count < \$2/.test(slots), '重复点击手动同步只能复用正在运行或当前可领取的实例，不能误复用未来计划或耗尽实例');
+  && (/COALESCE\(next_attempt_at,scheduled_for\) <= now\(\) AND fail_count < \$2/.test(slots)
+    || /COALESCE\(next_attempt_at,scheduled_for\) <= now\(\) AND \$\{retryCountSql\(\)\} < \$2/.test(slots)), '重复点击手动同步只能复用正在运行或当前可领取的实例，不能误复用未来计划或失败预算已耗尽的实例');
 assert(/DELETE FROM ops\.data_quality_issues q[\s\S]*q\.status='resolved'/.test(arbitrageParser)
   && /UPDATE ops\.data_quality_issues q[\s\S]*q\.status='open'/.test(arbitrageParser), '质量异常二次恢复必须先清理旧resolved再关闭当前open');
 assert(/sanitizeJobError\(err\.message \|\| err, 500\)/.test(arbitrageService)

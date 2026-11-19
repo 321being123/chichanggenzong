@@ -97,6 +97,10 @@ function waitReasonPolicy(reason, jobCode) {
   return { key, ...policy };
 }
 
+// 就绪等待的三种合法原因：数据集锁争用、等待发布、等待依赖分区。
+// 只用于校验摘要里的 waitKind，未知值一律按 null 处理，不猜。
+const READINESS_WAIT_KINDS = Object.freeze(['lock', 'publication', 'dependency']);
+
 // “有效等待”只由明确证据和未到期的复查时间构成：done 只表示本批结束，
 // attempt_count 只表示当前重试计数，二者都不能单独证明工作完成或任务漏跑。
 // 复查日期展示统一走上海业务日（businessDateText），不能用 toISOString().slice(0,10)。
@@ -112,6 +116,9 @@ function slotWaitingState(slot, now = new Date()) {
   const remaining = Number.isFinite(remainingValue) ? remainingValue : null;
   const waitReason = String(summary.waitReason || '').trim();
   const waitingExternal = (slot && slot.status === 'waiting_external') || summary.waitingExternal === true;
+  // 就绪等待（发布/锁/依赖）与外部保护等待分开：它不吃失败预算，也不参与
+  // “连续三次缺 recover_at 才阻塞”的规则，只按任务定义的检查点和硬截止推进。
+  const waitingReadiness = (slot && slot.status === 'waiting_readiness') || summary.waitingReadiness === true;
   const continuationRequired = summary.continuationRequired === true;
   const hasOutstanding = continuationRequired || pendingStages.length > 0 || (remaining || 0) > 0;
   const policy = waitReasonPolicy(waitReason, slot && slot.job_code);
@@ -129,15 +136,20 @@ function slotWaitingState(slot, now = new Date()) {
     .every(field => evidenceSource[field] != null && String(evidenceSource[field]).trim() !== '');
   const evidenceWait = Boolean(policy) && due && evidenceComplete && !policyExpired;
   const kind = !due ? null
-    : waitingExternal ? 'external'
-      : hasOutstanding ? (evidenceWait ? 'evidence_wait' : 'continuation')
-        : null;
+    : waitingReadiness ? 'readiness'
+      : waitingExternal ? 'external'
+        : hasOutstanding ? (evidenceWait ? 'evidence_wait' : 'continuation')
+          : null;
   const state = {
     waiting: Boolean(kind),
-    // exempt 才是“可以免于续批止损”的等待：外部来源等待和有证据的复查等待。
+    // exempt 才是“可以免于续批止损”的等待：外部来源等待、有证据的复查等待和就绪等待。
     // 普通续批（kind=continuation）仍属正常调度，不算漏跑，但必须受续批上限约束。
-    exempt: kind === 'external' || kind === 'evidence_wait',
+    exempt: kind === 'external' || kind === 'evidence_wait' || kind === 'readiness',
     kind: kind || null,
+    waitKind: waitingReadiness && READINESS_WAIT_KINDS.includes(String(summary.waitKind || ''))
+      ? String(summary.waitKind) : null,
+    readinessEscalateAt: waitingReadiness && summary.readinessEscalateAt ? summary.readinessEscalateAt : null,
+    readinessStopAt: waitingReadiness && summary.readinessStopAt ? summary.readinessStopAt : null,
     until: until ? until.toISOString() : null,
     untilDate: until ? businessDateText(until) : null,
     pendingStages,

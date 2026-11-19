@@ -345,11 +345,19 @@ async function recordResolutionFailure(error, context = {}) {
 
 function sanitizeAlertRecord(alert) {
   if (!alert) return null;
+  const groupItems = Array.isArray(alert.group_items)
+    ? alert.group_items.map(item => ({
+      ...item,
+      subject: sanitizeJobError(item.subject || '', 500),
+      summary: sanitizeJobError(item.summary || '', 4000),
+    }))
+    : alert.group_items;
   return {
     ...alert,
     subject: sanitizeJobError(alert.subject || '', 500),
     summary: sanitizeJobError(alert.summary || '', 4000),
     last_send_error: alert.last_send_error ? sanitizeJobError(alert.last_send_error, 1000) : null,
+    group_items: groupItems,
   };
 }
 

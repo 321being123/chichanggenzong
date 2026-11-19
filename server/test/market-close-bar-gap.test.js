@@ -38,22 +38,32 @@ datasets.readHistoricalCloseSeries = async ({ tsCode, kind } = {}) => {
 };
 
 // 分区发布替身：用开关注入"发布失败"，验证重跑是否补发布。
+// 收盘终盘走按品种原子合并的发布入口，两个入口都要能注入失败。
 const datasetPartitions = require('../services/datasetPartitions');
 const realPublishPartition = datasetPartitions.publishDatasetPartition;
+const realPublishCoverage = datasetPartitions.publishCoveragePartition;
 let publishFailure = null;
 datasetPartitions.publishDatasetPartition = async (...args) => {
   if (publishFailure) throw new Error(publishFailure);
   return realPublishPartition(...args);
 };
+datasetPartitions.publishCoveragePartition = async (...args) => {
+  if (publishFailure) throw new Error(publishFailure);
+  return realPublishCoverage(...args);
+};
 
 const { pool } = require('../db/connection');
 const repository = require('../repositories/marketCloseRepository');
 const marketClose = require('../jobs/marketClose');
+const { datasetDependencyState } = require('../services/jobScheduleSlots');
+const { getJobDefinition } = require('../services/jobDefinitions');
 
 let ACCOUNT_ID = null;
 const CODES = {
   gap: '689998', storeBroken: '689997', publishBroken: '689996', resolveBroken: '689995',
   crossStock: '689994', crossBond: '113994',
+  partialOne: '113991', partialTwo: '113992',
+  heldOnly: '113993', fund: '510300',
 };
 const tsCodeOf = code => `${code}.SH`;
 
@@ -143,6 +153,8 @@ async function resetScenario(code) {
 const runCloseFor = (label, code) => marketClose.runMarketCloseByLabel(label, DATE, {
   accounts: [{ username: USER, account_name: ACCOUNT }],
   quoteMap: new Map([[code, { code, price: PRICE, quote_time: `${DATE}T15:05:00+08:00` }]]),
+  // 收盘缺口场景需要稳定落在可转债首个就绪检查点之后，避免回归结果受本机实际时钟影响。
+  readinessNow: new Date(`${DATE}T18:00:00+08:00`),
 });
 
 const runClose = code => runCloseFor(JOB_LABEL, code);
@@ -395,6 +407,193 @@ async function scenarioCrossKindIsolation() {
   assert.strictEqual(marketClose.labelOwnsKind('A股', 'bond'), false, 'A 股任务不拥有可转债品种');
   assert.strictEqual(marketClose.labelOwnsKind('可转债', 'stock'), false);
   assert.strictEqual(marketClose.labelOwnsKind('非标准证券', 'stock'), false, '未登记品种范围的任务不重建缺口');
+
+  // 反例回归：共享 CN 分区已有 A 股终盘行时，不能把它当成可转债覆盖并唤醒转债槽。
+  await ensureInstrument(CODES.crossStock);
+  const stockComplete = await runCloseFor(JOB_LABEL, CODES.crossStock);
+  assert.strictEqual(stockComplete.ok, true, '股票终盘证据准备必须成功');
+  const wrongKindPublish = await marketClose.publishCloseBarPartition('CN', DATE, '可转债', [{ username: USER }]);
+  assert.strictEqual(wrongKindPublish.rowCount, 0, '可转债发布只统计可转债终盘行');
+  const { rows: partitionDiagnostics } = await pool.query(
+    `SELECT diagnostics FROM ops.dataset_partitions WHERE dataset_code='position_close_bars_cn' AND scope_key='CN' AND partition_key=$1::date`,
+    [DATE],
+  );
+  const coverageKinds = partitionDiagnostics[0] && partitionDiagnostics[0].diagnostics && partitionDiagnostics[0].diagnostics.coverage_kinds;
+  assert.deepStrictEqual(coverageKinds, ['stock'], '股票分区不得写入 bond 覆盖标记');
+}
+
+// ---------- E. 部分覆盖不得把整类分区判成质量通过（2026-11-19 复验 P1） ----------
+// 复现：两只可转债都有已确认账户日价，只有一只的终盘日线落库。
+// 旧实现只拦 rowCount<=0，于是分区 quality_status=passed、调度重验直接判整类就绪。
+async function scenarioPartialCoverage() {
+  // 缺口按「任务标签 + 交易日」整批重试，上一个场景留下的证券缺口也会被拉进来，
+  // 必须先清掉，否则本次运行会去补不属于本场景的证券。
+  for (const code of [CODES.crossBond, CODES.crossStock]) await cleanupCode(code);
+  await resetScenarioWithPositions([
+    { code: CODES.partialOne, subtype: '沪市' },
+    { code: CODES.partialTwo, subtype: '沪市' },
+  ]);
+  // 只给第一只建主档：第二只的终盘日线一定写不进去（instrument_or_source_not_found）。
+  await ensureInstrument(CODES.partialOne);
+  const quote = code => ({ code, price: PRICE, quote_time: `${DATE}T15:05:00+08:00` });
+  const partialRun = await marketClose.runMarketCloseByLabel('可转债', DATE, {
+    accounts: [{ username: USER, account_name: ACCOUNT }],
+    quoteMap: new Map([[CODES.partialOne, quote(CODES.partialOne)], [CODES.partialTwo, quote(CODES.partialTwo)]]),
+    readinessNow: new Date(`${DATE}T18:00:00+08:00`),
+  });
+  assert.strictEqual(partialRun.ok, false, '部分证券缺终盘日线时任务必须报未完成');
+  const secondPrice = await accountPrice(CODES.partialTwo);
+  assert.ok(secondPrice && secondPrice.quality === 'confirmed', '第二只账户日价应已确认，差值只能体现在共享日线覆盖上');
+  const published = await marketClose.publishCloseBarPartition('CN', DATE, '可转债', [{ username: USER }]);
+  assert.strictEqual(published.coverage.status, 'partial',
+    '部分覆盖必须判成 partial：' + JSON.stringify(published.coverage));
+  assert.strictEqual(published.coverage.expected, 2, '目标证券来自两只已确认账户日价的转债');
+  assert.strictEqual(published.coverage.covered, 1, '只有一只有合格终盘日线');
+  assert.strictEqual(published.qualityStatus, 'failed', '部分覆盖不得标成质量通过');
+  const { rows } = await pool.query(
+    `SELECT diagnostics FROM ops.dataset_partitions
+      WHERE dataset_code='position_close_bars_cn' AND scope_key='CN' AND partition_key=$1::date`,
+    [DATE],
+  );
+  const diagnostics = rows[0] && rows[0].diagnostics;
+  assert.strictEqual(diagnostics.quality_status, 'failed', '分区质量必须反映覆盖缺口，调度重验才不会被误判为就绪');
+  assert.strictEqual(diagnostics.coverage_status, 'partial');
+  assert.strictEqual(Number(diagnostics.expected_count), 2);
+  assert.strictEqual(Number(diagnostics.covered_count), 1);
+
+  // 补齐第二只后再次发布：覆盖完整才允许 passed。
+  await ensureInstrument(CODES.partialTwo);
+  const completed = await marketClose.runMarketCloseByLabel('可转债', DATE, {
+    accounts: [{ username: USER, account_name: ACCOUNT }],
+    quoteMap: new Map([[CODES.partialOne, quote(CODES.partialOne)], [CODES.partialTwo, quote(CODES.partialTwo)]]),
+    readinessNow: new Date(`${DATE}T18:00:00+08:00`),
+  });
+  assert.strictEqual(completed.ok, true, '补齐后任务必须成功：' + JSON.stringify(completed));
+  const republished = await marketClose.publishCloseBarPartition('CN', DATE, '可转债', [{ username: USER }]);
+  assert.strictEqual(republished.coverage.status, 'complete', '覆盖齐全后必须判 complete');
+  assert.strictEqual(republished.qualityStatus, 'passed');
+  assert.strictEqual((await partitionRow()).status, 'published');
+}
+
+// ---------- F. 共享 CN 分区的品种覆盖不得互相顶替（2026-11-19 复验 P1） ----------
+// 复现：两只转债一只缺终盘 → 转债部分覆盖；同日基金任务完整发布后，
+// 旧实现用最后一次发布的质量覆盖整行，转债在零新增记录下变成"已就绪"。
+// 同时验证覆盖分母包含持仓：只有持仓、没有账户日价的证券也必须计入。
+async function scenarioCrossKindCoverage() {
+  for (const code of [CODES.heldOnly, CODES.fund]) await cleanupCode(code);
+  await resetScenarioWithPositions([
+    { code: CODES.partialOne, subtype: '沪市' },
+    { code: CODES.partialTwo, subtype: '沪市' },
+  ]);
+  await ensureInstrument(CODES.partialOne);
+  const quote = code => ({ code, price: PRICE, quote_time: `${DATE}T15:05:00+08:00` });
+  const bondRun = await marketClose.runMarketCloseByLabel('可转债', DATE, {
+    accounts: [{ username: USER, account_name: ACCOUNT }],
+    quoteMap: new Map([[CODES.partialOne, quote(CODES.partialOne)], [CODES.partialTwo, quote(CODES.partialTwo)]]),
+    readinessNow: new Date(`${DATE}T18:00:00+08:00`),
+  });
+  assert.strictEqual(bondRun.ok, false, '转债缺终盘时必须报未完成');
+
+  // 只有持仓、既无账户日价也无终盘日线的转债：必须进入覆盖分母。
+  await pool.query(
+    `INSERT INTO positions (id, username, account_name, account_id, code, name, price, quantity, cost, type, subtype)
+     VALUES ($1,$2,$3,$4,$5,$6,0,100,5,'股权','沪市')`,
+    [crypto.randomUUID(), USER, ACCOUNT, ACCOUNT_ID, CODES.heldOnly, '仅持仓测试转债'],
+  );
+  const withHeld = await marketClose.publishCloseBarPartition('CN', DATE, '可转债', [{ username: USER }]);
+  assert.strictEqual(withHeld.coverage.expected, 3, '覆盖分母必须包含持仓证券，不能只看已确认日价');
+  assert.strictEqual(withHeld.coverage.covered, 1, '只有一只有合格终盘日线');
+  assert.strictEqual(withHeld.qualityStatus, 'failed');
+
+  // 同日基金任务完整发布：转债的未就绪结论不得被覆盖。
+  await pool.query(
+    `INSERT INTO positions (id, username, account_name, account_id, code, name, price, quantity, cost, type, subtype)
+     VALUES ($1,$2,$3,$4,$5,$6,0,100,5,'基金','沪市')`,
+    [crypto.randomUUID(), USER, ACCOUNT, ACCOUNT_ID, CODES.fund, '基金测试证券'],
+  );
+  await ensureInstrument(CODES.fund);
+  const fundRun = await marketClose.runMarketCloseByLabel('LOF/ETF', DATE, {
+    accounts: [{ username: USER, account_name: ACCOUNT }],
+    quoteMap: new Map([[CODES.fund, quote(CODES.fund)]]),
+    readinessNow: new Date(`${DATE}T18:00:00+08:00`),
+  });
+  assert.strictEqual(fundRun.ok, true, '基金终盘完整时任务必须成功：' + JSON.stringify(fundRun));
+  const fundPublish = await marketClose.publishCloseBarPartition('CN', DATE, 'LOF/ETF', [{ username: USER }]);
+  assert.strictEqual(fundPublish.coverage.status, 'complete', '基金自身覆盖完整');
+  assert.strictEqual(fundPublish.qualityStatus, 'failed', '整行质量取最差品种：基金补齐不得把转债的 partial 冲掉');
+
+  const { rows } = await pool.query(
+    `SELECT diagnostics FROM ops.dataset_partitions
+      WHERE dataset_code='position_close_bars_cn' AND scope_key='CN' AND partition_key=$1::date`,
+    [DATE],
+  );
+  const diagnostics = rows[0] && rows[0].diagnostics;
+  const byKind = diagnostics.coverage_by_kind || {};
+  assert.strictEqual(byKind.bond && byKind.bond.status, 'partial', '转债品种结论必须保留');
+  assert.strictEqual(byKind.fund && byKind.fund.status, 'complete', '基金品种结论单独记录');
+  assert.deepStrictEqual(diagnostics.coverage_kinds.slice().sort(), ['bond', 'fund']);
+  assert.strictEqual(diagnostics.quality_status, 'failed', '任一品种未补齐时整行不得为 passed');
+
+  // 调度重验：转债仍不 ready、基金 ready，两条结论互不顶替。
+  const bondState = await datasetDependencyState(
+    { slot_id: 1, job_code: 'market_close:可转债', business_date: DATE, request_payload: {} },
+    getJobDefinition('market_close:可转债'), { readiness: true },
+  );
+  assert.strictEqual(bondState.ready, false, '同分区基金已就绪不得让转债判成就绪');
+  assert.ok((bondState.observations || []).some(item => item && item.error === 'partition_coverage_partial'),
+    '转债必须留下部分覆盖的未就绪观测');
+  const fundState = await datasetDependencyState(
+    { slot_id: 2, job_code: 'market_close:LOF/ETF', business_date: DATE, request_payload: {} },
+    getJobDefinition('market_close:LOF/ETF'), { readiness: true },
+  );
+  assert.strictEqual(fundState.ready, true, '基金覆盖完整时必须判就绪');
+}
+
+// ---------- G. 并发发布必须原子合并品种结论（2026-11-19 第三轮复验 P1） ----------
+// 复现：转债与基金同时读到旧分区，转债写 partial 后基金用读到的旧值整体写回，
+// 转债结论被冲掉、调度重验误判 ready。合并必须发生在数据库端（单条 UPDATE 内）。
+async function scenarioConcurrentCoverageMerge() {
+  const { publishCoveragePartition } = require('../services/datasetPartitions');
+  // 发布路径不得再"先读旧分区再整体写回"：读改写正是并发丢更新的来源。
+  const source = require('fs').readFileSync(require('path').join(__dirname, '../jobs/marketClose.js'), 'utf8');
+  assert.ok(!/select_position_close_partition/.test(source),
+    '品种覆盖不得在任务侧读改写，必须交给数据库端原子合并');
+  await pool.query(
+    `DELETE FROM ops.dataset_partitions
+      WHERE dataset_code='position_close_bars_cn' AND scope_key='CN' AND partition_key=$1::date`,
+    [DATE],
+  );
+  for (let round = 0; round < 5; round += 1) {
+    await Promise.all([
+      publishCoveragePartition('position_close_bars_cn', 'CN', {
+        partitionKey: DATE, rowCount: 1, coverageKind: 'bond',
+        coverage: { expected: 2, covered: 1, status: 'partial' },
+        diagnostics: { query_status: 'success', reason: 'test:concurrent' },
+      }),
+      publishCoveragePartition('position_close_bars_cn', 'CN', {
+        partitionKey: DATE, rowCount: 1, coverageKind: 'fund',
+        coverage: { expected: 1, covered: 1, status: 'complete' },
+        diagnostics: { query_status: 'success', reason: 'test:concurrent' },
+      }),
+    ]);
+    const { rows } = await pool.query(
+      `SELECT diagnostics FROM ops.dataset_partitions
+        WHERE dataset_code='position_close_bars_cn' AND scope_key='CN' AND partition_key=$1::date`,
+      [DATE],
+    );
+    const diagnostics = rows[0] && rows[0].diagnostics;
+    assert.strictEqual(diagnostics.coverage_by_kind.bond.status, 'partial',
+      `第 ${round + 1} 轮并发后转债结论不得被基金覆盖`);
+    assert.strictEqual(diagnostics.coverage_by_kind.fund.status, 'complete',
+      `第 ${round + 1} 轮并发后基金结论不得丢失`);
+    assert.strictEqual(diagnostics.quality_status, 'failed', '并发合并后整行仍取最差品种');
+    assert.deepStrictEqual(diagnostics.coverage_kinds.slice().sort(), ['bond', 'fund']);
+  }
+  const bondState = await datasetDependencyState(
+    { slot_id: 3, job_code: 'market_close:可转债', business_date: DATE, request_payload: {} },
+    getJobDefinition('market_close:可转债'), { readiness: true },
+  );
+  assert.strictEqual(bondState.ready, false, '并发写入后转债仍必须判为未就绪');
 }
 
 async function main() {
@@ -406,8 +605,11 @@ async function main() {
   await scenarioPublishRetry();
   await scenarioResolveFailureRecovery();
   await scenarioCrossKindIsolation();
+  await scenarioPartialCoverage();
+  await scenarioCrossKindCoverage();
+  await scenarioConcurrentCoverageMerge();
 
-  console.log('收盘任务连续重跑回归通过：缺口落库、缺口表异常不误报成功、重跑继续核验与补发布、已发布日线也销账、跨品种不串扰');
+  console.log('收盘任务连续重跑回归通过：缺口落库、缺口表异常不误报成功、重跑继续核验与补发布、已发布日线也销账、跨品种不串扰、部分覆盖不判整类通过、共享分区按品种保留覆盖结论、并发发布原子合并');
 }
 
 main()

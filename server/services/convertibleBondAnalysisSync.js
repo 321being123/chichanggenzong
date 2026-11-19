@@ -1130,9 +1130,13 @@ async function syncConvertibleBondUniverseWithBackfill(reason = 'scheduled', bac
   // 子阶段续跑只执行已经失败的市场阶段，不为未尝试数据集制造失败。
   if(backfillOpts.failedDatasets?.length || backfillOpts.pendingStages?.length) return {...result,mode:'market_repair',publishDatasetCodes:['bond_master','bond_daily','stock_daily','stock_valuation','stock_adj_factor','stock_suspend_calendar'],stageComplete:result.ok===true&&!result.continuationRequired};
   const repo=await require('./repoDailyRates').syncRepoDailyRates({targetDate}).catch(e=>({ok:false,error:e.message,failedDatasets:['repo_daily_rates']}));
-  return {...result,mode:backfillOpts.mode==='shared_eod'?'shared_eod':'core',stageComplete:result.ok===true&&repo.ok&&!result.continuationRequired,repoDailyRates:repo,ok:result.ok!==false&&repo.ok,status:result.ok!==false&&repo.ok&&!result.continuationRequired?'succeeded':'partial',
+  // repo_daily_rates 由利率服务自己发布（事实齐且分区合格时零写入），
+  // 不能交回通用发布器再写一次：那会刷新 published_at 并把 source_id 覆盖成 NULL。
+  return {...result,mode:backfillOpts.mode==='shared_eod'?'shared_eod':'core',
+    publishDatasetCodes:['bond_master','bond_daily','stock_daily','stock_valuation','stock_adj_factor','stock_suspend_calendar'],
+    stageComplete:result.ok===true&&repo.ok&&!result.continuationRequired,repoDailyRates:repo,ok:result.ok!==false&&repo.ok,status:result.ok!==false&&repo.ok&&!result.continuationRequired?'succeeded':'partial',
     failedDatasets:[...new Set([...(result.failedDatasets||[]),...(repo.failedDatasets||[])])],
-    datasetDiagnostics:{...result.datasetDiagnostics,repo_daily_rates:{publish:false,quality_status:repo.ok?'passed':'failed'}},
+    datasetDiagnostics:{...result.datasetDiagnostics},
     ...(repo.ok?{}:{error:repo.error||'回购每日利率未完整发布',errorCode:'DATASET_INCOMPLETE',errorType:'data_quality'})};
 }
 

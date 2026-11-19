@@ -15,6 +15,7 @@ const DEFAULT_JOB_OPTIONS = {
   producesDatasets: [],
   consumesDatasets: [],
   datasetDependencies: [],
+  readinessDatasetDependencies: [],
   maxExternalCallsPerRun: 0,
   // 槽位调用量只做审计；未知的累计调用上限保持 0，续批由任务超时、最长续跑时间和无进展保护停止。
   slotExternalCallsLimit: 0,
@@ -29,6 +30,13 @@ const DEFAULT_JOB_OPTIONS = {
   // 依赖收盘后才产生的数据（盘后公告、当日完整行情）的任务应设为 true，否则周末与
   // 节假日前一天收盘后的数据要等到下一个交易日才同步。
   afterTradingDay: false,
+  // 就绪等待（方案 2026-11-18 P0）：本业务日的复查时刻、静默等待升级为告警的时刻、
+  // 以及自动续跑硬截止。三者都按北京时间的 'HH:MM' 声明，由调度按业务日换算成绝对时刻，
+  // 页面与 Runner 不得另写常量。未声明即沿用既有 blocked/失败合同，不切换到
+  // waiting_readiness；这三个值是试行安排，不是供应商承诺的发布时间。
+  readinessCheckpoints: null,
+  readinessEscalateAt: null,
+  readinessStopAt: null,
 };
 
 const JOB_DEFINITION_SOURCE = [
@@ -48,13 +56,14 @@ const JOB_DEFINITION_SOURCE = [
     manualTargetScope: 'stock_analysis模式仅对request_payload.targetCodes指定的一只普通A股补齐完整历史财报、分红与公告并重算快照，不发布全市场分区；selection_inputs模式按market与targetTradeDate冻结选股输入缺口，复用既有财务/分红/行业采集入口与标准层写入，港股另补成分、日线和估值，剩余对象持久化续跑，不发布全市场财务分区', sourceDescription: '日常当前上市可转债正股；手动股票分析按明确指定单股采集财报入标准层；选股输入补齐以理杏仁官方为主源，分红与A股行业可回退Tushare、港股日线可回退腾讯，均经既有数据访问层入口', mayConsumeQuota: true, externalSources: ['lixinger_official', 'tushare', 'tencent', 'sse', 'szse', 'cninfo'], retryPolicy: 'external', retryDelaysMinutes: [15, 60, 240], maxAttempts: 4 },
   { jobCode: 'bond_safety_refresh', label: '可转债安全评分', hour: 8, minute: 30, weekdays: true, afterTradingDay: true, deadlineMinutes: 120, dataDatePolicy: 'previous_trading_day', freshnessGate: true, strictDatasetPublication: true, dependencyCodes: ['convertible_bond_universe_refresh'], sourceDescription: '已发布的共享标准行情与财务标准层；本地计算', mayConsumeQuota: false, externalSources: [], retryPolicy: 'local', retryDelaysMinutes: [15, 60, 240], maxAttempts: 4 },
   { jobCode: 'market_close:A股', label: 'A股收盘数据', hour: 15, minute: 10, weekdays: true, deadlineMinutes: 90, dataDatePolicy: 'same_day', freshnessGate: true, sourceDescription: '腾讯实时报价做收盘准入；终盘核验读已发布的不复权日线（理杏仁官方 ex_rights 优先，缺覆盖按 Tushare daily 同口径补齐），同一证券当日只取一次', mayConsumeQuota: true, externalSources: ['tencent', 'lixinger_official', 'tushare'], retryPolicy: 'external', retryDelaysMinutes: [15, 60], maxAttempts: 3 },
-  { jobCode: 'market_close:可转债', label: '可转债收盘数据', hour: 15, minute: 10, weekdays: true, deadlineMinutes: 90, dataDatePolicy: 'same_day', freshnessGate: true, sourceDescription: '腾讯实时报价做收盘准入；终盘核验读不复权可转债日线（Tushare cb_daily），同一证券当日只取一次', mayConsumeQuota: true, externalSources: ['tencent', 'tushare'], retryPolicy: 'external', retryDelaysMinutes: [15, 60], maxAttempts: 3 },
-  { jobCode: 'market_close:LOF/ETF', label: 'LOF/ETF收盘数据', hour: 15, minute: 10, weekdays: true, deadlineMinutes: 90, dataDatePolicy: 'same_day', freshnessGate: true, sourceDescription: '腾讯实时报价做收盘准入；终盘核验读不复权基金日线（Tushare fund_daily），同一证券当日只取一次', mayConsumeQuota: true, externalSources: ['tencent', 'tushare'], retryPolicy: 'external', retryDelaysMinutes: [15, 60], maxAttempts: 3 },
+  // 试点等待复查盯的是本任务实际写入的终盘证据分区；缺失时记录逐项观测，分区出现后由同一 sweep 唤醒原槽。
+  { jobCode: 'market_close:可转债', label: '可转债收盘数据', hour: 15, minute: 10, weekdays: true, deadlineMinutes: 90, dataDatePolicy: 'same_day', freshnessGate: true, readinessCheckpoints: ['17:15', '17:45', '18:15'], readinessEscalateAt: '18:30', readinessStopAt: '19:30', readinessDatasetDependencies: [{ datasetCode: 'position_close_bars_cn', scopeKey: 'CN', partitionDatePolicy: 'business_date', requireQualityStatus: 'passed', coverageKind: 'bond' }], sourceDescription: '腾讯实时报价做收盘准入；终盘核验读不复权可转债日线（Tushare cb_daily），同一证券当日只取一次', mayConsumeQuota: true, externalSources: ['tencent', 'tushare'], retryPolicy: 'external', retryDelaysMinutes: [15, 60], maxAttempts: 3 },
+  { jobCode: 'market_close:LOF/ETF', label: 'LOF/ETF收盘数据', hour: 15, minute: 10, weekdays: true, deadlineMinutes: 90, dataDatePolicy: 'same_day', freshnessGate: true, readinessCheckpoints: ['17:30', '18:00', '18:30'], readinessEscalateAt: '19:00', readinessStopAt: '20:00', readinessDatasetDependencies: [{ datasetCode: 'position_close_bars_cn', scopeKey: 'CN', partitionDatePolicy: 'business_date', requireQualityStatus: 'passed', coverageKind: 'fund' }], sourceDescription: '腾讯实时报价做收盘准入；终盘核验读不复权基金日线（Tushare fund_daily），同一证券当日只取一次', mayConsumeQuota: true, externalSources: ['tencent', 'tushare'], retryPolicy: 'external', retryDelaysMinutes: [15, 60], maxAttempts: 3 },
   { jobCode: 'hk_rate', label: '港币汇率更新', hour: 16, minute: 15, weekdays: false, marketCalendarPolicy: 'hk-rate', deadlineMinutes: 90, dataDatePolicy: 'latest_available', freshnessGate: false, freshnessMode: 'max_age', freshnessMaxAgeMinutes: 1440, sourceDescription: '港股收市报价到达后采集最终汇率；A股单开市日沿用16:15', mayConsumeQuota: true, externalSources: ['exchange-rate'], retryPolicy: 'external', retryDelaysMinutes: [15, 60], maxAttempts: 3 },
-  { jobCode: 'market_close:港股', label: '港股收盘数据', hour: 16, minute: 30, weekdays: false, marketCalendarPolicy: 'hk-close', deadlineMinutes: 120, dataDatePolicy: 'same_day', freshnessGate: true, sourceDescription: '港股收市时刻后20分钟的腾讯实时报价做收盘准入；终盘核验读不复权港股日线（腾讯 day 日K，官方 ex_rights 优先），同一证券当日只取一次', mayConsumeQuota: true, externalSources: ['tencent', 'lixinger_official'], retryPolicy: 'external', retryDelaysMinutes: [15, 60], maxAttempts: 3 },
-  { jobCode: 'nav_snapshot', label: '净值快照', hour: 16, minute: 20, weekdays: false, marketCalendarPolicy: 'nav-snapshot', deadlineMinutes: 120, dataDatePolicy: 'same_day', freshnessGate: false, retryPolicy: 'local' },
+  { jobCode: 'market_close:港股', label: '港股收盘数据', hour: 16, minute: 30, weekdays: false, marketCalendarPolicy: 'hk-close', deadlineMinutes: 120, dataDatePolicy: 'same_day', freshnessGate: true, readinessCheckpoints: ['17:00', '17:30'], readinessEscalateAt: '18:00', readinessStopAt: '19:30', readinessDatasetDependencies: [{ datasetCode: 'position_close_bars_hk', scopeKey: 'HK', partitionDatePolicy: 'business_date', requireQualityStatus: 'passed', coverageKind: 'hk_stock' }], sourceDescription: '港股收市时刻后20分钟的腾讯实时报价做收盘准入；终盘核验读不复权港股日线（腾讯 day 日K，官方 ex_rights 优先），同一证券当日只取一次', mayConsumeQuota: true, externalSources: ['tencent', 'lixinger_official'], retryPolicy: 'external', retryDelaysMinutes: [15, 60], maxAttempts: 3 },
+  { jobCode: 'nav_snapshot', label: '净值快照', hour: 16, minute: 20, weekdays: false, marketCalendarPolicy: 'nav-snapshot', deadlineMinutes: 120, dataDatePolicy: 'same_day', freshnessGate: false, retryPolicy: 'local', readinessCheckpoints: ['18:30'], readinessEscalateAt: '19:00', readinessStopAt: '20:00', readinessDatasetDependencies: [{ datasetCode: 'repo_daily_rates', scopeKey: 'CN', partitionDatePolicy: 'business_date', requireQualityStatus: 'passed' }], sourceDescription: '收盘净值按目标日补缺口；逆回购利率未发布时只在 18:30 检查点后请求同日缺口，由统一就绪重验按 repo_daily_rates 分区唤醒' },
   { jobCode: 'index_recent', label: '指数每日补齐', hour: 16, minute: 20, weekdays: true, deadlineMinutes: 120, dataDatePolicy: 'previous_trading_day', freshnessGate: true, sourceDescription: 'Tushare 指数接口', mayConsumeQuota: true, externalSources: ['tushare'], retryPolicy: 'external', retryDelaysMinutes: [15, 60], maxAttempts: 3 },
-  { jobCode: 'ipo_calendar_refresh', label: '打新日历与日报', hour: 18, minute: 5, additionalSchedules: [{ hour: 19, minute: 45, mode: 'enrichment', weekdays: true }], weekdays: true, deadlineMinutes: 240, catchupWindowMinutes: 4200, catchupMode: 'latest_only', dataDatePolicy: 'latest_available', freshnessGate: true, requiresDataWatermark: false, importance: 'high', datasetDependencies: [{ datasetCode: 'ipo_history', scopeKey: 'GLOBAL', partitionDatePolicy: 'business_date', requireQualityStatus: 'passed' }, { datasetCode: 'bond_issuance_events', scopeKey: 'CN', partitionDatePolicy: 'business_date', requireQualityStatus: 'passed' }, { datasetCode: 'bond_listing_liquidity', scopeKey: 'CN', partitionDatePolicy: 'business_date', requireQualityStatus: 'passed' }], sourceDescription: '读取16:30上市前预测缺口检查后已发布的新股事实与17:30已核验的可转债流通规模事实生成日报；19:45再刷新同一基础分区对应的日报', retryPolicy: 'local' },
+  { jobCode: 'ipo_calendar_refresh', label: '打新日历与日报', hour: 18, minute: 5, additionalSchedules: [{ hour: 19, minute: 45, mode: 'enrichment', weekdays: true }], weekdays: true, deadlineMinutes: 240, catchupWindowMinutes: 4200, catchupMode: 'latest_only', dataDatePolicy: 'latest_available', freshnessGate: true, readinessCheckpoints: ['18:30', '19:45'], readinessEscalateAt: '20:00', readinessStopAt: '22:00', requiresDataWatermark: false, importance: 'high', datasetDependencies: [{ datasetCode: 'ipo_history', scopeKey: 'GLOBAL', partitionDatePolicy: 'business_date', requireQualityStatus: 'passed' }, { datasetCode: 'bond_issuance_events', scopeKey: 'CN', partitionDatePolicy: 'business_date', requireQualityStatus: 'passed' }, { datasetCode: 'bond_listing_liquidity', scopeKey: 'CN', partitionDatePolicy: 'business_date', requireQualityStatus: 'passed' }], sourceDescription: '读取16:30上市前预测缺口检查后已发布的新股事实与17:30已核验的可转债流通规模事实生成日报；19:45再刷新同一基础分区对应的日报', retryPolicy: 'local' },
   { jobCode: 'convertible_bond_universe_refresh', label: '可转债行情同步（共享收盘采集）', hour: 8, minute: 0, weekdays: true, afterTradingDay: true, catchupMode: 'latest_only', dataDatePolicy: 'previous_trading_day', freshnessGate: true, strictDatasetPublication: true, datasetFailureThreshold: 3, sourceDescription: '腾讯行情与 Tushare 接口；同时发布股票日行情、估值、复权因子和停牌分区', mayConsumeQuota: true, externalSources: ['tencent', 'tushare'], retryPolicy: 'external', retryDelaysMinutes: [15, 60, 240], maxAttempts: 4, collectorRole: 'shared_cn_market_eod' },
   { jobCode: 'convertible_bond_revision_motive_inputs_sync', label: '下修动机输入增量同步', hour: 7, minute: 20, weekdays: true, afterTradingDay: true, catchupMode: 'latest_only', catchupWindowMinutes: 4320, dataDatePolicy: 'latest_available', freshnessGate: false, requiresDataWatermark: false, sourceDescription: 'Tushare 持有人与质押接口，结果写入事实库', mayConsumeQuota: true, externalSources: ['tushare'], retryPolicy: 'external', retryDelaysMinutes: [15, 60, 240], maxAttempts: 4 },
   { jobCode: 'convertible_bond_revision_motive_calculate', label: '下修动机评分计算', manualOnly: true, requiresDataWatermark: false, sourceDescription: '已入库下修、行情、财务、持有人和质押事实，数据库本地计算' },
@@ -107,17 +116,17 @@ const JOB_CONTRACTS = {
   // 安全评分只读取共享收盘批次与财务标准层；外部同步由 universe/financial 任务负责。
   'bond_safety_refresh': { externalApis: [], producesDatasets: ['bond_safety_snapshot'], consumesDatasets: ['bond_master', 'stock_daily', 'stock_valuation', 'stock_financial_reports'], maxExternalCallsPerRun: 0 },
   'market_close:A股': { externalApis: ['tencent_quote', 'daily', 'cn/company/candlestick'], producesDatasets: ['account_daily_prices', 'position_close_bars_cn'], consumesDatasets: ['account_positions', 'stock_daily'], maxExternalCallsPerRun: null },
-  'market_close:可转债': { externalApis: ['tencent_quote', 'cb_daily'], producesDatasets: ['account_daily_prices', 'position_close_bars_cn'], consumesDatasets: ['account_positions', 'stock_daily'], maxExternalCallsPerRun: null },
-  'market_close:LOF/ETF': { externalApis: ['tencent_quote', 'fund_daily', 'cn/fund/candlestick'], producesDatasets: ['account_daily_prices', 'position_close_bars_cn'], consumesDatasets: ['account_positions', 'stock_daily'], maxExternalCallsPerRun: null },
+  'market_close:可转债': { externalApis: ['tencent_quote', 'cb_daily'], producesDatasets: ['account_daily_prices', 'position_close_bars_cn'], consumesDatasets: ['account_positions', 'stock_daily', 'position_close_bars_cn'], readinessDatasetDependencies: [{ datasetCode: 'position_close_bars_cn', scopeKey: 'CN', partitionDatePolicy: 'business_date', requireQualityStatus: 'passed', coverageKind: 'bond' }], maxExternalCallsPerRun: null },
+  'market_close:LOF/ETF': { externalApis: ['tencent_quote', 'fund_daily', 'cn/fund/candlestick'], producesDatasets: ['account_daily_prices', 'position_close_bars_cn'], consumesDatasets: ['account_positions', 'stock_daily', 'position_close_bars_cn'], readinessDatasetDependencies: [{ datasetCode: 'position_close_bars_cn', scopeKey: 'CN', partitionDatePolicy: 'business_date', requireQualityStatus: 'passed', coverageKind: 'fund' }], maxExternalCallsPerRun: null },
   'hk_rate': { externalApis: ['exchange_rate_realtime', 'exchange_rate'], producesDatasets: ['hk_fx_rate'], consumesDatasets: [], maxExternalCallsPerRun: null },
-  'market_close:港股': { externalApis: ['tencent_quote', 'hk/company/candlestick'], producesDatasets: ['account_daily_prices', 'position_close_bars_hk'], consumesDatasets: ['account_positions'], maxExternalCallsPerRun: null },
-  'nav_snapshot': { externalApis: ['repo_daily'], producesDatasets: ['nav_snapshot','account_cash_income','repo_daily_rates'], consumesDatasets: ['account_daily_prices'], maxExternalCallsPerRun: null,modeExternalCallLimits:{cash_income:0},
+  'market_close:港股': { externalApis: ['tencent_quote', 'hk/company/candlestick'], producesDatasets: ['account_daily_prices', 'position_close_bars_hk'], consumesDatasets: ['account_positions', 'position_close_bars_hk'], readinessDatasetDependencies: [{ datasetCode: 'position_close_bars_hk', scopeKey: 'HK', partitionDatePolicy: 'business_date', requireQualityStatus: 'passed', coverageKind: 'hk_stock' }], maxExternalCallsPerRun: null },
+  'nav_snapshot': { externalApis: ['repo_daily'], producesDatasets: ['nav_snapshot','account_cash_income','repo_daily_rates'], consumesDatasets: ['account_daily_prices','repo_daily_rates'], readinessDatasetDependencies: [{ datasetCode: 'repo_daily_rates', scopeKey: 'CN', partitionDatePolicy: 'business_date', requireQualityStatus: 'passed' }], maxExternalCallsPerRun: null,modeExternalCallLimits:{cash_income:0},
     datasetPublicationByMode:{core:{publish:['nav_snapshot'],optionalPublish:['repo_daily_rates'],completionConditions:['按fromDate至businessDate核验；日任务默认单日，历史补算保留原指定范围及区间内缺口']},cash_income:{publish:['account_cash_income'],requireStageComplete:true}} },
   'index_recent': { externalApis: ['index_daily'], producesDatasets: ['index_daily'], consumesDatasets: [], maxExternalCallsPerRun: null },
   'ipo_calendar_refresh': { externalApis: [], producesDatasets: ['ipo_calendar'], consumesDatasets: ['ipo_history', 'trade_calendar', 'bond_issuance_events', 'bond_listing_liquidity'], maxExternalCallsPerRun: 0 },
   'convertible_bond_universe_refresh': { externalApis: ['cb_basic', 'stock_basic', 'cb_daily', 'daily', 'daily_basic', 'adj_factor', 'suspend_d', 'tencent_quote','repo_daily'], producesDatasets: ['bond_master', 'bond_daily', 'stock_daily', 'stock_valuation', 'stock_adj_factor', 'stock_suspend_calendar','repo_daily_rates'], consumesDatasets: [], maxExternalCallsPerRun: null,
-    datasetPublicationByMode:{core:{publish:['bond_master','bond_daily','stock_daily','stock_valuation','stock_adj_factor','stock_suspend_calendar','repo_daily_rates'],requireStageComplete:true},repo_daily:{publish:['repo_daily_rates'],requirePublished:['repo_daily_rates'],requireStageComplete:true},
-      shared_eod:{publish:['bond_master','bond_daily','stock_daily','stock_valuation','stock_adj_factor','stock_suspend_calendar','repo_daily_rates'],requireStageComplete:true},
+    datasetPublicationByMode:{core:{publish:['bond_master','bond_daily','stock_daily','stock_valuation','stock_adj_factor','stock_suspend_calendar'],optionalPublish:['repo_daily_rates'],requireStageComplete:true},repo_daily:{publish:['repo_daily_rates'],requirePublished:['repo_daily_rates'],requireStageComplete:true},
+      shared_eod:{publish:['bond_master','bond_daily','stock_daily','stock_valuation','stock_adj_factor','stock_suspend_calendar'],optionalPublish:['repo_daily_rates'],requireStageComplete:true},
       market_repair:{publish:['bond_master','bond_daily','stock_daily','stock_valuation','stock_adj_factor','stock_suspend_calendar'],requireStageComplete:true},
       stock_lifecycle:{publish:[],requirePublished:[],requireStageComplete:true,requiresDataWatermark:false}} },
   // 候选规模随上市转债变化，不能编造固定调用数；完整遍历由接口官方频率、任务超时和失败分类保护。
@@ -175,7 +184,7 @@ const JOB_CONTRACTS = {
 const DATA_DATE_POLICIES = Object.freeze(['none', 'same_day', 'previous_trading_day', 'latest_available']);
 const PARTITION_DATE_POLICIES = Object.freeze(['business_date', 'previous_trading_day', 'expected_data_date']);
 const CONTRACT_FIELDS = Object.freeze([
-  'externalApis', 'producesDatasets', 'consumesDatasets', 'datasetDependencies', 'maxExternalCallsPerRun',
+  'externalApis', 'producesDatasets', 'consumesDatasets', 'datasetDependencies', 'readinessDatasetDependencies', 'maxExternalCallsPerRun',
   'datasetPublicationByMode', 'modeExternalCallLimits',
 ]);
 
@@ -224,9 +233,10 @@ function validateJobDefinitionSources({
       warnings.push(`${item.jobCode} 原始定义缺少 dataDatePolicy，当前由默认值补齐`);
     }
     const requirements = Array.isArray(item.datasetDependencies) ? item.datasetDependencies : [];
-    for (const requirement of requirements) {
+    const readinessRequirements = Array.isArray(item.readinessDatasetDependencies) ? item.readinessDatasetDependencies : [];
+    for (const requirement of [...requirements, ...readinessRequirements]) {
       if (!requirement || !requirement.datasetCode) {
-        errors.push(`${item.jobCode} 存在缺少 datasetCode 的 datasetDependencies`);
+        errors.push(`${item.jobCode} 存在缺少 datasetCode 的数据集依赖`);
         continue;
       }
       if (!Object.prototype.hasOwnProperty.call(requirement, 'partitionDatePolicy')) {
@@ -259,7 +269,10 @@ function validateJobDefinitionSources({
     if (!item || !item.jobCode) continue;
     const effective = { ...DEFAULT_JOB_OPTIONS, ...item, ...(contracts[item.jobCode] || {}) };
     const consumes = new Set(Array.isArray(effective.consumesDatasets) ? effective.consumesDatasets : []);
-    for (const requirement of (Array.isArray(effective.datasetDependencies) ? effective.datasetDependencies : [])) {
+    for (const requirement of [
+      ...(Array.isArray(effective.datasetDependencies) ? effective.datasetDependencies : []),
+      ...(Array.isArray(effective.readinessDatasetDependencies) ? effective.readinessDatasetDependencies : []),
+    ]) {
       if (requirement && requirement.datasetCode && !consumes.has(requirement.datasetCode)) {
         errors.push(`${item.jobCode} 的硬依赖 ${requirement.datasetCode} 不在 consumesDatasets 中`);
       }

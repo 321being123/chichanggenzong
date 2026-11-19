@@ -223,6 +223,7 @@ const MIGRATIONS = [
   { version: '203_market_close_bar_gaps', up: () => require('./migrations/era15MarketCloseBarGaps').migration203MarketCloseBarGaps(pool) },
   { version: '204_comment_notification', up: () => require('./migrations/era15CommentNotifications').migration204CommentNotification(pool) },
   { version: '205_notification_preferences', up: () => require('./migrations/era15CommentNotifications').migration205NotificationPreferences(pool) },
+  { version: '206_job_slot_retry_counters', up: () => require('./migrations/era16JobSlotRetryCounters').migration206JobSlotRetryCounters(pool) },
 ];
 
 async function ensureMigrationsTable() {

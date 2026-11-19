@@ -647,6 +647,7 @@ function adminPaintJobsLegacyError(network) {
 }
 
 function jobSlotStatusTag(status, late, waiting) {
+  if (status === 'waiting_readiness') return '<span class="tag tag-a">等待复查</span>';
   if (waiting && status === 'pending') return '<span class="tag tag-a">等待复查</span>';
   if (late && status === 'pending') return '<span class="tag tag-over">超时待处理</span>';
   if (status === 'succeeded' || status === 'done') return '<span class="tag tag-ok">成功</span>';
@@ -654,6 +655,19 @@ function jobSlotStatusTag(status, late, waiting) {
   if (status === 'failed' || status === 'blocked') return '<span class="tag tag-over">' + (status === 'blocked' ? '已阻塞' : '失败') + '</span>';
   if (status === 'degraded') return '<span class="tag tag-warn">降级</span>';
   return '<span class="tag">待运行</span>';
+}
+
+function renderGroupedAlertSummary(alert) {
+  const items = Array.isArray(alert.group_items) ? alert.group_items : [];
+  const count = Number(alert.group_count || items.length || 1);
+  if (count <= 1 && items.length <= 1) return escapeHtml(jobDisplayText(alert.summary || alert.subject || '', 300));
+  const detailItems = (items.length ? items : [alert]).map(function (item) {
+    const scope = [item.scopeType || item.scope_type, item.businessDate || item.business_date].filter(Boolean).join(' / ');
+    const text = jobDisplayText(item.summary || item.subject || '', 500);
+    return '<li>' + escapeHtml((scope ? scope + '：' : '') + text) + '</li>';
+  }).join('');
+  return '<div>' + escapeHtml(jobDisplayText(alert.summary || alert.subject || '', 300)) +
+    '</div><details class="job-alert-group"><summary>归并 ' + count + ' 条告警，展开明细</summary><ul>' + detailItems + '</ul></details>';
 }
 
 function renderJobs() {
@@ -717,11 +731,15 @@ function adminPaintJobs(data) {
       const emailConfigured = Boolean(overview.health && overview.health.emailConfigured);
       const emailStatus = !emailConfigured ? '未配置' : (alertCounts.send_failed ? '投递失败' : '正常');
       const emailColor = !emailConfigured || alertCounts.send_failed ? '#d93025' : '#188038';
+      // 告警组数取总览的归并组计数合计，不用告警列表长度：列表最多 30 组，
+      // 超过就少算，且运营分析按同一归并口径统计，两处必须同快照对得上。
+      const alertGroupTotal = Object.keys(alertCounts)
+        .reduce(function (sum, key) { return sum + Number(alertCounts[key] || 0); }, 0);
       summary.innerHTML = '<div class="stats">' +
         '<div class="stat-card"><div class="label">今日计划</div><div class="value">' + slots.length + '</div><div class="sub">已生成持久化计划</div></div>' +
         '<div class="stat-card"><div class="label">已成功</div><div class="value u-c-good" >' + (counts.succeeded || 0) + '</div><div class="sub">可继续观察数据时间</div></div>' +
         '<div class="stat-card"><div class="label">待处理异常</div><div class="value u-c-danger" >' + ((counts.failed || 0) + (counts.blocked || 0) + (counts.degraded || 0)) + '</div><div class="sub">失败、阻塞或降级</div></div>' +
-        '<div class="stat-card"><div class="label">告警数量</div><div class="value">' + (overview.alerts || []).reduce((n, item) => n + Number(item.count || 0), 0) + '</div><div class="sub">邮件告警会去重抑制</div></div>' +
+        '<div class="stat-card"><div class="label">告警组数</div><div class="value">' + alertGroupTotal + '</div><div class="sub">当前待处理告警已按根因归并</div></div>' +
         '<div class="stat-card"><div class="label">邮件告警</div><div class="value" data-style="color:' + emailColor + '">' + emailStatus + '</div><div class="sub">可在下方查看投递失败详情</div></div>' +
       '</div>';
     }
@@ -736,10 +754,10 @@ function adminPaintJobs(data) {
       return '<tr><td>' + escapeHtml(jobLabel(j.job)) + '</td><td>' + jobStatusTag(j.status) + '</td><td>' + fmtTime(j.started_at) + '</td><td>' + fmtTime(j.finished_at) + '</td><td>' + escapeHtml(jobTriggerLabel(j.trigger_type || 'scheduled')) + '</td><td class="biz-table-note-cell biz-table-note-cell--300 biz-table-break-all">' + escapeHtml(jobDisplayText(j.detail || '', 500)) + '</td></tr>';
     }).join('') : '<tr><td colspan="6" class="biz-table-state-cell">暂无运行记录</td></tr>';
     if (alertBody) alertBody.innerHTML = alerts.length ? alerts.map(function (alert) {
-      return '<tr><td>' + fmtTime(alert.last_seen_at) + '</td><td>' + escapeHtml(jobLabel(alert.job_code)) + '</td><td class="biz-table-note-cell biz-table-note-cell--320 biz-table-break-word">' + escapeHtml(jobDisplayText(alert.summary || alert.subject || '', 300)) + '</td><td>' + escapeHtml(jobStatusLabel(alert.status)) + '</td><td><button class="btn btn-outline btn-xs" data-act="resendJobAlert" data-arg1="' + Number(alert.alert_id) + '">重发</button> <button class="btn btn-outline btn-xs" data-act="acknowledgeJobAlert" data-arg1="' + Number(alert.alert_id) + '">确认</button></td></tr>';
+       return '<tr><td>' + fmtTime(alert.last_seen_at) + '</td><td>' + escapeHtml(jobLabel(alert.job_code)) + '</td><td class="biz-table-note-cell biz-table-note-cell--320 biz-table-break-word">' + renderGroupedAlertSummary(alert) + '</td><td>' + escapeHtml(jobStatusLabel(alert.status)) + '</td><td><button class="btn btn-outline btn-xs" data-act="resendJobAlert" data-arg1="' + Number(alert.alert_id) + '">重发</button> <button class="btn btn-outline btn-xs" data-act="acknowledgeJobAlert" data-arg1="' + Number(alert.alert_id) + '">确认</button></td></tr>';
     }).join('') : '<tr><td colspan="5" class="biz-table-state-cell">暂无待处理告警</td></tr>';
     if (alertHistoryBody) alertHistoryBody.innerHTML = alertHistory.length ? alertHistory.map(function (alert) {
-      return '<tr><td>' + fmtTime(alert.last_seen_at) + '</td><td>' + escapeHtml(jobLabel(alert.job_code)) + '</td><td class="biz-table-note-cell biz-table-note-cell--320 biz-table-break-word">' + escapeHtml(jobDisplayText(alert.summary || alert.subject || '', 300)) + '</td><td>' + escapeHtml(jobStatusLabel(alert.status)) + '</td></tr>';
+       return '<tr><td>' + fmtTime(alert.last_seen_at) + '</td><td>' + escapeHtml(jobLabel(alert.job_code)) + '</td><td class="biz-table-note-cell biz-table-note-cell--320 biz-table-break-word">' + renderGroupedAlertSummary(alert) + '</td><td>' + escapeHtml(jobStatusLabel(alert.status)) + '</td></tr>';
     }).join('') : '<tr><td colspan="4" class="biz-table-state-cell">暂无历史告警</td></tr>';
 }
 function adminPaintJobsError() {

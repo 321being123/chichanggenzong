@@ -10,6 +10,7 @@ const classifyCode = require('../../public/js/code-classify');
 const { appVersion } = require('../../package.json');
 const txControl = require('../repositories/transactionControl');
 const jobScheduleSlotsRepository = require('../repositories/jobScheduleSlotsRepository');
+const jobAlertMailerRepository = require('../repositories/jobAlertMailerRepository.js');
 const repository = require('../repositories/jobScheduleSlotsRepository.js');
 const { taskDependencyStates } = jobScheduleSlotsRepository;
 
@@ -188,14 +189,39 @@ function dependenciesForMode(modeMap, mode, fallback) {
   return fallback || [];
 }
 
-async function datasetDependencyState(slot, definition) {
-  const requirements = dependenciesForMode(definition.modeDatasetDependencies, slotMode(slot), definition.datasetDependencies);
-  if (!requirements.length) return { ready: true, failed: false, detail: '' };
+function readinessDatasetRequirements(slot, definition) {
+  const fallback = Array.isArray(definition.readinessDatasetDependencies)
+    && definition.readinessDatasetDependencies.length
+    ? definition.readinessDatasetDependencies
+    : definition.datasetDependencies;
+  return dependenciesForMode(definition.modeReadinessDatasetDependencies, slotMode(slot), fallback);
+}
+
+// 收盘试点把“本任务自己要产出的终盘分区”同时登记为复查证据，
+// 但它不能成为唤醒原 Runner 的前置条件：分区只有在 Runner 运行后才会出现。
+// 只有全部未就绪要求都属于本任务声明的产出时，检查点才可以放行一次原槽续跑；
+// IPO 等真正的依赖消费者仍必须等待上游分区质量通过。
+function readinessCanWakeProducer(slot, definition, state) {
+  if (!state || state.ready || !state.hasRequirements) return false;
+  const requirements = readinessDatasetRequirements(slot, definition);
+  const produced = new Set(Array.isArray(definition.producesDatasets) ? definition.producesDatasets : []);
+  return requirements.length > 0 && requirements.every(requirement => produced.has(requirement.datasetCode));
+}
+
+async function datasetDependencyState(slot, definition, options = {}) {
+  const requirements = options.readiness
+    ? readinessDatasetRequirements(slot, definition)
+    : dependenciesForMode(definition.modeDatasetDependencies, slotMode(slot), definition.datasetDependencies);
+  if (!requirements.length) {
+    return { ready: true, failed: false, checked: false, hasRequirements: false, detail: '' };
+  }
   if (!getRegisteredJobDefinition(definition.jobCode)) {
     return { ready: false, failed: true, detail: 'unknown_job_definition', scopeKeys: [] };
   }
   const failures = [];
   const scopeKeys = [];
+  const observations = [];
+  const mode = slotMode(slot);
   for (const requirement of requirements) {
     // node-postgres 对 date 字段默认返回 Date；直接 String(Date).slice(0, 10)
     // 会得到“Wed Sep 02”，再传给 PostgreSQL::date 就会导致整个调度轮次失败。
@@ -204,32 +230,83 @@ async function datasetDependencyState(slot, definition) {
       partitionKey = resolveDatasetPartitionDate(requirement, slot, definition);
     } catch (error) {
       failures.push(`${requirement.datasetCode || 'unknown'}@invalid-partition-date-policy`);
-      scopeKeys.push(`${requirement.datasetCode || 'unknown'}:${requirement.scopeKey || ''}:invalid`);
+      const scopeKey = `${requirement.datasetCode || 'unknown'}:${requirement.scopeKey || ''}:invalid`;
+      scopeKeys.push(scopeKey);
+      observations.push({
+        datasetCode: requirement.datasetCode || 'unknown', scopeKey: requirement.scopeKey || '',
+        businessDate: normalizeBusinessDate(slot.business_date), mode, partitionKey: null,
+        status: 'invalid', qualityStatus: null, ready: false, error: 'invalid-partition-date-policy',
+      });
       continue;
     }
     if (!partitionKey) {
       failures.push(`${requirement.datasetCode}@invalid-business-date`);
+      const scopeKey = `${requirement.datasetCode}:${requirement.scopeKey || ''}:invalid`;
+      scopeKeys.push(scopeKey);
+      observations.push({
+        datasetCode: requirement.datasetCode, scopeKey: requirement.scopeKey || '',
+        businessDate: normalizeBusinessDate(slot.business_date), mode, partitionKey: null,
+        status: 'invalid', qualityStatus: null, ready: false, error: 'invalid-business-date',
+      });
       continue;
     }
+    const scopeKey = `${requirement.datasetCode}:${requirement.scopeKey || ''}:${partitionKey}`;
     const { rows } = await repository.select_ops_dataset_partitions([requirement.datasetCode, requirement.scopeKey || '', partitionKey]);
     const partition = rows[0];
     if (!partition) {
       failures.push(`${requirement.datasetCode}@${partitionKey}=missing`);
-      scopeKeys.push(`${requirement.datasetCode}:${requirement.scopeKey || ''}:${partitionKey}`);
+      scopeKeys.push(scopeKey);
+      observations.push({
+        datasetCode: requirement.datasetCode, scopeKey: requirement.scopeKey || '',
+        businessDate: normalizeBusinessDate(slot.business_date), mode, partitionKey,
+        status: 'missing', qualityStatus: null, ready: false, error: 'partition_missing',
+      });
       continue;
     }
-    const qualityStatus = partition.diagnostics && partition.diagnostics.quality_status;
-    if (partition.status !== 'published' || partition.is_stale
-        || (requirement.requireQualityStatus && qualityStatus !== requirement.requireQualityStatus)) {
+    const diagnostics = partition.diagnostics && typeof partition.diagnostics === 'object'
+      ? partition.diagnostics : {};
+    const qualityStatus = diagnostics.quality_status;
+    const coverageKinds = Array.isArray(diagnostics.coverage_kinds) ? diagnostics.coverage_kinds : [];
+    // 共享终盘分区由 A股/转债/基金多个品种共用：覆盖和质量都必须读本品种自己的结论。
+    // 只看整行 quality_status 会让"基金补齐"把转债的未就绪冲掉（反之亦然）。
+    const kindCoverage = requirement.coverageKind && diagnostics.coverage_by_kind
+      && typeof diagnostics.coverage_by_kind === 'object'
+      ? diagnostics.coverage_by_kind[requirement.coverageKind] : null;
+    const kindReady = kindCoverage && kindCoverage.status
+      ? (kindCoverage.status === 'complete' || kindCoverage.status === 'no_target')
+      : null;
+    const coverageReady = !requirement.coverageKind
+      || (kindReady === null ? coverageKinds.includes(requirement.coverageKind) : kindReady);
+    const qualityReady = kindReady === null
+      ? (!requirement.requireQualityStatus || qualityStatus === requirement.requireQualityStatus)
+      : kindReady;
+    const ready = partition.status === 'published' && !partition.is_stale && coverageReady && qualityReady;
+    observations.push({
+      datasetCode: requirement.datasetCode, scopeKey: requirement.scopeKey || '',
+      businessDate: normalizeBusinessDate(slot.business_date), mode, partitionKey,
+      status: partition.status, qualityStatus: qualityStatus || null, ready,
+      coverageKind: requirement.coverageKind || null,
+      coverageStatus: kindCoverage ? kindCoverage.status : null,
+      expectedCount: kindCoverage ? Number(kindCoverage.expected || 0) : null,
+      coveredCount: kindCoverage ? Number(kindCoverage.covered || 0) : null,
+      error: ready ? null : (partition.is_stale ? 'partition_stale'
+        : !coverageReady ? (kindReady === false ? 'partition_coverage_partial' : 'partition_coverage_kind_missing')
+          : 'partition_quality_not_passed'),
+    });
+    if (!ready) {
       failures.push(`${requirement.datasetCode}@${partitionKey}=${partition.status}/${qualityStatus || 'unknown'}`);
-      scopeKeys.push(`${requirement.datasetCode}:${requirement.scopeKey || ''}:${partitionKey}`);
+      scopeKeys.push(scopeKey);
     }
   }
   return {
     ready: failures.length === 0,
     failed: failures.length > 0,
+    checked: true,
+    hasRequirements: true,
     detail: failures.join(', '),
     scopeKeys,
+    gapCount: failures.length,
+    observations,
   };
 }
 
@@ -422,6 +499,10 @@ async function reconcileSlot(slot) {
   // succeeded 和 skipped 都是终态：succeeded 是执行终态，skipped 是归档终态。
   // 二者都不能再被旧 job_runs 反推成 failed，否则已接管/已归档的槽会反复收敛、反复失败。
   if (slot.status === 'succeeded' || slot.status === 'skipped') return slot;
+  // 就绪硬截止后的失败是终止证据，不得被旧的水位重验、接管或普通扫描翻回可领取。
+  // 只有 retryJobSlot 的人工重试会清除 readinessExpiredAt 并建立新的失败预算周期。
+  if (slot.result_summary && slot.result_summary.readinessExpiredAt
+      && slot.trigger_type !== 'manual_retry') return slot;
   // 人工补跑刚重置为 pending 时，旧的失败 job_runs 仍然存在；此时不能被旧记录立即回滚为 failed，
   // 必须先让统一执行器领取并生成新的 manual_retry 运行记录。
   if (slot.status === 'pending' && slot.trigger_type === 'manual_retry') return slot;
@@ -444,6 +525,19 @@ async function reconcileSlot(slot) {
   // 外部来源等待期间保留等待状态，不能被旧的失败运行记录在调度扫描时覆盖；
   // 到达 next_attempt_at 后由统一执行器重新领取并继续执行。
   if (slot.status === 'waiting_external') return slot;
+  // 就绪等待只由 reconcileReadinessSlots 按检查点和硬截止处理，这里不做状态推进，
+  // 避免同一槽被两个入口各判一次；但接管核对仍在这里做——同业务日同范围已有后续完整
+  // 成功的实例时，这个等待已经没必要继续，不能白等到硬截止再报超期。
+  if (slot.status === 'waiting_readiness') {
+    const recovery = await findStrictRecoverySlot(slot)
+      .catch(error => { console.warn('[job-slot] 就绪等待接管核对失败:', error.message); return null; });
+    if (recovery) {
+      const superseded = await supersedeStaleSlot(slot, recovery,
+        '同业务日同范围的后续实例已完成并通过运行、阶段和分区证据核验，本等待不再继续');
+      if (superseded) return superseded;
+    }
+    return slot;
+  }
   // 续批止损：有效等待（原因已登记且未超时限）在 expireContinuationSlot 内部豁免，
   // 这里不再用“有没有 waitReason 字符串”做开关，避免任意原因长期免于止损。
   if (slot.status === 'pending' && waiting.continuationRequired) {
@@ -664,11 +758,14 @@ async function recoverExpiredSlots() {
   const { rows } = await repository.select_ops_job_schedule_slots_2();
   for (const slot of rows) {
     const definition = getJobDefinition(slot.job_code);
-    const nextStatus = Number(slot.attempt_count || 0) < (definition.maxAttempts || 3) ? 'pending' : 'failed';
+    // 租约回收由仓储按合同结算：counters 槽结算一次 fail_count，legacy 槽不加新列
+    // （它的失败已由领取时的 attempt_count+1 表达）。这里按结算后的序号判定是否还能继续。
+    const progress = retryProgressOf(slot);
+    const nextStatus = progress.current <= (definition.maxAttempts || 3) ? 'pending' : 'failed';
     const retryDelays = Array.isArray(definition.retryDelaysMinutes) ? definition.retryDelaysMinutes : [5, 15, 45];
     const retryDelay = definition.retryPolicy === 'external'
-      ? Number(retryDelays[Math.min(Math.max(Number(slot.attempt_count || 1) - 1, 0), retryDelays.length - 1)] || 15)
-      : Number(retryDelays[Math.min(Math.max(Number(slot.attempt_count || 1) - 1, 0), retryDelays.length - 1)] || 5);
+      ? Number(retryDelays[Math.min(progress.delayIndex, retryDelays.length - 1)] || 15)
+      : Number(retryDelays[Math.min(progress.delayIndex, retryDelays.length - 1)] || 5);
     await repository.update_ops_job_schedule_slots_8([slot.slot_id, nextStatus, retryDelay]);
     if (nextStatus === 'failed') {
       const { notifyJobFailure } = require('./jobAlertMailer');
@@ -687,6 +784,21 @@ async function recoverExpiredSlots() {
 
 function attemptLimit(slot,definition){
   return (definition.maxAttempts||3)+(slot.job_code==='nav_snapshot'&&slot.result_summary?.dependencyRecovery?1:0);
+}
+
+// 失败预算的读取口径（迁移 206 的 retry_contract 边界）：
+//   legacy  —— 存量未结槽，旧 attempt_count 已含本次领取（领取时 +1），不再加一；
+//   counters —— 新槽，fail_count 只在结算时增长，本次失败是 count+1。
+// 返回 current=本次失败后的序号、delayIndex=退避档位下标。
+function retryProgressOf(slot) {
+  const legacy = Boolean(slot && slot.retry_contract === 'legacy');
+  const count = legacy ? Number(slot && slot.attempt_count || 0) : Number(slot && slot.fail_count || 0);
+  return {
+    legacy,
+    count,
+    current: count + (legacy ? 0 : 1),
+    delayIndex: legacy ? Math.max(count - 1, 0) : count,
+  };
 }
 
 async function recoverNavDependencies(query=(sql,params)=>jobScheduleSlotsRepository.runQuery(sql,params)){
@@ -730,11 +842,17 @@ let sweepCursor = 0;
 
 async function sweepStaleSlots(limit = 20) {
   const safeLimit = Math.min(Math.max(Number(limit) || 20, 1), SWEEP_PAGE_SIZE_MAX);
+  // 到期的就绪等待先重验：它们是当天关键路径（收盘/净值），不能被旧槽分页排在后面。
+  // 这里仍然是同一个周期入口，不新增轮询器。
+  const readiness = await reconcileReadinessSlots(Math.min(safeLimit, 20)).catch(error => {
+    console.warn('[job-slot] 就绪等待重验失败:', error.message);
+    return null;
+  });
   const rows = await jobScheduleSlotsRepository.listStaleSlots(sweepCursor, SWEEP_MIN_AGE_MINUTES, safeLimit);
   if (!rows.length) {
     const wrapped = sweepCursor > 0;
     sweepCursor = 0;
-    return { ok: true, scanned: 0, changed: 0, changes: [], cursorReset: wrapped };
+    return { ok: true, scanned: 0, changed: 0, changes: [], cursorReset: wrapped, readiness };
   }
   const changes = [];
   for (const slot of rows) {
@@ -747,7 +865,7 @@ async function sweepStaleSlots(limit = 20) {
       changes.push({ slotId: Number(slot.slot_id), jobCode: slot.job_code, from: slot.status, to: after.status });
     }
   }
-  return { ok: true, scanned: rows.length, changed: changes.length, changes, cursor: sweepCursor };
+  return { ok: true, scanned: rows.length, changed: changes.length, changes, cursor: sweepCursor, readiness };
 }
 
 async function listDueSlots(limit = 20, options = {}) {
@@ -765,7 +883,7 @@ async function listDueSlots(limit = 20, options = {}) {
   const due = [];
   for (const slot of rows) {
     const definition = getJobDefinition(slot.job_code);
-    if (Number(slot.attempt_count || 0) >= attemptLimit(slot,definition)) continue;
+    if (retryProgressOf(slot).count >= attemptLimit(slot,definition)) continue;
     const dependencies = dependenciesForMode(definition.modeDependencyCodes, slotMode(slot), definition.dependencyCodes);
     if (dependencies.length) {
       const states = await taskDependencyStates(slot, dependencies);
@@ -795,6 +913,19 @@ async function listDueSlots(limit = 20, options = {}) {
     const datasets = await datasetDependencyState(slot, definition);
     if (!datasets.ready) {
       if (datasets.failed) {
+        if (isReadinessPilot(definition)) {
+          // 试点任务：分区缺失/未达标只是"还没就绪"，转 waiting_readiness 等检查点，
+          // 不写数据集故障告警、不判永久失败；硬截止才升级。
+          const entry = readinessEnterPatch(slot, definition, new Date(), 'dependency', datasets.scopeKeys && datasets.scopeKeys[0]);
+          const waiting = await repository.update_ops_job_schedule_slots_25([
+            slot.slot_id, entry.nextCheckAt, JSON.stringify(entry.patch),
+            `等待数据分区就绪：${datasets.detail}`,
+          ]);
+          if (waiting.rows[0]) {
+            slot.status = 'waiting_readiness';
+            continue;
+          }
+        }
         const blocked = await repository.update_ops_job_schedule_slots_9([slot.slot_id, `依赖数据分区未发布：${datasets.detail}`]);
         if (blocked.rows[0]) {
           const { notifyJobFailure } = require('./jobAlertMailer');
@@ -1017,6 +1148,277 @@ async function waitForExternalSlot(slotId, errorMessage, resultSummary, retryAt 
   return rows[0] || null;
 }
 
+// ===== 就绪等待（方案 2026-11-18 P0-A）=====
+// 发布、锁争用和依赖分区未就绪都不是"任务执行失败"。旧实现把它们按普通 failed 处理，
+// 零外采的等待也会吃掉失败预算（生产 2568029 两次 DATASET_LOCKED 即此）。
+// 这里把三类等待统一为 waiting_readiness，失败预算只留给真实执行失败。
+// 时间换算、试点判定与"首查前不开外部终盘窗口"集中在 jobReadiness，与收盘 Runner 共用
+// 同一份实现——两处各写一份会让 15:10 那次仍然去外采 cb_daily/fund_daily。
+const {
+  READINESS_WAIT_KINDS: READINESS_KINDS,
+  readinessMoment, isReadinessPilot, nextReadinessCheckpoint, readinessBoundaryMoment,
+} = require('./jobReadiness');
+
+// 进入就绪等待时写入的摘要增量：一个作用域只记录一个下一检查点，
+// 首次观测（firstReadyAt）由后续阶段写入并保留最早值，这里不覆盖它。
+function readinessEnterPatch(slot, definition, now, waitKind, target) {
+  const nextCheckAt = nextReadinessCheckpoint(slot, definition, now);
+  const escalateAt = readinessBoundaryMoment(slot, definition, 'readinessEscalateAt');
+  const stopAt = readinessBoundaryMoment(slot, definition, 'readinessStopAt');
+  return {
+    nextCheckAt,
+    patch: sanitizeJobResult({
+      waitingReadiness: true,
+      waitingExternal: false,
+      waitKind,
+      readinessBusinessDate: normalizeBusinessDate(slot.business_date),
+      readinessNextCheckAt: nextCheckAt.toISOString(),
+      readinessEscalateAt: escalateAt ? escalateAt.toISOString() : null,
+      readinessStopAt: stopAt ? stopAt.toISOString() : null,
+      ...(target ? { readinessTarget: String(target).slice(0, 200) } : {}),
+    }),
+  };
+}
+
+async function waitForReadinessSlot(slotId, options = {}, runId = null, expectedToken = null) {
+  const lookup = await repository.select_ops_job_schedule_slots_4([slotId]);
+  const slot = lookup.rows[0];
+  if (!slot) return null;
+  const definition = getJobDefinition(slot.job_code);
+  const now = new Date();
+  const requested = options.nextCheckAt ? new Date(options.nextCheckAt) : null;
+  const requestedFuture = requested && !Number.isNaN(requested.getTime()) && requested.getTime() > now.getTime()
+    ? requested : null;
+  const configuredNext = requestedFuture || nextReadinessCheckpoint(slot, definition, now);
+  const waitKind = READINESS_KINDS.includes(options.waitKind) ? options.waitKind : 'dependency';
+  const escalateAt = readinessBoundaryMoment(slot, definition, 'readinessEscalateAt');
+  const stopAt = readinessBoundaryMoment(slot, definition, 'readinessStopAt');
+  const nextCheckAt = stopAt && !Number.isNaN(stopAt.getTime()) && stopAt.getTime() <= now.getTime()
+    ? now
+    : (stopAt && !Number.isNaN(stopAt.getTime()) && configuredNext.getTime() > stopAt.getTime() ? stopAt : configuredNext);
+  const merged = await mergeSlotExternalCallSummary(slotId, options.resultSummary || {}, expectedToken);
+  const safeSummary = sanitizeJobResult({
+    ...(merged || {}),
+    waitingReadiness: true,
+    waitingExternal: false,
+    waitKind,
+    readinessBusinessDate: normalizeBusinessDate(slot.business_date),
+    readinessNextCheckAt: nextCheckAt.toISOString(),
+    readinessEscalateAt: escalateAt ? escalateAt.toISOString() : null,
+    readinessStopAt: stopAt ? stopAt.toISOString() : null,
+    ...(options.target ? { readinessTarget: String(options.target).slice(0, 200) } : {}),
+  });
+  const { rows } = await repository.update_ops_job_schedule_slots_21([
+    slotId, nextCheckAt, JSON.stringify(safeSummary), runId,
+    options.errorMessage ? sanitizeJobError(options.errorMessage) : null, expectedToken || null,
+  ]);
+  return rows[0] || null;
+}
+
+async function escalateReadinessSlot(slot, reason) {
+  const { notifyJobFailure } = require('./jobAlertMailer');
+  const definition = getJobDefinition(slot.job_code);
+  const summary = slot.result_summary && typeof slot.result_summary === 'object' ? slot.result_summary : {};
+  const kind = String(summary.waitKind || 'dependency');
+  await notifyJobFailure({
+    jobCode: slot.job_code,
+    slotId: slot.slot_id,
+    alertKey: `slot:${slot.slot_id}:readiness:${kind}`,
+    alertType: reason === 'expired' ? 'failure' : 'failure_warning',
+    severity: reason === 'expired' ? 'critical' : 'warning',
+    subject: reason === 'expired'
+      ? `后台任务数据就绪超期：${definition.label}`
+      : `后台任务等待数据就绪：${definition.label}`,
+    summary: reason === 'expired'
+      ? `本业务日硬截止前仍未就绪（等待类型 ${kind}，目标 ${summary.readinessTarget || '未登记'}）。${slot.last_error || ''}`
+      : `已超过升级时刻仍在等待数据就绪（等待类型 ${kind}，目标 ${summary.readinessTarget || '未登记'}），将在硬截止前继续复查。${slot.last_error || ''}`,
+  }).catch(error => console.warn('[job-alert] 就绪等待告警失败:', error.message));
+}
+
+function readinessObservationKey(observation = {}) {
+  return [
+    observation.datasetCode || observation.dataset_code || 'unknown',
+    observation.scopeKey || observation.scope_key || '',
+    observation.businessDate || observation.business_date || '',
+    observation.mode || 'core',
+  ].join('|');
+}
+
+function mergeReadinessEvidence(summary = {}, evidence = {}) {
+  const existing = Array.isArray(summary.readinessObservations) ? summary.readinessObservations : [];
+  const incoming = Array.isArray(evidence.observations) ? evidence.observations : [];
+  const byKey = new Map();
+  for (const item of existing) byKey.set(readinessObservationKey(item), item);
+  for (const item of incoming) {
+    const key = readinessObservationKey(item);
+    const prior = byKey.get(key);
+    byKey.set(key, {
+      ...(prior || {}), ...item,
+      observationKey: key,
+      firstReadyAt: prior && prior.firstReadyAt
+        ? prior.firstReadyAt
+        : (item.ready === true ? evidence.observedAt : null),
+      lastObservedAt: evidence.observedAt,
+    });
+  }
+  const observations = Array.from(byKey.values()).slice(0, 100);
+  const firstReadyCandidates = observations
+    .map(item => item.firstReadyAt)
+    .filter(Boolean)
+    .map(value => new Date(value))
+    .filter(value => !Number.isNaN(value.getTime()))
+    .sort((left, right) => left.getTime() - right.getTime());
+  return {
+    readinessFirstReadyAt: firstReadyCandidates.length
+      ? firstReadyCandidates[0].toISOString()
+      : (summary.readinessFirstReadyAt || null),
+    readinessObservations: observations,
+    readinessObservationSource: evidence.source || summary.readinessObservationSource || null,
+  };
+}
+
+// 升级判定只算一次，供"延期等待"和"自产分区唤醒"两条路径共用：
+// 后者原先直接 continue，越过升级时刻也不会告警，硬截止前一直静默。
+function readinessEscalationPlan(slot, summary, definition, now) {
+  const nextCheckAt = nextReadinessCheckpoint(slot, definition, now);
+  const escalateAt = summary && summary.readinessEscalateAt ? new Date(summary.readinessEscalateAt)
+    : readinessBoundaryMoment(slot, definition, 'readinessEscalateAt');
+  const shouldEscalate = Boolean(escalateAt) && !Number.isNaN(escalateAt.getTime())
+    && now.getTime() >= escalateAt.getTime() && !(summary && summary.readinessEscalatedAt);
+  return { nextCheckAt, escalateAt, shouldEscalate };
+}
+
+// 统一重验入口：由 sweepStaleSlots 的同一周期驱动，不新增轮询器。
+// 取证只读数据库（数据集分区状态），不代替上游发请求；转回原槽 pending 后仍由原 Runner 续跑。
+async function reconcileReadinessSlots(limit = 10) {
+  const rows = await repository.listDueReadinessSlots(Math.min(Math.max(Number(limit) || 10, 1), 50));
+  const now = new Date();
+  const result = { scanned: rows.length, resumed: 0, deferred: 0, escalated: 0, expired: 0 };
+  for (const slot of rows) {
+    const definition = getJobDefinition(slot.job_code);
+    const summary = slot.result_summary && typeof slot.result_summary === 'object' ? slot.result_summary : {};
+    const revision = slot.updated_at_exact || slot.updated_at;
+    const stopAt = summary.readinessStopAt ? new Date(summary.readinessStopAt)
+      : readinessBoundaryMoment(slot, definition, 'readinessStopAt');
+    // ① 超过本业务日硬截止：这才升级为真实故障并扣一次失败预算。
+    if (stopAt && !Number.isNaN(stopAt.getTime()) && now.getTime() >= stopAt.getTime()) {
+      const expiredSummary = { ...summary, waitingReadiness: false, readinessExpiredAt: stopAt.toISOString() };
+      const failed = await repository.update_ops_job_schedule_slots_24([
+        slot.slot_id, JSON.stringify(sanitizeJobResult(expiredSummary)),
+        `就绪等待超过本业务日硬截止 ${stopAt.toISOString()}：${summary.waitKind || 'dependency'} 仍未就绪`, revision,
+      ]);
+      if (failed.rows[0]) {
+        result.expired += 1;
+        await escalateReadinessSlot(failed.rows[0], 'expired');
+      }
+      continue;
+    }
+    const waitKind = READINESS_KINDS.includes(summary.waitKind) ? summary.waitKind : 'dependency';
+    // ② 锁争用是短时占用：到期即允许原槽再试一次，锁状态本身不可查询，不能凭空延后。
+    if (waitKind === 'lock') {
+      const resumed = await repository.update_ops_job_schedule_slots_22([slot.slot_id, revision, null]);
+      if (resumed.rows[0]) result.resumed += 1;
+      continue;
+    }
+    // ③ 发布/依赖：按数据集分区实际状态核验，缺失或不达标只是"还没就绪"，不是永久失败。
+    const state = await datasetDependencyState(slot, definition, { readiness: true })
+      .catch(error => ({ ready: false, failed: true, checked: false, hasRequirements: true, detail: error.message }));
+    if (!state.hasRequirements) {
+      // 任务没有声明可供统一重验的分区依赖时，检查点只负责唤醒原槽重跑。
+      // 不生成首次就绪证据，避免把零次分区查询误记为数据已恢复。
+      const resumed = await repository.update_ops_job_schedule_slots_22([slot.slot_id, revision, null]);
+      if (resumed.rows[0]) result.resumed += 1;
+      continue;
+    }
+    if (state.ready) {
+      const readyEvidence = {
+        waitKind,
+        observedAt: now.toISOString(),
+        businessDate: normalizeBusinessDate(slot.business_date),
+        source: 'dataset_partitions',
+        gapCount: Number(state.gapCount || 0),
+        lastError: null,
+        attemptKind: 'readiness_recheck',
+        detail: String(state.detail || '').slice(0, 500),
+        scopeKeys: Array.isArray(state.scopeKeys) ? state.scopeKeys.slice(0, 50) : [],
+        observations: Array.isArray(state.observations) ? state.observations.slice(0, 100) : [],
+      };
+      const evidencePatch = mergeReadinessEvidence(summary, readyEvidence);
+      const resumed = await repository.update_ops_job_schedule_slots_22([
+        slot.slot_id, revision, JSON.stringify({ ...readyEvidence, ...evidencePatch }),
+      ]);
+      if (resumed.rows[0]) result.resumed += 1;
+      continue;
+    }
+    if (readinessCanWakeProducer(slot, definition, state)) {
+      // 这里的分区缺失/未达标是“尚未运行本任务”的负观测，不是外部依赖故障。
+      // 到检查点只唤醒原槽；Runner 会在首个允许窗口内做一次受控终盘取数，
+      // 由它自己发布按品种和目标证券核验过的分区，不能在此处伪造 ready 证据。
+      // 但“唤醒”不等于“可以静默等待”：越过升级时刻仍缺自产分区时，
+      // 必须在硬截止前至少告警一次（按告警键去重），否则检查点会反复唤醒、告警数一直是 0。
+      const escalation = readinessEscalationPlan(slot, summary, definition, now);
+      const escalatePatch = escalation.shouldEscalate
+        ? JSON.stringify(sanitizeJobResult({
+          ...summary,
+          // 唤醒即不再等待：仓储 update_22 先清 waitingReadiness 再合并本补丁，
+          // 若这里把旧摘要的 true 写回来，唤醒后的槽会一直被当成"等待中"。
+          waitingReadiness: false,
+          readinessEscalatedAt: now.toISOString(),
+          readinessLastCheckedAt: now.toISOString(),
+          readinessLastDetail: String(state.detail || '').slice(0, 500),
+        }))
+        : null;
+      const producerWake = await repository.update_ops_job_schedule_slots_22([slot.slot_id, revision, escalatePatch]);
+      if (producerWake.rows[0]) {
+        result.resumed += 1;
+        if (escalation.shouldEscalate) {
+          result.escalated += 1;
+          await escalateReadinessSlot(producerWake.rows[0], 'escalate');
+        }
+      }
+      continue;
+    }
+    // ④ 仍未就绪：推进下一个检查点，并在越过升级时刻时至少告警一次（按告警键去重）。
+    const escalation = readinessEscalationPlan(slot, summary, definition, now);
+    const nextCheckAt = escalation.nextCheckAt;
+    const shouldEscalate = escalation.shouldEscalate;
+    const readinessEvidence = mergeReadinessEvidence(summary, {
+      waitKind,
+      observedAt: now.toISOString(),
+      businessDate: normalizeBusinessDate(slot.business_date),
+      source: 'dataset_partitions',
+      gapCount: Number(state.gapCount || 0),
+      lastError: String(state.detail || '').slice(0, 500) || null,
+      attemptKind: 'readiness_recheck',
+      detail: String(state.detail || '').slice(0, 500),
+      scopeKeys: Array.isArray(state.scopeKeys) ? state.scopeKeys.slice(0, 50) : [],
+      observations: Array.isArray(state.observations) ? state.observations.slice(0, 100) : [],
+    });
+    const nextSummary = {
+      ...summary,
+      ...readinessEvidence,
+      waitingReadiness: true,
+      waitKind,
+      readinessNextCheckAt: nextCheckAt.toISOString(),
+      readinessLastCheckedAt: now.toISOString(),
+      readinessLastDetail: String(state.detail || '').slice(0, 500),
+      ...(shouldEscalate ? { readinessEscalatedAt: now.toISOString() } : {}),
+    };
+    const deferred = await repository.update_ops_job_schedule_slots_23([
+      slot.slot_id, nextCheckAt, JSON.stringify(sanitizeJobResult(nextSummary)),
+      `等待数据就绪：${String(state.detail || '分区未发布').slice(0, 300)}`, revision,
+    ]);
+    if (deferred.rows[0]) {
+      result.deferred += 1;
+      if (shouldEscalate) {
+        result.escalated += 1;
+        await escalateReadinessSlot(deferred.rows[0], 'escalate');
+      }
+    }
+  }
+  return result;
+}
+
 // 单槽位累计调用量必须由数据库原子累加，不能由多个 Worker 读旧值后覆盖。
 // 传 executionToken 时同时校验执行归属：接管后的旧执行不得再累加或覆盖进度。
 async function mergeSlotExternalCallSummary(slotId, resultSummary = {}, expectedToken = null) {
@@ -1070,7 +1472,7 @@ async function acknowledgeSlot(slotId) {
 async function listJobSlots(options = {}) {
   const businessDate = options.date && /^\d{4}-\d{2}-\d{2}$/.test(String(options.date)) ? String(options.date) : dateText();
   const limit = Math.min(Math.max(parseInt(options.limit, 10) || 100, 1), 300);
-  const status = ['pending', 'running', 'succeeded', 'degraded', 'failed', 'blocked', 'skipped', 'waiting_external'].includes(options.status) ? options.status : null;
+  const status = ['pending', 'running', 'succeeded', 'degraded', 'failed', 'blocked', 'skipped', 'waiting_external', 'waiting_readiness'].includes(options.status) ? options.status : null;
   const triggerType = String(options.trigger || '').trim() || null;
   const keyword = String(options.keyword || '').trim() || null;
   const category = String(options.category || '').trim() || null;
@@ -1157,7 +1559,7 @@ async function getJobOverview() {
   const [counts, slots, alerts, workers] = await Promise.all([
     repository.select_ops_job_schedule_slots_9([today]),
     repository.select_ops_job_schedule_slots_10([today]),
-    jobScheduleSlotsRepository.countAlertsByStatus(),
+    jobAlertMailerRepository.countAlertGroupsByStatus().then(result => result.rows || []),
     repository.with_ops_worker_heartbeats(),
   ]);
   return {
@@ -1261,9 +1663,10 @@ module.exports = {
   WORKER_ID, workerIdForRole, JOB_DEFINITIONS, dateText, normalizeBusinessDate, shanghaiParts, ensureSlot, enqueueManualJob, syncScheduleSlots, slotMode, dependenciesForMode,
   enqueueSelectionPeriodJob, selectionBusinessKeyOf,
   claimSlot, completeSlot, deferSlot, waitForExternalSlot, continueSlot, mergeSlotExternalCallSummary, touchSlot, recoverExpiredSlots, listDueSlots, retryJobSlot, acknowledgeSlot,
+  waitForReadinessSlot, reconcileReadinessSlots, isReadinessPilot, nextReadinessCheckpoint, readinessMoment,
   listJobSlots, getJobSlot, validateJobSlot, heartbeat, getJobOverview, queryDataAsOf, isDataAsOfFresh, resolveDataAsOf, expectedDataDate,
   isSlotDayAllowed, isWeekday, previousDate, resolveScheduleForDate,
   previousTradingDateOf, resolveScheduleTargetTradeDate,
-  resolveDatasetPartitionDate, datasetDependencyState, recoverNavDependencies, attemptLimit, sweepStaleSlots,
+  resolveDatasetPartitionDate, datasetDependencyState, recoverNavDependencies, attemptLimit, retryProgressOf, sweepStaleSlots,
   reconcileSlot, pendingNeedsTakeoverCheck, blockReasonOf,
 };

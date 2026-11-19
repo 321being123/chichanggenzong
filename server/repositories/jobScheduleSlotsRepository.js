@@ -5,6 +5,14 @@ const { pool } = require('../db/connection');
 const SWEEP_MIN_AGE_MINUTES = 60;
 let sweepCursor = 0;
 
+// 领取资格与失败上限的计数来源（迁移 206 的 retry_contract 显式边界）：
+//   legacy  —— 迁移瞬间已存在的未结槽，继续用旧 attempt_count 判定，不切入新合同；
+//   counters —— 新槽，用 fail_count（只记真实执行失败）。
+// 旧 attempt_count 混有"领取 +1"和"等待豁免 -1"，无法拆成历史领取数与真实失败数，
+// 所以边界必须显式标记，不能靠新列隐式回退或按旧值推导。
+const retryCountSql = (alias = '') =>
+  `(CASE WHEN ${alias}retry_contract='legacy' THEN ${alias}attempt_count ELSE ${alias}fail_count END)`;
+
 // 待核对的旧槽游标分页读取（只做事实读取，状态判定由服务层 reconcileSlot 负责）
 async function listStaleSlots(cursor, minAgeMinutes, limit) {
   const { rows } = await pool.query(
@@ -74,8 +82,9 @@ async function select_ops_job_schedule_slots(params, client = pool) {
          -- 选股槽位的规范业务键必须两边完全相等：普通请求不得命中多带 shadow 的旧槽，
          -- 同日不同周期也不得互相吃槽；其他任务两边都为空，行为与原来一致（方案 27.8）。
          AND COALESCE(request_payload->>'selectionBusinessKey','') = COALESCE($3::jsonb->>'selectionBusinessKey','')
-         AND (status='running' OR (status='pending' AND scheduled_for <= now()
-           AND COALESCE(next_attempt_at,scheduled_for) <= now() AND attempt_count < $2))
+          AND (status='running' OR (status='pending' AND scheduled_for <= now()
+            AND COALESCE(next_attempt_at,scheduled_for) <= now() AND ${retryCountSql()} < $2
+            AND result_summary->>'readinessExpiredAt' IS NULL))
        ORDER BY slot_id DESC LIMIT 1
     `, params);
 }
@@ -151,7 +160,7 @@ async function update_ops_job_schedule_slots_5(params, client = pool) {
   return client.query(`UPDATE ops.job_schedule_slots
         SET status=$2, last_run_id=$3,
             data_as_of=CASE WHEN $2='succeeded' THEN COALESCE($4, data_as_of) ELSE data_as_of END,
-            last_error=$5, result_summary=$6::jsonb, updated_at=now()
+            last_error=$5, result_summary=COALESCE(result_summary,'{}'::jsonb) || $6::jsonb, updated_at=now()
       WHERE slot_id=$1 AND status NOT IN ('running','succeeded','skipped')
         AND updated_at=$7::timestamptz
       RETURNING *`, params);
@@ -171,13 +180,17 @@ async function update_ops_job_schedule_slots_6(params, client = pool) {
 }
 
 async function update_ops_job_schedule_slots_7(params, client = pool) {
+  // 领取计数分账（迁移 206）：claim_count 记总领取、fail_count 只记真实失败。
+  // 资格判定按 retry_contract 分流：legacy 存量槽仍用 attempt_count，新槽用 fail_count。
+  // attempt_count 同步 +1 只为兼容回滚后的旧 Worker。
   return client.query(`UPDATE ops.job_schedule_slots
-        SET status='running', attempt_count=attempt_count+1, lease_owner=$2,
+        SET status='running', attempt_count=attempt_count+1, claim_count=claim_count+1, lease_owner=$2,
             lease_until=now()+($5::integer * interval '1 minute'), heartbeat_at=now(),
             next_attempt_at=NULL, trigger_type=$3, execution_token=$6, updated_at=now()
       WHERE slot_id=$1 AND status IN ('pending','failed','waiting_external')
-        AND attempt_count < $4 + CASE WHEN job_code='nav_snapshot' AND result_summary ? 'dependencyRecovery' THEN 1 ELSE 0 END
+        AND ${retryCountSql()} < $4 + CASE WHEN job_code='nav_snapshot' AND result_summary ? 'dependencyRecovery' THEN 1 ELSE 0 END
         AND (next_attempt_at IS NULL OR next_attempt_at<=now())
+        AND ($3::text='manual_retry' OR result_summary->>'readinessExpiredAt' IS NULL)
       RETURNING *, business_date::text AS business_date`, params);
 }
 
@@ -189,15 +202,20 @@ async function update_job_runs(params, client = pool) {
 }
 
 async function select_ops_job_schedule_slots_2(params, client = pool) {
-  return client.query(`SELECT slot_id, job_code, attempt_count
+  return client.query(`SELECT slot_id, job_code, attempt_count, claim_count, fail_count, retry_contract
        FROM ops.job_schedule_slots
       WHERE status='running' AND lease_until IS NOT NULL AND lease_until < now()
       ORDER BY slot_id`);
 }
 
 async function update_ops_job_schedule_slots_8(params, client = pool) {
+  // 租约过期由接管方结算：本次领取既没成功也没进入等待，按真实执行失败计一次，
+  // 保留"最多 maxAttempts 次"的止损语义，不让崩溃的槽无限 pending 重试。
+  // legacy 存量槽不加 fail_count：它的失败已经由领取时的 attempt_count+1 表达（原合同）。
   return client.query(`UPDATE ops.job_schedule_slots
-          SET status=$2, next_attempt_at=CASE WHEN $2='pending' THEN now()+($3::integer * interval '1 minute') ELSE NULL END,
+          SET status=$2,
+              fail_count=fail_count + CASE WHEN retry_contract='legacy' THEN 0 ELSE 1 END,
+              next_attempt_at=CASE WHEN $2='pending' THEN now()+($3::integer * interval '1 minute') ELSE NULL END,
               lease_owner=NULL, lease_until=NULL, execution_token=NULL, heartbeat_at=now(),
               last_error='执行租约已过期，系统已自动接管', updated_at=now()
         WHERE slot_id=$1 AND status='running'`, params);
@@ -213,8 +231,9 @@ async function select_ops_job_schedule_slots_3(params, client = pool) {
       WHERE (status='pending' AND (next_attempt_at IS NULL OR next_attempt_at <= now())
         OR (status IN ('failed','waiting_external') AND next_attempt_at IS NOT NULL AND next_attempt_at <= now()))
         AND scheduled_for <= now()
+        AND s.result_summary->>'readinessExpiredAt' IS NULL
         AND ($3::int[] IS NULL OR policy.tier = ANY($3))
-        AND s.attempt_count < policy.max_attempts + CASE WHEN s.job_code='nav_snapshot' AND s.result_summary ? 'dependencyRecovery' THEN 1 ELSE 0 END
+        AND ${retryCountSql('s.')} < policy.max_attempts + CASE WHEN s.job_code='nav_snapshot' AND s.result_summary ? 'dependencyRecovery' THEN 1 ELSE 0 END
       ORDER BY policy.tier ASC, scheduled_for ASC, slot_id ASC LIMIT $1`, params);
 }
 
@@ -237,9 +256,12 @@ async function select_ops_job_schedule_slots_4(params, client = pool) {
 }
 
 async function update_ops_job_schedule_slots_11(params, client = pool) {
+  // 收尾结算：只有 failed 且属于新账本的槽才计入失败预算；
+  // degraded/succeeded/blocked/skipped 都不加，legacy 槽保持旧合同（失败由领取计数体现）。
   return client.query(`UPDATE ops.job_schedule_slots
         SET status=$2, last_run_id=COALESCE($5,last_run_id), data_as_of=CASE WHEN $2 IN ('succeeded','degraded') THEN COALESCE($6, data_as_of) ELSE data_as_of END,
-            result_summary=$3::jsonb, last_error=$4, lease_owner=NULL, lease_until=NULL,
+            fail_count=fail_count + CASE WHEN $2::text='failed' AND retry_contract='counters' THEN 1 ELSE 0 END,
+            result_summary=COALESCE(result_summary,'{}'::jsonb) || $3::jsonb, last_error=$4, lease_owner=NULL, lease_until=NULL,
             heartbeat_at=now(), updated_at=now()
       WHERE slot_id=$1 AND status='running'
         AND ($7::text IS NULL OR (execution_token=$7
@@ -248,10 +270,13 @@ async function update_ops_job_schedule_slots_11(params, client = pool) {
 }
 
 async function update_ops_job_schedule_slots_12(params, client = pool) {
+  // 真实执行失败退避：失败预算只在这里累加（等待/续批/收尾成功都不加）。
+  // legacy 存量槽保持旧合同，不写新列。
   return client.query(`UPDATE ops.job_schedule_slots
         SET status='failed', last_run_id=COALESCE($5,last_run_id), trigger_type='auto_retry',
+            fail_count=fail_count + CASE WHEN retry_contract='counters' THEN 1 ELSE 0 END,
             next_attempt_at=now()+($2 || ' minutes')::interval,
-            result_summary=$3::jsonb, last_error=$4, lease_owner=NULL, lease_until=NULL,
+            result_summary=COALESCE(result_summary,'{}'::jsonb) || $3::jsonb, last_error=$4, lease_owner=NULL, lease_until=NULL,
             heartbeat_at=now(), updated_at=now()
       WHERE slot_id=$1 AND status='running'
         AND ($6::text IS NULL OR (execution_token=$6
@@ -259,10 +284,13 @@ async function update_ops_job_schedule_slots_12(params, client = pool) {
 }
 
 async function update_ops_job_schedule_slots_13(params, client = pool) {
+  // 外部保护等待：不动 fail_count（本次不是真实执行失败）。只有 legacy 存量槽继续
+  // 维持旧字段"抵消本次领取"的兼容语义；新账本的 attempt_count 只增不减，避免反向扣减
+  // 让审计看到的领取次数失真。
   return client.query(`UPDATE ops.job_schedule_slots
         SET status='waiting_external', last_run_id=COALESCE($4,last_run_id), trigger_type='auto_retry',
-            next_attempt_at=$2, attempt_count=GREATEST(attempt_count-1,0),
-            result_summary=$3::jsonb, last_error=$5, lease_owner=NULL, lease_until=NULL,
+            next_attempt_at=$2, attempt_count=CASE WHEN retry_contract='legacy' THEN GREATEST(attempt_count-1,0) ELSE attempt_count END,
+            result_summary=COALESCE(result_summary,'{}'::jsonb) || $3::jsonb, last_error=$5, lease_owner=NULL, lease_until=NULL,
             heartbeat_at=now(), updated_at=now()
       WHERE slot_id=$1 AND status='running'
         AND ($6::text IS NULL OR (execution_token=$6
@@ -283,10 +311,13 @@ async function update_ops_job_schedule_slots_14(params, client = pool) {
 }
 
 async function update_ops_job_schedule_slots_15(params, client = pool) {
+  // 续批（部分完成继续跑）：释放回 pending，不动 fail_count——续批不是失败。
+  // 只有 legacy 存量槽保留旧字段兼容扣减；新账本的 attempt_count 只增不减。
+  // legacy 分支仍等价于 attempt_count=GREATEST(attempt_count-1,0)，供旧兼容合同使用。
   return client.query(`UPDATE ops.job_schedule_slots
         SET status='pending', last_run_id=COALESCE($4,last_run_id), trigger_type='auto_retry',
-            attempt_count=GREATEST(attempt_count-1,0), next_attempt_at=$2,
-            result_summary=$3::jsonb, last_error=NULL, lease_owner=NULL, lease_until=NULL,
+            attempt_count=CASE WHEN retry_contract='legacy' THEN GREATEST(attempt_count-1,0) ELSE attempt_count END, next_attempt_at=$2,
+            result_summary=COALESCE(result_summary,'{}'::jsonb) || $3::jsonb, last_error=NULL, lease_owner=NULL, lease_until=NULL,
             heartbeat_at=now(), updated_at=now()
       WHERE slot_id=$1 AND status='running'
         AND ($5::text IS NULL OR (execution_token=$5
@@ -305,12 +336,16 @@ async function update_ops_job_schedule_slots_16(params, client = pool) {
 }
 
 async function update_ops_job_schedule_slots_17(params, client = pool) {
+  // 人工重试：保留 claim_count（领取序列连续可审计），只重置失败预算基线。
+  // 这一步同时把槽切到新账本（retry_contract='counters'）：人工重试就是对存量槽的
+  // 显式定向确认，符合"未经定向确认不切换"。attempt_count=0 维持旧字段兼容语义。
   return client.query(`UPDATE ops.job_schedule_slots
-        SET status='pending', attempt_count=0, next_attempt_at=now(), trigger_type='manual_retry',
+        SET status='pending', attempt_count=0, fail_count=0, retry_contract='counters',
+            next_attempt_at=now(), trigger_type='manual_retry',
             lease_owner=NULL, lease_until=NULL, acknowledged_at=NULL, last_error=NULL,
             execution_token=NULL,
             result_summary='{}'::jsonb, request_payload=request_payload - 'force', updated_at=now()
-      WHERE slot_id=$1 AND status IN ('failed','degraded','blocked','skipped','waiting_external')
+      WHERE slot_id=$1 AND status IN ('failed','degraded','blocked','skipped','waiting_external','waiting_readiness')
       RETURNING *`, params);
 }
 
@@ -415,6 +450,82 @@ async function update_ops_job_schedule_slots_20(params, client = pool) {
               updated_at=now()
         WHERE slot_id=$1
         RETURNING *`, params);
+}
+
+// 就绪等待写入（迁移 206 的 waiting_readiness）：发布/锁/依赖类等待。
+// 与 waiting_external 的区别是不消耗失败预算、不参与"缺 recover_at 三次"规则，
+// 由 sweepStaleSlots 的同周期到期批次统一重验（方案 P0-A）。
+async function update_ops_job_schedule_slots_21(params, client = pool) {
+  // params: [slotId, nextCheckAt, summary, runId, errorMessage, expectedToken]
+  return client.query(`UPDATE ops.job_schedule_slots
+        SET status='waiting_readiness', last_run_id=COALESCE($4,last_run_id), trigger_type='auto_retry',
+            next_attempt_at=$2, attempt_count=CASE WHEN retry_contract='legacy' THEN GREATEST(attempt_count-1,0) ELSE attempt_count END,
+            result_summary=COALESCE(result_summary,'{}'::jsonb) || $3::jsonb, last_error=$5, lease_owner=NULL, lease_until=NULL,
+            heartbeat_at=now(), updated_at=now()
+      WHERE slot_id=$1 AND status='running'
+        AND ($6::text IS NULL OR (execution_token=$6
+             AND lease_until IS NOT NULL AND lease_until > clock_timestamp())) RETURNING *`, params);
+}
+
+// 到期就绪等待的有界批次：不受旧槽 60 分钟最小年龄限制，否则 17:15 的复查点会被挡到 18:10。
+async function listDueReadinessSlots(limit, client = pool) {
+  const { rows } = await client.query(
+    `SELECT *, business_date::text AS business_date, updated_at::text AS updated_at_exact
+       FROM ops.job_schedule_slots
+      WHERE status='waiting_readiness' AND next_attempt_at IS NOT NULL AND next_attempt_at <= now()
+      ORDER BY next_attempt_at ASC, slot_id ASC LIMIT $1`, [limit]);
+  return rows;
+}
+
+// 重验通过：按 updated_at 做乐观锁转回原槽 pending，不新开实例、不直接调 Runner。
+// 就绪观测只在调用方明确传入 readyEvidence 时落库；锁等待唤醒不能伪造数据就绪。
+// readinessFirstReadyAt 是本站观测，不是供应商发布时间；实际 published_at 与分区状态另读。
+async function update_ops_job_schedule_slots_22(params, client = pool) {
+  // params: [slotId, updated_at 文本, readyEvidence JSON]
+  return client.query(`UPDATE ops.job_schedule_slots
+        SET status='pending', next_attempt_at=now(), trigger_type='auto_retry',
+            last_error=NULL,
+             result_summary = COALESCE(result_summary,'{}'::jsonb)
+               || jsonb_build_object('waitingReadiness', false, 'readinessReadyAt', now()::text)
+               || COALESCE($3::jsonb, '{}'::jsonb),
+            updated_at=now()
+      WHERE slot_id=$1 AND status='waiting_readiness' AND updated_at=$2::timestamptz
+      RETURNING *, business_date::text AS business_date`, params);
+}
+
+// 仍未就绪：只在原状态上推进下一个检查点，保留首次观测和等待原因。
+async function update_ops_job_schedule_slots_23(params, client = pool) {
+  // params: [slotId, nextCheckAt, summary, errorMessage, updated_at 文本]
+  return client.query(`UPDATE ops.job_schedule_slots
+        SET next_attempt_at=$2, result_summary=COALESCE(result_summary,'{}'::jsonb) || $3::jsonb, last_error=$4, updated_at=now()
+      WHERE slot_id=$1 AND status='waiting_readiness' AND updated_at=$5::timestamptz
+      RETURNING *`, params);
+}
+
+// 就绪等待超期：只升级状态与证据，不凭空记一次执行失败。
+// 依赖未发布可以在任何一次执行之前就进入等待（claim_count=0），把它算成"执行失败"
+// 会直接破坏"领取 = 失败 + 等待 + 续批 + 成功 + 其他结算 + 未结算"的守恒。
+// 超期仍是真实故障，由告警与 failed 状态体现；next_attempt_at 置空避免自动重领，
+// 人工重试走 retryJobSlot 显式重新排队。
+async function update_ops_job_schedule_slots_24(params, client = pool) {
+  // params: [slotId, summary, errorMessage, updated_at 文本]
+  return client.query(`UPDATE ops.job_schedule_slots
+        SET status='failed', next_attempt_at=NULL,
+            result_summary=COALESCE(result_summary,'{}'::jsonb) || $2::jsonb, last_error=$3, updated_at=now()
+      WHERE slot_id=$1 AND status='waiting_readiness' AND updated_at=$4::timestamptz
+      RETURNING *`, params);
+}
+
+// 候选阶段发现依赖分区未发布：试点任务转入就绪等待，不写数据集故障告警、不判永久失败。
+// 只接受 pending，已失败或已阻塞的槽保持原状，等它自己的证据，不做隐式翻案。
+async function update_ops_job_schedule_slots_25(params, client = pool) {
+  // params: [slotId, nextCheckAt, summary 增量, errorMessage]
+  return client.query(`UPDATE ops.job_schedule_slots
+        SET status='waiting_readiness', next_attempt_at=$2,
+            result_summary=COALESCE(result_summary,'{}'::jsonb) || $3::jsonb,
+            last_error=$4, updated_at=now()
+      WHERE slot_id=$1 AND status='pending'
+      RETURNING *, business_date::text AS business_date`, params);
 }
 
 // 通用语句执行入口：供「可注入查询器」的默认实现使用，连接与执行留在数据层
@@ -571,4 +682,10 @@ module.exports = {
   select_job_runs_3,
   update_ops_job_schedule_slots_19,
   update_ops_job_schedule_slots_20,
+  update_ops_job_schedule_slots_21,
+  update_ops_job_schedule_slots_22,
+  update_ops_job_schedule_slots_23,
+  update_ops_job_schedule_slots_24,
+  update_ops_job_schedule_slots_25,
+  listDueReadinessSlots,
 };

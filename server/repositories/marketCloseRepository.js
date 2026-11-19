@@ -52,14 +52,76 @@ async function upsert_daily_bar_evidence(params, client = pool) {
   );
 }
 
-// 某交易日某市场已核验的日线只数：分区行数必须来自实际证据行，不能凭"本次采到了几条"自报。
+// 某交易日某市场某品种已核验的日线只数：分区行数必须来自实际证据行，
+// 不能凭“本次采到了几条”自报，也不能用 A 股行证明可转债/基金覆盖。
 async function count_position_close_bars(params, client = pool) {
   return client.query(
     `SELECT COUNT(*)::int AS row_count
        FROM market.daily_bars b JOIN core.instruments i ON i.instrument_id=b.instrument_id
       WHERE b.trade_date=$1::date AND i.market=$2
-        AND b.bar_status='terminal' AND b.price_adjust='none' AND b.quality_status='passed'`,
+        AND b.bar_status='terminal' AND b.price_adjust='none' AND b.quality_status='passed'
+        AND ($3::text IS NULL OR (
+          ($3='stock' AND i.asset_class IN ('stock','equity')
+            AND regexp_replace(i.canonical_code,'\\D','','g') !~ '^(11|12)\\d{4}$'
+            AND regexp_replace(i.canonical_code,'\\D','','g') !~ '^(5|15|16|17|180|181|184)')
+          OR ($3='bond' AND (i.asset_class='convertible_bond'
+            OR regexp_replace(i.canonical_code,'\\D','','g') ~ '^(11|12)\\d{4}$'))
+          OR ($3='fund' AND regexp_replace(i.canonical_code,'\\D','','g') ~ '^(5|15|16|17|180|181|184)')
+          OR ($3='hk_stock' AND (upper(i.market)='HK' OR i.canonical_code ~ '\\.HK$'))
+        ))`,
     params
+  );
+}
+
+// 终盘分区的覆盖对账：目标证券 = 本任务当天已确认账户日价 ∪ 当前持仓中属于该品种的证券，
+// 覆盖证券 = 该市场该日已落库的合格终盘日线。
+// 只统计已确认日价会把"连账户日价都没确认（终盘候选未转正）"的证券漏出分母，
+// 分母偏小就会把未补齐的分区判成覆盖完整。持仓并集补上这部分；历史补跑时持仓已变，
+// 已确认日价那一份仍保留，避免只依赖当前持仓。这里只做计数，不写任何事实。
+async function count_close_bar_coverage(params, client = pool) {
+  return client.query(
+    `WITH scoped AS (
+       SELECT regexp_replace(code,'\\D','','g') AS num
+         FROM daily_prices
+        WHERE date=$1::text AND upper(market)=upper($2)
+          AND quality='confirmed' AND is_final=true
+          AND code IS NOT NULL AND code <> ''
+          AND ($4::text[] IS NULL OR username = ANY($4::text[]))
+       UNION ALL
+       SELECT regexp_replace(code,'\\D','','g') AS num
+         FROM positions
+        WHERE code IS NOT NULL AND code <> '' AND quantity::float8 > 0
+          AND ($4::text[] IS NULL OR username = ANY($4::text[]))
+     ), target AS (
+       SELECT DISTINCT num FROM scoped
+        WHERE (
+          (upper($2)='HK' AND num ~ '^\\d{5}$')
+          OR (upper($2)<>'HK' AND $3::text='stock' AND num ~ '^\\d{6}$'
+            AND num !~ '^(11|12)\\d{4}$' AND num !~ '^(5|15|16|17|180|181|184)')
+          OR (upper($2)<>'HK' AND $3::text='bond' AND num ~ '^(11|12)\\d{4}$')
+          OR (upper($2)<>'HK' AND $3::text='fund' AND num ~ '^(5|15|16|17|180|181|184)')
+          OR (upper($2)<>'HK' AND $3::text IS NULL AND num ~ '^\\d{6}$')
+        )
+     ), covered AS (
+       SELECT DISTINCT regexp_replace(i.canonical_code,'\\D','','g') AS num
+         FROM market.daily_bars b JOIN core.instruments i ON i.instrument_id=b.instrument_id
+        WHERE b.trade_date=$1::date AND upper(i.market)=upper($2)
+          AND b.bar_status='terminal' AND b.price_adjust='none' AND b.quality_status='passed'
+     )
+     SELECT (SELECT COUNT(*)::int FROM target) AS expected_count,
+            (SELECT COUNT(*)::int FROM target t
+              WHERE EXISTS (SELECT 1 FROM covered c WHERE c.num=t.num)) AS covered_count`,
+    params
+  );
+}
+
+async function select_position_close_partition(params, client = pool) {
+  return client.query(
+    `SELECT diagnostics
+       FROM ops.dataset_partitions
+      WHERE dataset_code=$1 AND scope_key=$2 AND partition_key=$3::date
+      LIMIT 1`,
+    params,
   );
 }
 
@@ -170,7 +232,7 @@ module.exports = {
   select_daily_prices,
   select_published_daily_bar,
   upsert_daily_bar_evidence,
-  count_position_close_bars,
+  count_position_close_bars, count_close_bar_coverage, select_position_close_partition,
   upsert_bar_gap,
   resolve_bar_gap,
   select_open_bar_gaps,

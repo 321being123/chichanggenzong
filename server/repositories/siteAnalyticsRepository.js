@@ -40,9 +40,15 @@ async function select_users(params, client = pool) {
         WHERE created_at >= $1 AND created_at < $2`, params);
 }
 
+// 待处理告警口径（方案 2026-11-18 P1）：必须与后台任务页共用同一判据和同一计数单位。
+// 任务页展示的是“按根因归并后的告警组数”，这里若按原始告警条数 COUNT(*) 统计，
+// 同一快照必然对不上（一条根因多条通知时就分叉）。因此复用 countAlertGroupsByStatus
+// ——活动告警判据与根因键都只有一处定义，且不受任何列表分页上限影响。
 async function select_ops_alert_notifications(params, client = pool) {
-  return client.query(`SELECT COUNT(*)::int AS pending_exceptions FROM ops.alert_notifications
-        WHERE status NOT IN ('resolved','acknowledged','suppressed')`, params);
+  const { countAlertGroupsByStatus } = require('./jobAlertMailerRepository');
+  const { rows } = await countAlertGroupsByStatus(client);
+  const pending = rows.reduce((sum, row) => sum + Number((row && row.count) || 0), 0);
+  return { rows: [{ pending_exceptions: pending }] };
 }
 
 async function select_ops_site_runtime_minute(params, client = pool) {
@@ -106,8 +112,9 @@ async function select_ops_job_schedule_slots(params, client = pool) {
 }
 
 async function select_ops_alert_notifications_1(params, client = pool) {
+  const { ACTIVE_ALERT_WHERE } = require('./jobAlertMailerRepository');
   return client.query(`SELECT status, severity, COUNT(*)::int AS count FROM ops.alert_notifications
-        WHERE status NOT IN ('resolved','acknowledged','suppressed') GROUP BY status, severity ORDER BY count DESC`);
+        WHERE ${ACTIVE_ALERT_WHERE} GROUP BY status, severity ORDER BY count DESC`);
 }
 
 async function select_ops_external_call_budgets(params, client = pool) {

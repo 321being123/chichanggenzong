@@ -95,6 +95,20 @@ function isCnHoliday(dateStr) {
   return list.indexOf(dateStr) >= 0;
 }
 
+// 交易日判断（周末与休市日的唯一运行时口径）：任务调度和"休市跳过发布"都读这里。
+// 年份未覆盖时抛错——调用方必须按"无法确认休市"处理，不能默认当天休市。
+// 星期几用北京中午解析再取 UTC 星期，避免容器时区影响（与逆回购清算日历同口径）。
+function isTradingDate(dateStr) {
+  const text = String(dateStr || '').trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) throw new TypeError('交易日判断需要 YYYY-MM-DD 日期');
+  const obj = loadHolidays();
+  const year = text.slice(0, 4);
+  if (!obj.years || !Array.isArray(obj.years[year])) throw new Error('缺少 ' + year + ' 年休市日历');
+  const weekday = new Date(text + 'T12:00:00+08:00').getUTCDay();
+  if (weekday === 0 || weekday === 6) return false;
+  return !isCnHoliday(text);
+}
+
 // 已覆盖的最新年份（用于判断是否跨年需联网）
 function getCoveredYear(obj) {
   obj = obj || loadHolidays();
@@ -104,4 +118,4 @@ function getCoveredYear(obj) {
 
 function getHolidayLoadError() { return _loadError; }
 
-module.exports = { loadHolidays, saveHolidays, isCnHoliday, getCoveredYear, getHolidayLoadError, CONFIG, SEED_CONFIG };
+module.exports = { loadHolidays, saveHolidays, isCnHoliday, isTradingDate, getCoveredYear, getHolidayLoadError, CONFIG, SEED_CONFIG };

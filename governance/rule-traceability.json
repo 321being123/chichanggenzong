@@ -6170,6 +6170,26 @@
       ],
       "owner": "WorkBuddy",
       "status": "local_verified"
+    },
+    {
+      "id": "DATE-TRADING-CALENDAR-001",
+      "title": "交易日判断只读运行时休市日历（周末＋休市日），年份缺失时按交易日拒绝跳过发布",
+      "implementation": {
+        "file": "server/config/holidays.js",
+        "symbol": "isTradingDate"
+      },
+      "tests": [
+        {
+          "file": "server/test/nav-repo-eod.test.js",
+          "pattern": "休市日不外采、不发布分区"
+        },
+        {
+          "file": "server/test/nav-repo-eod.test.js",
+          "pattern": "是交易日，不得跳过发布"
+        }
+      ],
+      "owner": "WorkBuddy",
+      "status": "local_verified"
     }
   ]
 }

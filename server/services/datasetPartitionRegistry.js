@@ -285,11 +285,17 @@ function strictBusinessDate(value) {
   return `${matched[1]}-${matched[2]}-${matched[3]}`;
 }
 
-// 独立核验业务日是否交易日（与利率采集同一份日历口径）。
-// 调用方必须先通过 strictBusinessDate：说不清日期就不允许跳过发布。
+// 独立核验业务日是否交易日：经 infrastructure 层的交易日历读取（同一份运行时休市日历）。
+// 调用方必须先通过 strictBusinessDate；日历缺失或无法判断时按"交易日"处理，
+// 宁可报错拒绝跳过，也不能在说不清的情况下放行。
 function isTradingBusinessDate(date) {
-  const { tradingDates } = require('./repoDailyRates');
-  return tradingDates(date, date).length > 0;
+  try {
+    const { isTradingDate } = require('../db/tradingCalendar');
+    return isTradingDate(date);
+  } catch (error) {
+    console.warn('[dataset-partition] 交易日判断失败，按交易日处理：' + (error && error.message));
+    return true;
+  }
 }
 
 async function publishJobDatasets(jobCode, businessDate, result) {

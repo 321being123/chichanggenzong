@@ -40,9 +40,9 @@ function check(name, fn) {
     }
     await cleanup();
     const ia = await pool.query(
-      `INSERT INTO core.instruments(canonical_code,name,asset_class,market) VALUES ($1,'DC测试股票A','stock','SH') RETURNING instrument_id`, [CODE_A]);
+      `INSERT INTO core.instruments(canonical_code,name,asset_class,market,exchange_code) VALUES ($1,'DC测试股票A','stock','CN','SSE') RETURNING instrument_id`, [CODE_A]);
     const ib = await pool.query(
-      `INSERT INTO core.instruments(canonical_code,name,asset_class,market) VALUES ($1,'DC测试股票B','stock','SZ') RETURNING instrument_id`, [CODE_B]);
+      `INSERT INTO core.instruments(canonical_code,name,asset_class,market,exchange_code) VALUES ($1,'DC测试股票B','stock','CN','SZSE') RETURNING instrument_id`, [CODE_B]);
     const idA = ia.rows[0].instrument_id, idB = ib.rows[0].instrument_id;
     await pool.query(
       `INSERT INTO market.daily_valuations(instrument_id,trade_date,source_id,total_market_cap) VALUES
@@ -57,7 +57,7 @@ function check(name, fn) {
         `SELECT COALESCE(SUM(dv.total_market_cap),0)::double precision AS total_cap, COUNT(*)::int AS stock_count
          FROM market.daily_valuations dv
          JOIN core.instruments i ON i.instrument_id = dv.instrument_id
-         WHERE i.asset_class='stock' AND dv.trade_date=$1 AND dv.total_market_cap>0`, [DATE_NEW]);
+         WHERE i.asset_class='stock' AND i.market='CN' AND dv.currency_code='CNY' AND dv.trade_date=$1 AND dv.total_market_cap>0`, [DATE_NEW]);
       const expectCap = CAP_A_NEW + CAP_B_NEW; // 1.3 + 0.5 = 1.8 万亿元（元）
       const expectCount = 2;
 

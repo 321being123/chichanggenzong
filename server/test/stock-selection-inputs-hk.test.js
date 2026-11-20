@@ -274,13 +274,14 @@ async function main() {
 
   await check('港股金融标准事实不能用普通股专属科目冒充归母合计', async () => {
     const calls = [];
+    let includeParentEquity = true;
     stub('../services/lixingerOfficial', {
       callEndpoint: async (endpoint, params) => {
         calls.push({ endpoint, metrics: params.metricsList });
         return { rows: [{ date: '2025-12-31', standardDate: '2025-12-31', reportDate: '2026-03-01',
           reportType: 'annual_report', currency: 'USD', q: {
             ps: { oi: { t: 7, t_o: 1 }, npatoshopc: { t: 350, t_o: 45 }, npatshaoehopc: { t: 428, t_o: 55 } },
-            bs: { ta: { t: 15, t_o: 2 }, tl: { t: 900 }, tetoshopc: { t: 3509, t_o: 451 }, tetshaoehopc: { t: 4287, t_o: 551 } },
+            bs: { ta: { t: 15, t_o: 2 }, tl: { t: 900 }, tetoshopc: { t: 3509, t_o: 451 }, tetshaoehopc: { t: 4287, t_o: includeParentEquity ? 551 : null } },
           } }] };
       },
     });
@@ -301,10 +302,15 @@ async function main() {
     const insuranceStart = calls.length;
     const insurance = await read('insurance');
     assert.strictEqual(insurance.income[0].n_income_attr_p, undefined);
-    assert.strictEqual(insurance.balance[0].total_hldr_eqy_exc_min_int, undefined);
+    assert.strictEqual(insurance.balance[0].total_hldr_eqy_exc_min_int, 551);
     assert.ok(!calls[insuranceStart].metrics.includes('q.ps.npatshaoehopc.t_o'));
-    assert.ok(!calls[insuranceStart].metrics.includes('q.bs.tetshaoehopc.t_o'));
+    assert.ok(calls[insuranceStart].metrics.includes('q.bs.tetshaoehopc.t_o'));
     assert.strictEqual(insurance.balance[0].__statement_metrics['bs.tetoshopc'], 451);
+    assert.strictEqual((await read('security')).balance[0].total_hldr_eqy_exc_min_int, 551);
+    includeParentEquity = false;
+    const withoutParent = (await read('security')).balance[0];
+    assert.strictEqual(withoutParent.total_hldr_eqy_exc_min_int, null, '不能用普通股金额或换算后的金额填归母合计');
+    assert.strictEqual(withoutParent.__statement_metrics['bs.tetoshopc'], 451);
   });
 
   await check('港股通清单接口：按 isMutualMarketAhFlag 取数并解析每手股数与财报类型', async () => {

@@ -19,7 +19,8 @@ const datasets = fs.readFileSync(path.join(__dirname, '..', 'dataAccess', 'marke
 assert.ok(datasets.includes('getTotalMarketCap(date)'), '统一层聚合未传目标交易日');
 assert.ok(svc.includes('async function getTotalMarketCap(tradeDate)'), 'getTotalMarketCap 未接收 tradeDate 参数');
 assert.ok(repo.includes('dv.trade_date = $1'), 'getTotalMarketCap 未按 trade_date 过滤完整分区');
-assert.ok(repo.includes("i.asset_class = 'stock'"), 'getTotalMarketCap 未限定股票资产类别');
+assert.ok(repo.includes("i.asset_class = 'stock' AND i.market = 'CN' AND dv.currency_code = 'CNY'"), '统一层聚合需限定人民币 A 股');
+assert.match(datasets, /count\(DISTINCT v\.instrument_id\)[\s\S]*?i\.market = 'CN'[\s\S]*?i\.asset_class = 'stock' AND v\.currency_code = 'CNY'/, '官方总市值回退的证券计数需去重并使用同一市场及币种范围');
 assert.ok(/totalMarketCap\(\{ tradeDate \}\)/.test(svc), '服务必须转发到仓储聚合实现');
 
 // P0-1-②：单位换算——daily_valuations 为元，写入亿元列须除以 1e8；Tushare 万元 ÷ 1e4

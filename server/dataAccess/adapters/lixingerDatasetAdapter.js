@@ -441,7 +441,7 @@ function fillStaticPe(rows, annuals) {
 const HK_VALUATION_METRICS = ['pe_ttm', 'pb', 'dyr', 'mc'];
 
 // 港股金融类型各走自己的端点；只使用该类型的官方科目目录，禁止混发非金融类型科目。
-// 普通股专属指标仍可展示；银行的归母合计指标已对 00005.HK 实样验证，其他类型保留未核实缺口。
+// 普通股专属指标仍可展示。归母合计只映射已验证的报告类型和对应原币科目。
 const HK_FINANCIAL_TABLE_TYPES = new Set(['bank', 'insurance', 'security', 'reit', 'other_financial']);
 const HK_FINANCIAL_REPORT_METRICS = {
   income: { revenue: 'ps.oi', total_profit: 'ps.tp' },
@@ -544,12 +544,17 @@ async function resolveFinancialReports({ tsCode, startDate, endDate, kinds = ['i
   const tableType = requestedType;
   const financialTable = Boolean(tableType && tableType !== 'non_financial');
   const typeCodes = new Set(reportMetrics.metricsOfType(market, tableType).map(item => item.code));
-  // 银行端点实样确认支持归母合计；其他金融类型权限尚未逐一核实，保留缺口。
-  const rawMapping = hk ? (financialTable ? (tableType === 'bank' ? {
+  // 证券和保险的原币归母权益已用对应 HKFRS 合计科目核验；利润仍沿用已验证的银行映射。
+  const hkFinancialMapping = {
     ...HK_FINANCIAL_REPORT_METRICS,
-    income: { ...HK_FINANCIAL_REPORT_METRICS.income, n_income_attr_p: 'ps.npatshaoehopc' },
-    balance: { ...HK_FINANCIAL_REPORT_METRICS.balance, total_hldr_eqy_exc_min_int: 'bs.tetshaoehopc' },
-  } : HK_FINANCIAL_REPORT_METRICS) : HK_REPORT_METRICS) : REPORT_METRICS;
+    ...(tableType === 'bank' && {
+      income: { ...HK_FINANCIAL_REPORT_METRICS.income, n_income_attr_p: 'ps.npatshaoehopc' },
+    }),
+    ...(['bank', 'insurance', 'security'].includes(tableType) && {
+      balance: { ...HK_FINANCIAL_REPORT_METRICS.balance, total_hldr_eqy_exc_min_int: 'bs.tetshaoehopc' },
+    }),
+  };
+  const rawMapping = hk ? (financialTable ? hkFinancialMapping : HK_REPORT_METRICS) : REPORT_METRICS;
   // A 股金融类型不能混入非金融科目；m.* 衍生项沿用已有映射，三表项必须在对应端点目录中。
   const mapping = hk || !financialTable ? rawMapping : Object.fromEntries(Object.entries(rawMapping).map(([kind, fields]) => [kind,
     Object.fromEntries(Object.entries(fields).filter(([, code]) => (Array.isArray(code) ? code : [code])

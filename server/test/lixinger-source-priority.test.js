@@ -13,7 +13,7 @@ const { pool } = require('../db/connection');
 const { migration180LixingerOfficialSource, migration181LixingerOfficialPriority } = require('../db/migrations/lixingerOfficialSource');
 const stockRepository = require('../repositories/stockRepository');
 
-const CODE = 'PRIO999.SH';
+const CODE = '999996.SH';
 const DAY = '2026-10-30';
 
 (async () => {
@@ -40,8 +40,8 @@ const DAY = '2026-10-30';
     // 不假设该日期为空：增量仍是 900 才说明取到官方那条、且这只证券只计一次。
     const before = await stockRepository.totalMarketCap({ tradeDate: DAY }, client);
     const instrument = await client.query(
-      `INSERT INTO core.instruments(canonical_code,name,asset_class,market)
-       VALUES($1,'优先级测试股票','stock','SH') RETURNING instrument_id`,
+      `INSERT INTO core.instruments(canonical_code,name,asset_class,market,exchange_code)
+       VALUES($1,'优先级测试股票','stock','CN','SSE') RETURNING instrument_id`,
       [CODE],
     );
     const instrumentId = instrument.rows[0].instrument_id;

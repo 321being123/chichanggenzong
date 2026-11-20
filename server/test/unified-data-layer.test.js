@@ -85,8 +85,8 @@ async function checkAsync(name, fn) {
     const TEST_STOCK_CODE = '999901.SH';
     await pool.query(`DELETE FROM core.instruments WHERE canonical_code=$1`, [TEST_STOCK_CODE]);
     const insStock = await pool.query(
-      `INSERT INTO core.instruments(canonical_code,name,asset_class,market)
-       VALUES ($1,'CI测试股票','stock','SH') RETURNING instrument_id`, [TEST_STOCK_CODE]);
+      `INSERT INTO core.instruments(canonical_code,name,asset_class,market,exchange_code)
+       VALUES ($1,'CI测试股票','stock','CN','SSE') RETURNING instrument_id`, [TEST_STOCK_CODE]);
     const { rows: srcRows } = await pool.query(
       `SELECT source_id FROM ops.data_sources WHERE source_code='tushare' LIMIT 1`);
     const srcId = srcRows.length ? srcRows[0].source_id : 1;

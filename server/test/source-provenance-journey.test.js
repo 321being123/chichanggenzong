@@ -170,6 +170,26 @@ async function cleanup() {
       '官方优先级必须小于备源（数值小者优先），否则上面的断言只是碰巧通过');
     console.log('  ✓ 业务层：同证券同日双来源按优先级择一，取官方值且不重复计数');
 
+    // 回归 11-18：港股即使与 A 股同日入库，也不能抬高 A 股市值或证券数。
+    const tx = await pool.connect();
+    try {
+      await tx.query('BEGIN');
+      const { rows: [hk] } = await tx.query(`INSERT INTO core.instruments
+        (canonical_code, name, asset_class, market, exchange_code, status)
+        VALUES ('99998.HK','市值范围测试股','stock','HK','HKEX','listed')
+        ON CONFLICT (canonical_code) DO UPDATE SET name=EXCLUDED.name RETURNING instrument_id`);
+      await tx.query(`INSERT INTO market.daily_valuations
+        (instrument_id,trade_date,source_id,total_market_cap,currency_code)
+        VALUES ($1,$2,$3,100000000,'HKD')
+        ON CONFLICT (instrument_id,trade_date,source_id) DO UPDATE SET total_market_cap=EXCLUDED.total_market_cap`,
+      [hk.instrument_id, DAY, sourceIds.lixinger_official.id]);
+      assert.deepStrictEqual(await stockRepository.totalMarketCap({ tradeDate: DAY }, tx), after,
+        '同日港币港股估值不得进入 A 股总市值或证券数量');
+    } finally {
+      await tx.query('ROLLBACK');
+      tx.release();
+    }
+
     // 反例一：只有备源时，业务侧应取到备源值——这是合法的降级，不是伪造官方
     await pool.query('DELETE FROM market.daily_valuations WHERE instrument_id=$1 AND trade_date=$2 AND source_id=$3',
       [instrumentId, DAY, sourceIds.lixinger_official.id]);

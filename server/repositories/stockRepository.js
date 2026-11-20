@@ -65,7 +65,8 @@ async function totalMarketCap(params = {}, tx) {
          FROM market.daily_valuations dv
          JOIN core.instruments i ON i.instrument_id = dv.instrument_id
          LEFT JOIN ops.data_sources s ON s.source_id = dv.source_id
-        WHERE i.asset_class = 'stock' AND dv.trade_date = $1 AND dv.total_market_cap > 0
+        WHERE i.asset_class = 'stock' AND i.market = 'CN' AND dv.currency_code = 'CNY'
+          AND dv.trade_date = $1 AND dv.total_market_cap > 0
         ORDER BY dv.instrument_id, s.priority ASC NULLS LAST, dv.source_id ASC
      )
      SELECT COALESCE(SUM(total_market_cap), 0)::double precision AS total_cap,

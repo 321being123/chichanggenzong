@@ -431,7 +431,10 @@ async function readTotalAShareMarketCap({ day, minUnifiedCount = 1000 } = {}) {
       const capYi = Number(primary.value.raw.mc_om) / YUAN_TO_100M;
       // 官方只给 A 股市值、不给证券只数：用当日估值分区的实际行数补，写 0 会被误读成"没有证券"。
       const { rows } = await require('../db/connection').pool
-        .query('SELECT count(*)::int AS n FROM market.daily_valuations WHERE trade_date = $1::date', [date]);
+        .query(`SELECT count(DISTINCT v.instrument_id)::int AS n
+                  FROM market.daily_valuations v JOIN core.instruments i USING (instrument_id)
+                 WHERE v.trade_date = $1::date AND i.market = 'CN'
+                   AND i.asset_class = 'stock' AND v.currency_code = 'CNY'`, [date]);
       const valuationRows = Number(rows[0] && rows[0].n) || 0;
       // 分区不完整时（当天估值还没采、或只采了一部分）不能拿这个小数字当证券只数：
       // ① 写库会撞 chk_a_share_security_count（security_count >= 1000）；

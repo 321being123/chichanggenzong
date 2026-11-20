@@ -1268,7 +1268,18 @@
         }
       ],
       "owner": "A股 IPO",
-      "status": "implemented",
+      "status": "production_verified",
+      "sharedLayerProductionEvidence": {
+        "codeCommit": "cc2a8902",
+        "job": "ipo_history_sync",
+        "slotIds": ["2568046", "2616836"],
+        "runIds": [8385, 8387],
+        "targetCode": "920309.BJ",
+        "sharedMembershipId": 14262,
+        "classificationDate": "2026-11-18",
+        "l2Code": "340700",
+        "externalCalls": 0
+      },
       "productionEvidence": {
         "codeCommit": "df58692",
         "job": "ipo_history_sync",

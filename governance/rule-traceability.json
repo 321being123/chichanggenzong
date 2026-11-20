@@ -1236,7 +1236,7 @@
     },
     {
       "id": "IPO-INDUSTRY-L2-002",
-      "title": "申万行业路径独立增量缓存，未上市成功空结果正常待收录，收录后原任务更新",
+      "title": "申万行业按目标业务日读取共享分类，未上市未收录为正常等待",
       "implementation": {
         "file": "ipo-report/ipo_history_sync.py",
         "symbol": "sync_sw_industry_taxonomies"
@@ -1244,19 +1244,23 @@
       "tests": [
         {
           "file": "ipo-report/test_ipo_history_sync.py",
-          "pattern": "申万二级行业路径入库且不覆盖官方行业事实"
+          "pattern": "申万共享查询按身份、体系和目标日期限制分类"
         },
         {
           "file": "ipo-report/test_ipo_history_sync.py",
-          "pattern": "未上市申万成功空结果记正常待收录且不伪造分类"
+          "pattern": "共享二级行业路径入库且保留发行披露字段"
         },
         {
           "file": "ipo-report/test_ipo_history_sync.py",
-          "pattern": "上市日申万空结果仍为真实缺口不能沿用未上市豁免"
+          "pattern": "未上市共享层无申万分类记正常待收录"
         },
         {
           "file": "ipo-report/test_ipo_history_sync.py",
-          "pattern": "上游收录后真实分类替换待收录状态"
+          "pattern": "上市日共享层缺分类仍为真实缺口"
+        },
+        {
+          "file": "ipo-report/test_ipo_history_sync.py",
+          "pattern": "共享层收录后替换待收录状态"
         },
         {
           "file": "ipo-report/test_ipo_history_sync.py",
@@ -1264,7 +1268,7 @@
         }
       ],
       "owner": "A股 IPO",
-      "status": "production_verified",
+      "status": "implemented",
       "productionEvidence": {
         "codeCommit": "df58692",
         "job": "ipo_history_sync",

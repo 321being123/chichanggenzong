@@ -28,8 +28,14 @@ async function runJobByCode(jobCode, reason = 'manual-retry', businessDate, cont
       return require('../jobs/indexBaseline').runIndexBaselineJob(reason);
     case 'index_recent':
       return require('../jobs/indexBaseline').runIndexRecentJob();
-    case 'market_volatility_sync':
-      return require('../jobs/marketVolatilitySync').runMarketVolatilitySync(context);
+    case 'market_volatility_sync': {
+      const marketCycle = require('../jobs/marketVolatilitySync');
+      const { shanghaiDateText } = require('./jobReadiness');
+      if (reason === 'manual-retry' && context.slotId && businessDate && businessDate < shanghaiDateText()) {
+        return marketCycle.revalidateHistoricalMarketVolatility(businessDate);
+      }
+      return marketCycle.runMarketVolatilitySync(context);
+    }
     case 'stock_analysis_refresh':
       return require('../jobs/stockAnalysisRefresh').runStockAnalysisRefresh(reason, {
         ...context,

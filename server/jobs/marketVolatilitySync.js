@@ -394,6 +394,42 @@ async function readMarketSubdatasetFreshness(targetDate) {
   return diagnostics;
 }
 
+async function revalidateHistoricalMarketVolatility(businessDate) {
+  const { getPartition } = require('../services/datasetPartitions');
+  const { isPublishedDatasetEvidence } = require('../services/datasetPartitionRegistry');
+  const datasetCode = 'market_volatility';
+  const partition = await getPartition(datasetCode, 'GLOBAL', businessDate);
+  const diagnostics = partition?.diagnostics;
+  const subdatasets = diagnostics?.subdatasets;
+  const validPartition = isPublishedDatasetEvidence(partition, datasetCode, { requireQuality: true })
+    && partition.partition_key === businessDate && partition.data_as_of === businessDate
+    && Number(partition.row_count) > 0
+    && diagnostics.historical_cutoff === businessDate
+    && diagnostics.query_status === 'success' && diagnostics.coverage_status === 'complete'
+    && Array.isArray(diagnostics.stale_subdatasets) && diagnostics.stale_subdatasets.length === 0;
+  const validatedInputs = Object.entries(MARKET_SUBDATASET_POLICIES).every(([code, policy]) => {
+    const row = subdatasets?.[code];
+    if (row?.status !== 'fresh' || !/^\d{4}-\d{2}-\d{2}$/.test(row.data_as_of || '')
+        || row.data_as_of > businessDate) return false;
+    const lag = policy.maxLagMonths != null ? row.lag_months : row.lag_days;
+    const limit = policy.maxLagMonths ?? policy.maxLagDays;
+    return Number.isInteger(lag) && lag >= 0 && lag <= limit;
+  });
+  if (!validPartition || !validatedInputs
+      || subdatasets.a_share_market_cap.data_as_of !== businessDate
+      || subdatasets.m2_market_cap.data_as_of !== businessDate) {
+    return {
+      ok: false, status: 'failed', errorCode: 'DATASET_INCOMPLETE', errorType: 'data_quality',
+      error: '历史市场周期缺少原业务日的完整验收证据',
+      failedDatasets: [datasetCode], publishDatasets: false,
+    };
+  }
+  return {
+    ok: true, status: 'succeeded', dataAsOf: businessDate, publishDatasets: false,
+    externalCalls: 0, datasetDiagnostics: { [datasetCode]: diagnostics },
+  };
+}
+
 async function runMarketVolatilitySync(context = {}) {
   if (!(await tryClaimJob('market_volatility_sync'))) return { skipped: true, reason: 'locked' };
   const id = await startJobRun('market_volatility_sync');
@@ -458,4 +494,4 @@ async function runMarketVolatilitySync(context = {}) {
 function scheduleMarketVolatilitySync() { runMarketVolatilitySync().catch(e => console.error('股市波动首次同步失败:', e.message)); const now=new Date(), next=new Date(); next.setHours(18,45,0,0); if(next<=now) next.setDate(next.getDate()+1); const first=setTimeout(function(){ runMarketVolatilitySync().catch(e=>console.error('股市波动同步失败:',e.message)); const timer=setInterval(()=>runMarketVolatilitySync().catch(e=>console.error('股市波动同步失败:',e.message)),86400000); if(timer.unref) timer.unref(); }, next-now); if(first.unref) first.unref(); }
 module.exports = { syncChinaYield, syncCsiIndexPe, syncCsiPeFromOfficial, CSI_OFFICIAL_PE_SINCE, syncHsiPe, syncUsTreasuryYield, calculateGraham, parseHsiWorkbook,
   syncCsi300Valuation, syncMoneySupply, tradeMonthEnds, syncAShareMarketCap, calculateM2MarketCap,
-  syncMarketCycleMetrics, runMarketVolatilitySync, scheduleMarketVolatilitySync, readMarketSubdatasetFreshness };
+  syncMarketCycleMetrics, runMarketVolatilitySync, revalidateHistoricalMarketVolatility, scheduleMarketVolatilitySync, readMarketSubdatasetFreshness };

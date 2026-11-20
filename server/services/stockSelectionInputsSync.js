@@ -390,11 +390,17 @@ async function resolveHkTargetPool({ asOfDate, fsTableTypes = ['non_financial', 
  * 判据沿用选股池既有的「近 60 天无行情即停止交易」口径；从未有过行情的新上市标的
  * 仍保留为真实待补，不把缺口伪装成完成。只分类，不取数、不写库。
  */
-function classifyUnavailableHkCodes({ pending, metaByCode, everTraded }) {
+function classifyUnavailableHkCodes({ pending, metaByCode, everTraded, asOfDate }) {
   const excluded = [];
   const eligible = [];
   for (const code of pending || []) {
-    if (!metaByCode.get(code)) { excluded.push({ code, reason: 'instrument_missing' }); continue; }
+    const meta = metaByCode.get(code);
+    if (!meta) { excluded.push({ code, reason: 'instrument_missing' }); continue; }
+    const listingDate = dashDate(meta.list_date);
+    if (asOfDate && listingDate && listingDate > asOfDate) {
+      excluded.push({ code, reason: 'not_listed_on_target_date', listingDate });
+      continue;
+    }
     if (everTraded.has(code)) { excluded.push({ code, reason: 'no_recent_bars_suspended_or_delisted' }); continue; }
     eligible.push(code);
   }
@@ -436,7 +442,7 @@ async function syncHkTargetPoolBars({ asOfDate, maxCodes } = {}) {
     if (meta) metaByCode.set(code, meta);
   }
   const { excluded: excludedUnavailable, eligible: eligiblePending } =
-    classifyUnavailableHkCodes({ pending, metaByCode, everTraded });
+    classifyUnavailableHkCodes({ pending, metaByCode, everTraded, asOfDate });
   const excludedCodes = new Set(excludedUnavailable.map(item => item.code));
   // 收敛后的清单同时供批后复核使用，避免「批前排除了、批后又算回来」。
   const eligibleCodes = codes.filter(code => !excludedCodes.has(code));

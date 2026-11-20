@@ -42,6 +42,18 @@ const onlyNew = classifyUnavailableHkCodes({ pending: ['09999.HK'], metaByCode, 
 eq(onlyNew.eligible.length, 1, '新股缺口必须保留，不能把缺口伪装成完成');
 eq(onlyNew.excluded.length, 0, '新股不得被排除');
 // 3. 空队列、缺参数都不抛错。
+const dated = classifyUnavailableHkCodes({
+  pending: ['02636.HK', '09999.HK'],
+  metaByCode: new Map([
+    ['02636.HK', { list_date: '2026-10-15' }],
+    ['09999.HK', { list_date: '2026-09-30' }],
+  ]),
+  everTraded: new Set(),
+  asOfDate: '2026-09-30',
+});
+eq(dated.excluded[0]?.reason, 'not_listed_on_target_date', '历史日尚未上市时不进入行情补数');
+eq(dated.eligible[0], '09999.HK', '上市当日缺行情仍需核验');
+
 const empty = classifyUnavailableHkCodes({ pending: [], metaByCode: new Map(), everTraded: new Set() });
 eq(empty.eligible.length, 0, '空队列返回空结果');
 eq(classifyUnavailableHkCodes({}).excluded.length, 0, '缺参数不得抛错');
@@ -50,7 +62,7 @@ const source = read('server/services/stockSelectionInputsSync.js');
 const pureFn = source.match(/function classifyUnavailableHkCodes\([\s\S]*?\n\}/);
 
 // 4. 接线守卫：分类真的用在目标池上，且下游批后复核拿到的是同一份收敛清单。
-ok(/classifyUnavailableHkCodes\(\{ pending, metaByCode, everTraded \}\)/.test(source),
+ok(/classifyUnavailableHkCodes\(\{ pending, metaByCode, everTraded, asOfDate \}\)/.test(source),
   '目标池必须调用该分类');
 ok(/days: 3650/.test(source), '必须用全历史行情区分「停牌老股」与「从没交易过的新股」');
 ok(/const eligibleCodes = codes\.filter\(code => !excludedCodes\.has\(code\)\)/.test(source),

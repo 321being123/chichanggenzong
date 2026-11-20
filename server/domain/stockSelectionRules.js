@@ -368,6 +368,7 @@ function findYear(years, year) {
  */
 function evaluateAnnualAnomaly(annual, params = DEFAULT_PARAMS) {
   const p = Object.assign({}, DEFAULT_PARAMS, params || {});
+  const market = String((annual || {}).market || '').toUpperCase();
   const years = Array.isArray((annual || {}).years) ? annual.years : [];
   const latestYear = annual && annual.latestYear ? Number(annual.latestYear) : null;
   if (!latestYear) {
@@ -436,7 +437,7 @@ function evaluateAnnualAnomaly(annual, params = DEFAULT_PARAMS) {
     }
     // 港股财报年份覆盖受官方端点限制，中间缺年份时补数任务反复采集也补不齐（2026-11-05 生产实测）：
     // 按「客观不可评估」处理，不入选、不进补数队列、不阻断整批发布；A 股中间断档仍判待补。
-    if (String((annual || {}).market || '').toUpperCase() === 'HK') {
+    if (market === 'HK') {
       return Object.assign(result, { status: STATUS.NOT_APPLICABLE, reason: 'fiscal_history_gap_not_evaluable_hk', missingYears: missing.sort((a, b) => a - b), profitSum: null, dividendSum: null });
     }
     return Object.assign(result, { status: STATUS.PENDING, reason: 'insufficient_fiscal_history', missingYears: missing.sort((a, b) => a - b), profitSum: null, dividendSum: null });
@@ -455,7 +456,7 @@ function evaluateAnnualAnomaly(annual, params = DEFAULT_PARAMS) {
     // 港股年报按各期原币留证。只有全部币种都已核实的跨币种历史才属于客观不可比。
     const allCurrenciesKnown = profitCurrencies.length === needed.length + 1
       && profitCurrencies.every(value => /^[A-Z]{3}$/.test(value || ''));
-    const status = annual.market === 'HK' && allCurrenciesKnown ? STATUS.NOT_APPLICABLE : STATUS.PENDING;
+    const status = market === 'HK' && allCurrenciesKnown ? STATUS.NOT_APPLICABLE : STATUS.PENDING;
     return Object.assign(result, { status, reason: 'annual_profit_currency_mismatch',
       profitSum: null, dividendSum: null, profitCurrencies });
   }
@@ -484,9 +485,11 @@ function evaluateAnnualAnomaly(annual, params = DEFAULT_PARAMS) {
   const excluded = profitExceeded || dividendExceeded;
   // R2-01：分红是年度异常的**必要维度**之一，未知不等于通过。
   // 原实现把"分红不可比"当成跳过比较后直接 PASS，等于未知条件被放行——
-  // 只有利润已经严格超十年合计（明确不符合）才允许直接排除；其余情况一律待补。
+  // 数据不足继续待补；港股各年分红均有原币证据但确实跨币种时，客观不可比的证券不入选。
+  const dividendNotEvaluable = market === 'HK' && dividendCurrencyMismatch && !dividendCurrencyUnknown
+    && dividendUnknownYears.length === 0 && dividendCurrencies.every(value => /^[A-Z]{3}$/.test(value));
   const status = excluded ? STATUS.FAIL
-    : (dividendComparable ? STATUS.PASS : STATUS.PENDING);
+    : (dividendComparable ? STATUS.PASS : dividendNotEvaluable ? STATUS.NOT_APPLICABLE : STATUS.PENDING);
   const reason = excluded
     ? (profitExceeded && dividendExceeded ? 'profit_and_dividend_exceed_decade' : profitExceeded ? 'profit_exceed_decade' : 'dividend_exceed_decade')
     : (dividendComparable ? null : dividendCurrencyUnknown ? 'annual_dividend_currency_unknown'

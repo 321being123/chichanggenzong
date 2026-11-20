@@ -2136,7 +2136,9 @@ async function listCodesWithRecentBars({ codes = [], asOfDate, days = 60 }, tx) 
     SELECT DISTINCT i.canonical_code AS code
       FROM market.daily_bars b
       JOIN core.instruments i ON i.instrument_id = b.instrument_id
-     WHERE i.canonical_code = ANY($1::text[]) AND b.trade_date <= $2::date AND b.trade_date > ($2::date - $3::int)`,
+     WHERE i.canonical_code = ANY($1::text[])
+       AND (i.list_date IS NULL OR i.list_date <= $2::date)
+       AND b.trade_date <= $2::date AND b.trade_date > ($2::date - $3::int)`,
   [list, asOfDate, Number(days) || 60]);
   return new Set(rows.map(row => row.code));
 }

@@ -47,5 +47,34 @@ function loadJob(options) {
   assert.strictEqual(diag.cn_yield.status, 'stale', '日历缺失不能放宽判定，必须按自然日判 stale');
   console.log('  ✓ 日历缺失：回退自然日差，不放宽判定');
 
-  console.log('市场周期新鲜度：交易日口径通过');
+  const partitions = require('../services/datasetPartitions');
+  const getPartition = partitions.getPartition;
+  const day = '2026-11-18';
+  const subdatasets = Object.fromEntries(['cn_yield', 'csi300_pe', 'csi_all_pe', 'hsi_pe', 'us_treasury_yield',
+    'a_share_market_cap', 'm2_market_cap', 'graham_csi300', 'graham_csi_all']
+    .map(code => [code, { status: 'fresh', data_as_of: day, lag_days: 0 }]));
+  subdatasets.m2 = { status: 'fresh', data_as_of: '2026-10-01', lag_months: 1 };
+  const partition = { status: 'published', is_stale: false, row_count: 10, partition_key: day, data_as_of: day,
+    diagnostics: { quality_status: 'passed', query_status: 'success', coverage_status: 'complete', historical_cutoff: day, stale_subdatasets: [], subdatasets } };
+  try {
+    partitions.getPartition = async (...args) => {
+      assert.deepStrictEqual(args, ['market_volatility', 'GLOBAL', day]);
+      return partition;
+    };
+    const history = await job.revalidateHistoricalMarketVolatility(day);
+    assert.strictEqual(history.ok, true);
+    assert.strictEqual(history.dataAsOf, day);
+    assert.strictEqual(history.publishDatasets, false, '已验证分区免重复发布');
+    assert.strictEqual(history.externalCalls, 0);
+    subdatasets.cn_yield.data_as_of = '2026-11-19';
+    assert.strictEqual((await job.revalidateHistoricalMarketVolatility(day)).ok, false, '未来数据不能用于历史任务恢复');
+    subdatasets.cn_yield.data_as_of = day;
+    delete subdatasets.m2_market_cap;
+    assert.strictEqual((await job.revalidateHistoricalMarketVolatility(day)).ok, false, '缺一项证据不能恢复');
+    partitions.getPartition = async () => null;
+    assert.strictEqual((await job.revalidateHistoricalMarketVolatility(day)).ok, false);
+  } finally {
+    partitions.getPartition = getPartition;
+  }
+  console.log('市场周期新鲜度和历史原业务日复验通过');
 })().catch(error => { console.error(error); process.exitCode = 1; });

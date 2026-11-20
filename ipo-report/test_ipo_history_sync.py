@@ -68,69 +68,73 @@ try:
 
     taxonomy_cursor = IndustryTaxonomyCursorSpy()
     old_taxonomy_query = sync.tushare_query
-    old_provider_resolver = sync.resolve_provider_code
-    sync.tushare_query = lambda api, params, fields: [{
-        "ts_code": "301716.SZ", "l1_code": "801080.SI", "l1_name": "电子",
-        "l2_code": "801086.SI", "l2_name": "电子化学品Ⅱ",
-        "l3_code": "850861.SI", "l3_name": "电子化学品Ⅲ", "is_new": "Y",
-    }]
-    sync.resolve_provider_code = lambda code, *args, **kwargs: "301716.SZ"
-    try:
-        taxonomy_result = sync.sync_sw_industry_taxonomies(
-            taxonomy_cursor, ["301716"], date(2026, 9, 29)
-        )
-    finally:
-        sync.tushare_query = old_taxonomy_query
-        sync.resolve_provider_code = old_provider_resolver
-    check("申万二级行业路径入库且不覆盖官方行业事实",
-          taxonomy_result.get("updated") == 1
-          and "industry_taxonomies" in taxonomy_cursor.query
-          and "SW2021" in taxonomy_cursor.query
-          and taxonomy_cursor.params[0].adapted.get("l2_code") == "801086.SI"
-          and taxonomy_cursor.params[0].adapted.get("l2_name") == "电子化学品Ⅱ",
-          repr(taxonomy_result))
-
+    old_shared_industry = sync.read_shared_sw_industry
+    old_canonical_resolver = sync.resolve_canonical_code
+    def unexpected_upstream(*args):
+        raise AssertionError("IPO 申万复用共享层，不调用 Tushare")
+    sync.tushare_query = unexpected_upstream
     today = sync._today_shanghai()
-    sync.resolve_provider_code = lambda code, *args, **kwargs: "999999.SH"
-    sync.tushare_query = lambda *args: []
+    shared = {
+        "ts_code": "301716.SZ", "l1_code": "801080", "l1_name": "电子",
+        "l2_code": "801086", "l2_name": "电子化学品Ⅱ",
+        "l3_code": "850861", "l3_name": "电子化学品Ⅲ",
+        "source": "lixinger_official", "shared_membership_id": 18,
+        "classification_date": today.isoformat(),
+    }
     try:
+        shared_cursor = IndustryTaxonomyCursorSpy()
+        shared_cursor.row = (18, "lixinger_official", today.isoformat(), "801080",
+                             "电子", "801086", "电子化学品Ⅱ", "850861", "电子化学品Ⅲ")
+        sync.resolve_canonical_code = lambda code, **kwargs: "301716.SZ"
+        parsed = sync.read_shared_sw_industry(shared_cursor, "301716", today)
+        check("申万共享查询按身份、体系和目标日期限制分类",
+              parsed == shared and shared_cursor.params == ("301716.SZ", today, today)
+              and "tax.taxonomy_code='SW2021'" in shared_cursor.query
+              and "m.valid_to>" in shared_cursor.query)
+        sync.read_shared_sw_industry = lambda *args: shared
+        taxonomy_result = sync.sync_sw_industry_taxonomies(taxonomy_cursor, ["301716"], today)
+        saved = taxonomy_cursor.params[0].adapted
+        check("共享二级行业路径入库且保留发行披露字段",
+              taxonomy_result["updated"] == 1 and saved["source"] == "lixinger_official"
+              and saved["l2_code"] == "801086" and saved["shared_membership_id"] == 18
+              and "SET industry=" not in taxonomy_cursor.query)
+        reused = sync.sync_sw_industry_taxonomies(IndustryTaxonomyCursorSpy(saved), ["301716"], today)
+        check("同一共享归属无需重复写入", reused["cached"] == 1 and reused["attempted"] == 0)
+        sync.read_shared_sw_industry = lambda *args: None
         pending_cursor = IndustryTaxonomyCursorSpy(ipo_status="active")
         pending_result = sync.sync_sw_industry_taxonomies(pending_cursor, ["999999"], today)
         pending = pending_cursor.params[0].adapted
-        check("未上市申万成功空结果记正常待收录且不伪造分类",
+        check("未上市共享层无申万分类记正常待收录",
               pending_result["pending_not_due"] == 1 and pending_result["missing"] == 0
               and pending["reason"] == "prelisting_not_indexed" and "l2_code" not in pending)
         same_day = sync.sync_sw_industry_taxonomies(
             IndustryTaxonomyCursorSpy(pending, ipo_status="active"), ["999999"], today)
-        check("未上市待收录同日复用数据库不重复请求",
+        check("未上市待收录同日无需重复写入",
               same_day["pending_not_due"] == 1 and same_day["attempted"] == 0)
         listed = sync.sync_sw_industry_taxonomies(
             IndustryTaxonomyCursorSpy(pending, today.isoformat(), "active"), ["999999"], today)
-        check("上市日申万空结果仍为真实缺口不能沿用未上市豁免",
-              listed["missing"] == 1 and listed["pending_not_due"] == 0 and listed["attempted"] == 1)
+        check("上市日共享层缺分类仍为真实缺口",
+              listed["missing"] == 1 and listed["pending_not_due"] == 0)
         stale = dict(pending, fetched_at="2026-01-01T12:00:00+08:00")
-        next_day = sync.sync_sw_industry_taxonomies(
-            IndustryTaxonomyCursorSpy(stale, ipo_status="active"), ["999999"], today)
-        check("待收录次日通过原同步链重新核验", next_day["attempted"] == 1)
-        valid = {"l2_code": "801050.SI", "l2_name": "有证据的测试分类"}
-        sync.tushare_query = lambda *args: [valid]
+        sync.read_shared_sw_industry = lambda *args: shared
         acquired_cursor = IndustryTaxonomyCursorSpy(stale, ipo_status="active")
-        acquired = sync.sync_sw_industry_taxonomies(acquired_cursor, ["999999"], today)
-        check("上游收录后真实分类替换待收录状态",
-              acquired["updated"] == 1 and acquired_cursor.params[0].adapted["l2_code"] == valid["l2_code"]
+        acquired = sync.sync_sw_industry_taxonomies(acquired_cursor, ["301716"], today)
+        check("共享层收录后替换待收录状态",
+              acquired["updated"] == 1 and acquired_cursor.params[0].adapted["l2_code"] == shared["l2_code"]
               and "status" not in acquired_cursor.params[0].adapted)
         def failed_query(*args):
-            raise RuntimeError("接口请求失败")
-        sync.tushare_query = failed_query
+            raise RuntimeError("共享查询失败")
+        sync.read_shared_sw_industry = failed_query
         failed = sync.sync_sw_industry_taxonomies(
             IndustryTaxonomyCursorSpy(ipo_status="active"), ["999999"], today)
-        check("未上市接口失败不能伪装正常待收录", failed["failed"] == 1 and failed["pending_not_due"] == 0)
+        check("共享查询失败不能记作正常待收录", failed["failed"] == 1 and failed["pending_not_due"] == 0)
         check("定向资料完整且仅未上市申万待收录允许完成",
               sync._targeted_stage_complete({"attempted": 1, "remaining": 0,
                                              "industry_taxonomy": pending_result}, ["999999"]))
     finally:
         sync.tushare_query = old_taxonomy_query
-        sync.resolve_provider_code = old_provider_resolver
+        sync.read_shared_sw_industry = old_shared_industry
+        sync.resolve_canonical_code = old_canonical_resolver
 
     loss = sync.normalize_share({
         "ts_code": "999999.SH", "name": "测试新股", "ipo_date": "20260801",

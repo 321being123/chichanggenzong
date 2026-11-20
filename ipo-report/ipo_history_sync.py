@@ -278,15 +278,51 @@ def tushare_query(api_name, params, fields, retries=2):
     return _tushare(api_name, params, fields)
 
 
+def read_shared_sw_industry(cur, code, today):
+    """只读取目标业务日已可见的共享申万 2021 分类。"""
+    ts_code = resolve_canonical_code(code, asset_class="stock", conn=cur.connection)
+    if not ts_code:
+        return None
+    cur.execute(
+        """SELECT m.membership_id, ds.source_code,
+                  TO_CHAR(COALESCE(GREATEST(m.valid_from,m.announced_at),
+                          (m.created_at AT TIME ZONE 'Asia/Shanghai')::date),'YYYY-MM-DD') AS evidence_date,
+                  root.industry_code, root.industry_name, l2.industry_code, l2.industry_name,
+                  CASE WHEN leaf.level=3 THEN leaf.industry_code END,
+                  CASE WHEN leaf.level=3 THEN leaf.industry_name END
+             FROM core.instruments i
+             JOIN core.company_instruments ci USING (instrument_id)
+             JOIN core.company_industry_memberships m ON m.company_id=ci.company_id
+             JOIN core.industry_nodes leaf ON leaf.industry_node_id=m.industry_node_id
+             JOIN core.industry_taxonomies tax ON tax.taxonomy_id=leaf.taxonomy_id
+             JOIN core.industry_nodes l2 ON l2.industry_node_id=CASE
+                  WHEN leaf.level=2 THEN leaf.industry_node_id ELSE leaf.parent_id END
+                  AND l2.taxonomy_id=tax.taxonomy_id AND l2.level=2
+             JOIN core.industry_nodes root ON root.industry_node_id=l2.parent_id
+                  AND root.taxonomy_id=tax.taxonomy_id AND root.level=1
+             JOIN ops.data_sources ds ON ds.source_id=m.source_id
+            WHERE i.canonical_code=%s AND i.market='CN' AND tax.taxonomy_code='SW2021'
+              AND leaf.level IN (2,3)
+              AND COALESCE(GREATEST(m.valid_from,m.announced_at),
+                   (m.created_at AT TIME ZONE 'Asia/Shanghai')::date)<=%s::date
+              AND (m.valid_to>%s::date OR (m.valid_to IS NULL AND m.is_current))
+            ORDER BY evidence_date DESC, ds.priority ASC NULLS LAST, m.membership_id DESC
+            LIMIT 1""",
+        (ts_code, today, today),
+    )
+    row = cur.fetchone()
+    if not row or not row[5] or not row[6]:
+        return None
+    return dict(zip(("shared_membership_id", "source", "classification_date", "l1_code",
+                     "l1_name", "l2_code", "l2_name", "l3_code", "l3_name"), row),
+                ts_code=ts_code)
+
+
 def sync_sw_industry_taxonomies(cur, codes, today, raise_on_guard=False):
-    """把目标 IPO 的申万行业路径作为独立分类元数据增量入库。"""
+    """同步共享层的申万路径，不改发行披露行业和行业 PE。"""
     codes = sorted({str(code or "").split(".")[0] for code in (codes or []) if code})
     result = {"attempted": 0, "updated": 0, "cached": 0, "pending_not_due": 0,
               "missing": 0, "failed": 0, "stopped": None}
-    if not codes:
-        return result
-
-    fields = "ts_code,l1_code,l1_name,l2_code,l2_name,l3_code,l3_name,is_new"
     for code in codes:
         cur.execute(
             "SELECT source_payload->'industry_taxonomies'->'SW2021',listing_date,ipo_status "
@@ -294,59 +330,38 @@ def sync_sw_industry_taxonomies(cur, codes, today, raise_on_guard=False):
             (code,),
         )
         row = cur.fetchone()
-        stored = row[0] if row else None
-        stored = stored if isinstance(stored, dict) else {}
+        stored = row[0] if row and isinstance(row[0], dict) else {}
+        listing_date = str(row[1] or "")[:10] if row else ""
+        prelisting = bool(row and ((listing_date and listing_date > today.isoformat())
+                                  or (not listing_date and row[2] == "active")))
         fetched_at = str(stored.get("fetched_at") or "")[:10]
-        fresh = False
+        evidence_date = str(stored.get("classification_date") or fetched_at)[:10]
         try:
             fresh = bool(stored.get("l2_code") and stored.get("l2_name")
-                         and fetched_at and date.fromisoformat(fetched_at) >= today - timedelta(days=90))
+                         and 0 <= (today - date.fromisoformat(evidence_date)).days <= 90)
         except ValueError:
             fresh = False
-        if fresh:
-            result["cached"] += 1
-            continue
-
-        listing_date = str(row[1] or "")[:10] if row else ""
-        prelisting = bool(row and row[2] == "active"
-                          and (not listing_date or listing_date > today.isoformat()))
-        if (prelisting and stored.get("status") == "pending_not_due"
-                and fetched_at == today.isoformat()):
-            result["pending_not_due"] += 1
-            continue
-
-        result["attempted"] += 1
         try:
-            ts_code = resolve_provider_code(code, "tushare", "ts_code", conn=cur.connection, asset_class="stock")
-            if not ts_code:
+            item = read_shared_sw_industry(cur, code, today)
+            if item and stored.get("shared_membership_id") == item["shared_membership_id"] and fresh:
+                result["cached"] += 1
+                continue
+            if not item and fresh:
+                result["cached"] += 1
+                continue
+            if not item and prelisting and stored.get("status") == "pending_not_due" and fetched_at == today.isoformat():
+                result["pending_not_due"] += 1
+                continue
+            result["attempted"] += 1
+            if not item and not prelisting:
                 result["missing"] += 1
                 continue
-            rows = tushare_query(
-                "index_member_all", {"ts_code": ts_code, "is_new": "Y"}, fields
-            )
-            item = next((item for item in rows if item.get("l2_code") and item.get("l2_name")), None)
-            if not item:
-                if not (prelisting and not rows and not stored.get("l2_code")):
-                    result["missing"] += 1
-                    continue
-                taxonomy = {
-                    "taxonomy_code": "SW2021", "status": "pending_not_due",
-                    "reason": "prelisting_not_indexed", "ts_code": ts_code,
-                    "fetched_at": _now_shanghai().isoformat(),
-                    "source": "tushare.index_member_all",
-                }
-            else:
-                taxonomy = {
-                    "taxonomy_code": "SW2021",
-                    "classification_date": today.isoformat(),
-                    "fetched_at": _now_shanghai().isoformat(),
-                    "source": "tushare.index_member_all",
-                    "ts_code": ts_code,
-                    "l1_code": item.get("l1_code"), "l1_name": item.get("l1_name"),
-                    "l2_code": item.get("l2_code"), "l2_name": item.get("l2_name"),
-                    "l3_code": item.get("l3_code"), "l3_name": item.get("l3_name"),
-                    "is_new": item.get("is_new"),
-                }
+            taxonomy = {
+                "taxonomy_code": "SW2021",
+                "fetched_at": _now_shanghai().isoformat(),
+                **(item or {"status": "pending_not_due", "reason": "prelisting_not_indexed",
+                            "source": "shared_industry"}),
+            }
             cur.execute(
                 """UPDATE ipo_history
                       SET source_payload=COALESCE(source_payload,'{}'::jsonb) || jsonb_build_object(

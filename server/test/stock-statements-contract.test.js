@@ -370,11 +370,22 @@ assert.strictEqual(field(flowYoy, 'ps.tp').values[0].comparison_reason, 'flow_pe
     assert.strictEqual(rules.evaluateAnnualAnomaly({ ...annual, market: 'CN' }).status, rules.STATUS.PENDING);
     const unknownAnnual = stockSelectionService.annualFactsOf(profits.map(item => ({ ...item, currency: null })), [], '00386.HK', null, '2000-01-01');
     assert.strictEqual(rules.evaluateAnnualAnomaly({ ...unknownAnnual, market: 'HK' }).reason, 'annual_profit_currency_unknown');
+    const usdProfits = profits.map(item => ({ ...item, currency: 'USD', profit: item.year === 2025 ? 1100 : 100 }));
+    const usd = rules.evaluateAnnualAnomaly({
+      ...stockSelectionService.annualFactsOf(usdProfits, [], '00386.HK', null, '2000-01-01'), market: 'HK',
+    });
+    assert.strictEqual(usd.reason, 'profit_exceed_decade', '同为美元的十一期利润可直接比较');
+    assert.strictEqual(usd.profitSum, 1000);
+    assert.strictEqual(usd.currency, 'USD');
     const sameProfits = profits.map(item => ({ ...item, currency: 'CNY' }));
     const dividends = sameProfits.map((item, index) => ({ year: item.year, dividend: 1, dividendKnown: true,
       dividendCurrencies: [index === 0 ? 'HKD' : 'CNY'], dividendCurrencyUnknown: false }));
     const mixedDividends = stockSelectionService.annualFactsOf(sameProfits, dividends, '00386.HK', null, '2000-01-01');
-    assert.strictEqual(rules.evaluateAnnualAnomaly({ ...mixedDividends, market: 'HK' }).reason, 'annual_dividend_currency_mismatch');
+    const dividendAnomaly = rules.evaluateAnnualAnomaly({ ...mixedDividends, market: 'HK' });
+    assert.strictEqual(dividendAnomaly.reason, 'annual_dividend_currency_mismatch');
+    assert.strictEqual(dividendAnomaly.status, rules.STATUS.NOT_APPLICABLE);
+    assert.strictEqual(dividendAnomaly.dividendSum, null);
+    assert.strictEqual(rules.evaluateAnnualAnomaly({ ...mixedDividends, market: 'CN' }).status, rules.STATUS.PENDING);
     dividends[0].dividendCurrencies = [];
     const unknownDividends = stockSelectionService.annualFactsOf(sameProfits, dividends, '00386.HK', null, '2000-01-01');
     assert.strictEqual(rules.evaluateAnnualAnomaly({ ...unknownDividends, market: 'HK' }).reason, 'annual_dividend_currency_unknown');

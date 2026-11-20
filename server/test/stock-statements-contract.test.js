@@ -357,11 +357,17 @@ assert.strictEqual(field(flowYoy, 'ps.tp').values[0].comparison_reason, 'flow_pe
     ]);
     assert.strictEqual(unknownTtm.reason, 'ttm_currency_unknown');
     const profits = Array.from({ length: 11 }, (_, index) => ({ year: 2015 + index, profit: 100,
-      currency: index === 0 ? 'HKD' : 'CNY' }));
+      currency: index === 0 ? 'HKD' : 'USD' }));
     const annual = stockSelectionService.annualFactsOf(profits, [], '00386.HK', null, '2000-01-01');
     const anomaly = rules.evaluateAnnualAnomaly({ ...annual, market: 'HK' });
-    assert.strictEqual(anomaly.status, rules.STATUS.PENDING);
+    assert.strictEqual(anomaly.status, rules.STATUS.NOT_APPLICABLE);
     assert.strictEqual(anomaly.reason, 'annual_profit_currency_mismatch', '跨币种年度利润不能直接求和');
+    assert.strictEqual(anomaly.profitY, 100);
+    assert.strictEqual(anomaly.profitSum, null);
+    assert.strictEqual(anomaly.currency, 'USD', '最新年报金额保留美元标识，不沿用最早一期币种');
+    assert.deepStrictEqual(annual.years.map(({ profitCurrency }) => profitCurrency),
+      ['HKD', ...Array(10).fill('USD')], '逐年保留年报原币');
+    assert.strictEqual(rules.evaluateAnnualAnomaly({ ...annual, market: 'CN' }).status, rules.STATUS.PENDING);
     const unknownAnnual = stockSelectionService.annualFactsOf(profits.map(item => ({ ...item, currency: null })), [], '00386.HK', null, '2000-01-01');
     assert.strictEqual(rules.evaluateAnnualAnomaly({ ...unknownAnnual, market: 'HK' }).reason, 'annual_profit_currency_unknown');
     const sameProfits = profits.map(item => ({ ...item, currency: 'CNY' }));

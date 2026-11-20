@@ -323,7 +323,7 @@ function annualFactsOf(profits, annualDividends, code, sourceGaps, listDate) {
   return {
     latestYear: years.length ? years[years.length - 1].year : null,
     years,
-    currency: rows.length ? rows[0].currency : null,
+    currency: years.length ? years[years.length - 1].profitCurrency : null,
     requireProfitCurrency: true,
     requireDividendCurrency: true,
     // 上市年份：判断「十年比较窗口」是否早于上市（2026-11-08）。

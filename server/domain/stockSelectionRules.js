@@ -452,7 +452,11 @@ function evaluateAnnualAnomaly(annual, params = DEFAULT_PARAMS) {
       profitSum: null, dividendSum: null, profitCurrencies });
   }
   if (new Set(knownCurrencies).size > 1) {
-    return Object.assign(result, { status: STATUS.PENDING, reason: 'annual_profit_currency_mismatch',
+    // 港股年报按各期原币留证。只有全部币种都已核实的跨币种历史才属于客观不可比。
+    const allCurrenciesKnown = profitCurrencies.length === needed.length + 1
+      && profitCurrencies.every(value => /^[A-Z]{3}$/.test(value || ''));
+    const status = annual.market === 'HK' && allCurrenciesKnown ? STATUS.NOT_APPLICABLE : STATUS.PENDING;
+    return Object.assign(result, { status, reason: 'annual_profit_currency_mismatch',
       profitSum: null, dividendSum: null, profitCurrencies });
   }
   const profitSum = needed.reduce((sum, y) => sum + (num(findYear(years, y).profit) || 0), 0);

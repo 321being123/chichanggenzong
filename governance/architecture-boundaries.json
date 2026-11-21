@@ -1754,6 +1754,13 @@
       "batch": 7,
       "status": "registered",
       "note": "个人提醒设置读写与版本条件更新；按登录主体取偏好，SQL 在仓储，本文件 0 SQL/0 联网/0 DOM"
+    },
+    {
+      "path": "server/services/storageRetention.js",
+      "role": "application",
+      "batch": 7,
+      "status": "registered",
+      "note": "数据库存储保留清理编排：约束保留天数边界并调用仓储分批清理过期原始报文与未发布试算运行，本文件 0 SQL/0 联网/0 DOM"
     }
   ],
   "globalContracts": {

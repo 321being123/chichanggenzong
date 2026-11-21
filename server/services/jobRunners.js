@@ -76,6 +76,8 @@ async function runJobByCode(jobCode, reason = 'manual-retry', businessDate, cont
       return require('../jobs/accountPriceBackfill').runAccountPriceBackfill(reason, context);
     case 'site_analytics_retention':
       return require('./siteAnalytics').purgeAnalyticsData();
+    case 'storage_retention':
+      return require('./storageRetention').purgeStorageData();
     case 'notification_dispatch':
       return require('../jobs/notificationDispatch').runNotificationDispatch(reason, context);
     case 'convertible_bond_universe_refresh': {

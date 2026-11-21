@@ -338,14 +338,15 @@ function renderReturnsStats() {
   var totalReturnPct = last.nav == null ? null : (last.nav - 1) * 100;
 
   var sign = totalReturn >= 0 ? '+' : '';
+  var th = (typeof window !== 'undefined' && window.SiteChartTheme) ? window.SiteChartTheme.get() : { up: '#dc2626', down: '#059669' };
   document.getElementById('ret-total-return').textContent = curAsset == null || initAsset == null ? '—' : (totalReturn < 0 ? '-' : '') + fmt(Math.abs(totalReturn));
-  document.getElementById('ret-total-return').style.color = totalReturn >= 0 ? '#137333' : '#d93025';
+  document.getElementById('ret-total-return').style.color = totalReturn >= 0 ? th.down : th.up;
   document.getElementById('ret-total-return-pct').textContent = totalReturnPct == null ? '—' : (totalReturnPct >= 0 ? '+' : '') + totalReturnPct.toFixed(2) + '%';
-  document.getElementById('ret-total-return-pct').style.color = totalReturn >= 0 ? '#137333' : '#d93025';
+  document.getElementById('ret-total-return-pct').style.color = totalReturn >= 0 ? th.down : th.up;
 
   var navEl = document.getElementById('ret-nav');
   navEl.textContent = last.nav == null ? '—' : Number(last.nav).toFixed(4);
-  navEl.style.color = last.nav >= 1 ? '#137333' : '#d93025';
+  navEl.style.color = last.nav >= 1 ? th.down : th.up;
   document.getElementById('ret-nav-date').textContent = last.date;
   document.getElementById('ret-days').textContent = data.navHistory.length;
 }
@@ -469,11 +470,12 @@ async function renderNavVsIndexChart(canvasId, opts) {
   var zzData = getIndexSeries('中证500', navData) || [];
   var hsidata = getIndexSeries('恒生指数', navData) || [];
 
+  var th = (typeof window !== 'undefined' && window.SiteChartTheme) ? window.SiteChartTheme.get() : { chart1: '#2563eb', chart2: '#0891b2', chart3: '#f59e0b', chart4: '#7c3aed', chart5: '#dc2626', grid: '#e2e8f0', axis: '#64748b' };
   var datasets = [{
     label: '持仓净值',
     data: navVals,
-    borderColor: '#1a237e',
-    backgroundColor: 'rgba(26,35,126,.08)',
+    borderColor: th.chart1,
+    backgroundColor: 'rgba(37,99,235,.08)',
     fill: true,
     tension: 0.3,
     pointRadius: 0,
@@ -488,7 +490,7 @@ async function renderNavVsIndexChart(canvasId, opts) {
     var hs300Vals = navData.map(function (d) { return hs300Map[d.date] || null; });
     datasets.push({
       label: '沪深300', data: hs300Vals,
-      borderColor: '#d93025', backgroundColor: 'transparent',
+      borderColor: th.chart5, backgroundColor: 'transparent',
       tension: 0.3, pointRadius: 0, borderWidth: 1.5,
       spanGaps: true, hidden: !indexVisibility['沪深300']
     });
@@ -500,7 +502,7 @@ async function renderNavVsIndexChart(canvasId, opts) {
     var shVals = navData.map(function (d) { return shMap[d.date] || null; });
     datasets.push({
       label: '上证指数', data: shVals,
-      borderColor: '#e37400', backgroundColor: 'transparent',
+      borderColor: th.chart3, backgroundColor: 'transparent',
       tension: 0.3, pointRadius: 0, borderWidth: 1.5,
       spanGaps: true, hidden: !indexVisibility['上证指数']
     });
@@ -512,7 +514,7 @@ async function renderNavVsIndexChart(canvasId, opts) {
     var zzVals = navData.map(function (d) { return zzMap[d.date] || null; });
     datasets.push({
       label: '中证全指', data: zzVals,
-      borderColor: '#7b1fa2', backgroundColor: 'transparent',
+      borderColor: th.chart4, backgroundColor: 'transparent',
       tension: 0.3, pointRadius: 0, borderWidth: 1.5,
       spanGaps: true, hidden: !indexVisibility['中证全指']
     });
@@ -524,7 +526,7 @@ async function renderNavVsIndexChart(canvasId, opts) {
     var hsiVals = navData.map(function (d) { return hsiMap[d.date] || null; });
     datasets.push({
       label: '恒生指数', data: hsiVals,
-      borderColor: '#00838f', backgroundColor: 'transparent',
+      borderColor: th.chart2, backgroundColor: 'transparent',
       tension: 0.3, pointRadius: 0, borderWidth: 1.5,
       spanGaps: true, hidden: !indexVisibility['恒生指数']
     });
@@ -561,13 +563,13 @@ async function renderNavVsIndexChart(canvasId, opts) {
       scales: {
         x: {
           grid: { display: false },
-          ticks: { maxTicksLimit: 12, font: { size: 11 }, color: '#999' }
+          ticks: { maxTicksLimit: 12, font: { size: 11 }, color: th.axis }
         },
         y: {
-          grid: { color: '#f0f0f0' },
+          grid: { color: th.grid },
           ticks: {
             font: { size: 11 },
-            color: '#999',
+            color: th.axis,
             callback: function (v) {
               var pct = (v - 1) * 100;
               return pct >= 0 ? '+' + pct.toFixed(1) + '%' : pct.toFixed(1) + '%';

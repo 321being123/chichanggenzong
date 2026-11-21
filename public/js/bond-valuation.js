@@ -375,22 +375,23 @@ function drawBondValCharts(data, boundaries) {
   if (!data.length) { box.innerHTML = '<div class="bond-val-note">该区间暂无历史估值数据。</div>'; return; }
   bondValChartTipStore = {};
   bondValChartTipSeq = 0;
+  var th = window.SiteChartTheme ? window.SiteChartTheme.get() : { chart1: '#2563eb', chart2: '#0891b2', chart3: '#f59e0b', chart4: '#7c3aed', chart5: '#dc2626', chart6: '#059669', textSecondary: '#475569', textMuted: '#64748b' };
   box.innerHTML =
     chartCard('价格与公允区间', svgChart([
-      { key: 'close', color: '#c0392b', label: '收盘价' },
-      { key: 'fair_price', color: '#2980b9', label: '中性公允价' },
-      { key: 'anchor_value', color: '#7f8c8d', label: '价值底座' }
+      { key: 'close', color: th.chart5, label: '收盘价' },
+      { key: 'fair_price', color: th.chart1, label: '中性公允价' },
+      { key: 'anchor_value', color: th.textMuted, label: '价值底座' }
     ], data, { band: ['fair_price_low', 'fair_price_high'] })) +
     chartCard('绝对估值偏离', svgChart([
-      { key: 'absolute_deviation_pct', color: '#8e44ad', label: '绝对估值偏离' }
+      { key: 'absolute_deviation_pct', color: th.chart4, label: '绝对估值偏离' }
     ], data, { zero: true, pct: true, fixedBoundaries: boundaries, versionKey: 'model_version' })) +
     chartCard('估值分位', svgChart([
-      { key: 'valuation_percentile', color: '#16a085', label: '历史估值分位' }
+      { key: 'valuation_percentile', color: th.chart6, label: '历史估值分位' }
     ], data, { zero: false, pct: true, refLines: [20, 40, 60, 80], fixedRange: [0, 100], bands5: true, versionKey: 'model_version' })) +
     chartCard('单券与市场', svgChart([
-      { key: 'absolute_deviation_pct', color: '#8e44ad', label: '单券偏离' },
-      { key: 'market_heat_pct', color: '#e67e22', label: '市场热度' },
-      { key: 'relative_market_deviation_pct', color: '#34495e', label: '相对市场偏离' }
+      { key: 'absolute_deviation_pct', color: th.chart4, label: '单券偏离' },
+      { key: 'market_heat_pct', color: th.chart3, label: '市场热度' },
+      { key: 'relative_market_deviation_pct', color: th.textSecondary, label: '相对市场偏离' }
     ], data, { zero: true, pct: true }));
   bindBondValChartTips(box);
 }
@@ -442,29 +443,30 @@ function svgChart(series, data, opts) {
       svg += '<rect x="' + padL + '" y="' + by0.toFixed(1) + '" width="' + (W - padL - padR) + '" height="' + (by1 - by0).toFixed(1) + '" fill="' + bandCols[b] + '"/>';
     }
   }
+  var th = window.SiteChartTheme ? window.SiteChartTheme.get() : { textPrimary: '#0f172a', textFaint: '#94a3b8', grid: '#e2e8f0', chart4: '#7c3aed' };
   // 模型版本切换竖线
   if (opts.versionKey) {
     var _lastV = null;
     for (var vi = 0; vi < n; vi++) {
       var _v = data[vi][opts.versionKey];
       if (_v !== _lastV && _lastV !== null) {
-        svg += '<line x1="' + X(vi).toFixed(1) + '" y1="' + padT + '" x2="' + X(vi).toFixed(1) + '" y2="' + (H - padB) + '" stroke="#2c3e50" stroke-dasharray="4 3" stroke-width="1"/>';
+        svg += '<line x1="' + X(vi).toFixed(1) + '" y1="' + padT + '" x2="' + X(vi).toFixed(1) + '" y2="' + (H - padB) + '" stroke="' + th.textPrimary + '" stroke-dasharray="4 3" stroke-width="1"/>';
       }
       _lastV = _v;
     }
   }
   // 0 线
-  if (opts.zero && min < 0 && max > 0) svg += '<line x1="' + padL + '" y1="' + Y(0) + '" x2="' + (W - padR) + '" y2="' + Y(0) + '" stroke="#aaa" stroke-dasharray="3 3"/>';
+  if (opts.zero && min < 0 && max > 0) svg += '<line x1="' + padL + '" y1="' + Y(0) + '" x2="' + (W - padR) + '" y2="' + Y(0) + '" stroke="' + th.textFaint + '" stroke-dasharray="3 3"/>';
   // 参考线
   if (opts.refLines) opts.refLines.forEach(function (rv) {
-    svg += '<line x1="' + padL + '" y1="' + Y(rv) + '" x2="' + (W - padR) + '" y2="' + Y(rv) + '" stroke="#bbb" stroke-dasharray="2 4"/>';
+    svg += '<line x1="' + padL + '" y1="' + Y(rv) + '" x2="' + (W - padR) + '" y2="' + Y(rv) + '" stroke="' + th.grid + '" stroke-dasharray="2 4"/>';
   });
   // 历史分位边界（模型版本固化的 20/40/60/80 偏离边界，不随查看范围变化）
   if (opts.fixedBoundaries) {
     ['q20', 'q40', 'q60', 'q80'].forEach(function (qk) {
       var pv = Number(opts.fixedBoundaries[qk]);
       if (!Number.isFinite(pv) || pv < min || pv > max) return;
-      svg += '<line x1="' + padL + '" y1="' + Y(pv).toFixed(1) + '" x2="' + (W - padR) + '" y2="' + Y(pv).toFixed(1) + '" stroke="#9b59b6" stroke-dasharray="5 3" stroke-width="1"/>';
+      svg += '<line x1="' + padL + '" y1="' + Y(pv).toFixed(1) + '" x2="' + (W - padR) + '" y2="' + Y(pv).toFixed(1) + '" stroke="' + th.chart4 + '" stroke-dasharray="5 3" stroke-width="1"/>';
     });
   }
   // 带状（公允区间）
@@ -506,8 +508,8 @@ function svgChart(series, data, opts) {
   series.forEach(function (s) { leg += '<span><i data-style="background:' + s.color + '"></i>' + esc(s.label) + '</span>'; });
   if (opts.band) leg += '<span><i data-style="background:rgba(41,128,185,0.3)"></i>公允区间</span>';
   if (opts.bands5) leg += '<span><i data-style="background:rgba(39,174,96,0.4)"></i>低估</span><span><i data-style="background:rgba(241,196,15,0.4)"></i>合理</span><span><i data-style="background:rgba(192,57,43,0.4)"></i>高估</span>';
-  if (opts.pctlKey) leg += '<span><i data-style="background:#9b59b6"></i>历史分位边界</span>';
-  if (opts.versionKey) leg += '<span><i data-style="background:#2c3e50"></i>模型版本切换</span>';
+  if (opts.pctlKey) leg += '<span><i data-style="background:' + th.chart4 + '"></i>历史分位边界</span>';
+  if (opts.versionKey) leg += '<span><i data-style="background:' + th.textPrimary + '"></i>模型版本切换</span>';
   leg += '</div>';
   return svg + leg;
 }

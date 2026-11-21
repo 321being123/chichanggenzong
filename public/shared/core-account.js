@@ -91,21 +91,22 @@ function renderEarnings() {
   const sorted = records.slice().sort(function (a, b) { return (a.date || '').localeCompare(b.date || ''); });
   const last = sorted[sorted.length - 1];
 
+  var th = (typeof window !== 'undefined' && window.SiteChartTheme) ? window.SiteChartTheme.get() : { up: '#dc2626', down: '#059669', textMuted: '#64748b', textPrimary: '#0f172a' };
   const pct = function (v) { return v == null ? '—' : (v >= 0 ? '+' : '') + (v * 100).toFixed(2) + '%'; };
-  const col = function (v) { return v >= 0 ? '#d93025' : '#137333'; };
+  const col = function (v) { return v >= 0 ? th.up : th.down; };
 
   const cards = [
     { label: '当前总资产', value: last.totalMarketValue == null ? '—' : fmt(last.totalMarketValue), sub: '投入本金 ' + fmt(last.totalInvested || 0) },
     { label: '当前净值', value: last.nav == null ? '—' : last.nav.toFixed(4), sub: '基准 1.0000', color: col((last.nav || 1) - 1) },
     { label: '总收益率', value: pct(last.totalReturn), sub: '资金总收益 ' + pct(last.capitalGain), color: col(last.totalReturn || 0) },
     { label: '年化收益', value: pct(last.annualizedReturn), sub: '当年收益 ' + pct(last.yearReturn), color: col(last.annualizedReturn || 0) },
-    { label: '今年收益', value: last.yearReturn == null ? '—' : pct(last.yearReturn), sub: '年初至今', color: last.yearReturn == null ? '#888' : col(last.yearReturn) },
-    { label: '当前回撤', value: last.currentDrawdown == null ? '—' : (last.currentDrawdown * 100).toFixed(2) + '%', sub: '当日', color: '#d93025' },
-    { label: '最大回撤', value: last.maxDrawdown == null ? '—' : (last.maxDrawdown * 100).toFixed(2) + '%', sub: '历史', color: '#d93025' }
+    { label: '今年收益', value: last.yearReturn == null ? '—' : pct(last.yearReturn), sub: '年初至今', color: last.yearReturn == null ? th.textMuted : col(last.yearReturn) },
+    { label: '当前回撤', value: last.currentDrawdown == null ? '—' : (last.currentDrawdown * 100).toFixed(2) + '%', sub: '当日', color: th.up },
+    { label: '最大回撤', value: last.maxDrawdown == null ? '—' : (last.maxDrawdown * 100).toFixed(2) + '%', sub: '历史', color: th.up }
   ];
   el.innerHTML = cards.map(function (c) {
     return '<div class="stat-card"><div class="stat-top"><div><div class="label">' + c.label + '</div>' +
-      '<div class="value" data-style="color:' + (c.color || '#1a1a2e') + '">' + c.value + '</div></div></div>' +
+      '<div class="value" data-style="color:' + (c.color || th.textPrimary) + '">' + c.value + '</div></div></div>' +
       '<div class="sub">' + (c.sub || '') + '</div></div>';
   }).join('');
 
@@ -118,6 +119,7 @@ function renderEarnings() {
 function renderEarningsChart(sorted) {
   const ctx = document.getElementById('chart-earnings');
   if (!ctx) return;
+  var th = (typeof window !== 'undefined' && window.SiteChartTheme) ? window.SiteChartTheme.get() : { chart1: '#2563eb', chart5: '#dc2626', grid: '#e2e8f0', axis: '#64748b' };
   const labels = sorted.map(function (r) { return (r.date || ''); });
   const mv = sorted.map(function (r) { return r.totalMarketValue == null ? null : r.totalMarketValue; });
   const inv = sorted.map(function (r) { return r.totalInvested || 0; });
@@ -127,8 +129,8 @@ function renderEarningsChart(sorted) {
     data: {
       labels: labels,
       datasets: [
-        { label: '总资产', data: mv, borderColor: '#1a237e', backgroundColor: 'rgba(26,35,126,.08)', fill: true, tension: 0.3, pointRadius: 0, borderWidth: 2.5 },
-        { label: '投入本金', data: inv, borderColor: '#d93025', backgroundColor: 'transparent', borderDash: [5, 3], tension: 0.3, pointRadius: 0, borderWidth: 1.5 }
+        { label: '总资产', data: mv, borderColor: th.chart1, backgroundColor: 'rgba(37,99,235,.08)', fill: true, tension: 0.3, pointRadius: 0, borderWidth: 2.5 },
+        { label: '投入本金', data: inv, borderColor: th.chart5, backgroundColor: 'transparent', borderDash: [5, 3], tension: 0.3, pointRadius: 0, borderWidth: 1.5 }
       ]
     },
     options: {
@@ -141,8 +143,8 @@ function renderEarningsChart(sorted) {
         })
       },
       scales: {
-        x: { grid: { display: false }, ticks: { maxTicksLimit: 12, font: { size: 11 }, color: '#999' } },
-        y: { grid: { color: '#f0f0f0' }, ticks: { font: { size: 11 }, color: '#999', callback: function (v) { return '¥' + (v / 10000).toFixed(0) + '万'; } } }
+        x: { grid: { display: false }, ticks: { maxTicksLimit: 12, font: { size: 11 }, color: th.axis } },
+        y: { grid: { color: th.grid }, ticks: { font: { size: 11 }, color: th.axis, callback: function (v) { return '¥' + (v / 10000).toFixed(0) + '万'; } } }
       }
     }
   });
@@ -167,9 +169,10 @@ function renderEarningsTable(sorted) {
   const el = document.getElementById('earnings-table');
   if (!el) return;
   earningsSorted = sorted;
+  var th = (typeof window !== 'undefined' && window.SiteChartTheme) ? window.SiteChartTheme.get() : { up: '#dc2626', down: '#059669', textMuted: '#64748b' };
   const wan = function (v) { return v == null ? '—' : (Number(v) / 10000).toFixed(2) + '万'; };
-  const trendColor = function (v) { return v > 0 ? '#d93025' : (v < 0 ? '#137333' : '#888'); };
-  const trendClass = function (color) { return color === '#d93025' ? 'positive' : (color === '#137333' ? 'negative' : ''); };
+  const trendColor = function (v) { return v > 0 ? th.up : (v < 0 ? th.down : th.textMuted); };
+  const trendClass = function (color) { return color === th.up ? 'positive' : (color === th.down ? 'negative' : ''); };
   const cols = [
     { t: '日期', get: function (r) {
         const references = Array.isArray(r.suspensionReferencePrices) ? r.suspensionReferencePrices : [];
@@ -184,11 +187,11 @@ function renderEarningsTable(sorted) {
     { t: '投入本金(万元)', get: function (r) { return wan(r.totalInvested); } },
     { t: '净值', get: function (r) { return r.nav == null ? '—' : Number(r.nav).toFixed(4); } },
     { t: '总收益率', right: true, color: function (r) { return trendColor(r.totalReturn || 0); }, get: function (r) { return r.totalReturn == null ? '—' : (r.totalReturn >= 0 ? '+' : '') + (r.totalReturn * 100).toFixed(2) + '%'; } },
-    { t: '本周涨跌', right: true, color: function (r) { return r.weekChange == null ? '#888' : trendColor(r.weekChange); }, get: function (r) { return r.weekChange == null ? '-' : ((r.weekChange >= 0) ? '+' : '') + (r.weekChange * 100).toFixed(2) + '%'; } },
-    { t: '今日涨跌', right: true, color: function (r) { return (r.dayChange == null) ? '#888' : trendColor(r.dayChange); }, get: function (r) { return (r.dayChange == null) ? '-' : ((r.dayChange >= 0) ? '+' : '') + ((r.dayChange || 0) * 100).toFixed(2) + '%'; } },
+    { t: '本周涨跌', right: true, color: function (r) { return r.weekChange == null ? th.textMuted : trendColor(r.weekChange); }, get: function (r) { return r.weekChange == null ? '-' : ((r.weekChange >= 0) ? '+' : '') + (r.weekChange * 100).toFixed(2) + '%'; } },
+    { t: '今日涨跌', right: true, color: function (r) { return (r.dayChange == null) ? th.textMuted : trendColor(r.dayChange); }, get: function (r) { return (r.dayChange == null) ? '-' : ((r.dayChange >= 0) ? '+' : '') + ((r.dayChange || 0) * 100).toFixed(2) + '%'; } },
     { t: '年化', right: true, color: function (r) { return trendColor(r.annualizedReturn || 0); }, get: function (r) { return r.annualizedReturn == null ? '—' : (r.annualizedReturn >= 0 ? '+' : '') + (r.annualizedReturn * 100).toFixed(2) + '%'; } },
     { t: '当前回撤', right: true, color: function (r) { return trendColor(r.currentDrawdown || 0); }, get: function (r) { return r.currentDrawdown == null ? '—' : (r.currentDrawdown * 100).toFixed(2) + '%'; } },
-    { t: '今年收益', right: true, color: function (r) { return (r.yearReturn == null) ? '#888' : trendColor(r.yearReturn); }, get: function (r) { return (r.yearReturn == null) ? '-' : ((r.yearReturn >= 0 ? '+' : '') + ((r.yearReturn) * 100).toFixed(2) + '%'); } },
+    { t: '今年收益', right: true, color: function (r) { return (r.yearReturn == null) ? th.textMuted : trendColor(r.yearReturn); }, get: function (r) { return (r.yearReturn == null) ? '-' : ((r.yearReturn >= 0 ? '+' : '') + ((r.yearReturn) * 100).toFixed(2) + '%'); } },
     { t: '操作', center: true,       get: function (r) {
         if (r.isLive) return '实时估值';
         return '<button class="btn btn-outline btn-sm" data-act="openNavEdit" data-date="' + escapeHtml(r.date) + '">编辑</button> ' +

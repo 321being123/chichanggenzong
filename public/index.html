@@ -24,6 +24,7 @@
 <script src="shared/ui-actions.js?v=__APP_VERSION__"></script>
 <script src="shared/mobile-ui.js?v=__APP_VERSION__" defer></script>
 <script src="shared/telemetry.js?v=__APP_VERSION__" defer></script>
+<script src="shared/chart-theme.js?v=__APP_VERSION__" defer></script>
 </head>
 <body>
 
@@ -1014,10 +1015,13 @@
         <h3 class="u-m-0 u-clickable">修改密码 <span id="pwd-arrow">▶</span></h3>
       </div>
       <div class="js-hidden" id="pwd-body">
-        <div class="form-group"><label>旧密码</label><input id="pwd-old" type="password" autocomplete="current-password" data-autofill-credential></div>
-        <div class="form-group"><label>新密码</label><input id="pwd-new" type="password" autocomplete="new-password" data-autofill-credential></div>
-        <div class="form-group"><label>确认新密码</label><input id="pwd-new2" type="password" autocomplete="new-password" data-autofill-credential></div>
-        <button class="btn btn-primary" data-act="changePwd">更新密码</button>
+        <form id="pwd-form" data-autofill-scope="credential" novalidate>
+          <input type="text" class="js-hidden" autocomplete="username" value="" aria-hidden="true" tabindex="-1">
+          <div class="form-group"><label>旧密码</label><input id="pwd-old" type="password" autocomplete="current-password" data-autofill-credential></div>
+          <div class="form-group"><label>新密码</label><input id="pwd-new" type="password" autocomplete="new-password" data-autofill-credential></div>
+          <div class="form-group"><label>确认新密码</label><input id="pwd-new2" type="password" autocomplete="new-password" data-autofill-credential></div>
+          <button class="btn btn-primary" type="button" data-act="changePwd">更新密码</button>
+        </form>
       </div>
     </div>
 

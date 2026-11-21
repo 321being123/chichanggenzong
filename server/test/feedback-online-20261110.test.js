@@ -93,11 +93,11 @@ check('#30 到期感叹号复用风险评级配色，强赎红不变', () => {
   const six = css.match(/\.bond-lifecycle-mark-expiry-6m \{[^}]*\}/);
   const year = css.match(/\.bond-lifecycle-mark-expiry-1y \{[^}]*\}/);
   assert.ok(high && medium && six && year, '四个类都必须存在');
-  assert.strictEqual(six[0].match(/color:\s*(#[0-9a-fA-F]{6})/)[1], high[0].match(/background:\s*(#[0-9a-fA-F]{6})/)[1],
+  assert.strictEqual(six[0].match(/color:\s*(var\(--rating-high\)|#[0-9a-fA-F]{6})/)[1], high[0].match(/background:\s*(var\(--rating-high\)|#[0-9a-fA-F]{6})/)[1],
     '半年提醒必须与「高风险」同色');
-  assert.strictEqual(year[0].match(/color:\s*(#[0-9a-fA-F]{6})/)[1], medium[0].match(/background:\s*(#[0-9a-fA-F]{6})/)[1],
+  assert.strictEqual(year[0].match(/color:\s*(var\(--rating-medium\)|#[0-9a-fA-F]{6})/)[1], medium[0].match(/background:\s*(var\(--rating-medium\)|#[0-9a-fA-F]{6})/)[1],
     '一年提醒必须与「中风险」同色');
-  assert.ok(/\.bond-lifecycle-mark-call,\.bond-lifecycle-mark-maturity \{ color:#d93025; \}/.test(css), '强赎与临近退市保持红色');
+  assert.ok(/\.bond-lifecycle-mark-call,\.bond-lifecycle-mark-maturity \{ color:(?:var\(--up\)|#d93025); \}/.test(css), '强赎与临近退市保持红色');
 });
 
 // ---------- #31 编辑器工具栏与粗体 ----------

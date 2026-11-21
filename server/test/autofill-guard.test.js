@@ -7,7 +7,9 @@ const guard = fs.readFileSync(path.join(root, 'public', 'shared', 'autofill-guar
 const index = fs.readFileSync(path.join(root, 'public', 'index.html'), 'utf8');
 const login = fs.readFileSync(path.join(root, 'public', 'login.html'), 'utf8');
 const dialog = fs.readFileSync(path.join(root, 'public', 'shared', 'dialog.js'), 'utf8');
-const pageFiles = ['index.html', 'login.html', 'admin.html', 'share-knowledge.html', 'ipo-report.html'];
+const pageFiles = ['index.html', 'login.html', 'admin.html', 'share-knowledge.html', 'ipo-report.html', 'bond-revision-motive.html'];
+const adminJs = fs.readFileSync(path.join(root, 'public', 'js', 'admin.js'), 'utf8');
+const shareHtml = fs.readFileSync(path.join(root, 'server', 'views', 'share.html'), 'utf8');
 
 assert.ok(guard.includes('MutationObserver'), '自动填充守门器必须覆盖动态创建的输入框');
 assert.ok(guard.includes("isPasswordField(el) ? 'new-password' : 'off'"), '只有密码输入框可以使用 new-password，普通输入框必须使用 off');
@@ -28,6 +30,14 @@ pageFiles.forEach((file) => {
 const nonCredentialPasswordIds = ['admin-pwd-input', 'model-key'];
 nonCredentialPasswordIds.forEach((id) => {
   assert.ok(guard.includes(`'${id}'`) === false, `${id} 不得进入账号密码自动填充白名单`);
+});
+assert.ok(shareHtml.includes('shared/autofill-guard.js?v=__APP_VERSION__'), '公开分享页必须加载最新自动填充守门器');
+assert.ok(index.includes('id="pwd-form"') && index.includes('data-autofill-scope="credential"'), '个人中心改密区必须使用独立 form 边界隔离');
+assert.ok(login.includes('id="auth-form"') && login.includes('data-autofill-scope="credential"'), '登录页必须使用独立 form 边界');
+assert.ok(guard.includes("autocomplete', 'one-time-code'") || guard.includes("setAttribute('autocomplete', 'one-time-code')"), 'OTP 验证码字段必须保留 one-time-code 语义');
+['admin-pwd-input', 'set-tushare-primary', 'set-tushare-backup', 'model-key'].forEach((id) => {
+  const re = new RegExp(`id="${id}"[^>]*data-autofill-secret="true"`);
+  assert.ok(re.test(adminJs), `${id} 必须使用 data-autofill-secret 与 ui-secret-input，避免触发账号密码保存弹窗`);
 });
 
 console.log('autofill-guard: 普通输入框与认证字段标记检查通过');

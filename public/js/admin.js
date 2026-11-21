@@ -242,7 +242,7 @@ function adminPaintUsersError(network) {
 
 function adminResetPwd(username) {
   openAdminModal('重置密码 - ' + username,
-    '<div class="form-group"><label>新密码（至少6位）</label><input id="admin-pwd-input" type="password" autocomplete="new-password" placeholder="输入新密码" class="u-input"></div>',
+    '<div class="form-group"><label>新密码（至少6位）</label><input id="admin-pwd-input" type="text" autocomplete="off" data-autofill-secret="true" spellcheck="false" autocapitalize="off" autocorrect="off" placeholder="输入新密码" class="u-input ui-secret-input"></div>',
     '<button class="btn btn-outline" data-act="closeAdminModal">取消</button>' +
     '<button class="btn btn-primary" data-act="doAdminResetPwd" data-arg1="' + escapeHtml(username) + '">确定重置</button>'
   );
@@ -918,8 +918,8 @@ function renderSettingsTabs(el, s) {
     '<div class="settings-panel" data-panel="external-api" hidden><div class="u-note u-mb-12">统一管理外部数据 API 的主备凭据。凭据加密保存在服务端，页面只显示掩码；留空表示保留原值。</div><div data-style="background:#fff;border:1px solid #e8e8e8;border-radius:10px;padding:20px;max-width:700px;">' +
     '<div data-style="font-size:17px;font-weight:600;color:#222;margin-bottom:16px;">' + escapeHtml(apiSettings.label || 'Tushare Pro') + '</div>' +
     '<div data-style="display:grid;grid-template-columns:120px 1fr;gap:12px 14px;align-items:center;">' +
-    '<label for="set-tushare-primary">主 Token</label><div><input id="set-tushare-primary" type="password" autocomplete="new-password" placeholder="' + (apiPrimary.configured ? '当前已配置：' + escapeHtml(apiPrimary.masked || '已配置') : '尚未配置') + '" class="u-input-lg"></div>' +
-    '<label for="set-tushare-backup">备用 Token</label><div><input id="set-tushare-backup" type="password" autocomplete="new-password" placeholder="' + (apiBackup.configured ? '当前已配置：' + escapeHtml(apiBackup.masked || '已配置') : '尚未配置') + '" class="u-input-lg"></div>' +
+    '<label for="set-tushare-primary">主 Token</label><div><input id="set-tushare-primary" type="text" autocomplete="off" data-autofill-secret="true" spellcheck="false" autocapitalize="off" autocorrect="off" placeholder="' + (apiPrimary.configured ? '当前已配置：' + escapeHtml(apiPrimary.masked || '已配置') : '尚未配置') + '" class="u-input-lg ui-secret-input"></div>' +
+    '<label for="set-tushare-backup">备用 Token</label><div><input id="set-tushare-backup" type="text" autocomplete="off" data-autofill-secret="true" spellcheck="false" autocapitalize="off" autocorrect="off" placeholder="' + (apiBackup.configured ? '当前已配置：' + escapeHtml(apiBackup.masked || '已配置') : '尚未配置') + '" class="u-input-lg ui-secret-input"></div>' +
     '<label for="set-tushare-mode">运行模式</label><select id="set-tushare-mode" data-style="padding:9px 12px;border:1px solid #d0d0d0;border-radius:6px;box-sizing:border-box;max-width:260px;">' + option('auto', '自动故障转移') + option('primary', '固定使用主 Token') + option('backup', '固定使用备用 Token') + '</select>' +
     '<label>切换通知</label><label class="u-flex-center u-gap-6"><input id="set-tushare-notify" type="checkbox" ' + (apiSettings.notify_on_switch !== false ? 'checked' : '') + '>主备切换时发送后台告警</label></div>' +
     '<div class="u-fs-12 u-c-muted u-mt-16">当前模式：' + modeLabel + (apiSwitch ? '；最近切换：' + escapeHtml(apiSwitch.switched_at || '') + '（' + escapeHtml(apiSwitch.reason || '') + '）' : '') + '</div>' +
@@ -1277,7 +1277,7 @@ function openModelForm(id) {
     '<div class="form-group"><label>名称（便于区分，如「默认模型」）</label><input id="model-name" placeholder="如 默认模型" class="u-input"></div>' +
     '<div class="form-group"><label>模型名（如 agnes-2.5-flash）</label><input id="model-model" placeholder="如 agnes-2.5-flash" class="u-input"></div>' +
     '<div class="form-group"><label>API 地址（必须是 HTTPS，如 https://apihub.agnes-ai.com/v1/chat/completions）</label><input id="model-url" placeholder="https://..." class="u-input"></div>' +
-    '<div class="form-group"><label>API Key' + (isEdit ? '（留空或显示打码串表示不修改）' : '') + '</label><input id="model-key" type="password" autocomplete="new-password" placeholder="粘贴 API Key" class="u-input"></div>' +
+    '<div class="form-group"><label>API Key' + (isEdit ? '（留空或显示打码串表示不修改）' : '') + '</label><input id="model-key" type="text" autocomplete="off" data-autofill-secret="true" spellcheck="false" autocapitalize="off" autocorrect="off" placeholder="粘贴 API Key" class="u-input ui-secret-input"></div>' +
     '<label data-style="display:flex;align-items:center;gap:8px;font-size:13px;color:#555;"><input type="checkbox" id="model-enabled" checked> 启用（参与识别兜底）</label>';
   openAdminModal(isEdit ? '编辑模型' : '新增模型', body,
     '<button class="btn btn-outline" data-act="closeAdminModal">取消</button>' +

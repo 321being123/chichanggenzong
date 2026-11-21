@@ -6,70 +6,11 @@
 <meta name="base-url" content="">
 <title>存在小站</title>
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
-<link rel="stylesheet" href="shared/style.css?v=0.8.2.1">
+<link rel="stylesheet" href="shared/style.css?v=__APP_VERSION__">
+<link rel="stylesheet" href="css/login.css?v=__APP_VERSION__">
 <script src="shared/autofill-guard.js?v=__APP_VERSION__"></script>
-<style>
-* { margin:0; padding:0; box-sizing:border-box; }
-body {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', sans-serif;
-  background: linear-gradient(135deg, #1a237e 0%, #283593 50%, #3949ab 100%);
-  min-height: 100vh;
-}
-.login-page { min-height: calc(100vh - 52px); display:flex; align-items:center; justify-content:center; padding:24px 0; }
-.login-brand, .login-nav-link { color:inherit; text-decoration:none; }
-.login-box {
-  background: #fff; border-radius: 16px; padding: 40px; width: 400px; max-width: 92vw;
-  box-shadow: 0 20px 60px rgba(0,0,0,.3);
-}
-.login-box h1 { font-size: 22px; color: #1a237e; text-align:center; margin-bottom:4px; }
-.login-box .sub { font-size: 13px; color: #6e6e6e; text-align:center; margin-bottom:20px; }
-.form-group { margin-bottom:14px; position:relative; }
-.form-group label { display:block; font-size:13px; color:#666; margin-bottom:4px; font-weight:500; }
-.form-group input {
-  width:100%; padding:12px 14px; border:1px solid #e0e0e0; border-radius:10px;
-  font-size:15px; outline:none; transition:border-color .2s;
-}
-.form-group input:focus { border-color:#1a237e; box-shadow:0 0 0 3px rgba(26,35,126,.08); }
-.pwd-wrap { position:relative; }
-.pwd-wrap input { padding-right:40px; }
-.pwd-toggle {
-  position:absolute; right:12px; top:50%; transform:translateY(-50%);
-  background:none; border:none; cursor:pointer; font-size:18px; color:#6e6e6e; padding:4px;
-  line-height:1;
-}
-.btn {
-  width:100%; padding:12px; border:none; border-radius:10px; font-size:15px; font-weight:600;
-  cursor:pointer; transition:.2s; margin-bottom:10px; justify-content:center; text-align:center;
-}
-.btn-primary { background:#1a237e; color:#fff; }
-.btn-primary:hover { background:#283593; }
-.btn:disabled { background:#aaa; cursor:not-allowed; }
-.error {
-  color:#d93025; font-size:13px; text-align:center; padding:8px 12px; margin-bottom:10px;
-  background:#fef2f2; border-radius:8px; display:none;
-}
-.switch { text-align:center; font-size:13px; color:#6e6e6e; margin-top:4px; }
-.switch a, .switch .switch-btn { color:#1a73e8; cursor:pointer; text-decoration:none; }
-.switch .switch-btn { background:none; border:none; padding:0; font:inherit; }
-.switch a:hover, .switch .switch-btn:hover { text-decoration:underline; }
-.toast {
-  position:fixed; bottom:24px; left:50%; transform:translateX(-50%);
-  background:#323232; color:#fff; padding:12px 24px; border-radius:10px;
-  font-size:13px; opacity:0; transition:opacity .35s; pointer-events:none;
-  box-shadow:0 4px 16px rgba(0,0,0,.2); z-index:999;
-}
-.toast.show { opacity:1; }
-
-/* 注册/找回模式：全局 .form-group:last-child 会把分组容器内最后一个表单项的下边距清零，
-   导致「注册」按钮紧贴验证码框、「邀请码」紧贴确认密码框，这里恢复统一间距 */
-#register-fields .form-group:last-child,
-#forgot-fields .form-group:last-child,
-#register-email-fields .form-group:last-child { margin-bottom: 14px; }
-
-@media (max-width:760px) { .login-page { min-height:calc(100dvh - var(--site-nav-height)); padding:16px 12px; align-items:flex-start; } .login-box { width:100%; max-width:400px; padding:24px 18px; } .login-box .pwd-toggle { right:2px; } .login-box .form-group input { padding-right:48px; } }
-</style>
-<script src="shared/mobile-ui.js?v=1" defer></script>
-<script src="shared/telemetry.js?v=0.8.0.12" defer></script>
+<script src="shared/mobile-ui.js?v=__APP_VERSION__" defer></script>
+<script src="shared/telemetry.js?v=__APP_VERSION__" defer></script>
   <script src="shared/ui-actions.js?v=__APP_VERSION__"></script>
 </head>
 <body>
@@ -95,12 +36,13 @@ body {
 </div>
 <main class="login-page">
 <div class="login-box">
-  <h1>📈 登录存在小站</h1>
+  <h1>登录存在小站</h1>
   <p class="sub" id="subtitle">账号登录</p>
 
   <div class="error" id="error"></div>
   <div class="error js-hidden" id="email-service-hint"></div>
 
+  <form id="auth-form" data-autofill-scope="credential" novalidate>
   <div class="form-group">
     <label for="username">账号</label>
     <input type="text" id="username" placeholder="输入账号" autocomplete="username" data-autofill-credential>
@@ -180,7 +122,8 @@ body {
     </div>
   </div>
 
-  <button class="btn btn-primary" id="submit-btn" data-act="submit">登 录</button>
+  <button class="btn btn-primary" id="submit-btn" type="button" data-act="submit">登 录</button>
+  </form>
   <div class="switch" id="switch-hint">
     <button type="button" class="switch-btn register-entry" data-act="toggleMode">注册新账号</button> · <button type="button" class="switch-btn" data-act="toggleForgotMode">忘记密码</button>
   </div>
@@ -489,6 +432,10 @@ function submit() {
     showError('连接失败，请检查服务是否运行');
   });
 }
+
+// 表单提交拦截（配合 <form data-autofill-scope="credential"> 避免浏览器误判整页）
+const authForm = document.getElementById('auth-form');
+if (authForm) authForm.addEventListener('submit', e => { e.preventDefault(); });
 
 // 回车键
 document.getElementById('username').addEventListener('keydown', e => {

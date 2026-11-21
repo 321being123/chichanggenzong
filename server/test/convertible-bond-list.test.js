@@ -128,7 +128,7 @@ check('前端含上市转债子页、脚本和只读接口', () => {
   assert.ok(js.includes('bondListFloatingScroll') && js.includes('bondListSyncFloatingScroll'), '列表左右滚动条未固定在窗口底部');
   assert.ok(js.includes("event.target.id === 'bond-list-floating-scroll'"), '底部滚动条事件被全局滚动监听覆盖');
   assert.ok(css.includes('.bond-list-floating-scroll { position:fixed; bottom:0;'), '底部横向滚动条缺少固定样式');
-  assert.ok(css.includes('.bond-list-up { color:#d93025;') && css.includes('.bond-list-down { color:#137333;'), '涨跌幅颜色未按红涨绿跌设置');
+  assert.ok(css.includes('.bond-list-up { color:var(--up);') && css.includes('.bond-list-down { color:var(--down);'), '涨跌幅颜色未按红涨绿跌设置');
 });
 
 check('接口路由在单债动态参数之前注册', () => {

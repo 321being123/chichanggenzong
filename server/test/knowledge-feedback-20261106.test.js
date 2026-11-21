@@ -59,7 +59,7 @@ check('#21 禁止整页下拉回弹', () => {
 
 check('#21 回弹露出的画布与顶栏同色', () => {
   const css = read('public/shared/style.css');
-  assert.ok(/html\s*\{\s*background:\s*#1a237e/i.test(css), '根元素需给出与深蓝顶栏同色的画布背景，否则下拉回弹会露出浅灰空白');
+  assert.ok(/html\s*\{\s*background:\s*var\(--bg-canvas\)/i.test(css), '根元素需给出与浅色画布一致的背景变量，否则下拉回弹会露出空白');
 });
 
 check('#21 编辑器图标不被 CSP 挤成占位块', () => {

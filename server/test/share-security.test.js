@@ -259,12 +259,12 @@ test('分享页同时提供两个消息容器，且不输出运维更新时间',
   assert.ok(!/id="stock-analysis-updated"/.test(template), '分享页不得输出 stock-analysis-updated');
 });
 
-test('分享页标题在深色 hero 上使用浅色，不沿用正文深灰', () => {
+test('分享页标题在浅色 hero 卡片上使用 --text-primary，不再使用浅色文字', () => {
   const css = fs.readFileSync(path.join(root, 'public', 'css', 'share.css'), 'utf8');
   const rule = css.match(/\.stock-analysis-hero h1\s*\{[^}]*\}/);
   assert.ok(rule, '应有 .stock-analysis-hero h1 规则');
-  assert.ok(/color:\s*#fff/i.test(rule[0]), '标题颜色应为浅色（深色 hero 背景）');
-  assert.ok(!/color:\s*#333/i.test(rule[0]), '标题不得使用正文深灰');
+  assert.ok(/color:\s*var\(--text-primary\)/i.test(rule[0]), '标题颜色应使用 --text-primary（浅色 hero 卡片）');
+  assert.ok(!/color:\s*#fff/i.test(rule[0]), '浅色 hero 卡片标题不得再使用白色 #fff');
 });
 
 test('分享页脚本声明 username、showToast、switchMain 三个被复用的全局', () => {

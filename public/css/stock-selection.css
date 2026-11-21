@@ -30,14 +30,11 @@
 .ss-exclusion-groups strong { color: #273142; font-size: 12px; }
 .ss-exclusion-groups ul { list-style: none; margin: 4px 0 0; padding: 0; }
 .ss-exclusion-groups li { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 4px 0; color: var(--bond-feature-muted); font-size: 12px; }
-.ss-row-actions { position: relative; min-width: 58px; }
-.ss-row-actions summary { min-height: 32px; padding: 5px 8px; border: 1px solid #d7dce3; border-radius: 6px; color: #273142; cursor: pointer; list-style: none; text-align: center; }
-.ss-row-actions summary::-webkit-details-marker { display: none; }
-.ss-row-actions summary::after { content: '⌄'; margin-left: 5px; color: var(--bond-feature-muted); }
-.ss-row-actions[open] summary::after { content: '⌃'; }
-.ss-row-menu { position: absolute; z-index: 30; right: 0; top: 38px; min-width: 150px; padding: 5px; border: 1px solid #d7dce3; border-radius: 8px; background: #fff; box-shadow: 0 7px 20px rgba(15, 23, 42, .16); }
-.ss-row-menu button { display: block; width: 100%; min-height: 36px; border: 0; background: #fff; color: #273142; cursor: pointer; text-align: left; }
-.ss-row-menu button:hover, .ss-row-menu button:focus-visible { background: #f1f5f9; outline: none; }
+/* 2026-11-22（#39）：操作列改为行内直达按钮组，已排除项高亮，不再使用折叠菜单。 */
+.ss-row-actions { display: inline-flex; align-items: center; gap: 6px; flex-wrap: nowrap; }
+.ss-row-action { min-height: 30px; padding: 0 8px; border: 1px solid #d7dce3; border-radius: 6px; background: #fff; color: #273142; font-size: 12px; line-height: 28px; white-space: nowrap; cursor: pointer; }
+.ss-row-action:hover, .ss-row-action:focus-visible { border-color: var(--bond-feature-focus); background: #f8fafc; outline: none; }
+.ss-row-action-on { border-color: var(--warn); background: var(--warn-bg); color: var(--warn); }
 .ss-disabled-note { color: #9a3412; font-size: 12px; }
 .ss-metric-help { display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; margin-left: 3px; padding: 0; border: 1px solid #94a3b8; border-radius: 50%; background: #fff; color: #475569; font-size: 12px; cursor: help; vertical-align: middle; }
 .ss-metric-help:focus-visible { outline: 2px solid var(--bond-feature-focus); outline-offset: 2px; }
@@ -97,7 +94,8 @@
   .ss-exclusion-groups { grid-template-columns: minmax(0, 1fr); }
   .ss-exclusion-head { display: block; }
   .ss-exclusion-head span { display: block; margin-top: 3px; }
-  .ss-row-actions summary, .ss-row-menu button, .ss-source-panel .btn { min-height: 44px; }
+  .ss-row-action { min-height: 44px; line-height: 42px; }
+  .ss-source-panel .btn { min-height: 44px; }
   .ss-metric-help { width: 44px; height: 44px; margin-left: 0; }
   .ss-metric-tooltip-close { width: 44px; min-width: 44px; height: 44px; margin: -9px -11px 0 0; line-height: 44px; }
   .ss-source-panel .ss-toolbar select { min-height: 44px; font-size: 16px; }

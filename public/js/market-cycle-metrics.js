@@ -164,7 +164,7 @@ function mvcShowTooltip(event,chart,data,left,right,width){
   if(mvcState.metric==='m2_market_cap'){
     lines.push('M2：'+mvcNum(item.m2_100m_yuan,2)+'亿元');
     lines.push('A股总市值：'+mvcNum(item.total_market_cap_100m_yuan,2)+'亿元');
-  }else if(Number.isFinite(Number(item.close))){
+  }else if(item.close!=null&&Number.isFinite(Number(item.close))&&Number(item.close)>0){
     lines.push(mvcEsc((mvcState.overview&&mvcState.overview.indexName)||'指数')+'：'+mvcNum(item.close,2)+'点');
   }
   tooltip.innerHTML=lines.join('<br>');tooltip.style.left=Math.min(Math.max(event.clientX-box.left+12,8),box.width-220)+'px';tooltip.style.top=Math.max(event.clientY-box.top+12,8)+'px';tooltip.hidden=false;

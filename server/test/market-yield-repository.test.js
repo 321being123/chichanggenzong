@@ -126,6 +126,17 @@ pool.query = async (sql, params) => { calls.push({ sql, params }); return { rows
     assert.strictEqual(calls[0].params[10], null);
     assert.strictEqual(calls[0].params[11], 1.5);
     assert.strictEqual(calls[0].params.length, 14, '三行里缺日期的一行被丢弃，只剩两条');
+    // 2026-11-22（#35 / #38）：恒指历史补传脚本必须与官方同步任务一样写 PB；
+    // 市场周期浮框不得把 close=null 的日期渲染成“恒生指数：0.00点”。
+    const fs = require('fs');
+    const path = require('path');
+    const backfill = fs.readFileSync(path.join(__dirname, '..', 'scripts', 'backfillIndexValuationOfficial.js'), 'utf8');
+    assert.match(backfill, /saveHsiIndexHistory\([\s\S]{0,200}?pb > 0 \? pb : null\)/,
+      '恒指回填脚本重跑时必须把 PB 传给 saveHsiIndexHistory');
+    const frontend = fs.readFileSync(path.join(__dirname, '..', '..', 'public', 'js', 'market-cycle-metrics.js'), 'utf8');
+    assert.match(frontend,
+      /item\.close!=null&&Number\.isFinite\(Number\(item\.close\)\)&&Number\(item\.close\)>0/,
+      '指数点位浮框必须跳过空值或非正收盘价');
     console.log('market yield repository: parameter binding and write order passed');
   } finally { pool.query = original; await pool.end(); }
 })().catch(error => { console.error(error); process.exitCode = 1; });

@@ -109,11 +109,26 @@
     html += '<label class="nt-toggle"><input type="checkbox" data-nt-act="unread"'
       + (state.unreadOnly ? ' checked' : '') + '> 只看未读</label>';
     html += '<span class="nt-toolbar-spacer"></span>';
-    html += '<button type="button" class="btn btn-outline btn-sm" data-nt-act="settings">提醒设置</button>';
     html += '<button type="button" class="btn btn-outline btn-sm" data-nt-act="readall">全部已读</button>';
     html += '<button type="button" class="btn btn-outline btn-sm" data-nt-act="refresh">刷新</button>';
     html += '</div>';
     return html;
+  }
+
+  // 2026-11-22（#37）：「提醒设置」移到顶部二级导航右侧，工具栏只留列表操作。
+  // 未登录时没有个人设置可读，入口隐藏；设置面板打开期间按 aria-pressed 标出激活态。
+  function syncSettingsButton() {
+    var root = document.getElementById('main-notifications');
+    if (!root || !root.querySelector) return;
+    var button = root.querySelector('[data-nt-act="settings"]');
+    if (!button) return;
+    var state = window.appNotificationsPresenter.state;
+    var visible = loggedIn();
+    button.hidden = !visible;
+    button.disabled = !visible;
+    var active = state.prefsOpen === true;
+    button.setAttribute('aria-pressed', active ? 'true' : 'false');
+    button.classList.toggle('active', active);
   }
 
   // 提醒设置面板：四项独立开关；保存失败不伪装成功，跨设备冲突由 Presenter 重新获取
@@ -214,6 +229,7 @@
     var state = window.appNotificationsPresenter.state;
     var host = byId('nt-body');
     if (!host) return;
+    syncSettingsButton();
     if (state.prefsOpen) { host.innerHTML = settingsHtml(); return; }
     if (state.detailId) { host.innerHTML = detailHtml(); return; }
     var html = headerHtml();

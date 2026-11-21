@@ -195,22 +195,20 @@ check('指标说明支持焦点/悬停/点按且单实例关闭恢复焦点', ()
   assert.ok(css.includes('.ss-metric-help { width: 44px; height: 44px; margin-left: 0; }'), '手机说明入口必须保留 44px 触控区');
   assert.ok(css.includes('.ss-metric-tooltip-close { width: 44px; min-width: 44px; height: 44px;'), '手机浮层关闭按钮必须保留 44px 触控区');
 });
-check('候选操作重渲染后保留动作焦点并恢复菜单状态', () => {
+check('候选操作重渲染后保留动作焦点（行内按钮）', () => {
   const dom = new JSDOM('<!doctype html><html><body><div id="ss-candidates"></div></body></html>', { pretendToBeVisual: true });
   const context = { window: dom.window, document: dom.window.document };
   vm.createContext(context); vm.runInContext(view, context);
   const item = { code: 'AAA', instrumentId: 1, filterStatus: 'PASS', industry: { code: 'I' }, exclusionReasons: [], personalExclusionReasons: [], currentPb: null, currentPe: null, dividendYield: null, equityCny: null };
   const state = { candidates: [item], candidateTotal: 1 };
   context.ssRenderCandidates(state);
-  const details = dom.window.document.querySelector('details.ss-row-actions'); details.open = true;
+  assert.strictEqual(dom.window.document.querySelectorAll('details.ss-row-actions').length, 0, '操作列不得再有折叠菜单');
   dom.window.document.querySelector('[data-ss-action="exclude-instrument"]').focus();
   item.personalExcluded = true; item.personalExclusionReasons = ['user_excluded_instrument'];
   context.ssRenderCandidates(state);
   assert.strictEqual(dom.window.document.activeElement.getAttribute('data-ss-action'), 'restore-instrument');
-  assert.strictEqual(dom.window.document.querySelector('details.ss-row-actions').open, true);
   context.ssCloseRowActionMenus();
-  assert.strictEqual(dom.window.document.querySelector('details.ss-row-actions').open, false);
-  assert.strictEqual(dom.window.document.activeElement.tagName, 'SUMMARY');
+  assert.strictEqual(dom.window.document.activeElement.getAttribute('data-ss-action'), 'restore-instrument', '没有展开菜单时不得抢走行内按钮焦点');
 });
 check('目标组合行移除后焦点回到组合摘要', () => {
   const dom = new JSDOM('<!doctype html><html><body><div id="ss-portfolio"></div><div id="ss-exclusions"></div></body></html>', { pretendToBeVisual: true });
@@ -219,7 +217,6 @@ check('目标组合行移除后焦点回到组合摘要', () => {
   const portfolio = { members: [{ code: 'AAA', name: '甲', instrumentId: 1, currentPb: null }], positionRatio: 0.5,
     selectedCount: 1, slots: 30, unfilledSlots: 29, equityWeightInMarketBudget: 0.5, cashWeightInMarketBudget: 0.5 };
   context.ssRenderPortfolio({ portfolio });
-  dom.window.document.querySelector('details.ss-row-actions').open = true;
   dom.window.document.querySelector('[data-ss-action="exclude-instrument"]').focus();
   portfolio.members = [];
   portfolio.selectedCount = 0;
@@ -228,11 +225,45 @@ check('目标组合行移除后焦点回到组合摘要', () => {
   assert.strictEqual(dom.window.document.activeElement.className, 'ss-portfolio-summary');
   assert.strictEqual(dom.window.document.activeElement.getAttribute('tabindex'), '-1');
 });
-check('关键指标和组合字段均有说明入口，个人结果成功后关闭操作菜单', () => {
+check('操作列改为行内直达按钮并保留容器与 data 属性', () => {
+  assert.ok(!view.includes('<details class="ss-row-actions"'), '不得再渲染折叠菜单');
+  assert.ok(view.includes('<div class="ss-row-actions">'), '行内按钮组必须保留 .ss-row-actions 容器');
+  assert.ok(/class="ss-row-action[^"]*" data-ss-action="exclude-instrument"/.test(view), '股票排除必须是行内按钮');
+  assert.ok(/class="ss-row-action[^"]*" data-ss-action="restore-industry"/.test(view), '行业恢复必须是行内按钮');
+  assert.ok(view.includes('ss-row-action-on'), '已排除态必须高亮');
+  assert.ok(css.includes('.ss-row-actions { display: inline-flex'), '行内按钮组必须横向排列');
+  assert.ok(css.includes('.ss-row-action { min-height: 44px'), '移动端行内按钮触控高度必须 >= 44px');
+});
+check('目标组合移除冗余权重列并展示四项基本面指标', () => {
+  const dom = new JSDOM('<!doctype html><html><body><div id="ss-portfolio"></div></body></html>', { pretendToBeVisual: true });
+  const context = { window: dom.window, document: dom.window.document };
+  vm.createContext(context); vm.runInContext(view, context);
+  const member = { code: 'AAA', name: '甲', instrumentId: 1, slotNo: 1, currentPb: 1.2, currentPe: 12.3,
+    dividendYield: 0.045, debtToAssetRatio: 0.62, latestProfitYoy: 0.154, latestProfitPeriodEnd: '2026-09-30' };
+  const portfolio = { members: [member], positionRatio: 1, selectedCount: 1, slots: 30, unfilledSlots: 29,
+    equityWeightInMarketBudget: 1, cashWeightInMarketBudget: 0, industryBreakdown: [], changes: null };
+  context.ssRenderPortfolio({ portfolio });
+  const head = dom.window.document.querySelector('thead').textContent;
+  const body = dom.window.document.querySelector('tbody').textContent;
+  assert.ok(!head.includes('占市场预算') && !head.includes('占股票目标'), '目标组合不得再展示冗余权重列');
+  ['PE（TTM）', '股息率', '资产负债率', '最近财报利润同比'].forEach(label => {
+    assert.ok(head.includes(label), '目标组合缺少列：' + label);
+  });
+  assert.ok(body.includes('12.30') && body.includes('4.50%') && body.includes('62.00%') && body.includes('+15.40%'),
+    '四项指标格式必须与候选列表一致');
+  assert.ok(body.includes('2026-09-30'), '利润同比应附最近报告期');
+  member.currentPb = null; member.currentPe = null; member.dividendYield = null; member.debtToAssetRatio = null; member.latestProfitYoy = null;
+  member.latestProfitPeriodEnd = null;
+  context.ssRenderPortfolio({ portfolio });
+  const missing = dom.window.document.querySelector('tbody').textContent;
+  assert.strictEqual((missing.match(/--/g) || []).length >= 5, true, '缺失指标必须显示占位符而不是 0');
+});
+check('关键指标和组合字段均有说明入口，个人结果成功后关闭行操作菜单', () => {
   assert.ok(view.includes("ssHelp('PB×PE'"), 'PB×PE 必须有说明入口');
   assert.ok(view.includes("ssHelp('股息率'"), '股息率必须有说明入口');
   assert.ok(view.includes("ssHelp('席位'"), '席位必须有说明入口');
-  assert.ok(view.includes("ssHelp('股票目标权重'"), '股票目标权重必须有说明入口');
+  assert.ok(view.includes("ssHelp('资产负债率'"), '资产负债率必须有说明入口');
+  assert.ok(view.includes("ssHelp('最近财报利润同比'"), '最近财报利润同比必须有说明入口');
   assert.ok(view.includes('直接 PB 阈值通过'), 'PB×PE 说明必须覆盖直接 PB 阈值通过路径');
   assert.ok(presenter.includes('ssCloseRowActionMenus'), '个人结果成功后必须关闭行操作菜单');
 });

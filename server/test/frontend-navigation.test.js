@@ -206,6 +206,13 @@ ok(/if \(seq !== notifPoll\.seq \|\| who !== username\) return null;/.test(sessi
 ok(html.includes('id="main-notifications"'), '缺少站内通知一级页容器');
 ok(/data-nt-sub="all"[\s\S]{0,200}?data-nt-sub="feedback"[\s\S]{0,200}?data-nt-sub="system"/.test(html),
   '通知页应有全部/反馈/系统三个子栏目');
+// 2026-11-22（#37）：提醒设置入口在标题区右侧，主栏目列表工具栏不再重复渲染。
+ok(/class="nt-header-actions"[\s\S]{0,200}?id="nt-settings-btn"[^>]*data-nt-act="settings"/.test(html),
+  '提醒设置应放在通知页标题区右侧');
+const ntHeaderSource = (fs.readFileSync(path.join(root, 'public/js', 'notifications.js'), 'utf8')
+  .match(/function headerHtml\(\)[\s\S]*?\n  \}/) || [''])[0];
+ok(ntHeaderSource && !ntHeaderSource.includes('data-nt-act="settings"'),
+  '列表工具栏不得再重复渲染提醒设置入口');
 const notificationsJs = fs.readFileSync(path.join(root, 'public/js/notifications.js'), 'utf8');
 // 批次4 View／Presenter 分离后，归属键（owner 序号）断言跟随代码位置移至 notifications-presenter.js
 const notificationsPresenterJs = fs.readFileSync(path.join(root, 'public/js/presenters/notifications-presenter.js'), 'utf8');

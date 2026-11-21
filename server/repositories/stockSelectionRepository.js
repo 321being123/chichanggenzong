@@ -589,6 +589,118 @@ async function loadEquityFacts({ companyIds, asOfDate, availableBefore, market =
   }]));
 }
 
+/**
+ * 目标组合成员的两项基本面指标（#39）：资产负债率与最近财报利润同比。
+ * 只读批次可见时点内的合并报表（announced_at < asOfDate，available_at < knowledgeCutoff），
+ * 不改表结构；缺值、币种不可比或上年同期为 0 时返回 null，不猜。
+ */
+async function loadMemberFundamentals({ companyIds, asOfDate, availableBefore, market = null }, tx) {
+  if (!companyIds || !companyIds.length) return new Map();
+  const exec = executorOf(tx);
+  const stamp = 'r.announced_at < $2::date AND ($3::timestamptz IS NULL OR r.available_at IS NULL OR r.available_at < $3::timestamptz)';
+  const balancePredicate = market ? marketFinancialCandidatePredicate('r', market, 'balance') : 'TRUE';
+  const balanceUnverified = market ? marketFinancialUnverifiedForMarket('r', market, 'balance') : 'FALSE';
+  // 同 report_id 同时有资产合计与负债合计才算一份可用报表，避免拿两期数据拼比率。
+  const balance = await exec(`
+    SELECT DISTINCT ON (r.company_id)
+           r.company_id, r.report_id, r.period_end::text AS period_end,
+           MAX(CASE WHEN f.metric_code='total_assets' THEN ${SAFE_FINANCIAL_FACT_SQL} END) AS total_assets,
+           MAX(CASE WHEN f.metric_code='total_liabilities' THEN ${SAFE_FINANCIAL_FACT_SQL} END) AS total_liabilities,
+           MAX(CASE WHEN f.metric_code='total_assets' THEN f.currency_code END) AS assets_currency,
+           MAX(CASE WHEN f.metric_code='total_liabilities' THEN f.currency_code END) AS liabilities_currency,
+           BOOL_OR((${UNVERIFIED_FINANCIAL_CURRENCY_SQL}) OR ${balanceUnverified}) AS currency_unverified
+      FROM fundamental.financial_reports r
+      JOIN fundamental.financial_facts f ON f.report_id = r.report_id
+       AND f.metric_code IN ('total_assets','total_liabilities')
+     WHERE r.company_id = ANY($1::bigint[])
+       AND ${balancePredicate}
+       AND r.report_kind = 'balance'
+       AND r.statement_scope = 'consolidated'
+       AND r.announced_at IS NOT NULL
+       AND ${stamp}
+       AND EXISTS (SELECT 1 FROM fundamental.financial_facts fa
+                    WHERE fa.report_id = r.report_id AND fa.metric_code = 'total_assets')
+       AND EXISTS (SELECT 1 FROM fundamental.financial_facts fl
+                    WHERE fl.report_id = r.report_id AND fl.metric_code = 'total_liabilities')
+     GROUP BY r.company_id, r.report_id, r.period_end, r.announced_at
+     ORDER BY r.company_id, r.period_end DESC, r.announced_at DESC, r.report_id DESC`,
+  [companyIds, asOfDate, availableBefore || null]);
+
+  const incomePredicate = market ? marketFinancialCandidatePredicate('r', market, 'income') : 'TRUE';
+  const incomeUnverified = market ? marketFinancialUnverifiedForMarket('r', market, 'income') : 'FALSE';
+  // 一季报/半年报/三季报/年报都参与同比；上年同期按同一 period_type 与同月日匹配。
+  const income = await exec(`
+    SELECT r.company_id, r.report_id, r.period_end::text AS period_end, r.period_type,
+           ${SAFE_FINANCIAL_FACT_SQL} AS net_profit,
+           f.currency_code,
+           ((${UNVERIFIED_FINANCIAL_CURRENCY_SQL}) OR ${incomeUnverified}) AS currency_unverified
+      FROM fundamental.financial_reports r
+      JOIN fundamental.financial_facts f ON f.report_id = r.report_id AND f.metric_code = 'net_profit_parent'
+     WHERE r.company_id = ANY($1::bigint[])
+       AND ${incomePredicate}
+       AND r.report_kind = 'income'
+       AND r.statement_scope = 'consolidated'
+       AND r.period_type IN ('annual','semiannual','q1','q3')
+       AND r.announced_at IS NOT NULL
+       AND ${stamp}
+     ORDER BY r.company_id, r.period_end DESC, r.announced_at DESC, r.report_id DESC`,
+  [companyIds, asOfDate, availableBefore || null]);
+
+  const map = new Map();
+  balance.rows.forEach(row => {
+    const assets = row.total_assets === null ? null : Number(row.total_assets);
+    const liabilities = row.total_liabilities === null ? null : Number(row.total_liabilities);
+    const sameCurrency = row.currency_unverified !== true
+      && !!row.assets_currency && !!row.liabilities_currency
+      && String(row.assets_currency).toUpperCase() === String(row.liabilities_currency).toUpperCase();
+    map.set(String(row.company_id), {
+      debtToAssetRatio: sameCurrency && Number.isFinite(assets) && Number.isFinite(liabilities) && assets > 0
+        ? liabilities / assets : null,
+      debtToAssetPeriodEnd: sameCurrency ? row.period_end : null,
+      latestProfitYoy: null,
+      latestProfitPeriodEnd: null,
+    });
+  });
+  const incomeByCompany = new Map();
+  income.rows.forEach(row => {
+    const key = String(row.company_id);
+    const list = incomeByCompany.get(key) || [];
+    list.push(row);
+    incomeByCompany.set(key, list);
+  });
+  incomeByCompany.forEach((rows, companyId) => {
+    const entry = map.get(companyId) || {
+      debtToAssetRatio: null, debtToAssetPeriodEnd: null, latestProfitYoy: null, latestProfitPeriodEnd: null,
+    };
+    const latest = rows[0] || null;
+    entry.latestProfitPeriodEnd = latest ? latest.period_end : null;
+    if (latest) {
+      const prior = rows.find(row => row.period_end === shiftYear(latest.period_end)
+        && row.period_type === latest.period_type);
+      const current = latest.net_profit === null ? null : Number(latest.net_profit);
+      const priorProfit = prior && prior.net_profit !== null ? Number(prior.net_profit) : null;
+      const comparable = prior && latest.currency_unverified !== true && prior.currency_unverified !== true
+        && !!latest.currency_code && !!prior.currency_code
+        && String(latest.currency_code).toUpperCase() === String(prior.currency_code).toUpperCase();
+      entry.latestProfitYoy = comparable && Number.isFinite(current) && Number.isFinite(priorProfit) && priorProfit !== 0
+        ? (current - priorProfit) / Math.abs(priorProfit) : null;
+    }
+    map.set(companyId, entry);
+  });
+  return map;
+}
+
+/** 上年同一报告期（2/29 在上年不存在时落到 2/28）。 */
+function shiftYear(dateText) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(dateText || ''));
+  if (!match) return null;
+  const year = Number(match[1]) - 1;
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const lastDay = new Date(Date.UTC(year, month, 0)).getUTCDate();
+  return `${String(year).padStart(4, '0')}-${match[2]}-${String(Math.min(day, lastDay)).padStart(2, '0')}`;
+}
+
 /** 年度归母利润（只取年报口径），同一财年取最新公告版本。 */
 async function loadAnnualProfits({ companyIds, asOfDate, availableBefore, market = null }, tx) {
   if (!companyIds.length) return new Map();
@@ -2438,6 +2550,7 @@ async function listCandidatesForProjection({ runId, batchSize = 1000 }, tx) {
 module.exports = {
   MARKET_CONFIG, SAFE_FINANCIAL_FACT_SQL,
   loadUniverse, loadPbWindow, loadPbMissingDaysForCodes, loadEquityFacts, loadAnnualProfits, loadDividendWindow,
+  loadMemberFundamentals,
   loadAnnualDividends, loadIndustries, loadFxRatesForPairs, loadMarketValuation, loadLatestMarketValuation, loadCalendar,
   loadCalendarEvidence, findUniverseArtifact, insertUniverseArtifact, loadUniverseRoster, loadTtmInputs,
   loadOpenPrices, loadClosePrices, loadBenchmarkCloses, loadDividendCash, loadDividendEvents, loadBarWindow,

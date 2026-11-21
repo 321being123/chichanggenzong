@@ -88,7 +88,10 @@ async function main() {
       if (target.benchmark === 'HSI') {
         for (const row of kept) {
           await marketYieldRepository.saveHsiMarketValuation(row.day, row.pe, row.raw, 'lixinger_official');
-          await marketYieldRepository.saveHsiIndexHistory(row.day, row.pe, row.raw, 'lixinger_official');
+          // PB 与 PE 同源：重跑本脚本必须同样写入 pb，否则选股市场准入会缺恒指 PB。
+          const pb = Number(row.pb);
+          await marketYieldRepository.saveHsiIndexHistory(
+            row.day, row.pe, row.raw, 'lixinger_official', pb > 0 ? pb : null);
         }
       } else {
         await marketYieldRepository.saveCsi300Valuations(kept);

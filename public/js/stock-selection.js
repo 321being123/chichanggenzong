@@ -241,14 +241,16 @@ function ssIndustryAction(item) {
   var industry = item.industry; var attrs = ' data-ss-code="' + ssEsc(item.code) + '" data-ss-name="' + ssEsc(item.name || '') + '" data-ss-instrument-id="' + ssEsc(item.instrumentId) + '"';
   var industryAttrs = industry ? attrs + ' data-ss-industry-code="' + ssEsc(industry.code) + '" data-ss-industry-name="' + ssEsc(industry.name || '') + '" data-ss-industry-system="' + ssEsc(industry.system || '') + '" data-ss-industry-version="' + ssEsc(industry.version || '') + '"' : attrs;
   var reasons = Array.isArray(item.personalExclusionReasons) ? item.personalExclusionReasons : [];
+  // 2026-11-22（#39）：操作列改为行内直达按钮，已排除项高亮，不再需要展开菜单。
   var instrumentAction = reasons.includes('user_excluded_instrument')
-    ? '<button type="button" data-ss-action="restore-instrument"' + attrs + '>恢复该股票</button>'
-    : '<button type="button" data-ss-action="exclude-instrument"' + attrs + '>排除该股票</button>';
-  var industryAction = !industry ? '<span class="ss-disabled-note">行业待核验，不能按行业排除</span>'
+    ? '<button type="button" class="ss-row-action ss-row-action-on" data-ss-action="restore-instrument"' + attrs + '>恢复股票</button>'
+    : '<button type="button" class="ss-row-action" data-ss-action="exclude-instrument"' + attrs + '>排除股票</button>';
+  var industryAction = !industry
+    ? '<span class="ss-disabled-note" title="行业待核验，不能按行业排除">行业待核验</span>'
     : reasons.includes('user_excluded_industry')
-      ? '<button type="button" data-ss-action="restore-industry"' + industryAttrs + '>恢复该行业</button>'
-      : '<button type="button" data-ss-action="exclude-industry"' + industryAttrs + '>排除该行业</button>';
-  return '<details class="ss-row-actions"><summary>操作</summary><div class="ss-row-menu">' + instrumentAction + industryAction + '</div></details>';
+      ? '<button type="button" class="ss-row-action ss-row-action-on" data-ss-action="restore-industry"' + industryAttrs + '>恢复行业</button>'
+      : '<button type="button" class="ss-row-action" data-ss-action="exclude-industry"' + industryAttrs + '>排除行业</button>';
+  return '<div class="ss-row-actions">' + instrumentAction + industryAction + '</div>';
 }
 
 function ssActionFamily(action) {
@@ -256,16 +258,13 @@ function ssActionFamily(action) {
 }
 
 function ssCloseRowActionMenus(root) {
+  // 行操作已改为行内按钮，没有折叠菜单；保留入口兼容 Presenter 调用，并清理历史遗留的展开节点。
   var scope = root || document;
   if (!scope || !scope.querySelectorAll) return;
-  var active = document.activeElement;
-  var activeDetails = active && active.closest ? active.closest('details.ss-row-actions') : null;
-  var focusTarget = activeDetails ? activeDetails.querySelector('summary') : null;
   scope.querySelectorAll('details.ss-row-actions[open]').forEach(function (details) { details.open = false; });
-  if (focusTarget && typeof focusTarget.focus === 'function' && document.contains(focusTarget)) focusTarget.focus();
 }
 
-function ssRestoreRowFocus(root, focusedCode, focusedAction, focusedActionFamily, focusedDetailsOpen, fallback) {
+function ssRestoreRowFocus(root, focusedCode, focusedAction, focusedActionFamily, fallback) {
   if (!focusedCode) return false;
   var focusedNodes = root.querySelectorAll('[data-ss-code]');
   for (var index = 0; index < focusedNodes.length; index += 1) {
@@ -278,8 +277,6 @@ function ssRestoreRowFocus(root, focusedCode, focusedAction, focusedActionFamily
         if (actionKind === focusedAction || focusedActionFamily && actionKind.indexOf(focusedActionFamily) >= 0) { target = actionNodes[actionIndex]; break; }
       }
     } else target = focusedNodes[index];
-    var details = focusedNodes[index].querySelector('details.ss-row-actions');
-    if (details && focusedDetailsOpen) details.open = true;
     if (target && typeof target.focus === 'function') target.focus();
     return !!target;
   }
@@ -299,10 +296,9 @@ function ssRenderCandidates(state) {
   var focusedCode = focusedRow ? focusedRow.getAttribute('data-ss-code') : null;
   var focusedAction = active && focusedRow ? active.getAttribute('data-ss-action') : null;
   var focusedActionFamily = ssActionFamily(focusedAction);
-  var focusedDetailsOpen = !!(focusedRow && focusedRow.querySelector('details.ss-row-actions[open]'));
   if (!list.length) {
     root.innerHTML = '<div class="ss-empty">当前市场 / 周期 / 来源暂无候选结果</div>';
-    if (focusedRow) ssRestoreRowFocus(root, focusedCode, focusedAction, focusedActionFamily, false, ssEl('ss-exclusions') || ssEl('ss-run-header') || root);
+    if (focusedRow) ssRestoreRowFocus(root, focusedCode, focusedAction, focusedActionFamily, ssEl('ss-exclusions') || ssEl('ss-run-header') || root);
     return;
   }
   var rows = list.map(function (item) {
@@ -318,7 +314,7 @@ function ssRenderCandidates(state) {
   }).join('');
   root.innerHTML = '<div class="biz-table-scroll"><table class="biz-table"><thead><tr><th class="text-right">名次</th><th>证券</th><th>行业 ' + ssHelp('行业分类', '按来源批次冻结的分类体系、版本和行业代码识别；缺失时不能按行业排除。') + '</th><th class="text-right">PB ' + ssHelp('PB', '当前来源批次的市净率；缺值显示“—”，不当作 0。') + '</th><th class="text-right">十年 PB 区间</th><th class="text-right">正极值比' + ssHelp('PB 正极值比', '最近十年有效正 PB 的最高值 ÷ 最低值；覆盖不足或无有效正值时不评估。') + '</th><th class="text-right">PE（TTM）' + ssHelp('PE（TTM）', '滚动十二个月市盈率，按来源批次的财务可见性冻结；亏损/零利润不伪造为低 PE。') + '</th><th class="text-right">PB×PE ' + ssHelp('PB×PE', '仅当 PB 超过阈值且 PE（TTM）为正时计算；直接 PB 阈值通过、PE 缺失、非正或口径不一致时显示“—”，不表示读取失败。') + '</th><th class="text-right">股息率 ' + ssHelp('股息率', '按来源批次冻结的股息率；缺失显示“—”，不混入另行估算值。') + '</th><th class="text-right">净资产（人民币）</th><th class="text-right">三项名次</th><th class="text-right">总分</th><th>结论</th><th>操作</th></tr></thead><tbody>' + rows + '</tbody></table></div><div class="ss-list-foot">已显示 ' + list.length + ' / ' + state.candidateTotal + ' 只<button class="btn btn-outline btn-sm" id="ss-load-more"' + (list.length >= state.candidateTotal ? ' disabled' : '') + '>加载更多</button></div>';
   var newViewport = root.querySelector('.biz-table-scroll'); if (newViewport && oldScrollLeft !== null) newViewport.scrollLeft = oldScrollLeft;
-  if (focusedCode) ssRestoreRowFocus(root, focusedCode, focusedAction, focusedActionFamily, focusedDetailsOpen, root.querySelector('.ss-list-foot') || ssEl('ss-exclusions') || root);
+  if (focusedCode) ssRestoreRowFocus(root, focusedCode, focusedAction, focusedActionFamily, root.querySelector('.ss-list-foot') || ssEl('ss-exclusions') || root);
   var more = ssEl('ss-load-more'); if (more) more.addEventListener('click', function () { if (window.StockSelectionPresenter) window.StockSelectionPresenter.loadMore(); });
   if (window.BusinessTable) window.BusinessTable.attach(root, { page: '#main-stock-selection' }); ssRenderRunHeader(state);
 }
@@ -330,22 +326,27 @@ function ssRenderPortfolio(state) {
   var focusedCode = focusedRow ? focusedRow.getAttribute('data-ss-code') : null;
   var focusedAction = active && focusedRow ? active.getAttribute('data-ss-action') : null;
   var focusedActionFamily = ssActionFamily(focusedAction);
-  var focusedDetailsOpen = !!(focusedRow && focusedRow.querySelector('details.ss-row-actions[open]'));
   var portfolio = state.portfolio;
   if (!portfolio) { root.innerHTML = '<div class="ss-empty">当前市场 / 周期 / 来源暂无目标组合</div>'; return; }
   var rows = (portfolio.members || []).map(function (member) {
     var industry = member.industryCode ? { code: member.industryCode, name: member.industryName, system: member.industrySystem, version: member.industryVersion } : null;
     var item = { code: member.code, name: member.name, instrumentId: member.instrumentId, industry: industry };
-    var marketWeight = member.weightInMarketBudget === null || member.weightInMarketBudget === undefined ? '--' : (Number(member.weightInMarketBudget) * 100).toFixed(2) + '%';
-    var equityWeight = member.weightInEquityTarget === null || member.weightInEquityTarget === undefined ? '--' : (Number(member.weightInEquityTarget) * 100).toFixed(2) + '%';
-    return '<tr data-ss-code="' + ssEsc(member.code) + '"><td class="text-right">' + ssEsc(member.slotNo) + '</td><td><button type="button" class="ss-stock-link" data-ss-analysis="' + ssEsc(member.code) + '">' + ssEsc(member.name || member.code) + '</button><div class="ss-sub">' + ssEsc(member.code) + '</div></td><td>' + ssEsc(member.industryName || '分类待核验') + '</td><td class="text-right">' + marketWeight + '</td><td class="text-right">' + equityWeight + '</td><td class="text-right">' + (member.currentPb === null ? '--' : Number(member.currentPb).toFixed(3)) + '</td><td>' + (member.issuerDuplicate ? '<span class="ss-tag ss-tag-warn">A/H 重复暴露</span>' : '') + '</td><td>' + ssIndustryAction(item) + '</td></tr>';
+    // 2026-11-22（#39）：权重只在组合摘要和行业分布里说明，成员行改成四项基本面指标。
+    var pe = member.currentPe === null || member.currentPe === undefined ? '--' : Number(member.currentPe).toFixed(2);
+    var dividend = member.dividendYield === null || member.dividendYield === undefined ? '--' : (Number(member.dividendYield) * 100).toFixed(2) + '%';
+    var debtRatio = member.debtToAssetRatio === null || member.debtToAssetRatio === undefined ? '--' : (Number(member.debtToAssetRatio) * 100).toFixed(2) + '%';
+    var profitYoy = member.latestProfitYoy === null || member.latestProfitYoy === undefined ? '--'
+      : (Number(member.latestProfitYoy) > 0 ? '+' : '') + (Number(member.latestProfitYoy) * 100).toFixed(2) + '%';
+    var profitPeriod = member.latestProfitPeriodEnd ? '<div class="ss-sub">报告期 ' + ssEsc(member.latestProfitPeriodEnd) + '</div>' : '';
+    return '<tr data-ss-code="' + ssEsc(member.code) + '"><td class="text-right">' + ssEsc(member.slotNo) + '</td><td><button type="button" class="ss-stock-link" data-ss-analysis="' + ssEsc(member.code) + '">' + ssEsc(member.name || member.code) + '</button><div class="ss-sub">' + ssEsc(member.code) + '</div></td><td>' + ssEsc(member.industryName || '分类待核验') + '</td>'
+      + '<td class="text-right">' + (member.currentPb === null ? '--' : Number(member.currentPb).toFixed(3)) + '</td><td class="text-right">' + pe + '</td><td class="text-right">' + dividend + '</td><td class="text-right">' + debtRatio + '</td><td class="text-right">' + profitYoy + profitPeriod + '</td><td>' + (member.issuerDuplicate ? '<span class="ss-tag ss-tag-warn">A/H 重复暴露</span>' : '') + '</td><td>' + ssIndustryAction(item) + '</td></tr>';
   }).join('');
   var empty = portfolio.members.length ? '' : '<div class="ss-empty">本来源没有可买入席位；空席和剩余仓位保留现金，不放大单只权重。</div>';
    var industries = (portfolio.industryBreakdown || []).map(function (item) { var marketWeight = item.weightInMarketBudget === null || item.weightInMarketBudget === undefined ? '--' : (Number(item.weightInMarketBudget) * 100).toFixed(2) + '%'; var limit = item.limitRatio === null || item.limitRatio === undefined ? '--' : (Number(item.limitRatio) * 100).toFixed(0) + '%'; return '<li>' + ssEsc(item.industryName || item.industryCode) + '：' + ssEsc(item.count) + ' 只，占市场预算 ' + marketWeight + '（上限 ' + limit + '）</li>'; }).join('');
-  root.innerHTML = empty + (rows ? '<div class="biz-table-scroll"><table class="biz-table"><thead><tr><th class="text-right">席位 ' + ssHelp('席位', '来源批次按原始排名和席位规则冻结的目标位置；空席保留现金。') + '</th><th>证券</th><th>行业</th><th class="text-right">占市场预算' + ssHelp('参考仓位', '参考仓位是来源批次的冻结参数；实际采用仓位与参考仓位分开显示。') + '</th><th class="text-right">占股票目标' + ssHelp('股票目标权重', '按个人组合目标股票资产计算的权重；空席和剩余仓位保留现金。') + '</th><th class="text-right">PB ' + ssHelp('PB', '当前来源批次冻结的市净率；缺失显示“—”，不当作 0。') + '</th><th>提示</th><th>操作</th></tr></thead><tbody>' + rows + '</tbody></table></div>' : '')
+  root.innerHTML = empty + (rows ? '<div class="biz-table-scroll"><table class="biz-table"><thead><tr><th class="text-right">席位 ' + ssHelp('席位', '来源批次按原始排名和席位规则冻结的目标位置；空席保留现金。') + '</th><th>证券</th><th>行业</th><th class="text-right">PB ' + ssHelp('PB', '当前来源批次冻结的市净率；缺失显示“—”，不当作 0。') + '</th><th class="text-right">PE（TTM）' + ssHelp('PE（TTM）', '滚动十二个月市盈率，按来源批次的财务可见性冻结；亏损/零利润不伪造为低 PE。') + '</th><th class="text-right">股息率 ' + ssHelp('股息率', '按来源批次冻结的股息率；缺失显示“—”，不混入另行估算值。') + '</th><th class="text-right">资产负债率 ' + ssHelp('资产负债率', '最新已公告合并资产负债表的负债合计 ÷ 资产合计；资产合计非正或币种不可比时显示“—”。') + '</th><th class="text-right">最近财报利润同比 ' + ssHelp('最近财报利润同比', '最新已公告合并利润表（含一季报/半年报/三季报/年报）归母净利润相对上年同报告期的变化；缺同期数据或上年同期为 0 时显示“—”。') + '</th><th>提示</th><th>操作</th></tr></thead><tbody>' + rows + '</tbody></table></div>' : '')
     + '<div class="ss-portfolio-summary">实际仓位 ' + (portfolio.positionRatio === null ? '—' : (Number(portfolio.positionRatio) * 100).toFixed(0) + '%') + '；已填 ' + portfolio.selectedCount + '/' + portfolio.slots + ' 席，空席 ' + portfolio.unfilledSlots + '；股票占市场预算 ' + (portfolio.equityWeightInMarketBudget === null ? '—' : (Number(portfolio.equityWeightInMarketBudget) * 100).toFixed(2) + '%') + '，现金 ' + (portfolio.cashWeightInMarketBudget === null ? '—' : (Number(portfolio.cashWeightInMarketBudget) * 100).toFixed(2) + '%') + '。</div>'
     + ssRenderChanges(portfolio.changes) + (industries ? '<ul class="ss-industry">' + industries + '</ul>' : '');
-  if (focusedCode) ssRestoreRowFocus(root, focusedCode, focusedAction, focusedActionFamily, focusedDetailsOpen,
+  if (focusedCode) ssRestoreRowFocus(root, focusedCode, focusedAction, focusedActionFamily,
     root.querySelector('.ss-portfolio-summary') || ssEl('ss-exclusions') || ssEl('ss-run-header') || root);
   if (window.BusinessTable) window.BusinessTable.attach(root, { page: '#main-stock-selection' });
 }

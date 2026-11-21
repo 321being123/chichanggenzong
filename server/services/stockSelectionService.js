@@ -1561,6 +1561,14 @@ async function getPortfolio(runId, options = {}) {
   const run = await repo.findRun(runId);
   if (!run) return null;
   const members = await repo.listMembers(runId);
+  // #39：按本批次冻结的目标日与可见截止补充两项基本面指标，只读历史批次，不改库表结构。
+  const memberFundamentals = await repo.loadMemberFundamentals({
+    companyIds: [...new Set(members.map(member => Number(member.company_id))
+      .filter(companyId => Number.isFinite(companyId) && companyId > 0))],
+    asOfDate: run.as_of_date_text,
+    availableBefore: run.knowledge_cutoff_text,
+    market: run.market,
+  });
   const sourceRun = run.run_kind === 'personal' && run.supersedes_run_id
     ? await repo.findRun(run.supersedes_run_id) : null;
   const sourceIndustryIdentityCounts = await repo.listIndustryIdentityCounts(
@@ -1687,37 +1695,47 @@ async function getPortfolio(runId, options = {}) {
       version: row.version || null,
       affectedCount: Number(row.affected_count || 0),
     })),
-    members: members.map(member => ({
-      instrumentId: Number(member.instrument_id),
-      slotNo: member.slot_no,
-      code: member.code,
-      name: member.name,
-      companyId: member.company_id,
-      industryCode: member.industry_code,
-      industryName: member.industry_name,
-      industrySystem: member.industry_system,
-      industryVersion: member.industry_version,
-      weightInMarketBudget: member.weight_in_market_budget === null || member.weight_in_market_budget === undefined
-        ? null : Number(member.weight_in_market_budget),
-      weightInEquityTarget: member.weight_in_equity_target === null || member.weight_in_equity_target === undefined
-        ? null : Number(member.weight_in_equity_target),
-      weightInInvestedEquity: member.weight_in_invested_equity === null || member.weight_in_invested_equity === undefined
-        ? null : Number(member.weight_in_invested_equity),
-      issuerDuplicate: member.issuer_duplicate,
-      currentPb: member.current_pb === null ? null : Number(member.current_pb),
-      currentPe: member.current_pe === null ? null : Number(member.current_pe),
-      dividendYield: member.dividend_yield === null ? null : Number(member.dividend_yield),
-      totalScore: member.total_score === null ? null : Number(member.total_score),
-      // V2 解释字段：估值通过路径与历史极值，和"最终入选"分开说明。
-      valuationStatus: member.valuation_status || null,
-      valuationPassReason: member.valuation_pass_reason || null,
-      pbPeProduct: member.pb_pe_product === null || member.pb_pe_product === undefined ? null : Number(member.pb_pe_product),
-      historicalPbMin: member.historical_pb_min === null || member.historical_pb_min === undefined ? null : Number(member.historical_pb_min),
-      historicalPbMax: member.historical_pb_max === null || member.historical_pb_max === undefined ? null : Number(member.historical_pb_max),
-      pbPositiveExtremaRatio: member.pb_positive_extrema_ratio === null || member.pb_positive_extrema_ratio === undefined
-        ? null : Number(member.pb_positive_extrema_ratio),
-      ttmProfitStatus: member.ttm_profit_status || null,
-    })),
+    members: members.map(member => {
+      const fundamental = memberFundamentals.get(String(member.company_id)) || {};
+      return {
+        instrumentId: Number(member.instrument_id),
+        slotNo: member.slot_no,
+        code: member.code,
+        name: member.name,
+        companyId: member.company_id,
+        industryCode: member.industry_code,
+        industryName: member.industry_name,
+        industrySystem: member.industry_system,
+        industryVersion: member.industry_version,
+        weightInMarketBudget: member.weight_in_market_budget === null || member.weight_in_market_budget === undefined
+          ? null : Number(member.weight_in_market_budget),
+        weightInEquityTarget: member.weight_in_equity_target === null || member.weight_in_equity_target === undefined
+          ? null : Number(member.weight_in_equity_target),
+        weightInInvestedEquity: member.weight_in_invested_equity === null || member.weight_in_invested_equity === undefined
+          ? null : Number(member.weight_in_invested_equity),
+        issuerDuplicate: member.issuer_duplicate,
+        currentPb: member.current_pb === null ? null : Number(member.current_pb),
+        currentPe: member.current_pe === null ? null : Number(member.current_pe),
+        dividendYield: member.dividend_yield === null ? null : Number(member.dividend_yield),
+        // 最近一期合并报表口径（缺失为 null，页面显示“—”）：不写入快照表。
+        debtToAssetRatio: fundamental.debtToAssetRatio === null || fundamental.debtToAssetRatio === undefined
+          ? null : Number(fundamental.debtToAssetRatio),
+        debtToAssetPeriodEnd: fundamental.debtToAssetPeriodEnd || null,
+        latestProfitYoy: fundamental.latestProfitYoy === null || fundamental.latestProfitYoy === undefined
+          ? null : Number(fundamental.latestProfitYoy),
+        latestProfitPeriodEnd: fundamental.latestProfitPeriodEnd || null,
+        totalScore: member.total_score === null ? null : Number(member.total_score),
+        // V2 解释字段：估值通过路径与历史极值，和"最终入选"分开说明。
+        valuationStatus: member.valuation_status || null,
+        valuationPassReason: member.valuation_pass_reason || null,
+        pbPeProduct: member.pb_pe_product === null || member.pb_pe_product === undefined ? null : Number(member.pb_pe_product),
+        historicalPbMin: member.historical_pb_min === null || member.historical_pb_min === undefined ? null : Number(member.historical_pb_min),
+        historicalPbMax: member.historical_pb_max === null || member.historical_pb_max === undefined ? null : Number(member.historical_pb_max),
+        pbPositiveExtremaRatio: member.pb_positive_extrema_ratio === null || member.pb_positive_extrema_ratio === undefined
+          ? null : Number(member.pb_positive_extrema_ratio),
+        ttmProfitStatus: member.ttm_profit_status || null,
+      };
+    }),
     industryBreakdown,
   };
 }

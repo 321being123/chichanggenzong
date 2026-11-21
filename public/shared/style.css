@@ -1414,7 +1414,16 @@ input[type="search"] {
 .nav-bell-badge[hidden] { display: none; }
 
 .nt-sub-nav { margin-bottom: 0; }
-#main-notifications > .bond-header { margin-bottom: 0; }
+/* 2026-11-22（#37）：标题区左侧子栏目、右侧「提醒设置」，移动端换行时按钮不挤压 Tab。 */
+#main-notifications > .bond-header {
+  display: flex; align-items: center; justify-content: space-between;
+  flex-wrap: wrap; gap: 12px; margin-bottom: 0;
+}
+#main-notifications > .bond-header > .nt-sub-nav { flex: 1 1 auto; }
+.nt-header-actions { display: flex; align-items: center; flex: 0 0 auto; gap: 8px; margin-left: auto; padding-right: 20px; }
+.nt-header-actions .btn[aria-pressed="true"] {
+  border-color: var(--primary); background: var(--primary-soft); color: var(--primary-text);
+}
 .nt-page { padding-top: 16px; }
 .nt-body { display: flex; flex-direction: column; gap: 12px; }
 .nt-toolbar {
@@ -1483,6 +1492,8 @@ input[type="search"] {
 
 @media (max-width: 760px) {
   .nt-page { padding-top: 12px; }
+  .nt-header-actions { padding-right: 12px; }
+  .nt-header-actions .btn { min-height: 44px; }
   .nt-toolbar { gap: 8px; }
   .nt-toggle { font-size: 14px; min-height: 44px; }
   .nt-item { padding: 12px; }

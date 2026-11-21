@@ -75,17 +75,18 @@ function initBondCycleSub() {
     };
   }
   var metricBtns = document.querySelectorAll('.bond-cycle-metric-tabs button');
-  function bcSeriesColor(m) { for (var z = 0; z < BC_SERIES.length; z++) if (BC_SERIES[z].key === m) return BC_SERIES[z].color; return '#555'; }
+  var mutedAxis = (window.SiteChartTheme ? window.SiteChartTheme.get().textSecondary : '#475569');
+  function bcSeriesColor(m) { for (var z = 0; z < BC_SERIES.length; z++) if (BC_SERIES[z].key === m) return BC_SERIES[z].color; return mutedAxis; }
   for (var k = 0; k < metricBtns.length; k++) {
     (function (b) {
       var m = b.dataset.metric;
       b.style.borderBottom = '2px solid ' + bcSeriesColor(m);
-      b.style.color = bondCycleState.visible[m] ? bcSeriesColor(m) : '#555';
+      b.style.color = bondCycleState.visible[m] ? bcSeriesColor(m) : mutedAxis;
       b.classList.toggle('active', !!bondCycleState.visible[m]);
       b.onclick = function () {
         bondCycleState.visible[m] = !bondCycleState.visible[m];
         b.classList.toggle('active', bondCycleState.visible[m]);
-        b.style.color = bondCycleState.visible[m] ? bcSeriesColor(m) : '#555';
+        b.style.color = bondCycleState.visible[m] ? bcSeriesColor(m) : mutedAxis;
         if (bondCycleState.data) renderBondCycleChart(bondCycleState.data);
       };
     })(metricBtns[k]);
@@ -159,11 +160,12 @@ var BC_METRIC_FIELDS = {
 
 // 四条曲线配置：每条独立纵轴，轴色与曲线同色
 // side: L1=左外(综合估值) L2=左内(价格中位数) R1=右内(溢价率) R2=右外(周期分位)
+var _bcTheme = window.SiteChartTheme ? window.SiteChartTheme.get() : { chart1: '#2563eb', chart2: '#0891b2', chart3: '#f59e0b', chart5: '#dc2626' };
 var BC_SERIES = [
-  { key: 'composite', name: '综合估值', color: '#2563eb', side: 'L1' },
-  { key: 'median_price', name: '价格中位数', color: '#06b6d4', side: 'L2' },
-  { key: 'median_conversion_premium_pct', name: '溢价率中位数', color: '#f59e0b', side: 'R1' },
-  { key: 'percentile', name: '周期分位', color: '#ef4444', side: 'R2' }
+  { key: 'composite', name: '综合估值', color: _bcTheme.chart1, side: 'L1' },
+  { key: 'median_price', name: '价格中位数', color: _bcTheme.chart2, side: 'L2' },
+  { key: 'median_conversion_premium_pct', name: '溢价率中位数', color: _bcTheme.chart3, side: 'R1' },
+  { key: 'percentile', name: '周期分位', color: _bcTheme.chart5, side: 'R2' }
 ];
 
 // Catmull-Rom 样条转三次贝塞尔：平滑曲线（类似收益率曲线），且精确穿过每个数据点

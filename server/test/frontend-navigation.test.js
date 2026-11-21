@@ -181,8 +181,8 @@ ok(/addEventListener\('mousedown'[\s\S]{0,300}?preventDefault/.test(uiActions),
 
 // ===== 筛选栏控件统一外观（2026-10-25 反馈：后台输入框/日期框走原生样式） =====
 const styleCss = fs.readFileSync(path.join(root, 'public', 'shared', 'style.css'), 'utf8');
-ok(/\.filter-bar input:not\(\[type=checkbox\]\):not\(\[type=radio\]\)[\s\S]{0,500}?border-radius:\s*7px/.test(styleCss),
-  '后台筛选栏输入控件应统一为 7px 圆角规范');
+ok(/\.filter-bar input:not\(\[type=checkbox\]\):not\(\[type=radio\]\)[\s\S]{0,500}?border-radius:\s*(?:7px|var\(--r-md\))/.test(styleCss),
+  '后台筛选栏输入控件应统一为圆角规范');
 ok(/\.filter-bar select\s*\{[\s\S]{0,300}?height:\s*36px/.test(styleCss),
   '后台筛选栏下拉框应与输入框同高（36px）');
 ok(/\.filter-bar[\s\S]{0,600}?input\[type="date"\][\s\S]{0,120}?width:\s*150px/.test(styleCss),

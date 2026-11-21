@@ -685,6 +685,12 @@
       "status": "registered"
     },
     {
+      "path": "public/shared/chart-theme.js",
+      "role": "frontend_infrastructure",
+      "batch": 0,
+      "status": "registered"
+    },
+    {
       "path": "ipo-report/migrate.py",
       "role": "migration",
       "batch": 5,
@@ -1966,6 +1972,7 @@
         "contractStatus": "registered",
         "batch": 4,
         "scripts": [
+          "public/shared/autofill-guard.js",
           "public/shared/mobile-ui.js",
           "public/shared/telemetry.js",
           "public/shared/ui-actions.js",

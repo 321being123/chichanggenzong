@@ -1,6 +1,14 @@
 [
   {
     "date": "2026-11-21",
+    "version": "0.9.4.12",
+    "items": [
+      "新增：全站前端 UI 设计系统重构，统一 Design Tokens、自托管 Inter 字体、浅色磨砂顶栏与图表主题读取器",
+      "优化：统一按钮/输入/开关与全站二级吸顶导航，login 页样式外链化，autofill-guard 四类输入边界治理"
+    ]
+  },
+  {
+    "date": "2026-11-21",
     "version": "0.9.4.11",
     "items": [
       "新增：迁移 207_raw_record_ref_indexes 为四张引用表补齐 raw_record_id 部分索引，避免清理原始报文触发全表扫描",

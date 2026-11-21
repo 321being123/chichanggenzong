@@ -22,7 +22,7 @@
 .share-brand {
   font-size: 15px;
   font-weight: 600;
-  color: #333;
+  color: var(--text-primary);
   text-decoration: none;
 }
 
@@ -34,12 +34,14 @@
   padding-bottom: 24px;
 }
 
-/* 标题在深色 hero 背景上，必须用浅色；不能沿用正文的 #333。 */
+/* 公开分享页 hero 已改为浅色卡片，标题沿用深色正文主色 */
 .stock-analysis-hero h1 {
-  margin: 0 0 8px;
-  font-size: 22px;
+  margin: 0 0 6px;
+  font-size: 20px;
+  font-weight: 700;
   line-height: 1.35;
-  color: #fff;
+  color: var(--text-primary);
+  letter-spacing: -0.015em;
 }
 
 .share-footer {
@@ -47,7 +49,7 @@
   margin: 0 auto;
   padding: 16px 20px 28px;
   font-size: 13px;
-  color: #6e6e6e;
+  color: var(--text-muted);
 }
 
 .share-footer a {
@@ -55,7 +57,7 @@
 }
 
 .stock-analysis-message-error {
-  color: #c62828;
+  color: var(--up);
 }
 
 /* ============ 分享面板 ============ */
@@ -86,8 +88,8 @@
   flex-shrink: 0;
   width: 40px;
   height: 40px;
-  border-radius: 9px;
-  background: #182848;
+  border-radius: var(--r-md);
+  background: var(--primary);
 }
 
 .share-preview-text {

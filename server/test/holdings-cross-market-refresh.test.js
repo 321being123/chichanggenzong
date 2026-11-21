@@ -48,7 +48,7 @@ assert.ok(indexHtml.includes('shared/core-quote.js?v=__APP_VERSION__') && indexH
   '修改后的共享行情与统计脚本必须使用当前版本缓存键');
 assert(indexHtml.indexOf('js/api/client.js') < indexHtml.indexOf('js/api/holdings-quote-api.js') &&
   indexHtml.indexOf('js/api/holdings-quote-api.js') < indexHtml.indexOf('shared/core-quote.js'), '持仓行情客户端必须在共享行情之前加载');
-assert.ok(sharedStyle.includes('.sub-nav .btn-refresh { background: #fff; color: #1a237e; border: 1px solid #c7cedb; }'),
+assert.ok(/\.sub-nav \.btn-refresh\s*\{[^}]*background:\s*var\(--bg-surface\)[^}]*color:\s*var\(--text-primary\)[^}]*border:\s*1px solid var\(--border-strong\)/.test(sharedStyle),
   '桌面白色工具栏上的刷新按钮应使用可辨认的文字和边框');
 assert.ok(sharedStyle.includes('.mobile-account-tools .btn-refresh { min-height: 44px; }'),
   '移动端刷新按钮触控高度不得低于 44px');

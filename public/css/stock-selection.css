@@ -9,7 +9,7 @@
 .ss-card-body span { display: block; color: var(--bond-feature-muted); font-size: 12px; }
 .ss-card-body strong { display: block; margin-top: 4px; font-size: 18px; color: var(--bond-feature-text); }
 .ss-card-note { margin-top: 12px; color: var(--bond-feature-muted); font-size: 12px; line-height: 1.6; }
-.ss-card.active { border-color: var(--bond-feature-focus); box-shadow: 0 0 0 1px rgba(26, 35, 126, .25); }
+.ss-card.active { border-color: var(--primary); box-shadow: 0 0 0 1px rgba(37, 99, 235, .25); }
 /* .bond-feature-stat 会给所有后代 span 上标签样式，徽标需要提权回自己的状态色。 */
 .ss-cards .ss-gate { font-size: 12px; padding: 3px 8px; border-radius: 999px; background: #f1f5f9; color: #475569; white-space: nowrap; }
 .ss-cards .ss-gate-eligible { background: #ecfdf5; color: #047857; }
@@ -46,12 +46,12 @@
 .ss-metric-tooltip-close:hover, .ss-metric-tooltip-close:focus-visible { background: rgba(255, 255, 255, .15); outline: none; }
 .ss-sub { color: var(--bond-feature-muted); font-size: 12px; margin-top: 2px; }
 /* 证券名称是跳证券分析的入口：做成链接样按钮，不改变表格行高与对齐。 */
-.ss-stock-link { padding: 0; border: 0; background: none; color: #1a237e; font: inherit; font-weight: 600; text-align: left; cursor: pointer; }
+.ss-stock-link { padding: 0; border: 0; background: none; color: var(--primary); font: inherit; font-weight: 600; text-align: left; cursor: pointer; }
 .ss-stock-link:hover, .ss-stock-link:focus-visible { text-decoration: underline; outline: none; }
-.ss-tag { display: inline-block; font-size: 12px; padding: 3px 8px; border-radius: 999px; background: #f1f5f9; color: #475569; font-weight: 600; }
-.ss-tag-ok { background: #e6f4ea; color: #137333; }
-.ss-tag-warn { background: #fff7ed; color: #b45309; }
-.ss-tag-bad { background: #fce8e6; color: #d93025; }
+.ss-tag { display: inline-block; font-size: 12px; padding: 3px 8px; border-radius: var(--r-full); background: var(--bg-muted); color: var(--text-secondary); font-weight: 600; }
+.ss-tag-ok { background: var(--down-bg); color: var(--down); }
+.ss-tag-warn { background: var(--warn-bg); color: var(--warn); }
+.ss-tag-bad { background: var(--up-bg); color: var(--up); }
 .ss-list-foot { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 12px 16px; border-top: 1px solid #f0f0f0; color: var(--bond-feature-muted); font-size: 12px; }
 .ss-portfolio-summary { padding: 12px 16px; color: #273142; font-size: 12px; line-height: 1.8; }
 .ss-industry { margin: 0; padding: 0 16px 12px 32px; color: var(--bond-feature-muted); font-size: 12px; line-height: 1.8; }

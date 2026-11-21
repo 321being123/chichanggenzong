@@ -61,12 +61,19 @@ function renderHomeBonds(payload) {
     counts[key]++;
   });
   var totalCount = payload && Number.isFinite(Number(payload.total)) ? Number(payload.total) : rows.length;
-  var colors = { '安全':'#19a463', '低风险':'#7bbf45', '中风险':'#f3b33d', '高风险':'#e05a47', '未评级':'#9aa0a6' };
+  var tk = window.SiteChartTheme ? window.SiteChartTheme.token : function (_, f) { return f; };
+  var colors = {
+    '安全': tk('--rating-safe', '#059669'),
+    '低风险': tk('--rating-low', '#16a34a'),
+    '中风险': tk('--rating-mid', '#d97706'),
+    '高风险': tk('--rating-high', '#dc2626'),
+    '未评级': tk('--text-faint', '#94a3b8')
+  };
   var total = totalCount || 1, el = document.getElementById('home-bond-distribution');
   if (!el) return;
   el.innerHTML = Object.keys(counts).map(function(key) {
     var pct = Number(counts[key] || 0) / total * 100;
-    return '<div class="home-risk-row"><span>' + key + '</span><div class="home-risk-track"><div class="home-risk-fill" data-style="width:' + pct.toFixed(1) + '%;background:' + (colors[key] || '#9aa0a6') + '"></div></div><b>' + (counts[key] || 0) + '</b></div>';
+    return '<div class="home-risk-row"><span>' + key + '</span><div class="home-risk-track"><div class="home-risk-fill" data-style="width:' + pct.toFixed(1) + '%;background:' + (colors[key] || colors['未评级']) + '"></div></div><b>' + (counts[key] || 0) + '</b></div>';
   }).join('');
 }
 
@@ -155,23 +162,24 @@ function renderHomeBondCycle(payload) {
   function xAt(index) { return L + index * (W-L-R) / Math.max(rows.length-1, 1); }
   function yComposite(value) { return T + (compositeRange.max-value) * plotH / (compositeRange.max-compositeRange.min); }
   function yPercentile(value) { return T + (percentileRange.max-value) * plotH / 100; }
+  var th = window.SiteChartTheme ? window.SiteChartTheme.get() : { chart1: '#2563eb', chart5: '#dc2626', primaryLight: '#3b82f6' };
   var svg = [];
   for (var i=0;i<=4;i++) {
     var y=T+i*plotH/4;
     svg.push('<line class="home-cycle-grid-line" x1="'+L+'" y1="'+y+'" x2="'+(W-R)+'" y2="'+y+'"/>');
-    svg.push('<text class="home-cycle-axis" x="'+(L-8)+'" y="'+(y+4)+'" text-anchor="end" data-style="fill:#2563eb">'+
+    svg.push('<text class="home-cycle-axis" x="'+(L-8)+'" y="'+(y+4)+'" text-anchor="end" data-style="fill:'+th.chart1+'">'+
       homeCycleNumber(compositeRange.max-i*(compositeRange.max-compositeRange.min)/4,0)+'</text>');
-    svg.push('<text class="home-cycle-axis" x="'+(W-R+8)+'" y="'+(y+4)+'" data-style="fill:#ef4444">'+(100-i*25)+'%</text>');
+    svg.push('<text class="home-cycle-axis" x="'+(W-R+8)+'" y="'+(y+4)+'" data-style="fill:'+th.chart5+'">'+(100-i*25)+'%</text>');
   }
-  svg.push('<path class="home-cycle-path" stroke="#2563eb" d="'+homeCyclePath(rows,'composite_value',xAt,yComposite)+'"/>');
-  svg.push('<path class="home-cycle-path" stroke="#ef4444" d="'+homeCyclePath(rows,'rolling_percentile',xAt,yPercentile)+'"/>');
+  svg.push('<path class="home-cycle-path" stroke="'+th.chart1+'" d="'+homeCyclePath(rows,'composite_value',xAt,yComposite)+'"/>');
+  svg.push('<path class="home-cycle-path" stroke="'+th.chart5+'" d="'+homeCyclePath(rows,'rolling_percentile',xAt,yPercentile)+'"/>');
   svg.push(homeCycleAxisLabels(rows,xAt,H));
   svg.push('<rect class="home-cycle-hit" x="'+L+'" y="'+T+'" width="'+(W-L-R)+'" height="'+plotH+'"/>');
   root.innerHTML = '<svg viewBox="0 0 '+W+' '+H+'" role="img" aria-label="可转债周期历史图">'+svg.join('')+'</svg><div class="home-cycle-tooltip" hidden></div>';
   homeBindCycleTooltip(root, rows, L, R, W, function(row) {
     return '<strong>'+escapeHtml(String(row.date).slice(0,10))+'</strong><br>' +
-      '<span data-style="color:#60a5fa">综合估值：'+homeCycleNumber(row.composite_value,2)+'</span><br>' +
-      '<span data-style="color:#f87171">周期分位：'+homeCycleNumber(row.rolling_percentile,1)+'%</span>';
+      '<span data-style="color:'+th.primaryLight+'">综合估值：'+homeCycleNumber(row.composite_value,2)+'</span><br>' +
+      '<span data-style="color:'+th.chart5+'">周期分位：'+homeCycleNumber(row.rolling_percentile,1)+'%</span>';
   });
 }
 
@@ -226,13 +234,14 @@ function renderHomeMarketCycle(payload) {
     svg.push('<text class="home-cycle-axis" x="'+(L-8)+'" y="'+(y+4)+'" text-anchor="end">'+
       homeCycleNumber(range.max-i*(range.max-range.min)/4,2)+meta.suffix+'</text>');
   }
+  var th = window.SiteChartTheme ? window.SiteChartTheme.get() : { chart1: '#2563eb', up: '#dc2626', textFaint: '#94a3b8' };
   ladder.forEach(function(row,index) {
     var y=yAt(Number(row.value));
     var edge=index===0 || index===ladder.length-1;
-    svg.push('<line class="home-cycle-boundary" x1="'+L+'" y1="'+y+'" x2="'+(W-R)+'" y2="'+y+'" data-style="stroke:'+(edge?'#dc2626':'#94a3b8')+'"/>');
+    svg.push('<line class="home-cycle-boundary" x1="'+L+'" y1="'+y+'" x2="'+(W-R)+'" y2="'+y+'" data-style="stroke:'+(edge?th.up:th.textFaint)+'"/>');
     svg.push('<text class="home-cycle-axis" x="'+(W-R-4)+'" y="'+(y-5)+'" text-anchor="end">'+row.position+'%</text>');
   });
-  svg.push('<path class="home-cycle-path" stroke="#2563eb" d="'+homeCyclePath(rows,'value',xAt,yAt)+'"/>');
+  svg.push('<path class="home-cycle-path" stroke="'+th.chart1+'" d="'+homeCyclePath(rows,'value',xAt,yAt)+'"/>');
   svg.push(homeCycleAxisLabels(rows,xAt,H));
   svg.push('<rect class="home-cycle-hit" x="'+L+'" y="'+T+'" width="'+(W-L-R)+'" height="'+plotH+'"/>');
   root.innerHTML = '<svg viewBox="0 0 '+W+' '+H+'" role="img" aria-label="'+escapeHtml(meta.title)+'历史图">'+svg.join('')+'</svg><div class="home-cycle-tooltip" hidden></div>';

@@ -3,14 +3,18 @@
 // 用 daily_prices（部署后已逐日攒齐的持仓收盘价）重放 trades 得到各日持仓与市值，
 // 对「晚录入股票在交易日至录入日前」缺价的几天，用 Tushare 历史收盘回补 daily_prices。
 // Tushare 拉不到的缺口日 → 跳过那天（保留原快照），不近似。
-const { loadAccountData, saveDailyPrices, upsertNav } = require('../db');
+const { loadAccountData, saveDailyPrices, upsertNav, pool } = require('../db');
 const accountsRepository = require('../repositories/accountsRepository');
+const navAttributionRepository = require('../repositories/navAttributionRepository');
 const { toTsCode, normDate } = require('../services/market');
 const marketDatasets = require('../dataAccess/marketDatasets');
 const classifyCode = require('../../public/js/code-classify');
 const { isCnHoliday } = require('../config/holidays');
 const { investedAt, chainNav, cashAt, isExternalTransfer } = require('../../public/shared/nav-math.js');
 const { getCurrentFxRate } = require('../services/fxRate');
+const {
+  expectedCloseDateFor, detectConflictOnDate, pickBestByQuality, PRIVATE_SOURCES, codeVariants,
+} = require('../services/effectivePrice');
 
 // 东八区日期 YYYY-MM-DD
 function cnDate(d) {
@@ -63,7 +67,28 @@ function historyBackfillRow({ code, price, market, provider, adjust }) {
   };
 }
 
-async function backfillHkDailyPrices(username, accountName, code, start, end) {
+// 历史回补行准入：定点补价必须同时满足业务日范围与 qualifiedOnly；
+// provider 若忽略请求区间返回额外日期，也不得写入库存。
+function selectBackfillRows(byDate, options = {}) {
+  const picked = [];
+  for (const date of Object.keys(byDate || {})) {
+    if (options.businessDate && date !== options.businessDate) continue;
+    const rows = options.qualifiedOnly
+      ? byDate[date].filter(row => row.quality === 'confirmed' && row.is_final === true)
+      : byDate[date];
+    if (!rows.length) continue;
+    if (options.qualifiedOnly) {
+      const prices = new Set(rows.map(row => Number(row.price)));
+      if (prices.size !== 1) continue;
+      picked.push([date, [rows[0]]]);
+    } else {
+      picked.push([date, rows]);
+    }
+  }
+  return picked;
+}
+
+async function backfillHkDailyPrices(username, accountName, code, start, end, options = {}) {
   // 港股日线属于「行情数据集」：只向数据层要序列，主备来源由数据层决定。
   // 代码规范化与收盘核验同源（数据访问层唯一实现），六位补零的港股持仓不会被当成另一只证券。
   const { readStockDailySeries, normalizeHkSecurityCode } = require('../dataAccess/marketDatasets');
@@ -80,9 +105,9 @@ async function backfillHkDailyPrices(username, accountName, code, start, end) {
     }));
   }
   let any = false;
-  for (const date of Object.keys(byDate)) {
+  for (const [date, rowsForDate] of selectBackfillRows(byDate, options)) {
     try {
-      await saveDailyPrices(username, accountName, date, byDate[date], { market: 'HK' });
+      await saveDailyPrices(username, accountName, date, rowsForDate, { market: 'HK' });
       any = true;
     } catch (e) { /* 单日失败不阻断其余日期 */ }
   }
@@ -91,12 +116,12 @@ async function backfillHkDailyPrices(username, accountName, code, start, end) {
 
 // 用对应证券类型的 Tushare 历史接口拉取 [start, end] 收盘，按日期 upsert 进 daily_prices。
 // 成功返回 true（至少写回一条）；失败/无数据返回 false。
-async function backfillDailyPrices(username, accountName, code, start, end, position = {}) {
+async function backfillDailyPrices(username, accountName, code, start, end, position = {}, options = {}) {
   const tsCode = toTsCode(code);
   const kind = historicalKindFor(code, position);
   // 港股日线不走 Tushare（hk_daily 需高积分），改走腾讯 web.ifzq 日 K；
   // 数据源的选择留在数据层，业务层只说「补某只标的某区间的收盘价」。
-  if (kind === 'hk_stock') return backfillHkDailyPrices(username, accountName, code, start, end);
+  if (kind === 'hk_stock') return backfillHkDailyPrices(username, accountName, code, start, end, options);
   let rows = [];
   try {
     rows = await marketDatasets.readHistoricalCloseSeries({ tsCode, kind, startDate: start, endDate: end });
@@ -113,24 +138,189 @@ async function backfillDailyPrices(username, accountName, code, start, end, posi
     }));
   }
   let any = false;
-  for (const d of Object.keys(byDate)) {
+  for (const [date, rowsForDate] of selectBackfillRows(byDate, options)) {
     try {
-      await saveDailyPrices(username, accountName, d, byDate[d], { market: 'CN' });
+      await saveDailyPrices(username, accountName, date, rowsForDate, { market: 'CN' });
       any = true;
     } catch (e) {}
   }
   return any;
 }
 
+// 单日精确选价：只承认同一「市场 + 代码 + 日期」的 confirmed + final 正价。
+// 同日 confirmed 冲突整日不可用；已有 confirmed 但非 final 时保持待补，不能让候选价冒充终盘。
+function pickExactClose(rows, code, market, date) {
+  const list = (rows || []).filter(row =>
+    String(row.date || '').slice(0, 10) === date && Number(row.price) > 0);
+  if (!list.length) return { row: null, conflict: null, hasConfirmed: false };
+  const conflict = detectConflictOnDate(code, market, list, date, 'confirmed');
+  if (conflict) return { row: null, conflict, hasConfirmed: true };
+  const confirmed = list.filter(row => String(row.quality || '') === 'confirmed');
+  const finalRows = confirmed.filter(row => row.is_final === true || row.isFinal === true);
+  if (finalRows.length) return { row: pickBestByQuality(finalRows), conflict: null, hasConfirmed: true };
+  return { row: null, conflict: null, hasConfirmed: confirmed.length > 0 };
+}
+
+// 共享确认价的 evidence 只保留可核验公开资格字段，不整包复制其它账户的内部证据。
+function sharedCloseEvidence(evidence) {
+  const source = evidence || {};
+  const out = {};
+  for (const key of ['origin', 'provider', 'price_adjust', 'market_basis', 'qualification', 'terminalEvidence']) {
+    if (typeof source[key] === 'string') out[key] = source[key];
+  }
+  out.shared_close_reuse = { basis: 'same_market_code_expected_close' };
+  return out;
+}
+
+// 交易录入后的定点收盘价补齐（与净值重算、账本事务解耦）。
+// - 只处理历史日期；当天及未来尊重现有收盘任务，绝不写盘中候选/成交价为正式终盘。
+// - 同时读取本账户与其它账户同一「市场+代码+应有收盘日」的 confirmed/final 公开价；
+//   同日 confirmed 冲突（包括本账户已 confirmed 与另一账户不同价）整日不可用。
+// - 只有两边都确认无冲突时才复制共享价；真缺才按单证券单日取价。
+// - 失败或证据不足返回 pending，由调用方在保存交易成功的前提下明确提示，不抛错。
+async function ensureTradeClosePrice(username, accountName, trade = {}, options = {}) {
+  const tradeDate = String(trade.tradeDate || trade.date || '').slice(0, 10);
+  const rawCode = String(trade.code || '').trim();
+  if (!username || !accountName || !rawCode) return { status: 'skipped', reason: 'missing_scope' };
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(tradeDate)) return { status: 'skipped', reason: 'invalid_trade_date', tradeDate };
+  const today = options.today || cnDate(options.now || new Date());
+  if (tradeDate >= today) {
+    return { status: 'skipped', reason: 'today_close_flow', code: rawCode, tradeDate };
+  }
+  try {
+    const market = historicalKindFor(rawCode, trade) === 'hk_stock' ? 'HK' : 'CN';
+    const expected = options.expectedCloseDate
+      ? await options.expectedCloseDate(market, tradeDate)
+      : await expectedCloseDateFor(market, tradeDate, options.query || pool.query.bind(pool), new Map(), 'historical');
+    const base = { code: rawCode, market, tradeDate, closeDate: expected || null };
+    if (!expected) return { ...base, status: 'pending', reason: 'expected_close_date_unknown' };
+    const variants = codeVariants(rawCode, market === 'HK');
+    const query = options.query || pool.query.bind(pool);
+    const pairs = variants.map(code => ({ market, code, date: expected }));
+    const readOwn = options.readOwn || (async () => {
+      const result = await navAttributionRepository.listOwnPricesAt(
+        query, [username, accountName, JSON.stringify(pairs)]
+      );
+      return result.rows || [];
+    });
+    const readShared = options.readShared || (async () => {
+      const result = await navAttributionRepository.listSharedConfirmedAt(
+        query, [username, accountName, JSON.stringify(pairs), PRIVATE_SOURCES]
+      );
+      return result.rows || [];
+    });
+    const [rawOwnRows, sharedRows] = await Promise.all([
+      readOwn({ username, accountName, date: expected, market, codes: variants }),
+      readShared({ username, accountName, date: expected, market, codes: variants }),
+    ]);
+    // 本账户私有派生价（导入锚点等）不是公开收盘事实，不参与 confirmed 选价或冲突核对。
+    const ownRows = rawOwnRows.filter(row => !PRIVATE_SOURCES.includes(String(row.source || '')));
+    // 冲突必须同时看本账户与共享行：本账户先有 confirmed 不能跳过另一账户的不同价。
+    const combined = pickExactClose([...ownRows, ...sharedRows], rawCode, market, expected);
+    if (combined.conflict) return { ...base, status: 'pending', reason: 'shared_close_conflict' };
+    const own = pickExactClose(ownRows, rawCode, market, expected);
+    if (own.row) return { ...base, status: 'already', source: own.row.source || null };
+    if (own.hasConfirmed) return { ...base, status: 'pending', reason: 'local_close_not_final' };
+    const shared = pickExactClose(sharedRows, rawCode, market, expected);
+    if (shared.row) {
+      const savePrice = options.savePrice || ((row) => saveDailyPrices(username, accountName, expected, [row], { market }));
+      const saved = await savePrice({
+        code: rawCode,
+        name: '',
+        price: Number(shared.row.price),
+        source: shared.row.source || 'shared_confirmed_close',
+        quality: 'confirmed',
+        is_final: true,
+        market,
+        evidence: sharedCloseEvidence(shared.row.evidence),
+      });
+      const written = Array.isArray(saved) ? saved.some(item => item && item.written) : saved !== false;
+      if (written) return { ...base, status: 'reused', source: shared.row.source || null };
+      const afterRows = (await readOwn({ username, accountName, date: expected, market, codes: variants }))
+        .filter(row => !PRIVATE_SOURCES.includes(String(row.source || '')));
+      const after = pickExactClose(afterRows, rawCode, market, expected);
+      if (after.row) return { ...base, status: 'already', source: after.row.source || null };
+      return { ...base, status: 'pending', reason: 'shared_close_write_rejected' };
+    }
+
+    const backfill = options.backfill || backfillDailyPrices;
+    let fetched = false;
+    try {
+      fetched = await backfill(username, accountName, rawCode, expected, expected, trade, {
+        qualifiedOnly: true,
+        businessDate: expected,
+      });
+    } catch (e) {
+      fetched = false;
+    }
+    const fetchedRows = (await readOwn({ username, accountName, date: expected, market, codes: variants }))
+      .filter(row => !PRIVATE_SOURCES.includes(String(row.source || '')));
+    const afterFetch = pickExactClose(fetchedRows, rawCode, market, expected);
+    if (afterFetch.conflict) return { ...base, status: 'pending', reason: 'local_close_conflict' };
+    if (afterFetch.row) return { ...base, status: 'fetched', source: afterFetch.row.source || null };
+    return { ...base, status: 'pending', reason: fetched ? 'history_close_not_qualified' : 'history_close_unavailable' };
+  } catch (error) {
+    return { status: 'pending', reason: 'close_price_check_failed', code: rawCode, tradeDate };
+  }
+}
+
+// 净值重算前的现金收益结算：只对已知 409 版本竞争做有限重试。
+// 授权失败原样抛出；其它失败返回待重算，由调用方保留快照和 nav_dirty_from。
+async function settleCashIncomeForRecompute(settle, username, accountName, options = {}) {
+  const maxAttempts = Number(options.attempts) > 0 ? Number(options.attempts) : 2;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      const state = await settle(username, accountName);
+      return {
+        status: (state && state.status) || 'calculated',
+        changed: state && state.changed,
+        navUpdated: state && state.navUpdated,
+        attempts: attempt,
+      };
+    } catch (error) {
+      const httpStatus = Number(error && error.status) || 500;
+      if (httpStatus === 401 || httpStatus === 403) throw error;
+      if (httpStatus !== 409) {
+        return { status: 'failed', reason: 'settlement_failed', httpStatus, attempts: attempt };
+      }
+      if (attempt >= maxAttempts) {
+        return { status: 'failed', reason: 'version_conflict', httpStatus: 409, attempts: attempt };
+      }
+    }
+  }
+  return { status: 'failed', reason: 'version_conflict', httpStatus: 409, attempts: maxAttempts };
+}
+
 // 主入口：从 fromDate 起重算该账户历史净值（幂等 upsert）
-async function recomputeNav(username, accountName, fromDate) {
+async function recomputeNav(username, accountName, fromDate, options = {}) {
   if (!fromDate || !/^\d{4}-\d{2}-\d{2}$/.test(fromDate)) {
     return { ok: false, error: 'fromDate 格式应为 YYYY-MM-DD' };
   }
-  await require('../services/cashIncome').settleCashIncome(username,accountName);
-  const data = await loadAccountData(username, accountName);
+  const settle = options.settleCashIncome || require('../services/cashIncome').settleCashIncome;
+  const cashSettlement = await settleCashIncomeForRecompute(settle, username, accountName);
+  // 现金收益结算未完成或明确 partial 时，现有现金账本可能已过期：
+  // 立即返回待重算，保留现有历史快照与 nav_dirty_from，绝不继续写净值或清除待办。
+  if (cashSettlement.status === 'failed' || cashSettlement.status === 'partial') {
+    const reason = cashSettlement.status === 'partial'
+      ? 'cash_settlement_partial'
+      : (cashSettlement.reason === 'version_conflict' ? 'cash_settlement_conflict' : 'cash_settlement_failed');
+    console.warn('[replayNav] 现金收益结算未完成，净值保持待重算:', cashSettlement.reason || cashSettlement.status);
+    return {
+      ok: false,
+      status: 'pending',
+      reason,
+      days: 0,
+      missingDates: [],
+      cashSettlement,
+      warnings: [reason],
+    };
+  }
+  const load = options.loadAccountData || loadAccountData;
+  const data = await load(username, accountName);
   const navs = (data.navHistory || []).slice().sort(function (a, b) { return a.date.localeCompare(b.date); });
-  if (navs.length === 0) return { ok: true, days: 0, note: 'no_nav' };
+  if (navs.length === 0) {
+    return { ok: true, status: 'no_nav', days: 0, note: 'no_nav', cashSettlement };
+  }
   const cashBase = Number(data.cashBase) || 0;
   const trades = (data.trades || []).slice().sort(function (a, b) {
     // 方案 3.6 修复：按交易日(trade_date)+成交时间(executed_at)排序，避免带时间 date 与纯日期比较错位
@@ -223,7 +413,7 @@ async function recomputeNav(username, accountName, fromDate) {
       if (info.qty === 0) continue;
       let price = dpMap.get(code + '|' + d);
       if (price == null) {
-        // 缺价 → 尝试 Tushare 历史回补（本run每代码一次）；回补后从库重载该代码价格
+        // 缺价 → 按既有默认范围尝试历史回补（本run每代码一次）；回补后从库重载该代码价格
         if (!backfilled.has(code)) {
           backfilled.add(code);
           const ok = await backfillDailyPrices(username, accountName, code, fromDate, today);
@@ -278,7 +468,25 @@ async function recomputeNav(username, accountName, fromDate) {
   if (affected > 0 && missingDates.length === 0) {
     await accountsRepository.clearNavDirtyFrom({ username, accountName });
   }
-  return { ok: missingDates.length === 0, status: missingDates.length ? 'partial' : 'succeeded', days: affected, missingDates: [...new Set(missingDates)] };
+  const warnings = [];
+  return {
+    ok: missingDates.length === 0,
+    status: missingDates.length ? 'partial' : 'succeeded',
+    days: affected,
+    missingDates: [...new Set(missingDates)],
+    cashSettlement,
+    warnings,
+  };
 }
 
-module.exports = { recomputeNav, backfillDailyPrices, historicalKindFor, historyBackfillRow, isTradingDay, cnDate };
+module.exports = {
+  recomputeNav,
+  ensureTradeClosePrice,
+  settleCashIncomeForRecompute,
+  selectBackfillRows,
+  backfillDailyPrices,
+  historicalKindFor,
+  historyBackfillRow,
+  isTradingDay,
+  cnDate,
+};

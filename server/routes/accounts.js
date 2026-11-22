@@ -14,7 +14,7 @@ const { withTransaction } = require('../db/transaction');
 const accountsRepository = require('../repositories/accountsRepository');
 const navImportRepository = require('../repositories/navImportRepository');
 const { fetchQuotesByCodes, todayCN, isCnTradingDate, toTsCode } = require('../services/market');
-const { recomputeNav } = require('../jobs/replayNav');
+const { recomputeNav, ensureTradeClosePrice } = require('../jobs/replayNav');
 const { getValuationByCodes } = require('../services/convertibleBondValuationService');
 const { applyPrivateCache } = require('../middleware/publicCache');
 const tradeLedger = require('../services/tradeLedger');
@@ -48,6 +48,24 @@ function requireVersion(req, res, next) {
     return res.status(400).json({ error: '版本号非法，请刷新页面后重试' });
   }
   next();
+}
+
+// 交易已提交后单独补对应成交日的收盘价；与行情刷新、净值重算各自报告。
+// 任何补价异常都不能回滚已保存交易，只返回 pending 供前端明确提示。
+async function ensureLedgerClosePrice(username, accountName, trade, result) {
+  try {
+    return await ensureTradeClosePrice(username, accountName, {
+      code: (result && result.code) || trade.code,
+      name: trade.name || '',
+      type: trade.type || '',
+      subtype: trade.subtype || '',
+      quoteCurrency: trade.quote_currency || trade.quoteCurrency,
+      tradeDate: (result && result.tradeDate) || trade.date,
+    });
+  } catch (error) {
+    console.warn('[ledger] 交易已保存，收盘价补取异常:', error && error.message);
+    return { status: 'pending', reason: 'close_price_check_failed' };
+  }
 }
 
 // 根据当前持仓反向回放导入日之后的交易，得到导入日的系统持仓数量。
@@ -135,14 +153,18 @@ router.post('/accounts/:name/ledger/trades', requireLogin, asyncHandler(assertOw
       // 2026-08-04 第三轮修复：必须返回最新数据+版本——若第一次保存成功但响应丢失，
       // 重试命中后前端需要靠这里的 data 恢复最新状态，否则页面停留在旧数据/旧版本。
       const quoteRefresh = await tradeLedger.refreshPositionPrices(req.session.user, name, [r.code || trade.code]);
+      const closePrice = await ensureLedgerClosePrice(req.session.user, name, trade, r);
       const fresh = await tradeLedger.loadLedgerResult(req.session.user, name);
-      return res.json({ ok: true, skipped: 'duplicate', id: r.id, quoteRefresh, data: fresh });
+      return res.json({ ok: true, skipped: 'duplicate', id: r.id, quoteRefresh, closePrice, data: fresh });
     }
     // 返回服务端最新账户结果（前端直接刷新内存，方案阶段二第 8 条）
     // 交易提交成功后立即刷新受影响证券，覆盖周末/收盘后新建持仓仍显示成交价的问题。
     const quoteRefresh = await tradeLedger.refreshPositionPrices(req.session.user, name, [r.code || trade.code]);
+    // 历史成交日的正式收盘价单独补齐：已有共享确认价直接复用，真缺才定点取价；
+    // 当天/未来日期交给现有收盘任务，不在这里写盘中候选价。
+    const closePrice = await ensureLedgerClosePrice(req.session.user, name, trade, r);
     const fresh = await tradeLedger.loadLedgerResult(req.session.user, name);
-    res.json({ ok: true, id: r.id, cash: r.cash, tradeDate: r.tradeDate, quoteRefresh, data: fresh });
+    res.json({ ok: true, id: r.id, cash: r.cash, tradeDate: r.tradeDate, quoteRefresh, closePrice, data: fresh });
   } catch (e) {
     res.status(e.status || 500).json({ error: e.message });
   }
@@ -447,9 +469,48 @@ router.post('/data/:name/recompute-nav', requireLogin, asyncHandler(assertOwners
   if (!fromDate || !/^\d{4}-\d{2}-\d{2}$/.test(fromDate)) {
     return res.status(400).json({ error: 'fromDate 格式应为 YYYY-MM-DD' });
   }
-  const r = await recomputeNav(req.session.user, name, fromDate);
-  if (!r.ok) return res.status(400).json({ error: r.error || '回填失败' });
-  res.json({ ok: true, days: r.days || 0 });
+  let r;
+  try {
+    r = await recomputeNav(req.session.user, name, fromDate);
+  } catch (error) {
+    // 保留原异常语义：权限/授权失败不能被改写成普通 400；未知异常给通用提示。
+    const status = Number(error && error.status) || 500;
+    const message = status >= 500 ? '净值重算未完成，请稍后重试' : (error.message || '净值重算未完成');
+    console.warn('[ledger] 净值重算未完成:', status);
+    return res.status(status).json({ ok: false, status: 'failed', error: message, warnings: [] });
+  }
+  const body = {
+    ok: !!(r && r.ok),
+    status: r && r.status,
+    reason: r && r.reason,
+    days: (r && r.days) || 0,
+    missingDates: (r && r.missingDates) || [],
+    note: r && r.note,
+    cashSettlement: r && r.cashSettlement,
+    warnings: (r && r.warnings) || [],
+  };
+  if (r && r.error) body.error = r.error;
+  if (!body.ok) {
+    // 已知版本竞争/现金结算 partial：保留 409 语义并给出结构化提示；
+    // 历史净值日期未闭合仍按原有非成功语义返回 400。
+    const cashPending = body.status === 'pending' && /^cash_settlement_/.test(String(body.reason || ''));
+    const settlementStatus = Number(body.cashSettlement && body.cashSettlement.httpStatus) || 409;
+    let error = '净值重算仍有日期未闭合';
+    if (cashPending) {
+      if (body.reason === 'cash_settlement_failed') {
+        error = '净值重算待完成：现金收益结算失败，请稍后重试';
+      } else if (body.reason === 'cash_settlement_partial') {
+        error = '净值重算待完成：现金收益结算仍有未闭合项，请稍后重试';
+      } else {
+        error = '净值重算待完成：现金收益结算遇版本竞争，请稍后重试';
+      }
+    }
+    const statusCode = cashPending
+      ? (body.reason === 'cash_settlement_failed' ? Math.max(400, settlementStatus) : 409)
+      : 400;
+    return res.status(statusCode).json({ ...body, error });
+  }
+  res.json(body);
 }));
 
 // 管理员判定统一走 server/middleware/auth.js 的 requireAdmin（数据库 role=admin 或 ADMIN_USERS 白名单，

@@ -707,7 +707,11 @@ async function computeGrahamSelection(input, { market, asOfDate, strategyCode, p
   if (!gate.eligible) reasons.push(gate.reason || 'market_not_eligible');
   if (!universe.length) reasons.push('universe_empty');
   if (shouldBlockUniverseDrift(universeLoad.evidence.drift, input.allowUniverseDrift)) reasons.push('universe_drift');
-  if (pendingCount > 0) reasons.push('pending_objects_in_ranking_pool');
+  // 格雷厄姆方案的待补对象只做披露、不阻断发布（2026-11-22 用户决策）。
+  // 净流动资产法只对有流动科目的实体成立，缺科目是数据侧长期边界
+  // （2026-11-22 线上实测 5626 家 A股里 141 家缺，占 2.5%），拿它当永久阻断
+  // 会让方案永远发不出组合，而合格候选本身不受这些标的影响。pendingCount 照常披露。
+  // 投资要义方案走另一处质量判定，口径保持原状。
 
   const quality = {
     publishable: reasons.length === 0,

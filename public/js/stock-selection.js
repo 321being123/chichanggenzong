@@ -149,6 +149,15 @@ function ssInitView() {
     }
   });
   document.addEventListener('keydown', function (event) {
+    var help = event.target && typeof event.target.closest === 'function'
+      ? event.target.closest('[data-ss-metric-help]') : null;
+    // 原生 button 在真实浏览器会由 Enter/Space 产生 click；这里显式处理，确保 Escape
+    // 关闭后仍保留焦点的标题可用同一按键重新打开，并让自动回归能验证真实表头节点。
+    if (help && (event.key === 'Enter' || event.key === ' ' || event.key === 'Spacebar')) {
+      event.preventDefault();
+      ssOpenMetricTooltip(help);
+      return;
+    }
     if (event.key === 'Escape' && document.querySelector('.ss-metric-tooltip')) { event.preventDefault(); ssCloseMetricTooltip(true); }
   });
   window.addEventListener('resize', function () { if (ssMetricTooltipButton) ssPositionMetricTooltip(ssMetricTooltipButton, document.querySelector('.ss-metric-tooltip')); });
@@ -232,7 +241,12 @@ function ssRenderRunHeader(state) {
   if (retry) retry.addEventListener('click', function () { if (window.StockSelectionPresenter && window.StockSelectionPresenter.retrySimulation) window.StockSelectionPresenter.retrySimulation(); });
 }
 
-function ssHelp(label, text) { return '<button type="button" class="ss-metric-help" data-ss-metric-help="' + ssEsc(label) + '" data-ss-help-text="' + ssEsc(text) + '" aria-label="查看' + ssEsc(label) + '说明">ⓘ</button>'; }
+// 表头说明由标题文字本身承载：不再另放圆形 ⓘ；使用原生 button 保留
+// 悬停/聚焦/点按/Enter/Space 行为，视觉上仍只是可聚焦的标题文字。
+function ssHelp(label, text, helpKey) {
+  var key = helpKey || label;
+  return '<button type="button" class="ss-metric-help" data-ss-metric-help="' + ssEsc(key) + '" data-ss-help-text="' + ssEsc(text) + '" aria-label="查看' + ssEsc(key) + '说明">' + ssEsc(label) + '</button>';
+}
 var SS_PERSONAL_REASON_TEXT = {
   user_excluded_instrument: '个人排除股票', user_excluded_industry: '个人排除行业',
   annual_anomaly: '年度财务异常', annual_anomaly_pending: '年度财务异常待核验',
@@ -325,7 +339,7 @@ function ssRenderCandidates(state) {
     return '<tr data-ss-code="' + ssEsc(item.code) + '" tabindex="0"><td class="text-right">' + ssEsc(order) + '</td><td><button type="button" class="ss-stock-link" data-ss-analysis="' + ssEsc(item.code) + '">' + ssEsc(item.name || item.code) + '</button><div class="ss-sub">' + ssEsc(item.code) + '</div></td><td>' + industry + '</td>'
       + '<td class="text-right">' + (item.currentPb === null ? '--' : Number(item.currentPb).toFixed(3)) + '</td><td class="text-right">' + (item.historicalPbMin === null || item.historicalPbMin === undefined ? '--' : Number(item.historicalPbMin).toFixed(3) + ' ~ ' + (item.historicalPbMax === null ? '--' : Number(item.historicalPbMax).toFixed(3))) + '</td><td class="text-right">' + ratio + '</td><td class="text-right">' + (item.currentPe === null ? '--' : Number(item.currentPe).toFixed(2)) + '</td><td class="text-right">' + product + '</td><td class="text-right">' + (item.dividendYield === null ? '--' : (Number(item.dividendYield) * 100).toFixed(2) + '%') + '</td><td class="text-right">' + (item.equityCny === null ? '--' : (Number(item.equityCny) / 1e8).toFixed(1) + ' 亿') + '</td><td class="text-right">' + [item.pbRank, item.peRank, item.dividendRank].map(function (v) { return v === null || v === undefined ? '--' : v; }).join(' / ') + '</td><td class="text-right">' + (item.totalScore === null || item.totalScore === undefined ? '--' : item.totalScore) + '</td><td>' + status + (personal ? '<div class="ss-sub">' + personal + '</div>' : '') + (reasons ? '<div class="ss-sub">' + reasons + '</div>' : '') + '</td><td>' + ssIndustryAction(item) + '</td></tr>';
   }).join('');
-  root.innerHTML = '<div class="biz-table-scroll"><table class="biz-table"><thead><tr><th class="text-right">名次</th><th>证券</th><th>行业 ' + ssHelp('行业分类', '按来源批次冻结的分类体系、版本和行业代码识别；缺失时不能按行业排除。') + '</th><th class="text-right">PB ' + ssHelp('PB', '当前来源批次的市净率；缺值显示“—”，不当作 0。') + '</th><th class="text-right">十年 PB 区间</th><th class="text-right">正极值比' + ssHelp('PB 正极值比', '最近十年有效正 PB 的最高值 ÷ 最低值；覆盖不足或无有效正值时不评估。') + '</th><th class="text-right">PE（TTM）' + ssHelp('PE（TTM）', '滚动十二个月市盈率，按来源批次的财务可见性冻结；亏损/零利润不伪造为低 PE。') + '</th><th class="text-right">PB×PE ' + ssHelp('PB×PE', '仅当 PB 超过阈值且 PE（TTM）为正时计算；直接 PB 阈值通过、PE 缺失、非正或口径不一致时显示“—”，不表示读取失败。') + '</th><th class="text-right">股息率 ' + ssHelp('股息率', '按来源批次冻结的股息率；缺失显示“—”，不混入另行估算值。') + '</th><th class="text-right">净资产（人民币）</th><th class="text-right">三项名次</th><th class="text-right">总分</th><th>结论</th><th>操作</th></tr></thead><tbody>' + rows + '</tbody></table></div><div class="ss-list-foot">已显示 ' + list.length + ' / ' + state.candidateTotal + ' 只<button class="btn btn-outline btn-sm" id="ss-load-more"' + (list.length >= state.candidateTotal ? ' disabled' : '') + '>加载更多</button></div>';
+  root.innerHTML = '<div class="biz-table-scroll"><table class="biz-table"><thead><tr><th class="text-right">名次</th><th>证券</th><th>' + ssHelp('行业', '按来源批次冻结的分类体系、版本和行业代码识别；缺失时不能按行业排除。') + '</th><th class="text-right">' + ssHelp('PB', '当前来源批次的市净率；缺值显示“—”，不当作 0。') + '</th><th class="text-right">十年 PB 区间</th><th class="text-right">' + ssHelp('正极值比', '最近十年有效正 PB 的最高值 ÷ 最低值；覆盖不足或无有效正值时不评估。') + '</th><th class="text-right">' + ssHelp('PE（TTM）', '滚动十二个月市盈率，按来源批次的财务可见性冻结；亏损/零利润不伪造为低 PE。') + '</th><th class="text-right">' + ssHelp('PB×PE', '仅当 PB 超过阈值且 PE（TTM）为正时计算；直接 PB 阈值通过、PE 缺失、非正或口径不一致时显示“—”，不表示读取失败。') + '</th><th class="text-right">' + ssHelp('股息率', '按来源批次冻结的股息率；缺失显示“—”，不混入另行估算值。') + '</th><th class="text-right">净资产（人民币）</th><th class="text-right">三项名次</th><th class="text-right">总分</th><th>结论</th><th>操作</th></tr></thead><tbody>' + rows + '</tbody></table></div><div class="ss-list-foot">已显示 ' + list.length + ' / ' + state.candidateTotal + ' 只<button class="btn btn-outline btn-sm" id="ss-load-more"' + (list.length >= state.candidateTotal ? ' disabled' : '') + '>加载更多</button></div>';
   var newViewport = root.querySelector('.biz-table-scroll'); if (newViewport && oldScrollLeft !== null) newViewport.scrollLeft = oldScrollLeft;
   if (focusedCode) ssRestoreRowFocus(root, focusedCode, focusedAction, focusedActionFamily, root.querySelector('.ss-list-foot') || ssEl('ss-exclusions') || root);
   var more = ssEl('ss-load-more'); if (more) more.addEventListener('click', function () { if (window.StockSelectionPresenter) window.StockSelectionPresenter.loadMore(); });
@@ -356,7 +370,7 @@ function ssRenderPortfolio(state) {
   }).join('');
   var empty = portfolio.members.length ? '' : '<div class="ss-empty">本来源没有可买入席位；空席和剩余仓位保留现金，不放大单只权重。</div>';
    var industries = (portfolio.industryBreakdown || []).map(function (item) { var marketWeight = item.weightInMarketBudget === null || item.weightInMarketBudget === undefined ? '--' : (Number(item.weightInMarketBudget) * 100).toFixed(2) + '%'; var limit = item.limitRatio === null || item.limitRatio === undefined ? '--' : (Number(item.limitRatio) * 100).toFixed(0) + '%'; return '<li>' + ssEsc(item.industryName || item.industryCode) + '：' + ssEsc(item.count) + ' 只，占市场预算 ' + marketWeight + '（上限 ' + limit + '）</li>'; }).join('');
-  root.innerHTML = empty + (rows ? '<div class="biz-table-scroll"><table class="biz-table"><thead><tr><th class="text-right">席位 ' + ssHelp('席位', '来源批次按原始排名和席位规则冻结的目标位置；空席保留现金。') + '</th><th>证券</th><th>行业</th><th class="text-right">PB ' + ssHelp('PB', '当前来源批次冻结的市净率；缺失显示“—”，不当作 0。') + '</th><th class="text-right">PE（TTM）' + ssHelp('PE（TTM）', '滚动十二个月市盈率，按来源批次的财务可见性冻结；亏损/零利润不伪造为低 PE。') + '</th><th class="text-right">股息率 ' + ssHelp('股息率', '按来源批次冻结的股息率；缺失显示“—”，不混入另行估算值。') + '</th><th class="text-right">资产负债率 ' + ssHelp('资产负债率', '最新已公告合并资产负债表的负债合计 ÷ 资产合计；资产合计非正或币种不可比时显示“—”。') + '</th><th class="text-right">最近财报利润同比 ' + ssHelp('最近财报利润同比', '最新已公告合并利润表（含一季报/半年报/三季报/年报）归母净利润相对上年同报告期的变化；缺同期数据或上年同期为 0 时显示“—”。') + '</th><th>提示</th><th>操作</th></tr></thead><tbody>' + rows + '</tbody></table></div>' : '')
+  root.innerHTML = empty + (rows ? '<div class="biz-table-scroll"><table class="biz-table"><thead><tr><th class="text-right">' + ssHelp('席位', '来源批次按原始排名和席位规则冻结的目标位置；空席保留现金。') + '</th><th>证券</th><th>行业</th><th class="text-right">' + ssHelp('PB', '当前来源批次冻结的市净率；缺失显示“—”，不当作 0。') + '</th><th class="text-right">' + ssHelp('PE（TTM）', '滚动十二个月市盈率，按来源批次的财务可见性冻结；亏损/零利润不伪造为低 PE。') + '</th><th class="text-right">' + ssHelp('股息率', '按来源批次冻结的股息率；缺失显示“—”，不混入另行估算值。') + '</th><th class="text-right">' + ssHelp('资产负债率', '最新已公告合并资产负债表的负债合计 ÷ 资产合计；资产合计非正或币种不可比时显示“—”。') + '</th><th class="text-right">' + ssHelp('最近财报利润同比', '最新已公告合并利润表（含一季报/半年报/三季报/年报）归母净利润相对上年同报告期的变化；缺同期数据或上年同期为 0 时显示“—”。') + '</th><th>提示</th><th>操作</th></tr></thead><tbody>' + rows + '</tbody></table></div>' : '')
     + '<div class="ss-portfolio-summary">实际仓位 ' + (portfolio.positionRatio === null ? '—' : (Number(portfolio.positionRatio) * 100).toFixed(0) + '%') + '；已填 ' + portfolio.selectedCount + '/' + portfolio.slots + ' 席，空席 ' + portfolio.unfilledSlots + '；股票占市场预算 ' + (portfolio.equityWeightInMarketBudget === null ? '—' : (Number(portfolio.equityWeightInMarketBudget) * 100).toFixed(2) + '%') + '，现金 ' + (portfolio.cashWeightInMarketBudget === null ? '—' : (Number(portfolio.cashWeightInMarketBudget) * 100).toFixed(2) + '%') + '。</div>'
     + ssRenderChanges(portfolio.changes) + (industries ? '<ul class="ss-industry">' + industries + '</ul>' : '');
   if (focusedCode) ssRestoreRowFocus(root, focusedCode, focusedAction, focusedActionFamily,

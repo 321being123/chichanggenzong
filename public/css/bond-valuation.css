@@ -18,7 +18,7 @@
 
 .bond-val-toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 14px 16px; border-bottom: 1px solid var(--border); }
 .bond-val-toolbar input[type=search] { min-width: 220px; height: 36px; padding: 0 10px; border: 1px solid var(--border-strong); border-radius: var(--r-md); background: var(--bg-surface); color: var(--text-primary); }
-.bond-val-toolbar select { height: 36px; padding: 0 10px; border: 1px solid var(--border-strong); border-radius: var(--r-md); background: var(--bg-surface); color: var(--text-primary); }
+.bond-val-toolbar select { height: 36px; padding-top: 0; padding-bottom: 0; padding-left: 10px; border: 1px solid var(--border-strong); border-radius: var(--r-md); background-color: var(--bg-surface); color: var(--text-primary); }
 .bond-val-toolbar input:focus, .bond-val-toolbar select:focus { outline: none; border-color: var(--primary); box-shadow: var(--focus-ring); }
 .bond-val-toolbar .btn { height: 36px; padding: 0 14px; border-color: var(--border-strong); background: var(--bg-surface); color: var(--primary); font-size: 12px; }
 .bond-val-toolbar .btn:hover { border-color: var(--primary); background: var(--primary-50); color: var(--primary-hover); }
@@ -87,7 +87,7 @@
   .bond-val-table-scroll { max-height:none; min-height:0; }
   .bond-val-cards { grid-template-columns:repeat(2,minmax(0,1fr)); }
   .bond-val-card { min-width:0; }
-  .bond-val-toolbar input[type=search], .bond-val-toolbar select { min-width: 0; flex: 1 1 170px; }
+  .bond-val-toolbar input[type=search], .bond-val-toolbar select { min-width: 0; flex: 1 1 170px; min-height: 44px; height: 44px; font-size: 16px; }
   .bond-val-spacer { display: none; }
   .bond-val-chart-tooltip { min-width:0; max-width:calc(100vw - 24px); }
 }

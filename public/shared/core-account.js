@@ -94,6 +94,11 @@ function renderEarnings() {
   var th = (typeof window !== 'undefined' && window.SiteChartTheme) ? window.SiteChartTheme.get() : { up: '#dc2626', down: '#059669', textMuted: '#64748b', textPrimary: '#0f172a' };
   const pct = function (v) { return v == null ? '—' : (v >= 0 ? '+' : '') + (v * 100).toFixed(2) + '%'; };
   const col = function (v) { return v >= 0 ? th.up : th.down; };
+  // 回撤是负向指标：按站内涨红跌绿着色，零和缺失保持中性，不能一律标红。
+  const drawdownCol = function (v) {
+    if (v == null || !Number.isFinite(Number(v)) || Number(v) === 0) return th.textMuted;
+    return Number(v) > 0 ? th.up : th.down;
+  };
 
   const cards = [
     { label: '当前总资产', value: last.totalMarketValue == null ? '—' : fmt(last.totalMarketValue), sub: '投入本金 ' + fmt(last.totalInvested || 0) },
@@ -101,8 +106,8 @@ function renderEarnings() {
     { label: '总收益率', value: pct(last.totalReturn), sub: '资金总收益 ' + pct(last.capitalGain), color: col(last.totalReturn || 0) },
     { label: '年化收益', value: pct(last.annualizedReturn), sub: '当年收益 ' + pct(last.yearReturn), color: col(last.annualizedReturn || 0) },
     { label: '今年收益', value: last.yearReturn == null ? '—' : pct(last.yearReturn), sub: '年初至今', color: last.yearReturn == null ? th.textMuted : col(last.yearReturn) },
-    { label: '当前回撤', value: last.currentDrawdown == null ? '—' : (last.currentDrawdown * 100).toFixed(2) + '%', sub: '当日', color: th.up },
-    { label: '最大回撤', value: last.maxDrawdown == null ? '—' : (last.maxDrawdown * 100).toFixed(2) + '%', sub: '历史', color: th.up }
+    { label: '当前回撤', value: last.currentDrawdown == null ? '—' : (last.currentDrawdown * 100).toFixed(2) + '%', sub: '当日', color: drawdownCol(last.currentDrawdown) },
+    { label: '最大回撤', value: last.maxDrawdown == null ? '—' : (last.maxDrawdown * 100).toFixed(2) + '%', sub: '历史', color: drawdownCol(last.maxDrawdown) }
   ];
   el.innerHTML = cards.map(function (c) {
     return '<div class="stat-card"><div class="stat-top"><div><div class="label">' + c.label + '</div>' +

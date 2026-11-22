@@ -41,8 +41,10 @@
 .ss-row-action:hover, .ss-row-action:focus-visible { border-color: var(--bond-feature-focus); background: #f8fafc; outline: none; }
 .ss-row-action-on { border-color: var(--warn); background: var(--warn-bg); color: var(--warn); }
 .ss-disabled-note { color: #9a3412; font-size: 12px; }
-.ss-metric-help { display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; margin-left: 3px; padding: 0; border: 1px solid #94a3b8; border-radius: 50%; background: #fff; color: #475569; font-size: 12px; cursor: help; vertical-align: middle; }
-.ss-metric-help:focus-visible { outline: 2px solid var(--bond-feature-focus); outline-offset: 2px; }
+/* 2026-11-22（#50）：表头说明由标题文字本身承载，去掉圆形 ⓘ，保留可聚焦和点按。 */
+.ss-metric-help { display: inline; appearance: none; -webkit-appearance: none; padding: 0; border: 0; background: none; color: inherit; font: inherit; font-weight: inherit; line-height: inherit; text-align: inherit; vertical-align: baseline; cursor: help; text-decoration: underline dotted; text-underline-offset: 3px; text-decoration-color: #94a3b8; }
+.ss-metric-help:hover { text-decoration-color: currentColor; }
+.ss-metric-help:focus-visible { outline: 2px solid var(--bond-feature-focus); outline-offset: 2px; border-radius: 3px; }
 .ss-metric-tooltip { position: fixed; z-index: 1000; display: inline-flex; align-items: flex-start; gap: 8px; max-width: min(340px, calc(100vw - 16px)); max-height: calc(100vh - 16px); overflow: auto; padding: 9px 11px; border: 1px solid #cbd5e1; border-radius: 7px; background: #0f172a; color: #fff; font-size: 12px; font-weight: 400; line-height: 1.6; box-shadow: 0 8px 24px rgba(15, 23, 42, .2); }
 .ss-metric-tooltip-close { flex: 0 0 auto; width: 24px; height: 24px; margin: -3px -5px 0 0; padding: 0; border: 0; border-radius: 4px; background: transparent; color: #fff; font-size: 18px; line-height: 24px; cursor: pointer; }
 .ss-metric-tooltip-close:hover, .ss-metric-tooltip-close:focus-visible { background: rgba(255, 255, 255, .15); outline: none; }
@@ -103,7 +105,7 @@
   /* 状态标签在手机上也要有可点按的触控高度。 */
   .ss-cards button.ss-gate { min-height: 44px; }
   .ss-source-panel .btn { min-height: 44px; }
-  .ss-metric-help { width: 44px; height: 44px; margin-left: 0; }
+  .ss-metric-help { display: inline-flex; align-items: center; justify-content: center; min-width: 44px; min-height: 44px; padding: 0 2px; }
   .ss-metric-tooltip-close { width: 44px; min-width: 44px; height: 44px; margin: -9px -11px 0 0; line-height: 44px; }
   .ss-source-panel .ss-toolbar select { min-height: 44px; font-size: 16px; }
   .ss-settings-grid { grid-template-columns: minmax(0, 1fr); }

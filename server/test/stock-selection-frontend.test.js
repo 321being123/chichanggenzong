@@ -214,7 +214,7 @@ check('指标说明支持焦点/悬停/点按且单实例关闭恢复焦点', ()
   help.click(); context.ssRenderCandidates({ candidates: [], candidateTotal: 0 });
   assert.strictEqual(dom.window.document.querySelectorAll('.ss-metric-tooltip').length, 0, '重渲染销毁入口时必须清理浮层');
   assert.ok(help.getAttribute('aria-describedby') === null);
-  assert.ok(css.includes('.ss-metric-help { width: 44px; height: 44px; margin-left: 0; }'), '手机说明入口必须保留 44px 触控区');
+  assert.ok(css.includes('.ss-metric-help { display: inline-flex; align-items: center; justify-content: center; min-width: 44px; min-height: 44px;'), '手机说明入口必须保留 44×44 触控区');
   assert.ok(css.includes('.ss-metric-tooltip-close { width: 44px; min-width: 44px; height: 44px;'), '手机浮层关闭按钮必须保留 44px 触控区');
 });
 check('候选操作重渲染后保留动作焦点（行内按钮）', () => {
@@ -280,6 +280,56 @@ check('目标组合移除冗余权重列并展示四项基本面指标', () => {
   const missing = dom.window.document.querySelector('tbody').textContent;
   assert.strictEqual((missing.match(/--/g) || []).length >= 5, true, '缺失指标必须显示占位符而不是 0');
 });
+check('表头说明由标题文字本身承载，不再显示圆形 ⓘ', () => {
+  const dom = new JSDOM('<!doctype html><html><body><div id="ss-candidates"></div><div id="ss-portfolio"></div></body></html>');
+  const context = { window: dom.window, document: dom.window.document };
+  vm.createContext(context); vm.runInContext(view, context);
+  const item = { code: 'AAA', instrumentId: 1, filterStatus: 'PASS', industry: { code: 'I' }, exclusionReasons: [],
+    personalExclusionReasons: [], currentPb: null, currentPe: null, dividendYield: null, equityCny: null };
+  context.ssRenderCandidates({ candidates: [item], candidateTotal: 1 });
+  const candidateHtml = dom.window.document.getElementById('ss-candidates').innerHTML;
+  assert.ok(!candidateHtml.includes('ⓘ'), '候选表不得再显示圆形 ⓘ');
+  assert.ok(!/<span[^>]*class="ss-metric-help"/.test(candidateHtml), '说明入口不得使用无法原生触发 Enter/Space 的 span');
+  assert.ok(/<button type="button" class="ss-metric-help" data-ss-metric-help="PB"/.test(candidateHtml),
+    'PB 表头标题本身必须是原生可聚焦说明按钮');
+  const candidateLabels = [...dom.window.document.querySelectorAll('#ss-candidates thead .ss-metric-help')].map(node => node.textContent);
+  assert.deepStrictEqual(candidateLabels, ['行业', 'PB', '正极值比', 'PE（TTM）', 'PB×PE', '股息率'],
+    '候选表说明入口必须只覆盖指标标题，不带独立图标');
+  const member = { code: 'AAA', name: '甲', instrumentId: 1, slotNo: 1, currentPb: null, currentPe: null, dividendYield: null,
+    debtToAssetRatio: null, latestProfitYoy: null, industryName: '行业', issuerDuplicate: false };
+  context.ssRenderPortfolio({ portfolio: { members: [member], positionRatio: 1, selectedCount: 1, slots: 30, unfilledSlots: 29,
+    equityWeightInMarketBudget: 1, cashWeightInMarketBudget: 0, industryBreakdown: [], changes: null } });
+  const portfolioHtml = dom.window.document.getElementById('ss-portfolio').innerHTML;
+  assert.ok(!portfolioHtml.includes('ⓘ'), '目标组合表不得再显示圆形 ⓘ');
+  const portfolioLabels = [...dom.window.document.querySelectorAll('#ss-portfolio thead .ss-metric-help')].map(node => node.textContent);
+  assert.deepStrictEqual(portfolioLabels, ['席位', 'PB', 'PE（TTM）', '股息率', '资产负债率', '最近财报利润同比'],
+    '目标组合说明入口必须只覆盖指标标题，不带独立图标');
+  assert.ok(/\.ss-metric-help \{[^}]*text-decoration: underline dotted/.test(css), '标题说明应保留可辨认但非圆形的提示样式');
+  assert.ok(!/\.ss-metric-help \{[^}]*border-radius: 50%/.test(css), '不得再绘制圆形 ⓘ');
+  assert.ok(css.includes('.ss-metric-help { display: inline-flex; align-items: center; justify-content: center; min-width: 44px; min-height: 44px;'),
+    '手机端 PB 等窄标题说明入口必须保留 44×44 触控区');
+
+  // 真实渲染表头：聚焦打开、Escape 关闭并留焦，Enter/Space 可重新打开。
+  const help = dom.window.document.querySelector('#ss-candidates thead [data-ss-metric-help="PB"]');
+  assert.ok(help && help.tagName === 'BUTTON', '必须能取到真实渲染的 PB 标题按钮');
+  context.ssInitView();
+  help.focus();
+  help.dispatchEvent(new dom.window.FocusEvent('focusin', { bubbles: true }));
+  assert.strictEqual(dom.window.document.querySelectorAll('.ss-metric-tooltip').length, 1, '聚焦标题应打开说明');
+  dom.window.document.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+  assert.strictEqual(dom.window.document.querySelectorAll('.ss-metric-tooltip').length, 0, 'Escape 应关闭说明');
+  assert.strictEqual(dom.window.document.activeElement, help, 'Escape 关闭后焦点应留在标题按钮');
+  const enter = new dom.window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true });
+  help.dispatchEvent(enter);
+  assert.strictEqual(enter.defaultPrevented, true);
+  assert.strictEqual(dom.window.document.querySelectorAll('.ss-metric-tooltip').length, 1, 'Enter 应重新打开说明');
+  dom.window.document.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+  const space = new dom.window.KeyboardEvent('keydown', { key: ' ', bubbles: true, cancelable: true });
+  help.dispatchEvent(space);
+  assert.strictEqual(space.defaultPrevented, true);
+  assert.strictEqual(dom.window.document.querySelectorAll('.ss-metric-tooltip').length, 1, '空格应重新打开说明');
+});
+
 check('关键指标和组合字段均有说明入口，个人结果成功后关闭行操作菜单', () => {
   assert.ok(view.includes("ssHelp('PB×PE'"), 'PB×PE 必须有说明入口');
   assert.ok(view.includes("ssHelp('股息率'"), '股息率必须有说明入口');

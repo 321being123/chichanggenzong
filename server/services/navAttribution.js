@@ -617,6 +617,8 @@ async function computeNavAttribution(username, accountName, data, currentTotal, 
   const unqualifiedBasisCodes = [];
   // 逐个「证券身份」核对：CN|600000 与 HK|00001 是两只证券，不能按代码合并。
   const identities = relevantIdentities;
+  // 已被当前估值选中的退市固定价：期初总资产重建也必须消费同一价格，不能只改 complete。
+  const fixedBasisPrices = new Map();
   // 基准时点各市场的「最近应有收盘日」：用已落库交易日历回看，不按星期几猜。
   const { expectedCloseDateFor, resolveSuspendedReference } = require('./effectivePrice');
   const basisStateCache = new Map();
@@ -647,6 +649,8 @@ async function computeNavAttribution(username, accountName, data, currentTotal, 
     const market = (p && p.market) || q.market || identity.split('|')[0];
     const code = (p && p.code) || q.code || identity.split('|').slice(1).join('|');
     const isHk = market === 'HK' || q.subtype === '港股' || (p && p.subtype === '港股');
+    // 当前持仓明确为 CN 退市债，且当前批次统一估值也认定该价格时才允许补充基准。
+    const liveDelistedHolding = Boolean(liveEnd && !isHk && market === 'CN' && p && isDelistedBond(p, code));
     let storedPrevRow = marketPrice(previousPriceByCode, code, isHk);
     let storedCurrentRow = marketPrice(currentPriceByCode, code, isHk);
     const expectedBasisDate = await expectedBasisDateFor(isHk ? 'HK' : 'CN');
@@ -694,8 +698,6 @@ async function computeNavAttribution(username, accountName, data, currentTotal, 
       }
     }
     const storedPrevPrice = storedPrevRow && storedPrevRow.price;
-    const fixedDelistedPrice = manualDelistedPrice(data, code, p);
-    const prevPrice = storedPrevPrice > 0 ? storedPrevPrice : fixedDelistedPrice;
     const tradePrice = tradePriceAtEnd(data, code, prevDate, currentDate, prevAt, lastAt);
     const currentMarketState = currentDate === todayDate ? todayMarketStates[isHk ? 'HK' : 'CN'] : null;
     const marketOpenOnCurrentDate = currentMarketState ? currentMarketState.status === 'open' : true;
@@ -703,15 +705,58 @@ async function computeNavAttribution(username, accountName, data, currentTotal, 
     const evidenceRow = liveEnd && currentValuation
       ? (currentValuation[`${isHk ? 'HK' : 'CN'}|${code}`] || null)
       : null;
-    const lastPrice = evidenceRow && Number(evidenceRow.price) > 0
-      ? Number(evidenceRow.price)
-      : (liveEnd && marketOpenOnCurrentDate && p
-        ? Number(p.price) : (storedCurrentRow && storedCurrentRow.price));
-    const endPrice = lastPrice > 0 ? lastPrice : (tradePrice > 0 ? tradePrice : fixedDelistedPrice);
+    // 只有当前批次统一估值明确给出 manual_delisted 正值，才允许用它补充历史基准。
+    // 不能拿当前聚合持仓价替代 effectivePrice 的实际选择，也不能在没有估值证据时覆盖上期价格。
+    const currentValuationFixed = liveEnd && evidenceRow && evidenceRow.priceKind === 'manual_delisted' &&
+      Number(evidenceRow.price) > 0 ? Number(evidenceRow.price) : null;
+    const legacyFixedPrice = manualDelistedPrice(data, code, p);
+    const basisDateOk = Boolean(storedPrevRow && expectedBasisDate && storedPrevRow.date === expectedBasisDate);
+    // 原本合格的精确确认价或有效停牌基准优先，不因退市固定价而改口径。
+    const originalBasisQualified = storedPrevPrice > 0 &&
+      (storedPrevRow.quality === 'confirmed' || storedPrevRow.isFinal === true) &&
+      (basisDateOk || Boolean(suspensionReference));
+    let useFixedBasis = false;
+    let fixedBasisPrice = null;
+    let basisCorroboration = null;
+    if (liveDelistedHolding && currentValuationFixed != null && previous.snapshotSource !== 'imported') {
+      if (!(storedPrevPrice > 0)) {
+        useFixedBasis = true;
+        fixedBasisPrice = currentValuationFixed;
+      } else if (!originalBasisQualified && Math.abs(Number(storedPrevPrice) - currentValuationFixed) < 1e-6) {
+        // 旧记录只用于证明“基准时点已有同一金额”，绝不升格为确认收盘；
+        // 只有落库值等于当前固定价时才放行，异价旧记录仍保持原缺口。
+        useFixedBasis = true;
+        fixedBasisPrice = currentValuationFixed;
+        basisCorroboration = {
+          date: storedPrevRow.date,
+          quality: storedPrevRow.quality || 'legacy_unverified',
+          price: Number(storedPrevPrice),
+          relation: 'equal_amount_history',
+        };
+      }
+    }
+    // 原不带旧日价的历史路径保持：没有可用基准价时仍按既有退市固定价兜底。
+    if (!useFixedBasis && previous.snapshotSource !== 'imported' && !(storedPrevPrice > 0) &&
+        (currentValuationFixed != null || legacyFixedPrice != null)) {
+      useFixedBasis = true;
+      fixedBasisPrice = currentValuationFixed != null ? currentValuationFixed : legacyFixedPrice;
+    }
+    const prevPrice = useFixedBasis
+      ? fixedBasisPrice
+      : (storedPrevPrice > 0 ? storedPrevPrice : legacyFixedPrice);
+    const lastPrice = useFixedBasis
+      ? fixedBasisPrice
+      : (evidenceRow && Number(evidenceRow.price) > 0
+        ? Number(evidenceRow.price)
+        : (liveEnd && marketOpenOnCurrentDate && p
+          ? Number(p.price) : (storedCurrentRow && storedCurrentRow.price)));
+    const endPrice = lastPrice > 0 ? lastPrice : (tradePrice > 0 ? tradePrice : legacyFixedPrice);
     const currentQty = p ? Number(p.quantity) || 0 : 0;
-    if (fixedDelistedPrice != null && (storedPrevPrice == null || !(storedPrevPrice > 0) || !(lastPrice > 0))) {
+    if (currentValuationFixed != null ||
+        (legacyFixedPrice != null && (useFixedBasis || storedPrevPrice == null || !(storedPrevPrice > 0) || !(lastPrice > 0)))) {
       manualPriceCodes.push(code);
     }
+    if (useFixedBasis) fixedBasisPrices.set(`${isHk ? 'HK' : 'CN'}|${code}`, fixedBasisPrice);
     if ((qty > 0 && (!(prevPrice > 0) || !(endPrice > 0))) || (currentQty > 0 && !(endPrice > 0)) ||
       ((qty > 0 || currentQty > 0) && isHk && !(prevRate > 0 && lastRate > 0))) {
       missing.push(code);
@@ -737,27 +782,29 @@ async function computeNavAttribution(username, accountName, data, currentTotal, 
     // 基准价资格：必须是该市场在基准时点「最近应有收盘日」的已确认收盘价，
     // 或明确的人工估值（退市债固定价）。只要日期对不上（例如周五缺价却拿周四价格），
     // 数值可以照算，但归因必须标成不完整，不能给出看似完整的“今日涨跌”。
-    const basisFromDaily = storedPrevPrice > 0;
-    const basisDateOk = Boolean(storedPrevRow && expectedBasisDate && storedPrevRow.date === expectedBasisDate);
-    const basisQualified = basisFromDaily
-      ? ((storedPrevRow.quality === 'confirmed' || storedPrevRow.isFinal === true) && (basisDateOk || Boolean(suspensionReference)))
-      : fixedDelistedPrice != null;
+    const basisFromDaily = !useFixedBasis && storedPrevPrice > 0;
+    const basisQualified = useFixedBasis
+      ? true
+      : (basisFromDaily ? originalBasisQualified : legacyFixedPrice != null);
     if (qty > 0 && !basisQualified) unqualifiedBasisCodes.push(code);
     priceEvidence.push({
       code,
       market: isHk ? 'HK' : 'CN',
       basisPrice: prevPrice > 0 ? prevPrice : null,
-      basisPriceDate: storedPrevRow ? storedPrevRow.date : null,
+      basisPriceDate: useFixedBasis ? null : (storedPrevRow ? storedPrevRow.date : null),
       basisExpectedDate: expectedBasisDate || null,
-      basisQuality: basisFromDaily ? storedPrevRow.quality : (fixedDelistedPrice != null ? 'manual_delisted' : null),
+      basisQuality: useFixedBasis ? 'manual_delisted' : (basisFromDaily ? storedPrevRow.quality : (legacyFixedPrice != null ? 'manual_delisted' : null)),
       basisQualified,
-      ...(suspensionReference ? { basisPriceKind: 'suspension_reference', basisSuspensionEvidence: suspensionReference } : {}),
+      ...(useFixedBasis
+        ? { basisPriceKind: 'manual_delisted', ...(basisCorroboration ? { basisCorroboration } : {}) }
+        : (suspensionReference ? { basisPriceKind: 'suspension_reference', basisSuspensionEvidence: suspensionReference } : {})),
       currentPrice: endPrice > 0 ? endPrice : null,
-      currentPriceKind: evidenceRow ? evidenceRow.priceKind : (currentSuspensionReference ? 'suspension_reference' : (storedCurrentRow ? 'close' : null)),
-      currentPriceDate: evidenceRow ? evidenceRow.tradeDate : (storedCurrentRow ? storedCurrentRow.date : null),
+      currentPriceKind: useFixedBasis ? 'manual_delisted'
+        : (evidenceRow ? evidenceRow.priceKind : (currentSuspensionReference ? 'suspension_reference' : (storedCurrentRow ? 'close' : null))),
+      currentPriceDate: useFixedBasis ? null : (evidenceRow ? evidenceRow.tradeDate : (storedCurrentRow ? storedCurrentRow.date : null)),
       ...(currentSuspensionReference ? { currentSuspensionEvidence: currentSuspensionReference } : {}),
-      quality: evidenceRow ? evidenceRow.quality : (storedCurrentRow ? 'legacy_unverified' : null),
-      sourceRef: evidenceRow ? evidenceRow.sourceRef : null,
+      quality: useFixedBasis ? 'manual_delisted' : (evidenceRow ? evidenceRow.quality : (storedCurrentRow ? 'legacy_unverified' : null)),
+      sourceRef: useFixedBasis ? 'positions.price' : (evidenceRow ? evidenceRow.sourceRef : null),
     });
   }
   const ledgerChange = { value: 0 };
@@ -791,6 +838,8 @@ async function computeNavAttribution(username, accountName, data, currentTotal, 
   let previousTotal = Number(previous.totalAsset) || 0;
   if (!isAuthoritativeSnapshot(previous) && previousMarketValue.complete) {
     const rebuilt = snapshotTotal(data, previous, prevQty, (code, isHk) => {
+      const fixed = fixedBasisPrices.get(`${isHk ? 'HK' : 'CN'}|${code}`);
+      if (fixed > 0) return fixed;
       const row = marketPrice(previousPriceByCode, code, isHk);
       return row?.price > 0 ? row.price : manualDelistedPrice(data, code, currentByCode.get(code));
     }, prevRate);

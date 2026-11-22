@@ -6,6 +6,7 @@ const { cnDate, validRate, upsertFxRate, syncLegacyAccountRates, getFxRate, getC
 const { getMarketState, shanghaiDateTime, isPotentialHkTradingTime } = require('../services/marketState');
 const { openExternalCircuit, ExternalCallGuardError } = require('../services/externalCallGuard');
 const hkRateSource = require('../services/hkRateSource');
+const { syncRecentForeignRates } = require('../services/fxForeignRate');
 const CoreDate = require('../../public/shared/core-date.js');
 
 const FRESH_RATE_MS = 24 * 60 * 60 * 1000;
@@ -178,6 +179,9 @@ async function runHkRateJob({ final = false, targetDate } = {}) {
     }
     // 仅返回实际入库的汇率日期；失败、跳过或没有日期时不能伪造任务水位。
     result = { ...r, dataAsOf: rateResultWatermark(r) };
+    // 外币财报折算汇率（USD→CNY）与港币汇率是同一张表、同一类事实：港币写入后顺带增量同步最近几天。
+    // 该同步自身吞掉异常，只把结果挂在返回体里，不改变港币汇率任务的成败与水位。
+    result.foreignRates = await syncRecentForeignRates({ days: 7 });
     await finishJobRun(runId, !!r.ok, r.ok ? ('汇率 ' + r.rate) : (r.error || r.reason || '抓取失败'));
   } catch (e) {
     await finishJobRun(runId, false, e.message || String(e));

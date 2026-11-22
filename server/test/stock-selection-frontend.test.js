@@ -127,6 +127,28 @@ check('市场概览的日期与周状态标题和内容一致', () => {
   item.activePeriodType = 'week'; context.ssRenderMarkets({ market: 'CN', markets: [item] });
   assert.ok(rootNode.innerHTML.includes('本周状态') && rootNode.innerHTML.includes('本周已发布'));
 });
+check('市场概览占满正文宽度，V2 状态标签本身提供说明', () => {
+  assert.ok(/\.ss-cards\s*\{\s*grid-template-columns:\s*minmax\(0,\s*1fr\)/.test(css),
+    '当前市场概览必须单列占满正文宽度');
+  const rootNode = { innerHTML: '' };
+  const context = { window: {}, document: { getElementById: () => rootNode, querySelectorAll: () => [] } };
+  vm.createContext(context); vm.runInContext(view, context);
+  const item = { market: 'CN', label: 'A股', gate: { status: 'not_required' }, pb: null, pe: null,
+    referencePosition: null, activePeriodType: 'week', selectedPeriodStatus: { samePeriodPublished: true } };
+  context.ssRenderMarkets({ market: 'CN', markets: [item], strategyCode: 'low_pb_v2' });
+  assert.ok(/<button type="button" class="ss-gate ss-gate-not_required[^"]*" data-ss-metric-help="指数仅参考"/.test(rootNode.innerHTML),
+    'V2 指数仅参考必须让状态标签本身成为说明按钮');
+  assert.ok(rootNode.innerHTML.includes('aria-label="查看指数仅参考说明"'), '说明按钮必须有可访问名称');
+  assert.ok(rootNode.innerHTML.includes('不影响个股筛选、排名与组合发布'), '说明必须覆盖筛选、排名和组合发布');
+  assert.ok(rootNode.innerHTML.includes('不适用'), 'V2 无参考仓位必须显示不适用');
+  assert.ok(!rootNode.innerHTML.includes('class="ss-metric-help"'), '不能再另放一个 ⓘ 说明按钮');
+
+  item.gate = { status: 'eligible' };
+  context.ssRenderMarkets({ market: 'CN', markets: [item], strategyCode: 'low_pb_v1' });
+  assert.ok(rootNode.innerHTML.includes('<span class="ss-gate ss-gate-eligible">'), 'V1 准入标签保持 span 与原文案');
+  assert.ok(rootNode.innerHTML.includes('本轮不配置'), 'V1 无参考仓位保持原有文案');
+  assert.ok(!rootNode.innerHTML.includes('不适用'), 'V1 不得显示不适用的 V2 文案');
+});
 check('历史字符串行业排除在管理面板中可见且可恢复', () => {
   const rootNode = { innerHTML: '' };
   const context = { window: {}, document: { getElementById: () => rootNode } };

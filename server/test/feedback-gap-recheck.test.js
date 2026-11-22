@@ -333,6 +333,95 @@ function baseConfig() {
       const list2 = await store.listAttachments(pool, createdId, false);
       assert.strictEqual(list2.length, 0, '移除后活动截图应为 0');
     });
+
+    // ---------- #42：持仓反馈附带内部账户编号（2026-11-22） ----------
+    await test('#42 持仓上下文按打开时登录名绑定，仅管理员详情可见', async function () {
+      await pool.query('DELETE FROM public.feedbacks');
+      // public.accounts.id 是 TEXT：使用真实形状的 64 位十六进制，而不是数字编号。
+      const ACC_A = 'a'.repeat(64);
+      const ACC_B = 'b'.repeat(64);
+      await pool.query('DELETE FROM accounts WHERE id IN ($1,$2)', [ACC_A, ACC_B]);
+      await pool.query(
+        'INSERT INTO accounts (id, username, account_name, cash_base, hk_rate) VALUES ($1,$2,$3,0,1),($4,$5,$6,0,1)',
+        [ACC_A, 'alice', '本人账户', ACC_B, 'bob', '他人账户']
+      );
+      const base = {
+        type: 'bug', title: '持仓估值说明', description: '估值不完整但没有说明原因',
+        pagePath: '/?main=holdings', visibility: 'public',
+      };
+      const created = await service.createFeedback(aliceActor, Object.assign({}, base, {
+        accountName: '本人账户', accountOwner: 'alice', clientRequestId: 'ctx-1',
+      }), []);
+      assert.strictEqual(await store.getFeedbackInternalAccount(pool, created.id), ACC_A,
+        '必须按打开时的登录名核验账户归属并保存 TEXT 内部编号');
+
+      const publicDetail = await service.detail(created.id, { username: null, canModerate: false });
+      assert.ok(!('internalAccountId' in publicDetail.feedback), '公开投影不得包含内部账户编号');
+      assert.ok(!JSON.stringify(publicDetail).includes(ACC_A), '公开详情与事件不得泄露内部账户编号');
+      assert.ok(!String(publicDetail.feedback.pagePath).includes('本人账户'), '账户名不得写入页面路径');
+      const authorDetail = await service.detail(created.id, aliceActor);
+      assert.ok(!('internalAccountId' in authorDetail.feedback), '普通本人详情也不得包含内部账户编号');
+
+      const adminDetail = await service.adminDetail(created.id, adminActor);
+      assert.strictEqual(adminDetail.feedback.internalAccountId, ACC_A,
+        '管理员详情必须能按内部编号复现账户');
+      assert.ok(!JSON.stringify(adminDetail.events).includes(ACC_A), '事件不得写入内部账户编号');
+      const releaseDetail = await release.readDetail(created.id, { operator: adminActor.username });
+      assert.strictEqual(releaseDetail.feedback.internalAccountId, ACC_A);
+      assert.deepStrictEqual(Object.keys(releaseDetail).sort(), Object.keys(publicDetail).sort(),
+        '发布核对详情保留既有结果结构');
+      const list = await service.adminList(adminActor, { pageSize: 50 });
+      assert.ok(!('internalAccountId' in list.items[0]), '后台列表不得包含内部账户编号');
+
+      // 跨登录主体（A 打开表单后切到 B）或伪造非持仓页：忽略上下文，但原反馈照常提交。
+      const forgedOwner = await service.createFeedback(aliceActor, Object.assign({}, base, {
+        title: '跨登录主体', accountName: '本人账户', accountOwner: 'bob', clientRequestId: 'ctx-forged',
+      }), []);
+      assert.strictEqual(await store.getFeedbackInternalAccount(pool, forgedOwner.id), null,
+        '打开时登录名与会话不一致时必须忽略上下文');
+      const nonHoldings = await service.createFeedback(aliceActor, Object.assign({}, base, {
+        title: '非持仓页', pagePath: '/?main=home',
+        accountName: '本人账户', accountOwner: 'alice', clientRequestId: 'ctx-home',
+      }), []);
+      assert.strictEqual(await store.getFeedbackInternalAccount(pool, nonHoldings.id), null,
+        '非持仓页面不得接受账户上下文');
+
+      const wrongAccount = await service.createFeedback(aliceActor, Object.assign({}, base, {
+        title: '其他人的账户', accountName: '他人账户', accountOwner: 'alice', clientRequestId: 'ctx-cross-account',
+      }), []);
+      assert.strictEqual(await store.getFeedbackInternalAccount(pool, wrongAccount.id), null);
+      await assert.rejects(service.createFeedback(aliceActor, Object.assign({}, base, {
+        accountName: '他人账户', accountOwner: 'alice', clientRequestId: 'ctx-1',
+      }), []), error => error.status === 409, '同一请求号不能绑定另一账户');
+
+      // 旧客户端不带账户上下文：相同请求重试必须保持幂等。
+      const legacy = {
+        type: 'bug', title: '旧客户端', description: '无账户上下文',
+        pagePath: '/?main=holdings', visibility: 'public', clientRequestId: 'legacy-1',
+      };
+      const legacyFirst = await service.createFeedback(aliceActor, legacy, []);
+      const legacyRetry = await service.createFeedback(aliceActor, legacy, []);
+      assert.strictEqual(legacyRetry.created, false, '旧客户端相同请求必须返回原记录');
+      assert.strictEqual(String(legacyRetry.id), String(legacyFirst.id));
+
+      // 账户改名/删除后的相同重试仍走既有幂等结果，不得变成 400/409；新上下文可无编号提交。
+      await pool.query('UPDATE accounts SET account_name=$1 WHERE id=$2', ['改名账户', ACC_A]);
+      const renamedRetry = await service.createFeedback(aliceActor, Object.assign({}, base, {
+        accountName: '本人账户', accountOwner: 'alice', clientRequestId: 'ctx-1',
+      }), []);
+      assert.strictEqual(renamedRetry.created, false, '账户改名后相同重试必须保持幂等');
+      assert.strictEqual(String(renamedRetry.id), String(created.id));
+      await pool.query('DELETE FROM accounts WHERE id=$1', [ACC_A]);
+      const deletedRetry = await service.createFeedback(aliceActor, Object.assign({}, base, {
+        accountName: '本人账户', accountOwner: 'alice', clientRequestId: 'ctx-1',
+      }), []);
+      assert.strictEqual(deletedRetry.created, false, '账户删除后相同重试必须保持幂等');
+      const afterDelete = await service.createFeedback(aliceActor, Object.assign({}, base, {
+        title: '账户删除后', accountName: '本人账户', accountOwner: 'alice', clientRequestId: 'ctx-2',
+      }), []);
+      assert.strictEqual(await store.getFeedbackInternalAccount(pool, afterDelete.id), null,
+        '账户不存在时忽略上下文，反馈仍可提交');
+    });
   } catch (e) {
     fail++;
     failures.push('执行异常：' + (e && e.message));

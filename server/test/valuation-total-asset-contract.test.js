@@ -4,7 +4,7 @@
 const assert = require('assert');
 const crypto = require('crypto');
 const { pool } = require('../db/connection');
-const { loadAccountData, resolveHkRateEvidence } = require('../db');
+const { loadAccountData, loadAccountSummary, resolveHkRateEvidence } = require('../db');
 const { buildPositionExport } = require('../services/positionExport');
 const { summarizeBackfill, findMissingCloseDates } = require('../jobs/marketClose');
 const priceRepository = require('../repositories/effectivePriceRepository');
@@ -67,6 +67,24 @@ async function seed(positionPrice) {
   );
 }
 
+// 退市债夹具：持仓保留最后退市价，同时存在一条 legacy_unverified 旧日价（真实生产形态）。
+async function seedDelisted(fixedPrice, legacyDailyPrice) {
+  await pool.query('DELETE FROM daily_prices WHERE username=$1', [USER]);
+  await pool.query('DELETE FROM positions WHERE username=$1', [USER]);
+  await pool.query(
+    `INSERT INTO positions (id, username, account_name, account_id, code, name, price, quantity, cost, type, subtype)
+     VALUES ($1,$2,$3,$4,'404002','搜特退债',$5,1000,1,'股权','京市')`,
+    [crypto.randomUUID(), USER, ACCOUNT, ACCOUNT_ID, fixedPrice]
+  );
+  if (legacyDailyPrice != null) {
+    await pool.query(
+      `INSERT INTO daily_prices (username, account_name, account_id, date, code, name, price, market, quality, is_final, source)
+       VALUES ($1,$2,$3,$4,'404002','搜特退债',$5,'CN','legacy_unverified',null,'legacy_import')`,
+      [USER, ACCOUNT, ACCOUNT_ID, expectedCloseDate(), legacyDailyPrice]
+    );
+  }
+}
+
 async function main() {
   await cleanup();
   ACCOUNT_ID = crypto.createHash('sha256').update(USER + '\n' + ACCOUNT).digest('hex');
@@ -107,6 +125,36 @@ async function main() {
   assert.ok(String(unverifiedRow[3]).includes('未确认'), '未确认价格必须在导出里标注');
   assert.strictEqual(unverifiedRow[5], null, '未确认价格不得输出市值');
   assert.strictEqual(unverifiedRow[6], null, '未确认价格不得输出比例');
+
+  // 1c. 明确退市债：本账户保留的 2.362 是当前有效估值，压过 legacy_unverified 旧日价；
+  // 质量单独计数，导出允许输出市值与比例，且不回写 daily_prices。
+  await seedDelisted(2.362, 2.31);
+  const delisted = await loadAccountData(USER, ACCOUNT);
+  assert.strictEqual(delisted.totalAssetComplete, true, '退市债固定价应构成该账户的完整当前估值');
+  assert.strictEqual(Math.round(delisted.totalAsset), 3362, '完整总资产 = 1000 现金 + 1000×2.362');
+  assert.strictEqual(delisted.valuation.complete, true);
+  assert.strictEqual(delisted.valuation.manualDelisted, 1, '退市固定价必须单独计数');
+  assert.strictEqual(delisted.valuation.confirmed, 0, '退市固定价不是市场收盘价，不能计入已确认收盘');
+  const summary = await loadAccountSummary(USER, ACCOUNT);
+  assert.strictEqual(summary.totalAsset, delisted.totalAsset, '总览摘要与完整账户必须使用同一批固定价');
+  assert.strictEqual(summary.valuation.complete, true);
+  assert.strictEqual(summary.valuation.prices['CN|404002'].price, 2.362);
+  const delistedPosition = delisted.positions.find(position => position.code === '404002');
+  assert.strictEqual(delistedPosition.price, 2.362, '持仓价必须是本账户退市固定价，不能取旧日价');
+  assert.strictEqual(delistedPosition.priceQuality, 'manual_delisted');
+  assert.strictEqual(delistedPosition.priceKind, 'manual_delisted');
+  assert.strictEqual(delistedPosition.priceSource, 'positions.price');
+  assert.strictEqual(delistedPosition.priceTradeDate, null, '退市固定价不得伪造交易日');
+  const delistedExport = buildPositionExport(delisted);
+  assert.strictEqual(delistedExport.complete, true, '导出必须认可该账户私有的有效估值');
+  const delistedRow = delistedExport.rows.find(row => row[0] === '404002');
+  assert.strictEqual(delistedRow[5], 2362, '退市固定价应输出人民币市值');
+  assert.strictEqual(delistedRow[3], '2.362（退市固定价）', '导出保留退市固定价精度和来源类型');
+  const delistedDaily = (await pool.query(
+    'SELECT price::float8 AS price, quality FROM daily_prices WHERE username=$1 AND code=$2', [USER, '404002']
+  )).rows[0];
+  assert.strictEqual(delistedDaily.price, 2.31, '统一估值不得回写或覆盖 daily_prices');
+  assert.strictEqual(delistedDaily.quality, 'legacy_unverified');
 
   // 回到“完全缺价”状态做导出断言。
   await seed(0);

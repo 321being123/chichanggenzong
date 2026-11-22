@@ -121,6 +121,8 @@ router.post('/', requireLogin, createLimiter, uploadMiddleware, requestBytesGuar
     type: body.type, title: body.title, description: body.description,
     pagePath: body.pagePath, visibility: body.visibility,
     submittedVersion: body.submittedVersion, clientRequestId: body.clientRequestId,
+    // #42：只传打开表单时的账户名与登录名；内部编号由服务端核验归属后换算。
+    accountName: body.account, accountOwner: body.accountOwner,
   }, req.files);
   noStore(res);
   res.status(result.created === false ? 200 : 201).json({

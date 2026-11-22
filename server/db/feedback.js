@@ -27,12 +27,12 @@ async function insertFeedback(db, row) {
   const { rows } = await db.query(
     `INSERT INTO public.feedbacks
        (author_username, author_nickname_snapshot, type, title, description, page_path,
-        submitted_version, status, visibility, client_request_id, request_hash)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,'new',$8,$9,$10)
+        submitted_version, status, visibility, client_request_id, request_hash, internal_account_id)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,'new',$8,$9,$10,$11)
      RETURNING id::text AS id, revision::text AS revision`,
     [row.authorUsername, row.authorNicknameSnapshot || '', row.type, row.title, row.description,
       row.pagePath || '', row.submittedVersion || '', row.visibility || 'public',
-      row.clientRequestId || null, row.requestHash || null]
+      row.clientRequestId || null, row.requestHash || null, row.internalAccountId == null ? null : String(row.internalAccountId)]
   );
   return rows[0];
 }
@@ -57,6 +57,16 @@ async function getFeedback(db, id) {
     [id]
   );
   return rows[0] || null;
+}
+
+// 持仓反馈附带的内部账户编号：只由管理员详情按需读取；列表、公开详情和事件都不查这一列。
+async function getFeedbackInternalAccount(db, id) {
+  const { rows } = await db.query(
+    `SELECT internal_account_id::text AS "internalAccountId"
+       FROM public.feedbacks WHERE id = $1`,
+    [id]
+  );
+  return rows[0] ? rows[0].internalAccountId : null;
 }
 
 // 加行锁读取：用于状态变更 / 附件追加 / 发布回写，必须在事务内调用
@@ -406,6 +416,7 @@ module.exports = {
   insertFeedback, findByIdempotencyKey, getFeedback, lockFeedback,
   listFeedbacks, countByStatus, listMine, rankingPage, rankingForUser, versionLinks,
   bumpRevision, updateFeedbackFields,
+  getFeedbackInternalAccount,
   listComments, findCommentByRequest, insertComment, getComment, markComment,
   insertEvent, listEvents,
   listAttachments, countActiveAttachments, insertAttachment, getAttachment, removeAttachment,

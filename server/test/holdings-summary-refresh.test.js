@@ -96,6 +96,37 @@ assert.ok(incompleteValuationTip.includes('当前估值不完整') && incomplete
 assert.ok(!incompleteValuationTip.includes('休市行情校准'), '统一估值后不得再出现休市行情校准项');
 const completeValuationTip = context.buildChangeTipHtml(102, 1, 180, 22, 0, null, 0, null, false, [], null, { complete: true, missingCount: 0 });
 assert.ok(!completeValuationTip.includes('当前估值不完整'), '估值完整时不得提示缺失');
+// 2026-11-22（#42）：有价格但资格不可信时按类别和证券代码说明，逐只使用自己的价格日与预期收盘日。
+const mixedValuation = {
+  complete: false, missingCount: 3, untrustedCount: 2,
+  untrustedCodes: ['CN|600519', 'SZ|000001'],
+  prices: {
+    'CN|600519': { tradeDate: '2026-10-29', quality: 'stale_reference', priceKind: 'stale_close', expectedCloseDate: '2026-11-20' },
+    'SZ|000001': { tradeDate: '2026-11-19', quality: 'derived_reference', priceKind: 'derived_close', expectedCloseDate: '2026-11-21' },
+  },
+  missing: [
+    { code: '600036', reason: 'position_price_missing' },
+    { code: '00700', reason: 'position_fx_missing' },
+    { code: '601318', reason: 'position_price_missing' },
+  ],
+  conflicts: [{ code: '600000', date: '2026-11-20', priceCount: 2 }],
+  reasonCodes: ['price_date_before_expected_close', 'position_fx_missing'],
+};
+const mixedValuationTip = context.buildChangeTipHtml(102, 1, 180, 22, 0, null, 0, null, false, [], null, mixedValuation);
+assert.ok(mixedValuationTip.includes('缺价 2 只：600036、601318'), '缺价必须列出受影响代码');
+assert.ok(mixedValuationTip.includes('港币汇率未确认 1 只：00700'), '港币汇率缺口必须单列');
+assert.ok(mixedValuationTip.includes('跨账户价格冲突 1 只：600000 2026-11-20'), '跨账户冲突必须单列并带日期');
+assert.ok(mixedValuationTip.includes('未确认历史价 1 只：600519 2026-10-29（应为 2026-11-20）'), '历史价必须带真实价日和该证券预期收盘日');
+assert.ok(mixedValuationTip.includes('未确认参考价 1 只：000001 2026-11-19（应为 2026-11-21）'), '派生参考价不能混成历史价，预期日必须逐只');
+assert.ok(!mixedValuationTip.includes('600519 2026-10-29（应为 2026-11-21）'), '单只证券不得混用其它市场的预期日期');
+assert.ok(context.valuationIncompleteText({ complete: false, missingCount: 4, missing: [
+  { code: '600036', reason: 'position_price_missing' }, { code: '600037', reason: 'position_price_missing' },
+  { code: '600038', reason: 'position_price_missing' }, { code: '600039', reason: 'position_price_missing' },
+] }).includes('等 1 只'), '代码列表必须截断并标出剩余数量');
+const reasonOnlyText = context.valuationIncompleteText({ complete: false, reasonCodes: ['fx_rate_fallback', 'cross_account_price_conflict'] });
+assert.ok(reasonOnlyText.includes('港币汇率未确认') && reasonOnlyText.includes('跨账户价格冲突'), '只有原因码时也必须区分汇率与冲突');
+assert.ok(!reasonOnlyText.includes('历史价'), '不能把所有不完整原因都说成历史价');
+assert.strictEqual(context.valuationIncompleteText({ complete: true }), '', '估值完整时不得生成原因说明');
 
 const summaryElements = new Map();
 const statsContainer = { innerHTML: '', querySelector: () => null };

@@ -132,8 +132,13 @@ async function applyUnifiedValuation({ username, accountName, positions, query, 
       partial: !complete,
       confirmed: resolved.status.confirmed,
       candidate: resolved.status.candidate,
+      // 退市债固定价属于本账户的有效当前估值，单独计数，不能混入市场收盘价。
+      manualDelisted: resolved.status.manualDelisted,
       unverified: resolved.status.unverified,
       stale: resolved.status.stale,
+      // 有价格但资格不可信（如仅有历史账户价、导入派生价）单独计数，页面才能解释“为什么估值不完整”。
+      untrustedCount: resolved.status.untrusted,
+      untrustedCodes: resolved.status.untrustedCodes || [],
       missingCount: resolved.status.missingCount + unpricedCodes.length + missingFxCodes.length,
       expectedCloseDates: resolved.status.expectedCloseDates,
       reasonCodes: [...reasonCodes],
@@ -145,6 +150,8 @@ async function applyUnifiedValuation({ username, accountName, positions, query, 
       prices: Object.fromEntries([...resolved.prices.entries()].map(([code, row]) => [code, {
         price: row.price, currency: row.currency, priceKind: row.priceKind, tradeDate: row.tradeDate,
         quoteAt: row.quoteAt, quality: row.quality, sourceRef: row.sourceRef, revision: row.revision,
+        // 单只证券自己的市场与预期收盘日：说明逐只缺口时不能拿其它市场的日期代替。
+        market: row.market, expectedCloseDate: row.expectedCloseDate,
       }])),
     },
   };

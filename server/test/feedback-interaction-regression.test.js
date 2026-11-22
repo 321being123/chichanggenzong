@@ -26,6 +26,26 @@ w.history.pushState({}, '', '/?main=holdings'); w.openFeedbackForm({source:'fab'
 assert.equal(w.document.getElementById('fb-form-title-input').value, '');
 w.document.getElementById('fb-form-title-input').value = '已提交'; w.feedbackCloseForm(true); w.openFeedbackForm({source:'fab'});
 assert.equal(w.document.getElementById('fb-form-title-input').value, '');
+// #42：账户上下文在打开表单时快照，跨登录主体（含同名重注册）不得沿用旧表单或旧账户。
+w.username = 'alice'; w.accountIdentity = 'idA'; w.currentAccount = '账户A';
+w.history.pushState({}, '', '/?main=holdings'); w.openFeedbackForm({source:'fab'});
+assert.deepEqual(w.feedbackPresenter.state.form.accountContext, {account: '账户A', owner: 'alice'});
+assert.match(w.document.getElementById('fb-form-overlay').textContent, /仅后台管理员可见/);
+const originalForm = w.feedbackPresenter.state.form;
+w.currentAccount = '账户B';
+assert.deepEqual(originalForm.accountContext, {account: '账户A', owner: 'alice'});
+assert.ok(w.feedbackFormMatchesSession(originalForm));
+w.username = 'bob'; w.accountIdentity = 'idB';
+assert.ok(!w.feedbackFormMatchesSession(originalForm));
+w.openFeedbackForm({source:'fab'});
+assert.deepEqual(w.feedbackPresenter.state.form.accountContext, {account: '账户B', owner: 'bob'});
+w.accountIdentity = 'idC'; w.currentAccount = '账户B';
+w.document.getElementById('fb-form-title-input').value = '上一账号草稿'; w.feedbackCloseForm();
+w.openFeedbackForm({source:'fab'});
+assert.equal(w.document.getElementById('fb-form-title-input').value, '', '同名不同身份必须清空陈旧草稿');
+w.feedbackOpenEditForm({feedback:{id:'1',revision:'1',type:'bug',title:'t',description:'d',pagePath:'/?main=holdings'}});
+assert.equal(w.feedbackPresenter.state.form.mode, 'edit');
+assert.equal(w.feedbackPresenter.state.form.accountContext, null, '编辑不得重新采集或替换账户快照');
 let calls = []; w.myProfile = {role: 'admin'};
 w.positionComparisonPresenter = {getAccount:()=> 'a', loadVisibility:()=>{}, refreshBenchmarkButton:()=>{}, changeVisibility:value=>calls.push(value)};
 w.eval(source('public/js/position-comparison.js'));

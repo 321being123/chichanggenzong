@@ -39,7 +39,9 @@ function renderHomeHoldings() {
   var valuationMissing = data.valuation && Number(data.valuation.missingCount) > 0 ? Number(data.valuation.missingCount) : 0;
   homeSetText('home-total-asset', (valuationIncomplete && completeTotal == null ? '≈ ' : '') + fmt(displayTotal));
   homeSetText('home-position-count', data.positions.length + ' 项持仓' +
-    (valuationIncomplete ? ' · ⚠ 估值不完整' + (valuationMissing > 0 ? '（' + valuationMissing + ' 只缺价或未确认）' : '') : ''));
+    (valuationIncomplete ? ' · ⚠ ' + (typeof valuationIncompleteText === 'function'
+      ? valuationIncompleteText(data.valuation)
+      : '估值不完整' + (valuationMissing > 0 ? '（' + valuationMissing + ' 只缺价或未确认）' : '')) : ''));
   homeSetText('home-cash-value', '现金 ' + fmt(summary.cash));
 }
 

@@ -150,6 +150,11 @@
   async function submitForm() {
     if (!state.form || state.form.submitting) return;
     var form = state.form;
+    if (!window.feedbackFormMatchesSession(form)) {
+      window.feedbackCloseForm(true);
+      window.feedbackToast('登录状态已变更，请重新打开反馈表单');
+      return;
+    }
     var values = window.feedbackReadSubmitForm();
     var title = values.title;
     var description = values.description;
@@ -179,6 +184,12 @@
       body.append('pagePath', pagePath);
       body.append('visibility', window.feedbackReadVisibility());
       body.append('clientRequestId', form.requestId);
+      // #42：使用打开表单时冻结的持仓页账户快照，提交时不再读全局账户。
+      var accountContext = form.accountContext;
+      if (accountContext && accountContext.account && accountContext.owner) {
+        body.append('account', accountContext.account);
+        body.append('accountOwner', accountContext.owner);
+      }
       form.files.forEach(function (f) { body.append('images', f); });
       var created = await requestJson('/api/feedback', { method: 'POST', body: body });
       var fromFab = form.source === 'fab';

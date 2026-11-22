@@ -11,6 +11,7 @@ const notificationService = require('./notificationService');
 const { hasCapability, isAdminIdentity } = require('../middleware/auth');
 const txControl = require('../repositories/transactionControl');
 const repository = require('../repositories/feedbackServiceRepository.js');
+const accountsRepository = require('../repositories/accountsRepository');
 
 // ---------- 常量 ----------
 const TYPES = ['bug', 'improvement', 'feature'];
@@ -57,7 +58,7 @@ const PUBLIC_FIELDS = [
   'withdrawnAt', 'commentCount', 'latestSummary', 'lastEventAt', 'nickname', 'attachments',
 ];
 const AUTHOR_FIELDS = ['visibility', 'moderation', 'moderationReason'];
-const ADMIN_FIELDS = ['authorUsername', 'duplicateOf', 'implementedReleaseSha'];
+const ADMIN_FIELDS = ['authorUsername', 'duplicateOf', 'implementedReleaseSha', 'internalAccountId'];
 
 function pickFields(row, fields) {
   const out = {};
@@ -293,12 +294,21 @@ async function createFeedback(actor, input, files) {
   // A-07：问题版本由服务端运行元数据写入，客户端传值一律忽略
   const submittedVersion = runtimeVersion();
   const clientRequestId = cleanText(input.clientRequestId, 80) || null;
+  // #42：只有持仓页的新反馈才接受独立账户上下文，且打开表单时的登录名必须仍是当前会话。
+  // 非持仓、非本人或旧客户端一律忽略上下文，原反馈仍照常提交；账户名和编号都不进入 pagePath。
+  const accountName = cleanText(input.accountName, 64);
+  const accountOwner = cleanText(input.accountOwner, 64);
+  const holdingsContext = /^\/\?main=holdings(?:&|$)/.test(pagePath)
+    && !!accountName && !!accountOwner && accountOwner === actor.username;
 
   const encoded = await encodeImages(files);
-  const requestHash = hashRequest({
+  // 保持旧客户端的摘要结构。新请求绑定打开表单时的账户查找键，改名或删除不影响相同请求重试。
+  const hashParts = {
     title: title, description: description, type: type, visibility: visibility,
     pagePath: pagePath, images: encoded.map(function (e) { return e.sha256; }),
-  });
+  };
+  if (holdingsContext) hashParts.contextAccount = accountName;
+  const requestHash = hashRequest(hashParts);
 
   const client = await pool.connect();
   let written = [];
@@ -312,12 +322,22 @@ async function createFeedback(actor, input, files) {
       }
       return { id: dup.id, revision: dup.revision, created: false };
     }
+    // 只有新建记录才解析内部账户编号；既有幂等返回早于这里。
+    // 归属不存在、改名或已删除时保持 null，让反馈照常提交，不要求账户仍存在。
+    let internalAccountId = null;
+    if (holdingsContext) {
+      const owned = await accountsRepository.readAccountId(
+        { username: actor.username, accountName: accountName }, client
+      );
+      if (owned) internalAccountId = owned.id;
+    }
     const nickname = await nicknameOf(client, actor.username);
     const created = await store.insertFeedback(client, {
       authorUsername: actor.username, authorNicknameSnapshot: nickname, type: type,
       title: title, description: description, pagePath: pagePath,
       submittedVersion: submittedVersion, visibility: visibility,
       clientRequestId: clientRequestId, requestHash: requestHash,
+      internalAccountId: internalAccountId,
     });
     written = writeEncodedFiles(encoded);
     for (let i = 0; i < written.length; i++) {
@@ -820,13 +840,15 @@ async function adminDetail(id, actor) {
   if (!actor.canModerate) throw createError(403, '无权限：需要 content_manage 能力');
   const fb = await store.getFeedback(pool, id);
   if (!fb) throw notFound();
-  const [comments, attachments, events] = await Promise.all([
+  const [comments, attachments, events, internalAccountId] = await Promise.all([
     store.listComments(pool, id, { canModerate: true, username: actor.username }),
     store.listAttachments(pool, id, true),
     store.listEvents(pool, id, true),
+    // #42：内部账户编号只在这里单独读取，不并入列表查询，也不写入事件。
+    store.getFeedbackInternalAccount(pool, id),
   ]);
   return {
-    feedback: projectFeedback(Object.assign({}, fb, { attachments: attachments }), 'admin'),
+    feedback: projectFeedback(Object.assign({}, fb, { attachments: attachments, internalAccountId: internalAccountId }), 'admin'),
     comments: comments.map(function (c) { return projectComment(c, actor, c.authorUsername); }),
     events: events,
     permissions: { moderate: true },

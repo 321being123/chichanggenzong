@@ -561,6 +561,8 @@ table { width: 100%; border-collapse: collapse; font-size: var(--fs-sm); }
 .position-list-table .pos-chg-col { width: 70px; }
 .position-list-table .pos-valuation-col { width: 110px; }
 .position-list-table .pos-code-cell { font-weight: 600; font-family: var(--font-mono); }
+/* 2026-11-22（#42）：价格可显示但资格不可信时，在价格下方标出日期和类型。 */
+.position-list-table .pos-price-note { display: block; margin-top: 2px; font-size: 11px; font-weight: 400; line-height: 1.4; color: var(--warning); }
 .position-list-table .pos-name-cell .pos-link { font-weight: 600; }
 .position-list-table .pos-subtype-sh .pos-link { color: var(--sec-a-fg); }
 .position-list-table .pos-subtype-sz .pos-link { color: var(--sec-sz-fg); }
@@ -592,6 +594,7 @@ table { width: 100%; border-collapse: collapse; font-size: var(--fs-sm); }
 /* 持仓表可点击跳转：代码/名称/估值标签 */
 .pos-link { color: var(--link); cursor: pointer; text-decoration: none; }
 .pos-link:hover { text-decoration: underline; color: var(--link-hover); }
+.pos-price-note { display: block; color: var(--text-secondary); font-size: var(--fs-xs); }
 .pos-link .val-low, .pos-link .val-low2, .pos-link .val-mid, .pos-link .val-high1, .pos-link .val-high, .pos-link .val-risk, .pos-link .val-none { font-weight: 600; }
 
 /* ===== 分页（.ui-pagination + 兼容别名） ===== */
@@ -1414,13 +1417,16 @@ input[type="search"] {
 .nav-bell-badge[hidden] { display: none; }
 
 .nt-sub-nav { margin-bottom: 0; }
-/* 2026-11-22（#37）：标题区左侧子栏目、右侧「提醒设置」，移动端换行时按钮不挤压 Tab。 */
-#main-notifications > .bond-header {
+/* 2026-11-22（#40）：二级导航与通用正文同宽（1240 居中 + 20px 内边距），提醒设置贴正文右缘。 */
+#main-notifications > .bond-header { margin-bottom: 0; }
+.nt-header-inner {
   display: flex; align-items: center; justify-content: space-between;
-  flex-wrap: wrap; gap: 12px; margin-bottom: 0;
+  flex-wrap: wrap; gap: 12px;
+  width: 100%; max-width: 1240px; margin: 0 auto; padding: 0 20px;
 }
-#main-notifications > .bond-header > .nt-sub-nav { flex: 1 1 auto; }
-.nt-header-actions { display: flex; align-items: center; flex: 0 0 auto; gap: 8px; margin-left: auto; padding-right: 20px; }
+/* 导航自身已由 .nt-header-inner 定宽，去掉重复的 1240/内边距，避免双份偏移。 */
+.nt-header-inner > .nt-sub-nav { flex: 1 1 260px; max-width: none; margin: 0; padding: 0; }
+.nt-header-actions { display: flex; align-items: center; flex: 0 0 auto; gap: 8px; margin-left: auto; }
 .nt-header-actions .btn[aria-pressed="true"] {
   border-color: var(--primary); background: var(--primary-soft); color: var(--primary-text);
 }
@@ -1492,7 +1498,8 @@ input[type="search"] {
 
 @media (max-width: 760px) {
   .nt-page { padding-top: 12px; }
-  .nt-header-actions { padding-right: 12px; }
+  /* 与 .feature-page-shell 手机内边距一致，导航和提醒设置同缘。 */
+  .nt-header-inner { padding: 0 12px; }
   .nt-header-actions .btn { min-height: 44px; }
   .nt-toolbar { gap: 8px; }
   .nt-toggle { font-size: 14px; min-height: 44px; }

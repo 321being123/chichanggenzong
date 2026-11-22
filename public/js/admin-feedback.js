@@ -99,6 +99,7 @@
     var html = '<div class="fb-detail-body" data-style="max-height:200px;overflow:auto">' + esc(fb.description) + '</div>'
       + '<div class="fb-card-meta"><span>' + esc(fb.nickname) + '</span><span>' + esc(fmtTime(fb.createdAt)) + '</span>'
       + '<span>编号 #' + esc(fb.id) + '</span><span>revision ' + esc(fb.revision) + '</span>'
+      + (fb.internalAccountId ? '<span class="fb-internal-account">内部账户 #' + esc(fb.internalAccountId) + '</span>' : '')
       + (fb.pagePath ? '<span>' + esc(fb.pagePath) + '</span>' : '') + '</div>';
 
     if (fb.attachments && fb.attachments.length) {

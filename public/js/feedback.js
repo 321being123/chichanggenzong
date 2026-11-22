@@ -31,6 +31,12 @@
     if (window.username) return window.username;
     return null;
   }
+  // 账号不可复用身份（建号时间）用于清掉跨登录主体的陈旧表单；取不到时按空串比较。
+  function currentIdentity() {
+    if (typeof accountIdentity === 'string' && accountIdentity) return accountIdentity;
+    if (typeof window.accountIdentity === 'string') return window.accountIdentity;
+    return '';
+  }
   function byId(id) { return document.getElementById(id); }
 
   function fmtTime(iso) {
@@ -459,9 +465,16 @@
 
   function openForm(mode, data, opts) {
     bindEvents();
+    // #42：新反馈的账户上下文必须在打开表单时快照，提交时不再读取可能已切换的全局账户。
+    var identity = currentIdentity();
+    if (state.form && state.form.mode === 'create' &&
+        (state.form.draftUser !== currentUser() || (state.form.draftIdentity || '') !== identity)) {
+      closeForm(true);
+    }
     var existing = byId('fb-form-overlay');
     if (mode === 'create' && existing && state.form && state.form.mode === 'create' &&
-        state.form.draftPage === currentPagePath() && state.form.draftUser === currentUser()) {
+        state.form.draftPage === currentPagePath() && state.form.draftUser === currentUser() &&
+        (state.form.draftIdentity || '') === identity) {
       existing.hidden = false;
       return;
     }
@@ -476,6 +489,9 @@
       revision: fb ? fb.revision : null,
       draftPage: currentPagePath(),
       draftUser: currentUser(),
+      draftIdentity: identity,
+      // 编辑不重新采集账户上下文；数据库里的复现上下文保持原样。
+      accountContext: mode === 'create' ? holdingsAccountContext() : null,
       files: [],
       previews: [],
       requestId: (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : ('fb-' + Date.now() + '-' + Math.random().toString(16).slice(2)),
@@ -499,6 +515,7 @@
       + '<input type="text" id="fb-form-title-input" maxlength="100" value="' + esc(fb ? fb.title : '') + '" placeholder="例如：xxx数据有问题"></div>'
       + '<div class="fb-field fb-field--row"><span class="fb-label">地址</span>'
       + '<input type="text" id="fb-form-page" maxlength="1000" value="' + esc(fb ? fb.pagePath : currentPagePath()) + '"></div>'
+      + (state.form.accountContext ? '<p class="fb-upload-tip">会附带所选账户的内部编号，仅后台管理员可见。</p>' : '')
       + '<div class="fb-field fb-field--row"><span class="fb-label">描述<i>*</i></span>'
       + '<textarea id="fb-form-desc" maxlength="5000" placeholder="请您提供详细的问题描述或需求，这对我们的理解会有很大帮助。">' + esc(fb ? fb.description : '') + '</textarea></div>'
       + (!editing
@@ -581,6 +598,10 @@
     return { title: title, description: description, type: type, pagePath: pagePath };
   }
 
+  function feedbackFormMatchesSession(form) {
+    return !!form.draftUser && form.draftUser === currentUser() && form.draftIdentity === currentIdentity();
+  }
+
   function feedbackBeginSubmit() {
     var btn = byId('fb-form-submit');
     if (btn) { btn.disabled = true; btn.textContent = '提交中…'; }
@@ -594,6 +615,19 @@
   function feedbackReadVisibility() {
     var visibilityEl = document.querySelector('input[name="fb-visibility"]:checked');
     return visibilityEl ? visibilityEl.value : 'public';
+  }
+
+  // #42：只在持仓页为新反馈生成账户快照（打开表单时调用）。这里只记账户名和打开时登录名，
+  // 服务端会再核验归属；公开投影和列表都不可见。
+  function holdingsAccountContext() {
+    var params = new URLSearchParams(window.location.search);
+    var holdings = byId('main-holdings');
+    var onHoldings = params.get('main') === 'holdings' || !!(holdings && holdings.classList.contains('active'));
+    if (!onHoldings) return null;
+    var account = typeof currentAccount === 'string' ? currentAccount : '';
+    var owner = currentUser();
+    if (!account || !owner) return null;
+    return { account: account, owner: owner };
   }
 
   // ---------- 子页切换 ----------
@@ -816,6 +850,7 @@
   window.feedbackPaintVersionsPrepare = feedbackPaintVersionsPrepare;
   window.feedbackPaintVersions = feedbackPaintVersions;
   window.feedbackReadSubmitForm = feedbackReadSubmitForm;
+  window.feedbackFormMatchesSession = feedbackFormMatchesSession;
   window.feedbackBeginSubmit = feedbackBeginSubmit;
   window.feedbackEndSubmit = feedbackEndSubmit;
   window.feedbackReadVisibility = feedbackReadVisibility;

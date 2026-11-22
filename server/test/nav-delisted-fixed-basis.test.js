@@ -37,13 +37,47 @@ let dailyRows = [];
 
 (async () => {
   try {
+    // #46 整合后，归因基准改走 navAttributionRepository 的 jsonb_to_recordset 批量查询；
+    // 本夹具仍用精简的 dailyRows 行，这里把它们映射到新查询，保持 #49 各场景语义不变。
+    const marketOf = code => String(code).startsWith('007') ? 'HK' : 'CN';
+    const decorated = () => dailyRows.map(row => ({
+      username: 'fixture-user', account_name: 'fixture-account',
+      market: row.market || marketOf(row.code), code: row.code, date: row.date,
+      price: row.price, quality: row.quality, is_final: row.is_final === true,
+      source: row.source || null, evidence: row.evidence || null,
+    }));
     pool.query = async (sql, params = []) => {
       if (sql.includes("FROM market.trade_calendar") && sql.includes("exchange='HKEX'")) {
         const dates = Array.isArray(params[0]) ? params[0] : [params[0]];
         return { rows: dates.map(value => hkCalendarRow(String(value).slice(0, 10))) };
       }
-      if (sql.includes('FROM daily_prices')) return { rows: dailyRows };
       if (sql.includes('FROM market.fx_rates')) return { rows: [] };
+      if (sql.includes('jsonb_to_recordset')) {
+        const pairs = JSON.parse(params[2] || '[]');
+        const rows = decorated();
+        if (/JOIN LATERAL/.test(sql)) {
+          // 旧参考行：每个目标截点当天或之前最近一条正价（confirmed 分支额外要求 final）。
+          const confirmedOnly = /date < w\.date/.test(sql);
+          const out = [];
+          for (const pair of pairs) {
+            const prior = rows.filter(r => r.market === pair.market && r.code === pair.code && Number(r.price) > 0 &&
+              (confirmedOnly ? r.date < pair.date && r.quality === 'confirmed' && r.is_final === true : r.date <= pair.date))
+              .sort((a, b) => String(b.date).localeCompare(String(a.date)))[0];
+            if (prior) out.push({ ...prior, wanted_market: pair.market, wanted_code: pair.code, wanted_date: pair.date });
+          }
+          return { rows: out };
+        }
+        if (/NOT \(dp\.username/.test(sql)) return { rows: [] }; // 共享确认价：本夹具无其它账户
+        // listOwnPricesAt：本账户在明确目标日期的精确行。
+        const out = [];
+        for (const pair of pairs) {
+          for (const r of rows) {
+            if (r.market === pair.market && r.code === pair.code && r.date === pair.date) out.push(r);
+          }
+        }
+        return { rows: out };
+      }
+      if (sql.includes('FROM daily_prices')) return { rows: decorated() };
       throw new Error(`unexpected #49 query: ${sql}`);
     };
 

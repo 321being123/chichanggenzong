@@ -439,6 +439,109 @@ async function tradeCount(username) {
     assert.strictEqual((await holdingOf(U6, A, '699002')).quantity, 1000, '预览不得改合并方持仓');
     console.log('  ✓ 预览：dryRun 不写账本、不写结算单、不改持仓');
 
+    // ==================== 八、未关联完成公告缺口筛选 + 反向案退市日期边界 ====================
+    const atomicCase = await insertCase({
+      key: 'swapjourney:atomic:' + Date.now(),
+      target: ins[CODES.source],
+      reference: ins[CODES.target],
+      ratio: 0.5,
+    });
+    const atomicAcqCase = await insertCase({
+      key: 'swapjourney:atomic-acq:' + Date.now(),
+      target: ins[CODES.target],
+      reference: ins[CODES.target],
+      ratio: 0.5,
+    });
+    const atomicDocId = await insertAnnouncement(
+      atomicAcqCase,
+      '旅程合并方换股吸收合并旅程被合并方之A股换股实施结果公告',
+      '2026-10-27'
+    );
+    let missing = await repo.selectUnlinkedImplementationCandidates('2026-10-26');
+    assert.ok(!missing.some(x => String(x.case_id) === atomicCase), '未来公告不得进入历史目标日');
+    missing = await repo.selectUnlinkedImplementationCandidates('2026-10-27');
+    assert.ok(missing.some(x => String(x.case_id) === atomicCase), '合并方案件有完成公告但被合并方案件未关联时须报告缺口');
+    await pool.query('INSERT INTO event.arbitrage_case_documents(case_id,document_id) VALUES($1,$2)', [atomicCase, atomicDocId]);
+    missing = await repo.selectUnlinkedImplementationCandidates('2026-10-27');
+    assert.ok(!missing.some(x => String(x.case_id) === atomicCase), '已关联完成公告不得继续报告缺口');
+    const patterns = svc.IMPLEMENTATION_TITLE_PATTERNS.map(x => '%' + x + '%');
+    let completed = await repo.selectImplementedSwapCases(patterns, '2026-10-26');
+    assert.ok(!completed.some(x => String(x.case_id) === atomicCase), '未披露的完成公告不得用于历史目标日');
+    completed = await repo.selectImplementedSwapCases(patterns, '2026-10-27');
+    assert.ok(completed.some(x => String(x.case_id) === atomicCase), '有效完成公告应被识别');
+    await pool.query('DELETE FROM event.arbitrage_case_documents WHERE case_id=$1 AND document_id=$2', [atomicCase, atomicDocId]);
+
+    // ==================== 九、重放数量/成本不符回滚 + 账户锁内重算 + 快照导入串行 ====================
+    const U7 = U + '_atomic';
+    const ID7 = ID + '_atomic';
+    await seedAccount(U7, ID7, A);
+    const atomicCaseRow = {
+      case_id: Number(atomicCase),
+      source_instrument_id: ins[CODES.source],
+      target_instrument_id: ins[CODES.target],
+      source_code: '699001',
+      target_code: '699002',
+      source_name: '旅程被合并方',
+      target_name: '旅程合并方',
+      swap_ratio: '0.5',
+      evidence_announced_at: '2026-10-16T00:00:00+08:00',
+    };
+    const plan7 = svc.buildPlan(
+      atomicCaseRow,
+      { username: U7, account_name: A, account_id: ID7, quantity: 3200, cost_total: 43845.44, type: '股权', subtype: '沪市' },
+      { quantity: 1000, costTotal: 25000, type: '股权', subtype: '沪市' }
+    );
+    const origQty = repo.selectCurrentSourceQuantity;
+    repo.selectCurrentSourceQuantity = async () => ({ quantity: 1 });
+    const qtyMismatch = await svc.settleOne(atomicCaseRow, plan7, {});
+    repo.selectCurrentSourceQuantity = origQty;
+    assert.strictEqual(qtyMismatch.status, 'failed');
+    assert.match(qtyMismatch.error, /账本重放后的持仓/);
+    assert.strictEqual(await tradeCount(U7), 0, '重放后数量不符必须回滚账本');
+
+    const origTarget = repo.selectExistingTargetHolding;
+    let targetCalls = 0;
+    repo.selectExistingTargetHolding = async (...args) => {
+      const r = await origTarget(...args);
+      targetCalls++;
+      return targetCalls === 2 ? { ...r, cost_total: Number(r.cost_total) + 500 } : r;
+    };
+    const costMismatch = await svc.settleOne(atomicCaseRow, plan7, {});
+    repo.selectExistingTargetHolding = origTarget;
+    assert.strictEqual(costMismatch.status, 'failed');
+    assert.match(costMismatch.error, /持仓成本/);
+    assert.strictEqual(await tradeCount(U7), 0, '重放后成本不符必须回滚账本');
+
+    const lock = await pool.connect();
+    await lock.query('BEGIN');
+    await lock.query('SELECT version FROM account_data WHERE username=$1 AND account_name=$2 FOR UPDATE', [U7, A]);
+    const pending7 = svc.settleOne(atomicCaseRow, plan7, {});
+    await lock.query("UPDATE positions SET quantity=200 WHERE username=$1 AND account_name=$2 AND code='699001'", [U7, A]);
+    await lock.query('COMMIT');
+    lock.release();
+    const done7 = await pending7;
+    assert.strictEqual(done7.status, 'applied', JSON.stringify(done7));
+    assert.strictEqual(done7.source_quantity, 200, '必须按锁内最新持仓重算');
+    assert.strictEqual(done7.target_quantity, 100);
+
+    const importLock = await pool.connect();
+    await importLock.query('BEGIN');
+    const ver7 = Number((await importLock.query('SELECT version FROM account_data WHERE username=$1 AND account_name=$2 FOR UPDATE', [U7, A])).rows[0].version);
+    let importFinished = false;
+    const importing = require('../db/accounts').saveAccountData(
+      U7, A,
+      { positions: [{ id: 'snap1', code: '699002', name: '旅程合并方', price: 1, quantity: 7, cost: 2, type: '股权', subtype: '沪市' }], trades: [], navHistory: [], cashFlows: [], cash: 0, hkRate: 1, totalAsset: 7, feeSettings: {} },
+      ver7, null, null
+    ).then(v => { importFinished = true; return v; });
+    await new Promise(r => setTimeout(r, 150));
+    assert.strictEqual(importFinished, false, '快照导入必须等待账户版本锁');
+    assert.strictEqual(Number((await pool.query("SELECT quantity FROM positions WHERE username=$1 AND code='699002'", [U7])).rows[0].quantity), 1100, '等待时不得提前改写持仓');
+    await importLock.query('COMMIT');
+    importLock.release();
+    await importing;
+    assert.strictEqual(Number((await pool.query("SELECT quantity FROM positions WHERE username=$1 AND code='699002'", [U7])).rows[0].quantity), 7, '锁释放后快照导入可继续');
+    console.log('  ✓ 原子保护：缺口筛选 + 重放不符回滚 + 锁内重算 + 快照导入串行通过');
+
     await cleanup();
     console.log('stock-swap-journey: 全部通过');
   } catch (e) {

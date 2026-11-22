@@ -476,7 +476,7 @@ async function fetchBondSafetySourceFromDatabase(targetTradeDate = null) {
         ebit: pick(income, 'ebit', pick(income, 'operate_profit', null)),
         cash: pick(balance, 'money_cap', null), trading_fin_assets: pick(balance, 'trad_asset', null),
         interest_bearing_debt: pick(indicator, 'interestdebt', null), total_liability: pick(balance, 'total_liab', null),
-        current_liability: pick(balance, 'total_cur_liab', null),
+        current_liability: pick(row, 'balance_current_liability', null),
       });
     }
     const valuation = normalizeDatabaseValuation(row);

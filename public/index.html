@@ -983,6 +983,7 @@
             <option value="">全部数据</option><option value="complete">数据完整</option><option value="partial">数据不完整</option>
           </select>
           <button class="btn btn-outline btn-sm" id="bond-list-refresh" data-act="bondListRefresh">刷新行情</button>
+          <button class="btn btn-outline btn-sm" id="bond-list-export" data-act="exportBondList">导出 Excel</button>
           <span class="bond-list-quality" id="bond-list-visible"></span>
         </div>
         <div id="bond-list-table"><div class="bond-list-empty">正在加载上市转债数据...</div></div>
@@ -1292,6 +1293,7 @@
 <script type="text/lazy" data-lazy-section="ipo" src="js/ipo.js?v=__APP_VERSION__"></script>
 <script type="text/lazy" data-lazy-section="ipo" src="js/presenters/ipo-presenter.js?v=__APP_VERSION__"></script>
 <script type="text/lazy" data-lazy-section="bond-safety" src="shared/bond-marks.js?v=__APP_VERSION__"></script>
+<script type="text/lazy" data-lazy-section="bond-safety" src="shared/bond-list-contract.js?v=__APP_VERSION__"></script>
 <script type="text/lazy" data-lazy-section="bond-safety" src="js/bond-safety.js?v=__APP_VERSION__"></script>
 <script type="text/lazy" data-lazy-section="bond-safety" src="js/presenters/bond-safety-presenter.js?v=__APP_VERSION__"></script>
 <script type="text/lazy" data-lazy-section="bond-safety" src="js/bond-cycle.js?v=__APP_VERSION__"></script>

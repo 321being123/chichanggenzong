@@ -142,6 +142,8 @@ async function readDetail(feedbackId, options) {
   const opts = options || {};
   const actor = { username: opts.operator || 'release-agent', canModerate: true };
   const data = await feedbackService.detail(feedbackId, actor);
+  const internalAccountId = await store.getFeedbackInternalAccount(pool, feedbackId);
+  if (internalAccountId) data.feedback.internalAccountId = internalAccountId;
   return data;
 }
 

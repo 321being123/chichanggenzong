@@ -162,6 +162,57 @@ test('CSP img-src 允许 blob:，否则反馈缩略图被拦截', function () {
   assert.ok(/\bblob:/.test(directive[0]), 'img-src 必须包含 blob:，实际为 ' + directive[0]);
 });
 
+// 2026-11-22（#42）：持仓估值的复现上下文只保存内部账户编号，且只对内容管理员可见。
+test('持仓反馈内部账户编号只经管理员详情投影', function () {
+  const service = read('server/services/feedbackService.js');
+  const db = read('server/db/feedback.js');
+  const route = read('server/routes/feedback.js');
+  const release = read('server/services/feedbackRelease.js');
+  const view = read('public/js/feedback.js');
+  const presenter = read('public/js/presenters/feedback-presenter.js');
+  const adminView = read('public/js/admin-feedback.js');
+  const publicFields = (service.match(/const PUBLIC_FIELDS = \[([\s\S]*?)\];/) || ['', ''])[1];
+  const adminFields = (service.match(/const ADMIN_FIELDS = \[([\s\S]*?)\];/) || ['', ''])[1];
+  const feedbackColumns = (db.match(/const FEEDBACK_COLUMNS = `([\s\S]*?)`;/) || ['', ''])[1];
+  const hashBlock = (service.match(/const hashParts = \{([\s\S]*?)\};/) || ['', ''])[1];
+
+  assert.ok(/main=holdings/.test(service) && /accountOwner === actor\.username/.test(service),
+    '服务端必须只接受持仓页且打开时登录名与会话一致的上下文');
+  assert.ok(!/不属于当前账号/.test(service), '归属不符时必须忽略上下文，不能让原反馈提交失败');
+  ['title', 'description', 'type', 'visibility', 'pagePath', 'images'].reduce(function (previous, key) {
+    const index = hashBlock.indexOf(key + ':');
+    assert.ok(index > previous, '旧客户端摘要字段顺序不得改变：' + key);
+    return index;
+  }, -1);
+  assert.ok(!hashBlock.includes('internalAccountId') && !hashBlock.includes('accountName') &&
+    /if \(holdingsContext\) hashParts\.contextAccount = accountName/.test(service),
+    '旧客户端摘要不变，新请求只在具备持仓上下文时绑定原账户查找键');
+  assert.ok(service.indexOf('findByIdempotencyKey') < service.indexOf('readAccountId'),
+    '既有幂等返回必须早于账户归属查询');
+  assert.ok(adminFields.includes('internalAccountId') && !publicFields.includes('internalAccountId'),
+    '内部账户编号只能进入管理员字段投影');
+  assert.ok(!feedbackColumns.includes('internal_account_id'),
+    '列表列不得带出内部账户编号，必须由管理员详情单独读取');
+  assert.ok(/getFeedbackInternalAccount/.test(db) && /getFeedbackInternalAccount/.test(service),
+    '管理员详情缺少内部账户编号的单独读取');
+  assert.ok(/accountName: body\.account, accountOwner: body\.accountOwner/.test(route),
+    '提交路由只接收账户名和打开时登录名，不接受内部编号');
+  assert.ok(/accountContext: mode === 'create' \? holdingsAccountContext\(\) : null/.test(view),
+    '账户上下文必须在打开新反馈表单时快照');
+  assert.ok(/draftIdentity/.test(view) && /feedbackReadAccountContext/.test(presenter) === false,
+    '陈旧表单必须按 username＋accountIdentity 清理，Presenter 不得提交时再读全局账户');
+  assert.ok(/body\.append\('accountOwner', accountContext\.owner\)/.test(presenter),
+    '提交时只能使用打开表单时的账户快照');
+  assert.ok(/feedbackService\.detail\(feedbackId, actor\)/.test(release) &&
+    /getFeedbackInternalAccount\(pool, feedbackId\)/.test(release),
+    '服务器受控 --mode detail 保留原结构并按需读取复现上下文');
+  assert.ok(/internalAccountId/.test(adminView), '后台详情必须展示内部账户编号');
+  assert.ok(/ADD COLUMN IF NOT EXISTS internal_account_id TEXT/.test(read('server/db/migrations/era07Feedback.js')),
+    '内部账户编号必须使用 TEXT，与 public.accounts.id 一致');
+  assert.ok(/208_feedback_internal_account/.test(read('server/db/migrations.js')),
+    '缺少内部账户编号迁移登记');
+});
+
 console.log('\n--- 汇总 ---');
 console.log('通过 ' + pass + ' / 失败 ' + fail);
 process.exit(fail ? 1 : 0);

@@ -209,6 +209,13 @@ ok(/data-nt-sub="all"[\s\S]{0,200}?data-nt-sub="feedback"[\s\S]{0,200}?data-nt-s
 // 2026-11-22（#37）：提醒设置入口在标题区右侧，主栏目列表工具栏不再重复渲染。
 ok(/class="nt-header-actions"[\s\S]{0,200}?id="nt-settings-btn"[^>]*data-nt-act="settings"/.test(html),
   '提醒设置应放在通知页标题区右侧');
+// 2026-11-22（#40）：二级导航与通用正文 1240 容器同宽同缘，提醒设置贴正文右缘。
+ok(/class="nt-header-inner"[\s\S]{0,400}?class="bond-sub-nav nt-sub-nav"[\s\S]{0,700}?class="nt-header-actions"/.test(html),
+  '通知二级导航与提醒设置应共用一个正文宽度容器');
+ok(/\.nt-header-inner\s*\{[^}]*max-width:\s*1240px[^}]*padding:\s*0 20px/.test(styleCss),
+  '通知标题区必须按通用正文 1240/20px 对齐');
+ok(/\.nt-header-inner > \.nt-sub-nav\s*\{[^}]*max-width:\s*none/.test(styleCss),
+  '导航不得在标题区容器内再叠加一层 1240 宽度');
 const ntHeaderSource = (fs.readFileSync(path.join(root, 'public/js', 'notifications.js'), 'utf8')
   .match(/function headerHtml\(\)[\s\S]*?\n  \}/) || [''])[0];
 ok(ntHeaderSource && !ntHeaderSource.includes('data-nt-act="settings"'),

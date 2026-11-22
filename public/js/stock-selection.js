@@ -160,11 +160,14 @@ var SS_STATUS_TEXT = { execution: { succeeded: '执行成功', pending: '待执�
 var SS_GATE_TEXT = { eligible: '准入通过（指数 PB < 2）', market_closed: '本轮不配置（指数 PB ≥ 2）', data_missing: '指数 PB 缺失，数据故障', not_required: '指数仅参考（V2 不设门槛）' };
 var SS_RUN_KIND_TEXT = { quarterly: '正式季度', daily: '每日动态', weekly: '每周正式', preview: '预览', personal: '个人组合' };
 function ssRenderPeriodTabs(state) { document.querySelectorAll('[data-ss-period]').forEach(function (button) { button.classList.toggle('active', button.dataset.ssPeriod === state.periodType); }); }
-function ssRenderRuleScope(state) {
+function ssIsV2(state) {
   var selected = (state.runs || []).find(function (run) { return Number(run.runId) === Number(state.sourceRunId); });
   var sourceStrategy = state.run && (state.run.strategyCode || state.run.strategyVersion);
   if (!sourceStrategy && selected) sourceStrategy = selected.strategyCode || selected.strategyVersion;
-  var isV2 = String(sourceStrategy || state.strategyCode || '').indexOf('_v2') >= 0;
+  return String(sourceStrategy || state.strategyCode || '').indexOf('_v2') >= 0;
+}
+function ssRenderRuleScope(state) {
+  var isV2 = ssIsV2(state);
   document.querySelectorAll('[data-ss-rule]').forEach(function (node) { node.hidden = node.getAttribute('data-ss-rule') !== (isV2 ? 'v2' : 'v1'); });
 }
 
@@ -172,13 +175,23 @@ function ssRenderMarkets(state) {
   var root = ssEl('ss-market-cards'); if (!root) return; ssCloseMetricTooltip(false); ssRenderMarketTabs(state);
   var item = (state.markets || []).find(function (entry) { return entry.market === state.market; });
   if (!item) { root.innerHTML = '<div class="ss-empty">当前市场暂无概览数据</div>'; return; }
-  var position = item.referencePosition === null || item.referencePosition === undefined ? '本轮不配置' : Math.round(item.referencePosition * 100) + '%';
+  var isV2 = ssIsV2(state);
+  // V2 不设指数门槛：没有参考仓位时显示“不适用”，V1 保持原有“本轮不配置”。
+  var position = item.referencePosition === null || item.referencePosition === undefined
+    ? (isV2 ? '不适用' : '本轮不配置')
+    : Math.round(item.referencePosition * 100) + '%';
   var latest = item.latestRun || null; var latestText = latest ? (latest.period_key || latest.periodKey || latest.quarter || latest.as_of_date || latest.asOfDate || '') + '（' + (latest.selected_count === undefined ? latest.selectedCount : latest.selected_count) + ' 只）' : '尚未发布';
   var readiness = item.selectedPeriodStatus
     ? (item.selectedPeriodStatus.samePeriodPublished
       ? (item.activePeriodType === 'day' ? '今日已发布' : '本周已发布')
       : (item.activePeriodType === 'day' ? '今日待就绪' : '本周待就绪')) : '';
-  root.innerHTML = '<div class="ss-card bond-feature-stat active"><div class="ss-card-head"><strong>' + ssEsc(item.label) + '</strong><span class="ss-gate ss-gate-' + ssEsc(item.gate.status) + '">' + ssEsc(SS_GATE_TEXT[item.gate.status] || item.gate.status) + '</span></div><div class="ss-card-body">'
+  // 2026-11-22（#41）：V2“指数仅参考”的说明就挂在状态标签本身，复用既有浮层的焦点/悬停/点按机制。
+  var gateStatus = item.gate.status;
+  var gateText = SS_GATE_TEXT[gateStatus] || gateStatus;
+  var gateBadge = gateStatus === 'not_required'
+    ? '<button type="button" class="ss-gate ss-gate-not_required ss-gate-help" data-ss-metric-help="指数仅参考" data-ss-help-text="中证全指/恒生指数的 PB、PE 仅作市场参考，不影响个股筛选、排名与组合发布。" aria-label="查看指数仅参考说明">' + ssEsc(gateText) + '</button>'
+    : '<span class="ss-gate ss-gate-' + ssEsc(gateStatus) + '">' + ssEsc(gateText) + '</span>';
+  root.innerHTML = '<div class="ss-card bond-feature-stat active"><div class="ss-card-head"><strong>' + ssEsc(item.label) + '</strong><span class="ss-gate-wrap">' + gateBadge + '</span></div><div class="ss-card-body">'
     + '<div><span>' + ssEsc(item.proxyLabel || item.benchmarkLabel + ' PB（市场代理）') + '</span><strong>' + (item.pb === null ? '--' : Number(item.pb).toFixed(3)) + '</strong></div>'
     + '<div><span>' + ssEsc(item.benchmarkLabel) + ' PE（TTM）</span><strong>' + (item.pe === null ? '--' : Number(item.pe).toFixed(2)) + '</strong></div>'
     + '<div><span>估值日期</span><strong>' + ssEsc(item.asOfDate || '--') + '</strong></div><div><span>PB 参考仓位</span><strong>' + ssEsc(position) + '</strong></div>'

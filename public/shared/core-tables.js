@@ -12,6 +12,101 @@ if (typeof document !== 'undefined' && document.addEventListener) {
 }
 // ===================== 统计卡片渲染 =====================
 
+// 2026-11-22（#42）：估值不完整必须给出可核实原因，而不是只报“不完整”。
+// 已确认收盘价（或所属市场交易时段内的实时价）才构成完整估值；历史账户价、导入派生价
+// 虽可显示，但资格不可信，按类别和证券代码说明。逐只证券使用自己的预期收盘日，
+// 不拿其它市场的日期代替。长列表截断为少量对象并标注剩余数量。
+var VALUATION_GROUP_LIMIT = 3;
+
+function valuationEsc(value) {
+  var text = String(value == null ? '' : value);
+  if (typeof escapeHtml === 'function') return escapeHtml(text);
+  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+function valuationCodeOf(value) {
+  var text = String(value == null ? '' : value);
+  var index = text.indexOf('|');
+  return index >= 0 ? text.slice(index + 1) : text;
+}
+function valuationSafeDate(value) {
+  var text = String(value == null ? '' : value).slice(0, 10);
+  return /^\d{4}-\d{2}-\d{2}$/.test(text) ? text : '';
+}
+function valuationGroupText(label, items, totalCount) {
+  var count = totalCount == null ? items.length : Number(totalCount);
+  if (!(count > 0)) return '';
+  var shown = items.slice(0, VALUATION_GROUP_LIMIT);
+  var remaining = Math.max(0, count - shown.length);
+  return label + ' ' + count + ' 只' + (shown.length ? '：' + shown.join('、') : '') +
+    (remaining > 0 ? ' 等 ' + remaining + ' 只' : '');
+}
+function valuationIncompleteText(valuation) {
+  var v = valuation || {};
+  if (v.complete !== false) return '';
+  var prices = v.prices && typeof v.prices === 'object' ? v.prices : {};
+  var reasonCodes = Array.isArray(v.reasonCodes) ? v.reasonCodes : [];
+  var groups = [];
+  var seen = new Set();
+  var priceMissing = [];
+  var fxMissing = [];
+  (Array.isArray(v.missing) ? v.missing : []).forEach(function (row) {
+    var code = valuationCodeOf(row && row.code);
+    if (!code) return;
+    var key = (row.market || '') + '|' + code;
+    var isFx = row.reason === 'position_fx_missing' || row.reason === 'fx_rate_fallback';
+    var missingGroup = isFx ? fxMissing : priceMissing;
+    if (seen.has(key) || (!row.market && missingGroup.includes(code))) return;
+    seen.add(key);
+    missingGroup.push(code);
+  });
+  groups.push(valuationGroupText('缺价', priceMissing));
+  // 只给出 fx_rate_fallback 而没有逐只清单时，仍标明汇率来源未确认，不把它说成股票缺价。
+  groups.push(fxMissing.length ? valuationGroupText('港币汇率未确认', fxMissing)
+    : (reasonCodes.indexOf('fx_rate_fallback') >= 0 ? '港币汇率未确认' : ''));
+
+  var conflicts = [];
+  (Array.isArray(v.conflicts) ? v.conflicts : []).forEach(function (row) {
+    var code = valuationCodeOf(row && row.code);
+    if (!code) return;
+    var key = (row.market || '') + '|' + code;
+    if (seen.has(key)) return;
+    seen.add(key);
+    var date = valuationSafeDate(row.date);
+    conflicts.push(code + (date ? ' ' + date : ''));
+  });
+  groups.push(conflicts.length ? valuationGroupText('跨账户价格冲突', conflicts)
+    : (reasonCodes.indexOf('cross_account_price_conflict') >= 0 ? '跨账户价格冲突' : ''));
+
+  var stale = [];
+  var unconfirmed = [];
+  (Array.isArray(v.untrustedCodes) ? v.untrustedCodes : []).forEach(function (key) {
+    var code = valuationCodeOf(key);
+    if (!code) return;
+    var row = prices[key] || {};
+    if (seen.has(key)) return;
+    var date = valuationSafeDate(row.tradeDate);
+    var expected = valuationSafeDate(row.expectedCloseDate);
+    var isStale = row.quality === 'stale_reference' || row.priceKind === 'stale_close';
+    var item = code + (date ? ' ' + date : '') + (expected ? '（应为 ' + expected + '）' : '');
+    (isStale ? stale : unconfirmed).push(item);
+  });
+  var unconfirmedCount = Array.isArray(v.untrustedCodes) ? unconfirmed.length : Number(v.untrustedCount) || 0;
+  // 服务端只统计资格不可信的价格数；历史价之外的派生/未核实参考价必须单列，不能都叫“历史价”。
+  groups.push(valuationGroupText('未确认历史价', stale, stale.length));
+  groups.push(valuationGroupText('未确认参考价', unconfirmed, unconfirmedCount));
+
+  var present = groups.filter(Boolean);
+  if (!present.length) {
+    var missingCount = Number(v.missingCount) > 0 ? Number(v.missingCount) : 0;
+    if (missingCount > 0) {
+      present.push(missingCount + ' 只证券缺价或价格未确认');
+    } else {
+      present.push(reasonCodes.indexOf('cross_account_price_conflict') >= 0 ? '跨账户价格不一致' : '存在未核实的价格来源');
+    }
+  }
+  return '估值不完整（' + present.join('；') + '）';
+}
+
 function renderStats() {
   var s = calcSummary();
   var container = document.getElementById('stats-container');
@@ -70,7 +165,6 @@ function renderStats() {
   var completeTotal = (data && typeof data.totalAsset === 'number' && Number.isFinite(data.totalAsset)) ? Number(data.totalAsset) : null;
   var partialTotal = (data && typeof data.totalAssetPartial === 'number' && Number.isFinite(data.totalAssetPartial)) ? Number(data.totalAssetPartial) : null;
   var displayTotal = completeTotal != null ? completeTotal : (partialTotal != null ? partialTotal : s.total);
-  var valuationMissing = data && data.valuation && Number(data.valuation.missingCount) > 0 ? Number(data.valuation.missingCount) : 0;
   if (el('stat-total')) {
     el('stat-total').textContent = (valuationIncomplete && completeTotal == null ? '≈ ' : '') + fmt(displayTotal);
     // 涨跌颜色
@@ -81,7 +175,7 @@ function renderStats() {
   }
   if (el('stat-total-sub')) {
     el('stat-total-sub').textContent = '持仓市值 ' + fmt(displayTotal - s.cash) + ' + 现金 ' + fmt(s.cash) +
-      (valuationIncomplete ? ' · ⚠ 估值不完整' + (valuationMissing > 0 ? '（' + valuationMissing + ' 只缺价或未确认）' : '') : '');
+      (valuationIncomplete ? ' · ⚠ ' + valuationIncompleteText(data.valuation) : '');
   }
   if (el('stat-change')) {
     var scEl = el('stat-change');
@@ -185,7 +279,6 @@ function buildChangeTipHtml(changeAmt, changePct, priceImpact, fxImpact, otherCh
   // 统一估值后不再存在双价格校准项：当前资产与涨跌必须指向同一批价格。
   // 价格证据不足时显式说明缺什么，而不是用一个无来源的校准金额把等式凑平。
   var valuationIncomplete = valuationStatus && valuationStatus.complete === false;
-  var valuationMissing = valuationStatus && Number(valuationStatus.missingCount) > 0 ? Number(valuationStatus.missingCount) : 0;
   var html = '' +
     '<div data-style="font-weight:600;margin-bottom:6px;">总资产今日涨跌：<span data-style="color:' + col(changeAmt) + ';">' + arrow(changeAmt) + ' ' + total + '</span></div>' +
     '<div class="u-divider-dark">' +
@@ -202,8 +295,9 @@ function buildChangeTipHtml(changeAmt, changePct, priceImpact, fxImpact, otherCh
       '<div class="u-badge-hint">导入当天使用券商持仓总值；从本日开始改用系统价格、数量和汇率计算。该差异通常来自汇率或收盘价更新时间不同，仅在首次切换时说明，后续不再保留。</div>';
   }
   if (valuationIncomplete) {
-    html += '<div class="u-badge-warn">当前估值不完整：' + (valuationMissing > 0 ? valuationMissing + ' 只证券缺价或价格未确认' : '存在未核实的价格来源') +
-      '；总资产为可用部分金额，不是完整精确值。</div>';
+    html += '<div class="u-badge-warn">当前' + valuationEsc(valuationIncompleteText(valuationStatus)) +
+      '；总资产为可用部分金额，不是完整精确值。</div>' +
+      '<div class="u-badge-hint">只有已确认收盘价，或所属市场交易时段内的实时价，才计入完整估值。</div>';
   }
   if (authorityMode) {
     html += '<div class="u-badge-warn">' + (authorityMode === 'broker_exact'
@@ -394,6 +488,7 @@ function getTodayProfit(position, overrideRate) {
 // 估值列颜色（与可转债估值页一致，bond-valuation.css 已加载）
 var POS_EVAL_CLASS = { '低估': 'val-low', '偏低估': 'val-low2', '合理': 'val-mid', '偏高估': 'val-high1', '高估': 'val-high', '风险折价': 'val-risk', '数据不足': 'val-none' };
 var POS_SUBTYPE_CLASS = { '沪市': 'pos-subtype-sh', '深市': 'pos-subtype-sz', '京市': 'pos-subtype-bj', '港股': 'pos-subtype-hk', '美股': 'pos-subtype-us', '可转债': 'pos-subtype-cb', '信用债': 'pos-subtype-credit', '基金/ETF': 'pos-subtype-fund' };
+var POSITION_PRICE_QUALITY_TEXT = { stale_reference: '历史价未确认', derived_reference: '导入派生价', unverified_reference: '未核实价', legacy_unverified: '遗留价未确认' };
 function getPositionTrendClass(value, hasData, zeroIsPositive) {
   if (!hasData) return 'muted-cell';
   if (zeroIsPositive && Number(value) === 0) return 'positive';
@@ -594,6 +689,14 @@ function renderPositionsTable(targetId, limit) {
     var priceDisplay = hasCachedPrice
       ? priceCurrency + Number(p.price).toFixed(3)
       : '<span class="muted-cell" title="无价格数据" aria-label="无价格数据">⟳ 无价</span>';
+    // 2026-11-22（#42）：价格能显示但资格不可信时标出日期和类型，解释估值为何不完整；
+    // 撮合中的实时候选价（candidate）属于当日有效价，不在此列。
+    var priceNoteDate = hasCachedPrice ? valuationSafeDate(p.priceTradeDate) : '';
+    var priceNote = hasCachedPrice && p.priceQuality && p.priceQuality !== 'confirmed' && p.priceQuality !== 'candidate'
+      ? '<small class="pos-price-note">' + priceNoteDate +
+        (priceNoteDate ? ' ' : '') +
+        valuationEsc(POSITION_PRICE_QUALITY_TEXT[p.priceQuality] || '未确认价') + '</small>'
+      : '';
     var chgDisplay = hasRealTime
       ? chgText
       : (hasCachedPrice ? '<span class="muted-cell">--</span>' : '<span class="muted-cell data-pending" title="无涨跌数据" aria-label="无涨跌数据">⟳ 无跌</span>');
@@ -608,7 +711,7 @@ function renderPositionsTable(targetId, limit) {
       '<td class="pos-index-cell muted-cell">' + (idx + 1) + '</td>' +
       '<td class="pos-code-cell ' + (POS_SUBTYPE_CLASS[p.subtype] || '') + '"><a href="javascript:void(0)" class="pos-link" title="查看证券分析" data-act="openPositionAnalysis" data-arg1="' + escapeHtml(p.code || '') + '">' + escapeHtml(p.code || '-') + '</a></td>' +
       '<td class="pos-name-cell"><strong><a href="javascript:void(0)" class="pos-link" title="查看证券分析" data-act="openPositionAnalysis" data-arg1="' + escapeHtml(p.code || '') + '">' + escapeHtml(p.name || '未知') + '</a></strong></td>' +
-      '<td class="text-right ' + priceClass + '">' + priceDisplay + '</td>' +
+      '<td class="text-right ' + priceClass + '">' + priceDisplay + priceNote + '</td>' +
       '<td class="text-right ' + chgClass + '">' + chgDisplay + '</td>' +
       '<td class="' + todayProfitClass + '">' + todayProfitDisplay + '</td>' +
       '<td class="text-right">' + (p.quantity != null ? fmtQty(p.quantity) : 0) + '</td>' +

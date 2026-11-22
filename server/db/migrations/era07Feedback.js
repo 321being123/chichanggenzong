@@ -211,4 +211,19 @@ async function migration171FeedbackReleaseRollback() {
   `);
 }
 
-module.exports = { migration170FeedbackModule, migration171FeedbackReleaseRollback };
+// 208：持仓反馈附带内部账户编号（2026-11-22，线上反馈 #42）
+// 只用于复现和定位，不进入公开投影、页面路径、事件或列表；账户名由服务端核验归属后
+// 换算成内部编号。public.accounts.id 是 TEXT（SHA256 十六进制或随机串），这里同样是 TEXT；
+// 不建外键：账户删除后仍要保留反馈的复现上下文。
+async function migration208FeedbackInternalAccount() {
+  await pool.query(`
+    ALTER TABLE public.feedbacks
+      ADD COLUMN IF NOT EXISTS internal_account_id TEXT;
+  `);
+}
+
+module.exports = {
+  migration170FeedbackModule,
+  migration171FeedbackReleaseRollback,
+  migration208FeedbackInternalAccount,
+};

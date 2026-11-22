@@ -442,7 +442,8 @@ async function run() {
     assert.ok(quote.includes('await loadData(currentAccount)'), '刷新成功后必须整批重读服务端统一估值结果');
     const tables = read('public/shared/core-tables.js');
     assert.ok(!tables.includes('休市行情校准'), '页面不得再展示休市行情校准');
-    assert.ok(tables.includes('当前估值不完整'), '价格证据不足时页面必须显式提示');
+    assert.ok(tables.includes("return '估值不完整") && tables.includes('valuationIncompleteText(valuationStatus)'),
+      '价格证据不足时页面必须用统一原因说明显式提示');
     const attribution = read('server/services/navAttribution.js');
     assert.ok(!attribution.includes('valuationAdjustment'), '归因不得再产出估值校准项');
     assert.ok(!attribution.includes('closedPriceCorrections'), '归因不得再产出逐证券校准列表');

@@ -1243,7 +1243,8 @@
       "batch": 3,
       "status": "registered",
       "note": "就绪窗口的纯时间换算与试点判定（0 SQL/0 联网/0 DOM）；供作业调度与收盘 Runner 共用同一份首查时刻口径"
-    },    {
+    },
+    {
       "path": "server/services/jobRecoveryEvidence.js",
       "role": "application",
       "batch": 3,
@@ -1781,6 +1782,20 @@
       "batch": 7,
       "status": "registered",
       "note": "数据库存储保留清理编排：约束保留天数边界并调用仓储分批清理过期原始报文与未发布试算运行，本文件 0 SQL/0 联网/0 DOM"
+    },
+    {
+      "path": "server/services/marketCycleIndicesService.js",
+      "role": "application",
+      "batch": 7,
+      "status": "registered",
+      "note": "常见指数页只读编排：读仓储历史→调 domain 计算指标，0 SQL/0 联网/0 DOM"
+    },
+    {
+      "path": "public/js/market-cycle-indices.js",
+      "role": "view",
+      "batch": 7,
+      "status": "registered",
+      "note": "常见指数页视图：DOM 渲染与事件绑定，取数经 presenter，不直接发请求"
     }
   ],
   "globalContracts": {

@@ -7,6 +7,7 @@ const crypto = require('crypto');
 const RULES = require('../domain/stockSelectionRules');
 const { loadFinancialSourceGaps, sourceGapYearsOf, loadPbGapDays, pbGapFullyRegistered } = require('../domain/financialSourceGaps');
 const RULES_V2 = require('../domain/stockSelectionRulesV2');
+const GRAHAM_RULES = require('../domain/stockSelectionGrahamRules');
 const PORTFOLIO = require('../domain/stockSelectionPortfolio');
 const PERIODS = require('./stockSelectionPeriods');
 const repo = require('../repositories/stockSelectionRepository');
@@ -14,7 +15,7 @@ const { withTransaction } = require('../db/transaction');
 const CoreDate = require('../../public/shared/core-date.js');
 
 const STRATEGY_VERSION = 'v1';
-const STRATEGY_CODES = Object.freeze([RULES.STRATEGY_CODE, RULES_V2.STRATEGY_CODE_V2]);
+const STRATEGY_CODES = Object.freeze([RULES.STRATEGY_CODE, RULES_V2.STRATEGY_CODE_V2, GRAHAM_RULES.STRATEGY_CODE_GRAHAM]);
 /**
  * 默认激活策略：由 STOCK_SELECTION_STRATEGY 显式指定，未配置时保持 V1。
  * 这是方案 27.13 的上线顺序决定的——V2 必须先以影子批次跑满两个完整周，
@@ -573,6 +574,187 @@ function shouldBlockUniverseDrift(drift, allowUniverseDrift) {
   return Boolean(drift) && allowUniverseDrift !== true;
 }
 
+async function computeGrahamSelection(input, { market, asOfDate, strategyCode, positionRatio, valuation, knowledgeCutoff, universeLoad }, tx) {
+  const params = Object.assign({}, GRAHAM_RULES.GRAHAM_PARAMS, input.internalParams || {});
+  const gate = RULES_V2.evaluateMarketGateV2(valuation);
+  const universe = universeLoad.rows;
+  const companyIds = Array.from(new Set(universe.map(row => row.company_id).filter(id => id !== null && id !== undefined)));
+  const [balances, industries] = await runBatched([
+    () => repo.loadGrahamBalanceFacts({ companyIds, asOfDate, availableBefore: knowledgeCutoff, market }, tx),
+    () => repo.loadIndustries({ companyIds, market, asOfDate }, tx),
+  ], tx);
+
+  const targetCurrency = market === 'HK' ? 'HKD' : 'CNY';
+  const fxPairs = [];
+  for (const row of universe) {
+    const bal = row.company_id ? balances.get(String(row.company_id)) : null;
+    const valCcy = String(row.valuation_currency || targetCurrency).toUpperCase();
+    const balCcy = bal && bal.currency ? String(bal.currency).toUpperCase() : null;
+    if (bal && balCcy && balCcy !== valCcy) {
+      fxPairs.push({ currency: balCcy, date: asOfDate });
+    }
+  }
+  const fxRates = await repo.loadFxRatesToCurrency({ pairs: fxPairs, targetCurrency }, tx);
+
+  const evaluated = universe.map(row => {
+    const companyKey = row.company_id !== null && row.company_id !== undefined ? String(row.company_id) : null;
+    const bal = companyKey ? balances.get(companyKey) || null : null;
+    const industry = companyKey ? industries.get(companyKey) || null : null;
+    const valCcy = String(row.valuation_currency || targetCurrency).toUpperCase();
+    const balCcy = bal && bal.currency ? String(bal.currency).toUpperCase() : null;
+    const fx = (balCcy && balCcy !== valCcy) ? fxRates.get(`${balCcy}|${asOfDate}`) || null : null;
+
+    const evalResult = GRAHAM_RULES.evaluateGrahamCandidate({
+      market,
+      asOfDate,
+      tsCode: row.code,
+      listDate: row.list_date,
+      delistDate: row.delist_date,
+      riskWarning: row.risk_warning,
+      suspendType: row.suspend_type,
+      fsTableType: bal ? bal.fsTableType : null,
+      hasBalanceReport: Boolean(bal && bal.reportId),
+      reportId: bal ? bal.reportId : null,
+      periodEnd: bal ? bal.periodEnd : null,
+      currentAssets: bal && !bal.currencyUnverified ? bal.currentAssets : null,
+      currentLiabilities: bal && !bal.currencyUnverified ? bal.currentLiabilities : null,
+      balanceCurrency: balCcy,
+      valuationCurrency: valCcy,
+      totalMarketCap: row.total_market_cap,
+      fxRate: fx ? fx.rate : null,
+      fxDate: fx ? fx.date : null,
+    });
+
+    return {
+      instrumentId: Number(row.instrument_id),
+      companyId: row.company_id ? Number(row.company_id) : null,
+      code: row.code,
+      name: row.name,
+      industry,
+      currentPb: row.pb === null || row.pb === undefined ? null : Number(row.pb),
+      historicalPbMax: null,
+      historicalPbMin: null,
+      currentPe: row.pe_ttm === null || row.pe_ttm === undefined ? null : Number(row.pe_ttm),
+      profitStatus: 'unknown',
+      dividendYield: row.dividend_yield_ttm === null || row.dividend_yield_ttm === undefined ? null : Number(row.dividend_yield_ttm),
+      equityAmount: null,
+      equityCurrency: balCcy,
+      equityCny: null,
+      fxRate: fx ? fx.rate : null,
+      fxDate: fx ? fx.date : null,
+      filterStatus: evalResult.status,
+      dataQualityStatus: evalResult.status === RULES.STATUS.PENDING ? 'pending' : (evalResult.status === RULES.STATUS.NOT_APPLICABLE ? 'not_applicable' : 'complete'),
+      exclusionReasons: evalResult.status === RULES.STATUS.PASS ? [] : [evalResult.reason],
+      rules: { G01: evalResult.g01 },
+      rankReady: evalResult.status === RULES.STATUS.PASS,
+      rankBlockReasons: [],
+      pbRank: null,
+      peRank: null,
+      dividendRank: null,
+      totalScore: evalResult.rankingScore,
+      selectionOrder: null,
+      detail: {
+        graham: evalResult.metrics,
+        price: row.price === null || row.price === undefined ? null : Number(row.price),
+        priceDate: row.price_date || null,
+        valuationDate: row.valuation_date || null,
+        periodEnd: bal ? bal.periodEnd : null,
+        announcedAt: bal ? bal.announcedAt : null,
+      },
+    };
+  });
+
+  const ranked = evaluated
+    .filter(item => item.filterStatus === RULES.STATUS.PASS && item.totalScore !== null)
+    .sort((a, b) => {
+      if (b.totalScore !== a.totalScore) return b.totalScore - a.totalScore;
+      return String(a.code || '').localeCompare(String(b.code || ''));
+    });
+  ranked.forEach((item, idx) => { item.selectionOrder = idx + 1; });
+
+  const excludedCodes = new Set((input.excludedCodes || []).map(c => String(c || '').trim().toUpperCase()).filter(Boolean));
+  const excludedIndustries = new Set((input.excludedIndustryCodes || []).map(c => String(c || '').trim()).filter(Boolean));
+  const selected = [];
+  for (const item of ranked) {
+    if (selected.length >= params.slotsPerMarket) break;
+    if (excludedCodes.has(String(item.code || '').toUpperCase())) continue;
+    if (item.industry && excludedIndustries.has(String(item.industry.code || ''))) continue;
+    selected.push(item);
+  }
+  const weight = selected.length ? Number((positionRatio / selected.length).toFixed(6)) : 0;
+  const members = selected.map((item, idx) => ({
+    instrumentId: item.instrumentId,
+    companyId: item.companyId,
+    code: item.code,
+    name: item.name,
+    industry: item.industry,
+    selectionOrder: idx + 1,
+    totalScore: item.totalScore,
+    targetWeight: weight,
+  }));
+  const portfolio = {
+    members,
+    skipped: [],
+    positionRatio,
+    budgetRatio: members.length ? Number((weight * members.length).toFixed(6)) : 0,
+    selectionOutcomes: [],
+  };
+
+  const pendingCount = evaluated.filter(item => item.filterStatus === RULES.STATUS.PENDING).length;
+  const riskHeld = evaluated.filter(item => item.filterStatus === RULES.STATUS.RISK);
+  const notEvaluable = evaluated.filter(item => item.filterStatus === RULES.STATUS.NOT_APPLICABLE);
+  const reasons = [];
+  if (!gate.eligible) reasons.push(gate.reason || 'market_not_eligible');
+  if (!universe.length) reasons.push('universe_empty');
+  if (shouldBlockUniverseDrift(universeLoad.evidence.drift, input.allowUniverseDrift)) reasons.push('universe_drift');
+  if (pendingCount > 0) reasons.push('pending_objects_in_ranking_pool');
+
+  const quality = {
+    publishable: reasons.length === 0,
+    reason: reasons[0] || null,
+    reasons,
+    universeCount: universe.length,
+    poolSize: ranked.length,
+    pendingCount,
+    anomalyPendingCount: 0,
+    rankBlockedCount: 0,
+    riskHeldCount: riskHeld.length,
+    notEvaluableCount: notEvaluable.length,
+    anomalyNotEvaluableCount: 0,
+    anomalyDividendSkipped: 0,
+    industryMissing: ranked.filter(item => !item.industry).length,
+    stalePrice: evaluated.filter(item => item.filterStatus === RULES.STATUS.PASS && !item.detail.priceDate).length,
+    profitCount: 0,
+  };
+
+  return {
+    market,
+    asOfDate,
+    gate,
+    valuation,
+    params,
+    positionRatio,
+    strategyCode,
+    isV2: true,
+    universe,
+    evaluated,
+    anomalyById: {},
+    candidates: evaluated,
+    ranked,
+    portfolio,
+    quality,
+    coverage: {
+      universeCount: universe.length,
+      withValuation: evaluated.filter(i => i.detail.graham && i.detail.graham.totalMarketCap > 0).length,
+      withPrice: evaluated.filter(i => i.detail.price !== null).length,
+      withEquity: evaluated.filter(i => i.detail.graham !== null).length,
+      withIndustry: evaluated.filter(i => i.industry !== null).length,
+      pbWindow: null,
+    },
+    universeEvidence: universeLoad.evidence,
+  };
+}
+
 async function computeSelection(input, tx) {
   const market = normalizeMarket(input.market);
   const asOfDate = String(input.asOfDate || '');
@@ -625,6 +807,11 @@ async function computeSelection(input, tx) {
       coverage: { universeCount: 0 },
       universeEvidence: universeLoad.evidence,
     };
+  }
+  if (strategyCode === GRAHAM_RULES.STRATEGY_CODE_GRAHAM) {
+    return computeGrahamSelection(input, {
+      market, asOfDate, strategyCode, positionRatio, valuation, knowledgeCutoff, universeLoad,
+    }, tx);
   }
 
   const companyIds = Array.from(new Set(universe.map(row => row.company_id).filter(id => id !== null && id !== undefined)));
@@ -816,7 +1003,10 @@ function inputsDigestOf(computed) {
       annual.latestYear, annual.currency || null, years,
       anomalyEvidence,
       item.industry ? `${item.industry.system}:${item.industry.code}:${item.industry.version}` : null,
-      item.rules.R01.status, item.rules.R02.status, item.rules.R04.status, item.rules.R05.status,
+      item.rules.G01 ? item.rules.G01.status : item.rules.R01.status,
+      item.rules.R02 ? item.rules.R02.status : null,
+      item.rules.R04 ? item.rules.R04.status : null,
+      item.rules.R05 ? item.rules.R05.status : null,
       item.filterStatus, item.profitStatus,
     ];
   }).sort((a, b) => Number(a[0]) - Number(b[0]));
@@ -950,8 +1140,9 @@ async function computeAndPersist(input) {
       owner: input.ownerUsername || null,
       sourceRunId: input.sourceRunId || null,
     };
-    // V1 的输入哈希保持原样（不因 V2 上线漂移）；V2 额外绑定策略/周期/精度/影子身份。
-    if (isV2) {
+    const isGraham = computed.strategyCode === GRAHAM_RULES.STRATEGY_CODE_GRAHAM;
+    // V1 的输入哈希保持原样（不因 V2 上线漂移）；V2 与格雷厄姆低估额外绑定策略/周期/精度/影子身份。
+    if (isV2 || isGraham) {
       manifestExtra.strategyCode = computed.strategyCode;
       manifestExtra.precisionPolicyVersion = computed.params.precisionPolicyVersion;
       manifestExtra.pbExtremaPolicy = computed.params.pbExtremaPolicy;

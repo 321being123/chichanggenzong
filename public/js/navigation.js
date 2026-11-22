@@ -69,7 +69,11 @@ function switchMain(main, noPushState, bondSub) {
     }
     if (main === 'stock-analysis') loadStockAnalysis();
     if (main === 'stock-selection') loadStockSelection();
-    if (main === 'market-volatility') loadMarketVolatility();
+    if (main === 'market-volatility') {
+      var mvMetric = new URLSearchParams(window.location.search).get('metric') || 'indices';
+      if (typeof switchMarketCycleMetric === 'function') switchMarketCycleMetric(mvMetric);
+      else loadMarketVolatility();
+    }
     if (main === 'arbitrage') loadArbitrage();
     if (main === 'knowledge') {
       if (typeof initKnowledgeEvents === 'function' && !window.__knowledgeEventsReady) {

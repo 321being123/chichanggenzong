@@ -118,14 +118,16 @@ pool.query = async (sql, params) => { calls.push({ sql, params }); return { rows
       assert.strictEqual(expressions, columnCount, `第 ${index + 1} 组表达式数量必须等于列数 ${columnCount}`);
     });
     assert.strictEqual(calls[0].params[0], '000985');
-    assert.strictEqual(calls[0].params[3], 18.16);
-    assert.strictEqual(calls[0].params[4], 1.52);
+    assert.strictEqual(calls[0].params[2], null);
+    assert.strictEqual(calls[0].params[3], 5e13);
+    assert.strictEqual(calls[0].params[4], 18.16);
+    assert.strictEqual(calls[0].params[5], 1.52);
     // 只有 PB 没有 PE 的行也必须写：选股只需要 PB，不能因 PE 缺失丢掉整行。
-    // 每行 7 个参数（indexCode, day, marketCap, pe, pb, sourceCode, raw），第二行起点是 7。
-    assert.strictEqual(calls[0].params[8], '2026-10-31');
-    assert.strictEqual(calls[0].params[10], null);
-    assert.strictEqual(calls[0].params[11], 1.5);
-    assert.strictEqual(calls[0].params.length, 14, '三行里缺日期的一行被丢弃，只剩两条');
+    // 每行 8 个参数（indexCode, day, close, marketCap, pe, pb, sourceCode, raw），第二行起点是 8。
+    assert.strictEqual(calls[0].params[9], '2026-10-31');
+    assert.strictEqual(calls[0].params[12], null);
+    assert.strictEqual(calls[0].params[13], 1.5);
+    assert.strictEqual(calls[0].params.length, 16, '三行里缺日期的一行被丢弃，只剩两条');
     // 2026-11-22（#35 / #38）：恒指历史补传脚本必须与官方同步任务一样写 PB；
     // 市场周期浮框不得把 close=null 的日期渲染成“恒生指数：0.00点”。
     const fs = require('fs');

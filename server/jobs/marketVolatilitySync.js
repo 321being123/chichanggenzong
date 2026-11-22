@@ -430,6 +430,37 @@ async function revalidateHistoricalMarketVolatility(businessDate) {
   };
 }
 
+async function syncCommonIndices(end = dateStr(new Date())) {
+  const { MARKET_INDICES } = require('../domain/marketIndexCatalog');
+  const { mergeIndexCloseAndValuationRows } = require('../domain/marketCycleIndices');
+  const { readIndexCloseSeries, readIndexValuationSeries } = require('../dataAccess/marketDatasets');
+  let totalSaved = 0;
+  for (const meta of MARKET_INDICES) {
+    const wm = await marketYieldRepository.readIndexValuationWatermark(meta.storageCode, CSI_OFFICIAL_SOURCE);
+    const maxDate = wm.rows[0] && wm.rows[0].mx;
+    const from = maxDate
+      ? dateStr(new Date(new Date(`${maxDate}T00:00:00Z`).getTime() - 45 * 86400000))
+      : meta.launchDate;
+    const market = meta.market.toLowerCase();
+    for (const [start, chunkEnd] of csiPeChunks(from, end)) {
+      const [closeRows, valuationRows] = await Promise.all([
+        readIndexCloseSeries({ tsCode: meta.indexCode, market, startDate: start, endDate: chunkEnd }),
+        readIndexValuationSeries({ indexCode: meta.lixingerCode, market, startDate: start, endDate: chunkEnd, allowFallback: false }),
+      ]);
+      const merged = mergeIndexCloseAndValuationRows(closeRows, valuationRows);
+      if (!merged.length) continue;
+      const res = await marketYieldRepository.saveIndexValuationHistoryRows({
+        indexCode: meta.storageCode,
+        rows: merged,
+        sourceCode: CSI_OFFICIAL_SOURCE,
+      });
+      totalSaved += res.rowCount || 0;
+    }
+  }
+  if (totalSaved) console.log(`[市场周期] 常见10指数增量同步 写入=${totalSaved}条`);
+  return totalSaved;
+}
+
 async function runMarketVolatilitySync(context = {}) {
   if (!(await tryClaimJob('market_volatility_sync'))) return { skipped: true, reason: 'locked' };
   const id = await startJobRun('market_volatility_sync');
@@ -459,6 +490,7 @@ async function runMarketVolatilitySync(context = {}) {
     await runDataset('csi300_pe', () => syncCsiIndexPe('CSI300', '000300'));
     await runDataset('csi_all_pe', () => syncCsiIndexPe('CSIALL', '000985'));
     await runDataset('hsi_pe', () => syncHsiPe());
+    await runDataset('common_indices', () => syncCommonIndices(end));
     await runDataset('us_treasury_yield', () => syncUsTreasuryYield(end));
     // 子阶段必须和 failedDatasets 使用同一代码，定向重试 m2 时不能重新抓取已经成功的指标。
     const cycleStages = ['csi300_valuation', 'm2', 'a_share_market_cap'];
@@ -492,6 +524,6 @@ async function runMarketVolatilitySync(context = {}) {
   } finally { await releaseJob('market_volatility_sync'); }
 }
 function scheduleMarketVolatilitySync() { runMarketVolatilitySync().catch(e => console.error('股市波动首次同步失败:', e.message)); const now=new Date(), next=new Date(); next.setHours(18,45,0,0); if(next<=now) next.setDate(next.getDate()+1); const first=setTimeout(function(){ runMarketVolatilitySync().catch(e=>console.error('股市波动同步失败:',e.message)); const timer=setInterval(()=>runMarketVolatilitySync().catch(e=>console.error('股市波动同步失败:',e.message)),86400000); if(timer.unref) timer.unref(); }, next-now); if(first.unref) first.unref(); }
-module.exports = { syncChinaYield, syncCsiIndexPe, syncCsiPeFromOfficial, CSI_OFFICIAL_PE_SINCE, syncHsiPe, syncUsTreasuryYield, calculateGraham, parseHsiWorkbook,
+module.exports = { syncChinaYield, syncCsiIndexPe, syncCsiPeFromOfficial, CSI_OFFICIAL_PE_SINCE, syncHsiPe, syncCommonIndices, syncUsTreasuryYield, calculateGraham, parseHsiWorkbook,
   syncCsi300Valuation, syncMoneySupply, tradeMonthEnds, syncAShareMarketCap, calculateM2MarketCap,
   syncMarketCycleMetrics, runMarketVolatilitySync, revalidateHistoricalMarketVolatility, scheduleMarketVolatilitySync, readMarketSubdatasetFreshness };

@@ -585,13 +585,17 @@
     <div class="ss-hero bond-feature-hero">
       <div>
         <h2>投资策略选股中心</h2>
-        <p>按低 PB、十年出现过高 PB、有现金分红、净资产达标四项条件筛股；A股与港股各自独立排名，每个市场最多 30 只等权席位。仅供研究参考，不构成投资建议。</p>
+        <p id="ss-hero-desc">按低 PB、十年出现过高 PB、有现金分红、净资产达标四项条件筛股；A股与港股各自独立排名，每个市场最多 30 只等权席位。仅供研究参考，不构成投资建议。</p>
       </div>
       <span id="ss-updated" class="ss-updated bond-feature-updated">页面只读数据库，不会触发外部采集</span>
     </div>
+    <div class="ss-scheme-tabs bond-sub-nav" id="ss-scheme-tabs" aria-label="选择选股方案">
+      <button type="button" class="bond-sub-tab active" data-ss-scheme="essentials">投资要义</button>
+      <button type="button" class="bond-sub-tab" data-ss-scheme="graham_net_net">格雷厄姆低估</button>
+    </div>
     <div id="ss-status" class="ss-status"></div>
     <div id="ss-market-cards" class="ss-cards bond-feature-stats"></div>
-    <ul class="ss-rule-list">
+    <ul class="ss-rule-list" id="ss-essentials-rule-list">
       <li data-ss-rule="v1"><strong>准入（V1）</strong>：市场估值代理 PB 严格小于 2 才配置；PB 等于或高于 2 本轮不配置，PB 缺失按数据故障处理，不解释成便宜。</li>
       <li data-ss-rule="v2"><strong>市场估值（V2）</strong>：中证全指/恒生指数 PB 只作市场参考，指数 PB 等于 2、高于 2 或缺失都不再停止配置。</li>
       <li data-ss-rule="v1"><strong>R01 当前 PB（V1）</strong>：0 &lt; PB ≤ 1.5。</li>
@@ -602,6 +606,10 @@
       <li><strong>R05 净资产</strong>：归母净资产折人民币不低于 100 亿元。</li>
       <li><strong>排名</strong>：PB 升序、PE（TTM）升序、股息率降序，三项名次相加，越小越优；亏损与零利润按规则记分，不作为低估优先。</li>
       <li><strong>组合</strong>：每市场 30 个等权席位，单一行业不超过该市场预算的 20%，合格股不足则留现金。</li>
+    </ul>
+    <ul class="ss-rule-list" id="ss-graham-rule-list" hidden>
+      <li><strong>G01 净流动资产盈余</strong>：最新已披露合并资产负债表的 <code>流动资产合计 − 流动负债合计 − 总市值 &gt; 0</code>（港股异币种财报按目标日汇率折算为港币后比较；银行/保险/券商等不区分流动科目的金融企业标记为不适用）。</li>
+      <li><strong>排序与组合</strong>：按 <code>（流动资产 − 流动负债 − 总市值）÷ 总市值</code> 降序排名（安全边际越高越靠前），每市场最多 30 个等权席位。</li>
     </ul>
     <div class="table-wrap ss-source-panel">
       <div class="table-header"><h3>当前市场来源</h3></div>
@@ -633,7 +641,8 @@
 <div class="main-page" id="main-market-volatility">
   <div class="mv-header">
     <div class="mv-sub-nav">
-      <button class="mv-sub-tab active" data-mv-metric="graham" data-act="switchMarketCycleMetric" data-arg="graham">格雷厄姆指数</button>
+      <button class="mv-sub-tab active" data-mv-metric="indices" data-act="switchMarketCycleMetric" data-arg="indices">常见指数</button>
+      <button class="mv-sub-tab" data-mv-metric="graham" data-act="switchMarketCycleMetric" data-arg="graham">格雷厄姆指数</button>
       <button class="mv-sub-tab" data-mv-metric="pe" data-act="switchMarketCycleMetric" data-arg="pe">市盈率（PE）</button>
       <button class="mv-sub-tab" data-mv-metric="pb" data-act="switchMarketCycleMetric" data-arg="pb">市净率（PB）</button>
       <button class="mv-sub-tab" data-mv-metric="m2_market_cap" data-act="switchMarketCycleMetric" data-arg="m2_market_cap">M2与股市市值比</button>
@@ -641,7 +650,39 @@
   </div>
   <div class="market-volatility-shell feature-page-shell">
     <div class="mv-hero"><div><h2>股市周期</h2><p>从股债收益、估值和资金面观察市场周期；仅供研究参考，不构成投资建议。</p></div><span id="mv-updated">正在读取数据...</span></div>
-    <div id="mv-sub-graham">
+    <div id="mv-sub-indices">
+      <div class="mv-controls table-wrap mvi-period-bar">
+        <div class="mv-control-group mvi-period-group">
+          <span>周期</span>
+          <button type="button" class="active" data-mvi-period="1d">日涨跌</button>
+          <button type="button" data-mvi-period="1w">周涨跌</button>
+          <button type="button" data-mvi-period="1m">月涨跌</button>
+          <button type="button" data-mvi-period="1q">季度涨跌</button>
+          <button type="button" data-mvi-period="ytd">今年涨跌</button>
+          <button type="button" data-mvi-period="ytd_mdd">今年最大回撤</button>
+          <button type="button" data-mvi-period="1y">近一年</button>
+          <button type="button" data-mvi-period="3y">三年</button>
+          <button type="button" data-mvi-period="5y">五年</button>
+          <button type="button" data-mvi-period="10y">十年</button>
+        </div>
+      </div>
+      <div id="mvi-status" class="mv-status"></div>
+      <div id="mvi-cards" class="mvi-cards-grid"></div>
+      <div class="table-wrap mvi-chart-section">
+        <div class="mvi-chart-toolbar">
+          <strong id="mvi-chart-title">指数历史走势与估值分位</strong>
+          <div class="mvi-mode-tabs">
+            <button type="button" class="active" data-mvi-mode="close">指数点位</button>
+            <button type="button" data-mvi-mode="pe">PE-TTM</button>
+            <button type="button" data-mvi-mode="pb">PB</button>
+          </div>
+        </div>
+        <div id="mvi-date-range" class="mvi-date-range"></div>
+        <div id="mvi-summary" class="mv-cards mvi-summary-strip"></div>
+        <div id="mvi-chart-box" class="mvi-chart-box"></div>
+      </div>
+    </div>
+    <div id="mv-sub-graham" hidden>
     <div class="mv-controls table-wrap">
       <div class="mv-control-group"><span>市场</span><button data-mv-market="CN" class="active">中国A股</button><button data-mv-market="HK">港股</button></div>
       <div class="mv-control-group" id="mv-benchmark-controls"><span>指数</span><button data-mv-benchmark="CSI300" class="active">沪深300</button><button data-mv-benchmark="CSIALL">中证全指</button></div>
@@ -1319,6 +1360,8 @@
 <script type="text/lazy" data-lazy-section="stock-analysis" src="js/stock-analysis-valuation-chart.js?v=__APP_VERSION__"></script>
 <script type="text/lazy" data-lazy-section="market-volatility" src="js/market-volatility.js?v=__APP_VERSION__"></script>
 <script type="text/lazy" data-lazy-section="market-volatility" src="js/presenters/market-volatility-presenter.js?v=__APP_VERSION__"></script>
+<script type="text/lazy" data-lazy-section="market-volatility" src="js/market-cycle-indices.js?v=__APP_VERSION__"></script>
+<script type="text/lazy" data-lazy-section="market-volatility" src="js/presenters/market-cycle-indices-presenter.js?v=__APP_VERSION__"></script>
 <script type="text/lazy" data-lazy-section="market-volatility" src="js/market-cycle-metrics.js?v=__APP_VERSION__"></script>
 <script type="text/lazy" data-lazy-section="market-volatility" src="js/presenters/market-cycle-metrics-presenter.js?v=__APP_VERSION__"></script>
 <script type="text/lazy" data-lazy-section="stock-selection" src="js/api/stock-selection-api.js?v=__APP_VERSION__"></script>

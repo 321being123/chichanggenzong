@@ -82,9 +82,21 @@ function mvcInit() {
   loadMarketCycleHomeConfig();
 }
 function switchMarketCycleMetric(metric) {
+  metric = metric || 'indices';
   document.querySelectorAll('[data-mv-metric]').forEach(function(button){button.classList.toggle('active',button.dataset.mvMetric===metric);});
-  var graham=metric==='graham'; document.getElementById('mv-sub-graham').hidden=!graham; document.getElementById('mv-sub-metric').hidden=graham;
-  if(graham){loadMarketVolatility();return;}
+  var indicesEl = document.getElementById('mv-sub-indices');
+  var grahamEl = document.getElementById('mv-sub-graham');
+  var metricEl = document.getElementById('mv-sub-metric');
+  var isIndices = metric === 'indices';
+  var isGraham = metric === 'graham';
+  if (indicesEl) indicesEl.hidden = !isIndices;
+  if (grahamEl) grahamEl.hidden = !isGraham;
+  if (metricEl) metricEl.hidden = isIndices || isGraham;
+  if (isIndices) {
+    if (typeof loadMarketCycleIndices === 'function') loadMarketCycleIndices();
+    return;
+  }
+  if(isGraham){loadMarketVolatility();return;}
   mvcInit(); mvcState.metric=metric;
   if(metric==='m2_market_cap'){mvcState.market='CN';mvcState.benchmark='ASHARE';}
   else if(metric==='pb'&&mvcState.benchmark==='CSIALL')mvcState.benchmark='CSI300';

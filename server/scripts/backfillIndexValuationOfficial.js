@@ -16,9 +16,12 @@
 const { pool } = require('../db/connection');
 const marketYieldRepository = require('../repositories/marketYieldRepository');
 const marketVolatilitySync = require('../jobs/marketVolatilitySync');
+const { MARKET_INDICES } = require('../domain/marketIndexCatalog');
+const { mergeIndexCloseAndValuationRows } = require('../domain/marketCycleIndices');
 
 const APPLY = process.argv.includes('--apply');
 const KEEP_LEGACY = process.argv.includes('--keep-legacy');
+const COMMON_INDICES = process.argv.includes('--common-indices');
 const ONLY = (process.argv.find(arg => arg.startsWith('--only=')) || '').split('=')[1] || null;
 const CHUNK_YEARS = 5;
 
@@ -63,8 +66,41 @@ async function sourceStats(table, predicate) {
   return rows;
 }
 
+async function backfillCommonIndices(today) {
+  const { readIndexCloseSeries, readIndexValuationSeries } = require('../dataAccess/marketDatasets');
+  const list = MARKET_INDICES.filter(m => !ONLY || m.storageCode === ONLY || m.indexCode === ONLY);
+  console.log(`\n=== 常见10指数 close + pe_ttm + pb 回填（目标 ${list.length} 个） ===`);
+  for (const meta of list) {
+    console.log(`\n[${meta.order}] ${meta.name} (${meta.indexCode} -> storage=${meta.storageCode}, since=${meta.launchDate})`);
+    if (!APPLY) continue;
+    let total = 0;
+    for (const [start, end] of chunks(meta.launchDate, today)) {
+      const [closeRows, valuationRows] = await Promise.all([
+        readIndexCloseSeries({ tsCode: meta.indexCode, market: meta.market.toLowerCase(), startDate: start, endDate: end }),
+        readIndexValuationSeries({ indexCode: meta.lixingerCode, market: meta.market.toLowerCase(), startDate: start, endDate: end, allowFallback: false }),
+      ]);
+      const merged = mergeIndexCloseAndValuationRows(closeRows, valuationRows);
+      if (!merged.length) continue;
+      const res = await marketYieldRepository.saveIndexValuationHistoryRows({
+        indexCode: meta.storageCode,
+        rows: merged,
+        sourceCode: 'lixinger_official',
+      });
+      total += res.rowCount || 0;
+      console.log(`  ${start}~${end} 合并写入 ${merged.length} 条 (rowCount=${res.rowCount || 0})`);
+    }
+    console.log(`  ${meta.name} 回填合计=${total}`);
+  }
+}
+
 async function main() {
   const today = dateStr(new Date());
+  if (COMMON_INDICES) {
+    console.log(`模式：${APPLY ? '执行（会写库）' : '预演（只读）'}（常见指数）`);
+    await backfillCommonIndices(today);
+    await pool.end();
+    return;
+  }
   const targets = TARGETS.filter(t => !ONLY || t.benchmark === ONLY);
   if (!targets.length) throw new Error(`--only 只支持 ${TARGETS.map(t => t.benchmark).join('/')}`);
 

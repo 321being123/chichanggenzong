@@ -1161,6 +1161,105 @@ async function loadFxRatesForPairs({ pairs }, tx) {
   }]));
 }
 
+async function loadGrahamBalanceFacts({ companyIds, asOfDate, availableBefore, market }, tx) {
+  if (!companyIds || !companyIds.length) return new Map();
+  const exec = executorOf(tx);
+  const mkt = String(market || 'CN').toUpperCase();
+  const wideTable = mkt === 'HK' ? 'fundamental.statement_balance_hkfrs' : 'fundamental.statement_balance_cas';
+  const marketPredicate = marketFinancialCandidatePredicate('r', mkt, 'balance');
+  const marketUnverified = marketFinancialUnverifiedForMarket('r', mkt, 'balance');
+  const tushareCaExpr = mkt === 'CN' ? `NULLIF(r.raw_payload->>'total_cur_assets', '')::numeric` : 'NULL::numeric';
+  const tushareClExpr = mkt === 'CN' ? `NULLIF(r.raw_payload->>'total_cur_liab', '')::numeric` : 'NULL::numeric';
+
+  const { rows } = await exec(`
+    SELECT DISTINCT ON (r.company_id)
+           r.company_id,
+           r.report_id,
+           r.period_end::text AS period_end,
+           r.announced_at::text AS announced_at,
+           r.currency_code,
+           COALESCE(wide.statement_coverage->>'fs_table_type', r.raw_payload->>'fs_table_type', r.raw_payload->>'fsTableType') AS fs_table_type,
+           CASE WHEN ${marketUnverified} THEN NULL
+                ELSE COALESCE(wide.bs_tca, f_ca.numeric_value, ${tushareCaExpr}) END AS current_assets,
+           CASE WHEN ${marketUnverified} THEN NULL
+                ELSE COALESCE(wide.bs_tcl, f_cl.numeric_value, ${tushareClExpr}) END AS current_liabilities,
+           ((${UNVERIFIED_FINANCIAL_CURRENCY_SQL}) OR ${marketUnverified}) AS currency_unverified
+      FROM fundamental.financial_reports r
+      LEFT JOIN ${wideTable} wide ON wide.report_id = r.report_id
+      LEFT JOIN fundamental.financial_facts f_ca ON f_ca.report_id = r.report_id AND f_ca.metric_code = 'total_current_assets'
+      LEFT JOIN fundamental.financial_facts f_cl ON f_cl.report_id = r.report_id AND f_cl.metric_code = 'total_current_liabilities'
+     WHERE r.company_id = ANY($1::bigint[])
+       AND r.report_kind = 'balance'
+       AND r.statement_scope = 'consolidated'
+       AND COALESCE(r.report_type, '1') = '1'
+       AND ${marketPredicate}
+       AND r.announced_at IS NOT NULL
+       AND r.announced_at < $2::date
+       AND ($3::timestamptz IS NULL OR r.available_at IS NULL OR r.available_at < $3::timestamptz)
+     ORDER BY r.company_id, r.period_end DESC, r.announced_at DESC, r.report_id DESC
+  `, [companyIds, asOfDate, availableBefore || null]);
+
+  return new Map(rows.map(row => [String(row.company_id), {
+    reportId: row.report_id,
+    periodEnd: row.period_end,
+    announcedAt: row.announced_at,
+    currency: row.currency_code || null,
+    currencyUnverified: row.currency_unverified === true,
+    fsTableType: row.fs_table_type || null,
+    currentAssets: row.current_assets === null || row.current_assets === undefined ? null : String(row.current_assets),
+    currentLiabilities: row.current_liabilities === null || row.current_liabilities === undefined ? null : String(row.current_liabilities),
+  }]));
+}
+
+async function loadFxRatesToCurrency({ pairs, targetCurrency = 'CNY' }, tx) {
+  const target = String(targetCurrency || 'CNY').toUpperCase();
+  const list = (pairs || []).filter(pair => pair && pair.currency && String(pair.currency).toUpperCase() !== target && pair.date);
+  if (!list.length) return new Map();
+  const exec = executorOf(tx);
+  const currencies = Array.from(new Set(list.map(p => String(p.currency).toUpperCase())));
+  if (target !== 'CNY' && !currencies.includes(target)) currencies.push(target);
+  const dates = Array.from(new Set(list.map(p => p.date)));
+
+  const { rows } = await exec(`
+    WITH need(base_currency, need_date) AS (
+      SELECT DISTINCT u.c, u.d FROM unnest($1::text[], $2::date[]) AS u(c, d)
+    )
+    SELECT DISTINCT ON (n.base_currency, n.need_date)
+           n.base_currency, n.need_date::text AS need_date, f.rate, f.rate_date::text AS rate_date
+      FROM need n
+      JOIN market.fx_rates f
+        ON f.base_currency = n.base_currency AND f.quote_currency = 'CNY' AND f.rate_date <= n.need_date
+     ORDER BY n.base_currency, n.need_date, f.rate_date DESC
+  `, [
+    list.flatMap(p => target === 'CNY' ? [String(p.currency).toUpperCase()] : [String(p.currency).toUpperCase(), target]),
+    list.flatMap(p => target === 'CNY' ? [p.date] : [p.date, p.date]),
+  ]);
+
+  const toCny = new Map();
+  for (const r of rows) {
+    toCny.set(`${r.base_currency}|${r.need_date}`, { rate: Number(r.rate), date: r.rate_date });
+  }
+  const result = new Map();
+  for (const p of list) {
+    const base = String(p.currency).toUpperCase();
+    const date = p.date;
+    if (target === 'CNY') {
+      const hit = toCny.get(`${base}|${date}`);
+      if (hit && hit.rate > 0) result.set(`${base}|${date}`, hit);
+    } else {
+      const baseCny = base === 'CNY' ? { rate: 1, date } : toCny.get(`${base}|${date}`);
+      const targetCny = toCny.get(`${target}|${date}`);
+      if (baseCny && baseCny.rate > 0 && targetCny && targetCny.rate > 0) {
+        result.set(`${base}|${date}`, {
+          rate: Number((baseCny.rate / targetCny.rate).toFixed(8)),
+          date: baseCny.date <= targetCny.date ? baseCny.date : targetCny.date,
+        });
+      }
+    }
+  }
+  return result;
+}
+
 /** 市场估值代理：市值加权（mcw）口径，目标日精确取值。 */
 async function loadMarketValuation({ market, asOfDate }, tx) {
   const config = marketConfig(market);
@@ -2551,7 +2650,7 @@ module.exports = {
   MARKET_CONFIG, SAFE_FINANCIAL_FACT_SQL,
   loadUniverse, loadPbWindow, loadPbMissingDaysForCodes, loadEquityFacts, loadAnnualProfits, loadDividendWindow,
   loadMemberFundamentals,
-  loadAnnualDividends, loadIndustries, loadFxRatesForPairs, loadMarketValuation, loadLatestMarketValuation, loadCalendar,
+  loadAnnualDividends, loadIndustries, loadFxRatesForPairs, loadFxRatesToCurrency, loadGrahamBalanceFacts, loadMarketValuation, loadLatestMarketValuation, loadCalendar,
   loadCalendarEvidence, findUniverseArtifact, insertUniverseArtifact, loadUniverseRoster, loadTtmInputs,
   loadOpenPrices, loadClosePrices, loadBenchmarkCloses, loadDividendCash, loadDividendEvents, loadBarWindow,
   upsertStrategy, findStrategyId, findRunByIdempotencyKey, nextRevision, insertRun, insertCandidates, insertMembers,

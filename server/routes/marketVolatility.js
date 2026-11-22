@@ -4,6 +4,7 @@ const asyncHandler = require('../middleware/async');
 const { requireLogin, requireCapability } = require('../middleware/auth');
 const svc = require('../services/marketVolatility');
 const cycleMetrics = require('../services/marketCycleMetrics');
+const cycleIndices = require('../services/marketCycleIndicesService');
 const { auditEvent } = require('../db');
 const { withTransaction } = require('../db/transaction');
 const marketCycleRepository = require('../repositories/marketCycleRepository');
@@ -166,4 +167,19 @@ router.post('/federal-funds/import', requireCapability('ops_manage'), upload.sin
   }
   res.json({ ok: true, sourceRows: sourceRecords.length, imported: records.length, earliest: records[0].tradeDate, latest: records[records.length - 1].tradeDate });
 }));
+router.get('/indices/overview', asyncHandler(async (req, res) => {
+  const version = await cycleIndices.getWatermarkVersion();
+  if (applyPublicCache(req, res, `indices-overview|${version}`)) return;
+  res.json(await cycleIndices.getIndicesOverview());
+}));
+
+router.get('/indices/history', asyncHandler(async (req, res) => {
+  const code = String(req.query.code || '000300.SH').trim();
+  const version = await cycleIndices.getWatermarkVersion();
+  if (applyPublicCache(req, res, `indices-history|${code}|${version}`)) return;
+  const payload = await cycleIndices.getIndexHistory(code);
+  if (!payload) return res.status(404).json({ error: '未知指数代码' });
+  res.json(payload);
+}));
+
 module.exports = router;

@@ -5,7 +5,7 @@ var ssState = {
   runId: null, sourceRunId: null, personalRunId: null, run: null, sourceRun: null, sourcePortfolio: null,
   candidates: [], candidateTotal: 0, candidateOffset: 0, portfolio: null,
   settings: null, settingsRevision: 0, settingsWritable: false, settingsError: null, settingsSaveError: null,
-  industries: [], detail: null, periodType: null, periodUserSelected: false, strategyCode: null,
+  industries: [], detail: null, periodType: null, periodUserSelected: false, strategyCode: null, scheme: 'essentials',
   loading: false, loadingKey: null, runListLoading: false, seq: 0, contextVersion: 0, detailVersion: 0,
   error: null, pendingSimulation: null, simulationError: null, pendingSettingsOperation: null,
 };
@@ -274,12 +274,13 @@ async function loadStockSelection() {
   ssState.loading = true; ssResetDisplayedRun();
   if (typeof ssSetStatus === 'function') ssSetStatus('正在读取当前市场与来源批次...');
   try {
-    var marketResult = await window.StockSelectionApi.getMarkets({ periodType: SS_PERIOD_API_TYPE[ssState.periodType] }); if (!guard.current()) return;
-    ssState.strategyCode = marketResult.strategyCode || null;
-    if (!ssState.periodUserSelected || !SS_KIND_BY_PERIOD[ssState.periodType]) ssState.periodType = ssDefaultPeriod(ssState.strategyCode);
+    var requestedStrategy = ssState.scheme === 'graham_net_net' ? 'graham_net_net_v1' : undefined;
+    var marketResult = await window.StockSelectionApi.getMarkets({ periodType: SS_PERIOD_API_TYPE[ssState.periodType], strategy: requestedStrategy }); if (!guard.current()) return;
+    ssState.strategyCode = requestedStrategy || marketResult.strategyCode || null;
+    if (!ssState.periodUserSelected || !SS_KIND_BY_PERIOD[ssState.periodType]) ssState.periodType = ssState.scheme === 'graham_net_net' ? 'weekly' : ssDefaultPeriod(ssState.strategyCode);
     var requestedPeriodType = SS_PERIOD_API_TYPE[ssState.periodType];
     if (requestedPeriodType && marketResult.activePeriodType !== requestedPeriodType) {
-      marketResult = await window.StockSelectionApi.getMarkets({ periodType: requestedPeriodType });
+      marketResult = await window.StockSelectionApi.getMarkets({ periodType: requestedPeriodType, strategy: requestedStrategy });
       if (!guard.current()) return;
     }
     ssState.markets = marketResult.markets || [];
@@ -939,8 +940,18 @@ async function ssRestoreExclusion(kind, target) {
   }, '排除设置', anchorContext);
 }
 
+function ssSelectScheme(scheme) {
+  var next = scheme === 'graham_net_net' ? 'graham_net_net' : 'essentials';
+  if (ssState.scheme === next) return;
+  ssState.scheme = next;
+  ssState.periodUserSelected = false;
+  ssState.periodType = null;
+  ssResetDisplayedRun();
+  loadStockSelection();
+}
+
 window.StockSelectionPresenter = {
-  state: ssState, load: loadStockSelection, switchMarket: ssSwitchMarket, selectRun: ssSelectRun, loadMoreRuns: ssLoadMoreRuns,
+  state: ssState, load: loadStockSelection, switchMarket: ssSwitchMarket, selectScheme: ssSelectScheme, selectRun: ssSelectRun, loadMoreRuns: ssLoadMoreRuns,
   switchPeriod: ssSwitchPeriod, loadMore: ssLoadMoreCandidates, openStock: ssOpenStock, openInAnalysis: ssOpenInAnalysis,
   saveSettings: ssSaveSettings, saveSettingsAndSimulate: ssSaveSettingsAndSimulate, simulate: ssSimulate,
   retrySimulation: ssRetrySimulation,

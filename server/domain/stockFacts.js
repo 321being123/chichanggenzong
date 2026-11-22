@@ -57,7 +57,7 @@ function resolvePeriodType(row) {
 // 上游字段 → 标准指标口径；只在适配边界转换一次。
 const FACT_MAP = {
   income: { n_income_attr_p: 'net_profit_parent', total_revenue: 'total_revenue', revenue: 'revenue', operate_profit: 'operating_profit', total_profit: 'total_profit', ebit: 'ebit', fin_exp_int_exp: 'interest_expense' },
-  balance: { total_assets: 'total_assets', total_liab: 'total_liabilities', total_hldr_eqy_exc_min_int: 'equity_parent', goodwill: 'goodwill', money_cap: 'cash_and_equivalents', trad_asset: 'trading_financial_assets' },
+  balance: { total_assets: 'total_assets', total_liab: 'total_liabilities', total_current_assets: 'total_current_assets', total_current_liabilities: 'total_current_liabilities', total_hldr_eqy_exc_min_int: 'equity_parent', goodwill: 'goodwill', money_cap: 'cash_and_equivalents', trad_asset: 'trading_financial_assets' },
   cashflow: { n_cashflow_act: 'operating_cashflow', c_pay_acq_const_fiolta: 'capital_expenditure' },
   indicator: { profit_dedt: 'net_profit_deducted', roe: 'roe', roa: 'roa', interestdebt: 'interest_bearing_debt', ebit_to_interest: 'interest_coverage' },
 };

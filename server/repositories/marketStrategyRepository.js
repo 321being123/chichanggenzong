@@ -58,4 +58,60 @@ async function writeSetting(username, account, metric, market, benchmark, lower,
   }
 }
 
-module.exports = { metricRows, readSetting, readIndexPoint, writeSetting };
+async function readIndexFullHistory(storageCode) {
+  const { rows } = await pool.query(`
+    SELECT DISTINCT ON (trade_date)
+      trade_date::text AS date,
+      close::float8 AS close,
+      pe_ttm::float8 AS pe,
+      pb::float8 AS pb
+    FROM market.index_valuation_history
+    WHERE index_code = $1
+      AND valuation_method = 'market_cap_weighted'
+      AND (close IS NOT NULL OR pe_ttm IS NOT NULL OR pb IS NOT NULL)
+    ORDER BY trade_date ASC,
+      CASE
+        WHEN source_code = 'lixinger_official' THEN 0
+        WHEN source_code = 'tushare_index_dailybasic' THEN 1
+        WHEN source_code = 'user_supplied_weighted_csv' THEN 2
+        ELSE 3
+      END
+  `, [storageCode]);
+  return rows;
+}
+
+async function readAllIndicesHistory(storageCodes) {
+  if (!Array.isArray(storageCodes) || !storageCodes.length) return [];
+  const { rows } = await pool.query(`
+    SELECT DISTINCT ON (index_code, trade_date)
+      index_code,
+      trade_date::text AS date,
+      close::float8 AS close,
+      pe_ttm::float8 AS pe,
+      pb::float8 AS pb
+    FROM market.index_valuation_history
+    WHERE index_code = ANY($1::text[])
+      AND valuation_method = 'market_cap_weighted'
+      AND (close IS NOT NULL OR pe_ttm IS NOT NULL OR pb IS NOT NULL)
+    ORDER BY index_code, trade_date ASC,
+      CASE
+        WHEN source_code = 'lixinger_official' THEN 0
+        WHEN source_code = 'tushare_index_dailybasic' THEN 1
+        WHEN source_code = 'user_supplied_weighted_csv' THEN 2
+        ELSE 3
+      END
+  `, [storageCodes]);
+  return rows;
+}
+
+async function readIndicesWatermark(storageCodes) {
+  if (!Array.isArray(storageCodes) || !storageCodes.length) return null;
+  const { rows } = await pool.query(`
+    SELECT max(trade_date)::text AS latest_date, max(ingested_at)::text AS latest_ingested
+    FROM market.index_valuation_history
+    WHERE index_code = ANY($1::text[]) AND valuation_method = 'market_cap_weighted'
+  `, [storageCodes]);
+  return rows[0] || null;
+}
+
+module.exports = { metricRows, readSetting, readIndexPoint, writeSetting, readIndexFullHistory, readAllIndicesHistory, readIndicesWatermark };

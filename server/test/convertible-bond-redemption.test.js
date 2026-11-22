@@ -72,7 +72,7 @@ assert.ok(presenter.includes('/api/bond-redemption') && page.includes('biz-table
 assert.ok(presenter.includes('/api/bond-redemption?limit=2000'), '强赎页必须读取完整的在市证券集合');
 assert.ok(page.includes("'年' +") && page.includes('bondRedemptionDate(data.trade_date)'), '强赎页日期必须统一显示为中文年月日');
 assert.ok(/\.bond-redemption-hero\s*\{[^}]*background:var\(--bg-surface\)[^}]*border:1px solid var\(--border\)/.test(redemptionCss), '强赎说明区必须沿用可转债功能页统一浅色卡片样式');
-assert.ok(/\.bond-list-hero\s*\{[^}]*background:var\(--bg-surface\)[^}]*border:1px solid var\(--border\)/.test(safetyCss), '上市转债说明区必须沿用安全性说明区统一浅色卡片样式');
+assert.ok(/\.bond-list-hero\s*\{[^}]*background:var\(--bg-surface\)[^}]*border:1px solid var\(--border-default\)/.test(safetyCss), '上市转债说明区必须沿用安全性说明区统一浅色卡片样式（用现行 --border-default 令牌，--border 已被设计系统移除）');
 assert.ok(cycle.includes("sub === 'redemption'") && cycle.includes('loadBondRedemption'));
 assert.ok(migration.includes('079_convertible_bond_redemption') && migration.includes('analytics.convertible_bond_call_latest'));
 assert.ok(migration.includes('CREATE TABLE IF NOT EXISTS event.convertible_bond_call_events'));

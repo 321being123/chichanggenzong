@@ -40,6 +40,8 @@ const REPORT_METRICS = {
   balance: {
     total_assets: 'bs.ta',
     total_liab: 'bs.tl',
+    total_current_assets: 'bs.tca',
+    total_current_liabilities: 'bs.tcl',
     total_hldr_eqy_exc_min_int: 'bs.tetshaoehopc',
     goodwill: 'bs.gw',
     money_cap: 'bs.cabb',

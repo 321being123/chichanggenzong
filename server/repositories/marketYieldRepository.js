@@ -30,28 +30,42 @@ async function saveHsiIndexHistory(day, pe, row, sourceCode = 'hsi_official', pb
  */
 async function saveIndexValuationHistoryRows({ indexCode, rows, sourceCode }) {
   if (!indexCode || !Array.isArray(rows) || !rows.length) return { rowCount: 0 };
-  const values = [];
-  const params = [];
-  let p = 1;
+  const validRows = [];
   for (const row of rows) {
+    const day = row.day || row.date;
+    const close = Number.isFinite(Number(row.close)) && Number(row.close) > 0 ? Number(row.close) : null;
     const pb = Number.isFinite(Number(row.pb)) && Number(row.pb) > 0 ? Number(row.pb) : null;
     const pe = Number.isFinite(Number(row.pe)) && Number(row.pe) > 0 ? Number(row.pe) : null;
-    if (!row.day || (pe === null && pb === null)) continue;
-    // 列顺序 index_code,valuation_method,trade_date,market_cap,pe_ttm,pb,source_code,raw_payload，
-    // 共 8 个表达式：1 个常量 method + 7 个占位符，少写一个会直接报
-    // “INSERT has more target columns than expressions”，整条估值写入失败。
-    values.push(`($${p++},'market_cap_weighted',$${p++},$${p++},$${p++},$${p++},$${p++},$${p++}::jsonb)`);
-    params.push(indexCode, row.day, row.marketCap === undefined ? null : row.marketCap, pe, pb, sourceCode, JSON.stringify(row.raw || {}));
+    const marketCap = Number.isFinite(Number(row.marketCap)) && Number(row.marketCap) > 0 ? Number(row.marketCap) : null;
+    if (!day || (close === null && pe === null && pb === null)) continue;
+    validRows.push({ day, close, marketCap, pe, pb, raw: row.raw || {} });
   }
-  if (!values.length) return { rowCount: 0 };
-  return pool.query(`INSERT INTO market.index_valuation_history
-      (index_code,valuation_method,trade_date,market_cap,pe_ttm,pb,source_code,raw_payload)
+  if (!validRows.length) return { rowCount: 0 };
+
+  let totalRowCount = 0;
+  const CHUNK_SIZE = 1000;
+  for (let i = 0; i < validRows.length; i += CHUNK_SIZE) {
+    const chunk = validRows.slice(i, i + CHUNK_SIZE);
+    const values = [];
+    const params = [];
+    let p = 1;
+    for (const row of chunk) {
+      values.push(`($${p++},'market_cap_weighted',$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++}::jsonb)`);
+      params.push(indexCode, row.day, row.close, row.marketCap, row.pe, row.pb, sourceCode, JSON.stringify(row.raw));
+    }
+    const res = await pool.query(`INSERT INTO market.index_valuation_history
+      (index_code,valuation_method,trade_date,close,market_cap,pe_ttm,pb,source_code,raw_payload)
       VALUES ${values.join(',')}
       ON CONFLICT(index_code,valuation_method,trade_date,source_code) DO UPDATE SET
+        close=COALESCE(EXCLUDED.close,market.index_valuation_history.close),
         market_cap=COALESCE(EXCLUDED.market_cap,market.index_valuation_history.market_cap),
         pe_ttm=COALESCE(EXCLUDED.pe_ttm,market.index_valuation_history.pe_ttm),
         pb=COALESCE(EXCLUDED.pb,market.index_valuation_history.pb),
-        raw_payload=EXCLUDED.raw_payload,ingested_at=now()`, params);
+        raw_payload=CASE WHEN EXCLUDED.raw_payload='{}'::jsonb THEN market.index_valuation_history.raw_payload ELSE EXCLUDED.raw_payload END,
+        ingested_at=now()`, params);
+    totalRowCount += res.rowCount || 0;
+  }
+  return { rowCount: totalRowCount };
 }
 
 // 水位按来源分开看：来源一换（csindex → lixinger_official）就自然走全量回填，
@@ -248,4 +262,12 @@ async function countMarketCap() {
   return pool.query("SELECT count(*)::int AS n FROM market.a_share_market_cap_daily WHERE source_code='tushare_daily_basic'");
 }
 
-module.exports = { saveChinaYield, saveHsiMarketValuation, saveHsiIndexHistory, readCsiWatermark, saveCsiValuations, readUsYieldWatermark, saveUsYieldBatch, readMoneyWatermark, saveMoneySupply, readCsi300Watermark, saveCsi300Valuations, readM2Inputs, calculateM2MarketCap, listMarketCapDates, saveMarketCap, readSubdatasetFreshness, listOpenTradingDays, countChinaYield, countMarketCap, saveIndexValuationHistoryRows };
+async function readIndexValuationWatermark(indexCode, sourceCode = 'lixinger_official') {
+  return pool.query(
+    `SELECT max(trade_date)::text AS mx
+       FROM market.index_valuation_history
+      WHERE index_code=$1 AND valuation_method='market_cap_weighted' AND source_code=$2 AND close IS NOT NULL`,
+    [indexCode, sourceCode]);
+}
+
+module.exports = { saveChinaYield, saveHsiMarketValuation, saveHsiIndexHistory, readCsiWatermark, saveCsiValuations, readUsYieldWatermark, saveUsYieldBatch, readMoneyWatermark, saveMoneySupply, readCsi300Watermark, saveCsi300Valuations, readM2Inputs, calculateM2MarketCap, listMarketCapDates, saveMarketCap, readSubdatasetFreshness, listOpenTradingDays, countChinaYield, countMarketCap, saveIndexValuationHistoryRows, readIndexValuationWatermark };

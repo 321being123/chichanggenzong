@@ -500,33 +500,36 @@ async function enqueueDueSelectionPeriods(now = new Date()) {
   // 复用既有的选股周期入队入口（规范化 shadow/策略/周期键 + requestId 幂等），
   // 再由 enqueueManualJob 补 selectionBusinessKey 做精确槽位去重。
   const { enqueueSelectionPeriodJob } = require('../services/jobScheduleSlots');
-  const strategyCode = String(process.env.STOCK_SELECTION_STRATEGY || '').trim().toLowerCase() || undefined;
+  const defaultStrategyCode = String(process.env.STOCK_SELECTION_STRATEGY || '').trim().toLowerCase() || undefined;
+  const strategyList = [defaultStrategyCode, 'graham_net_net_v1'];
   const shadowEnabled = String(process.env.STOCK_SELECTION_SHADOW || '') === '1';
   const queued = [];
-  for (const market of ['CN', 'HK']) {
-    let targets = [];
-    try {
-      targets = await service.duePeriodicTargets({ market, now, strategyCode });
-    } catch (error) {
-      console.warn(`[选股] ${market} 周期到期待检查失败：`, error.message);
-      continue;
-    }
-    for (const target of targets) {
-      // 已有正式批次就不再排队；未就绪的历史槽位由原续跑机制继续，不新建平行槽。
-      if (await service.hasPeriodRun({
-        market, periodType: target.periodType, periodKey: target.periodKey, strategyCode,
-      })) continue;
-      const mode = target.periodType === 'day' ? 'selection_daily' : 'selection_weekly';
-      const payload = { mode, market, targetDate: target.targetDate, periodKey: target.periodKey, freshnessGate: false };
-      if (strategyCode) payload.strategyCode = strategyCode;
-      const slot = await enqueueSelectionPeriodJob({ jobCode: 'stock_analysis_refresh', payload });
-      if (slot) queued.push({ market, mode, periodKey: target.periodKey, slotId: slot.slot_id });
-      if (shadowEnabled) {
-        const shadowSlot = await enqueueSelectionPeriodJob({
-          jobCode: 'stock_analysis_refresh',
-          payload: Object.assign({}, payload, { shadow: true }),
-        });
-        if (shadowSlot) queued.push({ market, mode, periodKey: target.periodKey, shadow: true, slotId: shadowSlot.slot_id });
+  for (const strategyCode of strategyList) {
+    for (const market of ['CN', 'HK']) {
+      let targets = [];
+      try {
+        targets = await service.duePeriodicTargets({ market, now, strategyCode });
+      } catch (error) {
+        console.warn(`[选股] ${market} (${strategyCode || 'default'}) 周期到期待检查失败：`, error.message);
+        continue;
+      }
+      for (const target of targets) {
+        // 已有正式批次就不再排队；未就绪的历史槽位由原续跑机制继续，不新建平行槽。
+        if (await service.hasPeriodRun({
+          market, periodType: target.periodType, periodKey: target.periodKey, strategyCode,
+        })) continue;
+        const mode = target.periodType === 'day' ? 'selection_daily' : 'selection_weekly';
+        const payload = { mode, market, targetDate: target.targetDate, periodKey: target.periodKey, freshnessGate: false };
+        if (strategyCode) payload.strategyCode = strategyCode;
+        const slot = await enqueueSelectionPeriodJob({ jobCode: 'stock_analysis_refresh', payload });
+        if (slot) queued.push({ market, mode, periodKey: target.periodKey, strategyCode: strategyCode || 'default', slotId: slot.slot_id });
+        if (shadowEnabled && strategyCode !== 'graham_net_net_v1') {
+          const shadowSlot = await enqueueSelectionPeriodJob({
+            jobCode: 'stock_analysis_refresh',
+            payload: Object.assign({}, payload, { shadow: true }),
+          });
+          if (shadowSlot) queued.push({ market, mode, periodKey: target.periodKey, shadow: true, slotId: shadowSlot.slot_id });
+        }
       }
     }
   }

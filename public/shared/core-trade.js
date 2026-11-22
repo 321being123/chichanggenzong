@@ -100,7 +100,41 @@ function autoCalcTrade() {
   setVal('trade-other', f.other_fee);
 }
 
+// 服务端交易响应中的收盘价状态只用于提示，不参与前端估值计算。
+function closePriceStatusText(closePrice) {
+  if (!closePrice || typeof closePrice !== 'object') return '';
+  if (closePrice.status === 'reused') return '，收盘价已复用共享确认价';
+  if (closePrice.status === 'fetched') return '，已补录成交日收盘价';
+  if (closePrice.status === 'pending') return '，收盘价待补（可稍后重试）';
+  return '';
+}
+// 净值重算与现金收益结算分别报告：现金结算版本竞争不再让收盘价/净值静默失败。
+// 同一原因只提示一次，避免 warnings、cashSettlement 与 ok=false 各拼一遍。
+function navRecomputeStatusText(payload) {
+  if (!payload || typeof payload !== 'object') return '';
+  if (payload.reason === 'cash_settlement_conflict') {
+    return '，净值待重算：现金收益结算遇版本竞争，请稍后重试';
+  }
+  if (payload.reason === 'cash_settlement_partial') {
+    return '，净值待重算：现金收益结算仍有未闭合项';
+  }
+  const settlement = payload.cashSettlement;
+  if (settlement && settlement.status === 'failed') {
+    return settlement.reason === 'version_conflict'
+      ? '，净值待重算：现金收益结算遇版本竞争，请稍后重试'
+      : '，净值待重算：现金收益结算未完成，请稍后重试';
+  }
+  if (payload.ok === false || (payload.ok !== true && payload.error)) {
+    return payload.status === 'partial' ? '，净值重算仍有日期未闭合' : '，净值重算待完成';
+  }
+  return '';
+}
+
 async function addTrade() {
+  // 冻结开始时账户、登录身份和切换代次：离开又返回或同名换人也不能接收迟到响应。
+  const scope = captureSmartImportScope();
+  const scopeAccount = scope.account;
+  const scopeVersion = dataVersion;
   const code = classifyCode.normalizeCode(document.getElementById('trade-code').value.trim());
   const name = document.getElementById('trade-name').value.trim() || code;
   const direction = document.getElementById('trade-dir').value;
@@ -140,10 +174,33 @@ async function addTrade() {
 
   // 服务端统一账本事务（2026-08-03 整改）：持仓/现金由服务端重算并返回，前端不再自行计算
   try {
-    const r = await window.tradeLedgerApi.addTrade(currentAccount, dataVersion, trade);
-    const j = r.payload;
-    if (!r.ok) {
-      showToast(j.error || '保存交易失败');
+    const r = await window.tradeLedgerApi.addTrade(scopeAccount, scopeVersion, trade);
+    const j = (r && r.payload) || {};
+    // 兼容旧服务：只返回 {error}、没有 ok 字段时也按失败处理。
+    const requestOk = !!(r && r.ok) && j.ok !== false && !(j.error && j.ok !== true);
+    const canRecompute = pickedDate && pickedDate < todayCN() && j.closePrice?.status !== 'pending';
+
+    // 手工录入在开始时冻结账户/身份/代次：迟到响应不得写入切换后的新账户。
+    if (!isSmartImportScopeCurrent(scope)) {
+      const active = captureSmartImportScope();
+      // 未变更登录主体时，已保存交易仍可在原账户重算，不把结果写回当前页面。
+      if (active.user !== scope.user || active.identity !== scope.identity) return;
+      let navNote = '';
+      if (requestOk && canRecompute) {
+        try {
+          const rr = await window.tradeLedgerApi.recomputeNav(scopeAccount, pickedDate);
+          navNote = navRecomputeStatusText((rr && rr.payload) || {});
+        } catch (e) {
+          navNote = '，原账户历史净值重算待重试';
+        }
+      }
+      showToast(requestOk
+        ? '账户已切换，本次交易已记入原账户' + closePriceStatusText(j.closePrice) + navNote
+        : '账户已切换，本次交易结果未确认，请回到原账户核对');
+      return;
+    }
+    if (!requestOk) {
+      showToast(j.error || '保存交易失败，请刷新页面后重试');
       return;
     }
     if (j.data) {
@@ -155,21 +212,45 @@ async function addTrade() {
       if (typeof j.data.cashflowVersion === 'number') dataCashVersion = j.data.cashflowVersion;
       restorePriceChangeMap();
     }
-    // 过去日期的交易：触发历史净值精确回填（Tushare 历史回补，不近似）
-    if (pickedDate && pickedDate < todayCN()) {
+    // 过去日期的交易：补对应成交日收盘价由服务端交易响应独立报告；
+    // 历史净值精确重算继续走既有接口，并与现金收益结算状态分别提示。
+    let navNote = '';
+    if (canRecompute) {
       try {
-        const rr = await window.tradeLedgerApi.recomputeNav(currentAccount, pickedDate);
-        const jj = rr.payload;
-        if (jj && jj.ok) data = await loadData(currentAccount);
-      } catch (e) {}
+        const rr = await window.tradeLedgerApi.recomputeNav(scopeAccount, pickedDate);
+        const jj = (rr && rr.payload) || {};
+        navNote = navRecomputeStatusText(jj);
+        if (!isSmartImportScopeCurrent(scope)) return;
+        if (rr && rr.ok && jj.ok) {
+          const refreshed = await loadData(scopeAccount);
+          if (!isSmartImportScopeCurrent(scope)) {
+            showToast('账户已切换，原账户历史净值已重算，当前页面未更新');
+            return;
+          }
+          data = refreshed;
+        }
+      } catch (e) {
+        if (!isSmartImportScopeCurrent(scope)) {
+          showToast('账户已切换，原账户历史净值重算结果未应用到当前页面');
+          return;
+        }
+        navNote = '，净值重算待重试';
+      }
     }
     renderAll();
-    showToast('已记录 ' + (direction === 'buy' ? '买入' : '卖出') + ' ' + (name || code));
+    showToast('已记录 ' + (direction === 'buy' ? '买入' : '卖出') + ' ' + (name || code)
+      + closePriceStatusText(j.closePrice) + navNote);
   } catch (e) {
+    if (!isSmartImportScopeCurrent(scope)) {
+      showToast('账户已切换，本次交易结果未确认，请回到原账户核对');
+      return;
+    }
     showToast('保存失败：' + (e.message || e));
     return;
   }
 
+  // 保存期间已切换账户：不能再清空新账户的表单。
+  if (!isSmartImportScopeCurrent(scope)) return;
   document.getElementById('trade-code').value = '';
   document.getElementById('trade-name').value = '';
   document.getElementById('trade-price').value = '';
@@ -1655,6 +1736,12 @@ function updateQtyHint(code) {
 //       | failed（明确失败）| conflict（版本/会话问题，暂停）| unknown（结果待确认）
 async function addTradeInternal(code, name, direction, price, quantity, date, importedFees, importBatchId, opts) {
   opts = opts || {};
+  function closeNoteOf(closePrice) {
+    return typeof closePriceStatusText === 'function' ? closePriceStatusText(closePrice) : '';
+  }
+  function navNoteOf(payload) {
+    return typeof navRecomputeStatusText === 'function' ? navRecomputeStatusText(payload) : '';
+  }
   var scope = opts.scope || captureSmartImportScope();
   if (!isSmartImportScopeCurrent(scope)) return { status: 'scope_changed', message: '账户已切换，旧结果已丢弃' };
   code = classifyCode.normalizeCode(code, name);
@@ -1689,17 +1776,25 @@ async function addTradeInternal(code, name, direction, price, quantity, date, im
           date: date, // 日期必须显式给定（重校验已阻止缺失，不默认今天；方案 4.1 第 6 条）
           import_batch_id: importBatchId || null
         });
-    if (!isSmartImportScopeCurrent(scope)) return { status: 'scope_changed', message: '账户已切换，旧结果已丢弃' };
-    const j = r.payload;
-    if (!r.ok) {
-      if (r.status === 409) {
+    const j = (r && r.payload) || {};
+    // 兼容旧服务只返回 {error}、没有 ok 字段：有 error 且未明确 ok:true 视为失败。
+    const requestOk = !!(r && r.ok) && j.ok !== false && !(j.error && j.ok !== true);
+    if (!isSmartImportScopeCurrent(scope)) {
+      // 交易若已明确保存，历史重算仍对原账户发起；只禁止把结果写回当前页面。
+      if (requestOk && date && date < todayCN()) {
+        try { await window.tradeLedgerApi.recomputeNav(scope.account, date); } catch (e) {}
+      }
+      return { status: 'scope_changed', message: '账户已切换，旧结果已丢弃' };
+    }
+    if (!requestOk) {
+      if (r && r.status === 409) {
         // 409 可能是"已保存但响应丢失后带旧版本重试"：先按原 id 核对，已落库才标已保存（方案 4.4 第 5 条）
         var verify409 = await verifySmartEventsSaved([tradeId], scope);
         if (!isSmartImportScopeCurrent(scope)) return { status: 'scope_changed', message: '账户已切换，旧结果已丢弃' };
         if (verify409.all) return { status: 'saved', message: '已保存（核对确认，响应丢失后重试遇版本冲突）' };
         return { status: 'conflict', message: j.error || '数据已在其他窗口被修改，请刷新页面后重试' };
       }
-      if (r.status === 401 || r.status === 403) return { status: 'conflict', message: j.error || '登录状态失效，请重新登录后继续' };
+      if (r && (r.status === 401 || r.status === 403)) return { status: 'conflict', message: j.error || '登录状态失效，请重新登录后继续' };
       // 失败后按原 id 核对：可能是响应丢失
       var verifyFailed = await verifySmartEventsSaved([tradeId], scope);
       if (!isSmartImportScopeCurrent(scope)) return { status: 'scope_changed', message: '账户已切换，旧结果已丢弃' };
@@ -1710,15 +1805,18 @@ async function addTradeInternal(code, name, direction, price, quantity, date, im
       // P1-4 服务端幂等命中：同批次重复导入 = 已保存；刷新数据与版本
       if (j.data) applyLedgerData(j.data);
       renderAll();
-      return { status: 'duplicate', message: '该笔交易已存在（同批次重复导入），已跳过' };
+      return { status: 'duplicate', message: '该笔交易已存在（同批次重复导入），已跳过' + closeNoteOf(j.closePrice) };
     }
     if (j.data) applyLedgerData(j.data);
-    // 过去日期的交易：触发历史净值精确回填（Tushare 历史回补，不近似）；失败与交易已保存分开提示
-    if (date && date < todayCN()) {
+    // 过去日期的交易：触发历史净值精确回填（Tushare 历史回补，不近似）；收盘价、净值重算
+    // 与现金收益结算分别报告，任何一项待补都不能伪装成完全成功。
+    let navNote = '';
+    if (date && date < todayCN() && j.closePrice?.status !== 'pending') {
       try {
         const rr = await window.tradeLedgerApi.recomputeNav(scope.account, date);
         if (!isSmartImportScopeCurrent(scope)) return { status: 'scope_changed', message: '账户已切换，旧结果已丢弃' };
         const jj = rr.payload;
+        navNote = navNoteOf(jj);
         if (jj && jj.ok) {
           var refreshed = await loadData(scope.account);
           if (!isSmartImportScopeCurrent(scope)) return { status: 'scope_changed', message: '账户已切换，旧结果已丢弃' };
@@ -1727,11 +1825,13 @@ async function addTradeInternal(code, name, direction, price, quantity, date, im
       } catch (e) {
         if (!isSmartImportScopeCurrent(scope)) return { status: 'scope_changed', message: '账户已切换，旧结果已丢弃' };
         renderAll();
-        return { status: 'saved', message: '已记录 ' + (direction === 'buy' ? '买入' : '卖出') + ' ' + (name || code) + '（历史净值重算失败，可稍后在净值页重试）' };
+        return { status: 'saved', message: '已记录 ' + (direction === 'buy' ? '买入' : '卖出') + ' ' + (name || code)
+          + closeNoteOf(j.closePrice) + '（历史净值重算失败，可稍后在净值页重试）' };
       }
     }
     renderAll();
-    return { status: 'saved', message: '已记录 ' + (direction === 'buy' ? '买入' : '卖出') + ' ' + (name || code) };
+    return { status: 'saved', message: '已记录 ' + (direction === 'buy' ? '买入' : '卖出') + ' ' + (name || code)
+      + closeNoteOf(j.closePrice) + navNote };
   } catch (e) {
     if (!isSmartImportScopeCurrent(scope)) return { status: 'scope_changed', message: '账户已切换，旧结果已丢弃' };
     // 网络异常：结果未知，先按原 id 核对是否已落库

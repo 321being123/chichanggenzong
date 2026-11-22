@@ -204,6 +204,15 @@ async function main() {
         const dates = Array.isArray(params[0]) ? params[0] : [params[0]].filter(Boolean);
         return { rows: dates.map(value => calendarRow(String(value).slice(0, 10))).filter(Boolean) };
       }
+      if (sql.includes('daily_prices') && sql.includes('jsonb_to_recordset')) {
+        const pairs = JSON.parse(params[2] || '[]');
+        const rows = [
+          { date: '2026-09-24', code: '600000', price: 10, quality: 'confirmed', is_final: true },
+          { date: '2026-09-24', code: '00700', price: 20, quality: 'confirmed', is_final: true },
+          { date: '2026-09-25', code: '00700', price: 22, quality: 'confirmed', is_final: true },
+        ];
+        return { rows: rows.filter(r => pairs.some(p => p.code === r.code && p.date === r.date)) };
+      }
       if (sql.includes('FROM daily_prices')) {
         const cutoff = String(params[3]).slice(0, 10);
         return { rows: cutoff < '2026-09-25'
@@ -274,6 +283,14 @@ async function main() {
       }
       // 2026-09-25 是 A 股休市日、港股开市日：A 股基准价必须落在 09-24（最近应有收盘日），
       // 港股基准价落在 09-25。基准价日期与市场最近应有收盘日不一致时归因不算完整。
+      if (sql.includes('daily_prices') && sql.includes('jsonb_to_recordset')) {
+        const pairs = JSON.parse(params[2] || '[]');
+        const rows = [
+          { code: '600000', date: '2026-09-24', price: 10, quality: 'confirmed', is_final: true },
+          { code: '00700', date: '2026-09-25', price: 20, quality: 'confirmed', is_final: true },
+        ];
+        return { rows: rows.filter(r => pairs.some(p => p.code === r.code && p.date === r.date)) };
+      }
       if (sql.includes('FROM daily_prices')) return { rows: [
         { code: '600000', date: '2026-09-24', price: 10, quality: 'confirmed', is_final: true },
         { code: '00700', date: '2026-09-25', price: 20, quality: 'confirmed', is_final: true },
@@ -328,7 +345,19 @@ async function main() {
     };
     marketState.invalidateMarketStateCache();
     pool.query = async (sql, params = []) => {
-      if (sql.includes('FROM market.trade_calendar')) return { rows: [calendarRow('2026-07-01')] };
+      if (sql.includes('FROM market.trade_calendar')) {
+        const dates = Array.isArray(params[0]) ? params[0] : [params[0]];
+        return { rows: dates.map(value => calendarRow(String(value).slice(0, 10))).filter(Boolean) };
+      }
+      if (sql.includes('daily_prices') && sql.includes('jsonb_to_recordset')) {
+        const pairs = JSON.parse(params[2] || '[]');
+        const rows = [
+          { code: '600000', date: '2026-06-30', price: 10, quality: 'confirmed', is_final: true },
+          { code: '600000', date: '2026-07-01', price: 11, quality: 'confirmed', is_final: true },
+          { code: '00700', date: '2026-06-30', price: 20, quality: 'confirmed', is_final: true },
+        ];
+        return { rows: rows.filter(r => pairs.some(p => p.code === r.code && p.date === r.date)) };
+      }
       if (sql.includes('FROM daily_prices')) return { rows: [
         { code: '600000', date: params[3] === '2026-07-01' ? '2026-07-01' : '2026-06-30', price: params[3] === '2026-07-01' ? 11 : 10, quality: 'confirmed', is_final: true },
         { code: '00700', date: '2026-06-30', price: 20, quality: 'confirmed', is_final: true },

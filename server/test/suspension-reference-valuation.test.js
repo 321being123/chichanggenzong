@@ -55,7 +55,8 @@ const { computeNavHistoryTotals, buildNavPerformance } = require('../services/na
     };
     let suspensionQueries = 0;
     const query = (sql, params) => {
-      if (String(sql).includes('jsonb_to_recordset')) suspensionQueries++;
+      // 共享候选也使用 jsonb_to_recordset；停牌证据只看实际停牌 SQL。
+      if (String(sql).includes('stock_suspend_calendar')) suspensionQueries++;
       return client.query(sql, params);
     };
     const totals = await computeNavHistoryTotals('fixture', 'account', data, query);

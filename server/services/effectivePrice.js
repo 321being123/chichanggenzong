@@ -681,4 +681,8 @@ module.exports = {
   shanghaiClock,
   POLICY_VERSION,
   QUALITY_RANK,
+  PRIVATE_SOURCES,
+  codeVariants,
+  pickBestByQuality,
+  detectConflictOnDate,
 };

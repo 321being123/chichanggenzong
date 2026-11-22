@@ -488,7 +488,7 @@ function getTodayProfit(position, overrideRate) {
 // 估值列颜色（与可转债估值页一致，bond-valuation.css 已加载）
 var POS_EVAL_CLASS = { '低估': 'val-low', '偏低估': 'val-low2', '合理': 'val-mid', '偏高估': 'val-high1', '高估': 'val-high', '风险折价': 'val-risk', '数据不足': 'val-none' };
 var POS_SUBTYPE_CLASS = { '沪市': 'pos-subtype-sh', '深市': 'pos-subtype-sz', '京市': 'pos-subtype-bj', '港股': 'pos-subtype-hk', '美股': 'pos-subtype-us', '可转债': 'pos-subtype-cb', '信用债': 'pos-subtype-credit', '基金/ETF': 'pos-subtype-fund' };
-var POSITION_PRICE_QUALITY_TEXT = { stale_reference: '历史价未确认', derived_reference: '导入派生价', unverified_reference: '未核实价', legacy_unverified: '遗留价未确认' };
+var POSITION_PRICE_QUALITY_TEXT = { stale_reference: '历史价未确认', derived_reference: '导入派生价', unverified_reference: '未核实价', legacy_unverified: '遗留价未确认', manual_delisted: '退市固定价' };
 function getPositionTrendClass(value, hasData, zeroIsPositive) {
   if (!hasData) return 'muted-cell';
   if (zeroIsPositive && Number(value) === 0) return 'positive';

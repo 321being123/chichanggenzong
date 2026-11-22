@@ -47,7 +47,11 @@ function fakeQuery({ daily = [], cache = [], positions = [] } = {}) {
       }) };
     }
     if (/FROM market_quote_cache/.test(sql)) return { rows: cache };
-    if (/FROM positions/.test(sql)) return { rows: positions };
+    if (/FROM positions/.test(sql)) {
+      const [username, accountName] = params;
+      return { rows: positions.filter(row =>
+        (row.username || 'fixture-user') === username && (row.accountName || '账户甲') === accountName) };
+    }
     throw new Error('unexpected valuation query: ' + sql);
   };
 }
@@ -435,6 +439,147 @@ async function run() {
     assert.strictEqual(verified.prices.get(priceKey('CN', '000003')).price, 8, '有核实依据的 A 股行可以正常使用');
   }
 
+  // 22. 明确退市债（404002）：同账户持仓保留的 2.362 是当前估值依据，
+  // 必须压过 legacy_unverified 旧日价，不能把旧交易日当成最近应有收盘日。
+  {
+    const resolved = await resolveEffectivePrices({
+      username: 'fixture-user', accountName: '账户甲', asOf: WEEKEND, mode: 'current',
+      subjects: subjects(['404002']),
+      query: fakeQuery({
+        daily: [
+          { code: '404002', date: EARLIER_DATE, price: 2.30, quality: 'legacy_unverified', market: 'CN' },
+          { code: '404002', date: CLOSE_DATE, price: 2.31, quality: 'legacy_unverified', market: 'CN' },
+        ],
+        positions: [{ code: '404002', name: '搜特退债', price: 2.362, quantity: 1000, subtype: '京市' }],
+      }),
+    });
+    const row = resolved.prices.get(priceKey('CN', '404002'));
+    assert.strictEqual(row.price, 2.362, '退市债必须使用本账户保留的固定价');
+    assert.strictEqual(row.quality, 'manual_delisted', '退市固定价必须是独立质量，不能混入市场收盘价');
+    assert.strictEqual(row.priceKind, 'manual_delisted');
+    assert.strictEqual(row.sourceRef, 'positions.price', '来源必须明确指向本账户持仓价');
+    assert.strictEqual(row.tradeDate, null, '退市固定价没有可核实交易日');
+    assert.strictEqual(row.expectedCloseDate, null, '退市固定价没有应有收盘日，不得套用普通交易日');
+    assert.ok(row.reasonCodes.includes('price_manual_delisted'));
+    assert.strictEqual(resolved.status.complete, true, '退市固定价是该账户当前资产的完整有效依据');
+    assert.strictEqual(resolved.status.manualDelisted, 1, '退市固定价必须单独计数');
+    assert.strictEqual(resolved.status.confirmed, 0, '退市固定价不能混入已确认市场收盘价');
+    assert.strictEqual(resolved.status.untrusted, 0, '退市固定价不是不可信价格');
+    assert.strictEqual(resolved.status.legacy, 0, '选中的退市固定价不得再被计成遗留未核验价');
+  }
+
+  // 即使缓存里残留日期合格的盘中报价，也应使用本账户退市固定价。
+  {
+    const RealDate = global.Date;
+    const timestamp = CLOSE_DATE + 'T02:00:00Z';
+    global.Date = class extends RealDate {
+      constructor(...args) { super(...(args.length ? args : [timestamp])); }
+    };
+    try {
+      const resolved = await resolveEffectivePrices({
+        username: 'fixture-user', accountName: '账户甲', asOf: CLOSE_DATE, at: timestamp,
+        mode: 'current', subjects: subjects(['404002']),
+        query: fakeQuery({
+          cache: [{ code: '404002', market: 'CN', source: 'test', price: 5, quote_time: timestamp }],
+          positions: [{ code: '404002', name: '搜特退债', price: 2.362, quantity: 1, subtype: '京市' }],
+        }),
+      });
+      assert.strictEqual(resolved.prices.get(priceKey('CN', '404002')).price, 2.362);
+      assert.strictEqual(resolved.status.manualDelisted, 1);
+    } finally {
+      global.Date = RealDate;
+      invalidateMarketStateCache();
+    }
+  }
+
+  // 23. 退市债没有保留固定价：旧日价不能被冒充成固定价，也不能让估值变完整。
+  {
+    const resolved = await resolveEffectivePrices({
+      username: 'fixture-user', accountName: '账户甲', asOf: WEEKEND, mode: 'current',
+      subjects: subjects(['404002']),
+      query: fakeQuery({
+        daily: [{ code: '404002', date: CLOSE_DATE, price: 2.31, quality: 'legacy_unverified', market: 'CN' }],
+        positions: [{ code: '404002', name: '搜特退债', price: 0, quantity: 1000, subtype: '京市' }],
+      }),
+    });
+    const row = resolved.prices.get(priceKey('CN', '404002'));
+    assert.strictEqual(row.quality, 'legacy_unverified', '缺固定价时仍按旧日价原样标质量');
+    assert.notStrictEqual(row.quality, 'manual_delisted', '不得拿共享旧日价冒充退市固定价');
+    assert.notStrictEqual(row.sourceRef, 'positions.price');
+    assert.strictEqual(resolved.status.complete, false, '缺固定价的退市债不能构成完整估值');
+    assert.strictEqual(resolved.status.manualDelisted, 0);
+  }
+
+  // 24. 同类退市债按名称识别（不写死 404002）：岭南退债同样使用本账户固定价。
+  {
+    const resolved = await resolveEffectivePrices({
+      username: 'fixture-user', accountName: '账户甲', asOf: WEEKEND, mode: 'current',
+      subjects: subjects(['128044']),
+      query: fakeQuery({
+        positions: [{ code: '128044', name: '岭南退债', price: 71.37, quantity: 10, subtype: '沪市' }],
+      }),
+    });
+    const row = resolved.prices.get(priceKey('CN', '128044'));
+    assert.strictEqual(row.price, 71.37, '名称明确的退市债也必须使用固定价');
+    assert.strictEqual(row.quality, 'manual_delisted');
+    assert.strictEqual(resolved.status.manualDelisted, 1);
+  }
+
+  // 25. 普通证券仍走严格门禁：持仓价不能借退市规则变成有效估值。
+  {
+    const resolved = await resolveEffectivePrices({
+      username: 'fixture-user', accountName: '账户甲', asOf: WEEKEND, mode: 'current',
+      subjects: subjects(['600519']),
+      query: fakeQuery({
+        positions: [{ code: '600519', name: '贵州茅台', price: 1800, quantity: 100, subtype: '沪市' }],
+      }),
+    });
+    const row = resolved.prices.get(priceKey('CN', '600519'));
+    assert.strictEqual(row.quality, 'unverified_reference', '普通证券持仓价仍是未核实参考价');
+    assert.strictEqual(row.priceKind, 'position_cache');
+    assert.strictEqual(resolved.status.manualDelisted, 0);
+    assert.strictEqual(resolved.status.complete, false);
+  }
+
+  // 26. 历史模式不从当前持仓倒推退市固定价：当时没有落库价格就保持缺口。
+  {
+    const resolved = await resolveEffectivePrices({
+      username: 'fixture-user', accountName: '账户甲', asOf: CLOSE_DATE, mode: 'historical',
+      subjects: subjects(['404002']),
+      query: fakeQuery({
+        positions: [{ code: '404002', name: '搜特退债', price: 2.362, quantity: 1000, subtype: '京市' }],
+      }),
+    });
+    assert.strictEqual(resolved.prices.size, 0, '历史重建不得使用今天的退市固定价');
+    assert.strictEqual(resolved.missing.length, 1);
+    assert.strictEqual(resolved.missing[0].reason, 'historical_price_not_recorded');
+    assert.strictEqual(resolved.status.complete, false);
+  }
+
+  // 27. 账户与市场隔离：别的账户的退市固定价、跨市场的同代码持仓都不能拿来用。
+  {
+    const resolved = await resolveEffectivePrices({
+      username: 'user-b', accountName: '账户乙', asOf: WEEKEND, mode: 'current',
+      subjects: subjects(['404002']),
+      query: fakeQuery({
+        positions: [{ code: '404002', name: '搜特退债', price: 2.362, quantity: 1000, subtype: '京市',
+          username: 'user-a', accountName: '账户甲' }],
+      }),
+    });
+    assert.strictEqual(resolved.prices.size, 0, '不得读取其他账户的退市固定价');
+    assert.strictEqual(resolved.missing.length, 1);
+
+    const crossMarket = await resolveEffectivePrices({
+      username: 'fixture-user', accountName: '账户甲', asOf: WEEKEND, mode: 'current',
+      subjects: [{ code: '128044', subtype: '港股' }],
+      query: fakeQuery({
+        positions: [{ code: '128044', name: '岭南退债', price: 71.37, quantity: 10, subtype: '沪市' }],
+      }),
+    });
+    assert.strictEqual(crossMarket.prices.size, 0, 'A 股账户的退市固定价不得被港股同代码持仓使用');
+    assert.strictEqual(crossMarket.status.complete, false);
+  }
+
   // 10. 旧机制收口：浏览器不再写收盘价、页面不再有休市校准、归因不再产出校准项。
   {
     const quote = read('public/shared/core-quote.js');
@@ -447,6 +592,17 @@ async function run() {
     const attribution = read('server/services/navAttribution.js');
     assert.ok(!attribution.includes('valuationAdjustment'), '归因不得再产出估值校准项');
     assert.ok(!attribution.includes('closedPriceCorrections'), '归因不得再产出逐证券校准列表');
+    // 退市识别只有一份：统一估值与净值归因/快照共用 delistedBond，不能各自写 404002。
+    const effective = read('server/services/effectivePrice.js');
+    const delistedRule = read('server/domain/delistedBond.js');
+    assert.ok(effective.includes("require('../domain/delistedBond')"), '统一估值必须复用退市识别模块');
+    assert.ok(attribution.includes("require('../domain/delistedBond')"), '净值归因必须复用退市识别模块');
+    assert.ok(!effective.includes('404002') && !attribution.includes('404002'),
+      '统一估值和归因不得各写一份 404002 判定');
+    assert.ok(delistedRule.includes('404002'), '退市识别模块是唯一判定入口');
+    assert.ok(tables.includes("manual_delisted: '退市固定价'"), '持仓价提示必须写明“退市固定价”');
+    assert.ok(read('server/services/positionExport.js').includes("'manual_delisted'"),
+      '导出必须认可该账户私有的退市固定价');
     const route = read('server/routes/accounts.js');
     assert.ok(route.includes('DAILY_PRICE_WRITE_RETIRED'), '旧收盘写接口必须明确返回 409 与升级提示');
     const migration = read('server/db/migrations/era15ValuationPriceEvidence.js');

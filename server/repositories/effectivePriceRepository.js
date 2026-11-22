@@ -44,7 +44,7 @@ async function listQuoteCacheCandidates(params, client = pool) {
 async function listPositionPriceCache(params, client = pool) {
   const [username, accountName, codes] = params;
   return client.query(
-    `SELECT code, price::float8 AS price, quantity::float8 AS quantity, subtype
+    `SELECT code, name, price::float8 AS price, quantity::float8 AS quantity, subtype
        FROM positions
       WHERE username = $1 AND account_name = $2 AND code = ANY($3::text[])`,
     [username, accountName, codes]

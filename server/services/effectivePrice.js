@@ -7,8 +7,9 @@ const repository = require('../repositories/effectivePriceRepository');
 const { getMarketState } = require('./marketState');
 const classifyCode = require('../../public/js/code-classify');
 const { canonicalizeSecurityCode } = require('./securityIdentity');
+const { isDelistedBond } = require('../domain/delistedBond');
 
-const POLICY_VERSION = 'effective-price-v1';
+const POLICY_VERSION = 'effective-price-v2';
 // 最近多少个交易日参与选价/冲突核对（同一证券同一交易日的跨账户/跨用户记录都会读到）。
 const RECENT_DATE_WINDOW = 6;
 const CLOSE_DATE_LOOKBACK_DAYS = 15;
@@ -189,7 +190,7 @@ async function resolveEffectivePrices(options = {}) {
   const nowAt = options.at ? new Date(options.at) : new Date();
 
   const empty = { asOf, mode, revision: null, prices: new Map(), missing: [], conflicts: [],
-    status: { complete: true, partial: false, confirmed: 0, candidate: 0, unverified: 0,
+    status: { complete: true, partial: false, confirmed: 0, candidate: 0, manualDelisted: 0, unverified: 0,
       stale: 0, legacy: 0, untrusted: 0, conflictCount: 0, missingCount: 0,
       expectedCloseDates: {}, reasonCodes: [] } };
   // 纯现金账户（没有任何需要报价的正数量证券）并不缺价，不能因此判成估值不完整。
@@ -304,6 +305,7 @@ async function resolveEffectivePrices(options = {}) {
       partial,
       confirmed: counts.confirmed,
       candidate: counts.candidate,
+      manualDelisted: counts.manualDelisted,
       unverified: counts.unverified,
       stale: counts.stale,
       legacy: counts.legacy,
@@ -321,6 +323,9 @@ async function resolveEffectivePrices(options = {}) {
 // 其余（收盘后仍未确认终盘的候选、遗留未核验、过期、兼容持仓价）都不可信。
 function isTrustworthyPrice(row, stateCache, mode, isToday, asOf) {
   if (row.quality === 'confirmed') return true;
+  // 退市债固定价只在当前估值生效：它来自本账户保留的最后退市价，不是市场收盘价，
+  // 但对该账户的当前资产是有效依据；历史重建仍只认当时落库的已确认收盘事实。
+  if (row.quality === 'manual_delisted') return mode === 'current';
   if (row.quality !== 'candidate') return false;
   if (mode !== 'current' || !isToday) return false;
   const live = stateCache.get(`${row.market}|${asOf}|live`);
@@ -343,9 +348,10 @@ function dedupeSubjects(subjects) {
 }
 
 function countQuality(prices) {
-  const counts = { confirmed: 0, candidate: 0, unverified: 0, stale: 0, legacy: 0 };
+  const counts = { confirmed: 0, candidate: 0, manualDelisted: 0, unverified: 0, stale: 0, legacy: 0 };
   for (const row of prices.values()) {
     if (row.quality === 'confirmed') counts.confirmed += 1;
+    else if (row.quality === 'manual_delisted') counts.manualDelisted += 1;
     else if (row.quality === 'legacy_unverified' || row.quality === 'derived_reference') counts.legacy += 1;
     else if (row.quality === 'stale_reference' || row.priceKind === 'stale_close') counts.stale += 1;
     else if (row.quality === 'unverified_reference') counts.unverified += 1;
@@ -378,6 +384,13 @@ function resolveOne(context) {
     variants.includes(String(row.code)) && normalizeMarket(row.market) === market);
   const marketPositionRows = positionRows.filter(row =>
     variants.includes(String(row.code)) && positionMarketOf(row) === market);
+  // 明确退市债已没有后续行情：账户里保留的最后退市价是当前估值的唯一有效依据。
+  // 只认本账户、本市场且为正价的持仓行，识别规则与净值归因/快照共用 delistedBond。
+  // 历史模式不从当前持仓倒推价格，缺价仍按历史缺口处理。
+  const fixedDelisted = mode === 'current' && market === 'CN'
+    ? marketPositionRows.find(row => Number(row.quantity) > 0 && Number.isFinite(Number(row.price))
+      && Number(row.price) > 0 && isDelistedBond(row, code))
+    : null;
   if (!shared.length && !derived.length && !marketCacheRows.length && !marketPositionRows.length) {
     return empty(mode === 'historical' ? 'historical_price_not_recorded' : 'price_not_recorded');
   }
@@ -387,6 +400,17 @@ function resolveOne(context) {
   let fromDaily = false;
   let marketState = null;
 
+  // 退市固定价优先于遗留/过期日价：后者不能冒充当前收盘价，也不能把旧交易日套到最近应有收盘日。
+  // 该价格不是市场收盘事实，不回写 daily_prices，只在当前模式作为本账户的有效估值。
+  if (fixedDelisted) {
+    selected = {
+      price: Number(fixedDelisted.price), tradeDate: null, quoteAt: null,
+      sourceRef: 'positions.price', quality: 'manual_delisted', revision: 0,
+      priceKind: 'manual_delisted',
+    };
+    priceKind = 'manual_delisted';
+  }
+
   if (mode === 'current' && isToday) {
     marketState = stateCache.get(`${market}|${asOf}|live`) || null;
   }
@@ -394,7 +418,7 @@ function resolveOne(context) {
   // 盘中与盘中休息（午休/午后未开）都用当日最新有效报价：休息时最新报价就是上午最后成交价，
   // 不能因为此刻不在连续竞价就退回上一交易日的收盘价。
   const intraday = phase === 'in_session' || phase === 'break';
-  if (mode === 'current' && marketState && marketState.status === 'open' && intraday) {
+  if (!selected && mode === 'current' && marketState && marketState.status === 'open' && intraday) {
     // 只接受来源报价时刻落在当日、且报价时间不晚于估值截止的实时候选。
     const todayCache = cacheRows
       .filter(row => variants.includes(String(row.code)) && normalizeMarket(row.market) === market)
@@ -485,9 +509,13 @@ function resolveOne(context) {
   const reasonCodes = [];
   if (selected.priceKind === 'stale_close') reasonCodes.push('price_date_before_expected_close');
   if (selected.priceKind === 'derived_close') reasonCodes.push('price_derived_from_import_anchor');
+  if (selected.quality === 'manual_delisted') reasonCodes.push('price_manual_delisted');
   if (selected.quality === 'unverified_reference') reasonCodes.push('price_unverified_reference');
   if (selected.quality === 'legacy_unverified') reasonCodes.push('price_legacy_unverified');
   if (conflict) reasonCodes.push('cross_account_price_conflict');
+
+  // 退市固定价没有可核实的交易日，也没有“应有收盘日”：两者都留空，不能借用普通证券的日期。
+  const resolvedExpectedCloseDate = selected.quality === 'manual_delisted' ? null : expectedCloseDate;
 
   return {
     conflict,
@@ -501,7 +529,7 @@ function resolveOne(context) {
       sourceRef: selected.sourceRef,
       quality: selected.quality,
       revision: selected.revision,
-      expectedCloseDate,
+      expectedCloseDate: resolvedExpectedCloseDate,
       market,
       reasonCodes,
     },

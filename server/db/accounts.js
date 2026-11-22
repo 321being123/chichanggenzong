@@ -132,6 +132,8 @@ async function applyUnifiedValuation({ username, accountName, positions, query, 
       partial: !complete,
       confirmed: resolved.status.confirmed,
       candidate: resolved.status.candidate,
+      // 退市债固定价属于本账户的有效当前估值，单独计数，不能混入市场收盘价。
+      manualDelisted: resolved.status.manualDelisted,
       unverified: resolved.status.unverified,
       stale: resolved.status.stale,
       // 有价格但资格不可信（如仅有历史账户价、导入派生价）单独计数，页面才能解释“为什么估值不完整”。

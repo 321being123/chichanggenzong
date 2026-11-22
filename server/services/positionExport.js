@@ -31,7 +31,8 @@ function buildPositionExport(result) {
     }
     // 价格存在但资格不足（遗留未核验/兼容持仓价/过期参考价/派生价）时，
     // 只能显示这个参考价本身，不得据此输出市值和比例——否则导出里会出现“看起来已完成”的金额。
-    const qualified = ['confirmed', 'candidate'].includes(String(position.priceQuality || ''));
+    // 退市债固定价是本账户的有效当前估值（不是市场收盘价），允许输出市值与比例。
+    const qualified = ['confirmed', 'candidate', 'manual_delisted'].includes(String(position.priceQuality || ''));
     if (!qualified) {
       missingCodes.push(code);
       const label = position.subtype === '港股' ? 'HK$' + price.toFixed(2) : price.toFixed(2);
@@ -50,8 +51,10 @@ function buildPositionExport(result) {
     }
     const marketValue = price * quantity * (isHk ? hkRate : 1);
     positionValue += marketValue;
-    rows.push([code, code + suffix, position.name || '',
-      position.subtype === '港股' ? 'HK$' + price.toFixed(2) : price.toFixed(2),
+    const displayPrice = position.priceQuality === 'manual_delisted'
+      ? price + '（退市固定价）'
+      : (isHk ? 'HK$' + price.toFixed(2) : price.toFixed(2));
+    rows.push([code, code + suffix, position.name || '', displayPrice,
       quantity, Math.round(marketValue * 100) / 100, null, position.type || '', position.subtype || '']);
   }
 

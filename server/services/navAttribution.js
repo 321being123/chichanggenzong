@@ -3,6 +3,7 @@ const NavMath = require('../../public/shared/nav-math');
 // 净值涨跌归因的唯一后端实现。
 // 前端只展示结果，不再自行拼接价格、汇率和账本公式。
 const { pool } = require('../db/connection');
+const { isDelistedBond } = require('../domain/delistedBond');
 const businessDateFormatter = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' });
 
 // 日价行的市场：缺 market（迁移前旧行/测试夹具）时按代码长度推断（5 位港股、6 位 A 股），
@@ -251,13 +252,7 @@ function priceAt(priceMap, date, code, isHk) {
 
 // 退市债券可能已没有外部行情，但持仓里保留了用户填写的最后退市价。
 // 仅对明确标记为退市债的证券启用该固定价，避免把普通证券的旧价格误当成归因依据。
-function isDelistedBond(row, code) {
-  const plainCode = String(code || row && (row.code || row.instrumentCode) || '')
-    .toUpperCase().replace(/\.(SH|SZ|BJ|HK|US)$/i, '');
-  const name = String(row && row.name || '').replace(/\s+/g, '');
-  return plainCode === '404002' || /退债|退市债|退市转债/.test(name);
-}
-
+// 识别规则与统一估值共用 delistedBond，不在这里复制一份代码/名称判定。
 function manualDelistedPrice(data, code, currentPosition) {
   const candidates = [];
   if (isDelistedBond(currentPosition, code)) candidates.push(currentPosition && currentPosition.price);

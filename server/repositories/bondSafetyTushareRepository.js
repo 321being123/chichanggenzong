@@ -35,7 +35,36 @@ async function loadIssuanceTypes(codes, client = pool) {
 }
 
 
-function loadBondSafetyFacts(params, client = pool) { return client.query(`
+// 安全性只消费同一报告期、同一合并口径的资产负债表；Tushare 摘要保留原始键，
+// 理杏仁摘要不含全量科目，因此同一 report_id 的 CAS 宽表 bs_tcl 作为缺失回退。
+// 任何跨报告、跨版本、跨来源、跨市场或非 CNY 的值都不借用；真实缺失保持 null，0 保持 0。
+function finiteField(value) {
+  // 只接受真实数字或数字字符串；布尔、数组、对象经 Number() 会变成 1/0 等假财务值。
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+  if (typeof value !== 'string') return null;
+  const text = value.trim();
+  if (text === '' || text === 'null') return null;
+  const n = Number(text);
+  return Number.isFinite(n) ? n : null;
+}
+
+function resolveCurrentLiability(row = {}) {
+  const raw = finiteField(row.balance_payload && row.balance_payload.total_cur_liab);
+  if (raw !== null) return raw;
+  if (String(row.balance_source_code || '').toLowerCase() !== 'lixinger_official') return null;
+  if (row.balance_report_id == null || row.balance_wide_report_id == null) return null;
+  if (String(row.balance_report_id) !== String(row.balance_wide_report_id)) return null;
+  if (row.balance_source_id == null || row.balance_wide_source_id == null
+    || String(row.balance_source_id) !== String(row.balance_wide_source_id)) return null;
+  if (row.balance_source_version && row.balance_wide_source_version
+    && String(row.balance_source_version) !== String(row.balance_wide_source_version)) return null;
+  if (String(row.balance_wide_currency || '').toUpperCase() !== 'CNY') return null;
+  if (String(row.balance_wide_standard || '').toUpperCase() !== 'CAS') return null;
+  return finiteField(row.balance_wide_current_liability);
+}
+
+async function loadBondSafetyFacts(params, client = pool) {
+  const { rows } = await client.query(`
     WITH market_day AS (
       SELECT COALESCE($1::date, MAX(trade_date)) AS trade_date
         FROM market.convertible_bond_daily_metrics
@@ -87,6 +116,11 @@ function loadBondSafetyFacts(params, client = pool) { return client.query(`
     SELECT b.*,ci.company_id,
            ind.raw_payload AS indicator_payload, bal.raw_payload AS balance_payload,
            inc.raw_payload AS income_payload, fp.period_end::text AS financial_report_end_date,
+           bal.report_id AS balance_report_id,bal.source_id AS balance_source_id,
+           bal.source_version AS balance_source_version,bds.source_code AS balance_source_code,
+           wide.report_id AS balance_wide_report_id,wide.source_id AS balance_wide_source_id,
+           wide.source_version AS balance_wide_source_version,wide.currency_code AS balance_wide_currency,
+           wide.accounting_standard AS balance_wide_standard,wide.bs_tcl AS balance_wide_current_liability,
            inc.period_end::text AS income_period,bal.period_end::text AS balance_period,ind.period_end::text AS indicator_period,
            COALESCE(n.industry_name,b.stock_raw->>'industry','') AS industry
       FROM bonds b
@@ -102,16 +136,22 @@ function loadBondSafetyFacts(params, client = pool) { return client.query(`
          ORDER BY r.period_end DESC LIMIT 1
       ) fp ON true
       LEFT JOIN LATERAL (SELECT r.raw_payload,r.period_end FROM fundamental.financial_reports r WHERE r.company_id=ci.company_id AND r.report_kind='indicator' AND r.report_type='1' AND r.is_current_version AND r.period_end=fp.period_end AND upper(COALESCE(r.raw_payload->>'ts_code','')) ~ '^[0-9]{6}[.](SH|SZ|BJ)$' ORDER BY r.announced_at DESC NULLS LAST LIMIT 1) ind ON true
-      LEFT JOIN LATERAL (SELECT r.raw_payload,r.period_end FROM fundamental.financial_reports r WHERE r.company_id=ci.company_id AND r.report_kind='balance' AND r.report_type='1' AND r.is_current_version AND r.period_end=fp.period_end AND upper(COALESCE(r.raw_payload->>'ts_code','')) ~ '^[0-9]{6}[.](SH|SZ|BJ)$' ORDER BY r.announced_at DESC NULLS LAST LIMIT 1) bal ON true
+      LEFT JOIN LATERAL (SELECT r.raw_payload,r.period_end,r.report_id,r.source_id,r.source_version FROM fundamental.financial_reports r WHERE r.company_id=ci.company_id AND r.report_kind='balance' AND r.report_type='1' AND r.is_current_version AND r.period_end=fp.period_end AND upper(COALESCE(r.raw_payload->>'ts_code','')) ~ '^[0-9]{6}[.](SH|SZ|BJ)$' ORDER BY r.announced_at DESC NULLS LAST LIMIT 1) bal ON true
+      -- 只按选中的 balance.report_id 关联 CAS 宽表；不按公司/期间二次选择，避免借到另一报告或版本。
+      LEFT JOIN fundamental.statement_balance_cas wide ON wide.report_id=bal.report_id
+      LEFT JOIN ops.data_sources bds ON bds.source_id=bal.source_id
       LEFT JOIN LATERAL (SELECT r.raw_payload,r.period_end FROM fundamental.financial_reports r WHERE r.company_id=ci.company_id AND r.report_kind='income' AND r.report_type='1' AND r.is_current_version AND r.period_end=fp.period_end AND upper(COALESCE(r.raw_payload->>'ts_code','')) ~ '^[0-9]{6}[.](SH|SZ|BJ)$' ORDER BY r.announced_at DESC NULLS LAST LIMIT 1) inc ON true
       LEFT JOIN LATERAL (SELECT n.industry_name FROM core.company_industry_memberships m JOIN core.industry_nodes n ON n.industry_node_id=m.industry_node_id WHERE m.company_id=ci.company_id AND m.is_current ORDER BY m.announced_at DESC NULLS LAST LIMIT 1) n ON true
     WHERE NOT EXISTS (SELECT 1 FROM fundamental.convertible_bond_issuance issuance
       WHERE issuance.instrument_id=b.instrument_id AND issuance.issue_type IN ('定向','私募'))
-  `, params); }
+  `, params);
+  return { rows: rows.map(row => ({ ...row, balance_current_liability: resolveCurrentLiability(row) })) };
+}
 
 module.exports = {
   loadBondSafetyFacts,
   loadFinancialCache,
   loadIssuanceTypes,
   saveFinancialCache,
+  resolveCurrentLiability,
 };

@@ -10,15 +10,7 @@ function bondListFloatingScroll() { return null; }
 function bondListSyncFloatingScroll() { if (window.BusinessTable) window.BusinessTable.sync(); }
 // 旧版监听曾排除 event.target.id === 'bond-list-floating-scroll'，现由共享组件内部处理。
 // 旧版定位选择器 document.querySelector('#main-bond-safety > .bond-header') 已作为 BusinessTable 的 top 作用域传入。
-var BOND_LIST_COLUMNS = [
-  ['bond_code','代码'],['bond_name','转债名称'],['price','现价'],['change_pct','涨跌幅'],['stock_name','正股名称'],
-  ['stock_price','正股价'],['stock_change_pct','正股涨跌'],['stock_pb','正股PB'],['convert_price','转股价'],['conversion_value','转股价值'],
-  ['conversion_premium','转股溢价率'],['bond_value','纯债价值'],['bond_floor_premium','债底溢价率'],['rating','债券评级'],['safety','安全性'],
-  ['option_value','期权价值'],['theoretical_value','理论价值'],['theoretical_deviation','理论偏离度'],['stock_volatility','正股波动率'],
-  ['call_trigger_price','强赎触发价'],['bond_market_cap_ratio','转债占比'],['asset_liability_ratio','资产负债率'],['fund_holding_ratio','基金持仓'],
-  ['maturity_date','到期时间'],['remaining_years','剩余年限'],['remain_size','剩余规模(亿元)'],['amount','成交额(万元)'],['turnover_rate','换手率'],
-  ['maturity_yield_pre_tax','到期税前收益'],['double_low','双低']
-];
+var BOND_LIST_COLUMNS = window.BondListContract.COLUMNS;
 var BOND_LIST_PERCENT = { change_pct:1, stock_change_pct:1, conversion_premium:1, bond_floor_premium:1, theoretical_deviation:1,
   stock_volatility:1, bond_market_cap_ratio:1, asset_liability_ratio:1, fund_holding_ratio:1, turnover_rate:1,
   maturity_yield_pre_tax:1, put_yield_pre_tax:1, put_yield_after_tax:1 };
@@ -95,6 +87,31 @@ function bondListSetRefreshButton(refreshing) {
   if (!button) return;
   button.disabled = Boolean(refreshing);
   button.textContent = refreshing ? '刷新中...' : '刷新行情';
+}
+function bondListSetExportButton(busy, text) {
+  var button = document.getElementById('bond-list-export');
+  if (!button) return;
+  button.disabled = Boolean(busy);
+  button.textContent = text || '导出 Excel';
+}
+// 只发送当前列表 30 列，不带 data_status/stock_code 等内部或非展示字段。
+function bondListExportRow(row) {
+  var projected = {};
+  BOND_LIST_COLUMNS.forEach(function(col) {
+    var value = row[col[0]];
+    projected[col[0]] = value === undefined ? null : value;
+  });
+  return projected;
+}
+function bondListDownload(blob, tradeDate) {
+  var url = URL.createObjectURL(blob);
+  var link = document.createElement('a');
+  link.href = url;
+  link.download = '上市可转债_' + String(tradeDate || '').slice(0, 10) + '.xlsx';
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
 }
 function bondListStartAutoRefresh() {
   if (bondListState.refreshTimer) return;

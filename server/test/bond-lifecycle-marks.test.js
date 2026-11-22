@@ -104,4 +104,50 @@ check('样式与加载顺序符合统一样式要求', () => {
   assert(marksAt < html.indexOf('js/bond-safety.js'), '共享标记脚本必须先于安全性列表脚本加载');
 });
 
+check('安全性样式引用的设计令牌全部可解析', () => {
+  const css = fs.readFileSync(path.join(ROOT, 'public', 'css', 'bond-safety.css'), 'utf8');
+  const shared = fs.readFileSync(path.join(ROOT, 'public', 'shared', 'style.css'), 'utf8');
+  const defined = new Set(Array.from(shared.matchAll(/(--[a-z0-9-]+)\s*:/g), match => match[1]));
+  const used = new Set(Array.from(css.matchAll(/var\((--[a-z0-9-]+)/g), match => match[1]));
+  const missing = Array.from(used).filter(token => !defined.has(token));
+  assert.deepStrictEqual(missing, [], '安全性样式存在未定义的 CSS 令牌：' + missing.join(', '));
+});
+
+check('安全性评级与到期三档使用已定义且彼此不同的强调色', () => {
+  const css = fs.readFileSync(path.join(ROOT, 'public', 'css', 'bond-safety.css'), 'utf8');
+  const shared = fs.readFileSync(path.join(ROOT, 'public', 'shared', 'style.css'), 'utf8');
+  const token = selector => {
+    const match = css.match(new RegExp(selector.replace('.', '\\.') + '\\s*\\{([^}]*)\\}'));
+    assert(match, '缺少样式规则：' + selector);
+    const color = match[1].match(/(?:^|;)\s*background:var\((--[a-z0-9-]+)\)/);
+    return color && color[1];
+  };
+  assert.strictEqual(token('.bond-rating-safe'), '--rating-safe-bg');
+  assert.strictEqual(token('.bond-rating-low'), '--rating-low-bg');
+  assert.strictEqual(token('.bond-rating-medium'), '--rating-medium-bg');
+  assert.strictEqual(token('.bond-rating-high'), '--rating-high-bg');
+  assert(/\.bond-rating-safe\s*\{[^}]*color:var\(--rating-safe-fg\)/.test(css), '安全评级文字色必须使用已定义的 fg 令牌');
+  assert(/\.bond-rating-low\s*\{[^}]*color:var\(--rating-low-fg\)/.test(css), '低风险评级文字色必须使用已定义的 fg 令牌');
+  assert(/\.bond-rating-medium\s*\{[^}]*color:var\(--rating-medium-fg\)/.test(css), '中风险评级文字色必须使用已定义的 fg 令牌');
+  assert(/\.bond-rating-high\s*\{[^}]*color:var\(--rating-high-fg\)/.test(css), '高风险评级文字色必须使用已定义的 fg 令牌');
+
+  const colorToken = selector => {
+    const match = css.match(new RegExp(selector.replace('.', '\\.') + '\\s*\\{[^}]*color:var\\((--[a-z0-9-]+)\\)'));
+    assert(match, '缺少颜色令牌：' + selector);
+    return match[1];
+  };
+  const colors = [
+    colorToken('.bond-lifecycle-mark'),
+    colorToken('.bond-lifecycle-mark-expiry-6m'),
+    colorToken('.bond-lifecycle-mark-expiry-1y'),
+  ];
+  assert.deepStrictEqual(colors, ['--up', '--rating-high-accent', '--rating-medium-accent'], '到期三档必须分别使用已定义的红、橘、黄强调色');
+  const values = colors.map(name => {
+    const match = shared.match(new RegExp(name.replace(/-/g, '\\-') + '\\s*:\\s*([^;]+);'));
+    assert(match, '共享样式缺少令牌定义：' + name);
+    return match[1].trim().toLowerCase();
+  });
+  assert.strictEqual(new Set(values).size, 3, '到期三档颜色必须彼此不同');
+});
+
 console.log('bond-lifecycle-marks: ' + pass + ' 项通过');

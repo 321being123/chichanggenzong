@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "lastReviewed": "2026-11-16",
+  "lastReviewed": "2026-11-22",
   "rulesVersion": "layer-coupling-5",
   "defaultRole": "pending_contract",
   "scan": {
@@ -653,6 +653,13 @@
       "note": "5.3 窄许可：只读费用预览，与服务端同源"
     },
     {
+      "path": "public/shared/bond-list-contract.js",
+      "role": "shared_pure",
+      "batch": 4,
+      "status": "registered",
+      "note": "上市可转债列与文本/百分比格式定义：浏览器 View 与 Node 导出共用，0 SQL/0 联网/0 DOM"
+    },
+    {
       "path": "public/shared/core-returns.js",
       "role": "shared_render",
       "batch": 4,
@@ -886,6 +893,13 @@
       "batch": 3,
       "status": "registered",
       "note": "service_legacy 存量终态归位：按实际职责登记（0 SQL/0 联网/0 DOM，扫描器核验）"
+    },
+    {
+      "path": "server/services/bondListExport.js",
+      "role": "shared_pure",
+      "batch": 3,
+      "status": "registered",
+      "note": "上市可转债导出请求校验与 Excel 工作簿构建：只序列化 Presenter 提交的当前展示行，0 SQL/0 联网/0 DOM"
     },
     {
       "path": "server/services/bondSafetyExport.js",

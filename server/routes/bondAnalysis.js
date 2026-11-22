@@ -8,6 +8,7 @@ const {
   buildConvertibleBondAnalysisFromDatabase,
 } = require('../services/convertibleBondAnalysis');
 const { getBondList } = require('../services/convertibleBondListService');
+const { validateBondListExportPayload, buildBondListWorkbook } = require('../services/bondListExport');
 
 const router = express.Router();
 
@@ -30,6 +31,22 @@ router.get('/search/securities', asyncHandler(async (req, res) => {
   const prefix = `${keyword}%`;
   const rows = await bondAnalysisRepository.searchSecurities({ like, prefix, exact: keyword });
   res.json({ data: rows });
+}));
+
+// 上市可转债导出：只序列化 Presenter 点击时提交的当前展示行，不回查、不重算、不访问外部。
+// POST 与列表同为公开只读边界；全局 CSRF 来源校验和 JSON 请求体大小限制照常生效。
+router.post('/bonds/export', asyncHandler(async (req, res) => {
+  const payload = validateBondListExportPayload(req.body);
+  if (!payload.ok) return res.status(400).json({ error: payload.error });
+  const workbook = await buildBondListWorkbook(payload.rows);
+  const buffer = await workbook.xlsx.writeBuffer();
+  const asOf = payload.tradeDate || new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(new Date());
+  const filename = `上市可转债_${asOf}.xlsx`;
+  res.setHeader('Cache-Control', 'private, no-store');
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(filename)}`);
+  res.setHeader('Content-Length', buffer.length);
+  res.end(Buffer.from(buffer));
 }));
 
 // 上市可转债列表：默认读取本地快照，行情刷新通过统一服务端缓存完成。

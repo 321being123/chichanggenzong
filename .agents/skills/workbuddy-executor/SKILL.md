@@ -1,16 +1,16 @@
 ---
 name: workbuddy-executor
-description: Use this skill when the user mentions workbuddy, WorkBuddy or CodeBuddy, or asks to delegate coding execution to WorkBuddy/CodeBuddyCLI (DeepSeek) for repository investigation, implementation, targeted tests and handoff, with independent review and verification by the current agent.
+description: Use this skill when the user mentions workbuddy, WorkBuddy or CodeBuddy, or asks to delegate coding execution to WorkBuddy/CodeBuddyCLI (DeepSeek) for repository investigation, implementation, targeted tests and handoff, with independent review and verification by the coordinating agent.
 ---
 
 # WorkBuddy (CodeBuddyCLI) 协同执行闭环
 
-用户把开发工作交给 WorkBuddy 时，通过本地 `codebuddy.cmd` 委派一段有明确结果的工作。WorkBuddy 负责查、改、测和交接，Codex 负责定边界、复核关键判断并独立验收。
+用户把开发工作交给 WorkBuddy 时，通过本地 `codebuddy.cmd` 委派一段有明确结果的工作。WorkBuddy 负责查、改、测和交接，协调 Agent 负责定边界、复核关键判断并独立验收。
 
 ## 1. 职责分工
 
 - **WorkBuddy / CodeBuddyCLI（默认 `deepseek-v4.1-flash`）**负责在目标工作树读取仓库规则和权威文档，排查原因与影响入口，拟定局部方案并实施，补反例、跑定向回归，更新任务卡和受影响的权威文档。
-- **Codex**明确用户要的结果、已知业务口径、授权边界和验收条件。把相关证据与仓库指针交给 WorkBuddy，保留业务判断、敏感环境核对、关键差异审查和独立验收。
+- **协调 Agent**明确用户要的结果、已知业务口径、授权边界和验收条件。把相关证据与仓库指针交给 WorkBuddy，保留业务判断、敏感环境核对、关键差异审查和独立验收。
 
 ## 2. Windows 环境与调用前提
 
@@ -26,10 +26,10 @@ description: Use this skill when the user mentions workbuddy, WorkBuddy or CodeB
 
 ## 3. 标准执行闭环
 
-### Step 1：定义结果与验收（Codex）
+### Step 1：定义结果与验收（协调 Agent）
 
 - 简述现象、预期结果、任务工作树、已知证据和允许范围。给出有关文档、事故或代码入口的指针。源码排查、局部设计和文件定位交给 WorkBuddy。
-- 边界清楚的任务一次委派排查、实现、测试和交接。涉及业务口径歧义、鉴权、迁移或共享链路时，先让 WorkBuddy 返回带文件位置的根因、拟改范围和需要决定的事项。Codex 复核关键假设后，沿用同一会话执行。
+- 边界清楚的任务一次委派排查、实现、测试和交接。涉及业务口径歧义、鉴权、迁移或共享链路时，先让 WorkBuddy 返回带文件位置的根因、拟改范围和需要决定的事项。协调 Agent 复核关键假设后，沿用同一会话执行。
 - 遇到复发缺陷，要求 WorkBuddy 核对仓库已有规则、事故记录和实际调用链，检查已有规则覆盖了哪些入口。回归同时覆盖既有入口和失败入口。退市固定价案例同时核对总览、完整账户、导出和净值。 [INC-0053](../../../docs/incidents/INC-0053-退市固定价未进入当前估值.md)
 
 ### Step 2：派发执行（Executor）
@@ -58,13 +58,13 @@ try {
 ### Step 3：证据交接与独立验收
 
 1. WorkBuddy 交回简短摘要，包含根因及文件位置、关键改动、实际执行的测试命令与结果、文档位置、未验项或阻塞。完整日志保留在原位置，摘要提供定位信息。
-2. Codex 独立检查 `git status`、差异清单和关键 diff，核对实现是否符合业务规则、是否越界，以及关键契约、权限、数据质量和失败分支是否保持正确。检查相应反例，确认测试没有跳过、弱化断言或吞掉异常。遇到证据冲突时再展开相关源码和日志。
-3. Codex 独立复跑能证明原问题修复和关键边界的测试。WorkBuddy 已通过的其余专项，按仓库规则核对当前代码树、测试环境和结果证据后采用。影响边界不清、代码在测试后变化、证据不全或出现回归时，补跑受影响的检查。
+2. 协调 Agent 独立检查 `git status`、差异清单和关键 diff，核对实现是否符合业务规则、是否越界，以及关键契约、权限、数据质量和失败分支是否保持正确。检查相应反例，确认测试没有跳过、弱化断言或吞掉异常。遇到证据冲突时再展开相关源码和日志。
+3. 协调 Agent 独立复跑能证明原问题修复和关键边界的测试。WorkBuddy 已通过的其余专项，按仓库规则核对当前代码树、测试环境和结果证据后采用。影响边界不清、代码在测试后变化、证据不全或出现回归时，补跑受影响的检查。
 
 ### Step 4：打回重改（Loop）
 若阶段验收不通过（回归测试失败、diff 存在上述隐患、不符合规范）：
 - 已知会话 ID 时，续跑在上方命令中加 `--resume <session-id>`。只在确认最近会话就是本任务时用 `-c`。审查意见同样通过 UTF-8 标准输入传递。本机曾用多行位置参数续跑，执行方只收到开头；若它报告缺少审查条目，先按标准输入重发并检查收到的条目，再继续验收。
 - 修复后回到 **Step 3** 重新验收，直到所有问题解决、定向回归测试全部通过。
 
-### Step 5：开发交接与发布验证（Coordinator）
+### Step 5：开发交接与发布验证（协调 Agent）
 按 `AGENTS.md` 与部署流程的测试分级完成交接。普通开发交接保留专项和关联回归，发布全量在最终整合树执行或按规则复用。发现回归及时返回 Step 4。

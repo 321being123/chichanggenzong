@@ -17,6 +17,14 @@ function priceRowMarket(row) {
   return String((row && row.code) || '').length === 5 ? 'HK' : 'CN';
 }
 
+// 港股 5/6 位是同一只证券的别名：分组、冲突与选价统一归一到 5 位键。
+// 仅对 HK 生效，A 股 000001 与港股 00001 仍按市场隔离，绝不合并。
+function priceCodeKey(code, market) {
+  const text = String(code || '').trim();
+  if (market === 'HK' && /^0\d{5}$/.test(text)) return text.slice(1);
+  return text;
+}
+
 function dateKey(value) {
   if (!value) return '';
   if (value instanceof Date) {
@@ -290,89 +298,179 @@ function snapshotTotal(data, nav, quantities, priceFor, rate) {
   return Number.isFinite(total) ? total : null;
 }
 
+// 历史资产与归因共用的单日选价：同日 confirmed 冲突整日不可用；否则按
+// effectivePrice 的质量排序择优，并保留该行是否具备 confirmed/final 资格。
+// 只返回一条业务结果，避免两处各写一套“同日质量/冲突”算法。
+function selectDailyPrice(rows, code, market) {
+  const date = rows.length ? dateKey(rows[0].date) : null;
+  if (!date) return { row: null, conflict: null };
+  const { detectConflictOnDate, pickBestByQuality } = require('./effectivePrice');
+  const conflict = detectConflictOnDate(code, market, rows, date, 'confirmed');
+  if (conflict) return { row: null, conflict };
+  const positive = rows.filter(row => Number(row.price) > 0);
+  const qualified = positive.filter(row =>
+    String(row.quality || 'legacy_unverified') === 'confirmed' || row.is_final === true);
+  const chosen = pickBestByQuality(qualified) || pickBestByQuality(positive);
+  if (!chosen) return { row: null, conflict: null };
+  return {
+    row: {
+      date, code: String(chosen.code), market: priceRowMarket(chosen),
+      price: Number(chosen.price),
+      quality: String(chosen.quality || 'legacy_unverified'),
+      isFinal: chosen.is_final === true,
+      source: chosen.source || null, evidence: chosen.evidence || {},
+      qualified: qualified.includes(chosen),
+    },
+    conflict: null,
+  };
+}
+
 async function computeNavHistoryTotals(username, accountName, data, query = pool.query.bind(pool)) {
   const navs = (data.navHistory || []).slice().sort((a, b) => dateKey(a.date).localeCompare(dateKey(b.date)));
   if (!navs.length) return {};
-  // 一次读取账户已落库价格，不逐日期查询或触发外部采集。
-  const { rows } = await layerRepository.listHistoryPrices(query, [username, accountName, dateKey(navs[navs.length - 1].date)]);
-  const { rows: fxRows } = await layerRepository.listHistoryFxRates(query, [dateKey(navs[navs.length - 1].date)]);
-  const fx = new Map(fxRows.map(r => [dateKey(r.rate_date), Number(r.rate)]));
-  // 历史价格同样按资格推进：只有已确认收盘（或明确终盘）才允许用于历史资产重建，
-  // 候选价与遗留未核验价只保留缺口，不参与计算。
-  const prices = new Map();
-  const confirmedPrices = new Map();
+  const { expectedCloseDateFor, resolveSuspendedReferencesBatch, loadSwapReferenceCandidates,
+    resolveSwapReference, PRIVATE_SOURCES, codeVariants } = require('./effectivePrice');
   const currentPositions = aggregateCurrentPositions(data.positions);
-  // 历史重建必须按“该市场在该日的最近应有收盘日”核对价格日期：
-  // 否则周四缺收盘价时会被周三的确认价静默填上，算出看似完整的历史资产。
-  const { expectedCloseDateFor, resolveSuspendedReferencesBatch, loadSwapReferenceCandidates, resolveSwapReference } = require('./effectivePrice');
-  const swapCandidates = (data.trades || []).some(t => t.direction === 'adjust')
-    ? await loadSwapReferenceCandidates(username, accountName, query) : [];
-  const marketStateCache = new Map();
-  const suspensionRequests = [];
-  const pendingTotals = [];
-  let cursor = 0;
+  const maxNavDate = dateKey(navs[navs.length - 1].date);
   const totals = {};
   const suspensionEvidence = {};
   const swapEvidence = {};
   Object.defineProperty(totals, 'suspensionEvidence', { value: suspensionEvidence, enumerable: false });
   Object.defineProperty(totals, 'swapEvidence', { value: swapEvidence, enumerable: false });
+  const marketStateCache = new Map();
+  const basePending = [];
+  // 共享候选只按“市场 + 代码 + 该市场应有收盘日”精确读取，不拉取其它日期的共享历史。
+  const expectedPairs = new Map();
   for (const nav of navs) {
     const date = dateKey(nav.date);
-    while (cursor < rows.length && dateKey(rows[cursor].date) <= date) {
-      const row = rows[cursor];
-      // 按「市场 + 代码」分键：同形代码（港股 00001 / A 股 000001）不能互相顶替。
-      const key = `${priceRowMarket(row)}|${String(row.code)}`;
-      const candidate = {
-        date: dateKey(row.date),
-        price: Number(row.price),
-        qualified: String(row.quality || 'legacy_unverified') === 'confirmed' || row.is_final === true,
-        quality: String(row.quality || 'legacy_unverified'), isFinal: row.is_final === true,
-        source: row.source || null, evidence: row.evidence || {},
-      };
-      prices.set(key, candidate);
-      if (candidate.quality === 'confirmed' && candidate.isFinal) confirmedPrices.set(key, candidate);
-      cursor++;
-    }
     if (nav.snapshotSource === 'manual_carry_forward' && !isAuthoritativeSnapshot(nav)) {
       totals[date] = null;
       continue;
     }
+    if (isAuthoritativeSnapshot(nav)) {
+      totals[date] = nav.totalAsset != null && Number.isFinite(Number(nav.totalAsset))
+        ? Number(nav.totalAsset) : null;
+      continue;
+    }
     // 历史重建必须具有当时的持仓锚点；当前持仓回退只用于首页实时估值，不能证明旧持仓。
-    if (!isAuthoritativeSnapshot(nav) && !latestImportedPositionAnchor(data, date)) {
+    if (!latestImportedPositionAnchor(data, date)) {
       totals[date] = null;
       continue;
     }
-    const rate = Number(nav.hkRate) > 0 ? Number(nav.hkRate) : fx.get(date);
+    const rate = Number(nav.hkRate) > 0 ? Number(nav.hkRate) : null;
     const quantities = quantityAsOf(data, date, nav.snapshot_at);
     // 按当日实际持有的市场逐个算出最近应有收盘日。
     const expectedByMarket = new Map();
-    for (const [code, row] of quantities) {
+    for (const [identity, row] of quantities) {
       if (!(Number(row.quantity) > 0)) continue;
-      const isHk = row.market === 'HK' || row.subtype === '港股' || currentPositions.get(code)?.subtype === '港股';
+      const isHk = row.market === 'HK' || row.subtype === '港股' || currentPositions.get(identity)?.subtype === '港股';
       const market = isHk ? 'HK' : 'CN';
-      if (expectedByMarket.has(market)) continue;
-      expectedByMarket.set(market, await expectedCloseDateFor(market, date, query, marketStateCache, 'historical'));
+      const code = String(row.code || identity.split('|').slice(1).join('|'));
+      if (!expectedByMarket.has(market)) {
+        expectedByMarket.set(market,
+          await expectedCloseDateFor(market, date, query, marketStateCache, 'historical'));
+      }
+      const expected = expectedByMarket.get(market);
+      if (!expected) continue;
+      for (const variant of codeVariants(code, isHk)) {
+        expectedPairs.set(`${market}|${variant}|${expected}`, { market, code: variant, date: expected });
+      }
+    }
+    basePending.push({ date, nav, quantities, rate, expectedByMarket });
+  }
+  const { rows: fxRows } = await layerRepository.listHistoryFxRates(query, [maxNavDate]);
+  const fx = new Map(fxRows.map(r => [dateKey(r.rate_date), Number(r.rate)]));
+  for (const item of basePending) {
+    if (item.rate == null) item.rate = fx.get(item.date);
+  }
+  if (!basePending.length) return totals;
+
+  const pairs = [...expectedPairs.values()];
+  // 休市快照可能依赖更早的收盘，查询下界从实际需要的日期计算。
+  const lowerBound = pairs.reduce((earliest, pair) => pair.date < earliest ? pair.date : earliest,
+    basePending[0].date);
+  const [ownResult, priorResult, sharedResult] = await Promise.all([
+    layerRepository.listOwnPricesInRange(query, [username, accountName, lowerBound, maxNavDate]),
+    layerRepository.listOwnConfirmedBefore(query, [username, accountName, lowerBound]),
+    pairs.length
+      ? layerRepository.listSharedConfirmedAt(query, [username, accountName, JSON.stringify(pairs), PRIVATE_SOURCES])
+      : { rows: [] },
+  ]);
+  // 先按「市场|代码 → 日期」归组，再用共享的单日选价函数择优/判冲突；
+  // 不再在游标里重复实现同日质量偏好。
+  const grouped = new Map();
+  for (const row of [...priorResult.rows, ...ownResult.rows, ...sharedResult.rows]) {
+    const market = priceRowMarket(row);
+    const key = `${market}|${priceCodeKey(row.code, market)}`;
+    const priceDate = dateKey(row.date);
+    if (!grouped.has(key)) grouped.set(key, new Map());
+    const byDate = grouped.get(key);
+    if (!byDate.has(priceDate)) byDate.set(priceDate, []);
+    byDate.get(priceDate).push(row);
+  }
+  const selectedRows = [];
+  const conflictKeys = new Set();
+  for (const [key, byDate] of grouped) {
+    const [market, code] = key.split('|');
+    for (const [priceDate, priceRows] of byDate) {
+      const picked = selectDailyPrice(priceRows, code, market);
+      if (picked.conflict) {
+        conflictKeys.add(`${key}|${priceDate}`);
+        selectedRows.push({ key, date: priceDate, code, market, price: null,
+          quality: 'conflict', isFinal: false, qualified: false, conflict: true });
+      } else if (picked.row) {
+        selectedRows.push({ key, ...picked.row, conflict: false });
+      }
+    }
+  }
+  selectedRows.sort((a, b) => a.date.localeCompare(b.date) ||
+    String(a.code).localeCompare(String(b.code)) || a.market.localeCompare(b.market));
+  const selectedByKeyDate = new Map();
+  for (const row of selectedRows) selectedByKeyDate.set(`${row.key}|${row.date}`, row);
+  // 历史价格同样按资格推进：只有已确认收盘（或明确终盘）才允许用于历史资产重建，
+  // 候选价与遗留未核验价只保留缺口，不参与计算。
+  const confirmedPrices = new Map();
+  const exactAt = (market, code, expected) => {
+    if (!expected) return null;
+    return selectedByKeyDate.get(`${market}|${priceCodeKey(code, market)}|${expected}`) || null;
+  };
+  const conflictAt = (code, market, expected) => Boolean(expected) &&
+    conflictKeys.has(`${market}|${priceCodeKey(code, market)}|${expected}`);
+  const swapCandidates = (data.trades || []).some(t => t.direction === 'adjust')
+    ? await loadSwapReferenceCandidates(username, accountName, query) : [];
+  const suspensionRequests = [];
+  const pendingTotals = [];
+  let cursor = 0;
+  for (const item of basePending) {
+    const { date, nav, quantities, rate, expectedByMarket } = item;
+    while (cursor < selectedRows.length && selectedRows[cursor].date <= date) {
+      const row = selectedRows[cursor];
+      if (row.qualified && row.quality === 'confirmed' && row.isFinal) {
+        confirmedPrices.set(row.key, row);
+      }
+      cursor++;
     }
     const requestedPrices = new Map();
     const swapPrices = new Map();
-    if (!isAuthoritativeSnapshot(nav)) {
-      for (const row of quantities.values()) {
-        if (!(Number(row.quantity) > 0) || row.market !== 'CN') continue;
-        const key = `CN|${row.code}`;
-        const expected = expectedByMarket.get('CN');
-        const exact = prices.get(key);
-        if (!expected || (exact && exact.qualified && exact.date === expected)) continue;
-        const swap = resolveSwapReference({code:row.code,market:'CN',quantity:row.quantity,
-          valuationDate:date,expectedCloseDate:expected,candidates:swapCandidates});
-        if (swap) { swapPrices.set(key,swap); continue; }
-        requestedPrices.set(key, suspensionRequests.length);
-        suspensionRequests.push({ code: row.code, market: 'CN', candidate: confirmedPrices.get(key), targetDate: expected });
-      }
+    for (const row of quantities.values()) {
+      if (!(Number(row.quantity) > 0) || row.market !== 'CN') continue;
+      const key = `CN|${row.code}`;
+      const expected = expectedByMarket.get('CN');
+      const exact = exactAt('CN', row.code, expected);
+      if (!expected || (exact && exact.qualified)) continue;
+      // 同一应有收盘日已有 confirmed 冲突时，当日保持缺失；不能落入停牌/换券/
+      // 固定价路径把冲突掩盖成另一个有效价格。
+      if (conflictAt(row.code, 'CN', expected)) continue;
+      const swap = resolveSwapReference({code:row.code,market:'CN',quantity:row.quantity,
+        valuationDate:date,expectedCloseDate:expected,candidates:swapCandidates});
+      if (swap) { swapPrices.set(key,swap); continue; }
+      requestedPrices.set(key, suspensionRequests.length);
+      suspensionRequests.push({ code: row.code, market: 'CN', candidate: confirmedPrices.get(key), targetDate: expected });
     }
-    pendingTotals.push({ date, nav, quantities, rate, expectedByMarket, requestedPrices, swapPrices, pricesAtDate: new Map(prices) });
+    pendingTotals.push({ date, nav, quantities, rate, expectedByMarket, requestedPrices, swapPrices });
   }
   const references = await resolveSuspendedReferencesBatch(suspensionRequests, query);
-  for (const { date, nav, quantities, rate, expectedByMarket, requestedPrices, swapPrices, pricesAtDate } of pendingTotals) {
+  for (const { date, nav, quantities, rate, expectedByMarket, requestedPrices, swapPrices } of pendingTotals) {
     const suspensionPrices = new Map([...requestedPrices].map(([key, index]) => [key, references.get(index)]).filter(([, value]) => value));
     if (suspensionPrices.size) suspensionEvidence[date] = [...suspensionPrices.entries()].map(([key, value]) => ({
       code: key.slice(3), market: 'CN', ...value,
@@ -380,11 +478,13 @@ async function computeNavHistoryTotals(username, accountName, data, query = pool
     if (swapPrices.size) swapEvidence[date]=[...swapPrices.values()];
     totals[date] = snapshotTotal(data, nav, quantities, (code, isHk) => {
       const market = isHk ? 'HK' : 'CN';
-      const row = pricesAtDate.get(`${market}|${code}`) ||
-        (isHk && /^\d{5}$/.test(code) ? pricesAtDate.get(`${market}|${code.padStart(6, '0')}`) : null);
-      const expected = expectedByMarket.get(isHk ? 'HK' : 'CN');
+      const expected = expectedByMarket.get(market);
+      // 同一应有收盘日存在 confirmed 冲突时，必须保持缺失，即使本账户还有旧价、
+      // 停牌参考、换券参考或固定价也不能把冲突当日补成完整。
+      if (conflictAt(code, market, expected)) return null;
+      const row = exactAt(market, code, expected);
       // 价格必须正是该市场当日的应有收盘价：日期不符（含缺当日价）即为缺口。
-      if (row && row.qualified && row.price > 0 && expected && row.date === expected) return row.price;
+      if (row && row.qualified && row.price > 0) return row.price;
       const suspended = suspensionPrices.get(`${market}|${code}`);
       if (suspended) return suspended.price;
       const swap = swapPrices.get(`${market}|${code}`);
@@ -569,31 +669,145 @@ async function computeNavAttribution(username, accountName, data, currentTotal, 
     }
   }
   const prevQty = quantityAsOf(data, prevDate, previous.snapshot_at);
-  // 身份键是「市场|代码」；SQL 只按代码取候选行，市场过滤在本地按身份做。
+  // 身份键是「市场|代码」；价格只按明确的目标日期读取，市场/代码在本地按身份匹配。
   const relevantIdentities = [...new Set([...prevQty.keys(), ...currentByCode.keys()])];
-  const relevantCodes = new Set(relevantIdentities.map(key => key.split('|').slice(1).join('|')));
-  const [previousPricesResult, currentPricesResult] = await Promise.all([
-    layerRepository.listBasisPrices(query, [username, accountName, [...relevantCodes], prevDate]),
-    layerRepository.listEarlierBasisPrices(query, [username, accountName, [...relevantCodes], currentDate]),
-  ]);
-  // 日价按「市场 + 代码」分键：港股 00001 与 A 股 000001 同形，只按代码会互相顶替。
-  // 同一「市场 + 代码」可能来自两种行（显式 market 与迁移前 market 为空），
-  // 归并时必须按日期取最新，不能让后读到的旧行覆盖新行。
-  const priceRowsByCode = (rows) => {
-    const map = new Map();
-    for (const row of rows) {
-      const key = `${priceRowMarket(row)}|${String(row.code)}`;
-      const candidate = {
-        date: dateKey(row.date), price: Number(row.price), market: priceRowMarket(row),
-        quality: String(row.quality || 'legacy_unverified'), isFinal: row.is_final === true,
-      };
-      const previous = map.get(key);
-      if (!previous || candidate.date > previous.date) map.set(key, candidate);
+  const { expectedCloseDateFor, resolveSuspendedReference, PRIVATE_SOURCES, codeVariants } = require('./effectivePrice');
+  // 基准时点各市场的「最近应有收盘日」：用已落库交易日历回看，不按星期几猜。
+  const basisStateCache = new Map();
+  const basisSuspensionCache = new Map();
+  const prevExpectedByMarket = new Map();
+  const currentExpectedByMarket = new Map();
+  const basisMarkets = new Set(relevantIdentities.map(identity => identity.split('|')[0])
+    .filter(market => market === 'CN' || market === 'HK'));
+  for (const market of basisMarkets) {
+    prevExpectedByMarket.set(market,
+      await expectedCloseDateFor(market, prevDate, query, basisStateCache, 'historical').catch(() => null));
+    currentExpectedByMarket.set(market,
+      await expectedCloseDateFor(market, currentDate, query, basisStateCache, 'historical').catch(() => null));
+  }
+  const expectedBasisDateFor = market => prevExpectedByMarket.get(market) || null;
+  const expectedCurrentDateFor = market => currentExpectedByMarket.get(market) || null;
+  const basisPairs = new Map();
+  const priorPairs = new Map();
+  const localRefPairs = new Map();
+  for (const identity of relevantIdentities) {
+    const [market, code] = identity.split('|');
+    if (market !== 'CN' && market !== 'HK') continue;
+    const prevExpected = expectedBasisDateFor(market);
+    const currentExpected = expectedCurrentDateFor(market);
+    for (const variant of codeVariants(code, market === 'HK')) {
+      if (prevExpected) {
+        basisPairs.set(`${market}|${variant}|${prevExpected}`, { market, code: variant, date: prevExpected });
+        if (market === 'CN') priorPairs.set(`${market}|${variant}|${prevExpected}`, { market, code: variant, date: prevExpected });
+      }
+      if (currentExpected) {
+        basisPairs.set(`${market}|${variant}|${currentExpected}`, { market, code: variant, date: currentExpected });
+        if (market === 'CN') priorPairs.set(`${market}|${variant}|${currentExpected}`, { market, code: variant, date: currentExpected });
+      }
+      localRefPairs.set(`${market}|${variant}|${prevDate}`, { market, code: variant, date: prevDate });
+      localRefPairs.set(`${market}|${variant}|${currentDate}`, { market, code: variant, date: currentDate });
     }
-    return map;
+  }
+  // 券商导入日的私有固化价是“仅用于数值归因”的派生证据：即使 prevDate 是休市日、
+  // 应有收盘日是前一交易日，也保留该账户在导入日的 nav_import_anchor，并继续标
+  // basisQualified=false / basis_price_not_confirmed；不能用实际上一交易日价改为完整。
+  const importedAnchorDate = previous.snapshotSource === 'imported' ? dateKey(previous.date) : null;
+  const ownPairs = new Map(basisPairs);
+  if (importedAnchorDate) {
+    for (const identity of relevantIdentities) {
+      const [market, code] = identity.split('|');
+      if (market !== 'CN' && market !== 'HK') continue;
+      for (const variant of codeVariants(code, market === 'HK')) {
+        ownPairs.set(`${market}|${variant}|${importedAnchorDate}`, { market, code: variant, date: importedAnchorDate });
+      }
+    }
+  }
+  const pairs = [...basisPairs.values()];
+  const ownPairList = [...ownPairs.values()];
+  const priorList = [...priorPairs.values()];
+  const localRefList = [...localRefPairs.values()];
+  const [ownPricesResult, sharedPricesResult, priorResult, localRefResult] = await Promise.all([
+    ownPairList.length
+      ? layerRepository.listOwnPricesAt(query, [username, accountName, JSON.stringify(ownPairList)])
+      : { rows: [] },
+    pairs.length
+      ? layerRepository.listSharedConfirmedAt(query, [username, accountName, JSON.stringify(pairs), PRIVATE_SOURCES])
+      : { rows: [] },
+    priorList.length
+      ? layerRepository.listOwnConfirmedBeforePairs(query, [username, accountName, JSON.stringify(priorList)])
+      : { rows: [] },
+    localRefList.length
+      ? layerRepository.listOwnLatestBeforePairs(query, [username, accountName, JSON.stringify(localRefList)])
+      : { rows: [] },
+  ]);
+  const anchorByKey = new Map();
+  if (importedAnchorDate) {
+    for (const row of ownPricesResult.rows) {
+      if (dateKey(row.date) !== importedAnchorDate) continue;
+      if (!PRIVATE_SOURCES.includes(String(row.source || ''))) continue;
+      const market = priceRowMarket(row);
+      anchorByKey.set(`${market}|${priceCodeKey(row.code, market)}`, row);
+    }
+  }
+  const basisRowsByKeyDate = new Map();
+  for (const row of [...ownPricesResult.rows, ...sharedPricesResult.rows]) {
+    const market = priceRowMarket(row);
+    const key = `${market}|${priceCodeKey(row.code, market)}|${dateKey(row.date)}`;
+    if (!basisRowsByKeyDate.has(key)) basisRowsByKeyDate.set(key, []);
+    basisRowsByKeyDate.get(key).push(row);
+  }
+  const selectBasis = (code, market, expected) => {
+    if (!expected) return null;
+    const rows = basisRowsByKeyDate.get(`${market}|${priceCodeKey(code, market)}|${expected}`);
+    if (!rows || !rows.length) return null;
+    const picked = selectDailyPrice(rows, priceCodeKey(code, market), market);
+    return picked.conflict ? { row: null, conflict: picked.conflict } : picked;
   };
-  const previousPriceByCode = priceRowsByCode(previousPricesResult.rows);
-  const currentPriceByCode = priceRowsByCode(currentPricesResult.rows);
+  const conflictRow = (date, market) => ({ date, price: null, market, quality: 'conflict',
+    isFinal: false, conflict: true });
+  const localRefByKeyDate = new Map();
+  for (const row of localRefResult.rows) {
+    const market = priceRowMarket(row);
+    localRefByKeyDate.set(`${market}|${priceCodeKey(row.code, market)}|${row.wanted_date}`, row);
+  }
+  const previousPriceByCode = new Map();
+  const currentPriceByCode = new Map();
+  for (const identity of relevantIdentities) {
+    const [market, code] = identity.split('|');
+    if (market !== 'CN' && market !== 'HK') continue;
+    const key = `${market}|${priceCodeKey(code, market)}`;
+    const anchor = anchorByKey.get(key);
+    if (anchor && Number(anchor.price) > 0) {
+      previousPriceByCode.set(key, {
+        date: dateKey(anchor.date), price: Number(anchor.price), market,
+        quality: String(anchor.quality || 'legacy_unverified'), isFinal: false,
+        qualified: false, source: anchor.source || 'nav_import_anchor',
+      });
+    } else {
+      const prevPicked = selectBasis(code, market, expectedBasisDateFor(market));
+      const prevLocal = localRefByKeyDate.get(`${market}|${priceCodeKey(code, market)}|${prevDate}`);
+      if (prevPicked) previousPriceByCode.set(key,
+        prevPicked.row || conflictRow(expectedBasisDateFor(market), market));
+      else if (prevLocal) previousPriceByCode.set(key, {
+        date: dateKey(prevLocal.date), price: Number(prevLocal.price), market,
+        quality: String(prevLocal.quality || 'legacy_unverified'), isFinal: prevLocal.is_final === true,
+        qualified: false, source: prevLocal.source || null,
+      });
+    }
+    const currentPicked = selectBasis(code, market, expectedCurrentDateFor(market));
+    const currentLocal = localRefByKeyDate.get(`${market}|${priceCodeKey(code, market)}|${currentDate}`);
+    if (currentPicked) currentPriceByCode.set(key,
+      currentPicked.row || conflictRow(expectedCurrentDateFor(market), market));
+    else if (currentLocal) currentPriceByCode.set(key, {
+      date: dateKey(currentLocal.date), price: Number(currentLocal.price), market,
+      quality: String(currentLocal.quality || 'legacy_unverified'), isFinal: currentLocal.is_final === true,
+      qualified: false, source: currentLocal.source || null,
+    });
+  }
+  const priorConfirmed = new Map();
+  for (const row of priorResult.rows) {
+    priorConfirmed.set(`${row.wanted_market}|${row.wanted_code}|${row.wanted_date}`, row);
+  }
   const { rows: fxRows } = await layerRepository.listBasisFxRates(query, [currentDate]);
   const fxByDate = new Map(fxRows.map(r => [dateKey(r.rate_date), Number(r.rate)]));
   // 已保存快照中的汇率是历史事实，行情表只能作为缺失时的明确回退，不能静默使用当前汇率。
@@ -617,28 +831,9 @@ async function computeNavAttribution(username, accountName, data, currentTotal, 
   const unqualifiedBasisCodes = [];
   // 逐个「证券身份」核对：CN|600000 与 HK|00001 是两只证券，不能按代码合并。
   const identities = relevantIdentities;
-  // 基准时点各市场的「最近应有收盘日」：用已落库交易日历回看，不按星期几猜。
-  const { expectedCloseDateFor, resolveSuspendedReference } = require('./effectivePrice');
-  const basisStateCache = new Map();
-  const basisExpectedCache = new Map();
-  const basisSuspensionCache = new Map();
-  function expectedBasisDateFor(market) {
-    if (!basisExpectedCache.has(market)) {
-      const promise = expectedCloseDateFor(market, prevDate, query, basisStateCache, 'historical')
-        .catch(() => null);
-      basisExpectedCache.set(market, promise);
-    }
-    return basisExpectedCache.get(market);
-  }
   function marketPrice(priceMap, code, isHk) {
     const market = isHk ? 'HK' : 'CN';
-    const variants = [code];
-    if (isHk && /^\d{5}$/.test(code)) variants.push(code.padStart(6, '0'));
-    for (const variant of variants) {
-      const row = priceMap.get(`${market}|${variant}`);
-      if (row) return row;
-    }
-    return null;
+    return priceMap.get(`${market}|${priceCodeKey(code, market)}`) || null;
   }
   for (const identity of identities) {
     const p = currentByCode.get(identity);
@@ -649,14 +844,19 @@ async function computeNavAttribution(username, accountName, data, currentTotal, 
     const isHk = market === 'HK' || q.subtype === '港股' || (p && p.subtype === '港股');
     let storedPrevRow = marketPrice(previousPriceByCode, code, isHk);
     let storedCurrentRow = marketPrice(currentPriceByCode, code, isHk);
-    const expectedBasisDate = await expectedBasisDateFor(isHk ? 'HK' : 'CN');
+    const expectedBasisDate = expectedBasisDateFor(isHk ? 'HK' : 'CN');
+    // 同一应有收盘日的 confirmed 冲突必须整只保留缺失，不能落进停牌、换券或固定价兜底。
+    if ((storedPrevRow && storedPrevRow.conflict) || (storedCurrentRow && storedCurrentRow.conflict)) {
+      missing.push(code);
+      previousMarketValue.complete = false;
+      continue;
+    }
     let suspensionReference = null;
     const exactBasis = storedPrevRow && expectedBasisDate && storedPrevRow.date === expectedBasisDate &&
       (storedPrevRow.quality === 'confirmed' || storedPrevRow.isFinal === true);
     if (qty > 0 && market === 'CN' && expectedBasisDate && !exactBasis) {
       try {
-        const { rows } = await layerRepository.listConfirmedBasisBefore(query, [username, accountName, code, expectedBasisDate]);
-        const prior = rows[0];
+        const prior = priorConfirmed.get(`CN|${code}|${expectedBasisDate}`);
         if (prior) suspensionReference = await resolveSuspendedReference({ code, market: 'CN', targetDate: expectedBasisDate,
           candidate: { date: dateKey(prior.date), price: Number(prior.price), quality: prior.quality,
             isFinal: prior.is_final === true, source: prior.source, evidence: prior.evidence },
@@ -672,13 +872,12 @@ async function computeNavAttribution(username, accountName, data, currentTotal, 
     // 否则不能把不可信的旧价与停牌参考价组合成“完整归因”。
     let currentSuspensionReference = null;
     if (suspensionReference && !liveEnd) {
-      const expectedCurrent = await expectedCloseDateFor('CN', currentDate, query, basisStateCache, 'historical').catch(() => null);
+      const expectedCurrent = expectedCurrentDateFor('CN');
       const exactCurrent = storedCurrentRow && expectedCurrent && storedCurrentRow.date === expectedCurrent &&
         (storedCurrentRow.quality === 'confirmed' || storedCurrentRow.isFinal === true);
       if (!exactCurrent && expectedCurrent) {
         try {
-          const { rows } = await layerRepository.listConfirmedBasisBefore(query, [username, accountName, code, expectedCurrent]);
-          const prior = rows[0];
+          const prior = priorConfirmed.get(`CN|${code}|${expectedCurrent}`);
           if (prior) currentSuspensionReference = await resolveSuspendedReference({ code, market: 'CN', targetDate: expectedCurrent,
             candidate: { date: dateKey(prior.date), price: Number(prior.price), quality: prior.quality,
               isFinal: prior.is_final === true, source: prior.source, evidence: prior.evidence },

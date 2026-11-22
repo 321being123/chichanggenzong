@@ -16,6 +16,31 @@ function shiftDate(date, days) {
   base.setUTCDate(base.getUTCDate() + days);
   return base.toISOString().slice(0, 10);
 }
+// 新仓储按明确目标日 JSON 对读取；替身只补 wanted_* 字段，不改变原断言语义。
+function withWantedRows(sql, params, rows) {
+  if (!sql.includes('jsonb_to_recordset')) return rows;
+  const pairs = JSON.parse(params[2] || '[]');
+  if (sql.includes('JOIN LATERAL')) {
+    const inclusive = sql.includes('date <= w.date');
+    const result = [];
+    for (const pair of pairs) {
+      const latest = rows.filter(row => row.code === pair.code &&
+        (inclusive ? row.date <= pair.date : row.date < pair.date))
+        .sort((a, b) => String(b.date).localeCompare(String(a.date)))[0];
+      if (latest) result.push({ ...latest, wanted_market: pair.market,
+        wanted_code: pair.code, wanted_date: pair.date });
+    }
+    return result;
+  }
+  const result = [];
+  for (const pair of pairs) {
+    for (const row of rows) {
+      if (row.code !== pair.code || row.date !== pair.date) continue;
+      result.push({ ...row, wanted_market: pair.market, wanted_code: pair.code, wanted_date: pair.date });
+    }
+  }
+  return result;
+}
 const TODAY = dateKey(new realDate());
 const YESTERDAY = shiftDate(TODAY, -1);
 
@@ -85,8 +110,9 @@ async function main() {
   // 5. 历史资产投影拒绝候选价与遗留未核实价（保留缺口，不用未确认价格重建）。
   {
     const makeQuery = quality => async (sql, params = []) => {
-      if (sql.includes('FROM daily_prices')) {
-        return { rows: [{ date: '2026-09-23', code: '600000', price: 10, quality, is_final: quality === 'confirmed' }] };
+      if (sql.includes('daily_prices')) {
+        const rows = [{ date: '2026-09-23', code: '600000', price: 10, quality, is_final: quality === 'confirmed' }];
+        return { rows: withWantedRows(sql, params, rows) };
       }
       if (sql.includes('FROM market.fx_rates')) return { rows: [] };
       throw new Error('unexpected history query: ' + sql);
@@ -110,10 +136,11 @@ async function main() {
     const wednesday = '2026-09-23';
     const thursday = '2026-09-24';
     assert.ok(isCnTradingDate(wednesday) && isCnTradingDate(thursday), '夹具日期必须是连续两个 A 股交易日');
-    const query = async (sql) => {
-      if (sql.includes('FROM daily_prices')) {
+    const query = async (sql, params = []) => {
+      if (sql.includes('daily_prices')) {
         // 只有周三的确认价，周四缺价。
-        return { rows: [{ date: wednesday, code: '600000', price: 10, quality: 'confirmed', is_final: true }] };
+        const rows = [{ date: wednesday, code: '600000', price: 10, quality: 'confirmed', is_final: true }];
+        return { rows: withWantedRows(sql, params, rows) };
       }
       if (sql.includes('FROM market.fx_rates')) return { rows: [] };
       throw new Error('unexpected history query: ' + sql);
@@ -140,10 +167,11 @@ async function main() {
       static now() { return frozen; }
     };
     invalidateMarketStateCache();
-    const query = async (sql) => {
-      if (sql.includes('FROM daily_prices')) {
+    const query = async (sql, params = []) => {
+      if (sql.includes('daily_prices')) {
         // 只有周三（09-23）的确认价；周四（09-24，实际持有的最近快照日）缺价。
-        return { rows: [{ date: '2026-09-23', code: '600000', market: 'CN', price: 10, quality: 'confirmed', is_final: true }] };
+        const rows = [{ date: '2026-09-23', code: '600000', market: 'CN', price: 10, quality: 'confirmed', is_final: true }];
+        return { rows: withWantedRows(sql, params, rows) };
       }
       if (sql.includes('FROM market.fx_rates')) return { rows: [] };
       throw new Error('unexpected basis query: ' + sql);
@@ -178,16 +206,17 @@ async function main() {
       static now() { return frozen; }
     };
     invalidateMarketStateCache();
-    const query = async (sql) => {
+    const query = async (sql, params = []) => {
       if (sql.includes('trade_calendar')) {
         return { rows: [{ trade_date: '2026-09-24', is_open: true, source_code: 'test_fixture',
           raw_payload: { official_schedule: { is_open: true, session_type: 'full_day', close_time: '16:10', source: 'test_fixture' } } }] };
       }
-      if (sql.includes('FROM daily_prices')) {
-        return { rows: [
+      if (sql.includes('daily_prices')) {
+        const rows = [
           { date: '2026-09-24', code: '000001', market: 'CN', price: 10, quality: 'confirmed', is_final: true },
           { date: '2026-09-24', code: '00001', market: 'HK', price: 20, quality: 'confirmed', is_final: true },
-        ] };
+        ];
+        return { rows: withWantedRows(sql, params, rows) };
       }
       if (sql.includes('FROM market.fx_rates')) return { rows: [] };
       throw new Error('unexpected identity query: ' + sql);

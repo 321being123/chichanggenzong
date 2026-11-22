@@ -16,7 +16,7 @@ const previousDay = (() => {
 
 const originalQuery = pool.query;
 pool.query = async (sql, params = []) => {
-  if (sql.includes('FROM daily_prices')) {
+  if (sql.includes('daily_prices')) {
     // 基准价必须带已确认收盘证据：无 quality 的旧价属于遗留未核验，不能当作完整收益基准。
     return { rows: [{ date: previousDay, code: '600000', price: 11, quality: 'confirmed', is_final: true }, { date: previousDay, code: '160719', price: 11, quality: 'confirmed', is_final: true }, { date: previousDay, code: '600001', price: 10, quality: 'confirmed', is_final: true }, { date: previousDay, code: '600002', price: 10, quality: 'confirmed', is_final: true }] };
   }

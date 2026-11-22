@@ -31,7 +31,7 @@ assert(read('public/index.html').includes('shared/core-earnings.js?v=__APP_VERSI
       { date: '2026-10-13', code: '600000', market: 'CN', price: 12, quality: 'confirmed', is_final: true }
     ] };
   });
-  assert.strictEqual(queries, 2, '所有历史日期共用批量本地查询');
+  assert.strictEqual(queries, 4, '历史范围、下界前确认价、精确共享候选与汇率各一次批量查询，不逐日逐券');
   assert.strictEqual(totals['2026-10-09'], 190, '券商导入不得重建覆盖');
   assert.strictEqual(totals['2026-10-12'], 210, '盘中快照201须按收盘价11及现金100重建为210');
   assert.strictEqual(totals['2026-10-13'], 220);

@@ -279,21 +279,6 @@ async function runRealPrecheck({ industries, startYear = 2011, totalRounds = 15 
       groupNodeIds.add(String(inst.industry_node_id));
       groupNodeNames.add(inst.sw_industry_name);
 
-      if (groupName && inst.sw_industry_name !== groupName) {
-        redCount++;
-        stockReports.push({
-          industryName: groupName,
-          canonicalCode: code,
-          stockName: inst.name,
-          instrumentId: inst.instrument_id,
-          swIndustryName: inst.sw_industry_name,
-          status: 'red',
-          reason: `${code} 库内行业为「${inst.sw_industry_name}」，与分组「${groupName}」不符`,
-          years: [],
-        });
-        continue;
-      }
-
       const idKey = String(inst.instrument_id);
       const bMap = barMap.get(idKey) || new Map();
       const vMap = valMap.get(idKey) || new Map();
@@ -332,17 +317,6 @@ async function runRealPrecheck({ industries, startYear = 2011, totalRounds = 15 
         status: stockStatus,
         years,
       });
-    }
-
-    if (groupNodeIds.size > 1) {
-      universeErrors.push(`分组「${groupName}」内股票分属多个不同 SW2021 行业（${[...groupNodeNames].join('、')}）`);
-    } else if (groupNodeIds.size === 1) {
-      const nodeId = [...groupNodeIds][0];
-      if (groupDbIndustries.has(nodeId)) {
-        universeErrors.push(`多个分组映射到同一 SW2021 行业（${[...groupNodeNames][0]}）`);
-      } else {
-        groupDbIndustries.add(nodeId);
-      }
     }
   }
 

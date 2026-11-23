@@ -32,7 +32,7 @@ async function exportBondSafety() {
     if (bondSafetyState.exportSeq !== seq) return;
     if (typeof showToast === 'function') showToast(error.message || String(error));
   } finally {
-    if (bondSafetyState.exportSeq === seq) bondSafetySetExportButton(false, '导出Excel');
+    if (bondSafetyState.exportSeq === seq) bondSafetySetExportButton(false, '导出 Excel');
   }
 }
 

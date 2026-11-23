@@ -8,7 +8,7 @@ const { saveAnalysisResults } = require('./financialDataArchitecture');
 const statementService = require('./stockStatementService');
 const contract = require('../domain/securityAnalysisContract');
 
-const FORMULA_VERSION = 'hk-4';
+const FORMULA_VERSION = 'hk-5';
 const { FORMULA_VERSION: STATEMENT_FORMULA_VERSION } = require('./hkStockStatements');
 
 // 港股 HKFRS 宽表字段对照（唯一登记位置）。现金流官方只有 7 个汇总项，没有资本开支，
@@ -186,6 +186,88 @@ function buildHkAnalysis(data, options = {}) {
   const latestAnnualCashflow = consolidatedFacts.find(group => isAnnual(group) && ofKind(group, 'cashflow')) || null;
   const operatingLatest = latestAnnualCashflow ? contract.finite(latestAnnualCashflow.operating) : null;
   const freeCash = contract.freeCashFlowOf({ operating: operatingLatest, capex: capexMissing ? null : latestAnnualCashflow && latestAnnualCashflow.capex });
+
+  // 港股补充指标：同币种或仅使用已落库汇率折算（无可靠汇率时保持 null，不臆造）。
+  const fxToCny = options.fxToCny || {};
+  function convertToMarketCurrency(amount, fromCurrency) {
+    if (amount === null || amount === undefined || !Number.isFinite(amount)) return null;
+    const src = String(fromCurrency || '').toUpperCase();
+    if (!src) return null;
+    if (src === currency) return amount;
+    if (currency === 'HKD') {
+      const hkdCny = contract.finite(fxToCny.HKD);
+      if (!hkdCny || hkdCny <= 0) return null;
+      if (src === 'CNY') return amount / hkdCny;
+      const srcCny = contract.finite(fxToCny[src]);
+      if (srcCny && srcCny > 0) return (amount * srcCny) / hkdCny;
+    }
+    return null;
+  }
+
+  const latestAnnualBalance = latestAnnual
+    ? consolidatedFacts.find(group => isAnnual(group) && ofKind(group, 'balance') && !group.currency_unverified && group.period_end === latestAnnual.period_end)
+    : null;
+  const prevAnnualBalance = latestAnnualBalance
+    ? consolidatedFacts.find(group => isAnnual(group) && ofKind(group, 'balance') && !group.currency_unverified
+      && sameCurrency(group, latestAnnualBalance)
+      && Number(String(group.period_end).slice(0, 4)) === Number(String(latestAnnualBalance.period_end).slice(0, 4)) - 1)
+    : null;
+  let roe = null, roa = null;
+  if (latestAnnual && !latestAnnual.currency_unverified && latestAnnual.profit !== null
+    && latestAnnualBalance && sameCurrency(latestAnnual, latestAnnualBalance)) {
+    const avgEquity = prevAnnualBalance && prevAnnualBalance.equity !== null && latestAnnualBalance.equity !== null
+      ? (latestAnnualBalance.equity + prevAnnualBalance.equity) / 2
+      : latestAnnualBalance.equity;
+    if (avgEquity !== null && avgEquity > 0) roe = latestAnnual.profit / avgEquity;
+    const avgAssets = prevAnnualBalance && prevAnnualBalance.assets !== null && latestAnnualBalance.assets !== null
+      ? (latestAnnualBalance.assets + prevAnnualBalance.assets) / 2
+      : latestAnnualBalance.assets;
+    if (avgAssets !== null && avgAssets > 0) roa = latestAnnual.profit / avgAssets;
+  }
+
+  let peStatic = null;
+  if (cap.value > 0 && latestAnnual && !latestAnnual.currency_unverified && latestAnnual.profit > 0) {
+    const profitInMarket = convertToMarketCurrency(latestAnnual.profit, latestAnnual.currency);
+    if (profitInMarket && profitInMarket > 0) peStatic = cap.value / profitInMarket;
+  }
+  let peThreeYearAvg = null;
+  if (cap.value > 0 && annual.length >= 3) {
+    const top3 = annual.slice(0, 3);
+    const y0 = Number(String(top3[0].period_end).slice(0, 4));
+    const consecutive = top3.every((g, idx) => !g.currency_unverified && g.profit !== null
+      && Number(String(g.period_end).slice(0, 4)) === y0 - idx);
+    if (consecutive) {
+      const converted = top3.map(g => convertToMarketCurrency(g.profit, g.currency));
+      if (converted.every(v => v !== null)) {
+        const avgProfit = (converted[0] + converted[1] + converted[2]) / 3;
+        if (avgProfit > 0) peThreeYearAvg = cap.value / avgProfit;
+      }
+    }
+  }
+
+  const latestBalanceForSafety = consolidatedFacts.find(group => ofKind(group, 'balance') && !group.currency_unverified) || null;
+  const liabilitiesInMarket = latestBalanceForSafety && latestBalanceForSafety.liabilities !== null
+    ? convertToMarketCurrency(latestBalanceForSafety.liabilities, latestBalanceForSafety.currency)
+    : null;
+  const marketCapToLiability = cap.value > 0 && liabilitiesInMarket !== null && liabilitiesInMarket > 0
+    ? cap.value / liabilitiesInMarket
+    : null;
+
+  const historySeries = valuations.map(row => ({
+    date: row.trade_date,
+    price: contract.finite(row.close),
+    pe: contract.finite(row.pe_ttm),
+    pb: contract.finite(row.pb),
+  }));
+  const stabilityYears = annual.slice(0, 20).map(group => ({
+    year: String(group.period_end).slice(0, 4),
+    report_ann_date: group.announced_at || '',
+    profit: group.currency_unverified ? null : group.profit,
+    dividend: null,
+    payout_ratio: null,
+    annual_payout_ratio: null,
+    dividend_details: [],
+  }));
   const fieldStatus = {
     market_cap: statusOf(cap), pe_ttm: statusOf(contract.metric(peTtm)), pb: statusOf(contract.metric(pb)),
     ttm_profit: { ...statusOf(ttm), currency: ttm.value === null ? null : (latestInterim || latestAnnual).currency }, dividend_yield: statusOf(dividend12m.yield),
@@ -238,29 +320,29 @@ function buildHkAnalysis(data, options = {}) {
       market_cap: cap.value, a_share_market_cap: null,
       circulating_market_cap: null, free_float_market_cap: null,
       annualized_return_since_listing: null, return_start_date: '',
-      pe_ttm: peTtm, pe_static: null, pe_forecast: null, pe_three_year_avg: null,
+      pe_ttm: peTtm, pe_static: peStatic, pe_forecast: null, pe_three_year_avg: peThreeYearAvg,
       pb, pb_ex_goodwill: null,
       dividend_yield: dividend12m.yield.value == null ? sourceDividendYield : dividend12m.yield.value,
       dividend_yield_source: dividend12m.yield.value == null ? 'source_reported' : 'implemented_events',
       payout_ratio: null, cumulative_payout_ratio: null, average_dividend_yield: null,
       cumulative_dividend: dividend12m.totalAmount, cumulative_profit: null,
-      roe: null, roa: null,
+      roe, roa,
     },
     stability: {
       status: stability.status, covered_years: stability.coveredYears,
       profitable_each_year: stability.status === contract.FIELD_STATUS.AVAILABLE ? stability.value.profitable : null,
       dividend_each_year: stability.status === contract.FIELD_STATUS.AVAILABLE ? stability.value.dividends : null,
-      no_profit_years: [], no_dividend_years: [], years: [], dividend_history: [], reason: '', reason_url: '',
+      no_profit_years: [], no_dividend_years: [], years: stabilityYears, dividend_history: [], reason: '', reason_url: '',
     },
     percentiles: {
       price: null, pe: pePercentile.value, pb: pbPercentile.value,
       pe_status: pePercentile.status, pb_status: pbPercentile.status,
-      history: [], bands: {}, current: { price, pe: peTtm, pb },
+      history: historySeries, bands: {}, current: { price, pe: peTtm, pb },
       note: '港股正估值分位只用可比的有效正样本；当前值为非正时不输出。价格与估值独立读取，缺复权因子时标注未复权且不计算依赖复权的分位。',
     },
     growth: { ten_year_average: {}, periods: {}, latest_interim_yoy: null, status: contract.FIELD_STATUS.INSUFFICIENT_HISTORY },
     safety: {
-      net_cash: null, interest_coverage: null, market_cap_to_liability: null,
+      net_cash: null, interest_coverage: null, market_cap_to_liability: marketCapToLiability,
       report_end_date: latestFact ? latestFact.period_end : null,
       industry_note: options.financial ? '金融公司按已验证适用指标展示，不套普通企业结论' : '',
     },
@@ -283,11 +365,17 @@ function buildHkAnalysis(data, options = {}) {
 }
 
 async function loadHkAnalysisInputs(tsCode) {
-  const [base, facts] = await Promise.all([
+  const fxRateRepository = require('../repositories/fxRateRepository');
+  const [base, facts, hkdRate, usdRate] = await Promise.all([
     stockAnalysisRepository.loadAnalysisInputs({ tsCode }),
     readHkReportFacts(tsCode),
+    fxRateRepository.readLatestRatePairUpTo('HKD', 'CNY', '9999-12-31').catch(() => null),
+    fxRateRepository.readLatestRatePairUpTo('USD', 'CNY', '9999-12-31').catch(() => null),
   ]);
-  return { meta: base.meta, valuations: base.valuations, dividends: base.dividends, events: base.events, reportFacts: facts };
+  const fxToCny = {};
+  if (hkdRate && Number(hkdRate.rate) > 0) fxToCny.HKD = Number(hkdRate.rate);
+  if (usdRate && Number(usdRate.rate) > 0) fxToCny.USD = Number(usdRate.rate);
+  return { meta: base.meta, valuations: base.valuations, dividends: base.dividends, events: base.events, reportFacts: facts, fxToCny };
 }
 
 async function refreshHkAnalysis(tsCode, options = {}) {
@@ -295,7 +383,7 @@ async function refreshHkAnalysis(tsCode, options = {}) {
   const today = options.isoToday || new Date().toISOString().slice(0, 10);
   const analysis = buildHkAnalysis(data, {
     tsCode, today: today.replace(/-/g, ''), isoToday: today,
-    currency: options.currency, financial: options.financial,
+    currency: options.currency, financial: options.financial, fxToCny: data.fxToCny,
   });
   const row = await stockAnalysisRepository.readLatestSnapshot({ tsCode });
   if (row && !hasCoreData(analysis) && hasCoreData(row.payload || {})) {

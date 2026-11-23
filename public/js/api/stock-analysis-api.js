@@ -29,6 +29,9 @@
     requestRefresh: function (code) {
       return request('/api/stock-analysis/' + encodeURIComponent(code) + '/refresh', { method: 'POST' });
     },
+    getRefreshStatus: function (slotId) {
+      return request('/api/stock-analysis/refresh/' + encodeURIComponent(slotId));
+    },
     addWatchlist: function (code) {
       return request('/api/stock-analysis/watchlist', {
         method: 'POST',

@@ -14,6 +14,9 @@
   var state = {
     sub: 'versions',
     detailId: null,
+    from: null,
+    ntSub: '',
+    ntUnread: false,
     seq: 0,
     list: { page: 1, pageSize: 20, q: '', type: '', status: '', from: '', to: '', sort: 'created' },
     mine: { page: 1, pageSize: 20, status: '' },
@@ -27,8 +30,19 @@
     var params = new URLSearchParams(window.location.search);
     params.set('main', 'feedback');
     params.set('sub', state.sub);
-    if (state.detailId) params.set('feedback', state.detailId);
-    else params.delete('feedback');
+    if (state.detailId) {
+      params.set('feedback', state.detailId);
+      if (state.from === 'notifications') {
+        params.set('from', 'notifications');
+        if (state.ntSub) params.set('ntSub', state.ntSub);
+        if (state.ntUnread) params.set('ntUnread', '1');
+      }
+    } else {
+      params.delete('feedback');
+      params.delete('from');
+      params.delete('ntSub');
+      params.delete('ntUnread');
+    }
     var url = '/?' + params.toString();
     if (!push) return;
     if (window.location.pathname + window.location.search !== url) history.pushState(null, '', url);
@@ -40,6 +54,9 @@
     // 默认落在「版本更新」：只看看版本改了什么，不默认把人丢进反馈列表（2026-10-25 反馈）
     state.sub = SUBS.indexOf(sub) >= 0 ? sub : 'versions';
     state.detailId = params.get('feedback') || null;
+    state.from = params.get('from') || null;
+    state.ntSub = params.get('ntSub') || '';
+    state.ntUnread = params.get('ntUnread') === '1';
   }
 
   // ---------- 请求 ----------

@@ -147,8 +147,11 @@ router.get('/runs', requireLogin, asyncHandler(async (req, res) => {
   if (kind && !['quarterly', 'daily', 'weekly', 'preview', 'personal'].includes(kind)) return res.status(400).json({ error: '运行类型不合法' });
   const periodType = req.query.periodType ? String(req.query.periodType).toLowerCase() : null;
   if (periodType && !PERIOD_TYPES.includes(periodType)) return res.status(400).json({ error: '周期类型不合法' });
-  const strategyCode = req.query.strategy ? String(req.query.strategy) : null;
-  if (strategyCode && !service.STRATEGY_CODES.includes(strategyCode.toLowerCase())) {
+  const rawStrategy = req.query.strategy ? String(req.query.strategy).trim() : '';
+  const strategyCodes = rawStrategy
+    ? rawStrategy.split(',').map(s => s.trim().toLowerCase()).filter(Boolean)
+    : [];
+  if (strategyCodes.some(code => !service.STRATEGY_CODES.includes(code))) {
     return res.status(400).json({ error: '策略版本不合法' });
   }
   const includeShadow = ['1', 'true'].includes(String(req.query.shadow || '').toLowerCase());
@@ -160,7 +163,8 @@ router.get('/runs', requireLogin, asyncHandler(async (req, res) => {
   const publishedOnly = ['1', 'true'].includes(String(req.query.published || '').toLowerCase());
   const result = await service.listRuns({
     market, quarter, kind, ownerUsername: req.session.user, ownerSubjectId: sessionSubjectOf(req), publishedOnly,
-    periodType, strategyCode: strategyCode ? strategyCode.toLowerCase() : null, includeShadow, limit, offset,
+    periodType, strategyCode: strategyCodes.length === 1 ? strategyCodes[0] : (strategyCodes.length > 1 ? strategyCodes : null),
+    includeShadow, limit, offset,
   });
   res.json({
     total: result.total,

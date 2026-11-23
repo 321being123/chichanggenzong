@@ -2036,7 +2036,13 @@ async function listRuns({ market, quarter, kind, ownerUsername, ownerSubjectId, 
   if (quarter) { params.push(quarter); conditions.push(`r.quarter = $${params.length}`); }
   if (kind) { params.push(kind); conditions.push(`r.run_kind = $${params.length}`); }
   if (periodType) { params.push(periodType); conditions.push(`r.period_type = $${params.length}`); }
-  if (strategyCode) { params.push(strategyCode); conditions.push(`s.strategy_code = $${params.length}`); }
+  if (Array.isArray(strategyCode) && strategyCode.length) {
+    params.push(strategyCode);
+    conditions.push(`s.strategy_code = ANY($${params.length}::text[])`);
+  } else if (strategyCode) {
+    params.push(strategyCode);
+    conditions.push(`s.strategy_code = $${params.length}`);
+  }
   // 影子批次默认不出现在普通列表里：它是工程观察渠道，混进正式下拉会让用户以为已上线。
   if (!includeShadow) conditions.push('r.is_shadow = false');
   // 页面批次下拉只列有意义的批次：已正式发布的组合，以及本人的个人测算结果。

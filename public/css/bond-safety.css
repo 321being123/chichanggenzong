@@ -46,11 +46,11 @@
 .bond-list-floating-scroll { position:fixed; bottom:0; display:none; }
 .bond-list-link { color:var(--primary); cursor:pointer; }
 .bond-list-link:hover { text-decoration:underline; }
-.bond-lifecycle-mark { display:inline-block; margin-left:4px; color:var(--up); font-size:16px; font-weight:700; line-height:1; cursor:help; vertical-align:-1px; }
-.bond-lifecycle-mark-call,.bond-lifecycle-mark-maturity { color:var(--up); }
-/* 到期提醒复用设计系统的高/中风险强调色，和强赎红感叹号拉开区分度 */
-.bond-lifecycle-mark-expiry-6m { color:var(--rating-high-accent); }
-.bond-lifecycle-mark-expiry-1y { color:var(--rating-medium-accent); }
+.bond-lifecycle-mark { display:inline-flex; align-items:center; justify-content:center; width:17px; height:17px; margin-left:5px; border-radius:50%; font-size:12px; font-weight:800; line-height:1; cursor:help; vertical-align:middle; }
+.bond-lifecycle-mark-call,.bond-lifecycle-mark-maturity { color:#dc2626; background:rgba(220,38,38,.14); }
+/* 半年与一年到期提醒与强赎红拉开色相，避免同色系难辨 */
+.bond-lifecycle-mark-expiry-6m { color:#d97706; background:rgba(217,119,6,.16); }
+.bond-lifecycle-mark-expiry-1y { color:#2563eb; background:rgba(37,99,235,.13); }
 .bond-list-up { color:var(--up); font-weight:600; }
 .bond-list-down { color:var(--down); font-weight:600; }
 .bond-list-empty { padding:70px 20px; text-align:center; color:var(--text-muted); line-height:1.8; }

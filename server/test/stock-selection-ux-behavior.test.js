@@ -695,16 +695,21 @@ async function main() {
   assert.strictEqual(historyCalls[historyCalls.length - 1].strategy, null, '季度分页不能按当前策略过滤');
   await crossStrategyHistory.window.StockSelectionPresenter.selectRun(121);
   assert.strictEqual(crossStrategyHistory.ssState.run.strategyCode, legacyStrategy, '所选结果必须保留来源实际策略');
-  const ruleNodes = ['v1', 'v2'].map(rule => ({ hidden: null, getAttribute: () => rule }));
-  const ruleView = { window: {}, document: { querySelectorAll: () => ruleNodes } };
+  const schemeAttrs = {};
+  const schemeButtons = [{
+    dataset: { ssScheme: 'essentials' },
+    classList: { toggle: () => {} },
+    setAttribute: (k, v) => { schemeAttrs[k] = v; },
+  }];
+  const ruleView = { window: {}, document: { querySelectorAll: () => schemeButtons } };
   vm.createContext(ruleView);
   vm.runInContext(fs.readFileSync(path.join(root, 'public', 'js', 'stock-selection.js'), 'utf8'), ruleView);
   ruleView.window.StockSelectionView.renderRuleScope(crossStrategyHistory.ssState);
-  assert.strictEqual(ruleNodes[0].hidden, false, 'V1 来源应显示 V1 规则说明');
-  assert.strictEqual(ruleNodes[1].hidden, true, 'V1 来源不应显示 V2 规则说明');
+  assert.ok(String(schemeAttrs['data-ss-help-text'] || '').includes('准入（V1）'), 'V1 来源应更新投资要义浮框为 V1 规则说明');
+  assert.ok(!String(schemeAttrs['data-ss-help-text'] || '').includes('R01 估值（V2）'), 'V1 来源不应在浮框显示 V2 规则说明');
   await crossStrategyHistory.window.StockSelectionPresenter.switchPeriod('weekly');
   ruleView.window.StockSelectionView.renderRuleScope(crossStrategyHistory.ssState);
-  assert.strictEqual(ruleNodes[1].hidden, false, '切回 V2 周来源应显示 V2 规则说明');
+  assert.ok(String(schemeAttrs['data-ss-help-text'] || '').includes('R01 估值（V2）'), '切回 V2 周来源应更新投资要义浮框为 V2 规则说明');
   await crossStrategyHistory.window.StockSelectionPresenter.switchPeriod('quarter');
   assert.strictEqual(crossStrategyHistory.ssState.sourceRunId, 121, '首屏外 V1 来源切回后必须恢复');
   assert.strictEqual(crossStrategyHistory.ssState.run.strategyCode, legacyStrategy);

@@ -86,6 +86,16 @@ function ssInitView() {
   if (runMore) runMore.addEventListener('click', function () { if (window.StockSelectionPresenter) window.StockSelectionPresenter.loadMoreRuns(); });
   var periodTabs = ssEl('ss-period-tabs');
   if (periodTabs) periodTabs.addEventListener('click', function (event) { var button = event.target.closest('[data-ss-period]'); if (button && window.StockSelectionPresenter) window.StockSelectionPresenter.switchPeriod(button.dataset.ssPeriod); });
+  var exclusionToggle = ssEl('ss-exclusion-toggle');
+  if (exclusionToggle) {
+    exclusionToggle.addEventListener('click', function () {
+      var panel = ssEl('ss-exclusions');
+      if (!panel) return;
+      var nextOpen = panel.hidden;
+      panel.hidden = !nextOpen;
+      exclusionToggle.setAttribute('aria-expanded', nextOpen ? 'true' : 'false');
+    });
+  }
   ['ss-candidates', 'ss-portfolio', 'ss-exclusions'].forEach(function (id) {
     var root = ssEl(id); if (!root) return;
     root.addEventListener('click', function (event) {
@@ -144,7 +154,7 @@ function ssInitView() {
   });
   document.addEventListener('click', function (event) {
     var button = event.target.closest('[data-ss-metric-help]');
-    if (button) { event.preventDefault(); ssOpenMetricTooltip(button); return; }
+    if (button && !button.hasAttribute('data-ss-scheme')) { event.preventDefault(); ssOpenMetricTooltip(button); return; }
     if (!event.target.closest('.ss-metric-tooltip')) {
       var focusable = event.target.closest('a,button,input,select,textarea,[tabindex]:not([tabindex="-1"])');
       ssCloseMetricTooltip(!focusable);
@@ -180,20 +190,42 @@ function ssIsV2(state) {
 function ssIsGraham(state) {
   return (state && state.scheme === 'graham_net_net') || (state && state.strategyCode === 'graham_net_net_v1');
 }
+function ssEssentialsRuleHelpText(isV2) {
+  return (isV2
+    ? [
+      '• 市场估值（V2）：中证全指/恒生指数 PB 只作市场参考，指数 PB 等于 2、高于 2 或缺失都不再停止配置。',
+      '• R01 估值（V2）：0 < PB ≤ 1.5；或 PB > 1.5 且 PB×PE(TTM) 严格小于 22.5（等于 22.5 不通过）。',
+      '• R02 十年 PB（V2）：最近十年（上市不足十年按上市以来）内 PB 曾严格大于 1，或有效正 PB 的最高值 ÷ 最低值 ≥ 3；窗口覆盖与观察年限随结果展示。',
+    ]
+    : [
+      '• 准入（V1）：市场估值代理 PB 严格小于 2 才配置；PB 等于或高于 2 本轮不配置，PB 缺失按数据故障处理，不解释成便宜。',
+      '• R01 当前 PB（V1）：0 < PB ≤ 1.5。',
+      '• R02 十年 PB（V1）：最近十年内至少出现一次 PB 严格大于 1。',
+    ]).concat([
+    '• R04 股息率：近十二个月已实施、已除息的税前现金股息率严格大于 0。',
+    '• R05 净资产：归母净资产折人民币不低于 100 亿元。',
+    '• 排名：PB 升序、PE（TTM）升序、股息率降序，三项名次相加，越小越优；亏损与零利润按规则记分，不作为低估优先。',
+    '• 组合：每市场 30 个等权席位，单一行业不超过该市场预算的 20%，合格股不足则留现金。',
+  ]).join('\n');
+}
 function ssRenderRuleScope(state) {
   var isGraham = ssIsGraham(state);
   var scheme = isGraham ? 'graham_net_net' : 'essentials';
-  document.querySelectorAll('[data-ss-scheme]').forEach(function (btn) { if (btn && btn.classList) btn.classList.toggle('active', btn.dataset && btn.dataset.ssScheme === scheme); });
-  var essList = ssEl('ss-essentials-rule-list'); if (essList) essList.hidden = isGraham;
-  var grahamList = ssEl('ss-graham-rule-list'); if (grahamList) grahamList.hidden = !isGraham;
+  document.querySelectorAll('[data-ss-scheme]').forEach(function (btn) {
+    if (!btn || !btn.classList) return;
+    var active = btn.dataset && btn.dataset.ssScheme === scheme;
+    btn.classList.toggle('active', active);
+    btn.setAttribute('aria-selected', active ? 'true' : 'false');
+    if (btn.dataset && btn.dataset.ssScheme === 'essentials') {
+      btn.setAttribute('data-ss-help-text', ssEssentialsRuleHelpText(ssIsV2(state)));
+    }
+  });
   var heroDesc = ssEl('ss-hero-desc');
   if (heroDesc) {
     heroDesc.textContent = isGraham
       ? '格雷厄姆净流动资产法（G01）：筛选流动资产合计 − 流动负债合计 − 总市值 > 0 的深度低估标的，按净流动资产盈余占市值比降序排列。'
       : '按低 PB、十年出现过高 PB、有现金分红、净资产达标四项条件筛股；A股与港股各自独立排名，每个市场最多 30 只等权席位。仅供研究参考，不构成投资建议。';
   }
-  var isV2 = ssIsV2(state);
-  document.querySelectorAll('[data-ss-rule]').forEach(function (node) { node.hidden = isGraham || node.getAttribute('data-ss-rule') !== (isV2 ? 'v2' : 'v1'); });
 }
 
 function ssRenderMarkets(state) {
@@ -441,9 +473,20 @@ function ssIndustryMapping(state, item) {
 
 function ssRenderExclusions(state) {
   var root = ssEl('ss-exclusions'); if (!root) return; ssCloseMetricTooltip(false);
-  if (state.settingsError) { root.innerHTML = '<div class="ss-exclusion-head"><strong>排除管理</strong><span class="ss-disabled-note">设置读取失败，排除与恢复已禁用，请刷新重试。</span></div>'; return; }
+  var toggle = ssEl('ss-exclusion-toggle');
+  if (state.settingsError) {
+    if (toggle) { toggle.textContent = '排除管理'; toggle.setAttribute('aria-expanded', 'true'); }
+    root.hidden = false;
+    root.innerHTML = '<div class="ss-exclusion-head"><strong>排除管理</strong><span class="ss-disabled-note">设置读取失败，排除与恢复已禁用，请刷新重试。</span></div>';
+    return;
+  }
   var settings = state.settings || {}; var industries = ((settings.industryFilters && settings.industryFilters[state.market]) || []).filter(Boolean).map(function (item) { return typeof item === 'string' ? { code: item, system: null, version: null, name: null } : item; }); var stocks = (settings.excludedInstruments || []).filter(function (item) { return item && String(item.market).toUpperCase() === state.market; });
   var count = industries.length + stocks.length;
+  if (toggle) toggle.textContent = '排除管理（' + count + '）';
+  if (state.settingsSaveError) {
+    root.hidden = false;
+    if (toggle) toggle.setAttribute('aria-expanded', 'true');
+  }
   var industryRows = industries.map(function (item) {
     var attrs = ' data-ss-industry-code="' + ssEsc(item.code) + '" data-ss-industry-name="' + ssEsc(item.name || '') + '" data-ss-industry-system="' + ssEsc(item.system || '') + '" data-ss-industry-version="' + ssEsc(item.version || '') + '"';
     var mapping = ssIndustryMapping(state, item);

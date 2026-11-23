@@ -1007,6 +1007,23 @@ async function getProjectorState({ classroomId, roundNo = null }) {
     isRevealed,
   });
 
+  let prevRevealedRound = null;
+  if (!isRevealed && targetRoundNo > 1) {
+    const prevRound = await repo.findRound(classroomId, targetRoundNo - 1);
+    if (prevRound && prevRound.status === 'revealed') {
+      prevRevealedRound = {
+        roundNo: targetRoundNo - 1,
+        calendarYear: blindActive ? null : Number(prevRound.calendar_year),
+        assets: projectAssetsForViewer({
+          openSnapshot: prevRound.open_market_snapshot,
+          settledMarket: prevRound.settled_market_snapshot,
+          blindActive,
+          isRevealed: true,
+        }),
+      };
+    }
+  }
+
   let leaderboard = [];
   if (isRevealed) {
     const rows = await repo.listRoundSettlements(classroomId, targetRoundNo);
@@ -1041,6 +1058,7 @@ async function getProjectorState({ classroomId, roundNo = null }) {
         : round.open_market_snapshot.marketPbDisplay,
       assets,
     },
+    prevRevealedRound,
     leaderboard,
   };
 }

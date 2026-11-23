@@ -529,7 +529,13 @@
       tdInd.textContent = a.industryName;
 
       const tdName = document.createElement('td');
-      tdName.textContent = a.stockName ? (a.alias + '（' + a.stockName + ' ' + a.canonicalCode + '）') : a.alias;
+      tdName.textContent = a.alias;
+      if (a.stockName) {
+        const nameSub = document.createElement('div');
+        nameSub.className = 'stat-sub';
+        nameSub.textContent = a.stockName + (a.canonicalCode ? (' ' + a.canonicalCode) : '');
+        tdName.appendChild(nameSub);
+      }
       if (a.paused && a.pauseReason) {
         const span = document.createElement('div');
         span.className = 'stat-sub';
@@ -993,6 +999,29 @@
 
   // ---------- 教师端控制台 & 投屏 ----------
 
+  const ROUND_STATUS_LABELS = {
+    pending: '未开盘',
+    configuring: '配置中',
+    locked: '已锁单',
+    revealed: '已揭晓',
+    completed: '已结课',
+    active: '进行中',
+  };
+  const SUBMIT_STATUS_LABELS = {
+    submitted: '已提交',
+    draft: '草稿待提交',
+    unsubmitted: '未提交',
+    not_submitted: '未提交',
+    pending: '未提交',
+    ineligible: '本轮未参排',
+  };
+  function formatRoundStatus(status) {
+    return ROUND_STATUS_LABELS[status] || status || '—';
+  }
+  function formatSubmitStatus(status) {
+    return SUBMIT_STATUS_LABELS[status] || status || '—';
+  }
+
   async function loadTeacherConsole() {
     if (!state.isAdmin) return;
     try {
@@ -1006,7 +1035,7 @@
         const btn = document.createElement('button');
         btn.type = 'button';
         btn.className = 'cr-btn' + (Number(state.teacherClassroomId) === Number(c.classroom_id) ? ' cr-btn-primary' : '');
-        btn.textContent = c.title + '（' + c.classroom_code + ' · 第 ' + c.current_round + ' 轮 · ' + c.status + ' · ' + c.member_count + ' 人）';
+        btn.textContent = c.title + '（' + c.classroom_code + ' · 第 ' + c.current_round + ' 轮 · ' + formatRoundStatus(c.status) + ' · ' + c.member_count + ' 人）';
         btn.addEventListener('click', function () {
           state.teacherClassroomId = Number(c.classroom_id);
           loadTeacherDetail();
@@ -1175,7 +1204,7 @@
       const ctrl = $('teacher-control-card');
       ctrl.textContent = '';
       const h = document.createElement('h3');
-      h.textContent = c.title + '（' + c.classroomCode + ' · 第 ' + r.roundNo + '/' + c.totalRounds + ' 轮 · ' + r.calendarYear + ' 年 · 状态：' + r.status + '）';
+      h.textContent = c.title + '（' + c.classroomCode + ' · 第 ' + r.roundNo + '/' + c.totalRounds + ' 轮 · ' + r.calendarYear + ' 年 · 状态：' + formatRoundStatus(r.status) + '）';
       ctrl.appendChild(h);
 
       const countsP = document.createElement('p');
@@ -1259,7 +1288,7 @@
         row.className = 'classroom-btn-group';
         row.style.marginBottom = '6px';
         const txt = document.createElement('span');
-        txt.textContent = p.displayNickname + '（状态：' + p.submitStatus + '）';
+        txt.textContent = p.displayNickname + '（状态：' + formatSubmitStatus(p.submitStatus) + '）';
         const maskBtn = makeActionBtn(p.isNicknameMasked ? '恢复原昵称' : '屏蔽昵称', 'cr-btn', async function () {
           const nextNick = p.isNicknameMasked ? p.classroomNickname : ('学员#' + p.memberId);
           await api.adminUpdateNickname(c.classroomId, p.memberId, nextNick, !p.isNicknameMasked);
@@ -1281,8 +1310,14 @@
       const mTb = document.createElement('tbody');
       r.assets.forEach(function (a) {
         const tr = document.createElement('tr');
-        [a.industryName, a.alias, a.stockName || '—', a.canonicalCode || '—', a.peDisplay, a.pbDisplay, P.formatReturnPct(a.returnRate)].forEach(function (v) {
-          const td = document.createElement('td'); td.textContent = escapeText(v); tr.appendChild(td);
+        [a.industryName, a.alias, a.stockName || '—', a.canonicalCode || '—', a.peDisplay, a.pbDisplay, P.formatReturnPct(a.returnRate)].forEach(function (v, idx) {
+          const td = document.createElement('td');
+          td.textContent = escapeText(v);
+          if (idx === 6 && typeof a.returnRate === 'number') {
+            if (a.returnRate > 0) td.className = 'ret-pos';
+            else if (a.returnRate < 0) td.className = 'ret-neg';
+          }
+          tr.appendChild(td);
         });
         mTb.appendChild(tr);
       });
@@ -1320,6 +1355,41 @@
       sub.textContent = d.round.marketHeaderTitle + '：PE ' + d.round.marketPeDisplay + ' / PB ' + d.round.marketPbDisplay +
         (d.round.showIndexLevel ? (' ｜ 指数点位 ' + d.round.indexOpenLevel) : '');
       container.appendChild(sub);
+
+      const returnRound = d.round.status === 'revealed'
+        ? { roundNo: d.round.roundNo, label: '第 ' + d.round.roundNo + ' 轮各标的涨跌', assets: d.round.assets || [] }
+        : (d.prevRevealedRound && d.prevRevealedRound.assets
+          ? { roundNo: d.prevRevealedRound.roundNo, label: '上一轮（第 ' + d.prevRevealedRound.roundNo + ' 轮）各标的涨跌', assets: d.prevRevealedRound.assets }
+          : null);
+      if (returnRound && returnRound.assets.length) {
+        const ah = document.createElement('h3');
+        ah.textContent = returnRound.label;
+        container.appendChild(ah);
+        const aWrap = document.createElement('div');
+        aWrap.className = 'classroom-table-wrap';
+        const aTbl = document.createElement('table');
+        aTbl.className = 'classroom-table';
+        aTbl.innerHTML = '<thead><tr><th>行业</th><th>标的</th><th>PE</th><th>PB</th><th>涨跌幅</th></tr></thead>';
+        const aTb = document.createElement('tbody');
+        returnRound.assets.forEach(function (a) {
+          const tr = document.createElement('tr');
+          if (a.assetType === 'bond') tr.className = 'row-bond';
+          const nameText = a.stockName ? (a.alias + '（' + a.stockName + '）') : a.alias;
+          [a.industryName, nameText, a.peDisplay || '—', a.pbDisplay || '—', P.formatReturnPct(a.returnRate)].forEach(function (v, idx) {
+            const td = document.createElement('td');
+            td.textContent = escapeText(v);
+            if (idx === 4 && typeof a.returnRate === 'number') {
+              if (a.returnRate > 0) td.className = 'ret-pos';
+              else if (a.returnRate < 0) td.className = 'ret-neg';
+            }
+            tr.appendChild(td);
+          });
+          aTb.appendChild(tr);
+        });
+        aTbl.appendChild(aTb);
+        aWrap.appendChild(aTbl);
+        container.appendChild(aWrap);
+      }
 
       if (d.leaderboard && d.leaderboard.length) {
         const lh = document.createElement('h3'); lh.textContent = '正式榜单';

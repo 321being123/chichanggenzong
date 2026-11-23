@@ -1154,6 +1154,13 @@
       "note": "service_legacy 存量终态归位：按实际职责登记（0 SQL/0 联网/0 DOM，扫描器核验）"
     },
     {
+      "path": "server/services/fxForeignRate.js",
+      "role": "application",
+      "batch": 7,
+      "status": "registered",
+      "note": "外币兑人民币汇率补齐与每日增量编排：读写全走 fxRateRepository，联网走 services/lixingerOfficial 适配层，本文件 0 SQL/0 联网/0 DOM"
+    },
+    {
       "path": "server/services/fxRate.js",
       "role": "application",
       "batch": 3,

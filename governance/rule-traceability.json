@@ -17,7 +17,7 @@
       "id": "CASH-DIVIDEND-REPROCESS-001",
       "title": "单份官方分红公告重解析必须核对身份且不得发布全局分区",
       "implementation": { "file": "server/services/cashDividendFacts.js", "symbol": "reprocessKnownDividendDocument" },
-      "tests": [ { "file": "server/test/cash-dividend-reprocess-contract.test.js", "pattern": "CASH-DIVIDEND-REPROCESS-001" } ],
+      "tests": [ { "file": "server/test/cash-income-db.test.js", "pattern": "CASH-DIVIDEND-REPROCESS-001" } ],
       "owner": "现金收益",
       "status": "implemented"
     },
@@ -654,7 +654,7 @@
       },
       "tests": [
         {
-          "file": "server/test/hk-ipo-dynamic-source-admission.test.js",
+          "file": "server/test/hk-ipo-contracts.test.js",
           "pattern": "默认未准入状态必须在联网和读取动态信号数据库前安全返回"
         }
       ],
@@ -735,7 +735,7 @@
       },
       "tests": [
         {
-          "file": "server/test/hk-ipo-dynamic-source-admission.test.js",
+          "file": "server/test/hk-ipo-contracts.test.js",
           "pattern": "少覆盖一只申购中的新股时不得按有数据判定完整"
         }
       ],
@@ -872,7 +872,7 @@
           "pattern": "智能导入反馈：日期"
         },
         {
-          "file": "server/test/hk-ipo-backtest-repository.test.js",
+          "file": "server/test/hk-ipo-contracts.test.js",
           "pattern": "港股回测仓储"
         },
         {
@@ -2163,7 +2163,7 @@
       },
       "tests": [
         {
-          "file": "server/test/cash-income-contract.test.js",
+          "file": "server/test/cash-income-unit.test.js",
           "pattern": "cashEstimatedDelta"
         }
       ],
@@ -2195,7 +2195,7 @@
       },
       "tests": [
         {
-          "file": "server/test/cash-income-calculation.test.js",
+          "file": "server/test/cash-income-unit.test.js",
           "pattern": "interestEndExclusive"
         }
       ],
@@ -2211,7 +2211,7 @@
       },
       "tests": [
         {
-          "file": "server/test/cash-income-facts.test.js",
+          "file": "server/test/cash-income-unit.test.js",
           "pattern": "sameDividendPeriod"
         }
       ],
@@ -2227,7 +2227,7 @@
       },
       "tests": [
         {
-          "file": "server/test/cash-income-actual.test.js",
+          "file": "server/test/cash-income-db.test.js",
           "pattern": "nested idempotence"
         }
       ],
@@ -2243,7 +2243,7 @@
       },
       "tests": [
         {
-          "file": "server/test/cash-income-actual.test.js",
+          "file": "server/test/cash-income-db.test.js",
           "pattern": "空结果不恢复"
         }
       ],
@@ -2259,7 +2259,7 @@
       },
       "tests": [
         {
-          "file": "server/test/cash-income-queue.test.js",
+          "file": "server/test/cash-income-db.test.js",
           "pattern": "第一批不能发布最终分区"
         }
       ],
@@ -2291,7 +2291,7 @@
       },
       "tests": [
         {
-          "file": "server/test/cash-income-settlement.test.js",
+          "file": "server/test/cash-income-unit.test.js",
           "pattern": "calculateHkNet"
         }
       ],
@@ -2307,7 +2307,7 @@
       },
       "tests": [
         {
-          "file": "server/test/cash-income-settlement.test.js",
+          "file": "server/test/cash-income-unit.test.js",
           "pattern": "unknown.complete"
         }
       ],
@@ -2323,11 +2323,11 @@
       },
       "tests": [
         {
-          "file": "server/test/cash-income-source-admission.test.js",
+          "file": "server/test/cash-income-unit.test.js",
           "pattern": "official admission cache"
         },
         {
-          "file": "server/test/cash-income-calculation.test.js",
+          "file": "server/test/cash-income-unit.test.js",
           "pattern": "未准入即使字段存在也不能使用市场利率"
         }
       ],
@@ -2343,7 +2343,7 @@
       },
       "tests": [
         {
-          "file": "server/test/cash-income-announcement.test.js",
+          "file": "server/test/cash-income-unit.test.js",
           "pattern": "普通+特别合计"
         },
         {
@@ -2367,7 +2367,7 @@
       },
       "tests": [
         {
-          "file": "server/test/cash-income-announcement.test.js",
+          "file": "server/test/cash-income-unit.test.js",
           "pattern": "国庆及周末顺延"
         },
         {
@@ -2375,7 +2375,7 @@
           "pattern": "T+3之前不得计入可用现金"
         },
         {
-          "file": "server/test/cash-income-panel.test.js",
+          "file": "server/test/cash-flow-frontend.test.js",
           "pattern": "待到账日期展示且不新增取数"
         }
       ],
@@ -2391,15 +2391,15 @@
       },
       "tests": [
         {
-          "file": "server/test/cash-income-related-documents.test.js",
+          "file": "server/test/cash-income-unit.test.js",
           "pattern": "本地九个对象补充公告关联"
         },
         {
-          "file": "server/test/cash-income-related-documents.test.js",
+          "file": "server/test/cash-income-unit.test.js",
           "pattern": "多事件歧义不宣称完成"
         },
         {
-          "file": "server/test/cash-income-related-documents.test.js",
+          "file": "server/test/cash-income-unit.test.js",
           "pattern": "A股监管附件不冒充H股实施"
         },
         {
@@ -2419,7 +2419,7 @@
       },
       "tests": [
         {
-          "file": "server/test/cash-income-queue.test.js",
+          "file": "server/test/cash-income-db.test.js",
           "pattern": "runSlot"
         }
       ],
@@ -3706,7 +3706,7 @@
       },
       "tests": [
         {
-          "file": "server/test/cash-income-bond-interest.test.js",
+          "file": "server/test/cash-income-db.test.js",
           "pattern": "excluded_other_bond_interest"
         }
       ],
@@ -3754,7 +3754,7 @@
       },
       "tests": [
         {
-          "file": "server/test/bond-safety-public-scope.test.js",
+          "file": "server/test/bond-safety-current-liability-pg.test.js",
           "pattern": "公开待上市保留"
         }
       ],
@@ -3802,7 +3802,7 @@
       },
       "tests": [
         {
-          "file": "server/test/rating-retry-capability.test.js",
+          "file": "server/test/rating-analysis-inputs.test.js",
           "pattern": "评级失败重试"
         }
       ],
@@ -3818,7 +3818,7 @@
       },
       "tests": [
         {
-          "file": "server/test/rating-notice-requirement.test.js",
+          "file": "server/test/rating-analysis-inputs.test.js",
           "pattern": "评级结果公告处理条件"
         }
       ],
@@ -3866,7 +3866,7 @@
       },
       "tests": [
         {
-          "file": "server/test/rating-retry-capability.test.js",
+          "file": "server/test/rating-analysis-inputs.test.js",
           "pattern": "评级失败重试"
         }
       ],
@@ -3882,7 +3882,7 @@
       },
       "tests": [
         {
-          "file": "server/test/rating-notice-validator.test.js",
+          "file": "server/test/rating-analysis-inputs.test.js",
           "pattern": "机构开头标题"
         }
       ],
@@ -3898,7 +3898,7 @@
       },
       "tests": [
         {
-          "file": "server/test/rating-issuer-name.test.js",
+          "file": "server/test/rating-analysis-inputs.test.js",
           "pattern": "三种发行人写法"
         }
       ],
@@ -3914,7 +3914,7 @@
       },
       "tests": [
         {
-          "file": "server/test/rating-document-selection.test.js",
+          "file": "server/test/rating-analysis-inputs.test.js",
           "pattern": "债项文书保留"
         }
       ],
@@ -3930,7 +3930,7 @@
       },
       "tests": [
         {
-          "file": "server/test/rating-outlook-api-missing.test.js",
+          "file": "server/test/rating-analysis-inputs.test.js",
           "pattern": "接口缺展望"
         }
       ],
@@ -3946,7 +3946,7 @@
       },
       "tests": [
         {
-          "file": "server/test/rating-outlook-api-missing.test.js",
+          "file": "server/test/rating-analysis-inputs.test.js",
           "pattern": "接口缺展望"
         }
       ],
@@ -4411,15 +4411,7 @@
           "pattern": "STOCK-SWAP-SETTLE-067"
         },
         {
-          "file": "server/test/stock-swap-atomic.test.js",
-          "pattern": "STOCK-SWAP-SETTLE-067"
-        },
-        {
-          "file": "server/test/stock-swap-runner-contract.test.js",
-          "pattern": "STOCK-SWAP-SETTLE-067"
-        },
-        {
-          "file": "server/test/stock-swap-job-execution.test.js",
+          "file": "server/test/stock-swap-contract.test.js",
           "pattern": "STOCK-SWAP-SETTLE-067"
         },
         {
@@ -4963,11 +4955,11 @@
       },
       "tests": [
         {
-          "file": "server/test/stock-selection-job-context.test.js",
+          "file": "server/test/stock-selection-schedule-contracts.test.js",
           "pattern": "market"
         },
         {
-          "file": "server/test/stock-selection-job-context.test.js",
+          "file": "server/test/stock-selection-schedule-contracts.test.js",
           "pattern": "batchLimit"
         }
       ],
@@ -5455,7 +5447,7 @@
       },
       "tests": [
         {
-          "file": "server/test/stock-selection-freshness-gate.test.js",
+          "file": "server/test/stock-selection-schedule-contracts.test.js",
           "pattern": "freshnessGate: false"
         }
       ],

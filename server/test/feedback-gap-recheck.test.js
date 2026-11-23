@@ -303,20 +303,6 @@ function baseConfig() {
       assert.strictEqual(fb.status, 'implemented', '被修改过的记录状态保持不变');
     });
 
-    // ---------- A-05：备份/恢复脚本的缺图反例逻辑 ----------
-    await test('A-05 恢复脚本在引用非零且无归档时必须失败', async function () {
-      const sh = fs.readFileSync(path.join(__dirname, '..', '..', 'scripts', 'restore_backup_drill.sh'), 'utf8');
-      assert.ok(sh.indexOf('$att_rows" -gt 0') >= 0 && sh.indexOf('[ -z "$attachments" ]') >= 0,
-        '恢复脚本必须显式拒绝“有引用却无归档”');
-      assert.ok(/备份不完整/.test(sh), '必须报错而不是跳过检查');
-    });
-
-    await test('A-05 备份脚本缺图目录时不伪造“已备份附件”', async function () {
-      const sh = fs.readFileSync(path.join(__dirname, '..', '..', 'scripts', 'backup_db.sh'), 'utf8');
-      assert.ok(/attachments=none/.test(sh), '无附件时清单必须写 none');
-      assert.ok(/manifest\.sha256/.test(sh), '整组必须生成清单');
-    });
-
     // ---------- A-06：截图增删服务端能力 ----------
     await test('A-06 作者在可编辑阶段可追加与移除截图', async function () {
       await pool.query('DELETE FROM public.feedbacks');

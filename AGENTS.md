@@ -4,7 +4,7 @@
 
 - 本项目的统一记忆入口是 `docs/知识索引.md`，机器路由是 `governance/knowledge-map.json`。每次任务先读索引，再按任务描述和实际改动文件匹配路由；禁止默认全量读取历史文档。通用外部API凭据配置按data-service路由；只新增独立来源时不默认套用IPO行业专项，实际涉及IPO行业采集、凭据权限或口径时仍须主动命中ipo-industry-enrichment。
 - 命中路由后必须核对其 `read` 文件的当前摘要、完整相关章节与直接依赖，优先用 `readSections` 定位，不默认全文读取；通知与反馈分别路由，市场周期使用专用路由，不以通用前端/API起点代替业务约束。已加载且未变化的章节不重复读；写前重读目标段。实际改动触发的 `update` 文档必须同步核对；根因不明、跨模块、数据、权限、安全、调度或部署问题必须扩读。
-- 修改项目规则、治理流程或权威文档路由时，必须同步核对 `governance/knowledge-map.json` 中相关路由的 `read`/`update` 文件清单，确保后续任务仍会命中这些规则。
+- 修改项目规则、治理流程或权威文档路由时，必须同步核对 `governance/knowledge-map.json` 中相关路由的 `read`/`update` 文件清单，确保后续任务仍会命中这些规则（2026-11-23 已随取消服务器备份功能移除 `feedback` 路由下已删除的备份脚本匹配项）。
 - `task-quality-governance` 路由用于任务运行时代码、任务定义和规则追踪变更，需同步生成任务矩阵；ADR-0003 的决策或生产状态补记由独立的 `task-quality-governance-record` 路由检查，不要求矩阵在无任务/规则变化时产生无意义差异。
 - A 股 IPO 行业、行业 PE 和上下游产业链补全按 `ipo-industry-enrichment` 路由执行；生产定向补全只通过 `ipo_history_sync` 现有 Runner 的 `request_payload.targetCodes`，范围按用户指令，不自行扩大为历史全量回放。产业链只按招股书原文记录“上游行业→公司产品→下游应用”关系及来源证据；下游应用映射关联赛道，缺少赛道样本时回退申万二级行业，不写入官方 `industry` 或行业 PE。字段证据和口径见 INC-0033、ADR-0004。
 - Bug 必须从数据源、数据库、服务、接口、页面和运行环境检查根因，并核查同类对象/功能；重大或重复问题按 `docs/incidents/README.md` 留下根因、同类范围和回归证据。

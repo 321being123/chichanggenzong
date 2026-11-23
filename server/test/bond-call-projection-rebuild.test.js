@@ -44,7 +44,6 @@ assert.match(rebuild, /retryJobSlot/);
 assert.match(exporter, /parser_version='call-event-v4'/);
 assert.match(exporter, /parse_status='complete'/);
 assert.match(exporter, /extracted_text/);
-assert.match(deploy, /portfolio-db-backup\.service/);
 assert.match(deploy, /--confirm-production/);
 assert.match(deploy, /RejectPolicy/);
 assert.match(deploy, /portfolio-bond-call-rebuild\.log/);

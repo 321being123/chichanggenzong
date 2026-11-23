@@ -15,6 +15,8 @@ const FILE = path.join(__dirname, 'catalog', 'lixingerReportMetrics.txt');
 // 版本化快照：不同财报类型只能请求其对应公司接口声明的科目。
 const TYPE_FILE = path.join(__dirname, 'catalog', 'lixingerCompanyStatementTypes_20261113.txt');
 const LAYOUT_FILE = path.join(__dirname, 'catalog', 'lixingerCompanyStatementLayout_20261113.txt');
+const HIERARCHY_RULE_FILE = path.join(__dirname, 'catalog', 'statementHierarchyRules_20261123.txt');
+const HIERARCHY_RULE_VERSION = '2026-11-23';
 
 // 市场 → 会计准则体系（落库时用于隔离两套科目）
 const MARKET_STANDARD = Object.freeze({ CN: 'CAS', HK: 'HKFRS' });
@@ -51,6 +53,25 @@ function load() {
     if (extra !== undefined || !['0', '1'].includes(heading) || layouts.has(key)) throw new Error(`财报布局字典行无效：${line}`);
     layouts.set(key, { source_section: section, source_prefix: prefix, source_heading: heading === '1' });
   }
+  const hierarchyRules = new Map();
+  for (const raw of fs.readFileSync(HIERARCHY_RULE_FILE, 'utf8').split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line || line.startsWith('#')) continue;
+    const [market, type, statement, code, groupPath, rowRole, parentCode, evidenceStatus, candidateParent, repGroup, ruleVersion, extra] = line.split('|');
+    const key = `${market}|${type}|${statement}|${code}`;
+    if (extra !== undefined || !groupPath || !rowRole || !evidenceStatus || !ruleVersion || hierarchyRules.has(key)) {
+      throw new Error(`财报层级规则字典行无效：${line}`);
+    }
+    hierarchyRules.set(key, Object.freeze({
+      group_path: groupPath,
+      row_role: rowRole,
+      parent_code: parentCode || null,
+      evidence_status: evidenceStatus,
+      candidate_parent: candidateParent || null,
+      rep_group: repGroup || null,
+      rule_version: ruleVersion,
+    }));
+  }
   const byType = {};
   const existing = new Set(rows.map(row => `${row.market}|${row.code}`));
   for (const raw of fs.readFileSync(TYPE_FILE, 'utf8').split(/\r?\n/)) {
@@ -66,7 +87,10 @@ function load() {
     const layout = layouts.get(layoutKey);
     if (!layout) throw new Error(`财报类型缺少官方布局：${layoutKey}`);
     layouts.delete(layoutKey);
-    const item = Object.freeze({ market, standard: MARKET_STANDARD[market], statement, code, name, ...layout });
+    const hierarchyRule = hierarchyRules.get(layoutKey);
+    if (!hierarchyRule) throw new Error(`财报类型缺少层级规则：${layoutKey}`);
+    hierarchyRules.delete(layoutKey);
+    const item = Object.freeze({ market, standard: MARKET_STANDARD[market], statement, code, name, ...layout, hierarchy_rule: hierarchyRule });
     const key = `${market}|${type}`;
     (byType[key] ||= []).push(item);
     if (!existing.has(`${market}|${code}`)) {
@@ -75,6 +99,7 @@ function load() {
     }
   }
   if (layouts.size) throw new Error('财报布局存在未登记的科目');
+  if (hierarchyRules.size) throw new Error('财报层级规则存在未登记的科目');
   const byMarket = {};
   for (const market of Object.keys(MARKET_STANDARD)) {
     byMarket[market] = rows.filter(row => row.market === market);
@@ -158,6 +183,8 @@ module.exports = {
   FILE,
   TYPE_FILE,
   LAYOUT_FILE,
+  HIERARCHY_RULE_FILE,
+  HIERARCHY_RULE_VERSION,
   MARKET_STANDARD,
   STATEMENTS,
   STATEMENT_LABEL,

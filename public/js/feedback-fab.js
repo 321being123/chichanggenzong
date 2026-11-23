@@ -6,7 +6,17 @@
 
   function toast(msg) {
     if (typeof showToast === 'function') { showToast(msg); return; }
-    if (window.projectAlert) window.projectAlert(msg);
+    var el = document.getElementById('fb-toast-fallback');
+    if (!el) {
+      el = document.createElement('div');
+      el.id = 'fb-toast-fallback';
+      el.className = 'toast';
+      document.body.appendChild(el);
+    }
+    el.textContent = String(msg == null ? '' : msg);
+    el.classList.add('show');
+    clearTimeout(el._fbTimer);
+    el._fbTimer = setTimeout(function () { el.classList.remove('show'); }, 2600);
   }
 
   // 与 feedback.js 的 currentUser 同款兼容：登录名是经典脚本顶层变量

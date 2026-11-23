@@ -467,6 +467,196 @@ assert.strictEqual(field(flowYoy, 'ps.tp').values[0].comparison_reason, 'flow_pe
   ]);
   assert.strictEqual(field(onlyTushare, 'bs.nr').level, 1, '纯 Tushare 历史表格仍按字典展示层级，金额另由来源白名单屏蔽');
 
+  // 新版 presentation 结构、33 组目录覆盖、代表行合并、冲突降级与候选不升格（2026-11-23）
+  const cnTypes = ['non_financial', 'bank', 'insurance', 'security', 'other_financial'];
+  const hkTypes = [...cnTypes, 'reit'];
+  let totalRuleCount = 0;
+  for (const [m, tList] of [['CN', cnTypes], ['HK', hkTypes]]) {
+    for (const t of tList) {
+      const list = dict.metricsOfType(m, t);
+      totalRuleCount += list.length;
+      for (const item of list) {
+        assert.ok(item.hierarchy_rule && item.hierarchy_rule.group_path && item.hierarchy_rule.rule_version,
+          `${m}|${t}|${item.code} 必须存在版本化层级规则`);
+      }
+    }
+  }
+  assert.strictEqual(totalRuleCount, 2243, '11 类 × 3 表共 2,243 条目录记录必须全覆盖');
+
+  const zeroRepPayload = buildStatementPayload({
+    market: 'CN', type: 'balance', options: { compare: 'none' }, canonicalCode: '600519.SH',
+    rows: [cnRow({
+      report_id: 50, period_end: '2025-12-31', industry: '白酒',
+      bs_ta: 0, bs_tca: 100, bs_nraar: 50, bs_nr: 20, bs_ar: 30,
+    })],
+  });
+  assert.ok(zeroRepPayload.presentation && Array.isArray(zeroRepPayload.presentation.rows), '响应必须包含 presentation.rows');
+  const pRow = code => zeroRepPayload.presentation.rows.find(r => r.kind === 'field' && r.code === code);
+  assert.strictEqual(pRow('bs.ta').depth, 0);
+  assert.strictEqual(pRow('bs.ta').row_role, 'total');
+  assert.strictEqual(pRow('bs.ta').is_group_rep, true, '0 值代表行应合并为分组首行');
+  assert.strictEqual(pRow('bs.tca').depth, 1);
+  assert.strictEqual(pRow('bs.tca').row_role, 'subtotal');
+  assert.strictEqual(pRow('bs.tca').is_group_rep, true);
+  assert.strictEqual(pRow('bs.nraar').depth, 2);
+  assert.strictEqual(pRow('bs.nraar').row_role, 'subtotal', '有经核子项的组合项应升为 subtotal');
+  assert.strictEqual(pRow('bs.nr').depth, 3);
+  assert.strictEqual(pRow('bs.nr').row_role, 'detail');
+  assert.strictEqual(pRow('bs.nr').parent_code, 'bs.nraar');
+
+  // 代表行无可用金额时保留独立 section 标题与原字段状态
+  const missingRepPayload = buildStatementPayload({
+    market: 'CN', type: 'balance', options: { compare: 'none' }, canonicalCode: '600519.SH',
+    rows: [cnRow({
+      report_id: 51, period_end: '2025-12-31', industry: '白酒',
+      bs_ta: null, bs_tca: 100,
+      statement_coverage: { fs_table_type: 'non_financial', requested_metric_codes: ['bs.ta', 'bs.tca'], returned_metric_codes: ['bs.tca'], complete: true },
+    })],
+  });
+  assert.ok(missingRepPayload.presentation.rows.some(r => r.kind === 'section' && r.label === '资产' && r.depth === 0),
+    '代表行无可用金额时必须保留独立分组标题');
+  assert.strictEqual(field(missingRepPayload, 'bs.ta').values[0].status, 'source_not_disclosed');
+
+  // 港股证券核验关系（2026-11-23）
+  const hkSecIncome = buildStatementPayload({
+    market: 'HK', type: 'income', options: { compare: 'none' }, canonicalCode: '02611.HK',
+    rows: [row({
+      report_id: 60, source_code: 'lixinger_official', currency_code: 'HKD', source_currency: 'HKD',
+      ps_nii: 100, ps_ii: 150, ps_ie: -50, ps_iifaajv: 20, ps_iifa: 12, ps_iifjv: 8,
+      statement_coverage: { fs_table_type: 'security', requested_metric_codes: ['ps.nii', 'ps.ii', 'ps.ie', 'ps.iifaajv', 'ps.iifa', 'ps.iifjv'], returned_metric_codes: ['ps.nii', 'ps.ii', 'ps.ie', 'ps.iifaajv', 'ps.iifa', 'ps.iifjv'], complete: true },
+    })],
+  });
+  const hkSecRow = code => hkSecIncome.presentation.rows.find(r => r.kind === 'field' && r.code === code);
+  assert.strictEqual(hkSecRow('ps.ii').parent_code, 'ps.nii');
+  assert.strictEqual(hkSecRow('ps.ii').row_role, 'detail');
+  assert.strictEqual(hkSecRow('ps.iifa').parent_code, 'ps.iifaajv');
+
+  // 候选与仅样本不得误升格
+  const bankCandidate = buildStatementPayload({
+    market: 'CN', type: 'balance', options: { compare: 'none' }, canonicalCode: '000001.SZ',
+    rows: [cnRow({
+      report_id: 70, industry: '银行', bs_dfbaofi: 10, bs_p_pf: 100, bs_tlaatc: 120,
+      statement_coverage: { fs_table_type: 'bank', requested_metric_codes: ['bs.dfbaofi', 'bs.p_pf', 'bs.tlaatc'], returned_metric_codes: ['bs.dfbaofi', 'bs.p_pf', 'bs.tlaatc'], complete: true },
+    })],
+  });
+  const bankCandidateRow = code => bankCandidate.presentation.rows.find(r => r.kind === 'field' && r.code === code);
+  assert.strictEqual(bankCandidateRow('bs.dfbaofi').parent_code, null, '候选关系不得误升格为已核父项');
+  assert.strictEqual(bankCandidateRow('bs.dfbaofi').relation_status, 'candidate');
+  assert.strictEqual(bankCandidateRow('bs.p_pf').parent_code, null, '发行人样本未命中特定报告时不自动启用父项');
+  assert.strictEqual(bankCandidateRow('bs.p_pf').relation_status, 'issuer_sample_unmatched');
+
+  // 混类型分组冲突降级到「其他已披露科目」
+  const groupConflict = buildStatementPayload({
+    market: 'CN', type: 'balance', options: { compare: 'none' }, canonicalCode: '600000.SH',
+    rows: [
+      cnRow({ report_id: 80, bs_cabb: 10, statement_coverage: { fs_table_type: 'non_financial', requested_metric_codes: ['bs.cabb'], returned_metric_codes: ['bs.cabb'], complete: true } }),
+      cnRow({ report_id: 81, bs_cabb: 8, statement_coverage: { fs_table_type: 'security', requested_metric_codes: ['bs.cabb'], returned_metric_codes: ['bs.cabb'], complete: true } }),
+    ],
+  });
+  const conflictRow = groupConflict.presentation.rows.find(r => r.kind === 'field' && r.code === 'bs.cabb');
+  assert.strictEqual(conflictRow.group_id, 'group:其他已披露科目', '跨类型分组不一致时必须降级到其他已披露科目');
+  assert.strictEqual(conflictRow.relation_status, 'group_conflict');
+
+  // 旧 fields 保持原 section/parent 兼容，同时混合准则或混合口径时 presentation 降级为平列
+  assert.strictEqual(field(zeroRepPayload, 'bs.ta').section, '资产总计', '旧 fields 必须保留原来源分组');
+  const mixedScope = buildStatementPayload({
+    market: 'CN', type: 'income', options: { compare: 'none', scope: 'all' }, canonicalCode: '600000.SH',
+    rows: [
+      cnRow({ report_id: 90, statement_scope: 'consolidated', ps_fe: 10, ps_ieife: 3, statement_coverage: { fs_table_type: 'non_financial', requested_metric_codes: ['ps.fe', 'ps.ieife'], returned_metric_codes: ['ps.fe', 'ps.ieife'], complete: true } }),
+      cnRow({ report_id: 91, statement_scope: 'parent', ps_fe: 8, ps_ieife: 2, statement_coverage: { fs_table_type: 'non_financial', requested_metric_codes: ['ps.fe', 'ps.ieife'], returned_metric_codes: ['ps.fe', 'ps.ieife'], complete: true } }),
+    ],
+  });
+  const mixedScopeRow = mixedScope.presentation.rows.find(r => r.kind === 'field' && r.code === 'ps.ieife');
+  assert.strictEqual(mixedScopeRow.parent_code, null, '混用合并/母公司口径时必须降级为平列');
+  assert.strictEqual(mixedScopeRow.relation_status, 'basis_conflict');
+
+  const mixedStandard = buildStatementPayload({
+    market: 'CN', type: 'income', options: { compare: 'none' }, canonicalCode: '600000.SH',
+    rows: [
+      cnRow({ report_id: 92, accounting_standard: 'CAS', ps_fe: 10, ps_ieife: 3, statement_coverage: { fs_table_type: 'non_financial', requested_metric_codes: ['ps.fe', 'ps.ieife'], returned_metric_codes: ['ps.fe', 'ps.ieife'], complete: true } }),
+      cnRow({ report_id: 93, accounting_standard: 'HKFRS', ps_fe: 8, ps_ieife: 2, statement_coverage: { fs_table_type: 'non_financial', requested_metric_codes: ['ps.fe', 'ps.ieife'], returned_metric_codes: ['ps.fe', 'ps.ieife'], complete: true } }),
+    ],
+  });
+  const mixedStandardRow = mixedStandard.presentation.rows.find(r => r.kind === 'field' && r.code === 'ps.ieife');
+  assert.strictEqual(mixedStandardRow.parent_code, null, '混用准则版本时必须降级为平列');
+  assert.strictEqual(mixedStandardRow.relation_status, 'basis_conflict');
+
+  // 单期 A 股传入不适用准则（HKFRS/UNKNOWN）、未知范围（unknown）或新列报版本（CAS_2026）时保留分组并降级直接关系
+  for (const [label, overrides] of [
+    ['CN+HKFRS', { accounting_standard: 'HKFRS' }],
+    ['CN+UNKNOWN准则', { accounting_standard: 'UNKNOWN' }],
+    ['CN+unknown范围', { statement_scope: 'unknown' }],
+    ['CN+CAS_2026列报版本', { statement_coverage: { fs_table_type: 'non_financial', presentation_version: 'CAS_2026', requested_metric_codes: ['ps.fe', 'ps.ieife'], returned_metric_codes: ['ps.fe', 'ps.ieife'], complete: true } }],
+  ]) {
+    const singleInvalid = buildStatementPayload({
+      market: 'CN', type: 'income', options: { compare: 'none' }, canonicalCode: '600000.SH',
+      rows: [cnRow({
+        report_id: 94, ps_fe: 10, ps_ieife: 3,
+        statement_coverage: { fs_table_type: 'non_financial', requested_metric_codes: ['ps.fe', 'ps.ieife'], returned_metric_codes: ['ps.fe', 'ps.ieife'], complete: true },
+        ...overrides,
+      })],
+    });
+    const invalidRow = singleInvalid.presentation.rows.find(r => r.kind === 'field' && r.code === 'ps.ieife');
+    assert.strictEqual(invalidRow.group_id, 'group:营业成本及费用', `${label} 应保留安全展示分组`);
+    assert.strictEqual(invalidRow.parent_code, null, `${label} 不得启用已核父项`);
+    assert.strictEqual(invalidRow.relation_status, 'basis_conflict', `${label} 应标记口径不适用降级`);
+  }
+
+  // 明确旧版与列报版本缺失混用，或 2027 年起新准则实施期缺少列报版本时，保留分组并降级直接父项
+  const mixedMissingFormat = buildStatementPayload({
+    market: 'CN', type: 'income', options: { compare: 'none' }, canonicalCode: '600000.SH',
+    rows: [
+      cnRow({ report_id: 96, period_end: '2025-12-31', ps_fe: 10, ps_ieife: 3, statement_coverage: { fs_table_type: 'non_financial', presentation_version: 'CAS_2019', requested_metric_codes: ['ps.fe', 'ps.ieife'], returned_metric_codes: ['ps.fe', 'ps.ieife'], complete: true } }),
+      cnRow({ report_id: 97, period_end: '2024-12-31', ps_fe: 8, ps_ieife: 2, statement_coverage: { fs_table_type: 'non_financial', requested_metric_codes: ['ps.fe', 'ps.ieife'], returned_metric_codes: ['ps.fe', 'ps.ieife'], complete: true } }),
+    ],
+  });
+  const mixedFormatRow = mixedMissingFormat.presentation.rows.find(r => r.kind === 'field' && r.code === 'ps.ieife');
+  assert.strictEqual(mixedFormatRow.group_id, 'group:营业成本及费用');
+  assert.strictEqual(mixedFormatRow.parent_code, null, '明确旧版与版本缺失混用不得启用直接父项');
+  assert.strictEqual(mixedFormatRow.relation_status, 'basis_conflict');
+
+  // 2026 年港股提前采用 HKFRS 18、列报版本缺失以及明确 HKAS_1 时，对列报版本敏感的利润表父项必须按实际列报版本受控启用
+  const hk2026EarlyAdopt = buildStatementPayload({
+    market: 'HK', type: 'income', options: { compare: 'none' }, canonicalCode: '00001.HK',
+    rows: [row({
+      report_id: 98, period_end: '2026-12-31', source_code: 'lixinger_official', currency_code: 'HKD', source_currency: 'HKD',
+      ps_fe: 10, ps_iiife: 3,
+      statement_coverage: { fs_table_type: 'non_financial', presentation_version: 'HKFRS_18', requested_metric_codes: ['ps.fe', 'ps.iiife'], returned_metric_codes: ['ps.fe', 'ps.iiife'], complete: true },
+    })],
+  });
+  assert.strictEqual(hk2026EarlyAdopt.presentation.rows.find(r => r.kind === 'field' && r.code === 'ps.iiife').parent_code, null, '2026 年港股明确提前采用 HKFRS 18 时不得沿用旧版财务费用父项');
+  assert.strictEqual(hk2026EarlyAdopt.presentation.rows.find(r => r.kind === 'field' && r.code === 'ps.iiife').relation_status, 'basis_conflict');
+
+  const hk2026MissingFormat = buildStatementPayload({
+    market: 'HK', type: 'income', options: { compare: 'none' }, canonicalCode: '00001.HK',
+    rows: [row({
+      report_id: 99, period_end: '2026-12-31', source_code: 'lixinger_official', currency_code: 'HKD', source_currency: 'HKD',
+      ps_fe: 10, ps_iiife: 3,
+      statement_coverage: { fs_table_type: 'non_financial', requested_metric_codes: ['ps.fe', 'ps.iiife'], returned_metric_codes: ['ps.fe', 'ps.iiife'], complete: true },
+    })],
+  });
+  const missingFmtRow = hk2026MissingFormat.presentation.rows.find(r => r.kind === 'field' && r.code === 'ps.iiife');
+  assert.strictEqual(missingFmtRow.group_id, 'group:营业成本及费用');
+  assert.strictEqual(missingFmtRow.parent_code, null, '缺少列报版本时不得对受新准则影响的利润表关系默认启用旧版父项');
+  assert.strictEqual(missingFmtRow.relation_status, 'format_version_unverified');
+
+  const hk2026LegacyExplicit = buildStatementPayload({
+    market: 'HK', type: 'income', options: { compare: 'none' }, canonicalCode: '00001.HK',
+    rows: [row({
+      report_id: 100, period_end: '2026-12-31', source_code: 'lixinger_official', currency_code: 'HKD', source_currency: 'HKD',
+      ps_fe: 10, ps_iiife: 3,
+      statement_coverage: { fs_table_type: 'non_financial', presentation_version: 'HKAS_1', requested_metric_codes: ['ps.fe', 'ps.iiife'], returned_metric_codes: ['ps.fe', 'ps.iiife'], complete: true },
+    })],
+  });
+  assert.strictEqual(hk2026LegacyExplicit.presentation.rows.find(r => r.kind === 'field' && r.code === 'ps.iiife').parent_code, 'ps.fe', '明确采用 HKAS_1 时应启用财务费用下的利息收入父子关系');
+
+  // 层级字典版本或展示结构版本变化必须改变 analysis_version 以触发 409 重读
+  const v23 = statementAnalysisVersionOf({ canonicalCode: '600519.SH', market: 'CN', type: 'balance', ruleVersion: '2026-11-23', rows: [cnRow({ report_id: 95 })] });
+  const v24 = statementAnalysisVersionOf({ canonicalCode: '600519.SH', market: 'CN', type: 'balance', ruleVersion: '2026-11-24', rows: [cnRow({ report_id: 95 })] });
+  assert.notStrictEqual(v23, v24, '层级字典版本变更必须使 analysis_version 失效');
+  const vPres = statementAnalysisVersionOf({ canonicalCode: '600519.SH', market: 'CN', type: 'balance', presentationVersion: '2026-11-24.1', ruleVersion: '2026-11-23', rows: [cnRow({ report_id: 95 })] });
+  assert.notStrictEqual(v23, vPres, '展示结构版本变更必须使 analysis_version 失效');
+
   console.log('stock statements contract tests passed');
 })().catch(error => {
   console.error(error);

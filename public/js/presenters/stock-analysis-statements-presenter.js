@@ -33,12 +33,18 @@ async function stockAnalysisLoadStatements(type) {
   var selectToken = stockAnalysisState.selectToken;
   var filters = stockStatementState.filters || (stockStatementState.filters = { periodType:'all', compare:'yoy', scope:'consolidated', limit:10 });
   var key = code + ':' + type + ':' + (filters.periodType || 'all') + ':' + (filters.compare || 'yoy') + ':' + (filters.scope || '') + ':' + (filters.limit || 10);
-  if (stockStatementState.cache[key]) return stockAnalysisRenderStatements(stockStatementState.cache[key]);
+  var detail = stockAnalysisState.data || {};
+  var statementVersions = detail.display ? detail.display.statement_analysis_versions : null;
+  var version = statementVersions ? statementVersions[type] : null;
+  var cached = stockStatementState.cache[key];
+  if (cached && (!version || cached.analysis_version === version)) {
+    return stockAnalysisRenderStatements(cached);
+  }
+  if (cached && version && cached.analysis_version !== version) {
+    delete stockStatementState.cache[key];
+  }
   stockAnalysisShowStatementsLoading();
   try {
-    var detail = stockAnalysisState.data || {};
-    var statementVersions = detail.display ? detail.display.statement_analysis_versions : null;
-    var version = statementVersions ? statementVersions[type] : null;
     // 版本冲突（409）最多重新读取一次整组本地内容；仍冲突则提示数据更新中，不拼接不同版本、不转外采。
     var response = await stockAnalysisApi.getStatements(code, type, version, filters);
     if (response.status === 409) {

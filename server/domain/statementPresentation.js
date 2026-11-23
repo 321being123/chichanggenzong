@@ -1,6 +1,10 @@
 'use strict';
 
 // 三表展示元数据只依赖调用方传入的版本化科目元数据，不取数、不访问数据库。
+const PRESENTATION_VERSION = '2026-11-23.1';
+const CONFLICT_GROUP_PATH = '其他已披露科目';
+// HKFRS 18 与财会〔2026〕11号会重构利润表的经营/投资/筹资分类；缺少明确列报版本时，不得启用依赖旧版列报分类的利润表父项。
+const FORMAT_SENSITIVE_PARENTS = new Set(['ps.fe', 'ps.ivi', 'ps.noi', 'ps.noe']);
 
 const PARENT_CODES = new Set([
   'bs.ta', 'bs.tca', 'bs.tnca', 'bs.tl', 'bs.tcl', 'bs.tncl', 'bs.toe', 'bs.tetoshopc', 'bs.cabwcb',
@@ -179,6 +183,10 @@ function inferTableTypeFromIndustry(market, industries) {
   return matched ? matched[1] : 'non_financial';
 }
 
+function groupIdOf(groupPath) {
+  return `group:${String(groupPath || CONFLICT_GROUP_PATH)}`;
+}
+
 function relationHintOf(metric) {
   const code = metric && metric.code;
   if (Object.prototype.hasOwnProperty.call(VERIFIED_RELATIONS, code)) {
@@ -189,6 +197,135 @@ function relationHintOf(metric) {
   }
   // 旧通用映射仅供现金流分区使用，没有逐类型证据时不能作为父子关系。
   return null;
+}
+
+function resolveRuleFromContexts(metric, statement) {
+  const contextRules = Array.isArray(metric && metric.context_rules) ? metric.context_rules : null;
+  if (!contextRules || !contextRules.length) {
+    const fallbackSection = sectionOf(metric, statement);
+    const parent = relationHintOf(metric);
+    const rowRole = parent ? 'detail'
+      : (metric && metric.source_heading ? 'subtotal' : (measureType(metric) === 'currency' ? 'line' : 'supplement'));
+    return {
+      group_path: fallbackSection,
+      row_role: rowRole,
+      parent_code: parent,
+      evidence_status: parent ? 'source_verified' : 'unverified',
+      relation_status: parent ? 'verified' : 'group_only',
+      candidate_parent: null,
+      rep_group: null,
+      rule_version: null,
+    };
+  }
+
+  const allHaveRule = contextRules.every(item => item && item.rule);
+  const rules = contextRules.map(item => item && item.rule).filter(Boolean);
+  const groupPaths = [...new Set(rules.map(rule => rule.group_path).filter(Boolean))];
+  const firstRule = rules[0] || null;
+  const hasBasisConflict = Boolean(metric && metric.has_basis_conflict)
+    || contextRules.some(item => item && item.reason === 'basis_conflict');
+
+  if (!allHaveRule) {
+    // 含未知类型或未登记来源：阻断直接父子，仅当已知规则一致时保留安全分组，否则归入其他已披露科目或基础分组。
+    const safeGroup = groupPaths.length === 1 ? groupPaths[0] : (groupPaths.length > 1 ? CONFLICT_GROUP_PATH : sectionOf(metric, statement));
+    const safeRole = firstRule ? (firstRule.row_role === 'detail' ? 'line' : firstRule.row_role) : 'line';
+    return {
+      group_path: safeGroup,
+      row_role: safeRole,
+      parent_code: null,
+      evidence_status: 'unverified',
+      relation_status: groupPaths.length > 1 ? 'group_conflict' : (hasBasisConflict ? 'basis_conflict' : 'unverified_context'),
+      candidate_parent: null,
+      rep_group: firstRule && firstRule.rep_group === safeGroup ? safeGroup : null,
+      rule_version: firstRule ? firstRule.rule_version : null,
+    };
+  }
+
+  if (groupPaths.length !== 1) {
+    const safeRole = firstRule && firstRule.row_role === 'detail' ? 'line' : (firstRule ? firstRule.row_role : 'line');
+    return {
+      group_path: CONFLICT_GROUP_PATH,
+      row_role: safeRole,
+      parent_code: null,
+      evidence_status: 'conflict',
+      relation_status: 'group_conflict',
+      candidate_parent: null,
+      rep_group: null,
+      rule_version: firstRule ? firstRule.rule_version : null,
+    };
+  }
+
+  const groupPath = groupPaths[0];
+  const repGroup = rules.every(rule => rule.rep_group === groupPath) ? groupPath : null;
+  const baseRole = firstRule.row_role || 'line';
+
+  if (hasBasisConflict) {
+    return {
+      group_path: groupPath,
+      row_role: baseRole === 'detail' ? 'line' : baseRole,
+      parent_code: null,
+      evidence_status: 'conflict',
+      relation_status: 'basis_conflict',
+      candidate_parent: null,
+      rep_group: repGroup,
+      rule_version: firstRule.rule_version,
+    };
+  }
+
+  const allVerified = rules.every(rule => rule.evidence_status === 'source_verified' && rule.parent_code);
+  const parentCodes = [...new Set(rules.map(rule => rule.parent_code).filter(Boolean))];
+  const hasUnknownFormat = Boolean(metric && metric.has_unknown_format);
+
+  if (allVerified && parentCodes.length === 1) {
+    if (hasUnknownFormat && FORMAT_SENSITIVE_PARENTS.has(parentCodes[0])) {
+      return {
+        group_path: groupPath,
+        row_role: baseRole === 'detail' ? 'line' : baseRole,
+        parent_code: null,
+        evidence_status: 'source_verified',
+        relation_status: 'format_version_unverified',
+        candidate_parent: null,
+        rep_group: repGroup,
+        rule_version: firstRule.rule_version,
+      };
+    }
+    return {
+      group_path: groupPath,
+      row_role: baseRole,
+      parent_code: parentCodes[0],
+      evidence_status: 'source_verified',
+      relation_status: 'verified',
+      candidate_parent: null,
+      rep_group: repGroup,
+      rule_version: firstRule.rule_version,
+    };
+  }
+
+  const statuses = [...new Set(rules.map(rule => rule.evidence_status))];
+  let relationStatus = 'group_only';
+  let candidateParent = null;
+  if (rules.some(rule => rule.parent_code) && (!allVerified || parentCodes.length > 1)) {
+    relationStatus = 'parent_conflict';
+  } else if (statuses.length === 1 && statuses[0] === 'candidate') {
+    relationStatus = 'candidate';
+    candidateParent = firstRule.candidate_parent || null;
+  } else if (statuses.length === 1 && statuses[0] === 'issuer_sample') {
+    relationStatus = 'issuer_sample_unmatched';
+    candidateParent = firstRule.candidate_parent || null;
+  } else if (statuses.length === 1 && statuses[0] === 'undecided') {
+    relationStatus = 'undecided';
+  }
+
+  return {
+    group_path: groupPath,
+    row_role: baseRole === 'detail' ? 'line' : baseRole,
+    parent_code: null,
+    evidence_status: statuses.length === 1 ? statuses[0] : 'mixed',
+    relation_status: relationStatus,
+    candidate_parent: candidateParent,
+    rep_group: repGroup,
+    rule_version: firstRule.rule_version,
+  };
 }
 
 function presentationOf(metrics, statement, currency) {
@@ -231,6 +368,155 @@ function presentationOf(metrics, statement, currency) {
   }));
 }
 
+// 按字典组序与父先于子生成新版 presentation 结构，不改写调用方传入的旧 fields 数组。
+function buildStatementPresentation(visibleFields, { metrics = [], statement = 'balance', ruleVersion = null } = {}) {
+  const metricByCode = new Map((Array.isArray(metrics) ? metrics : []).map((metric, index) => [metric.code, { metric, index }]));
+  const visibleCodes = new Set(visibleFields.map(field => field.code));
+  const resolvedFields = visibleFields.map((field, index) => {
+    const entry = metricByCode.get(field.code);
+    const metric = entry ? entry.metric : field;
+    const resolved = resolveRuleFromContexts(metric, statement);
+    const visibleParent = resolved.parent_code && visibleCodes.has(resolved.parent_code) ? resolved.parent_code : null;
+    return {
+      code: field.code,
+      section: field.section,
+      values: field.values,
+      group_path: resolved.group_path,
+      group_id: groupIdOf(resolved.group_path),
+      row_role: visibleParent ? resolved.row_role : (resolved.row_role === 'detail' ? 'line' : resolved.row_role),
+      parent: visibleParent,
+      relation_status: resolved.relation_status,
+      candidate_parent: resolved.candidate_parent,
+      rep_group: resolved.rep_group,
+      rule_version: resolved.rule_version,
+      catalog_order: entry ? entry.index : index,
+    };
+  });
+  const byCode = new Map(resolvedFields.map(field => [field.code, field]));
+  const groupOrder = new Map();
+  resolvedFields.forEach(field => {
+    const gp = field.group_path || field.section || CONFLICT_GROUP_PATH;
+    if (!groupOrder.has(gp)) {
+      groupOrder.set(gp, gp === CONFLICT_GROUP_PATH ? Number.MAX_SAFE_INTEGER : groupOrder.size);
+    }
+  });
+
+  // 保证同组连续、父先于子、组内其余字段保持原顺序。
+  const orderedGroups = [...groupOrder.keys()].sort((a, b) => groupOrder.get(a) - groupOrder.get(b));
+  const sortedFields = [];
+  const emittedCodes = new Set();
+
+  for (const groupPath of orderedGroups) {
+    const groupFields = resolvedFields
+      .filter(field => (field.group_path || field.section || CONFLICT_GROUP_PATH) === groupPath)
+      .sort((a, b) => (a.catalog_order ?? 0) - (b.catalog_order ?? 0));
+    const groupSet = new Set(groupFields.map(field => field.code));
+    const childrenByParent = new Map();
+    const roots = [];
+
+    for (const field of groupFields) {
+      const parentInGroup = field.parent && groupSet.has(field.parent) ? field.parent : null;
+      if (parentInGroup) {
+        if (!childrenByParent.has(parentInGroup)) childrenByParent.set(parentInGroup, []);
+        childrenByParent.get(parentInGroup).push(field);
+      } else {
+        roots.push(field);
+      }
+    }
+
+    const visit = (field, trail = new Set()) => {
+      if (!field || emittedCodes.has(field.code) || trail.has(field.code)) return;
+      emittedCodes.add(field.code);
+      const nextTrail = new Set(trail);
+      nextTrail.add(field.code);
+      const children = childrenByParent.get(field.code) || [];
+      const upgradedRole = children.length > 0 && field.row_role === 'line' ? 'subtotal' : (field.row_role || 'line');
+      sortedFields.push({ ...field, row_role: upgradedRole });
+      for (const child of children) visit(child, nextTrail);
+    };
+
+    for (const root of roots) visit(root);
+    // 兜底：若存在环导致未遍历到的节点，打破环后按原序输出。
+    for (const field of groupFields) {
+      if (!emittedCodes.has(field.code)) visit({ ...field, parent: null });
+    }
+  }
+
+  const rows = [];
+  const depthByCode = new Map();
+  let currentTopGroup = null;
+  let currentSubGroup = null;
+
+  for (const field of sortedFields) {
+    const groupPath = field.group_path || field.section || CONFLICT_GROUP_PATH;
+    const parts = groupPath.split(' › ');
+    const topGroup = parts[0];
+    const subGroup = parts[1] || null;
+    const hasAvailableValue = Array.isArray(field.values) && field.values.some(item => item && item.value != null);
+    let isGroupRep = false;
+
+    if (topGroup !== currentTopGroup) {
+      currentTopGroup = topGroup;
+      currentSubGroup = null;
+      if (!subGroup && field.rep_group === topGroup && hasAvailableValue) {
+        isGroupRep = true;
+      } else {
+        rows.push({
+          kind: 'section',
+          row_role: 'section',
+          group_id: groupIdOf(topGroup),
+          label: topGroup,
+          depth: 0,
+        });
+      }
+    }
+
+    if (subGroup && subGroup !== currentSubGroup) {
+      currentSubGroup = subGroup;
+      if (field.rep_group === groupPath && hasAvailableValue) {
+        isGroupRep = true;
+      } else {
+        rows.push({
+          kind: 'section',
+          row_role: 'section',
+          group_id: groupIdOf(groupPath),
+          label: subGroup,
+          depth: 1,
+        });
+      }
+    }
+
+    let depth = subGroup ? 2 : 1;
+    if (isGroupRep) {
+      depth = subGroup ? 1 : 0;
+    } else if (field.parent && depthByCode.has(field.parent)) {
+      const parentField = byCode.get(field.parent);
+      if (parentField && (parentField.group_path || parentField.section) === groupPath) {
+        depth = Math.min(8, depthByCode.get(field.parent) + 1);
+      }
+    }
+
+    depthByCode.set(field.code, depth);
+    rows.push({
+      kind: 'field',
+      code: field.code,
+      row_role: field.row_role || 'line',
+      group_id: field.group_id || groupIdOf(groupPath),
+      parent_code: field.parent || null,
+      depth,
+      relation_status: field.relation_status || 'group_only',
+      candidate_parent: field.candidate_parent || null,
+      is_group_rep: isGroupRep,
+    });
+  }
+
+  return {
+    version: PRESENTATION_VERSION,
+    rule_version: ruleVersion || (sortedFields.find(f => f.rule_version) || {}).rule_version || null,
+    rows,
+  };
+}
+
 // 过滤无值字段后重新计算深度，避免返回不可见的父项和错误缩进。
 function rebaseVisibleHierarchy(fields) {
   const visible = new Map(fields.map(field => [field.code, field]));
@@ -257,4 +543,15 @@ function normalizeMetricValue(raw, metric, currency) {
   return value;
 }
 
-module.exports = { measureType, sectionOf, unitOf, presentationOf, rebaseVisibleHierarchy, normalizeMetricValue, inferTableTypeFromIndustry };
+module.exports = {
+  PRESENTATION_VERSION,
+  measureType,
+  sectionOf,
+  unitOf,
+  groupIdOf,
+  presentationOf,
+  rebaseVisibleHierarchy,
+  buildStatementPresentation,
+  normalizeMetricValue,
+  inferTableTypeFromIndustry,
+};

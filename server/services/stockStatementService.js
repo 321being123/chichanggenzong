@@ -4,11 +4,16 @@ const dict = require('../dataAccess/lixingerReportMetrics');
 const contract = require('../domain/securityAnalysisContract');
 const presentation = require('../domain/statementPresentation');
 const repository = require('../repositories/stockStatementsRepository');
-const FORMULA_VERSION = 'stock-statements-5';
+const FORMULA_VERSION = 'stock-statements-6';
 
 const PERIOD_TYPES = new Set(['all', 'annual', 'semiannual', 'q1', 'q3', 'unknown']);
 const COMPARES = new Set(['yoy', 'qoq', 'none']);
 const STATEMENT_TYPES = new Set(['non_financial', 'bank', 'insurance', 'security', 'other_financial', 'reit']);
+const VALID_SCOPES = new Set(['consolidated', 'parent']);
+const MARKET_VALID_STANDARDS = Object.freeze({
+  CN: new Set(['CAS']),
+  HK: new Set(['HKFRS', 'IFRS']),
+});
 // 展示结构只对已登记的来源启用：理杏仁官方，以及字段映射受控的 Tushare 历史。
 const RELATION_SOURCE_WHITELIST = new Set(['lixinger_official', 'tushare']);
 
@@ -106,10 +111,18 @@ function reportDigestOf(rows) {
   return rows.map(row => `${row.report_id}:${row.source_version || ''}:${row.period_end || ''}:${row.period_type || ''}:${row.statement_revision || ''}`).join(',');
 }
 
-function statementAnalysisVersionOf({ canonicalCode, market = 'CN', type = 'balance', formulaVersion = FORMULA_VERSION, rows = [] } = {}) {
+function statementAnalysisVersionOf({
+  canonicalCode,
+  market = 'CN',
+  type = 'balance',
+  formulaVersion = FORMULA_VERSION,
+  presentationVersion = presentation.PRESENTATION_VERSION,
+  ruleVersion = dict.HIERARCHY_RULE_VERSION,
+  rows = [],
+} = {}) {
   return contract.analysisVersionOf({
     canonicalCode, formulaVersion,
-    inputs: { market, type, reports: reportDigestOf(rows) },
+    inputs: { market, type, presentationVersion, ruleVersion, reports: reportDigestOf(rows) },
   });
 }
 
@@ -163,25 +176,69 @@ function buildStatementPayload({ market = 'CN', type = 'balance', rows = [], ver
   // 金额的口径问题由 UNVERIFIED_TUSHARE_WIDE 单独屏蔽。因此结构只要求来源是可追溯登记过的
   // （理杏仁官方、Tushare 受控映射）；出现未登记来源时仍整表关闭，不让未知来源继承已核验层级。
   // 早前按「非理杏仁即阻断」会把最近几期恰好都来自 Tushare 的证券（如 600519.SH）整表压平。
-  if (!rows.every(row => RELATION_SOURCE_WHITELIST.has(String(row.source_code || '')))) {
+  const hasUnverifiedSource = !rows.every(row => RELATION_SOURCE_WHITELIST.has(String(row.source_code || '')));
+  if (hasUnverifiedSource) {
     relationContexts.push(`${market}|unverified_source`);
   }
+  const validStandards = MARKET_VALID_STANDARDS[String(market || '').toUpperCase()] || new Set();
+  const rowStandards = rows.map(row => String(row.accounting_standard || '').trim().toUpperCase());
+  const rowScopes = rows.map(row => String(row.statement_scope || '').trim().toLowerCase());
+  const rowFormatVersions = rows.map(row => {
+    const coverage = parseCoverage(row.statement_coverage);
+    return String((coverage && (coverage.presentation_version || coverage.format_version))
+      || row.presentation_version || row.format_version || '').trim().toUpperCase();
+  });
+  const standards = [...new Set(rowStandards.filter(Boolean))];
+  const scopes = [...new Set(rowScopes.filter(Boolean))];
+  const expectedBaselineFormats = String(market || '').toUpperCase() === 'CN'
+    ? new Set(['CAS_2019', 'DEFAULT'])
+    : new Set(['HKAS_1', 'HKFRS_LEGACY', 'DEFAULT']);
+  const hasUnknownFormat = rows.length > 0 && rowFormatVersions.some(fmt => !fmt);
+  const hasBasisConflict = rows.length > 0 && (
+    rowStandards.some(std => !validStandards.has(std))
+    || standards.length !== 1
+    || rowScopes.some(sc => !VALID_SCOPES.has(sc))
+    || scopes.length !== 1
+    || new Set(rowFormatVersions).size > 1
+    || rowFormatVersions.some(fmt => fmt && !expectedBaselineFormats.has(fmt))
+  );
+  const typeMetricsByType = new Map();
   const ordered = [];
   for (const tableType of effectiveTypes) {
     try {
-      ordered.push(...dict.metricsOfType(market, tableType)
-        .filter(metric => metric.statement === type)
-        .map(metric => ({ ...metric, relation_contexts: relationContexts })));
+      const list = dict.metricsOfType(market, tableType).filter(metric => metric.statement === type);
+      typeMetricsByType.set(tableType, new Map(list.map(metric => [metric.code, metric])));
+      ordered.push(...list);
     }
     catch (_) { /* 旧记录类型无法识别时不猜测 */ }
   }
   const byCode = new Map();
-  for (const metric of [...ordered, ...dict.metricsByStatement(market, type).map(item => ({ ...item, relation_contexts: [] }))]) {
-    const existing = byCode.get(metric.code);
-    if (!existing) {
-      byCode.set(metric.code, metric);
-    } else if (metric.relation_contexts && metric.relation_contexts.length) {
-      existing.relation_contexts = [...new Set([...(existing.relation_contexts || []), ...metric.relation_contexts])];
+  for (const metric of [...ordered, ...dict.metricsByStatement(market, type)]) {
+    if (!byCode.has(metric.code)) {
+      const contextRules = [];
+      for (const tableType of effectiveTypes) {
+        const typeMetric = typeMetricsByType.get(tableType)?.get(metric.code) || null;
+        contextRules.push({
+          context: `${market}|${String(tableType).toLowerCase()}`,
+          rule: typeMetric ? typeMetric.hierarchy_rule || null : null,
+        });
+      }
+      if (hasUnknownType && !inferredType) {
+        contextRules.push({ context: `${market}|unknown`, rule: null });
+      }
+      if (hasUnverifiedSource) {
+        contextRules.push({ context: `${market}|unverified_source`, rule: null });
+      }
+      if (hasBasisConflict) {
+        contextRules.push({ context: `${market}|basis_conflict`, rule: null, reason: 'basis_conflict' });
+      }
+      byCode.set(metric.code, {
+        ...metric,
+        relation_contexts: relationContexts,
+        context_rules: contextRules,
+        has_basis_conflict: hasBasisConflict,
+        has_unknown_format: hasUnknownFormat,
+      });
     }
   }
   const metrics = [...byCode.values()];
@@ -226,6 +283,11 @@ function buildStatementPayload({ market = 'CN', type = 'balance', rows = [], ver
         };
       }),
     }));
+  const presentationModel = presentation.buildStatementPresentation(fields, {
+    metrics,
+    statement: type,
+    ruleVersion: dict.HIERARCHY_RULE_VERSION,
+  });
   const availablePeriods = versionRows.map(row => metadataOf(row, market));
   const availablePeriodTypes = [...new Set(availablePeriods.map(period => period.period_type).filter(Boolean))];
   const availableScopes = [...new Set(availablePeriods.map(period => period.scope).filter(Boolean))];
@@ -247,6 +309,7 @@ function buildStatementPayload({ market = 'CN', type = 'balance', rows = [], ver
     compare: normalized.compare,
     scope: normalized.scope,
     fields,
+    presentation: presentationModel,
     status: periods.length ? contract.FIELD_STATUS.AVAILABLE : contract.FIELD_STATUS.MISSING,
   };
 }

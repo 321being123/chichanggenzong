@@ -81,8 +81,7 @@ assert.ok(statementsPresenter.includes('stockAnalysisState.selected !== code'), 
   const multiPeriodHelp = dom.window.document.querySelector('details.statement-status-help').textContent;
   assert.match(multiPeriodHelp, /2025-12-31 原值：/);
   assert.match(multiPeriodHelp, /2024-12-31 原值：/);
-  assert.match(multiPeriodHelp, /2025-12-31 同比：/);
-  assert.match(multiPeriodHelp, /2024-12-31 同比：/);
+  assert.match(multiPeriodHelp, /2025-12-31、2024-12-31 同比：/);
   view.stockAnalysisRenderStatements({ name: '资产负债表', type: 'balance', compare: 'none',
     periods: [{ end_date: '2025-12-31', scope: 'consolidated' }, { end_date: '2025-12-31', scope: 'parent' }],
     fields: [{ label: '资产', section: '资产', values: [
@@ -114,6 +113,130 @@ assert.ok(statementsPresenter.includes('stockAnalysisState.selected !== code'), 
   assert.ok(table.querySelector('tr[data-parent-code="ps.toc"] .statement-unit'), '层级字段应保留父项标识和同行单位');
   dom.window.close();
 }
+{
+  const dom = new JSDOM('<div id="stock-analysis-statements-title"></div><div id="stock-analysis-statements-meta"></div><div id="stock-analysis-statements-message"></div><div id="stock-analysis-statements-wrap"></div>');
+  const view = { document: dom.window.document, window: dom.window,
+    escapeHtml: value => String(value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;'),
+    stockAnalysisNumber: value => Number(value).toFixed(2),
+    stockAnalysisPercent: value => (Number(value) * 100).toFixed(2) + '%',
+    BusinessTable: { attach() {} } };
+  vm.runInNewContext(statementsScript, view);
+  view.stockAnalysisRenderStatements({
+    name: '资产负债表', type: 'balance', compare: 'yoy', unit_label: 'CNY·亿元',
+    periods: [{ end_date: '2025-12-31', scope: 'consolidated', fs_table_type: 'non_financial', currency: 'CNY' }],
+    fields: [
+      { code: 'bs.ta', label: '资产总计', unit: 'CNY·亿元', values: [{ value: 0, status: 'available', change: 0, comparison_status: 'available' }] },
+      { code: 'bs.tca', label: '流动资产合计', unit: 'CNY·亿元', values: [{ value: 10, status: 'available', change: 0.125, comparison_status: 'available' }] },
+      { code: 'bs.nraar', label: '应收票据及应收账款', unit: 'CNY·亿元', values: [{ value: 5, status: 'available', change: -0.05, comparison_status: 'available' }] },
+      { code: 'bs.nr', label: '其中：应收票据', unit: 'CNY·亿元', values: [{ value: 2, status: 'available', change: null, comparison_status: 'not_applicable', comparison_reason: 'comparison_method_unverified' }] },
+      { code: 'bs.lwi', label: '有息负债', unit: 'CNY·亿元', values: [{ value: 3, status: 'available', change: null, comparison_status: 'not_applicable', comparison_reason: 'comparison_method_unverified' }] },
+    ],
+    presentation: {
+      version: '2026-11-23.1',
+      rows: [
+        { kind: 'field', code: 'bs.ta', row_role: 'total', group_id: 'group:资产', parent_code: null, depth: 0, is_group_rep: true },
+        { kind: 'field', code: 'bs.tca', row_role: 'subtotal', group_id: 'group:资产 › 流动资产', parent_code: null, depth: 1, is_group_rep: true },
+        { kind: 'field', code: 'bs.nraar', row_role: 'subtotal', group_id: 'group:资产 › 流动资产', parent_code: null, depth: 2, is_group_rep: false },
+        { kind: 'field', code: 'bs.nr', row_role: 'detail', group_id: 'group:资产 › 流动资产', parent_code: 'bs.nraar', depth: 3, is_group_rep: false },
+        { kind: 'section', row_role: 'section', group_id: 'group:负债', label: '负债', depth: 0 },
+        { kind: 'field', code: 'bs.lwi', row_role: 'supplement', group_id: 'group:负债', parent_code: null, depth: 1, is_group_rep: false },
+      ],
+    },
+  });
+  const doc = dom.window.document;
+  assert.ok(doc.querySelector('tr[data-statement-code="bs.ta"][data-statement-level="0"].statement-role-total.statement-section-total'), '0 值代表行应合并为 0 层 total');
+  assert.ok(doc.querySelector('tr[data-statement-code="bs.tca"][data-statement-level="1"].statement-role-subtotal'), '1 层 subtotal 应正确渲染');
+  assert.ok(doc.querySelector('tr[data-statement-code="bs.nraar"][data-statement-level="2"].statement-role-subtotal'), '2 层组合项应渲染为 subtotal');
+  assert.ok(doc.querySelector('tr[data-statement-code="bs.nr"][data-statement-level="3"][data-parent-code="bs.nraar"].statement-role-detail .statement-branch'), '3 层明细应带父项连接符');
+  assert.ok(doc.querySelector('tr.statement-section th.statement-section-cell'), '独立分组标题应放在首个真实单元格以支持固定首列');
+  assert.strictEqual(doc.querySelectorAll('tr.statement-section td.statement-section-filler').length, 2, '分组行其余叶列应补齐');
+  assert.ok(doc.querySelector('tr[data-statement-code="bs.lwi"].statement-role-supplement'), '补充指标应保留 supplement 角色');
+  assert.strictEqual(doc.querySelector('tr[data-statement-code="bs.ta"] td.statement-change.flat').textContent, '0.00%', '舍入为零的变化应使用中性 flat 样式');
+  assert.strictEqual(doc.querySelector('tr[data-statement-code="bs.tca"] td.statement-change.up').textContent, '+12.50%', '正变化应带 + 号与 up 样式');
+  assert.strictEqual(doc.querySelector('tr[data-statement-code="bs.nraar"] td.statement-change.down').textContent, '-5.00%', '负变化应带 - 号与 down 样式');
+
+  // 未知版本、漏列字段、重复科目时必须回退旧 fields，不能静默隐藏科目
+  view.stockAnalysisRenderStatements({
+    name: '资产负债表', type: 'balance', compare: 'none', unit_label: 'CNY·亿元',
+    periods: [{ end_date: '2025-12-31', scope: 'consolidated', fs_table_type: 'non_financial', currency: 'CNY' }],
+    fields: [
+      { code: 'bs.ta', label: '资产总计', section: '资产总计', level: 0, values: [{ value: 10, status: 'available' }] },
+      { code: 'bs.tl', label: '负债合计', section: '负债合计', level: 0, values: [{ value: 4, status: 'available' }] },
+    ],
+    presentation: {
+      version: '9999-01-01',
+      rows: [
+        { kind: 'field', code: 'bs.ta', row_role: 'total', depth: 0 },
+        { kind: 'field', code: 'bs.tl', row_role: 'total', depth: 0 },
+      ],
+    },
+  });
+  assert.ok(doc.querySelector('tr[data-statement-code="bs.ta"]') && doc.querySelector('tr[data-statement-code="bs.tl"]'), '未知 presentation 版本必须回退完整 fields');
+
+  view.stockAnalysisRenderStatements({
+    name: '资产负债表', type: 'balance', compare: 'none', unit_label: 'CNY·亿元',
+    periods: [{ end_date: '2025-12-31', scope: 'consolidated', fs_table_type: 'non_financial', currency: 'CNY' }],
+    fields: [
+      { code: 'bs.ta', label: '资产总计', section: '资产总计', level: 0, values: [{ value: 10, status: 'available' }] },
+      { code: 'bs.tl', label: '负债合计', section: '负债合计', level: 0, values: [{ value: 4, status: 'available' }] },
+    ],
+    presentation: {
+      version: '2026-11-23.1',
+      rows: [
+        { kind: 'field', code: 'bs.ta', row_role: 'total', depth: 0 },
+      ],
+    },
+  });
+  assert.ok(doc.querySelector('tr[data-statement-code="bs.tl"]'), '漏列字段的 presentation 必须回退完整 fields，不能静默隐藏');
+
+  // 有原值且选择“不比较”时，降级关系状态仍须在行内说明中向用户解释
+  view.stockAnalysisRenderStatements({
+    name: '利润表', type: 'income', compare: 'none', unit_label: 'HKD·亿元',
+    periods: [{ end_date: '2026-12-31', scope: 'consolidated', fs_table_type: 'non_financial', currency: 'HKD' }],
+    fields: [
+      { code: 'ps.fe', label: '财务费用', unit: 'HKD·亿元', values: [{ value: 10, status: 'available' }] },
+      { code: 'ps.iiife', label: '其中：利息收入', unit: 'HKD·亿元', values: [{ value: 3, status: 'available' }] },
+    ],
+    presentation: {
+      version: '2026-11-23.1',
+      rows: [
+        { kind: 'section', row_role: 'section', group_id: 'group:营业成本及费用', label: '营业成本及费用', depth: 0 },
+        { kind: 'field', code: 'ps.fe', row_role: 'line', group_id: 'group:营业成本及费用', parent_code: null, depth: 1, relation_status: 'group_only' },
+        { kind: 'field', code: 'ps.iiife', row_role: 'line', group_id: 'group:营业成本及费用', parent_code: null, depth: 1, relation_status: 'format_version_unverified' },
+      ],
+    },
+  });
+  const relHelp = doc.querySelector('tr[data-statement-code="ps.iiife"] details.statement-status-help');
+  assert.ok(relHelp, '有原值且不比较时，降级关系必须有行内状态说明');
+  assert.match(relHelp.textContent, /列报版本尚未核实/);
+  dom.window.close();
+}
+(async () => {
+  // Presenter 命中缓存前必须核对当前详情的 statement_analysis_versions，版本失配时重读而不是渲染旧缓存
+  const rendered = [];
+  const apiCalls = [];
+  const presenterCtx = {
+    stockAnalysisState: { selected: '600519.SH', selectToken: 1, data: { display: { statement_analysis_versions: { balance: 'v2' } } } },
+    stockAnalysisShowStatementsLoading() {},
+    stockAnalysisShowStatementsError(err) { throw err; },
+    stockAnalysisRenderStatements(payload) { rendered.push(payload); },
+    stockAnalysisApi: {
+      async getStatements(code, type, version) {
+        apiCalls.push({ code, type, version });
+        return { ok: true, status: 200, payload: { analysis_version: 'v2', fields: [{ code: 'bs.ta' }] } };
+      },
+    },
+  };
+  vm.runInNewContext(statementsPresenter, presenterCtx);
+  presenterCtx.stockStatementState.cache['600519.SH:balance:all:yoy:consolidated:10'] = { analysis_version: 'v1', fields: [{ code: 'bs.old' }] };
+  await presenterCtx.stockAnalysisLoadStatements('balance');
+  assert.strictEqual(apiCalls.length, 1, '详情版本已更新为 v2 时不得直接命中 v1 缓存');
+  assert.strictEqual(apiCalls[0].version, 'v2');
+  assert.strictEqual(rendered[0].analysis_version, 'v2', '必须渲染重新读取的 v2 数据');
+})().catch(err => {
+  console.error(err);
+  process.exitCode = 1;
+});
 {
   const dom = new JSDOM('<div id="stock-analysis-statements-title"></div><div id="stock-analysis-statements-meta"></div><div id="stock-analysis-statements-message"></div><div id="stock-analysis-statements-wrap"></div>');
   const view = { document: dom.window.document, window: dom.window,

@@ -117,6 +117,8 @@
       state.me = me;
       state.accountIdentity = me.accountIdentity || me.username;
       state.isAdmin = me.role === 'admin';
+      window.username = me.username;
+      window.accountIdentity = state.accountIdentity;
       const badge = $('cr-user-badge');
       if (badge) badge.textContent = (me.nickname || me.username) + (state.isAdmin ? ' · 教师/管理员' : ' · 学员');
 

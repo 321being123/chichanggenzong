@@ -24,7 +24,12 @@
   // 这里按引用取同一 state 对象，渲染与事件委托体内的 state.xxx 读写保持不动。
   var state = window.feedbackPresenter.state;
 
-  function esc(v) { return escapeHtml(String(v == null ? '' : v)); }
+  function esc(v) {
+    var s = String(v == null ? '' : v);
+    if (typeof escapeHtml === 'function') return escapeHtml(s);
+    return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  }
   // 登录名是经典脚本的顶层变量；window 属性与直接引用都做兼容，避免取不到已登录状态
   function currentUser() {
     if (typeof username === 'string' && username) return username;
@@ -50,7 +55,17 @@
 
   function toast(msg) {
     if (typeof showToast === 'function') { showToast(msg); return; }
-    if (window.projectAlert) window.projectAlert(msg);
+    var el = document.getElementById('fb-toast-fallback');
+    if (!el) {
+      el = document.createElement('div');
+      el.id = 'fb-toast-fallback';
+      el.className = 'toast';
+      document.body.appendChild(el);
+    }
+    el.textContent = String(msg == null ? '' : msg);
+    el.classList.add('show');
+    clearTimeout(el._fbTimer);
+    el._fbTimer = setTimeout(function () { el.classList.remove('show'); }, 2600);
   }
 
   function typeBadge(type) {
@@ -542,15 +557,18 @@
   }
 
   function currentPagePath() {
+    var pathname = window.location.pathname || '/';
     var params = new URLSearchParams(window.location.search);
-    var keep = ['main', 'sub', 'case', 'code', 'metric', 'kind'];
+    var keep = pathname === '/'
+      ? ['main', 'sub', 'case', 'code', 'metric', 'kind']
+      : ['code', 'id', 'classroomId', 'tab'];
     var out = new URLSearchParams();
     keep.forEach(function (k) {
       var v = params.get(k);
       if (v) out.set(k, v);
     });
     var qs = out.toString();
-    return '/' + (qs ? '?' + qs : '');
+    return pathname + (qs ? '?' + qs : '');
   }
 
   function renderThumbs() {

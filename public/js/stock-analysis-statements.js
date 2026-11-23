@@ -74,6 +74,92 @@ function stockAnalysisStatementReason(reason) {
   return reasons[reason] || '暂无可用数据';
 }
 
+function stockAnalysisStatementRelationReason(relationStatus) {
+  var reasons = {
+    format_version_unverified: '报告列报版本尚未核实，暂按同组平列展示',
+    basis_conflict: '所选报告期准则、范围或列报版本存在差异，暂按同组平列展示',
+    group_conflict: '跨类型分组口径存在差异，暂归入当前分组平列展示',
+    parent_conflict: '不同报告期类型对该科目的归属存在差异，暂按同组平列展示',
+    unverified_context: '部分报告期类型或来源尚未核实，暂按同组平列展示',
+    issuer_sample_unmatched: '该层级仅见于特定发行人样本，当前报告暂按同组平列展示',
+    candidate: '候选归属关系尚未核实，暂按同组平列展示',
+    undecided: '直接归属关系待核实，暂按同组平列展示'
+  };
+  return reasons[relationStatus] || '';
+}
+
+function stockAnalysisStatementFormatChange(rawChange) {
+  if (rawChange == null) return { text: '—', cls: '' };
+  var num = Number(rawChange);
+  var formatted = stockAnalysisPercent(num);
+  if (/^[-+]?0(?:\.0+)?%$/.test(formatted) || Math.abs(num) < 0.00005) {
+    return { text: formatted.replace(/^[-+]/, ''), cls: 'statement-change flat' };
+  }
+  if (num > 0) {
+    return { text: formatted.charAt(0) === '+' ? formatted : '+' + formatted, cls: 'statement-change up' };
+  }
+  return { text: formatted, cls: 'statement-change down negative' };
+}
+
+function stockAnalysisBuildRowModels(data) {
+  var fields = Array.isArray(data && data.fields) ? data.fields : [];
+  var presentation = data && data.presentation;
+  var supportedVersions = ['2026-11-23.1'];
+  if (presentation && supportedVersions.indexOf(presentation.version) >= 0
+      && Array.isArray(presentation.rows) && presentation.rows.length) {
+    var byCode = {};
+    var fieldCount = 0;
+    var allFieldsHaveCode = fields.every(function(field) {
+      if (!field || !field.code || byCode[field.code]) return false;
+      byCode[field.code] = field;
+      fieldCount++;
+      return true;
+    });
+    var seenCodes = {};
+    var seenCount = 0;
+    var valid = allFieldsHaveCode && presentation.rows.every(function(row) {
+      if (!row) return false;
+      if (row.kind === 'section') return Boolean(row.label);
+      if (row.kind === 'field') {
+        if (!row.code || !byCode[row.code] || seenCodes[row.code]) return false;
+        seenCodes[row.code] = true;
+        seenCount++;
+        return true;
+      }
+      return false;
+    }) && seenCount === fieldCount;
+    if (valid) {
+      return { byCode: byCode, rows: presentation.rows, usesPresentation: true };
+    }
+  }
+  // 缺少或不支持新版 presentation 时回退旧 fields 渲染。
+  var fallbackRows = [];
+  var currentSection = '';
+  fields.forEach(function(field) {
+    var section = field.section || '';
+    var hasValue = Array.isArray(field.values) && field.values.some(function(item) { return item && item.value != null; });
+    if (section && section !== currentSection) {
+      currentSection = section;
+      if (!(String(field.label || '') === String(currentSection || '') && hasValue)) {
+        fallbackRows.push({ kind: 'section', row_role: 'section', group_id: 'legacy:' + currentSection, label: currentSection, depth: 0 });
+      }
+    }
+    var isSectionRep = section && String(field.label || '') === String(section) && hasValue;
+    fallbackRows.push({
+      kind: 'field',
+      code: field.code,
+      field: field,
+      row_role: field.row_role || (field.is_parent ? 'total' : 'line'),
+      group_id: field.group_id || ('legacy:' + section),
+      parent_code: field.parent || null,
+      depth: Math.max(0, Number(field.level) || 0),
+      relation_status: field.relation_status || 'group_only',
+      is_group_rep: Boolean(isSectionRep),
+    });
+  });
+  return { byCode: {}, rows: fallbackRows, usesPresentation: false };
+}
+
 function stockAnalysisRenderStatements(data) {
   var title = document.getElementById('stock-analysis-statements-title');
   var message = document.getElementById('stock-analysis-statements-message');
@@ -99,7 +185,7 @@ function stockAnalysisRenderStatements(data) {
   var comparisonLabel = data.compare === 'qoq' ? '环比' : '同比';
   var columnsPerPeriod = comparisonEnabled ? 2 : 1;
   var columnCount = data.periods.length * columnsPerPeriod + 1;
-  var headYears = data.periods.map(function(period) {
+  var headYears = data.periods.map(function(period, periodIndex) {
     var notes = [];
     if (period.end_date) notes.push('期末 ' + period.end_date);
     if (period.report_type_label || period.report_type) notes.push(period.report_type_label || period.report_type);
@@ -110,66 +196,96 @@ function stockAnalysisRenderStatements(data) {
     if (period.currency) notes.push(period.currency);
     if (period.announced_at) notes.push('公告 ' + period.announced_at);
     var note = notes.length ? '<small>' + escapeHtml(notes.join(' · ')) + '</small>' : '';
-    return '<th class="statement-period" scope="colgroup" colspan="' + columnsPerPeriod + '">' + escapeHtml(period.fiscal_year || period.year || period.end_date || '') + note + '</th>';
+    return '<th id="stmt-period-' + periodIndex + '" class="statement-period" scope="colgroup" colspan="' + columnsPerPeriod + '">' + escapeHtml(period.fiscal_year || period.year || period.end_date || '') + note + '</th>';
   }).join('');
-  var subHead = data.periods.map(function() {
-    return '<th scope="col">原值</th>' + (comparisonEnabled ? '<th scope="col">' + escapeHtml(comparisonLabel) + '</th>' : '');
+  var subHead = data.periods.map(function(_, periodIndex) {
+    return '<th id="stmt-val-' + periodIndex + '" headers="stmt-period-' + periodIndex + '" scope="col">原值</th>'
+      + (comparisonEnabled ? '<th id="stmt-cmp-' + periodIndex + '" headers="stmt-period-' + periodIndex + '" scope="col">' + escapeHtml(comparisonLabel) + '</th>' : '');
   }).join('');
-  var currentSection = '';
-  var rows = data.fields.map(function(field) {
-    var sectionRow = '';
-    var sectionChanged = field.section !== currentSection;
-    var fieldHasValue = Array.isArray(field.values) && field.values.some(function(item) { return item && item.value != null; });
-    var statusMessages = [];
+
+  var model = stockAnalysisBuildRowModels(data);
+  var commonComparisonReasons = {};
+  var emptySectionFillers = Array(Math.max(0, columnCount - 1)).fill('<td class="statement-section-filler" aria-hidden="true"></td>').join('');
+
+  var rows = model.rows.map(function(entry) {
+    if (entry.kind === 'section') {
+      var secDepth = Math.max(0, Math.min(4, Number(entry.depth) || 0));
+      var groupAttr = entry.group_id ? ' data-group-id="' + escapeHtml(entry.group_id) + '"' : '';
+      return '<tr class="statement-section statement-section-' + escapeHtml(data.type) + ' statement-role-section statement-level-' + secDepth + '" data-statement-level="' + (Number(entry.depth) || 0) + '"' + groupAttr + '><th scope="row" class="statement-section-cell">' + escapeHtml(entry.label) + '</th>' + emptySectionFillers + '</tr>';
+    }
+    var field = entry.field || model.byCode[entry.code];
+    if (!field) return '';
+    var statusGroups = {};
+    var statusOrder = [];
     function addStatusMessage(index, prefix, reason) {
-      var message = stockAnalysisStatementReason(reason);
+      var reasonText = stockAnalysisStatementReason(reason);
       var period = data.periods[index] || {};
       var periodLabel = period.end_date || period.fiscal_year || period.year || ('第' + (index + 1) + '期');
       var scopeLabels = { consolidated: '合并口径', parent: '母公司口径' };
       if (period.report_type_label || period.report_type) periodLabel += ' ' + (period.report_type_label || period.report_type);
       if (period.scope) periodLabel += ' ' + (scopeLabels[period.scope] || period.scope);
-      var text = periodLabel + ' ' + prefix + '：' + message;
-      if (statusMessages.indexOf(text) < 0) statusMessages.push(text);
+      var groupKey = prefix + '：' + reasonText;
+      if (!statusGroups[groupKey]) {
+        statusGroups[groupKey] = [];
+        statusOrder.push(groupKey);
+      }
+      if (statusGroups[groupKey].indexOf(periodLabel) < 0) statusGroups[groupKey].push(periodLabel);
     }
     (field.values || []).forEach(function(item, index) {
       if (item && item.status && item.status !== 'available') addStatusMessage(index, '原值', item.reason);
       if (comparisonEnabled && item && item.comparison_status && item.comparison_status !== 'available') {
         addStatusMessage(index, comparisonLabel, item.comparison_reason);
+        if (item.comparison_reason) commonComparisonReasons[item.comparison_reason] = (commonComparisonReasons[item.comparison_reason] || 0) + 1;
       }
     });
-    if (field.section !== currentSection) {
-      currentSection = field.section;
-      // 来源已经给出同名且有值的总计时，直接把它作为分组首行，避免“分组标题＋总计”重复占行。
-      if (!(String(field.label || '') === String(currentSection || '') && fieldHasValue)) {
-        sectionRow = '<tr class="statement-section statement-section-' + escapeHtml(data.type) + '"><th colspan="' + columnCount + '" scope="colgroup">' + escapeHtml(currentSection) + '</th></tr>';
-      }
-    }
-    var cells = field.values.map(function(item) {
+    var statusMessages = statusOrder.map(function(groupKey) {
+      return statusGroups[groupKey].join('、') + ' ' + groupKey;
+    });
+    var relationReason = stockAnalysisStatementRelationReason(entry.relation_status);
+    if (relationReason) statusMessages.push('层级关系：' + relationReason);
+    var cells = (field.values || []).map(function(item, periodIndex) {
       var value = item.value == null ? '—' : stockAnalysisNumber(item.value, 2);
       var valueReason = stockAnalysisStatementReason(item.reason);
       var valueStatus = item.status && item.status !== 'available' ? ' data-status="' + escapeHtml(item.status) + '" title="' + escapeHtml(valueReason) + '" aria-label="' + escapeHtml(valueReason) + '"' : '';
-      var valueCell = '<td class="statement-value"' + valueStatus + '>' + escapeHtml(value) + '</td>';
+      var valueCell = '<td class="statement-value' + (value === '—' ? ' statement-missing' : '') + '" headers="stmt-period-' + periodIndex + ' stmt-val-' + periodIndex + '"' + valueStatus + '>' + escapeHtml(value) + '</td>';
       if (!comparisonEnabled) return valueCell;
-      var change = item.change == null ? '—' : stockAnalysisPercent(item.change);
-      var changeClass = item.change != null && item.change < 0 ? ' class="negative"' : '';
+      var changeFmt = stockAnalysisStatementFormatChange(item.change);
+      var changeClass = changeFmt.cls ? ' class="' + changeFmt.cls + '"' : '';
       var comparisonReason = stockAnalysisStatementReason(item.comparison_reason);
       var comparisonStatus = item.comparison_status && item.comparison_status !== 'available' ? ' data-status="' + escapeHtml(item.comparison_status) + '" title="' + escapeHtml(comparisonReason) + '" aria-label="' + escapeHtml(comparisonReason) + '"' : '';
-      return valueCell + '<td' + changeClass + comparisonStatus + '>' + escapeHtml(change) + '</td>';
+      return valueCell + '<td' + changeClass + ' headers="stmt-period-' + periodIndex + ' stmt-cmp-' + periodIndex + '"' + comparisonStatus + '>' + escapeHtml(changeFmt.text) + '</td>';
     }).join('');
-    var level = Math.max(0, Number(field.level) || 0);
-    var rowClass = 'statement-item statement-level-' + level + (field.is_parent ? ' statement-parent statement-total' : '')
-      + (sectionChanged && String(field.label || '') === String(currentSection || '') && fieldHasValue ? ' statement-section-total' : '');
-    var branch = level ? '<span class="statement-branch" aria-hidden="true">└</span>' : '';
-    var parentAttr = field.parent ? ' data-parent-code="' + escapeHtml(field.parent) + '"' : '';
+
+    var depth = Math.max(0, Number(entry.depth) || 0);
+    var visualLevel = Math.min(4, depth);
+    var rowRole = entry.row_role || 'line';
+    var parentCode = entry.parent_code || null;
+    var parentField = parentCode && model.byCode[parentCode] ? model.byCode[parentCode] : null;
+    var rowClass = 'statement-item statement-role-' + escapeHtml(rowRole) + ' statement-level-' + visualLevel
+      + (rowRole === 'total' ? ' statement-parent statement-total' : rowRole === 'subtotal' ? ' statement-parent' : '')
+      + (entry.is_group_rep ? ' statement-section-total' : '');
+    var branch = parentCode ? '<span class="statement-branch" aria-hidden="true">└</span>' : '';
+    var parentAttr = parentCode ? ' data-parent-code="' + escapeHtml(parentCode) + '"' : '';
     var codeAttr = field.code ? ' data-statement-code="' + escapeHtml(field.code) + '"' : '';
+    var groupAttr = entry.group_id ? ' data-group-id="' + escapeHtml(entry.group_id) + '"' : '';
+    var roleAttr = ' data-row-role="' + escapeHtml(rowRole) + '"';
     var unit = field.unit ? '<small class="statement-unit">' + escapeHtml(field.unit) + '</small>' : '';
+    var srParent = parentField ? '<span class="statement-sr-parent">（隶属：' + escapeHtml(parentField.label) + '）</span>' : '';
     var statusHelp = statusMessages.length
       ? '<details class="statement-status-help"><summary aria-label="查看该字段状态说明">!</summary><div class="statement-status-help-text">' + escapeHtml(statusMessages.join('；')) + '</div></details>'
       : '';
-    return sectionRow + '<tr class="' + rowClass + '" data-statement-level="' + level + '"' + codeAttr + parentAttr + '><th scope="row">' + branch + '<span class="statement-label">' + escapeHtml(field.label) + '</span>' + unit + statusHelp + '</th>' + cells + '</tr>';
+    return '<tr class="' + rowClass + '" data-statement-level="' + depth + '"' + roleAttr + groupAttr + codeAttr + parentAttr + '><th scope="row">' + branch + '<span class="statement-label">' + escapeHtml(field.label) + '</span>' + srParent + unit + statusHelp + '</th>' + cells + '</tr>';
   }).join('');
+
+  var summaryHtml = '';
+  if (comparisonEnabled) {
+    var topReasons = Object.keys(commonComparisonReasons).filter(function(r) { return commonComparisonReasons[r] >= 3; });
+    if (topReasons.length) {
+      summaryHtml = '<div class="stock-analysis-statements-summary" role="note">比较口径说明：' + escapeHtml(topReasons.map(stockAnalysisStatementReason).join('；')) + '</div>';
+    }
+  }
   wrap.classList.add('biz-table-scroll');
-  wrap.innerHTML = '<table class="biz-table biz-table--matrix stock-analysis-statements-table" aria-label="' + escapeHtml((data.name || '财务三表') + '，' + (data.unit_label || '默认单位：亿元')) + '"><thead><tr><th rowspan="2" scope="col">' + escapeHtml(data.unit_label || '默认单位：亿元') + '</th>' + headYears + '</tr><tr>' + subHead + '</tr></thead><tbody>' + rows + '</tbody></table>';
+  wrap.innerHTML = summaryHtml + '<table class="biz-table biz-table--matrix stock-analysis-statements-table" aria-label="' + escapeHtml((data.name || '财务三表') + '，' + (data.unit_label || '默认单位：亿元')) + '"><thead><tr><th rowspan="2" scope="col">' + escapeHtml(data.unit_label || '默认单位：亿元') + '</th>' + headYears + '</tr><tr>' + subHead + '</tr></thead><tbody>' + rows + '</tbody></table>';
   wrap.style.display='block';
   if (window.BusinessTable) window.BusinessTable.attach(wrap, { page: '#main-stock-analysis', sticky: true });
 }

@@ -1,0 +1,2246 @@
+# 财报三表字段关系与展示分组版本化字典（2026-11-23）
+# 来源：docs/财报三表字段关系逐项核查清单_20261116.md（覆盖 11 类 × 3 表 = 33 组，共 2,243 条）
+# 列格式：market|type|statement|code|group_path|row_role|parent_code|evidence_status|candidate_parent|rep_group|rule_version
+CN|non_financial|balance|bs.ta|资产|total||unverified||资产|2026-11-23
+CN|non_financial|balance|bs.nwc|资产|supplement||unverified|||2026-11-23
+CN|non_financial|balance|bs.tca|资产 › 流动资产|subtotal||unverified||资产 › 流动资产|2026-11-23
+CN|non_financial|balance|bs.tca_ta_r|资产 › 流动资产|supplement||unverified|||2026-11-23
+CN|non_financial|balance|bs.cabb|资产 › 流动资产|line||unverified|||2026-11-23
+CN|non_financial|balance|bs.cabb_ta_r|资产 › 流动资产|supplement||unverified|||2026-11-23
+CN|non_financial|balance|bs.sr|资产 › 流动资产|line||unverified|||2026-11-23
+CN|non_financial|balance|bs.pwbaofi|资产 › 流动资产|line||unverified|||2026-11-23
+CN|non_financial|balance|bs.tfa|资产 › 流动资产|line||unverified|||2026-11-23
+CN|non_financial|balance|bs.cdfa|资产 › 流动资产|line||unverified|||2026-11-23
+CN|non_financial|balance|bs.nraar|资产 › 流动资产|line||unverified|||2026-11-23
+CN|non_financial|balance|bs.nr|资产 › 流动资产|detail|bs.nraar|source_verified|||2026-11-23
+CN|non_financial|balance|bs.ar|资产 › 流动资产|detail|bs.nraar|source_verified|||2026-11-23
+CN|non_financial|balance|bs.rf|资产 › 流动资产|line||unverified|||2026-11-23
+CN|non_financial|balance|bs.ats|资产 › 流动资产|line||unverified|||2026-11-23
+CN|non_financial|balance|bs.pr|资产 › 流动资产|line||unverified|||2026-11-23
+CN|non_financial|balance|bs.rir|资产 › 流动资产|line||unverified|||2026-11-23
+CN|non_financial|balance|bs.crorir|资产 › 流动资产|line||unverified|||2026-11-23
+CN|non_financial|balance|bs.or|资产 › 流动资产|line||unverified|||2026-11-23
+CN|non_financial|balance|bs.ir|资产 › 流动资产|detail|bs.or|source_verified|||2026-11-23
+CN|non_financial|balance|bs.dr|资产 › 流动资产|detail|bs.or|source_verified|||2026-11-23
+CN|non_financial|balance|bs.fahursa|资产 › 流动资产|line||unverified|||2026-11-23
+CN|non_financial|balance|bs.i|资产 › 流动资产|line||unverified|||2026-11-23
+CN|non_financial|balance|bs.i_dr|资产 › 流动资产|detail|bs.i|source_verified|||2026-11-23
+CN|non_financial|balance|bs.ca|资产 › 流动资产|line||unverified|||2026-11-23
+CN|non_financial|balance|bs.ahfs|资产 › 流动资产|line||unverified|||2026-11-23
+CN|non_financial|balance|bs.claatc|资产 › 流动资产|line||unverified|||2026-11-23
+CN|non_financial|balance|bs.pe|资产 › 流动资产|line||unverified|||2026-11-23
+CN|non_financial|balance|bs.ncadwioy|资产 › 流动资产|line||unverified|||2026-11-23
+CN|non_financial|balance|bs.oca|资产 › 流动资产|line||unverified|||2026-11-23
+CN|non_financial|balance|bs.tca_tcl_r|资产 › 流动资产|supplement||unverified|||2026-11-23
+CN|non_financial|balance|bs.q_r|资产 › 流动资产|supplement||unverified|||2026-11-23
+CN|non_financial|balance|bs.tnca|资产 › 非流动资产|subtotal||unverified||资产 › 非流动资产|2026-11-23
+CN|non_financial|balance|bs.tnca_ta_r|资产 › 非流动资产|supplement||unverified|||2026-11-23
+CN|non_financial|balance|bs.ah_ta_r|资产 › 非流动资产|supplement||unverified|||2026-11-23
+CN|non_financial|balance|bs.nclaatc|资产 › 非流动资产|line||unverified|||2026-11-23
+CN|non_financial|balance|bs.cri|资产 › 非流动资产|line||unverified|||2026-11-23
+CN|non_financial|balance|bs.ocri|资产 › 非流动资产|line||unverified|||2026-11-23
+CN|non_financial|balance|bs.ncafsfa|资产 › 非流动资产|line||unverified|||2026-11-23
+CN|non_financial|balance|bs.htmi|资产 › 非流动资产|line||unverified|||2026-11-23
+CN|non_financial|balance|bs.ltar|资产 › 非流动资产|line||unverified|||2026-11-23
+CN|non_financial|balance|bs.ltei|资产 › 非流动资产|line||unverified|||2026-11-23
+CN|non_financial|balance|bs.oeii|资产 › 非流动资产|line||unverified|||2026-11-23
+CN|non_financial|balance|bs.oncfa|资产 › 非流动资产|line||unverified|||2026-11-23
+CN|non_financial|balance|bs.rei|资产 › 非流动资产|line||unverified|||2026-11-23
+CN|non_financial|balance|bs.fa|资产 › 非流动资产|line||unverified|||2026-11-23
+CN|non_financial|balance|bs.dofa|资产 › 非流动资产|detail|bs.fa|source_verified|||2026-11-23
+CN|non_financial|balance|bs.fa_ta_r|资产 › 非流动资产|supplement||unverified|||2026-11-23
+CN|non_financial|balance|bs.cip|资产 › 非流动资产|line||unverified|||2026-11-23
+CN|non_financial|balance|bs.es|资产 › 非流动资产|detail|bs.cip|source_verified|||2026-11-23
+CN|non_financial|balance|bs.cip_fa_r|资产 › 非流动资产|supplement||unverified|||2026-11-23
+CN|non_financial|balance|bs.pba|资产 › 非流动资产|line||unverified|||2026-11-23
+CN|non_financial|balance|bs.oaga|资产 › 非流动资产|line||unverified|||2026-11-23
+CN|non_financial|balance|bs.pwba|资产 › 非流动资产|line||unverified|||2026-11-23
+CN|non_financial|balance|bs.roua|资产 › 非流动资产|line||unverified|||2026-11-23
+CN|non_financial|balance|bs.ia|资产 › 非流动资产|line||unverified|||2026-11-23
+CN|non_financial|balance|bs.ia_dr|资产 › 非流动资产|detail|bs.ia|source_verified|||2026-11-23
+CN|non_financial|balance|bs.rade|资产 › 非流动资产|line||unverified|||2026-11-23
+CN|non_financial|balance|bs.rade_dr|资产 › 非流动资产|detail|bs.rade|source_verified|||2026-11-23
+CN|non_financial|balance|bs.gw|资产 › 非流动资产|line||unverified|||2026-11-23
+CN|non_financial|balance|bs.gw_toe_r|资产 › 非流动资产|supplement||unverified|||2026-11-23
+CN|non_financial|balance|bs.ltpe|资产 › 非流动资产|line||unverified|||2026-11-23
+CN|non_financial|balance|bs.dita|资产 › 非流动资产|line||unverified|||2026-11-23
+CN|non_financial|balance|bs.onca|资产 › 非流动资产|line||unverified|||2026-11-23
+CN|non_financial|balance|bs.tl|负债|total||unverified||负债|2026-11-23
+CN|non_financial|balance|bs.lwi|负债|supplement||unverified|||2026-11-23
+CN|non_financial|balance|bs.lwi_ta_r|负债|supplement||unverified|||2026-11-23
+CN|non_financial|balance|bs.tl_ta_r|负债|supplement||unverified|||2026-11-23
+CN|non_financial|balance|bs.tcl|负债 › 流动负债|subtotal||unverified||负债 › 流动负债|2026-11-23
+CN|non_financial|balance|bs.tcl_tl_r|负债 › 流动负债|supplement||unverified|||2026-11-23
+CN|non_financial|balance|bs.stl|负债 › 流动负债|line||unverified|||2026-11-23
+CN|non_financial|balance|bs.bfcb|负债 › 流动负债|line||unverified|||2026-11-23
+CN|non_financial|balance|bs.pfbaofi|负债 › 流动负债|line||unverified|||2026-11-23
+CN|non_financial|balance|bs.dfl|负债 › 流动负债|line||unverified|||2026-11-23
+CN|non_financial|balance|bs.tfl|负债 › 流动负债|line||unverified|||2026-11-23
+CN|non_financial|balance|bs.npaap|负债 › 流动负债|line||unverified|||2026-11-23
+CN|non_financial|balance|bs.np|负债 › 流动负债|detail|bs.npaap|source_verified|||2026-11-23
+CN|non_financial|balance|bs.ap|负债 › 流动负债|detail|bs.npaap|source_verified|||2026-11-23
+CN|non_financial|balance|bs.afc|负债 › 流动负债|line||unverified|||2026-11-23
+CN|non_financial|balance|bs.cl|负债 › 流动负债|line||unverified|||2026-11-23
+CN|non_financial|balance|bs.fasurpa|负债 › 流动负债|line||unverified|||2026-11-23
+CN|non_financial|balance|bs.dfcab|负债 › 流动负债|line||unverified|||2026-11-23
+CN|non_financial|balance|bs.stoa|负债 › 流动负债|line||unverified|||2026-11-23
+CN|non_financial|balance|bs.ssoa|负债 › 流动负债|line||unverified|||2026-11-23
+CN|non_financial|balance|bs.sawp|负债 › 流动负债|line||unverified|||2026-11-23
+CN|non_financial|balance|bs.tp|负债 › 流动负债|line||unverified|||2026-11-23
+CN|non_financial|balance|bs.oap|负债 › 流动负债|line||unverified|||2026-11-23
+CN|non_financial|balance|bs.intp|负债 › 流动负债|detail|bs.oap|source_verified|||2026-11-23
+CN|non_financial|balance|bs.dp|负债 › 流动负债|detail|bs.oap|source_verified|||2026-11-23
+CN|non_financial|balance|bs.facp|负债 › 流动负债|line||unverified|||2026-11-23
+CN|non_financial|balance|bs.rip|负债 › 流动负债|line||unverified|||2026-11-23
+CN|non_financial|balance|bs.lhfs|负债 › 流动负债|line||unverified|||2026-11-23
+CN|non_financial|balance|bs.ncldwioy|负债 › 流动负债|line||unverified|||2026-11-23
+CN|non_financial|balance|bs.didwioy|负债 › 流动负债|line||unverified|||2026-11-23
+CN|non_financial|balance|bs.cal|负债 › 流动负债|line||unverified|||2026-11-23
+CN|non_financial|balance|bs.stbp|负债 › 流动负债|line||unverified|||2026-11-23
+CN|non_financial|balance|bs.ocl|负债 › 流动负债|line||unverified|||2026-11-23
+CN|non_financial|balance|bs.tncl|负债 › 非流动负债|subtotal||unverified||负债 › 非流动负债|2026-11-23
+CN|non_financial|balance|bs.tncl_tl_r|负债 › 非流动负债|supplement||unverified|||2026-11-23
+CN|non_financial|balance|bs.icr|负债 › 非流动负债|line||unverified|||2026-11-23
+CN|non_financial|balance|bs.ltl|负债 › 非流动负债|line||unverified|||2026-11-23
+CN|non_financial|balance|bs.bp|负债 › 非流动负债|line||unverified|||2026-11-23
+CN|non_financial|balance|bs.psibp|负债 › 非流动负债|detail|bs.bp|source_verified|||2026-11-23
+CN|non_financial|balance|bs.pcsibp|负债 › 非流动负债|detail|bs.bp|source_verified|||2026-11-23
+CN|non_financial|balance|bs.ll|负债 › 非流动负债|line||unverified|||2026-11-23
+CN|non_financial|balance|bs.ltap|负债 › 非流动负债|line||unverified|||2026-11-23
+CN|non_financial|balance|bs.sap|负债 › 非流动负债|detail|bs.ltap|source_verified|||2026-11-23
+CN|non_financial|balance|bs.ltpoe|负债 › 非流动负债|line||unverified|||2026-11-23
+CN|non_financial|balance|bs.ncal|负债 › 非流动负债|line||unverified|||2026-11-23
+CN|non_financial|balance|bs.ltdi|负债 › 非流动负债|line||unverified|||2026-11-23
+CN|non_financial|balance|bs.ditl|负债 › 非流动负债|line||unverified|||2026-11-23
+CN|non_financial|balance|bs.oncl|负债 › 非流动负债|line||unverified|||2026-11-23
+CN|non_financial|balance|bs.toe|所有者权益|total||unverified||所有者权益|2026-11-23
+CN|non_financial|balance|bs.toe_ta_r|所有者权益|supplement||unverified|||2026-11-23
+CN|non_financial|balance|bs.sc|所有者权益|line||unverified|||2026-11-23
+CN|non_financial|balance|bs.oei|所有者权益|line||unverified|||2026-11-23
+CN|non_financial|balance|bs.psioei|所有者权益|detail|bs.oei|source_verified|||2026-11-23
+CN|non_financial|balance|bs.pcsioei|所有者权益|detail|bs.oei|source_verified|||2026-11-23
+CN|non_financial|balance|bs.capr|所有者权益|line||unverified|||2026-11-23
+CN|non_financial|balance|bs.is|所有者权益|line||unverified|||2026-11-23
+CN|non_financial|balance|bs.oci|所有者权益|line||unverified|||2026-11-23
+CN|non_financial|balance|bs.rr|所有者权益|line||unverified|||2026-11-23
+CN|non_financial|balance|bs.surr|所有者权益|line||unverified|||2026-11-23
+CN|non_financial|balance|bs.pogr|所有者权益|line||unverified|||2026-11-23
+CN|non_financial|balance|bs.rtp|所有者权益|line||unverified|||2026-11-23
+CN|non_financial|balance|bs.er|所有者权益|line||unverified|||2026-11-23
+CN|non_financial|balance|bs.tetshaoehopc|所有者权益|line||unverified|||2026-11-23
+CN|non_financial|balance|bs.tetoshopc|所有者权益|line||unverified|||2026-11-23
+CN|non_financial|balance|bs.tetoshopc_ps|所有者权益|line||unverified|||2026-11-23
+CN|non_financial|balance|bs.etmsh|所有者权益|line||unverified|||2026-11-23
+CN|non_financial|balance|bs.ep_stn|员工情况|supplement||unverified|||2026-11-23
+CN|non_financial|balance|bs.ep_pn|员工情况|supplement||unverified|||2026-11-23
+CN|non_financial|balance|bs.ep_mn|员工情况|supplement||unverified|||2026-11-23
+CN|non_financial|balance|bs.ep_bn|员工情况|supplement||unverified|||2026-11-23
+CN|non_financial|balance|bs.ep_jcn|员工情况|supplement||unverified|||2026-11-23
+CN|non_financial|balance|bs.ep_hsabn|员工情况|supplement||unverified|||2026-11-23
+CN|non_financial|balance|bs.ep_psn|员工情况|supplement||unverified|||2026-11-23
+CN|non_financial|balance|bs.ep_spn|员工情况|supplement||unverified|||2026-11-23
+CN|non_financial|balance|bs.ep_tsn|员工情况|supplement||unverified|||2026-11-23
+CN|non_financial|balance|bs.ep_fon|员工情况|supplement||unverified|||2026-11-23
+CN|non_financial|balance|bs.ep_asn|员工情况|supplement||unverified|||2026-11-23
+CN|non_financial|balance|bs.ep_osn|员工情况|supplement||unverified|||2026-11-23
+CN|non_financial|balance|bs.mc|股本、股东以及估值|supplement||unverified|||2026-11-23
+CN|non_financial|balance|bs.tsc|股本、股东以及估值|supplement||unverified|||2026-11-23
+CN|non_financial|balance|bs.csc|股本、股东以及估值|supplement||unverified|||2026-11-23
+CN|non_financial|balance|bs.shn|股本、股东以及估值|supplement||unverified|||2026-11-23
+CN|non_financial|balance|bs.shn_om|股本、股东以及估值|supplement||unverified|||2026-11-23
+CN|non_financial|balance|bs.shbt1sh_tsc_r|股本、股东以及估值|supplement||unverified|||2026-11-23
+CN|non_financial|balance|bs.shbt10sh_tsc_r|股本、股东以及估值|supplement||unverified|||2026-11-23
+CN|non_financial|balance|bs.shbt10sh_csc_r|股本、股东以及估值|supplement||unverified|||2026-11-23
+CN|non_financial|balance|bs.shbt10poof_csc_r|股本、股东以及估值|supplement||unverified|||2026-11-23
+CN|non_financial|balance|bs.shbpoof_csc_r|股本、股东以及估值|supplement||unverified|||2026-11-23
+CN|non_financial|balance|bs.shbeosh_poof_ecsc_r|股本、股东以及估值|supplement||unverified|||2026-11-23
+CN|non_financial|balance|bs.pe_ttm|股本、股东以及估值|supplement||unverified|||2026-11-23
+CN|non_financial|balance|bs.d_pe_ttm|股本、股东以及估值|supplement||unverified|||2026-11-23
+CN|non_financial|balance|bs.pb|股本、股东以及估值|supplement||unverified|||2026-11-23
+CN|non_financial|balance|bs.pb_wo_gw|股本、股东以及估值|supplement||unverified|||2026-11-23
+CN|non_financial|balance|bs.ps_ttm|股本、股东以及估值|supplement||unverified|||2026-11-23
+CN|non_financial|balance|bs.pcf_ttm|股本、股东以及估值|supplement||unverified|||2026-11-23
+CN|non_financial|balance|bs.dyr|股本、股东以及估值|supplement||unverified|||2026-11-23
+CN|non_financial|income|ps.toi|营业收入|subtotal||unverified||营业收入|2026-11-23
+CN|non_financial|income|ps.oi|营业收入|line||unverified|||2026-11-23
+CN|non_financial|income|ps.ii|营业总收入|line||unverified|||2026-11-23
+CN|non_financial|income|ps.ep|营业总收入|line||unverified|||2026-11-23
+CN|non_financial|income|ps.faci|营业总收入|line||unverified|||2026-11-23
+CN|non_financial|income|ps.ooi|营业总收入|line||unverified|||2026-11-23
+CN|non_financial|income|ps.toc|营业成本及费用|subtotal||unverified||营业成本及费用|2026-11-23
+CN|non_financial|income|ps.oc|营业成本及费用|line||unverified|||2026-11-23
+CN|non_financial|income|ps.gp_m|营业总成本|line||unverified|||2026-11-23
+CN|non_financial|income|ps.ie|营业总成本|line||unverified|||2026-11-23
+CN|non_financial|income|ps.face|营业总成本|line||unverified|||2026-11-23
+CN|non_financial|income|ps.s|营业总成本|line||unverified|||2026-11-23
+CN|non_financial|income|ps.ce|营业总成本|line||unverified|||2026-11-23
+CN|non_financial|income|ps.iiicr|营业总成本|line||unverified|||2026-11-23
+CN|non_financial|income|ps.phdrfpip|营业总成本|line||unverified|||2026-11-23
+CN|non_financial|income|ps.rie|营业总成本|line||unverified|||2026-11-23
+CN|non_financial|income|ps.tas|营业成本及费用|line||unverified|||2026-11-23
+CN|non_financial|income|ps.se|营业成本及费用|line||unverified|||2026-11-23
+CN|non_financial|income|ps.ae|营业成本及费用|line||unverified|||2026-11-23
+CN|non_financial|income|ps.rade|营业成本及费用|line||unverified|||2026-11-23
+CN|non_financial|income|ps.crade|补充指标|supplement||unverified|||2026-11-23
+CN|non_financial|income|ps.crade_r|营业总成本|supplement||unverified|||2026-11-23
+CN|non_financial|income|ps.fe|营业成本及费用|line||unverified|||2026-11-23
+CN|non_financial|income|ps.ieife|营业成本及费用|detail|ps.fe|source_verified|||2026-11-23
+CN|non_financial|income|ps.iiife|营业成本及费用|detail|ps.fe|source_verified|||2026-11-23
+CN|non_financial|income|ps.se_r|营业总成本|supplement||unverified|||2026-11-23
+CN|non_financial|income|ps.ae_r|营业总成本|supplement||unverified|||2026-11-23
+CN|non_financial|income|ps.rade_r|营业总成本|supplement||unverified|||2026-11-23
+CN|non_financial|income|ps.fe_r|营业总成本|supplement||unverified|||2026-11-23
+CN|non_financial|income|ps.oe_r|营业总成本|supplement||unverified|||2026-11-23
+CN|non_financial|income|ps.foe_r|营业总成本|supplement||unverified|||2026-11-23
+CN|non_financial|income|ps.oic|其他损益|line||unverified|||2026-11-23
+CN|non_financial|income|ps.ivi|其他损益|line||unverified|||2026-11-23
+CN|non_financial|income|ps.iifaajv|其他损益|detail|ps.ivi|source_verified|||2026-11-23
+CN|non_financial|income|ps.iftdofamaac|其他损益|detail|ps.ivi|source_verified|||2026-11-23
+CN|non_financial|income|ps.ei|其他损益|line||unverified|||2026-11-23
+CN|non_financial|income|ps.nehb|其他损益|line||unverified|||2026-11-23
+CN|non_financial|income|ps.ciofv|其他损益|line||unverified|||2026-11-23
+CN|non_financial|income|ps.cilor|其他损益|line||unverified|||2026-11-23
+CN|non_financial|income|ps.ailor|其他损益|line||unverified|||2026-11-23
+CN|non_financial|income|ps.oail|营业总成本|line||unverified|||2026-11-23
+CN|non_financial|income|ps.adi|其他损益|line||unverified|||2026-11-23
+CN|non_financial|income|ps.ooe|营业总成本|line||unverified|||2026-11-23
+CN|non_financial|income|ps.cp|补充指标|supplement||unverified|||2026-11-23
+CN|non_financial|income|ps.cp_r|营业总成本|supplement||unverified|||2026-11-23
+CN|non_financial|income|ps.op|营业利润|subtotal||unverified||营业利润|2026-11-23
+CN|non_financial|income|ps.op_s_r|营业利润|supplement||unverified|||2026-11-23
+CN|non_financial|income|ps.op_op_r|营业利润|supplement||unverified|||2026-11-23
+CN|non_financial|income|ps.noi|营业利润至利润总额|line||unverified|||2026-11-23
+CN|non_financial|income|ps.ncadarg|营业利润至利润总额|detail|ps.noi|source_verified|||2026-11-23
+CN|non_financial|income|ps.noe|营业利润至利润总额|line||unverified|||2026-11-23
+CN|non_financial|income|ps.ncadarl|营业利润至利润总额|detail|ps.noe|source_verified|||2026-11-23
+CN|non_financial|income|ps.tp|利润总额|subtotal||unverified||利润总额|2026-11-23
+CN|non_financial|income|ps.rade_tp_r|利润总额|supplement||unverified|||2026-11-23
+CN|non_financial|income|ps.ebit|补充指标|supplement||unverified|||2026-11-23
+CN|non_financial|income|ps.ebitda|补充指标|supplement||unverified|||2026-11-23
+CN|non_financial|income|ps.ite|利润总额至净利润|line||unverified|||2026-11-23
+CN|non_financial|income|ps.ite_tp_r|利润总额|supplement||unverified|||2026-11-23
+CN|non_financial|income|ps.np|净利润|total||unverified||净利润|2026-11-23
+CN|non_financial|income|ps.np_s_r|净利润|supplement||unverified|||2026-11-23
+CN|non_financial|income|ps.npfco|净利润 › 按经营持续性|line||unverified|||2026-11-23
+CN|non_financial|income|ps.npfdco|净利润 › 按经营持续性|line||unverified|||2026-11-23
+CN|non_financial|income|ps.npatshaoehopc|净利润 › 按所有权归属|line||unverified|||2026-11-23
+CN|non_financial|income|ps.npatoshopc|净利润 › 按所有权归属|line||unverified|||2026-11-23
+CN|non_financial|income|ps.npatmsh|净利润 › 按所有权归属|line||unverified|||2026-11-23
+CN|non_financial|income|ps.npadnrpatoshaopc|补充指标|supplement||unverified|||2026-11-23
+CN|non_financial|income|ps.npadnrpatoshaopc_npatoshopc_r|净利润|supplement||unverified|||2026-11-23
+CN|non_financial|income|ps.wroe|净利润|supplement||unverified|||2026-11-23
+CN|non_financial|income|ps.wdroe|净利润|supplement||unverified|||2026-11-23
+CN|non_financial|income|ps.beps|每股收益|supplement||unverified|||2026-11-23
+CN|non_financial|income|ps.deps|每股收益|supplement||unverified|||2026-11-23
+CN|non_financial|income|ps.tci|综合收益|total||unverified||综合收益|2026-11-23
+CN|non_financial|income|ps.tciatshaoehopc|综合收益 › 按所有权归属|line||unverified|||2026-11-23
+CN|non_financial|income|ps.tciatoshopc|综合收益 › 按所有权归属|line||unverified|||2026-11-23
+CN|non_financial|income|ps.tciatmsh|综合收益 › 按所有权归属|line||unverified|||2026-11-23
+CN|non_financial|income|ps.natooci|综合收益 › 其他综合收益|subtotal||unverified||综合收益 › 其他综合收益|2026-11-23
+CN|non_financial|income|ps.d_oi|区域收入|supplement||unverified|||2026-11-23
+CN|non_financial|income|ps.d_oc|区域收入|supplement||unverified|||2026-11-23
+CN|non_financial|income|ps.d_gp_m|区域收入|supplement||unverified|||2026-11-23
+CN|non_financial|income|ps.d_oi_r|区域收入|supplement||unverified|||2026-11-23
+CN|non_financial|income|ps.o_oi|区域收入|supplement||unverified|||2026-11-23
+CN|non_financial|income|ps.o_oc|区域收入|supplement||unverified|||2026-11-23
+CN|non_financial|income|ps.o_gp_m|区域收入|supplement||unverified|||2026-11-23
+CN|non_financial|income|ps.o_oi_r|区域收入|supplement||unverified|||2026-11-23
+CN|non_financial|income|ps.da|分红、融资及涨跌幅|supplement||unverified|||2026-11-23
+CN|non_financial|income|ps.d_np_r|分红、融资及涨跌幅|supplement||unverified|||2026-11-23
+CN|non_financial|income|ps.da_om|分红、融资及涨跌幅|supplement||unverified|||2026-11-23
+CN|non_financial|income|ps.fa_om|分红、融资及涨跌幅|supplement||unverified|||2026-11-23
+CN|non_financial|income|ps.spc_a|分红、融资及涨跌幅|supplement||unverified|||2026-11-23
+CN|non_financial|income|ps.tfci_r|客户及供应商|supplement||unverified|||2026-11-23
+CN|non_financial|income|ps.tfsp_r|客户及供应商|supplement||unverified|||2026-11-23
+CN|non_financial|cashflow|cfs.crfscapls|经营活动现金流 › 现金流入|line||unverified|||2026-11-23
+CN|non_financial|cashflow|cfs.ndilaatc|经营活动现金流 › 现金流入|line||unverified|||2026-11-23
+CN|non_financial|cashflow|cfs.niicdadfbaofi|经营活动现金流 › 现金流入|line||unverified|||2026-11-23
+CN|non_financial|cashflow|cfs.niibfcb|经营活动现金流 › 现金流入|line||unverified|||2026-11-23
+CN|non_financial|cashflow|cfs.niipfofi|经营活动现金流 › 现金流入|line||unverified|||2026-11-23
+CN|non_financial|cashflow|cfs.crfp|经营活动现金流 › 现金流入|line||unverified|||2026-11-23
+CN|non_financial|cashflow|cfs.ncrfrib|经营活动现金流 › 现金流入|line||unverified|||2026-11-23
+CN|non_financial|cashflow|cfs.niiphd|经营活动现金流 › 现金流入|line||unverified|||2026-11-23
+CN|non_financial|cashflow|cfs.ndifahftp|经营活动现金流 › 现金流入|line||unverified|||2026-11-23
+CN|non_financial|cashflow|cfs.niipfbaofi|经营活动现金流 › 现金流入|line||unverified|||2026-11-23
+CN|non_financial|cashflow|cfs.niifasurpaioa|经营活动现金流 › 现金流入|line||unverified|||2026-11-23
+CN|non_financial|cashflow|cfs.crfifac|经营活动现金流 › 现金流入|line||unverified|||2026-11-23
+CN|non_financial|cashflow|cfs.ncrfstoa|经营活动现金流 › 现金流入|line||unverified|||2026-11-23
+CN|non_financial|cashflow|cfs.crfwbot|经营活动现金流 › 现金流入|line||unverified|||2026-11-23
+CN|non_financial|cashflow|cfs.crrtooa|经营活动现金流 › 现金流入|line||unverified|||2026-11-23
+CN|non_financial|cashflow|cfs.stciffoa|经营活动现金流 › 现金流入|subtotal||unverified||经营活动现金流 › 现金流入|2026-11-23
+CN|non_financial|cashflow|cfs.cpfpcarls|经营活动现金流 › 现金流出|line||unverified|||2026-11-23
+CN|non_financial|cashflow|cfs.niilaatc|经营活动现金流 › 现金流出|line||unverified|||2026-11-23
+CN|non_financial|cashflow|cfs.niibwcbbaofi|经营活动现金流 › 现金流出|line||unverified|||2026-11-23
+CN|non_financial|cashflow|cfs.ndipfofi|经营活动现金流 › 现金流出|line||unverified|||2026-11-23
+CN|non_financial|cashflow|cfs.cpfc|经营活动现金流 › 现金流出|line||unverified|||2026-11-23
+CN|non_financial|cashflow|cfs.niipwbaofi|经营活动现金流 › 现金流出|line||unverified|||2026-11-23
+CN|non_financial|cashflow|cfs.niifahursaioa|经营活动现金流 › 现金流出|line||unverified|||2026-11-23
+CN|non_financial|cashflow|cfs.cpfphd|经营活动现金流 › 现金流出|line||unverified|||2026-11-23
+CN|non_financial|cashflow|cfs.niifahftp|经营活动现金流 › 现金流出|line||unverified|||2026-11-23
+CN|non_financial|cashflow|cfs.cpfifac|经营活动现金流 › 现金流出|line||unverified|||2026-11-23
+CN|non_financial|cashflow|cfs.cptofe|经营活动现金流 › 现金流出|line||unverified|||2026-11-23
+CN|non_financial|cashflow|cfs.cpft|经营活动现金流 › 现金流出|line||unverified|||2026-11-23
+CN|non_financial|cashflow|cfs.cprtooa|经营活动现金流 › 现金流出|line||unverified|||2026-11-23
+CN|non_financial|cashflow|cfs.stcoffoa|经营活动现金流 › 现金流出|subtotal||unverified||经营活动现金流 › 现金流出|2026-11-23
+CN|non_financial|cashflow|cfs.ncffoa|经营活动现金流|total||unverified|||2026-11-23
+CN|non_financial|cashflow|cfs.crfrci|投资活动现金流 › 现金流入|line||unverified|||2026-11-23
+CN|non_financial|cashflow|cfs.crfii|投资活动现金流 › 现金流入|line||unverified|||2026-11-23
+CN|non_financial|cashflow|cfs.crfdofiaolta|投资活动现金流 › 现金流入|line||unverified|||2026-11-23
+CN|non_financial|cashflow|cfs.ncrfdossajvaou|投资活动现金流 › 现金流入|line||unverified|||2026-11-23
+CN|non_financial|cashflow|cfs.ncrfdossaou|投资活动现金流 › 现金流入|detail|cfs.ncrfdossajvaou|source_verified|||2026-11-23
+CN|non_financial|cashflow|cfs.ncrfdoaajv|投资活动现金流 › 现金流入|detail|cfs.ncrfdossajvaou|source_verified|||2026-11-23
+CN|non_financial|cashflow|cfs.crrtoia|投资活动现金流 › 现金流入|line||unverified|||2026-11-23
+CN|non_financial|cashflow|cfs.stcifia|投资活动现金流 › 现金流入|subtotal||unverified||投资活动现金流 › 现金流入|2026-11-23
+CN|non_financial|cashflow|cfs.cpfpfiaolta|投资活动现金流 › 现金流出|line||unverified|||2026-11-23
+CN|non_financial|cashflow|cfs.cpfi|投资活动现金流 › 现金流出|line||unverified|||2026-11-23
+CN|non_financial|cashflow|cfs.niipl|投资活动现金流 › 现金流出|line||unverified|||2026-11-23
+CN|non_financial|cashflow|cfs.ncpfbssajvaou|投资活动现金流 › 现金流出|line||unverified|||2026-11-23
+CN|non_financial|cashflow|cfs.ncpfbssaou|投资活动现金流 › 现金流出|detail|cfs.ncpfbssajvaou|source_verified|||2026-11-23
+CN|non_financial|cashflow|cfs.ncpfbajv|投资活动现金流 › 现金流出|detail|cfs.ncpfbssajvaou|source_verified|||2026-11-23
+CN|non_financial|cashflow|cfs.cprtoia|投资活动现金流 › 现金流出|line||unverified|||2026-11-23
+CN|non_financial|cashflow|cfs.stcoffia|投资活动现金流 › 现金流出|subtotal||unverified||投资活动现金流 › 现金流出|2026-11-23
+CN|non_financial|cashflow|cfs.ncffia|投资活动现金流|total||unverified|||2026-11-23
+CN|non_financial|cashflow|cfs.crfai|筹资活动现金流 › 现金流入|line||unverified|||2026-11-23
+CN|non_financial|cashflow|cfs.crfamshibss|筹资活动现金流 › 现金流入|detail|cfs.crfai|source_verified|||2026-11-23
+CN|non_financial|cashflow|cfs.crfl|筹资活动现金流 › 现金流入|line||unverified|||2026-11-23
+CN|non_financial|cashflow|cfs.crfib|筹资活动现金流 › 现金流入|line||unverified|||2026-11-23
+CN|non_financial|cashflow|cfs.crrtofa|筹资活动现金流 › 现金流入|line||unverified|||2026-11-23
+CN|non_financial|cashflow|cfs.stcifffa|筹资活动现金流 › 现金流入|subtotal||unverified||筹资活动现金流 › 现金流入|2026-11-23
+CN|non_financial|cashflow|cfs.cpfbrp|筹资活动现金流 › 现金流出|line||unverified|||2026-11-23
+CN|non_financial|cashflow|cfs.cpfdapdoi|筹资活动现金流 › 现金流出|line||unverified|||2026-11-23
+CN|non_financial|cashflow|cfs.cpfdapomshpbss|筹资活动现金流 › 现金流出|detail|cfs.cpfdapdoi|source_verified|||2026-11-23
+CN|non_financial|cashflow|cfs.cprtofa|筹资活动现金流 › 现金流出|line||unverified|||2026-11-23
+CN|non_financial|cashflow|cfs.stcofffa|筹资活动现金流 › 现金流出|subtotal||unverified||筹资活动现金流 › 现金流出|2026-11-23
+CN|non_financial|cashflow|cfs.ncfffa|筹资活动现金流|total||unverified|||2026-11-23
+CN|non_financial|cashflow|cfs.iocacedtfier|现金净变动与余额|line||unverified|||2026-11-23
+CN|non_financial|cashflow|cfs.bocaceatpb|现金净变动与余额|line||unverified|||2026-11-23
+CN|non_financial|cashflow|cfs.niicace|现金净变动与余额|total||unverified|||2026-11-23
+CN|non_financial|cashflow|cfs.bocaceatpe|现金净变动与余额|total||unverified|||2026-11-23
+CN|non_financial|cashflow|cfs.np|现金流补充资料|supplement||unverified|||2026-11-23
+CN|non_financial|cashflow|cfs.ioa|现金流补充资料|supplement||unverified|||2026-11-23
+CN|non_financial|cashflow|cfs.cilor|现金流补充资料|supplement||unverified|||2026-11-23
+CN|non_financial|cashflow|cfs.daa|现金流补充资料|supplement||unverified|||2026-11-23
+CN|non_financial|cashflow|cfs.dofx_dooaga_dopba|现金流补充资料|supplement||unverified|||2026-11-23
+CN|non_financial|cashflow|cfs.daaorei|现金流补充资料|supplement||unverified|||2026-11-23
+CN|non_financial|cashflow|cfs.aoroua|现金流补充资料|supplement||unverified|||2026-11-23
+CN|non_financial|cashflow|cfs.aoia|现金流补充资料|supplement||unverified|||2026-11-23
+CN|non_financial|cashflow|cfs.aoltde|现金流补充资料|supplement||unverified|||2026-11-23
+CN|non_financial|cashflow|cfs.lodofaiaaolta|现金流补充资料|supplement||unverified|||2026-11-23
+CN|non_financial|cashflow|cfs.lfsfa|现金流补充资料|supplement||unverified|||2026-11-23
+CN|non_financial|cashflow|cfs.lfcifv|现金流补充资料|supplement||unverified|||2026-11-23
+CN|non_financial|cashflow|cfs.fe|现金流补充资料|supplement||unverified|||2026-11-23
+CN|non_financial|cashflow|cfs.il|现金流补充资料|supplement||unverified|||2026-11-23
+CN|non_financial|cashflow|cfs.didita|现金流补充资料|supplement||unverified|||2026-11-23
+CN|non_financial|cashflow|cfs.iiditl|现金流补充资料|supplement||unverified|||2026-11-23
+CN|non_financial|cashflow|cfs.dii|现金流补充资料|supplement||unverified|||2026-11-23
+CN|non_financial|cashflow|cfs.dior|现金流补充资料|supplement||unverified|||2026-11-23
+CN|non_financial|cashflow|cfs.iiop|现金流补充资料|supplement||unverified|||2026-11-23
+CN|non_financial|cashflow|cfs.o|现金流补充资料|supplement||unverified|||2026-11-23
+CN|non_financial|cashflow|cfs.cbdwioy|现金流补充资料|supplement||unverified|||2026-11-23
+CN|non_financial|cashflow|cfs.flofa|现金流补充资料|supplement||unverified|||2026-11-23
+CN|non_financial|cashflow|cfs.ncffoa_dup|现金流补充资料|supplement||unverified|||2026-11-23
+CN|bank|balance|bs.ta|资产|total||unverified||资产|2026-11-23
+CN|bank|balance|bs.cabwcb|资产|line||unverified|||2026-11-23
+CN|bank|balance|bs.c|资产|line||issuer_sample|bs.cabwcb||2026-11-23
+CN|bank|balance|bs.bwcb|资产|line||issuer_sample|bs.cabwcb||2026-11-23
+CN|bank|balance|bs.bwbaofi|资产|line||unverified|||2026-11-23
+CN|bank|balance|bs.pm|资产|line||unverified|||2026-11-23
+CN|bank|balance|bs.pwbaofi|资产|line||unverified|||2026-11-23
+CN|bank|balance|bs.fahursa|资产|line||unverified|||2026-11-23
+CN|bank|balance|bs.laatc|资产|line||unverified|||2026-11-23
+CN|bank|balance|bs.dfa|资产|line||unverified|||2026-11-23
+CN|bank|balance|bs.t_fi|资产 › 金融投资|subtotal||unverified||资产 › 金融投资|2026-11-23
+CN|bank|balance|bs.fiafvtpol|资产 › 金融投资|line|bs.t_fi|source_verified|||2026-11-23
+CN|bank|balance|bs.fiaac|资产 › 金融投资|line|bs.t_fi|source_verified|||2026-11-23
+CN|bank|balance|bs.fiafvtoci|资产 › 金融投资|line|bs.t_fi|source_verified|||2026-11-23
+CN|bank|balance|bs.diafvtoci|资产 › 金融投资|line|bs.t_fi|source_verified|||2026-11-23
+CN|bank|balance|bs.deiafvtoci|资产 › 金融投资|line|bs.t_fi|source_verified|||2026-11-23
+CN|bank|balance|bs.afsfa|资产 › 金融投资|line|bs.t_fi|source_verified|||2026-11-23
+CN|bank|balance|bs.htmi|资产 › 金融投资|line|bs.t_fi|source_verified|||2026-11-23
+CN|bank|balance|bs.ri|资产 › 金融投资|line|bs.t_fi|source_verified|||2026-11-23
+CN|bank|balance|bs.ir|资产|line||unverified|||2026-11-23
+CN|bank|balance|bs.ltar|资产|line||unverified|||2026-11-23
+CN|bank|balance|bs.ltei|资产|line||unverified|||2026-11-23
+CN|bank|balance|bs.rei|资产|line||unverified|||2026-11-23
+CN|bank|balance|bs.fa|资产|line||unverified|||2026-11-23
+CN|bank|balance|bs.fa_ta_r|资产|supplement||unverified|||2026-11-23
+CN|bank|balance|bs.cip|资产|line||unverified|||2026-11-23
+CN|bank|balance|bs.roua|资产|line||unverified|||2026-11-23
+CN|bank|balance|bs.ia|资产|line||unverified|||2026-11-23
+CN|bank|balance|bs.gw|资产|line||unverified|||2026-11-23
+CN|bank|balance|bs.gw_toe_r|资产|supplement||unverified|||2026-11-23
+CN|bank|balance|bs.dita|资产|line||unverified|||2026-11-23
+CN|bank|balance|bs.oa|资产|line||unverified|||2026-11-23
+CN|bank|balance|bs.tl|负债|total||unverified||负债|2026-11-23
+CN|bank|balance|bs.tl_ta_r|负债|supplement||unverified|||2026-11-23
+CN|bank|balance|bs.bfcb|负债|line||unverified|||2026-11-23
+CN|bank|balance|bs.dapfbaofi|负债|line||unverified|||2026-11-23
+CN|bank|balance|bs.dfbaofi|负债|line||candidate|bs.dapfbaofi（待对照原报告）||2026-11-23
+CN|bank|balance|bs.pfbaofi|负债|line||candidate|bs.dapfbaofi（待对照原报告）||2026-11-23
+CN|bank|balance|bs.dfl|负债|line||unverified|||2026-11-23
+CN|bank|balance|bs.flafvtpol|负债|line||unverified|||2026-11-23
+CN|bank|balance|bs.fasurpa|负债|line||unverified|||2026-11-23
+CN|bank|balance|bs.cd|负债|line||unverified|||2026-11-23
+CN|bank|balance|bs.sawp|负债|line||unverified|||2026-11-23
+CN|bank|balance|bs.tp|负债|line||unverified|||2026-11-23
+CN|bank|balance|bs.cl|负债|line||unverified|||2026-11-23
+CN|bank|balance|bs.ll|负债|line||unverified|||2026-11-23
+CN|bank|balance|bs.al|负债|line||unverified|||2026-11-23
+CN|bank|balance|bs.intp|负债|line||unverified|||2026-11-23
+CN|bank|balance|bs.bp|负债|line||unverified|||2026-11-23
+CN|bank|balance|bs.ditl|负债|line||unverified|||2026-11-23
+CN|bank|balance|bs.ol|负债|line||unverified|||2026-11-23
+CN|bank|balance|bs.toe|所有者权益|total||unverified||所有者权益|2026-11-23
+CN|bank|balance|bs.toe_ta_r|所有者权益|supplement||unverified|||2026-11-23
+CN|bank|balance|bs.sc|所有者权益|line||unverified|||2026-11-23
+CN|bank|balance|bs.oei|所有者权益|line||unverified|||2026-11-23
+CN|bank|balance|bs.psioei|所有者权益|line||candidate|bs.oei（待对照原报告）||2026-11-23
+CN|bank|balance|bs.pcsioei|所有者权益|line||candidate|bs.oei（待对照原报告）||2026-11-23
+CN|bank|balance|bs.capr|所有者权益|line||unverified|||2026-11-23
+CN|bank|balance|bs.is|所有者权益|line||unverified|||2026-11-23
+CN|bank|balance|bs.oci|所有者权益|line||unverified|||2026-11-23
+CN|bank|balance|bs.rr|所有者权益|line||unverified|||2026-11-23
+CN|bank|balance|bs.surr|所有者权益|line||unverified|||2026-11-23
+CN|bank|balance|bs.pogr|所有者权益|line||unverified|||2026-11-23
+CN|bank|balance|bs.rtp|所有者权益|line||unverified|||2026-11-23
+CN|bank|balance|bs.er|所有者权益|line||unverified|||2026-11-23
+CN|bank|balance|bs.tetshaoehopc|所有者权益|line||unverified|||2026-11-23
+CN|bank|balance|bs.tetoshopc|所有者权益|line||unverified|||2026-11-23
+CN|bank|balance|bs.tetoshopc_ps|所有者权益|line||unverified|||2026-11-23
+CN|bank|balance|bs.etmsh|所有者权益|line||unverified|||2026-11-23
+CN|bank|balance|bs.trwa|核心指标|supplement||unverified|||2026-11-23
+CN|bank|balance|bs.ct1car|核心指标|supplement||unverified|||2026-11-23
+CN|bank|balance|bs.t1car|核心指标|supplement||unverified|||2026-11-23
+CN|bank|balance|bs.car|核心指标|supplement||unverified|||2026-11-23
+CN|bank|balance|bs.nis|核心指标|supplement||unverified|||2026-11-23
+CN|bank|balance|bs.nim|核心指标|supplement||unverified|||2026-11-23
+CN|bank|balance|bs.lcr|核心指标|supplement||unverified|||2026-11-23
+CN|bank|balance|bs.lr_rmb|核心指标|supplement||unverified|||2026-11-23
+CN|bank|balance|bs.lr_fc|核心指标|supplement||unverified|||2026-11-23
+CN|bank|balance|bs.lr_ctrmb|核心指标|supplement||unverified|||2026-11-23
+CN|bank|balance|bs.tlaatc|贷款质量|supplement||unverified|||2026-11-23
+CN|bank|balance|bs.p_pf|贷款质量|line||issuer_sample|bs.tlaatc||2026-11-23
+CN|bank|balance|bs.sm_pf|贷款质量|line||issuer_sample|bs.tlaatc||2026-11-23
+CN|bank|balance|bs.npl|贷款质量|line||issuer_sample|bs.tlaatc||2026-11-23
+CN|bank|balance|bs.s_npl|贷款质量|line||issuer_sample|bs.npl||2026-11-23
+CN|bank|balance|bs.d_npl|贷款质量|line||issuer_sample|bs.npl||2026-11-23
+CN|bank|balance|bs.l_npl|贷款质量|line||issuer_sample|bs.npl||2026-11-23
+CN|bank|balance|bs.tol|贷款质量|line||undecided|||2026-11-23
+CN|bank|balance|bs.lofmt3m|贷款质量|line||candidate|bs.tol（待对照原报告）||2026-11-23
+CN|bank|balance|bs.rl|贷款质量|line||undecided|||2026-11-23
+CN|bank|balance|bs.rlofmt90d|贷款质量|line||candidate|bs.rl（待对照原报告）||2026-11-23
+CN|bank|balance|bs.llr|贷款质量|line||undecided|||2026-11-23
+CN|bank|balance|bs.p_pf_mr|贷款质量|supplement||unverified|||2026-11-23
+CN|bank|balance|bs.sm_pf_mr|贷款质量|supplement||unverified|||2026-11-23
+CN|bank|balance|bs.s_npl_mr|贷款质量|supplement||unverified|||2026-11-23
+CN|bank|balance|bs.d_npl_mr|贷款质量|supplement||unverified|||2026-11-23
+CN|bank|balance|bs.npl_tlaatc_r|贷款质量|supplement||unverified|||2026-11-23
+CN|bank|balance|bs.llr_tlaatc_r|贷款质量|supplement||unverified|||2026-11-23
+CN|bank|balance|bs.llr_npl_r|贷款质量|supplement||unverified|||2026-11-23
+CN|bank|balance|bs.tol_tlaatc_r|贷款质量|supplement||unverified|||2026-11-23
+CN|bank|balance|bs.lofmt3m_tlaatc_r|贷款质量|supplement||unverified|||2026-11-23
+CN|bank|balance|bs.rl_tlaatc_r|贷款质量|supplement||unverified|||2026-11-23
+CN|bank|balance|bs.rlofmt90d_tlaatc_r|贷款质量|supplement||unverified|||2026-11-23
+CN|bank|balance|bs.ep_stn|员工情况|supplement||unverified|||2026-11-23
+CN|bank|balance|bs.ep_pn|员工情况|supplement||unverified|||2026-11-23
+CN|bank|balance|bs.ep_mn|员工情况|supplement||unverified|||2026-11-23
+CN|bank|balance|bs.ep_bn|员工情况|supplement||unverified|||2026-11-23
+CN|bank|balance|bs.ep_jcn|员工情况|supplement||unverified|||2026-11-23
+CN|bank|balance|bs.ep_hsabn|员工情况|supplement||unverified|||2026-11-23
+CN|bank|balance|bs.ep_psn|员工情况|supplement||unverified|||2026-11-23
+CN|bank|balance|bs.ep_spn|员工情况|supplement||unverified|||2026-11-23
+CN|bank|balance|bs.ep_tsn|员工情况|supplement||unverified|||2026-11-23
+CN|bank|balance|bs.ep_fon|员工情况|supplement||unverified|||2026-11-23
+CN|bank|balance|bs.ep_asn|员工情况|supplement||unverified|||2026-11-23
+CN|bank|balance|bs.ep_osn|员工情况|supplement||unverified|||2026-11-23
+CN|bank|balance|bs.mc|股本、股东以及估值|supplement||unverified|||2026-11-23
+CN|bank|balance|bs.tsc|股本、股东以及估值|supplement||unverified|||2026-11-23
+CN|bank|balance|bs.csc|股本、股东以及估值|supplement||unverified|||2026-11-23
+CN|bank|balance|bs.shn|股本、股东以及估值|supplement||unverified|||2026-11-23
+CN|bank|balance|bs.shn_om|股本、股东以及估值|supplement||unverified|||2026-11-23
+CN|bank|balance|bs.shbt1sh_tsc_r|股本、股东以及估值|supplement||unverified|||2026-11-23
+CN|bank|balance|bs.shbt10sh_tsc_r|股本、股东以及估值|supplement||unverified|||2026-11-23
+CN|bank|balance|bs.shbt10sh_csc_r|股本、股东以及估值|supplement||unverified|||2026-11-23
+CN|bank|balance|bs.shbt10poof_csc_r|股本、股东以及估值|supplement||unverified|||2026-11-23
+CN|bank|balance|bs.shbpoof_csc_r|股本、股东以及估值|supplement||unverified|||2026-11-23
+CN|bank|balance|bs.shbeosh_poof_ecsc_r|股本、股东以及估值|supplement||unverified|||2026-11-23
+CN|bank|balance|bs.pe_ttm|股本、股东以及估值|supplement||unverified|||2026-11-23
+CN|bank|balance|bs.d_pe_ttm|股本、股东以及估值|supplement||unverified|||2026-11-23
+CN|bank|balance|bs.pb|股本、股东以及估值|supplement||unverified|||2026-11-23
+CN|bank|balance|bs.pb_wo_gw|股本、股东以及估值|supplement||unverified|||2026-11-23
+CN|bank|balance|bs.ps_ttm|股本、股东以及估值|supplement||unverified|||2026-11-23
+CN|bank|balance|bs.pcf_ttm|股本、股东以及估值|supplement||unverified|||2026-11-23
+CN|bank|balance|bs.dyr|股本、股东以及估值|supplement||unverified|||2026-11-23
+CN|bank|income|ps.oi|营业收入|line||unverified|||2026-11-23
+CN|bank|income|ps.nii|营业收入|line||unverified|||2026-11-23
+CN|bank|income|ps.ii|营业收入|line||issuer_sample|ps.nii||2026-11-23
+CN|bank|income|ps.ie|营业收入|line||issuer_sample|ps.nii||2026-11-23
+CN|bank|income|ps.nii_bi_r|营业收入|supplement||unverified|||2026-11-23
+CN|bank|income|ps.nonii|营业收入|line||unverified|||2026-11-23
+CN|bank|income|ps.nonii_bi_r|营业收入|supplement||unverified|||2026-11-23
+CN|bank|income|ps.nfaci|营业收入|line||unverified|||2026-11-23
+CN|bank|income|ps.faci|营业收入|line||issuer_sample|ps.nfaci||2026-11-23
+CN|bank|income|ps.face|营业收入|line||issuer_sample|ps.nfaci||2026-11-23
+CN|bank|income|ps.ciofv|其他损益|line||unverified|||2026-11-23
+CN|bank|income|ps.ivi|其他损益|line||unverified|||2026-11-23
+CN|bank|income|ps.iifaajv|营业收入|line||candidate|ps.ivi（待对照原报告）||2026-11-23
+CN|bank|income|ps.ei|其他损益|line||unverified|||2026-11-23
+CN|bank|income|ps.ooi|营业收入|line||unverified|||2026-11-23
+CN|bank|income|ps.oe|营业支出|subtotal||unverified||营业支出|2026-11-23
+CN|bank|income|ps.tas|营业成本及费用|line||unverified|||2026-11-23
+CN|bank|income|ps.baae|营业支出|line||unverified|||2026-11-23
+CN|bank|income|ps.ooe|营业支出|line||unverified|||2026-11-23
+CN|bank|income|ps.c_i_r|营业支出|supplement||unverified|||2026-11-23
+CN|bank|income|ps.cilor|其他损益|line||unverified|||2026-11-23
+CN|bank|income|ps.ailor|其他损益|line||unverified|||2026-11-23
+CN|bank|income|ps.oail|营业支出|line||unverified|||2026-11-23
+CN|bank|income|ps.op|营业利润|subtotal||unverified||营业利润|2026-11-23
+CN|bank|income|ps.op_s_r|营业利润|supplement||unverified|||2026-11-23
+CN|bank|income|ps.noi|营业利润至利润总额|line||unverified|||2026-11-23
+CN|bank|income|ps.noe|营业利润至利润总额|line||unverified|||2026-11-23
+CN|bank|income|ps.tp|利润总额|subtotal||unverified||利润总额|2026-11-23
+CN|bank|income|ps.ite|利润总额至净利润|line||unverified|||2026-11-23
+CN|bank|income|ps.ite_tp_r|利润总额|supplement||unverified|||2026-11-23
+CN|bank|income|ps.np|净利润|total||unverified||净利润|2026-11-23
+CN|bank|income|ps.np_s_r|净利润|supplement||unverified|||2026-11-23
+CN|bank|income|ps.npfco|净利润 › 按经营持续性|line||unverified|||2026-11-23
+CN|bank|income|ps.npfdco|净利润 › 按经营持续性|line||unverified|||2026-11-23
+CN|bank|income|ps.npatshaoehopc|净利润 › 按所有权归属|line||unverified|||2026-11-23
+CN|bank|income|ps.npatoshopc|净利润 › 按所有权归属|line||unverified|||2026-11-23
+CN|bank|income|ps.npatmsh|净利润 › 按所有权归属|line||unverified|||2026-11-23
+CN|bank|income|ps.npadnrpatoshaopc|补充指标|supplement||unverified|||2026-11-23
+CN|bank|income|ps.npadnrpatoshaopc_npatoshopc_r|净利润|supplement||unverified|||2026-11-23
+CN|bank|income|ps.wroe|净利润|supplement||unverified|||2026-11-23
+CN|bank|income|ps.wdroe|净利润|supplement||unverified|||2026-11-23
+CN|bank|income|ps.beps|每股收益|supplement||unverified|||2026-11-23
+CN|bank|income|ps.deps|每股收益|supplement||unverified|||2026-11-23
+CN|bank|income|ps.tci|综合收益|total||unverified||综合收益|2026-11-23
+CN|bank|income|ps.tciatshaoehopc|综合收益 › 按所有权归属|line||unverified|||2026-11-23
+CN|bank|income|ps.tciatoshopc|综合收益 › 按所有权归属|line||unverified|||2026-11-23
+CN|bank|income|ps.tciatmsh|综合收益 › 按所有权归属|line||unverified|||2026-11-23
+CN|bank|income|ps.natooci|综合收益 › 其他综合收益|subtotal||unverified||综合收益 › 其他综合收益|2026-11-23
+CN|bank|income|ps.d_oi|区域收入|supplement||unverified|||2026-11-23
+CN|bank|income|ps.d_oc|区域收入|supplement||unverified|||2026-11-23
+CN|bank|income|ps.d_gp_m|区域收入|supplement||unverified|||2026-11-23
+CN|bank|income|ps.d_oi_r|区域收入|supplement||unverified|||2026-11-23
+CN|bank|income|ps.o_oi|区域收入|supplement||unverified|||2026-11-23
+CN|bank|income|ps.o_oc|区域收入|supplement||unverified|||2026-11-23
+CN|bank|income|ps.o_gp_m|区域收入|supplement||unverified|||2026-11-23
+CN|bank|income|ps.o_oi_r|区域收入|supplement||unverified|||2026-11-23
+CN|bank|income|ps.da|分红、融资及涨跌幅|supplement||unverified|||2026-11-23
+CN|bank|income|ps.d_np_r|分红、融资及涨跌幅|supplement||unverified|||2026-11-23
+CN|bank|income|ps.da_om|分红、融资及涨跌幅|supplement||unverified|||2026-11-23
+CN|bank|income|ps.fa_om|分红、融资及涨跌幅|supplement||unverified|||2026-11-23
+CN|bank|income|ps.spc_a|分红、融资及涨跌幅|supplement||unverified|||2026-11-23
+CN|bank|income|ps.tfci_r|客户及供应商|supplement||unverified|||2026-11-23
+CN|bank|income|ps.tfsp_r|客户及供应商|supplement||unverified|||2026-11-23
+CN|bank|cashflow|cfs.ndilaatc|经营活动现金流 › 现金流入|line||unverified|||2026-11-23
+CN|bank|cashflow|cfs.niibfcb|经营活动现金流 › 现金流入|line||unverified|||2026-11-23
+CN|bank|cashflow|cfs.niicdadfbaofi|经营活动现金流 › 现金流入|line||unverified|||2026-11-23
+CN|bank|cashflow|cfs.niicd|经营活动现金流 › 现金流入|line||candidate|cfs.niicdadfbaofi（待对照原报告）||2026-11-23
+CN|bank|cashflow|cfs.niidfbaofi|经营活动现金流 › 现金流入|line||candidate|cfs.niicdadfbaofi（待对照原报告）||2026-11-23
+CN|bank|cashflow|cfs.ndibwcbbaofi|经营活动现金流 › 现金流入|line||unverified|||2026-11-23
+CN|bank|cashflow|cfs.ndibwcb|经营活动现金流 › 现金流入|line||candidate|cfs.ndibwcbbaofi（待对照原报告）||2026-11-23
+CN|bank|cashflow|cfs.ndibwbaofi|经营活动现金流 › 现金流入|line||candidate|cfs.ndibwcbbaofi（待对照原报告）||2026-11-23
+CN|bank|cashflow|cfs.niipfbaoiafasurpa|经营活动现金流 › 现金流入|line||unverified|||2026-11-23
+CN|bank|cashflow|cfs.niipfbaofi|经营活动现金流 › 现金流入|line||candidate|cfs.niipfbaoiafasurpa（待对照原报告）||2026-11-23
+CN|bank|cashflow|cfs.niifasurpaioa|经营活动现金流 › 现金流入|line||candidate|cfs.niipfbaoiafasurpa（待对照原报告）||2026-11-23
+CN|bank|cashflow|cfs.ndipwbaofiafahursa|经营活动现金流 › 现金流入|line||unverified|||2026-11-23
+CN|bank|cashflow|cfs.ndipwbaofi|经营活动现金流 › 现金流入|line||candidate|cfs.ndipwbaofiafahursa（待对照原报告）||2026-11-23
+CN|bank|cashflow|cfs.ndifahursaioa|经营活动现金流 › 现金流入|line||candidate|cfs.ndipwbaofiafahursa（待对照原报告）||2026-11-23
+CN|bank|cashflow|cfs.ndifahftp|经营活动现金流 › 现金流入|line||unverified|||2026-11-23
+CN|bank|cashflow|cfs.crfifac|经营活动现金流 › 现金流入|line||unverified|||2026-11-23
+CN|bank|cashflow|cfs.crrtooa|经营活动现金流 › 现金流入|line||unverified|||2026-11-23
+CN|bank|cashflow|cfs.stciffoa|经营活动现金流 › 现金流入|subtotal||unverified||经营活动现金流 › 现金流入|2026-11-23
+CN|bank|cashflow|cfs.niilaatc|经营活动现金流 › 现金流出|line||unverified|||2026-11-23
+CN|bank|cashflow|cfs.ndibfcb|经营活动现金流 › 现金流出|line||unverified|||2026-11-23
+CN|bank|cashflow|cfs.ndicdadfbaofi|经营活动现金流 › 现金流出|line||unverified|||2026-11-23
+CN|bank|cashflow|cfs.ndicd|经营活动现金流 › 现金流出|line||candidate|cfs.ndicdadfbaofi（待对照原报告）||2026-11-23
+CN|bank|cashflow|cfs.ndidfbaofi|经营活动现金流 › 现金流出|line||candidate|cfs.ndicdadfbaofi（待对照原报告）||2026-11-23
+CN|bank|cashflow|cfs.niibwcbbaofi|经营活动现金流 › 现金流出|line||unverified|||2026-11-23
+CN|bank|cashflow|cfs.niibwcb|经营活动现金流 › 现金流出|line||candidate|cfs.niibwcbbaofi（待对照原报告）||2026-11-23
+CN|bank|cashflow|cfs.niibwbaofi|经营活动现金流 › 现金流出|line||candidate|cfs.niibwcbbaofi（待对照原报告）||2026-11-23
+CN|bank|cashflow|cfs.ndipfbaofiafasurpa|经营活动现金流 › 现金流出|line||unverified|||2026-11-23
+CN|bank|cashflow|cfs.ndipfbaofi|经营活动现金流 › 现金流出|line||candidate|cfs.ndipfbaofiafasurpa（待对照原报告）||2026-11-23
+CN|bank|cashflow|cfs.ndifasurpaioa|经营活动现金流 › 现金流出|line||candidate|cfs.ndipfbaofiafasurpa（待对照原报告）||2026-11-23
+CN|bank|cashflow|cfs.niipwbaofiafahursa|经营活动现金流 › 现金流出|line||unverified|||2026-11-23
+CN|bank|cashflow|cfs.niipwbaofi|经营活动现金流 › 现金流出|line||candidate|cfs.niipwbaofiafahursa（待对照原报告）||2026-11-23
+CN|bank|cashflow|cfs.niifahursaioa|经营活动现金流 › 现金流出|line||candidate|cfs.niipwbaofiafahursa（待对照原报告）||2026-11-23
+CN|bank|cashflow|cfs.niifahftp|经营活动现金流 › 现金流出|line||unverified|||2026-11-23
+CN|bank|cashflow|cfs.cpfifac|经营活动现金流 › 现金流出|line||unverified|||2026-11-23
+CN|bank|cashflow|cfs.cptofe|经营活动现金流 › 现金流出|line||unverified|||2026-11-23
+CN|bank|cashflow|cfs.cpft|经营活动现金流 › 现金流出|line||unverified|||2026-11-23
+CN|bank|cashflow|cfs.cprtooa|经营活动现金流 › 现金流出|line||unverified|||2026-11-23
+CN|bank|cashflow|cfs.stcoffoa|经营活动现金流 › 现金流出|subtotal||unverified||经营活动现金流 › 现金流出|2026-11-23
+CN|bank|cashflow|cfs.ncffoa|经营活动现金流|total||unverified|||2026-11-23
+CN|bank|cashflow|cfs.crfrci|投资活动现金流 › 现金流入|line||unverified|||2026-11-23
+CN|bank|cashflow|cfs.crfii|投资活动现金流 › 现金流入|line||unverified|||2026-11-23
+CN|bank|cashflow|cfs.crfdofiaolta|投资活动现金流 › 现金流入|line||unverified|||2026-11-23
+CN|bank|cashflow|cfs.ncrfdossajvaou|投资活动现金流 › 现金流入|line||unverified|||2026-11-23
+CN|bank|cashflow|cfs.ncrfdossaou|投资活动现金流 › 现金流入|line||candidate|cfs.ncrfdossajvaou（待对照原报告）||2026-11-23
+CN|bank|cashflow|cfs.ncrfdoaajv|投资活动现金流 › 现金流入|line||candidate|cfs.ncrfdossajvaou（待对照原报告）||2026-11-23
+CN|bank|cashflow|cfs.crrtoia|投资活动现金流 › 现金流入|line||unverified|||2026-11-23
+CN|bank|cashflow|cfs.stcifia|投资活动现金流 › 现金流入|subtotal||unverified||投资活动现金流 › 现金流入|2026-11-23
+CN|bank|cashflow|cfs.cpfi|投资活动现金流 › 现金流出|line||unverified|||2026-11-23
+CN|bank|cashflow|cfs.cpfpfiaolta|投资活动现金流 › 现金流出|line||unverified|||2026-11-23
+CN|bank|cashflow|cfs.ncpfbssajvaou|投资活动现金流 › 现金流出|line||unverified|||2026-11-23
+CN|bank|cashflow|cfs.ncpfbssaou|投资活动现金流 › 现金流出|line||candidate|cfs.ncpfbssajvaou（待对照原报告）||2026-11-23
+CN|bank|cashflow|cfs.ncpfbajv|投资活动现金流 › 现金流出|line||candidate|cfs.ncpfbssajvaou（待对照原报告）||2026-11-23
+CN|bank|cashflow|cfs.cprtoia|投资活动现金流 › 现金流出|line||unverified|||2026-11-23
+CN|bank|cashflow|cfs.stcoffia|投资活动现金流 › 现金流出|subtotal||unverified||投资活动现金流 › 现金流出|2026-11-23
+CN|bank|cashflow|cfs.ncffia|投资活动现金流|total||unverified|||2026-11-23
+CN|bank|cashflow|cfs.crfai|筹资活动现金流 › 现金流入|line||unverified|||2026-11-23
+CN|bank|cashflow|cfs.crfamshibss|筹资活动现金流 › 现金流入|line||candidate|cfs.crfai（待对照原报告）||2026-11-23
+CN|bank|cashflow|cfs.crfas|筹资活动现金流 › 现金流入|line||unverified|||2026-11-23
+CN|bank|cashflow|cfs.crfdc|筹资活动现金流 › 现金流入|line||unverified|||2026-11-23
+CN|bank|cashflow|cfs.crfib|筹资活动现金流 › 现金流入|line||unverified|||2026-11-23
+CN|bank|cashflow|cfs.crfnibcod|筹资活动现金流 › 现金流入|line||unverified|||2026-11-23
+CN|bank|cashflow|cfs.crfipcs|筹资活动现金流 › 现金流入|line||unverified|||2026-11-23
+CN|bank|cashflow|cfs.crfipo|筹资活动现金流 › 现金流入|line||unverified|||2026-11-23
+CN|bank|cashflow|cfs.crrtofa|筹资活动现金流 › 现金流入|line||unverified|||2026-11-23
+CN|bank|cashflow|cfs.stcifffa|筹资活动现金流 › 现金流入|subtotal||unverified||筹资活动现金流 › 现金流入|2026-11-23
+CN|bank|cashflow|cfs.cpfdcrp|筹资活动现金流 › 现金流出|line||unverified|||2026-11-23
+CN|bank|cashflow|cfs.cpfbrp|筹资活动现金流 › 现金流出|line||unverified|||2026-11-23
+CN|bank|cashflow|cfs.cpfnibcodrp|筹资活动现金流 › 现金流出|line||unverified|||2026-11-23
+CN|bank|cashflow|cfs.cpfbip|筹资活动现金流 › 现金流出|line||unverified|||2026-11-23
+CN|bank|cashflow|cfs.cpfdapdoi|筹资活动现金流 › 现金流出|line||unverified|||2026-11-23
+CN|bank|cashflow|cfs.cpfdapomshpbss|筹资活动现金流 › 现金流出|line||candidate|cfs.cpfdapdoi（待对照原报告）||2026-11-23
+CN|bank|cashflow|cfs.cpfncer|筹资活动现金流 › 现金流出|line||unverified|||2026-11-23
+CN|bank|cashflow|cfs.cpfipo|筹资活动现金流 › 现金流出|line||unverified|||2026-11-23
+CN|bank|cashflow|cfs.cprtofa|筹资活动现金流 › 现金流出|line||unverified|||2026-11-23
+CN|bank|cashflow|cfs.stcofffa|筹资活动现金流 › 现金流出|subtotal||unverified||筹资活动现金流 › 现金流出|2026-11-23
+CN|bank|cashflow|cfs.ncfffa|筹资活动现金流|total||unverified|||2026-11-23
+CN|bank|cashflow|cfs.iocacedtfier|现金净变动与余额|line||unverified|||2026-11-23
+CN|bank|cashflow|cfs.bocaceatpb|现金净变动与余额|line||unverified|||2026-11-23
+CN|bank|cashflow|cfs.niicace|现金净变动与余额|total||unverified|||2026-11-23
+CN|bank|cashflow|cfs.bocaceatpe|现金净变动与余额|total||unverified|||2026-11-23
+CN|bank|cashflow|cfs.np|现金流补充资料|supplement||unverified|||2026-11-23
+CN|bank|cashflow|cfs.ioa|现金流补充资料|supplement||unverified|||2026-11-23
+CN|bank|cashflow|cfs.cilor|现金流补充资料|supplement||unverified|||2026-11-23
+CN|bank|cashflow|cfs.daa|现金流补充资料|supplement||unverified|||2026-11-23
+CN|bank|cashflow|cfs.dofx_dooaga_dopba|现金流补充资料|supplement||unverified|||2026-11-23
+CN|bank|cashflow|cfs.daaorei|现金流补充资料|supplement||unverified|||2026-11-23
+CN|bank|cashflow|cfs.aoroua|现金流补充资料|supplement||unverified|||2026-11-23
+CN|bank|cashflow|cfs.aoia|现金流补充资料|supplement||unverified|||2026-11-23
+CN|bank|cashflow|cfs.aoltde|现金流补充资料|supplement||unverified|||2026-11-23
+CN|bank|cashflow|cfs.lodofaiaaolta|现金流补充资料|supplement||unverified|||2026-11-23
+CN|bank|cashflow|cfs.lfsfa|现金流补充资料|supplement||unverified|||2026-11-23
+CN|bank|cashflow|cfs.lfcifv|现金流补充资料|supplement||unverified|||2026-11-23
+CN|bank|cashflow|cfs.fe|现金流补充资料|supplement||unverified|||2026-11-23
+CN|bank|cashflow|cfs.il|现金流补充资料|supplement||unverified|||2026-11-23
+CN|bank|cashflow|cfs.didita|现金流补充资料|supplement||unverified|||2026-11-23
+CN|bank|cashflow|cfs.iiditl|现金流补充资料|supplement||unverified|||2026-11-23
+CN|bank|cashflow|cfs.dii|现金流补充资料|supplement||unverified|||2026-11-23
+CN|bank|cashflow|cfs.dior|现金流补充资料|supplement||unverified|||2026-11-23
+CN|bank|cashflow|cfs.iiop|现金流补充资料|supplement||unverified|||2026-11-23
+CN|bank|cashflow|cfs.o|现金流补充资料|supplement||unverified|||2026-11-23
+CN|bank|cashflow|cfs.cbdwioy|现金流补充资料|supplement||unverified|||2026-11-23
+CN|bank|cashflow|cfs.flofa|现金流补充资料|supplement||unverified|||2026-11-23
+CN|bank|cashflow|cfs.ncffoa_dup|现金流补充资料|supplement||unverified|||2026-11-23
+CN|insurance|balance|bs.ta|资产|total||unverified||资产|2026-11-23
+CN|insurance|balance|bs.cabb|资产|line||unverified|||2026-11-23
+CN|insurance|balance|bs.cabb_ta_r|资产|supplement||unverified|||2026-11-23
+CN|insurance|balance|bs.sr|资产|line||unverified|||2026-11-23
+CN|insurance|balance|bs.pwbaofi|资产|line||unverified|||2026-11-23
+CN|insurance|balance|bs.fahursa|资产|line||unverified|||2026-11-23
+CN|insurance|balance|bs.pr|资产|line||unverified|||2026-11-23
+CN|insurance|balance|bs.ar|资产|line||unverified|||2026-11-23
+CN|insurance|balance|bs.ir|资产|line||unverified|||2026-11-23
+CN|insurance|balance|bs.rir|资产|line||unverified|||2026-11-23
+CN|insurance|balance|bs.uprrfri|资产|line||unverified|||2026-11-23
+CN|insurance|balance|bs.crrfri|资产|line||unverified|||2026-11-23
+CN|insurance|balance|bs.lirrfri|资产|line||unverified|||2026-11-23
+CN|insurance|balance|bs.lthirrfri|资产|line||unverified|||2026-11-23
+CN|insurance|balance|bs.niipl|资产|line||unverified|||2026-11-23
+CN|insurance|balance|bs.dfa|资产|line||unverified|||2026-11-23
+CN|insurance|balance|bs.ica|资产|line||unverified|||2026-11-23
+CN|insurance|balance|bs.rica|资产|line||unverified|||2026-11-23
+CN|insurance|balance|bs.crorir|资产|line||unverified|||2026-11-23
+CN|insurance|balance|bs.phpl|资产|line||unverified|||2026-11-23
+CN|insurance|balance|bs.ltar|资产|line||unverified|||2026-11-23
+CN|insurance|balance|bs.laatc|资产|line||unverified|||2026-11-23
+CN|insurance|balance|bs.td|资产|line||unverified|||2026-11-23
+CN|insurance|balance|bs.t_fi|资产 › 金融投资|subtotal||unverified||资产 › 金融投资|2026-11-23
+CN|insurance|balance|bs.fiafvtpol|资产 › 金融投资|line|bs.t_fi|source_verified|||2026-11-23
+CN|insurance|balance|bs.fiaac|资产 › 金融投资|line|bs.t_fi|source_verified|||2026-11-23
+CN|insurance|balance|bs.diafvtoci|资产 › 金融投资|line|bs.t_fi|source_verified|||2026-11-23
+CN|insurance|balance|bs.deiafvtoci|资产 › 金融投资|line|bs.t_fi|source_verified|||2026-11-23
+CN|insurance|balance|bs.afsfa|资产 › 金融投资|line|bs.t_fi|source_verified|||2026-11-23
+CN|insurance|balance|bs.htmi|资产 › 金融投资|line|bs.t_fi|source_verified|||2026-11-23
+CN|insurance|balance|bs.ri|资产 › 金融投资|line|bs.t_fi|source_verified|||2026-11-23
+CN|insurance|balance|bs.ltei|资产|line||unverified|||2026-11-23
+CN|insurance|balance|bs.sd|资产|line||unverified|||2026-11-23
+CN|insurance|balance|bs.rei|资产|line||unverified|||2026-11-23
+CN|insurance|balance|bs.fa|资产|line||unverified|||2026-11-23
+CN|insurance|balance|bs.fa_ta_r|资产|supplement||unverified|||2026-11-23
+CN|insurance|balance|bs.ia|资产|line||unverified|||2026-11-23
+CN|insurance|balance|bs.gw|资产|line||unverified|||2026-11-23
+CN|insurance|balance|bs.gw_toe_r|资产|supplement||unverified|||2026-11-23
+CN|insurance|balance|bs.roua|资产|line||unverified|||2026-11-23
+CN|insurance|balance|bs.dita|资产|line||unverified|||2026-11-23
+CN|insurance|balance|bs.oa|资产|line||unverified|||2026-11-23
+CN|insurance|balance|bs.saa|资产|line||unverified|||2026-11-23
+CN|insurance|balance|bs.tl|负债|total||unverified||负债|2026-11-23
+CN|insurance|balance|bs.tl_ta_r|负债|supplement||unverified|||2026-11-23
+CN|insurance|balance|bs.stl|负债|line||unverified|||2026-11-23
+CN|insurance|balance|bs.bfcb|负债|line||unverified|||2026-11-23
+CN|insurance|balance|bs.dfbaofi|负债|line||unverified|||2026-11-23
+CN|insurance|balance|bs.pfbaofi|负债|line||unverified|||2026-11-23
+CN|insurance|balance|bs.dfl|负债|line||unverified|||2026-11-23
+CN|insurance|balance|bs.flafvtpol|负债|line||unverified|||2026-11-23
+CN|insurance|balance|bs.fasurpa|负债|line||unverified|||2026-11-23
+CN|insurance|balance|bs.cd|负债|line||unverified|||2026-11-23
+CN|insurance|balance|bs.icl|负债|line||unverified|||2026-11-23
+CN|insurance|balance|bs.ricl|负债|line||unverified|||2026-11-23
+CN|insurance|balance|bs.stoa|负债|line||unverified|||2026-11-23
+CN|insurance|balance|bs.ap|负债|line||unverified|||2026-11-23
+CN|insurance|balance|bs.afc|负债|line||unverified|||2026-11-23
+CN|insurance|balance|bs.pria|负债|line||unverified|||2026-11-23
+CN|insurance|balance|bs.facp|负债|line||unverified|||2026-11-23
+CN|insurance|balance|bs.rip|负债|line||unverified|||2026-11-23
+CN|insurance|balance|bs.sawp|负债|line||unverified|||2026-11-23
+CN|insurance|balance|bs.tp|负债|line||unverified|||2026-11-23
+CN|insurance|balance|bs.intp|负债|line||unverified|||2026-11-23
+CN|insurance|balance|bs.cp|负债|line||unverified|||2026-11-23
+CN|insurance|balance|bs.phdp|负债|line||unverified|||2026-11-23
+CN|insurance|balance|bs.phd|负债|line||unverified|||2026-11-23
+CN|insurance|balance|bs.icr|负债|line||unverified|||2026-11-23
+CN|insurance|balance|bs.uepr|负债|line||unverified|||2026-11-23
+CN|insurance|balance|bs.cr|负债|line||unverified|||2026-11-23
+CN|insurance|balance|bs.lir|负债|line||unverified|||2026-11-23
+CN|insurance|balance|bs.lthir|负债|line||unverified|||2026-11-23
+CN|insurance|balance|bs.ltl|负债|line||unverified|||2026-11-23
+CN|insurance|balance|bs.bp|负债|line||unverified|||2026-11-23
+CN|insurance|balance|bs.ditl|负债|line||unverified|||2026-11-23
+CN|insurance|balance|bs.sal|负债|line||unverified|||2026-11-23
+CN|insurance|balance|bs.ncal|负债|line||unverified|||2026-11-23
+CN|insurance|balance|bs.ol|负债|line||unverified|||2026-11-23
+CN|insurance|balance|bs.toe|所有者权益|total||unverified||所有者权益|2026-11-23
+CN|insurance|balance|bs.toe_ta_r|所有者权益|supplement||unverified|||2026-11-23
+CN|insurance|balance|bs.sc|所有者权益|line||unverified|||2026-11-23
+CN|insurance|balance|bs.oei|所有者权益|line||unverified|||2026-11-23
+CN|insurance|balance|bs.psioei|所有者权益|detail|bs.oei|source_verified|||2026-11-23
+CN|insurance|balance|bs.pcsioei|所有者权益|detail|bs.oei|source_verified|||2026-11-23
+CN|insurance|balance|bs.capr|所有者权益|line||unverified|||2026-11-23
+CN|insurance|balance|bs.is|所有者权益|line||unverified|||2026-11-23
+CN|insurance|balance|bs.oci|所有者权益|line||unverified|||2026-11-23
+CN|insurance|balance|bs.rr|所有者权益|line||unverified|||2026-11-23
+CN|insurance|balance|bs.surr|所有者权益|line||unverified|||2026-11-23
+CN|insurance|balance|bs.pogr|所有者权益|line||unverified|||2026-11-23
+CN|insurance|balance|bs.rtp|所有者权益|line||unverified|||2026-11-23
+CN|insurance|balance|bs.er|所有者权益|line||unverified|||2026-11-23
+CN|insurance|balance|bs.tetshaoehopc|所有者权益|line||unverified|||2026-11-23
+CN|insurance|balance|bs.tetoshopc|所有者权益|line||unverified|||2026-11-23
+CN|insurance|balance|bs.tetoshopc_ps|所有者权益|line||unverified|||2026-11-23
+CN|insurance|balance|bs.etmsh|所有者权益|line||unverified|||2026-11-23
+CN|insurance|balance|bs.ev|内含价值|supplement||unverified|||2026-11-23
+CN|insurance|balance|bs.evolahib|内含价值|line||candidate|bs.ev（待对照原报告）||2026-11-23
+CN|insurance|balance|bs.evolib|内含价值|line||candidate|bs.evolahib（待对照原报告）||2026-11-23
+CN|insurance|balance|bs.evohib|内含价值|line||candidate|bs.evolahib（待对照原报告）||2026-11-23
+CN|insurance|balance|bs.ccap|偿付能力状况|supplement||unverified|||2026-11-23
+CN|insurance|balance|bs.acap|偿付能力状况|supplement||unverified|||2026-11-23
+CN|insurance|balance|bs.mcap|偿付能力状况|supplement||unverified|||2026-11-23
+CN|insurance|balance|bs.coresr|偿付能力状况|supplement||unverified|||2026-11-23
+CN|insurance|balance|bs.compsr|偿付能力状况|supplement||unverified|||2026-11-23
+CN|insurance|balance|bs.ep_stn|员工情况|supplement||unverified|||2026-11-23
+CN|insurance|balance|bs.ep_pn|员工情况|supplement||unverified|||2026-11-23
+CN|insurance|balance|bs.ep_mn|员工情况|supplement||unverified|||2026-11-23
+CN|insurance|balance|bs.ep_bn|员工情况|supplement||unverified|||2026-11-23
+CN|insurance|balance|bs.ep_jcn|员工情况|supplement||unverified|||2026-11-23
+CN|insurance|balance|bs.ep_hsabn|员工情况|supplement||unverified|||2026-11-23
+CN|insurance|balance|bs.ep_psn|员工情况|supplement||unverified|||2026-11-23
+CN|insurance|balance|bs.ep_spn|员工情况|supplement||unverified|||2026-11-23
+CN|insurance|balance|bs.ep_tsn|员工情况|supplement||unverified|||2026-11-23
+CN|insurance|balance|bs.ep_fon|员工情况|supplement||unverified|||2026-11-23
+CN|insurance|balance|bs.ep_asn|员工情况|supplement||unverified|||2026-11-23
+CN|insurance|balance|bs.ep_osn|员工情况|supplement||unverified|||2026-11-23
+CN|insurance|balance|bs.mc|股本、股东以及估值|supplement||unverified|||2026-11-23
+CN|insurance|balance|bs.tsc|股本、股东以及估值|supplement||unverified|||2026-11-23
+CN|insurance|balance|bs.csc|股本、股东以及估值|supplement||unverified|||2026-11-23
+CN|insurance|balance|bs.shn|股本、股东以及估值|supplement||unverified|||2026-11-23
+CN|insurance|balance|bs.shn_om|股本、股东以及估值|supplement||unverified|||2026-11-23
+CN|insurance|balance|bs.shbt1sh_tsc_r|股本、股东以及估值|supplement||unverified|||2026-11-23
+CN|insurance|balance|bs.shbt10sh_tsc_r|股本、股东以及估值|supplement||unverified|||2026-11-23
+CN|insurance|balance|bs.shbt10sh_csc_r|股本、股东以及估值|supplement||unverified|||2026-11-23
+CN|insurance|balance|bs.shbt10poof_csc_r|股本、股东以及估值|supplement||unverified|||2026-11-23
+CN|insurance|balance|bs.shbpoof_csc_r|股本、股东以及估值|supplement||unverified|||2026-11-23
+CN|insurance|balance|bs.shbeosh_poof_ecsc_r|股本、股东以及估值|supplement||unverified|||2026-11-23
+CN|insurance|balance|bs.pe_ttm|股本、股东以及估值|supplement||unverified|||2026-11-23
+CN|insurance|balance|bs.d_pe_ttm|股本、股东以及估值|supplement||unverified|||2026-11-23
+CN|insurance|balance|bs.pb|股本、股东以及估值|supplement||unverified|||2026-11-23
+CN|insurance|balance|bs.pb_wo_gw|股本、股东以及估值|supplement||unverified|||2026-11-23
+CN|insurance|balance|bs.ps_ttm|股本、股东以及估值|supplement||unverified|||2026-11-23
+CN|insurance|balance|bs.pcf_ttm|股本、股东以及估值|supplement||unverified|||2026-11-23
+CN|insurance|balance|bs.dyr|股本、股东以及估值|supplement||unverified|||2026-11-23
+CN|insurance|income|ps.oi|营业收入|line||unverified|||2026-11-23
+CN|insurance|income|ps.pi|营业收入|line||unverified|||2026-11-23
+CN|insurance|income|ps.ripi|营业收入|detail|ps.pi|source_verified|||2026-11-23
+CN|insurance|income|ps.pctri|营业收入|line||unverified|||2026-11-23
+CN|insurance|income|ps.ciupr|营业收入|line||unverified|||2026-11-23
+CN|insurance|income|ps.ep|营业收入|line||unverified|||2026-11-23
+CN|insurance|income|ps.ir|营业收入|line||unverified|||2026-11-23
+CN|insurance|income|ps.niifb|营业收入|line||unverified|||2026-11-23
+CN|insurance|income|ps.iifb|营业收入|detail|ps.niifb|source_verified|||2026-11-23
+CN|insurance|income|ps.iefb|营业收入|detail|ps.niifb|source_verified|||2026-11-23
+CN|insurance|income|ps.nnifaci|营业收入|line||unverified|||2026-11-23
+CN|insurance|income|ps.nifaci|营业收入|detail|ps.nnifaci|source_verified|||2026-11-23
+CN|insurance|income|ps.niface|营业收入|detail|ps.nnifaci|source_verified|||2026-11-23
+CN|insurance|income|ps.nbii|营业收入|line||unverified|||2026-11-23
+CN|insurance|income|ps.ivi|其他损益|line||unverified|||2026-11-23
+CN|insurance|income|ps.iifaajv|其他损益|detail|ps.ivi|source_verified|||2026-11-23
+CN|insurance|income|ps.iftdofamaac|其他损益|detail|ps.ivi|source_verified|||2026-11-23
+CN|insurance|income|ps.ciofv|其他损益|line||unverified|||2026-11-23
+CN|insurance|income|ps.ei|其他损益|line||unverified|||2026-11-23
+CN|insurance|income|ps.adi|其他损益|line||unverified|||2026-11-23
+CN|insurance|income|ps.oic|其他损益|line||unverified|||2026-11-23
+CN|insurance|income|ps.ooi|营业收入|line||unverified|||2026-11-23
+CN|insurance|income|ps.oe|营业支出|subtotal||unverified||营业支出|2026-11-23
+CN|insurance|income|ps.s|营业支出|line||unverified|||2026-11-23
+CN|insurance|income|ps.ce|营业支出|line||unverified|||2026-11-23
+CN|insurance|income|ps.crcfri|营业支出|line||unverified|||2026-11-23
+CN|insurance|income|ps.iiicr|营业支出|line||unverified|||2026-11-23
+CN|insurance|income|ps.irrcfri|营业支出|line||unverified|||2026-11-23
+CN|insurance|income|ps.phdrfpip|营业支出|line||unverified|||2026-11-23
+CN|insurance|income|ps.rie|营业支出|line||unverified|||2026-11-23
+CN|insurance|income|ps.faceoio|营业支出|line||unverified|||2026-11-23
+CN|insurance|income|ps.ise|营业支出|line||unverified|||2026-11-23
+CN|insurance|income|ps.aoripp|营业支出|line||unverified|||2026-11-23
+CN|insurance|income|ps.arfri|营业支出|line||unverified|||2026-11-23
+CN|insurance|income|ps.iifefici|营业支出|line||unverified|||2026-11-23
+CN|insurance|income|ps.nrifefrich|营业支出|line||unverified|||2026-11-23
+CN|insurance|income|ps.tas|营业成本及费用|line||unverified|||2026-11-23
+CN|insurance|income|ps.baae|营业支出|line||unverified|||2026-11-23
+CN|insurance|income|ps.wdopr|营业支出|line||unverified|||2026-11-23
+CN|insurance|income|ps.ercfri|营业支出|line||unverified|||2026-11-23
+CN|insurance|income|ps.nbie|营业支出|line||unverified|||2026-11-23
+CN|insurance|income|ps.ooe|营业支出|line||unverified|||2026-11-23
+CN|insurance|income|ps.cilor|其他损益|line||unverified|||2026-11-23
+CN|insurance|income|ps.ailor|其他损益|line||unverified|||2026-11-23
+CN|insurance|income|ps.oail|营业支出|line||unverified|||2026-11-23
+CN|insurance|income|ps.op|营业利润|subtotal||unverified||营业利润|2026-11-23
+CN|insurance|income|ps.op_s_r|营业利润|supplement||unverified|||2026-11-23
+CN|insurance|income|ps.noi|营业利润至利润总额|line||unverified|||2026-11-23
+CN|insurance|income|ps.noe|营业利润至利润总额|line||unverified|||2026-11-23
+CN|insurance|income|ps.tp|利润总额|subtotal||unverified||利润总额|2026-11-23
+CN|insurance|income|ps.ite|利润总额至净利润|line||unverified|||2026-11-23
+CN|insurance|income|ps.ite_tp_r|利润总额|supplement||unverified|||2026-11-23
+CN|insurance|income|ps.np|净利润|total||unverified||净利润|2026-11-23
+CN|insurance|income|ps.np_s_r|净利润|supplement||unverified|||2026-11-23
+CN|insurance|income|ps.npfco|净利润 › 按经营持续性|line||unverified|||2026-11-23
+CN|insurance|income|ps.npfdco|净利润 › 按经营持续性|line||unverified|||2026-11-23
+CN|insurance|income|ps.opatshopc|净利润|line||unverified|||2026-11-23
+CN|insurance|income|ps.npatshaoehopc|净利润 › 按所有权归属|line||unverified|||2026-11-23
+CN|insurance|income|ps.npatoshopc|净利润 › 按所有权归属|line||unverified|||2026-11-23
+CN|insurance|income|ps.npatmsh|净利润 › 按所有权归属|line||unverified|||2026-11-23
+CN|insurance|income|ps.npadnrpatoshaopc|补充指标|supplement||unverified|||2026-11-23
+CN|insurance|income|ps.npadnrpatoshaopc_npatoshopc_r|净利润|supplement||unverified|||2026-11-23
+CN|insurance|income|ps.nbv|净利润|line||unverified|||2026-11-23
+CN|insurance|income|ps.wroe|净利润|supplement||unverified|||2026-11-23
+CN|insurance|income|ps.wdroe|净利润|supplement||unverified|||2026-11-23
+CN|insurance|income|ps.beps|每股收益|supplement||unverified|||2026-11-23
+CN|insurance|income|ps.deps|每股收益|supplement||unverified|||2026-11-23
+CN|insurance|income|ps.tci|综合收益|total||unverified||综合收益|2026-11-23
+CN|insurance|income|ps.tciatshaoehopc|综合收益 › 按所有权归属|line||unverified|||2026-11-23
+CN|insurance|income|ps.tciatoshopc|综合收益 › 按所有权归属|line||unverified|||2026-11-23
+CN|insurance|income|ps.tciatmsh|综合收益 › 按所有权归属|line||unverified|||2026-11-23
+CN|insurance|income|ps.natooci|综合收益 › 其他综合收益|subtotal||unverified||综合收益 › 其他综合收益|2026-11-23
+CN|insurance|income|ps.d_oi|区域收入|supplement||unverified|||2026-11-23
+CN|insurance|income|ps.d_oc|区域收入|supplement||unverified|||2026-11-23
+CN|insurance|income|ps.d_gp_m|区域收入|supplement||unverified|||2026-11-23
+CN|insurance|income|ps.d_oi_r|区域收入|supplement||unverified|||2026-11-23
+CN|insurance|income|ps.o_oi|区域收入|supplement||unverified|||2026-11-23
+CN|insurance|income|ps.o_oc|区域收入|supplement||unverified|||2026-11-23
+CN|insurance|income|ps.o_gp_m|区域收入|supplement||unverified|||2026-11-23
+CN|insurance|income|ps.o_oi_r|区域收入|supplement||unverified|||2026-11-23
+CN|insurance|income|ps.da|分红、融资及涨跌幅|supplement||unverified|||2026-11-23
+CN|insurance|income|ps.d_np_r|分红、融资及涨跌幅|supplement||unverified|||2026-11-23
+CN|insurance|income|ps.da_om|分红、融资及涨跌幅|supplement||unverified|||2026-11-23
+CN|insurance|income|ps.fa_om|分红、融资及涨跌幅|supplement||unverified|||2026-11-23
+CN|insurance|income|ps.spc_a|分红、融资及涨跌幅|supplement||unverified|||2026-11-23
+CN|insurance|income|ps.tfci_r|客户及供应商|supplement||unverified|||2026-11-23
+CN|insurance|income|ps.tfsp_r|客户及供应商|supplement||unverified|||2026-11-23
+CN|insurance|cashflow|cfs.crfp|经营活动现金流 › 现金流入|line||unverified|||2026-11-23
+CN|insurance|cashflow|cfs.ncrfrib|经营活动现金流 › 现金流入|line||unverified|||2026-11-23
+CN|insurance|cashflow|cfs.niiphd|经营活动现金流 › 现金流入|line||unverified|||2026-11-23
+CN|insurance|cashflow|cfs.ndilaatc|经营活动现金流 › 现金流入|line||unverified|||2026-11-23
+CN|insurance|cashflow|cfs.niicdadfbaofi|经营活动现金流 › 现金流入|line||unverified|||2026-11-23
+CN|insurance|cashflow|cfs.niibfcb|经营活动现金流 › 现金流入|line||unverified|||2026-11-23
+CN|insurance|cashflow|cfs.ndibwcbbaofi|经营活动现金流 › 现金流入|line||unverified|||2026-11-23
+CN|insurance|cashflow|cfs.niipfbaofi|经营活动现金流 › 现金流入|line||unverified|||2026-11-23
+CN|insurance|cashflow|cfs.niifasurpaioa|经营活动现金流 › 现金流入|line||unverified|||2026-11-23
+CN|insurance|cashflow|cfs.ndifahursaioa|经营活动现金流 › 现金流入|line||unverified|||2026-11-23
+CN|insurance|cashflow|cfs.ndifahftp|经营活动现金流 › 现金流入|line||unverified|||2026-11-23
+CN|insurance|cashflow|cfs.crfifac|经营活动现金流 › 现金流入|line||unverified|||2026-11-23
+CN|insurance|cashflow|cfs.ndiar|经营活动现金流 › 现金流入|line||unverified|||2026-11-23
+CN|insurance|cashflow|cfs.crfcfl|经营活动现金流 › 现金流入|line||unverified|||2026-11-23
+CN|insurance|cashflow|cfs.crrtooa|经营活动现金流 › 现金流入|line||unverified|||2026-11-23
+CN|insurance|cashflow|cfs.stciffoa|经营活动现金流 › 现金流入|subtotal||unverified||经营活动现金流 › 现金流入|2026-11-23
+CN|insurance|cashflow|cfs.cpfc|经营活动现金流 › 现金流出|line||unverified|||2026-11-23
+CN|insurance|cashflow|cfs.ncpfrib|经营活动现金流 › 现金流出|line||unverified|||2026-11-23
+CN|insurance|cashflow|cfs.cpfphd|经营活动现金流 › 现金流出|line||unverified|||2026-11-23
+CN|insurance|cashflow|cfs.niilaatc|经营活动现金流 › 现金流出|line||unverified|||2026-11-23
+CN|insurance|cashflow|cfs.ndicdadfbaofi|经营活动现金流 › 现金流出|line||unverified|||2026-11-23
+CN|insurance|cashflow|cfs.ndibfcb|经营活动现金流 › 现金流出|line||unverified|||2026-11-23
+CN|insurance|cashflow|cfs.niibwcbbaofi|经营活动现金流 › 现金流出|line||unverified|||2026-11-23
+CN|insurance|cashflow|cfs.ndipfbaofi|经营活动现金流 › 现金流出|line||unverified|||2026-11-23
+CN|insurance|cashflow|cfs.ndifasurpaioa|经营活动现金流 › 现金流出|line||unverified|||2026-11-23
+CN|insurance|cashflow|cfs.niifahursaioa|经营活动现金流 › 现金流出|line||unverified|||2026-11-23
+CN|insurance|cashflow|cfs.niifahftp|经营活动现金流 › 现金流出|line||unverified|||2026-11-23
+CN|insurance|cashflow|cfs.cpfifac|经营活动现金流 › 现金流出|line||unverified|||2026-11-23
+CN|insurance|cashflow|cfs.cptofe|经营活动现金流 › 现金流出|line||unverified|||2026-11-23
+CN|insurance|cashflow|cfs.cpft|经营活动现金流 › 现金流出|line||unverified|||2026-11-23
+CN|insurance|cashflow|cfs.niiar|经营活动现金流 › 现金流出|line||unverified|||2026-11-23
+CN|insurance|cashflow|cfs.niiltflr|经营活动现金流 › 现金流出|line||unverified|||2026-11-23
+CN|insurance|cashflow|cfs.cprtooa|经营活动现金流 › 现金流出|line||unverified|||2026-11-23
+CN|insurance|cashflow|cfs.stcoffoa|经营活动现金流 › 现金流出|subtotal||unverified||经营活动现金流 › 现金流出|2026-11-23
+CN|insurance|cashflow|cfs.ncffoa|经营活动现金流|total||unverified|||2026-11-23
+CN|insurance|cashflow|cfs.crfrci|投资活动现金流 › 现金流入|line||unverified|||2026-11-23
+CN|insurance|cashflow|cfs.crfii|投资活动现金流 › 现金流入|line||unverified|||2026-11-23
+CN|insurance|cashflow|cfs.crfdofiaolta|投资活动现金流 › 现金流入|line||unverified|||2026-11-23
+CN|insurance|cashflow|cfs.ncrfdossajvaou|投资活动现金流 › 现金流入|line||unverified|||2026-11-23
+CN|insurance|cashflow|cfs.ncrfdossaou|投资活动现金流 › 现金流入|detail|cfs.ncrfdossajvaou|source_verified|||2026-11-23
+CN|insurance|cashflow|cfs.ncrfdoaajv|投资活动现金流 › 现金流入|detail|cfs.ncrfdossajvaou|source_verified|||2026-11-23
+CN|insurance|cashflow|cfs.crrtoia|投资活动现金流 › 现金流入|line||unverified|||2026-11-23
+CN|insurance|cashflow|cfs.stcifia|投资活动现金流 › 现金流入|subtotal||unverified||投资活动现金流 › 现金流入|2026-11-23
+CN|insurance|cashflow|cfs.cpfi|投资活动现金流 › 现金流出|line||unverified|||2026-11-23
+CN|insurance|cashflow|cfs.cpfpfiaolta|投资活动现金流 › 现金流出|line||unverified|||2026-11-23
+CN|insurance|cashflow|cfs.niipl|投资活动现金流 › 现金流出|line||unverified|||2026-11-23
+CN|insurance|cashflow|cfs.ncpfbssmshe|投资活动现金流 › 现金流出|line||unverified|||2026-11-23
+CN|insurance|cashflow|cfs.ncpfbssajvaou|投资活动现金流 › 现金流出|line||unverified|||2026-11-23
+CN|insurance|cashflow|cfs.ncpfbssaou|投资活动现金流 › 现金流出|detail|cfs.ncpfbssajvaou|source_verified|||2026-11-23
+CN|insurance|cashflow|cfs.ncpfbajv|投资活动现金流 › 现金流出|detail|cfs.ncpfbssajvaou|source_verified|||2026-11-23
+CN|insurance|cashflow|cfs.cprtoia|投资活动现金流 › 现金流出|line||unverified|||2026-11-23
+CN|insurance|cashflow|cfs.stcoffia|投资活动现金流 › 现金流出|subtotal||unverified||投资活动现金流 › 现金流出|2026-11-23
+CN|insurance|cashflow|cfs.ncffia|投资活动现金流|total||unverified|||2026-11-23
+CN|insurance|cashflow|cfs.crfai|筹资活动现金流 › 现金流入|line||unverified|||2026-11-23
+CN|insurance|cashflow|cfs.crfamshibss|筹资活动现金流 › 现金流入|detail|cfs.crfai|source_verified|||2026-11-23
+CN|insurance|cashflow|cfs.crfl|筹资活动现金流 › 现金流入|line||unverified|||2026-11-23
+CN|insurance|cashflow|cfs.crfib|筹资活动现金流 › 现金流入|line||unverified|||2026-11-23
+CN|insurance|cashflow|cfs.niifasurpaifa|筹资活动现金流 › 现金流入|line||unverified|||2026-11-23
+CN|insurance|cashflow|cfs.crrtofa|筹资活动现金流 › 现金流入|line||unverified|||2026-11-23
+CN|insurance|cashflow|cfs.stcifffa|筹资活动现金流 › 现金流入|subtotal||unverified||筹资活动现金流 › 现金流入|2026-11-23
+CN|insurance|cashflow|cfs.cpfbrp|筹资活动现金流 › 现金流出|line||unverified|||2026-11-23
+CN|insurance|cashflow|cfs.cpfdapdoi|筹资活动现金流 › 现金流出|line||unverified|||2026-11-23
+CN|insurance|cashflow|cfs.cpfdapomshpbss|筹资活动现金流 › 现金流出|detail|cfs.cpfdapdoi|source_verified|||2026-11-23
+CN|insurance|cashflow|cfs.ndifasurpaifa|筹资活动现金流 › 现金流出|line||unverified|||2026-11-23
+CN|insurance|cashflow|cfs.cprtofa|筹资活动现金流 › 现金流出|line||unverified|||2026-11-23
+CN|insurance|cashflow|cfs.stcofffa|筹资活动现金流 › 现金流出|subtotal||unverified||筹资活动现金流 › 现金流出|2026-11-23
+CN|insurance|cashflow|cfs.ncfffa|筹资活动现金流|total||unverified|||2026-11-23
+CN|insurance|cashflow|cfs.iocacedtfier|现金净变动与余额|line||unverified|||2026-11-23
+CN|insurance|cashflow|cfs.bocaceatpb|现金净变动与余额|line||unverified|||2026-11-23
+CN|insurance|cashflow|cfs.niicace|现金净变动与余额|total||unverified|||2026-11-23
+CN|insurance|cashflow|cfs.bocaceatpe|现金净变动与余额|total||unverified|||2026-11-23
+CN|insurance|cashflow|cfs.np|现金流补充资料|supplement||unverified|||2026-11-23
+CN|insurance|cashflow|cfs.ioa|现金流补充资料|supplement||unverified|||2026-11-23
+CN|insurance|cashflow|cfs.cilor|现金流补充资料|supplement||unverified|||2026-11-23
+CN|insurance|cashflow|cfs.daa|现金流补充资料|supplement||unverified|||2026-11-23
+CN|insurance|cashflow|cfs.dofx_dooaga_dopba|现金流补充资料|supplement||unverified|||2026-11-23
+CN|insurance|cashflow|cfs.daaorei|现金流补充资料|supplement||unverified|||2026-11-23
+CN|insurance|cashflow|cfs.aoroua|现金流补充资料|supplement||unverified|||2026-11-23
+CN|insurance|cashflow|cfs.aoia|现金流补充资料|supplement||unverified|||2026-11-23
+CN|insurance|cashflow|cfs.aoltde|现金流补充资料|supplement||unverified|||2026-11-23
+CN|insurance|cashflow|cfs.lodofaiaaolta|现金流补充资料|supplement||unverified|||2026-11-23
+CN|insurance|cashflow|cfs.lfsfa|现金流补充资料|supplement||unverified|||2026-11-23
+CN|insurance|cashflow|cfs.lfcifv|现金流补充资料|supplement||unverified|||2026-11-23
+CN|insurance|cashflow|cfs.fe|现金流补充资料|supplement||unverified|||2026-11-23
+CN|insurance|cashflow|cfs.il|现金流补充资料|supplement||unverified|||2026-11-23
+CN|insurance|cashflow|cfs.didita|现金流补充资料|supplement||unverified|||2026-11-23
+CN|insurance|cashflow|cfs.iiditl|现金流补充资料|supplement||unverified|||2026-11-23
+CN|insurance|cashflow|cfs.dii|现金流补充资料|supplement||unverified|||2026-11-23
+CN|insurance|cashflow|cfs.dior|现金流补充资料|supplement||unverified|||2026-11-23
+CN|insurance|cashflow|cfs.iiop|现金流补充资料|supplement||unverified|||2026-11-23
+CN|insurance|cashflow|cfs.o|现金流补充资料|supplement||unverified|||2026-11-23
+CN|insurance|cashflow|cfs.cbdwioy|现金流补充资料|supplement||unverified|||2026-11-23
+CN|insurance|cashflow|cfs.flofa|现金流补充资料|supplement||unverified|||2026-11-23
+CN|insurance|cashflow|cfs.ncffoa_dup|现金流补充资料|supplement||unverified|||2026-11-23
+CN|security|balance|bs.ta|资产|total||unverified||资产|2026-11-23
+CN|security|balance|bs.cabb|资产|line||unverified|||2026-11-23
+CN|security|balance|bs.choboc|资产|detail|bs.cabb|source_verified|||2026-11-23
+CN|security|balance|bs.cabb_ta_r|资产|supplement||unverified|||2026-11-23
+CN|security|balance|bs.sr|资产|line||unverified|||2026-11-23
+CN|security|balance|bs.dhoboc|资产|detail|bs.sr|source_verified|||2026-11-23
+CN|security|balance|bs.ma|资产|line||unverified|||2026-11-23
+CN|security|balance|bs.dfa|资产|line||unverified|||2026-11-23
+CN|security|balance|bs.rfd|资产|line||unverified|||2026-11-23
+CN|security|balance|bs.ar|资产|line||unverified|||2026-11-23
+CN|security|balance|bs.ir|资产|line||unverified|||2026-11-23
+CN|security|balance|bs.fahursa|资产|line||unverified|||2026-11-23
+CN|security|balance|bs.t_fi|资产 › 金融投资|subtotal||unverified||资产 › 金融投资|2026-11-23
+CN|security|balance|bs.fiafvtpol|资产 › 金融投资|line|bs.t_fi|source_verified|||2026-11-23
+CN|security|balance|bs.fiaac|资产 › 金融投资|line|bs.t_fi|source_verified|||2026-11-23
+CN|security|balance|bs.diafvtoci|资产 › 金融投资|line|bs.t_fi|source_verified|||2026-11-23
+CN|security|balance|bs.deiafvtoci|资产 › 金融投资|line|bs.t_fi|source_verified|||2026-11-23
+CN|security|balance|bs.afsfa|资产 › 金融投资|line|bs.t_fi|source_verified|||2026-11-23
+CN|security|balance|bs.htmi|资产 › 金融投资|line|bs.t_fi|source_verified|||2026-11-23
+CN|security|balance|bs.ltei|资产|line||unverified|||2026-11-23
+CN|security|balance|bs.rei|资产|line||unverified|||2026-11-23
+CN|security|balance|bs.fa|资产|line||unverified|||2026-11-23
+CN|security|balance|bs.fa_ta_r|资产|supplement||unverified|||2026-11-23
+CN|security|balance|bs.cip|资产|line||unverified|||2026-11-23
+CN|security|balance|bs.roua|资产|line||unverified|||2026-11-23
+CN|security|balance|bs.ia|资产|line||unverified|||2026-11-23
+CN|security|balance|bs.ia_dr|资产|detail|bs.ia|source_verified|||2026-11-23
+CN|security|balance|bs.gw|资产|line||unverified|||2026-11-23
+CN|security|balance|bs.gw_toe_r|资产|supplement||unverified|||2026-11-23
+CN|security|balance|bs.dita|资产|line||unverified|||2026-11-23
+CN|security|balance|bs.ahfs|资产|line||unverified|||2026-11-23
+CN|security|balance|bs.oa|资产|line||unverified|||2026-11-23
+CN|security|balance|bs.tl|负债|total||unverified||负债|2026-11-23
+CN|security|balance|bs.tl_ta_r|负债|supplement||unverified|||2026-11-23
+CN|security|balance|bs.stl|负债|line||unverified|||2026-11-23
+CN|security|balance|bs.stfip|负债|line||unverified|||2026-11-23
+CN|security|balance|bs.pfbaofi|负债|line||unverified|||2026-11-23
+CN|security|balance|bs.dfl|负债|line||unverified|||2026-11-23
+CN|security|balance|bs.flafvtpol|负债|line||unverified|||2026-11-23
+CN|security|balance|bs.fasurpa|负债|line||unverified|||2026-11-23
+CN|security|balance|bs.stoa|负债|line||unverified|||2026-11-23
+CN|security|balance|bs.ssoa|负债|line||unverified|||2026-11-23
+CN|security|balance|bs.sawp|负债|line||unverified|||2026-11-23
+CN|security|balance|bs.tp|负债|line||unverified|||2026-11-23
+CN|security|balance|bs.ap|负债|line||unverified|||2026-11-23
+CN|security|balance|bs.intp|负债|line||unverified|||2026-11-23
+CN|security|balance|bs.cl|负债|line||unverified|||2026-11-23
+CN|security|balance|bs.al|负债|line||unverified|||2026-11-23
+CN|security|balance|bs.ltl|负债|line||unverified|||2026-11-23
+CN|security|balance|bs.bp|负债|line||unverified|||2026-11-23
+CN|security|balance|bs.ll|负债|line||unverified|||2026-11-23
+CN|security|balance|bs.ditl|负债|line||unverified|||2026-11-23
+CN|security|balance|bs.ol|负债|line||unverified|||2026-11-23
+CN|security|balance|bs.toe|所有者权益|total||unverified||所有者权益|2026-11-23
+CN|security|balance|bs.toe_ta_r|所有者权益|supplement||unverified|||2026-11-23
+CN|security|balance|bs.sc|所有者权益|line||unverified|||2026-11-23
+CN|security|balance|bs.oei|所有者权益|line||unverified|||2026-11-23
+CN|security|balance|bs.psioei|所有者权益|detail|bs.oei|source_verified|||2026-11-23
+CN|security|balance|bs.pcsioei|所有者权益|detail|bs.oei|source_verified|||2026-11-23
+CN|security|balance|bs.capr|所有者权益|line||unverified|||2026-11-23
+CN|security|balance|bs.is|所有者权益|line||unverified|||2026-11-23
+CN|security|balance|bs.oci|所有者权益|line||unverified|||2026-11-23
+CN|security|balance|bs.rr|所有者权益|line||unverified|||2026-11-23
+CN|security|balance|bs.surr|所有者权益|line||unverified|||2026-11-23
+CN|security|balance|bs.pogr|所有者权益|line||unverified|||2026-11-23
+CN|security|balance|bs.rtp|所有者权益|line||unverified|||2026-11-23
+CN|security|balance|bs.er|所有者权益|line||unverified|||2026-11-23
+CN|security|balance|bs.tetshaoehopc|所有者权益|line||unverified|||2026-11-23
+CN|security|balance|bs.tetoshopc|所有者权益|line||unverified|||2026-11-23
+CN|security|balance|bs.tetoshopc_ps|所有者权益|line||unverified|||2026-11-23
+CN|security|balance|bs.etmsh|所有者权益|line||unverified|||2026-11-23
+CN|security|balance|bs.ep_stn|员工情况|supplement||unverified|||2026-11-23
+CN|security|balance|bs.ep_pn|员工情况|supplement||unverified|||2026-11-23
+CN|security|balance|bs.ep_mn|员工情况|supplement||unverified|||2026-11-23
+CN|security|balance|bs.ep_bn|员工情况|supplement||unverified|||2026-11-23
+CN|security|balance|bs.ep_jcn|员工情况|supplement||unverified|||2026-11-23
+CN|security|balance|bs.ep_hsabn|员工情况|supplement||unverified|||2026-11-23
+CN|security|balance|bs.ep_psn|员工情况|supplement||unverified|||2026-11-23
+CN|security|balance|bs.ep_spn|员工情况|supplement||unverified|||2026-11-23
+CN|security|balance|bs.ep_tsn|员工情况|supplement||unverified|||2026-11-23
+CN|security|balance|bs.ep_fon|员工情况|supplement||unverified|||2026-11-23
+CN|security|balance|bs.ep_asn|员工情况|supplement||unverified|||2026-11-23
+CN|security|balance|bs.ep_osn|员工情况|supplement||unverified|||2026-11-23
+CN|security|balance|bs.mc|股本、股东以及估值|supplement||unverified|||2026-11-23
+CN|security|balance|bs.tsc|股本、股东以及估值|supplement||unverified|||2026-11-23
+CN|security|balance|bs.csc|股本、股东以及估值|supplement||unverified|||2026-11-23
+CN|security|balance|bs.shn|股本、股东以及估值|supplement||unverified|||2026-11-23
+CN|security|balance|bs.shn_om|股本、股东以及估值|supplement||unverified|||2026-11-23
+CN|security|balance|bs.shbt1sh_tsc_r|股本、股东以及估值|supplement||unverified|||2026-11-23
+CN|security|balance|bs.shbt10sh_tsc_r|股本、股东以及估值|supplement||unverified|||2026-11-23
+CN|security|balance|bs.shbt10sh_csc_r|股本、股东以及估值|supplement||unverified|||2026-11-23
+CN|security|balance|bs.shbt10poof_csc_r|股本、股东以及估值|supplement||unverified|||2026-11-23
+CN|security|balance|bs.shbpoof_csc_r|股本、股东以及估值|supplement||unverified|||2026-11-23
+CN|security|balance|bs.shbeosh_poof_ecsc_r|股本、股东以及估值|supplement||unverified|||2026-11-23
+CN|security|balance|bs.pe_ttm|股本、股东以及估值|supplement||unverified|||2026-11-23
+CN|security|balance|bs.d_pe_ttm|股本、股东以及估值|supplement||unverified|||2026-11-23
+CN|security|balance|bs.pb|股本、股东以及估值|supplement||unverified|||2026-11-23
+CN|security|balance|bs.pb_wo_gw|股本、股东以及估值|supplement||unverified|||2026-11-23
+CN|security|balance|bs.ps_ttm|股本、股东以及估值|supplement||unverified|||2026-11-23
+CN|security|balance|bs.pcf_ttm|股本、股东以及估值|supplement||unverified|||2026-11-23
+CN|security|balance|bs.dyr|股本、股东以及估值|supplement||unverified|||2026-11-23
+CN|security|balance|bs.pc_nc|券商特殊指标 — 母公司净资本及有关风险控制指标|supplement||unverified|||2026-11-23
+CN|security|balance|bs.pc_cnc|券商特殊指标 — 母公司净资本及有关风险控制指标|detail|bs.pc_nc|source_verified|||2026-11-23
+CN|security|balance|bs.pc_snc|券商特殊指标 — 母公司净资本及有关风险控制指标|detail|bs.pc_nc|source_verified|||2026-11-23
+CN|security|balance|bs.pc_na|券商特殊指标 — 母公司净资本及有关风险控制指标|supplement||unverified|||2026-11-23
+CN|security|balance|bs.pc_l|券商特殊指标 — 母公司净资本及有关风险控制指标|supplement||unverified|||2026-11-23
+CN|security|balance|bs.pc_trcr|券商特殊指标 — 母公司净资本及有关风险控制指标|supplement||unverified|||2026-11-23
+CN|security|balance|bs.pc_rcr|券商特殊指标 — 母公司净资本及有关风险控制指标|supplement||unverified|||2026-11-23
+CN|security|balance|bs.pc_clr|券商特殊指标 — 母公司净资本及有关风险控制指标|supplement||unverified|||2026-11-23
+CN|security|balance|bs.pc_lcr|券商特殊指标 — 母公司净资本及有关风险控制指标|supplement||unverified|||2026-11-23
+CN|security|balance|bs.pc_nsfr|券商特殊指标 — 母公司净资本及有关风险控制指标|supplement||unverified|||2026-11-23
+CN|security|balance|bs.pc_nc_na_r|券商特殊指标 — 母公司净资本及有关风险控制指标|supplement||unverified|||2026-11-23
+CN|security|balance|bs.pc_nc_l_r|券商特殊指标 — 母公司净资本及有关风险控制指标|supplement||unverified|||2026-11-23
+CN|security|balance|bs.pc_na_l_r|券商特殊指标 — 母公司净资本及有关风险控制指标|supplement||unverified|||2026-11-23
+CN|security|balance|bs.pc_pesaid_nc_r|券商特殊指标 — 母公司净资本及有关风险控制指标|supplement||unverified|||2026-11-23
+CN|security|balance|bs.pc_pnesaid_nc_r|券商特殊指标 — 母公司净资本及有关风险控制指标|supplement||unverified|||2026-11-23
+CN|security|income|ps.oi|营业收入|line||unverified|||2026-11-23
+CN|security|income|ps.nii|营业收入|line||unverified|||2026-11-23
+CN|security|income|ps.ii|营业收入|detail|ps.nii|source_verified|||2026-11-23
+CN|security|income|ps.ie|营业收入|detail|ps.nii|source_verified|||2026-11-23
+CN|security|income|ps.nfaci|营业收入|line||unverified|||2026-11-23
+CN|security|income|ps.nfifb|营业收入|detail|ps.nfaci|source_verified|||2026-11-23
+CN|security|income|ps.nfifib|营业收入|detail|ps.nfaci|source_verified|||2026-11-23
+CN|security|income|ps.nfifam|营业收入|detail|ps.nfaci|source_verified|||2026-11-23
+CN|security|income|ps.ivi|其他损益|line||unverified|||2026-11-23
+CN|security|income|ps.iifaajv|其他损益|detail|ps.ivi|source_verified|||2026-11-23
+CN|security|income|ps.iftdofamaac|其他损益|detail|ps.ivi|source_verified|||2026-11-23
+CN|security|income|ps.oic|其他损益|line||unverified|||2026-11-23
+CN|security|income|ps.ciofv|其他损益|line||unverified|||2026-11-23
+CN|security|income|ps.ei|其他损益|line||unverified|||2026-11-23
+CN|security|income|ps.ooi|营业收入|line||unverified|||2026-11-23
+CN|security|income|ps.adi|其他损益|line||unverified|||2026-11-23
+CN|security|income|ps.oe|营业支出|subtotal||unverified||营业支出|2026-11-23
+CN|security|income|ps.tas|营业成本及费用|line||unverified|||2026-11-23
+CN|security|income|ps.baae|营业支出|line||unverified|||2026-11-23
+CN|security|income|ps.ailor|其他损益|line||unverified|||2026-11-23
+CN|security|income|ps.cilor|其他损益|line||unverified|||2026-11-23
+CN|security|income|ps.oail|营业支出|line||unverified|||2026-11-23
+CN|security|income|ps.ooe|营业支出|line||unverified|||2026-11-23
+CN|security|income|ps.op|营业利润|subtotal||unverified||营业利润|2026-11-23
+CN|security|income|ps.op_s_r|营业利润|supplement||unverified|||2026-11-23
+CN|security|income|ps.noi|营业利润至利润总额|line||unverified|||2026-11-23
+CN|security|income|ps.noe|营业利润至利润总额|line||unverified|||2026-11-23
+CN|security|income|ps.tp|利润总额|subtotal||unverified||利润总额|2026-11-23
+CN|security|income|ps.ite|利润总额至净利润|line||unverified|||2026-11-23
+CN|security|income|ps.ite_tp_r|利润总额|supplement||unverified|||2026-11-23
+CN|security|income|ps.np|净利润|total||unverified||净利润|2026-11-23
+CN|security|income|ps.np_s_r|净利润|supplement||unverified|||2026-11-23
+CN|security|income|ps.npfco|净利润 › 按经营持续性|line||unverified|||2026-11-23
+CN|security|income|ps.npfdco|净利润 › 按经营持续性|line||unverified|||2026-11-23
+CN|security|income|ps.npatshaoehopc|净利润 › 按所有权归属|line||unverified|||2026-11-23
+CN|security|income|ps.npatoshopc|净利润 › 按所有权归属|line||unverified|||2026-11-23
+CN|security|income|ps.npatmsh|净利润 › 按所有权归属|line||unverified|||2026-11-23
+CN|security|income|ps.npadnrpatoshaopc|补充指标|supplement||unverified|||2026-11-23
+CN|security|income|ps.npadnrpatoshaopc_npatoshopc_r|净利润|supplement||unverified|||2026-11-23
+CN|security|income|ps.wroe|净利润|supplement||unverified|||2026-11-23
+CN|security|income|ps.wdroe|净利润|supplement||unverified|||2026-11-23
+CN|security|income|ps.beps|每股收益|supplement||unverified|||2026-11-23
+CN|security|income|ps.deps|每股收益|supplement||unverified|||2026-11-23
+CN|security|income|ps.tci|综合收益|total||unverified||综合收益|2026-11-23
+CN|security|income|ps.tciatshaoehopc|综合收益 › 按所有权归属|line||unverified|||2026-11-23
+CN|security|income|ps.tciatoshopc|综合收益 › 按所有权归属|line||unverified|||2026-11-23
+CN|security|income|ps.tciatmsh|综合收益 › 按所有权归属|line||unverified|||2026-11-23
+CN|security|income|ps.natooci|综合收益 › 其他综合收益|subtotal||unverified||综合收益 › 其他综合收益|2026-11-23
+CN|security|income|ps.d_oi|区域收入|supplement||unverified|||2026-11-23
+CN|security|income|ps.d_oc|区域收入|supplement||unverified|||2026-11-23
+CN|security|income|ps.d_gp_m|区域收入|supplement||unverified|||2026-11-23
+CN|security|income|ps.d_oi_r|区域收入|supplement||unverified|||2026-11-23
+CN|security|income|ps.o_oi|区域收入|supplement||unverified|||2026-11-23
+CN|security|income|ps.o_oc|区域收入|supplement||unverified|||2026-11-23
+CN|security|income|ps.o_gp_m|区域收入|supplement||unverified|||2026-11-23
+CN|security|income|ps.o_oi_r|区域收入|supplement||unverified|||2026-11-23
+CN|security|income|ps.da|分红、融资及涨跌幅|supplement||unverified|||2026-11-23
+CN|security|income|ps.d_np_r|分红、融资及涨跌幅|supplement||unverified|||2026-11-23
+CN|security|income|ps.da_om|分红、融资及涨跌幅|supplement||unverified|||2026-11-23
+CN|security|income|ps.fa_om|分红、融资及涨跌幅|supplement||unverified|||2026-11-23
+CN|security|income|ps.spc_a|分红、融资及涨跌幅|supplement||unverified|||2026-11-23
+CN|security|income|ps.tfci_r|客户及供应商|supplement||unverified|||2026-11-23
+CN|security|income|ps.tfsp_r|客户及供应商|supplement||unverified|||2026-11-23
+CN|security|cashflow|cfs.ndifahftp|经营活动现金流 › 现金流入|line||unverified|||2026-11-23
+CN|security|cashflow|cfs.ncrfdoafsfaioa|经营活动现金流 › 现金流入|line||unverified|||2026-11-23
+CN|security|cashflow|cfs.ndima|经营活动现金流 › 现金流入|line||unverified|||2026-11-23
+CN|security|cashflow|cfs.niipfbaofi|经营活动现金流 › 现金流入|line||unverified|||2026-11-23
+CN|security|cashflow|cfs.niifasurpaioa|经营活动现金流 › 现金流入|line||unverified|||2026-11-23
+CN|security|cashflow|cfs.crfifac|经营活动现金流 › 现金流入|line||unverified|||2026-11-23
+CN|security|cashflow|cfs.ncrfstoa|经营活动现金流 › 现金流入|line||unverified|||2026-11-23
+CN|security|cashflow|cfs.ncrfssoa|经营活动现金流 › 现金流入|line||unverified|||2026-11-23
+CN|security|cashflow|cfs.crrtooa|经营活动现金流 › 现金流入|line||unverified|||2026-11-23
+CN|security|cashflow|cfs.stciffoa|经营活动现金流 › 现金流入|subtotal||unverified||经营活动现金流 › 现金流入|2026-11-23
+CN|security|cashflow|cfs.niifahftp|经营活动现金流 › 现金流出|line||unverified|||2026-11-23
+CN|security|cashflow|cfs.ncpfbafsfaioa|经营活动现金流 › 现金流出|line||unverified|||2026-11-23
+CN|security|cashflow|cfs.niima|经营活动现金流 › 现金流出|line||unverified|||2026-11-23
+CN|security|cashflow|cfs.niipwbaofi|经营活动现金流 › 现金流出|line||unverified|||2026-11-23
+CN|security|cashflow|cfs.niifahursaioa|经营活动现金流 › 现金流出|line||unverified|||2026-11-23
+CN|security|cashflow|cfs.cpfifac|经营活动现金流 › 现金流出|line||unverified|||2026-11-23
+CN|security|cashflow|cfs.cptofe|经营活动现金流 › 现金流出|line||unverified|||2026-11-23
+CN|security|cashflow|cfs.cpft|经营活动现金流 › 现金流出|line||unverified|||2026-11-23
+CN|security|cashflow|cfs.cprtooa|经营活动现金流 › 现金流出|line||unverified|||2026-11-23
+CN|security|cashflow|cfs.stcoffoa|经营活动现金流 › 现金流出|subtotal||unverified||经营活动现金流 › 现金流出|2026-11-23
+CN|security|cashflow|cfs.ncffoa|经营活动现金流|total||unverified|||2026-11-23
+CN|security|cashflow|cfs.crfrci|投资活动现金流 › 现金流入|line||unverified|||2026-11-23
+CN|security|cashflow|cfs.crfii|投资活动现金流 › 现金流入|line||unverified|||2026-11-23
+CN|security|cashflow|cfs.crfdofiaolta|投资活动现金流 › 现金流入|line||unverified|||2026-11-23
+CN|security|cashflow|cfs.ncrfdossajvaou|投资活动现金流 › 现金流入|line||unverified|||2026-11-23
+CN|security|cashflow|cfs.ncrfdossaou|投资活动现金流 › 现金流入|detail|cfs.ncrfdossajvaou|source_verified|||2026-11-23
+CN|security|cashflow|cfs.ncrfdoaajv|投资活动现金流 › 现金流入|detail|cfs.ncrfdossajvaou|source_verified|||2026-11-23
+CN|security|cashflow|cfs.crrtoia|投资活动现金流 › 现金流入|line||unverified|||2026-11-23
+CN|security|cashflow|cfs.stcifia|投资活动现金流 › 现金流入|subtotal||unverified||投资活动现金流 › 现金流入|2026-11-23
+CN|security|cashflow|cfs.cpfi|投资活动现金流 › 现金流出|line||unverified|||2026-11-23
+CN|security|cashflow|cfs.cpfpfiaolta|投资活动现金流 › 现金流出|line||unverified|||2026-11-23
+CN|security|cashflow|cfs.ncpfbssajvaou|投资活动现金流 › 现金流出|line||unverified|||2026-11-23
+CN|security|cashflow|cfs.ncpfbssaou|投资活动现金流 › 现金流出|detail|cfs.ncpfbssajvaou|source_verified|||2026-11-23
+CN|security|cashflow|cfs.ncpfbajv|投资活动现金流 › 现金流出|detail|cfs.ncpfbssajvaou|source_verified|||2026-11-23
+CN|security|cashflow|cfs.cprtoia|投资活动现金流 › 现金流出|line||unverified|||2026-11-23
+CN|security|cashflow|cfs.stcoffia|投资活动现金流 › 现金流出|subtotal||unverified||投资活动现金流 › 现金流出|2026-11-23
+CN|security|cashflow|cfs.ncffia|投资活动现金流|total||unverified|||2026-11-23
+CN|security|cashflow|cfs.crfai|筹资活动现金流 › 现金流入|line||unverified|||2026-11-23
+CN|security|cashflow|cfs.crfamshibss|筹资活动现金流 › 现金流入|detail|cfs.crfai|source_verified|||2026-11-23
+CN|security|cashflow|cfs.crfl|筹资活动现金流 › 现金流入|line||unverified|||2026-11-23
+CN|security|cashflow|cfs.crfib|筹资活动现金流 › 现金流入|line||unverified|||2026-11-23
+CN|security|cashflow|cfs.crrtofa|筹资活动现金流 › 现金流入|line||unverified|||2026-11-23
+CN|security|cashflow|cfs.stcifffa|筹资活动现金流 › 现金流入|subtotal||unverified||筹资活动现金流 › 现金流入|2026-11-23
+CN|security|cashflow|cfs.cpfbrp|筹资活动现金流 › 现金流出|line||unverified|||2026-11-23
+CN|security|cashflow|cfs.cpfdapdoi|筹资活动现金流 › 现金流出|line||unverified|||2026-11-23
+CN|security|cashflow|cfs.cpfdapomshpbss|筹资活动现金流 › 现金流出|detail|cfs.cpfdapdoi|source_verified|||2026-11-23
+CN|security|cashflow|cfs.cprtofa|筹资活动现金流 › 现金流出|line||unverified|||2026-11-23
+CN|security|cashflow|cfs.stcofffa|筹资活动现金流 › 现金流出|subtotal||unverified||筹资活动现金流 › 现金流出|2026-11-23
+CN|security|cashflow|cfs.ncfffa|筹资活动现金流|total||unverified|||2026-11-23
+CN|security|cashflow|cfs.iocacedtfier|现金净变动与余额|line||unverified|||2026-11-23
+CN|security|cashflow|cfs.bocaceatpb|现金净变动与余额|line||unverified|||2026-11-23
+CN|security|cashflow|cfs.niicace|现金净变动与余额|total||unverified|||2026-11-23
+CN|security|cashflow|cfs.bocaceatpe|现金净变动与余额|total||unverified|||2026-11-23
+CN|security|cashflow|cfs.np|现金流补充资料|supplement||unverified|||2026-11-23
+CN|security|cashflow|cfs.ioa|现金流补充资料|supplement||unverified|||2026-11-23
+CN|security|cashflow|cfs.cilor|现金流补充资料|supplement||unverified|||2026-11-23
+CN|security|cashflow|cfs.daa|现金流补充资料|supplement||unverified|||2026-11-23
+CN|security|cashflow|cfs.dofx_dooaga_dopba|现金流补充资料|supplement||unverified|||2026-11-23
+CN|security|cashflow|cfs.daaorei|现金流补充资料|supplement||unverified|||2026-11-23
+CN|security|cashflow|cfs.aoroua|现金流补充资料|supplement||unverified|||2026-11-23
+CN|security|cashflow|cfs.aoia|现金流补充资料|supplement||unverified|||2026-11-23
+CN|security|cashflow|cfs.aoltde|现金流补充资料|supplement||unverified|||2026-11-23
+CN|security|cashflow|cfs.lodofaiaaolta|现金流补充资料|supplement||unverified|||2026-11-23
+CN|security|cashflow|cfs.lfsfa|现金流补充资料|supplement||unverified|||2026-11-23
+CN|security|cashflow|cfs.lfcifv|现金流补充资料|supplement||unverified|||2026-11-23
+CN|security|cashflow|cfs.fe|现金流补充资料|supplement||unverified|||2026-11-23
+CN|security|cashflow|cfs.il|现金流补充资料|supplement||unverified|||2026-11-23
+CN|security|cashflow|cfs.didita|现金流补充资料|supplement||unverified|||2026-11-23
+CN|security|cashflow|cfs.iiditl|现金流补充资料|supplement||unverified|||2026-11-23
+CN|security|cashflow|cfs.dii|现金流补充资料|supplement||unverified|||2026-11-23
+CN|security|cashflow|cfs.dior|现金流补充资料|supplement||unverified|||2026-11-23
+CN|security|cashflow|cfs.iiop|现金流补充资料|supplement||unverified|||2026-11-23
+CN|security|cashflow|cfs.o|现金流补充资料|supplement||unverified|||2026-11-23
+CN|security|cashflow|cfs.cbdwioy|现金流补充资料|supplement||unverified|||2026-11-23
+CN|security|cashflow|cfs.flofa|现金流补充资料|supplement||unverified|||2026-11-23
+CN|security|cashflow|cfs.ncffoa_dup|现金流补充资料|supplement||unverified|||2026-11-23
+CN|other_financial|balance|bs.ta|资产|total||unverified||资产|2026-11-23
+CN|other_financial|balance|bs.cabwcb|资产|line||unverified|||2026-11-23
+CN|other_financial|balance|bs.cabb|资产|line||unverified|||2026-11-23
+CN|other_financial|balance|bs.pm|资产|line||unverified|||2026-11-23
+CN|other_financial|balance|bs.pwbaofi|资产|line||unverified|||2026-11-23
+CN|other_financial|balance|bs.lr|资产|line||unverified|||2026-11-23
+CN|other_financial|balance|bs.ar|资产|line||unverified|||2026-11-23
+CN|other_financial|balance|bs.ltei|资产|line||unverified|||2026-11-23
+CN|other_financial|balance|bs.rei|资产|line||unverified|||2026-11-23
+CN|other_financial|balance|bs.fa|资产|line||unverified|||2026-11-23
+CN|other_financial|balance|bs.fa_ta_r|资产|supplement||unverified|||2026-11-23
+CN|other_financial|balance|bs.roua|资产|line||unverified|||2026-11-23
+CN|other_financial|balance|bs.ia|资产|line||unverified|||2026-11-23
+CN|other_financial|balance|bs.gw|资产|line||unverified|||2026-11-23
+CN|other_financial|balance|bs.gw_toe_r|资产|supplement||unverified|||2026-11-23
+CN|other_financial|balance|bs.dita|资产|line||unverified|||2026-11-23
+CN|other_financial|balance|bs.oa|资产|line||unverified|||2026-11-23
+CN|other_financial|balance|bs.tl|负债|total||unverified||负债|2026-11-23
+CN|other_financial|balance|bs.tl_ta_r|负债|supplement||unverified|||2026-11-23
+CN|other_financial|balance|bs.stl|负债|line||unverified|||2026-11-23
+CN|other_financial|balance|bs.bfcb|负债|line||unverified|||2026-11-23
+CN|other_financial|balance|bs.pfbaofi|负债|line||unverified|||2026-11-23
+CN|other_financial|balance|bs.sawp|负债|line||unverified|||2026-11-23
+CN|other_financial|balance|bs.tp|负债|line||unverified|||2026-11-23
+CN|other_financial|balance|bs.ll|负债|line||unverified|||2026-11-23
+CN|other_financial|balance|bs.ltl|负债|line||unverified|||2026-11-23
+CN|other_financial|balance|bs.bp|负债|line||unverified|||2026-11-23
+CN|other_financial|balance|bs.ditl|负债|line||unverified|||2026-11-23
+CN|other_financial|balance|bs.ol|负债|line||unverified|||2026-11-23
+CN|other_financial|balance|bs.toe|所有者权益|total||unverified||所有者权益|2026-11-23
+CN|other_financial|balance|bs.toe_ta_r|所有者权益|supplement||unverified|||2026-11-23
+CN|other_financial|balance|bs.sc|所有者权益|line||unverified|||2026-11-23
+CN|other_financial|balance|bs.oei|所有者权益|line||unverified|||2026-11-23
+CN|other_financial|balance|bs.psioei|所有者权益|detail|bs.oei|source_verified|||2026-11-23
+CN|other_financial|balance|bs.pcsioei|所有者权益|detail|bs.oei|source_verified|||2026-11-23
+CN|other_financial|balance|bs.capr|所有者权益|line||unverified|||2026-11-23
+CN|other_financial|balance|bs.is|所有者权益|line||unverified|||2026-11-23
+CN|other_financial|balance|bs.oci|所有者权益|line||unverified|||2026-11-23
+CN|other_financial|balance|bs.rr|所有者权益|line||unverified|||2026-11-23
+CN|other_financial|balance|bs.surr|所有者权益|line||unverified|||2026-11-23
+CN|other_financial|balance|bs.pogr|所有者权益|line||unverified|||2026-11-23
+CN|other_financial|balance|bs.rtp|所有者权益|line||unverified|||2026-11-23
+CN|other_financial|balance|bs.er|所有者权益|line||unverified|||2026-11-23
+CN|other_financial|balance|bs.tetshaoehopc|所有者权益|line||unverified|||2026-11-23
+CN|other_financial|balance|bs.tetoshopc|所有者权益|line||unverified|||2026-11-23
+CN|other_financial|balance|bs.tetoshopc_ps|所有者权益|line||unverified|||2026-11-23
+CN|other_financial|balance|bs.etmsh|所有者权益|line||unverified|||2026-11-23
+CN|other_financial|balance|bs.ep_stn|员工情况|supplement||unverified|||2026-11-23
+CN|other_financial|balance|bs.ep_pn|员工情况|supplement||unverified|||2026-11-23
+CN|other_financial|balance|bs.ep_mn|员工情况|supplement||unverified|||2026-11-23
+CN|other_financial|balance|bs.ep_bn|员工情况|supplement||unverified|||2026-11-23
+CN|other_financial|balance|bs.ep_jcn|员工情况|supplement||unverified|||2026-11-23
+CN|other_financial|balance|bs.ep_hsabn|员工情况|supplement||unverified|||2026-11-23
+CN|other_financial|balance|bs.ep_psn|员工情况|supplement||unverified|||2026-11-23
+CN|other_financial|balance|bs.ep_spn|员工情况|supplement||unverified|||2026-11-23
+CN|other_financial|balance|bs.ep_tsn|员工情况|supplement||unverified|||2026-11-23
+CN|other_financial|balance|bs.ep_fon|员工情况|supplement||unverified|||2026-11-23
+CN|other_financial|balance|bs.ep_asn|员工情况|supplement||unverified|||2026-11-23
+CN|other_financial|balance|bs.ep_osn|员工情况|supplement||unverified|||2026-11-23
+CN|other_financial|balance|bs.mc|股本、股东以及估值|supplement||unverified|||2026-11-23
+CN|other_financial|balance|bs.tsc|股本、股东以及估值|supplement||unverified|||2026-11-23
+CN|other_financial|balance|bs.csc|股本、股东以及估值|supplement||unverified|||2026-11-23
+CN|other_financial|balance|bs.shn|股本、股东以及估值|supplement||unverified|||2026-11-23
+CN|other_financial|balance|bs.shn_om|股本、股东以及估值|supplement||unverified|||2026-11-23
+CN|other_financial|balance|bs.shbt1sh_tsc_r|股本、股东以及估值|supplement||unverified|||2026-11-23
+CN|other_financial|balance|bs.shbt10sh_tsc_r|股本、股东以及估值|supplement||unverified|||2026-11-23
+CN|other_financial|balance|bs.shbt10sh_csc_r|股本、股东以及估值|supplement||unverified|||2026-11-23
+CN|other_financial|balance|bs.shbt10poof_csc_r|股本、股东以及估值|supplement||unverified|||2026-11-23
+CN|other_financial|balance|bs.shbpoof_csc_r|股本、股东以及估值|supplement||unverified|||2026-11-23
+CN|other_financial|balance|bs.shbeosh_poof_ecsc_r|股本、股东以及估值|supplement||unverified|||2026-11-23
+CN|other_financial|balance|bs.pe_ttm|股本、股东以及估值|supplement||unverified|||2026-11-23
+CN|other_financial|balance|bs.d_pe_ttm|股本、股东以及估值|supplement||unverified|||2026-11-23
+CN|other_financial|balance|bs.pb|股本、股东以及估值|supplement||unverified|||2026-11-23
+CN|other_financial|balance|bs.pb_wo_gw|股本、股东以及估值|supplement||unverified|||2026-11-23
+CN|other_financial|balance|bs.ps_ttm|股本、股东以及估值|supplement||unverified|||2026-11-23
+CN|other_financial|balance|bs.pcf_ttm|股本、股东以及估值|supplement||unverified|||2026-11-23
+CN|other_financial|balance|bs.dyr|股本、股东以及估值|supplement||unverified|||2026-11-23
+CN|other_financial|income|ps.oi|营业收入|line||unverified|||2026-11-23
+CN|other_financial|income|ps.nii|营业收入|line||unverified|||2026-11-23
+CN|other_financial|income|ps.ii|营业收入|detail|ps.nii|source_verified|||2026-11-23
+CN|other_financial|income|ps.ie|营业收入|detail|ps.nii|source_verified|||2026-11-23
+CN|other_financial|income|ps.nfaci|营业收入|line||unverified|||2026-11-23
+CN|other_financial|income|ps.faci|营业收入|detail|ps.nfaci|source_verified|||2026-11-23
+CN|other_financial|income|ps.face|营业收入|detail|ps.nfaci|source_verified|||2026-11-23
+CN|other_financial|income|ps.ivi|其他损益|line||unverified|||2026-11-23
+CN|other_financial|income|ps.iifaajv|其他损益|detail|ps.ivi|source_verified|||2026-11-23
+CN|other_financial|income|ps.oic|其他损益|line||unverified|||2026-11-23
+CN|other_financial|income|ps.ciofv|其他损益|line||unverified|||2026-11-23
+CN|other_financial|income|ps.ei|其他损益|line||unverified|||2026-11-23
+CN|other_financial|income|ps.adi|其他损益|line||unverified|||2026-11-23
+CN|other_financial|income|ps.loi|营业收入|line||unverified|||2026-11-23
+CN|other_financial|income|ps.ooi|营业收入|line||unverified|||2026-11-23
+CN|other_financial|income|ps.oe|营业支出|subtotal||unverified||营业支出|2026-11-23
+CN|other_financial|income|ps.tas|营业成本及费用|line||unverified|||2026-11-23
+CN|other_financial|income|ps.baae|营业支出|line||unverified|||2026-11-23
+CN|other_financial|income|ps.ooe|营业支出|line||unverified|||2026-11-23
+CN|other_financial|income|ps.cilor|其他损益|line||unverified|||2026-11-23
+CN|other_financial|income|ps.ailor|其他损益|line||unverified|||2026-11-23
+CN|other_financial|income|ps.oail|营业支出|line||unverified|||2026-11-23
+CN|other_financial|income|ps.op|营业利润|subtotal||unverified||营业利润|2026-11-23
+CN|other_financial|income|ps.op_s_r|营业利润|supplement||unverified|||2026-11-23
+CN|other_financial|income|ps.noi|营业利润至利润总额|line||unverified|||2026-11-23
+CN|other_financial|income|ps.noe|营业利润至利润总额|line||unverified|||2026-11-23
+CN|other_financial|income|ps.tp|利润总额|subtotal||unverified||利润总额|2026-11-23
+CN|other_financial|income|ps.ite|利润总额至净利润|line||unverified|||2026-11-23
+CN|other_financial|income|ps.ite_tp_r|利润总额|supplement||unverified|||2026-11-23
+CN|other_financial|income|ps.np|净利润|total||unverified||净利润|2026-11-23
+CN|other_financial|income|ps.np_s_r|净利润|supplement||unverified|||2026-11-23
+CN|other_financial|income|ps.npfco|净利润 › 按经营持续性|line||unverified|||2026-11-23
+CN|other_financial|income|ps.npfdco|净利润 › 按经营持续性|line||unverified|||2026-11-23
+CN|other_financial|income|ps.npatshaoehopc|净利润 › 按所有权归属|line||unverified|||2026-11-23
+CN|other_financial|income|ps.npatoshopc|净利润 › 按所有权归属|line||unverified|||2026-11-23
+CN|other_financial|income|ps.npatmsh|净利润 › 按所有权归属|line||unverified|||2026-11-23
+CN|other_financial|income|ps.npadnrpatoshaopc|补充指标|supplement||unverified|||2026-11-23
+CN|other_financial|income|ps.npadnrpatoshaopc_npatoshopc_r|净利润|supplement||unverified|||2026-11-23
+CN|other_financial|income|ps.wroe|净利润|supplement||unverified|||2026-11-23
+CN|other_financial|income|ps.wdroe|净利润|supplement||unverified|||2026-11-23
+CN|other_financial|income|ps.beps|每股收益|supplement||unverified|||2026-11-23
+CN|other_financial|income|ps.deps|每股收益|supplement||unverified|||2026-11-23
+CN|other_financial|income|ps.tci|综合收益|total||unverified||综合收益|2026-11-23
+CN|other_financial|income|ps.tciatshaoehopc|综合收益 › 按所有权归属|line||unverified|||2026-11-23
+CN|other_financial|income|ps.tciatoshopc|综合收益 › 按所有权归属|line||unverified|||2026-11-23
+CN|other_financial|income|ps.tciatmsh|综合收益 › 按所有权归属|line||unverified|||2026-11-23
+CN|other_financial|income|ps.natooci|综合收益 › 其他综合收益|subtotal||unverified||综合收益 › 其他综合收益|2026-11-23
+CN|other_financial|income|ps.d_oi|区域收入|supplement||unverified|||2026-11-23
+CN|other_financial|income|ps.d_oc|区域收入|supplement||unverified|||2026-11-23
+CN|other_financial|income|ps.d_gp_m|区域收入|supplement||unverified|||2026-11-23
+CN|other_financial|income|ps.d_oi_r|区域收入|supplement||unverified|||2026-11-23
+CN|other_financial|income|ps.o_oi|区域收入|supplement||unverified|||2026-11-23
+CN|other_financial|income|ps.o_oc|区域收入|supplement||unverified|||2026-11-23
+CN|other_financial|income|ps.o_gp_m|区域收入|supplement||unverified|||2026-11-23
+CN|other_financial|income|ps.o_oi_r|区域收入|supplement||unverified|||2026-11-23
+CN|other_financial|income|ps.da|分红、融资及涨跌幅|supplement||unverified|||2026-11-23
+CN|other_financial|income|ps.d_np_r|分红、融资及涨跌幅|supplement||unverified|||2026-11-23
+CN|other_financial|income|ps.da_om|分红、融资及涨跌幅|supplement||unverified|||2026-11-23
+CN|other_financial|income|ps.fa_om|分红、融资及涨跌幅|supplement||unverified|||2026-11-23
+CN|other_financial|income|ps.spc_a|分红、融资及涨跌幅|supplement||unverified|||2026-11-23
+CN|other_financial|income|ps.tfci_r|客户及供应商|supplement||unverified|||2026-11-23
+CN|other_financial|income|ps.tfsp_r|客户及供应商|supplement||unverified|||2026-11-23
+CN|other_financial|cashflow|cfs.ndibwcbbaofi|经营活动现金流 › 现金流入|line||unverified|||2026-11-23
+CN|other_financial|cashflow|cfs.niipfofi|经营活动现金流 › 现金流入|line||unverified|||2026-11-23
+CN|other_financial|cashflow|cfs.crfifac|经营活动现金流 › 现金流入|line||unverified|||2026-11-23
+CN|other_financial|cashflow|cfs.crrtooa|经营活动现金流 › 现金流入|line||unverified|||2026-11-23
+CN|other_financial|cashflow|cfs.stciffoa|经营活动现金流 › 现金流入|subtotal||unverified||经营活动现金流 › 现金流入|2026-11-23
+CN|other_financial|cashflow|cfs.niibwcb|经营活动现金流 › 现金流出|line||unverified|||2026-11-23
+CN|other_financial|cashflow|cfs.niipwofi|经营活动现金流 › 现金流出|line||unverified|||2026-11-23
+CN|other_financial|cashflow|cfs.cpfifac|经营活动现金流 › 现金流出|line||unverified|||2026-11-23
+CN|other_financial|cashflow|cfs.cptofe|经营活动现金流 › 现金流出|line||unverified|||2026-11-23
+CN|other_financial|cashflow|cfs.cpft|经营活动现金流 › 现金流出|line||unverified|||2026-11-23
+CN|other_financial|cashflow|cfs.cprtooa|经营活动现金流 › 现金流出|line||unverified|||2026-11-23
+CN|other_financial|cashflow|cfs.stcoffoa|经营活动现金流 › 现金流出|subtotal||unverified||经营活动现金流 › 现金流出|2026-11-23
+CN|other_financial|cashflow|cfs.ncffoa|经营活动现金流|total||unverified|||2026-11-23
+CN|other_financial|cashflow|cfs.crfrci|投资活动现金流 › 现金流入|line||unverified|||2026-11-23
+CN|other_financial|cashflow|cfs.crfii|投资活动现金流 › 现金流入|line||unverified|||2026-11-23
+CN|other_financial|cashflow|cfs.crfdofiaolta|投资活动现金流 › 现金流入|line||unverified|||2026-11-23
+CN|other_financial|cashflow|cfs.crrtoia|投资活动现金流 › 现金流入|line||unverified|||2026-11-23
+CN|other_financial|cashflow|cfs.stcifia|投资活动现金流 › 现金流入|subtotal||unverified||投资活动现金流 › 现金流入|2026-11-23
+CN|other_financial|cashflow|cfs.cpfi|投资活动现金流 › 现金流出|line||unverified|||2026-11-23
+CN|other_financial|cashflow|cfs.cpfpfiaolta|投资活动现金流 › 现金流出|line||unverified|||2026-11-23
+CN|other_financial|cashflow|cfs.cprtoia|投资活动现金流 › 现金流出|line||unverified|||2026-11-23
+CN|other_financial|cashflow|cfs.stcoffia|投资活动现金流 › 现金流出|subtotal||unverified||投资活动现金流 › 现金流出|2026-11-23
+CN|other_financial|cashflow|cfs.ncffia|投资活动现金流|total||unverified|||2026-11-23
+CN|other_financial|cashflow|cfs.crfai|筹资活动现金流 › 现金流入|line||unverified|||2026-11-23
+CN|other_financial|cashflow|cfs.crfib|筹资活动现金流 › 现金流入|line||unverified|||2026-11-23
+CN|other_financial|cashflow|cfs.crrtofa|筹资活动现金流 › 现金流入|line||unverified|||2026-11-23
+CN|other_financial|cashflow|cfs.stcifffa|筹资活动现金流 › 现金流入|subtotal||unverified||筹资活动现金流 › 现金流入|2026-11-23
+CN|other_financial|cashflow|cfs.cpfbrp|筹资活动现金流 › 现金流出|line||unverified|||2026-11-23
+CN|other_financial|cashflow|cfs.cpfbip|筹资活动现金流 › 现金流出|line||unverified|||2026-11-23
+CN|other_financial|cashflow|cfs.cpfdapdoi|筹资活动现金流 › 现金流出|line||unverified|||2026-11-23
+CN|other_financial|cashflow|cfs.cprtofa|筹资活动现金流 › 现金流出|line||unverified|||2026-11-23
+CN|other_financial|cashflow|cfs.stcofffa|筹资活动现金流 › 现金流出|subtotal||unverified||筹资活动现金流 › 现金流出|2026-11-23
+CN|other_financial|cashflow|cfs.ncfffa|筹资活动现金流|total||unverified|||2026-11-23
+CN|other_financial|cashflow|cfs.iocacedtfier|现金净变动与余额|line||unverified|||2026-11-23
+CN|other_financial|cashflow|cfs.bocaceatpb|现金净变动与余额|line||unverified|||2026-11-23
+CN|other_financial|cashflow|cfs.niicace|现金净变动与余额|total||unverified|||2026-11-23
+CN|other_financial|cashflow|cfs.bocaceatpe|现金净变动与余额|total||unverified|||2026-11-23
+CN|other_financial|cashflow|cfs.np|现金流补充资料|supplement||unverified|||2026-11-23
+CN|other_financial|cashflow|cfs.ioa|现金流补充资料|supplement||unverified|||2026-11-23
+CN|other_financial|cashflow|cfs.cilor|现金流补充资料|supplement||unverified|||2026-11-23
+CN|other_financial|cashflow|cfs.daa|现金流补充资料|supplement||unverified|||2026-11-23
+CN|other_financial|cashflow|cfs.dofx_dooaga_dopba|现金流补充资料|supplement||unverified|||2026-11-23
+CN|other_financial|cashflow|cfs.daaorei|现金流补充资料|supplement||unverified|||2026-11-23
+CN|other_financial|cashflow|cfs.aoroua|现金流补充资料|supplement||unverified|||2026-11-23
+CN|other_financial|cashflow|cfs.aoia|现金流补充资料|supplement||unverified|||2026-11-23
+CN|other_financial|cashflow|cfs.aoltde|现金流补充资料|supplement||unverified|||2026-11-23
+CN|other_financial|cashflow|cfs.lodofaiaaolta|现金流补充资料|supplement||unverified|||2026-11-23
+CN|other_financial|cashflow|cfs.lfsfa|现金流补充资料|supplement||unverified|||2026-11-23
+CN|other_financial|cashflow|cfs.lfcifv|现金流补充资料|supplement||unverified|||2026-11-23
+CN|other_financial|cashflow|cfs.fe|现金流补充资料|supplement||unverified|||2026-11-23
+CN|other_financial|cashflow|cfs.il|现金流补充资料|supplement||unverified|||2026-11-23
+CN|other_financial|cashflow|cfs.didita|现金流补充资料|supplement||unverified|||2026-11-23
+CN|other_financial|cashflow|cfs.iiditl|现金流补充资料|supplement||unverified|||2026-11-23
+CN|other_financial|cashflow|cfs.dii|现金流补充资料|supplement||unverified|||2026-11-23
+CN|other_financial|cashflow|cfs.dior|现金流补充资料|supplement||unverified|||2026-11-23
+CN|other_financial|cashflow|cfs.iiop|现金流补充资料|supplement||unverified|||2026-11-23
+CN|other_financial|cashflow|cfs.o|现金流补充资料|supplement||unverified|||2026-11-23
+CN|other_financial|cashflow|cfs.cbdwioy|现金流补充资料|supplement||unverified|||2026-11-23
+CN|other_financial|cashflow|cfs.flofa|现金流补充资料|supplement||unverified|||2026-11-23
+CN|other_financial|cashflow|cfs.ncffoa_dup|现金流补充资料|supplement||unverified|||2026-11-23
+HK|non_financial|balance|bs.ta|资产|total||unverified||资产|2026-11-23
+HK|non_financial|balance|bs.tca|资产 › 流动资产|subtotal||unverified||资产 › 流动资产|2026-11-23
+HK|non_financial|balance|bs.tca_ta_r|资产 › 流动资产|supplement||unverified|||2026-11-23
+HK|non_financial|balance|bs.cabb|资产 › 流动资产|line||unverified|||2026-11-23
+HK|non_financial|balance|bs.cabb_ta_r|资产 › 流动资产|supplement||unverified|||2026-11-23
+HK|non_financial|balance|bs.claatc|资产 › 流动资产|line||unverified|||2026-11-23
+HK|non_financial|balance|bs.lcabbapbd|资产 › 流动资产|line||unverified|||2026-11-23
+HK|non_financial|balance|bs.lcabb|资产 › 流动资产|line||unverified|||2026-11-23
+HK|non_financial|balance|bs.cpbd|资产 › 流动资产|line||unverified|||2026-11-23
+HK|non_financial|balance|bs.i|资产 › 流动资产|line||unverified|||2026-11-23
+HK|non_financial|balance|bs.nraar|资产 › 流动资产|line||unverified|||2026-11-23
+HK|non_financial|balance|bs.nr|资产 › 流动资产|detail|bs.nraar|source_verified|||2026-11-23
+HK|non_financial|balance|bs.ar|资产 › 流动资产|detail|bs.nraar|source_verified|||2026-11-23
+HK|non_financial|balance|bs.rf|资产 › 流动资产|line||unverified|||2026-11-23
+HK|non_financial|balance|bs.tr|资产 › 流动资产|line||unverified|||2026-11-23
+HK|non_financial|balance|bs.cca|资产 › 流动资产|line||unverified|||2026-11-23
+HK|non_financial|balance|bs.clr|资产 › 流动资产|line||unverified|||2026-11-23
+HK|non_financial|balance|bs.cahfs|资产 › 流动资产|line||unverified|||2026-11-23
+HK|non_financial|balance|bs.cdfa|资产 › 流动资产|line||unverified|||2026-11-23
+HK|non_financial|balance|bs.std|资产 › 流动资产|line||unverified|||2026-11-23
+HK|non_financial|balance|bs.sti|资产 › 流动资产|line||unverified|||2026-11-23
+HK|non_financial|balance|bs.osti|资产 › 流动资产|line||unverified|||2026-11-23
+HK|non_financial|balance|bs.cfiaac|资产 › 流动资产|line||unverified|||2026-11-23
+HK|non_financial|balance|bs.cfiafvtpol|资产 › 流动资产|line||unverified|||2026-11-23
+HK|non_financial|balance|bs.cfiafvtoci|资产 › 流动资产|line||unverified|||2026-11-23
+HK|non_financial|balance|bs.cpdoraoa|资产 › 流动资产|line||unverified|||2026-11-23
+HK|non_financial|balance|bs.tnca|资产 › 非流动资产|subtotal||unverified||资产 › 非流动资产|2026-11-23
+HK|non_financial|balance|bs.tnca_ta_r|资产 › 非流动资产|supplement||unverified|||2026-11-23
+HK|non_financial|balance|bs.ltd|资产 › 非流动资产|line||unverified|||2026-11-23
+HK|non_financial|balance|bs.nclaatc|资产 › 非流动资产|line||unverified|||2026-11-23
+HK|non_financial|balance|bs.ncpbd|资产 › 非流动资产|line||unverified|||2026-11-23
+HK|non_financial|balance|bs.ppe|资产 › 非流动资产|line||unverified|||2026-11-23
+HK|non_financial|balance|bs.ppe_ta_r|资产 › 非流动资产|supplement||unverified|||2026-11-23
+HK|non_financial|balance|bs.lur|资产 › 非流动资产|line||unverified|||2026-11-23
+HK|non_financial|balance|bs.roua|资产 › 非流动资产|line||unverified|||2026-11-23
+HK|non_financial|balance|bs.ba|资产 › 非流动资产|line||unverified|||2026-11-23
+HK|non_financial|balance|bs.oaga|资产 › 非流动资产|line||unverified|||2026-11-23
+HK|non_financial|balance|bs.cip|资产 › 非流动资产|line||unverified|||2026-11-23
+HK|non_financial|balance|bs.pi|资产 › 非流动资产|line||unverified|||2026-11-23
+HK|non_financial|balance|bs.iiaajv|资产 › 非流动资产|line||unverified|||2026-11-23
+HK|non_financial|balance|bs.iia|资产 › 非流动资产|detail|bs.iiaajv|source_verified|||2026-11-23
+HK|non_financial|balance|bs.iijv|资产 › 非流动资产|detail|bs.iiaajv|source_verified|||2026-11-23
+HK|non_financial|balance|bs.gwaia|资产 › 非流动资产|line||unverified|||2026-11-23
+HK|non_financial|balance|bs.gw|资产 › 非流动资产|detail|bs.gwaia|source_verified|||2026-11-23
+HK|non_financial|balance|bs.ia|资产 › 非流动资产|detail|bs.gwaia|source_verified|||2026-11-23
+HK|non_financial|balance|bs.olti|资产 › 非流动资产|line||unverified|||2026-11-23
+HK|non_financial|balance|bs.dita|资产 › 非流动资产|line||unverified|||2026-11-23
+HK|non_financial|balance|bs.ncca|资产 › 非流动资产|line||unverified|||2026-11-23
+HK|non_financial|balance|bs.nclr|资产 › 非流动资产|line||unverified|||2026-11-23
+HK|non_financial|balance|bs.ncahfs|资产 › 非流动资产|line||unverified|||2026-11-23
+HK|non_financial|balance|bs.ncdfa|资产 › 非流动资产|line||unverified|||2026-11-23
+HK|non_financial|balance|bs.ncfiaac|资产 › 非流动资产|line||unverified|||2026-11-23
+HK|non_financial|balance|bs.ncfiafvtpol|资产 › 非流动资产|line||unverified|||2026-11-23
+HK|non_financial|balance|bs.ncfiafvtoci|资产 › 非流动资产|line||unverified|||2026-11-23
+HK|non_financial|balance|bs.ltar|资产 › 非流动资产|line||unverified|||2026-11-23
+HK|non_financial|balance|bs.ncpdoraoa|资产 › 非流动资产|line||unverified|||2026-11-23
+HK|non_financial|balance|bs.tl|负债|total||unverified||负债|2026-11-23
+HK|non_financial|balance|bs.tl_ta_r|负债|supplement||unverified|||2026-11-23
+HK|non_financial|balance|bs.tcl|负债 › 流动负债|subtotal||unverified||负债 › 流动负债|2026-11-23
+HK|non_financial|balance|bs.tcl_tl_r|负债 › 流动负债|supplement||unverified|||2026-11-23
+HK|non_financial|balance|bs.stl|负债 › 流动负债|line||unverified|||2026-11-23
+HK|non_financial|balance|bs.stpl|负债 › 流动负债|line||unverified|||2026-11-23
+HK|non_financial|balance|bs.stbp|负债 › 流动负债|line||unverified|||2026-11-23
+HK|non_financial|balance|bs.tp|负债 › 流动负债|line||unverified|||2026-11-23
+HK|non_financial|balance|bs.otp|负债 › 流动负债|line||unverified|||2026-11-23
+HK|non_financial|balance|bs.npaap|负债 › 流动负债|line||unverified|||2026-11-23
+HK|non_financial|balance|bs.np|负债 › 流动负债|detail|bs.npaap|source_verified|||2026-11-23
+HK|non_financial|balance|bs.ap|负债 › 流动负债|detail|bs.npaap|source_verified|||2026-11-23
+HK|non_financial|balance|bs.didwioy|负债 › 流动负债|line||unverified|||2026-11-23
+HK|non_financial|balance|bs.stlcofcb|负债 › 流动负债|line||unverified|||2026-11-23
+HK|non_financial|balance|bs.stcl|负债 › 流动负债|line||unverified|||2026-11-23
+HK|non_financial|balance|bs.stll|负债 › 流动负债|line||unverified|||2026-11-23
+HK|non_financial|balance|bs.stdfl|负债 › 流动负债|line||unverified|||2026-11-23
+HK|non_financial|balance|bs.stsn|负债 › 流动负债|line||unverified|||2026-11-23
+HK|non_financial|balance|bs.stflafvtpol|负债 › 流动负债|line||unverified|||2026-11-23
+HK|non_financial|balance|bs.stafcrdaoraol|负债 › 流动负债|line||unverified|||2026-11-23
+HK|non_financial|balance|bs.tncl|负债 › 非流动负债|subtotal||unverified||负债 › 非流动负债|2026-11-23
+HK|non_financial|balance|bs.tncl_tl_r|负债 › 非流动负债|supplement||unverified|||2026-11-23
+HK|non_financial|balance|bs.ltl|负债 › 非流动负债|line||unverified|||2026-11-23
+HK|non_financial|balance|bs.ltpl|负债 › 非流动负债|line||unverified|||2026-11-23
+HK|non_financial|balance|bs.ditl|负债 › 非流动负债|line||unverified|||2026-11-23
+HK|non_financial|balance|bs.ltdi|负债 › 非流动负债|line||unverified|||2026-11-23
+HK|non_financial|balance|bs.sn|负债 › 非流动负债|line||unverified|||2026-11-23
+HK|non_financial|balance|bs.bp|负债 › 非流动负债|line||unverified|||2026-11-23
+HK|non_financial|balance|bs.lcorcps|负债 › 非流动负债|line||unverified|||2026-11-23
+HK|non_financial|balance|bs.ltlcofcb|负债 › 非流动负债|line||unverified|||2026-11-23
+HK|non_financial|balance|bs.ltcl|负债 › 非流动负债|line||unverified|||2026-11-23
+HK|non_financial|balance|bs.ltll|负债 › 非流动负债|line||unverified|||2026-11-23
+HK|non_financial|balance|bs.ltdfl|负债 › 非流动负债|line||unverified|||2026-11-23
+HK|non_financial|balance|bs.ltflafvtpol|负债 › 非流动负债|line||unverified|||2026-11-23
+HK|non_financial|balance|bs.ltafcrdaoraol|负债 › 非流动负债|line||unverified|||2026-11-23
+HK|non_financial|balance|bs.toe|所有者权益|total||unverified||所有者权益|2026-11-23
+HK|non_financial|balance|bs.toe_ta_r|所有者权益|supplement||unverified|||2026-11-23
+HK|non_financial|balance|bs.sc|所有者权益|line||unverified|||2026-11-23
+HK|non_financial|balance|bs.spa|所有者权益|line||unverified|||2026-11-23
+HK|non_financial|balance|bs.oei|所有者权益|line||unverified|||2026-11-23
+HK|non_financial|balance|bs.psioei|所有者权益|detail|bs.oei|source_verified|||2026-11-23
+HK|non_financial|balance|bs.pcsioei|所有者权益|detail|bs.oei|source_verified|||2026-11-23
+HK|non_financial|balance|bs.capr|所有者权益|line||unverified|||2026-11-23
+HK|non_financial|balance|bs.is|所有者权益|line||unverified|||2026-11-23
+HK|non_financial|balance|bs.r|所有者权益|line||unverified|||2026-11-23
+HK|non_financial|balance|bs.rr|所有者权益|line||unverified|||2026-11-23
+HK|non_financial|balance|bs.ors|所有者权益|line||unverified|||2026-11-23
+HK|non_financial|balance|bs.surr|所有者权益|line||unverified|||2026-11-23
+HK|non_financial|balance|bs.rtp|所有者权益|line||unverified|||2026-11-23
+HK|non_financial|balance|bs.shfsas|所有者权益|line||unverified|||2026-11-23
+HK|non_financial|balance|bs.ecocb|所有者权益|line||unverified|||2026-11-23
+HK|non_financial|balance|bs.tetshaoehopc|所有者权益|line||unverified|||2026-11-23
+HK|non_financial|balance|bs.tetoshopc|所有者权益|line||unverified|||2026-11-23
+HK|non_financial|balance|bs.etmsh|所有者权益|line||unverified|||2026-11-23
+HK|non_financial|balance|bs.rnci|所有者权益|line||unverified|||2026-11-23
+HK|non_financial|balance|bs.ep_stn|员工情况|supplement||unverified|||2026-11-23
+HK|non_financial|balance|bs.mc|股本、股东以及估值|supplement||unverified|||2026-11-23
+HK|non_financial|balance|bs.tsc|股本、股东以及估值|supplement||unverified|||2026-11-23
+HK|non_financial|balance|bs.pe_ttm|股本、股东以及估值|supplement||unverified|||2026-11-23
+HK|non_financial|balance|bs.pb|股本、股东以及估值|supplement||unverified|||2026-11-23
+HK|non_financial|balance|bs.ps_ttm|股本、股东以及估值|supplement||unverified|||2026-11-23
+HK|non_financial|balance|bs.pcf_ttm|股本、股东以及估值|supplement||unverified|||2026-11-23
+HK|non_financial|balance|bs.dyr|股本、股东以及估值|supplement||unverified|||2026-11-23
+HK|non_financial|income|ps.toi|营业收入|subtotal||unverified||营业收入|2026-11-23
+HK|non_financial|income|ps.oi|营业收入|line||unverified|||2026-11-23
+HK|non_financial|income|ps.ii|营业总收入|line||unverified|||2026-11-23
+HK|non_financial|income|ps.faci|营业总收入|line||unverified|||2026-11-23
+HK|non_financial|income|ps.or|营业总收入|line||unverified|||2026-11-23
+HK|non_financial|income|ps.oc|营业成本及费用|line||unverified|||2026-11-23
+HK|non_financial|income|ps.ie|营业总收入|line||unverified|||2026-11-23
+HK|non_financial|income|ps.face|营业总收入|line||unverified|||2026-11-23
+HK|non_financial|income|ps.gp|毛利|subtotal||unverified||毛利|2026-11-23
+HK|non_financial|income|ps.gp_m|营业总收入|line||unverified|||2026-11-23
+HK|non_financial|income|ps.se|营业成本及费用|line||unverified|||2026-11-23
+HK|non_financial|income|ps.ae|营业成本及费用|line||unverified|||2026-11-23
+HK|non_financial|income|ps.fe|营业成本及费用|line||unverified|||2026-11-23
+HK|non_financial|income|ps.fc|营业成本及费用|detail|ps.fe|source_verified|||2026-11-23
+HK|non_financial|income|ps.iiife|营业成本及费用|detail|ps.fe|source_verified|||2026-11-23
+HK|non_financial|income|ps.nfceg|营业成本及费用|detail|ps.fe|source_verified|||2026-11-23
+HK|non_financial|income|ps.rade|营业成本及费用|line||unverified|||2026-11-23
+HK|non_financial|income|ps.sbcc|营业总收入|line||unverified|||2026-11-23
+HK|non_financial|income|ps.se_r|营业总收入|supplement||unverified|||2026-11-23
+HK|non_financial|income|ps.ae_r|营业总收入|supplement||unverified|||2026-11-23
+HK|non_financial|income|ps.oe_r|营业总收入|supplement||unverified|||2026-11-23
+HK|non_financial|income|ps.fe_r|营业总收入|supplement||unverified|||2026-11-23
+HK|non_financial|income|ps.rade_r|营业总收入|supplement||unverified|||2026-11-23
+HK|non_financial|income|ps.foe_r|营业总收入|supplement||unverified|||2026-11-23
+HK|non_financial|income|ps.iifaajv|营业总收入|line||unverified|||2026-11-23
+HK|non_financial|income|ps.iifa|营业总收入|detail|ps.iifaajv|source_verified|||2026-11-23
+HK|non_financial|income|ps.iifjv|营业总收入|detail|ps.iifaajv|source_verified|||2026-11-23
+HK|non_financial|income|ps.ivi|其他损益|line||unverified|||2026-11-23
+HK|non_financial|income|ps.ciofv|其他损益|line||unverified|||2026-11-23
+HK|non_financial|income|ps.fvcoip|营业总收入|line||unverified|||2026-11-23
+HK|non_financial|income|ps.ailor|其他损益|line||unverified|||2026-11-23
+HK|non_financial|income|ps.cilor|其他损益|line||unverified|||2026-11-23
+HK|non_financial|income|ps.ooi|营业总收入|line||unverified|||2026-11-23
+HK|non_financial|income|ps.ooe|营业总收入|line||unverified|||2026-11-23
+HK|non_financial|income|ps.tp|利润总额|subtotal||unverified||利润总额|2026-11-23
+HK|non_financial|income|ps.rade_tp_r|利润总额|supplement||unverified|||2026-11-23
+HK|non_financial|income|ps.ite|利润总额至净利润|line||unverified|||2026-11-23
+HK|non_financial|income|ps.ite_tp_r|利润总额|supplement||unverified|||2026-11-23
+HK|non_financial|income|ps.np|净利润|total||unverified||净利润|2026-11-23
+HK|non_financial|income|ps.np_s_r|净利润|supplement||unverified|||2026-11-23
+HK|non_financial|income|ps.npatshaoehopc|净利润 › 按所有权归属|line||unverified|||2026-11-23
+HK|non_financial|income|ps.npatoshopc|净利润 › 按所有权归属|line||unverified|||2026-11-23
+HK|non_financial|income|ps.npatmsh|净利润 › 按所有权归属|line||unverified|||2026-11-23
+HK|non_financial|income|ps.adddicwrornci|净利润|line||unverified|||2026-11-23
+HK|non_financial|income|ps.nonifrs_op|补充指标|supplement||unverified|||2026-11-23
+HK|non_financial|income|ps.nonifrs_opatoehopc|补充指标|supplement||unverified|||2026-11-23
+HK|non_financial|income|ps.beps|每股收益|supplement||unverified|||2026-11-23
+HK|non_financial|income|ps.deps|每股收益|supplement||unverified|||2026-11-23
+HK|non_financial|income|ps.tci|综合收益|total||unverified||综合收益|2026-11-23
+HK|non_financial|income|ps.tciatshaoehopc|综合收益 › 按所有权归属|line||unverified|||2026-11-23
+HK|non_financial|income|ps.tciatoshopc|综合收益 › 按所有权归属|line||unverified|||2026-11-23
+HK|non_financial|income|ps.tciatmsh|综合收益 › 按所有权归属|line||unverified|||2026-11-23
+HK|non_financial|income|ps.tciatrnci|综合收益 › 按所有权归属|line||unverified|||2026-11-23
+HK|non_financial|income|ps.natooci|综合收益 › 其他综合收益|subtotal||unverified||综合收益 › 其他综合收益|2026-11-23
+HK|non_financial|income|ps.da|分红、回购及涨跌幅|supplement||unverified|||2026-11-23
+HK|non_financial|income|ps.da_om|分红、回购及涨跌幅|supplement||unverified|||2026-11-23
+HK|non_financial|income|ps.d_np_r|分红、回购及涨跌幅|supplement||unverified|||2026-11-23
+HK|non_financial|income|ps.ra|分红、回购及涨跌幅|supplement||unverified|||2026-11-23
+HK|non_financial|income|ps.spc_a|分红、回购及涨跌幅|supplement||unverified|||2026-11-23
+HK|non_financial|cashflow|cfs.ncffoa|经营活动现金流|total||unverified|||2026-11-23
+HK|non_financial|cashflow|cfs.ncffia|投资活动现金流|total||unverified|||2026-11-23
+HK|non_financial|cashflow|cfs.ncfffa|筹资活动现金流|total||unverified|||2026-11-23
+HK|non_financial|cashflow|cfs.niicace|现金净变动与余额|total||unverified|||2026-11-23
+HK|non_financial|cashflow|cfs.bocaceatpb|现金净变动与余额|line||unverified|||2026-11-23
+HK|non_financial|cashflow|cfs.iocacedtfier|现金净变动与余额|line||unverified|||2026-11-23
+HK|non_financial|cashflow|cfs.bocaceatpe|现金净变动与余额|total||unverified|||2026-11-23
+HK|bank|balance|bs.ta|资产|total||unverified||资产|2026-11-23
+HK|bank|balance|bs.cabwcb|资产|line||unverified|||2026-11-23
+HK|bank|balance|bs.bwbaofi|资产|line||unverified|||2026-11-23
+HK|bank|balance|bs.pm|资产|line||unverified|||2026-11-23
+HK|bank|balance|bs.pwbaofi|资产|line||unverified|||2026-11-23
+HK|bank|balance|bs.fahursa|资产|line||unverified|||2026-11-23
+HK|bank|balance|bs.laatc|资产|line||unverified|||2026-11-23
+HK|bank|balance|bs.hkgcoi|资产|line||unverified|||2026-11-23
+HK|bank|balance|bs.dfa|资产|line||unverified|||2026-11-23
+HK|bank|balance|bs.financial_investing|资产 › 金融投资|subtotal||unverified||资产 › 金融投资|2026-11-23
+HK|bank|balance|bs.dfiafvtpol|资产 › 金融投资|line|bs.financial_investing|source_verified|||2026-11-23
+HK|bank|balance|bs.fiafvtpol|资产 › 金融投资|line|bs.financial_investing|source_verified|||2026-11-23
+HK|bank|balance|bs.fiaac|资产 › 金融投资|line|bs.financial_investing|source_verified|||2026-11-23
+HK|bank|balance|bs.diafvtoci|资产 › 金融投资|line|bs.financial_investing|source_verified|||2026-11-23
+HK|bank|balance|bs.deiafvtoci|资产 › 金融投资|line|bs.financial_investing|source_verified|||2026-11-23
+HK|bank|balance|bs.ppe|资产|line||unverified|||2026-11-23
+HK|bank|balance|bs.ppe_ta_r|资产|supplement||unverified|||2026-11-23
+HK|bank|balance|bs.roua|资产|line||unverified|||2026-11-23
+HK|bank|balance|bs.iiaajv|资产|line||unverified|||2026-11-23
+HK|bank|balance|bs.iia|资产|line||candidate|bs.iiaajv（待对照原报告）||2026-11-23
+HK|bank|balance|bs.iijv|资产|line||candidate|bs.iiaajv（待对照原报告）||2026-11-23
+HK|bank|balance|bs.gwaia|资产|line||unverified|||2026-11-23
+HK|bank|balance|bs.gw|资产|line||candidate|bs.gwaia（待对照原报告）||2026-11-23
+HK|bank|balance|bs.ia|资产|line||candidate|bs.gwaia（待对照原报告）||2026-11-23
+HK|bank|balance|bs.tr|资产|line||unverified|||2026-11-23
+HK|bank|balance|bs.dita|资产|line||unverified|||2026-11-23
+HK|bank|balance|bs.oa|资产|line||unverified|||2026-11-23
+HK|bank|balance|bs.tl|负债|total||unverified||负债|2026-11-23
+HK|bank|balance|bs.tl_ta_r|负债|supplement||unverified|||2026-11-23
+HK|bank|balance|bs.bfcb|负债|line||unverified|||2026-11-23
+HK|bank|balance|bs.dfbaofi|负债|line||unverified|||2026-11-23
+HK|bank|balance|bs.pfbaofi|负债|line||unverified|||2026-11-23
+HK|bank|balance|bs.cd|负债|line||unverified|||2026-11-23
+HK|bank|balance|bs.hkcnic|负债|line||unverified|||2026-11-23
+HK|bank|balance|bs.fasurpa|负债|line||unverified|||2026-11-23
+HK|bank|balance|bs.dfl|负债|line||unverified|||2026-11-23
+HK|bank|balance|bs.flafvtpol|负债|line||unverified|||2026-11-23
+HK|bank|balance|bs.dflafvtpol|负债|line||unverified|||2026-11-23
+HK|bank|balance|bs.dsi|负债|line||unverified|||2026-11-23
+HK|bank|balance|bs.tp|负债|line||unverified|||2026-11-23
+HK|bank|balance|bs.ditl|负债|line||unverified|||2026-11-23
+HK|bank|balance|bs.ol|负债|line||unverified|||2026-11-23
+HK|bank|balance|bs.toe|所有者权益|total||unverified||所有者权益|2026-11-23
+HK|bank|balance|bs.toe_ta_r|所有者权益|supplement||unverified|||2026-11-23
+HK|bank|balance|bs.sc|所有者权益|line||unverified|||2026-11-23
+HK|bank|balance|bs.spa|所有者权益|line||unverified|||2026-11-23
+HK|bank|balance|bs.oei|所有者权益|line||unverified|||2026-11-23
+HK|bank|balance|bs.psioei|所有者权益|line||candidate|bs.oei（待对照原报告）||2026-11-23
+HK|bank|balance|bs.pcsioei|所有者权益|line||candidate|bs.oei（待对照原报告）||2026-11-23
+HK|bank|balance|bs.capr|所有者权益|line||unverified|||2026-11-23
+HK|bank|balance|bs.is|所有者权益|line||unverified|||2026-11-23
+HK|bank|balance|bs.r|所有者权益|line||unverified|||2026-11-23
+HK|bank|balance|bs.rr|所有者权益|line||unverified|||2026-11-23
+HK|bank|balance|bs.ors|所有者权益|line||unverified|||2026-11-23
+HK|bank|balance|bs.surr|所有者权益|line||unverified|||2026-11-23
+HK|bank|balance|bs.rtp|所有者权益|line||unverified|||2026-11-23
+HK|bank|balance|bs.shfsas|所有者权益|line||unverified|||2026-11-23
+HK|bank|balance|bs.ecocb|所有者权益|line||unverified|||2026-11-23
+HK|bank|balance|bs.tetshaoehopc|所有者权益|line||unverified|||2026-11-23
+HK|bank|balance|bs.tetoshopc|所有者权益|line||unverified|||2026-11-23
+HK|bank|balance|bs.etmsh|所有者权益|line||unverified|||2026-11-23
+HK|bank|balance|bs.rnci|所有者权益|line||unverified|||2026-11-23
+HK|bank|balance|bs.ep_stn|员工情况|supplement||unverified|||2026-11-23
+HK|bank|balance|bs.mc|股本、股东以及估值|supplement||unverified|||2026-11-23
+HK|bank|balance|bs.tsc|股本、股东以及估值|supplement||unverified|||2026-11-23
+HK|bank|balance|bs.pe_ttm|股本、股东以及估值|supplement||unverified|||2026-11-23
+HK|bank|balance|bs.pb|股本、股东以及估值|supplement||unverified|||2026-11-23
+HK|bank|balance|bs.ps_ttm|股本、股东以及估值|supplement||unverified|||2026-11-23
+HK|bank|balance|bs.pcf_ttm|股本、股东以及估值|supplement||unverified|||2026-11-23
+HK|bank|balance|bs.dyr|股本、股东以及估值|supplement||unverified|||2026-11-23
+HK|bank|income|ps.oi|营业收入|line||unverified|||2026-11-23
+HK|bank|income|ps.nii|营业收入|line||unverified|||2026-11-23
+HK|bank|income|ps.ii|营业收入|line||candidate|ps.nii（待对照原报告）||2026-11-23
+HK|bank|income|ps.ie|营业收入|line||candidate|ps.nii（待对照原报告）||2026-11-23
+HK|bank|income|ps.nfaci|营业收入|line||unverified|||2026-11-23
+HK|bank|income|ps.faci|营业收入|line||candidate|ps.nfaci（待对照原报告）||2026-11-23
+HK|bank|income|ps.face|营业收入|line||candidate|ps.nfaci（待对照原报告）||2026-11-23
+HK|bank|income|ps.ep|营业收入|line||unverified|||2026-11-23
+HK|bank|income|ps.iifaajv|营业收入|line||unverified|||2026-11-23
+HK|bank|income|ps.iifa|营业收入|line||candidate|ps.iifaajv（待对照原报告）||2026-11-23
+HK|bank|income|ps.iifjv|营业收入|line||candidate|ps.iifaajv（待对照原报告）||2026-11-23
+HK|bank|income|ps.ivi|其他损益|line||unverified|||2026-11-23
+HK|bank|income|ps.ooi|营业收入|line||unverified|||2026-11-23
+HK|bank|income|ps.oe|营业支出|subtotal||unverified||营业支出|2026-11-23
+HK|bank|income|ps.tas|营业成本及费用|line||unverified|||2026-11-23
+HK|bank|income|ps.baae|营业支出|line||unverified|||2026-11-23
+HK|bank|income|ps.ailor|其他损益|line||unverified|||2026-11-23
+HK|bank|income|ps.cilor|其他损益|line||unverified|||2026-11-23
+HK|bank|income|ps.oail|营业支出|line||unverified|||2026-11-23
+HK|bank|income|ps.ooe|营业支出|line||unverified|||2026-11-23
+HK|bank|income|ps.tp|利润总额|subtotal||unverified||利润总额|2026-11-23
+HK|bank|income|ps.ite|利润总额至净利润|line||unverified|||2026-11-23
+HK|bank|income|ps.ite_tp_r|利润总额|supplement||unverified|||2026-11-23
+HK|bank|income|ps.np|净利润|total||unverified||净利润|2026-11-23
+HK|bank|income|ps.np_s_r|净利润|supplement||unverified|||2026-11-23
+HK|bank|income|ps.npatshaoehopc|净利润 › 按所有权归属|line||unverified|||2026-11-23
+HK|bank|income|ps.npatoshopc|净利润 › 按所有权归属|line||unverified|||2026-11-23
+HK|bank|income|ps.npatmsh|净利润 › 按所有权归属|line||unverified|||2026-11-23
+HK|bank|income|ps.adddicwrornci|净利润|line||unverified|||2026-11-23
+HK|bank|income|ps.nonifrs_op|补充指标|supplement||unverified|||2026-11-23
+HK|bank|income|ps.nonifrs_opatoehopc|补充指标|supplement||unverified|||2026-11-23
+HK|bank|income|ps.beps|每股收益|supplement||unverified|||2026-11-23
+HK|bank|income|ps.deps|每股收益|supplement||unverified|||2026-11-23
+HK|bank|income|ps.tci|综合收益|total||unverified||综合收益|2026-11-23
+HK|bank|income|ps.tciatshaoehopc|综合收益 › 按所有权归属|line||unverified|||2026-11-23
+HK|bank|income|ps.tciatoshopc|综合收益 › 按所有权归属|line||unverified|||2026-11-23
+HK|bank|income|ps.tciatmsh|综合收益 › 按所有权归属|line||unverified|||2026-11-23
+HK|bank|income|ps.tciatrnci|综合收益 › 按所有权归属|line||unverified|||2026-11-23
+HK|bank|income|ps.natooci|综合收益 › 其他综合收益|subtotal||unverified||综合收益 › 其他综合收益|2026-11-23
+HK|bank|income|ps.da|分红、回购及涨跌幅|supplement||unverified|||2026-11-23
+HK|bank|income|ps.da_om|分红、回购及涨跌幅|supplement||unverified|||2026-11-23
+HK|bank|income|ps.d_np_r|分红、回购及涨跌幅|supplement||unverified|||2026-11-23
+HK|bank|income|ps.ra|分红、回购及涨跌幅|supplement||unverified|||2026-11-23
+HK|bank|income|ps.spc_a|分红、回购及涨跌幅|supplement||unverified|||2026-11-23
+HK|bank|cashflow|cfs.ncffoa|经营活动现金流|total||unverified|||2026-11-23
+HK|bank|cashflow|cfs.ncffia|投资活动现金流|total||unverified|||2026-11-23
+HK|bank|cashflow|cfs.ncfffa|筹资活动现金流|total||unverified|||2026-11-23
+HK|bank|cashflow|cfs.niicace|现金净变动与余额|total||unverified|||2026-11-23
+HK|bank|cashflow|cfs.bocaceatpb|现金净变动与余额|line||unverified|||2026-11-23
+HK|bank|cashflow|cfs.iocacedtfier|现金净变动与余额|line||unverified|||2026-11-23
+HK|bank|cashflow|cfs.bocaceatpe|现金净变动与余额|total||unverified|||2026-11-23
+HK|insurance|balance|bs.ta|资产|total||unverified||资产|2026-11-23
+HK|insurance|balance|bs.cabb|资产|line||unverified|||2026-11-23
+HK|insurance|balance|bs.cabb_ta_r|资产|supplement||unverified|||2026-11-23
+HK|insurance|balance|bs.sr|资产|line||unverified|||2026-11-23
+HK|insurance|balance|bs.pwbaofi|资产|line||unverified|||2026-11-23
+HK|insurance|balance|bs.fahursa|资产|line||unverified|||2026-11-23
+HK|insurance|balance|bs.pr|资产|line||unverified|||2026-11-23
+HK|insurance|balance|bs.ar|资产|line||unverified|||2026-11-23
+HK|insurance|balance|bs.ir|资产|line||unverified|||2026-11-23
+HK|insurance|balance|bs.rir|资产|line||unverified|||2026-11-23
+HK|insurance|balance|bs.uprrfri|资产|line||unverified|||2026-11-23
+HK|insurance|balance|bs.crrfri|资产|line||unverified|||2026-11-23
+HK|insurance|balance|bs.lirrfri|资产|line||unverified|||2026-11-23
+HK|insurance|balance|bs.lthirrfri|资产|line||unverified|||2026-11-23
+HK|insurance|balance|bs.niipl|资产|line||unverified|||2026-11-23
+HK|insurance|balance|bs.dfa|资产|line||unverified|||2026-11-23
+HK|insurance|balance|bs.crorir|资产|line||unverified|||2026-11-23
+HK|insurance|balance|bs.phpl|资产|line||unverified|||2026-11-23
+HK|insurance|balance|bs.ltar|资产|line||unverified|||2026-11-23
+HK|insurance|balance|bs.laatc|资产|line||unverified|||2026-11-23
+HK|insurance|balance|bs.td|资产|line||unverified|||2026-11-23
+HK|insurance|balance|bs.financial_investing|资产 › 金融投资|subtotal||unverified||资产 › 金融投资|2026-11-23
+HK|insurance|balance|bs.dfiafvtpol|资产 › 金融投资|line|bs.financial_investing|source_verified|||2026-11-23
+HK|insurance|balance|bs.fiafvtpol|资产 › 金融投资|line|bs.financial_investing|source_verified|||2026-11-23
+HK|insurance|balance|bs.fiaac|资产 › 金融投资|line|bs.financial_investing|source_verified|||2026-11-23
+HK|insurance|balance|bs.diafvtoci|资产 › 金融投资|line|bs.financial_investing|source_verified|||2026-11-23
+HK|insurance|balance|bs.deiafvtoci|资产 › 金融投资|line|bs.financial_investing|source_verified|||2026-11-23
+HK|insurance|balance|bs.htmi|资产 › 金融投资|line|bs.financial_investing|source_verified|||2026-11-23
+HK|insurance|balance|bs.ltei|资产|line||unverified|||2026-11-23
+HK|insurance|balance|bs.sd|资产|line||unverified|||2026-11-23
+HK|insurance|balance|bs.rei|资产|line||unverified|||2026-11-23
+HK|insurance|balance|bs.ppe|资产|line||unverified|||2026-11-23
+HK|insurance|balance|bs.ppe_ta_r|资产|supplement||unverified|||2026-11-23
+HK|insurance|balance|bs.gwaia|资产|line||unverified|||2026-11-23
+HK|insurance|balance|bs.gw|资产|line||candidate|bs.gwaia（待对照原报告）||2026-11-23
+HK|insurance|balance|bs.ia|资产|line||candidate|bs.gwaia（待对照原报告）||2026-11-23
+HK|insurance|balance|bs.roua|资产|line||unverified|||2026-11-23
+HK|insurance|balance|bs.dita|资产|line||unverified|||2026-11-23
+HK|insurance|balance|bs.oa|资产|line||unverified|||2026-11-23
+HK|insurance|balance|bs.saa|资产|line||unverified|||2026-11-23
+HK|insurance|balance|bs.tl|负债|total||unverified||负债|2026-11-23
+HK|insurance|balance|bs.tl_ta_r|负债|supplement||unverified|||2026-11-23
+HK|insurance|balance|bs.stl|负债|line||unverified|||2026-11-23
+HK|insurance|balance|bs.bfcb|负债|line||unverified|||2026-11-23
+HK|insurance|balance|bs.dfbaofi|负债|line||unverified|||2026-11-23
+HK|insurance|balance|bs.pfbaofi|负债|line||unverified|||2026-11-23
+HK|insurance|balance|bs.tfl|负债|line||unverified|||2026-11-23
+HK|insurance|balance|bs.dfl|负债|line||unverified|||2026-11-23
+HK|insurance|balance|bs.fasurpa|负债|line||unverified|||2026-11-23
+HK|insurance|balance|bs.cd|负债|line||unverified|||2026-11-23
+HK|insurance|balance|bs.stoa|负债|line||unverified|||2026-11-23
+HK|insurance|balance|bs.ap|负债|line||unverified|||2026-11-23
+HK|insurance|balance|bs.afc|负债|line||unverified|||2026-11-23
+HK|insurance|balance|bs.pria|负债|line||unverified|||2026-11-23
+HK|insurance|balance|bs.facp|负债|line||unverified|||2026-11-23
+HK|insurance|balance|bs.rip|负债|line||unverified|||2026-11-23
+HK|insurance|balance|bs.sawp|负债|line||unverified|||2026-11-23
+HK|insurance|balance|bs.tp|负债|line||unverified|||2026-11-23
+HK|insurance|balance|bs.intp|负债|line||unverified|||2026-11-23
+HK|insurance|balance|bs.cp|负债|line||unverified|||2026-11-23
+HK|insurance|balance|bs.phdp|负债|line||unverified|||2026-11-23
+HK|insurance|balance|bs.phd|负债|line||unverified|||2026-11-23
+HK|insurance|balance|bs.icr|负债|line||unverified|||2026-11-23
+HK|insurance|balance|bs.uepr|负债|line||unverified|||2026-11-23
+HK|insurance|balance|bs.cr|负债|line||unverified|||2026-11-23
+HK|insurance|balance|bs.lir|负债|line||unverified|||2026-11-23
+HK|insurance|balance|bs.lthir|负债|line||unverified|||2026-11-23
+HK|insurance|balance|bs.ltl|负债|line||unverified|||2026-11-23
+HK|insurance|balance|bs.bp|负债|line||unverified|||2026-11-23
+HK|insurance|balance|bs.ditl|负债|line||unverified|||2026-11-23
+HK|insurance|balance|bs.sal|负债|line||unverified|||2026-11-23
+HK|insurance|balance|bs.ncal|负债|line||unverified|||2026-11-23
+HK|insurance|balance|bs.ol|负债|line||unverified|||2026-11-23
+HK|insurance|balance|bs.toe|所有者权益|total||unverified||所有者权益|2026-11-23
+HK|insurance|balance|bs.toe_ta_r|所有者权益|supplement||unverified|||2026-11-23
+HK|insurance|balance|bs.sc|所有者权益|line||unverified|||2026-11-23
+HK|insurance|balance|bs.spa|所有者权益|line||unverified|||2026-11-23
+HK|insurance|balance|bs.oei|所有者权益|line||unverified|||2026-11-23
+HK|insurance|balance|bs.psioei|所有者权益|line||candidate|bs.oei（待对照原报告）||2026-11-23
+HK|insurance|balance|bs.pcsioei|所有者权益|line||candidate|bs.oei（待对照原报告）||2026-11-23
+HK|insurance|balance|bs.capr|所有者权益|line||unverified|||2026-11-23
+HK|insurance|balance|bs.is|所有者权益|line||unverified|||2026-11-23
+HK|insurance|balance|bs.r|所有者权益|line||unverified|||2026-11-23
+HK|insurance|balance|bs.rr|所有者权益|line||unverified|||2026-11-23
+HK|insurance|balance|bs.ors|所有者权益|line||unverified|||2026-11-23
+HK|insurance|balance|bs.surr|所有者权益|line||unverified|||2026-11-23
+HK|insurance|balance|bs.rtp|所有者权益|line||unverified|||2026-11-23
+HK|insurance|balance|bs.shfsas|所有者权益|line||unverified|||2026-11-23
+HK|insurance|balance|bs.ecocb|所有者权益|line||unverified|||2026-11-23
+HK|insurance|balance|bs.tetshaoehopc|所有者权益|line||unverified|||2026-11-23
+HK|insurance|balance|bs.tetoshopc|所有者权益|line||unverified|||2026-11-23
+HK|insurance|balance|bs.etmsh|所有者权益|line||unverified|||2026-11-23
+HK|insurance|balance|bs.rnci|所有者权益|line||unverified|||2026-11-23
+HK|insurance|balance|bs.ev|内含价值|supplement||unverified|||2026-11-23
+HK|insurance|balance|bs.evolahib|内含价值|line||candidate|bs.ev（待对照原报告）||2026-11-23
+HK|insurance|balance|bs.evolib|内含价值|line||candidate|bs.evolahib（待对照原报告）||2026-11-23
+HK|insurance|balance|bs.evohib|内含价值|line||candidate|bs.evolahib（待对照原报告）||2026-11-23
+HK|insurance|balance|bs.ep_stn|员工情况|supplement||unverified|||2026-11-23
+HK|insurance|balance|bs.mc|股本、股东以及估值|supplement||unverified|||2026-11-23
+HK|insurance|balance|bs.tsc|股本、股东以及估值|supplement||unverified|||2026-11-23
+HK|insurance|balance|bs.pe_ttm|股本、股东以及估值|supplement||unverified|||2026-11-23
+HK|insurance|balance|bs.pb|股本、股东以及估值|supplement||unverified|||2026-11-23
+HK|insurance|balance|bs.ps_ttm|股本、股东以及估值|supplement||unverified|||2026-11-23
+HK|insurance|balance|bs.pcf_ttm|股本、股东以及估值|supplement||unverified|||2026-11-23
+HK|insurance|balance|bs.dyr|股本、股东以及估值|supplement||unverified|||2026-11-23
+HK|insurance|income|ps.oi|营业收入|line||unverified|||2026-11-23
+HK|insurance|income|ps.ep|营业收入|line||unverified|||2026-11-23
+HK|insurance|income|ps.ir|营业收入|line||unverified|||2026-11-23
+HK|insurance|income|ps.iifb|营业收入|line||unverified|||2026-11-23
+HK|insurance|income|ps.nbii|营业收入|line||unverified|||2026-11-23
+HK|insurance|income|ps.nifaci|营业收入|line||unverified|||2026-11-23
+HK|insurance|income|ps.iifaajv|营业收入|line||unverified|||2026-11-23
+HK|insurance|income|ps.iifa|营业收入|line||candidate|ps.iifaajv（待对照原报告）||2026-11-23
+HK|insurance|income|ps.iifjv|营业收入|line||candidate|ps.iifaajv（待对照原报告）||2026-11-23
+HK|insurance|income|ps.ivi|其他损益|line||unverified|||2026-11-23
+HK|insurance|income|ps.oic|其他损益|line||unverified|||2026-11-23
+HK|insurance|income|ps.ciofv|其他损益|line||unverified|||2026-11-23
+HK|insurance|income|ps.ei|其他损益|line||unverified|||2026-11-23
+HK|insurance|income|ps.adi|其他损益|line||unverified|||2026-11-23
+HK|insurance|income|ps.ooi|营业收入|line||unverified|||2026-11-23
+HK|insurance|income|ps.oe|营业支出|subtotal||unverified||营业支出|2026-11-23
+HK|insurance|income|ps.s|营业支出|line||unverified|||2026-11-23
+HK|insurance|income|ps.ce|营业支出|line||unverified|||2026-11-23
+HK|insurance|income|ps.crcfri|营业支出|line||unverified|||2026-11-23
+HK|insurance|income|ps.iiicr|营业支出|line||unverified|||2026-11-23
+HK|insurance|income|ps.irrcfri|营业支出|line||unverified|||2026-11-23
+HK|insurance|income|ps.phdrfpip|营业支出|line||unverified|||2026-11-23
+HK|insurance|income|ps.rie|营业支出|line||unverified|||2026-11-23
+HK|insurance|income|ps.faceoio|营业支出|line||unverified|||2026-11-23
+HK|insurance|income|ps.ise|营业支出|line||unverified|||2026-11-23
+HK|insurance|income|ps.aoripp|营业支出|line||unverified|||2026-11-23
+HK|insurance|income|ps.arfri|营业支出|line||unverified|||2026-11-23
+HK|insurance|income|ps.iifefici|营业支出|line||unverified|||2026-11-23
+HK|insurance|income|ps.nrifefrich|营业支出|line||unverified|||2026-11-23
+HK|insurance|income|ps.iefb|营业支出|line||unverified|||2026-11-23
+HK|insurance|income|ps.nbie|营业支出|line||unverified|||2026-11-23
+HK|insurance|income|ps.niface|营业支出|line||unverified|||2026-11-23
+HK|insurance|income|ps.tas|营业成本及费用|line||unverified|||2026-11-23
+HK|insurance|income|ps.baae|营业支出|line||unverified|||2026-11-23
+HK|insurance|income|ps.ercfri|营业支出|line||unverified|||2026-11-23
+HK|insurance|income|ps.ailor|其他损益|line||unverified|||2026-11-23
+HK|insurance|income|ps.cilor|其他损益|line||unverified|||2026-11-23
+HK|insurance|income|ps.oail|营业支出|line||unverified|||2026-11-23
+HK|insurance|income|ps.tp|利润总额|subtotal||unverified||利润总额|2026-11-23
+HK|insurance|income|ps.ite|利润总额至净利润|line||unverified|||2026-11-23
+HK|insurance|income|ps.ite_tp_r|利润总额|supplement||unverified|||2026-11-23
+HK|insurance|income|ps.np|净利润|total||unverified||净利润|2026-11-23
+HK|insurance|income|ps.np_s_r|净利润|supplement||unverified|||2026-11-23
+HK|insurance|income|ps.npatshaoehopc|净利润 › 按所有权归属|line||unverified|||2026-11-23
+HK|insurance|income|ps.npatoshopc|净利润 › 按所有权归属|line||unverified|||2026-11-23
+HK|insurance|income|ps.npatmsh|净利润 › 按所有权归属|line||unverified|||2026-11-23
+HK|insurance|income|ps.adddicwrornci|净利润|line||unverified|||2026-11-23
+HK|insurance|income|ps.nonifrs_op|补充指标|supplement||unverified|||2026-11-23
+HK|insurance|income|ps.nonifrs_opatoehopc|补充指标|supplement||unverified|||2026-11-23
+HK|insurance|income|ps.beps|每股收益|supplement||unverified|||2026-11-23
+HK|insurance|income|ps.deps|每股收益|supplement||unverified|||2026-11-23
+HK|insurance|income|ps.tci|综合收益|total||unverified||综合收益|2026-11-23
+HK|insurance|income|ps.tciatshaoehopc|综合收益 › 按所有权归属|line||unverified|||2026-11-23
+HK|insurance|income|ps.tciatoshopc|综合收益 › 按所有权归属|line||unverified|||2026-11-23
+HK|insurance|income|ps.tciatmsh|综合收益 › 按所有权归属|line||unverified|||2026-11-23
+HK|insurance|income|ps.tciatrnci|综合收益 › 按所有权归属|line||unverified|||2026-11-23
+HK|insurance|income|ps.natooci|综合收益 › 其他综合收益|subtotal||unverified||综合收益 › 其他综合收益|2026-11-23
+HK|insurance|income|ps.da|分红、回购及涨跌幅|supplement||unverified|||2026-11-23
+HK|insurance|income|ps.da_om|分红、回购及涨跌幅|supplement||unverified|||2026-11-23
+HK|insurance|income|ps.d_np_r|分红、回购及涨跌幅|supplement||unverified|||2026-11-23
+HK|insurance|income|ps.ra|分红、回购及涨跌幅|supplement||unverified|||2026-11-23
+HK|insurance|income|ps.spc_a|分红、回购及涨跌幅|supplement||unverified|||2026-11-23
+HK|insurance|cashflow|cfs.ncffoa|经营活动现金流|total||unverified|||2026-11-23
+HK|insurance|cashflow|cfs.ncffia|投资活动现金流|total||unverified|||2026-11-23
+HK|insurance|cashflow|cfs.ncfffa|筹资活动现金流|total||unverified|||2026-11-23
+HK|insurance|cashflow|cfs.niicace|现金净变动与余额|total||unverified|||2026-11-23
+HK|insurance|cashflow|cfs.bocaceatpb|现金净变动与余额|line||unverified|||2026-11-23
+HK|insurance|cashflow|cfs.iocacedtfier|现金净变动与余额|line||unverified|||2026-11-23
+HK|insurance|cashflow|cfs.bocaceatpe|现金净变动与余额|total||unverified|||2026-11-23
+HK|security|balance|bs.ta|资产|total||unverified||资产|2026-11-23
+HK|security|balance|bs.cabb|资产|line||unverified|||2026-11-23
+HK|security|balance|bs.choboc|资产|detail|bs.cabb|source_verified|||2026-11-23
+HK|security|balance|bs.cabb_ta_r|资产|supplement||unverified|||2026-11-23
+HK|security|balance|bs.sr|资产|line||unverified|||2026-11-23
+HK|security|balance|bs.dhoboc|资产|detail|bs.sr|source_verified|||2026-11-23
+HK|security|balance|bs.ma|资产|line||unverified|||2026-11-23
+HK|security|balance|bs.dfa|资产|line||unverified|||2026-11-23
+HK|security|balance|bs.fahursa|资产|line||unverified|||2026-11-23
+HK|security|balance|bs.rfd|资产|line||unverified|||2026-11-23
+HK|security|balance|bs.ar|资产|line||unverified|||2026-11-23
+HK|security|balance|bs.financial_investing|资产 › 金融投资|subtotal||unverified||资产 › 金融投资|2026-11-23
+HK|security|balance|bs.fiafvtpol|资产 › 金融投资|line|bs.financial_investing|source_verified|||2026-11-23
+HK|security|balance|bs.fiaac|资产 › 金融投资|line|bs.financial_investing|source_verified|||2026-11-23
+HK|security|balance|bs.diafvtoci|资产 › 金融投资|line|bs.financial_investing|source_verified|||2026-11-23
+HK|security|balance|bs.deiafvtoci|资产 › 金融投资|line|bs.financial_investing|source_verified|||2026-11-23
+HK|security|balance|bs.ltei|资产|line||unverified|||2026-11-23
+HK|security|balance|bs.rei|资产|line||unverified|||2026-11-23
+HK|security|balance|bs.ppe|资产|line||unverified|||2026-11-23
+HK|security|balance|bs.ppe_ta_r|资产|supplement||unverified|||2026-11-23
+HK|security|balance|bs.cip|资产|line||unverified|||2026-11-23
+HK|security|balance|bs.roua|资产|line||unverified|||2026-11-23
+HK|security|balance|bs.gwaia|资产|line||unverified|||2026-11-23
+HK|security|balance|bs.gw|资产|detail|bs.gwaia|source_verified|||2026-11-23
+HK|security|balance|bs.ia|资产|detail|bs.gwaia|source_verified|||2026-11-23
+HK|security|balance|bs.dita|资产|line||unverified|||2026-11-23
+HK|security|balance|bs.ahfs|资产|line||unverified|||2026-11-23
+HK|security|balance|bs.oa|资产|line||unverified|||2026-11-23
+HK|security|balance|bs.tl|负债|total||unverified||负债|2026-11-23
+HK|security|balance|bs.tl_ta_r|负债|supplement||unverified|||2026-11-23
+HK|security|balance|bs.stl|负债|line||unverified|||2026-11-23
+HK|security|balance|bs.stfip|负债|line||unverified|||2026-11-23
+HK|security|balance|bs.pfbaofi|负债|line||unverified|||2026-11-23
+HK|security|balance|bs.tfl|负债|line||unverified|||2026-11-23
+HK|security|balance|bs.dfl|负债|line||unverified|||2026-11-23
+HK|security|balance|bs.fasurpa|负债|line||unverified|||2026-11-23
+HK|security|balance|bs.stoa|负债|line||unverified|||2026-11-23
+HK|security|balance|bs.ssoa|负债|line||unverified|||2026-11-23
+HK|security|balance|bs.sawp|负债|line||unverified|||2026-11-23
+HK|security|balance|bs.tp|负债|line||unverified|||2026-11-23
+HK|security|balance|bs.ap|负债|line||unverified|||2026-11-23
+HK|security|balance|bs.intp|负债|line||unverified|||2026-11-23
+HK|security|balance|bs.cl|负债|line||unverified|||2026-11-23
+HK|security|balance|bs.al|负债|line||unverified|||2026-11-23
+HK|security|balance|bs.ltl|负债|line||unverified|||2026-11-23
+HK|security|balance|bs.bp|负债|line||unverified|||2026-11-23
+HK|security|balance|bs.ll|负债|line||unverified|||2026-11-23
+HK|security|balance|bs.ditl|负债|line||unverified|||2026-11-23
+HK|security|balance|bs.ol|负债|line||unverified|||2026-11-23
+HK|security|balance|bs.toe|所有者权益|total||unverified||所有者权益|2026-11-23
+HK|security|balance|bs.toe_ta_r|所有者权益|supplement||unverified|||2026-11-23
+HK|security|balance|bs.sc|所有者权益|line||unverified|||2026-11-23
+HK|security|balance|bs.spa|所有者权益|line||unverified|||2026-11-23
+HK|security|balance|bs.oei|所有者权益|line||unverified|||2026-11-23
+HK|security|balance|bs.psioei|所有者权益|detail|bs.oei|source_verified|||2026-11-23
+HK|security|balance|bs.pcsioei|所有者权益|detail|bs.oei|source_verified|||2026-11-23
+HK|security|balance|bs.capr|所有者权益|line||unverified|||2026-11-23
+HK|security|balance|bs.is|所有者权益|line||unverified|||2026-11-23
+HK|security|balance|bs.r|所有者权益|line||unverified|||2026-11-23
+HK|security|balance|bs.rr|所有者权益|line||unverified|||2026-11-23
+HK|security|balance|bs.ors|所有者权益|line||unverified|||2026-11-23
+HK|security|balance|bs.surr|所有者权益|line||unverified|||2026-11-23
+HK|security|balance|bs.rtp|所有者权益|line||unverified|||2026-11-23
+HK|security|balance|bs.shfsas|所有者权益|line||unverified|||2026-11-23
+HK|security|balance|bs.ecocb|所有者权益|line||unverified|||2026-11-23
+HK|security|balance|bs.tetshaoehopc|所有者权益|line||unverified|||2026-11-23
+HK|security|balance|bs.tetoshopc|所有者权益|line||unverified|||2026-11-23
+HK|security|balance|bs.etmsh|所有者权益|line||unverified|||2026-11-23
+HK|security|balance|bs.rnci|所有者权益|line||unverified|||2026-11-23
+HK|security|balance|bs.ep_stn|员工情况|supplement||unverified|||2026-11-23
+HK|security|balance|bs.mc|股本、股东以及估值|supplement||unverified|||2026-11-23
+HK|security|balance|bs.tsc|股本、股东以及估值|supplement||unverified|||2026-11-23
+HK|security|balance|bs.pe_ttm|股本、股东以及估值|supplement||unverified|||2026-11-23
+HK|security|balance|bs.pb|股本、股东以及估值|supplement||unverified|||2026-11-23
+HK|security|balance|bs.ps_ttm|股本、股东以及估值|supplement||unverified|||2026-11-23
+HK|security|balance|bs.pcf_ttm|股本、股东以及估值|supplement||unverified|||2026-11-23
+HK|security|balance|bs.dyr|股本、股东以及估值|supplement||unverified|||2026-11-23
+HK|security|income|ps.oi|营业收入|line||unverified|||2026-11-23
+HK|security|income|ps.nii|营业收入|line||unverified|||2026-11-23
+HK|security|income|ps.ii|营业收入|detail|ps.nii|source_verified|||2026-11-23
+HK|security|income|ps.ie|营业收入|detail|ps.nii|source_verified|||2026-11-23
+HK|security|income|ps.nfaci|营业收入|line||unverified|||2026-11-23
+HK|security|income|ps.nfifb|营业收入|detail|ps.nfaci|source_verified|||2026-11-23
+HK|security|income|ps.nfifib|营业收入|detail|ps.nfaci|source_verified|||2026-11-23
+HK|security|income|ps.nfifam|营业收入|detail|ps.nfaci|source_verified|||2026-11-23
+HK|security|income|ps.iifaajv|营业收入|line||unverified|||2026-11-23
+HK|security|income|ps.iifa|营业收入|detail|ps.iifaajv|source_verified|||2026-11-23
+HK|security|income|ps.iifjv|营业收入|detail|ps.iifaajv|source_verified|||2026-11-23
+HK|security|income|ps.ivi|其他损益|line||unverified|||2026-11-23
+HK|security|income|ps.oic|其他损益|line||unverified|||2026-11-23
+HK|security|income|ps.ciofv|其他损益|line||unverified|||2026-11-23
+HK|security|income|ps.ei|其他损益|line||unverified|||2026-11-23
+HK|security|income|ps.adi|其他损益|line||unverified|||2026-11-23
+HK|security|income|ps.ooi|营业收入|line||unverified|||2026-11-23
+HK|security|income|ps.oe|营业支出|subtotal||unverified||营业支出|2026-11-23
+HK|security|income|ps.tas|营业成本及费用|line||unverified|||2026-11-23
+HK|security|income|ps.baae|营业支出|line||unverified|||2026-11-23
+HK|security|income|ps.ailor|其他损益|line||unverified|||2026-11-23
+HK|security|income|ps.cilor|其他损益|line||unverified|||2026-11-23
+HK|security|income|ps.oail|营业支出|line||unverified|||2026-11-23
+HK|security|income|ps.ooe|营业支出|line||unverified|||2026-11-23
+HK|security|income|ps.tp|利润总额|subtotal||unverified||利润总额|2026-11-23
+HK|security|income|ps.ite|利润总额至净利润|line||unverified|||2026-11-23
+HK|security|income|ps.ite_tp_r|利润总额|supplement||unverified|||2026-11-23
+HK|security|income|ps.np|净利润|total||unverified||净利润|2026-11-23
+HK|security|income|ps.np_s_r|净利润|supplement||unverified|||2026-11-23
+HK|security|income|ps.npatshaoehopc|净利润 › 按所有权归属|line||unverified|||2026-11-23
+HK|security|income|ps.npatoshopc|净利润 › 按所有权归属|line||unverified|||2026-11-23
+HK|security|income|ps.npatmsh|净利润 › 按所有权归属|line||unverified|||2026-11-23
+HK|security|income|ps.adddicwrornci|净利润|line||unverified|||2026-11-23
+HK|security|income|ps.nonifrs_op|补充指标|supplement||unverified|||2026-11-23
+HK|security|income|ps.nonifrs_opatoehopc|补充指标|supplement||unverified|||2026-11-23
+HK|security|income|ps.beps|每股收益|supplement||unverified|||2026-11-23
+HK|security|income|ps.deps|每股收益|supplement||unverified|||2026-11-23
+HK|security|income|ps.tci|综合收益|total||unverified||综合收益|2026-11-23
+HK|security|income|ps.tciatshaoehopc|综合收益 › 按所有权归属|line||unverified|||2026-11-23
+HK|security|income|ps.tciatoshopc|综合收益 › 按所有权归属|line||unverified|||2026-11-23
+HK|security|income|ps.tciatmsh|综合收益 › 按所有权归属|line||unverified|||2026-11-23
+HK|security|income|ps.tciatrnci|综合收益 › 按所有权归属|line||unverified|||2026-11-23
+HK|security|income|ps.natooci|综合收益 › 其他综合收益|subtotal||unverified||综合收益 › 其他综合收益|2026-11-23
+HK|security|income|ps.da|分红、回购及涨跌幅|supplement||unverified|||2026-11-23
+HK|security|income|ps.da_om|分红、回购及涨跌幅|supplement||unverified|||2026-11-23
+HK|security|income|ps.d_np_r|分红、回购及涨跌幅|supplement||unverified|||2026-11-23
+HK|security|income|ps.ra|分红、回购及涨跌幅|supplement||unverified|||2026-11-23
+HK|security|income|ps.spc_a|分红、回购及涨跌幅|supplement||unverified|||2026-11-23
+HK|security|cashflow|cfs.ncffoa|经营活动现金流|total||unverified|||2026-11-23
+HK|security|cashflow|cfs.ncffia|投资活动现金流|total||unverified|||2026-11-23
+HK|security|cashflow|cfs.ncfffa|筹资活动现金流|total||unverified|||2026-11-23
+HK|security|cashflow|cfs.niicace|现金净变动与余额|total||unverified|||2026-11-23
+HK|security|cashflow|cfs.bocaceatpb|现金净变动与余额|line||unverified|||2026-11-23
+HK|security|cashflow|cfs.iocacedtfier|现金净变动与余额|line||unverified|||2026-11-23
+HK|security|cashflow|cfs.bocaceatpe|现金净变动与余额|total||unverified|||2026-11-23
+HK|other_financial|balance|bs.ta|资产|total||unverified||资产|2026-11-23
+HK|other_financial|balance|bs.cabb|资产|line||unverified|||2026-11-23
+HK|other_financial|balance|bs.cabb_ta_r|资产|supplement||unverified|||2026-11-23
+HK|other_financial|balance|bs.laatc|资产|line||unverified|||2026-11-23
+HK|other_financial|balance|bs.dfa|资产|line||unverified|||2026-11-23
+HK|other_financial|balance|bs.fiafvtpol|资产|line||unverified|||2026-11-23
+HK|other_financial|balance|bs.fiafvtoci|资产|line||unverified|||2026-11-23
+HK|other_financial|balance|bs.ppe|资产|line||unverified|||2026-11-23
+HK|other_financial|balance|bs.ppe_ta_r|资产|supplement||unverified|||2026-11-23
+HK|other_financial|balance|bs.roua|资产|line||unverified|||2026-11-23
+HK|other_financial|balance|bs.rei|资产|line||unverified|||2026-11-23
+HK|other_financial|balance|bs.iiaajv|资产|line||unverified|||2026-11-23
+HK|other_financial|balance|bs.iia|资产|detail|bs.iiaajv|source_verified|||2026-11-23
+HK|other_financial|balance|bs.iijv|资产|detail|bs.iiaajv|source_verified|||2026-11-23
+HK|other_financial|balance|bs.gwaia|资产|line||unverified|||2026-11-23
+HK|other_financial|balance|bs.gw|资产|detail|bs.gwaia|source_verified|||2026-11-23
+HK|other_financial|balance|bs.ia|资产|detail|bs.gwaia|source_verified|||2026-11-23
+HK|other_financial|balance|bs.dita|资产|line||unverified|||2026-11-23
+HK|other_financial|balance|bs.oa|资产|line||unverified|||2026-11-23
+HK|other_financial|balance|bs.tl|负债|total||unverified||负债|2026-11-23
+HK|other_financial|balance|bs.tl_ta_r|负债|supplement||unverified|||2026-11-23
+HK|other_financial|balance|bs.l|负债|line||unverified|||2026-11-23
+HK|other_financial|balance|bs.dfl|负债|line||unverified|||2026-11-23
+HK|other_financial|balance|bs.flafvtpol|负债|line||unverified|||2026-11-23
+HK|other_financial|balance|bs.tp|负债|line||unverified|||2026-11-23
+HK|other_financial|balance|bs.ditl|负债|line||unverified|||2026-11-23
+HK|other_financial|balance|bs.ol|负债|line||unverified|||2026-11-23
+HK|other_financial|balance|bs.toe|所有者权益|total||unverified||所有者权益|2026-11-23
+HK|other_financial|balance|bs.toe_ta_r|所有者权益|supplement||unverified|||2026-11-23
+HK|other_financial|balance|bs.sc|所有者权益|line||unverified|||2026-11-23
+HK|other_financial|balance|bs.spa|所有者权益|line||unverified|||2026-11-23
+HK|other_financial|balance|bs.oei|所有者权益|line||unverified|||2026-11-23
+HK|other_financial|balance|bs.psioei|所有者权益|detail|bs.oei|source_verified|||2026-11-23
+HK|other_financial|balance|bs.pcsioei|所有者权益|detail|bs.oei|source_verified|||2026-11-23
+HK|other_financial|balance|bs.capr|所有者权益|line||unverified|||2026-11-23
+HK|other_financial|balance|bs.is|所有者权益|line||unverified|||2026-11-23
+HK|other_financial|balance|bs.r|所有者权益|line||unverified|||2026-11-23
+HK|other_financial|balance|bs.rr|所有者权益|line||unverified|||2026-11-23
+HK|other_financial|balance|bs.ors|所有者权益|line||unverified|||2026-11-23
+HK|other_financial|balance|bs.surr|所有者权益|line||unverified|||2026-11-23
+HK|other_financial|balance|bs.rtp|所有者权益|line||unverified|||2026-11-23
+HK|other_financial|balance|bs.shfsas|所有者权益|line||unverified|||2026-11-23
+HK|other_financial|balance|bs.ecocb|所有者权益|line||unverified|||2026-11-23
+HK|other_financial|balance|bs.tetshaoehopc|所有者权益|line||unverified|||2026-11-23
+HK|other_financial|balance|bs.tetoshopc|所有者权益|line||unverified|||2026-11-23
+HK|other_financial|balance|bs.etmsh|所有者权益|line||unverified|||2026-11-23
+HK|other_financial|balance|bs.rnci|所有者权益|line||unverified|||2026-11-23
+HK|other_financial|balance|bs.ep_stn|员工情况|supplement||unverified|||2026-11-23
+HK|other_financial|balance|bs.mc|股本、股东以及估值|supplement||unverified|||2026-11-23
+HK|other_financial|balance|bs.tsc|股本、股东以及估值|supplement||unverified|||2026-11-23
+HK|other_financial|balance|bs.pe_ttm|股本、股东以及估值|supplement||unverified|||2026-11-23
+HK|other_financial|balance|bs.pb|股本、股东以及估值|supplement||unverified|||2026-11-23
+HK|other_financial|balance|bs.ps_ttm|股本、股东以及估值|supplement||unverified|||2026-11-23
+HK|other_financial|balance|bs.pcf_ttm|股本、股东以及估值|supplement||unverified|||2026-11-23
+HK|other_financial|balance|bs.dyr|股本、股东以及估值|supplement||unverified|||2026-11-23
+HK|other_financial|income|ps.oi|营业收入|line||unverified|||2026-11-23
+HK|other_financial|income|ps.nii|营业收入|line||unverified|||2026-11-23
+HK|other_financial|income|ps.nfaci|营业收入|line||unverified|||2026-11-23
+HK|other_financial|income|ps.ep|营业收入|line||unverified|||2026-11-23
+HK|other_financial|income|ps.iifaajv|营业收入|line||unverified|||2026-11-23
+HK|other_financial|income|ps.iifa|营业收入|detail|ps.iifaajv|source_verified|||2026-11-23
+HK|other_financial|income|ps.iifjv|营业收入|detail|ps.iifaajv|source_verified|||2026-11-23
+HK|other_financial|income|ps.ivi|其他损益|line||unverified|||2026-11-23
+HK|other_financial|income|ps.ooi|营业收入|line||unverified|||2026-11-23
+HK|other_financial|income|ps.oe|营业支出|subtotal||unverified||营业支出|2026-11-23
+HK|other_financial|income|ps.tas|营业成本及费用|line||unverified|||2026-11-23
+HK|other_financial|income|ps.baae|营业支出|line||unverified|||2026-11-23
+HK|other_financial|income|ps.ailor|其他损益|line||unverified|||2026-11-23
+HK|other_financial|income|ps.cilor|其他损益|line||unverified|||2026-11-23
+HK|other_financial|income|ps.oail|营业支出|line||unverified|||2026-11-23
+HK|other_financial|income|ps.ooe|营业支出|line||unverified|||2026-11-23
+HK|other_financial|income|ps.tp|利润总额|subtotal||unverified||利润总额|2026-11-23
+HK|other_financial|income|ps.ite|利润总额至净利润|line||unverified|||2026-11-23
+HK|other_financial|income|ps.ite_tp_r|利润总额|supplement||unverified|||2026-11-23
+HK|other_financial|income|ps.np|净利润|total||unverified||净利润|2026-11-23
+HK|other_financial|income|ps.np_s_r|净利润|supplement||unverified|||2026-11-23
+HK|other_financial|income|ps.npatshaoehopc|净利润 › 按所有权归属|line||unverified|||2026-11-23
+HK|other_financial|income|ps.npatoshopc|净利润 › 按所有权归属|line||unverified|||2026-11-23
+HK|other_financial|income|ps.npatmsh|净利润 › 按所有权归属|line||unverified|||2026-11-23
+HK|other_financial|income|ps.adddicwrornci|净利润|line||unverified|||2026-11-23
+HK|other_financial|income|ps.nonifrs_op|补充指标|supplement||unverified|||2026-11-23
+HK|other_financial|income|ps.nonifrs_opatoehopc|补充指标|supplement||unverified|||2026-11-23
+HK|other_financial|income|ps.beps|每股收益|supplement||unverified|||2026-11-23
+HK|other_financial|income|ps.deps|每股收益|supplement||unverified|||2026-11-23
+HK|other_financial|income|ps.tci|综合收益|total||unverified||综合收益|2026-11-23
+HK|other_financial|income|ps.tciatshaoehopc|综合收益 › 按所有权归属|line||unverified|||2026-11-23
+HK|other_financial|income|ps.tciatoshopc|综合收益 › 按所有权归属|line||unverified|||2026-11-23
+HK|other_financial|income|ps.tciatmsh|综合收益 › 按所有权归属|line||unverified|||2026-11-23
+HK|other_financial|income|ps.tciatrnci|综合收益 › 按所有权归属|line||unverified|||2026-11-23
+HK|other_financial|income|ps.natooci|综合收益 › 其他综合收益|subtotal||unverified||综合收益 › 其他综合收益|2026-11-23
+HK|other_financial|income|ps.da|分红、回购及涨跌幅|supplement||unverified|||2026-11-23
+HK|other_financial|income|ps.da_om|分红、回购及涨跌幅|supplement||unverified|||2026-11-23
+HK|other_financial|income|ps.d_np_r|分红、回购及涨跌幅|supplement||unverified|||2026-11-23
+HK|other_financial|income|ps.ra|分红、回购及涨跌幅|supplement||unverified|||2026-11-23
+HK|other_financial|income|ps.spc_a|分红、回购及涨跌幅|supplement||unverified|||2026-11-23
+HK|other_financial|cashflow|cfs.ncffoa|经营活动现金流|total||unverified|||2026-11-23
+HK|other_financial|cashflow|cfs.ncffia|投资活动现金流|total||unverified|||2026-11-23
+HK|other_financial|cashflow|cfs.ncfffa|筹资活动现金流|total||unverified|||2026-11-23
+HK|other_financial|cashflow|cfs.niicace|现金净变动与余额|total||unverified|||2026-11-23
+HK|other_financial|cashflow|cfs.bocaceatpb|现金净变动与余额|line||unverified|||2026-11-23
+HK|other_financial|cashflow|cfs.iocacedtfier|现金净变动与余额|line||unverified|||2026-11-23
+HK|other_financial|cashflow|cfs.bocaceatpe|现金净变动与余额|total||unverified|||2026-11-23
+HK|reit|balance|bs.ta|资产|total||unverified||资产|2026-11-23
+HK|reit|balance|bs.tca|资产 › 流动资产|subtotal||unverified||资产 › 流动资产|2026-11-23
+HK|reit|balance|bs.tca_ta_r|资产 › 流动资产|supplement||unverified|||2026-11-23
+HK|reit|balance|bs.cabb|资产 › 流动资产|line||unverified|||2026-11-23
+HK|reit|balance|bs.cabb_ta_r|资产 › 流动资产|supplement||unverified|||2026-11-23
+HK|reit|balance|bs.lcabb|资产 › 流动资产|line||unverified|||2026-11-23
+HK|reit|balance|bs.i|资产 › 流动资产|line||unverified|||2026-11-23
+HK|reit|balance|bs.nraar|资产 › 流动资产|line||unverified|||2026-11-23
+HK|reit|balance|bs.nr|资产 › 流动资产|line||candidate|bs.nraar（待对照原报告）||2026-11-23
+HK|reit|balance|bs.ar|资产 › 流动资产|line||candidate|bs.nraar（待对照原报告）||2026-11-23
+HK|reit|balance|bs.tr|资产 › 流动资产|line||unverified|||2026-11-23
+HK|reit|balance|bs.cdfa|资产 › 流动资产|line||unverified|||2026-11-23
+HK|reit|balance|bs.cpdoraoa|资产 › 流动资产|line||unverified|||2026-11-23
+HK|reit|balance|bs.tnca|资产 › 非流动资产|subtotal||unverified||资产 › 非流动资产|2026-11-23
+HK|reit|balance|bs.tnca_ta_r|资产 › 非流动资产|supplement||unverified|||2026-11-23
+HK|reit|balance|bs.ppe|资产 › 非流动资产|line||unverified|||2026-11-23
+HK|reit|balance|bs.pi|资产 › 非流动资产|line||unverified|||2026-11-23
+HK|reit|balance|bs.rei|资产 › 非流动资产|line||unverified|||2026-11-23
+HK|reit|balance|bs.iiaajv|资产 › 非流动资产|line||unverified|||2026-11-23
+HK|reit|balance|bs.iia|资产 › 非流动资产|line||candidate|bs.iiaajv（待对照原报告）||2026-11-23
+HK|reit|balance|bs.iijv|资产 › 非流动资产|line||candidate|bs.iiaajv（待对照原报告）||2026-11-23
+HK|reit|balance|bs.gwaia|资产 › 非流动资产|line||unverified|||2026-11-23
+HK|reit|balance|bs.gw|资产 › 非流动资产|line||candidate|bs.gwaia（待对照原报告）||2026-11-23
+HK|reit|balance|bs.ia|资产 › 非流动资产|line||candidate|bs.gwaia（待对照原报告）||2026-11-23
+HK|reit|balance|bs.ncdfa|资产 › 非流动资产|line||unverified|||2026-11-23
+HK|reit|balance|bs.ncpdoraoa|资产 › 非流动资产|line||unverified|||2026-11-23
+HK|reit|balance|bs.tl|负债|total||unverified||负债|2026-11-23
+HK|reit|balance|bs.tl_ta_r|负债|supplement||unverified|||2026-11-23
+HK|reit|balance|bs.tcl|负债 › 流动负债|subtotal||unverified||负债 › 流动负债|2026-11-23
+HK|reit|balance|bs.tcl_tl_r|负债 › 流动负债|supplement||unverified|||2026-11-23
+HK|reit|balance|bs.stl|负债 › 流动负债|line||unverified|||2026-11-23
+HK|reit|balance|bs.tp|负债 › 流动负债|line||unverified|||2026-11-23
+HK|reit|balance|bs.npaap|负债 › 流动负债|line||unverified|||2026-11-23
+HK|reit|balance|bs.np|负债 › 流动负债|line||candidate|bs.npaap（待对照原报告）||2026-11-23
+HK|reit|balance|bs.ap|负债 › 流动负债|line||candidate|bs.npaap（待对照原报告）||2026-11-23
+HK|reit|balance|bs.stll|负债 › 流动负债|line||unverified|||2026-11-23
+HK|reit|balance|bs.stdfl|负债 › 流动负债|line||unverified|||2026-11-23
+HK|reit|balance|bs.stafcrdaoraol|负债 › 流动负债|line||unverified|||2026-11-23
+HK|reit|balance|bs.tncl|负债 › 非流动负债|subtotal||unverified||负债 › 非流动负债|2026-11-23
+HK|reit|balance|bs.tncl_tl_r|负债 › 非流动负债|supplement||unverified|||2026-11-23
+HK|reit|balance|bs.ltl|负债 › 非流动负债|line||unverified|||2026-11-23
+HK|reit|balance|bs.ltll|负债 › 非流动负债|line||unverified|||2026-11-23
+HK|reit|balance|bs.ditl|负债 › 非流动负债|line||unverified|||2026-11-23
+HK|reit|balance|bs.ltdfl|负债 › 非流动负债|line||unverified|||2026-11-23
+HK|reit|balance|bs.ltafcrdaoraol|负债 › 非流动负债|line||unverified|||2026-11-23
+HK|reit|balance|bs.toe|所有者权益|total||unverified||所有者权益|2026-11-23
+HK|reit|balance|bs.toe_ta_r|所有者权益|supplement||unverified|||2026-11-23
+HK|reit|balance|bs.sc|所有者权益|line||unverified|||2026-11-23
+HK|reit|balance|bs.spa|所有者权益|line||unverified|||2026-11-23
+HK|reit|balance|bs.oei|所有者权益|line||unverified|||2026-11-23
+HK|reit|balance|bs.psioei|所有者权益|line||candidate|bs.oei（待对照原报告）||2026-11-23
+HK|reit|balance|bs.pcsioei|所有者权益|line||candidate|bs.oei（待对照原报告）||2026-11-23
+HK|reit|balance|bs.capr|所有者权益|line||unverified|||2026-11-23
+HK|reit|balance|bs.is|所有者权益|line||unverified|||2026-11-23
+HK|reit|balance|bs.r|所有者权益|line||unverified|||2026-11-23
+HK|reit|balance|bs.rr|所有者权益|line||unverified|||2026-11-23
+HK|reit|balance|bs.ors|所有者权益|line||unverified|||2026-11-23
+HK|reit|balance|bs.surr|所有者权益|line||unverified|||2026-11-23
+HK|reit|balance|bs.rtp|所有者权益|line||unverified|||2026-11-23
+HK|reit|balance|bs.shfsas|所有者权益|line||unverified|||2026-11-23
+HK|reit|balance|bs.ecocb|所有者权益|line||unverified|||2026-11-23
+HK|reit|balance|bs.tetshaoehopc|所有者权益|line||unverified|||2026-11-23
+HK|reit|balance|bs.tetoshopc|所有者权益|line||unverified|||2026-11-23
+HK|reit|balance|bs.etmsh|所有者权益|line||unverified|||2026-11-23
+HK|reit|balance|bs.rnci|所有者权益|line||unverified|||2026-11-23
+HK|reit|balance|bs.uii|所有者权益|line||unverified|||2026-11-23
+HK|reit|balance|bs.ep_stn|员工情况|supplement||unverified|||2026-11-23
+HK|reit|balance|bs.mc|股本、股东以及估值|supplement||unverified|||2026-11-23
+HK|reit|balance|bs.tsc|股本、股东以及估值|supplement||unverified|||2026-11-23
+HK|reit|balance|bs.pe_ttm|股本、股东以及估值|supplement||unverified|||2026-11-23
+HK|reit|balance|bs.pb|股本、股东以及估值|supplement||unverified|||2026-11-23
+HK|reit|balance|bs.ps_ttm|股本、股东以及估值|supplement||unverified|||2026-11-23
+HK|reit|balance|bs.pcf_ttm|股本、股东以及估值|supplement||unverified|||2026-11-23
+HK|reit|balance|bs.dyr|股本、股东以及估值|supplement||unverified|||2026-11-23
+HK|reit|income|ps.oi|营业收入|line||unverified|||2026-11-23
+HK|reit|income|ps.poe|物业收入|line||unverified|||2026-11-23
+HK|reit|income|ps.mpf|营业收入|line||unverified|||2026-11-23
+HK|reit|income|ps.npi|物业收入|subtotal||unverified||物业收入|2026-11-23
+HK|reit|income|ps.baae|物业收入净额|line||unverified|||2026-11-23
+HK|reit|income|ps.fe|营业成本及费用|line||unverified|||2026-11-23
+HK|reit|income|ps.fc|物业收入净额|line||candidate|ps.fe（待对照原报告）||2026-11-23
+HK|reit|income|ps.iiife|物业收入净额|line||candidate|ps.fe（待对照原报告）||2026-11-23
+HK|reit|income|ps.nfceg|物业收入净额|line||candidate|ps.fe（待对照原报告）||2026-11-23
+HK|reit|income|ps.fvcoip|物业收入净额|line||unverified|||2026-11-23
+HK|reit|income|ps.iifaajv|物业收入净额|line||unverified|||2026-11-23
+HK|reit|income|ps.iifa|物业收入净额|line||candidate|ps.iifaajv（待对照原报告）||2026-11-23
+HK|reit|income|ps.iifjv|物业收入净额|line||candidate|ps.iifaajv（待对照原报告）||2026-11-23
+HK|reit|income|ps.ivi|其他损益|line||unverified|||2026-11-23
+HK|reit|income|ps.tp|利润总额|subtotal||unverified||利润总额|2026-11-23
+HK|reit|income|ps.ite|利润总额至净利润|line||unverified|||2026-11-23
+HK|reit|income|ps.ite_tp_r|利润总额|supplement||unverified|||2026-11-23
+HK|reit|income|ps.np|净利润|total||unverified||净利润|2026-11-23
+HK|reit|income|ps.np_s_r|净利润|supplement||unverified|||2026-11-23
+HK|reit|income|ps.npatshaoehopc|净利润 › 按所有权归属|line||unverified|||2026-11-23
+HK|reit|income|ps.npatoshopc|净利润 › 按所有权归属|line||unverified|||2026-11-23
+HK|reit|income|ps.npatmsh|净利润 › 按所有权归属|line||unverified|||2026-11-23
+HK|reit|income|ps.adddicwrornci|净利润|line||unverified|||2026-11-23
+HK|reit|income|ps.nonifrs_op|补充指标|supplement||unverified|||2026-11-23
+HK|reit|income|ps.nonifrs_opatoehopc|补充指标|supplement||unverified|||2026-11-23
+HK|reit|income|ps.beps|每股收益|supplement||unverified|||2026-11-23
+HK|reit|income|ps.deps|每股收益|supplement||unverified|||2026-11-23
+HK|reit|income|ps.tci|综合收益|total||unverified||综合收益|2026-11-23
+HK|reit|income|ps.tciatshaoehopc|综合收益 › 按所有权归属|line||unverified|||2026-11-23
+HK|reit|income|ps.tciatoshopc|综合收益 › 按所有权归属|line||unverified|||2026-11-23
+HK|reit|income|ps.twuh|综合收益总额|line||unverified|||2026-11-23
+HK|reit|income|ps.tciatmsh|综合收益 › 按所有权归属|line||unverified|||2026-11-23
+HK|reit|income|ps.tciatrnci|综合收益 › 按所有权归属|line||unverified|||2026-11-23
+HK|reit|income|ps.natooci|综合收益 › 其他综合收益|subtotal||unverified||综合收益 › 其他综合收益|2026-11-23
+HK|reit|income|ps.da|分红、回购及涨跌幅|supplement||unverified|||2026-11-23
+HK|reit|income|ps.da_om|分红、回购及涨跌幅|supplement||unverified|||2026-11-23
+HK|reit|income|ps.d_np_r|分红、回购及涨跌幅|supplement||unverified|||2026-11-23
+HK|reit|income|ps.ra|分红、回购及涨跌幅|supplement||unverified|||2026-11-23
+HK|reit|income|ps.spc_a|分红、回购及涨跌幅|supplement||unverified|||2026-11-23
+HK|reit|income|ps.tda|可供分派总金额(调整后)|total||unverified||可供分派总金额(调整后)|2026-11-23
+HK|reit|income|ps.dtuh|可供分派总金额(调整后)|line||unverified|||2026-11-23
+HK|reit|income|ps.dtuh_tda_r|可供分派总金额(调整后)|supplement||unverified|||2026-11-23
+HK|reit|cashflow|cfs.ncffoa|经营活动现金流|total||unverified|||2026-11-23
+HK|reit|cashflow|cfs.ncffia|投资活动现金流|total||unverified|||2026-11-23
+HK|reit|cashflow|cfs.ncfffa|筹资活动现金流|total||unverified|||2026-11-23
+HK|reit|cashflow|cfs.niicace|现金净变动与余额|total||unverified|||2026-11-23
+HK|reit|cashflow|cfs.bocaceatpb|现金净变动与余额|line||unverified|||2026-11-23
+HK|reit|cashflow|cfs.iocacedtfier|现金净变动与余额|line||unverified|||2026-11-23
+HK|reit|cashflow|cfs.bocaceatpe|现金净变动与余额|total||unverified|||2026-11-23

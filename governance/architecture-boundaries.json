@@ -1858,7 +1858,7 @@
       "role": "migration",
       "batch": 7,
       "status": "registered",
-      "note": "迁移 209：新建 classroom.* 独立沙盘表结构"
+      "note": "迁移 210：新建 classroom.* 独立沙盘表结构"
     },
     {
       "path": "public/js/api/classroom-api.js",

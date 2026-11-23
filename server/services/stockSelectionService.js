@@ -681,24 +681,15 @@ async function computeGrahamSelection(input, { market, asOfDate, strategyCode, p
     if (item.industry && excludedIndustries.has(String(item.industry.code || ''))) continue;
     selected.push(item);
   }
-  const weight = selected.length ? Number((positionRatio / selected.length).toFixed(6)) : 0;
-  const members = selected.map((item, idx) => ({
-    instrumentId: item.instrumentId,
-    companyId: item.companyId,
-    code: item.code,
-    name: item.name,
-    industry: item.industry,
-    selectionOrder: idx + 1,
-    totalScore: item.totalScore,
-    targetWeight: weight,
-  }));
-  const portfolio = {
-    members,
-    skipped: [],
+  // 席位与权重一律走共享构造器（buildSelectedPortfolio）：members 表的 slot_no /
+  // weight_in_market_budget / weight_in_equity_target 都是非空带范围检查的列，
+  // 早期这里自己拼对象只给 targetWeight，落库即报 slot_no 为空（2026-11-23 线上实证）。
+  const portfolio = PORTFOLIO.buildSelectedPortfolio({
+    selected,
     positionRatio,
-    budgetRatio: members.length ? Number((weight * members.length).toFixed(6)) : 0,
-    selectionOutcomes: [],
-  };
+    slots: params.slotsPerMarket,
+    params,
+  });
 
   const pendingCount = evaluated.filter(item => item.filterStatus === RULES.STATUS.PENDING).length;
   const riskHeld = evaluated.filter(item => item.filterStatus === RULES.STATUS.RISK);
@@ -1293,6 +1284,24 @@ async function computeAndPersist(input) {
  * - weekly：今天是本周最后一个已确认开市日，且整周日历完整（缺档时不猜，等下一交易日复核）。
  * 这里只给确定性目标，是否已有批次由调用方按 hasPeriodRun 去重，不新建平行任务。
  */
+/**
+ * 上一个已结束周的周期目标（周一 + 最后开市日）。整周日历缺档时返回 null，不猜 T。
+ * 晨间补算与「新策略首次上线回补」共用同一份推导，避免两处算法漂移。
+ */
+async function previousClosedWeekTarget({ market, today, strategyCode }, tx) {
+  const thisMonday = PERIODS.weekMondayOf(today);
+  const prevMonday = thisMonday ? PERIODS.shiftDays(thisMonday, -7) : null;
+  const prevRange = prevMonday ? PERIODS.periodRangeOf('week', `W:${prevMonday}`) : null;
+  if (!prevRange || prevRange.periodEnd >= today) return null;
+  const weekRows = await loadPeriodCalendar({
+    market, fromDate: prevRange.periodStart, toDate: prevRange.periodEnd,
+  }, tx);
+  const weekEvidence = PERIODS.calendarEvidenceOf(weekRows.rows, prevRange.periodStart, prevRange.periodEnd);
+  const lastOpen = weekEvidence.openDays[weekEvidence.openDays.length - 1] || null;
+  if (!weekEvidence.calendarComplete || !lastOpen) return null;
+  return { periodType: 'week', periodKey: `W:${prevMonday}`, targetDate: lastOpen, catchup: true, strategyCode: strategyCode || null };
+}
+
 async function duePeriodicTargets({ market, now = new Date(), readyHour = 18, strategyCode } = {}, tx) {
   const normalized = normalizeMarket(market);
   const stamp = CoreDate.dateTimeInZone(now, 'Asia/Shanghai');
@@ -1311,19 +1320,8 @@ async function duePeriodicTargets({ market, now = new Date(), readyHour = 18, st
     if (prevDay) {
       targets.push({ periodType: 'day', periodKey: `D:${prevDay}`, targetDate: prevDay, catchup: true, strategyCode: strategyCode || null });
     }
-    const thisMonday = PERIODS.weekMondayOf(today);
-    const prevMonday = thisMonday ? PERIODS.shiftDays(thisMonday, -7) : null;
-    const prevRange = prevMonday ? PERIODS.periodRangeOf('week', `W:${prevMonday}`) : null;
-    if (prevRange && prevRange.periodEnd < today) {
-      const weekRows = await loadPeriodCalendar({
-        market: normalized, fromDate: prevRange.periodStart, toDate: prevRange.periodEnd,
-      }, tx);
-      const weekEvidence = PERIODS.calendarEvidenceOf(weekRows.rows, prevRange.periodStart, prevRange.periodEnd);
-      const lastOpen = weekEvidence.openDays[weekEvidence.openDays.length - 1] || null;
-      if (weekEvidence.calendarComplete && lastOpen) {
-        targets.push({ periodType: 'week', periodKey: `W:${prevMonday}`, targetDate: lastOpen, catchup: true, strategyCode: strategyCode || null });
-      }
-    }
+    const prevWeek = await previousClosedWeekTarget({ market: normalized, today, strategyCode }, tx);
+    if (prevWeek) targets.push(prevWeek);
     return targets;
   }
   const dayRows = await loadPeriodCalendar({ market: normalized, fromDate: today, toDate: today }, tx);
@@ -1342,6 +1340,13 @@ async function duePeriodicTargets({ market, now = new Date(), readyHour = 18, st
     if (weekEvidence.calendarComplete && lastOpen === today) {
       targets.push({ periodType: 'week', periodKey: `W:${monday}`, targetDate: today, strategyCode: strategyCode || null });
     }
+  }
+  // 新策略首次上线：该策略在该市场还没有任何正式批次时，额外补上一个已结束周。
+  // 否则周批次只能等「本周最后一个开市日」，页面在策略上线后最长空白一周——
+  // 2026-11-22 格雷厄姆低估上线后正是这样（11-22 是周日，等到 11-27 周五才有周批次）。
+  if (strategyCode && await repo.hasNoPeriodRunAtAll({ market: normalized, strategyCode }, tx)) {
+    const prevWeek = await previousClosedWeekTarget({ market: normalized, today, strategyCode }, tx);
+    if (prevWeek && !targets.some(item => item.periodKey === prevWeek.periodKey)) targets.push(prevWeek);
   }
   return targets;
 }

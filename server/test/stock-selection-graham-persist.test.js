@@ -10,6 +10,11 @@
 //
 // 第二个缺口是入队：周批次只在「本周最后一个开市日」入队，新策略上线若不在这个时点，
 // 页面要空白整整一周。本文件同时锁定「该策略从未有批次时回补上一已结束周」的行为。
+//
+// 第三个缺口与第一个同源：格雷厄姆的成员对象由独立管线自己拼，缺 slot_no 与三套权重，
+// 修完 total_score 之后立刻撞上 `null value in column "slot_no"`（2026-11-23 部署后实测）。
+// 现在统一由 domain 的 buildSelectedPortfolio 产出，用例同时锁契约字段与真实插入。
+//
 // 夹具全部走 6098xx 号段并在事务内 ROLLBACK，不写业务数据。
 const assert = require('assert');
 const path = require('path');
@@ -18,11 +23,15 @@ require('dotenv').config({ path: path.join(__dirname, '..', '..', '.env') });
 const { pool } = require('../db/connection');
 const repo = require('../repositories/stockSelectionRepository');
 const service = require('../services/stockSelectionService');
+const PORTFOLIO = require('../domain/stockSelectionPortfolio');
 
 const PROBE_CODE = 'graham_persist_probe_v1';
 const AS_OF = '2099-12-31';
 const CUTOFF = '2099-12-30T15:00:00+08:00';
 const PROBE_CODE_STOCK = '609801';
+// 探针证券与组合跨越两个用例块，用模块级变量接住（第三个用例由第二个用例创建）。
+let otherInstrument = null;
+let grahamPortfolio = null;
 
 let passed = 0;
 let failed = 0;
@@ -130,13 +139,13 @@ async function main() {
     });
 
     await check('真实插入：整数分值（投资要义口径）不受类型放宽影响', async () => {
-      const other = (await client.query(
+      otherInstrument = (await client.query(
         `INSERT INTO core.instruments(canonical_code,name,asset_class,market,exchange_code,currency_code,status)
          VALUES($1,'整数分探针','stock','CN','SSE','CNY','listed') RETURNING instrument_id`,
         [`609802.SH`]
       )).rows[0].instrument_id;
       await repo.insertCandidates(client, runId, [{
-        instrumentId: other, companyId: null, code: `609802.SH`, name: '整数分探针',
+        instrumentId: otherInstrument, companyId: null, code: `609802.SH`, name: '整数分探针',
         industry: null, currentPb: 0.9, currentPe: 8, profitStatus: 'profit', dividendYield: 0.05,
         equityAmount: 50, equityCurrency: 'CNY', equityCny: 50, fxRate: null, fxDate: null,
         pbRank: 3, peRank: 5, dividendRank: 7, totalScore: 85, selectionOrder: 2,
@@ -144,9 +153,47 @@ async function main() {
       }]);
       const { rows } = await client.query(
         'SELECT total_score::text AS score FROM analytics.stock_selection_candidates WHERE run_id=$1 AND instrument_id=$2',
-        [runId, other]
+        [runId, otherInstrument]
       );
       assert.strictEqual(Number(rows[0].score), 85, `整数分值被改写：${rows[0].score}`);
+    });
+
+    /* ---------- 三、组合成员字段契约 ----------
+     * 第二处同类缺口：格雷厄姆的成员对象由独立管线自己拼，早期只给了 code/name/targetWeight，
+     * 而 analytics.stock_selection_portfolio_members 的 slot_no、weight_in_market_budget、
+     * weight_in_equity_target 都是 NOT NULL 且带范围检查，保存时报
+     * `null value in column "slot_no"` 整批回滚——页面因此依旧空白。
+     * 这里同时锁「构造器给出契约字段」与「真的能插进去」两件事。 */
+    await check('格雷厄姆组合成员必须带席号与三套权重', async () => {
+      grahamPortfolio = PORTFOLIO.buildSelectedPortfolio({
+        selected: [
+          { instrumentId: instrument, companyId: null, code: `${PROBE_CODE_STOCK}.SH`, name: '探针一', industry: null, selectionOrder: 1, totalScore: 1.524293 },
+          { instrumentId: otherInstrument, companyId: null, code: '609802.SH', name: '探针二', industry: null, selectionOrder: 2, totalScore: 1.2 },
+        ],
+        positionRatio: 1,
+        slots: 30,
+        params: { slotsPerMarket: 30 },
+      });
+      assert.deepStrictEqual(grahamPortfolio.members.map(m => m.slotNo), [1, 2],
+        `席号必须是 1..N：${JSON.stringify(grahamPortfolio.members.map(m => m.slotNo))}`);
+      grahamPortfolio.members.forEach(member => {
+        ['weightInMarketBudget', 'weightInEquityTarget', 'weightInInvestedEquity'].forEach(field => {
+          const value = member[field];
+          assert.ok(typeof value === 'number' && value > 0 && value <= 1,
+            `${member.code} 的 ${field} 必须是 0~1 之间的数，实际：${value}`);
+        });
+      });
+    });
+
+    await check('真实插入：格雷厄姆成员能写进组合成员表（slot_no 非空约束不再报错）', async () => {
+      await repo.insertMembers(client, runId, grahamPortfolio.members);
+      const { rows } = await client.query(
+        `SELECT slot_no, weight_in_market_budget::text AS wm, weight_in_equity_target::text AS we
+           FROM analytics.stock_selection_portfolio_members WHERE run_id=$1 ORDER BY slot_no`, [runId]
+      );
+      assert.strictEqual(rows.length, 2, `成员行没有落库：${rows.length}`);
+      assert.deepStrictEqual(rows.map(row => Number(row.slot_no)), [1, 2], '席号落库后不符');
+      assert.ok(Number(rows[0].wm) > 0, `市场预算权重落库后非正：${rows[0].wm}`);
     });
 
     /* ---------- 二、新策略首周回补 ---------- */

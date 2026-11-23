@@ -681,24 +681,15 @@ async function computeGrahamSelection(input, { market, asOfDate, strategyCode, p
     if (item.industry && excludedIndustries.has(String(item.industry.code || ''))) continue;
     selected.push(item);
   }
-  const weight = selected.length ? Number((positionRatio / selected.length).toFixed(6)) : 0;
-  const members = selected.map((item, idx) => ({
-    instrumentId: item.instrumentId,
-    companyId: item.companyId,
-    code: item.code,
-    name: item.name,
-    industry: item.industry,
-    selectionOrder: idx + 1,
-    totalScore: item.totalScore,
-    targetWeight: weight,
-  }));
-  const portfolio = {
-    members,
-    skipped: [],
+  // 席位与权重一律走共享构造器（buildSelectedPortfolio）：members 表的 slot_no /
+  // weight_in_market_budget / weight_in_equity_target 都是非空带范围检查的列，
+  // 早期这里自己拼对象只给 targetWeight，落库即报 slot_no 为空（2026-11-23 线上实证）。
+  const portfolio = PORTFOLIO.buildSelectedPortfolio({
+    selected,
     positionRatio,
-    budgetRatio: members.length ? Number((weight * members.length).toFixed(6)) : 0,
-    selectionOutcomes: [],
-  };
+    slots: params.slotsPerMarket,
+    params,
+  });
 
   const pendingCount = evaluated.filter(item => item.filterStatus === RULES.STATUS.PENDING).length;
   const riskHeld = evaluated.filter(item => item.filterStatus === RULES.STATUS.RISK);

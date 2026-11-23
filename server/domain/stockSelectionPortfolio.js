@@ -197,6 +197,70 @@ function buildPortfolio(input) {
   };
 }
 
+/**
+ * 格雷厄姆（净流动资产）方案的组合构造：只做"按名次取前 N 只等权"，不做行业上限与资格复核
+ * （资格已在规则层逐只判完）。**字段契约必须与 buildPortfolio 完全一致**——
+ * 2026-11-23 线上实证：这条独立管线早期只给 name/code/targetWeight，落库时
+ * analytics.stock_selection_portfolio_members 的 slot_no / weight_in_* 非空约束直接报
+ * `null value in column "slot_no"`，整批回滚，页面依旧空白。
+ * 因此这里统一产出 slotNo（1..N）与三套权重口径，A/H 同一发行人的重复暴露也照 buildPortfolio 标记。
+ */
+function buildSelectedPortfolio(input) {
+  const selected = Array.isArray(input.selected) ? input.selected : [];
+  const params = Object.assign({}, RULES.DEFAULT_PARAMS, input.params || {});
+  const slots = Math.max(Number(input.slots || params.slotsPerMarket) || 1, 1);
+  const positionRatio = clampRatio(input.positionRatio, 1);
+  const weightPerSlotInBudget = positionRatio / slots;
+  const weightPerSlotInEquity = 1 / slots;
+  const investedDenominator = selected.length;
+
+  const members = selected.map((item, idx) => ({
+    instrumentId: item.instrumentId,
+    companyId: item.companyId || null,
+    code: item.code,
+    name: item.name || null,
+    industry: item.industry || null,
+    slotNo: idx + 1,
+    selectionOrder: item.selectionOrder === undefined ? idx + 1 : item.selectionOrder,
+    totalScore: item.totalScore === undefined ? null : item.totalScore,
+    weightInMarketBudget: weightPerSlotInBudget,
+    weightInEquityTarget: weightPerSlotInEquity,
+    weightInInvestedEquity: investedDenominator > 0 ? 1 / investedDenominator : null,
+    issuerDuplicate: false,
+  }));
+
+  const byCompany = new Map();
+  members.forEach(member => {
+    if (!member.companyId) return;
+    const list = byCompany.get(member.companyId) || [];
+    list.push(member);
+    byCompany.set(member.companyId, list);
+  });
+  for (const list of byCompany.values()) {
+    if (list.length > 1) list.forEach(member => { member.issuerDuplicate = true; });
+  }
+
+  const equityWeightInBudget = members.length * weightPerSlotInBudget;
+  return {
+    slots,
+    positionRatio,
+    members,
+    skipped: [],
+    selectionOutcomes: [],
+    selectedCount: members.length,
+    equityWeightInMarketBudget: equityWeightInBudget,
+    cashWeightInMarketBudget: 1 - equityWeightInBudget,
+    unfilledSlots: slots - members.length,
+    budgetRatio: Number(equityWeightInBudget.toFixed(6)),
+    weightBasis: {
+      weightInMarketBudget: weightPerSlotInBudget,
+      weightInEquityTarget: weightPerSlotInEquity,
+      weightInInvestedEquity: investedDenominator > 0 ? 1 / investedDenominator : null,
+      investedDenominator,
+    },
+  };
+}
+
 /** 行业上限对应的最多只数（页面展示用，计算仍走精确比较）。 */
 function industrySlotCap(positionRatio, industryLimitRatio, slots) {
   const p = clampRatio(positionRatio, 1);
@@ -246,4 +310,4 @@ function combinedExposure(entries) {
   return list.reduce((sum, entry) => sum + Number(entry.budgetRatio) * Number(entry.positionRatio) * Number(entry.selectedCount || 0) / Number(entry.slots || 30), 0);
 }
 
-module.exports = { buildPortfolio, industrySlotCap, combineIssuerExposure, combinedExposure, clampRatio, industryIdentityKey };
+module.exports = { buildPortfolio, buildSelectedPortfolio, industrySlotCap, combineIssuerExposure, combinedExposure, clampRatio, industryIdentityKey };

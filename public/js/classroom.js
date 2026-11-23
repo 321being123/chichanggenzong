@@ -1211,7 +1211,7 @@
   async function runTeacherPrecheck() {
     const resBox = $('teacher-precheck-result');
     $('teacher-create-error').textContent = '';
-    resBox.textContent = '正在执行 15 年数据预检...';
+    resBox.textContent = '正在执行 15 年数据预检（若缺数将自动按需补全）...';
     try {
       const inputs = readTeacherCreateInputs();
       const res = await api.adminPrecheck({ startYear: inputs.startYear, industries: inputs.industries });
@@ -1219,7 +1219,11 @@
 
       const summary = document.createElement('div');
       summary.className = 'notice-banner';
+      const backfillInfo = res.autoBackfill && res.autoBackfill.attemptedCodes && res.autoBackfill.attemptedCodes.length
+        ? (' ｜ 已自动补全 ' + res.autoBackfill.attemptedCodes.length + ' 只标的（日线 ' + res.autoBackfill.filledBars + ' / 估值 ' + res.autoBackfill.filledValuations + '）')
+        : '';
       summary.textContent = (res.pass ? '预检通过：可用于创建真实场次。' : ('预检未通过：' + (res.blockers || []).join('；'))) +
+        backfillInfo +
         ' ｜ 国债财富净值：' + (res.bondCheck && res.bondCheck.wealthCovered ? '已覆盖' : '未覆盖') +
         ' ｜ 转债校准样本：' + (res.cbCalibration ? res.cbCalibration.sampleCount : 0) + ' 条';
       resBox.appendChild(summary);

@@ -525,6 +525,57 @@ async function run() {
     const remainMembers = await pool.query('SELECT 1 FROM public.classroom_members WHERE classroom_id = $1', [rcid]);
     assert.strictEqual(remainMembers.rows.length, 0, '删除后场次成员应级联清空');
 
+    // 自动补数预检与 ensureMaster market 归一化验证
+    await pool.query(
+      `DELETE FROM market.daily_bars b USING core.instruments i
+       WHERE b.instrument_id = i.instrument_id AND i.canonical_code = '600028.SH' AND b.trade_date BETWEEN '2011-01-01' AND '2011-12-31'`
+    );
+    await pool.query(
+      `DELETE FROM market.daily_valuations v USING core.instruments i
+       WHERE v.instrument_id = i.instrument_id AND i.canonical_code = '600028.SH' AND v.trade_date BETWEEN '2011-01-01' AND '2011-12-31'`
+    );
+    const missingPre = await precheckService.runRealPrecheck({ industries, startYear: 2011, totalRounds: 15 });
+    assert.strictEqual(missingPre.pass, false, '删除 2011 数据后只读预检应阻断');
+
+    const mockDs = {
+      async readStockDailySeries() {
+        return [
+          { ts_code: '600028.SH', trade_date: '20110105', close: 8.2, source_code: 'tushare' },
+          { ts_code: '600028.SH', trade_date: '20111230', close: 9.0, source_code: 'tushare' },
+        ];
+      },
+      async readAdjustmentFactorSeries() {
+        return [
+          { ts_code: '600028.SH', trade_date: '20110105', adj_factor: 1.0, source_code: 'tushare' },
+          { ts_code: '600028.SH', trade_date: '20111230', adj_factor: 1.0, source_code: 'tushare' },
+        ];
+      },
+      async readStockValuationHistory() {
+        return [
+          { ts_code: '600028.SH', trade_date: '20110105', pe: 10, pe_ttm: 10, pb: 1.2, dv_ttm: 2.0, total_mv: 50000000, circ_mv: 40000000, source_code: 'tushare' },
+        ];
+      },
+    };
+    const autoPre = await precheckService.ensureRealClassroomDataAndPrecheck({
+      industries,
+      startYear: 2011,
+      totalRounds: 15,
+      autoBackfill: true,
+      deps: { marketDatasets: mockDs },
+    });
+    assert.strictEqual(autoPre.pass, true, '自动补全后预检应转为通过');
+    assert.ok(autoPre.autoBackfill && autoPre.autoBackfill.attemptedCodes.includes('600028.SH'), '应记录自动补数的标的代码');
+
+    const stockProj = require('../repositories/stockProjectionRepository');
+    await stockProj.ensureMaster(pool, '600028.SH', await stockProj.sourceIds(pool), {
+      ts_code: '600028.SH',
+      name: '中国石化',
+      market: '主板',
+      list_date: '20010808',
+    });
+    const instCheck = await pool.query("SELECT market FROM core.instruments WHERE canonical_code = '600028.SH'");
+    assert.strictEqual(instCheck.rows[0].market, 'CN', 'ensureMaster 不应将主板写进 core.instruments.market');
+
     console.log('stock-classroom-integration.test.js: ALL PASSED');
   } finally {
     if (pool) await pool.end().catch(() => {});

@@ -28,11 +28,12 @@ function handleServiceError(err, res, next) {
 // ---------- 教师 / 管理员接口（必须 requireLogin + requireAdmin）----------
 
 router.post('/admin/precheck', requireLogin, requireAdmin, asyncHandler(async (req, res) => {
-  const { industries, startYear = 2011, totalRounds = 15 } = req.body || {};
-  const result = await precheckService.runRealPrecheck({
+  const { industries, startYear = 2011, totalRounds = 15, autoBackfill = true } = req.body || {};
+  const result = await precheckService.ensureRealClassroomDataAndPrecheck({
     industries,
     startYear: Number(startYear),
     totalRounds: Number(totalRounds),
+    autoBackfill: autoBackfill !== false,
   });
   res.json(result);
 }));

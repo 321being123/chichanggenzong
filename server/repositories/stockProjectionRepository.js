@@ -22,7 +22,8 @@ async function ensureMaster(client, tsCode, sources, metadata) {
   if (!legacy) throw new Error(`缺少证券基础资料：${tsCode}`);
   const raw = legacy.data || {}, exchange = tsCode.endsWith('.SH') ? 'SSE' : tsCode.endsWith('.BJ') ? 'BSE' : 'SZSE';
   const currency = tsCode.endsWith('.HK') ? 'HKD' : 'CNY', assetClass='stock';
-  const master = await ensureInstrumentIdentity({ canonicalCode: tsCode, name: legacy.name || '', assetClass, market: legacy.market || (tsCode.endsWith('.HK') ? 'HK' : 'CN'), exchangeCode: exchange, currencyCode: currency, listDate: asDate(legacy.list_date), status: 'listed', rawData: raw, companyName: legacy.name || tsCode }, client.query.bind(client));
+  const marketCode = (legacy.market === 'CN' || legacy.market === 'HK') ? legacy.market : (tsCode.endsWith('.HK') ? 'HK' : 'CN');
+  const master = await ensureInstrumentIdentity({ canonicalCode: tsCode, name: legacy.name || '', assetClass, market: marketCode, exchangeCode: exchange, currencyCode: currency, listDate: asDate(legacy.list_date), status: 'listed', rawData: raw, companyName: legacy.name || tsCode }, client.query.bind(client));
   const company = { company_id: master.companyId };
   const instrument = { instrument_id: master.instrumentId };
   const industryName = raw.industry || legacy.industry || '', system = raw.industry_system || 'Tushare基础行业', levelText = raw.industry_level || '';

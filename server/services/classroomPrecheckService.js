@@ -1,6 +1,9 @@
 'use strict';
 
 const repo = require('../repositories/classroomRepository');
+const stockProjection = require('../repositories/stockProjectionRepository');
+const marketDatasets = require('../dataAccess/marketDatasets');
+const { marketMultiple } = require('../domain/stockFacts');
 
 /**
  * 纯函数：在单个自然年的交易日列表内，按停牌规则解析取价日与估值日。
@@ -456,7 +459,140 @@ async function runRealPrecheck({ industries, startYear = 2011, totalRounds = 15 
   };
 }
 
+function formatIsoTradeDate(raw) {
+  const s = String(raw || '').replace(/-/g, '').trim();
+  if (!/^\d{8}$/.test(s)) return null;
+  return `${s.slice(0, 4)}-${s.slice(4, 6)}-${s.slice(6, 8)}`;
+}
+
+/**
+ * 真实场次建场预检（支持按需自动补齐缺失的 A 股历史日线、复权因子与估值快照）。
+ * 若初始只读预检已通过则零外部请求直接返回；否则针对已上市但缺数的标的按需补齐后再复检。
+ */
+async function ensureRealClassroomDataAndPrecheck({
+  industries,
+  startYear = 2011,
+  totalRounds = 15,
+  autoBackfill = true,
+  deps = {},
+} = {}) {
+  const initial = await runRealPrecheck({ industries, startYear, totalRounds });
+  if (initial.pass || !autoBackfill) {
+    return initial;
+  }
+
+  const redReports = (initial.stockReports || []).filter((r) => r && r.status === 'red' && r.canonicalCode);
+  if (!redReports.length) {
+    return initial;
+  }
+
+  const endYear = startYear + totalRounds - 1;
+  const startDate = `${startYear - 1}-12-01`;
+  const endDate = `${endYear}-12-31`;
+  const startCutoff = `${startYear}-01-10`;
+
+  const ds = deps.marketDatasets || marketDatasets;
+  const proj = deps.stockProjection || stockProjection;
+  const crRepo = deps.repo || repo;
+
+  const redCodes = [...new Set(redReports.map((r) => r.canonicalCode))];
+  const instRows = await crRepo.fetchInstrumentsByCodes(redCodes);
+  const instByCode = new Map();
+  for (const row of instRows) {
+    if (!instByCode.has(row.canonical_code)) {
+      instByCode.set(row.canonical_code, row);
+    }
+  }
+
+  const attemptedCodes = [];
+  const skippedNotListed = [];
+  const errors = [];
+  let filledBars = 0;
+  let filledFactors = 0;
+  let filledValuations = 0;
+
+  for (const code of redCodes) {
+    const inst = instByCode.get(code);
+    if (!inst) {
+      errors.push({ code, message: '证券主档中未找到该 A 股代码' });
+      continue;
+    }
+    if (inst.list_date && inst.list_date > startCutoff) {
+      skippedNotListed.push({ code, listDate: inst.list_date });
+      continue;
+    }
+
+    attemptedCodes.push(code);
+    try {
+      const [dailyRows, factorRows, valRows] = await Promise.all([
+        ds.readStockDailySeries({ tsCode: code, startDate, endDate, market: 'cn' }),
+        ds.readAdjustmentFactorSeries({ tsCode: code, startDate, endDate }),
+        ds.readStockValuationHistory({ tsCode: code, startDate, endDate }),
+      ]);
+
+      await crRepo.withTransaction(async (client) => {
+        const sources = await proj.sourceIds(client);
+        for (const r of dailyRows || []) {
+          const td = formatIsoTradeDate(r.trade_date);
+          if (!td || r.close == null || !(Number(r.close) > 0)) continue;
+          const sid = sources[r.source_code] || sources.tushare;
+          if (!sid) continue;
+          await proj.upsertDailyBar({ instrumentId: inst.instrument_id, tradeDate: td, sourceId: sid, close: Number(r.close) }, client);
+          filledBars++;
+        }
+        for (const r of factorRows || []) {
+          const td = formatIsoTradeDate(r.trade_date);
+          if (!td || r.adj_factor == null || !(Number(r.adj_factor) > 0)) continue;
+          const sid = sources[r.source_code] || sources.tushare;
+          if (!sid) continue;
+          await proj.upsertAdjustmentFactor({ instrumentId: inst.instrument_id, tradeDate: td, sourceId: sid, adjFactor: Number(r.adj_factor) }, client);
+          filledFactors++;
+        }
+        for (const r of valRows || []) {
+          const td = formatIsoTradeDate(r.trade_date);
+          if (!td) continue;
+          const sid = sources[r.source_code] || sources.tushare;
+          if (!sid) continue;
+          await proj.upsertDailyValuation({
+            instrumentId: inst.instrument_id,
+            tradeDate: td,
+            sourceId: sid,
+            peStatic: marketMultiple(r.pe),
+            peTtm: marketMultiple(r.pe_ttm),
+            pb: marketMultiple(r.pb),
+            dividendYieldTtm: r.dv_ttm == null ? null : Number(r.dv_ttm) / 100,
+            totalMarketCap: r.total_mv == null ? null : Number(r.total_mv) * 10000,
+            circulatingMarketCap: r.circ_mv == null ? null : Number(r.circ_mv) * 10000,
+            freeFloatMarketCap: null,
+            currencyCode: 'CNY',
+          }, client);
+          filledValuations++;
+        }
+      });
+    } catch (err) {
+      errors.push({ code, message: err && err.message ? err.message : String(err) });
+    }
+  }
+
+  const autoBackfillSummary = {
+    attemptedCodes,
+    skippedNotListed,
+    filledBars,
+    filledFactors,
+    filledValuations,
+    errors,
+  };
+
+  if (filledBars === 0 && filledFactors === 0 && filledValuations === 0) {
+    return { ...initial, autoBackfill: autoBackfillSummary };
+  }
+
+  const rechecked = await runRealPrecheck({ industries, startYear, totalRounds });
+  return { ...rechecked, autoBackfill: autoBackfillSummary };
+}
+
 module.exports = {
   resolveYearStockCoverage,
   runRealPrecheck,
+  ensureRealClassroomDataAndPrecheck,
 };

@@ -122,10 +122,11 @@ async function createClassroom({ adminUser, title, mode = 'demo', blindMode = tr
     scenarioSnapshot = buildDemoScenario({ startYear: Number(startYear), totalRounds });
     precheckSummary = { pass: true, mode: 'demo', dataLabel: scenarioSnapshot.dataLabel };
   } else {
-    const precheck = await precheckService.runRealPrecheck({
+    const precheck = await precheckService.ensureRealClassroomDataAndPrecheck({
       industries: industries || [],
       startYear: Number(startYear),
       totalRounds,
+      autoBackfill: true,
     });
     if (!precheck.pass) {
       throw createHttpError(400, `真实场次数据预检未通过：${precheck.blockers.join('；')}`, { precheck });

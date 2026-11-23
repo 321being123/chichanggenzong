@@ -215,6 +215,7 @@ async function loadUniverse({ market, asOfDate, availableBefore = null }, tx) {
          ORDER BY bb.trade_date DESC LIMIT 1
       ) b ON true
      WHERE i.asset_class = 'stock'
+       AND COALESCE(i.raw_data->>'identity_backfill', '') <> 'tencent_quote_fund_etf'
        AND i.market = $1
        -- 港股历史主档里有一批 .HK 证券的交易所被登记成 SZSE（2026-11-05 生产实测 688 只，
        -- 恰好是港股通＋恒生成分目标池），按交易所过滤会把整个港股候选池清空、连带补数任务崩溃。
@@ -336,6 +337,7 @@ async function loadUniverseRoster({ market, asOfDate }, tx) {
                       AND bt.trade_date > ($2::date - INTERVAL '60 days')) AS has_recent_bars
       FROM core.instruments i
      WHERE i.asset_class = 'stock'
+       AND COALESCE(i.raw_data->>'identity_backfill', '') <> 'tencent_quote_fund_etf'
        AND i.market = $1
        AND (i.market = 'HK' OR i.exchange_code = ANY($3::text[]))
        AND (i.list_date IS NULL OR i.list_date <= $2::date)
@@ -364,6 +366,7 @@ async function loadPbWindow({ market, windowStart, asOfDate }, tx) {
       SELECT instrument_id, COALESCE(list_date, DATE '1900-01-01') AS list_date
         FROM core.instruments
        WHERE market = $4 AND asset_class = 'stock'
+         AND COALESCE(raw_data->>'identity_backfill', '') <> 'tencent_quote_fund_etf'
     ),
     exempt AS (
       -- 停牌豁免一次性按证券聚合：原实现把它写成 expect 里的相关子查询，
@@ -523,7 +526,9 @@ async function loadPbMissingDaysForCodes({ market, codes = [], windowStart, asOf
     WITH inst AS (
       SELECT instrument_id, canonical_code, COALESCE(list_date, DATE '1900-01-01') AS list_date
         FROM core.instruments
-       WHERE market = $5 AND asset_class = 'stock' AND canonical_code = ANY($3::text[])
+       WHERE market = $5 AND asset_class = 'stock'
+         AND COALESCE(raw_data->>'identity_backfill', '') <> 'tencent_quote_fund_etf'
+         AND canonical_code = ANY($3::text[])
     ), cal AS (
       SELECT trade_date FROM market.trade_calendar
        WHERE exchange = ANY($4::text[]) AND COALESCE(is_open, true) = true

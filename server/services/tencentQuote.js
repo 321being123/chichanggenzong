@@ -123,7 +123,7 @@ async function resolveTencentDescriptor(rawCode) {
     if (sourceInstrument) {
       symbol = await resolveProviderCode({ instrumentId: sourceInstrument.instrument_id, sourceCode: SOURCE, identifierType: 'quote_symbol' });
     } else {
-      const assetClass = isConvertibleBondCode(original) ? 'convertible_bond' : 'stock';
+      const assetClass = isConvertibleBondCode(original) ? 'convertible_bond' : (isFundEtfCode(original) ? 'fund' : 'stock');
       const canonical = await resolveCanonicalCode(original, assetClass);
       if (canonical) symbol = await resolveProviderCode({ canonicalCode: canonical, sourceCode: SOURCE, identifierType: 'quote_symbol' });
       // 港股 IPO 新发现代码可能尚未完成 provider identifier 回填；
@@ -135,13 +135,13 @@ async function resolveTencentDescriptor(rawCode) {
     // 历史持仓可能早于统一证券主档迁移，基金/ETF 因不在 stock_basic 中尤其常见。
     // 先由统一身份写入口补齐最小主档和腾讯映射，再继续走同一映射读取链路。
     if (!symbol && isFundEtfCode(original)) {
-      const canonical = await resolveCanonicalCode(original, 'stock');
+      const canonical = await resolveCanonicalCode(original, 'fund');
       if (canonical) {
         try {
           const fallbackDescriptor = describeTencentCode(canonical);
           await ensureInstrumentIdentity({
             canonicalCode: canonical,
-            assetClass: 'stock',
+            assetClass: 'fund',
             market: 'CN',
             exchangeCode: canonical.endsWith('.SH') ? 'SSE' : 'SZSE',
             currencyCode: 'CNY',

@@ -66,4 +66,11 @@ const result = evaluateBondSafety([], [{
 }]);
 assert.strictEqual(Object.hasOwn(result.data[0], 'convert_update_date'), false, '输出表格数据不再包含最近转股更新日');
 
-console.log('PASS=22 FAIL=0');
+const { canonicalizeSecurityCode } = require('../services/securityIdentity');
+assert.strictEqual(canonicalizeSecurityCode('510310', 'fund'), '510310.SH', '基金代码规范化必须补齐交易所后缀');
+assert.strictEqual(canonicalizeSecurityCode('160719', 'fund'), '160719.SZ', 'LOF代码规范化必须补齐交易所后缀');
+assert.ok(tencentQuoteSource.includes("assetClass: 'fund'"), '基金兜底写入主档不得标记为 stock');
+const selectionRepoSource = fs.readFileSync(path.join(__dirname, '..', 'repositories', 'stockSelectionRepository.js'), 'utf8');
+assert.ok(selectionRepoSource.includes('tencent_quote_fund_etf'), '选股候选池必须排除历史误标的基金兜底主档');
+
+console.log('PASS=26 FAIL=0');

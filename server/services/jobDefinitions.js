@@ -366,6 +366,16 @@ function stageCompletionEvidence(definition, result = {}, request = {}) {
   if (!phase || phase.requiresDataWatermark !== false) return false;
   if (result.ok !== true || result.stageComplete !== true || result.error || result.continuationRequired
     || (result.failedDatasets || []).length || (result.pendingStages || []).length) return false;
+  if (requestedMode === 'stock_analysis_hk') {
+    const targetSet = Array.isArray(result.targetSet) ? result.targetSet : null;
+    if (!targetSet || String(result.market || '').toUpperCase() !== 'HK') return false;
+    if (!['open', 'closed'].includes(String(result.marketCalendarStatus || ''))) return false;
+    if ((result.remaining || []).length > 0) return false;
+    if (targetSet.length === 0) return Boolean(result.emptyReason);
+    return Array.isArray(result.results)
+      && result.results.length === targetSet.length
+      && result.results.every(item => item && item.ok === true);
+  }
   const requested = [...new Set((request.targetCodes || []).map(String))].sort();
   const completed = [...new Set((result.codes || []).map(String))].sort();
   const fields = [...new Set(request.targetFields || [])].sort();

@@ -160,7 +160,7 @@ function canonicalizeSecurityCode(rawCode, assetClass = 'stock') {
   if (digits.length === 5 && assetClass === 'stock') return `${digits.padStart(5, '0')}.HK`;
   const code = digits.padStart(6, '0');
   if (assetClass === 'convertible_bond') return `${code}${/^11/.test(code) ? '.SH' : '.SZ'}`;
-  if (assetClass === 'stock') {
+  if (assetClass === 'stock' || assetClass === 'fund') {
     // 市场后缀统一读取前后端共用的代码分类规则，基金/ETF/REITs、B股和北交所不再各写一套前缀。
     const info = classifyCode(code);
     const suffix = info && (info.market === 'sh' || info.market === 'kcb') ? 'SH'

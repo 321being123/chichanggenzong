@@ -122,5 +122,30 @@ test('三表按版本只读，409 后最多有界重读一次', () => {
   assert.ok(/分析数据更新中/.test(presenter));
 });
 
+test('stock_analysis_hk 阶段完成证据按目标集与结果校验，不再误判为 failed', () => {
+  const req = { mode: 'stock_analysis_hk', freshnessGate: false };
+  const okResult = {
+    ok: true,
+    status: 'succeeded',
+    mode: 'stock_analysis_hk',
+    market: 'HK',
+    marketCalendarStatus: 'open',
+    targetSet: ['00152.HK', '00363.HK'],
+    results: [{ code: '00152.HK', ok: true }, { code: '00363.HK', ok: true }],
+    remaining: [],
+    stageComplete: true,
+  };
+  assert.strictEqual(jobDefinitions.stageCompletionEvidence(definition, okResult, req), true);
+  assert.strictEqual(jobDefinitions.stageCompletionEvidence(definition, {
+    ...okResult, targetSet: [], results: [], emptyReason: '当前没有持仓或显式自选的港股，正常空跑',
+  }, req), true);
+  assert.strictEqual(jobDefinitions.stageCompletionEvidence(definition, {
+    ...okResult, status: 'partial', stageComplete: false, remaining: [{ code: '00363.HK', reason: 'missing' }], results: [{ code: '00152.HK', ok: true }],
+  }, req), false);
+  assert.strictEqual(jobDefinitions.stageCompletionEvidence(definition, {
+    ...okResult, results: [{ code: '00152.HK', ok: true }],
+  }, req), false);
+});
+
 console.log(`\n结果：${pass} 通过 / ${fail} 失败`);
 if (fail) process.exit(1);

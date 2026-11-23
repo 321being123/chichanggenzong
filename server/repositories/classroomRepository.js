@@ -44,19 +44,24 @@ async function fetchInstrumentsByCodes(codes) {
             to_char(i.list_date, 'YYYY-MM-DD') AS list_date,
             to_char(i.delist_date, 'YYYY-MM-DD') AS delist_date,
             i.status,
-            n.industry_node_id,
-            COALESCE(n.industry_code, '') AS industry_code,
-            COALESCE(n.industry_name, '') AS sw_industry_name,
-            COALESCE(t.taxonomy_code, '') AS taxonomy_code
+            sw.industry_node_id,
+            COALESCE(sw.industry_code, '') AS industry_code,
+            COALESCE(sw.industry_name, '') AS sw_industry_name,
+            COALESCE(sw.taxonomy_code, '') AS taxonomy_code
      FROM core.instruments i
      LEFT JOIN core.company_instruments ci
        ON ci.instrument_id = i.instrument_id AND ci.relation_type = 'issued_by'
-     LEFT JOIN core.company_industry_memberships cim
-       ON cim.company_id = ci.company_id AND cim.is_current = TRUE
-     LEFT JOIN core.industry_nodes n
-       ON n.industry_node_id = cim.industry_node_id
-     LEFT JOIN core.industry_taxonomies t
-       ON t.taxonomy_id = n.taxonomy_id AND t.taxonomy_code = 'SW2021'
+     LEFT JOIN LATERAL (
+       SELECT n.industry_node_id, n.industry_code, n.industry_name, t.taxonomy_code
+       FROM core.company_industry_memberships cim
+       JOIN core.industry_nodes n
+         ON n.industry_node_id = cim.industry_node_id
+       JOIN core.industry_taxonomies t
+         ON t.taxonomy_id = n.taxonomy_id AND t.taxonomy_code = 'SW2021'
+       WHERE cim.company_id = ci.company_id AND cim.is_current = TRUE
+       ORDER BY n.industry_node_id ASC
+       LIMIT 1
+     ) sw ON TRUE
      WHERE i.canonical_code = ANY($1::text[])
        AND i.market = 'CN'
        AND i.asset_class = 'stock'`,

@@ -1,8 +1,16 @@
 // 209：股市模拟沙盘（教学课堂）独立账本与场次状态表。
 // 与真实账户/持仓表完全隔离，所有金额以人民币分（BIGINT）存储。
+async function ensureSchema(pool, name) {
+  const { rows } = await pool.query(
+    'SELECT 1 FROM information_schema.schemata WHERE schema_name = $1',
+    [name]
+  );
+  if (!rows[0]) await pool.query(`CREATE SCHEMA ${name}`);
+}
+
 async function migration209StockClassroom(pool) {
+  await ensureSchema(pool, 'classroom');
   await pool.query(`
-    CREATE SCHEMA IF NOT EXISTS classroom;
 
     CREATE TABLE IF NOT EXISTS classroom.classrooms (
       classroom_id BIGSERIAL PRIMARY KEY,

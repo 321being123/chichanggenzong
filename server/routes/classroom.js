@@ -161,6 +161,24 @@ router.patch('/admin/:id/members/:memberId/nickname', requireLogin, requireAdmin
   }
 }));
 
+router.post('/admin/:id/close', requireLogin, requireAdmin, asyncHandler(async (req, res, next) => {
+  try {
+    const out = await classroomService.closeClassroom({ classroomId: Number(req.params.id) });
+    res.json({ classroom: out });
+  } catch (err) {
+    handleServiceError(err, res, next);
+  }
+}));
+
+router.delete('/admin/:id', requireLogin, requireAdmin, asyncHandler(async (req, res, next) => {
+  try {
+    const deleted = await classroomService.deleteClassroom({ classroomId: Number(req.params.id) });
+    res.json({ ok: true, deleted });
+  } catch (err) {
+    handleServiceError(err, res, next);
+  }
+}));
+
 // ---------- 学员端接口（requireLogin）----------
 
 router.get('/my', requireLogin, asyncHandler(async (req, res) => {

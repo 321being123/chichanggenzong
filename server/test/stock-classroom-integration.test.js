@@ -499,6 +499,32 @@ async function run() {
     const realRep = await classroomService.getMemberReport({ classroomId: rcid, authUser: stu1 });
     assert.strictEqual(realRep.rounds[0].endingTotalCents, 105000000, '真实场次国债 5% 回报结算精确为 105 万元');
 
+    // #64 关闭场次与级联删除验证
+    const closed = await classroomService.closeClassroom({ classroomId: rcid });
+    assert.strictEqual(closed.status, 'completed', '关闭场次后状态应为 completed');
+    const closedAgain = await classroomService.closeClassroom({ classroomId: rcid });
+    assert.strictEqual(closedAgain.status, 'completed', '重复关闭应幂等返回 completed');
+    await assert.rejects(
+      () => classroomService.saveDraft({ classroomId: rcid, roundNo: 1, authUser: stu1, allocations: {}, expectedVersion: 0 }),
+      /已关闭/,
+      '已关闭场次禁止保存草稿'
+    );
+    await assert.rejects(
+      () => classroomService.joinClassroom({
+        classroomId: rcid,
+        authUser: { subject_identity: 'stu:late64', username: 'late64' },
+        nickname: '迟到学员64',
+      }),
+      /已关闭/,
+      '已关闭场次禁止新学员入场'
+    );
+    const deleted = await classroomService.deleteClassroom({ classroomId: rcid });
+    assert.strictEqual(Number(deleted.classroom_id), rcid, '删除场次应返回被删除的 classroom_id');
+    const remain = await pool.query('SELECT 1 FROM public.classroom_classrooms WHERE classroom_id = $1', [rcid]);
+    assert.strictEqual(remain.rows.length, 0, '删除后场次主表应清空');
+    const remainMembers = await pool.query('SELECT 1 FROM public.classroom_members WHERE classroom_id = $1', [rcid]);
+    assert.strictEqual(remainMembers.rows.length, 0, '删除后场次成员应级联清空');
+
     console.log('stock-classroom-integration.test.js: ALL PASSED');
   } finally {
     if (pool) await pool.end().catch(() => {});

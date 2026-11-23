@@ -192,8 +192,8 @@ async function readInstrumentRawData(params, tx) {
 async function readCoverageFlags(params, tx) {
   const runner = tx || pool;
   const { rows } = await runner.query(`SELECT
-    EXISTS(SELECT 1 FROM market.daily_valuations v JOIN core.instruments i ON i.instrument_id=v.instrument_id WHERE i.canonical_code=$1) has_daily,
-    (SELECT min(to_char(v.trade_date,'YYYYMMDD')) FROM market.daily_valuations v JOIN core.instruments i ON i.instrument_id=v.instrument_id WHERE i.canonical_code=$1) first_daily,
+    EXISTS(SELECT 1 FROM market.daily_bars b JOIN market.adjustment_factors a ON a.instrument_id=b.instrument_id AND a.trade_date=b.trade_date JOIN core.instruments i ON i.instrument_id=b.instrument_id WHERE i.canonical_code=$1 AND b.close IS NOT NULL AND a.adj_factor IS NOT NULL) has_daily,
+    (SELECT min(to_char(b.trade_date,'YYYYMMDD')) FROM market.daily_bars b JOIN market.adjustment_factors a ON a.instrument_id=b.instrument_id AND a.trade_date=b.trade_date JOIN core.instruments i ON i.instrument_id=b.instrument_id WHERE i.canonical_code=$1 AND b.close IS NOT NULL AND a.adj_factor IS NOT NULL) first_daily,
     EXISTS(SELECT 1 FROM fundamental.financial_reports r JOIN core.company_instruments ci ON ci.company_id=r.company_id JOIN core.instruments i ON i.instrument_id=ci.instrument_id WHERE i.canonical_code=$1 AND r.report_kind='indicator' AND upper(COALESCE(r.raw_payload->>'ts_code',''))=upper($1)) has_indicator,
     EXISTS(SELECT 1 FROM fundamental.financial_reports r JOIN core.company_instruments ci ON ci.company_id=r.company_id JOIN core.instruments i ON i.instrument_id=ci.instrument_id WHERE i.canonical_code=$1 AND r.report_kind='income' AND upper(COALESCE(r.raw_payload->>'ts_code',''))=upper($1)) has_reports`, [params.tsCode]);
   return rows[0] || {};

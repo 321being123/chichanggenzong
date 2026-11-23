@@ -588,7 +588,7 @@
         <button type="button" class="ss-scheme-tab" data-ss-scheme="graham_net_net" data-ss-metric-help="格雷厄姆低估选股规则" data-ss-help-text="• G01 净流动资产盈余：最新已披露合并资产负债表的 流动资产合计 − 流动负债合计 − 总市值 &gt; 0（港股异币种财报按目标日汇率折算为港币后比较；银行/保险/券商等不区分流动科目的金融企业标记为不适用）。&#10;• 排序与组合：按（流动资产 − 流动负债 − 总市值）÷ 总市值 降序排名（安全边际越高越靠前），每市场最多 30 个等权席位。">格雷厄姆低估</button>
       </div>
     </div>
-    <div class="ss-hero bond-feature-hero">
+    <div class="ss-hero bond-feature-hero" hidden>
       <div>
         <h2>投资策略选股中心</h2>
         <p id="ss-hero-desc">按低 PB、十年出现过高 PB、有现金分红、净资产达标四项条件筛股；A股与港股各自独立排名，每个市场最多 30 只等权席位。仅供研究参考，不构成投资建议。</p>
@@ -596,12 +596,12 @@
       <span id="ss-updated" class="ss-updated bond-feature-updated">页面只读数据库，不会触发外部采集</span>
     </div>
     <div id="ss-status" class="ss-status"></div>
-    <div id="ss-market-cards" class="ss-cards bond-feature-stats"></div>
+    <div id="ss-market-cards" class="ss-cards bond-feature-stats" hidden></div>
     <div class="table-wrap ss-source-panel">
       <div class="ss-toolbar bond-feature-toolbar">
         <div class="bond-sub-nav ss-period-tabs" id="ss-period-tabs" aria-label="选择结果周期">
-          <button type="button" class="bond-sub-tab" data-ss-period="weekly">每周正式</button>
           <button type="button" class="bond-sub-tab" data-ss-period="daily">每日动态</button>
+          <button type="button" class="bond-sub-tab" data-ss-period="weekly">每周正式</button>
           <button type="button" class="bond-sub-tab" data-ss-period="quarter">历史季度</button>
         </div>
         <div class="ss-toolbar-right">

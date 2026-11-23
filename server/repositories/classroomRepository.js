@@ -356,6 +356,14 @@ async function updateClassroomState(client, classroomId, fields) {
   return rows[0];
 }
 
+async function deleteClassroom(client, classroomId) {
+  const { rows } = await q(client).query(
+    `DELETE FROM public.classroom_classrooms WHERE classroom_id = $1 RETURNING classroom_id, classroom_code, title`,
+    [classroomId]
+  );
+  return rows[0] || null;
+}
+
 async function insertRound(client, data) {
   const { rows } = await q(client).query(
     `INSERT INTO public.classroom_rounds (
@@ -683,6 +691,7 @@ module.exports = {
   listClassroomsForAdmin,
   listClassroomsForSubject,
   updateClassroomState,
+  deleteClassroom,
   insertRound,
   findRound,
   findRoundForUpdate,

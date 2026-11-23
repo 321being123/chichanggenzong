@@ -33,7 +33,8 @@
 .ss-run-note { margin-top: 8px; font-size: 13px; color: #b45309; line-height: 1.7; }
 .ss-run-error { margin-top: 8px; color: #9a3412; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .ss-source-panel .ss-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
-.ss-source-panel .ss-period-tabs { justify-content: flex-start; margin-right: auto; }
+.ss-source-panel .ss-period-tabs { justify-content: flex-start; margin: 0 auto 0 0; padding: 0; }
+.ss-source-panel .ss-period-tabs .bond-sub-tab:first-child { padding-left: 0; }
 .ss-source-panel .ss-toolbar-right { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-left: auto; }
 .ss-source-panel .ss-toolbar-right > label { display: inline-flex; align-items: center; gap: 8px; }
 .ss-source-panel .ss-toolbar select { min-height: 36px; }

@@ -84,6 +84,18 @@
         body: JSON.stringify(payload || {}),
       });
     },
+    adminClose: function (classroomId) {
+      return requestJson('/api/classroom/admin/' + classroomId + '/close', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      });
+    },
+    adminDelete: function (classroomId) {
+      return requestJson('/api/classroom/admin/' + classroomId, {
+        method: 'DELETE',
+      });
+    },
     adminGetState: function (classroomId) {
       return requestJson('/api/classroom/admin/' + classroomId + '/state');
     },

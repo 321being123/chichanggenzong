@@ -208,6 +208,37 @@ function ssEssentialsRuleHelpText(isV2) {
     '• 组合：每市场 30 个等权席位，单一行业不超过该市场预算的 20%，合格股不足则留现金。',
   ]).join('\n');
 }
+function ssBuildEssentialsHelpText(state) {
+  var rules = ssEssentialsRuleHelpText(ssIsV2(state));
+  var item = (state && state.markets || []).find(function (entry) { return entry.market === state.market; });
+  var lines = [
+    '投资策略选股中心（页面只读数据库，不会触发外部采集）',
+    '按低 PB、十年出现过高 PB、有现金分红、净资产达标四项条件筛股；A股与港股各自独立排名，每个市场最多 30 只等权席位。仅供研究参考，不构成投资建议。',
+  ];
+  if (item) {
+    var isV2 = ssIsV2(state);
+    var position = item.referencePosition === null || item.referencePosition === undefined
+      ? (isV2 ? '不适用' : '本轮不配置')
+      : Math.round(item.referencePosition * 100) + '%';
+    var latest = item.latestRun || null;
+    var latestText = latest
+      ? (latest.period_key || latest.periodKey || latest.quarter || latest.as_of_date || latest.asOfDate || '') + '（' + (latest.selected_count === undefined ? latest.selectedCount : latest.selected_count) + ' 只）'
+      : '尚未发布';
+    var readiness = item.selectedPeriodStatus
+      ? (item.selectedPeriodStatus.samePeriodPublished
+        ? (item.activePeriodType === 'day' ? '今日已发布' : '本周已发布')
+        : (item.activePeriodType === 'day' ? '今日待就绪' : '本周待就绪'))
+      : '';
+    var gateText = SS_GATE_TEXT[item.gate && item.gate.status] || (item.gate && item.gate.status) || '';
+    lines.push('');
+    lines.push('【' + item.label + (gateText ? ' · ' + gateText : '') + '】');
+    lines.push('• ' + (item.proxyLabel || item.benchmarkLabel + ' PB（市场代理）') + '：' + (item.pb === null ? '--' : Number(item.pb).toFixed(3)) + ' ｜ ' + item.benchmarkLabel + ' PE（TTM）：' + (item.pe === null ? '--' : Number(item.pe).toFixed(2)));
+    lines.push('• 估值日期：' + (item.asOfDate || '--') + ' ｜ PB 参考仓位：' + position);
+    lines.push('• 所选周期最新来源：' + latestText + (readiness ? ' ｜ ' + (item.activePeriodType === 'day' ? '今日状态' : '本周状态') + '：' + readiness : ''));
+    lines.push('• 口径：' + (item.valuationMethodLabel || '总市值加权') + (item.marketValuationRole === 'display_only' ? '；指数估值仅供参考，不决定是否配置。' : '；仅用于判断市场环境，不替代个股数据。'));
+  }
+  return lines.join('\n') + '\n\n' + rules;
+}
 function ssRenderRuleScope(state) {
   var isGraham = ssIsGraham(state);
   var scheme = isGraham ? 'graham_net_net' : 'essentials';
@@ -217,7 +248,7 @@ function ssRenderRuleScope(state) {
     btn.classList.toggle('active', active);
     btn.setAttribute('aria-selected', active ? 'true' : 'false');
     if (btn.dataset && btn.dataset.ssScheme === 'essentials') {
-      btn.setAttribute('data-ss-help-text', ssEssentialsRuleHelpText(ssIsV2(state)));
+      btn.setAttribute('data-ss-help-text', ssBuildEssentialsHelpText(state));
     }
   });
   var heroDesc = ssEl('ss-hero-desc');
@@ -230,6 +261,14 @@ function ssRenderRuleScope(state) {
 
 function ssRenderMarkets(state) {
   var root = ssEl('ss-market-cards'); if (!root) return; ssCloseMetricTooltip(false); ssRenderMarketTabs(state);
+  root.hidden = true;
+  if (typeof document.querySelectorAll === 'function') {
+    document.querySelectorAll('[data-ss-scheme]').forEach(function (btn) {
+      if (btn && btn.dataset && btn.dataset.ssScheme === 'essentials') {
+        btn.setAttribute('data-ss-help-text', ssBuildEssentialsHelpText(state));
+      }
+    });
+  }
   var item = (state.markets || []).find(function (entry) { return entry.market === state.market; });
   if (!item) { root.innerHTML = '<div class="ss-empty">当前市场暂无概览数据</div>'; return; }
   var isV2 = ssIsV2(state);

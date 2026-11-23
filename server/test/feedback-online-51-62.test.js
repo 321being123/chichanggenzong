@@ -72,7 +72,7 @@ check('#58/#59 修复 --ok 缺失导致的利润柱黑色与 20% 分位线消失
   const style = read('public', 'shared', 'style.css');
   const saCss = read('public', 'css', 'stock-analysis.css');
   assert.ok(style.includes('--ok: var(--success);'), 'style.css 必须提供 --ok 兜底变量');
-  assert.ok(saCss.includes('.stock-analysis-chart .profit{fill:var(--success)}'), '利润柱状图必须使用绿色 --success');
+  assert.ok(saCss.includes('.stock-analysis-chart .profit{fill:var(--profit-color)}') && saCss.includes('--profit-color:#4ade80'), '利润柱状图必须使用嫩绿色 --profit-color');
   assert.ok(saCss.includes('.band20{stroke:var(--success)}'), '20% 分位线必须使用绿色 --success');
   assert.ok(saCss.includes('.stock-analysis-valuation-legend .b20{border-color:var(--success)}'), '20% 分位图例必须使用绿色 --success');
 });

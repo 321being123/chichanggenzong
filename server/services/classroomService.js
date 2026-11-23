@@ -504,6 +504,9 @@ async function saveDraft({ classroomId, roundNo, authUser, allocations, expected
   return repo.withTransaction(async (client) => {
     const classroom = await repo.findClassroomById(classroomId, client);
     if (!classroom) throw createHttpError(404, '场次不存在');
+    if (classroom.status === 'completed') {
+      throw createHttpError(409, '场次已关闭，无法修改草稿');
+    }
     if (Number(classroom.current_round) !== Number(roundNo)) {
       throw createHttpError(409, '只能保存当前轮次的草稿');
     }
@@ -560,6 +563,9 @@ async function submitAllocation({ classroomId, roundNo, authUser, allocations, c
   return repo.withTransaction(async (client) => {
     const classroom = await repo.findClassroomByIdForUpdate(client, classroomId);
     if (!classroom) throw createHttpError(404, '场次不存在');
+    if (classroom.status === 'completed') {
+      throw createHttpError(409, '场次已关闭，无法提交配置');
+    }
     if (Number(classroom.current_round) !== Number(roundNo)) {
       throw createHttpError(409, '当前不在该轮次');
     }
@@ -1126,8 +1132,46 @@ async function saveAfterClassNote({ classroomId, authUser, note }) {
   };
 }
 
+async function closeClassroom({ classroomId }) {
+  const result = await repo.withTransaction(async (client) => {
+    const classroom = await repo.findClassroomByIdForUpdate(client, classroomId);
+    if (!classroom) throw createHttpError(404, '场次不存在');
+    if (classroom.status === 'completed') {
+      return { classroom, alreadyClosed: true };
+    }
+    const nextVer = Number(classroom.state_version) + 1;
+    const updated = await repo.updateClassroomState(client, classroomId, {
+      status: 'completed',
+      stateVersion: nextVer,
+      completedAt: classroom.completed_at || new Date(),
+    });
+    return { classroom: updated, alreadyClosed: false };
+  });
+
+  if (!result.alreadyClosed) {
+    sseHub.broadcastStateChange(classroomId, {
+      roundNo: result.classroom.current_round,
+      stateVersion: result.classroom.state_version,
+      status: result.classroom.status,
+    });
+  }
+
+  return summarizeClassroom(result.classroom);
+}
+
+async function deleteClassroom({ classroomId }) {
+  const deleted = await repo.withTransaction(async (client) => {
+    const classroom = await repo.findClassroomByIdForUpdate(client, classroomId);
+    if (!classroom) throw createHttpError(404, '场次不存在');
+    return repo.deleteClassroom(client, classroomId);
+  });
+  return deleted;
+}
+
 module.exports = {
   createClassroom,
+  closeClassroom,
+  deleteClassroom,
   resolveByCode,
   listMyClassrooms,
   joinClassroom,

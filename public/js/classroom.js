@@ -1081,10 +1081,60 @@
           renderTabs();
         });
         row.appendChild(btn);
+
+        if (c.status !== 'completed') {
+          const closeBtn = document.createElement('button');
+          closeBtn.type = 'button';
+          closeBtn.className = 'cr-btn cr-btn-sm';
+          closeBtn.textContent = '关闭场次';
+          closeBtn.addEventListener('click', async function () {
+            if (!window.confirm('确定关闭场次「' + c.title + '」？关闭后学员将无法再加入、保存草稿或提交配置。')) return;
+            try {
+              await api.adminClose(c.classroom_id);
+              await loadTeacherConsole();
+              await loadMyClassrooms();
+              showBanner('场次已关闭', false);
+            } catch (e) {
+              showBanner('关闭场次失败：' + e.message);
+            }
+          });
+          row.appendChild(closeBtn);
+        }
+
+        const delBtn = document.createElement('button');
+        delBtn.type = 'button';
+        delBtn.className = 'cr-btn cr-btn-danger cr-btn-sm';
+        delBtn.textContent = '删除';
+        delBtn.addEventListener('click', async function () {
+          if (!window.confirm('确定永久删除场次「' + c.title + '（' + c.classroom_code + '）」及其所有学员与轮次数据？此操作不可恢复。')) return;
+          try {
+            await api.adminDelete(c.classroom_id);
+            if (Number(state.teacherClassroomId) === Number(c.classroom_id)) {
+              state.teacherClassroomId = null;
+              state.teacherData = null;
+              $('teacher-active-panel').hidden = true;
+            }
+            if (Number(state.currentClassroomId) === Number(c.classroom_id)) {
+              state.currentClassroomId = null;
+              state.studentData = null;
+              closeSse();
+            }
+            await loadTeacherConsole();
+            await loadMyClassrooms();
+            renderTabs();
+            showBanner('场次已删除', false);
+          } catch (e) {
+            showBanner('删除场次失败：' + e.message);
+          }
+        });
+        row.appendChild(delBtn);
+
         list.appendChild(row);
       });
       if (state.teacherClassroomId) {
         await loadTeacherDetail();
+      } else {
+        $('teacher-active-panel').hidden = true;
       }
     } catch (e) {
       showBanner('加载教师控制台失败：' + e.message);
@@ -1252,39 +1302,46 @@
 
       const btns = document.createElement('div');
       btns.className = 'classroom-btn-group';
-      if (r.status === 'pending') {
-        const bOpen = makeActionBtn('开放第 1 轮配置', 'cr-btn cr-btn-primary', async function () {
-          await api.adminOpenRound(c.classroomId, 1, c.stateVersion);
-          await loadTeacherDetail();
-        });
-        btns.appendChild(bOpen);
-      }
-      if (r.status === 'configuring') {
-        const bLock = makeActionBtn('锁单', 'cr-btn cr-btn-danger', async function () {
-          if (!window.confirm('确认锁单？当前已提交 ' + d.counts.submittedCount + ' 人 / 未提交 ' + d.counts.unsubmittedCount + ' 人。')) return;
-          await api.adminLockRound(c.classroomId, r.roundNo, c.stateVersion);
-          await loadTeacherDetail();
-        });
-        btns.appendChild(bLock);
-      }
-      if (r.status === 'locked') {
-        const bUnlock = makeActionBtn('解锁回到配置中', 'cr-btn', async function () {
-          await api.adminUnlockRound(c.classroomId, r.roundNo, c.stateVersion);
-          await loadTeacherDetail();
-        });
-        const bReveal = makeActionBtn('揭晓并结算本轮', 'cr-btn cr-btn-success', async function () {
-          await api.adminRevealRound(c.classroomId, r.roundNo, c.stateVersion);
-          await loadTeacherDetail();
-        });
-        btns.appendChild(bUnlock);
-        btns.appendChild(bReveal);
-      }
-      if (r.status === 'revealed' && r.roundNo < c.totalRounds) {
-        const bNext = makeActionBtn('进入第 ' + (r.roundNo + 1) + ' 轮', 'cr-btn cr-btn-primary', async function () {
-          await api.adminOpenRound(c.classroomId, r.roundNo + 1, c.stateVersion);
-          await loadTeacherDetail();
-        });
-        btns.appendChild(bNext);
+      if (c.status === 'completed') {
+        const closedBadge = document.createElement('span');
+        closedBadge.className = 'cr-badge';
+        closedBadge.textContent = '本场次已关闭/已结课';
+        btns.appendChild(closedBadge);
+      } else {
+        if (r.status === 'pending') {
+          const bOpen = makeActionBtn('开放第 1 轮配置', 'cr-btn cr-btn-primary', async function () {
+            await api.adminOpenRound(c.classroomId, 1, c.stateVersion);
+            await loadTeacherDetail();
+          });
+          btns.appendChild(bOpen);
+        }
+        if (r.status === 'configuring') {
+          const bLock = makeActionBtn('锁单', 'cr-btn cr-btn-danger', async function () {
+            if (!window.confirm('确认锁单？当前已提交 ' + d.counts.submittedCount + ' 人 / 未提交 ' + d.counts.unsubmittedCount + ' 人。')) return;
+            await api.adminLockRound(c.classroomId, r.roundNo, c.stateVersion);
+            await loadTeacherDetail();
+          });
+          btns.appendChild(bLock);
+        }
+        if (r.status === 'locked') {
+          const bUnlock = makeActionBtn('解锁回到配置中', 'cr-btn', async function () {
+            await api.adminUnlockRound(c.classroomId, r.roundNo, c.stateVersion);
+            await loadTeacherDetail();
+          });
+          const bReveal = makeActionBtn('揭晓并结算本轮', 'cr-btn cr-btn-success', async function () {
+            await api.adminRevealRound(c.classroomId, r.roundNo, c.stateVersion);
+            await loadTeacherDetail();
+          });
+          btns.appendChild(bUnlock);
+          btns.appendChild(bReveal);
+        }
+        if (r.status === 'revealed' && r.roundNo < c.totalRounds) {
+          const bNext = makeActionBtn('进入第 ' + (r.roundNo + 1) + ' 轮', 'cr-btn cr-btn-primary', async function () {
+            await api.adminOpenRound(c.classroomId, r.roundNo + 1, c.stateVersion);
+            await loadTeacherDetail();
+          });
+          btns.appendChild(bNext);
+        }
       }
       if (c.blindMode && !c.identityRevealed) {
         const bId = makeActionBtn('揭示真实年份与股票名称', 'cr-btn', async function () {

@@ -153,10 +153,18 @@ function buildAnalysis(data, options = {}) {
   const latestBalance = balanceMap.get(latestIncome && latestIncome.end_date) || [...balanceMap.values()].sort((a, b) => b.end_date.localeCompare(a.end_date))[0] || {};
   const latestIndicator = indicatorMap.get(latestBalance.end_date) || [...indicatorMap.values()].sort((a, b) => b.end_date.localeCompare(a.end_date))[0] || {};
   const latestValuation = data.valuations[data.valuations.length - 1] || {};
+  let latestPriceRow = null;
+  for (let i = data.valuations.length - 1; i >= 0; i--) {
+    const row = data.valuations[i];
+    if (finite(row.close) != null && finite(row.adj_factor) != null) {
+      latestPriceRow = row;
+      break;
+    }
+  }
   // 腾讯旧缓存（上游失败保留）不能当实时行情：只有报价时间是当天，才算有效实时报价
   const liveQuote = rawQuote && isoDateSafe(rawQuote.quote_time) === isoDate(today) ? rawQuote : null;
   const quote = liveQuote;
-  const currentPrice = finite(liveQuote && liveQuote.price) || finite(latestValuation.close);
+  const currentPrice = finite(liveQuote && liveQuote.price) || finite(latestValuation.close) || finite(latestPriceRow && latestPriceRow.close);
   const totalShare = finite(latestValuation.total_share);
   const marketCap = currentPrice != null && totalShare != null ? currentPrice * totalShare * 10000 : finite(latestValuation.total_mv) == null ? null : finite(latestValuation.total_mv) * 10000;
   const floatShare = finite(latestValuation.float_share), freeShare = finite(latestValuation.free_share);
@@ -165,7 +173,13 @@ function buildAnalysis(data, options = {}) {
   const ttmProfit = ttmValue(incomeMap, 'n_income_attr_p');
   const staticProfit = annualIncome[0] && finite(annualIncome[0].n_income_attr_p);
   const avg3Profit = average(annualIncome.slice(0, 3).map(row => row.n_income_attr_p));
-  const forecast = data.forecasts.filter(row => dateText(row.ann_date) <= today).sort((a, b) => String(b.ann_date).localeCompare(String(a.ann_date)))[0];
+  const latestAnnualEndDate = annualIncome[0] ? dateText(annualIncome[0].end_date) : '';
+  const forecast = data.forecasts.filter(row => {
+    if (dateText(row.ann_date) > today) return false;
+    const fEnd = dateText(row.end_date);
+    if (latestAnnualEndDate && fEnd && fEnd <= latestAnnualEndDate) return false;
+    return true;
+  }).sort((a, b) => String(b.ann_date).localeCompare(String(a.ann_date)))[0];
   let forecastProfit = forecast ? average([forecast.net_profit_min, forecast.net_profit_max]) : null;
   if (forecastProfit == null && forecast && finite(forecast.last_parent_net) != null) {
     const pct = average([forecast.p_change_min, forecast.p_change_max]);
@@ -179,7 +193,7 @@ function buildAnalysis(data, options = {}) {
   const calculatedRoa = officialRoa == null && staticProfit != null && averageAnnualAssets ? staticProfit / averageAnnualAssets * 100 : officialRoa;
   const chartValuations = data.valuations.filter(row => row.trade_date >= yearsAgo(10958));
   const positiveValuations = chartValuations.filter(row => row.trade_date >= yearsAgo(3653));
-  const latestFactor = finite(latestValuation.adj_factor);
+  const latestFactor = finite(latestValuation.adj_factor) || finite(latestPriceRow && latestPriceRow.adj_factor);
   const qfqPrices = positiveValuations.map(row => {
     const close = finite(row.close), factor = finite(row.adj_factor);
     return close != null && factor != null && latestFactor ? close * factor / latestFactor : close;

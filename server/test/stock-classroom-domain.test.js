@@ -214,7 +214,35 @@ function run() {
   assert.deepStrictEqual(ranked.map((r) => r.officialRank), [1, 1, 3]);
   assert.strictEqual(rules.computeLateReferenceRank([120000000, 120000000, 95000000], 100000000), 3);
 
-  console.log('stock-classroom-domain.test.js: ALL PASSED');
+  // 9. 真实 siteApi（client.js）与 classroom-api.js 接线兼容回归
+  const vm = require('vm');
+  const fs = require('fs');
+  const path = require('path');
+  const sandbox = {
+    window: null,
+    fetch: async () => ({
+      ok: true,
+      status: 200,
+      headers: { get: () => 'application/json' },
+      json: async () => ({ username: 'tester', role: 'user' }),
+    }),
+    AbortController: global.AbortController,
+    setTimeout,
+    clearTimeout,
+    URLSearchParams,
+    Error,
+  };
+  sandbox.window = sandbox;
+  sandbox.globalThis = sandbox;
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../../public/js/api/client.js'), 'utf8'), sandbox);
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../../public/js/api/classroom-api.js'), 'utf8'), sandbox);
+  sandbox.classroomApi.getMe().then((meResult) => {
+    assert.strictEqual(meResult.username, 'tester');
+    console.log('stock-classroom-domain.test.js: ALL PASSED');
+  }).catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
 }
 
 run();

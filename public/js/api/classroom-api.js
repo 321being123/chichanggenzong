@@ -2,14 +2,18 @@
   'use strict';
 
   function getClient() {
-    if (global.siteApi && typeof global.siteApi.fetchJson === 'function') {
+    if (global.siteApi && (typeof global.siteApi.requestOrThrow === 'function' || typeof global.siteApi.fetchJson === 'function')) {
       return global.siteApi;
     }
     throw new Error('siteApi 未初始化');
   }
 
   function requestJson(url, opts) {
-    return getClient().fetchJson(url, opts);
+    const client = getClient();
+    if (typeof client.fetchJson === 'function') {
+      return client.fetchJson(url, opts);
+    }
+    return client.requestOrThrow(url, opts);
   }
 
   const classroomApi = {

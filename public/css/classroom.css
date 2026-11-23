@@ -169,6 +169,13 @@
   color: #fff;
 }
 
+.cr-btn-primary:disabled {
+  background: #94a3b8;
+  border-color: #94a3b8;
+  color: #fff;
+  opacity: 0.85;
+}
+
 .cr-btn-danger {
   background: #dc2626;
   border-color: #dc2626;

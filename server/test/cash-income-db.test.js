@@ -278,6 +278,26 @@ const fact=parseDividend(text,identity);
 const variant='转债代码：110998；付息债权登记日：2026年9月3日；可转债兑息日：2026年9月4日；每张面值100元人民币可转债派息金额为人民币1.80元（含税）。';
 assert.strictEqual(parseDividend(variant,identity).amount,1.8);
 assert.strictEqual(parseDividend(variant,identity).payDate,'2026-09-04');
+const interestNotices = [
+  {
+    code: '110085',
+    dates: '债权登记日：2026年2月13日；兑息日：2026年2月24日；',
+    terms: '面利率为1.50%（含税），即每张面值100 元可转债兑息金额为1.50 元（含税）。',
+    amount: 1.5,
+  },
+  {
+    code: '118020',
+    dates: '债权登记日：2026年9月22日；兑息日：2026年9月23日；',
+    terms: '每张面值100 元人民币\n可转债兑息金额为2.60 元人民币（含税）。',
+    amount: 2.6,
+  },
+];
+for (const {code, dates, terms, amount} of interestNotices) {
+  const bond = {...identity, canonical_code: `${code}.SH`};
+  const notice = `转债代码：${code}；${dates}${terms}`;
+  assert.strictEqual(parseDividend(notice,bond).amount,amount);
+  assert.strictEqual(parseDividend(notice+'每张兑息金额为99元（含税）。',bond).reason,'incomplete_bond_interest_terms');
+}
 const other='债券代码：110998；一、本期债券基本情况1.发行人：测试公司2.债券名称：另一债券3.债券代码：102583523二、付息办法';
 assert.strictEqual(parseDividend(other,identity).classification,'excluded_other_bond_interest');
 assert.strictEqual(parseDividend(other.replace('102583523二','102583523\n5.发行总额：5亿元\n二'),identity).classification,'excluded_other_bond_interest');

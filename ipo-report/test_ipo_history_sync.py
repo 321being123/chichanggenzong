@@ -113,8 +113,33 @@ try:
               same_day["pending_not_due"] == 1 and same_day["attempted"] == 0)
         listed = sync.sync_sw_industry_taxonomies(
             IndustryTaxonomyCursorSpy(pending, today.isoformat(), "active"), ["999999"], today)
-        check("上市日共享层缺分类仍为真实缺口",
+        check("未确认已上市不能使用上市日宽限",
               listed["missing"] == 1 and listed["pending_not_due"] == 0)
+        listing_day = date(2026, 11, 23)
+        listing_cursor = IndustryTaxonomyCursorSpy(
+            dict(pending, fetched_at="2026-11-20T13:51:51+08:00"), listing_day, "listed")
+        listing_result = sync.sync_sw_industry_taxonomies(listing_cursor, ["920067"], listing_day)
+        listing_pending = listing_cursor.params[0].adapted
+        check("已确认上市当日共享层未收录为有限等待",
+              listing_result["pending_not_due"] == 1 and listing_result["missing"] == 0
+              and listing_pending["reason"] == "listing_day_not_indexed"
+              and listing_pending["recheck_on"] == "2026-11-24" and "l2_code" not in listing_pending)
+        listing_pending["fetched_at"] = "2026-11-23T16:30:04+08:00"
+        listing_retry = sync.sync_sw_industry_taxonomies(
+            IndustryTaxonomyCursorSpy(listing_pending, listing_day, "listed"),
+            ["920067"], listing_day)
+        check("上市日重复检查不重写待收录证据",
+              listing_retry["pending_not_due"] == 1 and listing_retry["attempted"] == 0)
+        overdue = sync.sync_sw_industry_taxonomies(
+            IndustryTaxonomyCursorSpy(listing_pending, listing_day, "listed"),
+            ["920067"], date(2026, 11, 24))
+        check("上市次日仍未收录继续报告真实缺口",
+              overdue["missing"] == 1 and overdue["pending_not_due"] == 0)
+        later_classification = dict(shared, classification_date="2026-11-24")
+        historical_cursor = IndustryTaxonomyCursorSpy(later_classification, listing_day, "listed")
+        historical = sync.sync_sw_industry_taxonomies(historical_cursor, ["920067"], listing_day)
+        check("历史上市日复查保留次日入库的真实分类",
+              historical["pending_not_due"] == 1 and historical_cursor.rowcount == 0)
         stale = dict(pending, fetched_at="2026-01-01T12:00:00+08:00")
         sync.read_shared_sw_industry = lambda *args: shared
         acquired_cursor = IndustryTaxonomyCursorSpy(stale, ipo_status="active")

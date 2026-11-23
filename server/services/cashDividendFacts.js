@@ -9,7 +9,7 @@ const {fetchSseEvents, fetchSzseEvents} = require('../dataAccess/adapters/announ
 const PARSER='cash-dividend-v7';
 // v7 只扩展此前未解析的上交所表格，不改变 v6 已通过事实的口径。
 const COMPATIBLE_DOCUMENT_PARSERS=new Set([PARSER,'cash-dividend-v6']);
-const BOND_INTEREST_PARSER='bond-interest-v2';
+const BOND_INTEREST_PARSER='bond-interest-v3';
 function normalizeChineseDates(text){
   const digits={'零':0,'〇':0,'一':1,'二':2,'三':3,'四':4,'五':5,'六':6,'七':7,'八':8,'九':9};
   const n=s=>s.includes('十')?Number(s.split('十')[0]?digits[s.split('十')[0]]:1)*10+Number(s.split('十')[1]?digits[s.split('十')[1]]:0):Number([...s].map(c=>digits[c]).join(''));
@@ -115,7 +115,7 @@ function parseBondInterest(text,identity) {
   const recordDate=labeledDate(compact,'(?:付息)?债权登记日(?:期)?');
   const payDate=labeledDate(compact,'(?:本次)?(?:付息|兑息)日(?:期)?');
   // 只取明确含税的每张/每10张利息，不把本金、票面利率列表或税后金额当作毛息。
-  const amounts=[...compact.matchAll(/每(?:(\d+))?张[^。；;]{0,90}?(?:派发利息(?:为)?|派息金额(?:为)?|利息为|利息)[：:]?(?:人民币)?([\d.]+)元[（(]含税[）)]/g)]
+  const amounts=[...compact.matchAll(/每(?:(\d+))?张[^。；;]{0,90}?(?:派发利息(?:为)?|(?:派息|兑息)金额(?:为)?|利息为|利息)[：:]?(?:人民币)?([\d.]+)元(?:人民币)?[（(]含税[）)]/g)]
     .map(m=>Number(m[2])/Number(m[1]||1));
   const unique=[...new Set(amounts)];
   const terms={incomeKind:'bond_interest',recordDate,payDate,exDate:payDate,currency:'CNY',amount:unique[0],taxRate:0.2,quantityUnit:'bond',parserVersion:PARSER,bondParserVersion:BOND_INTEREST_PARSER};

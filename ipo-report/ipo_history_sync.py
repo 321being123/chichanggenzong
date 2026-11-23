@@ -282,7 +282,7 @@ def read_shared_sw_industry(cur, code, today):
     """只读取目标业务日已可见的共享申万 2021 分类。"""
     ts_code = resolve_canonical_code(code, asset_class="stock", conn=cur.connection)
     if not ts_code:
-        return None
+        raise ValueError(f"无法确定 {code} 的统一证券代码")
     cur.execute(
         """SELECT m.membership_id, ds.source_code,
                   TO_CHAR(COALESCE(GREATEST(m.valid_from,m.announced_at),
@@ -332,8 +332,12 @@ def sync_sw_industry_taxonomies(cur, codes, today, raise_on_guard=False):
         row = cur.fetchone()
         stored = row[0] if row and isinstance(row[0], dict) else {}
         listing_date = str(row[1] or "")[:10] if row else ""
-        prelisting = bool(row and ((listing_date and listing_date > today.isoformat())
+        today_text = today.isoformat()
+        prelisting = bool(row and ((listing_date and listing_date > today_text)
                                   or (not listing_date and row[2] == "active")))
+        listing_day = bool(row and listing_date == today_text and row[2] == "listed")
+        pending_reason = ("prelisting_not_indexed" if prelisting else
+                          "listing_day_not_indexed" if listing_day else None)
         fetched_at = str(stored.get("fetched_at") or "")[:10]
         evidence_date = str(stored.get("classification_date") or fetched_at)[:10]
         try:
@@ -349,19 +353,28 @@ def sync_sw_industry_taxonomies(cur, codes, today, raise_on_guard=False):
             if not item and fresh:
                 result["cached"] += 1
                 continue
-            if not item and prelisting and stored.get("status") == "pending_not_due" and fetched_at == today.isoformat():
+            if (not item and pending_reason and stored.get("l2_code") and stored.get("l2_name")
+                    and evidence_date > today_text):
+                # 历史槽按当时可见性判定，但不能用当时的等待覆盖后来入库的真实路径。
+                result["pending_not_due"] += 1
+                continue
+            if (not item and pending_reason and stored.get("status") == "pending_not_due"
+                    and stored.get("reason") == pending_reason and fetched_at == today_text):
                 result["pending_not_due"] += 1
                 continue
             result["attempted"] += 1
-            if not item and not prelisting:
+            if not item and not pending_reason:
                 result["missing"] += 1
                 continue
             taxonomy = {
                 "taxonomy_code": "SW2021",
                 "fetched_at": _now_shanghai().isoformat(),
-                **(item or {"status": "pending_not_due", "reason": "prelisting_not_indexed",
+                **(item or {"status": "pending_not_due", "reason": pending_reason,
                             "source": "shared_industry"}),
             }
+            if not item and listing_day:
+                # 截止绑定已确认上市日，重试或重启不会延长窗口。
+                taxonomy["recheck_on"] = (today + timedelta(days=1)).isoformat()
             cur.execute(
                 """UPDATE ipo_history
                       SET source_payload=COALESCE(source_payload,'{}'::jsonb) || jsonb_build_object(

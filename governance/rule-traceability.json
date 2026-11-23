@@ -1240,7 +1240,7 @@
     },
     {
       "id": "IPO-INDUSTRY-L2-002",
-      "title": "申万行业按目标业务日读取共享分类，未上市未收录为正常等待",
+      "title": "申万行业按业务日读取共享分类，上市当日收录宽限有截止",
       "implementation": {
         "file": "ipo-report/ipo_history_sync.py",
         "symbol": "sync_sw_industry_taxonomies"
@@ -1260,7 +1260,19 @@
         },
         {
           "file": "ipo-report/test_ipo_history_sync.py",
-          "pattern": "上市日共享层缺分类仍为真实缺口"
+          "pattern": "未确认已上市不能使用上市日宽限"
+        },
+        {
+          "file": "ipo-report/test_ipo_history_sync.py",
+          "pattern": "已确认上市当日共享层未收录为有限等待"
+        },
+        {
+          "file": "ipo-report/test_ipo_history_sync.py",
+          "pattern": "上市次日仍未收录继续报告真实缺口"
+        },
+        {
+          "file": "ipo-report/test_ipo_history_sync.py",
+          "pattern": "历史上市日复查保留次日入库的真实分类"
         },
         {
           "file": "ipo-report/test_ipo_history_sync.py",
@@ -1272,7 +1284,7 @@
         }
       ],
       "owner": "A股 IPO",
-      "status": "production_verified",
+      "status": "verified",
       "sharedLayerProductionEvidence": {
         "codeCommit": "cc2a8902",
         "job": "ipo_history_sync",
@@ -3708,6 +3720,10 @@
         {
           "file": "server/test/cash-income-db.test.js",
           "pattern": "excluded_other_bond_interest"
+        },
+        {
+          "file": "server/test/cash-income-db.test.js",
+          "pattern": "可转债兑息金额为2.60"
         }
       ],
       "owner": "运维治理",

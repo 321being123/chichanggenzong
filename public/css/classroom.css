@@ -509,21 +509,50 @@
     font-size: 11px;
     line-height: 1.25;
   }
+  #student-alloc-table {
+    table-layout: auto;
+  }
+  #student-alloc-table th,
+  #student-alloc-table td {
+    padding: 8px 1px;
+  }
+  #student-alloc-table th:first-child,
+  #student-alloc-table td:first-child {
+    padding-left: 4px;
+  }
+  #student-alloc-table th:last-child,
+  #student-alloc-table td:last-child {
+    padding-right: 4px;
+  }
   #student-alloc-table th:nth-child(1),
-  #student-alloc-table td:nth-child(1) { width: 15%; }
-  #student-alloc-table th:nth-child(2),
-  #student-alloc-table td:nth-child(2) { width: 31%; }
+  #student-alloc-table td:nth-child(1),
+  #student-alloc-table td:nth-child(3),
+  #student-alloc-table td:nth-child(4),
+  #student-alloc-table td:nth-child(5),
+  #student-alloc-table td:nth-child(6) {
+    white-space: nowrap;
+  }
+  #student-alloc-table td:nth-child(2) {
+    white-space: normal;
+    word-break: break-word;
+    overflow-wrap: anywhere;
+  }
   #student-alloc-table th:nth-child(3),
-  #student-alloc-table td:nth-child(3) { width: 13%; }
+  #student-alloc-table td:nth-child(3),
   #student-alloc-table th:nth-child(4),
-  #student-alloc-table td:nth-child(4) { width: 13%; }
+  #student-alloc-table td:nth-child(4),
   #student-alloc-table th:nth-child(5),
-  #student-alloc-table td:nth-child(5) { width: 28%; }
+  #student-alloc-table td:nth-child(5),
+  #student-alloc-table th:nth-child(6),
+  #student-alloc-table td:nth-child(6) {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+  }
   .alloc-cell-btn {
-    min-width: 56px;
+    min-width: 48px;
     width: 100%;
     min-height: 36px;
-    padding: 4px 6px;
+    padding: 4px 5px;
     font-size: 12px;
   }
 }

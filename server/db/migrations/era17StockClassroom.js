@@ -9,10 +9,9 @@ async function ensureSchema(pool, name) {
 }
 
 async function migration210StockClassroom(pool) {
-  await ensureSchema(pool, 'classroom');
   await pool.query(`
 
-    CREATE TABLE IF NOT EXISTS classroom.classrooms (
+    CREATE TABLE IF NOT EXISTS public.classroom_classrooms (
       classroom_id BIGSERIAL PRIMARY KEY,
       classroom_code TEXT NOT NULL UNIQUE,
       title TEXT NOT NULL,
@@ -35,9 +34,9 @@ async function migration210StockClassroom(pool) {
       completed_at TIMESTAMPTZ
     );
 
-    CREATE TABLE IF NOT EXISTS classroom.rounds (
+    CREATE TABLE IF NOT EXISTS public.classroom_rounds (
       round_id BIGSERIAL PRIMARY KEY,
-      classroom_id BIGINT NOT NULL REFERENCES classroom.classrooms(classroom_id) ON DELETE CASCADE,
+      classroom_id BIGINT NOT NULL REFERENCES public.classroom_classrooms(classroom_id) ON DELETE CASCADE,
       round_no SMALLINT NOT NULL CHECK (round_no BETWEEN 1 AND 15),
       calendar_year SMALLINT NOT NULL,
       status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'configuring', 'locked', 'revealed')),
@@ -51,9 +50,9 @@ async function migration210StockClassroom(pool) {
       UNIQUE (classroom_id, round_no)
     );
 
-    CREATE TABLE IF NOT EXISTS classroom.members (
+    CREATE TABLE IF NOT EXISTS public.classroom_members (
       member_id BIGSERIAL PRIMARY KEY,
-      classroom_id BIGINT NOT NULL REFERENCES classroom.classrooms(classroom_id) ON DELETE CASCADE,
+      classroom_id BIGINT NOT NULL REFERENCES public.classroom_classrooms(classroom_id) ON DELETE CASCADE,
       subject_id TEXT NOT NULL,
       username TEXT NOT NULL,
       classroom_nickname TEXT NOT NULL,
@@ -67,13 +66,13 @@ async function migration210StockClassroom(pool) {
       UNIQUE (classroom_id, display_nickname)
     );
     CREATE INDEX IF NOT EXISTS ix_classroom_members_subject_id
-      ON classroom.members (subject_id, joined_at DESC);
+      ON public.classroom_members (subject_id, joined_at DESC);
 
-    CREATE TABLE IF NOT EXISTS classroom.member_round_states (
+    CREATE TABLE IF NOT EXISTS public.classroom_member_round_states (
       id BIGSERIAL PRIMARY KEY,
-      classroom_id BIGINT NOT NULL REFERENCES classroom.classrooms(classroom_id) ON DELETE CASCADE,
+      classroom_id BIGINT NOT NULL REFERENCES public.classroom_classrooms(classroom_id) ON DELETE CASCADE,
       round_no SMALLINT NOT NULL CHECK (round_no BETWEEN 1 AND 15),
-      member_id BIGINT NOT NULL REFERENCES classroom.members(member_id) ON DELETE CASCADE,
+      member_id BIGINT NOT NULL REFERENCES public.classroom_members(member_id) ON DELETE CASCADE,
       opening_total_cents BIGINT NOT NULL CHECK (opening_total_cents >= 0),
       default_allocations JSONB NOT NULL DEFAULT '{}'::jsonb,
       default_cash_cents BIGINT NOT NULL CHECK (default_cash_cents >= 0),
@@ -82,22 +81,22 @@ async function migration210StockClassroom(pool) {
       UNIQUE (classroom_id, round_no, member_id)
     );
 
-    CREATE TABLE IF NOT EXISTS classroom.drafts (
+    CREATE TABLE IF NOT EXISTS public.classroom_drafts (
       draft_id BIGSERIAL PRIMARY KEY,
-      classroom_id BIGINT NOT NULL REFERENCES classroom.classrooms(classroom_id) ON DELETE CASCADE,
+      classroom_id BIGINT NOT NULL REFERENCES public.classroom_classrooms(classroom_id) ON DELETE CASCADE,
       round_no SMALLINT NOT NULL CHECK (round_no BETWEEN 1 AND 15),
-      member_id BIGINT NOT NULL REFERENCES classroom.members(member_id) ON DELETE CASCADE,
+      member_id BIGINT NOT NULL REFERENCES public.classroom_members(member_id) ON DELETE CASCADE,
       allocations JSONB NOT NULL DEFAULT '{}'::jsonb,
       draft_version INTEGER NOT NULL DEFAULT 1,
       updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
       UNIQUE (classroom_id, round_no, member_id)
     );
 
-    CREATE TABLE IF NOT EXISTS classroom.submissions (
+    CREATE TABLE IF NOT EXISTS public.classroom_submissions (
       submission_id BIGSERIAL PRIMARY KEY,
-      classroom_id BIGINT NOT NULL REFERENCES classroom.classrooms(classroom_id) ON DELETE CASCADE,
+      classroom_id BIGINT NOT NULL REFERENCES public.classroom_classrooms(classroom_id) ON DELETE CASCADE,
       round_no SMALLINT NOT NULL CHECK (round_no BETWEEN 1 AND 15),
-      member_id BIGINT NOT NULL REFERENCES classroom.members(member_id) ON DELETE CASCADE,
+      member_id BIGINT NOT NULL REFERENCES public.classroom_members(member_id) ON DELETE CASCADE,
       allocations JSONB NOT NULL DEFAULT '{}'::jsonb,
       cash_cents BIGINT NOT NULL CHECK (cash_cents >= 0),
       total_cents BIGINT NOT NULL CHECK (total_cents >= 0),
@@ -107,14 +106,14 @@ async function migration210StockClassroom(pool) {
       UNIQUE (classroom_id, round_no, member_id, client_request_id)
     );
     CREATE INDEX IF NOT EXISTS ix_classroom_submissions_latest
-      ON classroom.submissions (classroom_id, round_no, member_id)
+      ON public.classroom_submissions (classroom_id, round_no, member_id)
       WHERE is_latest = TRUE;
 
-    CREATE TABLE IF NOT EXISTS classroom.settlements (
+    CREATE TABLE IF NOT EXISTS public.classroom_settlements (
       settlement_id BIGSERIAL PRIMARY KEY,
-      classroom_id BIGINT NOT NULL REFERENCES classroom.classrooms(classroom_id) ON DELETE CASCADE,
+      classroom_id BIGINT NOT NULL REFERENCES public.classroom_classrooms(classroom_id) ON DELETE CASCADE,
       round_no SMALLINT NOT NULL CHECK (round_no BETWEEN 1 AND 15),
-      member_id BIGINT NOT NULL REFERENCES classroom.members(member_id) ON DELETE CASCADE,
+      member_id BIGINT NOT NULL REFERENCES public.classroom_members(member_id) ON DELETE CASCADE,
       participation_type TEXT NOT NULL CHECK (participation_type IN ('submitted', 'carried_over', 'late_backfill')),
       is_official_ranked BOOLEAN NOT NULL DEFAULT TRUE,
       opening_total_cents BIGINT NOT NULL CHECK (opening_total_cents >= 0),
@@ -129,7 +128,7 @@ async function migration210StockClassroom(pool) {
       UNIQUE (classroom_id, round_no, member_id)
     );
     CREATE INDEX IF NOT EXISTS ix_classroom_settlements_round_rank
-      ON classroom.settlements (classroom_id, round_no, is_official_ranked, ending_total_cents DESC);
+      ON public.classroom_settlements (classroom_id, round_no, is_official_ranked, ending_total_cents DESC);
   `);
 }
 

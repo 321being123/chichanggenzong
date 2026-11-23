@@ -1823,7 +1823,7 @@
       "role": "repository",
       "batch": 7,
       "status": "registered",
-      "note": "股市模拟沙盘只读市场事实查询与独立 classroom.* 账本读写"
+      "note": "股市模拟沙盘只读市场事实查询与独立 public.classroom_* 账本读写"
     },
     {
       "path": "server/services/classroomPrecheckService.js",
@@ -1858,7 +1858,7 @@
       "role": "migration",
       "batch": 7,
       "status": "registered",
-      "note": "迁移 210：新建 classroom.* 独立沙盘表结构"
+      "note": "迁移 210：新建 public.classroom_* 独立沙盘表结构"
     },
     {
       "path": "public/js/api/classroom-api.js",

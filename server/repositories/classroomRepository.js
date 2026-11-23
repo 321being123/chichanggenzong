@@ -236,7 +236,7 @@ async function fetchCbCalibrationBuckets() {
 
 async function insertClassroom(client, data) {
   const { rows } = await q(client).query(
-    `INSERT INTO classroom.classrooms (
+    `INSERT INTO public.classroom_classrooms (
        classroom_code, title, mode, blind_mode, identity_revealed, status,
        current_round, state_version, initial_cash_cents, start_year, end_year,
        total_rounds, created_by_subject_id, created_by_username,
@@ -267,7 +267,7 @@ async function insertClassroom(client, data) {
 
 async function findClassroomById(id, client) {
   const { rows } = await q(client).query(
-    'SELECT * FROM classroom.classrooms WHERE classroom_id = $1',
+    'SELECT * FROM public.classroom_classrooms WHERE classroom_id = $1',
     [id]
   );
   return rows[0] || null;
@@ -275,7 +275,7 @@ async function findClassroomById(id, client) {
 
 async function findClassroomByIdForUpdate(client, id) {
   const { rows } = await q(client).query(
-    'SELECT * FROM classroom.classrooms WHERE classroom_id = $1 FOR UPDATE',
+    'SELECT * FROM public.classroom_classrooms WHERE classroom_id = $1 FOR UPDATE',
     [id]
   );
   return rows[0] || null;
@@ -283,7 +283,7 @@ async function findClassroomByIdForUpdate(client, id) {
 
 async function findClassroomByCode(code, client) {
   const { rows } = await q(client).query(
-    'SELECT * FROM classroom.classrooms WHERE classroom_code = $1',
+    'SELECT * FROM public.classroom_classrooms WHERE classroom_code = $1',
     [String(code || '').trim().toUpperCase()]
   );
   return rows[0] || null;
@@ -295,8 +295,8 @@ async function listClassroomsForAdmin() {
             c.identity_revealed, c.status, c.current_round, c.state_version,
             c.start_year, c.end_year, c.total_rounds, c.created_at, c.completed_at,
             COUNT(m.member_id)::int AS member_count
-     FROM classroom.classrooms c
-     LEFT JOIN classroom.members m ON m.classroom_id = c.classroom_id
+     FROM public.classroom_classrooms c
+     LEFT JOIN public.classroom_members m ON m.classroom_id = c.classroom_id
      GROUP BY c.classroom_id
      ORDER BY c.created_at DESC
      LIMIT 100`
@@ -313,20 +313,20 @@ async function listClassroomsForSubject(subjectId) {
             m.member_id, m.display_nickname, m.first_eligible_round, m.joined_at,
             (
               SELECT s.ending_total_cents
-              FROM classroom.settlements s
+              FROM public.classroom_settlements s
               WHERE s.classroom_id = c.classroom_id AND s.member_id = m.member_id
               ORDER BY s.round_no DESC
               LIMIT 1
             ) AS latest_ending_total_cents,
             (
               SELECT s.round_no
-              FROM classroom.settlements s
+              FROM public.classroom_settlements s
               WHERE s.classroom_id = c.classroom_id AND s.member_id = m.member_id
               ORDER BY s.round_no DESC
               LIMIT 1
             ) AS latest_settled_round
-     FROM classroom.members m
-     JOIN classroom.classrooms c ON c.classroom_id = m.classroom_id
+     FROM public.classroom_members m
+     JOIN public.classroom_classrooms c ON c.classroom_id = m.classroom_id
      WHERE m.subject_id = $1
      ORDER BY m.joined_at DESC`,
     [String(subjectId)]
@@ -345,7 +345,7 @@ async function updateClassroomState(client, classroomId, fields) {
   if (fields.completedAt !== undefined) { sets.push(`completed_at = $${idx++}`); vals.push(fields.completedAt); }
   vals.push(classroomId);
   const { rows } = await q(client).query(
-    `UPDATE classroom.classrooms SET ${sets.join(', ')} WHERE classroom_id = $${idx} RETURNING *`,
+    `UPDATE public.classroom_classrooms SET ${sets.join(', ')} WHERE classroom_id = $${idx} RETURNING *`,
     vals
   );
   return rows[0];
@@ -353,7 +353,7 @@ async function updateClassroomState(client, classroomId, fields) {
 
 async function insertRound(client, data) {
   const { rows } = await q(client).query(
-    `INSERT INTO classroom.rounds (
+    `INSERT INTO public.classroom_rounds (
        classroom_id, round_no, calendar_year, status, state_version, open_market_snapshot
      ) VALUES ($1,$2,$3,$4,$5,$6)
      RETURNING *`,
@@ -371,7 +371,7 @@ async function insertRound(client, data) {
 
 async function findRound(classroomId, roundNo, client) {
   const { rows } = await q(client).query(
-    'SELECT * FROM classroom.rounds WHERE classroom_id = $1 AND round_no = $2',
+    'SELECT * FROM public.classroom_rounds WHERE classroom_id = $1 AND round_no = $2',
     [classroomId, roundNo]
   );
   return rows[0] || null;
@@ -379,7 +379,7 @@ async function findRound(classroomId, roundNo, client) {
 
 async function findRoundForUpdate(client, classroomId, roundNo) {
   const { rows } = await q(client).query(
-    'SELECT * FROM classroom.rounds WHERE classroom_id = $1 AND round_no = $2 FOR UPDATE',
+    'SELECT * FROM public.classroom_rounds WHERE classroom_id = $1 AND round_no = $2 FOR UPDATE',
     [classroomId, roundNo]
   );
   return rows[0] || null;
@@ -387,7 +387,7 @@ async function findRoundForUpdate(client, classroomId, roundNo) {
 
 async function listRounds(classroomId, client) {
   const { rows } = await q(client).query(
-    'SELECT * FROM classroom.rounds WHERE classroom_id = $1 ORDER BY round_no ASC',
+    'SELECT * FROM public.classroom_rounds WHERE classroom_id = $1 ORDER BY round_no ASC',
     [classroomId]
   );
   return rows;
@@ -406,7 +406,7 @@ async function updateRoundState(client, roundId, fields) {
   if (fields.lockedSubmittedCount !== undefined) { sets.push(`locked_submitted_count = $${idx++}`); vals.push(fields.lockedSubmittedCount); }
   vals.push(roundId);
   const { rows } = await q(client).query(
-    `UPDATE classroom.rounds SET ${sets.join(', ')} WHERE round_id = $${idx} RETURNING *`,
+    `UPDATE public.classroom_rounds SET ${sets.join(', ')} WHERE round_id = $${idx} RETURNING *`,
     vals
   );
   return rows[0];
@@ -414,7 +414,7 @@ async function updateRoundState(client, roundId, fields) {
 
 async function findMemberBySubject(classroomId, subjectId, client) {
   const { rows } = await q(client).query(
-    'SELECT * FROM classroom.members WHERE classroom_id = $1 AND subject_id = $2',
+    'SELECT * FROM public.classroom_members WHERE classroom_id = $1 AND subject_id = $2',
     [classroomId, String(subjectId)]
   );
   return rows[0] || null;
@@ -422,7 +422,7 @@ async function findMemberBySubject(classroomId, subjectId, client) {
 
 async function findMemberById(classroomId, memberId, client) {
   const { rows } = await q(client).query(
-    'SELECT * FROM classroom.members WHERE classroom_id = $1 AND member_id = $2',
+    'SELECT * FROM public.classroom_members WHERE classroom_id = $1 AND member_id = $2',
     [classroomId, memberId]
   );
   return rows[0] || null;
@@ -430,7 +430,7 @@ async function findMemberById(classroomId, memberId, client) {
 
 async function listMembers(classroomId, client) {
   const { rows } = await q(client).query(
-    'SELECT * FROM classroom.members WHERE classroom_id = $1 ORDER BY member_id ASC',
+    'SELECT * FROM public.classroom_members WHERE classroom_id = $1 ORDER BY member_id ASC',
     [classroomId]
   );
   return rows;
@@ -438,7 +438,7 @@ async function listMembers(classroomId, client) {
 
 async function listNicknames(classroomId, client) {
   const { rows } = await q(client).query(
-    'SELECT display_nickname FROM classroom.members WHERE classroom_id = $1',
+    'SELECT display_nickname FROM public.classroom_members WHERE classroom_id = $1',
     [classroomId]
   );
   return rows.map((r) => r.display_nickname);
@@ -446,7 +446,7 @@ async function listNicknames(classroomId, client) {
 
 async function insertMember(client, data) {
   const { rows } = await q(client).query(
-    `INSERT INTO classroom.members (
+    `INSERT INTO public.classroom_members (
        classroom_id, subject_id, username, classroom_nickname, display_nickname, first_eligible_round
      ) VALUES ($1,$2,$3,$4,$5,$6)
      RETURNING *`,
@@ -464,7 +464,7 @@ async function insertMember(client, data) {
 
 async function updateMemberNickname(classroomId, memberId, displayNickname, isMasked) {
   const { rows } = await pool.query(
-    `UPDATE classroom.members
+    `UPDATE public.classroom_members
      SET display_nickname = $1, is_nickname_masked = $2
      WHERE classroom_id = $3 AND member_id = $4
      RETURNING *`,
@@ -475,7 +475,7 @@ async function updateMemberNickname(classroomId, memberId, displayNickname, isMa
 
 async function updateMemberNote(classroomId, memberId, note) {
   const { rows } = await pool.query(
-    `UPDATE classroom.members
+    `UPDATE public.classroom_members
      SET after_class_note = $1, after_class_note_updated_at = now()
      WHERE classroom_id = $2 AND member_id = $3
      RETURNING after_class_note, after_class_note_updated_at`,
@@ -486,7 +486,7 @@ async function updateMemberNote(classroomId, memberId, note) {
 
 async function findMemberRoundState(classroomId, roundNo, memberId, client) {
   const { rows } = await q(client).query(
-    `SELECT * FROM classroom.member_round_states
+    `SELECT * FROM public.classroom_member_round_states
      WHERE classroom_id = $1 AND round_no = $2 AND member_id = $3`,
     [classroomId, roundNo, memberId]
   );
@@ -495,7 +495,7 @@ async function findMemberRoundState(classroomId, roundNo, memberId, client) {
 
 async function upsertMemberRoundState(client, data) {
   const { rows } = await q(client).query(
-    `INSERT INTO classroom.member_round_states (
+    `INSERT INTO public.classroom_member_round_states (
        classroom_id, round_no, member_id, opening_total_cents,
        default_allocations, default_cash_cents, liquidation_events
      ) VALUES ($1,$2,$3,$4,$5,$6,$7)
@@ -517,7 +517,7 @@ async function upsertMemberRoundState(client, data) {
 
 async function findDraft(classroomId, roundNo, memberId, client) {
   const { rows } = await q(client).query(
-    `SELECT * FROM classroom.drafts
+    `SELECT * FROM public.classroom_drafts
      WHERE classroom_id = $1 AND round_no = $2 AND member_id = $3`,
     [classroomId, roundNo, memberId]
   );
@@ -526,7 +526,7 @@ async function findDraft(classroomId, roundNo, memberId, client) {
 
 async function saveDraftWithVersion(client, { classroomId, roundNo, memberId, allocations, expectedVersion }) {
   const existing = await q(client).query(
-    `SELECT * FROM classroom.drafts
+    `SELECT * FROM public.classroom_drafts
      WHERE classroom_id = $1 AND round_no = $2 AND member_id = $3
      FOR UPDATE`,
     [classroomId, roundNo, memberId]
@@ -536,7 +536,7 @@ async function saveDraftWithVersion(client, { classroomId, roundNo, memberId, al
       return { conflict: true, current: null };
     }
     const ins = await q(client).query(
-      `INSERT INTO classroom.drafts (classroom_id, round_no, member_id, allocations, draft_version)
+      `INSERT INTO public.classroom_drafts (classroom_id, round_no, member_id, allocations, draft_version)
        VALUES ($1,$2,$3,$4,1) RETURNING *`,
       [classroomId, roundNo, memberId, JSON.stringify(allocations)]
     );
@@ -547,7 +547,7 @@ async function saveDraftWithVersion(client, { classroomId, roundNo, memberId, al
     return { conflict: true, current: cur };
   }
   const upd = await q(client).query(
-    `UPDATE classroom.drafts
+    `UPDATE public.classroom_drafts
      SET allocations = $1, draft_version = draft_version + 1, updated_at = now()
      WHERE draft_id = $2
      RETURNING *`,
@@ -558,7 +558,7 @@ async function saveDraftWithVersion(client, { classroomId, roundNo, memberId, al
 
 async function findSubmissionByRequestId(client, classroomId, roundNo, memberId, clientRequestId) {
   const { rows } = await q(client).query(
-    `SELECT * FROM classroom.submissions
+    `SELECT * FROM public.classroom_submissions
      WHERE classroom_id = $1 AND round_no = $2 AND member_id = $3 AND client_request_id = $4`,
     [classroomId, roundNo, memberId, clientRequestId]
   );
@@ -567,7 +567,7 @@ async function findSubmissionByRequestId(client, classroomId, roundNo, memberId,
 
 async function findLatestSubmission(classroomId, roundNo, memberId, client) {
   const { rows } = await q(client).query(
-    `SELECT * FROM classroom.submissions
+    `SELECT * FROM public.classroom_submissions
      WHERE classroom_id = $1 AND round_no = $2 AND member_id = $3 AND is_latest = TRUE
      ORDER BY submission_id DESC LIMIT 1`,
     [classroomId, roundNo, memberId]
@@ -577,7 +577,7 @@ async function findLatestSubmission(classroomId, roundNo, memberId, client) {
 
 async function listLatestSubmissions(classroomId, roundNo, client) {
   const { rows } = await q(client).query(
-    `SELECT * FROM classroom.submissions
+    `SELECT * FROM public.classroom_submissions
      WHERE classroom_id = $1 AND round_no = $2 AND is_latest = TRUE`,
     [classroomId, roundNo]
   );
@@ -586,13 +586,13 @@ async function listLatestSubmissions(classroomId, roundNo, client) {
 
 async function insertSubmission(client, data) {
   await q(client).query(
-    `UPDATE classroom.submissions
+    `UPDATE public.classroom_submissions
      SET is_latest = FALSE
      WHERE classroom_id = $1 AND round_no = $2 AND member_id = $3 AND is_latest = TRUE`,
     [data.classroomId, data.roundNo, data.memberId]
   );
   const { rows } = await q(client).query(
-    `INSERT INTO classroom.submissions (
+    `INSERT INTO public.classroom_submissions (
        classroom_id, round_no, member_id, allocations, cash_cents, total_cents, client_request_id, is_latest
      ) VALUES ($1,$2,$3,$4,$5,$6,$7,TRUE)
      RETURNING *`,
@@ -611,7 +611,7 @@ async function insertSubmission(client, data) {
 
 async function insertSettlement(client, data) {
   const { rows } = await q(client).query(
-    `INSERT INTO classroom.settlements (
+    `INSERT INTO public.classroom_settlements (
        classroom_id, round_no, member_id, participation_type, is_official_ranked,
        opening_total_cents, ending_total_cents, round_pnl_cents, ending_cash_cents,
        item_details, official_rank, reference_rank, official_participant_count
@@ -639,7 +639,7 @@ async function insertSettlement(client, data) {
 
 async function listMemberSettlements(classroomId, memberId, client) {
   const { rows } = await q(client).query(
-    `SELECT * FROM classroom.settlements
+    `SELECT * FROM public.classroom_settlements
      WHERE classroom_id = $1 AND member_id = $2
      ORDER BY round_no ASC`,
     [classroomId, memberId]
@@ -650,8 +650,8 @@ async function listMemberSettlements(classroomId, memberId, client) {
 async function listRoundSettlements(classroomId, roundNo, client) {
   const { rows } = await q(client).query(
     `SELECT s.*, m.display_nickname, m.classroom_nickname, m.is_nickname_masked, m.username
-     FROM classroom.settlements s
-     JOIN classroom.members m ON m.member_id = s.member_id
+     FROM public.classroom_settlements s
+     JOIN public.classroom_members m ON m.member_id = s.member_id
      WHERE s.classroom_id = $1 AND s.round_no = $2
      ORDER BY s.is_official_ranked DESC, COALESCE(s.official_rank, 999999) ASC, s.ending_total_cents DESC, s.member_id ASC`,
     [classroomId, roundNo]

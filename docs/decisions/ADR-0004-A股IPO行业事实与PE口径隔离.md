@@ -41,7 +41,7 @@ Tushare 官方文档只把 `stock_basic.industry` 定义为“所属行业”，
 
 2026-11-23 本地修复（待发布）：已确认上市当日的共享查询成功但尚无分类，登记 `listing_day_not_indexed`，现有任务从次日起按缺口复查。历史日期复查保留后来入库的真实路径。分类来源和发行行业、行业 PE 的证据边界沿用本决策。
 
-2026-11-23 修复（0.9.4.27）：正式发行公告尚未披露时，行业 PE 依据官方已下载文档证据记 `not_disclosed`（`official_issuance_announcement_not_published`），次日复查且不告警；正式发行公告已披露仍无 PE 时继续报 `parse_miss`。
+2026-11-23 修复（0.9.4.27–0.9.4.28）：正式发行公告尚未披露时，行业 PE 依据官方已下载文档证据（含 `reportdocs.static.szse.cn`）记 `not_disclosed`（`official_issuance_announcement_not_published`），次日复查且不告警；正式发行公告已披露仍无 PE 时继续报 `parse_miss`。
 
 1. `source_payload.historical_enrichment` 是 IPO 行业与行业 PE 的逐字段证据记录位置。记录原始来源、文档地址、披露日期、全文文本哈希、解析/抽取版本以及原文能确认的分类体系、版本和代码；未知值保持空，不从代码段、板块或名称推定。
 2. `ipo_history.industry` 继续作为兼容展示投影。已知 `tushare_stock_basic` 兜底值可由已绑定发行人、官方文件和字段证据的交易所/CNINFO 行业替换；旧值、来源、替换理由和新证据一并留存。其他旧值若没有任何分类体系或代码证据，可作为待核候选，但只有新官方证据明确给出分类体系或代码时才能替换并归档旧值；已有分类证据的值及没有合格官方替代证据的值保持不动。来源未知本身不能作为升级理由。

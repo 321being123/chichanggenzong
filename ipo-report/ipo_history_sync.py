@@ -206,7 +206,7 @@ def _industry_pe_state(code, value, diagnostic, prior_state, today):
     except ValueError:
         cited_due = None
     official_hosts={'sse':{'www.sse.com.cn','big5.sse.com.cn','static.sse.com.cn'},
-                    'szse':{'disc.static.szse.cn','www.szse.cn'},'cninfo':{'static.cninfo.com.cn','www.cninfo.com.cn'}}
+                    'szse':{'disc.static.szse.cn','reportdocs.static.szse.cn','www.szse.cn'},'cninfo':{'static.cninfo.com.cn','www.cninfo.com.cn'}}
     if (proof.get('status') == 'not_disclosed' and proof.get('verified') is True
             and proof.get('source') in ('sse', 'szse', 'cninfo')
             and re.fullmatch(r'[a-f0-9]{64}', str(proof.get('content_hash') or ''))

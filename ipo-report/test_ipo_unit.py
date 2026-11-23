@@ -320,6 +320,13 @@ try:
         check('PE单字段读取招股书且初询公告不冒充正式发行公告',
               pe_only['ipo_issuance_diagnostics']['industry_pe']['status']=='not_disclosed'
               and pe_only['ipo_issuance_candidate_scan']['downloaded_count']==2)
+        fetch._IPO_ISSUANCE_DETAIL_CACHE.clear()
+        fetch._download_exchange_pdf_text=lambda session,url,source: '钶锐锶688827 所属行业为通用设备制造业（C34）。'
+        no_schedule=fetch._fetch_exchange_ipo_issuance_detail('688827','钶锐锶',required_fields={'industry_pe'})
+        check('无发行公告日历句式但尚未发布正式发行公告也不报parse_miss',
+              no_schedule['ipo_issuance_diagnostics']['industry_pe']['status']=='not_disclosed'
+              and no_schedule['ipo_issuance_diagnostics']['industry_pe']['reason']=='official_issuance_announcement_not_published')
+        fetch._IPO_ISSUANCE_DETAIL_CACHE.clear()
         inquiry_title='钶锐锶首次公开发行股票发行公告'
         actual_notice=fetch._fetch_exchange_ipo_issuance_detail('688827','钶锐锶',required_fields={'industry_pe'})
         check('已有正式发行公告却无PE仍属解析缺口不得等待豁免',actual_notice['ipo_issuance_diagnostics']['industry_pe']['status']=='parse_miss')

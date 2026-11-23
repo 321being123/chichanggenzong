@@ -2805,19 +2805,43 @@ def _fetch_exchange_ipo_issuance_detail(stock_code, security_name='', required_f
                 'reason': f'no_{field}_value_parsed_from_downloaded_documents',
                 'candidate_scan_status': 'complete',
             }
+            has_formal_issuance_notice = any(
+                item['document']['role'] in ('issuance_announcement', 'issuance_risk_announcement')
+                and '初步询价' not in item['document']['title']
+                for item in parsed_documents
+            )
             plans = [item for item in parsed_documents if item['document']['role'] == 'prospectus'
                      and item['document']['source'] in ('sse', 'szse', 'cninfo')
                      and item['detail'].get('industry_pe_disclosure')]
-            if field == 'industry_pe' and plans and not any(item['document']['role'] in
-                    ('issuance_announcement', 'issuance_risk_announcement') and '初步询价' not in item['document']['title']
-                    for item in parsed_documents):
-                planned = min(plans, key=lambda item: item['detail']['industry_pe_disclosure']['disclosure_due'])
-                plan, document = planned['detail']['industry_pe_disclosure'], planned['document']
-                field_diagnostics[field] = {**field_diagnostics[field], 'status': 'not_disclosed',
-                    'reason': 'official_issuance_announcement_scheduled', 'verified': True,
-                    'disclosure_due': plan['disclosure_due'], 'evidence': plan['evidence'],
-                    'source': document['source'], 'as_of': document['date'], 'document_url': document['url'],
-                    'content_hash': document['content_hash'], 'parser_version': _IPO_ISSUANCE_PARSER_VERSION}
+            if field == 'industry_pe' and not has_formal_issuance_notice:
+                if plans:
+                    planned = min(plans, key=lambda item: item['detail']['industry_pe_disclosure']['disclosure_due'])
+                    plan, document = planned['detail']['industry_pe_disclosure'], planned['document']
+                    field_diagnostics[field] = {**field_diagnostics[field], 'status': 'not_disclosed',
+                        'reason': 'official_issuance_announcement_scheduled', 'verified': True,
+                        'disclosure_due': plan['disclosure_due'], 'evidence': plan['evidence'],
+                        'source': document['source'], 'as_of': document['date'], 'document_url': document['url'],
+                        'content_hash': document['content_hash'], 'parser_version': _IPO_ISSUANCE_PARSER_VERSION}
+                else:
+                    official_docs = [
+                        item['document'] for item in parsed_documents
+                        if item['document']['source'] in ('sse', 'szse', 'cninfo')
+                        and re.fullmatch(r'[a-f0-9]{64}', str(item['document'].get('content_hash') or ''))
+                        and str(item['document'].get('url') or '').startswith('https://')
+                    ]
+                    if official_docs:
+                        document = official_docs[0]
+                        field_diagnostics[field] = {
+                            **field_diagnostics[field],
+                            'status': 'not_disclosed',
+                            'reason': 'official_issuance_announcement_not_published',
+                            'verified': True,
+                            'source': document['source'],
+                            'as_of': document['date'],
+                            'document_url': document['url'],
+                            'content_hash': document['content_hash'],
+                            'parser_version': _IPO_ISSUANCE_PARSER_VERSION,
+                        }
         else:
             field_diagnostics[field] = {
                 'status': 'document_unavailable',

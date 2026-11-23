@@ -156,6 +156,10 @@
         {
           "file": "ipo-report/test_ipo_unit.py",
           "pattern": "IPO-DISCLOSURE-SCHEDULE-062"
+        },
+        {
+          "file": "ipo-report/test_ipo_history_sync.py",
+          "pattern": "正式发行公告未披露时按官方原文等待次日复查且不告警"
         }
       ],
       "owner": "Codex",

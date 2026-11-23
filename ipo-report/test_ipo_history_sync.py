@@ -728,6 +728,13 @@ try:
     for change in [{'verified':False},{'content_hash':''},{'evidence':{}},{'as_of':'2026-10-25'},{'disclosure_due':'2026-02-30'},
                    {'document_url':'https://evil.example.test/official.pdf'},{'disclosure_due':'2026-10-29'}]:
         check('不完整或未来证据不豁免PE'+str(change), sync._industry_pe_state('688827',None,{**planned_proof,**change},{},date(2026,10,24))['status']!='not_disclosed')
+    unpub_proof={'status':'not_disclosed','reason':'official_issuance_announcement_not_published','verified':True,'source':'szse',
+                 'as_of':'2026-10-24','document_url':'https://disc.static.szse.cn/notice.pdf','content_hash':'b'*64}
+    unpub_state=sync._industry_pe_state('301661',None,unpub_proof,{},date(2026,10,24))
+    check('正式发行公告未披露时按官方原文等待次日复查且不告警',
+          unpub_state['status']=='not_disclosed' and unpub_state['retry_after']=='2026-10-25'
+          and sync._industry_pe_non_alerting('301661',unpub_state,date(2026,10,24))
+          and not sync._industry_pe_non_alerting('301661',unpub_state,date(2026,10,25)))
     check("北交所行业PE仅记录不告警",
           sync._industry_pe_non_alerting("920186", {"status": "parse_miss"}, date(2026, 10, 1)))
     check("有官方证据的尚未披露行业PE不告警",

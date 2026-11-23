@@ -498,3 +498,9 @@ v10 修复代码前后格式、代码标签、大类与子类拼接和标准号�
 本地实现将已确认的上市日纳入有界等待。共享查询成功且无路径时保存 `pending_not_due/listing_day_not_indexed` 和次日 `recheck_on`；同一业务日重复检查先读共享层，已有等待证据时跳过重复写入。上市次日起仍缺分类继续计缺口，真实路径一旦可见即可接替等待；查询失败和歧义证券身份走失败分支。已待收录证券仍由现有预测及增强任务复查。历史槽读取未来不可见的分类时保留后来写入的有效路径。
 
 隔离 PostgreSQL 的 IPO Python 77 项通过，覆盖 920067 样本、宽限截止、历史保护及同类查询失败。Node Runner 专项通过。生产部署及原范围复核待统一发布。
+
+## 2026-11-23 正式发行公告未披露前不报行业PE告警
+
+生产 `0.9.4.26` 复跑 `ipo_history_sync` (`enrichment` 槽 `2741320`) 时，唯一待补对象 `301661`（猎奇智能，申购日 `2026-11-26`）因正式发行公告尚未披露、且招股书未命中 `刊登发行公告日期` 固定句式，被标为 `parse_miss`（`no_industry_pe_value_parsed_from_downloaded_documents`）并持续触发告警。
+
+本次修复（`0.9.4.27`）：① `ipo_lib_fetch._fetch_exchange_ipo_issuance_detail` 在正式发行/风险公告（不含初步询价）尚未披露且已取得官方来源文档证据时，统一标记 `status='not_disclosed'`、`reason='official_issuance_announcement_not_published'`，不再误报 `parse_miss`；一旦正式发行公告已披露但仍未解析出 `industry_pe`，仍保持 `parse_miss` 告警。② `ipo_history_sync._industry_pe_state` 对带官方证据的 `official_issuance_announcement_not_published` 按次日 `retry_after` 豁免当日告警并次日自动复查（`test_ipo_unit.py` 与 `test_ipo_history_sync.py` 78/78 通过）。

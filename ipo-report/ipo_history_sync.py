@@ -212,18 +212,21 @@ def _industry_pe_state(code, value, diagnostic, prior_state, today):
             and re.fullmatch(r'[a-f0-9]{64}', str(proof.get('content_hash') or ''))
             and str(proof.get('document_url') or '').startswith('https://')
             and urlparse(proof['document_url']).hostname in official_hosts.get(proof.get('source'),set())
-            and (proof.get('evidence') or {}).get('snippet')
             and re.fullmatch(r'\d{4}-\d{2}-\d{2}', str(proof.get('as_of') or ''))
-            and proof['as_of'] <= today.isoformat()
-            and due is not None and due == cited_due and due > today):
-        return {**proof, 'retry_after': proof['disclosure_due']}
+            and proof['as_of'] <= today.isoformat()):
+        if (proof.get('evidence') or {}).get('snippet') and due is not None and due == cited_due and due > today:
+            return {**proof, 'retry_after': proof['disclosure_due']}
+        if proof.get('reason') == 'official_issuance_announcement_not_published':
+            return {**proof, 'retry_after': (today + timedelta(days=1)).isoformat()}
     if proof.get('status') == 'not_disclosed':
         proof = {**proof, 'status': 'retryable', 'reason': 'disclosure_due_recheck'}
     if (prior.get("status") == "not_disclosed" and prior.get("verified") is True
             and prior.get("document_url") and prior.get("content_hash")
-            and (not prior.get('as_of') or str(prior['as_of']) <= today.isoformat())
-            and str(prior.get("disclosure_due") or "") > today.isoformat()):
-        return dict(prior)
+            and (not prior.get('as_of') or str(prior['as_of']) <= today.isoformat())):
+        if str(prior.get("disclosure_due") or "") > today.isoformat():
+            return dict(prior)
+        if prior.get("reason") == "official_issuance_announcement_not_published" and str(prior.get("retry_after") or "") > today.isoformat():
+            return dict(prior)
     if prior.get("status") in ("not_disclosed", "not_required"):
         prior = {**prior, "status": "retryable", "reason": "disclosure_due_recheck"}
     return _detail_field_state(None, proof or prior, "retryable", today)

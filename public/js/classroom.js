@@ -1304,18 +1304,18 @@
       // 教师真实行情表
       const mCard = $('teacher-market-card');
       mCard.textContent = '';
-      const mh = document.createElement('h3'); mh.textContent = '教师行情明细（含真实代码与市值）';
+      const mh = document.createElement('h3'); mh.textContent = '教师行情明细（已隐藏真实代码）';
       mCard.appendChild(mh);
       const mWrap = document.createElement('div'); mWrap.className = 'classroom-table-wrap';
       const mTbl = document.createElement('table'); mTbl.className = 'classroom-table';
-      mTbl.innerHTML = '<thead><tr><th>行业</th><th>代号</th><th>真实名称</th><th>代码</th><th>PE</th><th>PB</th><th>当轮涨跌</th></tr></thead>';
+      mTbl.innerHTML = '<thead><tr><th>行业</th><th>代号</th><th>真实名称</th><th>PE</th><th>PB</th><th>当轮涨跌</th></tr></thead>';
       const mTb = document.createElement('tbody');
       r.assets.forEach(function (a) {
         const tr = document.createElement('tr');
-        [a.industryName, a.alias, a.stockName || '—', a.canonicalCode || '—', a.peDisplay, a.pbDisplay, P.formatReturnPct(a.returnRate)].forEach(function (v, idx) {
+        [a.industryName, a.alias, a.stockName || '—', a.peDisplay, a.pbDisplay, P.formatReturnPct(a.returnRate)].forEach(function (v, idx) {
           const td = document.createElement('td');
           td.textContent = escapeText(v);
-          if (idx === 6 && typeof a.returnRate === 'number') {
+          if (idx === 5 && typeof a.returnRate === 'number') {
             if (a.returnRate > 0) td.className = 'ret-pos';
             else if (a.returnRate < 0) td.className = 'ret-neg';
           }

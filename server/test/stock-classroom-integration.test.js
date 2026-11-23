@@ -87,7 +87,7 @@ async function run() {
     assert.strictEqual(st1R1.round.assets[0].canonicalCode, undefined);
     assert.strictEqual(st1R1.round.assets[0].returnRate, undefined);
     assert.strictEqual(st1R1.round.assets[12].industryName, '债券');
-    assert.strictEqual(st1R1.round.assets[12].alias, '十年期国债');
+    assert.strictEqual(st1R1.round.assets[12].alias, '稳健债券');
 
     const projR1 = await classroomService.getProjectorState({ classroomId: cid });
     assert.strictEqual(projR1.classroom.startYear, null, '盲玩投屏不得返回真实起始年份');

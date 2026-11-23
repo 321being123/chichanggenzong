@@ -197,11 +197,15 @@
     renderDetail(host, data);
   }
 
+  function feedbackBackLabel() {
+    return state.from === 'notifications' ? '← 返回消息列表' : '← 返回列表';
+  }
+
   function feedbackPaintDetailMissing() {
     var host = ensureShell();
     if (!host) return;
     host.innerHTML = '<div class="fb-panel"><div class="fb-empty">该反馈不存在或无权访问</div>'
-      + '<div class="u-mb-12" data-style="text-align:center"><button type="button" class="btn btn-outline" data-fb-act="back">返回列表</button></div></div>';
+      + '<div class="u-mb-12" data-style="text-align:center"><button type="button" class="btn btn-outline" data-fb-act="back">' + esc(feedbackBackLabel()) + '</button></div></div>';
   }
 
   function renderDetail(host, data) {
@@ -213,7 +217,7 @@
     if (fb.withdrawnAt) badges += '<span class="fb-badge fb-badge--withdrawn">已撤回</span>';
 
     var html = '<div class="fb-panel"><div class="fb-detail-back">'
-      + '<button type="button" class="btn btn-outline btn-sm" data-fb-act="back">← 返回列表</button></div>'
+      + '<button type="button" class="btn btn-outline btn-sm" data-fb-act="back">' + esc(feedbackBackLabel()) + '</button></div>'
       + '<div class="fb-card-head"><span class="fb-card-no">#' + esc(fb.id) + '</span>' + badges + '</div>'
       + '<h3 class="fb-detail-title">' + esc(fb.title) + '</h3>'
       + '<div class="fb-detail-body">' + esc(fb.description) + '</div>';
@@ -721,6 +725,14 @@
         return;
       }
       if (act === 'back') {
+        if (state.from === 'notifications') {
+          var backParams = new URLSearchParams();
+          backParams.set('main', 'notifications');
+          if (state.ntSub) backParams.set('sub', state.ntSub);
+          if (state.ntUnread) backParams.set('unread', '1');
+          window.location.href = api('/?' + backParams.toString());
+          return;
+        }
         state.detailId = null;
         syncUrl(true);
         refreshCurrent();

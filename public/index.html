@@ -582,6 +582,12 @@
     </div>
   </div>
   <div class="feature-page-shell">
+    <div class="ss-scheme-bar" aria-label="选股策略方案">
+      <div class="ss-scheme-segmented" id="ss-scheme-tabs" role="tablist" aria-label="选择选股方案">
+        <button type="button" class="ss-scheme-tab active" data-ss-scheme="essentials" data-ss-metric-help="投资要义选股规则" data-ss-help-text="• 市场估值（V2）：中证全指/恒生指数 PB 只作市场参考，指数 PB 等于 2、高于 2 或缺失都不再停止配置。&#10;• R01 估值（V2）：0 &lt; PB ≤ 1.5；或 PB &gt; 1.5 且 PB×PE(TTM) 严格小于 22.5（等于 22.5 不通过）。&#10;• R02 十年 PB（V2）：最近十年（上市不足十年按上市以来）内 PB 曾严格大于 1，或有效正 PB 的最高值 ÷ 最低值 ≥ 3；窗口覆盖与观察年限随结果展示。&#10;• R04 股息率：近十二个月已实施、已除息的税前现金股息率严格大于 0。&#10;• R05 净资产：归母净资产折人民币不低于 100 亿元。&#10;• 排名：PB 升序、PE（TTM）升序、股息率降序，三项名次相加，越小越优；亏损与零利润按规则记分，不作为低估优先。&#10;• 组合：每市场 30 个等权席位，单一行业不超过该市场预算的 20%，合格股不足则留现金。">投资要义</button>
+        <button type="button" class="ss-scheme-tab" data-ss-scheme="graham_net_net" data-ss-metric-help="格雷厄姆低估选股规则" data-ss-help-text="• G01 净流动资产盈余：最新已披露合并资产负债表的 流动资产合计 − 流动负债合计 − 总市值 &gt; 0（港股异币种财报按目标日汇率折算为港币后比较；银行/保险/券商等不区分流动科目的金融企业标记为不适用）。&#10;• 排序与组合：按（流动资产 − 流动负债 − 总市值）÷ 总市值 降序排名（安全边际越高越靠前），每市场最多 30 个等权席位。">格雷厄姆低估</button>
+      </div>
+    </div>
     <div class="ss-hero bond-feature-hero">
       <div>
         <h2>投资策略选股中心</h2>
@@ -589,45 +595,27 @@
       </div>
       <span id="ss-updated" class="ss-updated bond-feature-updated">页面只读数据库，不会触发外部采集</span>
     </div>
-    <div class="ss-scheme-tabs bond-sub-nav" id="ss-scheme-tabs" aria-label="选择选股方案">
-      <button type="button" class="bond-sub-tab active" data-ss-scheme="essentials">投资要义</button>
-      <button type="button" class="bond-sub-tab" data-ss-scheme="graham_net_net">格雷厄姆低估</button>
-    </div>
     <div id="ss-status" class="ss-status"></div>
     <div id="ss-market-cards" class="ss-cards bond-feature-stats"></div>
-    <ul class="ss-rule-list" id="ss-essentials-rule-list">
-      <li data-ss-rule="v1"><strong>准入（V1）</strong>：市场估值代理 PB 严格小于 2 才配置；PB 等于或高于 2 本轮不配置，PB 缺失按数据故障处理，不解释成便宜。</li>
-      <li data-ss-rule="v2"><strong>市场估值（V2）</strong>：中证全指/恒生指数 PB 只作市场参考，指数 PB 等于 2、高于 2 或缺失都不再停止配置。</li>
-      <li data-ss-rule="v1"><strong>R01 当前 PB（V1）</strong>：0 &lt; PB ≤ 1.5。</li>
-      <li data-ss-rule="v2"><strong>R01 估值（V2）</strong>：0 &lt; PB ≤ 1.5；或 PB &gt; 1.5 且 PB×PE(TTM) 严格小于 22.5（等于 22.5 不通过）。</li>
-      <li data-ss-rule="v1"><strong>R02 十年 PB（V1）</strong>：最近十年内至少出现一次 PB 严格大于 1。</li>
-      <li data-ss-rule="v2"><strong>R02 十年 PB（V2）</strong>：最近十年（上市不足十年按上市以来）内 PB 曾严格大于 1，或有效正 PB 的最高值 ÷ 最低值 ≥ 3；窗口覆盖与观察年限随结果展示。</li>
-      <li><strong>R04 股息率</strong>：近十二个月已实施、已除息的税前现金股息率严格大于 0。</li>
-      <li><strong>R05 净资产</strong>：归母净资产折人民币不低于 100 亿元。</li>
-      <li><strong>排名</strong>：PB 升序、PE（TTM）升序、股息率降序，三项名次相加，越小越优；亏损与零利润按规则记分，不作为低估优先。</li>
-      <li><strong>组合</strong>：每市场 30 个等权席位，单一行业不超过该市场预算的 20%，合格股不足则留现金。</li>
-    </ul>
-    <ul class="ss-rule-list" id="ss-graham-rule-list" hidden>
-      <li><strong>G01 净流动资产盈余</strong>：最新已披露合并资产负债表的 <code>流动资产合计 − 流动负债合计 − 总市值 &gt; 0</code>（港股异币种财报按目标日汇率折算为港币后比较；银行/保险/券商等不区分流动科目的金融企业标记为不适用）。</li>
-      <li><strong>排序与组合</strong>：按 <code>（流动资产 − 流动负债 − 总市值）÷ 总市值</code> 降序排名（安全边际越高越靠前），每市场最多 30 个等权席位。</li>
-    </ul>
     <div class="table-wrap ss-source-panel">
-      <div class="table-header"><h3>当前市场来源</h3></div>
       <div class="ss-toolbar bond-feature-toolbar">
-        <div class="bond-sub-nav" id="ss-period-tabs" aria-label="选择结果周期">
+        <div class="bond-sub-nav ss-period-tabs" id="ss-period-tabs" aria-label="选择结果周期">
           <button type="button" class="bond-sub-tab" data-ss-period="weekly">每周正式</button>
           <button type="button" class="bond-sub-tab" data-ss-period="daily">每日动态</button>
           <button type="button" class="bond-sub-tab" data-ss-period="quarter">历史季度</button>
         </div>
-        <label>来源批次<select id="ss-run-select" aria-label="选择公共来源批次"><option value="">正在读取...</option></select></label>
-        <button type="button" class="btn btn-outline btn-sm" id="ss-run-load-more">加载更早来源</button>
+        <div class="ss-toolbar-right">
+          <label>来源批次<select id="ss-run-select" aria-label="选择公共来源批次"><option value="">正在读取...</option></select></label>
+          <button type="button" class="btn btn-outline btn-sm" id="ss-run-load-more">加载更早来源</button>
+          <button type="button" class="btn btn-outline btn-sm" id="ss-exclusion-toggle" aria-expanded="false" aria-controls="ss-exclusions">排除管理（0）</button>
+        </div>
       </div>
       <div id="ss-run-header" class="ss-run-header"></div>
-      <div id="ss-exclusions" class="ss-exclusions"></div>
-    </div>
-    <div class="table-wrap">
-      <div class="table-header"><h3>目标组合（等权 30 席）</h3></div>
-      <div id="ss-portfolio"></div>
+      <div id="ss-exclusions" class="ss-exclusions" hidden></div>
+      <div class="ss-portfolio-block">
+        <div class="table-header ss-portfolio-head"><h3>目标组合（等权 30 席）</h3></div>
+        <div id="ss-portfolio"></div>
+      </div>
     </div>
     <div id="ss-detail" class="ss-detail" hidden></div>
     <div class="table-wrap">
@@ -828,7 +816,7 @@
           <span class="bond-safety-quality bond-feature-quality" id="bond-safety-visible"></span>
           <span class="bond-safety-spacer"></span>
           <span class="bond-safety-quality bond-feature-quality" id="bond-safety-quality"></span>
-          <button class="btn btn-outline btn-sm" id="bond-safety-export" data-act="exportBondSafety">导出Excel</button>
+          <button class="btn btn-outline btn-sm" id="bond-safety-export" data-act="exportBondSafety">导出 Excel</button>
         </div>
         <div id="bond-safety-table"><div class="bond-safety-empty">正在加载安全性数据...</div></div>
       </div>
@@ -1025,9 +1013,10 @@
           <select id="bond-list-status" data-act="bondListApplyFilters" aria-label="按数据状态筛选">
             <option value="">全部数据</option><option value="complete">数据完整</option><option value="partial">数据不完整</option>
           </select>
+          <span class="bond-list-quality" id="bond-list-visible"></span>
+          <span class="bond-feature-spacer"></span>
           <button class="btn btn-outline btn-sm" id="bond-list-refresh" data-act="bondListRefresh">刷新行情</button>
           <button class="btn btn-outline btn-sm" id="bond-list-export" data-act="exportBondList">导出 Excel</button>
-          <span class="bond-list-quality" id="bond-list-visible"></span>
         </div>
         <div id="bond-list-table"><div class="bond-list-empty">正在加载上市转债数据...</div></div>
       </div>

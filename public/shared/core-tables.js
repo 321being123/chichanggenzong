@@ -636,9 +636,9 @@ function renderPositionsTable(targetId, limit) {
       ((filterState.type || filterState.subtype)
         ? '<button class="btn btn-outline btn-sm" data-act="resetPositionFilters">清除筛选</button>'
         : '') +
+      '<span class="u-c-muted">' + list.length + ' / ' + activePositions.length + ' 只</span>' +
       '<button class="btn btn-outline btn-sm filter-bar-btn u-ml-auto" data-act="PositionComparison.openBenchmarkPicker" title="与公开标杆账户对比持仓并测算复制仓位">持仓对比</button>' +
-      '<button class="btn btn-success btn-sm" data-act="exportToExcel">导出 Excel</button>' +
-      '<span data-style="color:#bbb;">' + list.length + ' / ' + activePositions.length + ' 只</span>' +
+      '<button class="btn btn-outline btn-sm filter-bar-btn" data-act="exportToExcel">导出 Excel</button>' +
       '</div>';
   }
 

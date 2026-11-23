@@ -85,6 +85,40 @@ function stockAnalysisCancelSelection() {
   stockAnalysisState.data = null;
 }
 
+async function stockAnalysisPollSlot(slotId, tsCode, selectToken) {
+  if (!slotId || !stockAnalysisApi.getRefreshStatus) return;
+  var deadline = Date.now() + 90000;
+  while (Date.now() < deadline) {
+    await new Promise(function (resolve) { setTimeout(resolve, 3000); });
+    if (stockAnalysisState.selected !== tsCode || stockAnalysisState.selectToken !== selectToken) return;
+    try {
+      var res = await stockAnalysisApi.getRefreshStatus(slotId);
+      if (stockAnalysisState.selected !== tsCode || stockAnalysisState.selectToken !== selectToken) return;
+      if (!res.ok) continue;
+      var slot = res.payload && res.payload.data;
+      if (!slot) continue;
+      if (slot.status === 'succeeded') {
+        var snap = await stockAnalysisApi.getSnapshot(tsCode);
+        if (stockAnalysisState.selected !== tsCode || stockAnalysisState.selectToken !== selectToken) return;
+        if (snap.ok && snap.payload) {
+          stockAnalysisRender(snap.payload);
+          if (typeof showToast === 'function') showToast('股票数据刷新完成');
+        }
+        return;
+      }
+      if (slot.status === 'failed' || slot.status === 'blocked') {
+        stockAnalysisSetMessage('后台刷新未完成，请稍后重试。', true);
+        return;
+      }
+    } catch (_) {
+      // 单次状态轮询异常不阻断后续重试
+    }
+  }
+  if (stockAnalysisState.selected === tsCode && stockAnalysisState.selectToken === selectToken) {
+    stockAnalysisSetMessage('后台仍在采集历史数据，稍后可重新查询该股票查看最新结果。');
+  }
+}
+
 async function stockAnalysisRefresh() {
   var tsCode = stockAnalysisState.selected;
   if (!tsCode || stockAnalysisState.loading) return;
@@ -93,6 +127,7 @@ async function stockAnalysisRefresh() {
   stockAnalysisState.loading = true;
   stockAnalysisSetRefreshButton(true, '刷新中...');
   stockAnalysisSetMessage('正在提交股票刷新任务...');
+  var queuedSlotId = null;
   try {
     if (typeof stockAnalysisInvalidateStatements === 'function') stockAnalysisInvalidateStatements(tsCode);
     var refreshResult = await stockAnalysisApi.requestRefresh(tsCode);
@@ -104,7 +139,8 @@ async function stockAnalysisRefresh() {
     if (analysis && stillCurrent) stockAnalysisRender(analysis);
     if (refreshResult.status === 202) {
       if (!payload.queued || !payload.queued.queued) throw new Error(payload.warning || '未能登记刷新任务，请稍后重试');
-      if (stillCurrent) stockAnalysisSetMessage('已加入后台刷新队列，完成后重新查询该股票即可查看。首次建档需要采集历史财报，请稍候。');
+      queuedSlotId = payload.queued.slotId || null;
+      if (stillCurrent) stockAnalysisSetMessage('已加入后台刷新队列，正在自动等待刷新完成...');
     }
     if (!refreshResult.ok && payload.error && stillCurrent) showToast('刷新失败，已显示上一份有效数据：' + payload.error);
   } catch (error) {
@@ -112,6 +148,9 @@ async function stockAnalysisRefresh() {
   } finally {
     stockAnalysisState.loading = false;
     stockAnalysisSetRefreshButton(false, '刷新数据');
+  }
+  if (queuedSlotId && stockAnalysisState.selected === tsCode && stockAnalysisState.selectToken === selectToken) {
+    await stockAnalysisPollSlot(queuedSlotId, tsCode, selectToken);
   }
 }
 

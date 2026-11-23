@@ -74,6 +74,7 @@
   --danger-border: #fecaca;
 
   --success: #15803d;
+  --ok: var(--success);
   --success-soft: #f0fdf4;
   --success-border: #bbf7d0;
 

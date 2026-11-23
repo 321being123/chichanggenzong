@@ -222,15 +222,24 @@ function ssMergeRuns(existing, incoming) {
   });
 }
 
-// 历史季度横跨策略版本；日周渠道仍绑定当前激活策略。
+// 格雷厄姆低估所有周期均绑定 graham_net_net_v1；投资要义历史季度横跨 V1/V2（不传 strategy），日周渠道绑定当前激活策略。
 function ssSourceStrategyFilter() {
+  if (ssState.scheme === 'graham_net_net') return 'graham_net_net_v1';
   return ssState.periodType === 'quarter' ? null : ssState.strategyCode;
+}
+
+function ssFilterSchemeRuns(runs) {
+  if (ssState.scheme === 'graham_net_net') {
+    return (runs || []).filter(function (run) { return run && run.strategyCode === 'graham_net_net_v1'; });
+  }
+  return (runs || []).filter(function (run) { return !run || run.strategyCode !== 'graham_net_net_v1'; });
 }
 
 function ssIsValidRememberedSource(run) {
   if (!run || !Number(run.runId)) return false;
   if (run.market !== ssState.market || run.runKind !== SS_KIND_BY_PERIOD[ssState.periodType]) return false;
   if (run.periodType && run.periodType !== SS_PERIOD_API_TYPE[ssState.periodType]) return false;
+  if (ssState.scheme !== 'graham_net_net' && run.strategyCode === 'graham_net_net_v1') return false;
   var strategyFilter = ssSourceStrategyFilter();
   if (strategyFilter && run.strategyCode !== strategyFilter) return false;
   return !!run.publishedAt && run.isShadow !== true;
@@ -300,7 +309,7 @@ async function loadStockSelection() {
       }),
     ]);
     if (!guard.current()) return;
-    var resolvedSource = await ssResolveInitialSource(results[0].runs || [], guard, requestOwner);
+    var resolvedSource = await ssResolveInitialSource(ssFilterSchemeRuns(results[0].runs || []), guard, requestOwner);
     if (!guard.current() || !resolvedSource) return;
     ssState.runs = resolvedSource.runs; ssState.runTotal = Number(results[0].total || ssState.runs.length); ssState.runOffset = (results[0].runs || []).length;
     ssSettingsResult(results[1]);

@@ -287,7 +287,11 @@
       if (!window.appNotificationsPresenter.currentRequest(seq, owner)) return;
       if (!marked) toast('通知已读状态未同步，稍后可重试');
       saveSnapshot();
-      window.location.href = api(item.target.path);
+      var targetUrl = new URL(api(item.target.path), window.location.origin);
+      targetUrl.searchParams.set('from', 'notifications');
+      if (state.sub && state.sub !== 'all') targetUrl.searchParams.set('ntSub', state.sub);
+      if (state.unreadOnly) targetUrl.searchParams.set('ntUnread', '1');
+      window.location.href = targetUrl.pathname + targetUrl.search;
       return;
     }
     // 系统通知：同页正文懒加载，成功打开后才标已读

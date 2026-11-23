@@ -305,14 +305,14 @@ function buildRoundOpenCatalog(roundMeta, prevRoundSettled, prevCbStates) {
     });
   }
 
-  // 第 13 行固定：债券｜十年期国债
+  // 第 13 行固定：债券｜稳健债券（底层仍锚定十年期国债财富指数，界面不直接暴露“十年期国债”防止学员反查）
   assets.push({
     assetId: 'bond_10y',
     assetType: 'bond',
     industryName: '债券',
-    alias: '十年期国债',
+    alias: '稳健债券',
     canonicalCode: 'CN10Y_WEALTH',
-    stockName: '十年期国债财富指数',
+    stockName: '稳健债券',
     peTtm: null,
     pb: null,
     paused: false,

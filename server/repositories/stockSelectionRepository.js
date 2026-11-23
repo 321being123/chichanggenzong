@@ -2012,6 +2012,22 @@ async function hasPeriodRun({ market, periodType, periodKey, strategyCode }, tx)
   return rows.length > 0;
 }
 
+/**
+ * 该策略在该市场是否从未产生过任何正式（非影子）日/周批次。
+ * 只用于「新策略首次上线」的入队回补判断：从来没有批次的策略，光排当天/本周会让页面
+ * 在周批次生成前一直空白（格雷厄姆 2026-11-22 上线后正是这样空了整整一周）。
+ */
+async function hasNoPeriodRunAtAll({ market, strategyCode }, tx) {
+  const exec = executorOf(tx);
+  const { rows } = await exec(`
+    SELECT 1 FROM analytics.stock_selection_runs r
+      JOIN analytics.stock_selection_strategies s ON s.strategy_id = r.strategy_id
+     WHERE r.market = $1 AND r.is_shadow = false AND r.run_kind IN ('daily','weekly')
+       AND s.strategy_code = $2::text
+     LIMIT 1`, [market, strategyCode]);
+  return rows.length === 0;
+}
+
 async function listRuns({ market, quarter, kind, ownerUsername, ownerSubjectId, publishedOnly, periodType, strategyCode, includeShadow, limit, offset }, tx) {
   const exec = executorOf(tx);
   const conditions = [];
@@ -2679,6 +2695,7 @@ module.exports = {
   findPublication, listPublicationEvents, markPublicationVisible, loadPublicationReplayEvidence,
   listRuns, findRun, findRunForUpdate, listCandidates, listIndustryIdentityCounts, findCandidate, listMembers, latestPublishedRun, copyCandidates,
   hasPeriodRun,
+  hasNoPeriodRunAtAll,
   listCandidatesForProjection,
   readUserSettings, readUserSettingsForUpdate, saveUserSettings,
   readUserSubjectId, findPersonalRunByRequestId,

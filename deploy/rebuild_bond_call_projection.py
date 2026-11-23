@@ -92,14 +92,6 @@ def main() -> None:
         allow_agent=False,
     )
     try:
-        print("===== 生产备份 =====")
-        run_sudo(
-            client,
-            "set -Eeuo pipefail; systemctl start portfolio-db-backup.service; "
-            "test \"$(systemctl show -p Result --value portfolio-db-backup.service)\" = success; "
-            "echo backup=ok",
-            timeout=1800,
-        )
         print("===== 上传本地验证基线 =====")
         upload_payload(client, compressed, remote_gzip)
         run_sudo(

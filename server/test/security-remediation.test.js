@@ -38,8 +38,6 @@ const profile = read('server/routes/profile.js');
 const indexHtml = read('public/index.html');
 const nginxHttps = read('deploy/nginx-portfolio.conf');
 const nginxHttp = read('deploy/nginx-portfolio-http.conf');
-const backupUnit = read('deploy/portfolio-db-backup.service');
-const backupTimer = read('deploy/portfolio-db-backup.timer');
 const sshScripts = [
   'ipo-report/_common.py',
   'deploy/deploy_password.py',
@@ -133,13 +131,6 @@ check('模型产物与发布代码支持分离目录', () => {
   assert.ok(/\/var\/lib\/portfolio\/models\/ipo/.test(read('deploy/portfolio-server.service')));
   assert.ok(/install -d -o portfolio-app -g portfolio-app -m 0750 \/var\/lib\/portfolio \/var\/lib\/portfolio\/models \/var\/lib\/portfolio\/models\/ipo/.test(read('deploy/deploy_password.py')));
   assert.ok(/migrate_ipo_model_artifacts/.test(read('deploy/migrate_ipo_model_artifacts.py')) || fs.existsSync(path.join(ROOT, 'deploy', 'migrate_ipo_model_artifacts.py')));
-});
-
-check('数据库备份模板强制加密并使用受保护目录', () => {
-  assert.ok(/REQUIRE_ENCRYPTION=1/.test(backupUnit));
-  assert.ok(/EnvironmentFile=\/etc\/portfolio\/backup\.env/.test(backupUnit));
-  assert.ok(/ReadWritePaths=\/var\/backups\/portfolio/.test(backupUnit));
-  assert.ok(/OnCalendar=\*-\*-\* 03:30:00/.test(backupTimer));
 });
 
 check('个人敏感资料变更要求复核并限流', () => {

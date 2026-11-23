@@ -104,7 +104,7 @@ async function main() {
     assert.strictEqual(snapshot.valuation.pe_ttm, 12);
     assert.strictEqual(old.cashflow.latest_year.operating, 40, '不能修改已保存的快照对象');
     assert.strictEqual(hk.publicSnapshotOf(old).cashflow.latest_year.operating, null);
-    assert.strictEqual(hk.publicSnapshotOf(analysis).display.formula_version, 'hk-4');
+    assert.strictEqual(hk.publicSnapshotOf(analysis).display.formula_version, 'hk-5');
     assert.strictEqual((await hk.refreshHkAnalysis('00005.HK')).cashflow.latest_year.operating, null);
   } finally {
     stockRepository.readLatestSnapshot = originalRead;

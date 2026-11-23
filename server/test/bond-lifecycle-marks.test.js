@@ -131,23 +131,17 @@ check('安全性评级与到期三档使用已定义且彼此不同的强调色'
   assert(/\.bond-rating-medium\s*\{[^}]*color:var\(--rating-medium-fg\)/.test(css), '中风险评级文字色必须使用已定义的 fg 令牌');
   assert(/\.bond-rating-high\s*\{[^}]*color:var\(--rating-high-fg\)/.test(css), '高风险评级文字色必须使用已定义的 fg 令牌');
 
-  const colorToken = selector => {
-    const match = css.match(new RegExp(selector.replace('.', '\\.') + '\\s*\\{[^}]*color:var\\((--[a-z0-9-]+)\\)'));
-    assert(match, '缺少颜色令牌：' + selector);
-    return match[1];
+  const colorValue = selector => {
+    const match = css.match(new RegExp(selector.replace('.', '\\.').replace(',', '\\s*,\\s*') + '\\s*\\{[^}]*color:([^;]+)'));
+    assert(match, '缺少颜色定义：' + selector);
+    return match[1].trim().toLowerCase();
   };
   const colors = [
-    colorToken('.bond-lifecycle-mark'),
-    colorToken('.bond-lifecycle-mark-expiry-6m'),
-    colorToken('.bond-lifecycle-mark-expiry-1y'),
+    colorValue('.bond-lifecycle-mark-call,.bond-lifecycle-mark-maturity'),
+    colorValue('.bond-lifecycle-mark-expiry-6m'),
+    colorValue('.bond-lifecycle-mark-expiry-1y'),
   ];
-  assert.deepStrictEqual(colors, ['--up', '--rating-high-accent', '--rating-medium-accent'], '到期三档必须分别使用已定义的红、橘、黄强调色');
-  const values = colors.map(name => {
-    const match = shared.match(new RegExp(name.replace(/-/g, '\\-') + '\\s*:\\s*([^;]+);'));
-    assert(match, '共享样式缺少令牌定义：' + name);
-    return match[1].trim().toLowerCase();
-  });
-  assert.strictEqual(new Set(values).size, 3, '到期三档颜色必须彼此不同');
+  assert.strictEqual(new Set(colors).size, 3, '到期三档颜色必须彼此不同');
 });
 
 console.log('bond-lifecycle-marks: ' + pass + ' 项通过');

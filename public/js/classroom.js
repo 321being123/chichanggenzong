@@ -16,6 +16,7 @@
     draftVersion: 0,
     syncStatus: 'idle', // idle | saved_local | synced | submitted | sync_failed | conflict
     conflictInfo: null,
+    isSubmitting: false,
     stateSeq: 0,
     lastKnownStateVersion: 0,
     sse: null,
@@ -427,15 +428,35 @@
     }
   }
 
+  function isCurrentConfigSubmitted() {
+    const d = state.studentData;
+    if (!d || !d.submission || !d.submission.allocations) return false;
+    return P.canonicalizeAllocationsJson(state.draftAllocations) ===
+      P.canonicalizeAllocationsJson(d.submission.allocations);
+  }
+
+  function updateStudentSubmitButton() {
+    const btn = $('btn-submit-round');
+    if (!btn) return;
+    const d = state.studentData;
+    const canConfigure = Boolean(d && d.joined && d.eligibleThisRound && d.round && d.round.status === 'configuring');
+    const submittedMatch = isCurrentConfigSubmitted();
+    btn.disabled = !canConfigure || state.isSubmitting || submittedMatch;
+    btn.textContent = state.isSubmitting ? '提交中...' : (submittedMatch ? '已提交' : '正式提交');
+  }
+
   function updateSyncPill() {
     const pill = $('sync-status-pill');
     if (!pill) return;
     pill.className = 'sync-pill';
-    if (state.syncStatus === 'saved_local') pill.textContent = '已保存到本机';
-    else if (state.syncStatus === 'synced') { pill.textContent = '已同步'; pill.classList.add('ok'); }
-    else if (state.syncStatus === 'submitted') { pill.textContent = '已提交'; pill.classList.add('ok'); }
-    else if (state.syncStatus === 'sync_failed') { pill.textContent = '同步失败（已保留本机）'; pill.classList.add('error'); }
-    else if (state.syncStatus === 'conflict') { pill.textContent = '草稿版本冲突'; pill.classList.add('error'); }
+    const effective = isCurrentConfigSubmitted()
+      ? 'submitted'
+      : (state.syncStatus === 'submitted' ? 'synced' : state.syncStatus);
+    if (effective === 'saved_local') pill.textContent = '已保存到本机';
+    else if (effective === 'synced') { pill.textContent = '已同步'; pill.classList.add('ok'); }
+    else if (effective === 'submitted') { pill.textContent = '已提交'; pill.classList.add('ok'); }
+    else if (effective === 'sync_failed') { pill.textContent = '同步失败（已保留本机）'; pill.classList.add('error'); }
+    else if (effective === 'conflict') { pill.textContent = '草稿版本冲突'; pill.classList.add('error'); }
     else pill.textContent = '期初默认配置';
   }
 
@@ -484,10 +505,12 @@
 
     // 状态横幅与按钮可用性
     const canConfigure = d.eligibleThisRound && r.status === 'configuring';
+    const hasSubmitted = Boolean(d.submission && d.submission.allocations);
+    const isSubmittedMatch = isCurrentConfigSubmitted();
     $('btn-clear-all').disabled = !canConfigure;
     $('btn-restore-open').disabled = !canConfigure;
     $('btn-save-draft').disabled = !d.eligibleThisRound || r.status === 'revealed';
-    $('btn-submit-round').disabled = !canConfigure;
+    updateStudentSubmitButton();
 
     if (!d.eligibleThisRound) {
       showBanner('您是在本轮锁单/揭晓后加入的，请等待第 ' + (r.roundNo + 1) + ' 轮开放配置后参排。');
@@ -497,6 +520,10 @@
       showBanner('本轮已锁单，有效提交已冻结；若需修改请等待教师解锁。');
     } else if (r.status === 'revealed') {
       showBanner('本轮已揭晓并完成结算！' + (r.roundNo < c.totalRounds ? '请等待教师开启下一轮。' : '全部 15 轮已结束，可前往「投资历史与报告」查看结课报告。'));
+    } else if (isSubmittedMatch) {
+      showBanner('已提交成功，当前配置已作为本轮有效提交；修改投资配置后可重新提交。');
+    } else if (hasSubmitted) {
+      showBanner('投资配置已修改，请点击「正式提交」以更新本轮有效提交。');
     } else {
       showBanner(c.mode === 'demo' ? '当前为演示场次（教学示例数据），可自由配置并点击「正式提交」。' : '');
     }
@@ -770,17 +797,21 @@
   }
 
   async function submitCurrentRound() {
-    if (!state.classroomId || !state.studentData) return;
+    if (state.isSubmitting || !state.classroomId || !state.studentData) return;
     const sentClassroomId = state.classroomId;
     const sentRoundNo = state.studentData.round.roundNo;
     const sentAllocations = Object.assign({}, state.draftAllocations);
     const sentJson = P.canonicalizeAllocationsJson(sentAllocations);
     const reqId = 'sub_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+    state.isSubmitting = true;
+    updateStudentSubmitButton();
     try {
       await api.submitAllocation(sentClassroomId, sentRoundNo, sentAllocations, reqId);
+      state.isSubmitting = false;
       if (state.classroomId !== sentClassroomId || !state.studentData || state.studentData.round.roundNo !== sentRoundNo) {
         return;
       }
+      state.studentData.submission = { allocations: sentAllocations };
       const reconciled = P.reconcileSubmitSuccess({
         sentClassroomId: sentClassroomId,
         sentRoundNo: sentRoundNo,
@@ -798,12 +829,18 @@
         dirty: reconciled.dirty,
       });
       if (reconciled.matchesSent) {
+        if (state.draftSyncTimer) {
+          clearTimeout(state.draftSyncTimer);
+          state.draftSyncTimer = null;
+        }
         await refreshStudentState();
       } else {
         renderStudentView();
         if (navigator.onLine) syncDraftToServer(false);
       }
     } catch (e) {
+      state.isSubmitting = false;
+      updateStudentSubmitButton();
       showBanner('正式提交失败：' + e.message);
     }
   }

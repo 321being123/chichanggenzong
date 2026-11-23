@@ -1796,6 +1796,83 @@
       "batch": 7,
       "status": "registered",
       "note": "常见指数页视图：DOM 渲染与事件绑定，取数经 presenter，不直接发请求"
+    },
+    {
+      "path": "server/domain/classroomRules.js",
+      "role": "domain",
+      "batch": 7,
+      "status": "registered",
+      "note": "股市模拟沙盘领域规则：定点分运算、策略选样、转债模型、结算与盲玩白名单裁剪"
+    },
+    {
+      "path": "server/domain/classroomDemoScenario.js",
+      "role": "domain",
+      "batch": 7,
+      "status": "registered",
+      "note": "股市模拟沙盘演示剧本生成器（教学示例数据，非真实行情）"
+    },
+    {
+      "path": "server/repositories/classroomRepository.js",
+      "role": "repository",
+      "batch": 7,
+      "status": "registered",
+      "note": "股市模拟沙盘只读市场事实查询与独立 classroom.* 账本读写"
+    },
+    {
+      "path": "server/services/classroomPrecheckService.js",
+      "role": "application",
+      "batch": 7,
+      "status": "registered",
+      "note": "股市模拟沙盘真实场次 15 年数据覆盖只读预检用例"
+    },
+    {
+      "path": "server/services/classroomSseHub.js",
+      "role": "application",
+      "batch": 7,
+      "status": "registered",
+      "note": "股市模拟沙盘同源 SSE 事务提交后状态推送中心"
+    },
+    {
+      "path": "server/services/classroomService.js",
+      "role": "application",
+      "batch": 7,
+      "status": "registered",
+      "note": "股市模拟沙盘建场/入场/草稿/提交/控场/结算/报告用例编排"
+    },
+    {
+      "path": "server/routes/classroom.js",
+      "role": "route",
+      "batch": 7,
+      "status": "registered",
+      "note": "股市模拟沙盘 HTTP/SSE 路由（requireLogin / requireAdmin）"
+    },
+    {
+      "path": "server/db/migrations/era17StockClassroom.js",
+      "role": "migration",
+      "batch": 7,
+      "status": "registered",
+      "note": "迁移 209：新建 classroom.* 独立沙盘表结构"
+    },
+    {
+      "path": "public/js/api/classroom-api.js",
+      "role": "api_client",
+      "batch": 7,
+      "status": "registered",
+      "note": "模拟股市前端 API 客户端"
+    },
+    {
+      "path": "public/js/presenters/classroom-presenter.js",
+      "role": "presenter",
+      "batch": 7,
+      "status": "registered",
+      "note": "模拟股市前端 Presenter：定点分解析、上限计算与本地草稿账号隔离"
+    },
+    {
+      "path": "public/js/classroom.js",
+      "role": "view",
+      "batch": 7,
+      "status": "registered",
+      "note": "模拟股市页面视图：手机半屏滚轮面板、SSE 状态同步、历史报告与教师控制台"
     }
   ],
   "globalContracts": {

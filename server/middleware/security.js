@@ -3,8 +3,10 @@ const { ALLOWED_HOSTS } = require('../config');
 
 // 公开首页允许未登录访问；只有管理后台仍强制跳转登录。
 function redirectUnauthenticated(req, res, next) {
-  // 后台需回跳参数，避免登录后落回前台
-  if (req.path === '/admin.html' && !req.session.user) return res.redirect('/login.html?redirect=' + encodeURIComponent(req.originalUrl || '/admin.html'));
+  // 后台及沙盘课堂需回跳参数，避免登录后落回前台（扫码进场需回到对应 ?code=...）
+  if ((req.path === '/admin.html' || req.path === '/classroom.html') && !req.session.user) {
+    return res.redirect('/login.html?redirect=' + encodeURIComponent(req.originalUrl || req.path));
+  }
   next();
 }
 

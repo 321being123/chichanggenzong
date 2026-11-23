@@ -35,6 +35,7 @@ const arbitrageRouter = require('./routes/arbitrage');
 const feedbackRouter = require('./routes/feedback');
 const notificationsRouter = require('./routes/notifications');
 const shareRouter = require('./routes/share');
+const classroomRouter = require('./routes/classroom');
 const telemetryRouter = require('./routes/telemetry');
 // 单一后台任务注册清单（Web 兼容模式与独立 Worker 共用）：见 server/scheduler.js
 const { startScheduler } = require('./scheduler');
@@ -176,6 +177,7 @@ async function start() {
   app.use('/api/arbitrage', arbitrageRouter);     // 套利机会：A 股套利/港股私有化/港股供股权
   app.use('/api/feedback', feedbackRouter);      // 意见反馈：公开列表/我的反馈/排名/版本关联/回复/截图
   app.use('/api/notifications', notificationsRouter); // 站内通知：本人收件箱/未读数/已读
+  app.use('/api/classroom', classroomRouter); // 股市模拟沙盘：建场/控场/学员配置/结算/SSE
   app.use('/', shareRouter);      // 通用分享：公开证券分析页 /s/security/:kind/:code、二维码与微信签名配置
 
   // 健康检查（无需登录）：liveness 与 readiness 供反向代理/编排探测

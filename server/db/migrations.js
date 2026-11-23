@@ -226,6 +226,7 @@ const MIGRATIONS = [
   { version: '206_job_slot_retry_counters', up: () => require('./migrations/era16JobSlotRetryCounters').migration206JobSlotRetryCounters(pool) },
   { version: '207_raw_record_ref_indexes', up: () => require('./migrations/era16RawRecordRefIndexes').migration207RawRecordRefIndexes(pool) },
   { version: '208_feedback_internal_account', up: () => require('./migrations/era07Feedback').migration208FeedbackInternalAccount(pool) },
+  { version: '209_stock_classroom', up: () => require('./migrations/era17StockClassroom').migration209StockClassroom(pool) },
 ];
 
 async function ensureMigrationsTable() {

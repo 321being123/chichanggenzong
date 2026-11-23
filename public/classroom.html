@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="base-url" content="">
+<title>模拟股市 - 存在小站</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<link rel="stylesheet" href="shared/style.css?v=__APP_VERSION__">
+<link rel="stylesheet" href="css/classroom.css?v=__APP_VERSION__">
+<script src="shared/autofill-guard.js?v=__APP_VERSION__"></script>
+<script src="shared/mobile-ui.js?v=__APP_VERSION__" defer></script>
+</head>
+<body>
+<main class="classroom-page">
+  <header class="classroom-topbar">
+    <div class="classroom-topbar-left">
+      <a class="classroom-back-link" href="/">← 返回首页</a>
+      <h1 class="classroom-title" id="cr-page-title">模拟股市</h1>
+      <span class="classroom-badge" id="cr-user-badge">加载中...</span>
+    </div>
+    <div class="classroom-btn-group" id="cr-top-actions"></div>
+  </header>
+
+  <nav class="classroom-tabs" id="cr-main-tabs" aria-label="模拟股市导航"></nav>
+
+  <div id="cr-banner" class="notice-banner" hidden></div>
+
+  <!-- 视图：我的历史与加入课堂 -->
+  <section id="view-lobby" hidden>
+    <div class="classroom-card">
+      <h2>加入课堂</h2>
+      <div class="classroom-btn-group">
+        <input class="cr-input" id="join-code-input" type="text" placeholder="输入场次代码（如 ABC123）" maxlength="12" autocomplete="off">
+        <button class="cr-btn cr-btn-primary" id="join-code-btn" type="button">进入场次</button>
+      </div>
+    </div>
+    <div class="classroom-card">
+      <h2>我的历史场次</h2>
+      <div id="my-classrooms-list"></div>
+    </div>
+  </section>
+
+  <!-- 视图：首次加入填写昵称 -->
+  <section id="view-join-prompt" class="classroom-card" hidden>
+    <h2 id="join-prompt-title">加入课堂</h2>
+    <p id="join-prompt-desc"></p>
+    <div class="classroom-btn-group">
+      <input class="cr-input" id="join-nickname-input" type="text" placeholder="请填写课堂昵称" maxlength="24" autocomplete="off">
+      <button class="cr-btn cr-btn-primary" id="join-confirm-btn" type="button">确认加入</button>
+      <button class="cr-btn" id="join-cancel-btn" type="button">返回列表</button>
+    </div>
+    <div class="sheet-error" id="join-error"></div>
+  </section>
+
+  <!-- 视图：学员配置 / 当轮结果 -->
+  <section id="view-student" hidden>
+    <div class="classroom-grid" id="student-summary-grid"></div>
+
+    <div class="classroom-actions-bar">
+      <div class="classroom-btn-group">
+        <span class="sync-pill" id="sync-status-pill">未修改</span>
+        <button class="cr-btn" id="btn-clear-all" type="button">全部清仓</button>
+        <button class="cr-btn" id="btn-restore-open" type="button">恢复期初配置</button>
+      </div>
+      <div class="classroom-btn-group">
+        <button class="cr-btn" id="btn-save-draft" type="button">保存草稿</button>
+        <button class="cr-btn cr-btn-primary" id="btn-submit-round" type="button">正式提交</button>
+      </div>
+    </div>
+
+    <div id="student-conflict-box" class="notice-banner" hidden></div>
+    <div id="student-liquidation-box" class="notice-banner" hidden></div>
+
+    <div class="classroom-table-wrap">
+      <table class="classroom-table" id="student-alloc-table">
+        <thead>
+          <tr>
+            <th>行业</th>
+            <th>股票</th>
+            <th>PE</th>
+            <th>PB</th>
+            <th>投入资金（万元）</th>
+            <th id="th-round-return" hidden>本轮涨跌</th>
+          </tr>
+        </thead>
+        <tbody id="student-alloc-tbody"></tbody>
+      </table>
+    </div>
+
+    <div class="classroom-card" id="student-strategy-details" hidden></div>
+    <div class="classroom-card" id="student-leaderboard-card" hidden></div>
+  </section>
+
+  <!-- 视图：我的投资历史与第15轮报告 -->
+  <section id="view-history" hidden>
+    <div class="classroom-card" id="report-summary-card" hidden></div>
+    <div class="classroom-card">
+      <h2>各轮投资历史</h2>
+      <div class="classroom-table-wrap">
+        <table class="classroom-table">
+          <thead>
+            <tr>
+              <th>轮次</th>
+              <th>参与状态</th>
+              <th>期初资产（万元）</th>
+              <th>期末资产（万元）</th>
+              <th>本轮盈亏（万元）</th>
+              <th>名次 / 参排人数</th>
+            </tr>
+          </thead>
+          <tbody id="history-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+    <div class="classroom-card" id="after-class-note-card">
+      <h2>课后想法</h2>
+      <textarea class="cr-textarea" id="after-class-note-input" placeholder="记录本场模拟投资的复盘思考（仅本人可读）..."></textarea>
+      <div class="classroom-btn-group cr-mt-10">
+        <button class="cr-btn cr-btn-primary" id="btn-save-note" type="button">保存课后想法</button>
+        <span class="sync-pill" id="note-save-status"></span>
+      </div>
+    </div>
+  </section>
+
+  <!-- 视图：教师端控制台（仅管理员） -->
+  <section id="view-teacher" hidden>
+    <div class="classroom-card">
+      <h2>创建新场次</h2>
+      <div class="classroom-btn-group">
+        <input class="cr-input" id="teacher-new-title" type="text" placeholder="场次名称（如：2026秋季投资课）" maxlength="48">
+        <select class="cr-input" id="teacher-new-mode">
+          <option value="demo">演示场次（教学示例数据）</option>
+          <option value="real">真实场次（15年历史行情预检）</option>
+        </select>
+        <label class="classroom-btn-group">
+          <span>起始年份</span>
+          <input class="cr-input cr-input-year" id="teacher-start-year" type="number" min="1995" max="2020" value="2011">
+          <span class="stat-sub" id="teacher-year-range">（2011–2025 年，共 15 轮）</span>
+        </label>
+        <label class="classroom-btn-group">
+          <input type="checkbox" id="teacher-new-blind" checked>
+          <span>盲玩模式</span>
+        </label>
+        <button class="cr-btn cr-btn-primary" id="btn-teacher-create" type="button">创建场次</button>
+      </div>
+
+      <div id="teacher-real-config" class="teacher-real-config" hidden>
+        <h3>真实场次股票池（4 个行业 × 每行业 3 只 A 股代码）</h3>
+        <div id="teacher-industry-rows" class="teacher-industry-rows"></div>
+        <div class="classroom-btn-group cr-mt-10">
+          <button class="cr-btn" id="btn-teacher-precheck" type="button">执行 15 年数据预检</button>
+        </div>
+        <div id="teacher-precheck-result" class="cr-mt-10"></div>
+      </div>
+
+      <div class="sheet-error" id="teacher-create-error"></div>
+    </div>
+
+    <div class="classroom-card">
+      <h2>场次列表</h2>
+      <div id="teacher-classroom-list"></div>
+    </div>
+
+    <div id="teacher-active-panel" hidden>
+      <div class="classroom-card" id="teacher-control-card"></div>
+      <div class="classroom-card" id="teacher-qr-card"></div>
+      <div class="classroom-card" id="teacher-participants-card"></div>
+      <div class="classroom-card" id="teacher-market-card"></div>
+      <div class="classroom-card" id="teacher-ranking-card"></div>
+    </div>
+  </section>
+
+  <!-- 视图：课堂投屏（管理员盲玩安全视图） -->
+  <section id="view-projector" hidden>
+    <div class="classroom-card" id="projector-content"></div>
+  </section>
+</main>
+
+<!-- 底部半屏调仓面板 -->
+<div class="sheet-backdrop" id="alloc-sheet" hidden>
+  <div class="sheet-panel" role="dialog" aria-modal="true" aria-labelledby="sheet-asset-title">
+    <div class="sheet-head">
+      <h3 class="sheet-title" id="sheet-asset-title">调整投入资金</h3>
+      <button class="sheet-close-btn" id="sheet-close-btn" type="button" aria-label="关闭面板">×</button>
+    </div>
+    <div class="sheet-cap-hint" id="sheet-cap-hint"></div>
+    <div class="sheet-input-row">
+      <input class="cr-input" id="sheet-amount-input" type="text" inputmode="decimal" placeholder="0" autocomplete="off">
+      <span>万元</span>
+    </div>
+    <div class="sheet-error" id="sheet-error"></div>
+    <div class="sheet-quick-row">
+      <button class="cr-btn" id="sheet-btn-zero" type="button">清零</button>
+      <button class="cr-btn" id="sheet-btn-25" type="button">25%</button>
+      <button class="cr-btn" id="sheet-btn-50" type="button">50%</button>
+      <button class="cr-btn cr-btn-primary" id="sheet-btn-max" type="button">投入全部可用资金</button>
+    </div>
+    <div class="wheel-viewport" id="sheet-wheel-viewport" aria-label="金额滚轮（每格1万元）">
+      <div class="wheel-highlight"></div>
+      <div class="wheel-list" id="sheet-wheel-list"></div>
+    </div>
+    <div class="classroom-btn-group">
+      <button class="cr-btn cr-btn-primary" id="sheet-confirm-btn" type="button">确定</button>
+      <button class="cr-btn" id="sheet-cancel-btn" type="button">取消</button>
+    </div>
+  </div>
+</div>
+
+<script src="js/api/client.js?v=__APP_VERSION__"></script>
+<script src="js/api/classroom-api.js?v=__APP_VERSION__"></script>
+<script src="js/presenters/classroom-presenter.js?v=__APP_VERSION__"></script>
+<script src="js/classroom.js?v=__APP_VERSION__"></script>
+</body>
+</html>

@@ -1,6 +1,14 @@
 [
   {
     "date": "2026-11-23",
+    "version": "0.9.4.29",
+    "items": [
+      "修复：港股个股分析定时任务（stock_analysis_hk）因缺少 targetCodes/targetFields 被阶段门禁误判为 failed 的问题",
+      "修复：基金/ETF 兜底写入证券主档时误标为 stock 导致选股输入审计（selection_inputs）每日阻塞的问题，并在选股查询排除历史误标记录"
+    ]
+  },
+  {
+    "date": "2026-11-23",
     "version": "0.9.4.28",
     "items": [
       "修复：将深交所官方招股书域名 reportdocs.static.szse.cn 纳入行业 PE 未披露证据白名单，避免正式发行公告尚未披露前误触发告警"

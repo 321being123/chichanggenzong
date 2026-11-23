@@ -40,14 +40,14 @@ async function check(name, fn) {
   }
 }
 
-/** 今天（上海）的日期与「就绪时段」时刻：18:40 北京时间 = UTC 10:40。 */
-function shanghaiToday() {
-  const parts = new Intl.DateTimeFormat('en-CA', {
-    timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit',
-  }).format(new Date());
-  const [y, m, d] = parts.split('-').map(Number);
-  return { text: parts, readyMoment: new Date(Date.UTC(y, m - 1, d, 10, 40)) };
-}
+/**
+ * 就绪时段固定锚点：上海 2026-11-06 18:40（周五，已收盘）= UTC 10:40。
+ * 为什么不用「今天」：CI 的交易日历是 ci-seed.sql 的最小样本（2026-10-17 ~ 2026-11-08），
+ * 用当天日期会因日历不覆盖而拿到 null，失败原因就与本次要验证的逻辑无关了。
+ * 该区间同时覆盖上一周（W:2026-10-26）与本周（W:2026-11-02），足够验证首周回补。
+ */
+const READY_NOW = new Date('2026-11-06T10:40:00Z');
+const PREV_WEEK_KEY = 'W:2026-10-26';
 
 async function main() {
   console.log('格雷厄姆低估：落库与新策略回补回归（真实 PostgreSQL）');
@@ -153,25 +153,22 @@ async function main() {
     await check('已有批次的策略：就绪时段不再补上一周（避免重复建槽）', async () => {
       const noRun = await repo.hasNoPeriodRunAtAll({ market: 'CN', strategyCode: PROBE_CODE }, client);
       assert.strictEqual(noRun, false, '本用例已插入批次，前置条件不成立');
-      const { text: today, readyMoment } = shanghaiToday();
       const targets = await service.duePeriodicTargets(
-        { market: 'CN', now: readyMoment, strategyCode: PROBE_CODE }, client
+        { market: 'CN', now: READY_NOW, strategyCode: PROBE_CODE }, client
       );
-      const week = targets.find(item => item.periodType === 'week');
-      assert.ok(!week, '该策略已有批次，不应再补上一周');
-      assert.ok(!targets.some(item => item.periodType === 'week' && item.targetDate < today),
-        '已有批次时不得补历史周批次');
+      assert.ok(!targets.some(item => item.periodType === 'week' && item.periodKey === PREV_WEEK_KEY),
+        '该策略已有批次，不应再补上一周');
     });
 
     await check('完全没有批次的策略码：就绪时段补出上一已结束周的目标日', async () => {
-      const { text: today, readyMoment } = shanghaiToday();
       const fresh = 'graham_persist_fresh_probe_v1';
       const targets = await service.duePeriodicTargets(
-        { market: 'CN', now: readyMoment, strategyCode: fresh }, client
+        { market: 'CN', now: READY_NOW, strategyCode: fresh }, client
       );
-      const week = targets.find(item => item.periodType === 'week');
-      assert.ok(week, '首次上线的策略必须补出上一已结束周');
-      assert.ok(week.targetDate < today, `补出的目标日必须早于今天：${week.targetDate}`);
+      const week = targets.find(item => item.periodType === 'week' && item.periodKey === PREV_WEEK_KEY);
+      assert.ok(week, `首次上线的策略必须补出上一已结束周（实际：${JSON.stringify(targets)}）`);
+      assert.strictEqual(week.catchup, true, '回补目标必须标记为补算');
+      assert.ok(week.targetDate < '2026-11-06', `补出的目标日必须早于当日：${week.targetDate}`);
       assert.ok(/^W:\d{4}-\d{2}-\d{2}$/.test(week.periodKey), `周键格式不符：${week.periodKey}`);
     });
 

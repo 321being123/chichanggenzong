@@ -88,30 +88,111 @@ function selectBackfillRows(byDate, options = {}) {
   return picked;
 }
 
-async function backfillHkDailyPrices(username, accountName, code, start, end, options = {}) {
-  // 港股日线属于「行情数据集」：只向数据层要序列，主备来源由数据层决定。
-  // 代码规范化与收盘核验同源（数据访问层唯一实现），六位补零的港股持仓不会被当成另一只证券。
-  const { readStockDailySeries, normalizeHkSecurityCode } = require('../dataAccess/marketDatasets');
-  const bare = normalizeHkSecurityCode(code);
-  const rows = await readStockDailySeries({ tsCode: `${bare}.HK`, market: 'hk', startDate: start, endDate: end });
-  if (!rows.length) return false;
-  const byDate = {};
-  for (const row of rows) {
-    const date = normDate(row.trade_date);
-    const close = Number(row.close);
-    if (!date || !(close > 0)) continue;
-    (byDate[date] = byDate[date] || []).push(historyBackfillRow({
-      code, price: close, market: 'HK', provider: row.source_code, adjust: row.price_adjust,
-    }));
+async function reuseSharedConfirmedInRange({ username, accountName, code, market, start, end, businessDate }) {
+  const variants = codeVariants(code, market === 'HK');
+  const { rows: sharedRows } = await navAttributionRepository.listSharedConfirmedRange(
+    pool.query.bind(pool),
+    [username, accountName, market, variants, start, end, PRIVATE_SOURCES],
+  );
+  const byDate = new Map();
+  for (const row of (sharedRows || [])) {
+    const d = String(row.date || '').slice(0, 10);
+    if (!d || (businessDate && d !== businessDate)) continue;
+    if (!byDate.has(d)) byDate.set(d, []);
+    byDate.get(d).push(row);
   }
+  const handledDates = new Set();
   let any = false;
-  for (const [date, rowsForDate] of selectBackfillRows(byDate, options)) {
+  for (const date of byDate.keys()) {
+    const picked = pickExactClose(byDate.get(date), code, market, date);
+    if (picked.conflict) {
+      handledDates.add(date);
+      continue;
+    }
+    if (picked.row) {
+      try {
+        await saveDailyPrices(username, accountName, date, [{
+          code,
+          name: '',
+          price: Number(picked.row.price),
+          source: picked.row.source || 'shared_confirmed_close',
+          quality: 'confirmed',
+          is_final: true,
+          market,
+          evidence: sharedCloseEvidence(picked.row.evidence),
+        }], { market });
+        handledDates.add(date);
+        any = true;
+      } catch (e) { /* 单日失败不阻断其余日期 */ }
+    }
+  }
+  return { any, handledDates };
+}
+
+async function saveBackfillRowsWithSharedReuse({ username, accountName, code, market, selectedEntries }) {
+  if (!selectedEntries.length) return false;
+  const variants = codeVariants(code, market === 'HK');
+  const pairs = [];
+  for (const [date] of selectedEntries) {
+    for (const variant of variants) pairs.push({ market, code: variant, date });
+  }
+  const { rows: sharedRows } = await navAttributionRepository.listSharedConfirmedAt(
+    pool.query.bind(pool),
+    [username, accountName, JSON.stringify(pairs), PRIVATE_SOURCES],
+  );
+  let any = false;
+  for (const [date, rowsForDate] of selectedEntries) {
+    const shared = pickExactClose(sharedRows, code, market, date);
+    if (shared.conflict) continue;
+    const toSave = shared.row
+      ? [{
+        code,
+        name: '',
+        price: Number(shared.row.price),
+        source: shared.row.source || 'shared_confirmed_close',
+        quality: 'confirmed',
+        is_final: true,
+        market,
+        evidence: sharedCloseEvidence(shared.row.evidence),
+      }]
+      : rowsForDate;
     try {
-      await saveDailyPrices(username, accountName, date, rowsForDate, { market: 'HK' });
+      await saveDailyPrices(username, accountName, date, toSave, { market });
       any = true;
     } catch (e) { /* 单日失败不阻断其余日期 */ }
   }
   return any;
+}
+
+async function backfillHkDailyPrices(username, accountName, code, start, end, options = {}) {
+  const reused = await reuseSharedConfirmedInRange({
+    username, accountName, code, market: 'HK', start, end, businessDate: options.businessDate,
+  });
+  const singleTarget = options.businessDate || (start === end ? start : null);
+  if (singleTarget && reused.handledDates.has(singleTarget)) return reused.any;
+  // 港股日线属于「行情数据集」：只向数据层要序列，主备来源由数据层决定。
+  // 代码规范化与收盘核验同源（数据访问层唯一实现），六位补零的港股持仓不会被当成另一只证券。
+  const { readStockDailySeries, normalizeHkSecurityCode } = require('../dataAccess/marketDatasets');
+  const bare = normalizeHkSecurityCode(code);
+  let rows = [];
+  try {
+    rows = await readStockDailySeries({ tsCode: `${bare}.HK`, market: 'hk', startDate: start, endDate: end });
+  } catch (e) { return reused.any; }
+  if (!rows.length) return reused.any;
+  const byDate = {};
+  for (const row of rows) {
+    const date = normDate(row.trade_date);
+    if (!date || reused.handledDates.has(date)) continue;
+    const close = Number(row.close);
+    if (!(close > 0)) continue;
+    (byDate[date] = byDate[date] || []).push(historyBackfillRow({
+      code, price: close, market: 'HK', provider: row.source_code, adjust: row.price_adjust,
+    }));
+  }
+  const savedAny = await saveBackfillRowsWithSharedReuse({
+    username, accountName, code, market: 'HK', selectedEntries: selectBackfillRows(byDate, options),
+  });
+  return reused.any || savedAny;
 }
 
 // 用对应证券类型的 Tushare 历史接口拉取 [start, end] 收盘，按日期 upsert 进 daily_prices。
@@ -122,29 +203,31 @@ async function backfillDailyPrices(username, accountName, code, start, end, posi
   // 港股日线不走 Tushare（hk_daily 需高积分），改走腾讯 web.ifzq 日 K；
   // 数据源的选择留在数据层，业务层只说「补某只标的某区间的收盘价」。
   if (kind === 'hk_stock') return backfillHkDailyPrices(username, accountName, code, start, end, options);
+  const reused = await reuseSharedConfirmedInRange({
+    username, accountName, code, market: 'CN', start, end, businessDate: options.businessDate,
+  });
+  const singleTarget = options.businessDate || (start === end ? start : null);
+  if (singleTarget && reused.handledDates.has(singleTarget)) return reused.any;
   let rows = [];
   try {
     rows = await marketDatasets.readHistoricalCloseSeries({ tsCode, kind, startDate: start, endDate: end });
-  } catch (e) { return false; }
-  if (!rows.length) return false;
+  } catch (e) { return reused.any; }
+  if (!rows.length) return reused.any;
   // 按日期分组（saveDailyPrices 按单日期批量写）
   const byDate = {};
   for (const r of rows) {
     const d = normDate(r.trade_date);
+    if (!d || reused.handledDates.has(d)) continue;
     const c = parseFloat(r.close);
-    if (!d || isNaN(c) || c <= 0) continue;
+    if (isNaN(c) || c <= 0) continue;
     (byDate[d] = byDate[d] || []).push(historyBackfillRow({
       code, price: c, market: 'CN', provider: r.source_code, adjust: r.price_adjust,
     }));
   }
-  let any = false;
-  for (const [date, rowsForDate] of selectBackfillRows(byDate, options)) {
-    try {
-      await saveDailyPrices(username, accountName, date, rowsForDate, { market: 'CN' });
-      any = true;
-    } catch (e) {}
-  }
-  return any;
+  const savedAny = await saveBackfillRowsWithSharedReuse({
+    username, accountName, code, market: 'CN', selectedEntries: selectBackfillRows(byDate, options),
+  });
+  return reused.any || savedAny;
 }
 
 // 单日精确选价：只承认同一「市场 + 代码 + 日期」的 confirmed + final 正价。

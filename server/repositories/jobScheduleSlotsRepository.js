@@ -63,6 +63,20 @@ async function insert_ops_job_schedule_slots(params, client = pool) {
      RETURNING *, updated_at::text AS updated_at_exact`, params);
 }
 
+// 定时任务改点只撤销未结束的同日自动旧槽；运行中及手动补跑保留。
+async function skipReplacedScheduledSlot(jobCode, previousScheduledFor, replacementSlotId, client = pool) {
+  return client.query(
+    `UPDATE ops.job_schedule_slots
+        SET status='skipped', next_attempt_at=NULL, last_error='定时任务已改点',
+            result_summary=COALESCE(result_summary,'{}'::jsonb) || jsonb_build_object('replacementSlotId',$3::bigint),
+            updated_at=now()
+      WHERE job_code=$1 AND scheduled_for=$2 AND slot_id<>$3
+        AND trigger_type IN ('scheduled','startup_catchup','auto_retry')
+        AND status IN ('pending','failed','waiting_readiness','waiting_external')`,
+    [jobCode, previousScheduledFor, replacementSlotId],
+  );
+}
+
 async function select_ops_dataset_partitions(params, client = pool) {
   return client.query(`SELECT status,is_stale,diagnostics
          FROM ops.dataset_partitions
@@ -635,6 +649,7 @@ module.exports = {
   readSlotRequestPayload,
   taskDependencyStates,
   insert_ops_job_schedule_slots,
+  skipReplacedScheduledSlot,
   select_ops_dataset_partitions,
   select_data,
   select_ops_job_schedule_slots,

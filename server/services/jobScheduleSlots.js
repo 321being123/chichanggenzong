@@ -699,6 +699,10 @@ async function syncScheduleSlots(now = new Date()) {
         if (targetTradeDate) requestPayload.targetTradeDate = targetTradeDate;
         if (Object.prototype.hasOwnProperty.call(resolvedSchedule, 'freshnessGate')) requestPayload.freshnessGate = Boolean(resolvedSchedule.freshnessGate);
         const slot = await ensureSlot(definition.jobCode, scheduledFor, businessDate, 'scheduled', requestPayload);
+        if (slot && businessDate === today && Number.isInteger(definition.previousScheduledMinute)) {
+          const previousScheduledFor = scheduledDate(businessDate, resolvedSchedule.hour, definition.previousScheduledMinute);
+          await repository.skipReplacedScheduledSlot(definition.jobCode, previousScheduledFor, slot.slot_id);
+        }
         const current = await reconcileSlot(slot);
         // 漏跑只看“已过计划期限且没有有效等待”。官方待披露、字段复查冷却和正常续批
         // 都有 next_attempt_at 和阶段证据，属于等待而不是故障，不能按计划时间误报。
@@ -1152,8 +1156,7 @@ async function waitForExternalSlot(slotId, errorMessage, resultSummary, retryAt 
 // 发布、锁争用和依赖分区未就绪都不是"任务执行失败"。旧实现把它们按普通 failed 处理，
 // 零外采的等待也会吃掉失败预算（生产 2568029 两次 DATASET_LOCKED 即此）。
 // 这里把三类等待统一为 waiting_readiness，失败预算只留给真实执行失败。
-// 时间换算、试点判定与"首查前不开外部终盘窗口"集中在 jobReadiness，与收盘 Runner 共用
-// 同一份实现——两处各写一份会让 15:10 那次仍然去外采 cb_daily/fund_daily。
+// 就绪检查点和边界均按上海时间换算。
 const {
   READINESS_WAIT_KINDS: READINESS_KINDS,
   readinessMoment, isReadinessPilot, nextReadinessCheckpoint, readinessBoundaryMoment,

@@ -61,6 +61,14 @@ function sameIdentity(current, prior) {
     && restatementValid);
 }
 
+function isValidCalendarDate(iso) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(iso)) return false;
+  const [y, m, d] = iso.split('-').map(Number);
+  if (m < 1 || m > 12 || d < 1 || d > 31) return false;
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  return dt.getUTCFullYear() === y && dt.getUTCMonth() === m - 1 && dt.getUTCDate() === d;
+}
+
 function flowPeriodStartOf(row) {
   if (!row) return '';
   const cov = parseCoverage(row.statement_coverage);
@@ -74,7 +82,11 @@ function hasSingleFlowPeriodBasis(row, market) {
   const cov = parseCoverage(row.statement_coverage);
   if (cov && cov.complete === false) return false;
   const start = flowPeriodStartOf(row);
-  if (start && !/^\d{4}-\d{2}-\d{2}$/.test(start)) return false;
+  const end = dateKey(row.period_end);
+  if (start) {
+    if (!isValidCalendarDate(start)) return false;
+    if (isValidCalendarDate(end) && start > end) return false;
+  }
   const isNaturalYearCas = String(market || '').toUpperCase() === 'CN'
     && String(row.accounting_standard || '').toUpperCase() === 'CAS';
   if (!isNaturalYearCas && !start) return false;
@@ -90,7 +102,7 @@ function hasFlowPeriodBasis(current, prior, market) {
   const curStart = flowPeriodStartOf(current);
   const priorStart = flowPeriodStartOf(prior);
   if (curStart || priorStart) {
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(curStart) || !/^\d{4}-\d{2}-\d{2}$/.test(priorStart)) return false;
+    if (!isValidCalendarDate(curStart) || !isValidCalendarDate(priorStart)) return false;
     if (curStart.slice(5) !== priorStart.slice(5) || Number(curStart.slice(0, 4)) - Number(priorStart.slice(0, 4)) !== 1) {
       return false;
     }

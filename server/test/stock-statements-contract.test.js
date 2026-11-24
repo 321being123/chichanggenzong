@@ -350,6 +350,19 @@ const hkFlowValid = buildStatementPayload({ market: 'HK', type: 'cashflow', cano
     row({ report_id: 1, period_end: '2024-06-30', period_start: '2024-01-01', fiscal_year: '2024', source_code: 'lixinger_official', update_flag: null, cfs_ncffoa: 2 }),
   ] });
 assert.strictEqual(field(hkFlowValid, 'cfs.ncffoa').values[0].yoy, 0.5, '港股具备连续财年与一致 period_start 时可算同比');
+// A-02: 非法日历日期（2月30日）或起始日在期末之后时不得计算同比
+const invalidCalendarStart = buildStatementPayload({ market: 'HK', type: 'income', canonicalCode: '00001.HK', options: { compare: 'yoy' },
+  rows: [
+    row({ report_id: 2, period_end: '2025-06-30', period_start: '2025-02-30', fiscal_year: '2025', source_code: 'lixinger_official', update_flag: null, ps_tp: 3 }),
+    row({ report_id: 1, period_end: '2024-06-30', period_start: '2024-02-30', fiscal_year: '2024', source_code: 'lixinger_official', update_flag: null, ps_tp: 2 }),
+  ] });
+assert.strictEqual(field(invalidCalendarStart, 'ps.tp').values[0].comparison_reason, 'flow_period_basis_unverified', '非法日历起始日不得算同比');
+const startAfterEnd = buildStatementPayload({ market: 'HK', type: 'cashflow', canonicalCode: '00001.HK', options: { compare: 'yoy' },
+  rows: [
+    row({ report_id: 2, period_end: '2025-06-30', period_start: '2025-07-01', fiscal_year: '2025', source_code: 'lixinger_official', update_flag: null, cfs_ncffoa: 3 }),
+    row({ report_id: 1, period_end: '2024-06-30', period_start: '2024-07-01', fiscal_year: '2024', source_code: 'lixinger_official', update_flag: null, cfs_ncffoa: 2 }),
+  ] });
+assert.strictEqual(field(startAfterEnd, 'cfs.ncffoa').values[0].comparison_reason, 'flow_period_basis_unverified', '起始日在期末之后不得算同比');
 // A-06: 当前累计报告有效但缺少上年同期时，应返回 insufficient_history / comparable_period_missing（而非期间口径待核实）
 const singleValidFlow = buildStatementPayload({ market: 'CN', type: 'income', canonicalCode: '600000.SH', options: { compare: 'yoy' },
   rows: [

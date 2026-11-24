@@ -988,9 +988,13 @@ async function syncConvertibleBondUniverse(reason = 'scheduled', options = {}) {
       missingDates: suspensionResult.ok ? (suspensionResult.missingDates || []) : [isoDate(daily.tradeDate)],
       publishDatasets: false,
       datasetDiagnostics: {
-        bond_master: { partition_row_count: bondMasterRowCount, processed_count: profiles.length, dataAsOf: isoDate(daily.tradeDate) },
+        bond_master: {
+          partition_row_count: bondMasterRowCount, processed_count: profiles.length,
+          dataAsOf: isoDate(daily.tradeDate), query_status: 'success',
+        },
         bond_daily: {
           partition_row_count: activeDailyRows.length, dataAsOf: targetTradeDate,
+          query_status: 'success',
           status: unresolvedCodes.length ? 'partial_published' : 'published', unresolved_count: unresolvedCodes.length,
           object_status_counts: bondStatusCounts,
           expected_count: profiles.length, raw_count: rawTargetRows.size, priced_count: bondStatusCounts.priced || 0,
@@ -1000,15 +1004,20 @@ async function syncConvertibleBondUniverse(reason = 'scheduled', options = {}) {
         },
         stock_daily: {
           partition_row_count: stockDailyRows.length, dataAsOf: isoDate(daily.tradeDate),
+          query_status: 'success',
           needed_count: neededStockCodes.length,
           by_source: Object.fromEntries([...dailyBySource].map(([code, rows]) => [code, rows.length])),
           scope: 'demand:underlying+positions+watchlist',
         },
         stock_valuation: {
           partition_row_count: stockValuationRows.length, dataAsOf: isoDate(daily.tradeDate),
+          query_status: 'success',
           by_source: Object.fromEntries([...valuationBySource].map(([code, rows]) => [code, rows.length])),
         },
-        stock_adj_factor: { partition_row_count: stockAdjustmentRows.length, dataAsOf: isoDate(daily.tradeDate) },
+        stock_adj_factor: {
+          partition_row_count: stockAdjustmentRows.length, dataAsOf: isoDate(daily.tradeDate),
+          query_status: stockAdjustmentRows.length ? 'success' : 'verified_no_change',
+        },
         stock_suspend_calendar: {
           partition_row_count: suspensionResult.count || 0,
           dataAsOf: isoDate(daily.tradeDate),

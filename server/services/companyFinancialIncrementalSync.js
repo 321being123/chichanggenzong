@@ -481,7 +481,10 @@ async function runCompanyFinancialIncrementalSync(reason = 'scheduled', options 
       nextAttemptInMinutes: continuationRequired ? 1 : null,
       continuationStartedAt,
       ...(continuationRequired && (noProgressCount >= 2 || continuationAgeExceeded) ? { continuationBlocked: true, continuationStopReason: continuationAgeExceeded ? '续批超过 24 小时，已停止自动续批' : '连续两批剩余公司数量未下降，已停止自动续批' } : {}),
-      datasetDiagnostics: { stock_financial_reports: { partition_row_count: latest.rowCount, queue_count: queue.length, processed_count: batch.length, failed_count: failures.length } } };
+      datasetDiagnostics: { stock_financial_reports: {
+        partition_row_count: latest.rowCount, queue_count: queue.length, processed_count: batch.length,
+        failed_count: failures.length, query_status: complete ? 'success' : (ok ? 'partial' : 'failed'),
+      } } };
     const detail = complete ? `处理 ${batch.length} 家公司，新增或更新 ${changed} 家`
       : failures.length ? `财务增量未完整完成：失败 ${failures.length} 家，剩余 ${remaining} 家`
         : `本批处理 ${batch.length} 家公司，剩余 ${remaining} 家等待后续增量批次`;

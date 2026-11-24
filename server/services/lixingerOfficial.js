@@ -77,14 +77,21 @@ function unwrapPayload(payload, endpoint) {
   return { rows: payload.data, total: payload.total == null ? null : Number(payload.total) };
 }
 
+const PARAMETER_FORBIDDEN_PATTERN = /时间跨度不能超过|参数(?:错误|无效)|invalid\s+param|date\s+range/i;
+
 function mapHttpFailure(status, body, endpoint, token) {
   const upstream = body && typeof body === 'object' ? body : {};
   const name = upstream.error && (upstream.error.name || upstream.error.code) || null;
   const upstreamMessage = upstream.error && upstream.error.message || upstream.message || '';
   const detail = redact(`理杏仁 ${endpoint.key} 请求失败（HTTP ${status}）${name ? `；name=${name}` : ''}${upstreamMessage ? `；message=${upstreamMessage}` : ''}`, token);
   if (status === 401) return sourceError('INVALID_CREDENTIAL', detail, { status });
-  // 官方 skill 1.0.43 口径：403 表示会员过期或当前接口免费次数已用完，
-  // 因此按"当前接口暂时不可用"处理：留证 + 单接口熔断到次日探测，不扩大到整个来源。
+  // 官方接口对部分参数越界（如“时间跨度不能超过10年”）也返回 HTTP 403 ForbiddenError；
+  // 这属于请求参数问题，不得归类为 ACCESS_FORBIDDEN 或触发 QUOTA_EXHAUSTED 熔断。
+  if (status === 403 && PARAMETER_FORBIDDEN_PATTERN.test(String(upstreamMessage || ''))) {
+    return sourceError('INVALID_PARAMETER', detail, { status, upstreamName: name });
+  }
+  // 官方 skill 1.0.43 口径：其余 403 表示会员过期或当前接口免费次数已用完，
+  // 按"当前接口暂时不可用"处理：留证 + 单接口熔断到次日探测，不扩大到整个来源。
   if (status === 403) return sourceError('ACCESS_FORBIDDEN', detail, { status });
   if (status === 429) return sourceError('RATE_LIMIT', detail, { status });
   if (status === 404) return sourceError('ENDPOINT_NOT_ADMITTED', detail, { status });

@@ -102,14 +102,22 @@ function isRatingPublicationDelay(event) {
   return /(?:延迟|延期)披露.*评级报告(?:的)?公告$/.test(title) && !/评级调整|信用等级.*调整|调整.*信用等级/.test(title);
 }
 
-function isRatingResultNotice(event) {
-  return /评级结果(?:的)?公告$/.test(String(event.title || '')) && !isRatingPublicationDelay(event);
+function isIssuerOnlyRatingTitle(title) {
+  const text = String(title || '');
+  return /(?:主体|发行人)(?:长期)?(?:信用)?评级/.test(text)
+    && !/可转债|可转换公司债券|转债|债项|债券(?:信用)?(?:等级|评级)/.test(text);
 }
 
-// 主体（发行人）信用评级报告不含本债债项结论，不能当债项评级来源；
-// 债项报告标题必须提到可转债/可转换公司债券/转债，或本身就是评级结果公告。
+function isRatingResultNotice(event) {
+  const title = String(event?.title || '');
+  return /评级结果(?:的)?公告$/.test(title) && !isRatingPublicationDelay(event) && !isIssuerOnlyRatingTitle(title);
+}
+
+// 主体（发行人）信用评级报告/结果公告不含本债债项结论，不能当债项评级来源；
+// 债项报告标题必须提到可转债/可转换公司债券/转债，或本身就是含债项语义的评级结果公告。
 function isBondRatingDocument(event) {
   const title = String(event?.title || '');
+  if (isIssuerOnlyRatingTitle(title)) return false;
   if (isRatingResultNotice(event) || /评级调整|信用等级.*调整|调整.*信用等级/.test(title)) return true;
   if (/可转债|可转换公司债券|转债/.test(title)) return true;
   return !/主体|发行人|公司信用评级报告|年度.{0,12}信用评级报告/.test(title);

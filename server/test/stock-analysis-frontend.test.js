@@ -255,6 +255,32 @@ assert.ok(statementsPresenter.includes('stockAnalysisState.selected !== code'), 
   dom.window.close();
 }
 {
+  const dom = new JSDOM('<select id="stock-analysis-statement-period"></select><div id="stock-analysis-statements-title"></div><div id="stock-analysis-statements-meta"></div><div id="stock-analysis-statements-message"></div><div id="stock-analysis-statements-wrap"></div>');
+  const view = { document: dom.window.document, window: dom.window,
+    escapeHtml: value => String(value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;'),
+    stockAnalysisNumber: value => String(value), stockAnalysisPercent: value => String(value),
+    stockAnalysisStatementFilters: () => ({ periodType: 'all', scope: 'consolidated' }),
+    BusinessTable: { attach() {} } };
+  vm.runInNewContext(statementsScript, view);
+  view.stockAnalysisRenderStatements({
+    name: '资产负债表', type: 'balance', compare: 'yoy', unit_label: '原值',
+    available_filters: { period_types: ['annual', 'semiannual', 'q1', 'q3'], scopes: ['consolidated'] },
+    periods: [
+      { end_date: '2026-09-30', report_type_label: 'third_quarterly_report', scope: 'consolidated', currency: 'CNY' },
+    ],
+    fields: [{ label: '资产总计', section: '资产', values: [
+      { value: 5021, status: 'available', change: null, comparison_status: 'insufficient_history', comparison_reason: 'comparable_period_missing' },
+    ] }],
+  });
+  const periodOptions = [...dom.window.document.querySelectorAll('#stock-analysis-statement-period option')].map(o => o.textContent);
+  assert.deepStrictEqual(periodOptions, ['全部', '年报', '半年报', '季报'], '无未知期时报告期下拉只保留全部/年报/半年报/季报');
+  const headerText = dom.window.document.querySelector('thead th.statement-period').textContent;
+  assert.ok(headerText.includes('三季报') && !headerText.includes('third_quarterly_report'), '列头应将英文报告期映射为中文');
+  assert.ok(!headerText.includes('报表类型待确认'), '不应在每列拼接刺眼的报表类型待确认');
+  assert.strictEqual(dom.window.document.querySelector('details.statement-status-help'), null, '仅缺少历史比较期时不在类目标题后渲染感叹号');
+  dom.window.close();
+}
+{
   const dom = new JSDOM('<select id="stock-analysis-statement-scope"></select>');
   const view = { document: dom.window.document, window: dom.window,
     escapeHtml: value => String(value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;'),

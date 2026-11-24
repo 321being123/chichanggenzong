@@ -4,9 +4,9 @@ const dict = require('../dataAccess/lixingerReportMetrics');
 const contract = require('../domain/securityAnalysisContract');
 const presentation = require('../domain/statementPresentation');
 const repository = require('../repositories/stockStatementsRepository');
-const FORMULA_VERSION = 'stock-statements-6';
+const FORMULA_VERSION = 'stock-statements-7';
 
-const PERIOD_TYPES = new Set(['all', 'annual', 'semiannual', 'q1', 'q3', 'unknown']);
+const PERIOD_TYPES = new Set(['all', 'annual', 'semiannual', 'quarter', 'q1', 'q3', 'unknown']);
 const COMPARES = new Set(['yoy', 'qoq', 'none']);
 const STATEMENT_TYPES = new Set(['non_financial', 'bank', 'insurance', 'security', 'other_financial', 'reit']);
 const VALID_SCOPES = new Set(['consolidated', 'parent']);
@@ -39,18 +39,19 @@ function dateKey(value) { return String(value || '').slice(0, 10); }
 function sameIdentity(current, prior) {
   const currentCurrency = String(current && current.currency_code || '').toUpperCase();
   const priorCurrency = String(prior && prior.currency_code || '').toUpperCase();
-  return current && prior && currentCurrency && priorCurrency
+  const currentFlag = current && current.update_flag != null && current.update_flag !== '' ? String(current.update_flag) : null;
+  const priorFlag = prior && prior.update_flag != null && prior.update_flag !== '' ? String(prior.update_flag) : null;
+  // 若两期均显式提供重述标志且不一致（例如 '1' vs '0'），则不能直接同比；
+  // 理杏仁官方报表无 update_flag（为 null）或双方标志一致时，按同公司/同口径/同币种允许同比。
+  const restatementMismatch = currentFlag !== null && priorFlag !== null && currentFlag !== priorFlag;
+  return Boolean(current && prior && currentCurrency && priorCurrency
     && currentCurrency === priorCurrency
     && current.company_id && String(current.company_id) === String(prior.company_id || '')
     && current.source_id && String(current.source_id) === String(prior.source_id || '')
     && current.accounting_standard && String(current.accounting_standard) === String(prior.accounting_standard || '')
     && current.statement_scope && String(current.statement_scope) === String(prior.statement_scope || '')
     && current.comp_type && String(current.comp_type) === String(prior.comp_type || '')
-    // 历史理杏仁适配器曾把未知重述标志写成 0，不能把这些旧记录视为已确认未重述。
-    && current.source_code !== 'lixinger_official' && prior.source_code !== 'lixinger_official'
-    // source_version is a per-report content hash, not a shared revision basis.
-    // An explicitly unadjusted pair is comparable; revisions need further evidence.
-    && String(current.update_flag ?? '') === '0' && String(prior.update_flag ?? '') === '0';
+    && !restatementMismatch);
 }
 
 function sameYearMonthDay(current, prior) {
@@ -70,22 +71,18 @@ function isPreviousQuarter(current, prior) {
   return previous[current.period_type] === prior.period_type;
 }
 
-function comparisonOf({ rows, index, metricCode, rawValue, statement, compare, measureType }) {
+function comparisonOf({ rows, comparisonRows, index, metricCode, rawValue, statement, compare, measureType }) {
   if (compare === 'none') return { value: null, status: null, reason: null };
   if (measureType !== 'currency') return { value: null, status: contract.FIELD_STATUS.NOT_APPLICABLE, reason: 'comparison_method_unverified' };
   const current = rows[index];
   if (compare === 'qoq' && statement !== 'balance') {
     return { value: null, status: contract.FIELD_STATUS.NOT_APPLICABLE, reason: 'cumulative_flow_qoq_not_supported' };
   }
-  // Current rows do not contain a verified period start/restatement basis for
-  // cumulative flows, so an identical end date alone cannot establish YOY.
-  if (compare === 'yoy' && statement !== 'balance') {
-    return { value: null, status: contract.FIELD_STATUS.NOT_APPLICABLE, reason: 'flow_period_basis_unverified' };
-  }
+  const poolRows = Array.isArray(comparisonRows) && comparisonRows.length ? comparisonRows : rows;
   const prior = compare === 'yoy'
-    ? rows.find((row, rowIndex) => rowIndex > index && current.period_type !== 'unknown' && Boolean(current.period_type) && sameIdentity(current, row)
+    ? poolRows.find((row, rowIndex) => rowIndex > index && current.period_type !== 'unknown' && Boolean(current.period_type) && sameIdentity(current, row)
       && String(row.period_type || '') === String(current.period_type || '') && sameYearMonthDay(current, row))
-    : rows.find((row, rowIndex) => rowIndex > index && sameIdentity(current, row) && isPreviousQuarter(current, row));
+    : poolRows.find((row, rowIndex) => rowIndex > index && sameIdentity(current, row) && isPreviousQuarter(current, row));
   if (!prior) return { value: null, status: contract.FIELD_STATUS.INSUFFICIENT_HISTORY, reason: 'comparable_period_missing' };
   const priorRaw = contract.finite(prior[metricCode]);
   if (rawValue === null || priorRaw === null) return { value: null, status: contract.FIELD_STATUS.SOURCE_UNAVAILABLE, reason: 'comparable_value_missing' };
@@ -155,7 +152,7 @@ function metadataOf(row, market) {
   });
 }
 
-function buildStatementPayload({ market = 'CN', type = 'balance', rows = [], versionRows = rows, options = {}, formulaVersion = FORMULA_VERSION, canonicalCode } = {}) {
+function buildStatementPayload({ market = 'CN', type = 'balance', rows = [], comparisonRows = null, versionRows = rows, options = {}, formulaVersion = FORMULA_VERSION, canonicalCode } = {}) {
   const normalized = normalizeOptions(options);
   const types = [...new Set(rows.map(row => parseCoverage(row.statement_coverage))
     .map(coverage => coverage && coverage.fs_table_type).filter(Boolean))];
@@ -252,7 +249,11 @@ function buildStatementPayload({ market = 'CN', type = 'balance', rows = [], ver
       && !(coverage && coverage.value_basis === 'source_original_t_o'));
   };
   const hasUnverifiedCurrency = rows.some(currencyUnverified);
-  const periods = rows.map(row => metadataOf(row, market));
+  const periods = rows.map(row => {
+    const meta = metadataOf(row, market);
+    if (!meta.fs_table_type && inferredType) meta.fs_table_type = inferredType;
+    return meta;
+  });
   const coverageRows = rows.map(row => parseCoverage(row.statement_coverage)).filter(Boolean);
   const requestedMetricCodes = [...new Set(coverageRows.flatMap(item => item.requested_metric_codes || []))];
   const returnedMetricCodes = [...new Set(coverageRows.flatMap(item => item.returned_metric_codes || []))];
@@ -271,7 +272,7 @@ function buildStatementPayload({ market = 'CN', type = 'balance', rows = [], ver
         const state = unverified ? { value: null, status: contract.FIELD_STATUS.SOURCE_UNAVAILABLE, reason: 'source_currency_unverified' }
           : valueStatus(raw, parseCoverage(row.statement_coverage), field.code, row.source_code);
         const comparison = raw === null ? { value: null, status: state.status, reason: state.reason }
-          : comparisonOf({ rows, index, metricCode: dict.columnOf(field.code), rawValue: raw, statement: type, compare: normalized.compare, measureType: field.measure_type });
+          : comparisonOf({ rows, comparisonRows, index, metricCode: dict.columnOf(field.code), rawValue: raw, statement: type, compare: normalized.compare, measureType: field.measure_type });
         return {
           value: presentation.normalizeMetricValue(raw, field, row.currency_code),
           status: state.status,
@@ -317,12 +318,13 @@ function buildStatementPayload({ market = 'CN', type = 'balance', rows = [], ver
 async function getStockStatements({ tsCode, market = 'CN', type = 'balance', limit = 8, requestedVersion = null, formulaVersion = FORMULA_VERSION, ...options } = {}) {
   if (!dict.STATEMENTS.includes(type)) throw new Error('三表类型无效');
   const normalized = normalizeOptions({ ...options, limit });
-  const [rows, versionRows] = await Promise.all([
-    repository.listStatementRows({ tsCode, market, type, limit: normalized.limit, periodType: normalized.periodType,
+  const [allRows, versionRows] = await Promise.all([
+    repository.listStatementRows({ tsCode, market, type, limit: Math.min(24, normalized.limit + 4), periodType: normalized.periodType,
       scope: normalized.scope === 'all' ? null : normalized.scope }),
     repository.listStatementRows({ tsCode, market, type, limit: 20, periodType: null, scope: null }),
   ]);
-  const payload = buildStatementPayload({ market, type, rows, versionRows, options: normalized, formulaVersion, canonicalCode: tsCode });
+  const rows = allRows.slice(0, normalized.limit);
+  const payload = buildStatementPayload({ market, type, rows, comparisonRows: allRows, versionRows, options: normalized, formulaVersion, canonicalCode: tsCode });
   const conflict = contract.versionConflict(requestedVersion, payload.analysis_version);
   if (conflict) {
     const error = new Error(conflict.error);

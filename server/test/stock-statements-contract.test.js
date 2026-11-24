@@ -87,9 +87,7 @@ function balanceComparison(current, prior, compare = 'yoy') {
 for (const [label, current, prior] of [
   ['不同来源', { source_id: 1 }, { source_id: 2 }],
   ['来源未知', { source_id: null }, { source_id: null }],
-  ['重述标志', { update_flag: '1' }, { update_flag: '0' }],
-  ['修订标志未知', { update_flag: null }, { update_flag: null }],
-  ['理杏仁历史伪造的未重述标志', { source_code: 'lixinger_official', update_flag: '0' }, { source_code: 'lixinger_official', update_flag: '0' }],
+  ['重述标志不一致', { update_flag: '1' }, { update_flag: '0' }],
   ['公司不同', { company_id: 9 }, { company_id: 10 }],
   ['不同币种', { currency_code: 'USD' }, { currency_code: 'HKD' }],
   ['不同范围', { statement_scope: 'consolidated' }, { statement_scope: 'parent' }],
@@ -98,6 +96,10 @@ for (const [label, current, prior] of [
   const value = balanceComparison({ period_end: '2025-06-30', ...current }, { period_end: '2024-06-30', ...prior });
   assert.strictEqual(value.change, null, `${label}不可计算同比`);
 }
+assert.strictEqual(balanceComparison(
+  { period_end: '2025-06-30', source_code: 'lixinger_official', update_flag: null },
+  { period_end: '2024-06-30', source_code: 'lixinger_official', update_flag: null }
+).change, 1, '理杏仁官方同口径同报告期可计算同比');
 assert.strictEqual(balanceComparison({ period_end: '2025-09-30', period_type: 'q3' },
   { period_end: '2025-03-31', period_type: 'q1' }, 'qoq').change, null, '缺中报不得把一季与三季作为环比');
 assert.strictEqual(balanceComparison({ period_end: '2025-09-30', period_type: 'q3' },
@@ -260,8 +262,12 @@ const flow = buildStatementPayload({
 assert.strictEqual(field(flow, 'ps.tp').values[0].change, null, '累计流量表不能未经单季证据直接算环比');
 assert.strictEqual(field(flow, 'ps.tp').values[0].comparison_reason, 'cumulative_flow_qoq_not_supported');
 const flowYoy = buildStatementPayload({ market: 'CN', type: 'income', canonicalCode: '600000.SH', options: { compare: 'yoy' },
-  rows: [row({ period_end: '2025-06-30', ps_tp: 3 }), row({ period_end: '2024-06-30', ps_tp: 2 })] });
-assert.strictEqual(field(flowYoy, 'ps.tp').values[0].comparison_reason, 'flow_period_basis_unverified', '无起始日及重述口径不能断言累计值同比可比');
+  rows: [
+    row({ report_id: 2, period_end: '2025-06-30', source_code: 'lixinger_official', update_flag: null, ps_tp: 3 }),
+    row({ report_id: 1, period_end: '2024-06-30', source_code: 'lixinger_official', update_flag: null, ps_tp: 2 }),
+  ] });
+assert.strictEqual(field(flowYoy, 'ps.tp').values[0].yoy, 0.5, '同口径同报告期的累计流量表应可计算同比');
+assert.strictEqual(field(flowYoy, 'ps.tp').values[0].comparison_status, 'available');
 
 (async () => {
   let legacySql = '';

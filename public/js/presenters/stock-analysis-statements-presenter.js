@@ -11,7 +11,7 @@ function stockAnalysisStatementFilters() {
 
 async function stockAnalysisSetStatementFilter(name, value) {
   var filters = stockStatementState.filters || (stockStatementState.filters = { periodType:'all', compare:'yoy', scope:'consolidated', limit:10 });
-  if (name === 'periodType' && ['all','annual','semiannual','q1','q3','unknown'].indexOf(value) < 0) value = 'all';
+  if (name === 'periodType' && ['all','annual','semiannual','quarter','q1','q3','unknown'].indexOf(value) < 0) value = 'all';
   if (name === 'compare' && ['yoy','qoq','none'].indexOf(value) < 0) value = 'yoy';
   if (name === 'limit' && [5,10,20,'5','10','20'].indexOf(value) < 0) value = 10;
   if (name === 'scope' && value == null) value = 'consolidated';

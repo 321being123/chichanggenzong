@@ -228,6 +228,7 @@ const MIGRATIONS = [
   { version: '208_feedback_internal_account', up: () => require('./migrations/era07Feedback').migration208FeedbackInternalAccount(pool) },
   { version: '209_candidates_total_score_numeric', up: () => require('./migrations/era17CandidatesTotalScore').migration209CandidatesTotalScoreNumeric(pool) },
   { version: '210_stock_classroom', up: () => require('./migrations/era17StockClassroom').migration210StockClassroom(pool) },
+  { version: '211_stock_classroom_preview', up: () => require('./migrations/era17StockClassroom').migration211StockClassroomPreview(pool) },
 ];
 
 async function ensureMigrationsTable() {

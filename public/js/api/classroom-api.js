@@ -67,6 +67,34 @@
       });
     },
     // 教师端接口
+    adminCreationOptions: function (startYear) {
+      const qs = startYear ? ('?startYear=' + encodeURIComponent(startYear)) : '';
+      return requestJson('/api/classroom/admin/creation-options' + qs);
+    },
+    adminSample: function (payload) {
+      return requestJson('/api/classroom/admin/sample', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload || {}),
+      });
+    },
+    adminPreview: function (payload) {
+      return requestJson('/api/classroom/admin/preview', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload || {}),
+      });
+    },
+    adminConfirm: function (payload) {
+      return getClient().fetchResponse('/api/classroom/admin/confirm', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload || {}),
+      }).then(async function (res) {
+        const data = await res.json().catch(function () { return {}; });
+        return { ok: res.ok, status: res.status, data: data };
+      });
+    },
     adminPrecheck: function (payload) {
       return requestJson('/api/classroom/admin/precheck', {
         method: 'POST',

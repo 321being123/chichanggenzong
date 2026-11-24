@@ -17,14 +17,32 @@ async function withTransaction(fn) {
   }
 }
 
+/**
+ * 在 REPEATABLE READ READ ONLY 事务中执行只读查询，确保预检事实与数据版本来自同一一致快照。
+ */
+async function withReadOnlySnapshot(fn) {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY');
+    const result = await fn(client);
+    await client.query('COMMIT');
+    return result;
+  } catch (err) {
+    try { await client.query('ROLLBACK'); } catch (e) { /* ignore */ }
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
 function q(client) {
   return client || pool;
 }
 
 // ---------- 只读市场事实查询（用于建场预检与真实剧本构建）----------
 
-async function fetchCnOpenTradeDates(startDate, endDate) {
-  const { rows } = await pool.query(
+async function fetchCnOpenTradeDates(startDate, endDate, client) {
+  const { rows } = await q(client).query(
     `SELECT to_char(trade_date, 'YYYY-MM-DD') AS trade_date
      FROM market.trade_calendar
      WHERE exchange = 'SSE'
@@ -37,9 +55,9 @@ async function fetchCnOpenTradeDates(startDate, endDate) {
   return rows.map((r) => r.trade_date);
 }
 
-async function fetchInstrumentsByCodes(codes) {
+async function fetchInstrumentsByCodes(codes, client) {
   if (!codes || codes.length === 0) return [];
-  const { rows } = await pool.query(
+  const { rows } = await q(client).query(
     `SELECT i.instrument_id, i.canonical_code, i.name, i.market, i.asset_class,
             to_char(i.list_date, 'YYYY-MM-DD') AS list_date,
             to_char(i.delist_date, 'YYYY-MM-DD') AS delist_date,
@@ -70,9 +88,9 @@ async function fetchInstrumentsByCodes(codes) {
   return rows;
 }
 
-async function fetchDailyBarsWithAdj(instrumentIds, startDate, endDate) {
+async function fetchDailyBarsWithAdj(instrumentIds, startDate, endDate, client) {
   if (!instrumentIds || instrumentIds.length === 0) return [];
-  const { rows } = await pool.query(
+  const { rows } = await q(client).query(
     `SELECT b.instrument_id,
             to_char(b.trade_date, 'YYYY-MM-DD') AS trade_date,
             b.close::text AS close,
@@ -92,9 +110,9 @@ async function fetchDailyBarsWithAdj(instrumentIds, startDate, endDate) {
   return rows;
 }
 
-async function fetchSuspensions(instrumentIds, startDate, endDate) {
+async function fetchSuspensions(instrumentIds, startDate, endDate, client) {
   if (!instrumentIds || instrumentIds.length === 0) return [];
-  const { rows } = await pool.query(
+  const { rows } = await q(client).query(
     `SELECT instrument_id,
             to_char(trade_date, 'YYYY-MM-DD') AS trade_date,
             suspend_type,
@@ -108,9 +126,9 @@ async function fetchSuspensions(instrumentIds, startDate, endDate) {
   return rows;
 }
 
-async function fetchDailyValuations(instrumentIds, startDate, endDate) {
+async function fetchDailyValuations(instrumentIds, startDate, endDate, client) {
   if (!instrumentIds || instrumentIds.length === 0) return [];
-  const { rows } = await pool.query(
+  const { rows } = await q(client).query(
     `SELECT instrument_id,
             to_char(trade_date, 'YYYY-MM-DD') AS trade_date,
             pe_ttm::text AS pe_ttm,
@@ -126,8 +144,8 @@ async function fetchDailyValuations(instrumentIds, startDate, endDate) {
   return rows;
 }
 
-async function fetchBondWealthIndexCoverage(startDate, endDate) {
-  const { rows } = await pool.query(
+async function fetchBondWealthIndexCoverage(startDate, endDate, client) {
+  const { rows } = await q(client).query(
     `SELECT index_code,
             COUNT(*)::int AS cnt,
             to_char(MIN(trade_date), 'YYYY-MM-DD') AS min_date,
@@ -142,8 +160,8 @@ async function fetchBondWealthIndexCoverage(startDate, endDate) {
   return rows;
 }
 
-async function fetchBondWealthIndexSeries(startDate, endDate) {
-  const { rows } = await pool.query(
+async function fetchBondWealthIndexSeries(startDate, endDate, client) {
+  const { rows } = await q(client).query(
     `SELECT index_code,
             to_char(trade_date, 'YYYY-MM-DD') AS trade_date,
             close::text AS close
@@ -159,8 +177,8 @@ async function fetchBondWealthIndexSeries(startDate, endDate) {
   return rows;
 }
 
-async function fetchSovereignYieldCount(startDate, endDate) {
-  const { rows } = await pool.query(
+async function fetchSovereignYieldCount(startDate, endDate, client) {
+  const { rows } = await q(client).query(
     `SELECT COUNT(*)::int AS cnt,
             to_char(MIN(trade_date), 'YYYY-MM-DD') AS min_date,
             to_char(MAX(trade_date), 'YYYY-MM-DD') AS max_date
@@ -172,8 +190,8 @@ async function fetchSovereignYieldCount(startDate, endDate) {
   return rows[0] || { cnt: 0, min_date: null, max_date: null };
 }
 
-async function fetchCbCalibrationSampleStats() {
-  const { rows } = await pool.query(
+async function fetchCbCalibrationSampleStats(client) {
+  const { rows } = await q(client).query(
     `SELECT COUNT(*)::int AS cnt,
             COUNT(DISTINCT instrument_id)::int AS cb_count,
             to_char(MIN(trade_date), 'YYYY-MM-DD') AS min_date,
@@ -185,8 +203,8 @@ async function fetchCbCalibrationSampleStats() {
   return rows[0] || { cnt: 0, cb_count: 0, min_date: null, max_date: null, median_premium_pct: null, median_bond_premium_pct: null };
 }
 
-async function fetchCbCalibrationBuckets() {
-  const { rows } = await pool.query(
+async function fetchCbCalibrationBuckets(client) {
+  const { rows } = await q(client).query(
     `WITH base AS (
        SELECT m.instrument_id,
               m.conversion_value,
@@ -699,8 +717,211 @@ async function listClassroomRevealedSettlements(classroomId, client) {
   return rows;
 }
 
+// ---------- 行业树、候选股筛选、数据版本指纹与建场预览 ----------
+
+async function fetchAvailableSseYears(client) {
+  const { rows } = await q(client).query(
+    `SELECT EXTRACT(YEAR FROM trade_date)::int AS year,
+            COUNT(*)::int AS cnt,
+            to_char(MIN(trade_date), 'YYYY-MM-DD') AS first_date,
+            to_char(MAX(trade_date), 'YYYY-MM-DD') AS last_date
+     FROM market.trade_calendar
+     WHERE exchange = 'SSE' AND is_open = TRUE
+     GROUP BY EXTRACT(YEAR FROM trade_date)
+     ORDER BY year ASC`
+  );
+  return rows;
+}
+
+async function fetchSw2021IndustryTree(client) {
+  const { rows } = await q(client).query(
+    `SELECT n.industry_node_id, n.parent_id, n.industry_code, n.industry_name, n.level
+     FROM core.industry_nodes n
+     JOIN core.industry_taxonomies t ON t.taxonomy_id = n.taxonomy_id
+     WHERE t.taxonomy_code = 'SW2021'
+     ORDER BY n.industry_node_id ASC`
+  );
+  return rows;
+}
+
+async function fetchCnStockCandidatesForWindow({ firstTradeDate, lastTradeDate }, client) {
+  const { rows } = await q(client).query(
+    `SELECT i.instrument_id,
+            i.canonical_code,
+            i.name,
+            to_char(i.list_date, 'YYYY-MM-DD') AS list_date,
+            to_char(i.delist_date, 'YYYY-MM-DD') AS delist_date,
+            i.status,
+            sw.industry_node_id
+     FROM core.instruments i
+     LEFT JOIN core.company_instruments ci
+       ON ci.instrument_id = i.instrument_id AND ci.relation_type = 'issued_by'
+     LEFT JOIN LATERAL (
+       SELECT cim.industry_node_id
+       FROM core.company_industry_memberships cim
+       JOIN core.industry_nodes n ON n.industry_node_id = cim.industry_node_id
+       JOIN core.industry_taxonomies t ON t.taxonomy_id = n.taxonomy_id AND t.taxonomy_code = 'SW2021'
+       WHERE cim.company_id = ci.company_id AND cim.is_current = TRUE
+     ) sw ON TRUE
+     WHERE i.market = 'CN'
+       AND i.asset_class = 'stock'
+       AND i.list_date IS NOT NULL
+       AND i.list_date <= $1::date
+       AND (i.delist_date IS NULL OR i.delist_date > $2::date)
+     ORDER BY i.instrument_id ASC`,
+    [firstTradeDate, lastTradeDate]
+  );
+  return rows;
+}
+
+async function fetchCnCalendarSummaryByYear(startYear, endYear, client) {
+  const { rows } = await q(client).query(
+    `WITH yrs AS (
+       SELECT generate_series($1::int, $2::int) AS yr
+     ),
+     stats AS (
+       SELECT EXTRACT(YEAR FROM trade_date)::int AS yr,
+              COUNT(*)::int AS total_rows,
+              COUNT(*) FILTER (WHERE is_open = TRUE)::int AS open_rows,
+              COUNT(*) FILTER (WHERE is_open = FALSE)::int AS closed_rows,
+              to_char(MIN(trade_date) FILTER (WHERE is_open = TRUE), 'YYYY-MM-DD') AS first_open_date,
+              to_char(MAX(trade_date) FILTER (WHERE is_open = TRUE), 'YYYY-MM-DD') AS last_open_date
+       FROM market.trade_calendar
+       WHERE exchange = 'SSE'
+         AND trade_date >= make_date($1::int, 1, 1)
+         AND trade_date <= make_date($2::int, 12, 31)
+       GROUP BY EXTRACT(YEAR FROM trade_date)
+     )
+     SELECT y.yr AS year,
+            COALESCE(s.total_rows, 0)::int AS total_rows,
+            COALESCE(s.open_rows, 0)::int AS open_rows,
+            COALESCE(s.closed_rows, 0)::int AS closed_rows,
+            s.first_open_date,
+            s.last_open_date,
+            (
+              SELECT COUNT(*)::int
+              FROM generate_series(make_date(y.yr, 1, 4), COALESCE(s.first_open_date::date - 1, make_date(y.yr, 1, 15)), '1 day'::interval) d
+              WHERE EXTRACT(ISODOW FROM d) <= 5
+                AND NOT EXISTS (
+                  SELECT 1 FROM market.trade_calendar tc
+                  WHERE tc.exchange = 'SSE' AND tc.trade_date = d::date
+                )
+            ) AS missing_head_weekdays,
+            (
+              SELECT COUNT(*)::int
+              FROM generate_series(COALESCE(s.last_open_date::date + 1, make_date(y.yr, 12, 20)), make_date(y.yr, 12, 31), '1 day'::interval) d
+              WHERE EXTRACT(ISODOW FROM d) <= 5
+                AND NOT EXISTS (
+                  SELECT 1 FROM market.trade_calendar tc
+                  WHERE tc.exchange = 'SSE' AND tc.trade_date = d::date
+                )
+            ) AS missing_tail_weekdays
+     FROM yrs y
+     LEFT JOIN stats s ON s.yr = y.yr
+     ORDER BY y.yr ASC`,
+    [startYear, endYear]
+  );
+  return rows;
+}
+
+async function fetchFactsDataVersion({ startDate, endDate }, client) {
+  const { rows } = await q(client).query(
+    `SELECT
+       (SELECT COUNT(*)::text || ':' || COALESCE(MAX(trade_date)::text, '') || ':' || COALESCE(SUM(hashtextextended(instrument_id::text || ':' || trade_date::text || ':' || COALESCE(close::text, ''), 0))::text, '0')
+        FROM market.daily_bars WHERE trade_date >= $1::date AND trade_date <= $2::date) AS bars_v,
+       (SELECT COUNT(*)::text || ':' || COALESCE(MAX(trade_date)::text, '') || ':' || COALESCE(SUM(hashtextextended(instrument_id::text || ':' || trade_date::text || ':' || COALESCE(adj_factor::text, ''), 0))::text, '0')
+        FROM market.adjustment_factors WHERE trade_date >= $1::date AND trade_date <= $2::date) AS adj_v,
+       (SELECT COUNT(*)::text || ':' || COALESCE(MAX(trade_date)::text, '') || ':' || COALESCE(SUM(hashtextextended(instrument_id::text || ':' || trade_date::text || ':' || COALESCE(pe_ttm::text, '') || ':' || COALESCE(pb::text, '') || ':' || COALESCE(total_market_cap::text, ''), 0))::text, '0')
+        FROM market.daily_valuations WHERE trade_date >= $1::date AND trade_date <= $2::date) AS val_v,
+       (SELECT COUNT(*)::text || ':' || COALESCE(MAX(trade_date)::text, '') || ':' || COALESCE(SUM(hashtextextended(instrument_id::text || ':' || trade_date::text || ':' || COALESCE(suspend_type, '') || ':' || COALESCE(suspend_reason, ''), 0))::text, '0')
+        FROM market.stock_suspend_calendar WHERE trade_date >= $1::date AND trade_date <= $2::date) AS susp_v,
+       (SELECT COUNT(*)::text || ':' || COALESCE(MAX(trade_date)::text, '') || ':' || COALESCE(SUM(hashtextextended(index_code || ':' || trade_date::text || ':' || COALESCE(close::text, ''), 0))::text, '0')
+        FROM market.index_valuation_history WHERE index_code IN ('CBA00601', 'CN10Y_WEALTH', 'CHINABOND_7_10Y_WEALTH') AND trade_date >= $1::date AND trade_date <= $2::date) AS bond_v,
+       (SELECT COUNT(*)::text || ':' || COALESCE(SUM(hashtextextended(trade_date::text || ':' || is_open::text, 0))::text, '0')
+        FROM market.trade_calendar WHERE exchange = 'SSE' AND trade_date >= $1::date AND trade_date <= $2::date) AS cal_v,
+       (SELECT COUNT(*)::text || ':' || COALESCE(SUM(hashtextextended(instrument_id::text || ':' || trade_date::text || ':' || COALESCE(conversion_value::text, '') || ':' || COALESCE(conversion_premium_pct::text, '') || ':' || COALESCE(bond_premium_pct::text, '') || ':' || COALESCE(raw_payload->>'remain_years', ''), 0))::text, '0')
+        FROM market.convertible_bond_daily_metrics) AS cb_v,
+       (SELECT COUNT(*)::text || ':' || COALESCE(SUM(hashtextextended(instrument_id::text || ':' || COALESCE(maturity_date::text, ''), 0))::text, '0')
+        FROM public.bond_unified) AS bu_v,
+       (SELECT COUNT(*)::text || ':' || COALESCE(SUM(hashtextextended(instrument_id::text || ':' || canonical_code || ':' || COALESCE(list_date::text, '') || ':' || COALESCE(delist_date::text, '') || ':' || COALESCE(status, ''), 0))::text, '0') || ':' || COALESCE(MAX(updated_at)::text, '')
+        FROM core.instruments WHERE market = 'CN' AND asset_class = 'stock') AS inst_v,
+       (SELECT COUNT(*)::text || ':' || COALESCE(SUM(hashtextextended(ci.company_id::text || ':' || ci.instrument_id::text || ':' || ci.relation_type || ':' || COALESCE(ci.valid_from::text, '') || ':' || COALESCE(ci.valid_to::text, ''), 0))::text, '0')
+        FROM core.company_instruments ci
+        JOIN core.instruments i ON i.instrument_id = ci.instrument_id
+        WHERE i.market = 'CN' AND i.asset_class = 'stock') AS ci_v,
+       (SELECT COUNT(*)::text || ':' || COALESCE(SUM(hashtextextended(company_id::text || ':' || industry_node_id::text, 0))::text, '0') || ':' || COALESCE(MAX(created_at)::text, '')
+        FROM core.company_industry_memberships WHERE is_current = TRUE) AS ind_v,
+       (SELECT COUNT(*)::text || ':' || COALESCE(SUM(hashtextextended(n.industry_node_id::text || ':' || COALESCE(n.parent_id::text, '') || ':' || COALESCE(n.level::text, '') || ':' || COALESCE(n.industry_code, '') || ':' || COALESCE(n.industry_name, ''), 0))::text, '0')
+        FROM core.industry_nodes n
+        JOIN core.industry_taxonomies t ON t.taxonomy_id = n.taxonomy_id
+        WHERE t.taxonomy_code = 'SW2021') AS tree_v`,
+    [startDate, endDate]
+  );
+  const r = rows[0] || {};
+  return [r.bars_v, r.adj_v, r.val_v, r.susp_v, r.bond_v, r.cal_v, r.cb_v, r.bu_v, r.inst_v, r.ci_v, r.ind_v, r.tree_v].join('|');
+}
+
+async function insertCreationPreview(client, { previewId, adminSubjectId, mode, startYear, dataVersion, payload, expiresAt }) {
+  const { rows } = await q(client).query(
+    `INSERT INTO public.classroom_creation_previews (
+      preview_id, admin_subject_id, mode, start_year, data_version, payload, expires_at
+    ) VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::timestamptz)
+    RETURNING *`,
+    [previewId, adminSubjectId, mode, startYear, dataVersion, JSON.stringify(payload), expiresAt]
+  );
+  return rows[0];
+}
+
+async function findCreationPreviewById(previewId, client, { forUpdate = false } = {}) {
+  const lockSql = forUpdate ? 'FOR UPDATE' : '';
+  const { rows } = await q(client).query(
+    `SELECT * FROM public.classroom_creation_previews WHERE preview_id = $1 ${lockSql}`,
+    [previewId]
+  );
+  return rows[0] || null;
+}
+
+async function findCreationPreviewByConfirmRequest(adminSubjectId, confirmRequestId, client) {
+  if (!confirmRequestId) return null;
+  const { rows } = await q(client).query(
+    `SELECT * FROM public.classroom_creation_previews
+     WHERE admin_subject_id = $1 AND confirm_request_id = $2`,
+    [adminSubjectId, confirmRequestId]
+  );
+  return rows[0] || null;
+}
+
+async function markCreationPreviewConfirmed(client, previewId, classroomId, confirmRequestId) {
+  const { rows } = await q(client).query(
+    `UPDATE public.classroom_creation_previews
+     SET confirmed_classroom_id = $2,
+         confirm_request_id = COALESCE($3, confirm_request_id)
+     WHERE preview_id = $1
+     RETURNING *`,
+    [previewId, classroomId, confirmRequestId || null]
+  );
+  return rows[0] || null;
+}
+
+async function fetchSw2021MembershipsByInstrumentIds(instrumentIds, client) {
+  if (!instrumentIds || instrumentIds.length === 0) return [];
+  const { rows } = await q(client).query(
+    `SELECT ci.instrument_id, cim.industry_node_id
+     FROM core.company_instruments ci
+     JOIN core.company_industry_memberships cim
+       ON cim.company_id = ci.company_id AND cim.is_current = TRUE
+     JOIN core.industry_nodes n ON n.industry_node_id = cim.industry_node_id
+     JOIN core.industry_taxonomies t ON t.taxonomy_id = n.taxonomy_id AND t.taxonomy_code = 'SW2021'
+     WHERE ci.instrument_id = ANY($1::bigint[])
+       AND ci.relation_type = 'issued_by'`,
+    [instrumentIds]
+  );
+  return rows;
+}
+
 module.exports = {
   withTransaction,
+  withReadOnlySnapshot,
   fetchCnOpenTradeDates,
   fetchInstrumentsByCodes,
   fetchDailyBarsWithAdj,
@@ -711,6 +932,16 @@ module.exports = {
   fetchSovereignYieldCount,
   fetchCbCalibrationSampleStats,
   fetchCbCalibrationBuckets,
+  fetchAvailableSseYears,
+  fetchCnCalendarSummaryByYear,
+  fetchSw2021IndustryTree,
+  fetchSw2021MembershipsByInstrumentIds,
+  fetchCnStockCandidatesForWindow,
+  fetchFactsDataVersion,
+  insertCreationPreview,
+  findCreationPreviewById,
+  findCreationPreviewByConfirmRequest,
+  markCreationPreviewConfirmed,
   insertClassroom,
   findClassroomById,
   findClassroomByIdForUpdate,

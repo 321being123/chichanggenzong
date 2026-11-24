@@ -1,7 +1,34 @@
 'use strict';
 
+const crypto = require('crypto');
+
 // 股市模拟沙盘演示场次剧本生成器（纯函数、确定性教学示例数据）。
 // 仅用于 mode='demo' 的课堂演示与交互/对账测试，严禁冒充真实市场历史快照。
+
+const DEMO_GENERATOR_FIXED_VERSION = 'demo_v1_fixed';
+const DEMO_GENERATOR_SEEDED_VERSION = 'demo_v2_seeded';
+
+function createSeededRng(seed) {
+  const hash = crypto.createHash('sha256').update(String(seed)).digest();
+  let state = hash.readUInt32LE(0) || 1;
+  return function nextFloat() {
+    state = (state + 0x6D2B79F5) >>> 0;
+    let t = Math.imul(state ^ (state >>> 15), 1 | state);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function shuffleWithRng(list, rng) {
+  const copy = list.slice();
+  for (let i = copy.length - 1; i > 0; i--) {
+    const j = Math.floor(rng() * (i + 1));
+    const tmp = copy[i];
+    copy[i] = copy[j];
+    copy[j] = tmp;
+  }
+  return copy;
+}
 
 const DEMO_INDUSTRIES = [
   {
@@ -57,10 +84,42 @@ const DEMO_CYCLE_PROFILE = [
   { bond: 0.0275, mkt: 0.096, valScale: 1.02 },  // R15 (2025)
 ];
 
-function buildDemoScenario({ startYear = 2011, totalRounds = 15 } = {}) {
+function buildDemoScenario({
+  startYear = 2011,
+  totalRounds = 15,
+  demoVariant = 'fixed',
+  seed = null,
+} = {}) {
+  const isRandom = demoVariant === 'random' || (seed != null && String(seed).trim() !== '' && demoVariant !== 'fixed');
+  const resolvedVariant = isRandom ? 'random' : 'fixed';
+  const resolvedSeed = isRandom ? String(seed != null && String(seed).trim() !== '' ? seed : 'default-demo-seed') : null;
+  const rng = isRandom ? createSeededRng(resolvedSeed) : null;
+
+  const industryList = isRandom
+    ? shuffleWithRng(DEMO_INDUSTRIES, rng).map((ind) => {
+      const shuffledStocks = shuffleWithRng(ind.stocks, rng).map((st, idx) => {
+        const capScale = 0.78 + rng() * 0.48; // 0.78..1.26
+        const peScale = 0.8 + rng() * 0.42;
+        const pbScale = 0.82 + rng() * 0.38;
+        return {
+          ...st,
+          alias: `${ind.industryName} ${String.fromCharCode(65 + idx)}`,
+          baseCap: Number(Math.max(250, st.baseCap * capScale).toFixed(2)),
+          basePe: Number(Math.max(4.2, st.basePe * peScale).toFixed(2)),
+          basePb: Number(Math.max(0.5, st.basePb * pbScale).toFixed(2)),
+        };
+      });
+      return { industryName: ind.industryName, stocks: shuffledStocks };
+    })
+    : DEMO_INDUSTRIES;
+
+  const cycleOffset = isRandom ? Math.floor(rng() * DEMO_CYCLE_PROFILE.length) : 0;
+  const bondDelta = isRandom ? ((rng() - 0.5) * 0.012) : 0;
+  const stockPhaseShift = isRandom ? Math.floor(rng() * 11) : 0;
+
   const rounds = [];
   const capState = new Map();
-  for (const ind of DEMO_INDUSTRIES) {
+  for (const ind of industryList) {
     for (const st of ind.stocks) {
       capState.set(st.assetId, st.baseCap);
     }
@@ -69,20 +128,30 @@ function buildDemoScenario({ startYear = 2011, totalRounds = 15 } = {}) {
   for (let i = 0; i < totalRounds; i++) {
     const roundNo = i + 1;
     const calendarYear = startYear + i;
-    const prof = DEMO_CYCLE_PROFILE[i % DEMO_CYCLE_PROFILE.length];
+    const prof = DEMO_CYCLE_PROFILE[(i + cycleOffset) % DEMO_CYCLE_PROFILE.length];
+    const roundBondRet = isRandom
+      ? Number(Math.max(-0.04, Math.min(0.15, prof.bond + bondDelta + ((rng() - 0.5) * 0.015))).toFixed(4))
+      : prof.bond;
     const stocks = [];
 
     let stockIdx = 0;
-    for (const ind of DEMO_INDUSTRIES) {
+    for (const ind of industryList) {
       for (const st of ind.stocks) {
         const cap = Number((capState.get(st.assetId) || st.baseCap).toFixed(2));
         // 确定性个股轮动偏移
-        const phase = ((i * 7 + stockIdx * 5) % 11) - 5; // -5..+5
-        const ret = Number((prof.mkt + phase * 0.028).toFixed(4));
-        // 第 10 轮故意让 5 只股票呈亏损（负 PE），用于验证「低/高市盈率 8」合格不足暂停并自动转现金的机制
+        const phase = isRandom
+          ? (((i * 7 + stockIdx * 5 + stockPhaseShift + Math.floor(rng() * 3)) % 11) - 5)
+          : (((i * 7 + stockIdx * 5) % 11) - 5); // -5..+5
+        const rawRet = isRandom
+          ? (prof.mkt + phase * 0.028 + ((rng() - 0.5) * 0.06))
+          : (prof.mkt + phase * 0.028);
+        const ret = Number(Math.max(-0.65, Math.min(1.5, rawRet)).toFixed(4));
+        // 固定剧本第 10 轮故意让 5 只股票呈亏损（负 PE），用于验证「低/高市盈率 8」合格不足暂停并自动转现金的机制
         let peTtm = Number((st.basePe * prof.valScale * (1 + (phase * 0.04))).toFixed(2));
-        if (roundNo === 10 && stockIdx % 2 === 1 && stockIdx < 10) {
+        if (!isRandom && roundNo === 10 && stockIdx % 2 === 1 && stockIdx < 10) {
           peTtm = Number((-12.5 - stockIdx).toFixed(2));
+        } else if (isRandom && rng() < 0.08) {
+          peTtm = Number((-8.0 - rng() * 12).toFixed(2));
         }
         const pb = Number(Math.max(0.45, st.basePb * prof.valScale * (1 + (phase * 0.03))).toFixed(2));
 
@@ -104,7 +173,7 @@ function buildDemoScenario({ startYear = 2011, totalRounds = 15 } = {}) {
     }
 
     const convertibleBonds = roundNo >= 11
-      ? DEMO_INDUSTRIES.map((ind, idx) => ({
+      ? industryList.map((ind, idx) => ({
         assetId: `cb_${idx}`,
         alias: `${ind.industryName}转债`,
         canonicalCode: `DEMO_CB_${idx + 1}`,
@@ -121,7 +190,7 @@ function buildDemoScenario({ startYear = 2011, totalRounds = 15 } = {}) {
     rounds.push({
       roundNo,
       calendarYear,
-      bondReturnRate: prof.bond,
+      bondReturnRate: roundBondRet,
       stocks,
       convertibleBonds,
     });
@@ -130,13 +199,18 @@ function buildDemoScenario({ startYear = 2011, totalRounds = 15 } = {}) {
   return {
     schemaVersion: 1,
     mode: 'demo',
-    dataLabel: '教学示例数据（非真实历史行情）',
+    demoVariant: resolvedVariant,
+    demoSeed: resolvedSeed,
+    demoGeneratorVersion: isRandom ? DEMO_GENERATOR_SEEDED_VERSION : DEMO_GENERATOR_FIXED_VERSION,
+    dataLabel: isRandom
+      ? '教学示例数据（随机种子演示，非真实历史行情）'
+      : '教学示例数据（非真实历史行情）',
     cbModelVersion: 'cb_model_v1_teaching',
     bondSeriesSource: 'demo_10y_wealth_series',
     startYear,
     endYear: startYear + totalRounds - 1,
     totalRounds,
-    industries: DEMO_INDUSTRIES.map((ind) => ({
+    industries: industryList.map((ind) => ({
       industryName: ind.industryName,
       stockCount: ind.stocks.length,
     })),
@@ -146,5 +220,7 @@ function buildDemoScenario({ startYear = 2011, totalRounds = 15 } = {}) {
 
 module.exports = {
   DEMO_INDUSTRIES,
+  DEMO_GENERATOR_FIXED_VERSION,
+  DEMO_GENERATOR_SEEDED_VERSION,
   buildDemoScenario,
 };

@@ -107,90 +107,368 @@ async function generateQrPayload(joinUrl) {
   }
 }
 
-async function createClassroom({ adminUser, title, mode = 'demo', blindMode = true, startYear = 2011, industries = null, origin = '' }) {
-  const isBlind = Boolean(blindMode);
-  const cleanTitle = String(title || '').trim()
-    || (isBlind ? '股市模拟沙盘课堂' : `股市模拟沙盘 ${startYear}-${startYear + 14}`);
+async function prepareScenarioAndSummary({
+  mode = 'demo',
+  startYear = 2011,
+  industries = null,
+  demoVariant = 'fixed',
+  demoSeed = null,
+}) {
   const cleanMode = mode === 'real' ? 'real' : 'demo';
   const totalRounds = 15;
-  const endYear = Number(startYear) + totalRounds - 1;
-
-  let scenarioSnapshot;
-  let precheckSummary = {};
+  const startYearNum = Number(startYear);
+  const endYear = startYearNum + totalRounds - 1;
 
   if (cleanMode === 'demo') {
-    scenarioSnapshot = buildDemoScenario({ startYear: Number(startYear), totalRounds });
-    precheckSummary = { pass: true, mode: 'demo', dataLabel: scenarioSnapshot.dataLabel };
-  } else {
-    const precheck = await precheckService.ensureRealClassroomDataAndPrecheck({
-      industries: industries || [],
-      startYear: Number(startYear),
+    const useRandom = demoVariant === 'random';
+    const resolvedSeed = useRandom
+      ? (demoSeed != null && String(demoSeed).trim() !== '' ? String(demoSeed).trim() : crypto.randomBytes(6).toString('hex'))
+      : null;
+    const scenarioSnapshot = buildDemoScenario({
+      startYear: startYearNum,
       totalRounds,
-      autoBackfill: true,
+      demoVariant: useRandom ? 'random' : 'fixed',
+      seed: resolvedSeed,
     });
-    if (!precheck.pass) {
-      throw createHttpError(400, `真实场次数据预检未通过：${precheck.blockers.join('；')}`, { precheck });
-    }
-    scenarioSnapshot = buildScenarioFromRealPrecheck({
-      precheck,
-      startYear: Number(startYear),
-      totalRounds,
-    });
-    precheckSummary = {
+    const precheckSummary = {
       pass: true,
-      mode: 'real',
-      yellowCount: precheck.yellowCount,
-      redCount: precheck.redCount,
+      mode: 'demo',
+      demoVariant: scenarioSnapshot.demoVariant,
+      demoSeed: scenarioSnapshot.demoSeed,
+      demoGeneratorVersion: scenarioSnapshot.demoGeneratorVersion,
+      dataLabel: scenarioSnapshot.dataLabel,
+    };
+    return {
+      cleanMode,
+      startYearNum,
+      endYear,
+      totalRounds,
+      dataVersion: 'demo',
+      scenarioSnapshot,
+      precheckSummary,
+      precheck: null,
     };
   }
 
+  const precheckFn = typeof precheckService.ensureRealClassroomDataAndPrecheck === 'function'
+    ? precheckService.ensureRealClassroomDataAndPrecheck
+    : precheckService.runRealPrecheck;
+  const precheck = await precheckFn({
+    industries: industries || [],
+    startYear: startYearNum,
+    totalRounds,
+    autoBackfill: true,
+    deps: { runRealPrecheck: precheckService.runRealPrecheck },
+  });
+  if (!precheck.pass) {
+    throw createHttpError(400, `真实场次数据预检未通过：${precheck.blockers.join('；')}`, { precheck });
+  }
+  const scenarioSnapshot = buildScenarioFromRealPrecheck({
+    precheck,
+    startYear: startYearNum,
+    totalRounds,
+  });
+  scenarioSnapshot.taxonomy = precheck.taxonomy || 'SW2021';
+  scenarioSnapshot.survivorBiasNotice = precheck.survivorBiasNotice || precheckService.SURVIVOR_BIAS_NOTICE;
+  const precheckSummary = {
+    pass: true,
+    mode: 'real',
+    taxonomy: scenarioSnapshot.taxonomy,
+    survivorBiasNotice: scenarioSnapshot.survivorBiasNotice,
+    dataVersion: precheck.dataVersion || '',
+    yellowCount: precheck.yellowCount,
+    redCount: precheck.redCount,
+  };
+  return {
+    cleanMode,
+    startYearNum,
+    endYear,
+    totalRounds,
+    dataVersion: precheck.dataVersion || '',
+    scenarioSnapshot,
+    precheckSummary,
+    precheck,
+  };
+}
+
+async function persistClassroomWithRound1(client, {
+  adminUser,
+  cleanTitle,
+  cleanMode,
+  blindMode,
+  startYearNum,
+  endYear,
+  totalRounds,
+  scenarioSnapshot,
+  precheckSummary,
+}) {
   const r1Meta = scenarioSnapshot.rounds[0];
   const r1Open = buildRoundOpenCatalog(r1Meta, null, null);
-
   let classroomCode = generateClassroomCode();
-  const created = await repo.withTransaction(async (client) => {
-    for (let attempt = 0; attempt < 5; attempt++) {
-      const dup = await repo.findClassroomByCode(classroomCode, client);
-      if (!dup) break;
-      classroomCode = generateClassroomCode();
-    }
-    const classroom = await repo.insertClassroom(client, {
-      classroomCode,
-      title: cleanTitle,
-      mode: cleanMode,
-      blindMode: Boolean(blindMode),
-      identityRevealed: false,
-      status: 'pending',
-      currentRound: 1,
-      initialCashCents: INITIAL_CASH_CENTS,
-      startYear: Number(startYear),
-      endYear,
-      totalRounds,
-      createdBySubjectId: adminUser.subject_identity,
-      createdByUsername: adminUser.username,
-      scenarioSnapshot,
-      precheckSummary,
-    });
-    await repo.insertRound(client, {
-      classroomId: classroom.classroom_id,
-      roundNo: 1,
-      calendarYear: r1Meta.calendarYear,
-      status: 'pending',
-      openMarketSnapshot: r1Open,
-    });
-    return classroom;
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const dup = await repo.findClassroomByCode(classroomCode, client);
+    if (!dup) break;
+    classroomCode = generateClassroomCode();
+  }
+  const classroom = await repo.insertClassroom(client, {
+    classroomCode,
+    title: cleanTitle,
+    mode: cleanMode,
+    blindMode: Boolean(blindMode),
+    identityRevealed: false,
+    status: 'pending',
+    currentRound: 1,
+    initialCashCents: INITIAL_CASH_CENTS,
+    startYear: startYearNum,
+    endYear,
+    totalRounds,
+    createdBySubjectId: adminUser.subject_identity,
+    createdByUsername: adminUser.username,
+    scenarioSnapshot,
+    precheckSummary,
   });
+  await repo.insertRound(client, {
+    classroomId: classroom.classroom_id,
+    roundNo: 1,
+    calendarYear: r1Meta.calendarYear,
+    status: 'pending',
+    openMarketSnapshot: r1Open,
+  });
+  return classroom;
+}
 
-  const joinPath = `/classroom.html?code=${created.classroom_code}`;
+async function buildClassroomResponse(classroom, origin = '', extra = {}) {
+  const joinPath = `/classroom.html?code=${classroom.classroom_code}`;
   const joinUrl = origin ? `${origin.replace(/\/$/, '')}${joinPath}` : joinPath;
   const qrDataUrl = await generateQrPayload(joinUrl);
-
   return {
-    classroom: summarizeClassroom(created),
+    classroom: summarizeClassroom(classroom),
     joinPath,
     joinUrl,
     qrDataUrl,
+    ...extra,
   };
+}
+
+async function createCreationPreview({
+  adminUser,
+  title,
+  mode = 'demo',
+  blindMode = true,
+  startYear = 2011,
+  industries = null,
+  demoVariant = 'fixed',
+  demoSeed = null,
+}) {
+  const isBlind = Boolean(blindMode);
+  const cleanMode = mode === 'real' ? 'real' : 'demo';
+  const startYearNum = Number(startYear);
+  const cleanTitle = String(title || '').trim()
+    || (isBlind ? '股市模拟沙盘课堂' : `股市模拟沙盘 ${startYearNum}-${startYearNum + 14}`);
+
+  if (cleanMode === 'real') {
+    const precheckFn = typeof precheckService.ensureRealClassroomDataAndPrecheck === 'function'
+      ? precheckService.ensureRealClassroomDataAndPrecheck
+      : precheckService.runRealPrecheck;
+    const precheck = await precheckFn({
+      industries: industries || [],
+      startYear: startYearNum,
+      totalRounds: 15,
+      autoBackfill: true,
+      deps: { runRealPrecheck: precheckService.runRealPrecheck },
+    });
+    if (!precheck.pass) {
+      return {
+        previewId: null,
+        pass: false,
+        mode: 'real',
+        startYear: startYearNum,
+        endYear: startYearNum + 14,
+        blockers: precheck.blockers,
+        precheck,
+      };
+    }
+  }
+
+  const prepared = await prepareScenarioAndSummary({
+    mode: cleanMode,
+    startYear: startYearNum,
+    industries,
+    demoVariant,
+    demoSeed,
+  });
+
+  const previewId = `prv_${crypto.randomBytes(12).toString('hex')}`;
+  const expiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString();
+  const payload = {
+    title: cleanTitle,
+    mode: prepared.cleanMode,
+    blindMode: isBlind,
+    startYear: prepared.startYearNum,
+    endYear: prepared.endYear,
+    totalRounds: prepared.totalRounds,
+    industries: cleanMode === 'real' ? (industries || []) : prepared.scenarioSnapshot.industries,
+    demoVariant: prepared.scenarioSnapshot.demoVariant || null,
+    demoSeed: prepared.scenarioSnapshot.demoSeed || null,
+    demoGeneratorVersion: prepared.scenarioSnapshot.demoGeneratorVersion || null,
+    scenarioSnapshot: prepared.scenarioSnapshot,
+    precheckSummary: prepared.precheckSummary,
+  };
+
+  await repo.insertCreationPreview(null, {
+    previewId,
+    adminSubjectId: adminUser.subject_identity,
+    mode: prepared.cleanMode,
+    startYear: prepared.startYearNum,
+    dataVersion: prepared.dataVersion,
+    payload,
+    expiresAt,
+  });
+
+  return {
+    previewId,
+    pass: true,
+    mode: prepared.cleanMode,
+    blindMode: isBlind,
+    title: cleanTitle,
+    startYear: prepared.startYearNum,
+    endYear: prepared.endYear,
+    dataVersion: prepared.dataVersion,
+    expiresAt,
+    taxonomy: prepared.scenarioSnapshot.taxonomy || 'SW2021',
+    survivorBiasNotice: prepared.scenarioSnapshot.survivorBiasNotice || precheckService.SURVIVOR_BIAS_NOTICE,
+    demoVariant: payload.demoVariant,
+    demoSeed: payload.demoSeed,
+    demoGeneratorVersion: payload.demoGeneratorVersion,
+    precheck: prepared.precheck,
+    industriesPreview: prepared.scenarioSnapshot.industries || null,
+  };
+}
+
+async function confirmCreationPreview({ adminUser, previewId, confirmRequestId = null, origin = '' }) {
+  if (!previewId) {
+    throw createHttpError(400, '缺少建场预览标识 previewId');
+  }
+
+  const cleanConfirmId = confirmRequestId ? String(confirmRequestId).trim() : null;
+  const result = await repo.withTransaction(async (client) => {
+    if (cleanConfirmId) {
+      const existingByReq = await repo.findCreationPreviewByConfirmRequest(adminUser.subject_identity, cleanConfirmId, client);
+      if (existingByReq && existingByReq.confirmed_classroom_id) {
+        const cls = await repo.findClassroomById(existingByReq.confirmed_classroom_id, client);
+        if (cls) return { classroom: cls, idempotentReplay: true, needsRefresh: false };
+      }
+    }
+
+    const preview = await repo.findCreationPreviewById(previewId, client, { forUpdate: true });
+    if (!preview) throw createHttpError(404, '建场预览不存在，请重新预览');
+    if (preview.admin_subject_id !== adminUser.subject_identity) {
+      throw createHttpError(403, '无权确认他人的建场预览');
+    }
+    if (preview.confirmed_classroom_id) {
+      const cls = await repo.findClassroomById(preview.confirmed_classroom_id, client);
+      if (cls) return { classroom: cls, idempotentReplay: true, needsRefresh: false };
+    }
+
+    const expired = new Date(preview.expires_at).getTime() <= Date.now();
+    let dataChanged = false;
+    const p = preview.payload || {};
+    if (preview.mode === 'real') {
+      const startDate = `${Number(preview.start_year) - 1}-12-01`;
+      const endDate = `${Number(preview.start_year) + 14}-12-31`;
+      const currentVersion = await repo.fetchFactsDataVersion({ startDate, endDate }, client);
+      if (currentVersion !== preview.data_version) {
+        dataChanged = true;
+      }
+    }
+
+    if (expired || dataChanged) {
+      return {
+        needsRefresh: true,
+        reason: dataChanged ? '底层行情或行业数据已更新' : '建场预览已过期',
+        payload: p,
+      };
+    }
+
+    const classroom = await persistClassroomWithRound1(client, {
+      adminUser,
+      cleanTitle: p.title,
+      cleanMode: preview.mode,
+      blindMode: p.blindMode,
+      startYearNum: Number(preview.start_year),
+      endYear: Number(p.endYear || (Number(preview.start_year) + 14)),
+      totalRounds: Number(p.totalRounds || 15),
+      scenarioSnapshot: p.scenarioSnapshot,
+      precheckSummary: p.precheckSummary,
+    });
+    await repo.markCreationPreviewConfirmed(client, previewId, classroom.classroom_id, cleanConfirmId);
+    return { classroom, idempotentReplay: false, needsRefresh: false };
+  });
+
+  if (result.needsRefresh) {
+    const p = result.payload || {};
+    const newPreview = await createCreationPreview({
+      adminUser,
+      title: p.title,
+      mode: p.mode,
+      blindMode: p.blindMode,
+      startYear: p.startYear,
+      industries: p.industries,
+      demoVariant: p.demoVariant || 'fixed',
+      demoSeed: p.demoSeed || null,
+    });
+    throw createHttpError(409, `${result.reason}，已按同一组合重新校验，请确认新预览`, {
+      code: 'PREVIEW_REFRESH_REQUIRED',
+      newPreview,
+    });
+  }
+
+  return buildClassroomResponse(result.classroom, origin, {
+    idempotentReplay: result.idempotentReplay,
+  });
+}
+
+async function createClassroom({
+  adminUser,
+  title,
+  mode = 'demo',
+  blindMode = true,
+  startYear = 2011,
+  industries = null,
+  demoVariant = 'fixed',
+  demoSeed = null,
+  previewId = null,
+  confirmRequestId = null,
+  origin = '',
+}) {
+  if (previewId) {
+    return confirmCreationPreview({ adminUser, previewId, confirmRequestId, origin });
+  }
+  const isBlind = Boolean(blindMode);
+  const startYearNum = Number(startYear);
+  const cleanTitle = String(title || '').trim()
+    || (isBlind ? '股市模拟沙盘课堂' : `股市模拟沙盘 ${startYearNum}-${startYearNum + 14}`);
+  const prepared = await prepareScenarioAndSummary({
+    mode,
+    startYear: startYearNum,
+    industries,
+    demoVariant,
+    demoSeed,
+  });
+
+  const created = await repo.withTransaction((client) => persistClassroomWithRound1(client, {
+    adminUser,
+    cleanTitle,
+    cleanMode: prepared.cleanMode,
+    blindMode: isBlind,
+    startYearNum: prepared.startYearNum,
+    endYear: prepared.endYear,
+    totalRounds: prepared.totalRounds,
+    scenarioSnapshot: prepared.scenarioSnapshot,
+    precheckSummary: prepared.precheckSummary,
+  }));
+
+  return buildClassroomResponse(created, origin);
 }
 
 function summarizeClassroom(c, { blindActive = false } = {}) {
@@ -1185,6 +1463,8 @@ async function deleteClassroom({ classroomId }) {
 
 module.exports = {
   createClassroom,
+  createCreationPreview,
+  confirmCreationPreview,
   closeClassroom,
   deleteClassroom,
   resolveByCode,

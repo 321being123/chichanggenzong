@@ -132,4 +132,30 @@ async function migration210StockClassroom(pool) {
   `);
 }
 
-module.exports = { migration210StockClassroom };
+// 211：股市模拟沙盘建场预览快照与幂等确认表。
+async function migration211StockClassroomPreview(pool) {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS public.classroom_creation_previews (
+      preview_id TEXT PRIMARY KEY,
+      admin_subject_id TEXT NOT NULL,
+      mode TEXT NOT NULL CHECK (mode IN ('real', 'demo')),
+      start_year SMALLINT NOT NULL,
+      data_version TEXT NOT NULL DEFAULT '',
+      payload JSONB NOT NULL,
+      confirmed_classroom_id BIGINT REFERENCES public.classroom_classrooms(classroom_id) ON DELETE SET NULL,
+      confirm_request_id TEXT,
+      expires_at TIMESTAMPTZ NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+    CREATE INDEX IF NOT EXISTS ix_classroom_creation_previews_admin
+      ON public.classroom_creation_previews (admin_subject_id, created_at DESC);
+    CREATE UNIQUE INDEX IF NOT EXISTS ux_classroom_creation_previews_confirm_req
+      ON public.classroom_creation_previews (admin_subject_id, confirm_request_id)
+      WHERE confirm_request_id IS NOT NULL;
+  `);
+}
+
+module.exports = {
+  migration210StockClassroom,
+  migration211StockClassroomPreview,
+};

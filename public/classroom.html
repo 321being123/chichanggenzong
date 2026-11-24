@@ -134,6 +134,11 @@
           <option value="demo">演示场次（教学示例数据）</option>
           <option value="real">真实场次（15年历史行情预检）</option>
         </select>
+        <select class="cr-input" id="teacher-demo-variant">
+          <option value="fixed">固定教学剧本</option>
+          <option value="random">随机演示剧本（按种子复现）</option>
+        </select>
+        <input class="cr-input" id="teacher-demo-seed" type="text" placeholder="可选：演示种子（留空自动生成）" maxlength="32" hidden>
         <label class="classroom-btn-group">
           <span>起始年份</span>
           <input class="cr-input cr-input-year" id="teacher-start-year" type="number" min="1995" max="2020" value="2011">
@@ -143,17 +148,28 @@
           <input type="checkbox" id="teacher-new-blind" checked>
           <span>盲玩模式</span>
         </label>
-        <button class="cr-btn cr-btn-primary" id="btn-teacher-create" type="button">创建场次</button>
+        <button class="cr-btn" id="btn-teacher-preview" type="button">预览建场</button>
+        <button class="cr-btn cr-btn-primary" id="btn-teacher-confirm" type="button" hidden>确认创建场次</button>
+        <button class="cr-btn cr-btn-primary" id="btn-teacher-create" type="button">直接创建场次</button>
       </div>
 
       <div id="teacher-real-config" class="teacher-real-config" hidden>
-        <h3>真实场次股票池（4 个行业 × 每行业 3 只 A 股代码）</h3>
+        <div class="classroom-btn-group cr-mt-10">
+          <button class="cr-btn" id="btn-teacher-load-options" type="button">加载可用窗口与一级行业</button>
+          <button class="cr-btn" id="btn-teacher-random-year" type="button">随机可用年份</button>
+          <button class="cr-btn" id="btn-teacher-sample-all" type="button">随机抽样 4×3</button>
+          <button class="cr-btn" id="btn-teacher-sample-next" type="button">换一批</button>
+        </div>
+        <div id="teacher-window-status" class="cr-mt-10"></div>
+        <h3>真实场次股票池（4 个一级行业 × 每行业 3 只 A 股代码）</h3>
         <div id="teacher-industry-rows" class="teacher-industry-rows"></div>
         <div class="classroom-btn-group cr-mt-10">
           <button class="cr-btn" id="btn-teacher-precheck" type="button">执行 15 年数据预检</button>
         </div>
         <div id="teacher-precheck-result" class="cr-mt-10"></div>
       </div>
+
+      <div id="teacher-preview-result" class="cr-mt-10"></div>
 
       <div class="sheet-error" id="teacher-create-error"></div>
     </div>

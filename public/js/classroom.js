@@ -180,14 +180,47 @@
     if ($('btn-teacher-create')) {
       $('btn-teacher-create').addEventListener('click', createClassroomFromTeacher);
     }
+    if ($('btn-teacher-preview')) {
+      $('btn-teacher-preview').addEventListener('click', previewClassroomFromTeacher);
+    }
+    if ($('btn-teacher-confirm')) {
+      $('btn-teacher-confirm').addEventListener('click', confirmClassroomFromPreview);
+    }
     if ($('teacher-new-mode')) {
-      $('teacher-new-mode').addEventListener('change', syncTeacherModeUi);
+      $('teacher-new-mode').addEventListener('change', function () {
+        invalidateTeacherPreview();
+        syncTeacherModeUi();
+      });
+    }
+    if ($('teacher-demo-variant')) {
+      $('teacher-demo-variant').addEventListener('change', function () {
+        invalidateTeacherPreview();
+        syncTeacherModeUi();
+      });
+    }
+    if ($('teacher-demo-seed')) {
+      $('teacher-demo-seed').addEventListener('input', invalidateTeacherPreview);
     }
     if ($('teacher-start-year')) {
-      $('teacher-start-year').addEventListener('input', syncTeacherYearRange);
+      $('teacher-start-year').addEventListener('input', function () {
+        invalidateTeacherPreview();
+        syncTeacherYearRange();
+      });
     }
     if ($('btn-teacher-precheck')) {
       $('btn-teacher-precheck').addEventListener('click', runTeacherPrecheck);
+    }
+    if ($('btn-teacher-load-options')) {
+      $('btn-teacher-load-options').addEventListener('click', function () { loadTeacherCreationOptions(false); });
+    }
+    if ($('btn-teacher-random-year')) {
+      $('btn-teacher-random-year').addEventListener('click', pickRandomAvailableYear);
+    }
+    if ($('btn-teacher-sample-all')) {
+      $('btn-teacher-sample-all').addEventListener('click', function () { sampleTeacherSelection(null, false); });
+    }
+    if ($('btn-teacher-sample-next')) {
+      $('btn-teacher-sample-next').addEventListener('click', function () { sampleTeacherSelection(null, true); });
     }
     initTeacherIndustryRows();
     syncTeacherModeUi();
@@ -1214,6 +1247,34 @@
     { industryName: '零售', codes: ['601933.SH', '002024.SZ', '600827.SH'] },
   ];
 
+  let teacherOptionsState = {
+    availableWindows: [],
+    industries: [],
+    optionsReqSeq: 0,
+    sampleReqSeq: 0,
+    previewReqSeq: 0,
+    activePreview: null,
+    confirmRequestId: null,
+    confirming: false,
+  };
+
+  function makeConfirmRequestId() {
+    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+      return 'cfm_' + crypto.randomUUID();
+    }
+    return 'cfm_' + Date.now() + '_' + Math.random().toString(16).slice(2, 10);
+  }
+
+  function invalidateTeacherPreview() {
+    teacherOptionsState.optionsReqSeq++;
+    teacherOptionsState.sampleReqSeq++;
+    teacherOptionsState.previewReqSeq++;
+    teacherOptionsState.activePreview = null;
+    teacherOptionsState.confirmRequestId = null;
+    if ($('btn-teacher-confirm')) $('btn-teacher-confirm').hidden = true;
+    if ($('teacher-preview-result')) $('teacher-preview-result').textContent = '';
+  }
+
   function initTeacherIndustryRows() {
     const wrap = $('teacher-industry-rows');
     if (!wrap || wrap.children.length > 0) return;
@@ -1222,12 +1283,25 @@
       row.className = 'teacher-industry-row';
       row.dataset.indIdx = String(idx);
 
+      const sel = document.createElement('select');
+      sel.className = 'cr-input teacher-ind-select';
+      sel.hidden = true;
+      sel.addEventListener('change', function () {
+        const opt = sel.options[sel.selectedIndex];
+        const nameEl = row.querySelector('.teacher-ind-name');
+        if (nameEl && opt && opt.dataset.name) nameEl.value = opt.dataset.name;
+        row.dataset.industryNodeId = sel.value || '';
+        invalidateTeacherPreview();
+      });
+      row.appendChild(sel);
+
       const nameInput = document.createElement('input');
       nameInput.type = 'text';
       nameInput.className = 'cr-input teacher-ind-name';
       nameInput.value = ind.industryName;
       nameInput.placeholder = '行业' + (idx + 1);
       nameInput.maxLength = 16;
+      nameInput.addEventListener('input', invalidateTeacherPreview);
       row.appendChild(nameInput);
 
       for (let j = 0; j < 3; j++) {
@@ -1237,8 +1311,19 @@
         codeInput.value = ind.codes[j];
         codeInput.placeholder = '股票代码' + (j + 1);
         codeInput.maxLength = 16;
+        codeInput.addEventListener('input', invalidateTeacherPreview);
         row.appendChild(codeInput);
       }
+
+      const resampleBtn = document.createElement('button');
+      resampleBtn.type = 'button';
+      resampleBtn.className = 'cr-btn';
+      resampleBtn.textContent = '重抽本组';
+      resampleBtn.addEventListener('click', function () {
+        sampleTeacherSelection(idx, false);
+      });
+      row.appendChild(resampleBtn);
+
       wrap.appendChild(row);
     });
   }
@@ -1246,8 +1331,12 @@
   function syncTeacherModeUi() {
     const modeEl = $('teacher-new-mode');
     const realBox = $('teacher-real-config');
-    if (!modeEl || !realBox) return;
-    realBox.hidden = modeEl.value !== 'real';
+    const variantEl = $('teacher-demo-variant');
+    const seedEl = $('teacher-demo-seed');
+    const isReal = modeEl && modeEl.value === 'real';
+    if (realBox) realBox.hidden = !isReal;
+    if (variantEl) variantEl.hidden = isReal;
+    if (seedEl) seedEl.hidden = isReal || !variantEl || variantEl.value !== 'random';
   }
 
   function syncTeacherYearRange() {
@@ -1268,10 +1357,252 @@
         const codeEls = row.querySelectorAll('.teacher-ind-code');
         const industryName = nameEl ? nameEl.value.trim() : '';
         const codes = Array.from(codeEls).map(function (el) { return el.value.trim().toUpperCase(); }).filter(Boolean);
-        industries.push({ industryName: industryName, codes: codes });
+        industries.push({
+          industryNodeId: row.dataset.industryNodeId || null,
+          industryName: industryName,
+          codes: codes,
+        });
       });
     }
     return { startYear: startYear, industries: industries };
+  }
+
+  function applySampledGroupsToRows(groups) {
+    const wrap = $('teacher-industry-rows');
+    if (!wrap || !Array.isArray(groups)) return;
+    Array.from(wrap.children).forEach(function (row, idx) {
+      const g = groups[idx];
+      if (!g) return;
+      row.dataset.industryNodeId = g.industryNodeId || '';
+      const sel = row.querySelector('.teacher-ind-select');
+      if (sel && !sel.hidden && g.industryNodeId) {
+        sel.value = String(g.industryNodeId);
+      }
+      const nameEl = row.querySelector('.teacher-ind-name');
+      if (nameEl) nameEl.value = g.industryName || '';
+      const codeEls = row.querySelectorAll('.teacher-ind-code');
+      (g.codes || []).forEach(function (code, j) {
+        if (codeEls[j]) codeEls[j].value = code;
+      });
+    });
+    invalidateTeacherPreview();
+  }
+
+  function renderIndustryDropdowns(industries) {
+    const wrap = $('teacher-industry-rows');
+    if (!wrap) return;
+    Array.from(wrap.children).forEach(function (row) {
+      const sel = row.querySelector('.teacher-ind-select');
+      if (!sel) return;
+      sel.innerHTML = '<option value="">-- 选择 SW2021 一级行业 --</option>';
+      (industries || []).forEach(function (ind) {
+        const opt = document.createElement('option');
+        opt.value = ind.industryNodeId;
+        opt.dataset.name = ind.industryName;
+        const suffix = ind.status === 'verifying'
+          ? '（校验中 ' + ind.verifiedCount + '/' + ind.coarseCount + '）'
+          : ('（合格 ' + ind.qualifiedCount + ' 只）');
+        opt.textContent = ind.industryName + suffix;
+        opt.disabled = !ind.enabled;
+        sel.appendChild(opt);
+      });
+      sel.hidden = !industries || industries.length === 0;
+    });
+  }
+
+  async function loadTeacherCreationOptions(pickRandomYear) {
+    const statusEl = $('teacher-window-status');
+    $('teacher-create-error').textContent = '';
+    if (statusEl) statusEl.textContent = '正在核验可建场历史窗口与 SW2021 一级行业...';
+    const reqSeq = ++teacherOptionsState.optionsReqSeq;
+    try {
+      const sy = pickRandomYear ? null : Math.trunc(Number(($('teacher-start-year') && $('teacher-start-year').value) || 2011));
+      let res = await api.adminCreationOptions(sy);
+      if (reqSeq !== teacherOptionsState.optionsReqSeq) return; // 忽略迟到响应
+      teacherOptionsState.availableWindows = res.availableWindows || [];
+
+      if (pickRandomYear && teacherOptionsState.availableWindows.length > 0) {
+        const randIdx = Math.floor(Math.random() * teacherOptionsState.availableWindows.length);
+        const picked = teacherOptionsState.availableWindows[randIdx];
+        if ($('teacher-start-year')) $('teacher-start-year').value = String(picked.startYear);
+        syncTeacherYearRange();
+        if (Number(picked.startYear) !== Number(res.selectedStartYear)) {
+          res = await api.adminCreationOptions(picked.startYear);
+          if (reqSeq !== teacherOptionsState.optionsReqSeq) return;
+          teacherOptionsState.availableWindows = res.availableWindows || teacherOptionsState.availableWindows;
+        }
+      } else if (res.selectedStartYear && $('teacher-start-year')) {
+        const currentInputYear = Math.trunc(Number($('teacher-start-year').value || 2011));
+        if (sy == null || currentInputYear === sy) {
+          $('teacher-start-year').value = String(res.selectedStartYear);
+          syncTeacherYearRange();
+        } else {
+          return; // 用户在请求期间已手动修改年份，丢弃旧响应
+        }
+      }
+
+      teacherOptionsState.industries = res.industries || [];
+      renderIndustryDropdowns(teacherOptionsState.industries);
+
+      if (statusEl) {
+        if (teacherOptionsState.availableWindows.length === 0) {
+          const blockers = (res.windowStatus && res.windowStatus.blockers) || ['暂无满足全部数据门槛的 15 年窗口'];
+          statusEl.innerHTML = '';
+          const banner = document.createElement('div');
+          banner.className = 'notice-banner';
+          banner.textContent = '当前暂无可用历史窗口：' + blockers.join('；') + '（可切换为演示场次或重选年份）';
+          statusEl.appendChild(banner);
+        } else {
+          const wins = teacherOptionsState.availableWindows.map(function (w) { return w.startYear + '–' + w.endYear; }).join('、');
+          statusEl.textContent = (res.onlyOneWindowNote ? (res.onlyOneWindowNote + ' ') : '') +
+            '可用窗口：' + wins + ' ｜ 当前窗口合格一级行业：' +
+            teacherOptionsState.industries.filter(function (i) { return i.enabled; }).length + ' 个';
+        }
+      }
+    } catch (e) {
+      if (reqSeq !== teacherOptionsState.optionsReqSeq) return;
+      if (statusEl) statusEl.textContent = '';
+      $('teacher-create-error').textContent = '加载可用窗口失败：' + e.message;
+    }
+  }
+
+  async function pickRandomAvailableYear() {
+    invalidateTeacherPreview();
+    await loadTeacherCreationOptions(true);
+  }
+
+  async function sampleTeacherSelection(targetGroupIndex, excludeCurrent) {
+    $('teacher-create-error').textContent = '';
+    const inputs = readTeacherCreateInputs();
+    const reqSeq = ++teacherOptionsState.sampleReqSeq;
+    const reqYear = inputs.startYear;
+    const excludeComboKey = excludeCurrent
+      ? inputs.industries.map(function (g) {
+        return (g.industryNodeId || g.industryName) + ':' + g.codes.slice().sort().join(',');
+      }).sort().join('|')
+      : null;
+    try {
+      const res = await api.adminSample({
+        startYear: reqYear,
+        lockedGroups: inputs.industries,
+        targetGroupIndex: targetGroupIndex,
+        excludeComboKey: excludeComboKey,
+      });
+      const currentYear = Math.trunc(Number(($('teacher-start-year') && $('teacher-start-year').value) || 2011));
+      if (reqSeq !== teacherOptionsState.sampleReqSeq || currentYear !== reqYear) return; // 忽略过期或切年份后的迟到响应
+      applySampledGroupsToRows(res.groups);
+      if (res.notes && res.notes.length && $('teacher-window-status')) {
+        $('teacher-window-status').textContent = res.notes.join('；');
+      }
+    } catch (e) {
+      $('teacher-create-error').textContent = '抽样失败：' + e.message;
+    }
+  }
+
+  function renderPreviewBox(res) {
+    const box = $('teacher-preview-result');
+    if (!box) return;
+    box.textContent = '';
+    const banner = document.createElement('div');
+    banner.className = 'notice-banner';
+    if (!res.pass) {
+      banner.textContent = '预览未通过：' + (res.blockers || []).join('；');
+      box.appendChild(banner);
+      return;
+    }
+    const extra = res.mode === 'demo'
+      ? (' ｜ 演示剧本：' + (res.demoVariant === 'random' ? ('随机种子 ' + res.demoSeed) : '固定教学剧本'))
+      : (' ｜ 分类基准：' + (res.taxonomy || 'SW2021') + ' ｜ ' + (res.survivorBiasNotice || ''));
+    banner.textContent = '预览就绪（有效期至 ' + new Date(res.expiresAt).toLocaleTimeString() + '）：' +
+      res.startYear + '–' + res.endYear + extra;
+    box.appendChild(banner);
+  }
+
+  async function previewClassroomFromTeacher() {
+    $('teacher-create-error').textContent = '';
+    const reqSeq = ++teacherOptionsState.previewReqSeq;
+    const title = $('teacher-new-title').value.trim();
+    const mode = $('teacher-new-mode').value;
+    const blindMode = $('teacher-new-blind').checked;
+    const demoVariant = $('teacher-demo-variant') ? $('teacher-demo-variant').value : 'fixed';
+    const demoSeed = $('teacher-demo-seed') ? $('teacher-demo-seed').value.trim() : '';
+    const inputs = readTeacherCreateInputs();
+
+    const payload = {
+      title: title,
+      mode: mode,
+      blindMode: blindMode,
+      startYear: inputs.startYear,
+      demoVariant: demoVariant,
+      demoSeed: demoSeed || null,
+    };
+    if (mode === 'real') payload.industries = inputs.industries;
+
+    try {
+      const res = await api.adminPreview(payload);
+      const currentInputs = readTeacherCreateInputs();
+      const currentMode = $('teacher-new-mode') ? $('teacher-new-mode').value : mode;
+      if (reqSeq !== teacherOptionsState.previewReqSeq || currentInputs.startYear !== payload.startYear || currentMode !== payload.mode) {
+        return; // 忽略切年份/改配置后的迟到预览响应
+      }
+      renderPreviewBox(res);
+      if (res.pass && res.previewId) {
+        teacherOptionsState.activePreview = res;
+        teacherOptionsState.confirmRequestId = makeConfirmRequestId();
+        if ($('btn-teacher-confirm')) $('btn-teacher-confirm').hidden = false;
+      } else {
+        invalidateTeacherPreview();
+        renderPreviewBox(res);
+      }
+    } catch (e) {
+      if (reqSeq !== teacherOptionsState.previewReqSeq) return;
+      $('teacher-create-error').textContent = '预览失败：' + e.message;
+    }
+  }
+
+  async function confirmClassroomFromPreview() {
+    if (teacherOptionsState.confirming) return;
+    const preview = teacherOptionsState.activePreview;
+    if (!preview || !preview.previewId) {
+      $('teacher-create-error').textContent = '请先执行预览建场';
+      return;
+    }
+    const btn = $('btn-teacher-confirm');
+    const expectedPreviewId = preview.previewId;
+    const expectedPreviewSeq = teacherOptionsState.previewReqSeq;
+    teacherOptionsState.confirming = true;
+    if (btn) btn.disabled = true;
+    $('teacher-create-error').textContent = '';
+
+    try {
+      const res = await api.adminConfirm({
+        previewId: expectedPreviewId,
+        confirmRequestId: teacherOptionsState.confirmRequestId,
+      });
+      const stale = !teacherOptionsState.activePreview
+        || teacherOptionsState.activePreview.previewId !== expectedPreviewId
+        || teacherOptionsState.previewReqSeq !== expectedPreviewSeq;
+      if (stale) return;
+      if (!res.ok) {
+        if (res.status === 409 && res.data && res.data.newPreview) {
+          teacherOptionsState.activePreview = res.data.newPreview;
+          teacherOptionsState.confirmRequestId = makeConfirmRequestId();
+          renderPreviewBox(res.data.newPreview);
+          $('teacher-create-error').textContent = res.data.error || '数据已变化，请确认新预览';
+          return;
+        }
+        throw new Error((res.data && res.data.error) || '确认建场失败');
+      }
+      invalidateTeacherPreview();
+      state.teacherClassroomId = res.data.classroom.classroomId;
+      await loadTeacherConsole();
+      renderTabs();
+    } catch (e) {
+      $('teacher-create-error').textContent = e.message;
+    } finally {
+      teacherOptionsState.confirming = false;
+      if (btn) btn.disabled = false;
+    }
   }
 
   async function runTeacherPrecheck() {
@@ -1332,12 +1663,16 @@
       const title = $('teacher-new-title').value.trim();
       const mode = $('teacher-new-mode').value;
       const blindMode = $('teacher-new-blind').checked;
+      const demoVariant = $('teacher-demo-variant') ? $('teacher-demo-variant').value : 'fixed';
+      const demoSeed = $('teacher-demo-seed') ? $('teacher-demo-seed').value.trim() : '';
       const inputs = readTeacherCreateInputs();
       const payload = {
         title: title,
         mode: mode,
         blindMode: blindMode,
         startYear: inputs.startYear,
+        demoVariant: demoVariant,
+        demoSeed: demoSeed || null,
       };
       if (mode === 'real') {
         payload.industries = inputs.industries;

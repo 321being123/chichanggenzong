@@ -349,9 +349,13 @@ async function run() {
       const dEnd = `${yr}-12-30`;
       await pool.query(
         `INSERT INTO market.trade_calendar (exchange, trade_date, is_open, source_code)
-         VALUES ('SSE', $1::date, TRUE, 'test'), ('SSE', $2::date, TRUE, 'test')
+         SELECT 'SSE',
+                d::date,
+                (d::date >= $1::date AND d::date <= $2::date AND (EXTRACT(ISODOW FROM d) <= 5 OR d::date IN ($1::date, $2::date))),
+                'test'
+         FROM generate_series(make_date($3::int, 1, 1), make_date($3::int, 12, 31), '1 day'::interval) AS d
          ON CONFLICT DO NOTHING`,
-        [dStart, dEnd]
+        [dStart, dEnd, yr]
       );
       if (yr >= 2011) {
         // 十年期国债财富净值每年固定涨 5%

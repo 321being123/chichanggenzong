@@ -27,6 +27,74 @@ function handleServiceError(err, res, next) {
 
 // ---------- 教师 / 管理员接口（必须 requireLogin + requireAdmin）----------
 
+router.get('/admin/creation-options', requireLogin, requireAdmin, asyncHandler(async (req, res, next) => {
+  try {
+    const startYear = req.query.startYear ? Number(req.query.startYear) : null;
+    const out = await precheckService.getCreationOptions({ startYear });
+    res.json(out);
+  } catch (err) {
+    handleServiceError(err, res, next);
+  }
+}));
+
+router.post('/admin/sample', requireLogin, requireAdmin, asyncHandler(async (req, res, next) => {
+  try {
+    const { startYear = 2011, lockedGroups = [], targetGroupIndex = null, excludeComboKey = null, seed = null } = req.body || {};
+    const out = await precheckService.sampleRealClassroomSelection({
+      startYear: Number(startYear),
+      lockedGroups,
+      targetGroupIndex,
+      excludeComboKey,
+      seed,
+    });
+    res.json(out);
+  } catch (err) {
+    handleServiceError(err, res, next);
+  }
+}));
+
+router.post('/admin/preview', requireLogin, requireAdmin, asyncHandler(async (req, res, next) => {
+  try {
+    const {
+      title,
+      mode = 'demo',
+      blindMode = true,
+      startYear = 2011,
+      industries = null,
+      demoVariant = 'fixed',
+      demoSeed = null,
+    } = req.body || {};
+    const out = await classroomService.createCreationPreview({
+      adminUser: req.authUser,
+      title,
+      mode,
+      blindMode,
+      startYear,
+      industries,
+      demoVariant,
+      demoSeed,
+    });
+    res.json(out);
+  } catch (err) {
+    handleServiceError(err, res, next);
+  }
+}));
+
+router.post('/admin/confirm', requireLogin, requireAdmin, asyncHandler(async (req, res, next) => {
+  try {
+    const { previewId, confirmRequestId = null } = req.body || {};
+    const out = await classroomService.confirmCreationPreview({
+      adminUser: req.authUser,
+      previewId,
+      confirmRequestId,
+      origin: resolveOrigin(req),
+    });
+    res.status(out.idempotentReplay ? 200 : 201).json(out);
+  } catch (err) {
+    handleServiceError(err, res, next);
+  }
+}));
+
 router.post('/admin/precheck', requireLogin, requireAdmin, asyncHandler(async (req, res) => {
   const { industries, startYear = 2011, totalRounds = 15 } = req.body || {};
   const result = await precheckService.runRealPrecheck({
@@ -44,7 +112,17 @@ router.get('/admin/list', requireLogin, requireAdmin, asyncHandler(async (req, r
 
 router.post('/admin/create', requireLogin, requireAdmin, asyncHandler(async (req, res, next) => {
   try {
-    const { title, mode = 'demo', blindMode = true, startYear = 2011, industries = null } = req.body || {};
+    const {
+      title,
+      mode = 'demo',
+      blindMode = true,
+      startYear = 2011,
+      industries = null,
+      demoVariant = 'fixed',
+      demoSeed = null,
+      previewId = null,
+      confirmRequestId = null,
+    } = req.body || {};
     const out = await classroomService.createClassroom({
       adminUser: req.authUser,
       title,
@@ -52,9 +130,13 @@ router.post('/admin/create', requireLogin, requireAdmin, asyncHandler(async (req
       blindMode,
       startYear,
       industries,
+      demoVariant,
+      demoSeed,
+      previewId,
+      confirmRequestId,
       origin: resolveOrigin(req),
     });
-    res.status(201).json(out);
+    res.status(out.idempotentReplay ? 200 : 201).json(out);
   } catch (err) {
     handleServiceError(err, res, next);
   }

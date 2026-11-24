@@ -4,9 +4,9 @@ const dict = require('../dataAccess/lixingerReportMetrics');
 const contract = require('../domain/securityAnalysisContract');
 const presentation = require('../domain/statementPresentation');
 const repository = require('../repositories/stockStatementsRepository');
-const FORMULA_VERSION = 'stock-statements-6';
+const FORMULA_VERSION = 'stock-statements-7';
 
-const PERIOD_TYPES = new Set(['all', 'annual', 'semiannual', 'q1', 'q3', 'unknown']);
+const PERIOD_TYPES = new Set(['all', 'annual', 'semiannual', 'quarter', 'q1', 'q3', 'unknown']);
 const COMPARES = new Set(['yoy', 'qoq', 'none']);
 const STATEMENT_TYPES = new Set(['non_financial', 'bank', 'insurance', 'security', 'other_financial', 'reit']);
 const VALID_SCOPES = new Set(['consolidated', 'parent']);
@@ -36,21 +36,91 @@ function parseCoverage(value) {
 
 function dateKey(value) { return String(value || '').slice(0, 10); }
 
+const KNOWN_PERIOD_TYPES = new Set(['annual', 'semiannual', 'q1', 'q3']);
+const VERIFIED_FLOW_SOURCES = new Set(['lixinger_official', 'tushare']);
+
 function sameIdentity(current, prior) {
   const currentCurrency = String(current && current.currency_code || '').toUpperCase();
   const priorCurrency = String(prior && prior.currency_code || '').toUpperCase();
-  return current && prior && currentCurrency && priorCurrency
+  const currentSource = String(current && current.source_code || '');
+  const priorSource = String(prior && prior.source_code || '');
+  const currentFlag = current && current.update_flag != null && current.update_flag !== '' ? String(current.update_flag) : null;
+  const priorFlag = prior && prior.update_flag != null && prior.update_flag !== '' ? String(prior.update_flag) : null;
+  const bothLixinger = currentSource === 'lixinger_official' && priorSource === 'lixinger_official';
+  // 非理杏仁来源必须双方均有明确未重述标志 '0'；理杏仁官方无 update_flag（null），只要双方均未标为明确重述 '1' 即可比。
+  const restatementValid = bothLixinger
+    ? (currentFlag !== '1' && priorFlag !== '1')
+    : (currentFlag === '0' && priorFlag === '0');
+  return Boolean(current && prior && currentCurrency && priorCurrency
     && currentCurrency === priorCurrency
     && current.company_id && String(current.company_id) === String(prior.company_id || '')
     && current.source_id && String(current.source_id) === String(prior.source_id || '')
     && current.accounting_standard && String(current.accounting_standard) === String(prior.accounting_standard || '')
     && current.statement_scope && String(current.statement_scope) === String(prior.statement_scope || '')
     && current.comp_type && String(current.comp_type) === String(prior.comp_type || '')
-    // 历史理杏仁适配器曾把未知重述标志写成 0，不能把这些旧记录视为已确认未重述。
-    && current.source_code !== 'lixinger_official' && prior.source_code !== 'lixinger_official'
-    // source_version is a per-report content hash, not a shared revision basis.
-    // An explicitly unadjusted pair is comparable; revisions need further evidence.
-    && String(current.update_flag ?? '') === '0' && String(prior.update_flag ?? '') === '0';
+    && restatementValid);
+}
+
+function isValidCalendarDate(iso) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(iso)) return false;
+  const [y, m, d] = iso.split('-').map(Number);
+  if (m < 1 || m > 12 || d < 1 || d > 31) return false;
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  return dt.getUTCFullYear() === y && dt.getUTCMonth() === m - 1 && dt.getUTCDate() === d;
+}
+
+function flowPeriodStartOf(row) {
+  if (!row) return '';
+  const cov = parseCoverage(row.statement_coverage);
+  return dateKey(row.period_start || row.start_date || (cov && cov.period_start));
+}
+
+function hasSingleFlowPeriodBasis(row, market) {
+  if (!row) return false;
+  if (!KNOWN_PERIOD_TYPES.has(String(row.period_type || ''))) return false;
+  if (!VERIFIED_FLOW_SOURCES.has(String(row.source_code || ''))) return false;
+  const cov = parseCoverage(row.statement_coverage);
+  if (cov && cov.complete === false) return false;
+  const start = flowPeriodStartOf(row);
+  const end = dateKey(row.period_end);
+  if (start) {
+    if (!isValidCalendarDate(start)) return false;
+    if (isValidCalendarDate(end) && start > end) return false;
+  }
+  const isNaturalYearCas = String(market || '').toUpperCase() === 'CN'
+    && String(row.accounting_standard || '').toUpperCase() === 'CAS';
+  if (!isNaturalYearCas && !start) return false;
+  return true;
+}
+
+function hasFlowPeriodBasis(current, prior, market) {
+  if (!hasSingleFlowPeriodBasis(current, market) || !hasSingleFlowPeriodBasis(prior, market)) {
+    return false;
+  }
+  if (String(current.period_type) !== String(prior.period_type)) return false;
+  if (String(current.source_code || '') !== String(prior.source_code || '')) return false;
+  const curStart = flowPeriodStartOf(current);
+  const priorStart = flowPeriodStartOf(prior);
+  if (curStart || priorStart) {
+    if (!isValidCalendarDate(curStart) || !isValidCalendarDate(priorStart)) return false;
+    if (curStart.slice(5) !== priorStart.slice(5) || Number(curStart.slice(0, 4)) - Number(priorStart.slice(0, 4)) !== 1) {
+      return false;
+    }
+  }
+  const hasCurFy = current.fiscal_year != null && current.fiscal_year !== '';
+  const hasPriorFy = prior.fiscal_year != null && prior.fiscal_year !== '';
+  if (hasCurFy !== hasPriorFy) return false;
+  if (hasCurFy && Number(current.fiscal_year) - Number(prior.fiscal_year) !== 1) return false;
+  return true;
+}
+
+function isCurrencyUnverified(row, market) {
+  if (!row || market !== 'HK' || row.source_code !== 'lixinger_official') return false;
+  const currency = String(row.currency_code || '').trim().toUpperCase();
+  const sourceCurrency = String(row.source_currency || '').trim().toUpperCase();
+  const coverage = parseCoverage(row.statement_coverage);
+  return !/^[A-Z]{3}$/.test(currency) || currency !== sourceCurrency || (currency !== 'HKD'
+    && !(coverage && coverage.value_basis === 'source_original_t_o'));
 }
 
 function sameYearMonthDay(current, prior) {
@@ -70,23 +140,34 @@ function isPreviousQuarter(current, prior) {
   return previous[current.period_type] === prior.period_type;
 }
 
-function comparisonOf({ rows, index, metricCode, rawValue, statement, compare, measureType }) {
+function comparisonOf({ rows, comparisonRows, index, metricCode, rawValue, statement, compare, measureType, market }) {
   if (compare === 'none') return { value: null, status: null, reason: null };
   if (measureType !== 'currency') return { value: null, status: contract.FIELD_STATUS.NOT_APPLICABLE, reason: 'comparison_method_unverified' };
   const current = rows[index];
   if (compare === 'qoq' && statement !== 'balance') {
     return { value: null, status: contract.FIELD_STATUS.NOT_APPLICABLE, reason: 'cumulative_flow_qoq_not_supported' };
   }
-  // Current rows do not contain a verified period start/restatement basis for
-  // cumulative flows, so an identical end date alone cannot establish YOY.
-  if (compare === 'yoy' && statement !== 'balance') {
-    return { value: null, status: contract.FIELD_STATUS.NOT_APPLICABLE, reason: 'flow_period_basis_unverified' };
-  }
+  const poolRows = Array.isArray(comparisonRows) && comparisonRows.length ? comparisonRows : rows;
   const prior = compare === 'yoy'
-    ? rows.find((row, rowIndex) => rowIndex > index && current.period_type !== 'unknown' && Boolean(current.period_type) && sameIdentity(current, row)
+    ? poolRows.find(row => row && row.report_id !== current.report_id && dateKey(row.period_end) < dateKey(current.period_end)
+      && current.period_type !== 'unknown' && Boolean(current.period_type) && sameIdentity(current, row)
       && String(row.period_type || '') === String(current.period_type || '') && sameYearMonthDay(current, row))
-    : rows.find((row, rowIndex) => rowIndex > index && sameIdentity(current, row) && isPreviousQuarter(current, row));
+    : poolRows.find(row => row && row.report_id !== current.report_id && dateKey(row.period_end) < dateKey(current.period_end)
+      && sameIdentity(current, row) && isPreviousQuarter(current, row));
+  if (compare === 'yoy' && statement !== 'balance') {
+    if (!prior) {
+      return hasSingleFlowPeriodBasis(current, market)
+        ? { value: null, status: contract.FIELD_STATUS.INSUFFICIENT_HISTORY, reason: 'comparable_period_missing' }
+        : { value: null, status: contract.FIELD_STATUS.NOT_APPLICABLE, reason: 'flow_period_basis_unverified' };
+    }
+    if (!hasFlowPeriodBasis(current, prior, market)) {
+      return { value: null, status: contract.FIELD_STATUS.NOT_APPLICABLE, reason: 'flow_period_basis_unverified' };
+    }
+  }
   if (!prior) return { value: null, status: contract.FIELD_STATUS.INSUFFICIENT_HISTORY, reason: 'comparable_period_missing' };
+  if (isCurrencyUnverified(prior, market)) {
+    return { value: null, status: contract.FIELD_STATUS.SOURCE_UNAVAILABLE, reason: 'comparable_value_missing' };
+  }
   const priorRaw = contract.finite(prior[metricCode]);
   if (rawValue === null || priorRaw === null) return { value: null, status: contract.FIELD_STATUS.SOURCE_UNAVAILABLE, reason: 'comparable_value_missing' };
   if (priorRaw === 0) return { value: null, status: contract.FIELD_STATUS.NOT_APPLICABLE, reason: 'zero_denominator' };
@@ -108,7 +189,7 @@ function valueStatus(raw, coverage, code, sourceCode) {
 }
 
 function reportDigestOf(rows) {
-  return rows.map(row => `${row.report_id}:${row.source_version || ''}:${row.period_end || ''}:${row.period_type || ''}:${row.statement_revision || ''}`).join(',');
+  return rows.map(row => `${row.report_id}:${row.source_version || ''}:${row.period_end || ''}:${row.period_type || ''}:${row.period_start || ''}:${row.statement_revision || ''}`).join(',');
 }
 
 function statementAnalysisVersionOf({
@@ -155,7 +236,7 @@ function metadataOf(row, market) {
   });
 }
 
-function buildStatementPayload({ market = 'CN', type = 'balance', rows = [], versionRows = rows, options = {}, formulaVersion = FORMULA_VERSION, canonicalCode } = {}) {
+function buildStatementPayload({ market = 'CN', type = 'balance', rows = [], comparisonRows = null, versionRows = rows, options = {}, formulaVersion = FORMULA_VERSION, canonicalCode } = {}) {
   const normalized = normalizeOptions(options);
   const types = [...new Set(rows.map(row => parseCoverage(row.statement_coverage))
     .map(coverage => coverage && coverage.fs_table_type).filter(Boolean))];
@@ -243,16 +324,13 @@ function buildStatementPayload({ market = 'CN', type = 'balance', rows = [], ver
   }
   const metrics = [...byCode.values()];
   const currencies = [...new Set(rows.map(row => String(row.currency_code || '').toUpperCase()).filter(Boolean))];
-  const currencyUnverified = row => {
-    if (market !== 'HK' || row.source_code !== 'lixinger_official') return false;
-    const currency = String(row.currency_code || '').trim().toUpperCase();
-    const sourceCurrency = String(row.source_currency || '').trim().toUpperCase();
-    const coverage = parseCoverage(row.statement_coverage);
-    return !/^[A-Z]{3}$/.test(currency) || currency !== sourceCurrency || (currency !== 'HKD'
-      && !(coverage && coverage.value_basis === 'source_original_t_o'));
-  };
+  const currencyUnverified = row => isCurrencyUnverified(row, market);
   const hasUnverifiedCurrency = rows.some(currencyUnverified);
-  const periods = rows.map(row => metadataOf(row, market));
+  const periods = rows.map(row => {
+    const meta = metadataOf(row, market);
+    if (!meta.fs_table_type && inferredType) meta.fs_table_type = inferredType;
+    return meta;
+  });
   const coverageRows = rows.map(row => parseCoverage(row.statement_coverage)).filter(Boolean);
   const requestedMetricCodes = [...new Set(coverageRows.flatMap(item => item.requested_metric_codes || []))];
   const returnedMetricCodes = [...new Set(coverageRows.flatMap(item => item.returned_metric_codes || []))];
@@ -271,7 +349,7 @@ function buildStatementPayload({ market = 'CN', type = 'balance', rows = [], ver
         const state = unverified ? { value: null, status: contract.FIELD_STATUS.SOURCE_UNAVAILABLE, reason: 'source_currency_unverified' }
           : valueStatus(raw, parseCoverage(row.statement_coverage), field.code, row.source_code);
         const comparison = raw === null ? { value: null, status: state.status, reason: state.reason }
-          : comparisonOf({ rows, index, metricCode: dict.columnOf(field.code), rawValue: raw, statement: type, compare: normalized.compare, measureType: field.measure_type });
+          : comparisonOf({ rows, comparisonRows, index, metricCode: dict.columnOf(field.code), rawValue: raw, statement: type, compare: normalized.compare, measureType: field.measure_type, market });
         return {
           value: presentation.normalizeMetricValue(raw, field, row.currency_code),
           status: state.status,
@@ -314,15 +392,29 @@ function buildStatementPayload({ market = 'CN', type = 'balance', rows = [], ver
   };
 }
 
+function filterRowsByOptions(allRows, normalized) {
+  return allRows.filter(row => {
+    if (normalized.periodType && normalized.periodType !== 'all') {
+      if (normalized.periodType === 'quarter') {
+        if (row.period_type !== 'q1' && row.period_type !== 'q3') return false;
+      } else if (row.period_type !== normalized.periodType) {
+        return false;
+      }
+    }
+    if (normalized.scope && normalized.scope !== 'all') {
+      if (String(row.statement_scope || 'consolidated') !== normalized.scope) return false;
+    }
+    return true;
+  }).slice(0, normalized.limit);
+}
+
 async function getStockStatements({ tsCode, market = 'CN', type = 'balance', limit = 8, requestedVersion = null, formulaVersion = FORMULA_VERSION, ...options } = {}) {
   if (!dict.STATEMENTS.includes(type)) throw new Error('三表类型无效');
   const normalized = normalizeOptions({ ...options, limit });
-  const [rows, versionRows] = await Promise.all([
-    repository.listStatementRows({ tsCode, market, type, limit: normalized.limit, periodType: normalized.periodType,
-      scope: normalized.scope === 'all' ? null : normalized.scope }),
-    repository.listStatementRows({ tsCode, market, type, limit: 20, periodType: null, scope: null }),
-  ]);
-  const payload = buildStatementPayload({ market, type, rows, versionRows, options: normalized, formulaVersion, canonicalCode: tsCode });
+  // 单次全量快照读取：展示行、比较基期池与版本摘要共享同一份数据库读取，避免两路读取修订漂移、筛选漏基期或长窗口版本遗漏。
+  const allRows = await repository.listStatementRows({ tsCode, market, type, limit: null, periodType: null, scope: null });
+  const rows = filterRowsByOptions(allRows, normalized);
+  const payload = buildStatementPayload({ market, type, rows, comparisonRows: allRows, versionRows: allRows, options: normalized, formulaVersion, canonicalCode: tsCode });
   const conflict = contract.versionConflict(requestedVersion, payload.analysis_version);
   if (conflict) {
     const error = new Error(conflict.error);
@@ -335,7 +427,7 @@ async function getStockStatements({ tsCode, market = 'CN', type = 'balance', lim
 
 async function getStockStatementVersions({ tsCode, market = 'CN', formulaVersion = FORMULA_VERSION } = {}) {
   const entries = await Promise.all(dict.STATEMENTS.map(async type => {
-    const rows = await repository.listStatementRows({ tsCode, market, type, limit: 20, periodType: null, scope: null });
+    const rows = await repository.listStatementRows({ tsCode, market, type, limit: null, periodType: null, scope: null });
     return [type, statementAnalysisVersionOf({ canonicalCode: tsCode, market, type, formulaVersion, rows })];
   }));
   return Object.fromEntries(entries);

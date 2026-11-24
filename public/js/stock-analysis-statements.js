@@ -35,7 +35,53 @@ function stockAnalysisStatementFilterChanged(value) {
   if (typeof stockAnalysisSetStatementFilter === 'function') stockAnalysisSetStatementFilter(name, value);
 }
 
+function stockAnalysisFormatPeriodLabel(raw) {
+  var key = String(raw || '').trim().toLowerCase();
+  var map = {
+    annual_report: '年报',
+    annual: '年报',
+    year_report: '年报',
+    fourth_quarterly_report: '年报',
+    q4: '年报',
+    semi_annual_report: '半年报',
+    semiannual_report: '半年报',
+    interim_report: '半年报',
+    semiannual: '半年报',
+    second_quarterly_report: '半年报',
+    first_quarterly_report: '一季报',
+    q1: '一季报',
+    third_quarterly_report: '三季报',
+    q3: '三季报',
+    quarterly_report: '季报',
+    quarter: '季报',
+    unknown: '未知',
+  };
+  return map[key] || (raw ? String(raw) : '');
+}
+
 function stockAnalysisRenderStatementFilters(data) {
+  var periodEl = document.getElementById('stock-analysis-statement-period');
+  if (periodEl) {
+    var availablePeriods = (data && data.available_filters && data.available_filters.period_types) || [];
+    var currentPeriod = typeof stockAnalysisStatementFilters === 'function' ? stockAnalysisStatementFilters().periodType : periodEl.value;
+    var periodOptions = [
+      { value: 'all', label: '全部' },
+      { value: 'annual', label: '年报' },
+      { value: 'semiannual', label: '半年报' },
+      { value: 'quarter', label: '季报' },
+    ];
+    if (availablePeriods.indexOf('unknown') >= 0) {
+      periodOptions.push({ value: 'unknown', label: '未知' });
+    }
+    periodEl.innerHTML = periodOptions.map(function(opt) {
+      return '<option value="' + opt.value + '">' + opt.label + '</option>';
+    }).join('');
+    var nextPeriod = periodOptions.some(function(opt) { return opt.value === currentPeriod; }) ? currentPeriod : 'all';
+    periodEl.value = nextPeriod;
+    if (typeof stockAnalysisStatementFilters === 'function') {
+      stockAnalysisStatementFilters().periodType = nextPeriod;
+    }
+  }
   var scope = document.getElementById('stock-analysis-statement-scope');
   var scopes = data && data.available_filters && data.available_filters.scopes || [];
   if (!scope || !scopes.length) return;
@@ -188,9 +234,10 @@ function stockAnalysisRenderStatements(data) {
   var headYears = data.periods.map(function(period, periodIndex) {
     var notes = [];
     if (period.end_date) notes.push('期末 ' + period.end_date);
-    if (period.report_type_label || period.report_type) notes.push(period.report_type_label || period.report_type);
+    var periodText = stockAnalysisFormatPeriodLabel(period.report_type_label || period.report_type);
+    if (periodText) notes.push(periodText);
     var tableTypes = { non_financial:'非金融', bank:'银行', insurance:'保险', security:'证券', other_financial:'其他金融', reit:'房地产投资信托' };
-    notes.push(tableTypes[period.fs_table_type] ? '报表类型：' + tableTypes[period.fs_table_type] : '报表类型待确认');
+    if (tableTypes[period.fs_table_type]) notes.push('报表类型：' + tableTypes[period.fs_table_type]);
     var scopes = { consolidated:'合并口径', parent:'母公司口径' };
     notes.push(scopes[period.scope] || (period.scope ? '口径：' + period.scope : '口径待确认'));
     if (period.currency) notes.push(period.currency);
@@ -222,7 +269,8 @@ function stockAnalysisRenderStatements(data) {
       var period = data.periods[index] || {};
       var periodLabel = period.end_date || period.fiscal_year || period.year || ('第' + (index + 1) + '期');
       var scopeLabels = { consolidated: '合并口径', parent: '母公司口径' };
-      if (period.report_type_label || period.report_type) periodLabel += ' ' + (period.report_type_label || period.report_type);
+      var periodTypeText = stockAnalysisFormatPeriodLabel(period.report_type_label || period.report_type);
+      if (periodTypeText) periodLabel += ' ' + periodTypeText;
       if (period.scope) periodLabel += ' ' + (scopeLabels[period.scope] || period.scope);
       var groupKey = prefix + '：' + reasonText;
       if (!statusGroups[groupKey]) {
@@ -232,10 +280,15 @@ function stockAnalysisRenderStatements(data) {
       if (statusGroups[groupKey].indexOf(periodLabel) < 0) statusGroups[groupKey].push(periodLabel);
     }
     (field.values || []).forEach(function(item, index) {
-      if (item && item.status && item.status !== 'available') addStatusMessage(index, '原值', item.reason);
-      if (comparisonEnabled && item && item.comparison_status && item.comparison_status !== 'available') {
-        addStatusMessage(index, comparisonLabel, item.comparison_reason);
-        if (item.comparison_reason) commonComparisonReasons[item.comparison_reason] = (commonComparisonReasons[item.comparison_reason] || 0) + 1;
+      if (item && item.status && item.status !== 'available' && item.status !== 'source_not_disclosed') {
+        addStatusMessage(index, '原值', item.reason);
+      }
+      if (comparisonEnabled && item && item.comparison_status && item.comparison_status !== 'available' && item.comparison_status !== 'source_not_disclosed') {
+        var cmpReason = item.comparison_reason;
+        if (cmpReason && cmpReason !== 'comparable_period_missing' && cmpReason !== 'comparable_value_missing' && cmpReason !== 'source_not_disclosed') {
+          addStatusMessage(index, comparisonLabel, cmpReason);
+        }
+        if (cmpReason) commonComparisonReasons[cmpReason] = (commonComparisonReasons[cmpReason] || 0) + 1;
       }
     });
     var statusMessages = statusOrder.map(function(groupKey) {

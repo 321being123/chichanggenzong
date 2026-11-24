@@ -10,6 +10,7 @@ const PAGE_FILES = Object.freeze({
   '/share-knowledge.html': 'share-knowledge.html',
   '/ipo-report.html': 'ipo-report.html',
   '/bond-revision-motive.html': 'bond-revision-motive.html',
+  '/classroom.html': 'classroom.html',
 });
 
 function renderAppVersion(html, appVersion) {

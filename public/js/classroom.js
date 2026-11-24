@@ -1122,7 +1122,9 @@
       row.style.marginBottom = '8px';
       const btn = document.createElement('button');
       btn.type = 'button';
-      btn.className = 'cr-btn' + (Number(state.teacherClassroomId) === Number(c.classroom_id) ? ' cr-btn-primary' : '');
+      const isSelected = Number(state.teacherClassroomId) === Number(c.classroom_id);
+      btn.className = 'cr-btn' + (isSelected ? ' cr-btn-primary' : '');
+      btn.setAttribute('aria-pressed', isSelected ? 'true' : 'false');
       btn.textContent = c.title + '（' + c.classroom_code + ' · 第 ' + c.current_round + ' 轮 · ' + formatRoundStatus(c.status) + ' · ' + c.member_count + ' 人）';
       btn.addEventListener('click', function () {
         state.teacherClassroomId = Number(c.classroom_id);

@@ -59,6 +59,11 @@ test('模拟股市页面 public/classroom.html 已引入提交反馈样式与脚
   assert.ok(html.includes('src="js/feedback-fab.js?v=__APP_VERSION__"'), '应引入 feedback-fab.js');
 });
 
+test('versionedStaticPages 已纳入 /classroom.html 以随发版刷新脚本缓存（#78）', () => {
+  const src = read('server/middleware/versionedStaticPages.js');
+  assert.ok(src.includes("'/classroom.html': 'classroom.html'"), 'versionedStaticPages 应映射 /classroom.html');
+});
+
 test('模拟股市初始化同步 window.username 与 window.accountIdentity 供反馈入口识别登录态', () => {
   const js = read('public/js/classroom.js');
   assert.ok(js.includes('window.username = me.username;'), 'init 应同步设置 window.username');

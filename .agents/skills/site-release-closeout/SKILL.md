@@ -33,7 +33,7 @@ description: "存在小站（portfolio-server）上线发布，或上一次发�
    - 确认本批**没有**相关反馈时，不要凭记忆下结论：写一份查询证据文件（`complete=true`、逐条候选给 `unrelated` 与理由、`queriedAt` 在 48 小时内、`releaseSha` 指向本次提交），交给部署脚本 `--feedback-none-evidence`。
 5. **推送**：`git push` 到 master（脚本要求 HEAD 与 origin/master 完全一致）。
 6. **部署**：只用 `docs/生产部署流程.md` 规定的入口，并带上核对依据——`--feedback-run-id <批次>` 或 `--feedback-none-evidence <证据文件>`。两者都不给，脚本会在**任何生产变更之前**退出，这是设计不是故障。
-7. **记录回执并读结论**：按 [生产部署流程的阅读与写入边界](../../../docs/生产部署流程.md#阅读与写入边界) 写入本批发布历史，专项结果回原方案，任务卡记录交接和未验项。按 `DEPLOY_RESULT.feedback_status` 下结论，不要自己重算。只有 `applied_verified`（确有实施且逐条回读一致）、`applied_verified_no_implementation`（本批明细全为不相关，无实施）和 `crosschecked_no_related_feedback`（完整查询确认无候选）是完成态；`applied_with_pending`、`readback_mismatch`、`apply_status_rejected`、`no_items`、`apply_failed`、`read_failed`、`not_crosschecked`、`skipped_missing_*` 都算未闭环。
+7. **记录回执并读结论**：按 [生产部署流程的阅读与写入边界](../../../docs/生产部署流程.md#阅读与写入边界) 将回执写入对应日期的 `docs/生产部署历史记录_截至YYYYMMDD.md`，专项结果回原方案，任务卡记录交接和未验项。按 `DEPLOY_RESULT.feedback_status` 下结论，不要自己重算。只有 `applied_verified`（确有实施且逐条回读一致）、`applied_verified_no_implementation`（本批明细全为不相关，无实施）和 `crosschecked_no_related_feedback`（完整查询确认无候选）是完成态；`applied_with_pending`、`readback_mismatch`、`apply_status_rejected`、`no_items`、`apply_failed`、`read_failed`、`not_crosschecked`、`skipped_missing_*` 都算未闭环。
 
 ## B 分支：只补回写
 

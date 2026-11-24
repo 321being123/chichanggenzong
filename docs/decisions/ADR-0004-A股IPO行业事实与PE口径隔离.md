@@ -265,3 +265,5 @@ Tushare 官方文档只把 `stock_basic.industry` 定义为“所属行业”，
 > 2026-11-15 核对（收盘任务终盘核验按品种接证据）：本次 `jobDefinitions` 只给四个 `market_close:*` 任务补齐终盘核验的接口与 `stock_daily` 消费声明，`marketClose`/`accounts`/`navAttribution`/`navSnapshot` 的改动限于收盘证据、市场身份与日价回写，未触碰 A 股 IPO 行业事实、行业 PE 口径、`industry` 字段写入或下游消费。本 ADR 决策与实现边界仍不变。
 
 > 2026-11-19 核对（盘后就绪重验）：本次调度兼容性修复仅恢复无数据集依赖任务的领取语义，并限制首次就绪观测必须有真实分区依赖证据，未触碰 A 股 IPO 行业事实、行业 PE 口径、`industry` 字段写入或下游消费。本 ADR 决策与实现边界仍不变。
+
+2026-11-24 共用调度定义核对：本次将内地持仓报价任务调整至 15:30。IPO 行业、行业 PE 解析及其正式公告判定仍执行本 ADR。

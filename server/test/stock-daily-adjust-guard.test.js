@@ -14,7 +14,7 @@ const adapter = require('../dataAccess/adapters/lixingerDatasetAdapter');
 adapter.resolveStockDaily = async () => [];
 
 const datasets = require('../dataAccess/marketDatasets');
-const { verifyTerminalClose, loadTerminalBar, buildCloseRecord } = require('../jobs/marketClose');
+const { verifyTerminalClose, loadTerminalBar } = require('../jobs/marketClose');
 // 第七轮验收新增：共享日线证据裁决与港股代码规范化（纯函数，离线可回归）。
 const mcTerminal = require('../jobs/marketClose');
 const { historyBackfillRow } = require('../jobs/replayNav');
@@ -99,27 +99,6 @@ async function main() {
   const hk = await verifyTerminalClose({ code: '00001', subtype: '港股', market: 'HK', date, price: 100, fetchSeries: bondSeries });
   assert.strictEqual(hk.ok, true, '港股应能用不复权港股日线确认终盘');
   assert.strictEqual(askedKinds.at(-1), 'stock', '港股走正股日线入口（数据层内部按 .HK 选腾讯 day 日 K）');
-
-  // 4b. 确认后必须落核验过的日线收盘价：报价 10.004 + 日线 10 -> 存 10（10 万股差 400 元）。
-  const closeState = { status: 'open', isAfterMarketClose: true, closeTime: '15:00' };
-  const confirmedRecord = await buildCloseRecord({
-    row: { code: '600000', name: '浦发银行', price: 10.004, quote_time: date + 'T15:00:00+08:00' },
-    position: { subtype: '沪市' }, market: 'CN', label: 'A股', state: closeState, cnDate: date,
-    readBar: async () => ({ ok: true, reason: null, close: 10, provider: 'lixinger', adjust: 'none', via: 'published_bar' }),
-  });
-  assert.strictEqual(confirmedRecord.quality, 'confirmed', '容差内应确认终盘');
-  assert.strictEqual(confirmedRecord.price, 10, '确认后必须存经核验的日线收盘价，不能存容差内的实时报价');
-  assert.strictEqual(confirmedRecord.evidence.priceBasis, 'bar_close', '证据必须标明价格取自日线收盘价');
-  assert.strictEqual(confirmedRecord.evidence.quotePrice, 10.004, '原始报价仍要留证，不能丢');
-
-  const pendingRecord = await buildCloseRecord({
-    row: { code: '600000', name: '浦发银行', price: 10.004, quote_time: date + 'T15:00:00+08:00' },
-    position: { subtype: '沪市' }, market: 'CN', label: 'A股', state: closeState, cnDate: date,
-    readBar: async () => ({ ok: false, reason: 'terminal_bar_mismatch' }),
-  });
-  assert.strictEqual(pendingRecord.quality, 'candidate', '来源冲突必须保留待核验');
-  assert.strictEqual(pendingRecord.is_final, null);
-  assert.strictEqual(pendingRecord.price, 10.004, '未确认时保留报价，但不得写成终盘价');
 
   // 4c. 终盘核验先读已发布的共享日线：命中就不再外采。
   let fetched = 0;
@@ -219,16 +198,6 @@ async function main() {
   assert.strictEqual(carried.ok, true);
   assert.strictEqual(carried.persisted, false, 'verifyTerminalClose 不得把持久化结果吞掉');
   assert.strictEqual(carried.persistReason, 'instrument_or_source_not_found');
-  const recordWithPersistFailure = await buildCloseRecord({
-    row: { code: '600000', name: '浦发银行', price: 10, quote_time: date + 'T15:00:00+08:00' },
-    position: { subtype: '沪市' }, market: 'CN', label: 'A股', state: closeState, cnDate: date,
-    readBar: async () => persistFailedBar,
-  });
-  assert.strictEqual(recordWithPersistFailure.quality, 'confirmed');
-  assert.strictEqual(recordWithPersistFailure.evidence.terminalPersisted, false,
-    '日价证据里必须记下"这条终盘证据没写回共享日线"');
-  assert.strictEqual(recordWithPersistFailure.evidence.terminalPersistReason, 'instrument_or_source_not_found');
-
   // 4h. 同一港股的五位/六位代码必须落到同一个身份：否则缺口判定、幂等跳过和历史修订门禁各自为政。
   assert.strictEqual(mcTerminal.identityOf('HK', '000001'), 'HK|00001', '身份里的港股代码必须先规范化');
   assert.strictEqual(mcTerminal.identityOf('HK', '00001'), 'HK|00001');

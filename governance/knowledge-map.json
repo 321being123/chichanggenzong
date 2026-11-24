@@ -77,10 +77,7 @@
         "docs/incidents/README.md",
         "docs/tasks/README.md"
       ],
-      "update": [
-        "docs/知识索引.md",
-        "docs/技术架构.md"
-      ],
+      "update": [],
       "checks": [
         "npm.cmd run check:knowledge"
       ],
@@ -135,13 +132,10 @@
         "docs/生产部署流程.md",
         "deploy/本地验证交接文档.md",
         "docs/技术架构.md",
-        "docs/tasks/README.md"
-      ],
-      "update": [
-        "docs/生产部署流程.md",
-        "docs/技术架构.md",
+        "docs/tasks/README.md",
         "docs/知识索引.md"
       ],
+      "update": [],
       "checks": [
         "npm.cmd run check:knowledge"
       ],
@@ -195,12 +189,7 @@
         "docs/技术架构.md",
         "governance/knowledge-map.json"
       ],
-      "update": [
-        "AGENTS.md",
-        "docs/知识索引.md",
-        "docs/技术架构.md",
-        "governance/knowledge-map.json"
-      ],
+      "update": [],
       "checks": [
         "npm.cmd run check:knowledge"
       ],
@@ -257,11 +246,7 @@
         "docs/技术架构.md",
         "docs/项目可持续维护与交付闭环整改方案_20261030.md"
       ],
-      "update": [
-        "docs/项目可持续维护与交付闭环整改方案_20261030.md",
-        "docs/技术架构.md",
-        "docs/知识索引.md"
-      ],
+      "update": [],
       "checks": [
         "npm.cmd run check:knowledge"
       ],
@@ -322,10 +307,7 @@
         "governance/architecture-boundaries.json",
         "docs/decisions/ADR-0002-后台任务与数据质量不变量.md"
       ],
-      "update": [
-        "docs/技术架构.md",
-        "docs/知识索引.md"
-      ],
+      "update": [],
       "checks": [
         "npm.cmd run check:knowledge"
       ],
@@ -419,11 +401,10 @@
         "docs/日期时间统一治理研发方案_20260928.md",
         "docs/incidents/INC-0032-全项目日期时间边界审计与整改方案.md",
         "docs/自动任务重复执行与API调用保护整改方案_20260815.md",
-        "docs/生产部署流程.md"
+        "docs/生产部署流程.md",
+        "docs/知识索引.md"
       ],
       "update": [
-        "docs/技术架构.md",
-        "docs/知识索引.md",
         "docs/日期时间统一治理研发方案_20260928.md",
         "docs/incidents/INC-0032-全项目日期时间边界审计与整改方案.md",
         "governance/rule-traceability.json"
@@ -489,11 +470,10 @@
       "read": [
         "docs/技术架构.md",
         "docs/应用分层与MVP架构整改方案_20261027.md",
-        "docs/生产部署流程.md"
+        "docs/生产部署流程.md",
+        "docs/知识索引.md"
       ],
       "update": [
-        "docs/技术架构.md",
-        "docs/知识索引.md",
         "docs/应用分层与MVP架构整改方案_20261027.md"
       ],
       "checks": [
@@ -570,7 +550,8 @@
         "docs/应用分层与MVP架构整改方案_20261027.md",
         "docs/日期时间统一治理研发方案_20260928.md",
         "docs/自动任务重复执行与API调用保护整改方案_20260815.md",
-        "docs/生产部署流程.md"
+        "docs/生产部署流程.md",
+        "docs/知识索引.md"
       ],
       "readSections": {
         "docs/技术架构.md": [
@@ -607,9 +588,7 @@
         ]
       },
       "update": [
-        "docs/投资策略选股中心研发方案_20261102.md",
-        "docs/技术架构.md",
-        "docs/知识索引.md"
+        "docs/投资策略选股中心研发方案_20261102.md"
       ],
       "checks": [
         "npm.cmd run check:knowledge"
@@ -644,12 +623,11 @@
         "docs/技术架构.md",
         "docs/自动任务重复执行与API调用保护整改方案_20260815.md",
         "docs/线上告警与异常整改开发方案_20261023.md",
-        "deploy/本地验证交接文档.md"
-      ],
-      "update": [
+        "deploy/本地验证交接文档.md",
         "AGENTS.md",
         "governance/knowledge-map.json"
       ],
+      "update": [],
       "checks": [
         "npm.cmd run check:knowledge"
       ],
@@ -717,11 +695,10 @@
         "docs/decisions/ADR-0003-告警与任务治理门禁补强.md",
         "docs/日期时间统一治理研发方案_20260928.md",
         "docs/incidents/INC-0032-全项目日期时间边界审计与整改方案.md",
-        "docs/生产部署流程.md"
+        "docs/生产部署流程.md",
+        "docs/知识索引.md"
       ],
       "update": [
-        "docs/技术架构.md",
-        "docs/知识索引.md",
         "docs/持仓分红与逆回购现金收益开发方案_20261010.md"
       ],
       "checks": [
@@ -789,12 +766,10 @@
         "docs/技术架构.md",
         "docs/decisions/ADR-0001-公告数据源优先级与统一采集.md",
         "docs/自动任务重复执行与API调用保护整改方案_20260815.md",
-        "docs/生产部署流程.md"
-      ],
-      "update": [
-        "docs/技术架构.md",
+        "docs/生产部署流程.md",
         "docs/知识索引.md"
       ],
+      "update": [],
       "checks": [
         "npm.cmd run check:knowledge"
       ],
@@ -859,11 +834,10 @@
         "docs/自动任务重复执行与API调用保护整改方案_20260815.md",
         "docs/incidents/INC-0033-A股IPO行业漏解析与持续补全研发方案.md",
         "docs/线上告警与异常整改开发方案_20261023.md",
-        "docs/生产部署流程.md"
+        "docs/生产部署流程.md",
+        "docs/知识索引.md"
       ],
       "update": [
-        "docs/技术架构.md",
-        "docs/知识索引.md",
         "docs/decisions/ADR-0003-告警与任务治理门禁补强.md",
         "docs/decisions/ADR-0004-A股IPO行业事实与PE口径隔离.md",
         "docs/incidents/INC-0033-A股IPO行业漏解析与持续补全研发方案.md",
@@ -938,11 +912,10 @@
         "docs/打新预测模型梳理与优化建议_20260929.md",
         "docs/decisions/ADR-0004-A股IPO行业事实与PE口径隔离.md",
         "docs/incidents/INC-0033-A股IPO行业漏解析与持续补全研发方案.md",
-        "docs/自动任务重复执行与API调用保护整改方案_20260815.md"
+        "docs/自动任务重复执行与API调用保护整改方案_20260815.md",
+        "docs/知识索引.md"
       ],
       "update": [
-        "docs/技术架构.md",
-        "docs/知识索引.md",
         "docs/打新预测模型梳理与优化建议_20260929.md"
       ],
       "checks": [
@@ -1001,11 +974,10 @@
         "docs/decisions/ADR-0002-后台任务与数据质量不变量.md",
         "docs/decisions/ADR-0003-告警与任务治理门禁补强.md",
         "docs/自动任务重复执行与API调用保护整改方案_20260815.md",
-        "docs/生产部署流程.md"
+        "docs/生产部署流程.md",
+        "docs/知识索引.md"
       ],
       "update": [
-        "docs/技术架构.md",
-        "docs/知识索引.md",
         "docs/decisions/ADR-0003-告警与任务治理门禁补强.md"
       ],
       "checks": [
@@ -1054,13 +1026,10 @@
       "read": [
         "docs/技术架构.md",
         "docs/decisions/ADR-0002-后台任务与数据质量不变量.md",
-        "docs/decisions/ADR-0003-告警与任务治理门禁补强.md"
+        "docs/decisions/ADR-0003-告警与任务治理门禁补强.md",
+        "docs/知识索引.md"
       ],
-      "update": [
-        "docs/技术架构.md",
-        "docs/知识索引.md",
-        "docs/decisions/ADR-0003-告警与任务治理门禁补强.md"
-      ],
+      "update": [],
       "checks": [
         "npm.cmd run check:knowledge"
       ],
@@ -1114,7 +1083,6 @@
         "docs/生产部署流程.md"
       ],
       "update": [
-        "docs/技术架构.md",
         "docs/可转债强赎公告解析与锁定期状态治理_研发方案_20260915.md"
       ],
       "checks": [
@@ -1180,8 +1148,7 @@
       ],
       "update": [
         "docs/港股打新日历与严选建议研发方案_20260907.md",
-        "docs/港股IPO数据源与实时申购信号整改研发方案_20260920.md",
-        "docs/技术架构.md"
+        "docs/港股IPO数据源与实时申购信号整改研发方案_20260920.md"
       ],
       "checks": [
         "npm.cmd run check:knowledge"
@@ -1225,9 +1192,7 @@
         "docs/技术架构.md",
         "docs/生产部署流程.md"
       ],
-      "update": [
-        "docs/技术架构.md"
-      ],
+      "update": [],
       "checks": [
         "npm.cmd run check:knowledge"
       ],
@@ -1265,9 +1230,7 @@
         "docs/技术架构.md",
         "docs/生产部署流程.md"
       ],
-      "update": [
-        "docs/技术架构.md"
-      ],
+      "update": [],
       "checks": [
         "npm.cmd run check:knowledge"
       ],
@@ -1305,9 +1268,7 @@
         "docs/技术架构.md",
         "docs/生产部署流程.md"
       ],
-      "update": [
-        "docs/技术架构.md"
-      ],
+      "update": [],
       "checks": [
         "npm.cmd run check:knowledge"
       ],
@@ -1344,9 +1305,7 @@
         "docs/技术架构.md",
         "docs/生产部署流程.md"
       ],
-      "update": [
-        "docs/技术架构.md"
-      ],
+      "update": [],
       "checks": [
         "npm.cmd run check:knowledge"
       ],
@@ -1390,9 +1349,7 @@
           "### 7.1 页面级访问矩阵（ACCESS-01）"
         ]
       },
-      "update": [
-        "docs/技术架构.md"
-      ],
+      "update": [],
       "checks": [
         "npm.cmd run check:knowledge"
       ],
@@ -1422,9 +1379,7 @@
         "docs/技术架构.md",
         "docs/生产部署流程.md"
       ],
-      "update": [
-        "docs/技术架构.md"
-      ],
+      "update": [],
       "checks": [
         "npm.cmd run check:knowledge"
       ],
@@ -1475,11 +1430,10 @@
       "read": [
         "docs/证券分析与通用分享开发方案_20261022.md",
         "docs/技术架构.md",
-        "docs/生产部署流程.md"
+        "docs/生产部署流程.md",
+        "docs/知识索引.md"
       ],
       "update": [
-        "docs/技术架构.md",
-        "docs/知识索引.md",
         "docs/证券分析与通用分享开发方案_20261022.md"
       ],
       "checks": [
@@ -1533,14 +1487,10 @@
       "read": [
         "docs/意见反馈与版本发布闭环研发方案_20261023.md",
         "docs/技术架构.md",
-        "docs/生产部署流程.md"
+        "docs/生产部署流程.md",
+        "docs/知识索引.md"
       ],
-      "update": [
-        "docs/意见反馈与版本发布闭环研发方案_20261023.md",
-        "docs/技术架构.md",
-        "docs/知识索引.md",
-        "docs/生产部署流程.md"
-      ],
+      "update": [],
       "checks": [
         "npm.cmd run check:knowledge"
       ],
@@ -1605,7 +1555,8 @@
       "read": [
         "docs/意见反馈与版本发布闭环研发方案_20261023.md",
         "docs/技术架构.md",
-        "docs/生产部署流程.md"
+        "docs/生产部署流程.md",
+        "docs/知识索引.md"
       ],
       "readSections": {
         "docs/意见反馈与版本发布闭环研发方案_20261023.md": [
@@ -1623,12 +1574,7 @@
           "### 反馈核对与多人 / 多 Agent 发布交接（强制）"
         ]
       },
-      "update": [
-        "docs/意见反馈与版本发布闭环研发方案_20261023.md",
-        "docs/技术架构.md",
-        "docs/知识索引.md",
-        "docs/生产部署流程.md"
-      ],
+      "update": [],
       "checks": [
         "npm.cmd run check:knowledge"
       ],
@@ -1672,10 +1618,7 @@
         "docs/知识库公共规则.md",
         "docs/tasks/README.md"
       ],
-      "update": [
-        "docs/技术架构.md",
-        "docs/生产部署流程.md"
-      ],
+      "update": [],
       "checks": [
         "npm.cmd run check:knowledge"
       ],

@@ -7,8 +7,9 @@ const classifyCode = require('../../public/js/code-classify');
 const NavMath = require('../../public/shared/nav-math');
 const CoreDate = require('../../public/shared/core-date');
 const { loadCashState } = require('../services/accountCash');
-const { resolveEffectivePrices, marketOf, priceKey } = require('../services/effectivePrice');
+const { resolveEffectivePrices, marketOf, priceKey, PRIVATE_SOURCES, codeVariants } = require('../services/effectivePrice');
 const priceRepository = require('../repositories/effectivePriceRepository');
+const { withTransaction } = require('./transaction');
 const { ACCOUNT_SCOPED_TABLES, ACCOUNT_METADATA_TABLE, listAccountScopedTables, findAccountNameLeftovers } = require('./accountScopedTables');
 
 // 按唯一键去重：同 key 只保留最后一条（前序被后序覆盖，与旧版逐条 INSERT 的覆盖语义一致）。
@@ -703,37 +704,95 @@ async function saveDailyPrices(username, accountName, date, prices, options = {}
     : String(date || '').slice(0, 10);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(normalizedDate)) throw new Error('收盘价日期必须是 YYYY-MM-DD');
   // options.client：调用方的受控事务连接（日价与兼容持仓价必须同事务提交）。
-  const runner = options.client || pool;
-  const { rows: aRows } = await runner.query(
-    'SELECT id FROM accounts WHERE username=$1 AND account_name=$2', [username, accountName]
-  );
-  const accountId = aRows[0] ? aRows[0].id : null;
-  const results = [];
-  for (const p of (prices || [])) {
-    if (!p || !p.code) continue;
-    // 证据由服务端产出：来源白名单、是否终盘、质量分级都不接受浏览器自证。
-    const quality = p.quality || options.quality || 'candidate';
-    const isFinal = p.is_final !== undefined ? p.is_final
-      : (p.isFinal !== undefined ? p.isFinal : (options.isFinal === undefined ? null : options.isFinal));
-    const result = await priceRepository.upsertDailyPrice([{
-      username,
-      accountName,
-      accountId,
-      date: normalizedDate,
-      code: p.code,
-      name: p.name || '',
-      price: round(p.price, 4),
-      source: p.source || options.source || null,
-      quoteAt: p.quote_at || p.quoteAt || options.quoteAt || null,
-      isFinal,
-      quality,
-      // 市场必须随行落库：港股 00001 与 A 股 000001 同形，缺市场就会串价。
-      market: p.market || options.market || null,
-      evidence: p.evidence || options.evidence || {},
-    }], runner);
-    results.push({ code: p.code, written: result.rowCount > 0, revision: result.rows[0] ? result.rows[0].revision : null });
-  }
-  return results;
+  // 未传事务连接时也启用短事务，保证并发写确认价能持有同券同日咨询锁并复核已提交价格。
+  return withTransaction(async runner => {
+    const { rows: aRows } = await runner.query(
+      'SELECT id FROM accounts WHERE username=$1 AND account_name=$2', [username, accountName]
+    );
+    const accountId = aRows[0] ? aRows[0].id : null;
+    const prepared = [];
+    const lockKeys = new Map();
+    for (const p of (prices || [])) {
+      if (!p || !p.code) continue;
+      // 证据由服务端产出：来源白名单、是否终盘、质量分级都不接受浏览器自证。
+      const quality = p.quality || options.quality || 'candidate';
+      const isFinal = p.is_final !== undefined ? p.is_final
+        : (p.isFinal !== undefined ? p.isFinal : (options.isFinal === undefined ? null : options.isFinal));
+      const source = p.source || options.source || null;
+      const market = priceRepository.dailyPriceMarket(p.market || options.market || null, p.code);
+      const isSharedConfirmed = quality === 'confirmed' && isFinal === true
+        && !PRIVATE_SOURCES.includes(String(source || '')) && Number(p.price) > 0;
+      const variants = isSharedConfirmed ? codeVariants(p.code, market === 'HK') : null;
+      const hkDigits = isSharedConfirmed && market === 'HK' ? String(p.code).replace(/\D/g, '') : '';
+      const lockCode = isSharedConfirmed
+        ? (market === 'HK' && hkDigits ? hkDigits.replace(/^0+/, '').padStart(5, '0') : String(p.code).trim())
+        : null;
+      if (isSharedConfirmed) {
+        lockKeys.set(`${market}|${lockCode}|${normalizedDate}`, { market, lockCode });
+      }
+      prepared.push({ p, quality, isFinal, source, market, isSharedConfirmed, variants });
+    }
+    // 固定顺序加锁，防止多只证券并发写入交叉等待死锁。
+    for (const key of Array.from(lockKeys.keys()).sort()) {
+      const { market, lockCode } = lockKeys.get(key);
+      await runner.query(
+        'SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))',
+        [`daily_price_confirm:${market}`, `${lockCode}|${normalizedDate}`],
+      );
+    }
+    const results = [];
+    for (const item of prepared) {
+      const { p, quality, isFinal, source, market, isSharedConfirmed, variants } = item;
+      let priceToWrite = round(p.price, 4);
+      let sourceToWrite = source;
+      let quoteAtToWrite = p.quote_at || p.quoteAt || options.quoteAt || null;
+      let evidenceToWrite = p.evidence || options.evidence || {};
+      if (isSharedConfirmed) {
+        const { rows: existingConfirmed } = await runner.query(
+          `SELECT price::float8 AS price, source, quote_at, evidence
+             FROM daily_prices
+            WHERE date = $3 AND market = $4 AND code = ANY($5::text[])
+              AND quality = 'confirmed' AND is_final = true AND price > 0
+              AND COALESCE(source, '') <> ALL($6::text[])
+              AND NOT (username = $1 AND account_name = $2 AND code = $7)
+            ORDER BY quote_at ASC NULLS LAST, revision ASC
+            LIMIT 1`,
+          [username, accountName, normalizedDate, market, variants, PRIVATE_SOURCES, p.code],
+        );
+        if (existingConfirmed.length > 0) {
+          const shared = existingConfirmed[0];
+          priceToWrite = round(shared.price, 4);
+          sourceToWrite = shared.source || source;
+          quoteAtToWrite = shared.quote_at || quoteAtToWrite;
+          const sharedEvidence = shared.evidence && typeof shared.evidence === 'object' ? shared.evidence : {};
+          evidenceToWrite = {
+            ...sharedEvidence,
+            businessDate: normalizedDate,
+            price_adjust: 'none',
+            reusedFromConfirmedClose: true,
+          };
+        }
+      }
+      const result = await priceRepository.upsertDailyPrice([{
+        username,
+        accountName,
+        accountId,
+        date: normalizedDate,
+        code: p.code,
+        name: p.name || '',
+        price: priceToWrite,
+        source: sourceToWrite,
+        quoteAt: quoteAtToWrite,
+        isFinal,
+        quality,
+        // 市场必须随行落库：港股 00001 与 A 股 000001 同形，缺市场就会串价。
+        market,
+        evidence: evidenceToWrite,
+      }], runner);
+      results.push({ code: p.code, written: result.rowCount > 0, revision: result.rows[0] ? result.rows[0].revision : null });
+    }
+    return results;
+  }, { tx: options.client });
 }
 
 // 已确认收盘价的过渡兼容缓存：只回写同账户当前持有证券的兼容持仓价，不作为另一套权威。

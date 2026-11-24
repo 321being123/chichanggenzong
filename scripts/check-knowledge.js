@@ -79,6 +79,32 @@ function loadMap(rootDir, errors) {
   }
 }
 
+function collectEntryDocumentErrors(rootDir) {
+  const errors = [];
+  const entries = ['docs/知识索引.md', 'docs/技术架构.md', 'docs/生产部署流程.md'];
+  const datedNote = /^(?:最后核对(?:日期)?[：:]\s*)?\d{4}-\d{2}-\d{2}/;
+  const receiptStart = /^(?:发布回执|发布前记录|待发布补记|\d+\.\d+\.\d+\.\d+\s+(?:已|未|待)(?:发布|上线|部署))/;
+  const releaseNote = /发布回执|定版|(?:已|未|待)(?:发布|上线|部署)|\d+\.\d+\.\d+\.\d+/;
+  for (const entry of entries) {
+    const filePath = path.join(rootDir, entry);
+    if (!fs.existsSync(filePath)) continue;
+    const lines = fs.readFileSync(filePath, 'utf8').trim().split(/\r?\n/);
+    if (!/^#\s+\S/.test(lines[0])) {
+      errors.push(`${entry} 必须以一级标题开始，历史记录请归档。`);
+      continue;
+    }
+    for (const line of lines.slice(1)) {
+      if (/^##\s/.test(line)) break;
+      const text = line.trim().replace(/^(?:>\s*)?(?:[-*]\s+)?\**/, '');
+      if (receiptStart.test(text) || (datedNote.test(text) && releaseNote.test(text))) {
+        errors.push(`${entry} 的文首含版本流水，请写入发布历史或原任务记录。`);
+        break;
+      }
+    }
+  }
+  return errors;
+}
+
 // ---------- readSections 标题校验（应用分层整改方案 7.1） ----------
 // 逐个验证路由声明的完整 Markdown 标题：忽略代码围栏内示例，
 // 统一空白并把尾部井号规范化，缺失时报 route ID、文件和标题。
@@ -382,6 +408,7 @@ function runCheck({ rootDir = path.resolve(__dirname, '..'), changedFiles = [] }
   errors.push(...collectJobContractErrors(rootDir));
   errors.push(...collectSkillEntryErrors(rootDir));
   errors.push(...collectReadSectionErrors(rootDir, map));
+  errors.push(...collectEntryDocumentErrors(rootDir));
   const files = [...new Set(changedFiles.map(normalize).filter(Boolean))];
   const releaseMetadataOnly = isReleaseMetadataOnly(rootDir, files);
   const matchedRoutes = [];

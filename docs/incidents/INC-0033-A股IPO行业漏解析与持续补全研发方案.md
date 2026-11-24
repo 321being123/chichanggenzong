@@ -506,3 +506,5 @@ v10 修复代码前后格式、代码标签、大类与子类拼接和标准号�
 生产 `0.9.4.26` 复跑 `ipo_history_sync` (`enrichment` 槽 `2741320`) 时，唯一待补对象 `301661`（猎奇智能，申购日 `2026-11-26`）因正式发行公告尚未披露、且招股书未命中 `刊登发行公告日期` 固定句式，被标为 `parse_miss`（`no_industry_pe_value_parsed_from_downloaded_documents`）并持续触发告警。
 
 本次修复（`0.9.4.27`–`0.9.4.28`）：① `ipo_lib_fetch._fetch_exchange_ipo_issuance_detail` 在正式发行/风险公告（不含初步询价）尚未披露且已取得官方来源文档证据时，统一标记 `status='not_disclosed'`、`reason='official_issuance_announcement_not_published'`，不再误报 `parse_miss`；一旦正式发行公告已披露但仍未解析出 `industry_pe`，仍保持 `parse_miss` 告警。② `ipo_history_sync._industry_pe_state` 将深交所官方招股书域名 `reportdocs.static.szse.cn` 纳入 `official_hosts['szse']` 白名单，对带官方证据的 `official_issuance_announcement_not_published` 按次日 `retry_after` 豁免当日告警并次日自动复查（`test_ipo_unit.py` 与 `test_ipo_history_sync.py` 78/78 通过）。
+
+2026-11-24 共用调度定义核对：持仓收盘价任务改点限定于 market_close 内地品种。IPO 行业与行业 PE 的定向任务定义、业务日和数据源继续按本方案。

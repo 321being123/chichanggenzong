@@ -1,8 +1,4 @@
-// 就绪窗口的纯函数（方案 2026-11-18 P0）。
-// 单独成模块的原因：调度侧（jobScheduleSlots）和业务侧（jobs/marketClose）都要算同一个
-// 检查点时刻。两处各写一份必然漂移——尤其"首查前不请求外部终盘"这条：调度按 17:15 唤醒，
-// 但 Runner 若没有同一份换算，15:10 那次仍会去外采 cb_daily/fund_daily。
-// 这里只做时间换算和试点判定，不碰数据库、不碰调度状态。
+// 统一就绪等待的检查点和截止时刻换算。
 
 const READINESS_WAIT_KINDS = Object.freeze(['lock', 'publication', 'dependency']);
 const READINESS_DEFAULT_DELAY_MINUTES = 15;
@@ -38,8 +34,7 @@ function readinessMoment(businessDate, clock) {
   return new Date(Date.UTC(year, month - 1, day, hour - 8, minute, 0));
 }
 
-// 试点判定：只有声明了 readinessCheckpoints 的任务才切换到 waiting_readiness /
-// 才延迟外部终盘取数。未声明即沿用既有契约，避免一次性改动全部链路。
+// 只有声明了 readinessCheckpoints 的任务才切换到 waiting_readiness。
 function isReadinessPilot(definition) {
   return Boolean(definition && Array.isArray(definition.readinessCheckpoints) && definition.readinessCheckpoints.length);
 }
@@ -70,20 +65,9 @@ function readinessBoundaryMoment(slot, definition, field) {
   return readinessMoment(slot && slot.business_date, definition && definition[field]);
 }
 
-// 外部终盘取数是否已开窗：首个检查点之前一律不开窗。
-// 15:10 只做候选预览；到 17:15（基金 17:30）之后才允许请求 cb_daily / fund_daily，
-// 这样"每天前几次必然拿不到终盘"的无效外采和无效失败都被消掉。
-function terminalFetchWindowOpen(definition, businessDate, now = new Date()) {
-  const checkpoints = readinessCheckpoints(definition);
-  if (!checkpoints.length) return true;
-  const first = readinessMoment(businessDate, checkpoints[0]);
-  if (!first || Number.isNaN(first.getTime())) return true;
-  return new Date(now).getTime() >= first.getTime();
-}
-
 module.exports = {
   READINESS_WAIT_KINDS, READINESS_DEFAULT_DELAY_MINUTES,
   shanghaiDateText, normalizeBusinessDate,
   readinessMoment, isReadinessPilot, readinessCheckpoints, nextReadinessCheckpoint,
-  readinessBoundaryMoment, terminalFetchWindowOpen,
+  readinessBoundaryMoment,
 };

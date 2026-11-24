@@ -97,6 +97,52 @@ function testReleaseMetadataDoesNotRequireArchitectureDocs() {
   assert.strictEqual(result.ok, true, result.errors.join('\n'));
 }
 
+function testReviewRoutesDoNotForceUnrelatedDocumentEdits() {
+  const rootDir = createFixture();
+  const map = require('../../governance/knowledge-map.json');
+  write(rootDir, 'governance/knowledge-map.json', JSON.stringify({
+    requiredFiles: [],
+    routes: map.routes.map(({ readSections, ...route }) => route)
+  }));
+  const samples = [
+    ['public/css/stock-analysis.css', 'frontend'],
+    ['server/test/feedback-ui-classroom.test.js', 'feedback'],
+    ['server/test/notification-service.test.js', 'notification-center'],
+    ['deploy/部署说明.md', 'deployment'],
+    ['docs/生产部署历史记录_截至20261124.md', 'knowledge-maintenance'],
+    ['server/test/lib/testRunControl.js', 'test-validation-policy'],
+    ['governance/knowledge-map.json', 'solution-design']
+  ];
+  for (const [file, routeId] of samples) {
+    const result = runCheck({ rootDir, changedFiles: [file] });
+    assert.ok(result.matchedRoutes.some(({ id }) => id === routeId), file);
+    assert.strictEqual(result.ok, true, result.errors.join('\n'));
+  }
+  const taskChange = runCheck({ rootDir, changedFiles: ['server/services/jobDefinitions.js'] });
+  assert.match(taskChange.errors.join('\n'), /task-quality-governance.*ADR-0003/);
+}
+
+function testEntryDocumentsRejectReleaseLogsInIntroduction() {
+  const rootDir = createFixture();
+  write(rootDir, 'docs/知识索引.md', '> 2026-11-24 已发布\n\n# 知识索引\n');
+  write(rootDir, 'docs/技术架构.md', '# 技术架构\n\n> 最后核对日期：2026-11-24（**0.9.5.5 已发布**）\n');
+  write(rootDir, 'docs/生产部署流程.md', '# 生产部署\n\n> **发布回执（0.9.5.5）**\n');
+  const result = runCheck({ rootDir, changedFiles: [] });
+  assert.deepStrictEqual(result.errors, [
+    'docs/知识索引.md 必须以一级标题开始，历史记录请归档。',
+    'docs/技术架构.md 的文首含版本流水，请写入发布历史或原任务记录。',
+    'docs/生产部署流程.md 的文首含版本流水，请写入发布历史或原任务记录。'
+  ]);
+}
+
+function testEntryDocumentsAllowDateAndEvidenceLinks() {
+  const rootDir = createFixture();
+  write(rootDir, 'docs/技术架构.md', '# 技术架构\n\n> 最后核对日期：2026-11-24。历史记录见原文。\n');
+  write(rootDir, 'docs/知识索引.md', '# 知识索引\n\n> 参阅发布历史。\n\n## 当前摘要\n\n0.9.5.5 已发布，详情见回执。\n');
+  const result = runCheck({ rootDir, changedFiles: [] });
+  assert.strictEqual(result.ok, true, result.errors.join('\n'));
+}
+
 testArchitectureChangeNeedsDocumentation();
 testArchitectureChangePassesWithDocumentation();
 testMissingRequiredKnowledgeEntryFails();
@@ -106,4 +152,7 @@ testDefaultWorktreeCollectionIncludesUntrackedBusinessFiles();
 testTrackedPreCommitHookChecksStagedKnowledgeChanges();
 testVersionMismatchIsRejected();
 testReleaseMetadataDoesNotRequireArchitectureDocs();
-console.log('knowledge-governance: 9 项检查，失败 0');
+testReviewRoutesDoNotForceUnrelatedDocumentEdits();
+testEntryDocumentsRejectReleaseLogsInIntroduction();
+testEntryDocumentsAllowDateAndEvidenceLinks();
+console.log('knowledge-governance: 12 项检查，失败 0');

@@ -11,7 +11,7 @@ function stockAnalysisStatementFilters() {
 
 async function stockAnalysisSetStatementFilter(name, value) {
   var filters = stockStatementState.filters || (stockStatementState.filters = { periodType:'all', compare:'yoy', scope:'consolidated', limit:10 });
-  if (name === 'periodType' && ['all','annual','semiannual','q1','q3','unknown'].indexOf(value) < 0) value = 'all';
+  if (name === 'periodType' && ['all','annual','semiannual','quarter','q1','q3','unknown'].indexOf(value) < 0) value = 'all';
   if (name === 'compare' && ['yoy','qoq','none'].indexOf(value) < 0) value = 'yoy';
   if (name === 'limit' && [5,10,20,'5','10','20'].indexOf(value) < 0) value = 10;
   if (name === 'scope' && value == null) value = 'consolidated';
@@ -63,6 +63,11 @@ async function stockAnalysisLoadStatements(type) {
     var payload = response.payload;
     if (requestToken !== stockStatementState.requestToken || selectToken !== stockAnalysisState.selectToken) return;
     if (!response.ok) throw new Error(payload.error || '三表读取失败');
+    var availablePeriods = payload && payload.available_filters && payload.available_filters.period_types;
+    if (filters.periodType === 'unknown' && Array.isArray(availablePeriods) && availablePeriods.indexOf('unknown') < 0) {
+      filters.periodType = 'all';
+      return stockAnalysisLoadStatements(type);
+    }
     stockStatementState.cache[key] = payload;
     stockAnalysisRenderStatements(payload);
   } catch (error) {

@@ -12,6 +12,20 @@ async function select_daily_prices(params, client = pool) {
   );
 }
 
+// 同一市场、证券与交易日只要已有任一账户写入“已确认终盘价”，后续账户/分批重试必须复用该价格，
+// 避免不同批次拿到不同实时报价而写入两个确认价，导致总资产/净值因跨账户价格冲突失败。
+async function select_confirmed_daily_prices(params, client = pool) {
+  return client.query(
+    `SELECT code, market, price::float8 AS price, name, source, quote_at, evidence
+       FROM daily_prices
+      WHERE date = $1 AND market = $2
+        AND quality = 'confirmed' AND is_final = true AND price > 0
+        AND COALESCE(source, '') <> ALL($3::text[])
+      ORDER BY quote_at ASC NULLS LAST, revision ASC`,
+    params
+  );
+}
+
 // 已发布的共享日线（market.daily_bars）：终盘核验先读这里，命中就不再外采。
 // 只按「证券 + 日期 + 来源名」取行是不够的：同一张表里既有可转债同步写入的腾讯实时报价，
 // 也有全市场日线，光看来源名无法区分。这里把行级证据（口径/终盘/质量）与
@@ -126,7 +140,7 @@ async function select_position_close_partition(params, client = pool) {
 }
 
 async function select_positions(params, client = pool) {
-  return client.query(`SELECT code FROM positions WHERE code IS NOT NULL AND code <> ''`);
+  return client.query(`SELECT code, subtype FROM positions WHERE code IS NOT NULL AND code <> ''`);
 }
 
 async function select_accounts(params, client = pool) {
@@ -230,6 +244,7 @@ async function count_terminal_daily_bars(params, client = pool) {
 
 module.exports = {
   select_daily_prices,
+  select_confirmed_daily_prices,
   select_published_daily_bar,
   upsert_daily_bar_evidence,
   count_position_close_bars, count_close_bar_coverage, select_position_close_partition,

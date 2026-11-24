@@ -75,7 +75,7 @@ assert.ok(statementsPresenter.includes('stockAnalysisState.selected !== code'), 
   assert.match(statusHelp.textContent, /比较口径尚未核实/);
   view.stockAnalysisRenderStatements({ name: '资产负债表', type: 'balance', compare: 'yoy',
     periods: [{ end_date: '2025-12-31' }, { end_date: '2024-12-31' }], fields: [{ label: '资产', section: '资产', values: [
-      { value: null, status: 'source_not_disclosed', reason: 'source_not_disclosed', comparison_status: 'not_applicable', comparison_reason: 'comparison_method_unverified' },
+      { value: null, status: 'source_unavailable', reason: 'source_currency_unverified', comparison_status: 'not_applicable', comparison_reason: 'comparison_method_unverified' },
       { value: null, status: 'collection_incomplete', reason: 'collection_incomplete', comparison_status: 'not_applicable', comparison_reason: 'comparison_method_unverified' }
     ] }] });
   const multiPeriodHelp = dom.window.document.querySelector('details.statement-status-help').textContent;
@@ -85,7 +85,7 @@ assert.ok(statementsPresenter.includes('stockAnalysisState.selected !== code'), 
   view.stockAnalysisRenderStatements({ name: '资产负债表', type: 'balance', compare: 'none',
     periods: [{ end_date: '2025-12-31', scope: 'consolidated' }, { end_date: '2025-12-31', scope: 'parent' }],
     fields: [{ label: '资产', section: '资产', values: [
-      { value: null, status: 'source_not_disclosed', reason: 'source_not_disclosed' },
+      { value: null, status: 'source_unavailable', reason: 'source_currency_unverified' },
       { value: null, status: 'collection_incomplete', reason: 'collection_incomplete' }
     ] }] });
   const sameDateHelp = dom.window.document.querySelector('details.statement-status-help').textContent;
@@ -255,6 +255,54 @@ assert.ok(statementsPresenter.includes('stockAnalysisState.selected !== code'), 
   dom.window.close();
 }
 {
+  const dom = new JSDOM('<select id="stock-analysis-statement-period"></select><div id="stock-analysis-statements-title"></div><div id="stock-analysis-statements-meta"></div><div id="stock-analysis-statements-message"></div><div id="stock-analysis-statements-wrap"></div>');
+  const view = { document: dom.window.document, window: dom.window,
+    escapeHtml: value => String(value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;'),
+    stockAnalysisNumber: value => String(value), stockAnalysisPercent: value => String(value),
+    stockAnalysisStatementFilters: () => ({ periodType: 'all', scope: 'consolidated' }),
+    BusinessTable: { attach() {} } };
+  vm.runInNewContext(statementsScript, view);
+  view.stockAnalysisRenderStatements({
+    name: '资产负债表', type: 'balance', compare: 'yoy', unit_label: '原值',
+    available_filters: { period_types: ['annual', 'semiannual', 'q1', 'q3'], scopes: ['consolidated'] },
+    periods: [
+      { end_date: '2026-09-30', report_type_label: 'third_quarterly_report', scope: 'consolidated', currency: 'CNY' },
+    ],
+    fields: [{ label: '资产总计', section: '资产', values: [
+      { value: 5021, status: 'available', change: null, comparison_status: 'insufficient_history', comparison_reason: 'comparable_period_missing' },
+    ] }],
+  });
+  const periodOptions = [...dom.window.document.querySelectorAll('#stock-analysis-statement-period option')].map(o => o.textContent);
+  assert.deepStrictEqual(periodOptions, ['全部', '年报', '半年报', '季报'], '无未知期时报告期下拉只保留全部/年报/半年报/季报');
+  const headerText = dom.window.document.querySelector('thead th.statement-period').textContent;
+  assert.ok(headerText.includes('三季报') && !headerText.includes('third_quarterly_report'), '列头应将英文报告期映射为中文');
+  assert.ok(!headerText.includes('报表类型待确认'), '不应在每列拼接刺眼的报表类型待确认');
+  assert.strictEqual(dom.window.document.querySelector('details.statement-status-help'), null, '仅缺少历史比较期时不在类目标题后渲染感叹号');
+  // A-06: 来源正常未披露在默认同比下仍不触发行内感叹号；采集不完整说明必须使用中文报告期；当前选中 unknown 且新数据无 unknown 时必须移除并回退 all
+  view.stockAnalysisStatementFilters = () => ({ periodType: 'unknown', scope: 'consolidated' });
+  view.stockAnalysisRenderStatements({
+    name: '资产负债表', type: 'balance', compare: 'yoy', unit_label: '原值',
+    available_filters: { period_types: ['annual', 'semiannual', 'q3'], scopes: ['consolidated'] },
+    periods: [
+      { end_date: '2026-09-30', report_type_label: 'third_quarterly_report', scope: 'consolidated', currency: 'CNY' },
+    ],
+    fields: [
+      { label: '应收票据', section: '资产', values: [{ value: null, status: 'source_not_disclosed', reason: 'source_not_disclosed', comparison_status: 'source_not_disclosed', comparison_reason: 'source_not_disclosed' }] },
+      { label: '商誉', section: '资产', values: [{ value: null, status: 'collection_incomplete', reason: 'source_batch_incomplete', comparison_status: 'collection_incomplete', comparison_reason: 'source_batch_incomplete' }] },
+    ],
+  });
+  assert.deepStrictEqual(
+    [...dom.window.document.querySelectorAll('#stock-analysis-statement-period option')].map(o => o.value),
+    ['all', 'annual', 'semiannual', 'quarter'],
+    '新数据不含未知期时即使原选中 unknown 也应移除该选项'
+  );
+  assert.strictEqual(dom.window.document.getElementById('stock-analysis-statement-period').value, 'all');
+  const helpNodes = dom.window.document.querySelectorAll('details.statement-status-help');
+  assert.strictEqual(helpNodes.length, 1, '仅采集不完整行保留感叹号，来源正常未披露不触发感叹号');
+  assert.ok(helpNodes[0].textContent.includes('三季报') && !helpNodes[0].textContent.includes('third_quarterly_report'), '行内说明不得出现英文报告期');
+  dom.window.close();
+}
+{
   const dom = new JSDOM('<select id="stock-analysis-statement-scope"></select>');
   const view = { document: dom.window.document, window: dom.window,
     escapeHtml: value => String(value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;'),
@@ -349,4 +397,33 @@ assert.ok(script.includes('analysis-help-tooltip app-tooltip') && chartScript.in
 assert.ok(utilsScript.includes('function appChartTooltip(') && holdingsCharts.split('appChartTooltip(').length - 1 >= 4,
   '持仓管理图表提示未使用统一主题');
 
-console.log('stock-analysis frontend tests passed');
+(async () => {
+  // A-06: 当筛选处于 unknown 且切换到无未知期的股票时，Presenter 必须自动回退 all 并重取
+  const calls = [];
+  let rendered = null;
+  const pCtx = {
+    stockAnalysisState: { selected: '600519.SH', selectToken: 1, data: { display: { statement_analysis_versions: { balance: 'v1' } } } },
+    stockAnalysisApi: {
+      getStatements: async (code, type, version, filters) => {
+        calls.push(filters.periodType);
+        if (filters.periodType === 'unknown') {
+          return { ok: true, status: 200, payload: { analysis_version: 'v1', periods: [], available_filters: { period_types: ['annual', 'semiannual'] } } };
+        }
+        return { ok: true, status: 200, payload: { analysis_version: 'v1', periods: [{ end_date: '2025-12-31' }], available_filters: { period_types: ['annual', 'semiannual'] } } };
+      },
+    },
+    stockAnalysisShowStatementsLoading: () => {},
+    stockAnalysisRenderStatements: (payload) => { rendered = payload; },
+    stockAnalysisShowStatementsError: (err) => { throw err; },
+  };
+  vm.runInNewContext(statementsPresenter, pCtx);
+  pCtx.stockStatementState.filters.periodType = 'unknown';
+  await pCtx.stockAnalysisLoadStatements('balance');
+  assert.deepStrictEqual(calls, ['unknown', 'all'], '无未知期时 Presenter 应自动回退到 all 重新取数');
+  assert.strictEqual(pCtx.stockStatementState.filters.periodType, 'all');
+  assert.strictEqual(rendered.periods.length, 1);
+  console.log('stock-analysis frontend tests passed');
+})().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});

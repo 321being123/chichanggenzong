@@ -182,14 +182,20 @@ check('msUntil 落点固定为北京时间 h:m（不受主机时区影响）', (
   }
 });
 
-console.log('C. 收盘确认准入 —— 报价必须是当日且不早于收市时刻');
+console.log('C. 收盘确认准入 —— 报价必须是当日且严格晚于收市时刻');
 const closedCN = { status: 'open', isAfterMarketClose: true, closeTime: '15:00' };
 const quoteAt = (date, time) => `${date}T${time}:00+08:00`;
-check('已收盘 + 收盘后报价 -> 已确认终盘', () => {
-  const q = mc.qualifyCloseQuote(closedCN, quoteAt('2026-09-24', '15:00'), '2026-09-24', '15:00');
-  assert.strictEqual(q.quality, 'confirmed');
-  assert.strictEqual(q.isFinal, true);
-  assert.strictEqual(q.reason, null);
+check('已收盘 + 同日腾讯报价严格晚于收市秒级边界 -> 已确认终盘', () => {
+  const row = { code: '160719', price: 1.6, quote_time: '2026-09-24T15:00:01+08:00' };
+  const record = mc.buildCloseRecord({ row, market: 'CN', label: 'LOF/ETF', state: closedCN, cnDate: '2026-09-24' });
+  assert.strictEqual(record.quality, 'confirmed');
+  assert.strictEqual(record.is_final, true);
+  assert.strictEqual(record.price, 1.6);
+  assert.strictEqual(record.quote_at, row.quote_time);
+  assert.strictEqual(record.evidence.priceBasis, 'tencent_post_close_quote');
+  assert.strictEqual(mc.qualifyCloseQuote(closedCN, quoteAt('2026-09-24', '15:00'), '2026-09-24', '15:00').quality, 'candidate');
+  assert.strictEqual(mc.qualifyCloseQuote({ ...closedCN, closeTime: '12:10' },
+    '2026-09-24T12:10:01+08:00', '2026-09-24', '12:10').quality, 'confirmed');
 });
 check('已收盘但拿到当天上午报价 -> 只能候选，不得写成终盘', () => {
   const q = mc.qualifyCloseQuote(closedCN, quoteAt('2026-09-24', '10:05'), '2026-09-24', '15:00');
@@ -212,6 +218,18 @@ check('市场未过收市时刻 -> 不能确认为终盘', () => {
     quoteAt('2026-09-24', '15:00'), '2026-09-24', '15:00');
   assert.strictEqual(q.quality, 'candidate');
   assert.strictEqual(q.reason, 'market_not_closed');
+});
+check('报价晚于本次取价/运行时刻 -> 只能候选，不得写成终盘', () => {
+  const runAt = '2026-11-24T16:56:00+08:00';
+  const futureQuote = '2026-11-24T23:59:59+08:00';
+  const q = mc.qualifyCloseQuote(closedCN, futureQuote, '2026-11-24', '15:00', runAt);
+  assert.strictEqual(q.quality, 'candidate');
+  assert.strictEqual(q.isFinal, null);
+  assert.strictEqual(q.reason, 'quote_in_future');
+  assert.strictEqual(mc.quoteNeedsCloseRefresh({ price: 12.5, quote_time: futureQuote }, closedCN, '2026-11-24', runAt), true);
+  const valid = mc.qualifyCloseQuote(closedCN, '2026-11-24T15:05:00+08:00', '2026-11-24', '15:00', runAt);
+  assert.strictEqual(valid.quality, 'confirmed');
+  assert.strictEqual(valid.isFinal, true);
 });
 check('补漏缺口按身份判定：同形证券不得互相顶替', () => {
   // 与 MARKET_CLOSE_TIMES 一致的规则形状：A 股要求 6 位及以上，港股按 5 位
@@ -321,7 +339,7 @@ check('候选未确认/历史待授权 -> 不给净值续跑', () => {
     result: { recorded: 2, pendingConfirmation: 1, sharedBarPublication: 'complete', barPartitionStatus: 'published' },
   });
   assert.strictEqual(pending.ok, false);
-  assert.strictEqual(pending.errorType, 'pending_confirmation');
+  assert.strictEqual(pending.errorType, 'close_quote_not_ready');
   assert.strictEqual(pending.pricesRecorded, false, '价格尚未确认时不能让净值按候选价继续');
   const blocked = mc.resolveCloseJobOutcome({
     label: 'A股', dateStr: '2026-11-14',

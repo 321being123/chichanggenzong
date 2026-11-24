@@ -61,22 +61,34 @@ function sameIdentity(current, prior) {
     && restatementValid);
 }
 
+function flowPeriodStartOf(row) {
+  if (!row) return '';
+  const cov = parseCoverage(row.statement_coverage);
+  return dateKey(row.period_start || row.start_date || (cov && cov.period_start));
+}
+
+function hasSingleFlowPeriodBasis(row, market) {
+  if (!row) return false;
+  if (!KNOWN_PERIOD_TYPES.has(String(row.period_type || ''))) return false;
+  if (!VERIFIED_FLOW_SOURCES.has(String(row.source_code || ''))) return false;
+  const cov = parseCoverage(row.statement_coverage);
+  if (cov && cov.complete === false) return false;
+  const start = flowPeriodStartOf(row);
+  if (start && !/^\d{4}-\d{2}-\d{2}$/.test(start)) return false;
+  const isNaturalYearCas = String(market || '').toUpperCase() === 'CN'
+    && String(row.accounting_standard || '').toUpperCase() === 'CAS';
+  if (!isNaturalYearCas && !start) return false;
+  return true;
+}
+
 function hasFlowPeriodBasis(current, prior, market) {
-  if (!current || !prior) return false;
-  if (!KNOWN_PERIOD_TYPES.has(String(current.period_type || '')) || String(current.period_type) !== String(prior.period_type)) {
+  if (!hasSingleFlowPeriodBasis(current, market) || !hasSingleFlowPeriodBasis(prior, market)) {
     return false;
   }
-  if (!VERIFIED_FLOW_SOURCES.has(String(current.source_code || '')) || String(current.source_code || '') !== String(prior.source_code || '')) {
-    return false;
-  }
-  const currentCov = parseCoverage(current.statement_coverage);
-  const priorCov = parseCoverage(prior.statement_coverage);
-  if ((currentCov && currentCov.complete === false) || (priorCov && priorCov.complete === false)) {
-    return false;
-  }
-  // 若任一方提供了显式累计起始日（period_start/start_date），双方都必须有且月日相同、年份差 1。
-  const curStart = dateKey(current.period_start || current.start_date || (currentCov && currentCov.period_start));
-  const priorStart = dateKey(prior.period_start || prior.start_date || (priorCov && priorCov.period_start));
+  if (String(current.period_type) !== String(prior.period_type)) return false;
+  if (String(current.source_code || '') !== String(prior.source_code || '')) return false;
+  const curStart = flowPeriodStartOf(current);
+  const priorStart = flowPeriodStartOf(prior);
   if (curStart || priorStart) {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(curStart) || !/^\d{4}-\d{2}-\d{2}$/.test(priorStart)) return false;
     if (curStart.slice(5) !== priorStart.slice(5) || Number(curStart.slice(0, 4)) - Number(priorStart.slice(0, 4)) !== 1) {
@@ -86,14 +98,7 @@ function hasFlowPeriodBasis(current, prior, market) {
   const hasCurFy = current.fiscal_year != null && current.fiscal_year !== '';
   const hasPriorFy = prior.fiscal_year != null && prior.fiscal_year !== '';
   if (hasCurFy !== hasPriorFy) return false;
-  if (hasCurFy) {
-    if (Number(current.fiscal_year) - Number(prior.fiscal_year) !== 1) return false;
-  } else {
-    // 无财年证据时，仅 A 股法定自然年 CAS 报表具有确定的累计起始日（1月1日）；港股等非自然年市场不得直接算同比。
-    const isNaturalYearCas = String(market || '').toUpperCase() === 'CN'
-      && String(current.accounting_standard || '').toUpperCase() === 'CAS';
-    if (!isNaturalYearCas) return false;
-  }
+  if (hasCurFy && Number(current.fiscal_year) - Number(prior.fiscal_year) !== 1) return false;
   return true;
 }
 
@@ -139,7 +144,7 @@ function comparisonOf({ rows, comparisonRows, index, metricCode, rawValue, state
       && sameIdentity(current, row) && isPreviousQuarter(current, row));
   if (compare === 'yoy' && statement !== 'balance') {
     if (!prior) {
-      return hasFlowPeriodBasis(current, current, market)
+      return hasSingleFlowPeriodBasis(current, market)
         ? { value: null, status: contract.FIELD_STATUS.INSUFFICIENT_HISTORY, reason: 'comparable_period_missing' }
         : { value: null, status: contract.FIELD_STATUS.NOT_APPLICABLE, reason: 'flow_period_basis_unverified' };
     }
@@ -172,7 +177,7 @@ function valueStatus(raw, coverage, code, sourceCode) {
 }
 
 function reportDigestOf(rows) {
-  return rows.map(row => `${row.report_id}:${row.source_version || ''}:${row.period_end || ''}:${row.period_type || ''}:${row.statement_revision || ''}`).join(',');
+  return rows.map(row => `${row.report_id}:${row.source_version || ''}:${row.period_end || ''}:${row.period_type || ''}:${row.period_start || ''}:${row.statement_revision || ''}`).join(',');
 }
 
 function statementAnalysisVersionOf({

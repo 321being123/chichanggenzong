@@ -337,6 +337,26 @@ const flowMismatchFy = buildStatementPayload({ market: 'HK', type: 'cashflow', c
     row({ report_id: 1, period_end: '2024-06-30', fiscal_year: null, source_code: 'lixinger_official', update_flag: null, cfs_ncffoa: 2 }),
   ] });
 assert.strictEqual(field(flowMismatchFy, 'cfs.ncffoa').values[0].comparison_reason, 'flow_period_basis_unverified', '财年证据缺失时流量表不得计算同比');
+// A-02: 港股仅有连续财年编号但缺少 period_start 期间证据时，不得计算同比；补齐一致 period_start 后正常可比
+const hkFlowOnlyFy = buildStatementPayload({ market: 'HK', type: 'income', canonicalCode: '00001.HK', options: { compare: 'yoy' },
+  rows: [
+    row({ report_id: 2, period_end: '2025-06-30', fiscal_year: '2025', period_start: null, source_code: 'lixinger_official', update_flag: null, ps_tp: 3 }),
+    row({ report_id: 1, period_end: '2024-06-30', fiscal_year: '2024', period_start: null, source_code: 'lixinger_official', update_flag: null, ps_tp: 2 }),
+  ] });
+assert.strictEqual(field(hkFlowOnlyFy, 'ps.tp').values[0].comparison_reason, 'flow_period_basis_unverified', '港股缺少 period_start 时仅凭连续财年不得算同比');
+const hkFlowValid = buildStatementPayload({ market: 'HK', type: 'cashflow', canonicalCode: '00001.HK', options: { compare: 'yoy' },
+  rows: [
+    row({ report_id: 2, period_end: '2025-06-30', period_start: '2025-01-01', fiscal_year: '2025', source_code: 'lixinger_official', update_flag: null, cfs_ncffoa: 3 }),
+    row({ report_id: 1, period_end: '2024-06-30', period_start: '2024-01-01', fiscal_year: '2024', source_code: 'lixinger_official', update_flag: null, cfs_ncffoa: 2 }),
+  ] });
+assert.strictEqual(field(hkFlowValid, 'cfs.ncffoa').values[0].yoy, 0.5, '港股具备连续财年与一致 period_start 时可算同比');
+// A-06: 当前累计报告有效但缺少上年同期时，应返回 insufficient_history / comparable_period_missing（而非期间口径待核实）
+const singleValidFlow = buildStatementPayload({ market: 'CN', type: 'income', canonicalCode: '600000.SH', options: { compare: 'yoy' },
+  rows: [
+    row({ report_id: 2, period_end: '2025-06-30', period_start: '2025-01-01', fiscal_year: '2025', currency_code: 'CNY', accounting_standard: 'CAS', source_code: 'lixinger_official', update_flag: null, ps_tp: 3 }),
+  ] });
+assert.strictEqual(field(singleValidFlow, 'ps.tp').values[0].comparison_status, 'insufficient_history');
+assert.strictEqual(field(singleValidFlow, 'ps.tp').values[0].comparison_reason, 'comparable_period_missing');
 
 (async () => {
   let legacySql = '';

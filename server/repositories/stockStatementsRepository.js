@@ -142,6 +142,7 @@ async function listStatementRows({ tsCode, market = 'CN', type = 'balance', limi
        r.report_type,r.comp_type,r.update_flag,r.statement_scope,r.available_at,
        r.raw_payload->>'report_period_label' AS report_type_label,
        r.raw_payload->>'fiscal_year' AS fiscal_year,
+       COALESCE(NULLIF(r.raw_payload->>'period_start',''), NULLIF(r.raw_payload->>'start_date',''), NULLIF(r.raw_payload->'__statement_coverage'->>'period_start','')) AS period_start,
        r.raw_payload->'__statement_coverage' AS statement_coverage,
        c.raw_data->>'industry' AS industry,
        ${selectedMetrics}

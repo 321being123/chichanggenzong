@@ -1,0 +1,13 @@
+services:
+  weekly-backup:
+    build: .
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /run
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      - ${PORTFOLIO_NAS_BACKUP_DIR:?Set the dedicated backup directory}:/backup
+      - ${PORTFOLIO_NAS_SSH_DIR:?Set the dedicated SSH directory}:/backup-ssh:ro

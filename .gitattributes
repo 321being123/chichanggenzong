@@ -1,1 +1,3 @@
 public/vendor/dompurify.min.js -text
+deploy/portfolio-backup-export.sh text eol=lf
+deploy/nas-backup/* text eol=lf

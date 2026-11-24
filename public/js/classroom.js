@@ -1220,7 +1220,7 @@
       const summary = document.createElement('div');
       summary.className = 'notice-banner';
       const backfillInfo = res.autoBackfill && res.autoBackfill.attemptedCodes && res.autoBackfill.attemptedCodes.length
-        ? (' ｜ 已自动补全 ' + res.autoBackfill.attemptedCodes.length + ' 只标的（日线 ' + res.autoBackfill.filledBars + ' / 估值 ' + res.autoBackfill.filledValuations + '）')
+        ? (' ｜ 已自动补全 ' + res.autoBackfill.attemptedCodes.length + ' 只标的（日线 ' + res.autoBackfill.filledBars + ' / 估值 ' + res.autoBackfill.filledValuations + ' / 停牌 ' + (res.autoBackfill.filledSuspensions || 0) + '）')
         : '';
       summary.textContent = (res.pass ? '预检通过：可用于创建真实场次。' : ('预检未通过：' + (res.blockers || []).join('；'))) +
         backfillInfo +

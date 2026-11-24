@@ -20,12 +20,14 @@ async function readTradingCalendar({ exchange = 'SSE', startDate, endDate, openO
   return tsRows(data).map(row => ({ ...row, source_code: 'tushare' }));
 }
 
-// 停牌：区间内的停牌事实（停牌日是强赎/下修计算的共同输入）。
-async function readSuspensions({ startDate, endDate, fields = 'ts_code,trade_date,suspend_type,suspend_reason' } = {}) {
-  const data = await tushareQuery('suspend_d', {
+// 停牌：区间内的停牌事实（停牌日是强赎/下修计算的共同输入；支持可选 tsCode 按单只标的查询）。
+async function readSuspensions({ tsCode = null, startDate, endDate, fields = 'ts_code,trade_date,suspend_type,suspend_reason' } = {}) {
+  const params = {
     start_date: String(startDate).replace(/-/g, ''),
     end_date: String(endDate).replace(/-/g, ''),
-  }, fields, { allowEmpty: true });
+  };
+  if (tsCode) params.ts_code = tsCode;
+  const data = await tushareQuery('suspend_d', params, fields, { allowEmpty: true });
   return tsRows(data).map(row => ({ ...row, source_code: 'tushare' }));
 }
 

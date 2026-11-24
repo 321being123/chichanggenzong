@@ -2,7 +2,9 @@
 
 const repo = require('../repositories/classroomRepository');
 const stockProjection = require('../repositories/stockProjectionRepository');
+const suspensionRepo = require('../repositories/convertibleBondSuspensionSyncRepository');
 const marketDatasets = require('../dataAccess/marketDatasets');
+const referenceDatasets = require('../dataAccess/referenceDatasets');
 const { marketMultiple } = require('../domain/stockFacts');
 
 /**
@@ -233,6 +235,7 @@ async function runRealPrecheck({ industries, startYear = 2011, totalRounds = 15 
   }
   const suspMap = new Map();
   for (const s of suspensions) {
+    if (s.suspend_type && s.suspend_type !== 'S') continue;
     const key = String(s.instrument_id);
     if (!suspMap.has(key)) suspMap.set(key, new Set());
     suspMap.get(key).add(s.trade_date);
@@ -492,7 +495,9 @@ async function ensureRealClassroomDataAndPrecheck({
   const startCutoff = `${startYear}-01-10`;
 
   const ds = deps.marketDatasets || marketDatasets;
+  const refDs = deps.referenceDatasets || referenceDatasets;
   const proj = deps.stockProjection || stockProjection;
+  const suspRepository = deps.suspensionRepo || suspensionRepo;
   const crRepo = deps.repo || repo;
 
   const redCodes = [...new Set(redReports.map((r) => r.canonicalCode))];
@@ -510,6 +515,18 @@ async function ensureRealClassroomDataAndPrecheck({
   let filledBars = 0;
   let filledFactors = 0;
   let filledValuations = 0;
+  let filledSuspensions = 0;
+
+  async function fetchSuspensionsInChunks(tsCode) {
+    const all = [];
+    for (let y = startYear - 1; y <= endYear; y += 5) {
+      const segStart = `${y}-01-01`;
+      const segEnd = `${Math.min(endYear, y + 4)}-12-31`;
+      const rows = await refDs.readSuspensions({ tsCode, startDate: segStart, endDate: segEnd });
+      if (Array.isArray(rows) && rows.length) all.push(...rows);
+    }
+    return all;
+  }
 
   for (const code of redCodes) {
     const inst = instByCode.get(code);
@@ -524,10 +541,14 @@ async function ensureRealClassroomDataAndPrecheck({
 
     attemptedCodes.push(code);
     try {
-      const [dailyRows, factorRows, valRows] = await Promise.all([
+      const [dailyRows, factorRows, valRows, suspRows] = await Promise.all([
         ds.readStockDailySeries({ tsCode: code, startDate, endDate, market: 'cn' }),
         ds.readAdjustmentFactorSeries({ tsCode: code, startDate, endDate }),
         ds.readStockValuationHistory({ tsCode: code, startDate, endDate }),
+        fetchSuspensionsInChunks(code).catch((err) => {
+          errors.push({ code, message: `停牌日历补全失败：${err && err.message ? err.message : String(err)}` });
+          return [];
+        }),
       ]);
 
       await crRepo.withTransaction(async (client) => {
@@ -568,6 +589,28 @@ async function ensureRealClassroomDataAndPrecheck({
           }, client);
           filledValuations++;
         }
+        const suspMapByDate = new Map();
+        for (const r of suspRows || []) {
+          const td = formatIsoTradeDate(r.trade_date);
+          if (!td) continue;
+          const prev = suspMapByDate.get(td);
+          const nextType = String(r.suspend_type || 'S').trim().toUpperCase();
+          // 同日同时有复牌(R)与停牌(S)记录时，保留停牌(S)证据
+          if (!prev || nextType === 'S') {
+            suspMapByDate.set(td, {
+              instrument_id: inst.instrument_id,
+              trade_date: td,
+              suspend_type: nextType,
+              suspend_reason: r.suspend_reason || '',
+              raw_payload: r,
+            });
+          }
+        }
+        const suspBatch = Array.from(suspMapByDate.values());
+        if (suspBatch.length && sources.tushare) {
+          await suspRepository.insert_market_stock_suspend_calendar([JSON.stringify(suspBatch), sources.tushare], client);
+          filledSuspensions += suspBatch.length;
+        }
       });
     } catch (err) {
       errors.push({ code, message: err && err.message ? err.message : String(err) });
@@ -580,10 +623,11 @@ async function ensureRealClassroomDataAndPrecheck({
     filledBars,
     filledFactors,
     filledValuations,
+    filledSuspensions,
     errors,
   };
 
-  if (filledBars === 0 && filledFactors === 0 && filledValuations === 0) {
+  if (filledBars === 0 && filledFactors === 0 && filledValuations === 0 && filledSuspensions === 0) {
     return { ...initial, autoBackfill: autoBackfillSummary };
   }
 

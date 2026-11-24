@@ -561,10 +561,58 @@ async function run() {
       startYear: 2011,
       totalRounds: 15,
       autoBackfill: true,
-      deps: { marketDatasets: mockDs },
+      deps: {
+        marketDatasets: mockDs,
+        referenceDatasets: { async readSuspensions() { return []; } },
+      },
     });
     assert.strictEqual(autoPre.pass, true, '自动补全后预检应转为通过');
     assert.ok(autoPre.autoBackfill && autoPre.autoBackfill.attemptedCodes.includes('600028.SH'), '应记录自动补数的标的代码');
+
+    // 停牌日历缺失场景：2011-12-30 无行情且前一个交易日 2011-12-29 有行情，缺停牌日历时阻断，补齐 suspend_d 后转为黄牌通过
+    await pool.query(
+      `INSERT INTO market.trade_calendar (exchange, trade_date, is_open, source_code)
+       VALUES ('SSE', '2011-12-29'::date, TRUE, 'test') ON CONFLICT DO NOTHING`
+    );
+    await pool.query(
+      `INSERT INTO market.daily_bars (instrument_id, trade_date, source_id, close, price_adjust, bar_status, quality_status)
+       SELECT instrument_id, '2011-12-29'::date, 1, 8.9, 'none', 'terminal', 'passed' FROM core.instruments WHERE canonical_code = '600028.SH'
+       ON CONFLICT DO NOTHING`
+    );
+    await pool.query(
+      `INSERT INTO market.adjustment_factors (instrument_id, trade_date, source_id, adj_factor)
+       SELECT instrument_id, '2011-12-29'::date, 1, 1.0 FROM core.instruments WHERE canonical_code = '600028.SH'
+       ON CONFLICT DO NOTHING`
+    );
+    await pool.query(
+      `DELETE FROM market.daily_bars b USING core.instruments i
+       WHERE b.instrument_id = i.instrument_id AND i.canonical_code = '600028.SH' AND b.trade_date = '2011-12-30'::date`
+    );
+    const suspMissing = await precheckService.runRealPrecheck({ industries, startYear: 2011, totalRounds: 15 });
+    assert.strictEqual(suspMissing.pass, false, '缺停牌证据时预检应阻断');
+
+    const suspFixed = await precheckService.ensureRealClassroomDataAndPrecheck({
+      industries,
+      startYear: 2011,
+      totalRounds: 15,
+      autoBackfill: true,
+      deps: {
+        marketDatasets: {
+          async readStockDailySeries() { return []; },
+          async readAdjustmentFactorSeries() { return []; },
+          async readStockValuationHistory() { return []; },
+        },
+        referenceDatasets: {
+          async readSuspensions({ startDate }) {
+            return startDate === '2010-01-01'
+              ? [{ ts_code: '600028.SH', trade_date: '20111230', suspend_type: 'S', suspend_reason: '重大事项停牌' }]
+              : [];
+          },
+        },
+      },
+    });
+    assert.strictEqual(suspFixed.pass, true, '自动补齐停牌日历后应按前移顺延黄牌通过');
+    assert.ok(suspFixed.autoBackfill.filledSuspensions >= 1, '应统计自动补齐的停牌记录数');
 
     const stockProj = require('../repositories/stockProjectionRepository');
     await stockProj.ensureMaster(pool, '600028.SH', await stockProj.sourceIds(pool), {

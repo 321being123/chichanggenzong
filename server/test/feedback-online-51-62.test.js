@@ -72,7 +72,7 @@ check('#58/#59 修复 --ok 缺失导致的利润柱黑色与 20% 分位线消失
   const style = read('public', 'shared', 'style.css');
   const saCss = read('public', 'css', 'stock-analysis.css');
   assert.ok(style.includes('--ok: var(--success);'), 'style.css 必须提供 --ok 兜底变量');
-  assert.ok(saCss.includes('.stock-analysis-chart .profit{fill:var(--profit-color)}') && saCss.includes('--profit-color:#4ade80'), '利润柱状图必须使用嫩绿色 --profit-color');
+  assert.ok(saCss.includes('.stock-analysis-chart .profit{fill:var(--profit-color)}') && saCss.includes('--profit-color:rgb(108, 178, 108)'), '利润柱状图必须使用嫩绿色 --profit-color');
   assert.ok(saCss.includes('.band20{stroke:var(--success)}'), '20% 分位线必须使用绿色 --success');
   assert.ok(saCss.includes('.stock-analysis-valuation-legend .b20{border-color:var(--success)}'), '20% 分位图例必须使用绿色 --success');
 });
@@ -99,8 +99,8 @@ check('#60 股债分析刷新轮询与港股指标计算', () => {
     events: [],
   }, { tsCode: '00883.HK', isoToday: '2026-11-23', today: '20261123', fxToCny: { HKD: 0.92 } });
 
-  assert.ok(res.valuation.roe > 0.18 && res.valuation.roe < 0.21, '港股 ROE 应按同币种计算得出');
-  assert.ok(res.valuation.roa > 0.12 && res.valuation.roa < 0.15, '港股 ROA 应按同币种计算得出');
+  assert.ok(res.valuation.roe > 18 && res.valuation.roe < 21, '港股 ROE 应按同币种计算得出（百分比口径）');
+  assert.ok(res.valuation.roa > 12 && res.valuation.roa < 15, '港股 ROA 应按同币种计算得出（百分比口径）');
   assert.ok(res.valuation.pe_static > 0, '港股静态市盈率应经汇率折算后算出');
   assert.ok(res.valuation.pe_three_year_avg > 0, '港股三年平均市盈率应算出');
   assert.strictEqual(res.percentiles.history.length, 2, '港股分位图 history 必须输出');

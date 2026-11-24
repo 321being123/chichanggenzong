@@ -618,7 +618,7 @@ async function run() {
     );
     await pool.query(
       `INSERT INTO market.stock_suspend_calendar (instrument_id, trade_date, suspend_type, suspend_reason, source_id)
-       VALUES ($1, '2025-12-31'::date, 'full', '测试停牌', (SELECT source_id FROM ops.data_sources LIMIT 1))
+       VALUES ($1, '2025-12-31'::date, 'S', '测试停牌', (SELECT source_id FROM ops.data_sources LIMIT 1))
        ON CONFLICT DO NOTHING`,
       [suspInstA]
     );

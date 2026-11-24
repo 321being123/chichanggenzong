@@ -33,14 +33,14 @@ description: "存在小站（portfolio-server）上线发布，或上一次发�
    - 确认本批**没有**相关反馈时，不要凭记忆下结论：写一份查询证据文件（`complete=true`、逐条候选给 `unrelated` 与理由、`queriedAt` 在 48 小时内、`releaseSha` 指向本次提交），交给部署脚本 `--feedback-none-evidence`。
 5. **推送**：`git push` 到 master（脚本要求 HEAD 与 origin/master 完全一致）。
 6. **部署**：只用 `docs/生产部署流程.md` 规定的入口，并带上核对依据——`--feedback-run-id <批次>` 或 `--feedback-none-evidence <证据文件>`。两者都不给，脚本会在**任何生产变更之前**退出，这是设计不是故障。
-7. **读结论**：按 `DEPLOY_RESULT.feedback_status` 下结论，不要自己重算。只有 `applied_verified`（确有实施且逐条回读一致）、`applied_verified_no_implementation`（本批明细全为不相关，无实施）和 `crosschecked_no_related_feedback`（完整查询确认无候选）是完成态；`applied_with_pending`、`readback_mismatch`、`apply_status_rejected`、`no_items`、`apply_failed`、`read_failed`、`not_crosschecked`、`skipped_missing_*` 都算未闭环。
+7. **记录回执并读结论**：按 [生产部署流程的阅读与写入边界](../../../docs/生产部署流程.md#阅读与写入边界) 写入本批发布历史，专项结果回原方案，任务卡记录交接和未验项。按 `DEPLOY_RESULT.feedback_status` 下结论，不要自己重算。只有 `applied_verified`（确有实施且逐条回读一致）、`applied_verified_no_implementation`（本批明细全为不相关，无实施）和 `crosschecked_no_related_feedback`（完整查询确认无候选）是完成态；`applied_with_pending`、`readback_mismatch`、`apply_status_rejected`、`no_items`、`apply_failed`、`read_failed`、`not_crosschecked`、`skipped_missing_*` 都算未闭环。
 
 ## B 分支：只补回写
 
 1. 用 `--mode status --run-id <批次>` 确认批次仍属于当前线上提交与版本（`releaseSha`/`appVersion`/`deploymentId` 一致）、`verifyStatus=passed`。
 2. 用 `--mode apply --run-id <批次> --operator <账号> --deployment-id <同一 UUID>` 补应用；不改版本、不 push、不重新部署。
 3. 用 `--mode status` 回读：逐条看主状态、`implementedVersion`、`implementedReleaseSha`、`revision` 与本批事件数。
-4. 回读不符（状态没变、没有实施版本、没有本批事件）就是**未闭环**，如实报告，不能用「已应用」代替「已确认」。
+4. 回读不符（状态没变、没有实施版本、没有本批事件）就是**未闭环**，如实报告，不能用「已应用」代替「已确认」。将本次回读结果补入原版本发布历史。
 
 ## 反馈状态的判定
 

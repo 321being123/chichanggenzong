@@ -126,7 +126,7 @@ async function listStatementRows({ tsCode, market = 'CN', type = 'balance', limi
     params.push(scope);
     predicates.push(`COALESCE(r.statement_scope,'consolidated')=$${params.length}`);
   }
-  params.push(Math.max(3, Math.min(24, Number(limit) || 8)));
+  params.push(Math.max(3, Math.min(48, Number(limit) || 8)));
   const { rows } = await runner.query(`SELECT r.report_id,r.company_id,to_char(COALESCE(w.period_end,r.period_end),'YYYY-MM-DD') AS period_end,
        ${periodTypeExpression} AS period_type,
        to_char(COALESCE(w.announced_at,r.announced_at),'YYYY-MM-DD') AS announced_at,

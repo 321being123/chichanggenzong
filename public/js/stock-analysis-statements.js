@@ -70,13 +70,17 @@ function stockAnalysisRenderStatementFilters(data) {
       { value: 'semiannual', label: '半年报' },
       { value: 'quarter', label: '季报' },
     ];
-    if (availablePeriods.indexOf('unknown') >= 0 || currentPeriod === 'unknown') {
+    if (availablePeriods.indexOf('unknown') >= 0) {
       periodOptions.push({ value: 'unknown', label: '未知' });
     }
     periodEl.innerHTML = periodOptions.map(function(opt) {
       return '<option value="' + opt.value + '">' + opt.label + '</option>';
     }).join('');
-    periodEl.value = periodOptions.some(function(opt) { return opt.value === currentPeriod; }) ? currentPeriod : 'all';
+    var nextPeriod = periodOptions.some(function(opt) { return opt.value === currentPeriod; }) ? currentPeriod : 'all';
+    periodEl.value = nextPeriod;
+    if (typeof stockAnalysisStatementFilters === 'function') {
+      stockAnalysisStatementFilters().periodType = nextPeriod;
+    }
   }
   var scope = document.getElementById('stock-analysis-statement-scope');
   var scopes = data && data.available_filters && data.available_filters.scopes || [];
@@ -265,7 +269,8 @@ function stockAnalysisRenderStatements(data) {
       var period = data.periods[index] || {};
       var periodLabel = period.end_date || period.fiscal_year || period.year || ('第' + (index + 1) + '期');
       var scopeLabels = { consolidated: '合并口径', parent: '母公司口径' };
-      if (period.report_type_label || period.report_type) periodLabel += ' ' + (period.report_type_label || period.report_type);
+      var periodTypeText = stockAnalysisFormatPeriodLabel(period.report_type_label || period.report_type);
+      if (periodTypeText) periodLabel += ' ' + periodTypeText;
       if (period.scope) periodLabel += ' ' + (scopeLabels[period.scope] || period.scope);
       var groupKey = prefix + '：' + reasonText;
       if (!statusGroups[groupKey]) {
@@ -275,7 +280,9 @@ function stockAnalysisRenderStatements(data) {
       if (statusGroups[groupKey].indexOf(periodLabel) < 0) statusGroups[groupKey].push(periodLabel);
     }
     (field.values || []).forEach(function(item, index) {
-      if (item && item.status && item.status !== 'available') addStatusMessage(index, '原值', item.reason);
+      if (item && item.status && item.status !== 'available' && item.status !== 'source_not_disclosed') {
+        addStatusMessage(index, '原值', item.reason);
+      }
       if (comparisonEnabled && item && item.comparison_status && item.comparison_status !== 'available') {
         var cmpReason = item.comparison_reason;
         if (cmpReason && cmpReason !== 'comparable_period_missing' && cmpReason !== 'comparable_value_missing') {

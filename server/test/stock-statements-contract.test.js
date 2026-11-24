@@ -88,6 +88,10 @@ for (const [label, current, prior] of [
   ['不同来源', { source_id: 1 }, { source_id: 2 }],
   ['来源未知', { source_id: null }, { source_id: null }],
   ['重述标志不一致', { update_flag: '1' }, { update_flag: '0' }],
+  ['一期重述一期未知', { update_flag: '1' }, { update_flag: null }],
+  ['两期均重述', { update_flag: '1' }, { update_flag: '1' }],
+  ['非理杏仁来源两期均未知', { source_code: 'tushare', update_flag: null }, { source_code: 'tushare', update_flag: null }],
+  ['理杏仁一期明确重述', { source_code: 'lixinger_official', update_flag: '1' }, { source_code: 'lixinger_official', update_flag: null }],
   ['公司不同', { company_id: 9 }, { company_id: 10 }],
   ['不同币种', { currency_code: 'USD' }, { currency_code: 'HKD' }],
   ['不同范围', { statement_scope: 'consolidated' }, { statement_scope: 'parent' }],
@@ -100,6 +104,40 @@ assert.strictEqual(balanceComparison(
   { period_end: '2025-06-30', source_code: 'lixinger_official', update_flag: null },
   { period_end: '2024-06-30', source_code: 'lixinger_official', update_flag: null }
 ).change, 1, '理杏仁官方同口径同报告期可计算同比');
+assert.strictEqual(balanceComparison(
+  { period_end: '2025-09-30', period_type: 'q3', source_code: 'lixinger_official', update_flag: null },
+  { period_end: '2025-06-30', period_type: 'semiannual', source_code: 'lixinger_official', update_flag: null },
+  'qoq'
+).change, 1, '理杏仁官方相邻季度时点可计算环比');
+// A-03: 港股基期币种与来源币种不一致时，不得把未核实基期当作同比分母
+const unverifiedBaseYoy = buildStatementPayload({
+  market: 'HK', type: 'balance', canonicalCode: '00005.HK', options: { compare: 'yoy' },
+  rows: [
+    row({ report_id: 2, period_end: '2025-06-30', source_code: 'lixinger_official', update_flag: null, currency_code: 'HKD', source_currency: 'HKD', bs_ta: 200 }),
+  ],
+  comparisonRows: [
+    row({ report_id: 2, period_end: '2025-06-30', source_code: 'lixinger_official', update_flag: null, currency_code: 'HKD', source_currency: 'HKD', bs_ta: 200 }),
+    row({ report_id: 1, period_end: '2024-06-30', source_code: 'lixinger_official', update_flag: null, currency_code: 'HKD', source_currency: 'USD', bs_ta: 100 }),
+  ],
+});
+assert.strictEqual(field(unverifiedBaseYoy, 'bs.ta').values[0].change, null, '基期币种未核实时不得计算同比');
+assert.strictEqual(field(unverifiedBaseYoy, 'bs.ta').values[0].comparison_reason, 'comparable_value_missing');
+// A-05: 季报 + 环比筛选场景下，仍能通过 comparisonRows 找到所需的半年报/年报基期
+const filteredQuarterQoq = buildStatementPayload({
+  market: 'CN', type: 'balance', canonicalCode: '600000.SH', options: { periodType: 'quarter', compare: 'qoq' },
+  rows: [
+    row({ report_id: 3, period_end: '2025-09-30', period_type: 'q3', currency_code: 'CNY', source_currency: 'CNY', accounting_standard: 'CAS', source_code: 'lixinger_official', update_flag: null, bs_ta: 300 }),
+    row({ report_id: 1, period_end: '2025-03-31', period_type: 'q1', currency_code: 'CNY', source_currency: 'CNY', accounting_standard: 'CAS', source_code: 'lixinger_official', update_flag: null, bs_ta: 150 }),
+  ],
+  comparisonRows: [
+    row({ report_id: 3, period_end: '2025-09-30', period_type: 'q3', currency_code: 'CNY', source_currency: 'CNY', accounting_standard: 'CAS', source_code: 'lixinger_official', update_flag: null, bs_ta: 300 }),
+    row({ report_id: 2, period_end: '2025-06-30', period_type: 'semiannual', currency_code: 'CNY', source_currency: 'CNY', accounting_standard: 'CAS', source_code: 'lixinger_official', update_flag: null, bs_ta: 200 }),
+    row({ report_id: 1, period_end: '2025-03-31', period_type: 'q1', currency_code: 'CNY', source_currency: 'CNY', accounting_standard: 'CAS', source_code: 'lixinger_official', update_flag: null, bs_ta: 150 }),
+    row({ report_id: 0, period_end: '2024-12-31', period_type: 'annual', currency_code: 'CNY', source_currency: 'CNY', accounting_standard: 'CAS', source_code: 'lixinger_official', update_flag: null, bs_ta: 100 }),
+  ],
+});
+assert.strictEqual(field(filteredQuarterQoq, 'bs.ta').values[0].change, 0.5, '季报筛选下三季报环比应命中半年报基期');
+assert.strictEqual(field(filteredQuarterQoq, 'bs.ta').values[1].change, 0.5, '季报筛选下一季报环比应命中上年年报基期');
 assert.strictEqual(balanceComparison({ period_end: '2025-09-30', period_type: 'q3' },
   { period_end: '2025-03-31', period_type: 'q1' }, 'qoq').change, null, '缺中报不得把一季与三季作为环比');
 assert.strictEqual(balanceComparison({ period_end: '2025-09-30', period_type: 'q3' },
@@ -268,6 +306,19 @@ const flowYoy = buildStatementPayload({ market: 'CN', type: 'income', canonicalC
   ] });
 assert.strictEqual(field(flowYoy, 'ps.tp').values[0].yoy, 0.5, '同口径同报告期的累计流量表应可计算同比');
 assert.strictEqual(field(flowYoy, 'ps.tp').values[0].comparison_status, 'available');
+const flowUnverifiedSource = buildStatementPayload({ market: 'CN', type: 'income', canonicalCode: '600000.SH', options: { compare: 'yoy' },
+  rows: [
+    row({ report_id: 2, period_end: '2025-06-30', source_code: 'other', update_flag: '0', ps_tp: 3 }),
+    row({ report_id: 1, period_end: '2024-06-30', source_code: 'other', update_flag: '0', ps_tp: 2 }),
+  ] });
+assert.strictEqual(field(flowUnverifiedSource, 'ps.tp').values[0].yoy, null, '缺少可信来源/期间证据时流量表不得计算同比');
+assert.strictEqual(field(flowUnverifiedSource, 'ps.tp').values[0].comparison_reason, 'flow_period_basis_unverified');
+const flowMismatchFy = buildStatementPayload({ market: 'HK', type: 'cashflow', canonicalCode: '00001.HK', options: { compare: 'yoy' },
+  rows: [
+    row({ report_id: 2, period_end: '2025-06-30', fiscal_year: '2025', source_code: 'lixinger_official', update_flag: null, cfs_ncffoa: 3 }),
+    row({ report_id: 1, period_end: '2024-06-30', fiscal_year: null, source_code: 'lixinger_official', update_flag: null, cfs_ncffoa: 2 }),
+  ] });
+assert.strictEqual(field(flowMismatchFy, 'cfs.ncffoa').values[0].comparison_reason, 'flow_period_basis_unverified', '财年证据缺失时流量表不得计算同比');
 
 (async () => {
   let legacySql = '';

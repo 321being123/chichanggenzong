@@ -36,14 +36,21 @@ function parseCoverage(value) {
 
 function dateKey(value) { return String(value || '').slice(0, 10); }
 
+const KNOWN_PERIOD_TYPES = new Set(['annual', 'semiannual', 'q1', 'q3']);
+const VERIFIED_FLOW_SOURCES = new Set(['lixinger_official', 'tushare']);
+
 function sameIdentity(current, prior) {
   const currentCurrency = String(current && current.currency_code || '').toUpperCase();
   const priorCurrency = String(prior && prior.currency_code || '').toUpperCase();
+  const currentSource = String(current && current.source_code || '');
+  const priorSource = String(prior && prior.source_code || '');
   const currentFlag = current && current.update_flag != null && current.update_flag !== '' ? String(current.update_flag) : null;
   const priorFlag = prior && prior.update_flag != null && prior.update_flag !== '' ? String(prior.update_flag) : null;
-  // 若两期均显式提供重述标志且不一致（例如 '1' vs '0'），则不能直接同比；
-  // 理杏仁官方报表无 update_flag（为 null）或双方标志一致时，按同公司/同口径/同币种允许同比。
-  const restatementMismatch = currentFlag !== null && priorFlag !== null && currentFlag !== priorFlag;
+  const bothLixinger = currentSource === 'lixinger_official' && priorSource === 'lixinger_official';
+  // 非理杏仁来源必须双方均有明确未重述标志 '0'；理杏仁官方无 update_flag（null），只要双方均未标为明确重述 '1' 即可比。
+  const restatementValid = bothLixinger
+    ? (currentFlag !== '1' && priorFlag !== '1')
+    : (currentFlag === '0' && priorFlag === '0');
   return Boolean(current && prior && currentCurrency && priorCurrency
     && currentCurrency === priorCurrency
     && current.company_id && String(current.company_id) === String(prior.company_id || '')
@@ -51,7 +58,36 @@ function sameIdentity(current, prior) {
     && current.accounting_standard && String(current.accounting_standard) === String(prior.accounting_standard || '')
     && current.statement_scope && String(current.statement_scope) === String(prior.statement_scope || '')
     && current.comp_type && String(current.comp_type) === String(prior.comp_type || '')
-    && !restatementMismatch);
+    && restatementValid);
+}
+
+function hasFlowPeriodBasis(current, prior) {
+  if (!current || !prior) return false;
+  if (!KNOWN_PERIOD_TYPES.has(String(current.period_type || '')) || String(current.period_type) !== String(prior.period_type)) {
+    return false;
+  }
+  if (!VERIFIED_FLOW_SOURCES.has(String(current.source_code || '')) || String(current.source_code || '') !== String(prior.source_code || '')) {
+    return false;
+  }
+  const currentCov = parseCoverage(current.statement_coverage);
+  const priorCov = parseCoverage(prior.statement_coverage);
+  if ((currentCov && currentCov.complete === false) || (priorCov && priorCov.complete === false)) {
+    return false;
+  }
+  const hasCurFy = current.fiscal_year != null && current.fiscal_year !== '';
+  const hasPriorFy = prior.fiscal_year != null && prior.fiscal_year !== '';
+  if (hasCurFy !== hasPriorFy) return false;
+  if (hasCurFy && Number(current.fiscal_year) - Number(prior.fiscal_year) !== 1) return false;
+  return true;
+}
+
+function isCurrencyUnverified(row, market) {
+  if (!row || market !== 'HK' || row.source_code !== 'lixinger_official') return false;
+  const currency = String(row.currency_code || '').trim().toUpperCase();
+  const sourceCurrency = String(row.source_currency || '').trim().toUpperCase();
+  const coverage = parseCoverage(row.statement_coverage);
+  return !/^[A-Z]{3}$/.test(currency) || currency !== sourceCurrency || (currency !== 'HKD'
+    && !(coverage && coverage.value_basis === 'source_original_t_o'));
 }
 
 function sameYearMonthDay(current, prior) {
@@ -71,7 +107,7 @@ function isPreviousQuarter(current, prior) {
   return previous[current.period_type] === prior.period_type;
 }
 
-function comparisonOf({ rows, comparisonRows, index, metricCode, rawValue, statement, compare, measureType }) {
+function comparisonOf({ rows, comparisonRows, index, metricCode, rawValue, statement, compare, measureType, market }) {
   if (compare === 'none') return { value: null, status: null, reason: null };
   if (measureType !== 'currency') return { value: null, status: contract.FIELD_STATUS.NOT_APPLICABLE, reason: 'comparison_method_unverified' };
   const current = rows[index];
@@ -80,10 +116,25 @@ function comparisonOf({ rows, comparisonRows, index, metricCode, rawValue, state
   }
   const poolRows = Array.isArray(comparisonRows) && comparisonRows.length ? comparisonRows : rows;
   const prior = compare === 'yoy'
-    ? poolRows.find((row, rowIndex) => rowIndex > index && current.period_type !== 'unknown' && Boolean(current.period_type) && sameIdentity(current, row)
+    ? poolRows.find(row => row && row.report_id !== current.report_id && dateKey(row.period_end) < dateKey(current.period_end)
+      && current.period_type !== 'unknown' && Boolean(current.period_type) && sameIdentity(current, row)
       && String(row.period_type || '') === String(current.period_type || '') && sameYearMonthDay(current, row))
-    : poolRows.find((row, rowIndex) => rowIndex > index && sameIdentity(current, row) && isPreviousQuarter(current, row));
+    : poolRows.find(row => row && row.report_id !== current.report_id && dateKey(row.period_end) < dateKey(current.period_end)
+      && sameIdentity(current, row) && isPreviousQuarter(current, row));
+  if (compare === 'yoy' && statement !== 'balance') {
+    if (!prior) {
+      return hasFlowPeriodBasis(current, current) // 若连当前行都不具备基本期间/来源证据，优先报 flow_period_basis_unverified
+        ? { value: null, status: contract.FIELD_STATUS.INSUFFICIENT_HISTORY, reason: 'comparable_period_missing' }
+        : { value: null, status: contract.FIELD_STATUS.NOT_APPLICABLE, reason: 'flow_period_basis_unverified' };
+    }
+    if (!hasFlowPeriodBasis(current, prior)) {
+      return { value: null, status: contract.FIELD_STATUS.NOT_APPLICABLE, reason: 'flow_period_basis_unverified' };
+    }
+  }
   if (!prior) return { value: null, status: contract.FIELD_STATUS.INSUFFICIENT_HISTORY, reason: 'comparable_period_missing' };
+  if (isCurrencyUnverified(prior, market)) {
+    return { value: null, status: contract.FIELD_STATUS.SOURCE_UNAVAILABLE, reason: 'comparable_value_missing' };
+  }
   const priorRaw = contract.finite(prior[metricCode]);
   if (rawValue === null || priorRaw === null) return { value: null, status: contract.FIELD_STATUS.SOURCE_UNAVAILABLE, reason: 'comparable_value_missing' };
   if (priorRaw === 0) return { value: null, status: contract.FIELD_STATUS.NOT_APPLICABLE, reason: 'zero_denominator' };
@@ -240,14 +291,7 @@ function buildStatementPayload({ market = 'CN', type = 'balance', rows = [], com
   }
   const metrics = [...byCode.values()];
   const currencies = [...new Set(rows.map(row => String(row.currency_code || '').toUpperCase()).filter(Boolean))];
-  const currencyUnverified = row => {
-    if (market !== 'HK' || row.source_code !== 'lixinger_official') return false;
-    const currency = String(row.currency_code || '').trim().toUpperCase();
-    const sourceCurrency = String(row.source_currency || '').trim().toUpperCase();
-    const coverage = parseCoverage(row.statement_coverage);
-    return !/^[A-Z]{3}$/.test(currency) || currency !== sourceCurrency || (currency !== 'HKD'
-      && !(coverage && coverage.value_basis === 'source_original_t_o'));
-  };
+  const currencyUnverified = row => isCurrencyUnverified(row, market);
   const hasUnverifiedCurrency = rows.some(currencyUnverified);
   const periods = rows.map(row => {
     const meta = metadataOf(row, market);
@@ -272,7 +316,7 @@ function buildStatementPayload({ market = 'CN', type = 'balance', rows = [], com
         const state = unverified ? { value: null, status: contract.FIELD_STATUS.SOURCE_UNAVAILABLE, reason: 'source_currency_unverified' }
           : valueStatus(raw, parseCoverage(row.statement_coverage), field.code, row.source_code);
         const comparison = raw === null ? { value: null, status: state.status, reason: state.reason }
-          : comparisonOf({ rows, comparisonRows, index, metricCode: dict.columnOf(field.code), rawValue: raw, statement: type, compare: normalized.compare, measureType: field.measure_type });
+          : comparisonOf({ rows, comparisonRows, index, metricCode: dict.columnOf(field.code), rawValue: raw, statement: type, compare: normalized.compare, measureType: field.measure_type, market });
         return {
           value: presentation.normalizeMetricValue(raw, field, row.currency_code),
           status: state.status,
@@ -318,13 +362,12 @@ function buildStatementPayload({ market = 'CN', type = 'balance', rows = [], com
 async function getStockStatements({ tsCode, market = 'CN', type = 'balance', limit = 8, requestedVersion = null, formulaVersion = FORMULA_VERSION, ...options } = {}) {
   if (!dict.STATEMENTS.includes(type)) throw new Error('三表类型无效');
   const normalized = normalizeOptions({ ...options, limit });
-  const [allRows, versionRows] = await Promise.all([
-    repository.listStatementRows({ tsCode, market, type, limit: Math.min(24, normalized.limit + 4), periodType: normalized.periodType,
+  const [rows, versionRows] = await Promise.all([
+    repository.listStatementRows({ tsCode, market, type, limit: normalized.limit, periodType: normalized.periodType,
       scope: normalized.scope === 'all' ? null : normalized.scope }),
-    repository.listStatementRows({ tsCode, market, type, limit: 20, periodType: null, scope: null }),
+    repository.listStatementRows({ tsCode, market, type, limit: 48, periodType: null, scope: null }),
   ]);
-  const rows = allRows.slice(0, normalized.limit);
-  const payload = buildStatementPayload({ market, type, rows, comparisonRows: allRows, versionRows, options: normalized, formulaVersion, canonicalCode: tsCode });
+  const payload = buildStatementPayload({ market, type, rows, comparisonRows: versionRows, versionRows, options: normalized, formulaVersion, canonicalCode: tsCode });
   const conflict = contract.versionConflict(requestedVersion, payload.analysis_version);
   if (conflict) {
     const error = new Error(conflict.error);
@@ -337,7 +380,7 @@ async function getStockStatements({ tsCode, market = 'CN', type = 'balance', lim
 
 async function getStockStatementVersions({ tsCode, market = 'CN', formulaVersion = FORMULA_VERSION } = {}) {
   const entries = await Promise.all(dict.STATEMENTS.map(async type => {
-    const rows = await repository.listStatementRows({ tsCode, market, type, limit: 20, periodType: null, scope: null });
+    const rows = await repository.listStatementRows({ tsCode, market, type, limit: 48, periodType: null, scope: null });
     return [type, statementAnalysisVersionOf({ canonicalCode: tsCode, market, type, formulaVersion, rows })];
   }));
   return Object.fromEntries(entries);

@@ -126,7 +126,7 @@ async function select_position_close_partition(params, client = pool) {
 }
 
 async function select_positions(params, client = pool) {
-  return client.query(`SELECT code FROM positions WHERE code IS NOT NULL AND code <> ''`);
+  return client.query(`SELECT code, subtype, quote_currency FROM positions WHERE code IS NOT NULL AND code <> ''`);
 }
 
 async function select_accounts(params, client = pool) {

@@ -570,7 +570,7 @@ function renderJobsLegacy() {
       '<div class="job-help-title">📋 任务说明</div>' +
       '<div class="job-help-sub">以下自动任务由系统按周期执行；手动任务可随时点击触发，用于补救或立即生效。</div>' +
       '<div class="job-help-group"><b>自动任务</b>' +
-        '<div class="job-help-item"><span class="job-help-name">A 股 / 可转债 / LOF·ETF 收盘数据（15:10）</span><span>每个交易日收盘后，抓取所有账户对应持仓的收盘价并写入 daily_prices。</span></div>' +
+        '<div class="job-help-item"><span class="job-help-name">A 股 / 可转债 / LOF·ETF 收盘数据（15:30）</span><span>每个交易日收盘后读取持仓的同日腾讯报价，报价时间晚于收市即用于收盘估值。</span></div>' +
         '<div class="job-help-item"><span class="job-help-name">港股收盘数据（16:10）</span><span>抓取港股持仓收盘价；随后由净值快照和港币汇率收盘任务使用当天最终数据。</span></div>' +
         '<div class="job-help-item"><span class="job-help-name">净值快照</span><span>根据已落库的收盘价，补齐每个账户的总资产和净值记录。</span></div>' +
         '<div class="job-help-item"><span class="job-help-name">指数基线与每日补齐</span><span>启动时补齐净值起点以来的指数基线；每个交易日收盘后补齐沪深300、上证、中证500、恒生等最新点位。</span></div>' +

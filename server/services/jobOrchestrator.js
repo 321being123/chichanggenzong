@@ -695,27 +695,7 @@ async function failOrRetry(slot, error, runId, result = {}, executionToken = nul
     if (waiting) return waiting;
     // 写入被拒（执行资格已失效）：退回普通失败路径，由租约与接管机制处理，不吞掉错误。
   }
-  // 终盘未就绪不是执行失败：15:10 拿到的是候选价，合格终盘要等共享日线发布之后
-  // （可转债 cb_daily 约 17:00 后更新，基金 fund_daily 类似）。旧实现把它当普通失败，
-  // 每天前几次尝试必然白占失败预算。试点任务转 waiting_readiness/publication，
-  // 到期由统一重验入口放行原槽，只补剩余缺口。
-  const pendingTerminalClose = String(failure.type || '') === 'pending_confirmation'
-    || /收盘价待确认|待确认终盘/.test(String(failure.message || ''));
-  if (pendingTerminalClose && definition.retryPolicy !== 'no_retry' && isReadinessPilot(definition)) {
-    await finishManagedRun(runId, slot.job_code, false, normalized, failure).catch(() => {});
-    const waiting = await waitForReadinessSlot(slot.slot_id, {
-      waitKind: 'publication',
-      errorMessage: message,
-      resultSummary: {
-        ...sanitizeJobResult(normalized),
-        pendingConfirmation: Number(result && result.pendingConfirmation || 0) || null,
-      },
-      target: `${slot.job_code}@${slot.business_date}`,
-    }, runId, executionToken);
-    if (waiting) return waiting;
-  }
-  // 确认没有进入就绪等待后，才把 Runner 返回的缺口视为真实采集失败。
-  // 否则 DATASET_LOCKED/终盘未发布会先写数据集告警或触发熔断，造成等待与告警语义串线。
+  // 缺价、网络失败等继续走统一的任务退避；内地报价锁争用在上方单独处理。
   await notifyDatasetDiagnostics(slot, normalized);
   await notifyIncompleteDataset(slot, normalized);
   const blocked = await applyDatasetFailureBreaker(slot, runId, normalized, failure, executionToken);

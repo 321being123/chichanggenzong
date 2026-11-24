@@ -5667,8 +5667,32 @@
       "status": "implemented"
     },
     {
+      "id": "HOLDINGS-TENCENT-CLOSE-QUOTE-012",
+      "title": "当日账户估值直接使用同一交易日、严格晚于实际收市的有效腾讯报价，持仓、总资产与净值共享账户日价",
+      "implementation": {
+        "file": "server/jobs/marketClose.js",
+        "symbol": "buildCloseRecord"
+      },
+      "tests": [
+        {
+          "file": "server/test/marketclose.test.js",
+          "pattern": "同日腾讯报价严格晚于收市秒级边界"
+        },
+        {
+          "file": "server/test/market-close-bar-gap.test.js",
+          "pattern": "持仓、总资产、净值同读一份腾讯收盘价"
+        },
+        {
+          "file": "server/test/market-close-bar-gap.test.js",
+          "pattern": "港股收盘不等待日线"
+        }
+      ],
+      "owner": "Codex",
+      "status": "local_verified"
+    },
+    {
       "id": "HOLDINGS-TERMINAL-EVIDENCE-004",
-      "title": "收盘终盘确认按品种取不复权日线证据（正股/港股、可转债、基金/ETF），确认后只落经核验的日线收盘价；共享日线必须带行级口径/终盘/质量证据且所属分区已发布才可采信，外采到的终盘日线写回共享日线并发布分区复用；按「市场+证券+交易日」去重",
+      "title": "历史共享终盘日线修复按品种取同日不复权证据，采信已发布且具有行级质量的日线，缺口补齐后写回并发布",
       "implementation": {
         "file": "server/jobs/marketClose.js",
         "symbol": "verifyTerminalClose"
@@ -5676,7 +5700,7 @@
       "tests": [
         {
           "file": "server/test/stock-daily-adjust-guard.test.js",
-          "pattern": "确认后必须存经核验的日线收盘价"
+          "pattern": "持久化结果吞掉"
         },
         {
           "file": "server/test/stock-daily-adjust-guard.test.js",
@@ -5695,8 +5719,8 @@
           "pattern": "外采成功后必须写回共享日线"
         },
         {
-          "file": "server/test/stock-daily-adjust-guard.test.js",
-          "pattern": "日价证据里必须记下"
+          "file": "server/test/market-close-bar-gap.test.js",
+          "pattern": "日价证据必须标记未写回共享日线"
         }
       ],
       "owner": "WorkBuddy",

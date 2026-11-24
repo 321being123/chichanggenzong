@@ -4,13 +4,12 @@ const path = require('path');
 const { pool } = require('../db/connection');
 const repo = require('../repositories/jobScheduleSlotsRepository');
 const {
-  waitForReadinessSlot, reconcileReadinessSlots, nextReadinessCheckpoint, readinessMoment,
+  ensureSlot, waitForReadinessSlot, reconcileReadinessSlots, nextReadinessCheckpoint, readinessMoment,
   listDueSlots, claimSlot, completeSlot, isReadinessPilot,
 } = require('../services/jobScheduleSlots');
 const alertRepo = require('../repositories/jobAlertMailerRepository');
 const { listAlerts } = require('../services/jobAlertMailer');
-const { terminalFetchWindowOpen } = require('../services/jobReadiness');
-const { buildCloseRecord, loadTerminalBar } = require('../jobs/marketClose');
+const { loadTerminalBar } = require('../jobs/marketClose');
 const { isRatePublicationWait, NAV_PUBLISH_DATASETS } = require('../jobs/navSnapshot');
 const { slotWaitingState } = require('../services/jobRecoveryEvidence');
 const { getJobDefinition } = require('../services/jobDefinitions');
@@ -78,7 +77,7 @@ const read = file => fs.readFileSync(path.join(root, file), 'utf8');
 
     // ③b 自产终盘分区缺失不能把原 Runner 永久锁死：到检查点应唤醒一次，
     // 分区只能由唤醒后的 Runner 按实际品种取数并发布，不能由重验入口伪造 ready。
-    const producerSlot = await insert('market_close:可转债', 'running', { attemptCount: 1, claimCount: 1 });
+    const producerSlot = await insert('nav_snapshot', 'running', { attemptCount: 1, claimCount: 1 });
     await waitForReadinessSlot(producerSlot.slotId, {
       waitKind: 'publication', errorMessage: '终盘分区尚未发布', resultSummary: { pendingConfirmation: 1 },
     }, null, producerSlot.token);
@@ -92,7 +91,7 @@ const read = file => fs.readFileSync(path.join(root, file), 'utf8');
 
     // ③c 自产分区越过升级时刻仍缺失：唤醒原 Runner 的同时必须升级告警。
     // 旧实现在唤醒分支直接 continue，18:30 之后到硬截止前一直静默，告警数始终是 0。
-    const escalationProducer = await insert('market_close:可转债', 'running', { attemptCount: 1, claimCount: 1 });
+    const escalationProducer = await insert('nav_snapshot', 'running', { attemptCount: 1, claimCount: 1 });
     await c.query(
       `UPDATE ops.job_schedule_slots
           SET status='waiting_readiness', next_attempt_at=now()-interval '1 minute', result_summary=$2::jsonb
@@ -227,13 +226,13 @@ const read = file => fs.readFileSync(path.join(root, file), 'utf8');
 
     // ⑦ 检查点换算按北京时间，且只取未来时刻
     const definition = getJobDefinition('market_close:可转债');
-    assert.deepStrictEqual(definition.readinessCheckpoints, ['17:15', '17:45', '18:15']);
-    assert.strictEqual(definition.readinessEscalateAt, '18:30');
-    assert.strictEqual(definition.readinessStopAt, '19:30');
-    const moment = readinessMoment('2026-11-19', '17:15');
-    assert.strictEqual(moment.toISOString(), '2026-11-19T09:15:00.000Z', '17:15 北京时间等于 09:15Z');
-    const next = nextReadinessCheckpoint({ business_date: '2026-11-19' }, definition, new Date('2026-11-19T08:00:00Z'));
-    assert.strictEqual(next.toISOString(), '2026-11-19T09:15:00.000Z', '首查取第一个未到时刻');
+    assert.deepStrictEqual(definition.readinessCheckpoints, ['15:31', '15:33', '15:36']);
+    assert.strictEqual(definition.readinessEscalateAt, '16:00');
+    assert.strictEqual(definition.readinessStopAt, '17:00');
+    const moment = readinessMoment('2026-11-19', '15:31');
+    assert.strictEqual(moment.toISOString(), '2026-11-19T07:31:00.000Z', '15:31 北京时间等于 07:31Z');
+    const next = nextReadinessCheckpoint({ business_date: '2026-11-19' }, definition, new Date('2026-11-19T07:30:00Z'));
+    assert.strictEqual(next.toISOString(), '2026-11-19T07:31:00.000Z', '首查取第一个未到时刻');
     const afterAll = nextReadinessCheckpoint({ business_date: '2026-11-19' }, definition, new Date('2026-11-19T12:00:00Z'));
     assert.strictEqual(afterAll.getTime() > new Date('2026-11-19T12:00:00Z').getTime(), true, '检查点用尽后按有限兜底推进，不无限等待');
 
@@ -251,8 +250,8 @@ const read = file => fs.readFileSync(path.join(root, file), 'utf8');
       '未声明检查点的任务保持既有 blocked 合同');
     assert.deepStrictEqual(getJobDefinition('market_close:可转债').datasetDependencies, [],
       '任务自己产出的终盘分区不得成为领取前置依赖');
-    assert.strictEqual(getJobDefinition('market_close:可转债').readinessDatasetDependencies[0].datasetCode,
-      'position_close_bars_cn', '终盘分区应保留为复查证据依赖');
+    assert.deepStrictEqual(getJobDefinition('market_close:可转债').readinessDatasetDependencies, [],
+      '收盘腾讯报价只等待请求锁，不等待历史日线分区');
     assert.ok(getJobDefinition('ipo_calendar_refresh').readinessCheckpoints,
       'IPO 输入分区缺失必须进入有界就绪等待');
     const producedPartitionSlot = await insert('market_close:可转债', 'pending');
@@ -325,11 +324,6 @@ const read = file => fs.readFileSync(path.join(root, file), 'utf8');
     const navObservations = afterNavReady.result_summary.readinessObservations || [];
     assert(navObservations.some(item => item.datasetCode === 'repo_daily_rates' && item.ready === true),
       '利率分区已发布时必须留下就绪观测，供三交易日观察逐项核对');
-
-    // ⑨ 终盘未就绪（候选已记、目标日日线未发布）必须走发布等待，不当成执行失败
-    assert(/waitKind: 'publication'/.test(orchestrator), '收盘终盘未就绪必须进入发布等待而不是普通失败');
-    assert(/pendingTerminalClose[^\n]*isReadinessPilot\(definition\)/.test(orchestrator),
-      '发布等待同样只对试点任务生效，未试点任务保持既有契约');
 
     // ⑨c 净值 Runner 与编排器接线：仅"目标分区未就绪"转就绪等待，不再 60 分钟自行续跑
     const navJobSource = read('server/jobs/navSnapshot.js');
@@ -439,68 +433,28 @@ const read = file => fs.readFileSync(path.join(root, file), 'utf8');
     const legacyRetried = (await repo.update_ops_job_schedule_slots_17([legacySlot.slotId])).rows[0];
     assert.strictEqual(legacyRetried.retry_contract, 'counters', '人工重试是定向确认，允许把存量槽切到新合同');
 
-    // ⑬ 终盘窗口：首查时刻之前不开窗，未声明检查点的任务不受限
-    const cbDefinition = getJobDefinition('market_close:可转债');
-    assert.strictEqual(terminalFetchWindowOpen(cbDefinition, '2026-11-19', new Date('2026-11-19T08:00:00Z')), false,
-      '17:15 之前不得开外部终盘窗口');
-    assert.strictEqual(terminalFetchWindowOpen(cbDefinition, '2026-11-19', new Date('2026-11-19T09:20:00Z')), true,
-      '17:15 之后才允许请求 cb_daily');
-    assert.strictEqual(terminalFetchWindowOpen(getJobDefinition('market_close:港股'), '2026-11-19', new Date('2026-11-19T08:00:00Z')), false,
-      '港股终盘核验应等到就绪检查点');
-
-    // ⑭ 首查前只写候选预览，不请求外部终盘日线
-    const gated = await buildCloseRecord({
-      row: { code: '110043', name: '无锡转债', price: 100, quote_time: '2026-11-18T15:00:00+08:00' },
-      position: { subtype: '沪市' }, market: 'CN', label: '可转债',
-      state: { status: 'open', isAfterMarketClose: true, closeTime: '15:00' }, cnDate: '2026-11-18',
-      readBar: async () => { throw new Error('首查前不得请求终盘日线'); },
-      allowTerminalFetch: false,
-    });
-    assert.strictEqual(gated.quality, 'candidate', '首查前只能写候选');
-    assert.strictEqual(gated.evidence.terminalEvidence, 'readiness_checkpoint_pending');
-
-    // ⑮ 旧腾讯报价不再拦住独立终盘核验（生产复发路径）
-    const staleQuote = await buildCloseRecord({
-      row: { code: '00700', name: '腾讯控股', price: 400, quote_time: '2026-11-18T16:08:17+08:00' },
-      position: { subtype: '港股' }, market: 'HK', label: '港股',
-      state: { status: 'open', isAfterMarketClose: true, closeTime: '16:10' }, cnDate: '2026-11-18',
-      readBar: async () => ({ ok: true, reason: null, close: 401, provider: 'lixinger', adjust: 'none', via: 'published_bar' }),
-    });
-    assert.strictEqual(staleQuote.quality, 'confirmed', '16:08 的旧报价配合合格同日不复权日线必须能确认终盘');
-    assert.strictEqual(staleQuote.price, 401, '确认价必须取日线收盘价，不能放行 16:08 的报价');
-    assert.strictEqual(staleQuote.evidence.quoteQualification, 'quote_before_close', '旧报价的准入结论仍要留证');
-
-    // ⑮b 真实接口错误不能伪装成“数据还没到”：错误分类必须保留到终盘证据层。
+    // 当前收盘价使用腾讯时间戳；接口错误分类仍在历史日线修复路径保留。
     for (const code of ['DATASET_LOCKED', 'PERMISSION_DENIED', 'RATE_LIMIT', 'UPSTREAM_5XX']) {
-      const error = Object.assign(new Error(`terminal ${code}`), { code, errorType: code === 'RATE_LIMIT' ? 'rate_limit' : undefined });
+      const error = Object.assign(new Error('terminal ' + code), { code });
       const terminal = await loadTerminalBar({
         code: '110043', kind: 'bond', date: '2026-11-18', readPublishedBar: null,
         fetchSeries: async () => { throw error; }, persistBar: null,
       });
       assert.strictEqual(terminal.ok, false);
       assert.strictEqual(terminal.terminalError.code, code);
-      const failedRecord = await buildCloseRecord({
-        row: { code: '110043', name: '无锡转债', price: 100, quote_time: '2026-11-18T15:00:00+08:00' },
-        position: { subtype: '沪市' }, market: 'CN', label: '可转债',
-        state: { status: 'open', isAfterMarketClose: true, closeTime: '15:00' }, cnDate: '2026-11-18',
-        readBar: async () => terminal,
-      });
-      assert.strictEqual(failedRecord.terminalFailure.code, code);
-      assert.strictEqual(failedRecord.evidence.terminalEvidence, 'terminal_evidence_error');
     }
 
-    // ⑯ 日历未知或尚未收市时，即使日线与报价同价，也不得确认终盘
-    for (const state of [
-      { status: 'unknown', isAfterMarketClose: false, closeTime: null },
-      { status: 'open', isAfterMarketClose: false, closeTime: '16:10' },
-    ]) {
-      const notClosed = await buildCloseRecord({
-        row: { code: '00700', name: '腾讯控股', price: 401, quote_time: '2026-11-18T16:08:17+08:00' },
-        position: { subtype: '港股' }, market: 'HK', label: '港股', state, cnDate: '2026-11-18',
-        readBar: async () => ({ ok: true, close: 401, provider: 'lixinger', adjust: 'none', via: 'published_bar' }),
-      });
-      assert.strictEqual(notClosed.quality, 'candidate', '未确认收市时不得确认独立日线');
-    }
+    const slotsRepository = require('../repositories/jobScheduleSlotsRepository');
+    const replaceJob = 'market_close:LOF/ETF';
+    const oldAt = '2026-11-24T15:10:00+08:00';
+    const newAt = '2026-11-24T15:30:00+08:00';
+    const oldSlot = await ensureSlot(replaceJob, oldAt, '2026-11-24');
+    const newSlot = await ensureSlot(replaceJob, newAt, '2026-11-24');
+    await slotsRepository.skipReplacedScheduledSlot(replaceJob, oldAt, newSlot.slot_id, c);
+    const retired = await readSlot(oldSlot.slot_id);
+    assert.strictEqual(retired.status, 'skipped', '旧 15:10 自动槽随 15:30 新槽退出');
+    assert.strictEqual(retired.result_summary.replacementSlotId, Number(newSlot.slot_id));
+    assert.strictEqual((await readSlot(newSlot.slot_id)).status, 'pending');
 
     console.log('就绪等待真实PG回归：锁等待不扣预算/到期放行/依赖延期/硬截止升级/检查点换算与试点边界通过');
   } finally {

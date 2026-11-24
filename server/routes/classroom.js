@@ -39,8 +39,11 @@ router.post('/admin/precheck', requireLogin, requireAdmin, asyncHandler(async (r
 }));
 
 router.get('/admin/list', requireLogin, requireAdmin, asyncHandler(async (req, res) => {
-  const items = await repo.listClassroomsForAdmin();
-  res.json({ items });
+  const result = await repo.listClassroomsForAdmin({
+    page: req.query.page,
+    pageSize: req.query.pageSize,
+  });
+  res.json(result);
 }));
 
 router.post('/admin/create', requireLogin, requireAdmin, asyncHandler(async (req, res, next) => {

@@ -23,6 +23,11 @@
     pollTimer: null,
     draftSyncTimer: null,
     teacherClassroomId: null,
+    teacherClassrooms: [],
+    teacherPage: 1,
+    teacherTotal: 0,
+    teacherTotalPages: 1,
+    teacherDetailSeq: 0,
     teacherData: null,
     projectorRoundNo: null,
     sheet: {
@@ -62,6 +67,13 @@
       el.hidden = false;
       el.textContent = msg;
     }
+  }
+
+  async function confirmDialog(message, options) {
+    if (typeof window.projectConfirm === 'function') {
+      return window.projectConfirm(message, options);
+    }
+    return window.confirm(message);
   }
 
   function renderTabs() {
@@ -1061,76 +1073,130 @@
     return SUBMIT_STATUS_LABELS[status] || status || '—';
   }
 
-  async function loadTeacherConsole() {
-    if (!state.isAdmin) return;
-    try {
-      const data = await api.adminList();
-      const list = $('teacher-classroom-list');
-      list.textContent = '';
-      (data.items || []).forEach(function (c) {
-        const row = document.createElement('div');
-        row.className = 'classroom-btn-group';
-        row.style.marginBottom = '8px';
-        const btn = document.createElement('button');
-        btn.type = 'button';
-        btn.className = 'cr-btn' + (Number(state.teacherClassroomId) === Number(c.classroom_id) ? ' cr-btn-primary' : '');
-        btn.textContent = c.title + '（' + c.classroom_code + ' · 第 ' + c.current_round + ' 轮 · ' + formatRoundStatus(c.status) + ' · ' + c.member_count + ' 人）';
-        btn.addEventListener('click', function () {
-          state.teacherClassroomId = Number(c.classroom_id);
-          loadTeacherDetail();
-          renderTabs();
-        });
-        row.appendChild(btn);
+  const TEACHER_PAGE_SIZE = 10;
 
-        if (c.status !== 'completed') {
-          const closeBtn = document.createElement('button');
-          closeBtn.type = 'button';
-          closeBtn.className = 'cr-btn cr-btn-sm';
-          closeBtn.textContent = '关闭场次';
-          closeBtn.addEventListener('click', async function () {
-            if (!window.confirm('确定关闭场次「' + c.title + '」？关闭后学员将无法再加入、保存草稿或提交配置。')) return;
-            try {
-              await api.adminClose(c.classroom_id);
-              await loadTeacherConsole();
-              await loadMyClassrooms();
-              showBanner('场次已关闭', false);
-            } catch (e) {
-              showBanner('关闭场次失败：' + e.message);
-            }
-          });
-          row.appendChild(closeBtn);
-        }
+  function renderTeacherClassroomList() {
+    const list = $('teacher-classroom-list');
+    if (!list) return;
+    list.textContent = '';
+    const pageItems = state.teacherClassrooms || [];
+    const total = Number(state.teacherTotal || pageItems.length);
+    const totalPages = Math.max(1, Number(state.teacherTotalPages || Math.ceil(total / TEACHER_PAGE_SIZE)));
 
-        const delBtn = document.createElement('button');
-        delBtn.type = 'button';
-        delBtn.className = 'cr-btn cr-btn-danger cr-btn-sm';
-        delBtn.textContent = '删除';
-        delBtn.addEventListener('click', async function () {
-          if (!window.confirm('确定永久删除场次「' + c.title + '（' + c.classroom_code + '）」及其所有学员与轮次数据？此操作不可恢复。')) return;
+    pageItems.forEach(function (c) {
+      const row = document.createElement('div');
+      row.className = 'classroom-btn-group';
+      row.style.marginBottom = '8px';
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'cr-btn' + (Number(state.teacherClassroomId) === Number(c.classroom_id) ? ' cr-btn-primary' : '');
+      btn.textContent = c.title + '（' + c.classroom_code + ' · 第 ' + c.current_round + ' 轮 · ' + formatRoundStatus(c.status) + ' · ' + c.member_count + ' 人）';
+      btn.addEventListener('click', function () {
+        state.teacherClassroomId = Number(c.classroom_id);
+        state.teacherData = null;
+        $('teacher-active-panel').hidden = true;
+        renderTeacherClassroomList();
+        loadTeacherDetail();
+        renderTabs();
+      });
+      row.appendChild(btn);
+
+      if (c.status !== 'completed') {
+        const closeBtn = document.createElement('button');
+        closeBtn.type = 'button';
+        closeBtn.className = 'cr-btn cr-btn-sm';
+        closeBtn.textContent = '关闭场次';
+        closeBtn.addEventListener('click', async function () {
+          if (!await confirmDialog('确定关闭场次「' + c.title + '」？关闭后学员将无法再加入、保存草稿或提交配置。', {
+            title: '关闭场次', confirmText: '关闭场次', danger: true,
+          })) return;
           try {
-            await api.adminDelete(c.classroom_id);
-            if (Number(state.teacherClassroomId) === Number(c.classroom_id)) {
-              state.teacherClassroomId = null;
-              state.teacherData = null;
-              $('teacher-active-panel').hidden = true;
-            }
-            if (Number(state.currentClassroomId) === Number(c.classroom_id)) {
-              state.currentClassroomId = null;
-              state.studentData = null;
-              closeSse();
-            }
+            await api.adminClose(c.classroom_id);
             await loadTeacherConsole();
             await loadMyClassrooms();
-            renderTabs();
-            showBanner('场次已删除', false);
+            showBanner('场次已关闭', false);
           } catch (e) {
-            showBanner('删除场次失败：' + e.message);
+            showBanner('关闭场次失败：' + e.message);
           }
         });
-        row.appendChild(delBtn);
+        row.appendChild(closeBtn);
+      }
 
-        list.appendChild(row);
+      const delBtn = document.createElement('button');
+      delBtn.type = 'button';
+      delBtn.className = 'cr-btn cr-btn-danger cr-btn-sm';
+      delBtn.textContent = '删除场次';
+      delBtn.addEventListener('click', async function () {
+        if (!await confirmDialog('确定永久删除场次「' + c.title + '（' + c.classroom_code + '）」及其所有学员与轮次数据？此操作不可恢复。', {
+          title: '删除场次', confirmText: '永久删除', danger: true,
+        })) return;
+        try {
+          await api.adminDelete(c.classroom_id);
+          if (Number(state.teacherClassroomId) === Number(c.classroom_id)) {
+            state.teacherClassroomId = null;
+            state.teacherData = null;
+            $('teacher-active-panel').hidden = true;
+          }
+          if (Number(state.currentClassroomId) === Number(c.classroom_id)) {
+            state.currentClassroomId = null;
+            state.studentData = null;
+            closeSse();
+          }
+          await loadTeacherConsole();
+          await loadMyClassrooms();
+          renderTabs();
+          showBanner('场次已删除', false);
+        } catch (e) {
+          showBanner('删除场次失败：' + e.message);
+        }
       });
+      row.appendChild(delBtn);
+
+      list.appendChild(row);
+    });
+
+    if (total > TEACHER_PAGE_SIZE || totalPages > 1) {
+      const pager = document.createElement('div');
+      pager.className = 'classroom-btn-group';
+      pager.style.marginTop = '10px';
+      const prevBtn = makeActionBtn('上一页', 'cr-btn cr-btn-sm', function () {
+        if (state.teacherPage > 1) {
+          loadTeacherConsole(state.teacherPage - 1);
+        }
+      });
+      prevBtn.disabled = state.teacherPage <= 1;
+      const info = document.createElement('span');
+      info.className = 'classroom-badge';
+      info.textContent = '第 ' + state.teacherPage + ' / ' + totalPages + ' 页（共 ' + total + ' 场）';
+      const nextBtn = makeActionBtn('下一页', 'cr-btn cr-btn-sm', function () {
+        if (state.teacherPage < totalPages) {
+          loadTeacherConsole(state.teacherPage + 1);
+        }
+      });
+      nextBtn.disabled = state.teacherPage >= totalPages;
+      pager.appendChild(prevBtn);
+      pager.appendChild(info);
+      pager.appendChild(nextBtn);
+      list.appendChild(pager);
+    }
+  }
+
+  async function loadTeacherConsole(page) {
+    if (!state.isAdmin) return;
+    const targetPage = Math.max(1, Number(page || state.teacherPage || 1));
+    try {
+      const data = await api.adminList(targetPage, TEACHER_PAGE_SIZE);
+      const items = data.items || [];
+      const total = Number(data.total != null ? data.total : items.length);
+      const totalPages = Math.max(1, Number(data.totalPages || Math.ceil(total / TEACHER_PAGE_SIZE)));
+      if (!items.length && targetPage > 1 && total > 0) {
+        return loadTeacherConsole(totalPages);
+      }
+      state.teacherPage = Number(data.page || targetPage);
+      state.teacherTotal = total;
+      state.teacherTotalPages = totalPages;
+      state.teacherClassrooms = items;
+      renderTeacherClassroomList();
       if (state.teacherClassroomId) {
         await loadTeacherDetail();
       } else {
@@ -1286,9 +1352,14 @@
   }
 
   async function loadTeacherDetail() {
-    if (!state.teacherClassroomId) return;
+    const targetId = Number(state.teacherClassroomId);
+    if (!targetId) return;
+    const reqSeq = ++state.teacherDetailSeq;
+    state.teacherData = null;
+    $('teacher-active-panel').hidden = true;
     try {
-      const d = await api.adminGetState(state.teacherClassroomId);
+      const d = await api.adminGetState(targetId);
+      if (reqSeq !== state.teacherDetailSeq || Number(state.teacherClassroomId) !== targetId) return;
       state.teacherData = d;
       $('teacher-active-panel').hidden = false;
 
@@ -1321,7 +1392,9 @@
         }
         if (r.status === 'configuring') {
           const bLock = makeActionBtn('锁单', 'cr-btn cr-btn-danger', async function () {
-            if (!window.confirm('确认锁单？当前已提交 ' + d.counts.submittedCount + ' 人 / 未提交 ' + d.counts.unsubmittedCount + ' 人。')) return;
+            if (!await confirmDialog('确认锁单？当前已提交 ' + d.counts.submittedCount + ' 人 / 未提交 ' + d.counts.unsubmittedCount + ' 人。', {
+              title: '确认锁单', confirmText: '确认锁单', danger: true,
+            })) return;
             await api.adminLockRound(c.classroomId, r.roundNo, c.stateVersion);
             await loadTeacherDetail();
           });
@@ -1349,7 +1422,9 @@
       }
       if (c.blindMode && !c.identityRevealed) {
         const bId = makeActionBtn('揭示真实年份与股票名称', 'cr-btn', async function () {
-          if (!window.confirm('确认向全体学员揭示真实年份与公司名称？（未来轮次收益仍保持保密）')) return;
+          if (!await confirmDialog('确认向全体学员揭示真实年份与公司名称？（未来轮次收益仍保持保密）', {
+            title: '揭示真实信息', confirmText: '确认揭示',
+          })) return;
           await api.adminRevealIdentity(c.classroomId);
           await loadTeacherDetail();
         });
@@ -1423,20 +1498,81 @@
       });
       mTbl.appendChild(mTb); mWrap.appendChild(mTbl); mCard.appendChild(mWrap);
 
-      // 排行榜
+      // 排行榜：展示全部已揭晓轮次的历史榜单矩阵（表头：昵称、第一轮、第二轮……）
       const rCard = $('teacher-ranking-card');
       rCard.textContent = '';
-      if (d.settlements && d.settlements.length) {
-        const rh = document.createElement('h3'); rh.textContent = '第 ' + r.roundNo + ' 轮榜单';
+      const historyRounds = (d.roundHistoryLeaderboards && d.roundHistoryLeaderboards.length)
+        ? d.roundHistoryLeaderboards
+        : ((d.settlements && d.settlements.length) ? [{ roundNo: r.roundNo, settlements: d.settlements }] : []);
+      if (historyRounds.length) {
+        const rh = document.createElement('h3');
+        rh.textContent = '各轮榜单（历史累计）';
         rCard.appendChild(rh);
-        d.settlements.forEach(function (s) {
-          const p = document.createElement('div');
-          p.textContent = (s.isOfficialRanked ? ('第 ' + s.officialRank + ' 名') : ('补录参考第 ' + s.referenceRank + ' 名')) +
-            ' · ' + s.displayNickname + ' · 期末 ' + P.centsToWanDisplay(s.endingTotalCents) + ' 万 · 本轮 ' + P.centsToWanDisplay(s.roundPnlCents) + ' 万';
-          rCard.appendChild(p);
+
+        const cnNums = ['', '一', '二', '三', '四', '五', '六', '七', '八', '九', '十'];
+        function formatRoundColumnLabel(n) {
+          const num = Number(n);
+          if (num >= 1 && num <= 10) return '第' + cnNums[num] + '轮';
+          if (num > 10 && num < 20) return '第十' + cnNums[num - 10] + '轮';
+          return '第' + num + '轮';
+        }
+
+        const memberMap = new Map();
+        const latestRound = historyRounds[historyRounds.length - 1];
+        (latestRound.settlements || []).forEach(function (s) {
+          memberMap.set(s.memberId, { memberId: s.memberId, displayNickname: s.displayNickname, rounds: new Map() });
         });
+        historyRounds.forEach(function (hr) {
+          (hr.settlements || []).forEach(function (s) {
+            if (!memberMap.has(s.memberId)) {
+              memberMap.set(s.memberId, { memberId: s.memberId, displayNickname: s.displayNickname, rounds: new Map() });
+            }
+            memberMap.get(s.memberId).rounds.set(hr.roundNo, s);
+          });
+        });
+
+        const wrap = document.createElement('div');
+        wrap.className = 'classroom-table-wrap';
+        const tbl = document.createElement('table');
+        tbl.className = 'classroom-table';
+        const thead = document.createElement('thead');
+        const htr = document.createElement('tr');
+        const thName = document.createElement('th');
+        thName.textContent = '昵称';
+        htr.appendChild(thName);
+        historyRounds.forEach(function (hr) {
+          const th = document.createElement('th');
+          th.textContent = formatRoundColumnLabel(hr.roundNo);
+          htr.appendChild(th);
+        });
+        thead.appendChild(htr);
+        tbl.appendChild(thead);
+
+        const tb = document.createElement('tbody');
+        memberMap.forEach(function (m) {
+          const tr = document.createElement('tr');
+          const tdName = document.createElement('td');
+          tdName.textContent = m.displayNickname;
+          tr.appendChild(tdName);
+          historyRounds.forEach(function (hr) {
+            const td = document.createElement('td');
+            const s = m.rounds.get(hr.roundNo);
+            if (!s) {
+              td.textContent = '—';
+            } else {
+              const rankText = s.isOfficialRanked ? ('第 ' + s.officialRank + ' 名') : ('补录第 ' + s.referenceRank + ' 名');
+              td.textContent = rankText + ' · ' + P.centsToWanDisplay(s.endingTotalCents) + '万（' + P.centsToWanDisplay(s.roundPnlCents) + '万）';
+            }
+            tr.appendChild(td);
+          });
+          tb.appendChild(tr);
+        });
+        tbl.appendChild(tb);
+        wrap.appendChild(tbl);
+        rCard.appendChild(wrap);
       }
     } catch (e) {
+      if (reqSeq !== state.teacherDetailSeq || Number(state.teacherClassroomId) !== targetId) return;
       showBanner('加载场次详情失败：' + e.message);
     }
   }

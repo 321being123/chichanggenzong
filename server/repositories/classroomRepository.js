@@ -294,19 +294,33 @@ async function findClassroomByCode(code, client) {
   return rows[0] || null;
 }
 
-async function listClassroomsForAdmin() {
-  const { rows } = await pool.query(
-    `SELECT c.classroom_id, c.classroom_code, c.title, c.mode, c.blind_mode,
-            c.identity_revealed, c.status, c.current_round, c.state_version,
-            c.start_year, c.end_year, c.total_rounds, c.created_at, c.completed_at,
-            COUNT(m.member_id)::int AS member_count
-     FROM public.classroom_classrooms c
-     LEFT JOIN public.classroom_members m ON m.classroom_id = c.classroom_id
-     GROUP BY c.classroom_id
-     ORDER BY c.created_at DESC
-     LIMIT 100`
-  );
-  return rows;
+async function listClassroomsForAdmin({ page = 1, pageSize = 100 } = {}) {
+  const safePage = Math.max(1, Number.parseInt(page, 10) || 1);
+  const safeSize = Math.min(100, Math.max(1, Number.parseInt(pageSize, 10) || 100));
+  const offset = (safePage - 1) * safeSize;
+  const [{ rows: countRows }, { rows }] = await Promise.all([
+    pool.query('SELECT COUNT(*)::int AS total FROM public.classroom_classrooms'),
+    pool.query(
+      `SELECT c.classroom_id, c.classroom_code, c.title, c.mode, c.blind_mode,
+              c.identity_revealed, c.status, c.current_round, c.state_version,
+              c.start_year, c.end_year, c.total_rounds, c.created_at, c.completed_at,
+              COUNT(m.member_id)::int AS member_count
+       FROM public.classroom_classrooms c
+       LEFT JOIN public.classroom_members m ON m.classroom_id = c.classroom_id
+       GROUP BY c.classroom_id
+       ORDER BY c.created_at DESC, c.classroom_id DESC
+       LIMIT $1 OFFSET $2`,
+      [safeSize, offset]
+    ),
+  ]);
+  const total = Number(countRows[0]?.total || 0);
+  return {
+    items: rows,
+    total,
+    page: safePage,
+    pageSize: safeSize,
+    totalPages: Math.max(1, Math.ceil(total / safeSize)),
+  };
 }
 
 async function listClassroomsForSubject(subjectId) {
@@ -672,6 +686,19 @@ async function listRoundSettlements(classroomId, roundNo, client) {
   return rows;
 }
 
+async function listClassroomRevealedSettlements(classroomId, client) {
+  const { rows } = await q(client).query(
+    `SELECT s.*, m.display_nickname, m.classroom_nickname, m.is_nickname_masked, m.username
+     FROM public.classroom_settlements s
+     JOIN public.classroom_members m ON m.member_id = s.member_id
+     JOIN public.classroom_rounds r ON r.classroom_id = s.classroom_id AND r.round_no = s.round_no
+     WHERE s.classroom_id = $1 AND r.status = 'revealed'
+     ORDER BY s.round_no ASC, s.is_official_ranked DESC, COALESCE(s.official_rank, 999999) ASC, s.ending_total_cents DESC, s.member_id ASC`,
+    [classroomId]
+  );
+  return rows;
+}
+
 module.exports = {
   withTransaction,
   fetchCnOpenTradeDates,
@@ -715,4 +742,5 @@ module.exports = {
   insertSettlement,
   listMemberSettlements,
   listRoundSettlements,
+  listClassroomRevealedSettlements,
 };

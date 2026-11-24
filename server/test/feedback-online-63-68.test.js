@@ -58,7 +58,7 @@ console.log('=== 线上反馈 #63-#68 回归测试 ===');
 {
   const saCss = read('public', 'css', 'stock-analysis.css');
   const saChart = read('public', 'js', 'stock-analysis-chart.js');
-  assert.ok(saCss.includes('--profit-color:#4ade80') && saCss.includes('.profit-swatch{background:#4ade80}'), 'stock-analysis.css 应定义嫩绿色变量与色块类');
+  assert.ok(saCss.includes('--profit-color:rgb(108, 178, 108)') && saCss.includes('.profit-swatch{background:rgb(108, 178, 108)}'), 'stock-analysis.css 应定义利润绿色变量与色块类');
   assert.ok(saChart.includes('<i class="profit-swatch"></i>归母净利润'), '图例应使用嫩绿 profit-swatch');
   assert.ok(saChart.includes('<i class="tip-color profit-swatch"'), 'tooltip 应使用嫩绿 profit-swatch');
   console.log('  [PASS] #66 归母净利润柱状图与图例/浮层改用嫩绿色');

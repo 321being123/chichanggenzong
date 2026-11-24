@@ -156,7 +156,7 @@ function stockAnalysisRender(d) {
     infoGroup('估值水平',[
     stockAnalysisMetric('滚动市盈率',stockAnalysisNumber(v.pe_ttm,2),'最近12个月利润',v.pe_ttm<0),
     stockAnalysisMetric('静态市盈率',stockAnalysisNumber(v.pe_static,2),'最新完整年报',v.pe_static<0),
-    stockAnalysisMetric('动态市盈率',stockAnalysisNumber(v.pe_forecast,2),'业绩预告区间中值',v.pe_forecast<0),
+    stockAnalysisMetric('动态市盈率',stockAnalysisNumber(v.pe_forecast,2),v.pe_forecast_basis==='annualized_report'?'最新报告期年化':'业绩预告区间中值',v.pe_forecast<0),
     stockAnalysisMetric('三年平均市盈率',stockAnalysisNumber(v.pe_three_year_avg,2),'最近三个年报平均利润',v.pe_three_year_avg<0),
     stockAnalysisMetric('市净率',stockAnalysisNumber(v.pb,2),'最新归母净资产',v.pb<0),
     stockAnalysisMetric('扣除商誉市净率',stockAnalysisNumber(v.pb_ex_goodwill,2),'净资产扣除商誉',v.pb_ex_goodwill<0)

@@ -168,6 +168,18 @@ function pickBestByQuality(rows) {
   })[0];
 }
 
+// 跨日期回退最近收盘价时必须先限定最高质量等级（confirmed 优先于 candidate），再按交易日降序与 revision 择优。
+function pickLatestBestByQuality(rows) {
+  if (!rows || !rows.length) return null;
+  return rows.slice().sort((a, b) => {
+    const rankDiff = (QUALITY_RANK[b.quality] ?? 0) - (QUALITY_RANK[a.quality] ?? 0);
+    if (rankDiff !== 0) return rankDiff;
+    const dateDiff = String(dateKey(b.date) || '').localeCompare(String(dateKey(a.date) || ''));
+    if (dateDiff !== 0) return dateDiff;
+    return Number(b.revision || 0) - Number(a.revision || 0);
+  })[0];
+}
+
 /**
  * 解析一批证券在某个估值时点的唯一生效价格。
  *
@@ -450,7 +462,7 @@ function resolveOne(context) {
       };
       priceKind = 'close';
     } else {
-      const fallback = pickBestByQuality(shared);
+      const fallback = pickLatestBestByQuality(shared);
       if (fallback && Number(fallback.price) > 0) {
         selected = {
           price: Number(fallback.price), tradeDate: dateKey(fallback.date),
@@ -466,7 +478,7 @@ function resolveOne(context) {
 
   if (!selected) {
     // 账户私有派生价（导入锚点固化价等）：仅本账户可用，且明确标为派生参考价，不构成完整估值。
-    const anchor = pickBestByQuality(derived);
+    const anchor = pickLatestBestByQuality(derived);
     if (anchor && Number(anchor.price) > 0) {
       selected = {
         price: Number(anchor.price), tradeDate: dateKey(anchor.date),

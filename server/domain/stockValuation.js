@@ -187,6 +187,18 @@ function buildAnalysis(data, options = {}) {
   }
   // Tushare forecast 的利润金额单位为万元；三张财报金额单位为元，计算前统一为元。
   if (forecastProfit != null) forecastProfit *= 10000;
+  let peForecastBasis = forecastProfit != null ? 'forecast' : null;
+  if (forecastProfit == null && latestIncome && latestIncome.n_income_attr_p != null) {
+    const latestEnd = dateText(latestIncome.end_date);
+    if (!latestAnnualEndDate || latestEnd > latestAnnualEndDate) {
+      const suffix = latestEnd.slice(4);
+      const factor = suffix === '0331' ? 4 : suffix === '0630' ? 2 : suffix === '0930' ? 4 / 3 : null;
+      if (factor) {
+        forecastProfit = finite(latestIncome.n_income_attr_p) * factor;
+        peForecastBasis = 'annualized_report';
+      }
+    }
+  }
   const equity = finite(latestBalance.total_hldr_eqy_exc_min_int), goodwill = finite(latestBalance.goodwill) || 0;
   const officialRoa = finite(indicatorMap.get(annualIncome[0]?.end_date)?.roa);
   const averageAnnualAssets = average([annualBalance[0]?.total_assets, annualBalance[1]?.total_assets]);
@@ -278,7 +290,7 @@ function buildAnalysis(data, options = {}) {
     valuation: {
       market_cap: marketCap, a_share_market_cap: marketCap, circulating_market_cap: circulatingMarketCap, free_float_market_cap: freeFloatMarketCap,
       annualized_return_since_listing: annualizedSinceListing, return_start_date: earliestValuation?.trade_date || '',
-      pe_ttm: peTtm, pe_static: peStatic, pe_forecast: signedRatio(marketCap, forecastProfit), pe_three_year_avg: peAvg3,
+      pe_ttm: peTtm, pe_static: peStatic, pe_forecast: signedRatio(marketCap, forecastProfit), pe_forecast_basis: peForecastBasis, pe_three_year_avg: peAvg3,
       pb, pb_ex_goodwill: pbExGoodwill, dividend_yield: signedRatio(dividend12m, marketCap), payout_ratio: signedRatio(annualDividend, staticProfit),
       cumulative_payout_ratio: cumulativePayoutRatio, average_dividend_yield: averageDividendYield,
       cumulative_dividend: cumulativeDividend, cumulative_profit: cumulativeProfit,

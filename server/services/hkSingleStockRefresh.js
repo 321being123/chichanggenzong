@@ -4,6 +4,7 @@
 
 const { datasetScope, getDatasetCursors, markDatasetSuccess } = require('./datasetCursors');
 const { readHkCoverage } = require('../repositories/hkSecurityAnalysisRepository');
+const { getMarketState, shanghaiDateTime } = require('./marketState');
 const contract = require('../domain/securityAnalysisContract');
 
 // 必需域决定「核心可用性」；官方未提供的域标客观不可得，不算失败也不伪装完成。
@@ -31,22 +32,91 @@ function cursorSucceeded(cursor, targetDate) {
   return String(cursor.last_success_date || '').slice(0, 10) >= String(targetDate).slice(0, 10);
 }
 
-async function collectMissingDomains({ tsCode, asOfDate, missing }) {
+async function collectMissingDomains({ tsCode, asOfDate, missing, inputs }) {
   // 复用现役港股补数入口（已准入来源 + 统一 Guard + 标准层落库），不新建采集器。
   // 只按单只证券调用，不启动整个选股补数流程；helper 的 ok 不等于分析完整，下面仍按本地覆盖复查。
-  const inputs = require('./stockSelectionInputsSync');
+  const syncInputs = inputs || require('./stockSelectionInputsSync');
   const attempts = [];
   const needsMarket = missing.some(domain => domain === 'bars' || domain === 'valuation');
   const needsFacts = missing.some(domain => domain === 'reports' || domain === 'dividends');
   if (needsMarket) {
-    try { attempts.push({ domain: 'hk_market', result: await inputs.collectHkMarketData({ code: tsCode }, asOfDate) }); }
+    try { attempts.push({ domain: 'hk_market', result: await syncInputs.collectHkMarketData({ code: tsCode }, asOfDate) }); }
     catch (error) { attempts.push({ domain: 'hk_market', error: error.message }); }
   }
   if (needsFacts) {
-    try { attempts.push({ domain: 'hk_facts', result: await inputs.collectOne({ code: tsCode }, asOfDate) }); }
+    try { attempts.push({ domain: 'hk_facts', result: await syncInputs.collectOne({ code: tsCode }, asOfDate) }); }
     catch (error) { attempts.push({ domain: 'hk_facts', error: error.message }); }
   }
   return attempts;
+}
+
+function attemptFailuresByDomain(attempts) {
+  const failures = new Map();
+  for (const attempt of attempts || []) {
+    if (attempt.domain === 'hk_market') {
+      if (attempt.error || !attempt.result || attempt.result.ok === false) {
+        const reason = attempt.error || (attempt.result && attempt.result.reason) || 'hk_market_collection_failed';
+        failures.set('bars', reason);
+        failures.set('valuation', reason);
+      } else {
+        if (!(Number(attempt.result.bars) > 0)) failures.set('bars', 'bars_not_written');
+        if (!(Number(attempt.result.valuations) > 0) || attempt.result.partial) {
+          failures.set('valuation', attempt.result.partial ? 'valuations_partial' : 'valuations_not_written');
+        }
+      }
+    } else if (attempt.domain === 'hk_facts') {
+      if (attempt.error || !attempt.result || attempt.result.ok === false) {
+        const reason = attempt.error || (attempt.result && attempt.result.reason) || 'hk_facts_collection_failed';
+        failures.set('reports', reason);
+        failures.set('dividends', reason);
+      } else {
+        if (attempt.result.financials !== true) failures.set('reports', 'financials_not_collected');
+        if (attempt.result.dividends !== true) failures.set('dividends', 'dividends_not_collected');
+      }
+    }
+  }
+  return failures;
+}
+
+function shiftIsoDate(dateStr, deltaDays) {
+  const ms = Date.parse(`${String(dateStr).slice(0, 10)}T00:00:00Z`);
+  if (!Number.isFinite(ms)) return null;
+  return new Date(ms + deltaDays * 86400000).toISOString().slice(0, 10);
+}
+
+async function resolveExpectedHkMarketDate({ targetDate, time, marketStateFn }) {
+  const queryState = marketStateFn || getMarketState;
+  try {
+    const live = await queryState({ market: 'HK', businessDate: targetDate, time: time || '23:59' });
+    if (!live || live.status === 'unknown') return null;
+    if (live.status === 'open' && live.isAfterMarketClose === true) return targetDate;
+    for (let offset = 1; offset <= 15; offset++) {
+      const candidate = shiftIsoDate(targetDate, -offset);
+      if (!candidate) break;
+      const state = await queryState({ market: 'HK', businessDate: candidate, time: '23:59' });
+      if (!state || state.status === 'unknown') return null;
+      if (state.status === 'open') return candidate;
+    }
+  } catch (_) {
+    return null;
+  }
+  return null;
+}
+
+function isMarketDateFresh(actualDate, targetDate, expectedMarketDate) {
+  if (!actualDate || !targetDate) return false;
+  const actual = String(actualDate).slice(0, 10);
+  if (expectedMarketDate) return actual >= String(expectedMarketDate).slice(0, 10);
+  const actualMs = Date.parse(`${actual}T00:00:00Z`);
+  const targetMs = Date.parse(`${String(targetDate).slice(0, 10)}T00:00:00Z`);
+  if (!Number.isFinite(actualMs) || !Number.isFinite(targetMs)) return false;
+  return ((targetMs - actualMs) / 86400000) <= 3;
+}
+
+function isDomainFresh(domain, coverage, expectedMarketDate, targetDate) {
+  if (domain === 'bars') return isMarketDateFresh(coverage.barsDate, targetDate, expectedMarketDate);
+  if (domain === 'valuation') return isMarketDateFresh(coverage.valuationDate, targetDate, expectedMarketDate);
+  return true;
 }
 
 /**
@@ -56,29 +126,57 @@ async function collectMissingDomains({ tsCode, asOfDate, missing }) {
 async function runHkSingleStockRefresh(options = {}) {
   const tsCode = String(options.tsCode || '').toUpperCase();
   if (!contract.HK_CODE_RE.test(tsCode)) throw new Error('港股刷新必须指定完整标准代码');
-  const targetDate = String(options.targetDate || options.asOfDate || new Date().toISOString().slice(0, 10)).slice(0, 10);
+  const nowInfo = shanghaiDateTime(options.now);
+  const targetDate = String(options.targetDate || options.asOfDate || nowInfo.businessDate).slice(0, 10);
+  const checkTime = options.time || (targetDate === nowInfo.businessDate ? nowInfo.time : '23:59');
+  const deps = options.deps || {};
+  const cursorsApi = deps.cursors || { getDatasetCursors, markDatasetSuccess };
+  const readCoverage = deps.readHkCoverage || readHkCoverage;
+  const hkService = deps.hkSecurityAnalysis || null;
+  const expectedMarketDate = options.expectedMarketDate !== undefined
+    ? options.expectedMarketDate
+    : await resolveExpectedHkMarketDate({ targetDate, time: checkTime, marketStateFn: deps.getMarketState });
   const scope = datasetScope('hk_stock_analysis', tsCode);
-  const cursors = await getDatasetCursors(scope, ALL_DOMAINS);
-  let coverage = await readHkCoverage(tsCode);
+  const cursors = await cursorsApi.getDatasetCursors(scope, ALL_DOMAINS);
+  let coverage = await readCoverage(tsCode);
 
-  const pending = ALL_DOMAINS.filter(domain => !cursorSucceeded(cursors.get(domain), targetDate));
+  const isCursorFresh = (domain) => cursorSucceeded(cursors.get(domain), targetDate)
+    && isDomainFresh(domain, coverage, expectedMarketDate, targetDate);
+
+  const pending = ALL_DOMAINS.filter(domain => !isCursorFresh(domain));
   const attempts = await collectMissingDomains({
     tsCode, asOfDate: targetDate,
     missing: pending.filter(domain => ['bars', 'valuation', 'reports', 'dividends'].includes(domain)),
+    inputs: deps.inputs,
   });
+  const attemptFailures = attemptFailuresByDomain(attempts);
   // 采集后重查本地事实：接口成功但没落库不算覆盖。
-  coverage = await readHkCoverage(tsCode);
+  coverage = await readCoverage(tsCode);
 
   const stageResults = [];
   const remaining = [];
   for (const domain of ALL_DOMAINS) {
-    if (cursorSucceeded(cursors.get(domain), targetDate)) {
+    if (isCursorFresh(domain)) {
       stageResults.push({ domain, status: 'skipped_already_succeeded', targetDate });
+      continue;
+    }
+    if (attemptFailures.has(domain)) {
+      // 上游采集失败或未落库时禁止推进目标日游标，否则同日再刷会跳过采集。
+      const reason = attemptFailures.get(domain);
+      remaining.push({ domain, status: 'pending', reason, required: REQUIRED_DOMAINS.includes(domain) });
+      stageResults.push({ domain, status: 'failed', targetDate, reason });
+      continue;
+    }
+    if (!isDomainFresh(domain, coverage, expectedMarketDate, targetDate)) {
+      // 上游只吐出旧日期数据时库内覆盖日期仍滞后于应有港股交易日，不得推进目标日游标。
+      const reason = 'stale_market_date';
+      remaining.push({ domain, status: 'pending', reason, required: true });
+      stageResults.push({ domain, status: 'failed', targetDate, reason });
       continue;
     }
     const covered = coverageOf(domain, coverage);
     if (covered) {
-      await markDatasetSuccess(scope, domain, { lastSuccessDate: targetDate });
+      await cursorsApi.markDatasetSuccess(scope, domain, { lastSuccessDate: targetDate });
       stageResults.push({ domain, status: 'succeeded', targetDate, source: 'local_coverage' });
     } else if (OPTIONAL_DOMAINS.includes(domain)) {
       remaining.push({ domain, status: 'source_unavailable', reason: domain === 'announcements'
@@ -99,7 +197,7 @@ async function runHkSingleStockRefresh(options = {}) {
   const blocking = remaining.filter(item => item.required).map(item => item.domain);
   if (!blocking.includes('snapshot') || coverage.reports > 0) {
     try {
-      const hk = require('./hkSecurityAnalysis');
+      const hk = hkService || require('./hkSecurityAnalysis');
       const analysis = await hk.refreshHkAnalysis(tsCode, {
         reason: 'manual-hk-single-stock', isoToday: targetDate,
         financial: options.financial === true,
@@ -113,12 +211,13 @@ async function runHkSingleStockRefresh(options = {}) {
   }
   const requiredMissing = remaining.filter(item => item.required).map(item => item.domain);
   const stageComplete = requiredMissing.length === 0;
+  const requiredAttemptFailed = REQUIRED_DOMAINS.some(domain => attemptFailures.has(domain));
   const effectiveDataDate = coverage.valuationDate || coverage.barsDate || null;
   const scopeEvidence = contract.datasetScopeOf({ market: 'HK', targetDate, targetCodes: [tsCode] });
 
   return {
-    ok: true,
-    status: stageComplete ? 'succeeded' : 'partial',
+    ok: !requiredAttemptFailed,
+    status: stageComplete ? 'succeeded' : (requiredAttemptFailed ? 'failed' : 'partial'),
     stageComplete,
     mode: 'stock_analysis',
     market: 'HK',

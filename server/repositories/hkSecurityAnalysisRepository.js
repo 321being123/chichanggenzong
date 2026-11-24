@@ -91,7 +91,7 @@ const REPORT_TABLES = Object.freeze({
 });
 const REPORT_SELECTS = Object.freeze({
   income: 'w.ps_npatoshopc,w.ps_np,w.ps_toi,w.ps_oi,w.ps_beps',
-  balance: 'w.bs_tetoshopc,w.bs_tetshaoehopc,w.bs_ta,w.bs_tl',
+  balance: 'w.bs_tetoshopc,w.bs_tetshaoehopc,w.bs_ta,w.bs_tl,w.bs_gw',
   cashflow: 'w.cfs_ncffoa',
 });
 const REPORT_KINDS = Object.freeze(['income', 'balance', 'cashflow']);

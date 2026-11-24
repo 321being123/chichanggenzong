@@ -3,7 +3,7 @@
    public/shared/style.css 的 bond-feature-* 规范，市场页签复用 .bond-sub-tab，
    表格复用 biz-table / btn 规范，本文件不再重定义这些控件的颜色、圆角和尺寸。 */
 /* 三级标题（选股策略方案）：采用分段胶囊控件，与二级下划线导航做视觉区分 */
-.ss-scheme-bar { display: flex; align-items: center; margin-bottom: 14px; }
+.ss-scheme-bar { display: flex; align-items: center; margin-bottom: 18px; }
 .ss-scheme-segmented { display: inline-flex; align-items: center; gap: 4px; padding: 4px; border: 1px solid var(--border-default); border-radius: var(--r-lg); background: var(--bg-muted); }
 .ss-scheme-tab { min-height: 34px; padding: 0 14px; border: 0; border-radius: var(--r-md); background: transparent; color: var(--text-secondary); font-family: inherit; font-size: 14px; font-weight: 500; cursor: pointer; transition: background-color .15s, color .15s, box-shadow .15s; }
 .ss-scheme-tab:hover { color: var(--text-primary); }
@@ -27,7 +27,8 @@
 .ss-cards .ss-gate-eligible { background: #ecfdf5; color: #047857; }
 .ss-cards .ss-gate-market_closed { background: #fff7ed; color: #b45309; }
 .ss-cards .ss-gate-data_missing { background: #fef2f2; color: #b91c1c; }
-.ss-status { min-height: 22px; margin: 10px 0; color: #b45309; font-size: 13px; }
+.ss-status { min-height: 0; margin: 0 0 18px; color: #b45309; font-size: 13px; }
+.ss-status:empty { display: none; }
 .ss-run-header { margin: 4px 0 14px; padding: 0 16px; }
 .ss-run-meta { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 12px; color: var(--bond-feature-muted); }
 .ss-run-note { margin-top: 8px; font-size: 13px; color: #b45309; line-height: 1.7; }

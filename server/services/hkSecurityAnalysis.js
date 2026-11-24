@@ -18,7 +18,7 @@ const HK_FACT_COLUMNS = Object.freeze({
     profit: ['ps_npatoshopc', 'ps_np'], revenue: ['ps_toi', 'ps_oi'], eps: ['ps_beps'],
   }),
   balance: Object.freeze({
-    equity: ['bs_tetoshopc', 'bs_tetshaoehopc'], assets: ['bs_ta'], liabilities: ['bs_tl'],
+    equity: ['bs_tetoshopc', 'bs_tetshaoehopc'], assets: ['bs_ta'], liabilities: ['bs_tl'], goodwill: ['bs_gw'],
   }),
   cashflow: Object.freeze({
     operating: ['cfs_ncffoa'], capex: [],
@@ -218,17 +218,33 @@ function buildHkAnalysis(data, options = {}) {
     const avgEquity = prevAnnualBalance && prevAnnualBalance.equity !== null && latestAnnualBalance.equity !== null
       ? (latestAnnualBalance.equity + prevAnnualBalance.equity) / 2
       : latestAnnualBalance.equity;
-    if (avgEquity !== null && avgEquity > 0) roe = latestAnnual.profit / avgEquity;
+    if (avgEquity !== null && avgEquity > 0) roe = (latestAnnual.profit / avgEquity) * 100;
     const avgAssets = prevAnnualBalance && prevAnnualBalance.assets !== null && latestAnnualBalance.assets !== null
       ? (latestAnnualBalance.assets + prevAnnualBalance.assets) / 2
       : latestAnnualBalance.assets;
-    if (avgAssets !== null && avgAssets > 0) roa = latestAnnual.profit / avgAssets;
+    if (avgAssets !== null && avgAssets > 0) roa = (latestAnnual.profit / avgAssets) * 100;
   }
 
   let peStatic = null;
   if (cap.value > 0 && latestAnnual && !latestAnnual.currency_unverified && latestAnnual.profit > 0) {
     const profitInMarket = convertToMarketCurrency(latestAnnual.profit, latestAnnual.currency);
     if (profitInMarket && profitInMarket > 0) peStatic = cap.value / profitInMarket;
+  }
+  let peForecast = null, peForecastBasis = null;
+  if (cap.value > 0 && latestInterim && !latestInterim.currency_unverified && latestInterim.profit !== null && latestInterim.profit !== 0) {
+    const pType = String(latestInterim.period_type || '').trim().toLowerCase();
+    // 港股财年结账日非固定 12-31，必须优先按 period_type 判定报告期长度，不能用 0630 猜半年报。
+    const factor = /^(q1|first_quarterly_report)$/i.test(pType) ? 4
+      : /^(semiannual|semi_annual|semiannual_report|semi_annual_report|interim|interim_report|second_quarterly_report|h1)$/i.test(pType) ? 2
+      : /^(q3|third_quarterly_report)$/i.test(pType) ? 4 / 3
+      : null;
+    if (factor) {
+      const interimProfit = convertToMarketCurrency(latestInterim.profit * factor, latestInterim.currency);
+      if (interimProfit && interimProfit !== 0) {
+        peForecast = cap.value / interimProfit;
+        peForecastBasis = 'annualized_report';
+      }
+    }
   }
   let peThreeYearAvg = null;
   if (cap.value > 0 && annual.length >= 3) {
@@ -246,6 +262,19 @@ function buildHkAnalysis(data, options = {}) {
   }
 
   const latestBalanceForSafety = consolidatedFacts.find(group => ofKind(group, 'balance') && !group.currency_unverified) || null;
+  const equityInMarket = latestBalanceForSafety && latestBalanceForSafety.equity !== null
+    ? convertToMarketCurrency(latestBalanceForSafety.equity, latestBalanceForSafety.currency)
+    : null;
+  const hasGoodwill = Boolean(latestBalanceForSafety && latestBalanceForSafety.goodwill !== null && latestBalanceForSafety.goodwill !== undefined);
+  const goodwillInMarket = hasGoodwill
+    ? convertToMarketCurrency(latestBalanceForSafety.goodwill, latestBalanceForSafety.currency)
+    : null;
+  const pbExGoodwill = cap.value > 0 && equityInMarket !== null && goodwillInMarket !== null && (equityInMarket - goodwillInMarket) > 0
+    ? cap.value / (equityInMarket - goodwillInMarket)
+    : null;
+  const effectiveDividendYield = dividend12m.yield.value == null ? sourceDividendYield : dividend12m.yield.value;
+  // 港股仅在有可核对同期间合并分红金额时才计算年度分红率；禁止把近 12 个月股息率与年报利润混算。
+  const payoutRatio = null;
   const liabilitiesInMarket = latestBalanceForSafety && latestBalanceForSafety.liabilities !== null
     ? convertToMarketCurrency(latestBalanceForSafety.liabilities, latestBalanceForSafety.currency)
     : null;
@@ -320,11 +349,11 @@ function buildHkAnalysis(data, options = {}) {
       market_cap: cap.value, a_share_market_cap: null,
       circulating_market_cap: null, free_float_market_cap: null,
       annualized_return_since_listing: null, return_start_date: '',
-      pe_ttm: peTtm, pe_static: peStatic, pe_forecast: null, pe_three_year_avg: peThreeYearAvg,
-      pb, pb_ex_goodwill: null,
-      dividend_yield: dividend12m.yield.value == null ? sourceDividendYield : dividend12m.yield.value,
+      pe_ttm: peTtm, pe_static: peStatic, pe_forecast: peForecast, pe_forecast_basis: peForecastBasis, pe_three_year_avg: peThreeYearAvg,
+      pb, pb_ex_goodwill: pbExGoodwill,
+      dividend_yield: effectiveDividendYield,
       dividend_yield_source: dividend12m.yield.value == null ? 'source_reported' : 'implemented_events',
-      payout_ratio: null, cumulative_payout_ratio: null, average_dividend_yield: null,
+      payout_ratio: payoutRatio, cumulative_payout_ratio: null, average_dividend_yield: null,
       cumulative_dividend: dividend12m.totalAmount, cumulative_profit: null,
       roe, roa,
     },

@@ -143,14 +143,14 @@ async function stockAnalysisRefresh() {
       if (stillCurrent) stockAnalysisSetMessage('已加入后台刷新队列，正在自动等待刷新完成...');
     }
     if (!refreshResult.ok && payload.error && stillCurrent) showToast('刷新失败，已显示上一份有效数据：' + payload.error);
+    if (queuedSlotId && stockAnalysisState.selected === tsCode && stockAnalysisState.selectToken === selectToken) {
+      await stockAnalysisPollSlot(queuedSlotId, tsCode, selectToken);
+    }
   } catch (error) {
     if (stockAnalysisState.selected === tsCode && stockAnalysisState.selectToken === selectToken) stockAnalysisSetMessage(error.message || String(error), true);
   } finally {
     stockAnalysisState.loading = false;
     stockAnalysisSetRefreshButton(false, '刷新数据');
-  }
-  if (queuedSlotId && stockAnalysisState.selected === tsCode && stockAnalysisState.selectToken === selectToken) {
-    await stockAnalysisPollSlot(queuedSlotId, tsCode, selectToken);
   }
 }
 

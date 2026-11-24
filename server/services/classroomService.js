@@ -948,20 +948,33 @@ async function getTeacherState({ classroomId, origin = '' }) {
     isRevealed: currentRound.status === 'revealed',
   });
 
+  const allRevealedRows = await repo.listClassroomRevealedSettlements(classroomId);
+  const mapSettlement = (s) => ({
+    memberId: Number(s.member_id),
+    displayNickname: s.display_nickname,
+    participationType: s.participation_type,
+    isOfficialRanked: Boolean(s.is_official_ranked),
+    officialRank: s.official_rank == null ? null : Number(s.official_rank),
+    referenceRank: s.reference_rank == null ? null : Number(s.reference_rank),
+    openingTotalCents: Number(s.opening_total_cents),
+    endingTotalCents: Number(s.ending_total_cents),
+    roundPnlCents: Number(s.round_pnl_cents),
+    cumulativePnlCents: Number(s.ending_total_cents) - Number(classroom.initial_cash_cents),
+  });
   const settlements = currentRound.status === 'revealed'
-    ? (await repo.listRoundSettlements(classroomId, curRoundNo)).map((s) => ({
-      memberId: Number(s.member_id),
-      displayNickname: s.display_nickname,
-      participationType: s.participation_type,
-      isOfficialRanked: Boolean(s.is_official_ranked),
-      officialRank: s.official_rank == null ? null : Number(s.official_rank),
-      referenceRank: s.reference_rank == null ? null : Number(s.reference_rank),
-      openingTotalCents: Number(s.opening_total_cents),
-      endingTotalCents: Number(s.ending_total_cents),
-      roundPnlCents: Number(s.round_pnl_cents),
-      cumulativePnlCents: Number(s.ending_total_cents) - Number(classroom.initial_cash_cents),
-    }))
+    ? allRevealedRows.filter((s) => Number(s.round_no) === curRoundNo).map(mapSettlement)
     : [];
+  const roundHistoryLeaderboards = [];
+  const byRound = new Map();
+  for (const s of allRevealedRows) {
+    const rNo = Number(s.round_no);
+    if (!byRound.has(rNo)) {
+      const entry = { roundNo: rNo, settlements: [] };
+      byRound.set(rNo, entry);
+      roundHistoryLeaderboards.push(entry);
+    }
+    byRound.get(rNo).settlements.push(mapSettlement(s));
+  }
 
   const joinPath = `/classroom.html?code=${classroom.classroom_code}`;
   const joinUrl = origin ? `${origin.replace(/\/$/, '')}${joinPath}` : joinPath;
@@ -992,6 +1005,7 @@ async function getTeacherState({ classroomId, origin = '' }) {
     },
     participants: participantRows,
     settlements,
+    roundHistoryLeaderboards,
     settledRounds: rounds.filter((r) => r.status === 'revealed').map((r) => Number(r.round_no)),
   };
 }

@@ -74,8 +74,11 @@
         body: JSON.stringify(payload || {}),
       });
     },
-    adminList: function () {
-      return requestJson('/api/classroom/admin/list');
+    adminList: function (page, pageSize) {
+      var qs = [];
+      if (page != null) qs.push('page=' + encodeURIComponent(page));
+      if (pageSize != null) qs.push('pageSize=' + encodeURIComponent(pageSize));
+      return requestJson('/api/classroom/admin/list' + (qs.length ? '?' + qs.join('&') : ''));
     },
     adminCreate: function (payload) {
       return requestJson('/api/classroom/admin/create', {

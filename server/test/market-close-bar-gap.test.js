@@ -687,6 +687,445 @@ async function scenarioLiveHongKong() {
   assert.strictEqual(seriesCalls, before, '港股收盘不等待日线');
 }
 
+async function scenarioCrossAccountReuse() {
+  const code = CODES.crossStock;
+  const accountTwo = '收盘复用二号账户';
+  const accountTwoId = crypto.createHash('sha256').update(USER + '\n' + accountTwo).digest('hex');
+  await resetScenarioWithPositions([{ code, name: '跨账户复用测试股' }], { historical: false });
+  await pool.query(
+    `UPDATE users SET accounts=$2 WHERE username=$1`,
+    [USER, JSON.stringify([ACCOUNT, accountTwo])],
+  );
+  await pool.query(
+    `INSERT INTO accounts (id, username, account_name, cash_base, hk_rate, version, updated_at)
+     VALUES ($1,$2,$3,500,0.868,0,to_char(now(),'YYYY-MM-DD HH24:MI:SS'))
+     ON CONFLICT (id) DO NOTHING`,
+    [accountTwoId, USER, accountTwo],
+  );
+  await pool.query(
+    `INSERT INTO positions (id, username, account_name, account_id, code, name, price, quantity, cost, type, subtype)
+     VALUES ($1,$2,$3,$4,$5,$6,0,100,5,'股权','沪市')`,
+    [crypto.randomUUID(), USER, accountTwo, accountTwoId, code, '跨账户复用测试股'],
+  );
+
+  const first = await marketClose.runMarketCloseByLabel('A股', TODAY, {
+    accounts: [{ username: USER, account_name: ACCOUNT }],
+    quoteMap: new Map([[code, { code, price: 12.5, quote_time: `${TODAY}T15:05:00+08:00` }]]),
+  });
+  assert.strictEqual(first.ok, true, JSON.stringify(first));
+
+  const second = await marketClose.runMarketCloseByLabel('A股', TODAY, {
+    accounts: [{ username: USER, account_name: accountTwo }],
+    quoteMap: new Map([[code, { code, price: 13.5, quote_time: `${TODAY}T15:35:00+08:00` }]]),
+  });
+  assert.strictEqual(second.ok, true, JSON.stringify(second));
+
+  const { rows } = await pool.query(
+    `SELECT price::float8 AS price, quality, is_final, evidence
+       FROM daily_prices WHERE username=$1 AND account_name=$2 AND code=$3 AND date=$4`,
+    [USER, accountTwo, code, TODAY],
+  );
+  assert.strictEqual(rows.length, 1);
+  assert.strictEqual(rows[0].quality, 'confirmed');
+  assert.strictEqual(rows[0].is_final, true);
+  assert.strictEqual(rows[0].price, 12.5, '后续账户必须复用同一证券同日已确认收盘价，不得写入第二个价格');
+  assert.strictEqual(rows[0].evidence.reusedFromConfirmedClose, true);
+
+  const { loadAccountSummary } = require('../db');
+  const summary = await loadAccountSummary(USER, accountTwo);
+  assert.strictEqual(summary.totalAsset, 500 + 12.5 * 100, '复用同价后总资产不得因价格冲突返回空值');
+  const basis = await require('../services/accountPositionBasis').ensurePositionBasis(USER, accountTwo, { date: TODAY });
+  assert.strictEqual(basis.covered, true, JSON.stringify(basis));
+  const nav = await require('../jobs/navSnapshot').recordNavSnapshots(USER, accountTwo, null, TODAY, TODAY);
+  assert.strictEqual(nav.ok, true, JSON.stringify(nav));
+}
+
+async function scenarioFutureQuoteRejected() {
+  const code = CODES.crossStock;
+  await resetScenarioWithPositions([{ code, name: '未来报价拦截测试股' }], { historical: false });
+  const readRealtimeQuotes = datasets.readRealtimeQuotes;
+  datasets.readRealtimeQuotes = async () => new Map();
+  try {
+    const result = await marketClose.runMarketCloseByLabel('A股', TODAY, {
+      accounts: [{ username: USER, account_name: ACCOUNT }],
+      now: `${TODAY}T16:56:00+08:00`,
+      quoteMap: new Map([[code, { code, price: 12.5, quote_time: `${TODAY}T23:59:59+08:00` }]]),
+    });
+    assert.strictEqual(result.ok, false, '晚于任务运行时刻的报价不得确认成功');
+    assert.strictEqual(result.errorType, 'close_quote_not_ready');
+    const row = await accountPrice(code, TODAY);
+    assert.strictEqual(row.quality, 'candidate');
+    assert.notStrictEqual(row.is_final, true);
+    assert.strictEqual(row.evidence.qualification, 'quote_in_future');
+  } finally {
+    datasets.readRealtimeQuotes = readRealtimeQuotes;
+  }
+}
+
+async function scenarioNoInjectedQuoteMap() {
+  const code = CODES.crossStock;
+  await resetScenarioWithPositions([{ code, name: '未注入行情入口测试股' }], { historical: false });
+  const readRealtimeQuotes = datasets.readRealtimeQuotes;
+  let requestedCodes = [];
+  datasets.readRealtimeQuotes = async ({ codes } = {}) => {
+    requestedCodes = codes || [];
+    return new Map([[`${code}.SH`, { code, price: 12.5, quote_time: `${TODAY}T15:05:00+08:00` }]]);
+  };
+  try {
+    const result = await marketClose.runMarketCloseByLabel('A股', TODAY, {
+      accounts: [{ username: USER, account_name: ACCOUNT }],
+    });
+    assert.strictEqual(result.ok, true, JSON.stringify(result));
+    assert.ok(requestedCodes.includes(`${code}.SH`), '未注入 quoteMap 时必须经 select_positions 查询持仓并请求腾讯报价');
+    const row = await accountPrice(code, TODAY);
+    assert.strictEqual(row.quality, 'confirmed');
+    assert.strictEqual(Number(row.price), 12.5);
+  } finally {
+    datasets.readRealtimeQuotes = readRealtimeQuotes;
+  }
+}
+
+async function scenarioBackfillReusesTodayConfirmed() {
+  const code = CODES.crossStock;
+  const accountTwo = '补价复用二号账户';
+  const accountTwoId = crypto.createHash('sha256').update(USER + '\n' + accountTwo).digest('hex');
+  await resetScenarioWithPositions([{ code, name: '补价复用测试股' }], { historical: false });
+  await pool.query(
+    `UPDATE users SET accounts=$2 WHERE username=$1`,
+    [USER, JSON.stringify([ACCOUNT, accountTwo])],
+  );
+  await pool.query(
+    `INSERT INTO accounts (id, username, account_name, cash_base, hk_rate, version, updated_at)
+     VALUES ($1,$2,$3,500,0.868,0,to_char(now(),'YYYY-MM-DD HH24:MI:SS'))
+     ON CONFLICT (id) DO NOTHING`,
+    [accountTwoId, USER, accountTwo],
+  );
+  await pool.query(
+    `INSERT INTO positions (id, username, account_name, account_id, code, name, price, quantity, cost, type, subtype)
+     VALUES ($1,$2,$3,$4,$5,$6,0,100,5,'股权','沪市')`,
+    [crypto.randomUUID(), USER, accountTwo, accountTwoId, code, '补价复用测试股'],
+  );
+
+  const first = await marketClose.runMarketCloseByLabel('A股', TODAY, {
+    accounts: [{ username: USER, account_name: ACCOUNT }],
+    quoteMap: new Map([[code, { code, price: 12.5, quote_time: `${TODAY}T15:05:00+08:00` }]]),
+  });
+  assert.strictEqual(first.ok, true, JSON.stringify(first));
+
+  const readHistorical = datasets.readHistoricalCloseSeries;
+  datasets.readHistoricalCloseSeries = async () => [
+    { trade_date: TODAY.replace(/-/g, ''), close: 13.5, source_code: 'tushare', price_adjust: 'none' },
+  ];
+  try {
+    const { backfillDailyPrices } = require('../jobs/replayNav');
+    const ok = await backfillDailyPrices(USER, accountTwo, code, TODAY, TODAY, { subtype: '沪市' });
+    assert.strictEqual(ok, true, '历史补价包含当天且他账户已有确认价时应复用成功');
+    const { rows } = await pool.query(
+      `SELECT price::float8 AS price, quality, is_final FROM daily_prices
+        WHERE username=$1 AND account_name=$2 AND code=$3 AND date=$4`,
+      [USER, accountTwo, code, TODAY],
+    );
+    assert.strictEqual(rows.length, 1);
+    assert.strictEqual(rows[0].quality, 'confirmed');
+    assert.strictEqual(rows[0].is_final, true);
+    assert.strictEqual(rows[0].price, 12.5, '历史补价范围包含当天时必须复用已有确认价 12.5，不得写入 13.5');
+    const { loadAccountSummary } = require('../db');
+    const summary = await loadAccountSummary(USER, accountTwo);
+    assert.strictEqual(summary.totalAsset, 500 + 12.5 * 100, '总资产不得因价格冲突返回空值');
+  } finally {
+    datasets.readHistoricalCloseSeries = readHistorical;
+  }
+}
+
+async function scenarioConcurrentMarketCloseAndBackfill() {
+  const code = CODES.crossStock;
+  const accountTwo = '并发交错二号账户';
+  const accountTwoId = crypto.createHash('sha256').update(USER + '\n' + accountTwo).digest('hex');
+  await resetScenarioWithPositions([{ code, name: '并发交错测试股' }], { historical: false });
+  await pool.query(
+    `UPDATE users SET accounts=$2 WHERE username=$1`,
+    [USER, JSON.stringify([ACCOUNT, accountTwo])],
+  );
+  await pool.query(
+    `INSERT INTO accounts (id, username, account_name, cash_base, hk_rate, version, updated_at)
+     VALUES ($1,$2,$3,500,0.868,0,to_char(now(),'YYYY-MM-DD HH24:MI:SS'))
+     ON CONFLICT (id) DO NOTHING`,
+    [accountTwoId, USER, accountTwo],
+  );
+  await pool.query(
+    `INSERT INTO positions (id, username, account_name, account_id, code, name, price, quantity, cost, type, subtype)
+     VALUES ($1,$2,$3,$4,$5,$6,0,100,5,'股权','沪市')`,
+    [crypto.randomUUID(), USER, accountTwo, accountTwoId, code, '并发交错测试股'],
+  );
+
+  const readHistorical = datasets.readHistoricalCloseSeries;
+  let releaseHistory;
+  let enteredHistory;
+  const historyEntered = new Promise(resolve => { enteredHistory = resolve; });
+  const historyGate = new Promise(resolve => { releaseHistory = resolve; });
+  datasets.readHistoricalCloseSeries = async () => {
+    enteredHistory();
+    await historyGate;
+    return [{ trade_date: TODAY.replace(/-/g, ''), close: 13.5, source_code: 'tushare', price_adjust: 'none' }];
+  };
+  try {
+    const { backfillDailyPrices } = require('../jobs/replayNav');
+    const backfillPromise = backfillDailyPrices(USER, accountTwo, code, TODAY, TODAY, { subtype: '沪市' });
+    await historyEntered;
+
+    const closeRes = await marketClose.runMarketCloseByLabel('A股', TODAY, {
+      accounts: [{ username: USER, account_name: ACCOUNT }],
+      quoteMap: new Map([[code, { code, price: 12.5, quote_time: `${TODAY}T15:05:00+08:00` }]]),
+    });
+    assert.strictEqual(closeRes.ok, true, JSON.stringify(closeRes));
+
+    releaseHistory();
+    const backfillOk = await backfillPromise;
+    assert.strictEqual(backfillOk, true);
+
+    const { rows } = await pool.query(
+      `SELECT price::float8 AS price, quality, is_final FROM daily_prices
+        WHERE username=$1 AND code=$2 AND date=$3 AND quality='confirmed' AND is_final=true`,
+      [USER, code, TODAY],
+    );
+    assert.strictEqual(rows.length, 2);
+    assert.deepStrictEqual(rows.map(r => r.price), [12.5, 12.5], '并发交错写入时同证券同日只能有一个确认价');
+    const { loadAccountSummary } = require('../db');
+    const summary = await loadAccountSummary(USER, accountTwo);
+    assert.strictEqual(summary.totalAsset, 500 + 12.5 * 100);
+  } finally {
+    datasets.readHistoricalCloseSeries = readHistorical;
+  }
+}
+
+async function scenarioLocalConfirmedWhenUpstreamUnavailable() {
+  const code = CODES.crossStock;
+  const accountTwo = '无上游腾讯复用账户';
+  const accountThree = '无上游补价复用账户';
+  const accountTwoId = crypto.createHash('sha256').update(USER + '\n' + accountTwo).digest('hex');
+  const accountThreeId = crypto.createHash('sha256').update(USER + '\n' + accountThree).digest('hex');
+  await resetScenarioWithPositions([{ code, name: '本地优先复用测试股' }], { historical: false });
+  await pool.query(
+    `UPDATE users SET accounts=$2 WHERE username=$1`,
+    [USER, JSON.stringify([ACCOUNT, accountTwo, accountThree])],
+  );
+  for (const [id, name] of [[accountTwoId, accountTwo], [accountThreeId, accountThree]]) {
+    await pool.query(
+      `INSERT INTO accounts (id, username, account_name, cash_base, hk_rate, version, updated_at)
+       VALUES ($1,$2,$3,500,0.868,0,to_char(now(),'YYYY-MM-DD HH24:MI:SS'))
+       ON CONFLICT (id) DO NOTHING`,
+      [id, USER, name],
+    );
+    await pool.query(
+      `INSERT INTO positions (id, username, account_name, account_id, code, name, price, quantity, cost, type, subtype)
+       VALUES ($1,$2,$3,$4,$5,$6,0,100,5,'股权','沪市')`,
+      [crypto.randomUUID(), USER, name, id, code, '本地优先复用测试股'],
+    );
+  }
+
+  const first = await marketClose.runMarketCloseByLabel('A股', TODAY, {
+    accounts: [{ username: USER, account_name: ACCOUNT }],
+    quoteMap: new Map([[code, { code, price: 12.5, quote_time: `${TODAY}T15:05:00+08:00` }]]),
+  });
+  assert.strictEqual(first.ok, true, JSON.stringify(first));
+
+  const readRealtimeQuotes = datasets.readRealtimeQuotes;
+  const readHistorical = datasets.readHistoricalCloseSeries;
+  datasets.readRealtimeQuotes = async () => { throw new Error('tencent upstream down'); };
+  datasets.readHistoricalCloseSeries = async () => [];
+  try {
+    const closeTwo = await marketClose.runMarketCloseByLabel('A股', TODAY, {
+      accounts: [{ username: USER, account_name: accountTwo }],
+    });
+    assert.strictEqual(closeTwo.ok, true, '本地已有确认价时即使腾讯失败也应复用补齐');
+
+    const { backfillDailyPrices } = require('../jobs/replayNav');
+    const backfillThree = await backfillDailyPrices(USER, accountThree, code, TODAY, TODAY, { subtype: '沪市' });
+    assert.strictEqual(backfillThree, true, '本地已有确认价时即使历史日线为空也应复用补齐');
+
+    const { rows } = await pool.query(
+      `SELECT account_name, price::float8 AS price, quality, is_final FROM daily_prices
+        WHERE username=$1 AND code=$2 AND date=$3`,
+      [USER, code, TODAY],
+    );
+    assert.strictEqual(rows.length, 3);
+    assert.ok(rows.every(r => r.quality === 'confirmed' && r.is_final === true && r.price === 12.5));
+  } finally {
+    datasets.readRealtimeQuotes = readRealtimeQuotes;
+    datasets.readHistoricalCloseSeries = readHistorical;
+  }
+}
+
+async function scenarioConcurrentHkFiveAndSixDigit() {
+  const accountTwo = '港股并发六位账户';
+  const accountTwoId = crypto.createHash('sha256').update(USER + '\n' + accountTwo).digest('hex');
+  await resetScenarioWithPositions([{ code: '08888', name: '港股五位测试', subtype: '港股' }], { historical: false });
+  await pool.query(`UPDATE users SET accounts=$2 WHERE username=$1`, [USER, JSON.stringify([ACCOUNT, accountTwo])]);
+  await pool.query(
+    `INSERT INTO accounts (id, username, account_name, cash_base, hk_rate, version, updated_at)
+     VALUES ($1,$2,$3,500,0.868,0,to_char(now(),'YYYY-MM-DD HH24:MI:SS'))
+     ON CONFLICT (id) DO NOTHING`,
+    [accountTwoId, USER, accountTwo],
+  );
+  const { saveDailyPrices } = require('../db');
+  const { withTransaction } = require('../db/transaction');
+  let txEntered;
+  let releaseTx;
+  const enteredPromise = new Promise(resolve => { txEntered = resolve; });
+  const gatePromise = new Promise(resolve => { releaseTx = resolve; });
+
+  const firstTx = withTransaction(async tx => {
+    await saveDailyPrices(USER, ACCOUNT, TODAY, [{
+      code: '08888', name: '港股五位测试', price: 12.5, quality: 'confirmed', is_final: true,
+      market: 'HK', source: 'market_close_task:港股', quote_at: `${TODAY}T16:30:00+08:00`,
+    }], { client: tx });
+    txEntered();
+    await gatePromise;
+  });
+  await enteredPromise;
+
+  let secondResolved = false;
+  const secondTx = saveDailyPrices(USER, accountTwo, TODAY, [{
+    code: '008888', name: '港股六位测试', price: 13.5, quality: 'confirmed', is_final: true,
+    market: 'HK', source: 'history_backfill:tencent', quote_at: `${TODAY}T16:31:00+08:00`,
+  }]).then(res => { secondResolved = true; return res; });
+
+  await new Promise(resolve => setTimeout(resolve, 120));
+  assert.strictEqual(secondResolved, false, '08888 未提交前，008888 必须被同一咨询锁阻塞');
+  releaseTx();
+  await Promise.all([firstTx, secondTx]);
+
+  const { rows } = await pool.query(
+    `SELECT code, price::float8 AS price FROM daily_prices
+      WHERE username=$1 AND date=$2 AND market='HK' AND code IN ('08888','008888')
+      ORDER BY code`,
+    [USER, TODAY],
+  );
+  assert.strictEqual(rows.length, 2);
+  assert.ok(rows.every(r => r.price === 12.5), `五位与六位港股必须复用同一确认价 12.5，实际: ${JSON.stringify(rows)}`);
+}
+
+async function scenarioMixedReusedAndMissingWhenUpstreamFails() {
+  const stockA = CODES.crossStock;
+  const stockB = '689999';
+  const accountTwo = '混合缺价复用账户';
+  const accountTwoId = crypto.createHash('sha256').update(USER + '\n' + accountTwo).digest('hex');
+  await resetScenarioWithPositions([{ code: stockA, name: '已有确认价股' }], { historical: false });
+  await pool.query(`UPDATE users SET accounts=$2 WHERE username=$1`, [USER, JSON.stringify([ACCOUNT, accountTwo])]);
+  await pool.query(
+    `INSERT INTO accounts (id, username, account_name, cash_base, hk_rate, version, updated_at)
+     VALUES ($1,$2,$3,500,0.868,0,to_char(now(),'YYYY-MM-DD HH24:MI:SS'))
+     ON CONFLICT (id) DO NOTHING`,
+    [accountTwoId, USER, accountTwo],
+  );
+  for (const [c, n] of [[stockA, '已有确认价股'], [stockB, '缺价待重试股']]) {
+    await pool.query(
+      `INSERT INTO positions (id, username, account_name, account_id, code, name, price, quantity, cost, type, subtype)
+       VALUES ($1,$2,$3,$4,$5,$6,0,100,5,'股权','沪市')`,
+      [crypto.randomUUID(), USER, accountTwo, accountTwoId, c, n],
+    );
+  }
+
+  const first = await marketClose.runMarketCloseByLabel('A股', TODAY, {
+    accounts: [{ username: USER, account_name: ACCOUNT }],
+    quoteMap: new Map([[stockA, { code: stockA, price: 12.5, quote_time: `${TODAY}T15:05:00+08:00` }]]),
+  });
+  assert.strictEqual(first.ok, true, JSON.stringify(first));
+
+  const readRealtimeQuotes = datasets.readRealtimeQuotes;
+  datasets.readRealtimeQuotes = async () => { throw new Error('tencent upstream down'); };
+  try {
+    const failedRun = await marketClose.runMarketCloseByLabel('A股', TODAY, {
+      accounts: [{ username: USER, account_name: accountTwo }],
+    });
+    assert.strictEqual(failedRun.ok, false, '仍有缺价证券失败时任务整体应失败');
+
+    const { rows: afterFail } = await pool.query(
+      `SELECT code, price::float8 AS price, quality, is_final FROM daily_prices
+        WHERE username=$1 AND account_name=$2 AND date=$3`,
+      [USER, accountTwo, TODAY],
+    );
+    assert.strictEqual(afterFail.length, 1, '腾讯报错时可复用的确认价必须先落库保留');
+    assert.strictEqual(afterFail[0].code, stockA);
+    assert.strictEqual(afterFail[0].price, 12.5);
+    assert.strictEqual(afterFail[0].quality, 'confirmed');
+
+    let retriedCodes = [];
+    datasets.readRealtimeQuotes = async ({ codes } = {}) => {
+      retriedCodes = codes || [];
+      return new Map([[`${stockB}.SH`, { code: stockB, price: 18.0, quote_time: `${TODAY}T15:06:00+08:00` }]]);
+    };
+    const retryRun = await marketClose.runMarketCloseByLabel('A股', TODAY, {
+      accounts: [{ username: USER, account_name: accountTwo }],
+    });
+    assert.strictEqual(retryRun.ok, true, JSON.stringify(retryRun));
+    assert.deepStrictEqual(retriedCodes.filter(c => c === `${stockA}.SH`), [], '已保留的 stockA 不应再被重试');
+  } finally {
+    datasets.readRealtimeQuotes = readRealtimeQuotes;
+  }
+}
+
+async function scenarioSameAccountHkAliasReuse() {
+  await resetScenarioWithPositions([{ code: '08888', name: '同账户港股五位测试', subtype: '港股' }], { historical: false });
+  const closeRes = await marketClose.runMarketCloseByLabel('港股', TODAY, {
+    accounts: [{ username: USER, account_name: ACCOUNT }],
+    quoteMap: new Map([['08888.HK', { code: '08888', price: 12.5, quote_time: `${TODAY}T16:30:00+08:00` }]]),
+  });
+  assert.strictEqual(closeRes.ok, true, JSON.stringify(closeRes));
+
+  const readStockDaily = datasets.readStockDailySeries;
+  datasets.readStockDailySeries = async () => [
+    { trade_date: TODAY.replace(/-/g, ''), close: 13.5, source_code: 'tencent', price_adjust: 'none' },
+  ];
+  try {
+    const { backfillDailyPrices } = require('../jobs/replayNav');
+    const ok = await backfillDailyPrices(USER, ACCOUNT, '008888', TODAY, TODAY, { subtype: '港股' });
+    assert.strictEqual(ok, true);
+    const { rows } = await pool.query(
+      `SELECT code, price::float8 AS price, quality, is_final FROM daily_prices
+        WHERE username=$1 AND account_name=$2 AND date=$3 AND market='HK' AND code IN ('08888','008888')
+        ORDER BY code`,
+      [USER, ACCOUNT, TODAY],
+    );
+    assert.strictEqual(rows.length, 2);
+    assert.ok(rows.every(r => r.quality === 'confirmed' && r.is_final === true && r.price === 12.5),
+      `同账户港股旧代码补价必须复用 12.5，实际: ${JSON.stringify(rows)}`);
+  } finally {
+    datasets.readStockDailySeries = readStockDaily;
+  }
+}
+
+async function scenarioPartialBatchRefreshFailureKeepsValid() {
+  const stockA = CODES.crossStock;
+  const stockB = '689999';
+  await resetScenarioWithPositions([
+    { code: stockA, name: '首批已有报价股' },
+    { code: stockB, name: '补取报错缺价股' },
+  ], { historical: false });
+
+  const readRealtimeQuotes = datasets.readRealtimeQuotes;
+  datasets.readRealtimeQuotes = async () => { throw new Error('tencent refresh failed'); };
+  try {
+    const quoteMap = new Map([[stockA, { code: stockA, price: 12.5, quote_time: `${TODAY}T15:05:00+08:00` }]]);
+    const res = await marketClose.runMarketCloseByLabel('A股', TODAY, {
+      accounts: [{ username: USER, account_name: ACCOUNT }],
+      quoteMap,
+    });
+    assert.strictEqual(res.ok, false, '仍有缺价证券补取失败时任务整体应失败');
+    const { rows } = await pool.query(
+      `SELECT code, price::float8 AS price, quality, is_final FROM daily_prices
+        WHERE username=$1 AND account_name=$2 AND date=$3`,
+      [USER, ACCOUNT, TODAY],
+    );
+    assert.strictEqual(rows.length, 1, '补取缺价股报错时同批已取得的合格报价必须落库保留');
+    assert.strictEqual(rows[0].code, stockA);
+    assert.strictEqual(rows[0].price, 12.5);
+    assert.strictEqual(rows[0].quality, 'confirmed');
+  } finally {
+    datasets.readRealtimeQuotes = readRealtimeQuotes;
+  }
+}
+
 async function main() {
   await cleanup();
   ACCOUNT_ID = crypto.createHash('sha256').update(USER + '\n' + ACCOUNT).digest('hex');
@@ -701,6 +1140,16 @@ async function main() {
   await scenarioConcurrentCoverageMerge();
   await scenarioLiveQuotes();
   await scenarioLiveHongKong();
+  await scenarioCrossAccountReuse();
+  await scenarioFutureQuoteRejected();
+  await scenarioNoInjectedQuoteMap();
+  await scenarioBackfillReusesTodayConfirmed();
+  await scenarioConcurrentMarketCloseAndBackfill();
+  await scenarioLocalConfirmedWhenUpstreamUnavailable();
+  await scenarioConcurrentHkFiveAndSixDigit();
+  await scenarioMixedReusedAndMissingWhenUpstreamFails();
+  await scenarioSameAccountHkAliasReuse();
+  await scenarioPartialBatchRefreshFailureKeepsValid();
 
   console.log('收盘任务连续重跑回归通过：缺口落库、缺口表异常不误报成功、重跑继续核验与补发布、已发布日线也销账、跨品种不串扰、部分覆盖不判整类通过、共享分区按品种保留覆盖结论、并发发布原子合并、当日报价直写与三处估值一致');
 }

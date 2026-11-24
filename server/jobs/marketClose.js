@@ -12,6 +12,7 @@ const repository = require('../repositories/marketCloseRepository.js');
 const { withTransaction } = require('../db/transaction');
 const { isPublishedDatasetEvidence } = require('../services/datasetPartitionRegistry');
 const { publishCoveragePartition } = require('../services/datasetPartitions');
+const { PRIVATE_SOURCES } = require('../services/effectivePrice');
 const sharedQuotePromises = new Map();
 const legacyFinalTasks = new Map();
 
@@ -124,13 +125,18 @@ function quoteParts(value) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return null;
   const parts = Object.fromEntries(quoteFormatter.formatToParts(date).map(item => [item.type, item.value]));
-  return { date: `${parts.year}-${parts.month}-${parts.day}`, time: `${parts.hour}:${parts.minute}:${parts.second}` };
+  return {
+    date: `${parts.year}-${parts.month}-${parts.day}`,
+    time: `${parts.hour}:${parts.minute}:${parts.second}`,
+    epochMs: date.getTime(),
+  };
 }
 
 // 收盘写入准入（合同 8.3.1-4）：一条报价要写成“已确认终盘价”，必须同时满足
 // ①当日是该市场交易日且任务执行时已过当地收市时刻；②这条报价的报价时刻属于当日；
-// ③报价时刻严格晚于当地收市时刻。收市前缓存只能写候选，等待重新取价。
-function qualifyCloseQuote(state, quoteTime, cnDate, closeTime) {
+// ③报价时刻严格晚于当地收市时刻；④报价时刻不得晚于本次取价/任务运行时刻。
+// 收市前或异常未来时刻缓存只能写候选，等待重新取价。
+function qualifyCloseQuote(state, quoteTime, cnDate, closeTime, nowInput) {
   if (state.status !== 'open' || state.isAfterMarketClose !== true) {
     return { quality: 'candidate', isFinal: null, reason: 'market_not_closed' };
   }
@@ -139,14 +145,17 @@ function qualifyCloseQuote(state, quoteTime, cnDate, closeTime) {
   if (parts.date !== cnDate) return { quality: 'candidate', isFinal: null, reason: 'quote_not_same_day' };
   if (parseClock(closeTime) === null) return { quality: 'candidate', isFinal: null, reason: 'close_time_unknown' };
   if (parts.time <= closeTime + ':00') return { quality: 'candidate', isFinal: null, reason: 'quote_before_close' };
+  const nowMs = nowInput !== undefined ? new Date(nowInput).getTime() : Date.now();
+  if (!Number.isFinite(nowMs)) return { quality: 'candidate', isFinal: null, reason: 'run_time_invalid' };
+  if (parts.epochMs > nowMs) return { quality: 'candidate', isFinal: null, reason: 'quote_in_future' };
   return { quality: 'confirmed', isFinal: true, reason: null };
 }
 
 // 同一天的共享报价也可能来自开市期间；收盘重试必须刷新这种旧报价。
-function quoteNeedsCloseRefresh(quote, state, cnDate) {
+function quoteNeedsCloseRefresh(quote, state, cnDate, nowInput) {
   if (!isUsableQuote(quote, cnDate)) return true;
   if (!state || state.status !== 'open' || state.isAfterMarketClose !== true) return false;
-  return qualifyCloseQuote(state, quote.quote_time, cnDate, state.closeTime).quality !== 'confirmed';
+  return qualifyCloseQuote(state, quote.quote_time, cnDate, state.closeTime, nowInput).quality !== 'confirmed';
 }
 
 // 历史共享日线修复仍要求同证券、同交易日、不复权的终盘证据。
@@ -458,8 +467,8 @@ async function verifyTerminalClose({
 }
 
 // 当日收盘估值直接采用合格腾讯报价，保留原始时间和确认依据。
-function buildCloseRecord({ row, market, label, state, cnDate }) {
-  const qualification = qualifyCloseQuote(state, row.quote_time, cnDate, state.closeTime);
+function buildCloseRecord({ row, market, label, state, cnDate, now }) {
+  const qualification = qualifyCloseQuote(state, row.quote_time, cnDate, state.closeTime, now);
   return {
     ...row,
     quality: qualification.quality,
@@ -477,6 +486,52 @@ function buildCloseRecord({ row, market, label, state, cnDate }) {
       price_adjust: 'none',
       qualification: qualification.reason || 'confirmed',
       priceBasis: qualification.isFinal ? 'tencent_post_close_quote' : 'quote_candidate',
+    },
+  };
+}
+
+function buildConfirmedPriceMap(rows) {
+  const map = new Map();
+  for (const row of (rows || [])) {
+    const market = dailyPriceRowMarket(row);
+    const key = identityOf(market, row.code);
+    const price = Number(row.price);
+    if (!map.has(key) && price > 0) {
+      map.set(key, {
+        code: row.code,
+        market,
+        price,
+        name: row.name || '',
+        source: row.source || null,
+        quote_at: row.quote_at || null,
+        evidence: row.evidence && typeof row.evidence === 'object' ? row.evidence : null,
+      });
+    }
+  }
+  return map;
+}
+
+async function loadConfirmedClosePriceMap(market, cnDate) {
+  const { rows } = await repository.select_confirmed_daily_prices([cnDate, market, PRIVATE_SOURCES]);
+  return buildConfirmedPriceMap(rows);
+}
+
+function buildReusedCloseRecord({ pos, existing, market, label, cnDate }) {
+  const baseEvidence = existing.evidence && typeof existing.evidence === 'object' ? existing.evidence : {};
+  return {
+    code: pos.code,
+    name: pos.name || existing.name || '',
+    price: existing.price,
+    quality: 'confirmed',
+    is_final: true,
+    quote_at: existing.quote_at || null,
+    market,
+    source: existing.source || ('market_close_task:' + label),
+    evidence: {
+      ...baseEvidence,
+      businessDate: cnDate,
+      price_adjust: 'none',
+      reusedFromConfirmedClose: true,
     },
   };
 }
@@ -528,11 +583,44 @@ async function recordCloseOne(username, accountName, label, matchFn, dateStr, co
     }
     return { recorded, failed, skipped, blockedRevision: plan.blocked.length, error: recorded === 0 && failed > 0 };
   }
-  if (context.quoteMap && context.refreshMissingQuotes) {
-    await context.refreshMissingQuotes(missing.map(pos => closeQuoteCode(pos, market)));
-  }
+  const confirmedPrices = context.confirmedPrices instanceof Map
+    ? context.confirmedPrices
+    : await loadConfirmedClosePriceMap(market, cnDate);
+  const reusedRecords = [];
+  const needQuotePositions = [];
   for (const pos of missing) {
-    const q = quoteForCode(context.quoteMap, closeQuoteCode(pos, market));
+    const existingConfirmed = confirmedPrices.get(positionIdentityKey(pos));
+    if (existingConfirmed) {
+      reusedRecords.push(buildReusedCloseRecord({ pos, existing: existingConfirmed, market, label, cnDate }));
+      recorded++;
+    } else {
+      needQuotePositions.push(pos);
+    }
+  }
+  if (reusedRecords.length > 0) {
+    // 先把本地已确认可复用的价格原子落库，避免后续上游取价失败拖累本可复用的证券。
+    await withTransaction(async tx => {
+      await saveDailyPrices(username, accountName, cnDate, reusedRecords, { client: tx });
+      await syncConfirmedCloseToPositions(username, accountName, cnDate, { client: tx });
+    });
+  }
+  let activeQuoteMap = context.quoteMap || null;
+  let refreshError = null;
+  if (needQuotePositions.length > 0) {
+    if (!activeQuoteMap && context.ensureQuoteMap) {
+      activeQuoteMap = await context.ensureQuoteMap();
+    }
+    if (activeQuoteMap && context.refreshMissingQuotes) {
+      try {
+        await context.refreshMissingQuotes(needQuotePositions.map(pos => closeQuoteCode(pos, market)), activeQuoteMap);
+      } catch (err) {
+        // 补取缺价证券失败时不能丢掉同批已拿到的有效报价：先保留有效报价落库，再触发缺价重试。
+        refreshError = err;
+      }
+    }
+  }
+  for (const pos of needQuotePositions) {
+    const q = quoteForCode(activeQuoteMap, closeQuoteCode(pos, market));
     if (isUsableQuote(q, cnDate)) {
       prices.push({ code: pos.code, name: pos.name || q.name || '', price: q.price, quote_time: q.quote_time || null });
       recorded++;
@@ -544,15 +632,36 @@ async function recordCloseOne(username, accountName, label, matchFn, dateStr, co
   if (prices.length > 0) {
     const state = context.quoteState
       || await getMarketState({ market, businessDate: cnDate, time: shanghaiDateTime().time });
-    const rows = prices.map(row => buildCloseRecord({ row, market, label, state, cnDate }));
-    candidateCount = rows.filter(row => row.is_final !== true).length;
+    const nowAt = context.now !== undefined ? context.now : new Date();
+    const freshRows = prices.map(row => buildCloseRecord({ row, market, label, state, cnDate, now: nowAt }));
+    candidateCount = freshRows.filter(row => row.is_final !== true).length;
     // 日价写入与兼容持仓价回写同一事务：任一失败整体回滚，任务如实失败，
     // 不留“日价有了、持仓价没更新”的半成品状态。
     await withTransaction(async tx => {
-      await saveDailyPrices(username, accountName, cnDate, rows, { client: tx });
+      await saveDailyPrices(username, accountName, cnDate, freshRows, { client: tx });
       await syncConfirmedCloseToPositions(username, accountName, cnDate, { client: tx });
     });
+    for (const saved of freshRows) {
+      if (saved.quality === 'confirmed' && saved.is_final === true && Number(saved.price) > 0) {
+        const key = identityOf(market, saved.code);
+        if (!confirmedPrices.has(key)) {
+          confirmedPrices.set(key, {
+            code: saved.code,
+            market,
+            price: Number(saved.price),
+            name: saved.name || '',
+            source: saved.source || null,
+            quote_at: saved.quote_at || null,
+            evidence: saved.evidence || null,
+          });
+        }
+      }
+    }
   }
+  if (refreshError && ['RATE_LIMIT', 'QUOTA_EXHAUSTED', 'CIRCUIT_OPEN', 'DATASET_LOCKED'].includes(refreshError.code)) {
+    throw refreshError;
+  }
+  if (refreshError && failed === 0) failed += 1;
   const error = recorded === 0 && failed > 0;
   return { recorded, failed, skipped, error, candidateCount };
 }
@@ -585,8 +694,13 @@ async function recordMarketClose(label, matchFn, dateStr, context = {}) {
     return { recorded: 0, failed: 0, skipped: 0, verifiedNoChange: true, reason: 'market_closed_or_unknown' };
   }
   const isCurrentDate = cnDate === cnDateStr();
-  const quoteMap = isCurrentDate && label !== '非标准证券'
-    ? (context.quoteMap || await getSharedQuoteMap(cnDate)) : null;
+  let quoteMap = context.quoteMap || null;
+  const ensureQuoteMap = isCurrentDate && label !== '非标准证券'
+    ? async () => {
+      if (!quoteMap) quoteMap = await getSharedQuoteMap(cnDate);
+      return quoteMap;
+    }
+    : null;
   // 终盘证据去重：同一「市场|证券|交易日」在一次任务里只取一次。
   // 多个账户持有同一证券时不再各采一遍；同一证券也不会因多条持仓记录重复请求。
   // 本次新采集的日线会写回共享日线事实（loadTerminalBar），任务结束再按实际证据行发布分区，
@@ -679,17 +793,24 @@ async function recordMarketClose(label, matchFn, dateStr, context = {}) {
     await verifyTerminalClose({ code: gap.code, kind: gap.kind, market: gap.market, date: cnDate, readBar: readTerminalBar });
   }
   const refreshAttempted = new Set();
-  const quoteState = quoteMap
+  const confirmedPrices = isCurrentDate && label !== '非标准证券'
+    ? (context.confirmedPrices instanceof Map
+      ? context.confirmedPrices
+      : await loadConfirmedClosePriceMap(market.market, cnDate))
+    : null;
+  const quoteState = isCurrentDate && label !== '非标准证券'
     ? await getMarketState({ market: market.market, businessDate: cnDate, time: shanghaiDateTime().time })
     : null;
-  const refreshMissingQuotes = quoteMap ? async codes => {
+  const refreshMissingQuotes = isCurrentDate && label !== '非标准证券' ? async (codes, targetQuoteMap) => {
+    const map = targetQuoteMap || quoteMap;
+    if (!map) return;
     const candidates = [...new Set((codes || []).map(code => String(code || '').trim()).filter(Boolean))]
-      .filter(code => !refreshAttempted.has(code) && quoteNeedsCloseRefresh(quoteForCode(quoteMap, code), quoteState, cnDate));
+      .filter(code => !refreshAttempted.has(code) && quoteNeedsCloseRefresh(quoteForCode(map, code), quoteState, cnDate, context.now));
     candidates.forEach(code => refreshAttempted.add(code));
     if (!candidates.length) return;
     const { readRealtimeQuotes } = require('../dataAccess/marketDatasets');
     const refreshed = await readRealtimeQuotes({ codes: candidates, businessDate: cnDate, force: true });
-    mergeQuoteMaps(quoteMap, refreshed);
+    mergeQuoteMaps(map, refreshed);
   } : null;
   // 账户范围可显式收窄（人工定向补跑/回归用）：默认仍是全库所有账户。
   // 共享日线缺口按「任务标签 + 交易日」独立重试，与账户范围无关。
@@ -699,7 +820,8 @@ async function recordMarketClose(label, matchFn, dateStr, context = {}) {
   let recorded = 0, failed = 0, skipped = 0, pendingConfirmation = 0, blockedRevision = 0;
   for (const account of accounts) {
     const r = await recordCloseOne(account.username, account.account_name, label, matchFn, cnDate, {
-      quoteMap, quoteState, refreshMissingQuotes, allowHistoricalRevision: context.allowHistoricalRevision === true,
+      quoteMap, ensureQuoteMap, quoteState, refreshMissingQuotes, confirmedPrices, now: context.now,
+      allowHistoricalRevision: context.allowHistoricalRevision === true,
     })
       .catch(error => {
         if (error && (error.terminalFailure || ['RATE_LIMIT', 'QUOTA_EXHAUSTED', 'CIRCUIT_OPEN', 'DATASET_LOCKED'].includes(error.code))) {

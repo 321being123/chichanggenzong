@@ -42,6 +42,19 @@ function listSharedConfirmedAt(executor, ...args) {
     ORDER BY dp.market, dp.code, dp.date`, ...args);
 }
 
+// 区间内已有共享确认价：历史补价在访问上游日线之前先查本地已确认价，命中即复用。
+function listSharedConfirmedRange(executor, ...args) {
+  return executor(`SELECT dp.date, dp.code, dp.market, dp.price::float8 AS price,
+           dp.quality, dp.is_final, dp.source, dp.evidence
+      FROM daily_prices dp
+     WHERE dp.market=$3 AND dp.code = ANY($4::text[])
+       AND dp.date BETWEEN $5 AND $6
+       AND dp.quality='confirmed' AND dp.is_final=true AND dp.price>0
+       AND COALESCE(dp.source,'') <> ALL($7::text[])
+       AND NOT (dp.username=$1 AND dp.account_name=$2)
+     ORDER BY dp.date, dp.code`, ...args);
+}
+
 // 基准价：本账户在明确目标日期的全部行，保留候选/遗留证据供业务层判资格；
 // 只按目标日期精确读取，不再拉取全历史后由 JS 丢弃旧行。
 function listOwnPricesAt(executor, ...args) {
@@ -109,6 +122,7 @@ module.exports = {
   listOwnPricesInRange,
   listOwnConfirmedBefore,
   listSharedConfirmedAt,
+  listSharedConfirmedRange,
   listOwnPricesAt,
   listOwnConfirmedBeforePairs,
   listOwnLatestBeforePairs,

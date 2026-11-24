@@ -219,6 +219,18 @@ check('市场未过收市时刻 -> 不能确认为终盘', () => {
   assert.strictEqual(q.quality, 'candidate');
   assert.strictEqual(q.reason, 'market_not_closed');
 });
+check('报价晚于本次取价/运行时刻 -> 只能候选，不得写成终盘', () => {
+  const runAt = '2026-11-24T16:56:00+08:00';
+  const futureQuote = '2026-11-24T23:59:59+08:00';
+  const q = mc.qualifyCloseQuote(closedCN, futureQuote, '2026-11-24', '15:00', runAt);
+  assert.strictEqual(q.quality, 'candidate');
+  assert.strictEqual(q.isFinal, null);
+  assert.strictEqual(q.reason, 'quote_in_future');
+  assert.strictEqual(mc.quoteNeedsCloseRefresh({ price: 12.5, quote_time: futureQuote }, closedCN, '2026-11-24', runAt), true);
+  const valid = mc.qualifyCloseQuote(closedCN, '2026-11-24T15:05:00+08:00', '2026-11-24', '15:00', runAt);
+  assert.strictEqual(valid.quality, 'confirmed');
+  assert.strictEqual(valid.isFinal, true);
+});
 check('补漏缺口按身份判定：同形证券不得互相顶替', () => {
   // 与 MARKET_CLOSE_TIMES 一致的规则形状：A 股要求 6 位及以上，港股按 5 位
   const aRule = { label: 'A股', match: code => String(code).length >= 6 && isA(code) };

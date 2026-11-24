@@ -61,7 +61,7 @@ function sameIdentity(current, prior) {
     && restatementValid);
 }
 
-function hasFlowPeriodBasis(current, prior) {
+function hasFlowPeriodBasis(current, prior, market) {
   if (!current || !prior) return false;
   if (!KNOWN_PERIOD_TYPES.has(String(current.period_type || '')) || String(current.period_type) !== String(prior.period_type)) {
     return false;
@@ -74,10 +74,26 @@ function hasFlowPeriodBasis(current, prior) {
   if ((currentCov && currentCov.complete === false) || (priorCov && priorCov.complete === false)) {
     return false;
   }
+  // 若任一方提供了显式累计起始日（period_start/start_date），双方都必须有且月日相同、年份差 1。
+  const curStart = dateKey(current.period_start || current.start_date || (currentCov && currentCov.period_start));
+  const priorStart = dateKey(prior.period_start || prior.start_date || (priorCov && priorCov.period_start));
+  if (curStart || priorStart) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(curStart) || !/^\d{4}-\d{2}-\d{2}$/.test(priorStart)) return false;
+    if (curStart.slice(5) !== priorStart.slice(5) || Number(curStart.slice(0, 4)) - Number(priorStart.slice(0, 4)) !== 1) {
+      return false;
+    }
+  }
   const hasCurFy = current.fiscal_year != null && current.fiscal_year !== '';
   const hasPriorFy = prior.fiscal_year != null && prior.fiscal_year !== '';
   if (hasCurFy !== hasPriorFy) return false;
-  if (hasCurFy && Number(current.fiscal_year) - Number(prior.fiscal_year) !== 1) return false;
+  if (hasCurFy) {
+    if (Number(current.fiscal_year) - Number(prior.fiscal_year) !== 1) return false;
+  } else {
+    // 无财年证据时，仅 A 股法定自然年 CAS 报表具有确定的累计起始日（1月1日）；港股等非自然年市场不得直接算同比。
+    const isNaturalYearCas = String(market || '').toUpperCase() === 'CN'
+      && String(current.accounting_standard || '').toUpperCase() === 'CAS';
+    if (!isNaturalYearCas) return false;
+  }
   return true;
 }
 
@@ -123,11 +139,11 @@ function comparisonOf({ rows, comparisonRows, index, metricCode, rawValue, state
       && sameIdentity(current, row) && isPreviousQuarter(current, row));
   if (compare === 'yoy' && statement !== 'balance') {
     if (!prior) {
-      return hasFlowPeriodBasis(current, current) // 若连当前行都不具备基本期间/来源证据，优先报 flow_period_basis_unverified
+      return hasFlowPeriodBasis(current, current, market)
         ? { value: null, status: contract.FIELD_STATUS.INSUFFICIENT_HISTORY, reason: 'comparable_period_missing' }
         : { value: null, status: contract.FIELD_STATUS.NOT_APPLICABLE, reason: 'flow_period_basis_unverified' };
     }
-    if (!hasFlowPeriodBasis(current, prior)) {
+    if (!hasFlowPeriodBasis(current, prior, market)) {
       return { value: null, status: contract.FIELD_STATUS.NOT_APPLICABLE, reason: 'flow_period_basis_unverified' };
     }
   }
@@ -359,15 +375,29 @@ function buildStatementPayload({ market = 'CN', type = 'balance', rows = [], com
   };
 }
 
+function filterRowsByOptions(allRows, normalized) {
+  return allRows.filter(row => {
+    if (normalized.periodType && normalized.periodType !== 'all') {
+      if (normalized.periodType === 'quarter') {
+        if (row.period_type !== 'q1' && row.period_type !== 'q3') return false;
+      } else if (row.period_type !== normalized.periodType) {
+        return false;
+      }
+    }
+    if (normalized.scope && normalized.scope !== 'all') {
+      if (String(row.statement_scope || 'consolidated') !== normalized.scope) return false;
+    }
+    return true;
+  }).slice(0, normalized.limit);
+}
+
 async function getStockStatements({ tsCode, market = 'CN', type = 'balance', limit = 8, requestedVersion = null, formulaVersion = FORMULA_VERSION, ...options } = {}) {
   if (!dict.STATEMENTS.includes(type)) throw new Error('三表类型无效');
   const normalized = normalizeOptions({ ...options, limit });
-  const [rows, versionRows] = await Promise.all([
-    repository.listStatementRows({ tsCode, market, type, limit: normalized.limit, periodType: normalized.periodType,
-      scope: normalized.scope === 'all' ? null : normalized.scope }),
-    repository.listStatementRows({ tsCode, market, type, limit: 48, periodType: null, scope: null }),
-  ]);
-  const payload = buildStatementPayload({ market, type, rows, comparisonRows: versionRows, versionRows, options: normalized, formulaVersion, canonicalCode: tsCode });
+  // 单次全量快照读取：展示行、比较基期池与版本摘要共享同一份数据库读取，避免两路读取修订漂移、筛选漏基期或长窗口版本遗漏。
+  const allRows = await repository.listStatementRows({ tsCode, market, type, limit: null, periodType: null, scope: null });
+  const rows = filterRowsByOptions(allRows, normalized);
+  const payload = buildStatementPayload({ market, type, rows, comparisonRows: allRows, versionRows: allRows, options: normalized, formulaVersion, canonicalCode: tsCode });
   const conflict = contract.versionConflict(requestedVersion, payload.analysis_version);
   if (conflict) {
     const error = new Error(conflict.error);
@@ -380,7 +410,7 @@ async function getStockStatements({ tsCode, market = 'CN', type = 'balance', lim
 
 async function getStockStatementVersions({ tsCode, market = 'CN', formulaVersion = FORMULA_VERSION } = {}) {
   const entries = await Promise.all(dict.STATEMENTS.map(async type => {
-    const rows = await repository.listStatementRows({ tsCode, market, type, limit: 48, periodType: null, scope: null });
+    const rows = await repository.listStatementRows({ tsCode, market, type, limit: null, periodType: null, scope: null });
     return [type, statementAnalysisVersionOf({ canonicalCode: tsCode, market, type, formulaVersion, rows })];
   }));
   return Object.fromEntries(entries);

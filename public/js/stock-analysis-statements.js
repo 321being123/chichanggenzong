@@ -283,9 +283,9 @@ function stockAnalysisRenderStatements(data) {
       if (item && item.status && item.status !== 'available' && item.status !== 'source_not_disclosed') {
         addStatusMessage(index, '原值', item.reason);
       }
-      if (comparisonEnabled && item && item.comparison_status && item.comparison_status !== 'available') {
+      if (comparisonEnabled && item && item.comparison_status && item.comparison_status !== 'available' && item.comparison_status !== 'source_not_disclosed') {
         var cmpReason = item.comparison_reason;
-        if (cmpReason && cmpReason !== 'comparable_period_missing' && cmpReason !== 'comparable_value_missing') {
+        if (cmpReason && cmpReason !== 'comparable_period_missing' && cmpReason !== 'comparable_value_missing' && cmpReason !== 'source_not_disclosed') {
           addStatusMessage(index, comparisonLabel, cmpReason);
         }
         if (cmpReason) commonComparisonReasons[cmpReason] = (commonComparisonReasons[cmpReason] || 0) + 1;

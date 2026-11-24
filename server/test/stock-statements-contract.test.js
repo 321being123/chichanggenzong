@@ -301,8 +301,8 @@ assert.strictEqual(field(flow, 'ps.tp').values[0].change, null, '累计流量表
 assert.strictEqual(field(flow, 'ps.tp').values[0].comparison_reason, 'cumulative_flow_qoq_not_supported');
 const flowYoy = buildStatementPayload({ market: 'CN', type: 'income', canonicalCode: '600000.SH', options: { compare: 'yoy' },
   rows: [
-    row({ report_id: 2, period_end: '2025-06-30', source_code: 'lixinger_official', update_flag: null, ps_tp: 3 }),
-    row({ report_id: 1, period_end: '2024-06-30', source_code: 'lixinger_official', update_flag: null, ps_tp: 2 }),
+    row({ report_id: 2, period_end: '2025-06-30', currency_code: 'CNY', accounting_standard: 'CAS', source_code: 'lixinger_official', update_flag: null, ps_tp: 3 }),
+    row({ report_id: 1, period_end: '2024-06-30', currency_code: 'CNY', accounting_standard: 'CAS', source_code: 'lixinger_official', update_flag: null, ps_tp: 2 }),
   ] });
 assert.strictEqual(field(flowYoy, 'ps.tp').values[0].yoy, 0.5, '同口径同报告期的累计流量表应可计算同比');
 assert.strictEqual(field(flowYoy, 'ps.tp').values[0].comparison_status, 'available');
@@ -313,6 +313,24 @@ const flowUnverifiedSource = buildStatementPayload({ market: 'CN', type: 'income
   ] });
 assert.strictEqual(field(flowUnverifiedSource, 'ps.tp').values[0].yoy, null, '缺少可信来源/期间证据时流量表不得计算同比');
 assert.strictEqual(field(flowUnverifiedSource, 'ps.tp').values[0].comparison_reason, 'flow_period_basis_unverified');
+const flowHkNoFy = buildStatementPayload({ market: 'HK', type: 'income', canonicalCode: '00001.HK', options: { compare: 'yoy' },
+  rows: [
+    row({ report_id: 2, period_end: '2025-06-30', fiscal_year: null, source_code: 'lixinger_official', update_flag: null, ps_tp: 3 }),
+    row({ report_id: 1, period_end: '2024-06-30', fiscal_year: null, source_code: 'lixinger_official', update_flag: null, ps_tp: 2 }),
+  ] });
+assert.strictEqual(field(flowHkNoFy, 'ps.tp').values[0].comparison_reason, 'flow_period_basis_unverified', '港股两期均无财年证据时流量表不得计算同比');
+const flowDiffStart = buildStatementPayload({ market: 'CN', type: 'cashflow', canonicalCode: '600000.SH', options: { compare: 'yoy' },
+  rows: [
+    row({ report_id: 2, period_end: '2025-06-30', period_start: '2025-04-01', currency_code: 'CNY', accounting_standard: 'CAS', source_code: 'lixinger_official', update_flag: null, cfs_ncffoa: 3 }),
+    row({ report_id: 1, period_end: '2024-06-30', period_start: '2024-01-01', currency_code: 'CNY', accounting_standard: 'CAS', source_code: 'lixinger_official', update_flag: null, cfs_ncffoa: 2 }),
+  ] });
+assert.strictEqual(field(flowDiffStart, 'cfs.ncffoa').values[0].comparison_reason, 'flow_period_basis_unverified', '累计起始日不同时流量表不得计算同比');
+const flowCnCasYoy = buildStatementPayload({ market: 'CN', type: 'income', canonicalCode: '600000.SH', options: { compare: 'yoy' },
+  rows: [
+    row({ report_id: 2, period_end: '2025-06-30', currency_code: 'CNY', accounting_standard: 'CAS', fiscal_year: null, source_code: 'lixinger_official', update_flag: null, ps_tp: 3 }),
+    row({ report_id: 1, period_end: '2024-06-30', currency_code: 'CNY', accounting_standard: 'CAS', fiscal_year: null, source_code: 'lixinger_official', update_flag: null, ps_tp: 2 }),
+  ] });
+assert.strictEqual(field(flowCnCasYoy, 'ps.tp').values[0].yoy, 0.5, 'A股法定自然年CAS官方流量表应可计算同比');
 const flowMismatchFy = buildStatementPayload({ market: 'HK', type: 'cashflow', canonicalCode: '00001.HK', options: { compare: 'yoy' },
   rows: [
     row({ report_id: 2, period_end: '2025-06-30', fiscal_year: '2025', source_code: 'lixinger_official', update_flag: null, cfs_ncffoa: 3 }),

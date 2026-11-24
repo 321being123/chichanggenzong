@@ -126,7 +126,9 @@ async function listStatementRows({ tsCode, market = 'CN', type = 'balance', limi
     params.push(scope);
     predicates.push(`COALESCE(r.statement_scope,'consolidated')=$${params.length}`);
   }
-  params.push(Math.max(3, Math.min(48, Number(limit) || 8)));
+  const hasLimit = limit !== null && limit !== undefined;
+  const limitClause = hasLimit ? `\n    LIMIT $${params.length + 1}` : '';
+  if (hasLimit) params.push(Math.max(3, Math.min(500, Number(limit) || 8)));
   const { rows } = await runner.query(`SELECT r.report_id,r.company_id,to_char(COALESCE(w.period_end,r.period_end),'YYYY-MM-DD') AS period_end,
        ${periodTypeExpression} AS period_type,
        to_char(COALESCE(w.announced_at,r.announced_at),'YYYY-MM-DD') AS announced_at,
@@ -150,8 +152,7 @@ async function listStatementRows({ tsCode, market = 'CN', type = 'balance', limi
      LEFT JOIN ops.data_sources ds ON ds.source_id=COALESCE(w.source_id,r.source_id)
      LEFT JOIN core.companies c ON c.company_id=r.company_id
     WHERE ${predicates.join(' AND ')}
-    ORDER BY COALESCE(w.period_end,r.period_end) DESC,COALESCE(w.announced_at,r.announced_at) DESC NULLS LAST,r.report_id DESC
-    LIMIT $${params.length}`, params);
+    ORDER BY COALESCE(w.period_end,r.period_end) DESC,COALESCE(w.announced_at,r.announced_at) DESC NULLS LAST,r.report_id DESC${limitClause}`, params);
   return rows;
 }
 

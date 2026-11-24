@@ -63,6 +63,11 @@ async function stockAnalysisLoadStatements(type) {
     var payload = response.payload;
     if (requestToken !== stockStatementState.requestToken || selectToken !== stockAnalysisState.selectToken) return;
     if (!response.ok) throw new Error(payload.error || '三表读取失败');
+    var availablePeriods = payload && payload.available_filters && payload.available_filters.period_types;
+    if (filters.periodType === 'unknown' && Array.isArray(availablePeriods) && availablePeriods.indexOf('unknown') < 0) {
+      filters.periodType = 'all';
+      return stockAnalysisLoadStatements(type);
+    }
     stockStatementState.cache[key] = payload;
     stockAnalysisRenderStatements(payload);
   } catch (error) {

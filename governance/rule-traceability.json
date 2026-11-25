@@ -6268,7 +6268,7 @@
     },
     {
       "id": "IMPORT-IDENTITY-CONFLICT-001",
-      "title": "导入与账本写入前必须按规范交易所代码核对主档名称，冲突阻断入账且不阻断同ID幂等重试",
+      "title": "导入与账本写入前必须按规范交易所代码核对主档名称，保留显式交易所并补零港股短码，冲突阻断入账且不阻断同ID幂等重试",
       "implementation": {
         "file": "server/services/securityIdentity.js",
         "symbol": "detectCodeNameConflicts"

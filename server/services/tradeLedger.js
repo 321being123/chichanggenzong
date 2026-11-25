@@ -177,6 +177,13 @@ async function applyTrade(username, accountName, trade, externalClient = null, e
       if (codeInfo) {
         t.type = codeInfo.type;
         t.subtype = codeInfo.subtype;
+        if (!identity && codeInfo.type === '股权') {
+          const exMatch = /\.(SH|SZ|BJ|HK)$/i.exec(rawCode) || /^(SH|SZ|BJ|HK)\d/i.exec(rawCode);
+          if (exMatch) {
+            const exMap = { SH: '沪市', SZ: '深市', BJ: '京市', HK: '港股' };
+            t.subtype = exMap[exMatch[1].toUpperCase()] || t.subtype;
+          }
+        }
       }
     }
   }

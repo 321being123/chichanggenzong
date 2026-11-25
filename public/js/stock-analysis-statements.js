@@ -447,6 +447,12 @@ function stockAnalysisRenderStatements(data) {
         }
         if (qoqReason) commonComparisonReasons[qoqReason] = (commonComparisonReasons[qoqReason] || 0) + 1;
       }
+      if (dualStickyCols && ['currency', 'per_share'].includes(field.measure_type) && item && item.single_reason) {
+        var ptSingle = String((data.periods[index] && data.periods[index].period_type) || '').toLowerCase();
+        if ((ptSingle === 'q1' || ptSingle === 'q3') && item.single_reason !== 'comparable_period_missing' && item.single_reason !== 'comparable_value_missing' && item.single_reason !== 'source_not_disclosed') {
+          addStatusMessage(index, '单季', item.single_reason);
+        }
+      }
     });
     var statusMessages = statusOrder.map(function(groupKey) {
       return statusGroups[groupKey].join('、') + ' ' + groupKey;
@@ -512,9 +518,13 @@ function stockAnalysisRenderStatements(data) {
       var subQoqVal = useSemiannualRow ? null : item.single_qoq;
       var subSrc = useSemiannualRow ? (item.yoy_source || item.comparison_source) : item.single_source;
       var subReason = useSemiannualRow ? (item.yoy_reason || item.comparison_reason) : item.single_reason;
-      var out = '<td class="statement-value statement-subperiod-val' + (sVal === '—' ? ' statement-missing' : '') + (!comparisonEnabled ? endCls : '') + '">' + escapeHtml(sVal) + '</td>';
-      if (showYoy) out += renderChangeCell(showSubInCol ? subYoyVal : null, 'ratio', subSrc, null, subReason, 'stmt-period-' + periodIndex + ' stmt-yoy-' + periodIndex, !showQoq ? endCls : '');
-      if (showQoq) out += renderChangeCell(showSubInCol ? subQoqVal : null, 'ratio', subSrc, null, subReason, 'stmt-period-' + periodIndex + ' stmt-qoq-' + periodIndex, endCls);
+      var subValReasonText = showSubInCol && sVal === '—' && subReason ? stockAnalysisStatementReason(subReason) : '';
+      var subValStatusAttr = subValReasonText
+        ? ' data-status="not_applicable" title="' + escapeHtml(subValReasonText) + '" aria-label="' + escapeHtml(subValReasonText) + '"'
+        : '';
+      var out = '<td class="statement-value statement-subperiod-val' + (sVal === '—' ? ' statement-missing' : '') + (!comparisonEnabled ? endCls : '') + '"' + subValStatusAttr + '>' + escapeHtml(sVal) + '</td>';
+      if (showYoy) out += renderChangeCell(showSubInCol ? subYoyVal : null, 'ratio', subSrc, showSubInCol && subYoyVal == null && subReason ? 'not_applicable' : null, subReason, 'stmt-period-' + periodIndex + ' stmt-yoy-' + periodIndex, !showQoq ? endCls : '');
+      if (showQoq) out += renderChangeCell(showSubInCol ? subQoqVal : null, 'ratio', subSrc, showSubInCol && subQoqVal == null && subReason ? 'not_applicable' : null, subReason, 'stmt-period-' + periodIndex + ' stmt-qoq-' + periodIndex, endCls);
       return out;
     }).join('');
     var subTr = '<tr class="' + rowClass + ' statement-subperiod-row" data-statement-level="' + depth + '"' + roleAttr + groupAttr + codeAttr + parentAttr + '><th scope="row" class="statement-col-name"><span class="statement-subperiod-indent"></span></th><th scope="row" class="statement-col-basis">' + escapeHtml(subRowLabel) + '</th>' + subCells + '</tr>';

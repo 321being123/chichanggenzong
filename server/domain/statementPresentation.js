@@ -458,7 +458,7 @@ function buildStatementPresentation(visibleFields, { metrics = [], statement = '
     if (topGroup !== currentTopGroup) {
       currentTopGroup = topGroup;
       currentSubGroup = null;
-      if (!subGroup && field.rep_group === topGroup && (hasAvailableValue || String(field.label || '') === String(topGroup || ''))) {
+      if (!subGroup && field.rep_group === topGroup) {
         isGroupRep = true;
       } else {
         rows.push({

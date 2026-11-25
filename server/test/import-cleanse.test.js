@@ -304,10 +304,29 @@ async function main() {
     const crossNorm = await identity.normalizeImportedItems([
       { kind: 'position', code: '000001.SZ', name: '上证指数', price: 10, quantity: 100, date: '2026-11-25' },
       { kind: 'position', code: '600000', name: '浦发银行', price: 10, quantity: 100, date: '2026-11-25' },
-    ], crossExExecutor);
+      { kind: 'position', code: '700', name: '中金公司', price: 10, quantity: 100, date: '2026-11-25' },
+    ], async () => ({
+      rows: [
+        { canonical_code: '000001.SH', name: '上证指数', market: 'CN', exchange_code: 'SSE', currency_code: 'CNY' },
+        { canonical_code: '000001.SZ', name: '平安银行', market: 'CN', exchange_code: 'SZSE', currency_code: 'CNY' },
+        { canonical_code: '600000.SH', name: '测试正股', market: 'CN', exchange_code: 'SSE', currency_code: 'CNY' },
+        { canonical_code: '00700.HK', name: '腾讯控股', market: 'HK', exchange_code: 'HKEX', currency_code: 'HKD' },
+      ],
+    }));
     const crossOut = cleanse.attachIdentityConflictValidation(crossNorm);
     assert.strictEqual(crossOut[0]._v.status, 'blocked', '000001.SZ 不得借用 000001.SH 名称放行');
     assert.strictEqual(crossOut[1]._identityConflict, undefined, 'CI 种子占位名称 测试正股 不得误拦真实证券');
+    assert.strictEqual(crossOut[2]._v.status, 'blocked', '港股短码 700 配错名称必须在预览即标为 blocked');
+
+    // Excel 结构化直解析保留原始交易所后缀用于冲突校验
+    const importRouter = require('../routes/import');
+    const structuredRows = importRouter.buildStructuredItems([
+      ['代码', '名称', '价格', '数量'],
+      ['000001.SH', '平安银行', '10', '100'],
+    ]);
+    const structuredCross = cleanse.attachIdentityConflictValidation(await identity.normalizeImportedItems(structuredRows, crossExExecutor));
+    assert.strictEqual(structuredCross[0]._v.status, 'blocked', 'Excel 结构化直解析不得在校验前丢掉 .SH');
+    assert.strictEqual(structuredCross[0].raw_code, undefined, '返回前应清理临时 raw_code');
 
     // 主档查询失败时写入边界不得静默放行
     const failExecutor = async (sql) => {

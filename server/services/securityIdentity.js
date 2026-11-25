@@ -142,7 +142,7 @@ function canonicalOfImportCode(rawCode, rawName) {
   if (prefixMatch) return `${prefixMatch[2]}.${prefixMatch[1]}`;
   const info = classifyCode(s, rawName);
   if (info && info.market && /^(sh|sz|bj|hk)$/i.test(info.market)) {
-    const codePart = info.code || s;
+    const codePart = info.code || classifyCode.normalizeCode(s, rawName) || s;
     return `${String(codePart).toUpperCase()}.${info.market.toUpperCase()}`;
   }
   return String(classifyCode.normalizeCode(s, rawName) || '').trim().toUpperCase();
@@ -153,9 +153,12 @@ async function detectCodeNameConflicts(items, query, options = {}) {
   const nameSet = new Set();
   for (const item of items) {
     if (!item || !item.code || !item.name) continue;
-    const digits = plainCode(item.code);
+    const checkCode = item._rawCodeForConflict || item.raw_code || item.code;
+    const digits = plainCode(checkCode);
+    const canonDigits = plainCode(canonicalOfImportCode(checkCode, item.name));
     const nm = nameKey(item.name);
     if (digits) codeSet.add(digits);
+    if (canonDigits) codeSet.add(canonDigits);
     if (nm) nameSet.add(nm);
   }
   if (!codeSet.size || !nameSet.size) return items;
@@ -183,7 +186,7 @@ async function detectCodeNameConflicts(items, query, options = {}) {
 
   return items.map(item => {
     if (!item || !item.code || !item.name) return item;
-    const checkCode = item._rawCodeForConflict || item.code;
+    const checkCode = item._rawCodeForConflict || item.raw_code || item.code;
     const digits = plainCode(checkCode);
     if (!digits) return item;
     const targetCanonical = canonicalOfImportCode(checkCode, item.name);
@@ -216,7 +219,7 @@ async function normalizeImportedItems(items, executor) {
   const resolved = new Map();
   for (const item of list) {
     if (!item || !item.code) continue;
-    const rawCode = String(item.code).trim();
+    const rawCode = String(item.raw_code || item.code).trim();
     const rawName = String(item.name == null ? '' : item.name).trim();
     const key = cleanCode(rawCode) + '\u0000' + nameKey(rawName);
     if (!resolved.has(key)) resolved.set(key, await resolveAmbiguousSecurity(rawCode, rawName, query));
@@ -224,7 +227,7 @@ async function normalizeImportedItems(items, executor) {
 
   const normalized = list.map(item => {
     if (!item || !item.code) return item;
-    const rawCode = String(item.code).trim();
+    const rawCode = String(item.raw_code || item.code).trim();
     const rawName = String(item.name == null ? '' : item.name).trim();
     const key = cleanCode(rawCode) + '\u0000' + nameKey(rawName);
     const identity = resolved.get(key);
@@ -242,9 +245,11 @@ async function normalizeImportedItems(items, executor) {
   });
   const checked = await detectCodeNameConflicts(normalized, query);
   return checked.map(item => {
-    if (!item || typeof item !== 'object' || !Object.prototype.hasOwnProperty.call(item, '_rawCodeForConflict')) return item;
+    if (!item || typeof item !== 'object') return item;
+    if (!Object.prototype.hasOwnProperty.call(item, '_rawCodeForConflict') && !Object.prototype.hasOwnProperty.call(item, 'raw_code')) return item;
     const copy = { ...item };
     delete copy._rawCodeForConflict;
+    delete copy.raw_code;
     return copy;
   });
 }

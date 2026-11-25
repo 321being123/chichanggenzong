@@ -297,9 +297,9 @@ assert.ok(statementsPresenter.includes('stockAnalysisState.selected !== code'), 
   // F-02: 仅比较列有值、采集不完整状态必须保留；整表全零时普通零值行仍应隐藏
   view.stockAnalysisRenderStatements({
     name: '利润表', type: 'income', compare: 'yoy', unit_label: '原值',
-    periods: [{ end_date: '2026-09-30', scope: 'consolidated', currency: 'CNY' }],
+    periods: [{ end_date: '2026-09-30', period_type: 'q3', report_type_label: 'third_quarterly_report', scope: 'consolidated', currency: 'CNY' }],
     fields: [
-      { code: 'ps.oi', label: '营业收入', section: '营业收入', values: [{ value: 100, status: 'available', yoy: 0.1, yoy_status: 'available' }] },
+      { code: 'ps.oi', label: '营业收入', measure_type: 'currency', section: '营业收入', values: [{ value: 100, status: 'available', yoy: 0.1, yoy_status: 'available', single_value: null, single_reason: 'flow_period_basis_unverified' }] },
       { code: 'ps.zero_with_yoy', label: '仅同比有值项', section: '营业收入', values: [{ value: 0, status: 'available', yoy: 0.05, yoy_status: 'available' }] },
       { code: 'ps.incomplete', label: '采集不完整项', section: '营业收入', values: [{ value: null, status: 'collection_incomplete', reason: 'source_batch_incomplete' }] },
       { code: 'ps.all_zero', label: '普通全零项', section: '营业收入', values: [{ value: 0, status: 'available', yoy: null }] },
@@ -309,6 +309,10 @@ assert.ok(statementsPresenter.includes('stockAnalysisState.selected !== code'), 
   assert.ok(f02Text.includes('仅同比有值项') && f02Text.includes('采集不完整项') && !f02Text.includes('普通全零项'), 'F-02: 保留仅比较列有值与采集不完整项，隐藏普通全零项');
   const incompleteTip = dom.window.document.querySelector('tr[data-statement-code="ps.incomplete"] details.statement-label-tip');
   assert.ok(incompleteTip && incompleteTip.querySelector('summary.statement-label-has-tip') && /来源采集不完整/.test(incompleteTip.textContent), 'F-03: 逐期采集不完整原因必须可通过标题键盘/触屏展开');
+  const subValCell = dom.window.document.querySelector('tr[data-statement-code="ps.oi"].statement-subperiod-row td.statement-subperiod-val');
+  assert.ok(subValCell && /累计报告期起始日及重述口径尚未核实/.test(subValCell.getAttribute('aria-label') || ''), 'F-03: 单季不可比时 subperiod 单元格必须渲染 single_reason');
+  const singleTip = dom.window.document.querySelector('tr[data-statement-code="ps.oi"] details.statement-label-tip');
+  assert.ok(singleTip && /累计报告期起始日及重述口径尚未核实/.test(singleTip.textContent), 'F-03: 单季不可比原因必须可通过标题键盘/触屏展开');
 
   view.stockAnalysisRenderStatements({
     name: '利润表', type: 'income', compare: 'yoy', unit_label: '原值',
@@ -453,7 +457,11 @@ assert.ok(utilsScript.includes('function appChartTooltip(') && holdingsCharts.sp
   ]) {
     const metrics = dict.metricsOfType(mkt, tbl).filter(x => x.statement === 'income');
     for (const val of [10, null]) {
-      const fields = pres.presentationOf(metrics, 'income', 'CNY').map(f => ({ ...f, values: [{ value: val }] }));
+      const fields = pres.presentationOf(metrics, 'income', 'CNY').map(f => ({
+        ...f,
+        label: f.code === 'ps.ite' ? '减：所得税费用' : f.label,
+        values: [{ value: val, status: val == null ? 'collection_incomplete' : 'available' }],
+      }));
       const model = pres.buildStatementPresentation(fields, { metrics, statement: 'income' });
       const iteRows = model.rows.filter(r => r.label === '所得税费用' || r.code === 'ps.ite');
       assert.deepStrictEqual(iteRows.map(r => r.kind + ':' + (r.code || r.label)), ['field:ps.ite'], `F-04: ${mkt}|${tbl} (val=${val}) 不得重复生成所得税费用分组标题`);

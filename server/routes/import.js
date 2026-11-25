@@ -318,7 +318,7 @@ function buildStructuredItems(rows) {
     const price = parseNumericCell(get('price'));
     const qty = parseNumericCell(get('qty'));
     if (!isFinite(price) || !isFinite(qty)) continue;
-    const item = { kind: kind, code: normalizeCode(code, name), name: name || code, price: price, quantity: qty };
+    const item = { kind: kind, code: normalizeCode(code, name), raw_code: code, name: name || code, price: price, quantity: qty };
     if (kind === 'trade') {
       const dirRaw = String(get('dir') == null ? '' : get('dir'));
       item.direction = /卖|卖出|sell/i.test(dirRaw) ? 'sell' : 'buy';

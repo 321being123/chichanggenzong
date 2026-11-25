@@ -292,6 +292,43 @@ async function main() {
       () => tradeLedger.applyTrade('u1', '默认账户', { code: '601990', name: '中金公司', direction: 'buy', price: 25.51, quantity: 100, date: '2026-11-25' }, { query: fakeExecutor }),
       err => err && err.status === 400 && /南京证券/.test(err.message)
     );
+
+    // 同号跨交易所不得互借名称（000001.SH 上证指数 vs 000001.SZ 平安银行）
+    const crossExExecutor = async () => ({
+      rows: [
+        { canonical_code: '000001.SH', name: '上证指数', market: 'CN', exchange_code: 'SSE', currency_code: 'CNY' },
+        { canonical_code: '000001.SZ', name: '平安银行', market: 'CN', exchange_code: 'SZSE', currency_code: 'CNY' },
+        { canonical_code: '600000.SH', name: '测试正股', market: 'CN', exchange_code: 'SSE', currency_code: 'CNY' },
+      ],
+    });
+    const crossNorm = await identity.normalizeImportedItems([
+      { kind: 'position', code: '000001.SZ', name: '上证指数', price: 10, quantity: 100, date: '2026-11-25' },
+      { kind: 'position', code: '600000', name: '浦发银行', price: 10, quantity: 100, date: '2026-11-25' },
+    ], crossExExecutor);
+    const crossOut = cleanse.attachIdentityConflictValidation(crossNorm);
+    assert.strictEqual(crossOut[0]._v.status, 'blocked', '000001.SZ 不得借用 000001.SH 名称放行');
+    assert.strictEqual(crossOut[1]._identityConflict, undefined, 'CI 种子占位名称 测试正股 不得误拦真实证券');
+
+    // 主档查询失败时写入边界不得静默放行
+    const failExecutor = async (sql) => {
+      if (String(sql).includes('core.instruments')) throw new Error('db down');
+      return { rows: [] };
+    };
+    await assert.rejects(
+      () => tradeLedger.applyTrade('u1', '默认账户', { code: '601990', name: '中金公司', direction: 'buy', price: 25.51, quantity: 100, date: '2026-11-25' }, { query: failExecutor }),
+      err => err && err.status === 503
+    );
+
+    // F-06: 已落库事件带同 id 重试必须在主档名称校验之前幂等返回成功
+    const dupClient = {
+      async query(sql) {
+        if (/FROM\s+(?:public\.)?trades/i.test(String(sql))) return { rows: [{ id: 'evt-dup-1' }] };
+        if (String(sql).includes('core.instruments')) throw new Error('should not query instruments on duplicate retry');
+        return { rows: [] };
+      },
+    };
+    const dupRes = await tradeLedger.applyTrade('u1', '默认账户', { id: 'evt-dup-1', code: '601990', name: '中金公司', direction: 'buy', price: 25.51, quantity: 100, date: '2026-11-25' }, dupClient);
+    assert.strictEqual(dupRes.skipped, 'duplicate');
   });
 
   console.log('\n通过 ' + passed + ' 项');

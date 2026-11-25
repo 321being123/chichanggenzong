@@ -1343,7 +1343,7 @@ function revalidateSmartRow(rowId) {
     status: issues.some(function(i) { return i.level === 'error'; }) ? 'blocked' : (issues.length ? 'review' : 'ok'),
     issues: issues,
     costSource: item._v ? item._v.costSource : null,
-    identityConflict: keepConflict ? prevConflict : null
+    identityConflict: prevConflict || null
   };
   var cell = document.getElementById('s-status-' + rowId);
   if (cell) cell.innerHTML = renderSmartRowStatus(item);

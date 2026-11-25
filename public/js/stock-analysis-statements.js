@@ -487,8 +487,8 @@ function stockAnalysisRenderStatements(data) {
     var keepUnit = stockAnalysisKeepUnitTag(field);
     var unit = keepUnit ? '<small class="statement-unit">' + escapeHtml(keepUnit) + '</small>' : '';
     var srParent = parentField ? '<span class="statement-sr-parent">（隶属：' + escapeHtml(parentField.label) + '）</span>' : '';
-    var labelHtml = relationReason
-      ? '<details class="statement-label-tip"><summary class="statement-label statement-label-has-tip" aria-label="' + escapeHtml(field.label + '：查看层级关系说明') + '">' + escapeHtml(field.label) + '</summary><div class="statement-label-tip-body">' + escapeHtml('层级关系：' + relationReason) + '</div></details>'
+    var labelHtml = statusMessages.length
+      ? '<details class="statement-label-tip"><summary class="statement-label statement-label-has-tip" aria-label="' + escapeHtml(field.label + '：查看状态与口径说明') + '">' + escapeHtml(field.label) + '</summary><div class="statement-label-tip-body">' + escapeHtml(statusMessages.join('；')) + '</div></details>'
       : '<span class="statement-label">' + escapeHtml(field.label) + '</span>';
     var basisCell = dualStickyCols ? '<th scope="row" class="statement-col-basis">当期</th>' : '';
     var primaryTr = '<tr class="' + rowClass + '" data-statement-level="' + depth + '"' + roleAttr + groupAttr + codeAttr + parentAttr + '><th scope="row" class="statement-col-name">' + branch + labelHtml + srParent + unit + '</th>' + basisCell + cells + '</tr>';

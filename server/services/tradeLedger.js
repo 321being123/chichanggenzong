@@ -180,19 +180,6 @@ async function applyTrade(username, accountName, trade, externalClient = null, e
       }
     }
   }
-  if (t.code && t.name && String(t.name).trim() !== String(t.code).trim()) {
-    const queryFn = externalClient ? externalClient.query.bind(externalClient) : pool.query.bind(pool);
-    const checked = await detectCodeNameConflicts([{ code: t.code, name: t.name }], queryFn);
-    const conflict = checked[0] && checked[0]._identityConflict;
-    if (conflict) {
-      const hint = conflict.nameCandidates && conflict.nameCandidates.length
-        ? `（名称对应 ${conflict.nameCandidates.join(' / ')}）`
-        : '';
-      const err = new Error(`代码 ${conflict.code} 对应「${conflict.codeName}」，与证券名称「${conflict.itemName}」不符，请核对后再提交${hint}`);
-      err.status = 400;
-      throw err;
-    }
-  }
   const { price, quantity, amount } = validateTrade(t);
   const { tradeDate, executedAt } = splitTradeDateTime(t.date, t.created_at);
   const client = externalClient || await pool.connect();
@@ -200,13 +187,26 @@ async function applyTrade(username, accountName, trade, externalClient = null, e
   try {
     if (ownTxn) await txControl.begin(client);
     // 幂等预检（2026-08-04）：event.id 已存在 → 直接返回成功，不校验版本。
-    // 放在版本校验之前：双击/网络重试的第二个请求携带同一 id 与同一旧版本号，
-    // 若先校验版本会因第一个请求已 +1 而 409，与"幂等不新增"的语义矛盾。
+    // 放在版本校验与主档名称冲突校验之前：双击/网络重试的第二个请求携带同一 id，
+    // 即使主档名称后续变更也不应阻断已落库事件的幂等返回。
     if (t.id) {
       const idDup = await repository.select_trades_1([t.id, username, accountName], client);
       if (idDup.rows[0]) {
         if (ownTxn) await txControl.commit(client);
         return { ok: true, id: t.id, code: t.code, skipped: 'duplicate', cash: null, tradeDate: tradeDate };
+      }
+    }
+    if (t.code && t.name && String(t.name).trim() !== String(t.code).trim()) {
+      const conflictCode = identity ? identity.code : (/\.(SH|SZ|BJ|HK)$/i.test(rawCode) ? rawCode : t.code);
+      const checked = await detectCodeNameConflicts([{ code: conflictCode, name: t.name }], client.query.bind(client), { throwOnError: true });
+      const conflict = checked[0] && checked[0]._identityConflict;
+      if (conflict) {
+        const hint = conflict.nameCandidates && conflict.nameCandidates.length
+          ? `（名称对应 ${conflict.nameCandidates.join(' / ')}）`
+          : '';
+        const err = new Error(`代码 ${conflict.code} 对应「${conflict.codeName}」，与证券名称「${conflict.itemName}」不符，请核对后再提交${hint}`);
+        err.status = 400;
+        throw err;
       }
     }
     // 乐观锁：独立事务时校验版本（外部事务由调用方统一校验一次）

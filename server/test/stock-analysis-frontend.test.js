@@ -307,6 +307,8 @@ assert.ok(statementsPresenter.includes('stockAnalysisState.selected !== code'), 
   });
   const f02Text = dom.window.document.getElementById('stock-analysis-statements-wrap').textContent;
   assert.ok(f02Text.includes('仅同比有值项') && f02Text.includes('采集不完整项') && !f02Text.includes('普通全零项'), 'F-02: 保留仅比较列有值与采集不完整项，隐藏普通全零项');
+  const incompleteTip = dom.window.document.querySelector('tr[data-statement-code="ps.incomplete"] details.statement-label-tip');
+  assert.ok(incompleteTip && incompleteTip.querySelector('summary.statement-label-has-tip') && /来源采集不完整/.test(incompleteTip.textContent), 'F-03: 逐期采集不完整原因必须可通过标题键盘/触屏展开');
 
   view.stockAnalysisRenderStatements({
     name: '利润表', type: 'income', compare: 'yoy', unit_label: '原值',
@@ -450,10 +452,12 @@ assert.ok(utilsScript.includes('function appChartTooltip(') && holdingsCharts.sp
     ['HK', 'non_financial'], ['HK', 'bank'], ['HK', 'insurance'], ['HK', 'security'], ['HK', 'other_financial'], ['HK', 'reit'],
   ]) {
     const metrics = dict.metricsOfType(mkt, tbl).filter(x => x.statement === 'income');
-    const fields = pres.presentationOf(metrics, 'income', 'CNY').map(f => ({ ...f, values: [{ value: 10 }] }));
-    const model = pres.buildStatementPresentation(fields, { metrics, statement: 'income' });
-    const iteRows = model.rows.filter(r => r.label === '所得税费用' || r.code === 'ps.ite');
-    assert.deepStrictEqual(iteRows.map(r => r.kind + ':' + (r.code || r.label)), ['field:ps.ite'], `F-04: ${mkt}|${tbl} 不得重复生成所得税费用分组标题`);
+    for (const val of [10, null]) {
+      const fields = pres.presentationOf(metrics, 'income', 'CNY').map(f => ({ ...f, values: [{ value: val }] }));
+      const model = pres.buildStatementPresentation(fields, { metrics, statement: 'income' });
+      const iteRows = model.rows.filter(r => r.label === '所得税费用' || r.code === 'ps.ite');
+      assert.deepStrictEqual(iteRows.map(r => r.kind + ':' + (r.code || r.label)), ['field:ps.ite'], `F-04: ${mkt}|${tbl} (val=${val}) 不得重复生成所得税费用分组标题`);
+    }
   }
   console.log('stock-analysis frontend tests passed');
 })().catch((err) => {

@@ -123,6 +123,10 @@ function normalizeInstrumentName(value) {
     .replace(/[-－—]?(A股|B股|H股|港股|退)$/i, '');
 }
 
+function isSeedPlaceholderName(value) {
+  return /^测试(正股|转债|基金|股票|标的)/.test(String(value == null ? '' : value).trim());
+}
+
 function namesCompatible(a, b) {
   const na = normalizeInstrumentName(a);
   const nb = normalizeInstrumentName(b);
@@ -130,7 +134,21 @@ function namesCompatible(a, b) {
   return na === nb || na.includes(nb) || nb.includes(na);
 }
 
-async function detectCodeNameConflicts(items, query) {
+function canonicalOfImportCode(rawCode, rawName) {
+  const s = String(rawCode == null ? '' : rawCode).trim().toUpperCase();
+  if (!s) return '';
+  if (/^\d{5,6}\.(SH|SZ|BJ|HK)$/.test(s)) return s;
+  const prefixMatch = /^(SH|SZ|BJ|HK)(\d{5,6})$/.exec(s);
+  if (prefixMatch) return `${prefixMatch[2]}.${prefixMatch[1]}`;
+  const info = classifyCode(s, rawName);
+  if (info && info.market && /^(sh|sz|bj|hk)$/i.test(info.market)) {
+    const codePart = info.code || s;
+    return `${String(codePart).toUpperCase()}.${info.market.toUpperCase()}`;
+  }
+  return String(classifyCode.normalizeCode(s, rawName) || '').trim().toUpperCase();
+}
+
+async function detectCodeNameConflicts(items, query, options = {}) {
   const codeSet = new Set();
   const nameSet = new Set();
   for (const item of items) {
@@ -151,17 +169,30 @@ async function detectCodeNameConflicts(items, query) {
            OR regexp_replace(name, '[[:space:]]+', '', 'g') = ANY($2::text[])`,
       [[...codeSet], [...nameSet]]
     );
-    rows = uniqueRows(result && result.rows);
-  } catch (_) {
+    rows = uniqueRows(result && result.rows).filter(row => row.name && !isSeedPlaceholderName(row.name));
+  } catch (err) {
+    if (options && options.throwOnError) {
+      const wrapped = new Error('主档名称核对失败，请稍后重试');
+      wrapped.status = 503;
+      wrapped.cause = err;
+      throw wrapped;
+    }
     return items;
   }
   if (!rows.length) return items;
 
   return items.map(item => {
     if (!item || !item.code || !item.name) return item;
-    const digits = plainCode(item.code);
+    const checkCode = item._rawCodeForConflict || item.code;
+    const digits = plainCode(checkCode);
     if (!digits) return item;
-    const codeRows = rows.filter(row => plainCode(row.canonical_code) === digits && row.name);
+    const targetCanonical = canonicalOfImportCode(checkCode, item.name);
+    const hasExplicitExchange = /\.(SH|SZ|BJ|HK)$/i.test(targetCanonical);
+    const codeRows = rows.filter(row => {
+      const rowCanon = String(row.canonical_code || '').trim().toUpperCase();
+      if (hasExplicitExchange) return rowCanon === targetCanonical;
+      return plainCode(rowCanon) === digits;
+    });
     if (!codeRows.length) return item;
     if (codeRows.some(row => namesCompatible(row.name, item.name))) return item;
     const nameCandidates = rows
@@ -197,9 +228,10 @@ async function normalizeImportedItems(items, executor) {
     const rawName = String(item.name == null ? '' : item.name).trim();
     const key = cleanCode(rawCode) + '\u0000' + nameKey(rawName);
     const identity = resolved.get(key);
-    if (!identity) return { ...item, code: classifyCode.normalizeCode(rawCode, rawName) };
+    if (!identity) return { ...item, _rawCodeForConflict: rawCode, code: classifyCode.normalizeCode(rawCode, rawName) };
     return {
       ...item,
+      _rawCodeForConflict: identity.code,
       code: identity.code,
       name: rawName || identity.name,
       type: identity.type,
@@ -208,7 +240,13 @@ async function normalizeImportedItems(items, executor) {
       quote_currency: identity.quote_currency
     };
   });
-  return detectCodeNameConflicts(normalized, query);
+  const checked = await detectCodeNameConflicts(normalized, query);
+  return checked.map(item => {
+    if (!item || typeof item !== 'object' || !Object.prototype.hasOwnProperty.call(item, '_rawCodeForConflict')) return item;
+    const copy = { ...item };
+    delete copy._rawCodeForConflict;
+    return copy;
+  });
 }
 
 function normalizedCanonicalCode(value) {

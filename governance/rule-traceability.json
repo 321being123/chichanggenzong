@@ -6265,6 +6265,22 @@
       ],
       "owner": "WorkBuddy",
       "status": "local_verified"
+    },
+    {
+      "id": "IMPORT-IDENTITY-CONFLICT-001",
+      "title": "导入与账本写入前必须按规范交易所代码核对主档名称，冲突阻断入账且不阻断同ID幂等重试",
+      "implementation": {
+        "file": "server/services/securityIdentity.js",
+        "symbol": "detectCodeNameConflicts"
+      },
+      "tests": [
+        {
+          "file": "server/test/import-cleanse.test.js",
+          "pattern": "#96/F-01 导入代码与主档名称不匹配时阻止入账（AI/Excel直解析/账本边界）"
+        }
+      ],
+      "owner": "Antigravity",
+      "status": "local_verified"
     }
   ]
 }

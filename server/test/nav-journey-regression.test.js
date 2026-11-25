@@ -115,7 +115,7 @@ function approx(actual, expected, tolerance, message) {
     // ---------- 第 1 天：期初建仓 1000 股 @10 ----------
     await test('第1天：期初建仓后持仓与成本正确', async function () {
       const result = await ledger.applyTrade(USER, ACCOUNT, {
-        code: '601995', name: '国泰君安', direction: 'open', price: 10, quantity: 1000,
+        code: '601995', name: '中金公司', direction: 'open', price: 10, quantity: 1000,
         date: D1 + ' 09:30:00', commission: 0, stamp_tax: 0, transfer_fee: 0, other_fee: 0,
       });
       assert.strictEqual(result.ok, true);
@@ -140,7 +140,7 @@ function approx(actual, expected, tolerance, message) {
     // ---------- 第 2 天：卖出 400 股 @12 ----------
     await test('第2天：卖出后持仓减少、交易台账记录完整', async function () {
       const result = await ledger.applyTrade(USER, ACCOUNT, {
-        code: '601995', name: '国泰君安', direction: 'sell', price: 12, quantity: 400,
+        code: '601995', name: '中金公司', direction: 'sell', price: 12, quantity: 400,
         date: D2 + ' 10:00:00', commission: 5, stamp_tax: 4.8, transfer_fee: 0.048, other_fee: 0,
       });
       assert.strictEqual(result.ok, true);
@@ -181,7 +181,7 @@ function approx(actual, expected, tolerance, message) {
       swapPlan = swap.buildPlan(
         { case_id: 9001, swap_ratio: 0.5,
           source_code: '601995.SH', target_code: '002091.SZ',
-          source_name: '国泰君安', target_name: '江苏国泰',
+          source_name: '中金公司', target_name: '江苏国泰',
           source_instrument_id: null, target_instrument_id: null,
           evidence_announced_at: D3 + ' 00:00:00' },
         { ...source.rows[0], username: USER, account_name: ACCOUNT, account_id: null },

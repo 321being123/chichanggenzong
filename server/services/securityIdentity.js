@@ -298,8 +298,10 @@ function canonicalizeSecurityCode(rawCode, assetClass = 'stock') {
   if (assetClass === 'convertible_bond') return `${code}${/^11/.test(code) ? '.SH' : '.SZ'}`;
   if (assetClass === 'stock' || assetClass === 'fund') {
     // 市场后缀统一读取前后端共用的代码分类规则，基金/ETF/REITs、B股和北交所不再各写一套前缀。
-    const info = classifyCode(text);
-    const suffix = info && (info.market === 'sh' || info.market === 'kcb') ? 'SH'
+    const info = classifyCode(code);
+    const shIndexOverride = /^00\d{4}\.SH$/i.test(text);
+    const suffix = shIndexOverride ? 'SH'
+      : info && (info.market === 'sh' || info.market === 'kcb') ? 'SH'
       : info && info.market === 'bj' ? 'BJ' : 'SZ';
     return `${code}.${suffix}`;
   }

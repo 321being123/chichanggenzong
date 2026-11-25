@@ -231,6 +231,25 @@ check('报价晚于本次取价/运行时刻 -> 只能候选，不得写成终�
   assert.strictEqual(valid.quality, 'confirmed');
   assert.strictEqual(valid.isFinal, true);
 });
+check('港股收市竞价（CAS）16:08-16:10 与半日市 12:08-12:10 随机收市窗口报价应确认为终盘', () => {
+  const hkClosed = { market: 'HK', status: 'open', isAfterMarketClose: true, closeTime: '16:10' };
+  const hkHalfClosed = { market: 'HK', status: 'open', isAfterMarketClose: true, closeTime: '12:10' };
+  const runAt = '2026-11-25T16:30:00+08:00';
+  // 16:08:05 / 16:08:00 在随机收市窗口内 -> confirmed
+  const casOk = mc.qualifyCloseQuote(hkClosed, '2026-11-25T16:08:05+08:00', '2026-11-25', '16:10', runAt);
+  assert.strictEqual(casOk.quality, 'confirmed');
+  assert.strictEqual(casOk.isFinal, true);
+  assert.strictEqual(mc.qualifyCloseQuote(hkClosed, '2026-11-25T16:08:00+08:00', '2026-11-25', '16:10', runAt).quality, 'confirmed');
+  assert.strictEqual(mc.quoteNeedsCloseRefresh({ price: 4.3, quote_time: '2026-11-25T16:08:10+08:00' }, hkClosed, '2026-11-25', runAt), false);
+  // 16:07:59 仍在持续交易/竞价前段 -> candidate，需要刷新
+  const beforeCas = mc.qualifyCloseQuote(hkClosed, '2026-11-25T16:07:59+08:00', '2026-11-25', '16:10', runAt);
+  assert.strictEqual(beforeCas.quality, 'candidate');
+  assert.strictEqual(beforeCas.reason, 'quote_before_close');
+  assert.strictEqual(mc.quoteNeedsCloseRefresh({ price: 4.3, quote_time: '2026-11-25T16:07:59+08:00' }, hkClosed, '2026-11-25', runAt), true);
+  // 半日市 12:08:05 -> confirmed；12:07:59 -> candidate
+  assert.strictEqual(mc.qualifyCloseQuote(hkHalfClosed, '2026-11-25T12:08:05+08:00', '2026-11-25', '12:10', runAt).quality, 'confirmed');
+  assert.strictEqual(mc.qualifyCloseQuote(hkHalfClosed, '2026-11-25T12:07:59+08:00', '2026-11-25', '12:10', runAt).reason, 'quote_before_close');
+});
 check('补漏缺口按身份判定：同形证券不得互相顶替', () => {
   // 与 MARKET_CLOSE_TIMES 一致的规则形状：A 股要求 6 位及以上，港股按 5 位
   const aRule = { label: 'A股', match: code => String(code).length >= 6 && isA(code) };

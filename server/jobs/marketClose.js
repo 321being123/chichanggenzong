@@ -128,9 +128,24 @@ function quoteParts(value) {
   };
 }
 
+// 港交所收市竞价时段（CAS）在收市前 2 分钟随机收市（全日市 16:08–16:10，半日市 12:08–12:10），
+// 腾讯行情接口返回最后一笔成交/收市时刻通常落在 16:08:xx（或 12:08:xx），市场已过收市时刻后应视为有效终盘报价。
+const HK_CAS_RANDOM_CLOSE_WINDOW_MINUTES = 2;
+
+function isQuoteBeforeClose(state, quoteClock, closeTime) {
+  const closeMinute = parseClock(closeTime);
+  if (closeMinute === null) return false;
+  if (String(state && state.market || '').toUpperCase() === 'HK') {
+    const cutoffMinute = Math.max(0, closeMinute - HK_CAS_RANDOM_CLOSE_WINDOW_MINUTES);
+    const cutoffClock = `${String(Math.floor(cutoffMinute / 60)).padStart(2, '0')}:${String(cutoffMinute % 60).padStart(2, '0')}:00`;
+    return quoteClock < cutoffClock;
+  }
+  return quoteClock <= `${closeTime}:00`;
+}
+
 // 收盘写入准入（合同 8.3.1-4）：一条报价要写成“已确认终盘价”，必须同时满足
 // ①当日是该市场交易日且任务执行时已过当地收市时刻；②这条报价的报价时刻属于当日；
-// ③报价时刻严格晚于当地收市时刻；④报价时刻不得晚于本次取价/任务运行时刻。
+// ③报价时刻晚于当地收市时刻（港股含收市前 2 分钟 CAS 随机收市窗口）；④报价时刻不得晚于本次取价/任务运行时刻。
 // 收市前或异常未来时刻缓存只能写候选，等待重新取价。
 function qualifyCloseQuote(state, quoteTime, cnDate, closeTime, nowInput) {
   if (state.status !== 'open' || state.isAfterMarketClose !== true) {
@@ -140,7 +155,7 @@ function qualifyCloseQuote(state, quoteTime, cnDate, closeTime, nowInput) {
   if (!parts) return { quality: 'candidate', isFinal: null, reason: 'quote_time_missing' };
   if (parts.date !== cnDate) return { quality: 'candidate', isFinal: null, reason: 'quote_not_same_day' };
   if (parseClock(closeTime) === null) return { quality: 'candidate', isFinal: null, reason: 'close_time_unknown' };
-  if (parts.time <= closeTime + ':00') return { quality: 'candidate', isFinal: null, reason: 'quote_before_close' };
+  if (isQuoteBeforeClose(state, parts.time, closeTime)) return { quality: 'candidate', isFinal: null, reason: 'quote_before_close' };
   const nowMs = nowInput !== undefined ? new Date(nowInput).getTime() : Date.now();
   if (!Number.isFinite(nowMs)) return { quality: 'candidate', isFinal: null, reason: 'run_time_invalid' };
   if (parts.epochMs > nowMs) return { quality: 'candidate', isFinal: null, reason: 'quote_in_future' };

@@ -9,7 +9,7 @@ const { loadCashState } = require('./accountCash');
 const { pool } = require('../db/connection');
 // 实时报价属于「行情数据集」：经数据层中立需求接口取，服务不直接依赖供应商适配层。
 const { readRealtimeQuotes } = require('../dataAccess/marketDatasets');
-const { todayCN } = require('./market');
+const { todayCN, pickMatchedQuote } = require('./market');
 const positionComparisonRepository = require('../repositories/positionComparisonDataRepository.js');
 const { listBenchmarks, loadEffectivePositions } = positionComparisonRepository;
 
@@ -77,7 +77,8 @@ async function estimatePositions(positions, cashInfo, quotes, hkRate) {
   const rate = (hkRate != null && hkRate > 0) ? hkRate : (cashInfo.hkRate || 0.868);
   const enriched = positions.map(p => {
     const c = String(p.code || '').trim();
-    const q = quoteMap.get(c) || null;
+    const tsCode = c.includes('.') ? c.toUpperCase() : (p.subtype === '沪市' && /^00\d{4}$/.test(c) ? `${c}.SH` : normalizeSecCode(c));
+    const q = pickMatchedQuote(quoteMap, c, tsCode);
     const price = q && q.price != null && q.price > 0 ? q.price : (p.price > 0 ? p.price : null);
     const isHk = normalizeSecCode(c).endsWith('.HK');
     const marketValue = (price != null && p.quantity > 0) ? price * p.quantity * (isHk ? rate : 1) : null;

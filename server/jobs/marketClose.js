@@ -1,6 +1,6 @@
 // ========== 自动记录每日收盘价（按市场收盘时刻精准触发 + 休市识别 + 缺失补漏） ==========
 const { pool, loadAccountData, saveDailyPrices, syncConfirmedCloseToPositions, tryClaimJob, releaseJob, startJobRun, finishJobRun } = require('../db');
-const { toTsCode } = require('../services/market');
+const { toTsCode, pickMatchedQuote } = require('../services/market');
 const { getMarketState, isCnTradingDate, prefetchMarketFacts, shanghaiDateTime, parseClock } = require('../services/marketState');
 const { runNavSnapshotJob } = require('./navSnapshot');
 const { runIndexRecentJob } = require('./indexBaseline');
@@ -83,12 +83,8 @@ function nextRunDelay(h, m) {
 function quoteForCode(quoteMap, code) {
   if (!quoteMap) return null;
   const value = String(code || '').trim();
-  const exact = quoteMap.get(value);
-  if (exact) return exact;
-  const fallback = quoteMap.get(value.replace(/\.(SH|SZ|BJ|HK)$/i, ''));
-  const market = String(fallback?.market || '').toLowerCase();
-  if (/\.HK$/i.test(value) ? market !== 'hk' : market === 'hk') return null;
-  return fallback || null;
+  const tsCode = /\.(SH|SZ|BJ|HK)$/i.test(value) ? value.toUpperCase() : toTsCode(value);
+  return pickMatchedQuote(quoteMap, value, tsCode);
 }
 
 function isUsableQuote(quote, expectedDate) {

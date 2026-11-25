@@ -381,6 +381,28 @@ async function main() {
     assert.strictEqual(marketSvc.pickMatchedQuote(onlyShLive, '000001', '000001.SZ'), null, '仅缺深市实时价时不得错取沪市裸码 3002');
     assert.strictEqual(marketSvc.pickMatchedQuote(onlyShLive, '000001.SH', '000001.SH').price, 3002);
 
+    // F-01 第七轮补充：仓位对比 estimatePositions 与收盘任务 quoteForCode 不得因裸码覆盖串价
+    const posCmp = require('../services/positionComparison');
+    const cmpQuotes = new Map([
+      ['000001.SZ', { code: '000001', market: 'sz', price: 15, name: '平安银行' }],
+      ['000001.SH', { code: '000001', market: 'sh', price: 3003, name: '上证指数' }],
+      ['000001', { code: '000001', market: 'sh', price: 3003, name: '上证指数' }],
+    ]);
+    const cmpEst = await posCmp.estimatePositions([
+      { code: '000001.SH', subtype: '沪市', quantity: 10, price: 0 },
+      { code: '000001', subtype: '深市', quantity: 10, price: 0 },
+    ], { hkRate: 0.9 }, cmpQuotes);
+    assert.strictEqual(cmpEst.positions.find(i => i.code === '000001.SH').price, 3003, '仓位对比沪市应取 3003');
+    assert.strictEqual(cmpEst.positions.find(i => i.code === '000001').price, 15, '仓位对比深市应取 15，不得受裸码 3003 污染');
+
+    const marketCloseJob = require('../jobs/marketClose');
+    const closeOnlySz = new Map([
+      ['000001', { code: '000001', market: 'sz', price: 16 }],
+      ['000001.SZ', { code: '000001', market: 'sz', price: 16 }],
+    ]);
+    assert.strictEqual(marketCloseJob.quoteForCode(closeOnlySz, '000001.SH'), null, '收盘任务仅缺沪市实时价时不得错取深市 16');
+    assert.strictEqual(marketCloseJob.quoteForCode(closeOnlySz, '000001').price, 16);
+
     // 主档查询失败时写入边界不得静默放行
     const failExecutor = async (sql) => {
       if (String(sql).includes('core.instruments')) throw new Error('db down');

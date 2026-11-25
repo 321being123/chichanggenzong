@@ -6268,7 +6268,7 @@
     },
     {
       "id": "IMPORT-IDENTITY-CONFLICT-001",
-      "title": "导入、账本写入与行情刷新必须按规范交易所代码核对主档及独立取价，单边缺实时价时禁止借用异市场裸码报价",
+      "title": "导入、账本写入、行情刷新、仓位对比与收盘任务必须按规范交易所代码独立取价，单边缺实时价时禁止借用异市场裸码报价",
       "implementation": {
         "file": "server/services/securityIdentity.js",
         "symbol": "detectCodeNameConflicts"

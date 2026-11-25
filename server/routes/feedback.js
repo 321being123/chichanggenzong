@@ -5,7 +5,7 @@ const express = require('express');
 const asyncHandler = require('../middleware/async');
 const multer = require('multer');
 const rateLimit = require('../middleware/rateLimit');
-const { requireLogin, optionalLogin } = require('../middleware/auth');
+const { requireLogin, optionalLogin, isAdminIdentity } = require('../middleware/auth');
 const service = require('../services/feedbackService');
 
 const router = express.Router();
@@ -56,11 +56,23 @@ function noStore(res) {
   res.setHeader('Cache-Control', 'private, no-store');
 }
 
-const createLimiter = rateLimit({
-  prefix: 'feedback-create', windowMs: 10 * 60 * 1000, max: 5,
+const adminCreateLimiter = rateLimit({
+  prefix: 'feedback-create-admin', windowMs: 10 * 60 * 1000, max: 100,
   getKey: function (req) { return (req.authUser && req.authUser.username) || req.ip || ''; },
   message: '提交过于频繁，请 10 分钟后再试',
 });
+const userCreateLimiter = rateLimit({
+  prefix: 'feedback-create', windowMs: 10 * 60 * 1000, max: 50,
+  getKey: function (req) { return (req.authUser && req.authUser.username) || req.ip || ''; },
+  message: '提交过于频繁，请 10 分钟后再试',
+});
+function createLimiter(req, res, next) {
+  const user = req.authUser;
+  if (user && isAdminIdentity(user.username, user.role)) {
+    return adminCreateLimiter(req, res, next);
+  }
+  return userCreateLimiter(req, res, next);
+}
 const commentLimiter = rateLimit({
   prefix: 'feedback-comment', windowMs: 5 * 60 * 1000, max: 10,
   getKey: function (req) { return (req.authUser && req.authUser.username) || req.ip || ''; },
@@ -221,4 +233,6 @@ router.delete('/:id/comments/:commentId', requireLogin, asyncHandler(async funct
   res.json(result);
 }));
 
+router.createLimiter = createLimiter;
+router.commentLimiter = commentLimiter;
 module.exports = router;

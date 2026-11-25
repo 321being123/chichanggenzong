@@ -196,11 +196,38 @@ async function detectCodeNameConflicts(items, query, options = {}) {
       if (hasExplicitExchange) return rowCanon === targetCanonical;
       return plainCode(rowCanon) === digits;
     });
-    if (!codeRows.length) return item;
-    if (codeRows.some(row => namesCompatible(row.name, item.name))) return item;
     const nameCandidates = rows
       .filter(row => row.name && namesCompatible(row.name, item.name))
       .map(row => row.canonical_code);
+    if (!codeRows.length) {
+      const plainRows = hasExplicitExchange
+        ? rows.filter(row => plainCode(row.canonical_code) === digits && row.name)
+        : [];
+      if (plainRows.length > 0) {
+        return {
+          ...item,
+          _identityConflict: {
+            code: item.code,
+            codeName: `${plainRows[0].canonical_code}（${plainRows[0].name}）`,
+            itemName: String(item.name).trim(),
+            nameCandidates,
+          },
+        };
+      }
+      if (hasExplicitExchange && nameCandidates.length > 0) {
+        return {
+          ...item,
+          _identityConflict: {
+            code: item.code,
+            codeName: '主档无此交易所代码',
+            itemName: String(item.name).trim(),
+            nameCandidates,
+          },
+        };
+      }
+      return item;
+    }
+    if (codeRows.some(row => namesCompatible(row.name, item.name))) return item;
     return {
       ...item,
       _identityConflict: {

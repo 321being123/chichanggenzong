@@ -44,7 +44,7 @@ process.stdin.on('end', () => {
         return;
       }
       const wbCsv = new ExcelJS.Workbook();
-      await wbCsv.csv.read(Readable.from(Buffer.from(csvText, 'utf8')), { parserOptions: { delimiter: ',', quote: '"' } });
+      await wbCsv.csv.read(Readable.from(Buffer.from(csvText, 'utf8')), { parserOptions: { delimiter: ',', quote: '"' }, map: v => v });
       const rows = collectRows(wbCsv, input);
       process.stdout.write(JSON.stringify({ sheetNames: ['CSV'], rows }));
       return;

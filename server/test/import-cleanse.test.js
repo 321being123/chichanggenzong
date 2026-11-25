@@ -328,6 +328,37 @@ async function main() {
     assert.strictEqual(structuredCross[0]._v.status, 'blocked', 'Excel 结构化直解析不得在校验前丢掉 .SH');
     assert.strictEqual(structuredCross[0].raw_code, undefined, '返回前应清理临时 raw_code');
 
+    // F-01 第四轮补充：000001.SH/上证指数 保留 .SH、601990.SZ/中金公司 被拦截、H700 结构化预览拦截、CSV 前导零保留
+    const shNorm = await identity.normalizeImportedItems([
+      { kind: 'position', code: '000001.SH', name: '上证指数', price: 3000, quantity: 50, date: '2026-11-25' },
+      { kind: 'position', code: '601990.SZ', name: '中金公司', price: 25, quantity: 100, date: '2026-11-25' },
+    ], async () => ({
+      rows: [
+        { canonical_code: '000001.SH', name: '上证指数', market: 'CN', exchange_code: 'SSE', currency_code: 'CNY' },
+        { canonical_code: '000001.SZ', name: '平安银行', market: 'CN', exchange_code: 'SZSE', currency_code: 'CNY' },
+        { canonical_code: '601990.SH', name: '南京证券', market: 'CN', exchange_code: 'SSE', currency_code: 'CNY' },
+        { canonical_code: '601995.SH', name: '中金公司', market: 'CN', exchange_code: 'SSE', currency_code: 'CNY' },
+      ],
+    }));
+    assert.strictEqual(shNorm[0].code, '000001.SH', '000001.SH 必须保留交易所后缀防止与深市 000001 混淆');
+    assert.strictEqual(shNorm[0]._identityConflict, undefined);
+    const shOut = cleanse.attachIdentityConflictValidation(shNorm);
+    assert.strictEqual(shOut[1]._v.status, 'blocked', '601990.SZ / 中金公司 必须被拦截');
+
+    const h700Rows = importRouter.buildStructuredItems([
+      ['代码', '名称', '价格', '数量'],
+      ['H700', '中金公司', '300', '100'],
+    ]);
+    const h700Out = cleanse.attachIdentityConflictValidation(await identity.normalizeImportedItems(h700Rows, async () => ({
+      rows: [{ canonical_code: '00700.HK', name: '腾讯控股', market: 'HK', exchange_code: 'HKEX', currency_code: 'HKD' }],
+    })));
+    assert.strictEqual(h700Out[0]._v.status, 'blocked', '结构化 Excel 的 H700 配错名称必须在预览即标为 blocked');
+
+    const { safeParseExcel } = require('../services/excelSafe');
+    const csvParsed = await safeParseExcel(Buffer.from('代码,名称,价格,数量\n000001,平安银行,12.34,100', 'utf8').toString('base64'), { mode: 'first' });
+    const csvItems = importRouter.buildStructuredItems(csvParsed.rows);
+    assert.strictEqual(csvItems[0].code, '000001', 'CSV 带前导零的 000001 不得变成港股 00001');
+
     // 主档查询失败时写入边界不得静默放行
     const failExecutor = async (sql) => {
       if (String(sql).includes('core.instruments')) throw new Error('db down');

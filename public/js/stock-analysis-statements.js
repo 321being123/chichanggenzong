@@ -107,6 +107,7 @@ function stockAnalysisStatementReason(reason) {
     negative_comparison_unverified: '含负数的比较口径尚未核实',
     comparable_period_missing: '缺少可确认口径一致的比较期',
     comparable_value_missing: '比较期缺少数据',
+    comparison_basis_uncomparable: '会计准则、合并口径或报告期类型不同，口径不可比',
     cumulative_flow_qoq_not_supported: '累计值暂无已核实的单期环比',
     flow_period_basis_unverified: '累计报告期起始日及重述口径尚未核实',
     zero_denominator: '比较期为零，无法计算',
@@ -449,7 +450,7 @@ function stockAnalysisRenderStatements(data) {
       }
       if (dualStickyCols && ['currency', 'per_share'].includes(field.measure_type) && item && item.single_reason) {
         var ptSingle = String((data.periods[index] && data.periods[index].period_type) || '').toLowerCase();
-        if ((ptSingle === 'q1' || ptSingle === 'q3') && item.single_reason !== 'comparable_period_missing' && item.single_reason !== 'comparable_value_missing' && item.single_reason !== 'source_not_disclosed') {
+        if ((ptSingle === 'q1' || ptSingle === 'q3') && item.single_reason !== 'source_not_disclosed') {
           addStatusMessage(index, '单季', item.single_reason);
         }
       }

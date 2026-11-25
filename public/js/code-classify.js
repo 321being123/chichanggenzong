@@ -33,6 +33,12 @@
     '深圳國際控股': '00152'
   };
 
+  function extractExplicitExchange(rawCode) {
+    var s = String(rawCode == null ? '' : rawCode).trim().toUpperCase();
+    var m = /\.(SH|SZ|BJ|HK)$/i.exec(s) || /^(SH|SZ|BJ|HK)(?=\d)/i.exec(s);
+    return m ? m[1].toUpperCase() : null;
+  }
+
   function cleanCode(rawCode) {
     return String(rawCode == null ? '' : rawCode).trim().toUpperCase()
       .replace(/\.(SH|SZ|BJ|HK|US)$/i, '')
@@ -108,6 +114,19 @@
       type = '股权'; subtype = '沪市'; market = 'sh';
     }
 
+    var explicitEx = extractExplicitExchange(rawCode);
+    if (explicitEx && type === '股权' && subtype !== '基金/ETF' && subtype !== '美股') {
+      if (explicitEx === 'SH' && market !== 'sh' && market !== 'kcb') {
+        subtype = '沪市'; market = 'sh'; isHK = false;
+      } else if (explicitEx === 'SZ' && market !== 'sz') {
+        subtype = '深市'; market = 'sz'; isHK = false;
+      } else if (explicitEx === 'BJ' && market !== 'bj') {
+        subtype = '京市'; market = 'bj'; isHK = false;
+      } else if (explicitEx === 'HK' && market !== 'hk') {
+        subtype = '港股'; market = 'hk'; isHK = true;
+      }
+    }
+
     return { type: type, subtype: subtype, market: market, isHK: isHK };
   }
 
@@ -119,13 +138,19 @@
     var info = classifyCode(code, rawName);
     if (!info) return code;
 
-    // 美股代码保持原样（字母）
+    var padded = code;
     if (info.subtype === '美股') return code;
-    // 港股固定 5 位
-    if (info.subtype === '港股') return code.padStart(5, '0');
-    // 其他数字代码（A股/基金/ETF/可转债/信用债等）统一 6 位
-    if (/^\d+$/.test(code)) return code.padStart(6, '0');
-    return code;
+    if (info.subtype === '港股') padded = code.padStart(5, '0');
+    else if (/^\d+$/.test(code)) padded = code.padStart(6, '0');
+
+    var explicitEx = extractExplicitExchange(rawCode);
+    if (explicitEx && info.type === '股权' && info.subtype !== '基金/ETF' && info.subtype !== '美股') {
+      var bareMarket = info.market === 'kcb' ? 'sh' : info.market;
+      if (explicitEx.toLowerCase() !== bareMarket) {
+        return padded + '.' + explicitEx;
+      }
+    }
+    return padded;
   }
 
   classifyCode.normalizeCode = normalizeCode;

@@ -15,7 +15,7 @@ const { visionUploadTokens, TOKEN_TTL, setVisionToken, mobileUploadHtml, consume
 const { upsertIndexPoints } = require('../db');
 const normalizeCode = require('../../public/js/code-classify.js').normalizeCode;
 const { normalizeImportedItems } = require('../services/securityIdentity');
-const { cleanseImportedItems, finalizeImportedItems, attachIdentityConflictValidation } = require('../services/importCleanse');
+const { cleanseImportedItems, finalizeImportedItems, attachIdentityConflictValidation, stripImportMarketHints } = require('../services/importCleanse');
 
 // 图片校验：仅接受图片 MIME + 文件魔数，解码后不超过 6MiB（与前端/手机端同一容量边界，方案 4.3 第 3 条）；返回错误信息字符串或 null
 function validateImage(image) {
@@ -312,13 +312,23 @@ function buildStructuredItems(rows) {
   for (let i = 1; i < rows.length; i++) {
     const r = Array.isArray(rows[i]) ? rows[i] : [];
     const get = function (key) { return m[key] !== undefined ? r[m[key]] : null; };
-    const code = String(get('code') == null ? '' : get('code')).replace(/\s+/g, '');
-    if (!code) continue;
+    const rawCode = String(get('code') == null ? '' : get('code')).replace(/\s+/g, '');
+    if (!rawCode) continue;
+    const stripped = stripImportMarketHints(rawCode);
+    const code = stripped.code;
     const name = String(get('name') == null ? '' : get('name')).trim();
     const price = parseNumericCell(get('price'));
     const qty = parseNumericCell(get('qty'));
     if (!isFinite(price) || !isFinite(qty)) continue;
-    const item = { kind: kind, code: normalizeCode(code, name), raw_code: code, name: name || code, price: price, quantity: qty };
+    const normCode = normalizeCode(code, name);
+    const item = {
+      kind: kind,
+      code: normCode,
+      raw_code: stripped.hint === 'HK' ? (normCode + '.HK') : rawCode,
+      name: name || code,
+      price: price,
+      quantity: qty,
+    };
     if (kind === 'trade') {
       const dirRaw = String(get('dir') == null ? '' : get('dir'));
       item.direction = /卖|卖出|sell/i.test(dirRaw) ? 'sell' : 'buy';

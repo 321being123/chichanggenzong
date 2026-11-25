@@ -313,6 +313,15 @@ assert.ok(statementsPresenter.includes('stockAnalysisState.selected !== code'), 
   assert.ok(subValCell && /累计报告期起始日及重述口径尚未核实/.test(subValCell.getAttribute('aria-label') || ''), 'F-03: 单季不可比时 subperiod 单元格必须渲染 single_reason');
   const singleTip = dom.window.document.querySelector('tr[data-statement-code="ps.oi"] details.statement-label-tip');
   assert.ok(singleTip && /累计报告期起始日及重述口径尚未核实/.test(singleTip.textContent), 'F-03: 单季不可比原因必须可通过标题键盘/触屏展开');
+  view.stockAnalysisRenderStatements({
+    name: '利润表', type: 'income', compare: 'yoy', unit_label: '原值',
+    periods: [{ end_date: '2026-09-30', period_type: 'q3', report_type_label: 'third_quarterly_report', scope: 'consolidated', currency: 'CNY' }],
+    fields: [
+      { code: 'ps.oi', label: '营业收入', measure_type: 'currency', section: '营业收入', values: [{ value: 100, status: 'available', yoy: 0.1, yoy_status: 'available', single_value: null, single_reason: 'comparison_basis_uncomparable' }] },
+    ],
+  });
+  const uncompTip = dom.window.document.querySelector('tr[data-statement-code="ps.oi"] details.statement-label-tip');
+  assert.ok(uncompTip && /口径不可比/.test(uncompTip.textContent) && !/暂无可用数据/.test(uncompTip.textContent), 'F-03: comparison_basis_uncomparable 必须显示具体口径不可比原因');
 
   view.stockAnalysisRenderStatements({
     name: '利润表', type: 'income', compare: 'yoy', unit_label: '原值',

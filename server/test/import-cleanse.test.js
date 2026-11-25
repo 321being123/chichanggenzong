@@ -366,6 +366,21 @@ async function main() {
     assert.strictEqual(marketSvc.toTsCode('920002.SH'), '920002.BJ');
     assert.strictEqual(marketSvc.toTsCode('600519.BJ'), '600519.SH');
 
+    // F-01 第六轮补充：单边缺实时价时，不得借用另一交易所的裸码报价
+    const onlySzLive = new Map([
+      ['000001', { code: '000001', market: 'sz', price: 14 }],
+      ['000001.SZ', { code: '000001', market: 'sz', price: 14 }],
+    ]);
+    assert.strictEqual(marketSvc.pickMatchedQuote(onlySzLive, '000001.SH', '000001.SH'), null, '仅缺沪市实时价时不得错取深市裸码 14');
+    assert.strictEqual(marketSvc.pickMatchedQuote(onlySzLive, '000001', '000001.SZ').price, 14);
+
+    const onlyShLive = new Map([
+      ['000001', { code: '000001', market: 'sh', price: 3002 }],
+      ['000001.SH', { code: '000001', market: 'sh', price: 3002 }],
+    ]);
+    assert.strictEqual(marketSvc.pickMatchedQuote(onlyShLive, '000001', '000001.SZ'), null, '仅缺深市实时价时不得错取沪市裸码 3002');
+    assert.strictEqual(marketSvc.pickMatchedQuote(onlyShLive, '000001.SH', '000001.SH').price, 3002);
+
     // 主档查询失败时写入边界不得静默放行
     const failExecutor = async (sql) => {
       if (String(sql).includes('core.instruments')) throw new Error('db down');

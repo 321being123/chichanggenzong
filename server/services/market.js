@@ -185,6 +185,21 @@ function ensureTsRealtime(codes) {
   });
 }
 
+function pickMatchedQuote(quotes, rawCode, tsCode) {
+  if (!quotes || typeof quotes.get !== 'function') return null;
+  const exact = quotes.get(tsCode);
+  if (exact) return exact;
+  const expectedMarket = /\.(SH|SZ|BJ|HK)$/i.test(String(tsCode || ''))
+    ? String(tsCode).split('.').pop().toLowerCase()
+    : '';
+  const fallback = quotes.get(rawCode) || quotes.get(normalizeCode(rawCode));
+  if (!fallback) return null;
+  if (expectedMarket && fallback.market && String(fallback.market).toLowerCase() !== expectedMarket) {
+    return null;
+  }
+  return fallback;
+}
+
 // 可复用的行情查询函数（单只：A股走Tushare日线，港股走腾讯实时）
 async function fetchQuoteByCode(code) {
   const c = code.trim().toUpperCase().replace(/\s/g, '');
@@ -195,7 +210,7 @@ async function fetchQuoteByCode(code) {
   if (tsCode.endsWith('.HK') || isConvertibleBondCode(c) || classifyCode.isFundEtfCode(c)) {
     try {
       const quotes = await fetchQuotes([c]);
-      const quote = quotes.get(tsCode) || quotes.get(c) || quotes.get(normalizeCode(c));
+      const quote = pickMatchedQuote(quotes, c, tsCode);
       return quote ? { price: quote.price, name: quote.name || normalizeCode(c), code: normalizeCode(c), change: quote.change, quote_time: quote.quote_time, source: quote.source } : null;
     } catch (_) {
       return null;
@@ -206,7 +221,7 @@ async function fetchQuoteByCode(code) {
   let liveQuote = null;
   try {
     const liveQuotes = await fetchQuotes([c]);
-    liveQuote = liveQuotes.get(tsCode) || liveQuotes.get(c) || liveQuotes.get(normalizeCode(c)) || null;
+    liveQuote = pickMatchedQuote(liveQuotes, c, tsCode);
   } catch (_) {
     // 腾讯限流、熔断或临时网络失败时继续走 Tushare 日线回退。
   }
@@ -229,7 +244,7 @@ async function fetchQuoteByCode(code) {
   if (name) {
     try {
       const quotes = await fetchQuotes([c]);
-      const quote = quotes.get(tsCode) || quotes.get(c) || quotes.get(normalizeCode(c));
+      const quote = pickMatchedQuote(quotes, c, tsCode);
       if (quote) return { price: quote.price, name: name || quote.name || c, code: normalizeCode(c), change: quote.change, quote_time: quote.quote_time, source: quote.source };
     } catch (_) {}
     // fallback 也拿不到价格：仅返回名称（供前端自动填充）
@@ -264,7 +279,7 @@ async function fetchQuotesByCodes(codes, options = {}) {
   stockCodes.forEach(c => {
     const ts = toTsCode(c);
     const d = daily.get(ts);
-    const quote = tencent.get(ts) || tencent.get(c) || tencent.get(normalizeCode(c));
+    const quote = pickMatchedQuote(tencent, c, ts);
     const price = quote ? quote.price : (d ? d.close : null);
     const change = quote && quote.change != null ? quote.change : (d ? d.pct_chg : null);
     result[c] = {
@@ -277,7 +292,7 @@ async function fetchQuotesByCodes(codes, options = {}) {
   });
   fundCodes.concat(bondCodes, hkCodes).forEach(c => {
     const ts = toTsCode(c);
-    const quote = tencent.get(ts) || tencent.get(c) || tencent.get(normalizeCode(c));
+    const quote = pickMatchedQuote(tencent, c, ts);
     result[c] = quote ? {
       price: quote.price, name: quote.name || c, code: normalizeCode(c), change: quote.change,
       quote_time: quote.quote_time, source: quote.source,
@@ -299,6 +314,6 @@ module.exports = {
   httpsGet, tushareQuery, tsRows, toTsCode,
   ensureTsNames, ensureTsDaily, ensureTsRealtime,
   withSingleFlight, NEG_TTL_MS,
-  fetchQuoteByCode, fetchQuotesByCodes, tsDateStr, normDate, todayCN,
+  fetchQuoteByCode, fetchQuotesByCodes, pickMatchedQuote, tsDateStr, normDate, todayCN,
   quoteDateCN, isCnTradingDate, validateDailyPriceBatch, normalizeDailyQuoteRow,
 };

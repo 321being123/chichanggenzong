@@ -1311,24 +1311,6 @@
     if ($('teacher-preview-result')) $('teacher-preview-result').textContent = '';
   }
 
-  let teacherOptionsState = {
-    availableWindows: [],
-    industries: [],
-    optionsReqSeq: 0,
-    sampleReqSeq: 0,
-    previewReqSeq: 0,
-    activePreview: null,
-    confirmRequestId: null,
-    confirming: false,
-  };
-
-  function makeConfirmRequestId() {
-    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
-      return 'cfm_' + crypto.randomUUID();
-    }
-    return 'cfm_' + Date.now() + '_' + Math.random().toString(16).slice(2, 10);
-  }
-
   function invalidateTeacherPreview() {
     teacherOptionsState.optionsReqSeq++;
     teacherOptionsState.sampleReqSeq++;

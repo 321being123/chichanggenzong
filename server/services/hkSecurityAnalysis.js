@@ -596,19 +596,7 @@ function buildHkAnalysis(data, options = {}) {
   }
 
   const latestBalanceForSafety = consolidatedFacts.find(group => ofKind(group, 'balance') && !group.currency_unverified) || null;
-  const equityInMarket = latestBalanceForSafety && latestBalanceForSafety.equity !== null
-    ? convertToMarketCurrency(latestBalanceForSafety.equity, latestBalanceForSafety.currency)
-    : null;
-  const hasGoodwill = Boolean(latestBalanceForSafety && latestBalanceForSafety.goodwill !== null && latestBalanceForSafety.goodwill !== undefined);
-  const goodwillInMarket = hasGoodwill
-    ? convertToMarketCurrency(latestBalanceForSafety.goodwill, latestBalanceForSafety.currency)
-    : null;
-  const pbExGoodwill = cap.value > 0 && equityInMarket !== null && goodwillInMarket !== null && (equityInMarket - goodwillInMarket) > 0
-    ? cap.value / (equityInMarket - goodwillInMarket)
-    : null;
   const effectiveDividendYield = dividend12m.yield.value == null ? sourceDividendYield : dividend12m.yield.value;
-  // 港股仅在有可核对同期间合并分红金额时才计算年度分红率；禁止把近 12 个月股息率与年报利润混算。
-  const payoutRatio = null;
   const liabilitiesInMarket = latestBalanceForSafety && latestBalanceForSafety.liabilities !== null
     ? convertToMarketCurrency(latestBalanceForSafety.liabilities, latestBalanceForSafety.currency)
     : null;

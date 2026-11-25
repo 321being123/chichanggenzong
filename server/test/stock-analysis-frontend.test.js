@@ -198,6 +198,9 @@ assert.ok(statementsPresenter.includes('stockAnalysisState.selected !== code'), 
     },
   });
   assert.strictEqual(doc.querySelector('tr[data-statement-code="ps.iiife"] details.statement-status-help'), null, '#91: 降级关系行不渲染感叹号');
+  const labelTip = doc.querySelector('tr[data-statement-code="ps.iiife"] details.statement-label-tip');
+  assert.ok(labelTip && labelTip.querySelector('summary.statement-label-has-tip'), '#91/F-03: 降级关系行通过可键盘/触屏展开的标题说明保留提示');
+  assert.match(labelTip.textContent, /列报版本尚未核实/);
   dom.window.close();
 }
 (async () => {
@@ -290,6 +293,30 @@ assert.ok(statementsPresenter.includes('stockAnalysisState.selected !== code'), 
   const renderedText = dom.window.document.getElementById('stock-analysis-statements-wrap').textContent;
   assert.ok(renderedText.includes('应收票据') && !renderedText.includes('应收保费') && !renderedText.includes('空分组'), '#90: 全零条目及空分组必须隐藏');
   assert.strictEqual(dom.window.document.querySelectorAll('details.statement-status-help').length, 0, '#91: 感叹号已移除');
+
+  // F-02: 仅比较列有值、采集不完整状态必须保留；整表全零时普通零值行仍应隐藏
+  view.stockAnalysisRenderStatements({
+    name: '利润表', type: 'income', compare: 'yoy', unit_label: '原值',
+    periods: [{ end_date: '2026-09-30', scope: 'consolidated', currency: 'CNY' }],
+    fields: [
+      { code: 'ps.oi', label: '营业收入', section: '营业收入', values: [{ value: 100, status: 'available', yoy: 0.1, yoy_status: 'available' }] },
+      { code: 'ps.zero_with_yoy', label: '仅同比有值项', section: '营业收入', values: [{ value: 0, status: 'available', yoy: 0.05, yoy_status: 'available' }] },
+      { code: 'ps.incomplete', label: '采集不完整项', section: '营业收入', values: [{ value: null, status: 'collection_incomplete', reason: 'source_batch_incomplete' }] },
+      { code: 'ps.all_zero', label: '普通全零项', section: '营业收入', values: [{ value: 0, status: 'available', yoy: null }] },
+    ],
+  });
+  const f02Text = dom.window.document.getElementById('stock-analysis-statements-wrap').textContent;
+  assert.ok(f02Text.includes('仅同比有值项') && f02Text.includes('采集不完整项') && !f02Text.includes('普通全零项'), 'F-02: 保留仅比较列有值与采集不完整项，隐藏普通全零项');
+
+  view.stockAnalysisRenderStatements({
+    name: '利润表', type: 'income', compare: 'yoy', unit_label: '原值',
+    periods: [{ end_date: '2026-09-30', scope: 'consolidated', currency: 'CNY' }],
+    fields: [
+      { code: 'ps.only_zero', label: '整表全零普通项', section: '全零分组', values: [{ value: 0, status: 'available' }] },
+    ],
+  });
+  const allZeroText = dom.window.document.getElementById('stock-analysis-statements-wrap').textContent;
+  assert.ok(!allZeroText.includes('整表全零普通项') && !allZeroText.includes('全零分组'), 'F-02: 整表全零时普通全零行与空分组也必须隐藏');
   dom.window.close();
 }
 {
@@ -416,6 +443,18 @@ assert.ok(utilsScript.includes('function appChartTooltip(') && holdingsCharts.sp
   assert.ok(!rulesText.includes('|营业总成本|'), '#93: 利润表分组不得重复出现「营业总成本」');
   assert.ok(!rulesText.includes('|营业利润至利润总额|') && !rulesText.includes('|利润总额至净利润|'), '#94: 利润表分组标题不得使用晦涩的「X至Y」写法');
   assert.ok(rulesText.includes('|营业外收支|') && rulesText.includes('|所得税费用|'), '#94: 应使用清晰的「营业外收支」「所得税费用」分组标题');
+  const dict = require(path.join(root, 'server', 'dataAccess', 'lixingerReportMetrics'));
+  const pres = require(path.join(root, 'server', 'domain', 'statementPresentation'));
+  for (const [mkt, tbl] of [
+    ['CN', 'non_financial'], ['CN', 'bank'], ['CN', 'insurance'], ['CN', 'security'], ['CN', 'other_financial'],
+    ['HK', 'non_financial'], ['HK', 'bank'], ['HK', 'insurance'], ['HK', 'security'], ['HK', 'other_financial'], ['HK', 'reit'],
+  ]) {
+    const metrics = dict.metricsOfType(mkt, tbl).filter(x => x.statement === 'income');
+    const fields = pres.presentationOf(metrics, 'income', 'CNY').map(f => ({ ...f, values: [{ value: 10 }] }));
+    const model = pres.buildStatementPresentation(fields, { metrics, statement: 'income' });
+    const iteRows = model.rows.filter(r => r.label === '所得税费用' || r.code === 'ps.ite');
+    assert.deepStrictEqual(iteRows.map(r => r.kind + ':' + (r.code || r.label)), ['field:ps.ite'], `F-04: ${mkt}|${tbl} 不得重复生成所得税费用分组标题`);
+  }
   console.log('stock-analysis frontend tests passed');
 })().catch((err) => {
   console.error(err);

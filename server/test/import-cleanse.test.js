@@ -259,7 +259,7 @@ async function main() {
     assert.strictEqual(again.expired, true); // 已销毁
   });
 
-  await check('#96 导入代码与主档名称不匹配时标待核对并提示正确代码', async () => {
+  await check('#96/F-01 导入代码与主档名称不匹配时阻止入账（AI/Excel直解析/账本边界）', async () => {
     const identity = require('../services/securityIdentity');
     const fakeExecutor = async () => ({
       rows: [
@@ -273,9 +273,25 @@ async function main() {
     ]);
     const normalized = await identity.normalizeImportedItems(items, fakeExecutor);
     const out = cleanse.finalizeImportedItems(normalized);
-    assert.strictEqual(out[0]._v.status, 'review');
-    assert.ok(out[0]._v.issues.some(i => i.field === 'code' && i.message.includes('南京证券') && i.message.includes('601995.SH')));
+    assert.strictEqual(out[0]._v.status, 'blocked');
+    assert.ok(out[0]._v.identityConflict && out[0]._v.identityConflict.code === '601990');
+    assert.ok(out[0]._v.issues.some(i => i.level === 'error' && i.field === 'code' && i.message.includes('南京证券') && i.message.includes('601995.SH')));
     assert.strictEqual(out[1]._v.status, 'ok');
+
+    // Excel 结构化直解析路径也必须透传 blocked 校验
+    const structuredNorm = await identity.normalizeImportedItems([
+      { kind: 'position', code: '601990', name: '中金公司', price: 25.51, quantity: 100, date: '2026-11-25' },
+    ], fakeExecutor);
+    const structuredOut = cleanse.attachIdentityConflictValidation(structuredNorm);
+    assert.strictEqual(structuredOut[0]._v.status, 'blocked');
+    assert.strictEqual(structuredOut[0]._identityConflict, undefined);
+
+    // 账本写入边界也必须拒绝错配代码与名称
+    const tradeLedger = require('../services/tradeLedger');
+    await assert.rejects(
+      () => tradeLedger.applyTrade('u1', '默认账户', { code: '601990', name: '中金公司', direction: 'buy', price: 25.51, quantity: 100, date: '2026-11-25' }, { query: fakeExecutor }),
+      err => err && err.status === 400 && /南京证券/.test(err.message)
+    );
   });
 
   console.log('\n通过 ' + passed + ' 项');

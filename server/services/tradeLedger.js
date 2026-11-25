@@ -19,7 +19,7 @@ const { round } = require('../db/util');
 const { todayCN, fetchQuotesByCodes } = require('../services/market');
 const CoreDate = require('../../public/shared/core-date.js');
 const classifyCode = require('../../public/js/code-classify');
-const { resolveAmbiguousSecurity } = require('./securityIdentity');
+const { resolveAmbiguousSecurity, detectCodeNameConflicts } = require('./securityIdentity');
 const txControl = require('../repositories/transactionControl');
 const { heldQuantity } = require('../repositories/tradeLedgerRepository.js');
 const repository = require('../repositories/tradeLedgerRepository.js');
@@ -178,6 +178,19 @@ async function applyTrade(username, accountName, trade, externalClient = null, e
         t.type = codeInfo.type;
         t.subtype = codeInfo.subtype;
       }
+    }
+  }
+  if (t.code && t.name && String(t.name).trim() !== String(t.code).trim()) {
+    const queryFn = externalClient ? externalClient.query.bind(externalClient) : pool.query.bind(pool);
+    const checked = await detectCodeNameConflicts([{ code: t.code, name: t.name }], queryFn);
+    const conflict = checked[0] && checked[0]._identityConflict;
+    if (conflict) {
+      const hint = conflict.nameCandidates && conflict.nameCandidates.length
+        ? `（名称对应 ${conflict.nameCandidates.join(' / ')}）`
+        : '';
+      const err = new Error(`代码 ${conflict.code} 对应「${conflict.codeName}」，与证券名称「${conflict.itemName}」不符，请核对后再提交${hint}`);
+      err.status = 400;
+      throw err;
     }
   }
   const { price, quantity, amount } = validateTrade(t);

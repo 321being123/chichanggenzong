@@ -270,11 +270,31 @@ function finalizeImportedItems(items) {
     if (item._identityConflict) {
       const c = item._identityConflict;
       const hint = c.nameCandidates && c.nameCandidates.length ? `（名称对应 ${c.nameCandidates.join(' / ')}）` : '';
-      addIssue(v, 'warn', 'code', `代码 ${c.code} 对应「${c.codeName}」，与导入名称「${c.itemName}」不符，请核对${hint}`);
+      const message = `代码 ${c.code} 对应「${c.codeName}」，与导入名称「${c.itemName}」不符，请核对${hint}`;
+      addIssue(v, 'error', 'code', message);
+      v.identityConflict = { code: String(item.code || ''), itemName: String(item.name || '').trim(), message };
       delete item._identityConflict;
     }
 
     refreshStatus(v);
+  }
+  return list;
+}
+
+// 结构化 Excel 直解析（buildStructuredItems）不走 cleanseImportedItems，但仍需把主档代码/名称冲突透传到预览校验态。
+function attachIdentityConflictValidation(items) {
+  const list = Array.isArray(items) ? items : [];
+  for (const item of list) {
+    if (!item || typeof item !== 'object' || !item._identityConflict) continue;
+    const c = item._identityConflict;
+    const hint = c.nameCandidates && c.nameCandidates.length ? `（名称对应 ${c.nameCandidates.join(' / ')}）` : '';
+    const message = `代码 ${c.code} 对应「${c.codeName}」，与导入名称「${c.itemName}」不符，请核对${hint}`;
+    const v = item._v || makeValidation();
+    addIssue(v, 'error', 'code', message);
+    v.identityConflict = { code: String(item.code || ''), itemName: String(item.name || '').trim(), message };
+    refreshStatus(v);
+    item._v = v;
+    delete item._identityConflict;
   }
   return list;
 }
@@ -287,4 +307,5 @@ module.exports = {
   normalizeCurrency,
   cleanseImportedItems,
   finalizeImportedItems,
+  attachIdentityConflictValidation,
 };

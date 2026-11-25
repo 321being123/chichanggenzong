@@ -15,7 +15,7 @@ const { visionUploadTokens, TOKEN_TTL, setVisionToken, mobileUploadHtml, consume
 const { upsertIndexPoints } = require('../db');
 const normalizeCode = require('../../public/js/code-classify.js').normalizeCode;
 const { normalizeImportedItems } = require('../services/securityIdentity');
-const { cleanseImportedItems, finalizeImportedItems } = require('../services/importCleanse');
+const { cleanseImportedItems, finalizeImportedItems, attachIdentityConflictValidation } = require('../services/importCleanse');
 
 // 图片校验：仅接受图片 MIME + 文件魔数，解码后不超过 6MiB（与前端/手机端同一容量边界，方案 4.3 第 3 条）；返回错误信息字符串或 null
 function validateImage(image) {
@@ -355,7 +355,7 @@ router.post('/api/excel-parse', requireLogin, rateLimit({ prefix: 'ai', windowMs
 
     // 结构化直解析优先：表头清晰的（持仓历史/对账单等）直接提取，不走大模型
     const structured = buildStructuredItems(rows);
-    if (structured) return res.json({ items: await normalizeImportedItems(structured) });
+    if (structured) return res.json({ items: attachIdentityConflictValidation(await normalizeImportedItems(structured)) });
 
     // AI 输入截断，避免超大表格放大 token 成本（最多约 5 万字符）
     const rowsJson = JSON.stringify(rows);

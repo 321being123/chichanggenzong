@@ -1333,10 +1333,17 @@ function revalidateSmartRow(rowId) {
   var isHk = !!(info && info.isHK);
   if (row.currency === 'HKD' && !isHk) issues.push({ level: 'error', field: 'currency', message: '币种为港币但代码不是港股' });
   if (row.currency === 'CNY' && isHk) issues.push({ level: 'error', field: 'currency', message: '币种为人民币但代码是港股' });
+  var prevConflict = item._v && item._v.identityConflict;
+  var keepConflict = prevConflict && String(row.code || '') === String(prevConflict.code || '')
+    && String(row.name || '').trim() === String(prevConflict.itemName || '').trim();
+  if (keepConflict) {
+    issues.push({ level: 'error', field: 'code', message: prevConflict.message });
+  }
   item._v = {
     status: issues.some(function(i) { return i.level === 'error'; }) ? 'blocked' : (issues.length ? 'review' : 'ok'),
     issues: issues,
-    costSource: item._v ? item._v.costSource : null
+    costSource: item._v ? item._v.costSource : null,
+    identityConflict: keepConflict ? prevConflict : null
   };
   var cell = document.getElementById('s-status-' + rowId);
   if (cell) cell.innerHTML = renderSmartRowStatus(item);

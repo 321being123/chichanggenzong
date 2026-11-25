@@ -217,7 +217,7 @@ CN|non_financial|income|ps.tp|利润总额|subtotal||unverified||利润总额|20
 CN|non_financial|income|ps.rade_tp_r|利润总额|supplement||unverified|||2026-11-23
 CN|non_financial|income|ps.ebit|补充指标|supplement||unverified|||2026-11-23
 CN|non_financial|income|ps.ebitda|补充指标|supplement||unverified|||2026-11-23
-CN|non_financial|income|ps.ite|所得税费用|line||unverified|||2026-11-23
+CN|non_financial|income|ps.ite|所得税费用|line||unverified||所得税费用|2026-11-23
 CN|non_financial|income|ps.ite_tp_r|利润总额|supplement||unverified|||2026-11-23
 CN|non_financial|income|ps.np|净利润|total||unverified||净利润|2026-11-23
 CN|non_financial|income|ps.np_s_r|净利润|supplement||unverified|||2026-11-23
@@ -499,7 +499,7 @@ CN|bank|income|ps.op_s_r|营业利润|supplement||unverified|||2026-11-23
 CN|bank|income|ps.noi|营业外收支|line||unverified|||2026-11-23
 CN|bank|income|ps.noe|营业外收支|line||unverified|||2026-11-23
 CN|bank|income|ps.tp|利润总额|subtotal||unverified||利润总额|2026-11-23
-CN|bank|income|ps.ite|所得税费用|line||unverified|||2026-11-23
+CN|bank|income|ps.ite|所得税费用|line||unverified||所得税费用|2026-11-23
 CN|bank|income|ps.ite_tp_r|利润总额|supplement||unverified|||2026-11-23
 CN|bank|income|ps.np|净利润|total||unverified||净利润|2026-11-23
 CN|bank|income|ps.np_s_r|净利润|supplement||unverified|||2026-11-23
@@ -822,7 +822,7 @@ CN|insurance|income|ps.op_s_r|营业利润|supplement||unverified|||2026-11-23
 CN|insurance|income|ps.noi|营业外收支|line||unverified|||2026-11-23
 CN|insurance|income|ps.noe|营业外收支|line||unverified|||2026-11-23
 CN|insurance|income|ps.tp|利润总额|subtotal||unverified||利润总额|2026-11-23
-CN|insurance|income|ps.ite|所得税费用|line||unverified|||2026-11-23
+CN|insurance|income|ps.ite|所得税费用|line||unverified||所得税费用|2026-11-23
 CN|insurance|income|ps.ite_tp_r|利润总额|supplement||unverified|||2026-11-23
 CN|insurance|income|ps.np|净利润|total||unverified||净利润|2026-11-23
 CN|insurance|income|ps.np_s_r|净利润|supplement||unverified|||2026-11-23
@@ -1097,7 +1097,7 @@ CN|security|income|ps.op_s_r|营业利润|supplement||unverified|||2026-11-23
 CN|security|income|ps.noi|营业外收支|line||unverified|||2026-11-23
 CN|security|income|ps.noe|营业外收支|line||unverified|||2026-11-23
 CN|security|income|ps.tp|利润总额|subtotal||unverified||利润总额|2026-11-23
-CN|security|income|ps.ite|所得税费用|line||unverified|||2026-11-23
+CN|security|income|ps.ite|所得税费用|line||unverified||所得税费用|2026-11-23
 CN|security|income|ps.ite_tp_r|利润总额|supplement||unverified|||2026-11-23
 CN|security|income|ps.np|净利润|total||unverified||净利润|2026-11-23
 CN|security|income|ps.np_s_r|净利润|supplement||unverified|||2026-11-23
@@ -1312,7 +1312,7 @@ CN|other_financial|income|ps.op_s_r|营业利润|supplement||unverified|||2026-1
 CN|other_financial|income|ps.noi|营业外收支|line||unverified|||2026-11-23
 CN|other_financial|income|ps.noe|营业外收支|line||unverified|||2026-11-23
 CN|other_financial|income|ps.tp|利润总额|subtotal||unverified||利润总额|2026-11-23
-CN|other_financial|income|ps.ite|所得税费用|line||unverified|||2026-11-23
+CN|other_financial|income|ps.ite|所得税费用|line||unverified||所得税费用|2026-11-23
 CN|other_financial|income|ps.ite_tp_r|利润总额|supplement||unverified|||2026-11-23
 CN|other_financial|income|ps.np|净利润|total||unverified||净利润|2026-11-23
 CN|other_financial|income|ps.np_s_r|净利润|supplement||unverified|||2026-11-23
@@ -1562,7 +1562,7 @@ HK|non_financial|income|ps.ooi|营业总收入|line||unverified|||2026-11-23
 HK|non_financial|income|ps.ooe|营业总收入|line||unverified|||2026-11-23
 HK|non_financial|income|ps.tp|利润总额|subtotal||unverified||利润总额|2026-11-23
 HK|non_financial|income|ps.rade_tp_r|利润总额|supplement||unverified|||2026-11-23
-HK|non_financial|income|ps.ite|所得税费用|line||unverified|||2026-11-23
+HK|non_financial|income|ps.ite|所得税费用|line||unverified||所得税费用|2026-11-23
 HK|non_financial|income|ps.ite_tp_r|利润总额|supplement||unverified|||2026-11-23
 HK|non_financial|income|ps.np|净利润|total||unverified||净利润|2026-11-23
 HK|non_financial|income|ps.np_s_r|净利润|supplement||unverified|||2026-11-23
@@ -1683,7 +1683,7 @@ HK|bank|income|ps.cilor|其他损益|line||unverified|||2026-11-23
 HK|bank|income|ps.oail|营业支出|line||unverified|||2026-11-23
 HK|bank|income|ps.ooe|营业支出|line||unverified|||2026-11-23
 HK|bank|income|ps.tp|利润总额|subtotal||unverified||利润总额|2026-11-23
-HK|bank|income|ps.ite|所得税费用|line||unverified|||2026-11-23
+HK|bank|income|ps.ite|所得税费用|line||unverified||所得税费用|2026-11-23
 HK|bank|income|ps.ite_tp_r|利润总额|supplement||unverified|||2026-11-23
 HK|bank|income|ps.np|净利润|total||unverified||净利润|2026-11-23
 HK|bank|income|ps.np_s_r|净利润|supplement||unverified|||2026-11-23
@@ -1857,7 +1857,7 @@ HK|insurance|income|ps.ailor|其他损益|line||unverified|||2026-11-23
 HK|insurance|income|ps.cilor|其他损益|line||unverified|||2026-11-23
 HK|insurance|income|ps.oail|营业支出|line||unverified|||2026-11-23
 HK|insurance|income|ps.tp|利润总额|subtotal||unverified||利润总额|2026-11-23
-HK|insurance|income|ps.ite|所得税费用|line||unverified|||2026-11-23
+HK|insurance|income|ps.ite|所得税费用|line||unverified||所得税费用|2026-11-23
 HK|insurance|income|ps.ite_tp_r|利润总额|supplement||unverified|||2026-11-23
 HK|insurance|income|ps.np|净利润|total||unverified||净利润|2026-11-23
 HK|insurance|income|ps.np_s_r|净利润|supplement||unverified|||2026-11-23
@@ -1989,7 +1989,7 @@ HK|security|income|ps.cilor|其他损益|line||unverified|||2026-11-23
 HK|security|income|ps.oail|营业支出|line||unverified|||2026-11-23
 HK|security|income|ps.ooe|营业支出|line||unverified|||2026-11-23
 HK|security|income|ps.tp|利润总额|subtotal||unverified||利润总额|2026-11-23
-HK|security|income|ps.ite|所得税费用|line||unverified|||2026-11-23
+HK|security|income|ps.ite|所得税费用|line||unverified||所得税费用|2026-11-23
 HK|security|income|ps.ite_tp_r|利润总额|supplement||unverified|||2026-11-23
 HK|security|income|ps.np|净利润|total||unverified||净利润|2026-11-23
 HK|security|income|ps.np_s_r|净利润|supplement||unverified|||2026-11-23
@@ -2091,7 +2091,7 @@ HK|other_financial|income|ps.cilor|其他损益|line||unverified|||2026-11-23
 HK|other_financial|income|ps.oail|营业支出|line||unverified|||2026-11-23
 HK|other_financial|income|ps.ooe|营业支出|line||unverified|||2026-11-23
 HK|other_financial|income|ps.tp|利润总额|subtotal||unverified||利润总额|2026-11-23
-HK|other_financial|income|ps.ite|所得税费用|line||unverified|||2026-11-23
+HK|other_financial|income|ps.ite|所得税费用|line||unverified||所得税费用|2026-11-23
 HK|other_financial|income|ps.ite_tp_r|利润总额|supplement||unverified|||2026-11-23
 HK|other_financial|income|ps.np|净利润|total||unverified||净利润|2026-11-23
 HK|other_financial|income|ps.np_s_r|净利润|supplement||unverified|||2026-11-23
@@ -2210,7 +2210,7 @@ HK|reit|income|ps.iifa|物业收入净额|line||candidate|ps.iifaajv（待对照
 HK|reit|income|ps.iifjv|物业收入净额|line||candidate|ps.iifaajv（待对照原报告）||2026-11-23
 HK|reit|income|ps.ivi|其他损益|line||unverified|||2026-11-23
 HK|reit|income|ps.tp|利润总额|subtotal||unverified||利润总额|2026-11-23
-HK|reit|income|ps.ite|所得税费用|line||unverified|||2026-11-23
+HK|reit|income|ps.ite|所得税费用|line||unverified||所得税费用|2026-11-23
 HK|reit|income|ps.ite_tp_r|利润总额|supplement||unverified|||2026-11-23
 HK|reit|income|ps.np|净利润|total||unverified||净利润|2026-11-23
 HK|reit|income|ps.np_s_r|净利润|supplement||unverified|||2026-11-23

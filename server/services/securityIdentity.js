@@ -466,4 +466,4 @@ async function ensureInstrumentIdentity({ canonicalCode, name = '', assetClass =
 
 function clearIdentifierCache() { identifierCache.clear(); }
 
-module.exports = { resolveAmbiguousSecurity, normalizeImportedItems, canonicalizeSecurityCode, resolveCanonicalCode, resolveInstrument, resolveProviderIdentifier, resolveProviderCode, ensureInstrumentIdentity, isCleanSecurityName, clearIdentifierCache };
+module.exports = { resolveAmbiguousSecurity, normalizeImportedItems, detectCodeNameConflicts, canonicalizeSecurityCode, resolveCanonicalCode, resolveInstrument, resolveProviderIdentifier, resolveProviderCode, ensureInstrumentIdentity, isCleanSecurityName, clearIdentifierCache };

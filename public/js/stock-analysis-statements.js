@@ -320,31 +320,41 @@ function stockAnalysisRenderStatements(data) {
   }).join('');
 
   var model = stockAnalysisBuildRowModels(data);
+  function hasFiniteNum(val) {
+    return val != null && Number.isFinite(Number(val));
+  }
+  function isAbnormalStatus(status, reason) {
+    if (!status || status === 'available' || status === 'source_not_disclosed') return false;
+    return reason !== 'comparable_period_missing' && reason !== 'comparable_value_missing' && reason !== 'zero_denominator' && reason !== 'source_not_disclosed';
+  }
   var keptRows = (function filterZeroRows(rows, byCode) {
     var fieldEntriesByCode = {};
-    var hasAnyNonZero = false;
     var keptCodes = {};
     rows.forEach(function(entry, idx) {
       if (entry.kind !== 'field') return;
       var field = entry.field || byCode[entry.code];
       var code = entry.code || (field && field.code) || ('__idx_' + idx);
       fieldEntriesByCode[code] = entry;
-      var nonZero = field && Array.isArray(field.values) && field.values.some(function(item) {
+      var keep = entry.row_role === 'total' || Boolean(entry.is_group_rep) || (field && Array.isArray(field.values) && field.values.some(function(item) {
         if (!item) return false;
-        var v = item.value != null ? Number(item.value) : NaN;
-        if (Number.isFinite(v) && v !== 0) return true;
-        if (dualStickyCols && item.single_value != null) {
-          var sv = Number(item.single_value);
-          if (Number.isFinite(sv) && sv !== 0) return true;
-        }
+        if (hasFiniteNum(item.value) && Number(item.value) !== 0) return true;
+        if (dualStickyCols && hasFiniteNum(item.single_value) && Number(item.single_value) !== 0) return true;
+        if (showYoy && (hasFiniteNum(item.yoy) || hasFiniteNum(item.change))) return true;
+        if (showQoq && hasFiniteNum(item.qoq)) return true;
+        if (dualStickyCols && ((showYoy && hasFiniteNum(item.single_yoy)) || (showQoq && hasFiniteNum(item.single_qoq)))) return true;
+        if (item.status && item.status !== 'available' && item.status !== 'source_not_disclosed') return true;
+        var yoyStatus = item.yoy_status !== undefined ? item.yoy_status : item.comparison_status;
+        var yoyReason = item.yoy_reason !== undefined ? item.yoy_reason : item.comparison_reason;
+        if (showYoy && isAbnormalStatus(yoyStatus, yoyReason)) return true;
+        var qoqStatus = item.qoq_status !== undefined ? item.qoq_status : (compareMode === 'qoq' ? item.comparison_status : null);
+        var qoqReason = item.qoq_reason !== undefined ? item.qoq_reason : (compareMode === 'qoq' ? item.comparison_reason : null);
+        if (showQoq && isAbnormalStatus(qoqStatus, qoqReason)) return true;
         return false;
-      });
-      if (nonZero || entry.row_role === 'total' || entry.is_group_rep) {
-        if (nonZero) hasAnyNonZero = true;
+      }));
+      if (keep) {
         keptCodes[code] = true;
       }
     });
-    if (!hasAnyNonZero) return rows;
     Object.keys(keptCodes).slice().forEach(function(code) {
       var cur = fieldEntriesByCode[code];
       var guard = 0;
@@ -477,8 +487,11 @@ function stockAnalysisRenderStatements(data) {
     var keepUnit = stockAnalysisKeepUnitTag(field);
     var unit = keepUnit ? '<small class="statement-unit">' + escapeHtml(keepUnit) + '</small>' : '';
     var srParent = parentField ? '<span class="statement-sr-parent">（隶属：' + escapeHtml(parentField.label) + '）</span>' : '';
+    var labelHtml = relationReason
+      ? '<details class="statement-label-tip"><summary class="statement-label statement-label-has-tip" aria-label="' + escapeHtml(field.label + '：查看层级关系说明') + '">' + escapeHtml(field.label) + '</summary><div class="statement-label-tip-body">' + escapeHtml('层级关系：' + relationReason) + '</div></details>'
+      : '<span class="statement-label">' + escapeHtml(field.label) + '</span>';
     var basisCell = dualStickyCols ? '<th scope="row" class="statement-col-basis">当期</th>' : '';
-    var primaryTr = '<tr class="' + rowClass + '" data-statement-level="' + depth + '"' + roleAttr + groupAttr + codeAttr + parentAttr + '><th scope="row" class="statement-col-name">' + branch + '<span class="statement-label">' + escapeHtml(field.label) + '</span>' + srParent + unit + '</th>' + basisCell + cells + '</tr>';
+    var primaryTr = '<tr class="' + rowClass + '" data-statement-level="' + depth + '"' + roleAttr + groupAttr + codeAttr + parentAttr + '><th scope="row" class="statement-col-name">' + branch + labelHtml + srParent + unit + '</th>' + basisCell + cells + '</tr>';
 
     if (!dualStickyCols || !['currency', 'per_share'].includes(field.measure_type)) {
       return primaryTr;

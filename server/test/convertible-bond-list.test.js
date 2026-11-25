@@ -259,6 +259,12 @@ check('#85 多条件筛选边界、空值排除与历史新低严格小于前低
   assert.strictEqual(fn({ ...hitRow, rating: 'A+' }, filters), false, '未选中评级不得命中');
 });
 
+check('#95 评级下拉复选框不得被筛选输入框样式撑大', () => {
+  const css = fs.readFileSync(path.join(__dirname, '..', '..', 'public', 'css', 'bond-safety.css'), 'utf8');
+  assert.ok(css.includes('.bond-filter-field input:not([type="checkbox"])'), '筛选框样式必须排除 checkbox');
+  assert.ok(css.includes('.bond-filter-rating-item input[type="checkbox"]') && css.includes('width:16px'), '评级下拉复选框必须固定 16px 尺寸');
+});
+
 const pass = tests.filter(item => item[0] === 'PASS').length;
 const fail = tests.filter(item => item[0] === 'FAIL').length;
 console.log('\n===== convertible-bond-list 测试汇总 =====');

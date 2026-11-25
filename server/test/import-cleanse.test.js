@@ -259,6 +259,25 @@ async function main() {
     assert.strictEqual(again.expired, true); // 已销毁
   });
 
+  await check('#96 导入代码与主档名称不匹配时标待核对并提示正确代码', async () => {
+    const identity = require('../services/securityIdentity');
+    const fakeExecutor = async () => ({
+      rows: [
+        { canonical_code: '601990.SH', name: '南京证券', market: 'CN', exchange_code: 'SSE', currency_code: 'CNY' },
+        { canonical_code: '601995.SH', name: '中金公司', market: 'CN', exchange_code: 'SSE', currency_code: 'CNY' },
+      ],
+    });
+    const { items } = cleanse.cleanseImportedItems([
+      { kind: 'position', code: '601990', name: '中金公司', cost: 25.51, quantity: 100, date: '2026-11-25' },
+      { kind: 'position', code: '601995', name: '中金公司', cost: 25.51, quantity: 100, date: '2026-11-25' },
+    ]);
+    const normalized = await identity.normalizeImportedItems(items, fakeExecutor);
+    const out = cleanse.finalizeImportedItems(normalized);
+    assert.strictEqual(out[0]._v.status, 'review');
+    assert.ok(out[0]._v.issues.some(i => i.field === 'code' && i.message.includes('南京证券') && i.message.includes('601995.SH')));
+    assert.strictEqual(out[1]._v.status, 'ok');
+  });
+
   console.log('\n通过 ' + passed + ' 项');
 }
 

@@ -320,6 +320,63 @@ function stockAnalysisRenderStatements(data) {
   }).join('');
 
   var model = stockAnalysisBuildRowModels(data);
+  var keptRows = (function filterZeroRows(rows, byCode) {
+    var fieldEntriesByCode = {};
+    var hasAnyNonZero = false;
+    var keptCodes = {};
+    rows.forEach(function(entry, idx) {
+      if (entry.kind !== 'field') return;
+      var field = entry.field || byCode[entry.code];
+      var code = entry.code || (field && field.code) || ('__idx_' + idx);
+      fieldEntriesByCode[code] = entry;
+      var nonZero = field && Array.isArray(field.values) && field.values.some(function(item) {
+        if (!item) return false;
+        var v = item.value != null ? Number(item.value) : NaN;
+        if (Number.isFinite(v) && v !== 0) return true;
+        if (dualStickyCols && item.single_value != null) {
+          var sv = Number(item.single_value);
+          if (Number.isFinite(sv) && sv !== 0) return true;
+        }
+        return false;
+      });
+      if (nonZero || entry.row_role === 'total' || entry.is_group_rep) {
+        if (nonZero) hasAnyNonZero = true;
+        keptCodes[code] = true;
+      }
+    });
+    if (!hasAnyNonZero) return rows;
+    Object.keys(keptCodes).slice().forEach(function(code) {
+      var cur = fieldEntriesByCode[code];
+      var guard = 0;
+      while (cur && cur.parent_code && !keptCodes[cur.parent_code] && guard++ < 16) {
+        keptCodes[cur.parent_code] = true;
+        cur = fieldEntriesByCode[cur.parent_code];
+      }
+    });
+    var filtered = [];
+    for (var i = 0; i < rows.length; i++) {
+      var entry = rows[i];
+      if (entry.kind === 'field') {
+        var f = entry.field || byCode[entry.code];
+        var fCode = entry.code || (f && f.code) || ('__idx_' + i);
+        if (keptCodes[fCode]) filtered.push(entry);
+      } else if (entry.kind === 'section') {
+        var secDepth = Number(entry.depth) || 0;
+        var hasChildField = false;
+        for (var j = i + 1; j < rows.length; j++) {
+          var next = rows[j];
+          if (next.kind === 'section' && (Number(next.depth) || 0) <= secDepth) break;
+          if (next.kind === 'field') {
+            var nf = next.field || byCode[next.code];
+            var nCode = next.code || (nf && nf.code) || ('__idx_' + j);
+            if (keptCodes[nCode]) { hasChildField = true; break; }
+          }
+        }
+        if (hasChildField) filtered.push(entry);
+      }
+    }
+    return filtered;
+  })(model.rows, model.byCode);
   var commonComparisonReasons = {};
   var emptySectionFillers = Array(Math.max(0, columnCount - stickyColCount)).fill('<td class="statement-section-filler" aria-hidden="true"></td>').join('');
 
@@ -334,7 +391,7 @@ function stockAnalysisRenderStatements(data) {
     return '<td' + clsAttr + ' headers="' + headersAttr + '"' + statusAttr + '>' + escapeHtml(fmt.text) + '</td>';
   }
 
-  var rows = model.rows.map(function(entry) {
+  var rows = keptRows.map(function(entry) {
     if (entry.kind === 'section') {
       var secDepth = Math.max(0, Math.min(4, Number(entry.depth) || 0));
       var groupAttr = entry.group_id ? ' data-group-id="' + escapeHtml(entry.group_id) + '"' : '';
@@ -420,11 +477,8 @@ function stockAnalysisRenderStatements(data) {
     var keepUnit = stockAnalysisKeepUnitTag(field);
     var unit = keepUnit ? '<small class="statement-unit">' + escapeHtml(keepUnit) + '</small>' : '';
     var srParent = parentField ? '<span class="statement-sr-parent">（隶属：' + escapeHtml(parentField.label) + '）</span>' : '';
-    var statusHelp = statusMessages.length
-      ? '<details class="statement-status-help"><summary aria-label="查看该字段状态说明">!</summary><div class="statement-status-help-text">' + escapeHtml(statusMessages.join('；')) + '</div></details>'
-      : '';
     var basisCell = dualStickyCols ? '<th scope="row" class="statement-col-basis">当期</th>' : '';
-    var primaryTr = '<tr class="' + rowClass + '" data-statement-level="' + depth + '"' + roleAttr + groupAttr + codeAttr + parentAttr + '><th scope="row" class="statement-col-name">' + branch + '<span class="statement-label">' + escapeHtml(field.label) + '</span>' + srParent + unit + statusHelp + '</th>' + basisCell + cells + '</tr>';
+    var primaryTr = '<tr class="' + rowClass + '" data-statement-level="' + depth + '"' + roleAttr + groupAttr + codeAttr + parentAttr + '><th scope="row" class="statement-col-name">' + branch + '<span class="statement-label">' + escapeHtml(field.label) + '</span>' + srParent + unit + '</th>' + basisCell + cells + '</tr>';
 
     if (!dualStickyCols || !['currency', 'per_share'].includes(field.measure_type)) {
       return primaryTr;

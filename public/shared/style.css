@@ -397,7 +397,7 @@ body:has(.nav) { padding-top: var(--site-nav-height, 52px); }
 .table-wrap { background: var(--bg-surface); border: 1px solid var(--border-default); border-radius: var(--r-lg); box-shadow: var(--shadow-xs); overflow: hidden; margin-bottom: 18px; }
 .table-header { display: flex; justify-content: space-between; align-items: center; padding: 14px 18px; border-bottom: 1px solid var(--border-subtle); flex-wrap: wrap; gap: 8px; }
 .table-header h3 { font-size: var(--fs-base); font-weight: 600; color: var(--text-primary); }
-.biz-table-scroll { width: 100%; max-width: 100%; overflow-x: auto; overflow-y: visible; background: var(--bg-surface); }
+.biz-table-scroll { width: 100%; max-width: 100%; overflow-x: auto; overflow-y: hidden; overflow-y: clip; background: var(--bg-surface); }
 .biz-table { width: max-content; min-width: 100%; border-collapse: separate; border-spacing: 0; font-size: var(--fs-xs); background: var(--bg-surface); }
 .biz-table th { position: relative; height: 52px; box-sizing: border-box; padding: 8px 6px; background: var(--table-head-bg); color: var(--text-secondary); font-weight: 600; text-align: center; white-space: normal; line-height: 1.35; overflow-wrap: break-word; border-bottom: 1px solid var(--border-default); }
 .biz-table th .biz-table-head-label { display: inline-block; line-height: 1.35; text-align: center; vertical-align: middle; }

@@ -114,6 +114,71 @@ async function resolveAmbiguousSecurity(rawCode, rawName, executor) {
   }
 }
 
+function normalizeInstrumentName(value) {
+  return String(value == null ? '' : value)
+    .trim()
+    .replace(/\s+/g, '')
+    .toUpperCase()
+    .replace(/^(\*?ST|XD|XR|DR|N|C)+/, '')
+    .replace(/[-－—]?(A股|B股|H股|港股|退)$/i, '');
+}
+
+function namesCompatible(a, b) {
+  const na = normalizeInstrumentName(a);
+  const nb = normalizeInstrumentName(b);
+  if (!na || !nb) return true;
+  return na === nb || na.includes(nb) || nb.includes(na);
+}
+
+async function detectCodeNameConflicts(items, query) {
+  const codeSet = new Set();
+  const nameSet = new Set();
+  for (const item of items) {
+    if (!item || !item.code || !item.name) continue;
+    const digits = plainCode(item.code);
+    const nm = nameKey(item.name);
+    if (digits) codeSet.add(digits);
+    if (nm) nameSet.add(nm);
+  }
+  if (!codeSet.size || !nameSet.size) return items;
+
+  let rows = [];
+  try {
+    const result = await query(
+      `SELECT canonical_code, name, market, exchange_code, currency_code
+         FROM core.instruments
+        WHERE regexp_replace(canonical_code, '\\D', '', 'g') = ANY($1::text[])
+           OR regexp_replace(name, '[[:space:]]+', '', 'g') = ANY($2::text[])`,
+      [[...codeSet], [...nameSet]]
+    );
+    rows = uniqueRows(result && result.rows);
+  } catch (_) {
+    return items;
+  }
+  if (!rows.length) return items;
+
+  return items.map(item => {
+    if (!item || !item.code || !item.name) return item;
+    const digits = plainCode(item.code);
+    if (!digits) return item;
+    const codeRows = rows.filter(row => plainCode(row.canonical_code) === digits && row.name);
+    if (!codeRows.length) return item;
+    if (codeRows.some(row => namesCompatible(row.name, item.name))) return item;
+    const nameCandidates = rows
+      .filter(row => row.name && namesCompatible(row.name, item.name))
+      .map(row => row.canonical_code);
+    return {
+      ...item,
+      _identityConflict: {
+        code: item.code,
+        codeName: codeRows[0].name,
+        itemName: String(item.name).trim(),
+        nameCandidates,
+      },
+    };
+  });
+}
+
 async function normalizeImportedItems(items, executor) {
   const list = Array.isArray(items) ? items : [];
   const query = executor || pool.query.bind(pool);
@@ -126,7 +191,7 @@ async function normalizeImportedItems(items, executor) {
     if (!resolved.has(key)) resolved.set(key, await resolveAmbiguousSecurity(rawCode, rawName, query));
   }
 
-  return list.map(item => {
+  const normalized = list.map(item => {
     if (!item || !item.code) return item;
     const rawCode = String(item.code).trim();
     const rawName = String(item.name == null ? '' : item.name).trim();
@@ -143,6 +208,7 @@ async function normalizeImportedItems(items, executor) {
       quote_currency: identity.quote_currency
     };
   });
+  return detectCodeNameConflicts(normalized, query);
 }
 
 function normalizedCanonicalCode(value) {

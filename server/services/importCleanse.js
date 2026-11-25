@@ -267,6 +267,13 @@ function finalizeImportedItems(items) {
       }
     }
 
+    if (item._identityConflict) {
+      const c = item._identityConflict;
+      const hint = c.nameCandidates && c.nameCandidates.length ? `（名称对应 ${c.nameCandidates.join(' / ')}）` : '';
+      addIssue(v, 'warn', 'code', `代码 ${c.code} 对应「${c.codeName}」，与导入名称「${c.itemName}」不符，请核对${hint}`);
+      delete item._identityConflict;
+    }
+
     refreshStatus(v);
   }
   return list;

@@ -28,6 +28,7 @@ import hashlib
 import json
 import math
 import os
+import re
 from pathlib import Path
 
 import numpy as np
@@ -83,6 +84,15 @@ _RATING_RANK = {
     "AAA": 6, "AA+": 5, "AA": 4, "AA-": 3, "A+": 2, "A": 1, "A-": 0,
     "BBB+": -1, "BBB": -2, "BB": -3, "B": -4, "C": -5, "": -99,
 }
+_RATING_AGENCY_SUFFIX = re.compile(r"\s*sti\s*$", re.IGNORECASE)
+
+
+def normalize_credit_rating(value):
+    """剥离评级机构后缀 sti；与 server/domain/bondRating.js 同一口径（反馈 #103）。"""
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    return _RATING_AGENCY_SUFFIX.sub("", text).strip().upper()
 
 # 稳定评价分类（供统计/排序，不依赖中文完整文案）
 EVAL_CLASSES = ["低估", "偏低估", "合理", "偏高估", "高估", "风险折价", "数据不足"]
@@ -540,6 +550,7 @@ def load_ratings():
         df = pd.read_sql_query(sql, conn)
     df["rating_date"] = pd.to_datetime(df["rating_date"], errors="coerce")
     df["announced_at"] = pd.to_datetime(df["announced_at"], errors="coerce")
+    df["rating"] = df["rating"].map(normalize_credit_rating)
     out = {}
     for code, g in df.groupby("ts_code"):
         g = g.sort_values("rating_date")
@@ -548,7 +559,7 @@ def load_ratings():
 
 
 def _rank(rating):
-    return _RATING_RANK.get((rating or "").strip().upper(), -99)
+    return _RATING_RANK.get(normalize_credit_rating(rating), -99)
 
 
 def evaluate_credit(code, ratings_df):
@@ -556,7 +567,7 @@ def evaluate_credit(code, ratings_df):
     if ratings_df is None or ratings_df.empty:
         return False, "暂无评级记录", ""
     latest = ratings_df.iloc[-1]
-    latest_rating = str(latest["rating"]).strip()
+    latest_rating = normalize_credit_rating(latest["rating"])
     has_history = len(ratings_df) >= 2
 
     triggered = False

@@ -5,6 +5,7 @@ const { expectedTradeDate } = require('../routes/bondCycle');
 const { getDatasetMetadata } = require('./datasetPartitions');
 const { getActiveModel } = require('../repositories/convertibleBondValuationServiceRepository.js');
 const repository = require('../repositories/convertibleBondValuationServiceRepository.js');
+const { normalizeBondRating } = require('../domain/bondRating');
 
 const EVAL_ORDER = { '低估': 0, '偏低估': 1, '合理': 2, '偏高估': 3, '高估': 4, '风险折价': 5, '数据不足': 6 };
 
@@ -239,7 +240,7 @@ async function getCreditHistory(code) {
   return rows.map(r => ({
     rating_date: isoDate(r.rating_date),
     announced_at: isoDate(r.announced_at),
-    rating: r.rating,
+    rating: normalizeBondRating(r.rating) || r.rating,
     rating_outlook: r.rating_outlook || '',
     rating_type: r.rating_type || '',
   }));

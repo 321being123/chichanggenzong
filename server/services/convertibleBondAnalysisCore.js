@@ -3,6 +3,7 @@
 const { tushareQuery, tsRows, tsDateStr } = require('./market');
 const crypto = require('crypto');
 const path = require('path');
+const { normalizeBondRating } = require('../domain/bondRating');
 
 const BOND_PREFIX = /^(110|111|113|118|123|127|128)\d{3}$/;
 
@@ -400,7 +401,8 @@ function cashflowsToDate(profile, coupons, targetDate, afterTax, finalValue, asO
 
 function creditDiscountRate(rating) {
   const rates = { AAA:0.028, 'AA+':0.032, AA:0.036, 'AA-':0.042, 'A+':0.05, A:0.06, 'A-':0.075 };
-  return rates[String(rating || '').toUpperCase()] || 0.06;
+  // 存量评级可能带 sti 机构后缀（反馈 #103）；不归一化会落到默认 6%，高估折现率。
+  return rates[normalizeBondRating(rating)] || 0.06;
 }
 
 function presentValue(cashflows, discountRate) {

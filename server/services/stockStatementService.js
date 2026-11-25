@@ -494,7 +494,8 @@ function filterRowsByOptions(allRows, normalized) {
   return allRows.filter(row => {
     if (normalized.periodType && normalized.periodType !== 'all') {
       if (normalized.periodType === 'quarter') {
-        if (row.period_type !== 'q1' && row.period_type !== 'q3') return false;
+        // 「季报」口径 = 全部季度粒度报告：一季报(Q1)、半年报(Q2)、三季报(Q3)、年报(Q4)。
+        if (!['q1', 'semiannual', 'q3', 'annual'].includes(String(row.period_type || ''))) return false;
       } else if (row.period_type !== normalized.periodType) {
         return false;
       }

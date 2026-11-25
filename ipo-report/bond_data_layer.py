@@ -6,10 +6,28 @@
 import hashlib
 import json
 import math
+import re
 from datetime import datetime
 
 import db_pg
 from instrument_identity import resolve_provider_code, ensure_instrument
+
+
+_RATING_PATTERN = re.compile(r"^(AAA|AA|A|BBB|BB|B|CCC|CC|C|D)([+-])?$")
+
+
+def normalize_credit_rating(value):
+    """剥离评级机构后缀 sti 与多余空白；保留无法识别的原始值，不猜等级。
+
+    与 server/domain/bondRating.js 保持同一口径（反馈 #103）。
+    """
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    cleaned = re.sub(r"\s*sti\s*$", "", text, flags=re.IGNORECASE).strip().upper()
+    if not cleaned:
+        return ""
+    return cleaned if _RATING_PATTERN.fullmatch(cleaned) else text
 
 
 def _num(value):
@@ -102,6 +120,8 @@ def save_cb_issue_rows(issue_rows, basic_rows=None, rating_map=None, dry=False):
             payload = dict(raw)
             payload["cb_basic"] = basic
             payload["rating"] = rating_map.get(ts_code)
+            # 原始报文保留上游原值；标准表只落归一化等级（反馈 #103）。
+            rating_value = normalize_credit_rating(rating_map.get(ts_code))
             payload_text = json.dumps(_json_safe(payload), ensure_ascii=False, sort_keys=True, default=str)
             cur.execute(
                 """INSERT INTO ops.raw_records(run_id,source_id,dataset_code,source_key,payload,payload_hash)
@@ -146,7 +166,7 @@ def save_cb_issue_rows(issue_rows, basic_rows=None, rating_map=None, dry=False):
                      source_updated_at=now(),updated_at=now()""",
                 (instrument_id, stock_id, name, name, _num(basic.get("par")), _num(raw.get("issue_price")),
                  issue_size * 100000000 if issue_size is not None else None,
-                 _num(basic.get("first_conv_price")), _num(basic.get("conv_price")), rating_map.get(ts_code) or "",
+                 _num(basic.get("first_conv_price")), _num(basic.get("conv_price")), rating_value,
                  listing_date, source_id, payload_text),
             )
             cur.execute(

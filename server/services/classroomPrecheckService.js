@@ -1343,7 +1343,13 @@ async function verifyIndustryPool({
   requireFullIndustry = false,
   timeoutMs = 4000,
   now = new Date(),
-}) {
+  // 建场选项逐窗口核验时复用同一份基础事实与转债校准样本，避免重复全表扫描。
+  sharedBase = null,
+  // 仅用于「可用窗口」判定：已凑够 N 个合格一级行业即可停止，避免把每个候选年都全量核验。
+  stopAfterQualifiedIndustries = 0,
+  // 日历/国债/转债公共门禁已失败时，窗口不可能通过，无需再核验个股。
+  skipIndustriesWhenWindowBlocked = false,
+} = {}) {
   const startYearNum = Number(startYear);
   const windowCheck = validateWindowBounds(startYearNum, totalRounds, now);
   if (!windowCheck.valid) {
@@ -1371,9 +1377,9 @@ async function verifyIndustryPool({
     const tradeDates = await repo.fetchCnOpenTradeDates(startDate, endDate, client);
     const calSummaryRows = await repo.fetchCnCalendarSummaryByYear(startYearNum, endYear, client);
     const bondWealthSeries = await repo.fetchBondWealthIndexSeries(`${startYearNum}-01-01`, endDate, client);
-    const cbStats = await repo.fetchCbCalibrationSampleStats(client);
-    const cbBucketRows = await repo.fetchCbCalibrationBuckets(client);
-    const snapDataVersion = await repo.fetchFactsDataVersion({ startDate, endDate }, client);
+    const cbStats = sharedBase ? sharedBase.cbStats : await repo.fetchCbCalibrationSampleStats(client);
+    const cbBucketRows = sharedBase ? sharedBase.cbBuckets : await repo.fetchCbCalibrationBuckets(client);
+    const snapDataVersion = sharedBase ? sharedBase.dataVersion : await repo.fetchFactsDataVersion({ startDate, endDate }, client);
     const calSummaryMap = new Map((calSummaryRows || []).map((r) => [Number(r.year), r]));
 
     const snapTradeDatesByYear = new Map();
@@ -1395,6 +1401,18 @@ async function verifyIndustryPool({
 
     const snapStartDates = snapTradeDatesByYear.get(startYearNum) || [];
     const snapEndDates = snapTradeDatesByYear.get(endYear) || [];
+    // 公共门禁（日历/国债/转债）已不通过的窗口一定不可用：在共享快照里就直接返回，
+    // 不再读取 SW2021 行业树和候选股票，避免把无效窗口的个股查询拖进建场耗时（F-01）。
+    if (skipIndustriesWhenWindowBlocked && !snapWindowStatus.pass) {
+      return {
+        dataVersion: snapDataVersion,
+        tradeDatesByYear: snapTradeDatesByYear,
+        windowStatus: snapWindowStatus,
+        startDates: snapStartDates,
+        endDates: snapEndDates,
+        cached: null,
+      };
+    }
     if (snapStartDates.length < 2 || snapEndDates.length < 2) {
       return {
         dataVersion: snapDataVersion,
@@ -1447,6 +1465,17 @@ async function verifyIndustryPool({
     };
   });
 
+  if (skipIndustriesWhenWindowBlocked && !windowStatus.pass) {
+    // 公共门禁已不通过时，该窗口一定不可用；直接返回原因，不再核验全部一级行业。
+    return {
+      windowStatus,
+      dataVersion,
+      industries: [],
+      excluded: [],
+      timedOut: false,
+    };
+  }
+
   if (startDates.length < 2 || endDates.length < 2) {
     return {
       windowStatus,
@@ -1459,6 +1488,10 @@ async function verifyIndustryPool({
   const cached = initialCached;
 
   const deadline = Date.now() + Math.max(0, Number(timeoutMs));
+  const qualifiedTarget = Math.max(0, Number(stopAfterQualifiedIndustries) || 0);
+  const countEnabledIndustries = () => cached.industries.reduce(
+    (total, item) => total + (item.qualified.length >= 3 ? 1 : 0), 0
+  );
   const runBatchVerify = async () => {
     let timedOut = false;
     for (const ind of cached.industries) {
@@ -1498,6 +1531,8 @@ async function verifyIndustryPool({
         }
       }
       if (timedOut) break;
+      // 「可用窗口」只需要证明至少有 N 个合格一级行业；凑够即停，剩余行业留给选中窗口的完整核验。
+      if (qualifiedTarget > 0 && countEnabledIndustries() >= qualifiedTarget) break;
     }
     return timedOut;
   };
@@ -1572,14 +1607,25 @@ async function getCreationOptions({ startYear = null, totalRounds = 15, timeoutM
 
   const availableWindows = [];
   const windowDiagnostics = [];
+  // 逐窗口核验前先取一次共享基础事实：数据版本与转债校准样本与窗口无关，
+  // 原先每个候选窗口都重算一遍全表哈希，是创建场次超时的主要来源。
+  const sharedBase = candidateStartYears.length
+    ? await repo.withReadOnlySnapshot((client) => repo.fetchCreationWindowBase({
+      startDate: `${candidateStartYears[0] - 1}-12-01`,
+      endDate: `${candidateStartYears[candidateStartYears.length - 1] + totalRounds - 1}-12-31`,
+    }, client))
+    : null;
   for (const sy of candidateStartYears) {
     const poolRes = await verifyIndustryPool({
       startYear: sy,
       totalRounds,
       initialBatchSize: 10,
       requireFullIndustry: false,
-      timeoutMs: Math.min(1500, timeoutMs),
+      timeoutMs: Math.min(timeoutMs, 4000),
       now,
+      sharedBase,
+      stopAfterQualifiedIndustries: 4,
+      skipIndustriesWhenWindowBlocked: true,
     });
     if (poolRes.windowStatus.pass) {
       availableWindows.push({
@@ -1592,7 +1638,10 @@ async function getCreationOptions({ startYear = null, totalRounds = 15, timeoutM
       windowDiagnostics.push({
         startYear: sy,
         endYear: sy + totalRounds - 1,
-        blockers: poolRes.windowStatus.blockers,
+        timedOut: Boolean(poolRes.timedOut),
+        blockers: poolRes.timedOut && !poolRes.windowStatus.pass
+          ? [...poolRes.windowStatus.blockers, '本窗口行业核验未在本次时限内完成，可重试继续']
+          : poolRes.windowStatus.blockers,
       });
     }
   }
@@ -1608,6 +1657,9 @@ async function getCreationOptions({ startYear = null, totalRounds = 15, timeoutM
     requireFullIndustry: false,
     timeoutMs,
     now,
+    sharedBase,
+    // 当前窗口同样先过公共门禁：门禁失败的窗口不允许再发起候选股票查询（F-01）。
+    skipIndustriesWhenWindowBlocked: true,
   });
 
   let onlyOneWindowNote = null;
@@ -1744,6 +1796,8 @@ async function sampleRealClassroomSelection({
     requireFullIndustry: !targetIndId,
     timeoutMs,
     now,
+    // 公共门禁失败的窗口不再核验/读取候选股票，直接进入不可用的错误路径（F-01）。
+    skipIndustriesWhenWindowBlocked: true,
   });
 
   if (poolRes.timedOut) {

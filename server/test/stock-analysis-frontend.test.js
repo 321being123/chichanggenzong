@@ -50,6 +50,10 @@ assert.ok(statementsScript.includes('statement-section-'), '财务报表缺少�
 assert.ok(statementsScript.includes('statement-level-') && statementsScript.includes('statement-branch'), '财务科目缺少父子层级展示');
 assert.ok(statementsScript.includes('comparisonEnabled = data.compare !== \'none\''), '不比较模式必须收起空比较列');
 assert.ok(analysisCss.includes('height:30px') && analysisCss.includes('statement-level-2') && analysisCss.includes('statement-unit'), '三表矩阵缺少紧凑行高、深层级与同行单位样式');
+assert.ok(analysisCss.includes('.stock-analysis-statements-table tbody th{text-align:left}'), '#106: 三表左侧科目列必须左对齐');
+assert.ok(analysisCss.includes('.statement-section-title') && analysisCss.includes('white-space:nowrap'), '#105: 整行分组标题必须禁止折行');
+assert.ok(/id="stock-analysis-statement-period"[^>]*>(?:(?!<\/select>)[\s\S])*<option value="quarter" selected>季报<\/option>/.test(html), '#104: 初始报告期只保留年报/半年报/季报并默认季报');
+assert.ok(!/id="stock-analysis-statement-period"[^>]*>(?:(?!<\/select>)[\s\S])*value="all"/.test(html), '#104: 初始报告期不得再含「全部」');
 assert.ok(analysisCss.includes('overflow-y:clip') && analysisCss.includes('white-space:normal'), '#89/#92: 三表容器不得出现内嵌纵向滚动条，桌面端长标题必须允许换行');
 assert.ok(analysisCss.includes('box-sizing:border-box') && analysisCss.includes('.statement-col-basis'), 'F-07: 双固定列必须使用 box-sizing:border-box 防止内边距导致 7px 交叠');
 assert.ok(!statementsScript.includes("periodFilter === 'semiannual' ? '半年'"), 'F-06: H1-Q1 差值不得标为半年');
@@ -139,8 +143,10 @@ assert.ok(statementsPresenter.includes('stockAnalysisState.selected !== code'), 
   assert.ok(doc.querySelector('tr[data-statement-code="bs.tca"][data-statement-level="1"].statement-role-subtotal'), '1 层 subtotal 应正确渲染');
   assert.ok(doc.querySelector('tr[data-statement-code="bs.nraar"][data-statement-level="2"].statement-role-subtotal'), '2 层组合项应渲染为 subtotal');
   assert.ok(doc.querySelector('tr[data-statement-code="bs.nr"][data-statement-level="3"][data-parent-code="bs.nraar"].statement-role-detail .statement-branch'), '3 层明细应带父项连接符');
-  assert.ok(doc.querySelector('tr.statement-section th.statement-section-cell'), '独立分组标题应放在首个真实单元格以支持固定首列');
-  assert.strictEqual(doc.querySelectorAll('tr.statement-section td.statement-section-filler').length, 2, '分组行其余叶列应补齐');
+  const sectionRow = doc.querySelector('tr.statement-section th.statement-section-cell');
+  assert.ok(sectionRow, '独立分组标题应放在首个真实单元格');
+  assert.ok(Number(sectionRow.getAttribute('colspan')) > 1, '#105: 整行分组标题必须横跨整行，避免被固定首列宽度挤成多行');
+  assert.ok(analysisCss.includes('.statement-section-title') && analysisCss.includes('white-space:nowrap'), '#105: 分组标题禁止折行');
   assert.ok(doc.querySelector('tr[data-statement-code="bs.lwi"].statement-role-supplement'), '补充指标应保留 supplement 角色');
   assert.strictEqual(doc.querySelector('tr[data-statement-code="bs.ta"] td.statement-change.flat').textContent, '0.00%', '舍入为零的变化应使用中性 flat 样式');
   assert.strictEqual(doc.querySelector('tr[data-statement-code="bs.tca"] td.statement-change.up').textContent, '+12.50%', '正变化应带 + 号与 up 样式');
@@ -265,12 +271,13 @@ assert.ok(statementsPresenter.includes('stockAnalysisState.selected !== code'), 
     ] }],
   });
   const periodOptions = [...dom.window.document.querySelectorAll('#stock-analysis-statement-period option')].map(o => o.textContent);
-  assert.deepStrictEqual(periodOptions, ['全部', '年报', '半年报', '季报'], '无未知期时报告期下拉只保留全部/年报/半年报/季报');
+  assert.deepStrictEqual(periodOptions, ['年报', '半年报', '季报'], '#104: 报告期下拉去掉「全部」，只保留年报/半年报/季报');
+  assert.strictEqual(dom.window.document.getElementById('stock-analysis-statement-period').value, 'quarter', '#104: 默认选中季报');
   const headerText = dom.window.document.querySelector('thead th.statement-period').textContent;
   assert.ok(headerText.includes('三季报') && !headerText.includes('third_quarterly_report'), '列头应将英文报告期映射为中文');
   assert.ok(!headerText.includes('报表类型待确认'), '不应在每列拼接刺眼的报表类型待确认');
   assert.strictEqual(dom.window.document.querySelector('details.statement-status-help'), null, '#91: 不渲染感叹号');
-  // 当前选中 unknown 且新数据无 unknown 时必须移除并回退 all
+  // 当前选中 unknown（旧状态/深链）也必须回退到季报，且下拉不再出现 unknown
   view.stockAnalysisStatementFilters = () => ({ periodType: 'unknown', scope: 'consolidated' });
   view.stockAnalysisRenderStatements({
     name: '资产负债表', type: 'balance', compare: 'yoy', unit_label: '原值',
@@ -286,10 +293,10 @@ assert.ok(statementsPresenter.includes('stockAnalysisState.selected !== code'), 
   });
   assert.deepStrictEqual(
     [...dom.window.document.querySelectorAll('#stock-analysis-statement-period option')].map(o => o.value),
-    ['all', 'annual', 'semiannual', 'quarter'],
-    '新数据不含未知期时即使原选中 unknown 也应移除该选项'
+    ['annual', 'semiannual', 'quarter'],
+    '下拉只保留三类报告期，不再提供全部/未知'
   );
-  assert.strictEqual(dom.window.document.getElementById('stock-analysis-statement-period').value, 'all');
+  assert.strictEqual(dom.window.document.getElementById('stock-analysis-statement-period').value, 'quarter', 'unknown 旧状态回退季报');
   const renderedText = dom.window.document.getElementById('stock-analysis-statements-wrap').textContent;
   assert.ok(renderedText.includes('应收票据') && !renderedText.includes('应收保费') && !renderedText.includes('空分组'), '#90: 全零条目及空分组必须隐藏');
   assert.strictEqual(dom.window.document.querySelectorAll('details.statement-status-help').length, 0, '#91: 感叹号已移除');
@@ -442,8 +449,31 @@ assert.ok(script.includes('analysis-help-tooltip app-tooltip') && chartScript.in
 assert.ok(utilsScript.includes('function appChartTooltip(') && holdingsCharts.split('appChartTooltip(').length - 1 >= 4,
   '持仓管理图表提示未使用统一主题');
 
+{
+  // #107: 占比/比率变动统一显示百分号，不再出现英文 pct。
+  const dom = new JSDOM('<div id="stock-analysis-statements-title"></div><div id="stock-analysis-statements-meta"></div><div id="stock-analysis-statements-message"></div><div id="stock-analysis-statements-wrap"></div>');
+  const view = { document: dom.window.document, window: dom.window,
+    escapeHtml: value => String(value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;'),
+    stockAnalysisNumber: value => Number(value).toFixed(2),
+    stockAnalysisPercent: value => (Number(value) * 100).toFixed(2) + '%',
+    BusinessTable: { attach() {} } };
+  vm.runInNewContext(statementsScript, view);
+  view.stockAnalysisRenderStatements({
+    name: '资产负债表', type: 'balance', compare: 'yoy', unit_label: '原值',
+    periods: [{ end_date: '2025-12-31', scope: 'consolidated', fs_table_type: 'non_financial', currency: 'CNY' }],
+    fields: [
+      { code: 'bs.tl_ta_r', label: '资产负债率', unit: '%', measure_type: 'percent', values: [{ value: 50, status: 'available', yoy: 1.01, yoy_unit: 'pct_pt', yoy_status: 'available' }] },
+      { code: 'bs.gp_m_r', label: '毛利率', unit: '%', measure_type: 'percent', values: [{ value: 30, status: 'available', yoy: -0.32, yoy_unit: 'pct_pt', yoy_status: 'available' }] },
+    ],
+  });
+  const changeCells = [...dom.window.document.querySelectorAll('td.statement-change')].map(td => td.textContent);
+  assert.deepStrictEqual(changeCells, ['+1.01%', '-0.32%'], '#107: 百分点差值必须显示为 +1.01%/-0.32%');
+  assert.ok(!/pct/i.test(dom.window.document.body.textContent), '#107: 三表不得再出现英文 pct');
+  dom.window.close();
+}
+
 (async () => {
-  // A-06: 当筛选处于 unknown 且切换到无未知期的股票时，Presenter 必须自动回退 all 并重取
+  // #104: 报告期只保留年报/半年报/季报，默认季报；Presenter 不再请求 all/unknown。
   const calls = [];
   let rendered = null;
   const pCtx = {
@@ -451,9 +481,6 @@ assert.ok(utilsScript.includes('function appChartTooltip(') && holdingsCharts.sp
     stockAnalysisApi: {
       getStatements: async (code, type, version, filters) => {
         calls.push(filters.periodType);
-        if (filters.periodType === 'unknown') {
-          return { ok: true, status: 200, payload: { analysis_version: 'v1', periods: [], available_filters: { period_types: ['annual', 'semiannual'] } } };
-        }
         return { ok: true, status: 200, payload: { analysis_version: 'v1', periods: [{ end_date: '2025-12-31' }], available_filters: { period_types: ['annual', 'semiannual'] } } };
       },
     },
@@ -462,10 +489,11 @@ assert.ok(utilsScript.includes('function appChartTooltip(') && holdingsCharts.sp
     stockAnalysisShowStatementsError: (err) => { throw err; },
   };
   vm.runInNewContext(statementsPresenter, pCtx);
-  pCtx.stockStatementState.filters.periodType = 'unknown';
+  assert.strictEqual(pCtx.stockAnalysisStatementFilters().periodType, 'quarter', '#104: 三表默认报告期必须是季报');
   await pCtx.stockAnalysisLoadStatements('balance');
-  assert.deepStrictEqual(calls, ['unknown', 'all'], '无未知期时 Presenter 应自动回退到 all 重新取数');
-  assert.strictEqual(pCtx.stockStatementState.filters.periodType, 'all');
+  assert.deepStrictEqual(calls, ['quarter'], '#104: 首次取数只请求季报口径');
+  await pCtx.stockAnalysisSetStatementFilter('periodType', 'all');
+  assert.strictEqual(pCtx.stockAnalysisStatementFilters().periodType, 'quarter', '#104: 非法/已移除的报告期必须回退季报');
   assert.strictEqual(rendered.periods.length, 1);
   const rulesText = fs.readFileSync(path.join(root, 'server', 'dataAccess', 'catalog', 'statementHierarchyRules_20261123.txt'), 'utf8');
   assert.ok(!rulesText.includes('|营业总成本|'), '#93: 利润表分组不得重复出现「营业总成本」');
@@ -487,6 +515,34 @@ assert.ok(utilsScript.includes('function appChartTooltip(') && holdingsCharts.sp
       const model = pres.buildStatementPresentation(fields, { metrics, statement: 'income' });
       const iteRows = model.rows.filter(r => r.label === '所得税费用' || r.code === 'ps.ite');
       assert.deepStrictEqual(iteRows.map(r => r.kind + ':' + (r.code || r.label)), ['field:ps.ite'], `F-04: ${mkt}|${tbl} (val=${val}) 不得重复生成所得税费用分组标题`);
+      // #104: 分组标题不得与科目行同名（例：第一个科目「营业总收入」后又出现「营业总收入」分组标题）。
+      const fieldLabelByCode = new Map(fields.map(f => [f.code, String(f.label || '').trim()]));
+      const sectionLabels = model.rows.filter(r => r.kind === 'section').map(r => String(r.label || '').trim());
+      for (const label of sectionLabels) {
+        const duplicated = model.rows.some(r => r.kind === 'field' && fieldLabelByCode.get(r.code) === label);
+        assert.ok(!duplicated, `#104: ${mkt}|${tbl} 分组标题「${label}」与科目行同名，必须去重`);
+      }
+    }
+  }
+  // #104: 资产负债表与现金流量表同样不得出现「分组标题=科目名」的重复标题（A股与港股）。
+  for (const market of ['CN', 'HK']) {
+    const tables = ['non_financial', 'bank', 'insurance', 'security', 'other_financial'];
+    if (market === 'HK') tables.push('reit');
+    for (const table of tables) {
+      for (const statement of ['balance', 'cashflow']) {
+        const metrics = dict.metricsOfType(market, table).filter(x => x.statement === statement);
+        if (!metrics.length) continue;
+        const fields = pres.presentationOf(metrics, statement, 'CNY').map(f => ({
+          ...f, values: [{ value: 10, status: 'available' }],
+        }));
+        const model = pres.buildStatementPresentation(fields, { metrics, statement });
+        const labelByCode = new Map(fields.map(f => [f.code, String(f.label || '').trim()]));
+        for (const row of model.rows.filter(r => r.kind === 'section')) {
+          const label = String(row.label || '').trim();
+          assert.ok(!model.rows.some(r => r.kind === 'field' && labelByCode.get(r.code) === label),
+            `#104: ${market}|${table}|${statement} 分组标题「${label}」与科目行同名，必须去重`);
+        }
+      }
     }
   }
   console.log('stock-analysis frontend tests passed');

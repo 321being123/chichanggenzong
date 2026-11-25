@@ -3,6 +3,7 @@
 import sys, os, time
 sys.path.insert(0, os.path.dirname(__file__))
 import db_pg
+from bond_data_layer import normalize_credit_rating
 from ipo_daily_report import _get_tushare_pro
 
 pro = _get_tushare_pro()
@@ -39,7 +40,7 @@ for i, code in enumerate(missing):
             dr = dr.sort_values('rating_date', ascending=False)
         rt = dr.iloc[0].get('rating')
         if rt:
-            rating = str(rt).replace('sti', '').replace('STI', '').strip()
+            rating = normalize_credit_rating(rt)
             cur.execute("""UPDATE fundamental.convertible_bond_profiles p
                              SET newest_rating=%s, source_updated_at=NOW(), updated_at=NOW()
                             FROM core.instruments i

@@ -60,10 +60,28 @@ function stockAnalysisNumber(value, digits) {
 }
 function stockAnalysisMoney(value, currency) {
   if (value === null || value === undefined || !Number.isFinite(Number(value))) return '--';
-  var n = Number(value), abs = Math.abs(n), unit = ({CNY:'元',HKD:'港元',USD:'美元'})[currency] || (currency ? currency : '元');
+  var n = Number(value), abs = Math.abs(n), unit = ({CNY:'元',HKD:'港元',USD:'美元',AUD:'澳元',SGD:'新加坡元'})[currency] || (currency ? currency : '元');
   if (abs >= 1e8) return stockAnalysisNumber(n / 1e8, 2) + '亿' + unit;
   if (abs >= 1e4) return stockAnalysisNumber(n / 1e4, 2) + '万' + unit;
   return stockAnalysisNumber(n, 2) + unit;
+}
+// 港股/美股金额按交易币种直接展示，不再强制折算人民币；显示层只读后端给的币种元数据。
+function stockAnalysisCurrencyName(code) {
+  return ({CNY:'人民币',HKD:'港元',USD:'美元',AUD:'澳元',SGD:'新加坡元'})[String(code || '').toUpperCase()] || String(code || '');
+}
+function stockAnalysisCurrencyLabel(code) {
+  var key = String(code || '').toUpperCase();
+  return key ? stockAnalysisCurrencyName(key) + ' (' + key + ')' : '';
+}
+function stockAnalysisCurrencyNote(display) {
+  display = display || {};
+  if (display.currency_note) return display.currency_note;
+  var market = String(display.currency || '').toUpperCase();
+  var report = String(display.report_currency || '').toUpperCase();
+  if (!market) return '';
+  return report && report !== market
+    ? '交易币种：' + stockAnalysisCurrencyLabel(market) + '；财报币种：' + stockAnalysisCurrencyLabel(report)
+    : '交易与财报币种：' + stockAnalysisCurrencyLabel(market);
 }
 function stockAnalysisPercent(value) {
   return value === null || value === undefined || !Number.isFinite(Number(value)) ? '--' : stockAnalysisNumber(Number(value) * 100, 2) + '%';
@@ -162,7 +180,9 @@ function stockAnalysisRender(d) {
   var display=d.display||{},industryInfo=d.industry_info||{},controller=d.actual_controller||{};
   var priceUnit=d.quote&&(d.quote.currency_name||d.quote.unit)||'元';
   var industryLabel=(industryInfo.level&&industryInfo.level!=='未标注级别'?(industryInfo.system||'')+industryInfo.level+' · ':'')+(industryInfo.name||d.industry||'--');
-  if (summary) summary.innerHTML = '<strong>' + escapeHtml(d.name || d.ts_code) + '</strong><span>' + escapeHtml(d.ts_code || '') + '</span><span>当前价：' + escapeHtml(stockAnalysisNumber(d.quote && d.quote.price, 3)) + ' ' + escapeHtml(priceUnit) + '</span>';
+  var currencyNote = stockAnalysisCurrencyNote(display);
+  if (summary) summary.innerHTML = '<strong>' + escapeHtml(d.name || d.ts_code) + '</strong><span>' + escapeHtml(d.ts_code || '') + '</span><span>当前价：' + escapeHtml(stockAnalysisNumber(d.quote && d.quote.price, 3)) + ' ' + escapeHtml(priceUnit) + '</span>' +
+    (currencyNote ? '<span class="stock-analysis-currency">' + escapeHtml(currencyNote) + '</span>' : '');
   var v=d.valuation||{}, valuation=document.getElementById('stock-analysis-valuation');
   var report=d.latest_report||{},forecast=d.performance_forecast;
   var forecastValue=forecast?(forecast.type||'业绩预告'):'暂无有效业绩预告';
@@ -182,7 +202,10 @@ function stockAnalysisRender(d) {
       stockAnalysisMetric('所属行业',industryLabel,'行业体系与级别以数据源为准'),
       stockAnalysisMetric('上市日期',stockAnalysisDate(d.list_date),'年-月-日'),
       stockAnalysisMetric('实际控制人',controller.name||'待核实',controller.name?(controller.type||'类型待核实'):'暂无可靠数据')
-    ]),
+    ].concat(isHk ? [
+      stockAnalysisMetric('交易币种',display.currency_label||stockAnalysisCurrencyLabel(display.currency)||'--','金额卡片与图表按交易币种展示'),
+      stockAnalysisMetric('财报币种',display.report_currency_label||stockAnalysisCurrencyLabel(display.report_currency)||'--','利润/净资产原币；跨币种比值按已落库汇率折算')
+    ] : [])),
     infoGroup('估值水平',[
     stockAnalysisMetric('滚动市盈率',stockAnalysisNumber(v.pe_ttm,2),'最近12个月利润',v.pe_ttm<0,reasonOf('pe_ttm')),
     stockAnalysisMetric('静态市盈率',stockAnalysisNumber(v.pe_static,2),'最新完整年报',v.pe_static<0,reasonOf('pe_static')),
@@ -194,14 +217,14 @@ function stockAnalysisRender(d) {
     infoGroup('收益、盈利与分红',[
     stockAnalysisMetric('股息率',stockAnalysisPercent(v.dividend_yield),'最近12个月税前现金分红',false,reasonOf('dividend_yield')),
     stockAnalysisMetric('分红率',stockAnalysisPercent(v.payout_ratio),'最新年度'+estSuffix,false,reasonOf('payout_ratio')),
-    stockAnalysisMetric('累计分红率',stockAnalysisPercent(v.cumulative_payout_ratio),'历史累计分红 '+stockAnalysisMoney(v.cumulative_dividend)+' ÷ 历史累计盈利 '+stockAnalysisMoney(v.cumulative_profit)+estSuffix,false,reasonOf('cumulative_payout_ratio')),
+    stockAnalysisMetric('累计分红率',stockAnalysisPercent(v.cumulative_payout_ratio),'历史累计分红 '+stockAnalysisMoney(v.cumulative_dividend,display.currency)+' ÷ 历史累计盈利 '+stockAnalysisMoney(v.cumulative_profit,display.currency)+estSuffix,false,reasonOf('cumulative_payout_ratio')),
     stockAnalysisMetric('平均股息率',stockAnalysisPercent(v.average_dividend_yield),'累计分红率 × 最近12个月归母净利润 ÷ 当前市值'+estSuffix,false,reasonOf('average_dividend_yield')),
     stockAnalysisMetric('ROE',v.roe==null?'--':stockAnalysisNumber(v.roe,2)+'%','最新完整年报'),
     stockAnalysisMetric('ROA',v.roa==null?'--':stockAnalysisNumber(v.roa,2)+'%',v.roa_source||'最新完整年报'),
     stockAnalysisMetric('上市至今年化收益率',stockAnalysisPercent(v.annualized_return_since_listing),returnNote,v.annualized_return_since_listing<0,reasonOf('annualized_return_since_listing'))
     ]),
     infoGroup('市值结构',[
-    stockAnalysisMetric(display.market_cap_label||'总市值',stockAnalysisMoney(v.market_cap),display.market==='HK'?'来源已验证的同一范围、同一币种估值，不用H股价格乘公司全体股本':'当前价格 × 总股本'),
+    stockAnalysisMetric(display.market_cap_label||'总市值',stockAnalysisMoney(v.market_cap,display.currency),display.market==='HK'?'来源已验证的同一范围、同一币种估值，不用H股价格乘公司全体股本':'当前价格 × 总股本'),
     display.market==='HK'?'':stockAnalysisMetric('A股市值',stockAnalysisMoney(v.a_share_market_cap),'A股价格 × A股总股本'),
     stockAnalysisMetric(display.circulating_market_cap_label||'流通市值',stockAnalysisMoney(v.circulating_market_cap),display.market==='HK'?'港股暂无可靠等价字段':'当前价格 × 流通股本'),
     display.market==='HK'?'':stockAnalysisMetric('自由流通市值',stockAnalysisMoney(v.free_float_market_cap),'当前价格 × 自由流通股本')

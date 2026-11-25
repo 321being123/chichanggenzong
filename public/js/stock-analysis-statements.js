@@ -62,21 +62,16 @@ function stockAnalysisFormatPeriodLabel(raw) {
 function stockAnalysisRenderStatementFilters(data) {
   var periodEl = document.getElementById('stock-analysis-statement-period');
   if (periodEl) {
-    var availablePeriods = (data && data.available_filters && data.available_filters.period_types) || [];
     var currentPeriod = typeof stockAnalysisStatementFilters === 'function' ? stockAnalysisStatementFilters().periodType : periodEl.value;
     var periodOptions = [
-      { value: 'all', label: '全部' },
       { value: 'annual', label: '年报' },
       { value: 'semiannual', label: '半年报' },
       { value: 'quarter', label: '季报' },
     ];
-    if (availablePeriods.indexOf('unknown') >= 0) {
-      periodOptions.push({ value: 'unknown', label: '未知' });
-    }
     periodEl.innerHTML = periodOptions.map(function(opt) {
       return '<option value="' + opt.value + '">' + opt.label + '</option>';
     }).join('');
-    var nextPeriod = periodOptions.some(function(opt) { return opt.value === currentPeriod; }) ? currentPeriod : 'all';
+    var nextPeriod = periodOptions.some(function(opt) { return opt.value === currentPeriod; }) ? currentPeriod : 'quarter';
     periodEl.value = nextPeriod;
     if (typeof stockAnalysisStatementFilters === 'function') {
       stockAnalysisStatementFilters().periodType = nextPeriod;
@@ -141,9 +136,12 @@ function stockAnalysisStatementFormatChange(rawChange, unit, source) {
   if (!Number.isFinite(num)) return { text: '—', cls: '', title: '' };
   var title = source === 'local_derived' ? '本地推算' : (source === 'lixinger_native' ? '理杏仁原生' : '');
   if (unit === 'pct_pt') {
-    var ptText = (num > 0 ? '+' : '') + num.toFixed(2) + ' pct';
+    // 比率/占比变动统一用百分号展示（例：+1.01%），不再暴露英文 pct。
     var ptCls = Math.abs(num) < 0.005 ? 'statement-change flat' : (num > 0 ? 'statement-change up' : 'statement-change down negative');
-    return { text: ptText.replace(/^\+0\.00/, '0.00'), cls: ptCls, title: (title ? title + ' · ' : '') + '百分点差值' };
+    var ptText = Math.abs(num) < 0.005
+      ? '0.00%'
+      : ((num > 0 ? '+' : '-') + Math.abs(num).toFixed(2) + '%');
+    return { text: ptText, cls: ptCls, title: (title ? title + ' · ' : '') + '占比较上期变动（百分点）' };
   }
   var formatted = stockAnalysisPercent(num);
   if (/^[-+]?0(?:\.0+)?%$/.test(formatted) || Math.abs(num) < 0.00005) {
@@ -266,12 +264,14 @@ function stockAnalysisRenderStatements(data) {
   var comparisonEnabled = data.compare !== 'none';
   var comparisonLabel = compareMode === 'both' ? '同比/环比' : (compareMode === 'qoq' ? '环比' : '同比');
   var columnsPerPeriod = 1 + (showYoy ? 1 : 0) + (showQoq ? 1 : 0);
-  var periodFilter = String(data.period_type || (typeof stockAnalysisStatementFilters === 'function' ? stockAnalysisStatementFilters().periodType : 'all') || 'all').toLowerCase();
+  var periodFilter = String(data.period_type || (typeof stockAnalysisStatementFilters === 'function' ? stockAnalysisStatementFilters().periodType : 'quarter') || 'quarter').toLowerCase();
   var isFlowStatement = data.type === 'income' || data.type === 'cashflow';
-  var hasSubPeriods = isFlowStatement && periodFilter !== 'annual' && (data.periods || []).some(function(p) {
+  var isQuarterFilter = periodFilter === 'quarter';
+  // 季报筛选下 Q4（年报）也要展示单季值，因此不能只在出现半年/一季/三季时才启用单季行。
+  var hasSubPeriods = isFlowStatement && (isQuarterFilter || (periodFilter !== 'annual' && (data.periods || []).some(function(p) {
     var pt = String((p && p.period_type) || '').toLowerCase();
     return pt === 'semiannual' || pt === 'q1' || pt === 'q3';
-  });
+  })));
   var dualStickyCols = hasSubPeriods;
   var stickyColCount = dualStickyCols ? 2 : 1;
   var columnCount = data.periods.length * columnsPerPeriod + stickyColCount;
@@ -389,7 +389,6 @@ function stockAnalysisRenderStatements(data) {
     return filtered;
   })(model.rows, model.byCode);
   var commonComparisonReasons = {};
-  var emptySectionFillers = Array(Math.max(0, columnCount - stickyColCount)).fill('<td class="statement-section-filler" aria-hidden="true"></td>').join('');
 
   function renderChangeCell(rawVal, unit, source, status, reason, headersAttr, extraCls) {
     var fmt = stockAnalysisStatementFormatChange(rawVal, unit, source);
@@ -406,8 +405,8 @@ function stockAnalysisRenderStatements(data) {
     if (entry.kind === 'section') {
       var secDepth = Math.max(0, Math.min(4, Number(entry.depth) || 0));
       var groupAttr = entry.group_id ? ' data-group-id="' + escapeHtml(entry.group_id) + '"' : '';
-      var secBasis = dualStickyCols ? '<th scope="row" class="statement-col-basis statement-section-cell"></th>' : '';
-      return '<tr class="statement-section statement-section-' + escapeHtml(data.type) + ' statement-role-section statement-level-' + secDepth + '" data-statement-level="' + (Number(entry.depth) || 0) + '"' + groupAttr + '><th scope="row" class="statement-col-name statement-section-cell">' + escapeHtml(entry.label) + '</th>' + secBasis + emptySectionFillers + '</tr>';
+      // 整行分组标题独占整行：不再被固定首列宽度挤压折行（#105）。
+      return '<tr class="statement-section statement-section-' + escapeHtml(data.type) + ' statement-role-section statement-level-' + secDepth + '" data-statement-level="' + (Number(entry.depth) || 0) + '"' + groupAttr + '><th scope="row" colspan="' + columnCount + '" class="statement-section-cell statement-section-title">' + escapeHtml(entry.label) + '</th></tr>';
     }
     var field = entry.field || model.byCode[entry.code];
     if (!field) return '';
@@ -504,15 +503,18 @@ function stockAnalysisRenderStatements(data) {
       return primaryTr;
     }
     var isSemiannualFilter = periodFilter === 'semiannual';
-    var isAllFilter = periodFilter === 'all';
-    var subRowLabel = isSemiannualFilter ? '半年' : (isAllFilter ? '单季/半年' : '单季');
+    // 「季报」= 全部季度粒度报告（Q1/半年报/Q3/年报），单季列按季度口径展示。
+    var subRowLabel = isSemiannualFilter ? '半年' : '单季';
     var subCells = (field.values || []).map(function(item, periodIndex) {
       var period = data.periods[periodIndex] || {};
       var pt = String(period.period_type || '').toLowerCase();
       var isYearEnd = yearGroups.some(function(g, gi) { return gi < yearGroups.length - 1 && g.endIdx === periodIndex; });
       var endCls = isYearEnd ? ' statement-year-end' : '';
-      var useSemiannualRow = (isSemiannualFilter || isAllFilter) && pt === 'semiannual';
-      var showSubInCol = isSemiannualFilter ? (pt === 'semiannual') : (isAllFilter ? (pt === 'semiannual' || pt === 'q1' || pt === 'q3') : (pt === 'q1' || pt === 'q3'));
+      // 半年报筛选展示「半年」累计值；其余（含季报筛选）一律展示单季值。
+      // 季报筛选必须覆盖 Q1/半年报/Q3/年报（Q4），且 Q2、Q4 都只能用 single_value，
+      // 不能把半年累计当 Q2 单季、也不能隐藏 Q4 单季值（F-07）。
+      var useSemiannualRow = isSemiannualFilter && pt === 'semiannual';
+      var showSubInCol = isSemiannualFilter ? (pt === 'semiannual') : true;
       var subRawVal = useSemiannualRow ? item.value : item.single_value;
       var sVal = showSubInCol ? stockAnalysisFormatCellValue(subRawVal, field) : '—';
       var subYoyVal = useSemiannualRow ? (item.yoy != null ? item.yoy : item.change) : item.single_yoy;

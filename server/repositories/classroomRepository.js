@@ -39,6 +39,17 @@ function q(client) {
   return client || pool;
 }
 
+// 建场选项的共享基础事实：一次快照内取数据版本与转债校准样本，
+// 供「可用窗口」逐窗口复用，避免每个候选窗口重复全表扫描。
+async function fetchCreationWindowBase({ startDate, endDate }, client) {
+  const dataVersion = await fetchFactsDataVersion({ startDate, endDate }, client);
+  const [cbStats, cbBuckets] = await Promise.all([
+    fetchCbCalibrationSampleStats(client),
+    fetchCbCalibrationBuckets(client),
+  ]);
+  return { dataVersion, cbStats, cbBuckets };
+}
+
 // ---------- 只读市场事实查询（用于建场预检与真实剧本构建）----------
 
 async function fetchCnOpenTradeDates(startDate, endDate, client) {
@@ -938,6 +949,7 @@ module.exports = {
   fetchSw2021MembershipsByInstrumentIds,
   fetchCnStockCandidatesForWindow,
   fetchFactsDataVersion,
+  fetchCreationWindowBase,
   insertCreationPreview,
   findCreationPreviewById,
   findCreationPreviewByConfirmRequest,

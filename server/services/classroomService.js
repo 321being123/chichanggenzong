@@ -839,7 +839,7 @@ async function submitAllocation({ classroomId, roundNo, authUser, allocations, c
   const reqId = String(clientRequestId || '').trim();
   if (!reqId) throw createHttpError(400, '缺少提交幂等标识 clientRequestId');
 
-  return repo.withTransaction(async (client) => {
+  const committed = await repo.withTransaction(async (client) => {
     const classroom = await repo.findClassroomByIdForUpdate(client, classroomId);
     if (!classroom) throw createHttpError(404, '场次不存在');
     if (classroom.status === 'completed') {
@@ -853,15 +853,25 @@ async function submitAllocation({ classroomId, roundNo, authUser, allocations, c
     const member = await repo.findMemberBySubject(classroomId, authUser.subject_identity, client);
     if (!member) throw createHttpError(403, '请先加入本场次');
 
+    const broadcastState = {
+      roundNo: Number(roundNo),
+      stateVersion: Number(classroom.state_version),
+      status: round ? round.status : '',
+      reason: 'submission',
+    };
+
     const dup = await repo.findSubmissionByRequestId(client, classroomId, roundNo, member.member_id, reqId);
     if (dup) {
       return {
-        idempotent: true,
-        submission: {
-          allocations: dup.allocations,
-          cashCents: Number(dup.cash_cents),
-          totalCents: Number(dup.total_cents),
-          submittedAt: dup.submitted_at,
+        broadcastState,
+        response: {
+          idempotent: true,
+          submission: {
+            allocations: dup.allocations,
+            cashCents: Number(dup.cash_cents),
+            totalCents: Number(dup.total_cents),
+            submittedAt: dup.submitted_at,
+          },
         },
       };
     }
@@ -895,15 +905,23 @@ async function submitAllocation({ classroomId, roundNo, authUser, allocations, c
     });
 
     return {
-      idempotent: false,
-      submission: {
-        allocations: sub.allocations,
-        cashCents: Number(sub.cash_cents),
-        totalCents: Number(sub.total_cents),
-        submittedAt: sub.submitted_at,
+      broadcastState,
+      response: {
+        idempotent: false,
+        submission: {
+          allocations: sub.allocations,
+          cashCents: Number(sub.cash_cents),
+          totalCents: Number(sub.total_cents),
+          submittedAt: sub.submitted_at,
+        },
       },
     };
   });
+
+  // 提交写入成功后必须广播，教师端才能及时看到「已提交人数」变化；
+  // stateVersion 不变（提交不是场次状态推进），教师端按 reason 判定是否重载。
+  sseHub.broadcastStateChange(classroomId, committed.broadcastState);
+  return committed.response;
 }
 
 // ---------- 教师控场事务 ----------

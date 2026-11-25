@@ -980,6 +980,13 @@ input[type="search"] {
 .job-worker-status { margin-left: auto; color: var(--text-muted); font-size: var(--fs-xs); }
 .job-detail { color: var(--text-secondary); font-size: var(--fs-sm); line-height: 1.8; }
 .job-detail p { margin: 6px 0; }
+.job-result-list { margin: 4px 0 8px; padding-left: 18px; }
+.job-result-list li { margin: 2px 0; line-height: 1.7; }
+.job-result-label { color: var(--text-primary); font-weight: 600; }
+.job-result-empty { margin: 4px 0 8px; color: var(--text-muted); }
+.job-result-raw { margin-top: 6px; }
+.job-result-raw > summary { cursor: pointer; color: var(--primary-text); font-size: var(--fs-xs); }
+.job-result-raw pre { margin: 6px 0 0; padding: 10px; max-height: 320px; overflow: auto; border: 1px solid var(--border-subtle); border-radius: var(--r-md); background: var(--bg-subtle); color: var(--text-secondary); font-size: 12px; line-height: 1.55; white-space: pre-wrap; word-break: break-word; }
 
 /* 休市日历（日历视图） */
 .holiday-calendar { margin-top: 4px; }

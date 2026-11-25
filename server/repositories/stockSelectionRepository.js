@@ -5,6 +5,40 @@
 
 const { pool } = require('../db/connection');
 const reportMetrics = require('../dataAccess/lixingerReportMetrics');
+const {
+  fiscalYearEndAnchors, inferFinancialPeriodType, resolveFinancialPeriodType,
+} = require('../domain/financialReportPeriod');
+const { reportPeriodTypeExpression } = require('./reportPeriodSql');
+
+// 存量报告期类型可能有 unknown（反馈 #102）。先用官方标签归一，再用同公司已确认年报的
+// 财年锚点识别半年报/季报；仍不能确定的保持 unknown，由调用方过滤，绝不按自然月份猜。
+function applyEffectivePeriodTypes(rows) {
+  const byCompany = new Map();
+  for (const row of rows || []) {
+    row.effective_period_type = resolveFinancialPeriodType({
+      periodType: row.period_type,
+      periodEnd: row.period_end,
+      reportPeriodLabel: row.report_period_label,
+      rawPayload: { reportType: row.report_type, report_type_label: row.report_type_label },
+    });
+    const key = String(row.company_id);
+    if (!byCompany.has(key)) byCompany.set(key, []);
+    byCompany.get(key).push(row);
+  }
+  for (const list of byCompany.values()) {
+    const anchors = fiscalYearEndAnchors(list.map(row => ({
+      periodEnd: row.period_end,
+      periodType: row.effective_period_type,
+    })));
+    if (!anchors.length) continue;
+    for (const row of list) {
+      if (row.effective_period_type !== 'unknown') continue;
+      const inferred = inferFinancialPeriodType(row.period_end, anchors);
+      if (inferred) row.effective_period_type = inferred;
+    }
+  }
+  return rows;
+}
 
 function executorOf(tx) {
   if (!tx) return (sql, params) => pool.query(sql, params);
@@ -164,7 +198,7 @@ async function loadUniverse({ market, asOfDate, availableBefore = null }, tx) {
           JOIN fundamental.financial_facts f ON f.report_id = r.report_id AND f.metric_code = 'net_profit_parent'
          WHERE r.company_id = ci.company_id
            AND r.report_kind = 'income'
-           AND r.period_type = 'annual'
+           AND ${reportPeriodTypeExpression('r')} = 'annual'
            AND r.statement_scope = 'consolidated'
            AND ${marketFinancialPredicate('r', 'income', 'i.market')}
            AND r.announced_at IS NOT NULL AND r.announced_at < $2::date
@@ -249,6 +283,9 @@ async function loadTtmInputs({ companyIds, asOfDate, availableBefore = null, mar
   const marketUnverified = market ? marketFinancialUnverifiedForMarket('r', market, 'income') : 'FALSE';
   const { rows } = await exec(`
     SELECT r.company_id, r.report_id, r.period_end::text AS period_end, r.period_type,
+           r.raw_payload->>'report_period_label' AS report_period_label,
+           r.raw_payload->>'reportType' AS report_type,
+           r.raw_payload->>'report_type_label' AS report_type_label,
            r.announced_at::text AS announced_at,
            (CASE WHEN ${marketUnverified} THEN NULL ELSE ${SAFE_FINANCIAL_FACT_SQL} END)::text AS net_profit,
            f.currency_code,
@@ -266,13 +303,14 @@ async function loadTtmInputs({ companyIds, asOfDate, availableBefore = null, mar
      ORDER BY r.company_id, r.period_end DESC, r.announced_at DESC, r.report_id DESC`,
   [companyIds, asOfDate, availableBefore]);
   const byCompany = new Map();
+  applyEffectivePeriodTypes(rows);
   rows.forEach(row => {
     const key = String(row.company_id);
     if (!byCompany.has(key)) byCompany.set(key, []);
     byCompany.get(key).push({
       reportId: Number(row.report_id),
       periodEnd: row.period_end,
-      periodType: row.period_type || null,
+      periodType: row.effective_period_type === 'unknown' ? null : row.effective_period_type,
       announcedAt: row.announced_at || null,
       netProfit: row.net_profit === null ? null : Number(row.net_profit),
       currency: row.currency_code || null,
@@ -642,6 +680,9 @@ async function loadMemberFundamentals({ companyIds, asOfDate, availableBefore, m
   // 一季报/半年报/三季报/年报都参与同比；上年同期按同一 period_type 与同月日匹配。
   const income = await exec(`
     SELECT r.company_id, r.report_id, r.period_end::text AS period_end, r.period_type,
+           r.raw_payload->>'report_period_label' AS report_period_label,
+           r.raw_payload->>'reportType' AS report_type,
+           r.raw_payload->>'report_type_label' AS report_type_label,
            ${SAFE_FINANCIAL_FACT_SQL} AS net_profit,
            f.currency_code,
            ((${UNVERIFIED_FINANCIAL_CURRENCY_SQL}) OR ${incomeUnverified}) AS currency_unverified
@@ -651,7 +692,9 @@ async function loadMemberFundamentals({ companyIds, asOfDate, availableBefore, m
        AND ${incomePredicate}
        AND r.report_kind = 'income'
        AND r.statement_scope = 'consolidated'
-       AND r.period_type IN ('annual','semiannual','q1','q3')
+       -- unknown 也读出来，由 applyEffectivePeriodTypes 用官方标签/财年锚点识别，
+       -- 避免已公告的中报因历史 period_type 未回补而被整条过滤（反馈 #102）。
+       AND (r.period_type IN ('annual','semiannual','q1','q3') OR r.period_type = 'unknown' OR r.period_type IS NULL)
        AND r.announced_at IS NOT NULL
        AND ${stamp}
      ORDER BY r.company_id, r.period_end DESC, r.announced_at DESC, r.report_id DESC`,
@@ -673,7 +716,8 @@ async function loadMemberFundamentals({ companyIds, asOfDate, availableBefore, m
     });
   });
   const incomeByCompany = new Map();
-  income.rows.forEach(row => {
+  applyEffectivePeriodTypes(income.rows);
+  income.rows.filter(row => row.effective_period_type !== 'unknown').forEach(row => {
     const key = String(row.company_id);
     const list = incomeByCompany.get(key) || [];
     list.push(row);
@@ -687,7 +731,7 @@ async function loadMemberFundamentals({ companyIds, asOfDate, availableBefore, m
     entry.latestProfitPeriodEnd = latest ? latest.period_end : null;
     if (latest) {
       const prior = rows.find(row => row.period_end === shiftYear(latest.period_end)
-        && row.period_type === latest.period_type);
+        && row.effective_period_type === latest.effective_period_type);
       const current = latest.net_profit === null ? null : Number(latest.net_profit);
       const priorProfit = prior && prior.net_profit !== null ? Number(prior.net_profit) : null;
       const comparable = prior && latest.currency_unverified !== true && prior.currency_unverified !== true
@@ -719,10 +763,13 @@ async function loadAnnualProfits({ companyIds, asOfDate, availableBefore, market
   const marketPredicate = market ? marketFinancialCandidatePredicate('r', market, 'income') : 'TRUE';
   const marketUnverified = market ? marketFinancialUnverifiedForMarket('r', market, 'income') : 'FALSE';
   const { rows } = await exec(`
-    SELECT DISTINCT ON (r.company_id, date_part('year', r.period_end))
-           r.company_id,
+    SELECT r.company_id,
            date_part('year', r.period_end)::int AS fiscal_year,
            r.period_end::text AS period_end,
+           r.period_type,
+           r.raw_payload->>'report_period_label' AS report_period_label,
+           r.raw_payload->>'reportType' AS report_type,
+           r.raw_payload->>'report_type_label' AS report_type_label,
            r.source_version,
            CASE WHEN ${marketUnverified} THEN NULL ELSE ${SAFE_FINANCIAL_FACT_SQL} END AS numeric_value,
            f.currency_code,
@@ -732,19 +779,27 @@ async function loadAnnualProfits({ companyIds, asOfDate, availableBefore, market
      WHERE r.company_id = ANY($1::bigint[])
        AND ${marketPredicate}
        AND r.report_kind = 'income'
-       AND r.period_type = 'annual'
+       -- unknown 由有效类型归一后再筛 annual（反馈 #102），不能直接丢掉或按年份猜。
+       AND (r.period_type = 'annual' OR r.period_type = 'unknown' OR r.period_type IS NULL)
        AND r.statement_scope = 'consolidated'
        AND r.announced_at IS NOT NULL
        AND r.announced_at < $2::date
        AND ($3::timestamptz IS NULL OR r.available_at IS NULL OR r.available_at < $3::timestamptz)
-     ORDER BY r.company_id, date_part('year', r.period_end), r.period_end DESC, r.announced_at DESC, r.report_id DESC`,
+     ORDER BY r.company_id, r.period_end DESC, r.announced_at DESC, r.report_id DESC`,
   [companyIds, asOfDate, availableBefore || null]);
   const map = new Map();
+  applyEffectivePeriodTypes(rows);
+  const seen = new Set();
   rows.forEach(row => {
+    if (row.effective_period_type !== 'annual') return;
+    const fiscalYear = Number(row.fiscal_year);
+    const dedupeKey = `${row.company_id}|${fiscalYear}`;
+    if (seen.has(dedupeKey)) return;
+    seen.add(dedupeKey);
     const key = String(row.company_id);
     const list = map.get(key) || [];
     list.push({
-      year: Number(row.fiscal_year),
+      year: fiscalYear,
       periodEnd: row.period_end,
       profit: row.numeric_value === null ? null : Number(row.numeric_value),
       currency: row.currency_code || null,
@@ -754,6 +809,8 @@ async function loadAnnualProfits({ companyIds, asOfDate, availableBefore, market
     });
     map.set(key, list);
   });
+  // 保持原读取顺序（按财年升序），供十年序列与分红规则直接消费。
+  for (const list of map.values()) list.sort((a, b) => a.year - b.year);
   return map;
 }
 
@@ -925,7 +982,7 @@ async function loadAnnualDividends({ companyIds, asOfDate, availableBefore, mark
         FROM fundamental.financial_reports r
        WHERE r.company_id = ANY($1::bigint[])
          AND r.report_kind = 'income'
-         AND r.period_type = 'annual'
+         AND ${reportPeriodTypeExpression('r')} = 'annual'
          AND r.statement_scope = 'consolidated'
          AND ${marketReportPredicate}
          AND r.announced_at IS NOT NULL

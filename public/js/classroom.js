@@ -29,6 +29,12 @@
     teacherTotalPages: 1,
     teacherDetailSeq: 0,
     teacherData: null,
+    teacherSse: null,
+    teacherSseClassroomId: null,
+    teacherSseEverConnected: false,
+    teacherPollTimer: null,
+    teacherPollRecovering: false,
+    teacherRefreshTimer: null,
     projectorRoundNo: null,
     sheet: {
       open: false,
@@ -105,6 +111,7 @@
 
   function switchTab(tabId) {
     state.activeTab = tabId;
+    if (tabId !== 'teacher') disconnectTeacherSse();
     renderTabs();
     setVisible('view-lobby', tabId === 'lobby');
     setVisible('view-join-prompt', tabId === 'join-prompt');
@@ -265,8 +272,20 @@
     bindWheelGestures();
 
     document.addEventListener('visibilitychange', function () {
-      if (!document.hidden && state.classroomId && state.activeTab === 'student') {
+      if (document.hidden) return;
+      if (state.classroomId && state.activeTab === 'student') {
         refreshStudentState();
+      }
+      // 回到前台立即补读教师人数；失败时由兜底轮询继续恢复（F-03）。
+      if (state.activeTab === 'teacher' && state.teacherClassroomId) {
+        loadTeacherDetail({ preserveScroll: true, throwOnError: true })
+          .then(function () { state.teacherPollRecovering = false; })
+          .catch(function () {
+            startTeacherFallbackPolling({ recovering: true });
+          });
+        if (!(state.teacherSse && state.teacherSse.readyState === 1)) {
+          startTeacherFallbackPolling();
+        }
       }
     });
     window.addEventListener('online', function () {
@@ -447,6 +466,126 @@
       clearTimeout(state.pollTimer);
       state.pollTimer = null;
     }
+  }
+
+  // ---------- 视口位置保护（轮次切换/锁单/开盘/实时刷新都不应把页面弹回顶部）----------
+
+  function captureScrollPosition() {
+    return {
+      x: Number(window.scrollX || window.pageXOffset || 0),
+      y: Number(window.scrollY || window.pageYOffset || 0),
+    };
+  }
+
+  function restoreScrollPosition(pos) {
+    if (!pos) return;
+    const apply = function () {
+      try { window.scrollTo(pos.x || 0, pos.y || 0); } catch (e) { /* 老浏览器忽略 */ }
+    };
+    apply();
+    // DOM 重排后高度变化可能把滚动位置钳回顶部，下一帧再恢复一次。
+    if (typeof window.requestAnimationFrame === 'function') window.requestAnimationFrame(apply);
+  }
+
+  // ---------- 教师端实时刷新（学员提交后必须更新已提交人数）----------
+
+  function scheduleTeacherDetailRefresh() {
+    if (state.teacherRefreshTimer) clearTimeout(state.teacherRefreshTimer);
+    state.teacherRefreshTimer = setTimeout(function () {
+      state.teacherRefreshTimer = null;
+      if (state.activeTab === 'teacher' && state.teacherClassroomId) {
+        loadTeacherDetail({ preserveScroll: true, throwOnError: true })
+          .catch(function () { startTeacherFallbackPolling({ recovering: true }); });
+      }
+    }, 350);
+  }
+
+  function startTeacherFallbackPolling(opts) {
+    if (opts && opts.recovering) state.teacherPollRecovering = true;
+    if (state.teacherPollTimer) return;
+    function scheduleNext() {
+      const jitter = Math.floor(Math.random() * 1500);
+      state.teacherPollTimer = setTimeout(function () {
+        state.teacherPollTimer = null;
+        const shouldRead = !document.hidden && navigator.onLine
+          && state.activeTab === 'teacher' && state.teacherClassroomId;
+        if (shouldRead) {
+          loadTeacherDetail({ preserveScroll: true, throwOnError: true })
+            .then(function () {
+              // 补读成功即退出恢复模式；若 SSE 仍未连上，继续兜底轮询。
+              state.teacherPollRecovering = false;
+            })
+            .catch(function () {
+              // 一次失败不允许让轮询停摆，下一次继续重试。
+              state.teacherPollRecovering = true;
+            })
+            .then(function () {
+              const sseOpen = Boolean(state.teacherSse && state.teacherSse.readyState === 1);
+              if (state.teacherPollRecovering || !sseOpen) scheduleNext();
+            });
+          return;
+        }
+        if (!(state.teacherSse && state.teacherSse.readyState === 1)) scheduleNext();
+      }, 8000 + jitter);
+    }
+    scheduleNext();
+  }
+
+  function stopTeacherFallbackPolling() {
+    if (state.teacherPollTimer) {
+      clearTimeout(state.teacherPollTimer);
+      state.teacherPollTimer = null;
+    }
+  }
+
+  function disconnectTeacherSse() {
+    if (state.teacherRefreshTimer) {
+      clearTimeout(state.teacherRefreshTimer);
+      state.teacherRefreshTimer = null;
+    }
+    if (state.teacherSse) {
+      try { state.teacherSse.close(); } catch (e) {}
+      state.teacherSse = null;
+    }
+    state.teacherSseClassroomId = null;
+    state.teacherSseEverConnected = false;
+    state.teacherPollRecovering = false;
+    stopTeacherFallbackPolling();
+  }
+
+  function connectTeacherSse(classroomId) {
+    const targetId = Number(classroomId);
+    if (!targetId) return;
+    if (state.teacherSse && Number(state.teacherSseClassroomId) === targetId) return;
+    disconnectTeacherSse();
+    const es = api.openEventStream(targetId);
+    if (!es) {
+      startTeacherFallbackPolling();
+      return;
+    }
+    state.teacherSse = es;
+    state.teacherSseClassroomId = targetId;
+    es.addEventListener('connected', function () {
+      const reconnected = state.teacherSseEverConnected;
+      state.teacherSseEverConnected = true;
+      stopTeacherFallbackPolling();
+      // 断线期间可能漏掉提交事件：重连后立即补读一次教师状态（保留滚动位置）。
+      if (reconnected && state.activeTab === 'teacher' && Number(state.teacherClassroomId) === targetId) {
+        loadTeacherDetail({ preserveScroll: true, throwOnError: true })
+          .then(function () { state.teacherPollRecovering = false; })
+          .catch(function () { startTeacherFallbackPolling({ recovering: true }); });
+      }
+    });
+    es.addEventListener('state_change', function (ev) {
+      stopTeacherFallbackPolling();
+      if (Number(state.teacherClassroomId) !== targetId) return;
+      // 提交事件不推进 stateVersion，教师端仍需按事件重载人数；按事件类型统一触发即可。
+      try { JSON.parse(ev.data || '{}'); } catch (e) { /* 事件内容异常也重载一次 */ }
+      scheduleTeacherDetailRefresh();
+    });
+    es.onerror = function () {
+      startTeacherFallbackPolling();
+    };
   }
 
   // ---------- 学员端状态与渲染 ----------
@@ -1205,12 +1344,13 @@
         if (Number(state.teacherClassroomId) === Number(c.classroom_id)) {
           state.teacherClassroomId = null;
           state.teacherData = null;
+          disconnectTeacherSse();
           $('teacher-active-panel').hidden = true;
         }
-        if (Number(state.currentClassroomId) === Number(c.classroom_id)) {
-          state.currentClassroomId = null;
+        if (Number(state.classroomId) === Number(c.classroom_id)) {
+          state.classroomId = null;
           state.studentData = null;
-          closeSse();
+          disconnectSse();
         }
         try {
           await loadTeacherConsole({ throwOnError: true });
@@ -1276,6 +1416,7 @@
       if (state.teacherClassroomId) {
         await loadTeacherDetail(opts);
       } else {
+        disconnectTeacherSse();
         $('teacher-active-panel').hidden = true;
       }
     } catch (e) {
@@ -1752,13 +1893,22 @@
     const targetId = Number(state.teacherClassroomId);
     if (!targetId) return;
     const reqSeq = ++state.teacherDetailSeq;
-    state.teacherData = null;
-    $('teacher-active-panel').hidden = true;
+    const preserveScroll = Boolean(opts && opts.preserveScroll);
+    const scrollPos = preserveScroll ? captureScrollPosition() : null;
+    const panel = $('teacher-active-panel');
+    // 切换到另一场次或首次打开时才清空面板；轮次切换、锁单、实时刷新保持现有 DOM，
+    // 避免面板高度瞬间归零导致整页滚动位置被浏览器钳回顶部（#98）。
+    const hadContent = Boolean(state.teacherData) && Boolean(panel) && !panel.hidden;
+    if (!hadContent) {
+      state.teacherData = null;
+      if (panel) panel.hidden = true;
+    }
+    connectTeacherSse(targetId);
     try {
       const d = await api.adminGetState(targetId);
       if (reqSeq !== state.teacherDetailSeq || Number(state.teacherClassroomId) !== targetId) return;
       state.teacherData = d;
-      $('teacher-active-panel').hidden = false;
+      if (panel) panel.hidden = false;
 
       const c = d.classroom;
       const r = d.round;
@@ -1783,7 +1933,7 @@
         if (r.status === 'pending') {
           const bOpen = makeActionBtn('开放第 1 轮配置', 'cr-btn cr-btn-primary', async function () {
             await api.adminOpenRound(c.classroomId, 1, c.stateVersion);
-            await loadTeacherDetail();
+            await loadTeacherDetail({ preserveScroll: true });
           });
           btns.appendChild(bOpen);
         }
@@ -1793,18 +1943,18 @@
               title: '确认锁单', confirmText: '确认锁单', danger: true,
             })) return;
             await api.adminLockRound(c.classroomId, r.roundNo, c.stateVersion);
-            await loadTeacherDetail();
+            await loadTeacherDetail({ preserveScroll: true });
           });
           btns.appendChild(bLock);
         }
         if (r.status === 'locked') {
           const bUnlock = makeActionBtn('解锁回到配置中', 'cr-btn', async function () {
             await api.adminUnlockRound(c.classroomId, r.roundNo, c.stateVersion);
-            await loadTeacherDetail();
+            await loadTeacherDetail({ preserveScroll: true });
           });
           const bReveal = makeActionBtn('揭晓并结算本轮', 'cr-btn cr-btn-success', async function () {
             await api.adminRevealRound(c.classroomId, r.roundNo, c.stateVersion);
-            await loadTeacherDetail();
+            await loadTeacherDetail({ preserveScroll: true });
           });
           btns.appendChild(bUnlock);
           btns.appendChild(bReveal);
@@ -1812,7 +1962,7 @@
         if (r.status === 'revealed' && r.roundNo < c.totalRounds) {
           const bNext = makeActionBtn('进入第 ' + (r.roundNo + 1) + ' 轮', 'cr-btn cr-btn-primary', async function () {
             await api.adminOpenRound(c.classroomId, r.roundNo + 1, c.stateVersion);
-            await loadTeacherDetail();
+            await loadTeacherDetail({ preserveScroll: true });
           });
           btns.appendChild(bNext);
         }
@@ -1823,7 +1973,7 @@
             title: '揭示真实信息', confirmText: '确认揭示',
           })) return;
           await api.adminRevealIdentity(c.classroomId);
-          await loadTeacherDetail();
+          await loadTeacherDetail({ preserveScroll: true });
         });
         btns.appendChild(bId);
       }
@@ -1864,7 +2014,7 @@
         const maskBtn = makeActionBtn(p.isNicknameMasked ? '恢复原昵称' : '屏蔽昵称', 'cr-btn', async function () {
           const nextNick = p.isNicknameMasked ? p.classroomNickname : ('学员#' + p.memberId);
           await api.adminUpdateNickname(c.classroomId, p.memberId, nextNick, !p.isNicknameMasked);
-          await loadTeacherDetail();
+          await loadTeacherDetail({ preserveScroll: true });
         });
         row.appendChild(txt);
         row.appendChild(maskBtn);
@@ -1972,6 +2122,12 @@
       if (reqSeq !== state.teacherDetailSeq || Number(state.teacherClassroomId) !== targetId) return;
       showBanner('加载场次详情失败：' + e.message);
       if (opts && opts.throwOnError) throw e;
+    } finally {
+      // 过期请求（切换场次或同场次被更新请求取代）不得恢复旧滚动位置：
+      // 否则会把用户已经滚到的新位置强行拉回旧场次的坐标（F-02）。
+      if (reqSeq === state.teacherDetailSeq && Number(state.teacherClassroomId) === targetId) {
+        restoreScrollPosition(scrollPos);
+      }
     }
   }
 

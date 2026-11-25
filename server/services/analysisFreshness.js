@@ -4,6 +4,7 @@
 // 状态枚举：fresh（新鲜） / needs_refresh（需刷新） / live_overlay（实时覆盖，P1 扩展） / stale_usable（过期但可用） / unavailable（不可用）。
 
 const CONV_PRICE_EPS = 0.001; // 转股价比较容差（元）
+const { normalizeBondRating } = require('../domain/bondRating');
 
 function finiteNum(v) {
   if (v === null || v === undefined || v === '' || (typeof v === 'string' && v.trim() === '')) return null;
@@ -105,8 +106,10 @@ function evaluateConvertibleBondFreshness(ctx = {}) {
     });
   }
   // 评级：已写入水位的信用评级若与当前主档评级不一致 -> 失效
+  // 比较前统一归一化（存量 AAsti 与快照 AA 不应被判成“评级变更”）。
   const wmRating = wm && wm.rating && wm.rating.newest_rating;
-  if (wmRating != null && ctx.currentRating != null && ctx.currentRating !== wmRating) {
+  if (wmRating != null && ctx.currentRating != null
+    && normalizeBondRating(ctx.currentRating) !== normalizeBondRating(wmRating)) {
     reasons.push({
       code: 'rating_changed',
       message: `信用评级已变更（当前：${ctx.currentRating}，快照记录：${wmRating}）`,

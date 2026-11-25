@@ -379,6 +379,7 @@ function buildStatementPresentation(visibleFields, { metrics = [], statement = '
     const visibleParent = resolved.parent_code && visibleCodes.has(resolved.parent_code) ? resolved.parent_code : null;
     return {
       code: field.code,
+      label: field.label,
       section: field.section,
       values: field.values,
       group_path: resolved.group_path,
@@ -459,6 +460,7 @@ function buildStatementPresentation(visibleFields, { metrics = [], statement = '
     const parts = groupPath.split(' › ');
     const topGroup = parts[0];
     const subGroup = parts[1] || null;
+    const fieldLabel = String(field.label || '').trim();
     const hasAvailableValue = Array.isArray(field.values) && field.values.some(item => item && item.value != null);
     let isGroupRep = false;
 
@@ -466,6 +468,10 @@ function buildStatementPresentation(visibleFields, { metrics = [], statement = '
       currentTopGroup = topGroup;
       currentSubGroup = null;
       if (!subGroup && field.rep_group === topGroup && (hasAvailableValue || topGroupCounts.get(topGroup) === 1)) {
+        isGroupRep = true;
+      } else if (fieldLabel && fieldLabel === String(topGroup).trim()) {
+        // 分组标题与科目行同名（如「营业总收入」）时不再重复渲染一条分组标题，
+        // 直接让该科目行承担分组代表行，避免一表出现两个同名标题。
         isGroupRep = true;
       } else {
         rows.push({
@@ -481,6 +487,8 @@ function buildStatementPresentation(visibleFields, { metrics = [], statement = '
     if (subGroup && subGroup !== currentSubGroup) {
       currentSubGroup = subGroup;
       if (field.rep_group === groupPath && hasAvailableValue) {
+        isGroupRep = true;
+      } else if (fieldLabel && fieldLabel === String(subGroup).trim()) {
         isGroupRep = true;
       } else {
         rows.push({
@@ -517,10 +525,26 @@ function buildStatementPresentation(visibleFields, { metrics = [], statement = '
     });
   }
 
+  // 兜底去重：同一张表内只要已经渲染过同名科目行，就不再保留同名分组标题
+  // （即使中间隔着其他科目，A股/港股三表通用，F-07）。
+  const dedupedRows = [];
+  const renderedFieldLabels = new Set();
+  for (const row of rows) {
+    if (row.kind === 'section') {
+      const sectionLabel = String(row.label || '').trim();
+      if (sectionLabel && renderedFieldLabels.has(sectionLabel)) continue;
+    } else if (row.kind === 'field') {
+      const field = byCode.get(row.code);
+      const fieldLabel = field ? String(field.label || '').trim() : '';
+      if (fieldLabel) renderedFieldLabels.add(fieldLabel);
+    }
+    dedupedRows.push(row);
+  }
+
   return {
     version: PRESENTATION_VERSION,
     rule_version: ruleVersion || (sortedFields.find(f => f.rule_version) || {}).rule_version || null,
-    rows,
+    rows: dedupedRows,
   };
 }
 

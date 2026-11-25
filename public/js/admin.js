@@ -401,6 +401,10 @@ const JOB_LABELS = {
   convertible_bond_announcement_reparse: '可转债旧公告重新解析',
   convertible_bond_valuation_refresh: '可转债估值预警',
   stock_analysis_refresh: '个股分析刷新',
+  stock_selection_daily_cn: 'A股日度选股',
+  stock_selection_daily_hk: '港股日度选股',
+  stock_selection_weekly_cn: 'A股周度选股',
+  stock_selection_weekly_hk: '港股周度选股',
   ipo_calendar_refresh: '打新日历与日报',
   ipo_history_sync: 'IPO事实同步',
   market_volatility_sync: '股市波动指标同步',
@@ -431,13 +435,92 @@ const JOB_FIELD_LABELS = {
   recorded: '记录数量', accounts: '账户数量', missingDates: '缺少日期', rate: '汇率', expected: '目标日期', last: '最新日期', previous: '上次执行',
   days: '交易日数量', recovered: '恢复数量', result: '同步结果', label: '任务类别', modelVersion: '模型版本', incomplete: '数据是否不完整',
   status: '状态', caseId: '事件编号', parse_pending: '待解析数量', parse_exhausted: '解析失败数量', unsupported: '是否支持',
+  // 任务/选股类结果（#101）：避免未登记字段一律显示「任务信息」。
+  job: '任务', jobCode: '任务', job_code: '任务', mode: '任务模式', market: '市场',
+  periodType: '报告周期', periodKey: '报告期', periodStart: '周期开始', periodEnd: '周期结束',
+  asOfDate: '数据日期', shadow: '影子批次', qualityStatus: '数据质量', businessStatus: '业务状态',
+  pendingCount: '待补数量', qualityReasons: '影响质量的原因', readinessStatus: '就绪状态',
+  publishDatasets: '是否发布数据集', publishDatasetCodes: '数据集', stageComplete: '阶段是否完成',
+  stageCompletedKind: '阶段结果', continuationRequired: '是否需要续批', nextCheckAt: '下次复查时间',
+  pendingStages: '待完成步骤', waitReason: '等待原因', waitReasons: '等待原因', missingDatasets: '缺少的数据集',
+  selectionRunId: '选股批次编号', published: '是否已发布', targetDate: '目标日期', target_trade_date: '目标日期',
+  continuationCount: '已续批次数', continuationMaxBatches: '续批次数上限', noProgressCount: '连续无进展次数',
+  slotExternalCallsTotal: '本槽位外部请求数', slotExternalCallsLimit: '本槽位请求上限',
+  lastRemaining: '剩余数量', datasetDiagnostics: '数据集明细', failedDatasets: '失败的数据集',
+  waitContext: '等待范围', pendingObjects: '待补对象', queryStatus: '查询状态', coverageStatus: '覆盖状态',
+  partition_row_count: '分区行数', quality_status: '数据质量状态', query_status: '查询状态', coverage_status: '覆盖状态',
+  run_id: '执行编号', period_type: '报告周期', period_key: '报告期', is_shadow: '是否影子批次',
+  stage_completed_kind: '阶段结果', zeroSelection: '是否零入选', selectionPending: '选股待补数量',
+  membershipPending: '成分待补数量', publishedFormal: '是否正式发布', publicationFailed: '发布是否失败',
+  nextSelectionRecheckAt: '选股下次复查时间', datasetCode: '数据集代码', businessDate: '业务日期',
+  // 后台结果中常见的内部子结构（字段名/分区名）也必须有中文名，不能裸露在业务列表。
+  repoDailyRates: '逆回购日利率', analysis_inputs: '可转债资料输入',
+  stock_selection_daily_cn: 'A股日度选股分区', stock_selection_daily_hk: '港股日度选股分区',
+  stock_selection_weekly_cn: 'A股周度选股分区', stock_selection_weekly_hk: '港股周度选股分区',
+  selection_daily_cn: 'A股日度选股', selection_daily_hk: '港股日度选股',
+  selection_weekly_cn: 'A股周度选股', selection_weekly_hk: '港股周度选股',
+};
+// 生产后台任务高频返回的状态/原因码 → 直白中文（F-05）。
+// 同一份映射同时供精确值匹配（JOB_VALUE_LABELS）与自由文本整词替换
+// （JOB_TEXT_CODE_LABELS）复用，避免 non_trading_day、verified_no_change、
+// circuit_open 等内部码裸露在业务列表。
+const JOB_REASON_CODE_LABELS = {
+  non_trading_day: '非交易日跳过', skipped_non_trading_day: '非交易日跳过',
+  market_closed: '未开市或已休市', market_closed_or_unknown: '未开市或休市状态未知', market_not_closed: '尚未收盘',
+  verified_no_change: '已核验无新增变化', no_new_data: '无新增数据',
+  no_change: '无变化', no_changes: '无变化',
+  circuit_open: '数据源接口临时熔断', source_circuit_open: '数据源接口临时熔断',
+  rate_limited: '触发上游限流，等待恢复', rate_limit: '触发上游限流，等待恢复',
+  timeout: '执行超时', slot_timeout: '执行超时',
+  not_run: '本阶段未执行', no_missing_data: '没有缺失数据', coverage_ok: '数据覆盖已满足',
+  no_market_data: '没有行情数据', no_verified_rows: '没有可核验数据',
+  historical_target_unsupported: '不支持历史目标日期', future_target_unsupported: '不支持未来目标日期',
+  invalid_target_date: '目标日期无效', invalid_target_codes: '目标代码无效', target_records_not_found: '未找到目标记录',
+  missing_scope: '缺少账户或对象范围', invalid_trade_date: '交易日期无效',
+  today_close_flow: '当日收盘流程处理中', expected_close_date_unknown: '预计收盘日期未知',
+  shared_close_conflict: '共享收盘数据冲突', local_close_not_final: '本地收盘尚未确认',
+  shared_close_write_rejected: '共享收盘写入被拒绝', local_close_conflict: '本地收盘数据冲突',
+  close_price_check_failed: '收盘价校验失败', settlement_failed: '结算失败', version_conflict: '版本冲突',
+  script_missing: '任务脚本缺失', no_pending_candidates: '没有待处理候选', not_requested: '本次未请求',
+  source_missing: '数据源未登记', invalid_range: '日期范围无效', empty_rows: '返回数据为空',
+  invalid_bond_code: '转债代码无效', invalid_code: '代码无效', publish_error: '发布失败', not_published: '尚未发布',
+  insufficient_candidates: '候选标的不足', market_data_missing: '行情数据缺失',
+  market_pb_not_below_threshold: '市场PB未低于阈值', selection_market_required: '缺少选股市场',
+  selection_quarter_unresolved: '选股季度未确定', confirmed_delisted: '已确认退市',
+  not_current_listed_bond_underlying: '非当前上市转债正股', upstream_row_limit_reached: '上游返回行数达到上限',
+  premium_fields_missing: '缺少溢价率字段', insufficient_bond_count: '转债数量不足', insufficient_coverage: '数据覆盖率不足',
+  not_registered: '数据集未登记', partition_key_required: '缺少分区键', dynamic_signal_degraded: '动态信号降级',
+  empty_or_no_date: '数据为空或缺少日期', slot_not_running: '任务槽位未运行', batch_not_running: '批次未运行',
+  stale: '数据已过期', exhausted: '已达最大尝试次数', validated: '校验通过', permission_denied: '权限不足',
 };
 const JOB_VALUE_LABELS = {
   scheduled: '定时执行', startup_catchup: '启动补跑', manual_retry: '人工补跑', auto_retry: '自动重试', locked: '已有同类任务运行', already_running: '已有同类任务运行',
   already_initialized: '已经完成初始化', cached: '使用已缓存结果', not_configured: '未配置，已跳过', in_process: '已有进程运行', fresh: '数据已是最新',
   'retry-after-failure': '失败后重试', no_missing: '没有缺失数据', no_nav: '没有净值记录', not_due: '尚未到执行时间', job_runs: '任务执行记录',
   'tushare.new_share': 'Tushare 新股接口', tushare: 'Tushare 数据接口', tencent: '腾讯行情接口', tushare_close: 'Tushare 收盘数据',
+  // 市场、周期、状态与内部原因码 → 直白中文
+  CN: 'A股', HK: '港股', US: '美股', CN_A: 'A股', HK_STOCK: '港股',
+  selection_daily: '日度选股', selection_weekly: '周度选股', selection_quarterly: '季度选股',
+  selection_inputs: '选股输入数据核对', selection_shadow: '选股影子评估',
+  stock_selection_daily_cn: 'A股日度选股', stock_selection_daily_hk: '港股日度选股',
+  stock_selection_weekly_cn: 'A股周度选股', stock_selection_weekly_hk: '港股周度选股',
+  repoDailyRates: '逆回购日利率', analysis_inputs: '可转债资料输入',
+  daily_recorded: '日度结果已记录', weekly_published: '周度结果已发布', shadow_evaluated: '影子结果已评估',
+  no_eligible_member: '没有符合条件的标的', zero_selection: '零入选',
+  partial: '部分完成', succeeded: '成功', failed: '失败', blocked: '已阻塞', running: '运行中', pending: '待运行',
+  degraded: '降级', skipped: '已跳过', waiting_external: '等待外部数据', waiting_readiness: '等待数据就绪',
+  passed: '通过', not_required: '不需要校验', verified: '已核验', gaps_pending: '仍有缺口',
+  insufficient_data: '数据不足', not_ready: '数据尚未就绪', ready: '数据已就绪', unknown: '未知',
+  selection_not_ready: '选股数据尚未就绪', selection_not_publishable: '选股结果暂不可发布',
+  pending_objects_in_ranking_pool: '排名池中仍有待补对象',
+  selection_period_computation: '报告期选股计算',
+  week: '周度', day: '日度', quarter: '季度',
+  released: '已正式发布', preview_only: '仅预览（未发布）', shadow_only: '仅影子结果',
+  target_date_required: '缺少目标日期',
+  local_derived: '本地推算', lixinger_native: '理杏仁原生',
+  success: '成功', available: '可用', source_not_disclosed: '来源未披露',
 };
+Object.assign(JOB_VALUE_LABELS, JOB_REASON_CODE_LABELS);
 function jobLabel(job) {
   if (!job) return '—';
   if (JOB_LABELS[job]) return JOB_LABELS[job];
@@ -449,15 +532,60 @@ function jobActionLabel(action) {
   return { job_validate: '重新校验', job_retry: '人工补跑', job_acknowledge: '确认任务异常', job_alert_resend: '重发告警', job_alert_acknowledge: '确认告警' }[action] || (action ? '系统操作' : '—');
 }
 function jobStatusLabel(status) {
-  return { done: '成功', succeeded: '成功', failed: '失败', running: '运行中', pending: '待运行', blocked: '已阻塞', degraded: '降级', skipped: '已跳过', sent: '已发送', resolved: '已恢复', acknowledged: '已确认', sending: '发送中', send_failed: '发送失败' }[status] || status || '—';
+  if (status === null || status === undefined || status === '') return '—';
+  return { done: '成功', succeeded: '成功', partial: '部分完成', failed: '失败', running: '运行中', pending: '待运行', blocked: '已阻塞', degraded: '降级', skipped: '已跳过', sent: '已发送', resolved: '已恢复', acknowledged: '已确认', sending: '发送中', send_failed: '发送失败', waiting_external: '等待外部数据', waiting_readiness: '等待数据就绪' }[status]
+    || JOB_VALUE_LABELS[status]
+    || (typeof status === 'string' ? translateJobText(status) : String(status));
 }
-function jobFieldLabel(field) { return JOB_FIELD_LABELS[field] || '任务信息'; }
+function jobFieldLabel(field) { return JOB_FIELD_LABELS[field] || ''; }
+const JOB_TEXT_CODE_LABELS = {
+  pending_objects_in_ranking_pool: '排名池中仍有待补对象',
+  selection_period_computation: '报告期选股计算',
+  selection_not_publishable: '选股结果暂不可发布',
+  selection_not_ready: '选股数据尚未就绪',
+  selection_inputs: '选股输入数据核对',
+  selection_daily: '日度选股',
+  selection_weekly: '周度选股',
+  selection_quarterly: '季度选股',
+  insufficient_data: '数据不足',
+  waiting_readiness: '等待数据就绪',
+  waiting_external: '等待外部数据',
+  target_date_required: '缺少目标日期',
+  source_not_disclosed: '来源未披露',
+  gaps_pending: '仍有缺口',
+  preview_only: '仅预览（未发布）',
+  shadow_only: '仅影子结果',
+  shadow_evaluated: '影子结果已评估',
+  daily_recorded: '日度结果已记录',
+  weekly_published: '周度结果已发布',
+  no_eligible_member: '没有符合条件的标的',
+  stage_completed_kind: '阶段结果',
+  publish_dataset_codes: '数据集',
+  stock_selection_daily_cn: 'A股日度选股', stock_selection_daily_hk: '港股日度选股',
+  stock_selection_weekly_cn: 'A股周度选股', stock_selection_weekly_hk: '港股周度选股',
+  repoDailyRates: '逆回购日利率', analysis_inputs: '可转债资料输入',
+};
+Object.assign(JOB_TEXT_CODE_LABELS, JOB_REASON_CODE_LABELS);
+function escapeRegExp(text) {
+  return String(text).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+// 只替换完整词边界内的内部码；禁止把 stock_selection_daily_hk 的中间子串
+// selection_daily 单独替换成「日度选股」，否则会出现 stock_日度选股_hk（F-05）。
+function replaceWholeCode(text, code, label) {
+  const matcher = new RegExp('(^|[^A-Za-z0-9_])' + escapeRegExp(code) + '(?![A-Za-z0-9_])', 'g');
+  return text.replace(matcher, function (all, prefix) { return prefix + label; });
+}
 function translateJobText(value) {
   let text = String(value || '')
     .replace(/\bmarket_close:([^#、，\s]+)#(\d+)/g, function (all, market, id) { return jobLabel('market_close:' + market) + '#' + id; });
   Object.keys(JOB_LABELS).forEach(function (code) {
     text = text.split(code + '#').join(JOB_LABELS[code] + '#');
   });
+  Object.keys(JOB_TEXT_CODE_LABELS)
+    .sort(function (a, b) { return b.length - a.length; })
+    .forEach(function (code) {
+      text = replaceWholeCode(text, code, JOB_TEXT_CODE_LABELS[code]);
+    });
   return text
     .replace(/\bparse_pending\b/g, '待解析数量')
     .replace(/\bparse_exhausted\b/g, '解析失败数量')
@@ -486,24 +614,59 @@ function jobValueLabel(value, field) {
   if (field === 'executable') return 'Python 数据同步程序';
   if (field === 'output') return '程序执行日志已完成（详细日志不在页面展开）';
   if (field === 'status') return jobStatusLabel(String(value));
+  if (field === 'qualityStatus' || field === 'quality_status') {
+    return { passed: '通过', partial: '部分可用', failed: '未通过', unknown: '未知' }[value] || jobValueLabel(value, '');
+  }
+  if (field === 'businessStatus') {
+    return { sufficient: '数据充足', partial: '部分可用', insufficient_data: '数据不足' }[value] || jobValueLabel(value, '');
+  }
+  if (field === 'readinessStatus') {
+    return { ready: '数据已就绪', not_ready: '数据尚未就绪' }[value] || jobValueLabel(value, '');
+  }
+  if (field === 'queryStatus' || field === 'query_status') {
+    return { success: '成功', failed: '失败', partial: '部分完成', not_run: '本阶段未执行', verified_no_change: '已核验无新增变化' }[value] || translateJobText(String(value));
+  }
+  if (field === 'coverageStatus' || field === 'coverage_status') {
+    return {
+      released: '已正式发布', preview_only: '仅预览（未发布）', shadow_only: '仅影子结果',
+      verified: '已核验', gaps_pending: '仍有缺口', verified_no_change: '已核验无新增变化',
+      market_closed: '未开市或已休市', complete: '数据完整', incomplete: '数据不完整',
+      verified_no_member: '已核验无符合标的', targeted_scoped: '按目标范围覆盖',
+    }[value] || translateJobText(String(value));
+  }
+  if (field === 'stageCompletedKind' || field === 'stage_completed_kind') return JOB_VALUE_LABELS[value] || translateJobText(String(value));
   if (typeof value === 'boolean') return value ? '是' : '否';
   return JOB_VALUE_LABELS[value] || (typeof value === 'string' ? translateJobText(value) : String(value));
 }
 function formatJobObject(value) {
   if (!value || typeof value !== 'object') return '';
+  const seen = Object.create(null);
   return Object.keys(value).reduce(function (parts, field) {
     const item = value[field];
     if (item === null || item === undefined || item === '') return parts;
+    const label = jobFieldLabel(field);
+    if (!label) return parts; // 未登记的内部字段只在「查看原始技术详情」中展示
     if (Array.isArray(item)) {
-      if (item.length) parts.push(jobFieldLabel(field) + '：' + item.map(function (entry) { return typeof entry === 'object' ? formatJobObject(entry) : jobValueLabel(entry, field); }).join('、'));
+      const text = item.map(function (entry) { return typeof entry === 'object' ? formatJobObject(entry) : jobValueLabel(entry, field); }).filter(Boolean).join('、');
+      if (text && !seen[label + '|' + text]) {
+        seen[label + '|' + text] = true;
+        parts.push(label + '：' + text);
+      }
       return parts;
     }
     if (typeof item === 'object') {
       const nested = formatJobObject(item);
-      if (nested) parts.push(jobFieldLabel(field) + '（' + nested + '）');
+      if (nested && !seen[label + '|' + nested]) {
+        seen[label + '|' + nested] = true;
+        parts.push(label + '（' + nested + '）');
+      }
       return parts;
     }
-    parts.push(jobFieldLabel(field) + '：' + jobValueLabel(item, field));
+    const text = jobValueLabel(item, field);
+    if (text && !seen[label + '|' + text]) {
+      seen[label + '|' + text] = true;
+      parts.push(label + '：' + text);
+    }
     return parts;
   }, []).join('；');
 }
@@ -514,9 +677,94 @@ function formatJobDetail(value, limit) {
     if (!text) return '';
     try { parsed = JSON.parse(text); } catch (e) { parsed = text; }
   }
-  const formatted = parsed && typeof parsed === 'object' ? formatJobObject(parsed) : translateJobText(String(parsed || ''));
+  const formatted = parsed && typeof parsed === 'object'
+    ? (formatJobObject(parsed) || translateJobText(JSON.stringify(parsed)))
+    : translateJobText(String(parsed || ''));
   const max = Number(limit) || 500;
   return formatted.length > max ? formatted.slice(0, max) + '…' : formatted;
+}
+
+// 业务执行结果逐项拆行，避免把内部 JSON 平铺成一长串「任务信息：…」；
+// 未登记的技术字段不再猜测标签，统一收进「查看原始技术详情」。
+function jobResultRows(value) {
+  const rows = [];
+  const seen = Object.create(null);
+  const walk = function (obj, prefix) {
+    Object.keys(obj).forEach(function (field) {
+      const item = obj[field];
+      if (item === null || item === undefined || item === '') return;
+      const label = jobFieldLabel(field);
+      // 未登记字段本身不能借父级标签进入业务列表；对象/数组继续下钻，
+      // 只有其中已登记的子字段才会显示，未登记的内部值统一留在「查看原始技术详情」（F-05）。
+      if (!label) {
+        if (Array.isArray(item)) {
+          item.forEach(function (entry) {
+            if (entry && typeof entry === 'object') walk(entry, prefix);
+          });
+        } else if (item && typeof item === 'object') {
+          walk(item, prefix);
+        }
+        return;
+      }
+      const fullLabel = prefix ? prefix + ' · ' + label : label;
+      if (Array.isArray(item)) {
+        if (fullLabel) {
+          const text = item.map(function (entry) {
+            return entry && typeof entry === 'object' ? '' : jobValueLabel(entry, field);
+          }).filter(Boolean).join('、');
+          if (text) {
+            const key = fullLabel + '|' + text;
+            if (!seen[key]) { seen[key] = true; rows.push({ label: fullLabel, text: text }); }
+          }
+        }
+        item.forEach(function (entry) {
+          if (entry && typeof entry === 'object') walk(entry, fullLabel || prefix);
+        });
+        return;
+      }
+      if (typeof item === 'object') {
+        walk(item, fullLabel || prefix);
+        return;
+      }
+      if (!fullLabel) return;
+      const text = jobValueLabel(item, field);
+      if (!text) return;
+      const key = fullLabel + '|' + text;
+      if (seen[key]) return;
+      seen[key] = true;
+      rows.push({ label: fullLabel, text: text });
+    });
+  };
+  walk(value, '');
+  return rows;
+}
+
+function jobResultRawText(value) {
+  if (value === null || value === undefined) return '';
+  if (typeof value === 'object') {
+    try { return JSON.stringify(value, null, 2); } catch (e) { return ''; }
+  }
+  const text = String(value).trim();
+  if (!text) return '';
+  try { return JSON.stringify(JSON.parse(text), null, 2); } catch (e) { return text; }
+}
+
+function renderJobResultHtml(value) {
+  let parsed = value;
+  if (typeof value === 'string') {
+    try { parsed = JSON.parse(value); } catch (e) { parsed = { message: value }; }
+  }
+  const rows = parsed && typeof parsed === 'object' ? jobResultRows(parsed) : [];
+  const listHtml = rows.length
+    ? '<ul class="job-result-list">' + rows.map(function (row) {
+      return '<li><span class="job-result-label">' + escapeHtml(row.label) + '：</span>' + escapeHtml(row.text) + '</li>';
+    }).join('') + '</ul>'
+    : '<p class="job-result-empty">本次执行没有可读的业务结果。</p>';
+  const raw = jobResultRawText(value);
+  const details = raw
+    ? '<details class="job-result-raw"><summary>查看原始技术详情</summary><pre>' + escapeHtml(raw) + '</pre></details>'
+    : '';
+  return listHtml + details;
 }
 function jobDescription(job) {
   if (!job) return '';
@@ -843,7 +1091,7 @@ function renderJobSlotRow(slot) {
   // 不能只用“待运行”表示，也不能把它标成超时待处理。
   const waitingState = slot.waiting_state && slot.waiting_state.waiting ? slot.waiting_state : null;
   const waitingNote = waitingState && waitingState.label ? waitingState.label + '；' : '';
-  const resultText = waitingNote + (slot.last_error || (slot.result_summary && JSON.stringify(slot.result_summary)) || '');
+  const resultText = waitingNote + (slot.last_error || (slot.result_summary ? formatJobDetail(slot.result_summary, 300) : ''));
   return '<tr><td>' + escapeHtml(jobLabel(slot.job_code)) + '</td><td>' + fmtTime(slot.scheduled_for) + '</td><td>' + jobSlotStatusTag(slot.status, slot.is_late, Boolean(waitingState)) + '</td><td>' + Number(slot.attempt_count || 0) + '/' + Number(slot.max_attempts || 4) + '</td><td>' + escapeHtml(watermark) + '</td><td class="biz-table-note-cell biz-table-note-cell--260 biz-table-break-word">' + escapeHtml(jobDisplayText(resultText, 300)) + '</td><td>' + detail + validate + retry + '</td></tr>';
 }
 
@@ -863,15 +1111,23 @@ function adminPaintJobSlotDetail(d) {
     const audits = list(d.audits, function (audit) { return '<li>' + escapeHtml(audit.actor || '-') + ' / ' + escapeHtml(jobActionLabel(audit.action)) + ' / ' + escapeHtml(audit.created_at || '') + '</li>'; }, '无审计记录');
     const freshness = d.freshness_validation || {};
     const summary = d.result_summary || {};
+    const pendingStages = (summary.pendingStages || [])
+      .map(function (code) { return jobValueLabel(code, 'pendingStages'); })
+      .filter(Boolean);
     const continuation = '目标日期 ' + (summary.targetDate || summary.target_trade_date || d.business_date || '-') +
       '；续批 ' + (summary.continuationRequired ? '是' : '否') +
       '（第' + Number(summary.continuationCount || 0) + '批/上限' + Number(summary.continuationMaxBatches || 0) + '）' +
       '；剩余 ' + (summary.lastRemaining ?? summary.remaining ?? '-') +
       '；无进展 ' + Number(summary.noProgressCount || 0) +
       '；槽位调用 ' + Number(summary.slotExternalCallsTotal || 0) + '/' + Number(summary.slotExternalCallsLimit || 0) +
-      '；待处理阶段 ' + ((summary.pendingStages || []).join('、') || '无');
+      '；待完成步骤 ' + (pendingStages.join('、') || '无');
     const waitingState = d.waiting_state && d.waiting_state.waiting ? d.waiting_state : null;
-    const html = '<div class="job-detail"><p><b>任务：</b>' + escapeHtml(jobLabel(d.job_code)) + '</p><p><b>计划时间：</b>' + fmtTime(d.scheduled_for) + '</p><p><b>业务执行结果：</b><br>' + escapeHtml(jobDisplayText(d.business_execution || d.result_summary || {}, 4000)) + '</p><p><b>续批与止损：</b>' + escapeHtml(continuation) + '</p><p><b>等待复查：</b>' + escapeHtml(waitingState ? (waitingState.label || '等待中') + (waitingState.waitReason ? '（原因 ' + waitingState.waitReason + '）' : '') : '当前不是等待状态') + '</p><p><b>数据新鲜度校验：</b>' + escapeHtml(freshness.status === 'passed' ? '通过' : freshness.status === 'not_required' ? '不需要水位校验' : freshness.status === 'degraded' ? '未达到目标日期' : '待校验') + '；数据日期 ' + escapeHtml(freshness.dataAsOf ? String(freshness.dataAsOf).slice(0, 10) : '-') + '；业务日期 ' + escapeHtml(freshness.businessDate || '-') + '</p><p><b>计划状态：</b>' + jobSlotStatusTag(d.status, false, Boolean(waitingState)) + '</p><p><b>最近错误：</b>' + escapeHtml(jobDisplayText(d.last_error || '无', 1000)) + '</p><p><b>执行尝试：</b></p><ul>' + runs + '</ul><p><b>依赖：</b></p><ul>' + deps + '</ul><p><b>邮件告警：</b></p><ul>' + alerts + '</ul><p><b>人工审计：</b></p><ul>' + audits + '</ul></div>';
+    const waitingReason = waitingState && waitingState.waitReason
+      ? jobValueLabel(waitingState.waitReason, 'waitReason') : '';
+    const waitingText = waitingState
+      ? (translateJobText(waitingState.label || '等待中') + (waitingReason ? '（原因：' + waitingReason + '）' : ''))
+      : '当前不需要等待复查';
+    const html = '<div class="job-detail"><p><b>任务：</b>' + escapeHtml(jobLabel(d.job_code)) + '</p><p><b>计划时间：</b>' + fmtTime(d.scheduled_for) + '</p><p><b>业务执行结果：</b></p>' + renderJobResultHtml(d.business_execution || d.result_summary || {}) + '<p><b>续批与止损：</b>' + escapeHtml(continuation) + '</p><p><b>等待复查：</b>' + escapeHtml(waitingText) + '</p><p><b>数据新鲜度校验：</b>' + escapeHtml(freshness.status === 'passed' ? '通过' : freshness.status === 'not_required' ? '不需要水位校验' : freshness.status === 'degraded' ? '未达到目标日期' : '待校验') + '；数据日期 ' + escapeHtml(freshness.dataAsOf ? String(freshness.dataAsOf).slice(0, 10) : '-') + '；业务日期 ' + escapeHtml(freshness.businessDate || '-') + '</p><p><b>计划状态：</b>' + jobSlotStatusTag(d.status, false, Boolean(waitingState)) + '</p><p><b>最近错误：</b>' + escapeHtml(jobDisplayText(d.last_error || '无', 1000)) + '</p><p><b>执行尝试：</b></p><ul>' + runs + '</ul><p><b>依赖：</b></p><ul>' + deps + '</ul><p><b>邮件告警：</b></p><ul>' + alerts + '</ul><p><b>人工审计：</b></p><ul>' + audits + '</ul></div>';
     openAdminModal('任务详情', html, '<button class="btn btn-outline" data-act="closeAdminModal">关闭</button>');
 }
 

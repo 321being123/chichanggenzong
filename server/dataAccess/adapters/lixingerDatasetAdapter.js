@@ -13,6 +13,9 @@
 const { callEndpoint } = require('../../services/lixingerOfficial');
 const { resolveProviderIdentifier } = require('../../services/securityIdentity');
 const reportMetrics = require('../lixingerReportMetrics');
+const {
+  normalizeFinancialPeriodType, fiscalYearEndAnchors, inferFinancialPeriodType,
+} = require('../../domain/financialReportPeriod');
 
 const SOURCE = 'lixinger_official';
 const VALUATION_CHUNK = 100; // 官方限制：stockCodes 一次最多 100 个
@@ -502,28 +505,10 @@ function hkValuationRow(rawRow, tsCode, fallbackDate) {
 
 // 官方报告类型 → 标准期间类型（R2-03）。港股财年可以在 3/6/7 月结束，
 // 写库层再按期末月份推断会把它错标成季报，导致年度利润永远取不到。
-// 只做一一对应映射，认不出的保持 null（上层落 'unknown'，不猜）。
-const REPORT_PERIOD_TYPES = {
-  annual_report: 'annual',
-  annual: 'annual',
-  year_report: 'annual',
-  semi_annual_report: 'semiannual',
-  semiannual_report: 'semiannual',
-  interim_report: 'semiannual',
-  second_quarterly_report: 'semiannual',
-  first_quarterly_report: 'q1',
-  quarterly_report: 'q1',
-  q1: 'q1',
-  q2: 'semiannual',
-  third_quarterly_report: 'q3',
-  q3: 'q3',
-  fourth_quarterly_report: 'annual',
-  q4: 'annual',
-};
-
+// 2026-11-25 反馈 #102：映射统一收敛到 domain/financialReportPeriod.js，
+// 覆盖中英文别名；认不出的保持 null（上层落 'unknown'，不猜）。
 function periodTypeOfReportType(reportType) {
-  const key = String(reportType || '').trim().toLowerCase();
-  return REPORT_PERIOD_TYPES[key] || null;
+  return normalizeFinancialPeriodType(reportType);
 }
 
 // 财务三表按公司已核实的报表类型选择官方端点；未知类型不能猜测。
@@ -726,6 +711,22 @@ async function resolveFinancialReports({ tsCode, startDate, endDate, kinds = ['i
         && reportMetrics.metricsByStatement(market, kind)
           .some(metric => numberOrNull(statementMetrics[metric.code]) !== null);
       if (filled || hasStatementMetric) out[kind].push(row);
+    }
+  }
+  // 港股：官方 reportType 缺失时，用同一批里已明确标注为 annual 的期末推导财年锚点，
+  // 再识别 unknown 的半年报/季报（反馈 #102）。没有可靠 annual 锚点时保持 unknown。
+  if (hk) {
+    const allRows = [...out.income, ...out.balance, ...out.cashflow];
+    const anchors = fiscalYearEndAnchors(allRows.map(row => ({
+      periodEnd: row.end_date,
+      periodType: row.period_type,
+    })));
+    if (anchors.length) {
+      for (const row of allRows) {
+        if (row.period_type !== 'unknown') continue;
+        const inferred = inferFinancialPeriodType(row.end_date, anchors);
+        if (inferred) row.period_type = inferred;
+      }
     }
   }
   return out;

@@ -7,7 +7,7 @@ from datetime import date, timedelta
 from collections import defaultdict
 
 import db_pg
-from bond_data_layer import get_listing_liquidity, save_listing_liquidity
+from bond_data_layer import get_listing_liquidity, save_listing_liquidity, normalize_credit_rating
 from ipo_lib_fetch import fetch_placing_result
 from ipo_lib_historical_prediction import (
     HISTORICAL_ROLLBACK_MODEL_VERSION,
@@ -126,7 +126,7 @@ def _historical_rating_map(conn):
         ratings[int(instrument_id)].append({
             "rating_date": rating_date,
             "announced_at": announced_at,
-            "rating": rating,
+            "rating": normalize_credit_rating(rating),
         })
     return ratings
 
@@ -140,8 +140,8 @@ def _rating_as_of(ratings, as_of, fallback=""):
         if rating_date <= target and announced_at <= target:
             valid.append(row)
     if valid:
-        return str(valid[-1].get("rating") or "")
-    return str(fallback or "")
+        return normalize_credit_rating(valid[-1].get("rating") or "")
+    return normalize_credit_rating(fallback or "")
 
 
 def _prediction_rows(conn):

@@ -6281,6 +6281,74 @@
       ],
       "owner": "Antigravity",
       "status": "local_verified"
+    },
+    {
+      "id": "HK-ANALYSIS-FX-PAIR-001",
+      "title": "港股分析跨币种比值必须按市场交易币种与已落库汇率折算，汇率读取参数错误不得静默降级",
+      "implementation": {
+        "file": "server/services/hkSecurityAnalysis.js",
+        "symbol": "loadHkAnalysisInputs"
+      },
+      "tests": [
+        {
+          "file": "server/test/feedback-online-97-107.test.js",
+          "pattern": "#100 HKD 市值 + CNY/USD 财报按已落库汇率折算"
+        }
+      ],
+      "owner": "CodeBuddy",
+      "status": "local_verified"
+    },
+    {
+      "id": "FINANCIAL-REPORT-PERIOD-NORMALIZE-001",
+      "title": "财报 period_type=unknown 时须按官方标签与同公司财年锚点归一，无可靠证据不得按自然月份猜测",
+      "implementation": {
+        "file": "server/domain/financialReportPeriod.js",
+        "symbol": "resolveFinancialPeriodType"
+      },
+      "tests": [
+        {
+          "file": "server/test/stock-selection-fundamentals.test.js",
+          "pattern": "unknown 中报必须凭同公司年报锚点识别为半年报"
+        }
+      ],
+      "owner": "CodeBuddy",
+      "status": "local_verified"
+    },
+    {
+      "id": "REPORT-PERIOD-SQL-EXPRESSION-001",
+      "title": "period_type=unknown 或空时必须继续读取官方报告标签，年度估值与年度分红共用同一 SQL 表达式",
+      "implementation": {
+        "file": "server/repositories/reportPeriodSql.js",
+        "symbol": "reportPeriodTypeExpression"
+      },
+      "tests": [
+        {
+          "file": "server/test/feedback-report-period-sql-db.test.js",
+          "pattern": "unknown + annual_report 必须识别为 annual"
+        },
+        {
+          "file": "server/test/feedback-online-97-107.test.js",
+          "pattern": "#102 选股读端把 unknown 中报识别为半年报"
+        }
+      ],
+      "owner": "CodeBuddy",
+      "status": "local_verified"
+    },
+    {
+      "id": "BOND-RATING-NORMALIZE-001",
+      "title": "可转债信用评级展示、筛选与估值前必须剥离 sti 评级机构后缀并保留原始报文",
+      "implementation": {
+        "file": "server/domain/bondRating.js",
+        "symbol": "normalizeBondRating"
+      },
+      "tests": [
+        {
+          "file": "server/test/feedback-online-97-107.test.js",
+          "pattern": "#103 AAAsti/AA+sti/AA-sti/AAsti/A+sti/A-sti/BBB+sti 统一归一化"
+        }
+      ],
+      "owner": "CodeBuddy",
+      "status": "local_verified"
     }
   ]
 }

@@ -10,6 +10,7 @@ const repository = require('../repositories/convertibleBondAnalysisRepository.js
 const { datasetScope, getDatasetCursors, isDatasetFresh, markDatasetSuccess,
   recordQualityIssue, resolveQualityIssue } = require('./datasetCursors');
 const { getLatestCallState } = require('./convertibleBondRedemptionService');
+const { normalizeBondRating } = require('../domain/bondRating');
 const { ANNOUNCEMENT_OVERLAP_DAYS, DAILY_FIELDS, FORMULA_VERSION, accruedPutPrice, addDays, addYears, annualizedRedemptionYield, annualizedVolatility, blackScholesConvertible, cashflowsToDate, couponRowsFromClause, creditDiscountRate, currentInterestYear, currentPutPeriod, derivedDividendYield, earliestPutDate, estimatePutTimeline, fallbackPe, finite, futureTradeCalendar, hasNetAssetFloorClause, instrumentStatus, isoDate, nextPutPeriod, normalizeBondCode, normalizePriceChange, normalizePriceChanges, parseCouponRates, parseMoney, parseTriggerRatio, parseWindow, presentValue, pricePairFromReason, putOpportunityState, remainingYears, resetWindowState, revisionDecision, simplifyClause, termsHash, triggerProgress, yieldToMaturity, yuanToHundredMillion } = require('./convertibleBondAnalysisCore.js');
 const { announcementSourceKey, backfillMissingRatings, ensureStockUniverse, extractNoRevisionPeriods, extractPriceChangeDetails, incrementalStart, isFullReport, latestFinancial, latestFullReport, latestProspectus, loadCachedAnalysisHistory, loadCachedStockValuations, loadExtraData, loadNoRevisionCache, loadPriceChangeCache, loadProspectusCache, loadSafety, loadTrackedDelistedStocks, mergeDailyRows, pythonCandidates, reportPeriod, revisionEventDecision, savePriceChanges, saveProspectusDetails, saveRatingHistory, saveRatingOutlooks, saveReportFundHolding, saveRevisionEvents, sourceIds, syncTrackedStockLifecycle } = require('./convertibleBondAnalysisStore.js');
 const { activeProfile, addTradingDays, announcementDateWindows, backfillBondFirstDayPerformance, backfillBondIssueResults, backfillBondListingLiquidity, backfillCycleGaps, backfillUnderlyingStockMarket, bondGapQueueHash, buildBondGapQueue, classifyBondObjectStatus, collectConvertibleBondAnnouncementMarket, fetchTargetedBondDaily, getRecentOpenDays, isTencentBondWindow, isUnderlyingStockListed, latestFullBondDaily, latestTradeDates, readBondGapQueue, relevantConvertibleBondAnnouncements, resolveConvertibleBondSymbolicLocks, saveAnnouncementHistories, syncConvertibleBondAnnouncementHistories, syncConvertibleBondUniverse, syncConvertibleBondUniverseWithBackfill, writeBondGapQueue } = require('./convertibleBondAnalysisSync.js');
@@ -40,6 +41,10 @@ async function buildConvertibleBondAnalysisFromDatabase(tsCode, requestedDate, o
   for (const key of ['value_date','maturity_date','conv_start_date','conv_end_date','rate_clause','coupon_rate',
     'maturity_call_price','issue_rating','newest_rating','guarantor','guarantee_type']) {
     if (row[key] != null) profile[key] = key.endsWith('_date') ? isoDate(row[key]) : row[key];
+  }
+  // 主档历史值可能带 sti 后缀；进入估值和展示前统一清洗（原始值仍在 row/raw_payload）。
+  for (const key of ['issue_rating','newest_rating']) {
+    if (profile[key]) profile[key] = normalizeBondRating(profile[key]) || profile[key];
   }
   const bondDaily = cached.bondDaily.filter(bar => isoDate(bar.trade_date)<=targetDate);
   const stockDaily = cached.stockDaily.filter(bar => isoDate(bar.trade_date)<=targetDate);
@@ -225,7 +230,9 @@ async function assembleConvertibleBondAnalysis({ tsCode, stockCode, profile, ids
         ? financialLiabilities / financialAssets : null,
       total_market_cap: marketCap, dividend_yield: stockDividendYield,
       report_end_date: latestBalance.end_date || financial.report_end_date || null },
-    rating_history: extras.ratings,
+    rating_history: (extras.ratings || []).map(row => ({
+      ...row, rating: normalizeBondRating(row.rating) || row.rating || null,
+    })),
     credit: { issue_rating: profile.issue_rating || null, newest_rating: profile.newest_rating || null,
       rating_company: profile.rating_comp || null },
     liquidity: { volume: finite(latestBond.vol), amount: finite(latestBond.amount), double_low: bondPrice != null && convPremium != null ? bondPrice + convPremium * 100 : null },
@@ -356,7 +363,7 @@ async function getConvertibleBondSnapshot(value) {
     latestConvPriceChangeDate,
     latestStockTradeDate,
     currentFinancialEnd,
-    currentRating: r.profile_rating,
+    currentRating: normalizeBondRating(r.profile_rating) || r.profile_rating,
     currentTermsHash,
     watermark: r.source_watermark,
   });

@@ -137,6 +137,10 @@ async function run() {
     assert.strictEqual(overBudgetCaught, true, '超限提交必须被服务端拦截');
 
     // 6. 正式提交幂等 + 锁单/解锁保留提交 + 解锁与揭晓竞态
+    const sseFrames = [];
+    const unsubscribeSse = require('../services/classroomSseHub').subscribe(cid, {
+      write: (frame) => { sseFrames.push(String(frame)); },
+    });
     const sub1 = await classroomService.submitAllocation({
       classroomId: cid,
       roundNo: 1,
@@ -144,7 +148,16 @@ async function run() {
       allocations: { stk_energy_a: 50000000, bond_10y: 20000000 },
       clientRequestId: 'r1_stu1_req1',
     });
+    unsubscribeSse();
     assert.strictEqual(sub1.idempotent, false);
+    // #99：提交写入后必须广播 state_change，教师端才能立即刷新「已提交人数」。
+    assert.ok(sseFrames.some((frame) => /event: state_change/.test(frame) && /"reason":"submission"/.test(frame)),
+      '学员提交成功后必须广播带 submission 原因的 state_change');
+    const teacherAfterSubmit = await classroomService.getTeacherState({ classroomId: cid });
+    assert.strictEqual(teacherAfterSubmit.counts.submittedCount, 1, '#99：提交后教师端已提交人数必须为 1');
+    assert.strictEqual(teacherAfterSubmit.counts.unsubmittedCount, teacherAfterSubmit.counts.eligibleCount - 1, '#99：未提交人数必须同步减少');
+    const submittedParticipant = teacherAfterSubmit.participants.find((p) => p.submitStatus === 'submitted');
+    assert.ok(submittedParticipant, '#99：参课名单必须显示该学员为已提交');
     const sub1Dup = await classroomService.submitAllocation({
       classroomId: cid,
       roundNo: 1,

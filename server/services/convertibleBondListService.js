@@ -10,6 +10,7 @@ const txControl = require('../repositories/transactionControl');
 const { fetchCoupons, fetchStockHistory, fetchUniverseRows } = require('../repositories/convertibleBondListServiceRepository.js');
 const repository = require('../repositories/convertibleBondListServiceRepository.js');
 const { recordQualityIssue } = require('./datasetCursors');
+const { normalizeBondRating } = require('../domain/bondRating');
 const {
   finite, isoDate, normalizeBondCode, remainingYears, annualizedVolatility,
   parseTriggerRatio, earliestPutDate, estimatePutTimeline, futureTradeCalendar,
@@ -462,7 +463,9 @@ async function getBondList({ tradeDate = null, query = '', limit = 500, refreshQ
       convert_price: numberOrNull(row.current_conv_price), conversion_value: numberOrNull(sourceRow.conversion_value),
       conversion_premium: conversionPremium, bond_value: numberOrNull(row.bond_value),
       bond_floor_premium: numberOrNull(row.bond_value) > 0 && numberOrNull(sourceRow.close) != null ? numberOrNull(sourceRow.close) / numberOrNull(row.bond_value) - 1 : null,
-      rating: row.newest_rating || row.issue_rating || null,
+      // 存量主档可能仍是 AAsti/AA+sti（反馈 #103）；展示与筛选统一用归一化评级，
+      // 否则「全部评级」下拉会出现 *sti 选项，且与 AA+/AA 筛选互不命中。
+      rating: normalizeBondRating(row.newest_rating || row.issue_rating) || null,
       safety: safetyRatings.get(bondCode) || safetyRatings.get(bondCode && bondCode.split('.')[0]) || '未评级',
       option_value: metric.theoretical_option_value == null ? null : Number(metric.theoretical_option_value),
       theoretical_value: metric.theoretical_value == null ? null : Number(metric.theoretical_value),

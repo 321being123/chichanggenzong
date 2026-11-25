@@ -3,6 +3,7 @@
 const { pool, tryClaimJob, releaseJob, startJobRun, finishJobRun } = require('../db');
 // 文档选择纯判定已下沉到 domain 层（2026-10-30 S5 提取），本文件保留数据读写职责并继续转出同名函数。
 const { reportPeriod, isFullReport, latestFullReport, latestProspectus } = require('../domain/convertibleBondAnalysisRules');
+const { normalizeBondRating } = require('../domain/bondRating');
 // 证券主档与实时报价经数据层中立需求接口取。
 const marketDatasets = require('../dataAccess/marketDatasets');
 const { tsRows, tsDateStr } = require('./tushareFormat');
@@ -203,6 +204,9 @@ async function saveTerms(client, instrumentId, profile, tushareSource) {
 }
 
 async function saveProfile(client, profile, sources, subscriptionDate = null) {
+  // 写入侧统一清洗评级机构后缀（反馈 #103）；raw_payload 仍保留上游原值供追溯。
+  const issueRating = normalizeBondRating(profile.issue_rating);
+  const newestRating = normalizeBondRating(profile.newest_rating);
   const bondId = await ensureInstrument(client, profile.ts_code, profile.bond_short_name, 'convertible_bond', profile.list_date, profile.delist_date, subscriptionDate);
   const stockId = profile.stk_code ? await ensureInstrument(client, profile.stk_code, profile.stk_short_name, 'stock', null, null) : null;
   await client.query(
@@ -230,7 +234,7 @@ async function saveProfile(client, profile, sources, subscriptionDate = null) {
       isoDate(profile.conv_start_date), isoDate(profile.conv_end_date), isoDate(profile.conv_stop_date), finite(profile.first_conv_price),
       finite(profile.conv_price), finite(profile.coupon_rate), finite(profile.add_rate), finite(profile.pay_per_year), profile.rate_type || '',
       profile.rate_clause || '', profile.maturity_call_price || '', profile.guarantor || '', profile.guarantee_type || '',
-      profile.issue_rating || '', profile.newest_rating || '', profile.rating_comp || '', sources.tushare, JSON.stringify(profile)]
+      issueRating, newestRating, profile.rating_comp || '', sources.tushare, JSON.stringify(profile)]
   );
   await saveTerms(client, bondId, profile, sources.tushare);
   return { bondId, stockId };
@@ -317,7 +321,7 @@ async function saveRatingHistory(client, instrumentId, rows, sourceId) {
          rating_outlook=COALESCE(NULLIF(EXCLUDED.rating_outlook,''),fundamental.convertible_bond_ratings.rating_outlook),
          raw_payload=fundamental.convertible_bond_ratings.raw_payload || EXCLUDED.raw_payload`,
       [instrumentId, isoDate(row.rating_date), isoDate(row.ann_date), row.rating_com_name || '', row.rating_way || '',
-        row.rating_type || '', row.rating || '', row.rating_outlook || '', sourceId, JSON.stringify(row)]
+        row.rating_type || '', normalizeBondRating(row.rating), row.rating_outlook || '', sourceId, JSON.stringify(row)]
     );
   }
 }

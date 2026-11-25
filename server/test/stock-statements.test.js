@@ -70,6 +70,14 @@ assert.ok(receivableParent && receivableChildren.some(([code]) => code === 'note
     });
     assert.strictEqual(sQuarterQoq.fields[0].values.filter(v => v.change !== null).length, 20, '季报+合并口径+近20期应全部20/20算出环比');
 
+    const sQuarterAll = await service.getStockStatements({
+      tsCode: '00001.HK', market: 'HK', type: 'balance', periodType: 'quarter', scope: 'consolidated', compare: 'none', limit: 20, requestedVersion: v1.balance,
+    });
+    const quarterTypes = new Set(sQuarterAll.periods.map(p => p.period_type));
+    assert.ok(quarterTypes.has('q1') && quarterTypes.has('semiannual') && quarterTypes.has('q3') && quarterTypes.has('annual'),
+      '#104: 「季报」必须同时包含一季报(Q1)、半年报(Q2)、三季报(Q3)与年报(Q4)');
+    assert.strictEqual(sQuarterAll.periods.length, 20, '#104: 季报口径按季度粒度返回完整 20 期');
+
     revision = 2;
     const v2 = await service.getStockStatementVersions({ tsCode: '00001.HK', market: 'HK' });
     assert.notStrictEqual(v2.balance, v1.balance, '修订第49条报告后版本摘要必须变化');

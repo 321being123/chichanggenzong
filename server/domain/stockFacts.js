@@ -2,6 +2,7 @@
 // 约束：本文件不得出现 SQL、连接池、HTTP、req/res、DOM 或调度器依赖；
 // 上游 SQL 在 server/repositories/stockProjectionRepository.js，编排在 services。
 const crypto = require('crypto');
+const { normalizeFinancialPeriodType } = require('./financialReportPeriod');
 
 function asDate(value) {
   const text = String(value || '').replace(/-/g, '').slice(0, 8);
@@ -50,7 +51,15 @@ function periodType(endDate) {
  */
 function resolvePeriodType(row) {
   const declared = String((row && row.period_type) || '').trim().toLowerCase();
-  if (declared) return declared;
+  if (declared && declared !== 'unknown') {
+    return normalizeFinancialPeriodType(declared) || declared;
+  }
+  // 声明为 unknown 时，仍可信任上游原始报告类型标签（反馈 #102）。
+  const label = (row && (row.report_period_label || row.reportType || row.periodType))
+    || (row && row.raw_payload && (row.raw_payload.report_period_label || row.raw_payload.reportType));
+  const normalized = normalizeFinancialPeriodType(label);
+  if (normalized) return normalized;
+  if (declared === 'unknown') return 'unknown';
   return periodType(row && row.end_date);
 }
 

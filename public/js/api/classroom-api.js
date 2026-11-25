@@ -67,15 +67,17 @@
       });
     },
     // 教师端接口
+    // 建场选项/抽样/预检需要核验 15 年事实，属于长任务；使用独立超时，避免沿用默认 30s 被误报为「请求超时」。
     adminCreationOptions: function (startYear) {
       const qs = startYear ? ('?startYear=' + encodeURIComponent(startYear)) : '';
-      return requestJson('/api/classroom/admin/creation-options' + qs);
+      return requestJson('/api/classroom/admin/creation-options' + qs, { timeoutMs: 120000 });
     },
     adminSample: function (payload) {
       return requestJson('/api/classroom/admin/sample', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload || {}),
+        timeoutMs: 120000,
       });
     },
     adminPreview: function (payload) {
@@ -83,6 +85,7 @@
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload || {}),
+        timeoutMs: 120000,
       });
     },
     adminConfirm: function (payload) {
@@ -100,6 +103,7 @@
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload || {}),
+        timeoutMs: 120000,
       });
     },
     adminList: function (page, pageSize) {

@@ -8,7 +8,7 @@ const { saveAnalysisResults } = require('./financialDataArchitecture');
 const statementService = require('./stockStatementService');
 const contract = require('../domain/securityAnalysisContract');
 
-const FORMULA_VERSION = 'hk-6';
+const FORMULA_VERSION = 'hk-7';
 const { FORMULA_VERSION: STATEMENT_FORMULA_VERSION } = require('./hkStockStatements');
 
 // 港股 HKFRS 宽表字段对照（唯一登记位置）。现金流官方只有 7 个汇总项，没有资本开支，
@@ -238,21 +238,34 @@ function buildHkAnalysis(data, options = {}) {
   const operatingLatest = latestAnnualCashflow ? contract.finite(latestAnnualCashflow.operating) : null;
   const freeCash = contract.freeCashFlowOf({ operating: operatingLatest, capex: capexMissing ? null : latestAnnualCashflow && latestAnnualCashflow.capex });
 
-  // 港股补充指标：同币种或仅使用已落库汇率折算（无可靠汇率时保持 null，不臆造）。
-  const fxToCny = options.fxToCny || {};
+  // 港股补充指标：同币种直接展示；跨币种只用已落库汇率折算（无可靠汇率时保持 null，不臆造）。
+  // 交易币种是市值/股价的币种（港股为 HKD），财报币种可能为 CNY/USD。比值必须同币种，
+  // 因此利润/净资产按「财报币种 → 交易币种」折算，而不是无条件折算成人民币。
+  const fxToCny = options.fxToCny || data.fxToCny || {};
   function convertToMarketCurrency(amount, fromCurrency) {
     if (amount === null || amount === undefined || !Number.isFinite(amount)) return null;
     const src = String(fromCurrency || '').toUpperCase();
     if (!src) return null;
     if (src === currency) return amount;
-    if (currency === 'HKD') {
-      const hkdCny = contract.finite(fxToCny.HKD);
-      if (!hkdCny || hkdCny <= 0) return null;
-      if (src === 'CNY') return amount / hkdCny;
-      const srcCny = contract.finite(fxToCny[src]);
-      if (srcCny && srcCny > 0) return (amount * srcCny) / hkdCny;
+    const srcCny = contract.finite(fxToCny[src]);
+    const marketCny = contract.finite(fxToCny[currency]);
+    // 人民币目标：外币 ×（外币→CNY）。
+    if (currency === 'CNY') return srcCny && srcCny > 0 ? amount * srcCny : null;
+    // 其他目标（港股 HKD）：外币 → CNY → 目标币种；人民币源用反向汇率。
+    if (marketCny && marketCny > 0) {
+      if (src === 'CNY') return amount / marketCny;
+      if (srcCny && srcCny > 0) return (amount * srcCny) / marketCny;
     }
     return null;
+  }
+  const CURRENCY_NAMES = { HKD: '港元', CNY: '人民币', USD: '美元', AUD: '澳元', SGD: '新加坡元' };
+  function currencyNameOf(code) {
+    const key = String(code || '').toUpperCase();
+    return CURRENCY_NAMES[key] || key || '';
+  }
+  function currencyLabelOf(code) {
+    const key = String(code || '').toUpperCase();
+    return key ? `${currencyNameOf(key)} (${key})` : '';
   }
 
   const latestAnnualBalance = latestAnnual
@@ -613,6 +626,8 @@ function buildHkAnalysis(data, options = {}) {
   const stabilityYears = annual.slice(0, 20).map(group => {
     const yr = String(group.period_end).slice(0, 4);
     const divEntry = dividendByYear.get(yr);
+    // 图表把利润与分红画在同一柱状图，两者必须同币种；统一折算到交易币种（港股为 HKD）。
+    // 原实现只折算分红、利润保留财报原币，CNY 财报 + HKD 市值会把两种量纲画在一起。
     const profitInMarket = !group.currency_unverified && group.profit !== null
       ? convertToMarketCurrency(group.profit, group.currency)
       : null;
@@ -621,8 +636,10 @@ function buildHkAnalysis(data, options = {}) {
     return {
       year: yr,
       report_ann_date: group.announced_at || '',
-      profit: group.currency_unverified ? null : group.profit,
+      profit: profitInMarket,
+      profit_currency: currency,
       dividend: divAmt,
+      dividend_currency: currency,
       payout_ratio: yrPayout,
       annual_payout_ratio: yrPayout,
       is_estimated: divEntry ? divEntry.is_estimated : false,
@@ -657,6 +674,14 @@ function buildHkAnalysis(data, options = {}) {
       formulaVersion: STATEMENT_FORMULA_VERSION, rows: statementVersionRowsOf(facts, type),
     }),
   ]));
+  const reportCurrency = latestFact && latestFact.currency ? String(latestFact.currency).toUpperCase() : null;
+  const currencyLabel = currencyLabelOf(currency);
+  const reportCurrencyLabel = reportCurrency ? currencyLabelOf(reportCurrency) : null;
+  // 页面上金额与图表统一使用交易币种（港股为 HKD）；财报原币只作为口径说明，
+  // 不再强制折算成人民币导致缺汇率时整块指标变「--」。
+  const currencyNote = reportCurrency && reportCurrency !== currency
+    ? `交易币种：${currencyLabel}；财报币种：${reportCurrencyLabel}（跨币种比值按已落库汇率折算）`
+    : `交易与财报币种：${currencyLabel}`;
 
   return {
     ts_code: options.tsCode, name: meta.name || options.tsCode, market: 'HK',
@@ -673,9 +698,12 @@ function buildHkAnalysis(data, options = {}) {
     performance_forecast: null,
     as_of: options.isoToday || null,
     latest_market_trade_date: latest.trade_date || null,
-    quote: { price, currency, currency_name: currency === 'HKD' ? '港元' : currency, unit: currency, quote_time: null, source: 'local_daily_bars' },
+    quote: { price, currency, currency_name: currencyNameOf(currency), unit: currency, quote_time: null, source: 'local_daily_bars' },
     display: {
-      market: 'HK', currency, market_cap_label: '总市值（来源已验证范围）',
+      market: 'HK', currency, currency_name: currencyNameOf(currency), currency_label: currencyLabel,
+      report_currency: reportCurrency, report_currency_name: reportCurrency ? currencyNameOf(reportCurrency) : null,
+      report_currency_label: reportCurrencyLabel, currency_note: currencyNote,
+      market_cap_label: '总市值（来源已验证范围）',
       circulating_market_cap_label: '流通市值', share_scope: cap.scope || null,
       field_status: fieldStatus, analysis_version: version, formula_version: FORMULA_VERSION,
       statement_analysis_versions: statementAnalysisVersions,
@@ -737,8 +765,10 @@ async function loadHkAnalysisInputs(tsCode) {
   const [base, facts, hkdRate, usdRate, cursors, refreshCursors] = await Promise.all([
     stockAnalysisRepository.loadAnalysisInputs({ tsCode }),
     readHkReportFacts(tsCode),
-    fxRateRepository.readLatestRatePairUpTo('HKD', 'CNY', '9999-12-31').catch(() => null),
-    fxRateRepository.readLatestRatePairUpTo('USD', 'CNY', '9999-12-31').catch(() => null),
+    // 仓储签名是对象参数；2026-11-25 反馈 #100 原实现误传三位置参数，查询恒为空，
+    // 导致所有「财报币种 ≠ HKD」的港股静默落入 fx_rate_missing。
+    fxRateRepository.readLatestRatePairUpTo({ baseCurrency: 'HKD', quoteCurrency: 'CNY', date: '9999-12-31' }).catch(() => null),
+    fxRateRepository.readLatestRatePairUpTo({ baseCurrency: 'USD', quoteCurrency: 'CNY', date: '9999-12-31' }).catch(() => null),
     getDatasetCursors(datasetScope('hk', tsCode), ['dividends']).catch(() => new Map()),
     getDatasetCursors(datasetScope('hk_stock_analysis', tsCode), ['dividends']).catch(() => new Map()),
   ]);

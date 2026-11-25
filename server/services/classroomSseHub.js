@@ -29,6 +29,7 @@ function broadcastStateChange(classroomId, payload) {
     roundNo: Number(payload.roundNo),
     stateVersion: Number(payload.stateVersion),
     status: String(payload.status || ''),
+    reason: String(payload.reason || 'state'),
   });
   const frame = `event: state_change\ndata: ${data}\n\n`;
   let sent = 0;

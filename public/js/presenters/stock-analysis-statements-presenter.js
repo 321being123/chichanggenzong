@@ -2,16 +2,16 @@
 // 职责：持有三表缓存与请求序号、决定何时取数、何时把结果交给 View。
 // 边界：本文件不直接操作 DOM（静态门禁按 role=presenter、allowDom=false 校验），
 //       需要改界面时只调用 View 暴露的入口；View 不取数，只渲染并上报用户操作。
-var stockStatementState = { type:'balance', loadedCode:'', cache:{}, requestToken:0, filters:{ periodType:'all', compare:'yoy', scope:'consolidated', limit:10 } };
+var stockStatementState = { type:'balance', loadedCode:'', cache:{}, requestToken:0, filters:{ periodType:'quarter', compare:'yoy', scope:'consolidated', limit:10 } };
 
 function stockAnalysisStatementFilters() {
-  stockStatementState.filters = stockStatementState.filters || { periodType:'all', compare:'yoy', scope:'consolidated', limit:10 };
+  stockStatementState.filters = stockStatementState.filters || { periodType:'quarter', compare:'yoy', scope:'consolidated', limit:10 };
   return stockStatementState.filters;
 }
 
 async function stockAnalysisSetStatementFilter(name, value) {
-  var filters = stockStatementState.filters || (stockStatementState.filters = { periodType:'all', compare:'yoy', scope:'consolidated', limit:10 });
-  if (name === 'periodType' && ['all','annual','semiannual','quarter','q1','q3','unknown'].indexOf(value) < 0) value = 'all';
+  var filters = stockStatementState.filters || (stockStatementState.filters = { periodType:'quarter', compare:'yoy', scope:'consolidated', limit:10 });
+  if (name === 'periodType' && ['annual','semiannual','quarter'].indexOf(value) < 0) value = 'quarter';
   if (name === 'compare' && ['yoy','qoq','none'].indexOf(value) < 0) value = 'yoy';
   if (name === 'limit' && [5,10,20,'5','10','20'].indexOf(value) < 0) value = 10;
   if (name === 'scope' && value == null) value = 'consolidated';
@@ -31,8 +31,8 @@ async function stockAnalysisLoadStatements(type) {
   if (!code) return;
   var requestToken = ++stockStatementState.requestToken;
   var selectToken = stockAnalysisState.selectToken;
-  var filters = stockStatementState.filters || (stockStatementState.filters = { periodType:'all', compare:'yoy', scope:'consolidated', limit:10 });
-  var key = code + ':' + type + ':' + (filters.periodType || 'all') + ':' + (filters.compare || 'yoy') + ':' + (filters.scope || '') + ':' + (filters.limit || 10);
+  var filters = stockStatementState.filters || (stockStatementState.filters = { periodType:'quarter', compare:'yoy', scope:'consolidated', limit:10 });
+  var key = code + ':' + type + ':' + (filters.periodType || 'quarter') + ':' + (filters.compare || 'yoy') + ':' + (filters.scope || '') + ':' + (filters.limit || 10);
   var detail = stockAnalysisState.data || {};
   var statementVersions = detail.display ? detail.display.statement_analysis_versions : null;
   var version = statementVersions ? statementVersions[type] : null;
@@ -63,11 +63,6 @@ async function stockAnalysisLoadStatements(type) {
     var payload = response.payload;
     if (requestToken !== stockStatementState.requestToken || selectToken !== stockAnalysisState.selectToken) return;
     if (!response.ok) throw new Error(payload.error || '三表读取失败');
-    var availablePeriods = payload && payload.available_filters && payload.available_filters.period_types;
-    if (filters.periodType === 'unknown' && Array.isArray(availablePeriods) && availablePeriods.indexOf('unknown') < 0) {
-      filters.periodType = 'all';
-      return stockAnalysisLoadStatements(type);
-    }
     stockStatementState.cache[key] = payload;
     stockAnalysisRenderStatements(payload);
   } catch (error) {

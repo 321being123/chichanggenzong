@@ -104,11 +104,11 @@ async function main() {
     assert.strictEqual(snapshot.valuation.pe_ttm, 12);
     assert.strictEqual(old.cashflow.latest_year.operating, 40, '不能修改已保存的快照对象');
     assert.strictEqual(hk.publicSnapshotOf(old).cashflow.latest_year.operating, null);
-    assert.strictEqual(hk.publicSnapshotOf(analysis).display.formula_version, 'hk-6');
+    assert.strictEqual(hk.publicSnapshotOf(analysis).display.formula_version, 'hk-7');
     assert.strictEqual((await hk.refreshHkAnalysis('00005.HK')).cashflow.latest_year.operating, null);
-    // hk-5 旧快照在 hk-6 下自动失效保护
-    const oldHk5 = { ...old, display: { ...old.display, formula_version: 'hk-5' } };
-    assert.strictEqual(hk.publicSnapshotOf(oldHk5).display.field_status.ttm_profit.value, null);
+    // hk-6 旧快照在 hk-7 下自动失效保护（汇率读取修复 + 图表币种口径变化）
+    const oldHk6 = { ...old, display: { ...old.display, formula_version: 'hk-6' } };
+    assert.strictEqual(hk.publicSnapshotOf(oldHk6).display.field_status.ttm_profit.value, null);
   } finally {
     stockRepository.readLatestSnapshot = originalRead;
     stockRepository.loadAnalysisInputs = originalInputs;
@@ -381,6 +381,56 @@ async function main() {
     ],
   }, { tsCode: '09988.HK', today: '20251101' });
   assert.strictEqual(nextFebMissingFirstDay.valuation.payout_ratio, null, 'F-03: 2025-02-28 缺少 2024-03-01 覆盖时不得输出 0%');
+  // 反馈 #100：港股按交易币种展示；跨币种比值只用已落库汇率折算，缺汇率才留空。
+  const hkMarketValuations = [{ trade_date: '20251101', close: 10, adj_factor: 1, pe_ttm: 9, pb: 1.1, total_mv: 10000, dv_ttm: 0, total_share: 1000 }];
+  const cnyReport = [{
+    period_end: '2025-12-31', period_type: 'annual', statement_scope: 'consolidated', currency: 'CNY', source_version: 'v1',
+    report_ids: [{ kind: 'income', report_id: 1 }, { kind: 'balance', report_id: 2 }],
+    profit: 10000000, equity: 50000000, goodwill: 0, currency_unverified: false,
+  }];
+  const withHkdRate = hk.buildHkAnalysis({
+    meta: { name: '中国中药', list_date: '19930407', currency: 'HKD' },
+    valuations: hkMarketValuations, dividends: [], events: [], reportFacts: cnyReport,
+    fxToCny: { HKD: 0.92, USD: 7.1 },
+  }, { tsCode: '00570.HK', today: '20251101' });
+  assert.ok(withHkdRate.valuation.pe_static > 0, '#100: HKD 市值 + CNY 财报在已有 HKD→CNY 汇率时必须算出静态 PE');
+  assert.strictEqual(withHkdRate.display.field_status.pe_static.reason, null);
+  assert.ok(Math.abs(withHkdRate.valuation.pe_static - 9.2) < 1e-9, '#100: CNY 利润按 HKD→CNY 折算后再与 HKD 市值相除');
+  assert.ok(withHkdRate.valuation.pb_ex_goodwill > 0, '#100: 净资产同样按 HKD 交易币种折算');
+  assert.strictEqual(withHkdRate.display.currency, 'HKD');
+  assert.strictEqual(withHkdRate.display.report_currency, 'CNY');
+  assert.strictEqual(withHkdRate.display.currency_label, '港元 (HKD)');
+  assert.ok(withHkdRate.display.currency_note.includes('财报币种：人民币 (CNY)'), '#100: 页面顶部必须说明交易/财报币种');
+
+  const usdReport = [{ ...cnyReport[0], currency: 'USD', profit: 1000000 }];
+  const withUsdRate = hk.buildHkAnalysis({
+    meta: { name: '美元财报港股', list_date: '19930407', currency: 'HKD' },
+    valuations: hkMarketValuations, dividends: [], events: [], reportFacts: usdReport,
+    fxToCny: { HKD: 0.92, USD: 7.1 },
+  }, { tsCode: '00571.HK', today: '20251101' });
+  assert.ok(withUsdRate.valuation.pe_static > 0, '#100: HKD 市值 + USD 财报必须用 USD→CNY 与 HKD→CNY 交叉折算');
+  assert.strictEqual(withUsdRate.display.report_currency, 'USD');
+
+  const missingRate = hk.buildHkAnalysis({
+    meta: { name: '缺汇率港股', list_date: '19930407', currency: 'HKD' },
+    valuations: hkMarketValuations, dividends: [], events: [], reportFacts: cnyReport,
+    fxToCny: {},
+  }, { tsCode: '00572.HK', today: '20251101' });
+  assert.strictEqual(missingRate.valuation.pe_static, null, '#100: 真缺交叉汇率时不得用不同币种直接相除');
+  assert.strictEqual(missingRate.display.field_status.pe_static.reason, 'fx_rate_missing');
+
+  const hkdReport = [{ ...cnyReport[0], currency: 'HKD' }];
+  const sameCurrency = hk.buildHkAnalysis({
+    meta: { name: '港币财报港股', list_date: '19930407', currency: 'HKD' },
+    valuations: hkMarketValuations, dividends: [], events: [], reportFacts: hkdReport,
+    fxToCny: {},
+  }, { tsCode: '00573.HK', today: '20251101' });
+  assert.ok(sameCurrency.valuation.pe_static > 0, '#100: 交易与财报同为 HKD 时无需汇率即可计算');
+
+  const hkSrc = require('fs').readFileSync(require('path').join(__dirname, '..', 'services', 'hkSecurityAnalysis.js'), 'utf8');
+  assert.ok(hkSrc.includes("readLatestRatePairUpTo({ baseCurrency: 'HKD', quoteCurrency: 'CNY'"), '#100: 汇率必须按仓储对象签名读取');
+  assert.ok(!/readLatestRatePairUpTo\('HKD'/.test(hkSrc), '#100: 不得再使用会静默返回空的三位置参数');
+
   console.log('港股概览币种与旧快照保护通过');
 }
 

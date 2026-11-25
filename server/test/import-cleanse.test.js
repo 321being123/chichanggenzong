@@ -259,6 +259,172 @@ async function main() {
     assert.strictEqual(again.expired, true); // 已销毁
   });
 
+  await check('#96/F-01 导入代码与主档名称不匹配时阻止入账（AI/Excel直解析/账本边界）', async () => {
+    const identity = require('../services/securityIdentity');
+    const fakeExecutor = async () => ({
+      rows: [
+        { canonical_code: '601990.SH', name: '南京证券', market: 'CN', exchange_code: 'SSE', currency_code: 'CNY' },
+        { canonical_code: '601995.SH', name: '中金公司', market: 'CN', exchange_code: 'SSE', currency_code: 'CNY' },
+      ],
+    });
+    const { items } = cleanse.cleanseImportedItems([
+      { kind: 'position', code: '601990', name: '中金公司', cost: 25.51, quantity: 100, date: '2026-11-25' },
+      { kind: 'position', code: '601995', name: '中金公司', cost: 25.51, quantity: 100, date: '2026-11-25' },
+    ]);
+    const normalized = await identity.normalizeImportedItems(items, fakeExecutor);
+    const out = cleanse.finalizeImportedItems(normalized);
+    assert.strictEqual(out[0]._v.status, 'blocked');
+    assert.ok(out[0]._v.identityConflict && out[0]._v.identityConflict.code === '601990');
+    assert.ok(out[0]._v.issues.some(i => i.level === 'error' && i.field === 'code' && i.message.includes('南京证券') && i.message.includes('601995.SH')));
+    assert.strictEqual(out[1]._v.status, 'ok');
+
+    // Excel 结构化直解析路径也必须透传 blocked 校验
+    const structuredNorm = await identity.normalizeImportedItems([
+      { kind: 'position', code: '601990', name: '中金公司', price: 25.51, quantity: 100, date: '2026-11-25' },
+    ], fakeExecutor);
+    const structuredOut = cleanse.attachIdentityConflictValidation(structuredNorm);
+    assert.strictEqual(structuredOut[0]._v.status, 'blocked');
+    assert.strictEqual(structuredOut[0]._identityConflict, undefined);
+
+    // 账本写入边界也必须拒绝错配代码与名称
+    const tradeLedger = require('../services/tradeLedger');
+    await assert.rejects(
+      () => tradeLedger.applyTrade('u1', '默认账户', { code: '601990', name: '中金公司', direction: 'buy', price: 25.51, quantity: 100, date: '2026-11-25' }, { query: fakeExecutor }),
+      err => err && err.status === 400 && /南京证券/.test(err.message)
+    );
+
+    // 同号跨交易所不得互借名称（000001.SH 上证指数 vs 000001.SZ 平安银行）
+    const crossExExecutor = async () => ({
+      rows: [
+        { canonical_code: '000001.SH', name: '上证指数', market: 'CN', exchange_code: 'SSE', currency_code: 'CNY' },
+        { canonical_code: '000001.SZ', name: '平安银行', market: 'CN', exchange_code: 'SZSE', currency_code: 'CNY' },
+        { canonical_code: '600000.SH', name: '测试正股', market: 'CN', exchange_code: 'SSE', currency_code: 'CNY' },
+      ],
+    });
+    const crossNorm = await identity.normalizeImportedItems([
+      { kind: 'position', code: '000001.SZ', name: '上证指数', price: 10, quantity: 100, date: '2026-11-25' },
+      { kind: 'position', code: '600000', name: '浦发银行', price: 10, quantity: 100, date: '2026-11-25' },
+      { kind: 'position', code: '700', name: '中金公司', price: 10, quantity: 100, date: '2026-11-25' },
+    ], async () => ({
+      rows: [
+        { canonical_code: '000001.SH', name: '上证指数', market: 'CN', exchange_code: 'SSE', currency_code: 'CNY' },
+        { canonical_code: '000001.SZ', name: '平安银行', market: 'CN', exchange_code: 'SZSE', currency_code: 'CNY' },
+        { canonical_code: '600000.SH', name: '测试正股', market: 'CN', exchange_code: 'SSE', currency_code: 'CNY' },
+        { canonical_code: '00700.HK', name: '腾讯控股', market: 'HK', exchange_code: 'HKEX', currency_code: 'HKD' },
+      ],
+    }));
+    const crossOut = cleanse.attachIdentityConflictValidation(crossNorm);
+    assert.strictEqual(crossOut[0]._v.status, 'blocked', '000001.SZ 不得借用 000001.SH 名称放行');
+    assert.strictEqual(crossOut[1]._identityConflict, undefined, 'CI 种子占位名称 测试正股 不得误拦真实证券');
+    assert.strictEqual(crossOut[2]._v.status, 'blocked', '港股短码 700 配错名称必须在预览即标为 blocked');
+
+    // Excel 结构化直解析保留原始交易所后缀用于冲突校验
+    const importRouter = require('../routes/import');
+    const structuredRows = importRouter.buildStructuredItems([
+      ['代码', '名称', '价格', '数量'],
+      ['000001.SH', '平安银行', '10', '100'],
+    ]);
+    const structuredCross = cleanse.attachIdentityConflictValidation(await identity.normalizeImportedItems(structuredRows, crossExExecutor));
+    assert.strictEqual(structuredCross[0]._v.status, 'blocked', 'Excel 结构化直解析不得在校验前丢掉 .SH');
+    assert.strictEqual(structuredCross[0].raw_code, undefined, '返回前应清理临时 raw_code');
+
+    // F-01 第四轮补充：000001.SH/上证指数 保留 .SH、601990.SZ/中金公司 被拦截、H700 结构化预览拦截、CSV 前导零保留
+    const shNorm = await identity.normalizeImportedItems([
+      { kind: 'position', code: '000001.SH', name: '上证指数', price: 3000, quantity: 50, date: '2026-11-25' },
+      { kind: 'position', code: '601990.SZ', name: '中金公司', price: 25, quantity: 100, date: '2026-11-25' },
+    ], async () => ({
+      rows: [
+        { canonical_code: '000001.SH', name: '上证指数', market: 'CN', exchange_code: 'SSE', currency_code: 'CNY' },
+        { canonical_code: '000001.SZ', name: '平安银行', market: 'CN', exchange_code: 'SZSE', currency_code: 'CNY' },
+        { canonical_code: '601990.SH', name: '南京证券', market: 'CN', exchange_code: 'SSE', currency_code: 'CNY' },
+        { canonical_code: '601995.SH', name: '中金公司', market: 'CN', exchange_code: 'SSE', currency_code: 'CNY' },
+      ],
+    }));
+    assert.strictEqual(shNorm[0].code, '000001.SH', '000001.SH 必须保留交易所后缀防止与深市 000001 混淆');
+    assert.strictEqual(shNorm[0]._identityConflict, undefined);
+    const shOut = cleanse.attachIdentityConflictValidation(shNorm);
+    assert.strictEqual(shOut[1]._v.status, 'blocked', '601990.SZ / 中金公司 必须被拦截');
+
+    const h700Rows = importRouter.buildStructuredItems([
+      ['代码', '名称', '价格', '数量'],
+      ['H700', '中金公司', '300', '100'],
+    ]);
+    const h700Out = cleanse.attachIdentityConflictValidation(await identity.normalizeImportedItems(h700Rows, async () => ({
+      rows: [{ canonical_code: '00700.HK', name: '腾讯控股', market: 'HK', exchange_code: 'HKEX', currency_code: 'HKD' }],
+    })));
+    assert.strictEqual(h700Out[0]._v.status, 'blocked', '结构化 Excel 的 H700 配错名称必须在预览即标为 blocked');
+
+    const { safeParseExcel } = require('../services/excelSafe');
+    const csvParsed = await safeParseExcel(Buffer.from('代码,名称,价格,数量\n000001,平安银行,12.34,100', 'utf8').toString('base64'), { mode: 'first' });
+    const csvItems = importRouter.buildStructuredItems(csvParsed.rows);
+    assert.strictEqual(csvItems[0].code, '000001', 'CSV 带前导零的 000001 不得变成港股 00001');
+
+    // F-01 第五轮补充：toTsCode 保持 000001.SH 不变且不破坏 920002.SH->.BJ / 600519.BJ->.SH
+    const marketSvc = require('../services/market');
+    assert.strictEqual(marketSvc.toTsCode('000001.SH'), '000001.SH');
+    assert.strictEqual(marketSvc.toTsCode('000001'), '000001.SZ');
+    assert.strictEqual(marketSvc.toTsCode('920002.SH'), '920002.BJ');
+    assert.strictEqual(marketSvc.toTsCode('600519.BJ'), '600519.SH');
+
+    // F-01 第六轮补充：单边缺实时价时，不得借用另一交易所的裸码报价
+    const onlySzLive = new Map([
+      ['000001', { code: '000001', market: 'sz', price: 14 }],
+      ['000001.SZ', { code: '000001', market: 'sz', price: 14 }],
+    ]);
+    assert.strictEqual(marketSvc.pickMatchedQuote(onlySzLive, '000001.SH', '000001.SH'), null, '仅缺沪市实时价时不得错取深市裸码 14');
+    assert.strictEqual(marketSvc.pickMatchedQuote(onlySzLive, '000001', '000001.SZ').price, 14);
+
+    const onlyShLive = new Map([
+      ['000001', { code: '000001', market: 'sh', price: 3002 }],
+      ['000001.SH', { code: '000001', market: 'sh', price: 3002 }],
+    ]);
+    assert.strictEqual(marketSvc.pickMatchedQuote(onlyShLive, '000001', '000001.SZ'), null, '仅缺深市实时价时不得错取沪市裸码 3002');
+    assert.strictEqual(marketSvc.pickMatchedQuote(onlyShLive, '000001.SH', '000001.SH').price, 3002);
+
+    // F-01 第七轮补充：仓位对比 estimatePositions 与收盘任务 quoteForCode 不得因裸码覆盖串价
+    const posCmp = require('../services/positionComparison');
+    const cmpQuotes = new Map([
+      ['000001.SZ', { code: '000001', market: 'sz', price: 15, name: '平安银行' }],
+      ['000001.SH', { code: '000001', market: 'sh', price: 3003, name: '上证指数' }],
+      ['000001', { code: '000001', market: 'sh', price: 3003, name: '上证指数' }],
+    ]);
+    const cmpEst = await posCmp.estimatePositions([
+      { code: '000001.SH', subtype: '沪市', quantity: 10, price: 0 },
+      { code: '000001', subtype: '深市', quantity: 10, price: 0 },
+    ], { hkRate: 0.9 }, cmpQuotes);
+    assert.strictEqual(cmpEst.positions.find(i => i.code === '000001.SH').price, 3003, '仓位对比沪市应取 3003');
+    assert.strictEqual(cmpEst.positions.find(i => i.code === '000001').price, 15, '仓位对比深市应取 15，不得受裸码 3003 污染');
+
+    const marketCloseJob = require('../jobs/marketClose');
+    const closeOnlySz = new Map([
+      ['000001', { code: '000001', market: 'sz', price: 16 }],
+      ['000001.SZ', { code: '000001', market: 'sz', price: 16 }],
+    ]);
+    assert.strictEqual(marketCloseJob.quoteForCode(closeOnlySz, '000001.SH'), null, '收盘任务仅缺沪市实时价时不得错取深市 16');
+    assert.strictEqual(marketCloseJob.quoteForCode(closeOnlySz, '000001').price, 16);
+
+    // 主档查询失败时写入边界不得静默放行
+    const failExecutor = async (sql) => {
+      if (String(sql).includes('core.instruments')) throw new Error('db down');
+      return { rows: [] };
+    };
+    await assert.rejects(
+      () => tradeLedger.applyTrade('u1', '默认账户', { code: '601990', name: '中金公司', direction: 'buy', price: 25.51, quantity: 100, date: '2026-11-25' }, { query: failExecutor }),
+      err => err && err.status === 503
+    );
+
+    // F-06: 已落库事件带同 id 重试必须在主档名称校验之前幂等返回成功
+    const dupClient = {
+      async query(sql) {
+        if (/FROM\s+(?:public\.)?trades/i.test(String(sql))) return { rows: [{ id: 'evt-dup-1' }] };
+        if (String(sql).includes('core.instruments')) throw new Error('should not query instruments on duplicate retry');
+        return { rows: [] };
+      },
+    };
+    const dupRes = await tradeLedger.applyTrade('u1', '默认账户', { id: 'evt-dup-1', code: '601990', name: '中金公司', direction: 'buy', price: 25.51, quantity: 100, date: '2026-11-25' }, dupClient);
+    assert.strictEqual(dupRes.skipped, 'duplicate');
+  });
+
   console.log('\n通过 ' + passed + ' 项');
 }
 

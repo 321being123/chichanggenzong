@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "lastReviewed": "2026-11-24",
+  "lastReviewed": "2026-11-25",
   "rules": [
     {
       "id": "BOND-RATING-ISSUER-ONLY-001",
@@ -6264,6 +6264,22 @@
         }
       ],
       "owner": "WorkBuddy",
+      "status": "local_verified"
+    },
+    {
+      "id": "IMPORT-IDENTITY-CONFLICT-001",
+      "title": "导入、账本写入、行情刷新、仓位对比与收盘任务必须按规范交易所代码独立取价，单边缺实时价时禁止借用异市场裸码报价",
+      "implementation": {
+        "file": "server/services/securityIdentity.js",
+        "symbol": "detectCodeNameConflicts"
+      },
+      "tests": [
+        {
+          "file": "server/test/import-cleanse.test.js",
+          "pattern": "#96/F-01 导入代码与主档名称不匹配时阻止入账（AI/Excel直解析/账本边界）"
+        }
+      ],
+      "owner": "Antigravity",
       "status": "local_verified"
     }
   ]

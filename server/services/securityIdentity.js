@@ -114,27 +114,154 @@ async function resolveAmbiguousSecurity(rawCode, rawName, executor) {
   }
 }
 
+function normalizeInstrumentName(value) {
+  return String(value == null ? '' : value)
+    .trim()
+    .replace(/\s+/g, '')
+    .toUpperCase()
+    .replace(/^(\*?ST|XD|XR|DR|N|C)+/, '')
+    .replace(/[-－—]?(A股|B股|H股|港股|退)$/i, '');
+}
+
+function isSeedPlaceholderName(value) {
+  return /^测试(正股|转债|基金|股票|标的)/.test(String(value == null ? '' : value).trim());
+}
+
+function namesCompatible(a, b) {
+  const na = normalizeInstrumentName(a);
+  const nb = normalizeInstrumentName(b);
+  if (!na || !nb) return true;
+  return na === nb || na.includes(nb) || nb.includes(na);
+}
+
+function canonicalOfImportCode(rawCode, rawName) {
+  const s = String(rawCode == null ? '' : rawCode).trim().toUpperCase();
+  if (!s) return '';
+  if (/^\d{5,6}\.(SH|SZ|BJ|HK)$/.test(s)) return s;
+  const prefixMatch = /^(SH|SZ|BJ|HK)(\d{5,6})$/.exec(s);
+  if (prefixMatch) return `${prefixMatch[2]}.${prefixMatch[1]}`;
+  const info = classifyCode(s, rawName);
+  if (info && info.market && /^(sh|sz|bj|hk)$/i.test(info.market)) {
+    const codePart = info.code || classifyCode.normalizeCode(s, rawName) || s;
+    return `${String(codePart).toUpperCase()}.${info.market.toUpperCase()}`;
+  }
+  return String(classifyCode.normalizeCode(s, rawName) || '').trim().toUpperCase();
+}
+
+async function detectCodeNameConflicts(items, query, options = {}) {
+  const codeSet = new Set();
+  const nameSet = new Set();
+  for (const item of items) {
+    if (!item || !item.code || !item.name) continue;
+    const checkCode = item._rawCodeForConflict || item.raw_code || item.code;
+    const digits = plainCode(checkCode);
+    const canonDigits = plainCode(canonicalOfImportCode(checkCode, item.name));
+    const nm = nameKey(item.name);
+    if (digits) codeSet.add(digits);
+    if (canonDigits) codeSet.add(canonDigits);
+    if (nm) nameSet.add(nm);
+  }
+  if (!codeSet.size || !nameSet.size) return items;
+
+  let rows = [];
+  try {
+    const result = await query(
+      `SELECT canonical_code, name, market, exchange_code, currency_code
+         FROM core.instruments
+        WHERE regexp_replace(canonical_code, '\\D', '', 'g') = ANY($1::text[])
+           OR regexp_replace(name, '[[:space:]]+', '', 'g') = ANY($2::text[])`,
+      [[...codeSet], [...nameSet]]
+    );
+    rows = uniqueRows(result && result.rows).filter(row => row.name && !isSeedPlaceholderName(row.name));
+  } catch (err) {
+    if (options && options.throwOnError) {
+      const wrapped = new Error('主档名称核对失败，请稍后重试');
+      wrapped.status = 503;
+      wrapped.cause = err;
+      throw wrapped;
+    }
+    return items;
+  }
+  if (!rows.length) return items;
+
+  return items.map(item => {
+    if (!item || !item.code || !item.name) return item;
+    const checkCode = item._rawCodeForConflict || item.raw_code || item.code;
+    const digits = plainCode(checkCode);
+    if (!digits) return item;
+    const targetCanonical = canonicalOfImportCode(checkCode, item.name);
+    const hasExplicitExchange = /\.(SH|SZ|BJ|HK)$/i.test(targetCanonical);
+    const codeRows = rows.filter(row => {
+      const rowCanon = String(row.canonical_code || '').trim().toUpperCase();
+      if (hasExplicitExchange) return rowCanon === targetCanonical;
+      return plainCode(rowCanon) === digits;
+    });
+    const nameCandidates = rows
+      .filter(row => row.name && namesCompatible(row.name, item.name))
+      .map(row => row.canonical_code);
+    if (!codeRows.length) {
+      const plainRows = hasExplicitExchange
+        ? rows.filter(row => plainCode(row.canonical_code) === digits && row.name)
+        : [];
+      if (plainRows.length > 0) {
+        return {
+          ...item,
+          _identityConflict: {
+            code: item.code,
+            codeName: `${plainRows[0].canonical_code}（${plainRows[0].name}）`,
+            itemName: String(item.name).trim(),
+            nameCandidates,
+          },
+        };
+      }
+      if (hasExplicitExchange && nameCandidates.length > 0) {
+        return {
+          ...item,
+          _identityConflict: {
+            code: item.code,
+            codeName: '主档无此交易所代码',
+            itemName: String(item.name).trim(),
+            nameCandidates,
+          },
+        };
+      }
+      return item;
+    }
+    if (codeRows.some(row => namesCompatible(row.name, item.name))) return item;
+    return {
+      ...item,
+      _identityConflict: {
+        code: item.code,
+        codeName: codeRows[0].name,
+        itemName: String(item.name).trim(),
+        nameCandidates,
+      },
+    };
+  });
+}
+
 async function normalizeImportedItems(items, executor) {
   const list = Array.isArray(items) ? items : [];
   const query = executor || pool.query.bind(pool);
   const resolved = new Map();
   for (const item of list) {
     if (!item || !item.code) continue;
-    const rawCode = String(item.code).trim();
+    const rawCode = String(item.raw_code || item.code).trim();
     const rawName = String(item.name == null ? '' : item.name).trim();
     const key = cleanCode(rawCode) + '\u0000' + nameKey(rawName);
     if (!resolved.has(key)) resolved.set(key, await resolveAmbiguousSecurity(rawCode, rawName, query));
   }
 
-  return list.map(item => {
+  const normalized = list.map(item => {
     if (!item || !item.code) return item;
-    const rawCode = String(item.code).trim();
+    const rawCode = String(item.raw_code || item.code).trim();
     const rawName = String(item.name == null ? '' : item.name).trim();
     const key = cleanCode(rawCode) + '\u0000' + nameKey(rawName);
     const identity = resolved.get(key);
-    if (!identity) return { ...item, code: classifyCode.normalizeCode(rawCode, rawName) };
+    if (!identity) return { ...item, _rawCodeForConflict: rawCode, code: classifyCode.normalizeCode(rawCode, rawName) };
     return {
       ...item,
+      _rawCodeForConflict: identity.code,
       code: identity.code,
       name: rawName || identity.name,
       type: identity.type,
@@ -142,6 +269,15 @@ async function normalizeImportedItems(items, executor) {
       market: identity.market,
       quote_currency: identity.quote_currency
     };
+  });
+  const checked = await detectCodeNameConflicts(normalized, query);
+  return checked.map(item => {
+    if (!item || typeof item !== 'object') return item;
+    if (!Object.prototype.hasOwnProperty.call(item, '_rawCodeForConflict') && !Object.prototype.hasOwnProperty.call(item, 'raw_code')) return item;
+    const copy = { ...item };
+    delete copy._rawCodeForConflict;
+    delete copy.raw_code;
+    return copy;
   });
 }
 
@@ -162,7 +298,7 @@ function canonicalizeSecurityCode(rawCode, assetClass = 'stock') {
   if (assetClass === 'convertible_bond') return `${code}${/^11/.test(code) ? '.SH' : '.SZ'}`;
   if (assetClass === 'stock' || assetClass === 'fund') {
     // 市场后缀统一读取前后端共用的代码分类规则，基金/ETF/REITs、B股和北交所不再各写一套前缀。
-    const info = classifyCode(code);
+    const info = classifyCode(text);
     const suffix = info && (info.market === 'sh' || info.market === 'kcb') ? 'SH'
       : info && info.market === 'bj' ? 'BJ' : 'SZ';
     return `${code}.${suffix}`;
@@ -400,4 +536,4 @@ async function ensureInstrumentIdentity({ canonicalCode, name = '', assetClass =
 
 function clearIdentifierCache() { identifierCache.clear(); }
 
-module.exports = { resolveAmbiguousSecurity, normalizeImportedItems, canonicalizeSecurityCode, resolveCanonicalCode, resolveInstrument, resolveProviderIdentifier, resolveProviderCode, ensureInstrumentIdentity, isCleanSecurityName, clearIdentifierCache };
+module.exports = { resolveAmbiguousSecurity, normalizeImportedItems, detectCodeNameConflicts, canonicalizeSecurityCode, resolveCanonicalCode, resolveInstrument, resolveProviderIdentifier, resolveProviderCode, ensureInstrumentIdentity, isCleanSecurityName, clearIdentifierCache };

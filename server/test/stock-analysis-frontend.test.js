@@ -50,7 +50,7 @@ assert.ok(statementsScript.includes('statement-section-'), '财务报表缺少�
 assert.ok(statementsScript.includes('statement-level-') && statementsScript.includes('statement-branch'), '财务科目缺少父子层级展示');
 assert.ok(statementsScript.includes('comparisonEnabled = data.compare !== \'none\''), '不比较模式必须收起空比较列');
 assert.ok(analysisCss.includes('height:30px') && analysisCss.includes('statement-level-2') && analysisCss.includes('statement-unit'), '三表矩阵缺少紧凑行高、深层级与同行单位样式');
-assert.ok(analysisCss.includes('.statement-status-help') && analysisCss.includes('min-width:44px') && analysisCss.includes('min-height:44px'), '缺失字段必须有可触达的状态说明入口');
+assert.ok(analysisCss.includes('overflow-y:clip') && analysisCss.includes('white-space:normal'), '#89/#92: 三表容器不得出现内嵌纵向滚动条，桌面端长标题必须允许换行');
 assert.ok(analysisCss.includes('box-sizing:border-box') && analysisCss.includes('.statement-col-basis'), 'F-07: 双固定列必须使用 box-sizing:border-box 防止内边距导致 7px 交叠');
 assert.ok(!statementsScript.includes("periodFilter === 'semiannual' ? '半年'"), 'F-06: H1-Q1 差值不得标为半年');
 assert.ok(analysisCss.includes('.biz-table-floating-head .stock-analysis-statements-table thead') && analysisCss.includes('height:auto'), '浮动表头必须解除共享表头的固定行高');
@@ -72,27 +72,13 @@ assert.ok(statementsPresenter.includes('stockAnalysisState.selected !== code'), 
   assert.ok(cell, '不可比较值要有可访问原因');
   assert.strictEqual(cell.getAttribute('aria-label'), '该项目的比较口径尚未核实');
   assert.strictEqual(cell.textContent, '—');
-  const statusHelp = dom.window.document.querySelector('details.statement-status-help');
-  assert.ok(statusHelp, '不可比较字段要有触摸可打开的状态说明');
-  assert.match(statusHelp.textContent, /比较口径尚未核实/);
+  assert.strictEqual(dom.window.document.querySelector('details.statement-status-help'), null, '#91: 财报行不再渲染黄色感叹号说明');
   view.stockAnalysisRenderStatements({ name: '资产负债表', type: 'balance', compare: 'yoy',
     periods: [{ end_date: '2025-12-31' }, { end_date: '2024-12-31' }], fields: [{ label: '资产', section: '资产', values: [
       { value: null, status: 'source_unavailable', reason: 'source_currency_unverified', comparison_status: 'not_applicable', comparison_reason: 'comparison_method_unverified' },
       { value: null, status: 'collection_incomplete', reason: 'collection_incomplete', comparison_status: 'not_applicable', comparison_reason: 'comparison_method_unverified' }
     ] }] });
-  const multiPeriodHelp = dom.window.document.querySelector('details.statement-status-help').textContent;
-  assert.match(multiPeriodHelp, /2025-12-31 原值：/);
-  assert.match(multiPeriodHelp, /2024-12-31 原值：/);
-  assert.match(multiPeriodHelp, /2025-12-31、2024-12-31 同比：/);
-  view.stockAnalysisRenderStatements({ name: '资产负债表', type: 'balance', compare: 'none',
-    periods: [{ end_date: '2025-12-31', scope: 'consolidated' }, { end_date: '2025-12-31', scope: 'parent' }],
-    fields: [{ label: '资产', section: '资产', values: [
-      { value: null, status: 'source_unavailable', reason: 'source_currency_unverified' },
-      { value: null, status: 'collection_incomplete', reason: 'collection_incomplete' }
-    ] }] });
-  const sameDateHelp = dom.window.document.querySelector('details.statement-status-help').textContent;
-  assert.match(sameDateHelp, /2025-12-31 合并口径 原值：/);
-  assert.match(sameDateHelp, /2025-12-31 母公司口径 原值：/);
+  assert.strictEqual(dom.window.document.querySelector('details.statement-status-help'), null, '#91: 多期缺失字段同样不渲染感叹号');
   dom.window.close();
 }
 {
@@ -211,9 +197,10 @@ assert.ok(statementsPresenter.includes('stockAnalysisState.selected !== code'), 
       ],
     },
   });
-  const relHelp = doc.querySelector('tr[data-statement-code="ps.iiife"] details.statement-status-help');
-  assert.ok(relHelp, '有原值且不比较时，降级关系必须有行内状态说明');
-  assert.match(relHelp.textContent, /列报版本尚未核实/);
+  assert.strictEqual(doc.querySelector('tr[data-statement-code="ps.iiife"] details.statement-status-help'), null, '#91: 降级关系行不渲染感叹号');
+  const labelTip = doc.querySelector('tr[data-statement-code="ps.iiife"] details.statement-label-tip');
+  assert.ok(labelTip && labelTip.querySelector('summary.statement-label-has-tip'), '#91/F-03: 降级关系行通过可键盘/触屏展开的标题说明保留提示');
+  assert.match(labelTip.textContent, /列报版本尚未核实/);
   dom.window.close();
 }
 (async () => {
@@ -282,8 +269,8 @@ assert.ok(statementsPresenter.includes('stockAnalysisState.selected !== code'), 
   const headerText = dom.window.document.querySelector('thead th.statement-period').textContent;
   assert.ok(headerText.includes('三季报') && !headerText.includes('third_quarterly_report'), '列头应将英文报告期映射为中文');
   assert.ok(!headerText.includes('报表类型待确认'), '不应在每列拼接刺眼的报表类型待确认');
-  assert.strictEqual(dom.window.document.querySelector('details.statement-status-help'), null, '仅缺少历史比较期时不在类目标题后渲染感叹号');
-  // A-06: 来源正常未披露在默认同比下仍不触发行内感叹号；采集不完整说明必须使用中文报告期；当前选中 unknown 且新数据无 unknown 时必须移除并回退 all
+  assert.strictEqual(dom.window.document.querySelector('details.statement-status-help'), null, '#91: 不渲染感叹号');
+  // 当前选中 unknown 且新数据无 unknown 时必须移除并回退 all
   view.stockAnalysisStatementFilters = () => ({ periodType: 'unknown', scope: 'consolidated' });
   view.stockAnalysisRenderStatements({
     name: '资产负债表', type: 'balance', compare: 'yoy', unit_label: '原值',
@@ -292,8 +279,9 @@ assert.ok(statementsPresenter.includes('stockAnalysisState.selected !== code'), 
       { end_date: '2026-09-30', report_type_label: 'third_quarterly_report', scope: 'consolidated', currency: 'CNY' },
     ],
     fields: [
-      { label: '应收票据', section: '资产', values: [{ value: null, status: 'source_not_disclosed', reason: 'source_not_disclosed', comparison_status: 'source_not_disclosed', comparison_reason: 'source_not_disclosed' }] },
-      { label: '商誉', section: '资产', values: [{ value: null, status: 'collection_incomplete', reason: 'source_batch_incomplete', comparison_status: 'collection_incomplete', comparison_reason: 'source_batch_incomplete' }] },
+      { label: '应收票据', section: '资产', values: [{ value: 12.5, status: 'available' }] },
+      { label: '应收保费', section: '资产', values: [{ value: 0, status: 'available' }] },
+      { label: '零值分组项', section: '空分组', values: [{ value: 0, status: 'available' }] },
     ],
   });
   assert.deepStrictEqual(
@@ -302,9 +290,61 @@ assert.ok(statementsPresenter.includes('stockAnalysisState.selected !== code'), 
     '新数据不含未知期时即使原选中 unknown 也应移除该选项'
   );
   assert.strictEqual(dom.window.document.getElementById('stock-analysis-statement-period').value, 'all');
-  const helpNodes = dom.window.document.querySelectorAll('details.statement-status-help');
-  assert.strictEqual(helpNodes.length, 1, '仅采集不完整行保留感叹号，来源正常未披露不触发感叹号');
-  assert.ok(helpNodes[0].textContent.includes('三季报') && !helpNodes[0].textContent.includes('third_quarterly_report'), '行内说明不得出现英文报告期');
+  const renderedText = dom.window.document.getElementById('stock-analysis-statements-wrap').textContent;
+  assert.ok(renderedText.includes('应收票据') && !renderedText.includes('应收保费') && !renderedText.includes('空分组'), '#90: 全零条目及空分组必须隐藏');
+  assert.strictEqual(dom.window.document.querySelectorAll('details.statement-status-help').length, 0, '#91: 感叹号已移除');
+
+  // F-02: 仅比较列有值、采集不完整状态必须保留；整表全零时普通零值行仍应隐藏
+  view.stockAnalysisRenderStatements({
+    name: '利润表', type: 'income', compare: 'yoy', unit_label: '原值',
+    periods: [{ end_date: '2026-09-30', period_type: 'q3', report_type_label: 'third_quarterly_report', scope: 'consolidated', currency: 'CNY' }],
+    fields: [
+      { code: 'ps.oi', label: '营业收入', measure_type: 'currency', section: '营业收入', values: [{ value: 100, status: 'available', yoy: 0.1, yoy_status: 'available', single_value: null, single_reason: 'flow_period_basis_unverified' }] },
+      { code: 'ps.zero_with_yoy', label: '仅同比有值项', section: '营业收入', values: [{ value: 0, status: 'available', yoy: 0.05, yoy_status: 'available' }] },
+      { code: 'ps.incomplete', label: '采集不完整项', section: '营业收入', values: [{ value: null, status: 'collection_incomplete', reason: 'source_batch_incomplete' }] },
+      { code: 'ps.all_zero', label: '普通全零项', section: '营业收入', values: [{ value: 0, status: 'available', yoy: null }] },
+    ],
+  });
+  const f02Text = dom.window.document.getElementById('stock-analysis-statements-wrap').textContent;
+  assert.ok(f02Text.includes('仅同比有值项') && f02Text.includes('采集不完整项') && !f02Text.includes('普通全零项'), 'F-02: 保留仅比较列有值与采集不完整项，隐藏普通全零项');
+  const incompleteTip = dom.window.document.querySelector('tr[data-statement-code="ps.incomplete"] details.statement-label-tip');
+  assert.ok(incompleteTip && incompleteTip.querySelector('summary.statement-label-has-tip') && /来源采集不完整/.test(incompleteTip.textContent), 'F-03: 逐期采集不完整原因必须可通过标题键盘/触屏展开');
+  const subValCell = dom.window.document.querySelector('tr[data-statement-code="ps.oi"].statement-subperiod-row td.statement-subperiod-val');
+  assert.ok(subValCell && /累计报告期起始日及重述口径尚未核实/.test(subValCell.getAttribute('aria-label') || ''), 'F-03: 单季不可比时 subperiod 单元格必须渲染 single_reason');
+  const singleTip = dom.window.document.querySelector('tr[data-statement-code="ps.oi"] details.statement-label-tip');
+  assert.ok(singleTip && /累计报告期起始日及重述口径尚未核实/.test(singleTip.textContent), 'F-03: 单季不可比原因必须可通过标题键盘/触屏展开');
+  view.stockAnalysisRenderStatements({
+    name: '利润表', type: 'income', compare: 'yoy', unit_label: '原值',
+    periods: [{ end_date: '2026-09-30', period_type: 'q3', report_type_label: 'third_quarterly_report', scope: 'consolidated', currency: 'CNY' }],
+    fields: [
+      { code: 'ps.oi', label: '营业收入', measure_type: 'currency', section: '营业收入', values: [{ value: 100, status: 'available', yoy: 0.1, yoy_status: 'available', single_value: null, single_reason: 'comparison_basis_uncomparable' }] },
+    ],
+  });
+  const uncompTip = dom.window.document.querySelector('tr[data-statement-code="ps.oi"] details.statement-label-tip');
+  assert.ok(uncompTip && /口径不可比/.test(uncompTip.textContent) && !/暂无可用数据/.test(uncompTip.textContent), 'F-03: comparison_basis_uncomparable 必须显示具体口径不可比原因');
+
+  // F-07: 资产总计缺值、流动资产子分组有值时，必须保留独立「资产」分组标题
+  const presDomain = require(path.join(root, 'server', 'domain', 'statementPresentation'));
+  const balMetrics = [
+    { code: 'bs.ta', name: '资产总计', group_path: '资产', rep_group: '资产', row_role: 'total' },
+    { code: 'bs.tca', name: '流动资产合计', group_path: '资产 › 流动资产', rep_group: '资产 › 流动资产', row_role: 'subtotal' },
+  ];
+  const balFields = [
+    { code: 'bs.ta', label: '资产总计', values: [{ value: null }] },
+    { code: 'bs.tca', label: '流动资产合计', values: [{ value: 100 }] },
+  ];
+  const balModel = presDomain.buildStatementPresentation(balFields, { metrics: balMetrics, statement: 'balance' });
+  assert.ok(balModel.rows.some(r => r.kind === 'section' && r.label === '资产' && r.depth === 0), 'F-07: 资产总计缺值且子分组有值时必须保留独立「资产」分组标题');
+
+  view.stockAnalysisRenderStatements({
+    name: '利润表', type: 'income', compare: 'yoy', unit_label: '原值',
+    periods: [{ end_date: '2026-09-30', scope: 'consolidated', currency: 'CNY' }],
+    fields: [
+      { code: 'ps.only_zero', label: '整表全零普通项', section: '全零分组', values: [{ value: 0, status: 'available' }] },
+    ],
+  });
+  const allZeroText = dom.window.document.getElementById('stock-analysis-statements-wrap').textContent;
+  assert.ok(!allZeroText.includes('整表全零普通项') && !allZeroText.includes('全零分组'), 'F-02: 整表全零时普通全零行与空分组也必须隐藏');
   dom.window.close();
 }
 {
@@ -427,6 +467,28 @@ assert.ok(utilsScript.includes('function appChartTooltip(') && holdingsCharts.sp
   assert.deepStrictEqual(calls, ['unknown', 'all'], '无未知期时 Presenter 应自动回退到 all 重新取数');
   assert.strictEqual(pCtx.stockStatementState.filters.periodType, 'all');
   assert.strictEqual(rendered.periods.length, 1);
+  const rulesText = fs.readFileSync(path.join(root, 'server', 'dataAccess', 'catalog', 'statementHierarchyRules_20261123.txt'), 'utf8');
+  assert.ok(!rulesText.includes('|营业总成本|'), '#93: 利润表分组不得重复出现「营业总成本」');
+  assert.ok(!rulesText.includes('|营业利润至利润总额|') && !rulesText.includes('|利润总额至净利润|'), '#94: 利润表分组标题不得使用晦涩的「X至Y」写法');
+  assert.ok(rulesText.includes('|营业外收支|') && rulesText.includes('|所得税费用|'), '#94: 应使用清晰的「营业外收支」「所得税费用」分组标题');
+  const dict = require(path.join(root, 'server', 'dataAccess', 'lixingerReportMetrics'));
+  const pres = require(path.join(root, 'server', 'domain', 'statementPresentation'));
+  for (const [mkt, tbl] of [
+    ['CN', 'non_financial'], ['CN', 'bank'], ['CN', 'insurance'], ['CN', 'security'], ['CN', 'other_financial'],
+    ['HK', 'non_financial'], ['HK', 'bank'], ['HK', 'insurance'], ['HK', 'security'], ['HK', 'other_financial'], ['HK', 'reit'],
+  ]) {
+    const metrics = dict.metricsOfType(mkt, tbl).filter(x => x.statement === 'income');
+    for (const val of [10, null]) {
+      const fields = pres.presentationOf(metrics, 'income', 'CNY').map(f => ({
+        ...f,
+        label: f.code === 'ps.ite' ? '减：所得税费用' : f.label,
+        values: [{ value: val, status: val == null ? 'collection_incomplete' : 'available' }],
+      }));
+      const model = pres.buildStatementPresentation(fields, { metrics, statement: 'income' });
+      const iteRows = model.rows.filter(r => r.label === '所得税费用' || r.code === 'ps.ite');
+      assert.deepStrictEqual(iteRows.map(r => r.kind + ':' + (r.code || r.label)), ['field:ps.ite'], `F-04: ${mkt}|${tbl} (val=${val}) 不得重复生成所得税费用分组标题`);
+    }
+  }
   console.log('stock-analysis frontend tests passed');
 })().catch((err) => {
   console.error(err);

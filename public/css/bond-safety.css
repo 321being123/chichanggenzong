@@ -43,13 +43,15 @@
 .bond-list-filters-panel { padding:12px 16px; border-bottom:1px solid var(--border-default); background:var(--bg-subtle, #f8fafc); }
 .bond-filter-grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(190px, 1fr)); gap:10px 12px; align-items:end; }
 .bond-filter-field { display:flex; flex-direction:column; gap:4px; font-size:12px; color:var(--text-secondary); position:relative; }
-.bond-filter-field input { height:34px; width:100%; min-width:0; border:1px solid var(--border-strong); border-radius:var(--r-md); background:var(--bg-surface); padding:0 8px; color:var(--text-primary); font-size:13px; }
+.bond-filter-field input:not([type="checkbox"]) { height:34px; width:100%; min-width:0; border:1px solid var(--border-strong); border-radius:var(--r-md); background:var(--bg-surface); padding:0 8px; color:var(--text-primary); font-size:13px; }
 .bond-filter-range { display:flex; align-items:center; gap:4px; }
 .bond-filter-range span { font-size:12px; color:var(--text-muted); flex:0 0 auto; }
 .bond-filter-rating-btn { height:34px; width:100%; justify-content:space-between; text-align:left; }
 .bond-filter-rating-menu { position:absolute; top:100%; left:0; z-index:30; min-width:180px; max-height:220px; overflow:auto; margin-top:4px; padding:8px; border:1px solid var(--border-strong); border-radius:var(--r-md); background:var(--bg-surface); box-shadow:0 8px 24px rgba(15,23,42,.12); display:flex; flex-direction:column; gap:6px; }
 .bond-filter-rating-menu.js-hidden { display:none; }
-.bond-filter-rating-item { display:flex; align-items:center; gap:6px; font-size:13px; color:var(--text-primary); cursor:pointer; }
+.bond-filter-rating-item { display:flex; align-items:center; gap:8px; min-height:28px; font-size:13px; color:var(--text-primary); cursor:pointer; }
+.bond-filter-rating-item input[type="checkbox"],
+.bond-filter-check input[type="checkbox"] { width:16px; height:16px; min-width:16px; min-height:16px; flex:0 0 auto; margin:0; padding:0; border:0; accent-color:var(--primary, #2563eb); cursor:pointer; }
 .bond-filter-actions { display:flex; flex-wrap:wrap; align-items:center; gap:10px 14px; margin-top:10px; padding-top:10px; border-top:1px dashed var(--border-default); }
 .bond-filter-check { display:inline-flex; align-items:center; gap:6px; font-size:13px; font-weight:500; color:var(--text-primary); cursor:pointer; }
 .bond-filter-help { font-size:12px; color:var(--text-muted); }
@@ -86,8 +88,9 @@
   .bond-list-filters-panel { display:none; }
   .bond-list-filters-panel.is-open { display:block; }
   .bond-filter-grid { grid-template-columns:1fr; }
-  .bond-filter-field input,
+  .bond-filter-field input:not([type="checkbox"]),
   .bond-filter-rating-btn,
   .bond-filter-btn-group .btn { min-height:44px; font-size:16px; }
+  .bond-filter-rating-item { min-height:44px; }
   .bond-filter-check { min-height:44px; }
 }

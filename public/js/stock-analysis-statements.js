@@ -107,6 +107,7 @@ function stockAnalysisStatementReason(reason) {
     negative_comparison_unverified: '含负数的比较口径尚未核实',
     comparable_period_missing: '缺少可确认口径一致的比较期',
     comparable_value_missing: '比较期缺少数据',
+    comparison_basis_uncomparable: '会计准则、合并口径或报告期类型不同，口径不可比',
     cumulative_flow_qoq_not_supported: '累计值暂无已核实的单期环比',
     flow_period_basis_unverified: '累计报告期起始日及重述口径尚未核实',
     zero_denominator: '比较期为零，无法计算',
@@ -320,6 +321,73 @@ function stockAnalysisRenderStatements(data) {
   }).join('');
 
   var model = stockAnalysisBuildRowModels(data);
+  function hasFiniteNum(val) {
+    return val != null && Number.isFinite(Number(val));
+  }
+  function isAbnormalStatus(status, reason) {
+    if (!status || status === 'available' || status === 'source_not_disclosed') return false;
+    return reason !== 'comparable_period_missing' && reason !== 'comparable_value_missing' && reason !== 'zero_denominator' && reason !== 'source_not_disclosed';
+  }
+  var keptRows = (function filterZeroRows(rows, byCode) {
+    var fieldEntriesByCode = {};
+    var keptCodes = {};
+    rows.forEach(function(entry, idx) {
+      if (entry.kind !== 'field') return;
+      var field = entry.field || byCode[entry.code];
+      var code = entry.code || (field && field.code) || ('__idx_' + idx);
+      fieldEntriesByCode[code] = entry;
+      var keep = entry.row_role === 'total' || Boolean(entry.is_group_rep) || (field && Array.isArray(field.values) && field.values.some(function(item) {
+        if (!item) return false;
+        if (hasFiniteNum(item.value) && Number(item.value) !== 0) return true;
+        if (dualStickyCols && hasFiniteNum(item.single_value) && Number(item.single_value) !== 0) return true;
+        if (showYoy && (hasFiniteNum(item.yoy) || hasFiniteNum(item.change))) return true;
+        if (showQoq && hasFiniteNum(item.qoq)) return true;
+        if (dualStickyCols && ((showYoy && hasFiniteNum(item.single_yoy)) || (showQoq && hasFiniteNum(item.single_qoq)))) return true;
+        if (item.status && item.status !== 'available' && item.status !== 'source_not_disclosed') return true;
+        var yoyStatus = item.yoy_status !== undefined ? item.yoy_status : item.comparison_status;
+        var yoyReason = item.yoy_reason !== undefined ? item.yoy_reason : item.comparison_reason;
+        if (showYoy && isAbnormalStatus(yoyStatus, yoyReason)) return true;
+        var qoqStatus = item.qoq_status !== undefined ? item.qoq_status : (compareMode === 'qoq' ? item.comparison_status : null);
+        var qoqReason = item.qoq_reason !== undefined ? item.qoq_reason : (compareMode === 'qoq' ? item.comparison_reason : null);
+        if (showQoq && isAbnormalStatus(qoqStatus, qoqReason)) return true;
+        return false;
+      }));
+      if (keep) {
+        keptCodes[code] = true;
+      }
+    });
+    Object.keys(keptCodes).slice().forEach(function(code) {
+      var cur = fieldEntriesByCode[code];
+      var guard = 0;
+      while (cur && cur.parent_code && !keptCodes[cur.parent_code] && guard++ < 16) {
+        keptCodes[cur.parent_code] = true;
+        cur = fieldEntriesByCode[cur.parent_code];
+      }
+    });
+    var filtered = [];
+    for (var i = 0; i < rows.length; i++) {
+      var entry = rows[i];
+      if (entry.kind === 'field') {
+        var f = entry.field || byCode[entry.code];
+        var fCode = entry.code || (f && f.code) || ('__idx_' + i);
+        if (keptCodes[fCode]) filtered.push(entry);
+      } else if (entry.kind === 'section') {
+        var secDepth = Number(entry.depth) || 0;
+        var hasChildField = false;
+        for (var j = i + 1; j < rows.length; j++) {
+          var next = rows[j];
+          if (next.kind === 'section' && (Number(next.depth) || 0) <= secDepth) break;
+          if (next.kind === 'field') {
+            var nf = next.field || byCode[next.code];
+            var nCode = next.code || (nf && nf.code) || ('__idx_' + j);
+            if (keptCodes[nCode]) { hasChildField = true; break; }
+          }
+        }
+        if (hasChildField) filtered.push(entry);
+      }
+    }
+    return filtered;
+  })(model.rows, model.byCode);
   var commonComparisonReasons = {};
   var emptySectionFillers = Array(Math.max(0, columnCount - stickyColCount)).fill('<td class="statement-section-filler" aria-hidden="true"></td>').join('');
 
@@ -334,7 +402,7 @@ function stockAnalysisRenderStatements(data) {
     return '<td' + clsAttr + ' headers="' + headersAttr + '"' + statusAttr + '>' + escapeHtml(fmt.text) + '</td>';
   }
 
-  var rows = model.rows.map(function(entry) {
+  var rows = keptRows.map(function(entry) {
     if (entry.kind === 'section') {
       var secDepth = Math.max(0, Math.min(4, Number(entry.depth) || 0));
       var groupAttr = entry.group_id ? ' data-group-id="' + escapeHtml(entry.group_id) + '"' : '';
@@ -380,6 +448,12 @@ function stockAnalysisRenderStatements(data) {
         }
         if (qoqReason) commonComparisonReasons[qoqReason] = (commonComparisonReasons[qoqReason] || 0) + 1;
       }
+      if (dualStickyCols && ['currency', 'per_share'].includes(field.measure_type) && item && item.single_reason) {
+        var ptSingle = String((data.periods[index] && data.periods[index].period_type) || '').toLowerCase();
+        if ((ptSingle === 'q1' || ptSingle === 'q3') && item.single_reason !== 'source_not_disclosed') {
+          addStatusMessage(index, '单季', item.single_reason);
+        }
+      }
     });
     var statusMessages = statusOrder.map(function(groupKey) {
       return statusGroups[groupKey].join('、') + ' ' + groupKey;
@@ -420,11 +494,11 @@ function stockAnalysisRenderStatements(data) {
     var keepUnit = stockAnalysisKeepUnitTag(field);
     var unit = keepUnit ? '<small class="statement-unit">' + escapeHtml(keepUnit) + '</small>' : '';
     var srParent = parentField ? '<span class="statement-sr-parent">（隶属：' + escapeHtml(parentField.label) + '）</span>' : '';
-    var statusHelp = statusMessages.length
-      ? '<details class="statement-status-help"><summary aria-label="查看该字段状态说明">!</summary><div class="statement-status-help-text">' + escapeHtml(statusMessages.join('；')) + '</div></details>'
-      : '';
+    var labelHtml = statusMessages.length
+      ? '<details class="statement-label-tip"><summary class="statement-label statement-label-has-tip" aria-label="' + escapeHtml(field.label + '：查看状态与口径说明') + '">' + escapeHtml(field.label) + '</summary><div class="statement-label-tip-body">' + escapeHtml(statusMessages.join('；')) + '</div></details>'
+      : '<span class="statement-label">' + escapeHtml(field.label) + '</span>';
     var basisCell = dualStickyCols ? '<th scope="row" class="statement-col-basis">当期</th>' : '';
-    var primaryTr = '<tr class="' + rowClass + '" data-statement-level="' + depth + '"' + roleAttr + groupAttr + codeAttr + parentAttr + '><th scope="row" class="statement-col-name">' + branch + '<span class="statement-label">' + escapeHtml(field.label) + '</span>' + srParent + unit + statusHelp + '</th>' + basisCell + cells + '</tr>';
+    var primaryTr = '<tr class="' + rowClass + '" data-statement-level="' + depth + '"' + roleAttr + groupAttr + codeAttr + parentAttr + '><th scope="row" class="statement-col-name">' + branch + labelHtml + srParent + unit + '</th>' + basisCell + cells + '</tr>';
 
     if (!dualStickyCols || !['currency', 'per_share'].includes(field.measure_type)) {
       return primaryTr;
@@ -445,9 +519,13 @@ function stockAnalysisRenderStatements(data) {
       var subQoqVal = useSemiannualRow ? null : item.single_qoq;
       var subSrc = useSemiannualRow ? (item.yoy_source || item.comparison_source) : item.single_source;
       var subReason = useSemiannualRow ? (item.yoy_reason || item.comparison_reason) : item.single_reason;
-      var out = '<td class="statement-value statement-subperiod-val' + (sVal === '—' ? ' statement-missing' : '') + (!comparisonEnabled ? endCls : '') + '">' + escapeHtml(sVal) + '</td>';
-      if (showYoy) out += renderChangeCell(showSubInCol ? subYoyVal : null, 'ratio', subSrc, null, subReason, 'stmt-period-' + periodIndex + ' stmt-yoy-' + periodIndex, !showQoq ? endCls : '');
-      if (showQoq) out += renderChangeCell(showSubInCol ? subQoqVal : null, 'ratio', subSrc, null, subReason, 'stmt-period-' + periodIndex + ' stmt-qoq-' + periodIndex, endCls);
+      var subValReasonText = showSubInCol && sVal === '—' && subReason ? stockAnalysisStatementReason(subReason) : '';
+      var subValStatusAttr = subValReasonText
+        ? ' data-status="not_applicable" title="' + escapeHtml(subValReasonText) + '" aria-label="' + escapeHtml(subValReasonText) + '"'
+        : '';
+      var out = '<td class="statement-value statement-subperiod-val' + (sVal === '—' ? ' statement-missing' : '') + (!comparisonEnabled ? endCls : '') + '"' + subValStatusAttr + '>' + escapeHtml(sVal) + '</td>';
+      if (showYoy) out += renderChangeCell(showSubInCol ? subYoyVal : null, 'ratio', subSrc, showSubInCol && subYoyVal == null && subReason ? 'not_applicable' : null, subReason, 'stmt-period-' + periodIndex + ' stmt-yoy-' + periodIndex, !showQoq ? endCls : '');
+      if (showQoq) out += renderChangeCell(showSubInCol ? subQoqVal : null, 'ratio', subSrc, showSubInCol && subQoqVal == null && subReason ? 'not_applicable' : null, subReason, 'stmt-period-' + periodIndex + ' stmt-qoq-' + periodIndex, endCls);
       return out;
     }).join('');
     var subTr = '<tr class="' + rowClass + ' statement-subperiod-row" data-statement-level="' + depth + '"' + roleAttr + groupAttr + codeAttr + parentAttr + '><th scope="row" class="statement-col-name"><span class="statement-subperiod-indent"></span></th><th scope="row" class="statement-col-basis">' + escapeHtml(subRowLabel) + '</th>' + subCells + '</tr>';

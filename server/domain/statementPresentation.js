@@ -442,6 +442,13 @@ function buildStatementPresentation(visibleFields, { metrics = [], statement = '
     }
   }
 
+  const topGroupCounts = new Map();
+  for (const field of sortedFields) {
+    const groupPath = field.group_path || field.section || CONFLICT_GROUP_PATH;
+    const parts = groupPath.split(' › ');
+    topGroupCounts.set(parts[0], (topGroupCounts.get(parts[0]) || 0) + 1);
+  }
+
   const rows = [];
   const depthByCode = new Map();
   let currentTopGroup = null;
@@ -458,7 +465,7 @@ function buildStatementPresentation(visibleFields, { metrics = [], statement = '
     if (topGroup !== currentTopGroup) {
       currentTopGroup = topGroup;
       currentSubGroup = null;
-      if (!subGroup && field.rep_group === topGroup && hasAvailableValue) {
+      if (!subGroup && field.rep_group === topGroup && (hasAvailableValue || topGroupCounts.get(topGroup) === 1)) {
         isGroupRep = true;
       } else {
         rows.push({

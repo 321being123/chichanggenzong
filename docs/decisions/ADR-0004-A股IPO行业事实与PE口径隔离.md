@@ -1,5 +1,7 @@
 # ADR-0004：A 股 IPO 行业事实与 PE 口径隔离
 
+> 2026-11-24 线上后台告警与异常修复核对（本地未部署）：`jobOrchestrator.js` 仅允许 `datasetDiagnostics.query_status === 'verified_no_change'` 不被误判为查询失败，不触及 A 股 IPO 行业事实、行业 PE 或产业链口径，本 ADR 结论不变。
+
 > 2026-11-23 线上任务异常修复核对（本地未部署）：`jobDefinitions.js` 仅补齐 `stock_analysis_hk` 的 `stageCompletionEvidence` 分支，不触及 A 股 IPO 行业事实、行业 PE 或产业链口径，本 ADR 结论不变。
 
 > 2026-11-21 存储保留清理核对（本地未部署）：`jobDefinitions.js` 仅新增系统保留清理任务 `storage_retention`，不触及 A 股 IPO 行业事实、行业 PE 或产业链口径，本 ADR 结论不变。

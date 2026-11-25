@@ -1,5 +1,7 @@
 # INC-0033：A 股 IPO 行业漏解析与持续补全研发方案
 
+> 2026-11-24 线上后台告警与异常修复核对（本地未部署）：`jobOrchestrator.js` 仅在 `buildDatasetDiagnosticAlerts` 中放行显式 `verified_no_change`，不改动 `ipo_history_sync` 及 A 股 IPO 行业解析与补全范围。
+
 > 2026-11-23 线上任务异常修复核对（本地未部署）：`jobDefinitions.js` 仅补齐 `stock_analysis_hk` 阶段完成证据判断，不改动 `ipo_history_sync` 及 A 股 IPO 行业解析与补全范围。
 
 > 2026-11-21 存储保留清理核对（本地未部署）：`jobDefinitions.js` 仅新增系统保留清理任务 `storage_retention`，不改动 `ipo_history_sync` 及 A 股 IPO 行业解析与补全范围。

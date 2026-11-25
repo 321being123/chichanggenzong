@@ -1,7 +1,27 @@
 {
   "schemaVersion": 1,
-  "lastReviewed": "2026-11-23",
+  "lastReviewed": "2026-11-24",
   "rules": [
+    {
+      "id": "BOND-RATING-ISSUER-ONLY-001",
+      "title": "纯主体/发行人信用评级结果公告不含债项语义时不得入选可转债必选债项评级文档",
+      "implementation": { "file": "server/domain/convertibleBondAnalysisRules.js", "symbol": "isBondRatingDocument" },
+      "tests": [
+        { "file": "server/test/online-alerts-20261124.test.js", "pattern": "纯主体信用评级结果公告不得纳入债项评级文档" }
+      ],
+      "owner": "可转债分析",
+      "status": "implemented"
+    },
+    {
+      "id": "DATASET-DIAGNOSTIC-QUERY-STATUS-001",
+      "title": "数据集诊断须显式声明 query_status，verified_no_change 不误报降级、缺失 query_status 仍拦截",
+      "implementation": { "file": "server/services/jobOrchestrator.js", "symbol": "buildDatasetDiagnosticAlerts" },
+      "tests": [
+        { "file": "server/test/online-alerts-20261124.test.js", "pattern": "缺失 query_status 仍必须报降级告警" }
+      ],
+      "owner": "任务与告警治理",
+      "status": "implemented"
+    },
     {
       "id": "HOLDINGS-NAV-SWAP-014",
       "title": "换股过渡参考估值须同时验证已实施结算单、官方公告、账本和合并方确认终盘，并保留实际记账日",

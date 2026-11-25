@@ -488,7 +488,7 @@ function buildDatasetDiagnosticAlerts(slot, result = {}) {
     const partitionKey = datasetPartitionKeyForSlot(slot, result, datasetCode);
     if (!partitionKey) continue;
     const scopeKey = `${datasetCode}:${datasetScopeKey(datasetCode)}:${partitionKey}`;
-    const failedQuery = diagnostic.query_status !== 'success';
+    const failedQuery = !['success', 'verified_no_change'].includes(diagnostic.query_status);
     const failedQuality = ['failed', 'stale', 'blocked'].includes(diagnostic.quality_status);
     const incompleteCoverage = ['incomplete', 'failed'].includes(diagnostic.coverage_status);
     if (failedQuery || failedQuality || incompleteCoverage) {

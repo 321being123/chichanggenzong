@@ -189,7 +189,10 @@ async function refreshBondSafety(reason = 'manual', options = {}) {
     const dataAsOf = source.dataAsOf || (source.sourceUpdatedAt ? String(source.sourceUpdatedAt).slice(0, 10) : null);
     await finishJobRun(runId, true, `刷新 ${snapshot.row_count} 条；未匹配 ${result.diagnostics.unmatched_stock_count} 条`);
     return { ok: true, skipped: false, snapshot, dataAsOf, publishDatasets: true,
-      datasetDiagnostics: { bond_safety_snapshot: { partition_row_count: snapshot.row_count, quality_gate: qualityGate } }, qualityGate };
+      datasetDiagnostics: { bond_safety_snapshot: {
+        partition_row_count: snapshot.row_count, quality_gate: qualityGate,
+        query_status: 'success', quality_status: 'passed',
+      } }, qualityGate };
   } catch (error) {
     await finishJobRun(runId, false, error.message);
     throw error;

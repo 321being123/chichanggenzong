@@ -6,12 +6,37 @@ const {
 } = require('../services/jobAlertMailer');
 const { collectNginxRuntime } = require('../services/nginxRuntimeCollector');
 
-function serviceIsActive() {
-  if (process.platform === 'win32') return true;
+function serviceState() {
+  if (process.platform === 'win32') return 'active';
   try {
-    execFileSync('systemctl', ['is-active', '--quiet', 'portfolio-worker.service'], { stdio: 'ignore' });
-    return true;
-  } catch (_) { return false; }
+    return String(execFileSync('systemctl', ['show', '-p', 'ActiveState', '--value', 'portfolio-worker.service'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }) || '').trim() || 'unknown';
+  } catch (_) { return 'unknown'; }
+}
+
+// 优雅重启过渡期（deactivating / activating）且 2 分钟内仍有心跳时，不误报 worker_offline；
+// 若已停机（inactive/failed）或心跳超过 2 分钟仍无更新，则立即判离线。
+function evaluateWorkerHealth({ activeState, hasRecentHeartbeat }) {
+  const state = String(activeState || '').trim().toLowerCase();
+  if (state === 'active') {
+    return {
+      online: Boolean(hasRecentHeartbeat),
+      transitioning: false,
+      summary: hasRecentHeartbeat ? '' : '最近2分钟没有收到 Worker 心跳，后台定时任务可能无法执行，请立即检查进程和服务器。',
+    };
+  }
+  if ((state === 'deactivating' || state === 'activating' || state === 'reloading') && hasRecentHeartbeat) {
+    return { online: true, transitioning: true, summary: '' };
+  }
+  return {
+    online: false,
+    transitioning: false,
+    summary: !hasRecentHeartbeat
+      ? '最近2分钟没有收到 Worker 心跳，后台定时任务可能无法执行，请立即检查进程和服务器。'
+      : `portfolio-worker.service 当前状态为 ${state || 'unknown'}（非 active），请立即检查服务。`,
+  };
 }
 
 async function main() {
@@ -30,19 +55,17 @@ async function main() {
       WHERE role='worker' AND status='running' AND last_seen_at >= now()-interval '2 minutes'
       ORDER BY last_seen_at DESC LIMIT 1`
   );
-  const workerOnline = rows.length > 0 && serviceIsActive();
-  if (!workerOnline) {
+  const health = evaluateWorkerHealth({ activeState: serviceState(), hasRecentHeartbeat: rows.length > 0 });
+  if (!health.online) {
     const result = await sendAlert({
       alertKey: 'worker:offline',
       alertType: 'worker_offline',
       severity: 'critical',
       subject: '后台 Worker 已离线',
-      summary: !serviceIsActive()
-        ? 'portfolio-worker.service 未处于 active 状态，请立即检查服务。'
-        : '最近2分钟没有收到 Worker 心跳，后台定时任务可能无法执行，请立即检查进程和服务器。',
+      summary: health.summary,
     });
     if (!result.ok && !result.suppressed) process.exitCode = 2;
-  } else {
+  } else if (!health.transitioning) {
     const old = await pool.query(
       `SELECT alert_id FROM ops.alert_notifications
         WHERE alert_key='worker:offline' AND status <> 'resolved' LIMIT 1`
@@ -54,8 +77,12 @@ async function main() {
   await pool.end();
 }
 
-main().catch(async error => {
-  console.error('[worker-health] 检查失败:', error.message);
-  await pool.end().catch(() => {});
-  process.exit(1);
-});
+if (require.main === module) {
+  main().catch(async error => {
+    console.error('[worker-health] 检查失败:', error.message);
+    await pool.end().catch(() => {});
+    process.exit(1);
+  });
+}
+
+module.exports = { evaluateWorkerHealth, serviceState };

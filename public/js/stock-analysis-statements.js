@@ -160,7 +160,8 @@ function stockAnalysisPeriodQuarterLabel(period) {
   if (pt === 'q3') return 'Q3';
   if (pt === 'semiannual') return 'Q2';
   if (pt === 'q1') return 'Q1';
-  return (period && (period.report_type_label || period.report_type)) || '当期';
+  var raw = (period && (period.report_type_label || period.report_type)) || '';
+  return raw ? (stockAnalysisFormatPeriodLabel(raw) || raw) : '当期';
 }
 
 function stockAnalysisFormatCellValue(rawVal, field) {

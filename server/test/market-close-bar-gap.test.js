@@ -11,6 +11,7 @@ const crypto = require('crypto');
 process.env.NODE_ENV = 'test';
 
 const TODAY = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Shanghai' });
+const TODAY_AFTER_CLOSE = `${TODAY}T16:40:00+08:00`;
 const DATE = '2026-11-18';
 const PRICE = 12.5;
 const USER = 'market_close_bar_gap';
@@ -628,6 +629,7 @@ async function scenarioLiveQuotes() {
     const price = PRICE + i;
     const quote_time = TODAY + 'T15:30:00+08:00';
     const result = await marketClose.runMarketCloseByLabel(label, TODAY, {
+      now: TODAY_AFTER_CLOSE,
       accounts, quoteMap: new Map([[code, { code, price, quote_time }]]),
     });
     assert.strictEqual(result.ok, true, JSON.stringify(result));
@@ -667,6 +669,7 @@ async function scenarioLiveHongKong() {
   datasets.readRealtimeQuotes = async () => new Map();
   try {
     const stale = await marketClose.runMarketCloseByLabel('港股', TODAY, {
+      now: TODAY_AFTER_CLOSE,
       accounts, quoteMap: new Map([[code + '.HK', { code, price: PRICE, quote_time: TODAY + 'T16:09:59+08:00' }]]),
     });
     assert.strictEqual(stale.ok, false);
@@ -674,6 +677,7 @@ async function scenarioLiveHongKong() {
     assert.strictEqual(stale.retryable, true, '港股收市前报价应重取腾讯');
     assert.strictEqual((await accountPrice(code, TODAY)).quality, 'candidate');
     const result = await marketClose.runMarketCloseByLabel('港股', TODAY, {
+      now: TODAY_AFTER_CLOSE,
       accounts, quoteMap: new Map([[code + '.HK', { code, price: PRICE + 1, quote_time: TODAY + 'T16:10:01+08:00' }]]),
     });
     assert.strictEqual(result.ok, true, JSON.stringify(result));
@@ -709,12 +713,14 @@ async function scenarioCrossAccountReuse() {
   );
 
   const first = await marketClose.runMarketCloseByLabel('A股', TODAY, {
+      now: TODAY_AFTER_CLOSE,
     accounts: [{ username: USER, account_name: ACCOUNT }],
     quoteMap: new Map([[code, { code, price: 12.5, quote_time: `${TODAY}T15:05:00+08:00` }]]),
   });
   assert.strictEqual(first.ok, true, JSON.stringify(first));
 
   const second = await marketClose.runMarketCloseByLabel('A股', TODAY, {
+      now: TODAY_AFTER_CLOSE,
     accounts: [{ username: USER, account_name: accountTwo }],
     quoteMap: new Map([[code, { code, price: 13.5, quote_time: `${TODAY}T15:35:00+08:00` }]]),
   });
@@ -773,6 +779,7 @@ async function scenarioNoInjectedQuoteMap() {
   };
   try {
     const result = await marketClose.runMarketCloseByLabel('A股', TODAY, {
+      now: TODAY_AFTER_CLOSE,
       accounts: [{ username: USER, account_name: ACCOUNT }],
     });
     assert.strictEqual(result.ok, true, JSON.stringify(result));
@@ -807,6 +814,7 @@ async function scenarioBackfillReusesTodayConfirmed() {
   );
 
   const first = await marketClose.runMarketCloseByLabel('A股', TODAY, {
+      now: TODAY_AFTER_CLOSE,
     accounts: [{ username: USER, account_name: ACCOUNT }],
     quoteMap: new Map([[code, { code, price: 12.5, quote_time: `${TODAY}T15:05:00+08:00` }]]),
   });
@@ -874,6 +882,7 @@ async function scenarioConcurrentMarketCloseAndBackfill() {
     await historyEntered;
 
     const closeRes = await marketClose.runMarketCloseByLabel('A股', TODAY, {
+      now: TODAY_AFTER_CLOSE,
       accounts: [{ username: USER, account_name: ACCOUNT }],
       quoteMap: new Map([[code, { code, price: 12.5, quote_time: `${TODAY}T15:05:00+08:00` }]]),
     });
@@ -924,6 +933,7 @@ async function scenarioLocalConfirmedWhenUpstreamUnavailable() {
   }
 
   const first = await marketClose.runMarketCloseByLabel('A股', TODAY, {
+      now: TODAY_AFTER_CLOSE,
     accounts: [{ username: USER, account_name: ACCOUNT }],
     quoteMap: new Map([[code, { code, price: 12.5, quote_time: `${TODAY}T15:05:00+08:00` }]]),
   });
@@ -935,6 +945,7 @@ async function scenarioLocalConfirmedWhenUpstreamUnavailable() {
   datasets.readHistoricalCloseSeries = async () => [];
   try {
     const closeTwo = await marketClose.runMarketCloseByLabel('A股', TODAY, {
+      now: TODAY_AFTER_CLOSE,
       accounts: [{ username: USER, account_name: accountTwo }],
     });
     assert.strictEqual(closeTwo.ok, true, '本地已有确认价时即使腾讯失败也应复用补齐');
@@ -1027,6 +1038,7 @@ async function scenarioMixedReusedAndMissingWhenUpstreamFails() {
   }
 
   const first = await marketClose.runMarketCloseByLabel('A股', TODAY, {
+      now: TODAY_AFTER_CLOSE,
     accounts: [{ username: USER, account_name: ACCOUNT }],
     quoteMap: new Map([[stockA, { code: stockA, price: 12.5, quote_time: `${TODAY}T15:05:00+08:00` }]]),
   });
@@ -1036,6 +1048,7 @@ async function scenarioMixedReusedAndMissingWhenUpstreamFails() {
   datasets.readRealtimeQuotes = async () => { throw new Error('tencent upstream down'); };
   try {
     const failedRun = await marketClose.runMarketCloseByLabel('A股', TODAY, {
+      now: TODAY_AFTER_CLOSE,
       accounts: [{ username: USER, account_name: accountTwo }],
     });
     assert.strictEqual(failedRun.ok, false, '仍有缺价证券失败时任务整体应失败');
@@ -1056,6 +1069,7 @@ async function scenarioMixedReusedAndMissingWhenUpstreamFails() {
       return new Map([[`${stockB}.SH`, { code: stockB, price: 18.0, quote_time: `${TODAY}T15:06:00+08:00` }]]);
     };
     const retryRun = await marketClose.runMarketCloseByLabel('A股', TODAY, {
+      now: TODAY_AFTER_CLOSE,
       accounts: [{ username: USER, account_name: accountTwo }],
     });
     assert.strictEqual(retryRun.ok, true, JSON.stringify(retryRun));
@@ -1068,6 +1082,7 @@ async function scenarioMixedReusedAndMissingWhenUpstreamFails() {
 async function scenarioSameAccountHkAliasReuse() {
   await resetScenarioWithPositions([{ code: '08888', name: '同账户港股五位测试', subtype: '港股' }], { historical: false });
   const closeRes = await marketClose.runMarketCloseByLabel('港股', TODAY, {
+      now: TODAY_AFTER_CLOSE,
     accounts: [{ username: USER, account_name: ACCOUNT }],
     quoteMap: new Map([['08888.HK', { code: '08888', price: 12.5, quote_time: `${TODAY}T16:30:00+08:00` }]]),
   });
@@ -1108,6 +1123,7 @@ async function scenarioPartialBatchRefreshFailureKeepsValid() {
   try {
     const quoteMap = new Map([[stockA, { code: stockA, price: 12.5, quote_time: `${TODAY}T15:05:00+08:00` }]]);
     const res = await marketClose.runMarketCloseByLabel('A股', TODAY, {
+      now: TODAY_AFTER_CLOSE,
       accounts: [{ username: USER, account_name: ACCOUNT }],
       quoteMap,
     });

@@ -207,7 +207,7 @@ async function runR203() {
       ts_code: '00700.HK', end_date: '2025-03-31', ann_date: '2025-05-14',
       cash_div_tax: 1.5, total_cash_amount: 1000, currency: 'HKD', div_proc: '实施',
     }]);
-    const call = calls[0];
+    const call = calls.find(c => /INSERT INTO fundamental\.corporate_actions/i.test(c.sql));
     assert.ok(call, '必须写分红事实');
     assert.strictEqual(Number(call.params[12]), 1000, '总额不能被算成 null');
     assert.strictEqual(call.params[13], 'HKD', '分红币种必须是 HKD');

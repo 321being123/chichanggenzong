@@ -65,6 +65,33 @@ function validateYearTradeCalendar(year, yearTradeDates, calSummaryRow = null) {
   return { ok: true };
 }
 
+// 按 (startYear, totalRounds, taxonomy, ruleVersion, dataVersion) 缓存已核验的行业与个股覆盖状态
+const windowPoolCache = new Map();
+
+function getShanghaiCurrentYear(now = new Date()) {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric',
+  }).formatToParts(now);
+  const yearPart = parts.find((p) => p.type === 'year');
+  return Number(yearPart ? yearPart.value : now.getUTCFullYear());
+}
+
+function validateWindowBounds(startYear, totalRounds = 15, now = new Date()) {
+  if (!Number.isInteger(startYear) || startYear < 1990) {
+    return { valid: false, reason: '起始年份须为合法整数（不早于 1990 年）' };
+  }
+  const endYear = startYear + totalRounds - 1;
+  const maxCompletedYear = getShanghaiCurrentYear(now) - 1;
+  if (endYear > maxCompletedYear) {
+    return {
+      valid: false,
+      reason: `历史窗口 ${startYear}–${endYear} 包含尚未结束的上海业务自然年（当前仅支持截至 ${maxCompletedYear} 年）`,
+    };
+  }
+  return { valid: true, startYear, endYear };
+}
+
 function createRng(seed = null) {
   if (seed == null || String(seed).trim() === '') {
     return () => crypto.randomInt(0, 0x100000000) / 0x100000000;

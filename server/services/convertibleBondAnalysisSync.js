@@ -988,10 +988,7 @@ async function syncConvertibleBondUniverse(reason = 'scheduled', options = {}) {
       missingDates: suspensionResult.ok ? (suspensionResult.missingDates || []) : [isoDate(daily.tradeDate)],
       publishDatasets: false,
       datasetDiagnostics: {
-        bond_master: {
-          partition_row_count: bondMasterRowCount, processed_count: profiles.length,
-          dataAsOf: isoDate(daily.tradeDate), query_status: 'success',
-        },
+        bond_master: { partition_row_count: bondMasterRowCount, processed_count: profiles.length, dataAsOf: isoDate(daily.tradeDate), query_status: 'success' },
         bond_daily: {
           partition_row_count: activeDailyRows.length, dataAsOf: targetTradeDate,
           query_status: 'success',

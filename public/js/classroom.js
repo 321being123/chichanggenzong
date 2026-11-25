@@ -1177,7 +1177,7 @@
             return;
           }
           try {
-            await loadTeacherConsole(undefined, { throwOnError: true });
+            await loadTeacherConsole({ throwOnError: true });
             await loadLobby({ throwOnError: true });
             renderTabs();
             showBanner('场次已关闭', false);
@@ -1213,7 +1213,7 @@
           closeSse();
         }
         try {
-          await loadTeacherConsole(undefined, { throwOnError: true });
+          await loadTeacherConsole({ throwOnError: true });
           await loadLobby({ throwOnError: true });
           renderTabs();
           showBanner('场次已删除', false);
@@ -1252,8 +1252,13 @@
     }
   }
 
-  async function loadTeacherConsole(page, opts) {
+  async function loadTeacherConsole(pageOrOpts, opts) {
     if (!state.isAdmin) return;
+    let page = pageOrOpts;
+    if (pageOrOpts && typeof pageOrOpts === 'object') {
+      opts = pageOrOpts;
+      page = undefined;
+    }
     const targetPage = Math.max(1, Number(page || state.teacherPage || 1));
     try {
       const data = await api.adminList(targetPage, TEACHER_PAGE_SIZE);

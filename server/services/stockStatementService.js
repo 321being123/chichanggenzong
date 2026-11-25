@@ -163,10 +163,12 @@ function comparisonOf({ rows, comparisonRows, index, metricCode, metricRawCode, 
   }
   const poolRows = Array.isArray(comparisonRows) && comparisonRows.length ? comparisonRows : rows;
   const prior = compare === 'yoy'
-    ? poolRows.find(row => row && row.report_id !== current.report_id && dateKey(row.period_end) < dateKey(current.period_end)
+    ? poolRows.find(row => row && row !== current && (row.report_id == null || current.report_id == null || row.report_id !== current.report_id || dateKey(row.period_end) < dateKey(current.period_end))
+      && dateKey(row.period_end) < dateKey(current.period_end)
       && current.period_type !== 'unknown' && Boolean(current.period_type) && sameIdentity(current, row)
       && String(row.period_type || '') === String(current.period_type || '') && sameYearMonthDay(current, row))
-    : poolRows.find(row => row && row.report_id !== current.report_id && dateKey(row.period_end) < dateKey(current.period_end)
+    : poolRows.find(row => row && row !== current && (row.report_id == null || current.report_id == null || row.report_id !== current.report_id || dateKey(row.period_end) < dateKey(current.period_end))
+      && dateKey(row.period_end) < dateKey(current.period_end)
       && sameIdentity(current, row) && isPreviousQuarter(current, row));
   if (compare === 'yoy' && statement !== 'balance') {
     if (!prior) {
@@ -219,7 +221,7 @@ function singleFlowOf({ rows, comparisonRows, index, metricCode, metricRawCode, 
   }
   const poolRows = Array.isArray(comparisonRows) && comparisonRows.length ? comparisonRows : rows;
   const prior = poolRows.find(row => row && row.report_id !== current.report_id && dateKey(row.period_end) < dateKey(current.period_end)
-    && sameIdentity(current, row) && isPreviousQuarter(current, row));
+    && isPreviousQuarter(current, row));
   if (!prior) {
     return { value: null, yoy: null, qoq: null, source: null, reason: 'comparable_period_missing' };
   }

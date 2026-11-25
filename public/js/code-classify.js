@@ -115,15 +115,11 @@
     }
 
     var explicitEx = extractExplicitExchange(rawCode);
-    if (explicitEx && type === '股权' && subtype !== '基金/ETF' && subtype !== '美股') {
-      if (explicitEx === 'SH' && market !== 'sh' && market !== 'kcb') {
+    if (explicitEx && type === '股权' && subtype !== '基金/ETF' && subtype !== '美股' && first2 === '00') {
+      if (explicitEx === 'SH' && market !== 'sh') {
         subtype = '沪市'; market = 'sh'; isHK = false;
       } else if (explicitEx === 'SZ' && market !== 'sz') {
         subtype = '深市'; market = 'sz'; isHK = false;
-      } else if (explicitEx === 'BJ' && market !== 'bj') {
-        subtype = '京市'; market = 'bj'; isHK = false;
-      } else if (explicitEx === 'HK' && market !== 'hk') {
-        subtype = '港股'; market = 'hk'; isHK = true;
       }
     }
 
@@ -144,7 +140,7 @@
     else if (/^\d+$/.test(code)) padded = code.padStart(6, '0');
 
     var explicitEx = extractExplicitExchange(rawCode);
-    if (explicitEx && info.type === '股权' && info.subtype !== '基金/ETF' && info.subtype !== '美股') {
+    if (explicitEx && info.type === '股权' && info.subtype !== '基金/ETF' && info.subtype !== '美股' && code.substring(0, 2) === '00') {
       var bareMarket = info.market === 'kcb' ? 'sh' : info.market;
       if (explicitEx.toLowerCase() !== bareMarket) {
         return padded + '.' + explicitEx;

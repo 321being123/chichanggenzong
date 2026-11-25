@@ -195,7 +195,7 @@ async function fetchQuoteByCode(code) {
   if (tsCode.endsWith('.HK') || isConvertibleBondCode(c) || classifyCode.isFundEtfCode(c)) {
     try {
       const quotes = await fetchQuotes([c]);
-      const quote = quotes.get(normalizeCode(c));
+      const quote = quotes.get(tsCode) || quotes.get(c) || quotes.get(normalizeCode(c));
       return quote ? { price: quote.price, name: quote.name || normalizeCode(c), code: normalizeCode(c), change: quote.change, quote_time: quote.quote_time, source: quote.source } : null;
     } catch (_) {
       return null;
@@ -206,7 +206,7 @@ async function fetchQuoteByCode(code) {
   let liveQuote = null;
   try {
     const liveQuotes = await fetchQuotes([c]);
-    liveQuote = liveQuotes.get(normalizeCode(c)) || null;
+    liveQuote = liveQuotes.get(tsCode) || liveQuotes.get(c) || liveQuotes.get(normalizeCode(c)) || null;
   } catch (_) {
     // 腾讯限流、熔断或临时网络失败时继续走 Tushare 日线回退。
   }
@@ -229,7 +229,7 @@ async function fetchQuoteByCode(code) {
   if (name) {
     try {
       const quotes = await fetchQuotes([c]);
-      const quote = quotes.get(normalizeCode(c));
+      const quote = quotes.get(tsCode) || quotes.get(c) || quotes.get(normalizeCode(c));
       if (quote) return { price: quote.price, name: name || quote.name || c, code: normalizeCode(c), change: quote.change, quote_time: quote.quote_time, source: quote.source };
     } catch (_) {}
     // fallback 也拿不到价格：仅返回名称（供前端自动填充）
@@ -264,7 +264,7 @@ async function fetchQuotesByCodes(codes, options = {}) {
   stockCodes.forEach(c => {
     const ts = toTsCode(c);
     const d = daily.get(ts);
-    const quote = tencent.get(normalizeCode(c));
+    const quote = tencent.get(ts) || tencent.get(c) || tencent.get(normalizeCode(c));
     const price = quote ? quote.price : (d ? d.close : null);
     const change = quote && quote.change != null ? quote.change : (d ? d.pct_chg : null);
     result[c] = {
@@ -276,7 +276,8 @@ async function fetchQuotesByCodes(codes, options = {}) {
     };
   });
   fundCodes.concat(bondCodes, hkCodes).forEach(c => {
-    const quote = tencent.get(normalizeCode(c));
+    const ts = toTsCode(c);
+    const quote = tencent.get(ts) || tencent.get(c) || tencent.get(normalizeCode(c));
     result[c] = quote ? {
       price: quote.price, name: quote.name || c, code: normalizeCode(c), change: quote.change,
       quote_time: quote.quote_time, source: quote.source,

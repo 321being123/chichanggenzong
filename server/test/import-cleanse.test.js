@@ -359,6 +359,13 @@ async function main() {
     const csvItems = importRouter.buildStructuredItems(csvParsed.rows);
     assert.strictEqual(csvItems[0].code, '000001', 'CSV 带前导零的 000001 不得变成港股 00001');
 
+    // F-01 第五轮补充：toTsCode 保持 000001.SH 不变且不破坏 920002.SH->.BJ / 600519.BJ->.SH
+    const marketSvc = require('../services/market');
+    assert.strictEqual(marketSvc.toTsCode('000001.SH'), '000001.SH');
+    assert.strictEqual(marketSvc.toTsCode('000001'), '000001.SZ');
+    assert.strictEqual(marketSvc.toTsCode('920002.SH'), '920002.BJ');
+    assert.strictEqual(marketSvc.toTsCode('600519.BJ'), '600519.SH');
+
     // 主档查询失败时写入边界不得静默放行
     const failExecutor = async (sql) => {
       if (String(sql).includes('core.instruments')) throw new Error('db down');

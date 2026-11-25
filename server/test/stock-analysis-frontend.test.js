@@ -323,6 +323,19 @@ assert.ok(statementsPresenter.includes('stockAnalysisState.selected !== code'), 
   const uncompTip = dom.window.document.querySelector('tr[data-statement-code="ps.oi"] details.statement-label-tip');
   assert.ok(uncompTip && /口径不可比/.test(uncompTip.textContent) && !/暂无可用数据/.test(uncompTip.textContent), 'F-03: comparison_basis_uncomparable 必须显示具体口径不可比原因');
 
+  // F-07: 资产总计缺值、流动资产子分组有值时，必须保留独立「资产」分组标题
+  const presDomain = require(path.join(root, 'server', 'domain', 'statementPresentation'));
+  const balMetrics = [
+    { code: 'bs.ta', name: '资产总计', group_path: '资产', rep_group: '资产', row_role: 'total' },
+    { code: 'bs.tca', name: '流动资产合计', group_path: '资产 › 流动资产', rep_group: '资产 › 流动资产', row_role: 'subtotal' },
+  ];
+  const balFields = [
+    { code: 'bs.ta', label: '资产总计', values: [{ value: null }] },
+    { code: 'bs.tca', label: '流动资产合计', values: [{ value: 100 }] },
+  ];
+  const balModel = presDomain.buildStatementPresentation(balFields, { metrics: balMetrics, statement: 'balance' });
+  assert.ok(balModel.rows.some(r => r.kind === 'section' && r.label === '资产' && r.depth === 0), 'F-07: 资产总计缺值且子分组有值时必须保留独立「资产」分组标题');
+
   view.stockAnalysisRenderStatements({
     name: '利润表', type: 'income', compare: 'yoy', unit_label: '原值',
     periods: [{ end_date: '2026-09-30', scope: 'consolidated', currency: 'CNY' }],

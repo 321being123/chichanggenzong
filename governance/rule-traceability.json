@@ -6268,7 +6268,7 @@
     },
     {
       "id": "IMPORT-IDENTITY-CONFLICT-001",
-      "title": "导入与账本写入前必须按规范交易所代码核对主档名称，保留非默认显式交易所后缀与CSV前导零并拦截错配，不阻断同ID幂等重试",
+      "title": "导入、账本写入与行情刷新必须按规范交易所代码核对主档及独立取价，保留00开头显式交易所并维持920/600后缀纠偏",
       "implementation": {
         "file": "server/services/securityIdentity.js",
         "symbol": "detectCodeNameConflicts"

@@ -446,7 +446,7 @@ function buildStatementPresentation(visibleFields, { metrics = [], statement = '
   for (const field of sortedFields) {
     const groupPath = field.group_path || field.section || CONFLICT_GROUP_PATH;
     const parts = groupPath.split(' › ');
-    if (!parts[1]) topGroupCounts.set(parts[0], (topGroupCounts.get(parts[0]) || 0) + 1);
+    topGroupCounts.set(parts[0], (topGroupCounts.get(parts[0]) || 0) + 1);
   }
 
   const rows = [];

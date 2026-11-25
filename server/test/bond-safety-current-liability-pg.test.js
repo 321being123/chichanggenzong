@@ -7,10 +7,10 @@ const TRADE_DATE = '2099-12-15';
 const PERIOD_END = '2098-12-31';
 
 async function takeCodes(client, count) {
-  const start = 600000 + Math.floor(Math.random() * 90000);
+  const start = 690000 + Math.floor(Math.random() * 9000);
   const { rows } = await client.query(`SELECT n::text||'.SH' AS code FROM generate_series($1::int,$2::int) n
     WHERE NOT EXISTS (SELECT 1 FROM core.instruments WHERE canonical_code=n::text||'.SH') ORDER BY n LIMIT $3`,
-  [start, start + count * 3, count]);
+  [start, start + count * 20, count]);
   assert.strictEqual(rows.length, count, '无法生成互不冲突的测试证券代码');
   return rows.map(row => row.code);
 }

@@ -115,7 +115,7 @@ async function collectOne(gap, asOfDate) {
   const meta = await readMeta(gap.code);
   if (!meta) return { code: gap.code, ok: false, reason: 'instrument_missing' };
   const startDate = dashDate(shiftYears(asOfDate, HISTORY_YEARS)) || '2000-01-01';
-  const { readFinancialReportRows, readDividendRows } = require('../dataAccess/marketDatasets');
+  const { readFinancialReportRows, readDividendRows, readDividendRowsWithCoverage } = require('../dataAccess/marketDatasets');
   const bundle = {};
   let anyFinancial = false;
   // 港股财报端点按公司财报类型分流（2026-11-05 实测：银行/保险/证券端点指标名与普通公司一致，
@@ -137,11 +137,17 @@ async function collectOne(gap, asOfDate) {
     if (Array.isArray(financial.cashflow) && financial.cashflow.length) { bundle.cashflow = financial.cashflow; anyFinancial = true; }
     if (Array.isArray(financial.indicator) && financial.indicator.length) { bundle.indicators = financial.indicator; anyFinancial = true; }
   }
-  const dividends = await readDividendRows({ tsCode: meta.ts_code, startDate, endDate: asOfDate });
+  const divResult = typeof readDividendRowsWithCoverage === 'function'
+    ? await readDividendRowsWithCoverage({ tsCode: meta.ts_code, startDate, endDate: asOfDate })
+    : { rows: await readDividendRows({ tsCode: meta.ts_code, startDate, endDate: asOfDate }), coverage: null };
+  const dividends = divResult && Array.isArray(divResult.rows) ? divResult.rows : (Array.isArray(divResult) ? divResult : null);
+  const dividendCoverage = divResult && divResult.coverage && divResult.coverage.complete === true
+    ? { complete: true, startDate: dashDate(divResult.coverage.startDate) || startDate, endDate: dashDate(divResult.coverage.endDate) || dashDate(asOfDate) }
+    : null;
   if (Array.isArray(dividends) && dividends.length) bundle.dividends = dividends;
   if (!anyFinancial && !bundle.dividends) {
     // 官方返回空 = 本次没有可入库的新事实；不能当成"已补齐"，也不覆盖旧数据。
-    return { code: gap.code, ok: false, reason: 'source_returned_empty' };
+    return { code: gap.code, ok: false, reason: 'source_returned_empty', dividendCoverage };
   }
   await persistCollectedData({
     ts_code: meta.ts_code,
@@ -150,11 +156,19 @@ async function collectOne(gap, asOfDate) {
     list_date: meta.list_date,
     data: meta.raw_data || {},
   }, bundle);
+  if (dividendCoverage && dividendCoverage.complete === true && /\.HK$/i.test(String(meta.ts_code || ''))) {
+    const { datasetScope, markDatasetSuccess } = require('./datasetCursors');
+    await markDatasetSuccess(datasetScope('hk', meta.ts_code), 'dividends', {
+      lastSuccessDate: dashDate(asOfDate),
+      cursorPayload: dividendCoverage,
+    });
+  }
   return {
     code: gap.code,
     ok: true,
     financials: anyFinancial,
     dividends: Boolean(bundle.dividends),
+    dividendCoverage,
   };
 }
 

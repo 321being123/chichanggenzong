@@ -8,7 +8,7 @@ const { saveAnalysisResults } = require('./financialDataArchitecture');
 const statementService = require('./stockStatementService');
 const contract = require('../domain/securityAnalysisContract');
 
-const FORMULA_VERSION = 'hk-5';
+const FORMULA_VERSION = 'hk-6';
 const { FORMULA_VERSION: STATEMENT_FORMULA_VERSION } = require('./hkStockStatements');
 
 // 港股 HKFRS 宽表字段对照（唯一登记位置）。现金流官方只有 7 个汇总项，没有资本开支，
@@ -44,6 +44,7 @@ function statementVersionRowsOf(facts, type) {
       report_id: item.report_id, source_version: group.source_version,
       period_end: group.period_end, period_type: group.period_type,
       announced_at: group.announced_at, statement_revision: item.statement_revision,
+      statement_comparisons: item.statement_comparisons || null,
     })))
     .sort((a, b) => String(b.period_end).localeCompare(String(a.period_end))
       || String(b.announced_at || '').localeCompare(String(a.announced_at || ''))
@@ -62,13 +63,20 @@ async function readHkReportFacts(tsCode, limit = 20, tx) {
         currency: String(row.currency_code || '').trim().toUpperCase() || null,
         source_version: row.source_version || null, company_id: row.company_id,
         report_ids: [], profit: null, revenue: null, eps: null, equity: null,
-        assets: null, liabilities: null, operating: null, capex: null, currency_unverified: false,
+        assets: null, liabilities: null, goodwill: null, operating: null, capex: null,
+        balance_coverage: null, currency_unverified: false,
       };
-      group.report_ids.push({ kind, report_id: row.report_id, statement_revision: row.statement_revision || null });
+      group.report_ids.push({
+        kind,
+        report_id: row.report_id,
+        statement_revision: row.statement_revision || null,
+        statement_comparisons: row.statement_comparisons || null,
+      });
       const currency = String(row.currency_code || '').trim().toUpperCase();
       const sourceCurrency = String(row.source_currency || '').trim().toUpperCase();
       let coverage = row.statement_coverage;
       if (typeof coverage === 'string') { try { coverage = JSON.parse(coverage); } catch (_) { coverage = null; } }
+      if (kind === 'balance') group.balance_coverage = coverage || null;
       const currencyUnverified = row.source_code === 'lixinger_official'
         && (!/^[A-Z]{3}$/.test(currency) || currency !== sourceCurrency || (currency !== 'HKD'
           && !(coverage && coverage.value_basis === 'source_original_t_o')));
@@ -85,6 +93,49 @@ async function readHkReportFacts(tsCode, limit = 20, tx) {
 function isAnnual(group) {
   return /^(annual|annual_report|year|year_report|yearly|fy|a|q4|fourth_quarterly_report|年报|年度)$/i
     .test(String(group.period_type || '').trim());
+}
+
+function parseYmdMs(raw) {
+  const s = String(raw || '').replace(/-/g, '').trim();
+  if (!/^\d{8}$/.test(s)) return null;
+  const ms = Date.parse(`${s.slice(0, 4)}-${s.slice(4, 6)}-${s.slice(6, 8)}T00:00:00Z`);
+  return Number.isFinite(ms) ? ms : null;
+}
+
+function fiscalYearStartOf(periodEnd) {
+  const s = String(periodEnd || '').slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return '';
+  const [y, m, day] = s.split('-').map(Number);
+  if (m === 2 && (day === 28 || day === 29)) return `${y - 1}-03-01`;
+  const d = new Date(Date.UTC(y - 1, m - 1, day + 1));
+  return Number.isFinite(d.getTime()) ? d.toISOString().slice(0, 10) : '';
+}
+
+function interimAnnualizeFactor(periodType) {
+  const t = String(periodType || '').trim().toLowerCase();
+  if (t === 'q1' || t === 'first_quarterly_report') return 4;
+  if (t === 'semiannual' || t === 'semi_annual_report' || t === 'interim_report' || t === 'q2' || t === 'second_quarterly_report') return 2;
+  if (t === 'q3' || t === 'third_quarterly_report') return 4 / 3;
+  return null;
+}
+
+function goodwillRequestedInCoverage(cov) {
+  if (!cov || cov.complete !== true) return false;
+  const codes = Array.isArray(cov.requested_metric_codes) ? cov.requested_metric_codes : [];
+  return codes.some(code => {
+    const s = String(code || '').trim().toLowerCase();
+    return s === 'bs.gw' || s === 'bs_gw' || s === 'bs.gw.t';
+  });
+}
+
+function resolveEventFiscalYear(row) {
+  const fy = String(row.fiscal_year || '').trim();
+  if (/^\d{4}/.test(fy)) return { year: fy.slice(0, 4), inferred: false };
+  const endDate = String(row.end_date || '').trim();
+  if (/^\d{4}/.test(endDate)) return { year: endDate.slice(0, 4), inferred: false };
+  const ex = String(row.ex_date || row.pay_date || row.ann_date || '').replace(/-/g, '').trim();
+  if (/^\d{4}/.test(ex)) return { year: ex.slice(0, 4), inferred: true };
+  return { year: null, inferred: false };
 }
 
 function statusOf(entry) {
@@ -226,27 +277,22 @@ function buildHkAnalysis(data, options = {}) {
   }
 
   let peStatic = null;
-  if (cap.value > 0 && latestAnnual && !latestAnnual.currency_unverified && latestAnnual.profit > 0) {
+  let peStaticStatus = contract.metric(null, contract.FIELD_STATUS.MISSING, 'missing_annual_report');
+  if (cap.value > 0 && latestAnnual && !latestAnnual.currency_unverified && latestAnnual.profit !== null) {
     const profitInMarket = convertToMarketCurrency(latestAnnual.profit, latestAnnual.currency);
-    if (profitInMarket && profitInMarket > 0) peStatic = cap.value / profitInMarket;
-  }
-  let peForecast = null, peForecastBasis = null;
-  if (cap.value > 0 && latestInterim && !latestInterim.currency_unverified && latestInterim.profit !== null && latestInterim.profit !== 0) {
-    const pType = String(latestInterim.period_type || '').trim().toLowerCase();
-    // 港股财年结账日非固定 12-31，必须优先按 period_type 判定报告期长度，不能用 0630 猜半年报。
-    const factor = /^(q1|first_quarterly_report)$/i.test(pType) ? 4
-      : /^(semiannual|semi_annual|semiannual_report|semi_annual_report|interim|interim_report|second_quarterly_report|h1)$/i.test(pType) ? 2
-      : /^(q3|third_quarterly_report)$/i.test(pType) ? 4 / 3
-      : null;
-    if (factor) {
-      const interimProfit = convertToMarketCurrency(latestInterim.profit * factor, latestInterim.currency);
-      if (interimProfit && interimProfit !== 0) {
-        peForecast = cap.value / interimProfit;
-        peForecastBasis = 'annualized_report';
-      }
+    if (profitInMarket === null) {
+      peStaticStatus = contract.metric(null, contract.FIELD_STATUS.SOURCE_UNAVAILABLE, 'fx_rate_missing');
+    } else if (profitInMarket === 0) {
+      peStaticStatus = contract.metric(null, contract.FIELD_STATUS.NOT_APPLICABLE, 'profit_is_zero');
+    } else {
+      peStatic = cap.value / profitInMarket;
+      peStaticStatus = contract.metric(peStatic, contract.FIELD_STATUS.AVAILABLE);
     }
+  } else if (latestAnnual && latestAnnual.currency_unverified) {
+    peStaticStatus = contract.metric(null, contract.FIELD_STATUS.SOURCE_UNAVAILABLE, 'source_currency_unverified');
   }
   let peThreeYearAvg = null;
+  let peThreeYearAvgStatus = contract.metric(null, contract.FIELD_STATUS.INSUFFICIENT_HISTORY, 'insufficient_3y_annual_reports');
   if (cap.value > 0 && annual.length >= 3) {
     const top3 = annual.slice(0, 3);
     const y0 = Number(String(top3[0].period_end).slice(0, 4));
@@ -256,7 +302,295 @@ function buildHkAnalysis(data, options = {}) {
       const converted = top3.map(g => convertToMarketCurrency(g.profit, g.currency));
       if (converted.every(v => v !== null)) {
         const avgProfit = (converted[0] + converted[1] + converted[2]) / 3;
-        if (avgProfit > 0) peThreeYearAvg = cap.value / avgProfit;
+        if (avgProfit === 0) {
+          peThreeYearAvgStatus = contract.metric(null, contract.FIELD_STATUS.NOT_APPLICABLE, 'avg_profit_is_zero');
+        } else {
+          peThreeYearAvg = cap.value / avgProfit;
+          peThreeYearAvgStatus = contract.metric(peThreeYearAvg, contract.FIELD_STATUS.AVAILABLE);
+        }
+      } else {
+        peThreeYearAvgStatus = contract.metric(null, contract.FIELD_STATUS.SOURCE_UNAVAILABLE, 'fx_rate_missing');
+      }
+    }
+  }
+
+  // 动态市盈率：保留港股中报/季报年化口径；无新一期中报/季报时写明原因。
+  let peForecast = null, peForecastBasis = null;
+  let peForecastStatus = contract.metric(
+    null,
+    contract.FIELD_STATUS.NOT_APPLICABLE,
+    latestAnnual ? '最新报告已为年报，暂无新一期中报/季报年化' : '暂无中报或季报利润数据'
+  );
+  if (cap.value > 0 && latestInterim && !latestInterim.currency_unverified && latestInterim.profit !== null) {
+    const factor = interimAnnualizeFactor(latestInterim.period_type);
+    const profitInMarket = convertToMarketCurrency(latestInterim.profit, latestInterim.currency);
+    if (!factor) {
+      peForecastStatus = contract.metric(null, contract.FIELD_STATUS.NOT_APPLICABLE, 'unsupported_interim_period_type');
+    } else if (profitInMarket === null) {
+      peForecastStatus = contract.metric(null, contract.FIELD_STATUS.SOURCE_UNAVAILABLE, 'fx_rate_missing');
+    } else if (profitInMarket === 0) {
+      peForecastStatus = contract.metric(null, contract.FIELD_STATUS.NOT_APPLICABLE, 'interim_profit_is_zero');
+    } else {
+      peForecast = cap.value / (profitInMarket * factor);
+      peForecastBasis = 'annualized_report';
+      peForecastStatus = contract.metric(peForecast, contract.FIELD_STATUS.AVAILABLE);
+    }
+  } else if (latestInterim && latestInterim.currency_unverified) {
+    peForecastStatus = contract.metric(null, contract.FIELD_STATUS.SOURCE_UNAVAILABLE, 'source_currency_unverified');
+  }
+
+  // 扣除商誉市净率：严格区分“真无商誉（已请求且完整但来源未披露）”与“未采到/批不完整”。
+  const latestBalanceForPb = consolidatedFacts.find(group => ofKind(group, 'balance') && !group.currency_unverified && group.equity !== null) || null;
+  let pbExGoodwill = null;
+  let pbExGoodwillStatus = contract.metric(null, contract.FIELD_STATUS.MISSING, 'missing_balance_sheet');
+  if (cap.value > 0 && latestBalanceForPb) {
+    const equityInMarket = convertToMarketCurrency(latestBalanceForPb.equity, latestBalanceForPb.currency);
+    if (equityInMarket === null) {
+      pbExGoodwillStatus = contract.metric(null, contract.FIELD_STATUS.SOURCE_UNAVAILABLE, 'fx_rate_missing');
+    } else if (latestBalanceForPb.goodwill !== null && Number.isFinite(latestBalanceForPb.goodwill)) {
+      const goodwillInMarket = convertToMarketCurrency(latestBalanceForPb.goodwill, latestBalanceForPb.currency);
+      if (goodwillInMarket === null) {
+        pbExGoodwillStatus = contract.metric(null, contract.FIELD_STATUS.SOURCE_UNAVAILABLE, 'fx_rate_missing');
+      } else {
+        const netEquity = equityInMarket - goodwillInMarket;
+        if (netEquity !== 0) {
+          pbExGoodwill = cap.value / netEquity;
+          pbExGoodwillStatus = contract.metric(pbExGoodwill, contract.FIELD_STATUS.AVAILABLE);
+        } else {
+          pbExGoodwillStatus = contract.metric(null, contract.FIELD_STATUS.NOT_APPLICABLE, 'net_equity_ex_goodwill_is_zero');
+        }
+      }
+    } else if (goodwillRequestedInCoverage(latestBalanceForPb.balance_coverage)) {
+      if (equityInMarket !== 0) {
+        pbExGoodwill = cap.value / equityInMarket;
+        pbExGoodwillStatus = { value: pbExGoodwill, status: contract.FIELD_STATUS.AVAILABLE, reason: 'goodwill_not_disclosed_treated_as_zero' };
+      } else {
+        pbExGoodwillStatus = contract.metric(null, contract.FIELD_STATUS.NOT_APPLICABLE, 'equity_is_zero');
+      }
+    } else {
+      const cov = latestBalanceForPb.balance_coverage;
+      const reason = cov && cov.complete === false ? 'source_batch_incomplete' : 'goodwill_not_collected';
+      pbExGoodwillStatus = contract.metric(null, contract.FIELD_STATUS.SOURCE_UNAVAILABLE, reason);
+    }
+  }
+
+  // 上市至今年化收益率：校验首尾有效收盘价与复权因子，并比对实际起算日与 list_date。
+  const DAY_MS = 86400000;
+  const adjustedPriceRows = valuations.filter(row => {
+    const c = contract.finite(row.close);
+    const af = contract.finite(row.adj_factor);
+    return c !== null && c > 0 && af !== null && af > 0 && parseYmdMs(row.trade_date) !== null;
+  });
+  let annualizedReturnSinceListing = null;
+  let returnStartDate = '';
+  let returnStartMode = null;
+  let annualizedReturnStatus = contract.metric(null, contract.FIELD_STATUS.INSUFFICIENT_HISTORY, 'insufficient_price_history');
+  if (adjustedPriceRows.length >= 2) {
+    const earliest = adjustedPriceRows[0];
+    const latestAdj = adjustedPriceRows[adjustedPriceRows.length - 1];
+    const startMs = parseYmdMs(earliest.trade_date);
+    const endMs = parseYmdMs(latestAdj.trade_date);
+    const days = (endMs - startMs) / DAY_MS;
+    if (days >= 30) {
+      const totalFactor = (Number(latestAdj.close) * Number(latestAdj.adj_factor))
+        / (Number(earliest.close) * Number(earliest.adj_factor));
+      if (Number.isFinite(totalFactor) && totalFactor > 0) {
+        annualizedReturnSinceListing = Math.pow(totalFactor, 365.25 / days) - 1;
+        returnStartDate = String(earliest.trade_date);
+        const listMs = parseYmdMs(meta.list_date);
+        returnStartMode = (listMs !== null && (startMs - listMs) / DAY_MS > 30) ? 'range' : 'listing';
+        annualizedReturnStatus = {
+          value: annualizedReturnSinceListing,
+          status: contract.FIELD_STATUS.AVAILABLE,
+          reason: returnStartMode === 'range' ? 'history_shorter_than_listing' : null,
+        };
+      }
+    }
+  } else if (valuations.some(row => contract.finite(row.close) > 0 && !(contract.finite(row.adj_factor) > 0))) {
+    annualizedReturnStatus = contract.metric(null, contract.FIELD_STATUS.SOURCE_UNAVAILABLE, 'missing_adj_factor');
+  }
+
+  // 分红率 / 累计分红率 / 平均股息率：严格核验分红覆盖证据，股本推算显式标注 is_estimated。
+  function sharesAtDate(ymd) {
+    const target = String(ymd || '').replace(/-/g, '');
+    for (let i = valuations.length - 1; i >= 0; i--) {
+      const v = valuations[i];
+      if (target && String(v.trade_date || '') > target) continue;
+      const ts = contract.finite(v.total_share);
+      if (ts !== null && ts > 0) return ts * 10000;
+      const mv = contract.finite(v.total_mv);
+      const cl = contract.finite(v.close);
+      if (mv !== null && mv > 0 && cl !== null && cl > 0) return (mv * 10000) / cl;
+    }
+    return null;
+  }
+
+  const dividendByYear = new Map();
+  const unconvertibleDividendYears = new Set();
+  let dividendEstimatedAny = false;
+  let dividendEstimationBasis = null;
+  for (const row of dividends) {
+    const exRaw = row.ex_date || row.pay_date || row.ann_date || null;
+    if (!exRaw) continue;
+    const { year, inferred } = resolveEventFiscalYear(row);
+    if (!year) continue;
+    const eventCurrency = String(row.currency || row.currency_code || currency).toUpperCase();
+    const explicitTotal = contract.finite(
+      row.total_dividend != null ? row.total_dividend : (row.total_amount != null ? row.total_amount : row.total_cash_amount)
+    );
+    const cashPerShare = contract.finite(row.cash_per_share != null ? row.cash_per_share : row.cash_div_tax);
+    let totalInMarket = null;
+    let isEstimated = false;
+    if (explicitTotal !== null && explicitTotal >= 0) {
+      totalInMarket = convertToMarketCurrency(explicitTotal, eventCurrency);
+    } else {
+      const shares = sharesAtDate(exRaw);
+      if (cashPerShare !== null && cashPerShare >= 0 && shares !== null && shares > 0) {
+        totalInMarket = convertToMarketCurrency(cashPerShare * shares, eventCurrency);
+        isEstimated = true;
+        dividendEstimatedAny = true;
+        dividendEstimationBasis = 'estimated_from_shares';
+      }
+    }
+    if (totalInMarket === null) {
+      if ((explicitTotal !== null && explicitTotal > 0) || (cashPerShare !== null && cashPerShare > 0)) {
+        unconvertibleDividendYears.add(year);
+      }
+      continue;
+    }
+    const prev = dividendByYear.get(year) || { total: 0, is_estimated: false, fiscal_year_inferred: false, details: [] };
+    prev.total += totalInMarket;
+    prev.is_estimated = prev.is_estimated || isEstimated;
+    prev.fiscal_year_inferred = prev.fiscal_year_inferred || inferred;
+    prev.details.push({
+      ex_date: String(exRaw),
+      cash_per_share: contract.finite(row.cash_per_share != null ? row.cash_per_share : row.cash_div_tax),
+      amount: totalInMarket,
+      is_estimated: isEstimated,
+      basis: isEstimated ? 'estimated_from_shares' : 'official_total',
+      fiscal_year_inferred: inferred,
+    });
+    dividendByYear.set(year, prev);
+  }
+
+  const validAnnualProfits = annual
+    .filter(g => !g.currency_unverified && g.profit !== null)
+    .map(g => ({ year: String(g.period_end).slice(0, 4), profit: convertToMarketCurrency(g.profit, g.currency) }))
+    .filter(item => item.profit !== null);
+
+  const divCov = data.dividendCoverage && typeof data.dividendCoverage === 'object' ? data.dividendCoverage : null;
+  const dividendSyncDate = divCov && divCov.endDate
+    ? String(divCov.endDate).slice(0, 10)
+    : (data.dividendSyncDate ? String(data.dividendSyncDate).slice(0, 10) : null);
+  const dividendCovStart = divCov && divCov.startDate ? String(divCov.startDate).slice(0, 10) : null;
+  const coverageExplicitlyIncomplete = Boolean(divCov && divCov.complete !== true);
+  // 仅有单点水位而无覆盖起止区间时，不能证明整个目标财年或历史区间已完成分红采集。
+  const dividendRangeVerified = Boolean(!coverageExplicitlyIncomplete && divCov && divCov.complete === true && dividendCovStart && dividendSyncDate);
+  const latestAnnualEnd = latestAnnual ? String(latestAnnual.period_end).slice(0, 10) : '';
+  const latestAnnualStart = fiscalYearStartOf(latestAnnualEnd);
+  const earliestAnnualEnd = annual.length ? String(annual[annual.length - 1].period_end).slice(0, 10) : '';
+  const earliestAnnualStart = fiscalYearStartOf(earliestAnnualEnd);
+  const latestYearCoverageVerified = Boolean(
+    dividendRangeVerified
+    && (!latestAnnualEnd || dividendSyncDate >= latestAnnualEnd)
+    && (!latestAnnualStart || dividendCovStart <= latestAnnualStart)
+  );
+  const fullRangeCoverageVerified = Boolean(
+    dividendRangeVerified
+    && (!latestAnnualEnd || dividendSyncDate >= latestAnnualEnd)
+    && (!earliestAnnualStart || dividendCovStart <= earliestAnnualStart)
+  );
+  const latestAnnualYear = latestAnnual ? String(latestAnnual.period_end).slice(0, 4) : '';
+  const latestAnnualProfitInMarket = latestAnnual && !latestAnnual.currency_unverified && latestAnnual.profit !== null
+    ? convertToMarketCurrency(latestAnnual.profit, latestAnnual.currency)
+    : null;
+
+  let payoutRatio = null;
+  let payoutRatioStatus = contract.metric(null, contract.FIELD_STATUS.SOURCE_UNAVAILABLE, 'dividend_coverage_unverified');
+  let cumulativePayoutRatio = null;
+  let cumulativePayoutStatus = contract.metric(null, contract.FIELD_STATUS.SOURCE_UNAVAILABLE, 'dividend_coverage_unverified');
+  let averageDividendYield = null;
+  let averageDividendYieldStatus = contract.metric(null, contract.FIELD_STATUS.SOURCE_UNAVAILABLE, 'dividend_coverage_unverified');
+  let cumulativeDividendTotal = dividend12m.totalAmount;
+  let cumulativeProfitTotal = null;
+
+  if (validAnnualProfits.length > 0) {
+    cumulativeProfitTotal = validAnnualProfits.reduce((sum, item) => sum + item.profit, 0);
+  }
+
+  if (dividends.length === 0) {
+    if (latestYearCoverageVerified && contract.finite(latest.dv_ttm) === 0) {
+      if (latestAnnualProfitInMarket !== null && latestAnnualProfitInMarket > 0) {
+        payoutRatio = 0;
+        payoutRatioStatus = { value: 0, status: contract.FIELD_STATUS.AVAILABLE, reason: 'verified_zero_dividend' };
+      } else {
+        payoutRatioStatus = contract.metric(null, contract.FIELD_STATUS.NOT_APPLICABLE, 'latest_annual_loss_or_missing');
+      }
+      if (fullRangeCoverageVerified && cumulativeProfitTotal !== null && cumulativeProfitTotal > 0) {
+        cumulativePayoutRatio = 0;
+        cumulativeDividendTotal = 0;
+        cumulativePayoutStatus = { value: 0, status: contract.FIELD_STATUS.AVAILABLE, reason: 'verified_zero_dividend' };
+        averageDividendYield = 0;
+        averageDividendYieldStatus = { value: 0, status: contract.FIELD_STATUS.AVAILABLE, reason: 'verified_zero_dividend' };
+      } else if (fullRangeCoverageVerified && cumulativeProfitTotal !== null && cumulativeProfitTotal <= 0) {
+        cumulativePayoutStatus = contract.metric(null, contract.FIELD_STATUS.NOT_APPLICABLE, '历史累计亏损，不适用');
+        averageDividendYieldStatus = contract.metric(null, contract.FIELD_STATUS.NOT_APPLICABLE, '历史累计亏损，不适用');
+      }
+    }
+  } else {
+    const hasLatestYearEvents = Boolean(latestAnnualYear && dividendByYear.has(latestAnnualYear));
+    const latestYearUnconvertible = Boolean(latestAnnualYear && unconvertibleDividendYears.has(latestAnnualYear));
+    if (latestYearUnconvertible) {
+      payoutRatioStatus = contract.metric(null, contract.FIELD_STATUS.SOURCE_UNAVAILABLE, 'fx_rate_missing');
+    } else if (hasLatestYearEvents || latestYearCoverageVerified) {
+      const latestYearDiv = hasLatestYearEvents ? dividendByYear.get(latestAnnualYear).total : 0;
+      if (latestAnnualProfitInMarket !== null && latestAnnualProfitInMarket > 0) {
+        payoutRatio = latestYearDiv / latestAnnualProfitInMarket;
+        payoutRatioStatus = {
+          ...contract.metric(payoutRatio, contract.FIELD_STATUS.AVAILABLE, dividendEstimatedAny ? '按股本估算' : null),
+          is_estimated: dividendEstimatedAny,
+          basis: dividendEstimationBasis,
+        };
+      } else if (latestAnnualProfitInMarket !== null && latestAnnualProfitInMarket <= 0) {
+        payoutRatioStatus = contract.metric(null, contract.FIELD_STATUS.NOT_APPLICABLE, '最近年报亏损，不适用');
+      }
+    }
+
+    const anyYearUnconvertible = unconvertibleDividendYears.size > 0;
+    const allYearsHaveEvents = validAnnualProfits.length > 0 && validAnnualProfits.every(item => dividendByYear.has(item.year));
+    if (anyYearUnconvertible) {
+      cumulativePayoutStatus = contract.metric(null, contract.FIELD_STATUS.SOURCE_UNAVAILABLE, 'fx_rate_missing');
+      averageDividendYieldStatus = contract.metric(null, contract.FIELD_STATUS.SOURCE_UNAVAILABLE, 'fx_rate_missing');
+    } else if (validAnnualProfits.length > 0 && (fullRangeCoverageVerified || allYearsHaveEvents)) {
+      let sumDiv = 0;
+      for (const item of validAnnualProfits) {
+        const entry = dividendByYear.get(item.year);
+        if (entry) sumDiv += entry.total;
+      }
+      cumulativeDividendTotal = sumDiv;
+      if (cumulativeProfitTotal > 0) {
+        cumulativePayoutRatio = sumDiv / cumulativeProfitTotal;
+        cumulativePayoutStatus = {
+          ...contract.metric(cumulativePayoutRatio, contract.FIELD_STATUS.AVAILABLE, dividendEstimatedAny ? '按股本估算' : null),
+          is_estimated: dividendEstimatedAny,
+          basis: dividendEstimationBasis,
+        };
+        const ttmProfitInMarket = ttm.value !== null
+          ? convertToMarketCurrency(ttm.value, (latestInterim || latestAnnual).currency)
+          : null;
+        if (cap.value > 0 && ttmProfitInMarket !== null) {
+          averageDividendYield = cumulativePayoutRatio * (ttmProfitInMarket / cap.value);
+          averageDividendYieldStatus = {
+            ...contract.metric(averageDividendYield, contract.FIELD_STATUS.AVAILABLE, dividendEstimatedAny ? '按股本估算' : null),
+            is_estimated: dividendEstimatedAny,
+            basis: dividendEstimationBasis,
+          };
+        } else {
+          averageDividendYieldStatus = contract.metric(null, contract.FIELD_STATUS.MISSING, 'missing_ttm_profit_or_cap');
+        }
+      } else {
+        cumulativePayoutStatus = contract.metric(null, contract.FIELD_STATUS.NOT_APPLICABLE, '历史累计亏损，不适用');
+        averageDividendYieldStatus = contract.metric(null, contract.FIELD_STATUS.NOT_APPLICABLE, '历史累计亏损，不适用');
       }
     }
   }
@@ -288,18 +622,32 @@ function buildHkAnalysis(data, options = {}) {
     pe: contract.finite(row.pe_ttm),
     pb: contract.finite(row.pb),
   }));
-  const stabilityYears = annual.slice(0, 20).map(group => ({
-    year: String(group.period_end).slice(0, 4),
-    report_ann_date: group.announced_at || '',
-    profit: group.currency_unverified ? null : group.profit,
-    dividend: null,
-    payout_ratio: null,
-    annual_payout_ratio: null,
-    dividend_details: [],
-  }));
+  const stabilityYears = annual.slice(0, 20).map(group => {
+    const yr = String(group.period_end).slice(0, 4);
+    const divEntry = dividendByYear.get(yr);
+    const profitInMarket = !group.currency_unverified && group.profit !== null
+      ? convertToMarketCurrency(group.profit, group.currency)
+      : null;
+    const divAmt = divEntry ? divEntry.total : (dividendRangeVerified && contract.finite(latest.dv_ttm) === 0 ? 0 : null);
+    const yrPayout = divAmt !== null && profitInMarket !== null && profitInMarket > 0 ? divAmt / profitInMarket : null;
+    return {
+      year: yr,
+      report_ann_date: group.announced_at || '',
+      profit: group.currency_unverified ? null : group.profit,
+      dividend: divAmt,
+      payout_ratio: yrPayout,
+      annual_payout_ratio: yrPayout,
+      is_estimated: divEntry ? divEntry.is_estimated : false,
+      dividend_details: divEntry ? divEntry.details : [],
+    };
+  });
   const fieldStatus = {
-    market_cap: statusOf(cap), pe_ttm: statusOf(contract.metric(peTtm)), pb: statusOf(contract.metric(pb)),
+    market_cap: statusOf(cap), pe_ttm: statusOf(contract.metric(peTtm)),
+    pe_static: statusOf(peStaticStatus), pe_forecast: statusOf(peForecastStatus), pe_three_year_avg: statusOf(peThreeYearAvgStatus),
+    pb: statusOf(contract.metric(pb)), pb_ex_goodwill: statusOf(pbExGoodwillStatus),
+    annualized_return_since_listing: { ...statusOf(annualizedReturnStatus), return_start_mode: returnStartMode, return_start_date: returnStartDate },
     ttm_profit: { ...statusOf(ttm), currency: ttm.value === null ? null : (latestInterim || latestAnnual).currency }, dividend_yield: statusOf(dividend12m.yield),
+    payout_ratio: payoutRatioStatus, cumulative_payout_ratio: cumulativePayoutStatus, average_dividend_yield: averageDividendYieldStatus,
     free_cashflow: statusOf(freeCash), pe_percentile: { value: pePercentile.value, status: pePercentile.status },
     ten_year_stability: { value: stability.value, status: stability.status },
   };
@@ -348,13 +696,15 @@ function buildHkAnalysis(data, options = {}) {
     valuation: {
       market_cap: cap.value, a_share_market_cap: null,
       circulating_market_cap: null, free_float_market_cap: null,
-      annualized_return_since_listing: null, return_start_date: '',
+      annualized_return_since_listing: annualizedReturnSinceListing, return_start_date: returnStartDate,
+      return_start_mode: returnStartMode,
       pe_ttm: peTtm, pe_static: peStatic, pe_forecast: peForecast, pe_forecast_basis: peForecastBasis, pe_three_year_avg: peThreeYearAvg,
       pb, pb_ex_goodwill: pbExGoodwill,
       dividend_yield: effectiveDividendYield,
       dividend_yield_source: dividend12m.yield.value == null ? 'source_reported' : 'implemented_events',
-      payout_ratio: payoutRatio, cumulative_payout_ratio: null, average_dividend_yield: null,
-      cumulative_dividend: dividend12m.totalAmount, cumulative_profit: null,
+      payout_ratio: payoutRatio, cumulative_payout_ratio: cumulativePayoutRatio, average_dividend_yield: averageDividendYield,
+      cumulative_dividend: cumulativeDividendTotal, cumulative_profit: cumulativeProfitTotal,
+      dividend_is_estimated: dividendEstimatedAny, dividend_basis: dividendEstimationBasis,
       roe, roa,
     },
     stability: {
@@ -395,16 +745,44 @@ function buildHkAnalysis(data, options = {}) {
 
 async function loadHkAnalysisInputs(tsCode) {
   const fxRateRepository = require('../repositories/fxRateRepository');
-  const [base, facts, hkdRate, usdRate] = await Promise.all([
+  const { datasetScope, getDatasetCursors } = require('./datasetCursors');
+  const [base, facts, hkdRate, usdRate, cursors, refreshCursors] = await Promise.all([
     stockAnalysisRepository.loadAnalysisInputs({ tsCode }),
     readHkReportFacts(tsCode),
     fxRateRepository.readLatestRatePairUpTo('HKD', 'CNY', '9999-12-31').catch(() => null),
     fxRateRepository.readLatestRatePairUpTo('USD', 'CNY', '9999-12-31').catch(() => null),
+    getDatasetCursors(datasetScope('hk', tsCode), ['dividends']).catch(() => new Map()),
+    getDatasetCursors(datasetScope('hk_stock_analysis', tsCode), ['dividends']).catch(() => new Map()),
   ]);
+  const primaryCursor = cursors && typeof cursors.get === 'function' ? cursors.get('dividends') : null;
+  const fallbackCursor = refreshCursors && typeof refreshCursors.get === 'function' ? refreshCursors.get('dividends') : null;
+  const hasCompletePayload = row => Boolean(row && !row.last_error && row.cursor_payload && row.cursor_payload.complete === true);
+  const divCursor = hasCompletePayload(primaryCursor) ? primaryCursor : (hasCompletePayload(fallbackCursor) ? fallbackCursor : (primaryCursor || fallbackCursor));
+  const dividendSyncDate = divCursor && !divCursor.last_error && divCursor.last_success_date
+    ? String(divCursor.last_success_date).slice(0, 10)
+    : null;
+  const dividendSyncVerified = Boolean(dividendSyncDate);
+  const cursorPayload = divCursor && divCursor.cursor_payload && typeof divCursor.cursor_payload === 'object'
+    ? divCursor.cursor_payload : {};
+  const rawStart = divCursor && (
+    divCursor.coverage_start_date || divCursor.start_date || divCursor.startDate
+    || cursorPayload.coverage_start_date || cursorPayload.start_date || cursorPayload.startDate || cursorPayload.fromDate
+  );
+  const rawEnd = divCursor && (
+    divCursor.coverage_end_date || divCursor.end_date || divCursor.endDate
+    || cursorPayload.coverage_end_date || cursorPayload.end_date || cursorPayload.endDate || cursorPayload.targetDate
+  );
+  const cursorStart = rawStart ? String(rawStart).slice(0, 10) : null;
+  const cursorEnd = rawEnd ? String(rawEnd).slice(0, 10) : dividendSyncDate;
+  const cursorComplete = cursorPayload.complete === true;
+  const dividendCoverage = base.dividendCoverage
+    || (dividendSyncVerified && cursorStart && cursorEnd
+      ? { complete: cursorComplete, startDate: cursorStart, endDate: cursorEnd }
+      : null);
   const fxToCny = {};
   if (hkdRate && Number(hkdRate.rate) > 0) fxToCny.HKD = Number(hkdRate.rate);
   if (usdRate && Number(usdRate.rate) > 0) fxToCny.USD = Number(usdRate.rate);
-  return { meta: base.meta, valuations: base.valuations, dividends: base.dividends, events: base.events, reportFacts: facts, fxToCny };
+  return { meta: base.meta, valuations: base.valuations, dividends: base.dividends, events: base.events, reportFacts: facts, fxToCny, dividendSyncVerified, dividendSyncDate, dividendCoverage };
 }
 
 async function refreshHkAnalysis(tsCode, options = {}) {

@@ -7,7 +7,7 @@ const repository = require('../repositories/stockStatementsRepository');
 const FORMULA_VERSION = 'stock-statements-7';
 
 const PERIOD_TYPES = new Set(['all', 'annual', 'semiannual', 'quarter', 'q1', 'q3', 'unknown']);
-const COMPARES = new Set(['yoy', 'qoq', 'none']);
+const COMPARES = new Set(['yoy', 'qoq', 'both', 'none']);
 const STATEMENT_TYPES = new Set(['non_financial', 'bank', 'insurance', 'security', 'other_financial', 'reit']);
 const VALID_SCOPES = new Set(['consolidated', 'parent']);
 const MARKET_VALID_STANDARDS = Object.freeze({
@@ -140,12 +140,26 @@ function isPreviousQuarter(current, prior) {
   return previous[current.period_type] === prior.period_type;
 }
 
-function comparisonOf({ rows, comparisonRows, index, metricCode, rawValue, statement, compare, measureType, market }) {
-  if (compare === 'none') return { value: null, status: null, reason: null };
-  if (measureType !== 'currency') return { value: null, status: contract.FIELD_STATUS.NOT_APPLICABLE, reason: 'comparison_method_unverified' };
-  const current = rows[index];
+function comparisonOf({ rows, comparisonRows, index, metricCode, metricRawCode, rawValue, statement, compare, measureType, market }) {
+  if (compare === 'none') return { value: null, status: null, reason: null, source: null, unit: null };
   if (compare === 'qoq' && statement !== 'balance') {
-    return { value: null, status: contract.FIELD_STATUS.NOT_APPLICABLE, reason: 'cumulative_flow_qoq_not_supported' };
+    return { value: null, status: contract.FIELD_STATUS.NOT_APPLICABLE, reason: 'cumulative_flow_qoq_not_supported', source: null, unit: null };
+  }
+  const current = rows[index];
+  const nativeCmp = parseCoverage(current && current.statement_comparisons);
+  const nativeMap = nativeCmp && nativeCmp[compare];
+  const nativeVal = nativeMap && metricRawCode ? contract.finite(nativeMap[metricRawCode]) : null;
+  if (nativeVal !== null) {
+    return {
+      value: nativeVal,
+      status: contract.FIELD_STATUS.AVAILABLE,
+      reason: null,
+      source: 'lixinger_native',
+      unit: measureType === 'percent' ? 'percent' : 'ratio',
+    };
+  }
+  if (measureType !== 'currency' && measureType !== 'percent') {
+    return { value: null, status: contract.FIELD_STATUS.NOT_APPLICABLE, reason: 'comparison_method_unverified', source: null, unit: null };
   }
   const poolRows = Array.isArray(comparisonRows) && comparisonRows.length ? comparisonRows : rows;
   const prior = compare === 'yoy'
@@ -157,22 +171,76 @@ function comparisonOf({ rows, comparisonRows, index, metricCode, rawValue, state
   if (compare === 'yoy' && statement !== 'balance') {
     if (!prior) {
       return hasSingleFlowPeriodBasis(current, market)
-        ? { value: null, status: contract.FIELD_STATUS.INSUFFICIENT_HISTORY, reason: 'comparable_period_missing' }
-        : { value: null, status: contract.FIELD_STATUS.NOT_APPLICABLE, reason: 'flow_period_basis_unverified' };
+        ? { value: null, status: contract.FIELD_STATUS.INSUFFICIENT_HISTORY, reason: 'comparable_period_missing', source: null, unit: null }
+        : { value: null, status: contract.FIELD_STATUS.NOT_APPLICABLE, reason: 'flow_period_basis_unverified', source: null, unit: null };
     }
     if (!hasFlowPeriodBasis(current, prior, market)) {
-      return { value: null, status: contract.FIELD_STATUS.NOT_APPLICABLE, reason: 'flow_period_basis_unverified' };
+      return { value: null, status: contract.FIELD_STATUS.NOT_APPLICABLE, reason: 'flow_period_basis_unverified', source: null, unit: null };
     }
   }
-  if (!prior) return { value: null, status: contract.FIELD_STATUS.INSUFFICIENT_HISTORY, reason: 'comparable_period_missing' };
+  if (!prior) return { value: null, status: contract.FIELD_STATUS.INSUFFICIENT_HISTORY, reason: 'comparable_period_missing', source: null, unit: null };
   if (isCurrencyUnverified(prior, market)) {
-    return { value: null, status: contract.FIELD_STATUS.SOURCE_UNAVAILABLE, reason: 'comparable_value_missing' };
+    return { value: null, status: contract.FIELD_STATUS.SOURCE_UNAVAILABLE, reason: 'comparable_value_missing', source: null, unit: null };
   }
   const priorRaw = contract.finite(prior[metricCode]);
-  if (rawValue === null || priorRaw === null) return { value: null, status: contract.FIELD_STATUS.SOURCE_UNAVAILABLE, reason: 'comparable_value_missing' };
-  if (priorRaw === 0) return { value: null, status: contract.FIELD_STATUS.NOT_APPLICABLE, reason: 'zero_denominator' };
-  if (priorRaw < 0 || rawValue < 0) return { value: null, status: contract.FIELD_STATUS.NOT_APPLICABLE, reason: 'negative_comparison_unverified' };
-  return { value: (rawValue - priorRaw) / Math.abs(priorRaw), status: contract.FIELD_STATUS.AVAILABLE, reason: null };
+  if (rawValue === null || priorRaw === null) return { value: null, status: contract.FIELD_STATUS.SOURCE_UNAVAILABLE, reason: 'comparable_value_missing', source: null, unit: null };
+  if (measureType === 'percent') {
+    return { value: (rawValue - priorRaw) * 100, status: contract.FIELD_STATUS.AVAILABLE, reason: null, source: 'local_derived', unit: 'pct_pt' };
+  }
+  if (priorRaw === 0) return { value: null, status: contract.FIELD_STATUS.NOT_APPLICABLE, reason: 'zero_denominator', source: null, unit: null };
+  if (priorRaw < 0 || rawValue < 0) return { value: null, status: contract.FIELD_STATUS.NOT_APPLICABLE, reason: 'negative_comparison_unverified', source: null, unit: null };
+  return { value: (rawValue - priorRaw) / Math.abs(priorRaw), status: contract.FIELD_STATUS.AVAILABLE, reason: null, source: 'local_derived', unit: 'ratio' };
+}
+
+function formatVersionOf(row) {
+  const coverage = parseCoverage(row && row.statement_coverage);
+  return String((coverage && (coverage.presentation_version || coverage.format_version))
+    || (row && (row.presentation_version || row.format_version)) || '').trim().toUpperCase();
+}
+
+function singleFlowOf({ rows, comparisonRows, index, metricCode, metricRawCode, rawValue, statement, measureType }) {
+  if (statement === 'balance' || !['currency', 'per_share'].includes(measureType)) {
+    return { value: null, yoy: null, qoq: null, source: null, reason: null };
+  }
+  const current = rows[index];
+  const nativeCmp = parseCoverage(current && current.statement_comparisons);
+  const nativeSingle = nativeCmp && nativeCmp.single && metricRawCode ? contract.finite(nativeCmp.single[metricRawCode]) : null;
+  const nativeSingleYoy = nativeCmp && nativeCmp.single_yoy && metricRawCode ? contract.finite(nativeCmp.single_yoy[metricRawCode]) : null;
+  const nativeSingleQoq = nativeCmp && nativeCmp.single_qoq && metricRawCode ? contract.finite(nativeCmp.single_qoq[metricRawCode]) : null;
+  if (nativeSingle !== null) {
+    return { value: nativeSingle, yoy: nativeSingleYoy, qoq: nativeSingleQoq, source: 'lixinger_native', reason: null };
+  }
+  const pt = String(current && current.period_type || '').toLowerCase();
+  if (pt === 'q1') {
+    return { value: rawValue, yoy: null, qoq: null, source: rawValue != null ? 'local_derived' : null, reason: null };
+  }
+  if (pt !== 'semiannual' && pt !== 'q3' && pt !== 'annual') {
+    return { value: null, yoy: null, qoq: null, source: null, reason: 'comparison_basis_uncomparable' };
+  }
+  const poolRows = Array.isArray(comparisonRows) && comparisonRows.length ? comparisonRows : rows;
+  const prior = poolRows.find(row => row && row.report_id !== current.report_id && dateKey(row.period_end) < dateKey(current.period_end)
+    && sameIdentity(current, row) && isPreviousQuarter(current, row));
+  if (!prior) {
+    return { value: null, yoy: null, qoq: null, source: null, reason: 'comparable_period_missing' };
+  }
+  const curFmt = formatVersionOf(current);
+  const priFmt = formatVersionOf(prior);
+  const sameBasis = String(current.currency_code || '').toUpperCase() === String(prior.currency_code || '').toUpperCase()
+    && String(current.statement_scope || '') === String(prior.statement_scope || '')
+    && String(current.accounting_standard || '') === String(prior.accounting_standard || '')
+    && String(current.comp_type || '') === String(prior.comp_type || '')
+    && String(current.source_id || '') === String(prior.source_id || '')
+    && String(current.update_flag ?? '') === String(prior.update_flag ?? '')
+    && curFmt === priFmt
+    && (!current.fiscal_year || !prior.fiscal_year || String(current.fiscal_year) === String(prior.fiscal_year));
+  if (!sameBasis) {
+    return { value: null, yoy: null, qoq: null, source: null, reason: 'comparison_basis_uncomparable' };
+  }
+  const priorRaw = contract.finite(prior[metricCode]);
+  if (rawValue === null || priorRaw === null) {
+    return { value: null, yoy: null, qoq: null, source: null, reason: 'comparable_value_missing' };
+  }
+  return { value: rawValue - priorRaw, yoy: null, qoq: null, source: 'local_derived', reason: null };
 }
 
 function valueStatus(raw, coverage, code, sourceCode) {
@@ -189,7 +257,11 @@ function valueStatus(raw, coverage, code, sourceCode) {
 }
 
 function reportDigestOf(rows) {
-  return rows.map(row => `${row.report_id}:${row.source_version || ''}:${row.period_end || ''}:${row.period_type || ''}:${row.period_start || ''}:${row.statement_revision || ''}`).join(',');
+  return rows.map(row => {
+    const cmp = parseCoverage(row.statement_comparisons);
+    const cmpKeys = cmp ? Object.keys(cmp).sort().join('+') : '';
+    return `${row.report_id}:${row.source_version || ''}:${row.period_end || ''}:${row.period_type || ''}:${row.period_start || ''}:${row.statement_revision || ''}:${cmpKeys}`;
+  }).join(',');
 }
 
 function statementAnalysisVersionOf({
@@ -348,16 +420,38 @@ function buildStatementPayload({ market = 'CN', type = 'balance', rows = [], com
         const raw = unverified ? null : observed;
         const state = unverified ? { value: null, status: contract.FIELD_STATUS.SOURCE_UNAVAILABLE, reason: 'source_currency_unverified' }
           : valueStatus(raw, parseCoverage(row.statement_coverage), field.code, row.source_code);
-        const comparison = raw === null ? { value: null, status: state.status, reason: state.reason }
-          : comparisonOf({ rows, comparisonRows, index, metricCode: dict.columnOf(field.code), rawValue: raw, statement: type, compare: normalized.compare, measureType: field.measure_type, market });
+        const colName = dict.columnOf(field.code);
+        const yoyCmp = raw === null ? { value: null, status: state.status, reason: state.reason, source: null, unit: null }
+          : comparisonOf({ rows, comparisonRows, index, metricCode: colName, metricRawCode: field.code, rawValue: raw, statement: type, compare: 'yoy', measureType: field.measure_type, market });
+        const qoqCmp = raw === null ? { value: null, status: state.status, reason: state.reason, source: null, unit: null }
+          : comparisonOf({ rows, comparisonRows, index, metricCode: colName, metricRawCode: field.code, rawValue: raw, statement: type, compare: 'qoq', measureType: field.measure_type, market });
+        const primaryCmp = normalized.compare === 'qoq' ? qoqCmp : normalized.compare === 'none' ? { value: null, status: null, reason: null, source: null, unit: null } : yoyCmp;
+        const single = unverified ? { value: null, yoy: null, qoq: null, source: null, reason: 'source_currency_unverified' }
+          : singleFlowOf({ rows, comparisonRows, index, metricCode: colName, metricRawCode: field.code, rawValue: raw, statement: type, measureType: field.measure_type });
         return {
           value: presentation.normalizeMetricValue(raw, field, row.currency_code),
           status: state.status,
           reason: state.reason,
-          change: comparison.value,
-          yoy: normalized.compare === 'yoy' ? comparison.value : null,
-          comparison_status: comparison.status,
-          comparison_reason: comparison.reason,
+          change: primaryCmp.value,
+          yoy: yoyCmp.value,
+          yoy_status: yoyCmp.status,
+          yoy_reason: yoyCmp.reason,
+          yoy_source: yoyCmp.source,
+          yoy_unit: yoyCmp.unit,
+          qoq: qoqCmp.value,
+          qoq_status: qoqCmp.status,
+          qoq_reason: qoqCmp.reason,
+          qoq_source: qoqCmp.source,
+          qoq_unit: qoqCmp.unit,
+          single_value: single.value === null ? null : presentation.normalizeMetricValue(single.value, field, row.currency_code),
+          single_yoy: single.yoy,
+          single_qoq: single.qoq,
+          single_source: single.source,
+          single_reason: single.reason,
+          comparison_status: primaryCmp.status,
+          comparison_reason: primaryCmp.reason,
+          comparison_source: primaryCmp.source,
+          comparison_unit: primaryCmp.unit,
         };
       }),
     }));
@@ -376,8 +470,10 @@ function buildStatementPayload({ market = 'CN', type = 'balance', rows = [], com
     standard: dict.standardOf(market),
     formula_version: formulaVersion,
     analysis_version: analysisVersion,
-    unit_label: hasUnverifiedCurrency ? '来源金额币种待核实；比例等按字段标注'
-      : `原值按${currencies.length === 1 ? currencies[0] : '报告币种'}展示；金额折算为亿元，比例/每股按字段标注`,
+    unit_label: hasUnverifiedCurrency ? '来源金额币种待核实'
+      : currencies.length > 1 ? '多币种·见各期标注'
+      : (currencies.length === 1 && currencies[0] !== 'CNY') ? `默认单位：${currencies[0]}·亿元` : '默认单位：亿元',
+    period_type: normalized.periodType,
     currency: currencies.length === 1 ? currencies[0] : null,
     currency_mixed: currencies.length > 1,
     report_ids: rows.map(row => row.report_id),

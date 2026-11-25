@@ -88,7 +88,13 @@ async function persistCollectedData(metadata, bundle) {
         }, client);
       }
     }
-    for (const r of bundle.dividends || []) {
+    const orderedDividends = projection.orderDividendBatchForUpsert(bundle.dividends || []);
+    const officialBatchPeers = projection.dividendBatchPeersOf(
+      orderedDividends.filter(row => row && row.is_default_source === false && row.end_date),
+      tsCode,
+    );
+    const officialBatchDividendKeys = [...new Set(officialBatchPeers.map(p => p.key))];
+    for (const r of orderedDividends) {
       const cash = finite(r.cash_div_tax), base = finite(r.base_share);
       // 来源直接给出分红总额时以它为准（港股常无 base_share），币种也按行落库，不硬编码 CNY（R2-03）。
       const declaredTotal = finite(r.total_cash_amount);
@@ -99,16 +105,23 @@ async function persistCollectedData(metadata, bundle) {
       // stockProjectionRepository.syncOfficialDividends 用的一致（同一来源、同一事件、同一行），
       // 否则 refreshDividends 里那条「另写标准分红事实」会再插一条同源副本，现金收益择一时出现并列。
       const sourceKey = r.is_default_source === false
-        ? `${r.ts_code || tsCode}:${r.end_date}:${r.ann_date || ''}`
+        ? projection.officialDividendSourceKey(r, tsCode)
         : `${tsCode}:${rowVersion(r)}`;
-      await projection.upsertCorporateAction({
+      const writtenKey = await projection.upsertCorporateAction({
         instrumentId: master.instrumentId, fiscalPeriodEnd: asDate(r.end_date), announcedAt: asDate(r.ann_date || r.imp_ann_date),
         recordDate: asDate(r.record_date), exDate: asDate(r.ex_date), payDate: asDate(r.pay_date), status: r.div_proc || '',
         cashPerSharePreTax: cash, cashPerShareAfterTax: finite(r.cash_div), stockDividendRatio: finite(r.stk_bo_rate), capitalizationRatio: finite(r.stk_co_rate),
         baseShares: base == null ? null : base * 10000, totalCashAmount: totalCash,
         currencyCode: String(r.currency || master.currency || 'CNY').toUpperCase(),
-        sourceId: sourceIdOf(r), sourceKey, rawPayload: r,
+        sourceId: sourceIdOf(r), sourceKey,
+        legacySourceKeys: r.is_default_source === false ? projection.legacyOfficialDividendSourceKeys(r, master.instrumentId, tsCode) : [],
+        protectedSourceKeys: r.is_default_source === false ? officialBatchDividendKeys : [],
+        batchPeers: r.is_default_source === false ? officialBatchPeers : [],
+        rawPayload: r,
       }, client);
+      if (r.is_default_source === false && writtenKey && !officialBatchDividendKeys.includes(writtenKey)) {
+        officialBatchDividendKeys.push(writtenKey);
+      }
     }
     for (const r of bundle.forecasts || []) {
       if (!asDate(r.end_date)) continue;

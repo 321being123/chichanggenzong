@@ -36,7 +36,7 @@ async function getDatasetCursors(scopeKey, datasetCodes, client = pool) {
   if (!scopeKey || !codes.length) return map;
   try {
     const { rows } = await client.query(
-      `SELECT dataset_code,last_success_date,last_source_update,last_attempt_at,last_error,retry_count
+      `SELECT dataset_code,last_success_date,last_source_update,last_attempt_at,last_error,retry_count,cursor_payload
          FROM ops.sync_cursors WHERE scope_key=$1 AND dataset_code = ANY($2::text[])`,
       [scopeKey, codes]
     );
@@ -72,16 +72,20 @@ async function markDatasetSuccess(scopeKey, datasetCode, options = {}) {
   const client = options.client || pool;
   const lastSuccessDate = options.lastSuccessDate || null;
   const lastSourceUpdate = options.lastSourceUpdate || null;
+  const hasPayload = options.cursorPayload && typeof options.cursorPayload === 'object';
+  const payloadJson = hasPayload ? JSON.stringify(options.cursorPayload) : null;
   try {
     await client.query(
-      `INSERT INTO ops.sync_cursors(instrument_id,company_id,scope_key,dataset_code,last_success_date,last_source_update,last_attempt_at,last_error,retry_count,updated_at)
-       VALUES($1,$2,$3,$4,$5,COALESCE($6::timestamptz,now()),now(),'',0,now())
+      `INSERT INTO ops.sync_cursors(instrument_id,company_id,scope_key,dataset_code,last_success_date,last_source_update,last_attempt_at,last_error,retry_count,cursor_payload,updated_at)
+       VALUES($1,$2,$3,$4,$5,COALESCE($6::timestamptz,now()),now(),'',0,COALESCE($7::jsonb,'{}'::jsonb),now())
        ON CONFLICT(scope_key,dataset_code) DO UPDATE SET
          instrument_id=COALESCE(EXCLUDED.instrument_id,sync_cursors.instrument_id),
          company_id=COALESCE(EXCLUDED.company_id,sync_cursors.company_id),
          last_success_date=COALESCE(GREATEST(sync_cursors.last_success_date,EXCLUDED.last_success_date),sync_cursors.last_success_date),
-          last_source_update=COALESCE(EXCLUDED.last_source_update,now()),last_attempt_at=now(),last_error='',retry_count=0,updated_at=now()`,
-      [options.instrumentId || null, options.companyId || null, scopeKey, datasetCode, lastSuccessDate, lastSourceUpdate]
+          last_source_update=COALESCE(EXCLUDED.last_source_update,now()),last_attempt_at=now(),last_error='',retry_count=0,
+          cursor_payload=CASE WHEN $7::jsonb IS NOT NULL THEN COALESCE(sync_cursors.cursor_payload,'{}'::jsonb)||$7::jsonb ELSE sync_cursors.cursor_payload END,
+          updated_at=now()`,
+      [options.instrumentId || null, options.companyId || null, scopeKey, datasetCode, lastSuccessDate, lastSourceUpdate, payloadJson]
     );
   } catch (_) {
     // 水位写入失败不得影响主流程

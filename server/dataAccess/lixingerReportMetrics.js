@@ -126,9 +126,12 @@ function metricsByStatement(market, statement) {
   return metricsOf(market).filter(item => item.statement === statement);
 }
 
-// 官方要求 "q.<表>.<字段>.t"：q = 季度粒度，t = 报告期累计值（与既有落库口径一致）。
+const VALID_EXPRESSIONS = new Set(['t', 't_o', 't_y2y', 't_c2c', 'c', 'c_o', 'c_y2y', 'c_c2c']);
+
+// 官方要求 "q.<表>.<字段>.t"：q = 季度粒度，t = 报告期累计值（与既有落库口径一致），
+// 原生同比/环比与单季口径后缀为 t_y2y/t_c2c/t_o_y2y/t_o_c2c/c/c_y2y/c_c2c。
 function requestCodeOf(metricCode, expression = 't') {
-  if (!['t', 't_o'].includes(expression)) throw new Error(`不支持的财报表达式：${expression}`);
+  if (!VALID_EXPRESSIONS.has(expression)) throw new Error(`不支持的财报表达式：${expression}`);
   return `q.${metricCode}.${expression}`;
 }
 
@@ -142,6 +145,31 @@ function metricsOfType(market, type) {
 
 function requestBatchesOf(market, size = MAX_METRICS_PER_REQUEST, type = 'non_financial', expression = 't') {
   const codes = metricsOfType(market, type).map(item => requestCodeOf(item.code, expression));
+  const limit = Math.max(Number(size) || MAX_METRICS_PER_REQUEST, 1);
+  const batches = [];
+  for (let index = 0; index < codes.length; index += limit) {
+    batches.push(codes.slice(index, index + limit));
+  }
+  return batches;
+}
+
+function requestComparisonBatchesOf(market, size = MAX_METRICS_PER_REQUEST, type = 'non_financial', _expression = 't', kinds = STATEMENTS) {
+  const mkt = String(market || '').toUpperCase();
+  const singleExpr = mkt === 'HK' ? 'c_o' : 'c';
+  const kindSet = new Set(kinds);
+  const items = metricsOfType(market, type).filter(item => kindSet.has(item.statement));
+  const codes = [];
+  for (const item of items) {
+    // 2026-11-24 理杏仁实测矩阵：A/H 股原生同比环比统一用 t_y2y/t_c2c（港股无 t_o_y2y），
+    // 港股原币单季流用 c_o、A 股用 c，单季同比环比统一用 c_y2y/c_c2c。
+    codes.push(requestCodeOf(item.code, 't_y2y'));
+    codes.push(requestCodeOf(item.code, 't_c2c'));
+    if (item.statement === 'income' || item.statement === 'cashflow') {
+      codes.push(requestCodeOf(item.code, singleExpr));
+      codes.push(requestCodeOf(item.code, 'c_y2y'));
+      codes.push(requestCodeOf(item.code, 'c_c2c'));
+    }
+  }
   const limit = Math.max(Number(size) || MAX_METRICS_PER_REQUEST, 1);
   const batches = [];
   for (let index = 0; index < codes.length; index += limit) {
@@ -194,6 +222,7 @@ module.exports = {
   metricsOf,
   metricsOfType,
   requestBatchesOf,
+  requestComparisonBatchesOf,
   requestCodeOf,
   standardOf,
   statementOfMetricKey,

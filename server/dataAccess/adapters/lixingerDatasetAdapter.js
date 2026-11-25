@@ -583,6 +583,10 @@ async function resolveFinancialReports({ tsCode, startDate, endDate, kinds = ['i
     .map(batch => batch.filter(code => !standardCodes.has(code)
       && kinds.includes(reportMetrics.statementOfMetricKey(code.replace(/^q\./, '').replace(/\.t(?:_o)?$/, '')))))
     .filter(batch => batch.length);
+  const hasBatchMetrics = q => {
+    if (!q || typeof q !== 'object') return false;
+    return Object.values(flattenMetrics(q)).some(v => v !== null && v !== undefined && v !== '');
+  };
   const merged = new Map();
   const batches = [metrics, ...extraBatches];
   for (const [batchIndex, list] of batches.entries()) {
@@ -595,13 +599,40 @@ async function resolveFinancialReports({ tsCode, startDate, endDate, kinds = ['i
       const key = JSON.stringify([item.date || null, item.standardDate || null, item.reportType || null,
         item.stockCode || null, item.reportDate || null, item.currency || null,
         item.fiscalYear || item.fiscal_year || null]);
+      const batchHasData = batchIndex > 0 || hasBatchMetrics(item.q);
       const prev = merged.get(key);
-      if (!prev) merged.set(key, { item: { ...item, q: { ...(item.q || {}) } }, batches: new Set([batchIndex]) });
-      else {
+      if (!prev) {
+        merged.set(key, {
+          item: { ...item, q: { ...(item.q || {}) } },
+          batches: new Set(batchHasData ? [batchIndex] : []),
+        });
+      } else {
         prev.item.q = mergeMetricTree(prev.item.q, item.q || {});
-        prev.batches.add(batchIndex);
+        if (batchHasData) prev.batches.add(batchIndex);
       }
     }
+  }
+  // 原生同比/环比与单季口径分批采集（单批严格 <=128 指标，单批失败不覆盖已有原值与旧对比值）。
+  const comparisonBatches = options.skipNativeComparisons
+    ? []
+    : reportMetrics.requestComparisonBatchesOf(market, undefined, tableType, expression, kinds);
+  let comparisonReturnedBatches = 0;
+  for (const list of comparisonBatches) {
+    try {
+      const { rows: cmpRows } = await callEndpointRange(endpoint,
+        { stockCodes: [code], metricsList: list }, start, end,
+        { dataset: 'stock_financial_reports', targetDate: end, ...options });
+      if (Array.isArray(cmpRows) && cmpRows.length) {
+        comparisonReturnedBatches++;
+        for (const item of cmpRows) {
+          const key = JSON.stringify([item.date || null, item.standardDate || null, item.reportType || null,
+            item.stockCode || null, item.reportDate || null, item.currency || null,
+            item.fiscalYear || item.fiscal_year || null]);
+          const prev = merged.get(key);
+          if (prev) prev.item.q = mergeMetricTree(prev.item.q, item.q || {});
+        }
+      }
+    } catch (_) { /* 失败保留：单批比较值采集失败不中断原值写入 */ }
   }
   const rows = [...merged.values()];
   const requestedMetricCodes = [...new Set([...metrics, ...extraBatches.flat()]
@@ -613,13 +644,35 @@ async function resolveFinancialReports({ tsCode, startDate, endDate, kinds = ['i
     // 三表原始科目：键形如 bs.ta.t / ps.toi.t / cfs.ncffoa.t，去掉粒度后缀后按代码交给落库层。
     // 只收 bs/ps/cfs（m.* 是衍生指标，由三表算得，不入库）。
     const statementMetrics = {};
+    const statementComparisons = { yoy: {}, qoq: {}, single: {}, single_yoy: {}, single_qoq: {} };
     for (const [key, value] of Object.entries(flat)) {
-      const match = /^((?:bs|ps|cfs)\.[a-z0-9_]+)\.(t|t_o)$/.exec(key);
-      if (match && match[2] !== expression) continue;
-      if (!match) continue;
       if (value === null || value === undefined || value === '') continue;
-      statementMetrics[match[1]] = value;
+      const numVal = Number(value);
+      const match = /^((?:bs|ps|cfs)\.[a-z0-9_]+)\.(t|t_o)$/.exec(key);
+      if (match) {
+        if (match[2] === expression) statementMetrics[match[1]] = value;
+        continue;
+      }
+      const cmpMatch = /^((?:bs|ps|cfs)\.[a-z0-9_]+)\.t_(y2y|c2c)$/.exec(key);
+      if (cmpMatch && Number.isFinite(numVal)) {
+        statementComparisons[cmpMatch[2] === 'y2y' ? 'yoy' : 'qoq'][cmpMatch[1]] = numVal;
+        continue;
+      }
+      const singleExpr = hk ? 'c_o' : 'c';
+      const singleMatch = /^((?:bs|ps|cfs)\.[a-z0-9_]+)\.(c|c_o|c_y2y|c_c2c)$/.exec(key);
+      if (singleMatch && Number.isFinite(numVal)) {
+        if (singleMatch[2] === singleExpr) {
+          statementComparisons.single[singleMatch[1]] = numVal;
+        } else if (singleMatch[2] === 'c_y2y') {
+          statementComparisons.single_yoy[singleMatch[1]] = numVal;
+        } else if (singleMatch[2] === 'c_c2c') {
+          statementComparisons.single_qoq[singleMatch[1]] = numVal;
+        }
+      }
     }
+    const cleanComparisons = Object.fromEntries(
+      Object.entries(statementComparisons).filter(([, map]) => Object.keys(map).length > 0)
+    );
     // 港股财年不统一（3/6/7 月结束都有），periodEnd 必须用真实期末 date；
     // A 股沿用 standardDate（标准化后的报告期），两者都不拿"今天"顶替。
     const periodEnd = hk ? (isoDate(item.date) || isoDate(item.standardDate)) : (isoDate(item.standardDate) || isoDate(item.date));
@@ -646,9 +699,12 @@ async function resolveFinancialReports({ tsCode, startDate, endDate, kinds = ['i
         requested_batch_count: batches.length,
         returned_batch_count: returnedBatches.size,
         complete: returnedBatches.size === batches.length,
+        comparison_requested: comparisonBatches.length > 0,
+        comparison_complete: comparisonBatches.length > 0 && comparisonReturnedBatches === comparisonBatches.length,
       },
       // 三表全量科目随行返回，落库层据此写宽表；没有科目时不挂空对象，避免污染原始留证。
       ...(Object.keys(statementMetrics).length ? { __statement_metrics: statementMetrics } : {}),
+      ...(Object.keys(cleanComparisons).length ? { __statement_comparisons: cleanComparisons } : {}),
       period_type: reportPeriodType || 'unknown',
       currency: item.currency || null,
       // 官方响应未提供经核实的重述标志，不能人为标成未重述。
@@ -688,10 +744,17 @@ async function resolveDividendRows({ tsCode, startDate, endDate, options = {} } 
     // dividend=0 的行（官方明确"无股息截至期末…"）落成 cash=0 的实施记录，
     // 这正好是年度异常需要的"该财年确实零分红"证据，而不是补 0 猜测。
     const unique = new Map();
+    let incompleteReason = null;
     for (const row of result.rows) {
-      const fsEnd = isoDate(row.fsEndDate);
-      if (!fsEnd) continue;
       const cash = numberOrNull(row.dividend);
+      const amount = numberOrNull(row.dividendAmount);
+      const fsEnd = isoDate(row.fsEndDate);
+      if (!fsEnd) {
+        if ((cash !== null && cash > 0) || (amount !== null && amount > 0)) {
+          incompleteReason = 'missing_fiscal_year';
+        }
+        continue;
+      }
       const exDate = isoDate(row.exDate);
       const mappedRow = {
         ts_code: tsCode,
@@ -706,13 +769,20 @@ async function resolveDividendRows({ tsCode, startDate, endDate, options = {} } 
         record_date: isoDate(row.registerDate),
         ex_date: exDate,
         pay_date: isoDate(row.paymentDate),
-        total_cash_amount: numberOrNull(row.dividendAmount),
+        total_cash_amount: amount,
         currency: row.currency || 'HKD',
         source_code: SOURCE,
       };
-      unique.set(`${mappedRow.end_date}:${mappedRow.ann_date || ''}:${mappedRow.div_proc}`, mappedRow);
+      unique.set(
+        `${mappedRow.end_date}:${mappedRow.ann_date || ''}:${mappedRow.ex_date || `${mappedRow.pay_date || ''}:${mappedRow.record_date || ''}`}:${mappedRow.div_proc}`,
+        mappedRow
+      );
     }
-    return [...unique.values()];
+    const outRows = [...unique.values()];
+    if (incompleteReason) {
+      Object.defineProperty(outRows, '__incompleteCoverage', { value: incompleteReason, enumerable: false });
+    }
+    return outRows;
   }
   const mapped = result.rows.map(row => {
     const cashRaw = numberOrNull(row.dividend);

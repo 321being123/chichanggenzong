@@ -41,6 +41,28 @@ async function fetchStockHistory(stockIds, tradeDate) {
   return history;
 }
 
+async function fetchBondHistoricalMinClose(instrumentIds, targetTradeDate, client = pool) {
+  if (!Array.isArray(instrumentIds) || !instrumentIds.length || !targetTradeDate) return new Map();
+  const { rows } = await client.query(`
+    SELECT t.instrument_id,
+           s.prev_min_close,
+           s.history_days,
+           s.history_start_date
+      FROM unnest($1::bigint[]) AS t(instrument_id)
+      CROSS JOIN LATERAL (
+        SELECT MIN(m.close) AS prev_min_close,
+               COUNT(*)::int AS history_days,
+               to_char(MIN(m.trade_date), 'YYYY-MM-DD') AS history_start_date
+          FROM market.convertible_bond_daily_metrics m
+         WHERE m.instrument_id = t.instrument_id
+           AND m.trade_date < $2::date
+           AND m.close > 0
+      ) s
+     WHERE s.history_days > 0
+  `, [instrumentIds, targetTradeDate]);
+  return new Map(rows.map(r => [String(r.instrument_id), r]));
+}
+
 async function fetchUniverseRows(tradeDate) {
   const { rows } = await pool.query(`
     WITH bond_rows AS (
@@ -197,6 +219,7 @@ async function select_analytics_convertible_bond_list_metrics_daily_1(params, cl
 module.exports = {
   fetchCoupons,
   fetchStockHistory,
+  fetchBondHistoricalMinClose,
   fetchUniverseRows,
   fetchLifecycleUndetermined,
   select_market_convertible_bond_daily_metrics,

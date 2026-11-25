@@ -51,6 +51,8 @@ assert.ok(statementsScript.includes('statement-level-') && statementsScript.incl
 assert.ok(statementsScript.includes('comparisonEnabled = data.compare !== \'none\''), '不比较模式必须收起空比较列');
 assert.ok(analysisCss.includes('height:30px') && analysisCss.includes('statement-level-2') && analysisCss.includes('statement-unit'), '三表矩阵缺少紧凑行高、深层级与同行单位样式');
 assert.ok(analysisCss.includes('.statement-status-help') && analysisCss.includes('min-width:44px') && analysisCss.includes('min-height:44px'), '缺失字段必须有可触达的状态说明入口');
+assert.ok(analysisCss.includes('box-sizing:border-box') && analysisCss.includes('.statement-col-basis'), 'F-07: 双固定列必须使用 box-sizing:border-box 防止内边距导致 7px 交叠');
+assert.ok(!statementsScript.includes("periodFilter === 'semiannual' ? '半年'"), 'F-06: H1-Q1 差值不得标为半年');
 assert.ok(analysisCss.includes('.biz-table-floating-head .stock-analysis-statements-table thead') && analysisCss.includes('height:auto'), '浮动表头必须解除共享表头的固定行高');
 assert.ok(businessTableScript.includes('floating.className = table.className + \' biz-table-floating-table\''), '浮动表头必须保留业务矩阵样式');
 assert.ok(businessTableScript.includes('aria-hidden\', \'true\''), '浮动表头副本必须对读屏隐藏');
@@ -104,13 +106,16 @@ assert.ok(statementsPresenter.includes('stockAnalysisState.selected !== code'), 
     { end_date: '2025-12-31', scope: 'consolidated', fs_table_type: 'non_financial', currency: 'CNY' }
   ], fields: [
     { code: 'ps.toi', label: '营业收入', section: '营业收入', level: 0, is_parent: true, values: [{ value: 10, status: 'available' }] },
-    { code: 'ps.oc', label: '营业成本', section: '成本及费用', level: 1, parent: 'ps.toc', unit: 'CNY·亿元', values: [{ value: 5, status: 'available' }] }
+    { code: 'ps.oc', label: '营业成本', section: '成本及费用', level: 1, parent: 'ps.toc', unit: 'CNY·亿元', values: [{ value: 5, status: 'available' }] },
+    { code: 'ps.beps', label: '基本每股收益', section: '每股收益', level: 1, parent: 'ps.eps', unit: '元/股', measure_type: 'per_share', values: [{ value: 1.5, status: 'available' }] }
   ] });
   const table = dom.window.document.querySelector('table');
   assert.strictEqual(table.querySelectorAll('thead tr:first-child th').length, 2, '不比较模式每期只能保留一个分组列');
   assert.strictEqual(table.querySelectorAll('thead tr:nth-child(2) th').length, 1, '不比较模式不能渲染空比较列');
   assert.ok(table.querySelector('tr.statement-section-total[data-statement-level="0"]'), '同名有值分组应合并为带值总计行');
-  assert.ok(table.querySelector('tr[data-parent-code="ps.toc"] .statement-unit'), '层级字段应保留父项标识和同行单位');
+  assert.ok(table.querySelector('tr[data-parent-code="ps.toc"]'), '层级字段应保留父项标识');
+  assert.ok(!table.querySelector('tr[data-parent-code="ps.toc"] .statement-unit'), '#87 亿元科目不再在竖表头重复渲染单位');
+  assert.ok(table.querySelector('tr[data-statement-code="ps.beps"] .statement-unit'), '#87 每股收益等非亿元非百分比例外科目保留单位');
   dom.window.close();
 }
 {

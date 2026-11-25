@@ -153,6 +153,17 @@ async function runHkSingleStockRefresh(options = {}) {
   // 采集后重查本地事实：接口成功但没落库不算覆盖。
   coverage = await readCoverage(tsCode);
 
+  const marketAttempt = attempts.find(item => item.domain === 'hk_market');
+  const rawFactsAttempt = attempts.find(item => item.domain === 'hk_facts');
+  const factsAttempt = rawFactsAttempt && rawFactsAttempt.result && rawFactsAttempt.result.dividendCoverage ? rawFactsAttempt : null;
+  const collectedDividendCoverage = factsAttempt ? factsAttempt.result.dividendCoverage : null;
+  if (collectedDividendCoverage && collectedDividendCoverage.complete === true) {
+    await cursorsApi.markDatasetSuccess(datasetScope('hk', tsCode), 'dividends', {
+      lastSuccessDate: targetDate,
+      cursorPayload: collectedDividendCoverage,
+    });
+  }
+
   const stageResults = [];
   const remaining = [];
   for (const domain of ALL_DOMAINS) {
@@ -160,6 +171,9 @@ async function runHkSingleStockRefresh(options = {}) {
       stageResults.push({ domain, status: 'skipped_already_succeeded', targetDate });
       continue;
     }
+    const domainError = (domain === 'bars' || domain === 'valuation')
+      ? (marketAttempt && marketAttempt.error)
+      : ((domain === 'reports' || domain === 'dividends') ? (rawFactsAttempt && rawFactsAttempt.error) : null);
     if (attemptFailures.has(domain)) {
       // 上游采集失败或未落库时禁止推进目标日游标，否则同日再刷会跳过采集。
       const reason = attemptFailures.get(domain);
@@ -174,16 +188,22 @@ async function runHkSingleStockRefresh(options = {}) {
       stageResults.push({ domain, status: 'failed', targetDate, reason });
       continue;
     }
-    const covered = coverageOf(domain, coverage);
+    const covered = !domainError && (
+      coverageOf(domain, coverage)
+      || (domain === 'dividends' && Boolean(collectedDividendCoverage && collectedDividendCoverage.complete === true))
+    );
     if (covered) {
-      await cursorsApi.markDatasetSuccess(scope, domain, { lastSuccessDate: targetDate });
+      await cursorsApi.markDatasetSuccess(scope, domain, {
+        lastSuccessDate: targetDate,
+        ...(domain === 'dividends' && collectedDividendCoverage ? { cursorPayload: collectedDividendCoverage } : {}),
+      });
       stageResults.push({ domain, status: 'succeeded', targetDate, source: 'local_coverage' });
-    } else if (OPTIONAL_DOMAINS.includes(domain)) {
+    } else if (!domainError && OPTIONAL_DOMAINS.includes(domain)) {
       remaining.push({ domain, status: 'source_unavailable', reason: domain === 'announcements'
         ? '港股公告统一采集层尚未覆盖该市场' : '暂无已实施的现金分红记录', required: false });
       stageResults.push({ domain, status: 'blocked_optional', targetDate });
     } else {
-      remaining.push({ domain, status: 'pending', reason: '本地覆盖缺失或来源未提供', required: true });
+      remaining.push({ domain, status: 'pending', reason: domainError || '本地覆盖缺失或来源未提供', required: !OPTIONAL_DOMAINS.includes(domain) });
       stageResults.push({ domain, status: 'failed', targetDate });
     }
   }

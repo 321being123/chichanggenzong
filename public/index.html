@@ -544,7 +544,7 @@
             <h3 id="stock-analysis-statements-title">资产负债表</h3>
             <div class="stock-analysis-statements-controls" aria-label="财报筛选">
               <label>报告期 <select id="stock-analysis-statement-period" data-act="stockAnalysisStatementFilterChanged" data-use-value><option value="all">全部</option><option value="annual">年报</option><option value="semiannual">半年报</option><option value="quarter">季报</option></select></label>
-              <label>比较 <select id="stock-analysis-statement-compare" data-act="stockAnalysisStatementFilterChanged" data-use-value><option value="yoy">同比</option><option value="qoq">环比</option><option value="none">不比较</option></select></label>
+              <label>比较 <select id="stock-analysis-statement-compare" data-act="stockAnalysisStatementFilterChanged" data-use-value><option value="both">同比 + 环比</option><option value="yoy">同比</option><option value="qoq">环比</option><option value="none">不比较</option></select></label>
               <label>期间 <select id="stock-analysis-statement-range" data-act="stockAnalysisStatementFilterChanged" data-use-value><option value="5">近5期</option><option value="10" selected>近10期</option><option value="20">近20期</option></select></label>
               <label>口径 <select id="stock-analysis-statement-scope" data-act="stockAnalysisStatementFilterChanged" data-use-value><option value="">全部已存口径</option><option value="consolidated">合并口径</option></select></label>
             </div>
@@ -1013,10 +1013,71 @@
           <select id="bond-list-status" data-act="bondListApplyFilters" aria-label="按数据状态筛选">
             <option value="">全部数据</option><option value="complete">数据完整</option><option value="partial">数据不完整</option>
           </select>
+          <button class="btn btn-outline btn-sm bond-filter-toggle-btn" id="bond-list-filter-toggle" type="button" data-act="bondListToggleFilterPanel" aria-expanded="false">筛选条件 (0)</button>
           <span class="bond-list-quality" id="bond-list-visible"></span>
           <span class="bond-feature-spacer"></span>
           <button class="btn btn-outline btn-sm" id="bond-list-refresh" data-act="bondListRefresh">刷新行情</button>
           <button class="btn btn-outline btn-sm" id="bond-list-export" data-act="exportBondList">导出 Excel</button>
+        </div>
+        <div class="bond-list-filters-panel" id="bond-list-filters-panel">
+          <div class="bond-filter-grid">
+            <label class="bond-filter-field">
+              <span>转债价格(元)</span>
+              <div class="bond-filter-range">
+                <input id="bond-filter-price-min" type="number" step="any" placeholder="最低" aria-label="转债价格最低">
+                <span>到</span>
+                <input id="bond-filter-price-max" type="number" step="any" placeholder="最高" aria-label="转债价格最高">
+              </div>
+            </label>
+            <label class="bond-filter-field">
+              <span>剩余规模(亿元) ≤</span>
+              <input id="bond-filter-remain-max" type="number" step="any" placeholder="上限" aria-label="剩余规模上限">
+            </label>
+            <label class="bond-filter-field">
+              <span>转债占比(%) ≤</span>
+              <input id="bond-filter-cap-ratio-max" type="number" step="any" placeholder="上限%" aria-label="转债占比上限">
+            </label>
+            <label class="bond-filter-field">
+              <span>资产负债率(%) ≤</span>
+              <input id="bond-filter-debt-ratio-max" type="number" step="any" placeholder="上限%" aria-label="资产负债率上限">
+            </label>
+            <label class="bond-filter-field">
+              <span>转股溢价率(%) ≤</span>
+              <input id="bond-filter-premium-max" type="number" step="any" placeholder="上限%" aria-label="转股溢价率上限">
+            </label>
+            <label class="bond-filter-field">
+              <span>到期收益率(%) ≥</span>
+              <input id="bond-filter-ytm-min" type="number" step="any" placeholder="下限%" aria-label="到期收益率下限">
+            </label>
+            <label class="bond-filter-field">
+              <span>剩余年限(年)</span>
+              <div class="bond-filter-range">
+                <input id="bond-filter-years-min" type="number" step="any" placeholder="最短" aria-label="剩余年限最短">
+                <span>到</span>
+                <input id="bond-filter-years-max" type="number" step="any" placeholder="最长" aria-label="剩余年限最长">
+              </div>
+            </label>
+            <div class="bond-filter-field bond-filter-rating-wrap">
+              <span>评级</span>
+              <button class="btn btn-outline btn-sm bond-filter-rating-btn" id="bond-filter-rating-btn" type="button" data-act="bondListToggleRatingMenu" aria-expanded="false">全部评级</button>
+              <div class="bond-filter-rating-menu js-hidden" id="bond-filter-rating-menu" role="group" aria-label="评级多选"></div>
+            </div>
+          </div>
+          <div class="bond-filter-actions">
+            <label class="bond-filter-check">
+              <input id="bond-filter-hist-low" type="checkbox">
+              <span>仅看历史新低转债</span>
+            </label>
+            <details class="bond-filter-help">
+              <summary>口径说明</summary>
+              <div class="bond-filter-help-body">当前现价低于此前全部已收盘交易日的历史最低收盘价（不含今日；历史不足 20 个交易日时不参与，盘中实时价波动会即时反映）。</div>
+            </details>
+            <div class="bond-filter-btn-group">
+              <button class="btn btn-primary btn-sm" id="bond-list-filter-apply" type="button" data-act="bondListApplyCommittedFilters">筛选</button>
+              <button class="btn btn-outline btn-sm" id="bond-list-filter-reset" type="button" data-act="bondListResetFilters">重置</button>
+            </div>
+            <span class="bond-filter-status-hint" id="bond-filter-status-hint">当前结果为最后的筛选条件执行结果；如需显示默认结果请点击“重置”按钮</span>
+          </div>
         </div>
         <div id="bond-list-table"><div class="bond-list-empty">正在加载上市转债数据...</div></div>
       </div>

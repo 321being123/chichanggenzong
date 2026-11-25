@@ -134,17 +134,48 @@ function stockAnalysisStatementRelationReason(relationStatus) {
   return reasons[relationStatus] || '';
 }
 
-function stockAnalysisStatementFormatChange(rawChange) {
-  if (rawChange == null) return { text: '—', cls: '' };
+function stockAnalysisStatementFormatChange(rawChange, unit, source) {
+  if (rawChange == null) return { text: '—', cls: '', title: '' };
   var num = Number(rawChange);
+  if (!Number.isFinite(num)) return { text: '—', cls: '', title: '' };
+  var title = source === 'local_derived' ? '本地推算' : (source === 'lixinger_native' ? '理杏仁原生' : '');
+  if (unit === 'pct_pt') {
+    var ptText = (num > 0 ? '+' : '') + num.toFixed(2) + ' pct';
+    var ptCls = Math.abs(num) < 0.005 ? 'statement-change flat' : (num > 0 ? 'statement-change up' : 'statement-change down negative');
+    return { text: ptText.replace(/^\+0\.00/, '0.00'), cls: ptCls, title: (title ? title + ' · ' : '') + '百分点差值' };
+  }
   var formatted = stockAnalysisPercent(num);
   if (/^[-+]?0(?:\.0+)?%$/.test(formatted) || Math.abs(num) < 0.00005) {
-    return { text: formatted.replace(/^[-+]/, ''), cls: 'statement-change flat' };
+    return { text: formatted.replace(/^[-+]/, ''), cls: 'statement-change flat', title: title };
   }
   if (num > 0) {
-    return { text: formatted.charAt(0) === '+' ? formatted : '+' + formatted, cls: 'statement-change up' };
+    return { text: formatted.charAt(0) === '+' ? formatted : '+' + formatted, cls: 'statement-change up', title: title };
   }
-  return { text: formatted, cls: 'statement-change down negative' };
+  return { text: formatted, cls: 'statement-change down negative', title: title };
+}
+
+function stockAnalysisPeriodQuarterLabel(period) {
+  var pt = String((period && period.period_type) || '').toLowerCase();
+  if (pt === 'annual') return 'Q4';
+  if (pt === 'q3') return 'Q3';
+  if (pt === 'semiannual') return 'Q2';
+  if (pt === 'q1') return 'Q1';
+  return (period && (period.report_type_label || period.report_type)) || '当期';
+}
+
+function stockAnalysisFormatCellValue(rawVal, field) {
+  if (rawVal == null) return '—';
+  var numText = stockAnalysisNumber(rawVal, 2);
+  if (field && (field.measure_type === 'percent' || field.unit === '%')) {
+    return numText === '--' ? '—' : (numText + '%');
+  }
+  return numText;
+}
+
+function stockAnalysisKeepUnitTag(field) {
+  if (!field || !field.unit) return '';
+  if (field.unit === '%' || /亿元$/.test(String(field.unit))) return '';
+  return String(field.unit);
 }
 
 function stockAnalysisBuildRowModels(data) {
@@ -227,11 +258,39 @@ function stockAnalysisRenderStatements(data) {
     return;
   }
   if (message) message.style.display='none';
+  var compareMode = data.compare || 'yoy';
+  var showYoy = compareMode === 'yoy' || compareMode === 'both';
+  var showQoq = compareMode === 'qoq' || compareMode === 'both';
   var comparisonEnabled = data.compare !== 'none';
-  var comparisonLabel = data.compare === 'qoq' ? '环比' : '同比';
-  var columnsPerPeriod = comparisonEnabled ? 2 : 1;
-  var columnCount = data.periods.length * columnsPerPeriod + 1;
-  var headYears = data.periods.map(function(period, periodIndex) {
+  var comparisonLabel = compareMode === 'both' ? '同比/环比' : (compareMode === 'qoq' ? '环比' : '同比');
+  var columnsPerPeriod = 1 + (showYoy ? 1 : 0) + (showQoq ? 1 : 0);
+  var periodFilter = String(data.period_type || (typeof stockAnalysisStatementFilters === 'function' ? stockAnalysisStatementFilters().periodType : 'all') || 'all').toLowerCase();
+  var isFlowStatement = data.type === 'income' || data.type === 'cashflow';
+  var hasSubPeriods = isFlowStatement && periodFilter !== 'annual' && (data.periods || []).some(function(p) {
+    var pt = String((p && p.period_type) || '').toLowerCase();
+    return pt === 'semiannual' || pt === 'q1' || pt === 'q3';
+  });
+  var dualStickyCols = hasSubPeriods;
+  var stickyColCount = dualStickyCols ? 2 : 1;
+  var columnCount = data.periods.length * columnsPerPeriod + stickyColCount;
+
+  var yearGroups = [];
+  (data.periods || []).forEach(function(period, periodIndex) {
+    var yr = String(period.fiscal_year || period.year || String(period.end_date || '').slice(0, 4) || '');
+    var last = yearGroups[yearGroups.length - 1];
+    if (last && last.year === yr) {
+      last.span += columnsPerPeriod;
+      last.endIdx = periodIndex;
+    } else {
+      yearGroups.push({ year: yr, span: columnsPerPeriod, startIdx: periodIndex, endIdx: periodIndex });
+    }
+  });
+  var headLayer1 = yearGroups.map(function(g, gi) {
+    var sepCls = gi < yearGroups.length - 1 ? ' statement-year-end' : '';
+    return '<th class="statement-year-group' + sepCls + '" scope="colgroup" colspan="' + g.span + '">' + escapeHtml(g.year || '报告期') + '</th>';
+  }).join('');
+
+  var headLayer2 = data.periods.map(function(period, periodIndex) {
     var notes = [];
     if (period.end_date) notes.push('期末 ' + period.end_date);
     var periodText = stockAnalysisFormatPeriodLabel(period.report_type_label || period.report_type);
@@ -242,23 +301,44 @@ function stockAnalysisRenderStatements(data) {
     notes.push(scopes[period.scope] || (period.scope ? '口径：' + period.scope : '口径待确认'));
     if (period.currency) notes.push(period.currency);
     if (period.announced_at) notes.push('公告 ' + period.announced_at);
-    var note = notes.length ? '<small>' + escapeHtml(notes.join(' · ')) + '</small>' : '';
-    return '<th id="stmt-period-' + periodIndex + '" class="statement-period" scope="colgroup" colspan="' + columnsPerPeriod + '">' + escapeHtml(period.fiscal_year || period.year || period.end_date || '') + note + '</th>';
+    var qLabel = stockAnalysisPeriodQuarterLabel(period);
+    var tipHtml = notes.length
+      ? '<details class="statement-period-tip"><summary aria-label="查看报告期详情">' + escapeHtml(qLabel) + '</summary><div class="statement-period-tip-body">' + escapeHtml(notes.join(' · ')) + '</div></details>'
+      : escapeHtml(qLabel);
+    var isYearEnd = yearGroups.some(function(g, gi) { return gi < yearGroups.length - 1 && g.endIdx === periodIndex; });
+    return '<th id="stmt-period-' + periodIndex + '" class="statement-period' + (isYearEnd ? ' statement-year-end' : '') + '" scope="colgroup" colspan="' + columnsPerPeriod + '">' + tipHtml + '</th>';
   }).join('');
+
   var subHead = data.periods.map(function(_, periodIndex) {
-    return '<th id="stmt-val-' + periodIndex + '" headers="stmt-period-' + periodIndex + '" scope="col">原值</th>'
-      + (comparisonEnabled ? '<th id="stmt-cmp-' + periodIndex + '" headers="stmt-period-' + periodIndex + '" scope="col">' + escapeHtml(comparisonLabel) + '</th>' : '');
+    var isYearEnd = yearGroups.some(function(g, gi) { return gi < yearGroups.length - 1 && g.endIdx === periodIndex; });
+    var endCls = isYearEnd ? ' statement-year-end' : '';
+    var cols = ['<th id="stmt-val-' + periodIndex + '" class="' + (!comparisonEnabled ? endCls.trim() : '') + '" headers="stmt-period-' + periodIndex + '" scope="col">原值</th>'];
+    if (showYoy) cols.push('<th id="stmt-yoy-' + periodIndex + '" class="' + (!showQoq ? endCls.trim() : '') + '" headers="stmt-period-' + periodIndex + '" scope="col">同比</th>');
+    if (showQoq) cols.push('<th id="stmt-qoq-' + periodIndex + '" class="' + endCls.trim() + '" headers="stmt-period-' + periodIndex + '" scope="col">环比</th>');
+    return cols.join('');
   }).join('');
 
   var model = stockAnalysisBuildRowModels(data);
   var commonComparisonReasons = {};
-  var emptySectionFillers = Array(Math.max(0, columnCount - 1)).fill('<td class="statement-section-filler" aria-hidden="true"></td>').join('');
+  var emptySectionFillers = Array(Math.max(0, columnCount - stickyColCount)).fill('<td class="statement-section-filler" aria-hidden="true"></td>').join('');
+
+  function renderChangeCell(rawVal, unit, source, status, reason, headersAttr, extraCls) {
+    var fmt = stockAnalysisStatementFormatChange(rawVal, unit, source);
+    var clsList = [fmt.cls, source === 'local_derived' ? 'statement-cmp-derived' : '', extraCls].filter(Boolean).join(' ');
+    var clsAttr = clsList ? ' class="' + clsList + '"' : '';
+    var reasonText = status && status !== 'available' ? stockAnalysisStatementReason(reason) : fmt.title;
+    var statusAttr = status && status !== 'available'
+      ? ' data-status="' + escapeHtml(status) + '" title="' + escapeHtml(reasonText) + '" aria-label="' + escapeHtml(reasonText) + '"'
+      : (reasonText ? ' data-cmp-source="' + escapeHtml(source || '') + '" title="' + escapeHtml(reasonText) + '"' : '');
+    return '<td' + clsAttr + ' headers="' + headersAttr + '"' + statusAttr + '>' + escapeHtml(fmt.text) + '</td>';
+  }
 
   var rows = model.rows.map(function(entry) {
     if (entry.kind === 'section') {
       var secDepth = Math.max(0, Math.min(4, Number(entry.depth) || 0));
       var groupAttr = entry.group_id ? ' data-group-id="' + escapeHtml(entry.group_id) + '"' : '';
-      return '<tr class="statement-section statement-section-' + escapeHtml(data.type) + ' statement-role-section statement-level-' + secDepth + '" data-statement-level="' + (Number(entry.depth) || 0) + '"' + groupAttr + '><th scope="row" class="statement-section-cell">' + escapeHtml(entry.label) + '</th>' + emptySectionFillers + '</tr>';
+      var secBasis = dualStickyCols ? '<th scope="row" class="statement-col-basis statement-section-cell"></th>' : '';
+      return '<tr class="statement-section statement-section-' + escapeHtml(data.type) + ' statement-role-section statement-level-' + secDepth + '" data-statement-level="' + (Number(entry.depth) || 0) + '"' + groupAttr + '><th scope="row" class="statement-col-name statement-section-cell">' + escapeHtml(entry.label) + '</th>' + secBasis + emptySectionFillers + '</tr>';
     }
     var field = entry.field || model.byCode[entry.code];
     if (!field) return '';
@@ -283,12 +363,21 @@ function stockAnalysisRenderStatements(data) {
       if (item && item.status && item.status !== 'available' && item.status !== 'source_not_disclosed') {
         addStatusMessage(index, '原值', item.reason);
       }
-      if (comparisonEnabled && item && item.comparison_status && item.comparison_status !== 'available' && item.comparison_status !== 'source_not_disclosed') {
-        var cmpReason = item.comparison_reason;
-        if (cmpReason && cmpReason !== 'comparable_period_missing' && cmpReason !== 'comparable_value_missing' && cmpReason !== 'source_not_disclosed') {
-          addStatusMessage(index, comparisonLabel, cmpReason);
+      var yoyStatus = item && item.yoy_status !== undefined ? item.yoy_status : (item && item.comparison_status);
+      var yoyReason = item && item.yoy_reason !== undefined ? item.yoy_reason : (item && item.comparison_reason);
+      if (showYoy && item && yoyStatus && yoyStatus !== 'available' && yoyStatus !== 'source_not_disclosed') {
+        if (yoyReason && yoyReason !== 'comparable_period_missing' && yoyReason !== 'comparable_value_missing' && yoyReason !== 'source_not_disclosed') {
+          addStatusMessage(index, '同比', yoyReason);
         }
-        if (cmpReason) commonComparisonReasons[cmpReason] = (commonComparisonReasons[cmpReason] || 0) + 1;
+        if (yoyReason) commonComparisonReasons[yoyReason] = (commonComparisonReasons[yoyReason] || 0) + 1;
+      }
+      var qoqStatus = item && item.qoq_status !== undefined ? item.qoq_status : (compareMode === 'qoq' && item ? item.comparison_status : null);
+      var qoqReason = item && item.qoq_reason !== undefined ? item.qoq_reason : (compareMode === 'qoq' && item ? item.comparison_reason : null);
+      if (showQoq && item && qoqStatus && qoqStatus !== 'available' && qoqStatus !== 'source_not_disclosed') {
+        if (qoqReason && qoqReason !== 'comparable_period_missing' && qoqReason !== 'comparable_value_missing' && qoqReason !== 'source_not_disclosed') {
+          addStatusMessage(index, '环比', qoqReason);
+        }
+        if (qoqReason) commonComparisonReasons[qoqReason] = (commonComparisonReasons[qoqReason] || 0) + 1;
       }
     });
     var statusMessages = statusOrder.map(function(groupKey) {
@@ -296,17 +385,22 @@ function stockAnalysisRenderStatements(data) {
     });
     var relationReason = stockAnalysisStatementRelationReason(entry.relation_status);
     if (relationReason) statusMessages.push('层级关系：' + relationReason);
+
     var cells = (field.values || []).map(function(item, periodIndex) {
-      var value = item.value == null ? '—' : stockAnalysisNumber(item.value, 2);
+      var isYearEnd = yearGroups.some(function(g, gi) { return gi < yearGroups.length - 1 && g.endIdx === periodIndex; });
+      var endCls = isYearEnd ? ' statement-year-end' : '';
+      var value = stockAnalysisFormatCellValue(item.value, field);
       var valueReason = stockAnalysisStatementReason(item.reason);
       var valueStatus = item.status && item.status !== 'available' ? ' data-status="' + escapeHtml(item.status) + '" title="' + escapeHtml(valueReason) + '" aria-label="' + escapeHtml(valueReason) + '"' : '';
-      var valueCell = '<td class="statement-value' + (value === '—' ? ' statement-missing' : '') + '" headers="stmt-period-' + periodIndex + ' stmt-val-' + periodIndex + '"' + valueStatus + '>' + escapeHtml(value) + '</td>';
-      if (!comparisonEnabled) return valueCell;
-      var changeFmt = stockAnalysisStatementFormatChange(item.change);
-      var changeClass = changeFmt.cls ? ' class="' + changeFmt.cls + '"' : '';
-      var comparisonReason = stockAnalysisStatementReason(item.comparison_reason);
-      var comparisonStatus = item.comparison_status && item.comparison_status !== 'available' ? ' data-status="' + escapeHtml(item.comparison_status) + '" title="' + escapeHtml(comparisonReason) + '" aria-label="' + escapeHtml(comparisonReason) + '"' : '';
-      return valueCell + '<td' + changeClass + ' headers="stmt-period-' + periodIndex + ' stmt-cmp-' + periodIndex + '"' + comparisonStatus + '>' + escapeHtml(changeFmt.text) + '</td>';
+      var valueCell = '<td class="statement-value' + (value === '—' ? ' statement-missing' : '') + (!comparisonEnabled ? endCls : '') + '" headers="stmt-period-' + periodIndex + ' stmt-val-' + periodIndex + '"' + valueStatus + '>' + escapeHtml(value) + '</td>';
+      var out = valueCell;
+      if (showYoy) {
+        out += renderChangeCell(item.yoy != null ? item.yoy : item.change, item.yoy_unit || item.comparison_unit, item.yoy_source || item.comparison_source, item.yoy_status || item.comparison_status, item.yoy_reason || item.comparison_reason, 'stmt-period-' + periodIndex + ' stmt-yoy-' + periodIndex, !showQoq ? endCls : '');
+      }
+      if (showQoq) {
+        out += renderChangeCell(item.qoq, item.qoq_unit, item.qoq_source, item.qoq_status, item.qoq_reason, 'stmt-period-' + periodIndex + ' stmt-qoq-' + periodIndex, endCls);
+      }
+      return out;
     }).join('');
 
     var depth = Math.max(0, Number(entry.depth) || 0);
@@ -322,12 +416,41 @@ function stockAnalysisRenderStatements(data) {
     var codeAttr = field.code ? ' data-statement-code="' + escapeHtml(field.code) + '"' : '';
     var groupAttr = entry.group_id ? ' data-group-id="' + escapeHtml(entry.group_id) + '"' : '';
     var roleAttr = ' data-row-role="' + escapeHtml(rowRole) + '"';
-    var unit = field.unit ? '<small class="statement-unit">' + escapeHtml(field.unit) + '</small>' : '';
+    var keepUnit = stockAnalysisKeepUnitTag(field);
+    var unit = keepUnit ? '<small class="statement-unit">' + escapeHtml(keepUnit) + '</small>' : '';
     var srParent = parentField ? '<span class="statement-sr-parent">（隶属：' + escapeHtml(parentField.label) + '）</span>' : '';
     var statusHelp = statusMessages.length
       ? '<details class="statement-status-help"><summary aria-label="查看该字段状态说明">!</summary><div class="statement-status-help-text">' + escapeHtml(statusMessages.join('；')) + '</div></details>'
       : '';
-    return '<tr class="' + rowClass + '" data-statement-level="' + depth + '"' + roleAttr + groupAttr + codeAttr + parentAttr + '><th scope="row">' + branch + '<span class="statement-label">' + escapeHtml(field.label) + '</span>' + srParent + unit + statusHelp + '</th>' + cells + '</tr>';
+    var basisCell = dualStickyCols ? '<th scope="row" class="statement-col-basis">当期</th>' : '';
+    var primaryTr = '<tr class="' + rowClass + '" data-statement-level="' + depth + '"' + roleAttr + groupAttr + codeAttr + parentAttr + '><th scope="row" class="statement-col-name">' + branch + '<span class="statement-label">' + escapeHtml(field.label) + '</span>' + srParent + unit + statusHelp + '</th>' + basisCell + cells + '</tr>';
+
+    if (!dualStickyCols || !['currency', 'per_share'].includes(field.measure_type)) {
+      return primaryTr;
+    }
+    var isSemiannualFilter = periodFilter === 'semiannual';
+    var isAllFilter = periodFilter === 'all';
+    var subRowLabel = isSemiannualFilter ? '半年' : (isAllFilter ? '单季/半年' : '单季');
+    var subCells = (field.values || []).map(function(item, periodIndex) {
+      var period = data.periods[periodIndex] || {};
+      var pt = String(period.period_type || '').toLowerCase();
+      var isYearEnd = yearGroups.some(function(g, gi) { return gi < yearGroups.length - 1 && g.endIdx === periodIndex; });
+      var endCls = isYearEnd ? ' statement-year-end' : '';
+      var useSemiannualRow = (isSemiannualFilter || isAllFilter) && pt === 'semiannual';
+      var showSubInCol = isSemiannualFilter ? (pt === 'semiannual') : (isAllFilter ? (pt === 'semiannual' || pt === 'q1' || pt === 'q3') : (pt === 'q1' || pt === 'q3'));
+      var subRawVal = useSemiannualRow ? item.value : item.single_value;
+      var sVal = showSubInCol ? stockAnalysisFormatCellValue(subRawVal, field) : '—';
+      var subYoyVal = useSemiannualRow ? (item.yoy != null ? item.yoy : item.change) : item.single_yoy;
+      var subQoqVal = useSemiannualRow ? null : item.single_qoq;
+      var subSrc = useSemiannualRow ? (item.yoy_source || item.comparison_source) : item.single_source;
+      var subReason = useSemiannualRow ? (item.yoy_reason || item.comparison_reason) : item.single_reason;
+      var out = '<td class="statement-value statement-subperiod-val' + (sVal === '—' ? ' statement-missing' : '') + (!comparisonEnabled ? endCls : '') + '">' + escapeHtml(sVal) + '</td>';
+      if (showYoy) out += renderChangeCell(showSubInCol ? subYoyVal : null, 'ratio', subSrc, null, subReason, 'stmt-period-' + periodIndex + ' stmt-yoy-' + periodIndex, !showQoq ? endCls : '');
+      if (showQoq) out += renderChangeCell(showSubInCol ? subQoqVal : null, 'ratio', subSrc, null, subReason, 'stmt-period-' + periodIndex + ' stmt-qoq-' + periodIndex, endCls);
+      return out;
+    }).join('');
+    var subTr = '<tr class="' + rowClass + ' statement-subperiod-row" data-statement-level="' + depth + '"' + roleAttr + groupAttr + codeAttr + parentAttr + '><th scope="row" class="statement-col-name"><span class="statement-subperiod-indent"></span></th><th scope="row" class="statement-col-basis">' + escapeHtml(subRowLabel) + '</th>' + subCells + '</tr>';
+    return primaryTr + subTr;
   }).join('');
 
   var summaryHtml = '';
@@ -337,8 +460,9 @@ function stockAnalysisRenderStatements(data) {
       summaryHtml = '<div class="stock-analysis-statements-summary" role="note">比较口径说明：' + escapeHtml(topReasons.map(stockAnalysisStatementReason).join('；')) + '</div>';
     }
   }
+  var cornerText = data.currency_mixed ? '多币种·见各期标注' : (data.unit_label || '默认单位：亿元');
   wrap.classList.add('biz-table-scroll');
-  wrap.innerHTML = summaryHtml + '<table class="biz-table biz-table--matrix stock-analysis-statements-table" aria-label="' + escapeHtml((data.name || '财务三表') + '，' + (data.unit_label || '默认单位：亿元')) + '"><thead><tr><th rowspan="2" scope="col">' + escapeHtml(data.unit_label || '默认单位：亿元') + '</th>' + headYears + '</tr><tr>' + subHead + '</tr></thead><tbody>' + rows + '</tbody></table>';
+  wrap.innerHTML = summaryHtml + '<table class="biz-table biz-table--matrix stock-analysis-statements-table' + (dualStickyCols ? ' has-dual-cols' : '') + '" aria-label="' + escapeHtml((data.name || '财务三表') + '，' + cornerText) + '"><thead><tr><th rowspan="3" colspan="' + stickyColCount + '" class="statement-col-corner" scope="col">' + escapeHtml(cornerText) + '</th>' + headLayer1 + '</tr><tr>' + headLayer2 + '</tr><tr>' + subHead + '</tr></thead><tbody>' + rows + '</tbody></table>';
   wrap.style.display='block';
   if (window.BusinessTable) window.BusinessTable.attach(wrap, { page: '#main-stock-analysis', sticky: true });
 }

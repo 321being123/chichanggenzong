@@ -229,6 +229,15 @@ const MIGRATIONS = [
   { version: '209_candidates_total_score_numeric', up: () => require('./migrations/era17CandidatesTotalScore').migration209CandidatesTotalScoreNumeric(pool) },
   { version: '210_stock_classroom', up: () => require('./migrations/era17StockClassroom').migration210StockClassroom(pool) },
   { version: '211_stock_classroom_preview', up: () => require('./migrations/era17StockClassroom').migration211StockClassroomPreview(pool) },
+  {
+    version: '212_cb_hist_min_covering_index',
+    up: () => pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_cbdm_inst_date_close
+        ON market.convertible_bond_daily_metrics (instrument_id, trade_date)
+        INCLUDE (close)
+        WHERE close > 0
+    `),
+  },
 ];
 
 async function ensureMigrationsTable() {

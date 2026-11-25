@@ -208,10 +208,14 @@
     </div>
     <div class="sheet-error" id="sheet-error"></div>
     <div class="sheet-quick-row">
-      <button class="cr-btn" id="sheet-btn-zero" type="button">清零</button>
-      <button class="cr-btn" id="sheet-btn-25" type="button">25%</button>
-      <button class="cr-btn" id="sheet-btn-50" type="button">50%</button>
-      <button class="cr-btn cr-btn-primary" id="sheet-btn-max" type="button">投入全部可用资金</button>
+      <button class="cr-btn" id="sheet-btn-zero" type="button" data-quick-kind="pct" data-quick-val="0">0%</button>
+      <button class="cr-btn" id="sheet-btn-25" type="button" data-quick-kind="pct" data-quick-val="25">25%</button>
+      <button class="cr-btn" id="sheet-btn-50" type="button" data-quick-kind="pct" data-quick-val="50">50%</button>
+      <button class="cr-btn" id="sheet-btn-max" type="button" data-quick-kind="pct" data-quick-val="100">100%</button>
+      <button class="cr-btn" id="sheet-btn-5w" type="button" data-quick-kind="fixed" data-quick-val="5000000">5万</button>
+      <button class="cr-btn" id="sheet-btn-10w" type="button" data-quick-kind="fixed" data-quick-val="10000000">10万</button>
+      <button class="cr-btn" id="sheet-btn-15w" type="button" data-quick-kind="fixed" data-quick-val="15000000">15万</button>
+      <button class="cr-btn" id="sheet-btn-20w" type="button" data-quick-kind="fixed" data-quick-val="20000000">20万</button>
     </div>
     <div class="wheel-viewport" id="sheet-wheel-viewport" aria-label="金额滚轮（每格1万元）">
       <div class="wheel-highlight"></div>

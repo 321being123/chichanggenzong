@@ -72,10 +72,31 @@ function stockAnalysisDate(value) {
   var text=String(value||'').replace(/-/g,'').slice(0,8);
   return /^\d{8}$/.test(text)?text.slice(0,4)+'-'+text.slice(4,6)+'-'+text.slice(6,8):'--';
 }
-function stockAnalysisMetric(label, value, note, negative) {
+function stockAnalysisFormatReason(reason) {
+  var map = {
+    goodwill_not_disclosed_treated_as_zero: '已核验资产负债表已请求商誉且完整，来源未披露按 0 处理',
+    goodwill_not_collected: '尚未采集商誉科目，暂不计算扣除商誉市净率',
+    source_batch_incomplete: '资产负债表采集批次不完整，暂不计算',
+    dividend_coverage_unverified: '尚未完成分红采集核验，无法区分零分红与未采集',
+    verified_zero_dividend: '已核验完整分红记录，该期无现金分红',
+    missing_adj_factor: '缺少复权因子，暂不计算区间年化收益率',
+    insufficient_price_history: '有效复权行情不足 30 天，暂不计算年化收益率',
+    history_shorter_than_listing: '本地复权行情起始晚于上市日，展示区间年化收益率',
+    fx_rate_missing: '缺少对应外币汇率，暂不折算',
+    missing_annual_report: '缺少有效年报数据',
+    insufficient_3y_annual_reports: '连续三年完整年报不足',
+    source_currency_unverified: '报表币种尚未核验',
+  };
+  return map[reason] || reason || '';
+}
+function stockAnalysisMetric(label, value, note, negative, reason) {
   var cls = negative ? ' class="stock-analysis-negative"' : '';
+  var reasonText = reason ? stockAnalysisFormatReason(reason) : '';
+  var detailHtml = reasonText
+    ? '<details class="metric-reason-details"><summary class="metric-reason-trigger">' + (value === '--' ? '缺数原因' : '口径说明') + '</summary><div class="metric-reason-body">' + escapeHtml(reasonText) + '</div></details>'
+    : '';
   return '<div class="stock-analysis-metric"><span>' + analysisHelp(label, stockAnalysisLabelHelp(label)) + '</span><strong' + cls + '>' + escapeHtml(String(value)) + '</strong>' +
-    (note ? '<small>' + escapeHtml(note) + '</small>' : '') + '</div>';
+    (note ? '<small>' + escapeHtml(note) + '</small>' : '') + detailHtml + '</div>';
 }
 // View 对外入口（批次4）：Presenter 只调这些函数改界面，自己不碰 DOM。
 function stockAnalysisApplyRefreshAvailability(signedIn) {
@@ -147,6 +168,15 @@ function stockAnalysisRender(d) {
   var forecastValue=forecast?(forecast.type||'业绩预告'):'暂无有效业绩预告';
   var forecastNote=forecast?('报告期 '+stockAnalysisDate(forecast.end_date)+(forecast.profit_min!=null||forecast.profit_max!=null?' · 利润区间 '+stockAnalysisMoney(forecast.profit_min)+' 至 '+stockAnalysisMoney(forecast.profit_max):'')):'以最新已披露数据为准';
   function infoGroup(title,items){return '<div class="stock-analysis-info-group"><h4>'+escapeHtml(title)+'</h4><div class="stock-analysis-grid">'+items.join('')+'</div></div>'}
+  var isHk = (d.market === 'HK' || display.market === 'HK');
+  var fs = display.field_status || {};
+  var reasonOf = function (k) { return (fs[k] && fs[k].reason) ? fs[k].reason : ''; };
+  var returnNote = isHk
+    ? (v.return_start_mode === 'range'
+      ? ('区间年化（自 ' + stockAnalysisDate(v.return_start_date) + ' 起）')
+      : ('上市至今（起算日 ' + stockAnalysisDate(v.return_start_date) + '）'))
+    : ('复权价格 · 起始 ' + stockAnalysisDate(v.return_start_date));
+  var estSuffix = (isHk && v.dividend_is_estimated) ? ' · 按股本估算' : '';
   if (valuation) valuation.innerHTML = [
     infoGroup('公司与证券资料',[
       stockAnalysisMetric('所属行业',industryLabel,'行业体系与级别以数据源为准'),
@@ -154,21 +184,21 @@ function stockAnalysisRender(d) {
       stockAnalysisMetric('实际控制人',controller.name||'待核实',controller.name?(controller.type||'类型待核实'):'暂无可靠数据')
     ]),
     infoGroup('估值水平',[
-    stockAnalysisMetric('滚动市盈率',stockAnalysisNumber(v.pe_ttm,2),'最近12个月利润',v.pe_ttm<0),
-    stockAnalysisMetric('静态市盈率',stockAnalysisNumber(v.pe_static,2),'最新完整年报',v.pe_static<0),
-    stockAnalysisMetric('动态市盈率',stockAnalysisNumber(v.pe_forecast,2),v.pe_forecast_basis==='annualized_report'?'最新报告期年化':'业绩预告区间中值',v.pe_forecast<0),
-    stockAnalysisMetric('三年平均市盈率',stockAnalysisNumber(v.pe_three_year_avg,2),'最近三个年报平均利润',v.pe_three_year_avg<0),
-    stockAnalysisMetric('市净率',stockAnalysisNumber(v.pb,2),'最新归母净资产',v.pb<0),
-    stockAnalysisMetric('扣除商誉市净率',stockAnalysisNumber(v.pb_ex_goodwill,2),'净资产扣除商誉',v.pb_ex_goodwill<0)
+    stockAnalysisMetric('滚动市盈率',stockAnalysisNumber(v.pe_ttm,2),'最近12个月利润',v.pe_ttm<0,reasonOf('pe_ttm')),
+    stockAnalysisMetric('静态市盈率',stockAnalysisNumber(v.pe_static,2),'最新完整年报',v.pe_static<0,reasonOf('pe_static')),
+    stockAnalysisMetric('动态市盈率',stockAnalysisNumber(v.pe_forecast,2),isHk?'最新中报/季报年化':(v.pe_forecast_basis==='annualized_report'?'最新报告期年化':'业绩预告区间中值'),v.pe_forecast<0,reasonOf('pe_forecast')),
+    stockAnalysisMetric('三年平均市盈率',stockAnalysisNumber(v.pe_three_year_avg,2),'最近三个年报平均利润',v.pe_three_year_avg<0,reasonOf('pe_three_year_avg')),
+    stockAnalysisMetric('市净率',stockAnalysisNumber(v.pb,2),'最新归母净资产',v.pb<0,reasonOf('pb')),
+    stockAnalysisMetric('扣除商誉市净率',stockAnalysisNumber(v.pb_ex_goodwill,2),'净资产扣除商誉',v.pb_ex_goodwill<0,reasonOf('pb_ex_goodwill'))
     ]),
     infoGroup('收益、盈利与分红',[
-    stockAnalysisMetric('股息率',stockAnalysisPercent(v.dividend_yield),'最近12个月税前现金分红'),
-    stockAnalysisMetric('分红率',stockAnalysisPercent(v.payout_ratio),'最新年度'),
-    stockAnalysisMetric('累计分红率',stockAnalysisPercent(v.cumulative_payout_ratio),'历史累计分红 '+stockAnalysisMoney(v.cumulative_dividend)+' ÷ 历史累计盈利 '+stockAnalysisMoney(v.cumulative_profit)),
-    stockAnalysisMetric('平均股息率',stockAnalysisPercent(v.average_dividend_yield),'累计分红率 × 最近12个月归母净利润 ÷ 当前市值'),
+    stockAnalysisMetric('股息率',stockAnalysisPercent(v.dividend_yield),'最近12个月税前现金分红',false,reasonOf('dividend_yield')),
+    stockAnalysisMetric('分红率',stockAnalysisPercent(v.payout_ratio),'最新年度'+estSuffix,false,reasonOf('payout_ratio')),
+    stockAnalysisMetric('累计分红率',stockAnalysisPercent(v.cumulative_payout_ratio),'历史累计分红 '+stockAnalysisMoney(v.cumulative_dividend)+' ÷ 历史累计盈利 '+stockAnalysisMoney(v.cumulative_profit)+estSuffix,false,reasonOf('cumulative_payout_ratio')),
+    stockAnalysisMetric('平均股息率',stockAnalysisPercent(v.average_dividend_yield),'累计分红率 × 最近12个月归母净利润 ÷ 当前市值'+estSuffix,false,reasonOf('average_dividend_yield')),
     stockAnalysisMetric('ROE',v.roe==null?'--':stockAnalysisNumber(v.roe,2)+'%','最新完整年报'),
     stockAnalysisMetric('ROA',v.roa==null?'--':stockAnalysisNumber(v.roa,2)+'%',v.roa_source||'最新完整年报'),
-    stockAnalysisMetric('上市至今年化收益率',stockAnalysisPercent(v.annualized_return_since_listing),'复权价格 · 起始 '+stockAnalysisDate(v.return_start_date),v.annualized_return_since_listing<0)
+    stockAnalysisMetric('上市至今年化收益率',stockAnalysisPercent(v.annualized_return_since_listing),returnNote,v.annualized_return_since_listing<0,reasonOf('annualized_return_since_listing'))
     ]),
     infoGroup('市值结构',[
     stockAnalysisMetric(display.market_cap_label||'总市值',stockAnalysisMoney(v.market_cap),display.market==='HK'?'来源已验证的同一范围、同一币种估值，不用H股价格乘公司全体股本':'当前价格 × 总股本'),

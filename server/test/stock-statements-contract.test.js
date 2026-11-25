@@ -148,7 +148,8 @@ assert.strictEqual(balanceComparison({ period_end: '2025-06-30', bs_ta: -10 },
   { period_end: '2024-06-30', bs_ta: 100 }).comparison_reason, 'negative_comparison_unverified', '跨零口径未核实');
 const ratioPayload = buildStatementPayload({ market: 'CN', type: 'balance', canonicalCode: '600000.SH',
   rows: [row({ period_end: '2025-06-30', bs_tl_ta_r: 0.5 }), row({ period_end: '2024-06-30', bs_tl_ta_r: 0.4 })] });
-assert.strictEqual(field(ratioPayload, 'bs.tl_ta_r').values[0].change, null, '未经证实的比率比较公式不能冒充同比');
+assert.strictEqual(field(ratioPayload, 'bs.tl_ta_r').values[0].yoy_unit, 'pct_pt', '无原生值时比例科目应采用百分点差值');
+assert.ok(Math.abs(field(ratioPayload, 'bs.tl_ta_r').values[0].change - 10) < 1e-9, '比例科目百分点差值应为 +10 pct');
 const unavailableEquity = buildStatementPayload({ market: 'CN', type: 'balance', canonicalCode: '000001.SZ',
   rows: [row({ source_code: 'tushare', bs_tetshaoehopc: 551, bs_tetoshopc: null })], options: { compare: 'none' } });
 assert.strictEqual(field(unavailableEquity, 'bs.tetoshopc').values[0].value, null, '不能隐藏普通股权益缺口');

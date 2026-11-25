@@ -372,6 +372,13 @@
 .sheet-quick-row .cr-btn {
   padding: 0 6px;
   font-size: 13px;
+  min-height: 44px;
+}
+
+.sheet-quick-row .cr-btn:disabled,
+.sheet-quick-row .cr-btn[aria-disabled="true"] {
+  opacity: 0.42;
+  cursor: not-allowed;
 }
 
 /* 闹钟式滚轮（仅在指定区域内响应纵向手势） */
@@ -491,11 +498,16 @@
 }
 
 @media (max-width: 760px) {
+  .fb-fab,
+  .fb-float-panel,
+  .cr-stock-name-sub {
+    display: none !important;
+  }
   .classroom-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
   .sheet-quick-row {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: repeat(4, minmax(0, 1fr));
   }
   .classroom-table-wrap {
     overflow-x: visible;

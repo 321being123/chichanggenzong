@@ -69,10 +69,50 @@
     return Math.max(0, Math.trunc(Number(openingTotalCents || 0)) - otherSum);
   }
 
+  function floorToWanCents(cents) {
+    const n = Math.max(0, Number(cents) || 0);
+    return Math.floor(n / CENTS_PER_WAN) * CENTS_PER_WAN;
+  }
+
   function computePercentCapCents(capCents, pct) {
     if (pct >= 100) return Math.max(0, Math.trunc(Number(capCents || 0)));
     if (pct <= 0) return 0;
     return Math.floor((Math.max(0, Math.trunc(Number(capCents || 0))) * pct) / 100);
+  }
+
+  function computeOpeningPercentWanCents(openingCents, pct) {
+    if (pct <= 0) return 0;
+    const base = Math.max(0, Math.trunc(Number(openingCents || 0)));
+    return floorToWanCents(Math.floor((base * pct) / 100));
+  }
+
+  const QUICK_ALLOC_BUTTON_SPECS = [
+    { id: 'sheet-btn-zero', label: '0%', kind: 'pct', value: 0 },
+    { id: 'sheet-btn-25', label: '25%', kind: 'pct', value: 25 },
+    { id: 'sheet-btn-50', label: '50%', kind: 'pct', value: 50 },
+    { id: 'sheet-btn-max', label: '100%', kind: 'pct', value: 100 },
+    { id: 'sheet-btn-5w', label: '5万', kind: 'fixed', value: 5 * CENTS_PER_WAN },
+    { id: 'sheet-btn-10w', label: '10万', kind: 'fixed', value: 10 * CENTS_PER_WAN },
+    { id: 'sheet-btn-15w', label: '15万', kind: 'fixed', value: 15 * CENTS_PER_WAN },
+    { id: 'sheet-btn-20w', label: '20万', kind: 'fixed', value: 20 * CENTS_PER_WAN },
+  ];
+
+  function computeQuickAllocButtons(openingCents, capCents) {
+    const cap = Math.max(0, Math.trunc(Number(capCents || 0)));
+    return QUICK_ALLOC_BUTTON_SPECS.map(function (spec) {
+      const targetCents = spec.kind === 'pct'
+        ? computeOpeningPercentWanCents(openingCents, spec.value)
+        : spec.value;
+      const disabled = spec.value === 0 && spec.kind === 'pct' ? false : targetCents > cap;
+      return {
+        id: spec.id,
+        label: spec.label,
+        kind: spec.kind,
+        value: spec.value,
+        targetCents: targetCents,
+        disabled: disabled,
+      };
+    });
   }
 
   function formatReturnPct(rate) {
@@ -264,7 +304,10 @@
     centsToWanDisplay: centsToWanDisplay,
     computeAllocatedSumCents: computeAllocatedSumCents,
     computeAssetCapCents: computeAssetCapCents,
+    floorToWanCents: floorToWanCents,
     computePercentCapCents: computePercentCapCents,
+    computeOpeningPercentWanCents: computeOpeningPercentWanCents,
+    computeQuickAllocButtons: computeQuickAllocButtons,
     formatReturnPct: formatReturnPct,
     buildLocalDraftKey: buildLocalDraftKey,
     readLocalDraft: readLocalDraft,

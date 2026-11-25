@@ -79,5 +79,58 @@ test('feedback.js 与 feedback-fab.js 兼容独立页面（esc/toast 兜底与�
   assert.ok(fbJs.includes("var pathname = window.location.pathname || '/';"), 'currentPagePath() 应保留非 / 路径如 /classroom.html');
 });
 
+test('#80 关闭/删除场次调用 loadLobby 且两阶段隔离刷新错误', () => {
+  const js = read('public/js/classroom.js');
+  assert.ok(!js.includes('loadMyClassrooms'), '不应残留不存在的 loadMyClassrooms 调用');
+  assert.ok(js.includes('await loadLobby('), '关闭与删除场次应调用 loadLobby()');
+  assert.ok(js.includes('场次已关闭，但列表刷新失败'), '关闭后刷新失败应明确提示已关闭');
+  assert.ok(js.includes('场次已删除，但列表刷新失败'), '删除后刷新失败应明确提示已删除');
+});
+
+test('#81 半屏投入快捷按钮 2×4 布局与万元向下取整/超限置灰规则', () => {
+  const html = read('public/classroom.html');
+  const css = read('public/css/classroom.css');
+  const presenter = require('../../public/js/presenters/classroom-presenter.js');
+  for (const id of ['sheet-btn-zero', 'sheet-btn-25', 'sheet-btn-50', 'sheet-btn-max', 'sheet-btn-5w', 'sheet-btn-10w', 'sheet-btn-15w', 'sheet-btn-20w']) {
+    assert.ok(html.includes(id), `classroom.html 应包含快捷按钮 ${id}`);
+  }
+  assert.ok(css.includes('min-height: 44px'), '快捷按钮最小高度应为 44px');
+  const btns = presenter.computeQuickAllocButtons(12500000, 10000000); // 期初 12.5万, 上限 10万
+  const byId = Object.fromEntries(btns.map((b) => [b.id, b]));
+  assert.strictEqual(byId['sheet-btn-zero'].targetCents, 0);
+  assert.strictEqual(byId['sheet-btn-zero'].disabled, false);
+  assert.strictEqual(byId['sheet-btn-25'].targetCents, 3000000); // floor(12.5*0.25=3.125) -> 3万
+  assert.strictEqual(byId['sheet-btn-25'].disabled, false);
+  assert.strictEqual(byId['sheet-btn-50'].targetCents, 6000000); // floor(6.25) -> 6万
+  assert.strictEqual(byId['sheet-btn-max'].targetCents, 12000000); // floor(12.5) -> 12万 > cap 10万
+  assert.strictEqual(byId['sheet-btn-max'].disabled, true);
+  assert.strictEqual(byId['sheet-btn-10w'].disabled, false);
+  assert.strictEqual(byId['sheet-btn-15w'].disabled, true);
+});
+
+test('#82 手机端仅隐藏反馈浮框与股票灰色副标题，保留停牌与转债提示', () => {
+  const js = read('public/js/classroom.js');
+  const css = read('public/css/classroom.css');
+  assert.ok(js.includes("nameSub.className = 'stat-sub cr-stock-name-sub'"), '股票副标题应使用 cr-stock-name-sub');
+  assert.ok(css.includes('.fb-fab') && css.includes('.fb-float-panel') && css.includes('.cr-stock-name-sub'), '760px 媒体查询应隐藏反馈浮框与 cr-stock-name-sub');
+  assert.ok(js.includes("span.className = 'stat-sub';") && js.includes('a.paused && a.pauseReason'), '停牌提示应继续使用 stat-sub 保留展示');
+});
+
+test('#83 移除 PRESET_INDUSTRIES 与 000333.SZ 硬编码并列出跨行业实际 SW2021 名称', () => {
+  const js = read('public/js/classroom.js');
+  const svc = read('server/services/classroomPrecheckService.js');
+  assert.ok(!js.includes('PRESET_INDUSTRIES'), '应移除静态 PRESET_INDUSTRIES');
+  assert.ok(!js.includes('000333.SZ'), '不应硬编码 2013 年上市的 000333.SZ');
+  assert.ok(svc.includes('s.swIndustryName'), '跨行业错误应列出每只股票的实际 SW2021 一级行业名称');
+});
+
+test('#80/#83 F-01/F-02 刷新异常透传与抽样迟到失败守卫', () => {
+  const js = read('public/js/classroom.js');
+  assert.ok(js.includes('if (opts && opts.throwOnError) throw e;'), 'loadLobby/loadTeacherConsole/loadTeacherDetail 在 throwOnError 时必须透传异常');
+  assert.ok(js.includes('await loadTeacherDetail(opts);'), 'loadTeacherConsole 应把 opts 透传给 loadTeacherDetail');
+  assert.ok(js.includes('loadTeacherConsole({ throwOnError: true })') && js.includes('loadLobby({ throwOnError: true })'), '关闭/删除后刷新必须传 throwOnError: true');
+  assert.ok(/catch \(e\) \{\s*const currentYear[\s\S]*?if \(reqSeq !== teacherOptionsState\.sampleReqSeq/.test(js), 'sampleTeacherSelection catch 必须校验 reqSeq 丢弃迟到失败');
+});
+
 console.log('PASS=' + pass + '  FAIL=' + fail);
 if (fail) process.exit(1);

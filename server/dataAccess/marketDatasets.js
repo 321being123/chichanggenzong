@@ -832,19 +832,55 @@ async function readFinancialReportRows({ tsCode, kinds, startDate, endDate, fsTa
 // 上层只看这个标记，不需要知道默认来源具体是谁。
 const DEFAULT_DIVIDEND_SOURCE = 'tushare';
 
-async function readDividendRows({ tsCode, startDate, endDate } = {}) {
+async function readDividendRowsWithCoverage({ tsCode, startDate, endDate } = {}) {
   const primary = await safeOfficial(() => official.resolveDividendRows({ tsCode, startDate, endDate }), 'stock_dividend');
   const tag = rows => rows.map(row => ({
     ...row,
     source_code: row.source_code,
     is_default_source: row.source_code === DEFAULT_DIVIDEND_SOURCE,
   }));
-  if (primary.value && primary.value.length) {
-    return tag(primary.value.map(row => ({ ...row, source_code: official.SOURCE })));
+  const primarySucceeded = Boolean(primary && !primary.fallback && Array.isArray(primary.value));
+  const incompleteReason = primarySucceeded && primary.value.__incompleteCoverage ? String(primary.value.__incompleteCoverage) : null;
+  const primaryComplete = primarySucceeded && !incompleteReason;
+  if (primarySucceeded && primary.value.length) {
+    return {
+      rows: tag(primary.value.map(row => ({ ...row, source_code: official.SOURCE }))),
+      coverage: primaryComplete
+        ? { complete: true, startDate, endDate, source: official.SOURCE }
+        : { complete: false, startDate: null, endDate: null, source: official.SOURCE, reason: incompleteReason },
+    };
   }
-  const rows = tsRows(await tushareQuery('dividend', { ts_code: tsCode },
-    'ts_code,end_date,ann_date,div_proc,stk_div,stk_bo_rate,stk_co_rate,cash_div,cash_div_tax,record_date,ex_date,pay_date,imp_ann_date,base_date,base_share', { allowEmpty: true }));
-  return tag(rows.map(row => ({ ...row, source_code: DEFAULT_DIVIDEND_SOURCE })));
+  if (primaryComplete && /\.HK$/i.test(String(tsCode || ''))) {
+    return {
+      rows: [],
+      coverage: { complete: true, startDate, endDate, source: official.SOURCE },
+    };
+  }
+  let rows = [];
+  try {
+    rows = tsRows(await tushareQuery('dividend', { ts_code: tsCode },
+      'ts_code,end_date,ann_date,div_proc,stk_div,stk_bo_rate,stk_co_rate,cash_div,cash_div_tax,record_date,ex_date,pay_date,imp_ann_date,base_date,base_share', { allowEmpty: true }));
+  } catch (error) {
+    if (primaryComplete) {
+      return {
+        rows: [],
+        coverage: { complete: true, startDate, endDate, source: official.SOURCE },
+      };
+    }
+    throw error;
+  }
+  const tagged = tag(rows.map(row => ({ ...row, source_code: DEFAULT_DIVIDEND_SOURCE })));
+  return {
+    rows: tagged,
+    coverage: primaryComplete
+      ? { complete: true, startDate, endDate, source: official.SOURCE }
+      : { complete: false, startDate: null, endDate: null, source: DEFAULT_DIVIDEND_SOURCE, reason: incompleteReason || 'primary_failed' },
+  };
+}
+
+async function readDividendRows(params = {}) {
+  const result = await readDividendRowsWithCoverage(params);
+  return result.rows;
 }
 
 // 债券安全性用财报：官方能给三表与大部分指标，但**没有利息保障倍数**（ebit_to_interest），
@@ -907,6 +943,7 @@ module.exports = {
   readHistoricalCloseSeries,
   readConvertibleBondQuotes,
   readDividendRows,
+  readDividendRowsWithCoverage,
   readFinancialReportRows,
   readFinancialStatementSeries,
   readIndexCloseSeries,

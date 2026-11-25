@@ -49,13 +49,159 @@ function bondListSort(a, b) {
   var result = Number.isFinite(an) && Number.isFinite(bn) ? an - bn : String(av).localeCompare(String(bv), 'zh-CN');
   return result * bondListState.sortDir;
 }
+function bondListReadNumInput(id) {
+  var el = document.getElementById(id);
+  if (!el) return null;
+  var raw = String(el.value == null ? '' : el.value).trim();
+  if (!raw) return null;
+  var n = Number(raw);
+  return Number.isFinite(n) ? n : null;
+}
+function bondListAllRatings() {
+  var set = {};
+  (bondListState.rows || []).forEach(function(r) {
+    set[r.rating ? String(r.rating) : '未评级'] = true;
+  });
+  var list = Object.keys(set);
+  return list.length ? list : ['AAA', 'AA+', 'AA', 'AA-', 'A+', 'A'];
+}
+function bondListSyncRatingMenu() {
+  var menu = document.getElementById('bond-filter-rating-menu');
+  var btn = document.getElementById('bond-filter-rating-btn');
+  if (!menu) return;
+  var ratings = bondListAllRatings();
+  var selected = bondListState.draftRatings;
+  if (!selected) {
+    selected = {};
+    ratings.forEach(function(r) { selected[r] = true; });
+    bondListState.draftRatings = selected;
+  }
+  menu.innerHTML = '<label class="bond-filter-rating-item"><input type="checkbox" data-rating-all="1"' +
+    (ratings.every(function(r) { return selected[r]; }) ? ' checked' : '') + '><span>全选 / 全不选</span></label>' +
+    ratings.map(function(r) {
+      return '<label class="bond-filter-rating-item"><input type="checkbox" data-rating-val="' + escapeHtml(r) + '"' +
+        (selected[r] ? ' checked' : '') + '><span>' + escapeHtml(r) + '</span></label>';
+    }).join('');
+  menu.querySelectorAll('input[type="checkbox"]').forEach(function(cb) {
+    cb.onchange = function() {
+      if (cb.dataset.ratingAll) {
+        ratings.forEach(function(r) { bondListState.draftRatings[r] = cb.checked; });
+      } else if (cb.dataset.ratingVal) {
+        bondListState.draftRatings[cb.dataset.ratingVal] = cb.checked;
+      }
+      bondListSyncRatingMenu();
+    };
+  });
+  if (btn) {
+    var cnt = ratings.filter(function(r) { return selected[r]; }).length;
+    btn.textContent = cnt === ratings.length ? '全部评级' : ('已选 ' + cnt + '/' + ratings.length);
+  }
+}
+function bondListToggleRatingMenu() {
+  var menu = document.getElementById('bond-filter-rating-menu');
+  var btn = document.getElementById('bond-filter-rating-btn');
+  if (!menu) return;
+  bondListSyncRatingMenu();
+  var open = menu.classList.contains('js-hidden');
+  menu.classList.toggle('js-hidden', !open);
+  if (btn) btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+}
+function bondListToggleFilterPanel() {
+  var panel = document.getElementById('bond-list-filters-panel');
+  var btn = document.getElementById('bond-list-filter-toggle');
+  if (!panel) return;
+  var open = !panel.classList.contains('is-open');
+  panel.classList.toggle('is-open', open);
+  if (btn) btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+}
+function bondListReadDraftFilters() {
+  var ratings = bondListAllRatings();
+  var draftRatings = bondListState.draftRatings || {};
+  var allSelected = !bondListState.draftRatings || ratings.every(function(r) { return draftRatings[r]; });
+  var selectedRatings = allSelected ? null : ratings.filter(function(r) { return draftRatings[r]; });
+  return {
+    priceMin: bondListReadNumInput('bond-filter-price-min'),
+    priceMax: bondListReadNumInput('bond-filter-price-max'),
+    remainMax: bondListReadNumInput('bond-filter-remain-max'),
+    capRatioMax: bondListReadNumInput('bond-filter-cap-ratio-max'),
+    debtRatioMax: bondListReadNumInput('bond-filter-debt-ratio-max'),
+    premiumMax: bondListReadNumInput('bond-filter-premium-max'),
+    ytmMin: bondListReadNumInput('bond-filter-ytm-min'),
+    yearsMin: bondListReadNumInput('bond-filter-years-min'),
+    yearsMax: bondListReadNumInput('bond-filter-years-max'),
+    selectedRatings: selectedRatings,
+    histLow: Boolean((document.getElementById('bond-filter-hist-low') || {}).checked),
+  };
+}
+function bondListCountActiveFilters(f) {
+  if (!f) return 0;
+  var c = 0;
+  if (f.priceMin != null || f.priceMax != null) c++;
+  if (f.remainMax != null) c++;
+  if (f.capRatioMax != null) c++;
+  if (f.debtRatioMax != null) c++;
+  if (f.premiumMax != null) c++;
+  if (f.ytmMin != null) c++;
+  if (f.yearsMin != null || f.yearsMax != null) c++;
+  if (f.selectedRatings != null) c++;
+  if (f.histLow) c++;
+  return c;
+}
+function bondListMatchesCommittedFilters(row, f) {
+  if (!f) return true;
+  var num = function(v) { return (v === null || v === undefined || v === '') ? null : (Number.isFinite(Number(v)) ? Number(v) : null); };
+  if (f.priceMin != null) { var p1 = num(row.price); if (p1 == null || p1 < f.priceMin) return false; }
+  if (f.priceMax != null) { var p2 = num(row.price); if (p2 == null || p2 > f.priceMax) return false; }
+  if (f.remainMax != null) { var rm = num(row.remain_size); if (rm == null || rm > f.remainMax) return false; }
+  if (f.capRatioMax != null) { var cr = num(row.bond_market_cap_ratio); if (cr == null || cr * 100 > f.capRatioMax) return false; }
+  if (f.debtRatioMax != null) { var dr = num(row.asset_liability_ratio); if (dr == null || dr * 100 > f.debtRatioMax) return false; }
+  if (f.premiumMax != null) { var cp = num(row.conversion_premium); if (cp == null || cp * 100 > f.premiumMax) return false; }
+  if (f.ytmMin != null) { var ym = num(row.maturity_yield_pre_tax); if (ym == null || ym * 100 < f.ytmMin) return false; }
+  if (f.yearsMin != null) { var y1 = num(row.remaining_years); if (y1 == null || y1 < f.yearsMin) return false; }
+  if (f.yearsMax != null) { var y2 = num(row.remaining_years); if (y2 == null || y2 > f.yearsMax) return false; }
+  if (Array.isArray(f.selectedRatings)) {
+    var r = row.rating ? String(row.rating) : '未评级';
+    if (f.selectedRatings.indexOf(r) < 0) return false;
+  }
+  if (f.histLow && !row.is_historical_low) return false;
+  return true;
+}
+function bondListApplyCommittedFilters() {
+  bondListState.committedFilters = bondListReadDraftFilters();
+  var menu = document.getElementById('bond-filter-rating-menu');
+  if (menu) menu.classList.add('js-hidden');
+  bondListApplyFilters();
+}
+function bondListResetFilters() {
+  ['bond-filter-price-min', 'bond-filter-price-max', 'bond-filter-remain-max', 'bond-filter-cap-ratio-max',
+    'bond-filter-debt-ratio-max', 'bond-filter-premium-max', 'bond-filter-ytm-min', 'bond-filter-years-min', 'bond-filter-years-max']
+    .forEach(function(id) { var el = document.getElementById(id); if (el) el.value = ''; });
+  var hl = document.getElementById('bond-filter-hist-low'); if (hl) hl.checked = false;
+  bondListState.draftRatings = null;
+  bondListState.committedFilters = null;
+  bondListSyncRatingMenu();
+  bondListApplyFilters();
+}
 function bondListApplyFilters() {
   var search = String((document.getElementById('bond-list-search') || {}).value || '').trim().toLowerCase();
   var status = String((document.getElementById('bond-list-status') || {}).value || '');
+  var committed = bondListState.committedFilters || null;
   bondListState.filtered = bondListState.rows.filter(function(row) {
     var hit = !search || [row.bond_code,row.bond_name,row.stock_name,row.stock_code].some(function(v) { return String(v || '').toLowerCase().indexOf(search) >= 0; });
-    return hit && (!status || row.data_status === status);
+    return hit && (!status || row.data_status === status) && bondListMatchesCommittedFilters(row, committed);
   }).sort(bondListSort);
+  var toggleBtn = document.getElementById('bond-list-filter-toggle');
+  if (toggleBtn) toggleBtn.textContent = '筛选条件 (' + bondListCountActiveFilters(committed) + ')';
+  var hintEl = document.getElementById('bond-filter-status-hint');
+  if (hintEl) {
+    var baseHint = '当前结果为最后的筛选条件执行结果；如需显示默认结果请点击“重置”按钮';
+    if (committed && committed.histLow) {
+      var insuff = bondListState.rows.filter(function(r) { return r.historical_low_status === 'insufficient_history'; }).length;
+      hintEl.textContent = baseHint + '（已排除 ' + insuff + ' 只历史覆盖不足转债）';
+    } else {
+      hintEl.textContent = baseHint;
+    }
+  }
   bondListRender();
 }
 function bondListRender() {
@@ -124,6 +270,7 @@ function bondListStartAutoRefresh() {
 function bondListRefresh() { loadBondList(true); }
 // View 对外入口（批次4）：Presenter 只调这些函数改界面，自己不碰 DOM。
 function bondListShowUpdated(data, forceRefresh) {
+  bondListSyncRatingMenu();
   var status = document.getElementById('bond-list-updated');
   var stale = document.getElementById('bond-list-stale');
   if (stale) { stale.classList.remove('js-hidden'); stale.style.display = data.stale ? '' : 'none'; }

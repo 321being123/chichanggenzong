@@ -104,6 +104,7 @@ async function readHkReportFacts(tsCode, limit = 12, tx) {
             to_char(w.announced_at,'YYYY-MM-DD') AS announced_at,w.currency_code,r.raw_payload->>'currency' AS source_currency,
             COALESCE(r.statement_scope,'consolidated') AS statement_scope,
             w.source_version,w.report_id,w.company_id,ds.source_code,r.raw_payload->'__statement_coverage' AS statement_coverage,
+            r.raw_payload->'__statement_comparisons' AS statement_comparisons,
             to_char(w.ingested_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US') AS statement_revision,${REPORT_SELECTS[kind]}
        FROM ${REPORT_TABLES[kind]} w
        JOIN core.company_instruments ci ON ci.company_id=w.company_id

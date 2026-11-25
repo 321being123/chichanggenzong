@@ -332,9 +332,21 @@ async function buildDailyMetrics({ tradeDate = null, reason = 'scheduled' } = {}
   if (!date) throw new Error('暂无可转债行情分区，无法生成列表指标');
   const universe = await attachCallStates(await fetchUniverseRows(date));
   if (!universe.length) throw new Error(`交易日 ${date} 没有可转债列表样本`);
-  const stocks = await fetchStockHistory([...new Set(universe.map(row => row.stock_instrument_id).filter(Boolean))], date);
-  const couponMap = await fetchCoupons(universe.map(row => row.instrument_id));
-  const metrics = universe.map(row => calculateRow(row, stocks, couponMap.get(String(row.instrument_id)) || []));
+  const [stocks, couponMap, histMinMap] = await Promise.all([
+    fetchStockHistory([...new Set(universe.map(row => row.stock_instrument_id).filter(Boolean))], date),
+    fetchCoupons(universe.map(row => row.instrument_id)),
+    repository.fetchBondHistoricalMinClose(universe.map(row => row.instrument_id), date),
+  ]);
+  const metrics = universe.map(row => {
+    const m = calculateRow(row, stocks, couponMap.get(String(row.instrument_id)) || []);
+    const hist = histMinMap.get(String(row.instrument_id));
+    m.diagnostics = {
+      ...(m.diagnostics || {}),
+      prev_min_close: hist && hist.prev_min_close != null ? Number(hist.prev_min_close) : null,
+      history_days: hist ? Number(hist.history_days || 0) : 0,
+    };
+    return m;
+  });
   const client = await pool.connect();
   try {
     await txControl.begin(client);
@@ -357,6 +369,30 @@ async function buildDailyMetrics({ tradeDate = null, reason = 'scheduled' } = {}
   return { trade_date: date, count: metrics.length, reason, complete: metrics.filter(row => row.data_status === 'complete').length };
 }
 
+async function resolveHistoricalMinMap(universe, metrics, date) {
+  const histMinMap = new Map();
+  const missingHistIds = [];
+  for (const row of universe) {
+    const key = String(row.instrument_id);
+    const m = metrics.get(key);
+    const d = m && m.diagnostics && typeof m.diagnostics === 'object' ? m.diagnostics : null;
+    // F-10: 当日已发布快照直接提供前低；无派生快照时实时走覆盖索引回查，不用进程缓存遮蔽历史补数。
+    if (d && d.prev_min_close !== undefined && d.history_days !== undefined) {
+      histMinMap.set(key, { prev_min_close: d.prev_min_close, history_days: d.history_days });
+    } else {
+      missingHistIds.push(row.instrument_id);
+    }
+  }
+  if (missingHistIds.length) {
+    const fetched = await repository.fetchBondHistoricalMinClose(missingHistIds, date);
+    for (const id of missingHistIds) {
+      const key = String(id);
+      histMinMap.set(key, fetched.get(key) || { prev_min_close: null, history_days: 0 });
+    }
+  }
+  return histMinMap;
+}
+
 async function getBondList({ tradeDate = null, query = '', limit = 500, refreshQuotes = false } = {}) {
   const [readablePartition, publishedDate] = await Promise.all([
     tradeDate ? null : getLatestReadablePartition('bond_daily', 'CN'),
@@ -374,6 +410,7 @@ async function getBondList({ tradeDate = null, query = '', limit = 500, refreshQ
   ]);
   if (!universe.length) return { trade_date: date, partition_status: readablePartition && readablePartition.status || null, updated_at: null, count: 0, data: [] };
   const metrics = new Map(metricRows.map(row => [String(row.instrument_id), row]));
+  const histMinMap = await resolveHistoricalMinMap(universe, metrics, date);
   const shouldRefreshQuotes = refreshQuotes && !tradeDate;
   const intraday = shouldRefreshQuotes
     ? await loadIntradayContext(universe, true)
@@ -453,6 +490,21 @@ async function getBondList({ tradeDate = null, query = '', limit = 500, refreshQ
       put_yield_after_tax: metric.put_yield_after_tax == null ? null : Number(metric.put_yield_after_tax),
       double_low: metric.double_low == null ? null : Number(metric.double_low),
       financial_period_end: dateText(metric.financial_period_end), fund_report_date: dateText(metric.fund_report_date),
+      ...(() => {
+        const bondPrice = numberOrNull(sourceRow.close);
+        const hist = histMinMap.get(String(row.instrument_id));
+        const prevMinClose = hist && hist.prev_min_close != null ? Number(hist.prev_min_close) : null;
+        const historyDays = hist ? Number(hist.history_days || 0) : 0;
+        const hasSufficientHistory = historyDays >= 20 && prevMinClose != null && prevMinClose > 0;
+        const isHistoricalLow = Boolean(hasSufficientHistory && bondPrice != null && bondPrice > 0 && bondPrice < prevMinClose);
+        const historicalLowStatus = hasSufficientHistory ? (isHistoricalLow ? 'hit' : 'not_hit') : 'insufficient_history';
+        return {
+          prev_min_close: prevMinClose,
+          history_days: historyDays,
+          is_historical_low: isHistoricalLow,
+          historical_low_status: historicalLowStatus,
+        };
+      })(),
       data_status: dataStatus, diagnostics,
     };
   });

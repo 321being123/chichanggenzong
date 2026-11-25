@@ -236,6 +236,234 @@ function groupCandidatesByLevel1Industry(candidateRows, level1Map) {
   };
 }
 
+const PRECHECK_RULE_VERSION = 'v2_sw2021_level1';
+const SURVIVOR_BIAS_NOTICE = '按建场时 SW2021 一级行业归属筛选并要求覆盖完整 15 个历史年度，存在幸存者偏差，仅作教学样本使用。';
+const BOND_CODE_PRIORITY = ['CBA00601', 'CN10Y_WEALTH', 'CHINABOND_7_10Y_WEALTH'];
+const MIN_SSE_OPEN_DAYS_PER_YEAR = 200;
+const MAX_CALENDAR_GAP_DAYS = 20;
+
+function validateYearTradeCalendar(year, yearTradeDates, calSummaryRow = null) {
+  if (!Array.isArray(yearTradeDates) || yearTradeDates.length < MIN_SSE_OPEN_DAYS_PER_YEAR) {
+    return {
+      ok: false,
+      reason: `${year} 年交易日历不完整（仅 ${yearTradeDates ? yearTradeDates.length : 0} 个开放日，须不少于 ${MIN_SSE_OPEN_DAYS_PER_YEAR} 个）`,
+    };
+  }
+  if (calSummaryRow) {
+    if (Number(calSummaryRow.missing_head_weekdays || 0) > 0) {
+      return {
+        ok: false,
+        reason: `${year} 年交易日历缺少年初开市日前的工作日记录（首日 ${yearTradeDates[0]}）`,
+      };
+    }
+    if (Number(calSummaryRow.missing_tail_weekdays || 0) > 0) {
+      return {
+        ok: false,
+        reason: `${year} 年交易日历缺少年末收市日后的工作日记录（末日 ${yearTradeDates[yearTradeDates.length - 1]}）`,
+      };
+    }
+    if (Number(calSummaryRow.closed_rows || 0) > 0 && Number(calSummaryRow.total_rows || 0) < 365) {
+      return {
+        ok: false,
+        reason: `${year} 年交易日历存在缺失自然日（仅 ${calSummaryRow.total_rows} 条）`,
+      };
+    }
+  }
+  const first = yearTradeDates[0];
+  const last = yearTradeDates[yearTradeDates.length - 1];
+  const firstMonthDay = first.slice(5);
+  const lastMonthDay = last.slice(5);
+  if (firstMonthDay > '01-15') {
+    return { ok: false, reason: `${year} 年交易日历缺少年初开市日（首日 ${first}）` };
+  }
+  if (lastMonthDay < '12-20') {
+    return { ok: false, reason: `${year} 年交易日历缺少年末收市日（末日 ${last}）` };
+  }
+  for (let i = 1; i < yearTradeDates.length; i++) {
+    const prevMs = Date.parse(`${yearTradeDates[i - 1]}T00:00:00Z`);
+    const curMs = Date.parse(`${yearTradeDates[i]}T00:00:00Z`);
+    const gapDays = Math.round((curMs - prevMs) / 86400000);
+    if (gapDays > MAX_CALENDAR_GAP_DAYS) {
+      return {
+        ok: false,
+        reason: `${year} 年交易日历存在异常断档（${yearTradeDates[i - 1]} 至 ${yearTradeDates[i]} 间隔 ${gapDays} 天）`,
+      };
+    }
+  }
+  return { ok: true };
+}
+
+// 按 (startYear, totalRounds, taxonomy, ruleVersion, dataVersion) 缓存已核验的行业与个股覆盖状态
+const windowPoolCache = new Map();
+
+function getShanghaiCurrentYear(now = new Date()) {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric',
+  }).formatToParts(now);
+  const yearPart = parts.find((p) => p.type === 'year');
+  return Number(yearPart ? yearPart.value : now.getUTCFullYear());
+}
+
+function validateWindowBounds(startYear, totalRounds = 15, now = new Date()) {
+  if (!Number.isInteger(startYear) || startYear < 1990) {
+    return { valid: false, reason: '起始年份须为合法整数（不早于 1990 年）' };
+  }
+  const endYear = startYear + totalRounds - 1;
+  const maxCompletedYear = getShanghaiCurrentYear(now) - 1;
+  if (endYear > maxCompletedYear) {
+    return {
+      valid: false,
+      reason: `历史窗口 ${startYear}–${endYear} 包含尚未结束的上海业务自然年（当前仅支持截至 ${maxCompletedYear} 年）`,
+    };
+  }
+  return { valid: true, startYear, endYear };
+}
+
+function createRng(seed = null) {
+  if (seed == null || String(seed).trim() === '') {
+    return () => crypto.randomInt(0, 0x100000000) / 0x100000000;
+  }
+  const hash = crypto.createHash('sha256').update(String(seed)).digest();
+  let state = hash.readUInt32LE(0) || 1;
+  return () => {
+    state = (state + 0x6D2B79F5) >>> 0;
+    let t = Math.imul(state ^ (state >>> 15), 1 | state);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function sampleUniformWithoutReplacement(items, count, rng = createRng()) {
+  const copy = items.slice();
+  const n = Math.min(count, copy.length);
+  for (let i = 0; i < n; i++) {
+    const j = i + Math.floor(rng() * (copy.length - i));
+    const tmp = copy[i];
+    copy[i] = copy[j];
+    copy[j] = tmp;
+  }
+  return copy.slice(0, n);
+}
+
+/**
+ * 将 SW2021 行业节点沿 parent_id 归并到一级行业节点。
+ */
+function resolveSw2021Level1Map(nodes) {
+  const byId = new Map();
+  for (const n of (nodes || [])) {
+    byId.set(String(n.industry_node_id), n);
+  }
+  const level1ById = new Map();
+  for (const [nodeId] of byId.entries()) {
+    let cur = byId.get(nodeId);
+    const visited = new Set();
+    let valid = true;
+    while (cur && cur.parent_id != null && Number(cur.level) !== 1) {
+      const curId = String(cur.industry_node_id);
+      if (visited.has(curId)) {
+        valid = false;
+        break;
+      }
+      visited.add(curId);
+      const parent = byId.get(String(cur.parent_id));
+      if (!parent) {
+        valid = false;
+        break;
+      }
+      cur = parent;
+    }
+    if (valid && cur) {
+      level1ById.set(nodeId, {
+        level1NodeId: String(cur.industry_node_id),
+        level1Code: cur.industry_code || '',
+        level1Name: cur.industry_name || '',
+      });
+    }
+  }
+  return level1ById;
+}
+
+/**
+ * 按 SW2021 一级行业节点 ID 分组、证券 ID 去重；缺失或冲突记录排除并留存原因。
+ */
+function groupCandidatesByLevel1Industry(candidateRows, level1Map) {
+  const byInstrument = new Map();
+  for (const row of (candidateRows || [])) {
+    const instId = String(row.instrument_id);
+    if (!byInstrument.has(instId)) {
+      byInstrument.set(instId, {
+        instrumentId: instId,
+        canonicalCode: row.canonical_code,
+        stockName: row.name,
+        listDate: row.list_date,
+        delistDate: row.delist_date,
+        rawNodeIds: new Set(),
+        level1Nodes: new Map(),
+      });
+    }
+    const entry = byInstrument.get(instId);
+    if (row.industry_node_id != null) {
+      const nid = String(row.industry_node_id);
+      entry.rawNodeIds.add(nid);
+      const l1 = level1Map.get(nid);
+      if (l1) {
+        entry.level1Nodes.set(l1.level1NodeId, l1);
+      }
+    }
+  }
+
+  const industryMap = new Map();
+  const excluded = [];
+
+  for (const entry of byInstrument.values()) {
+    if (entry.level1Nodes.size === 0) {
+      excluded.push({
+        instrumentId: entry.instrumentId,
+        canonicalCode: entry.canonicalCode,
+        stockName: entry.stockName,
+        reason: entry.rawNodeIds.size > 0
+          ? 'SW2021 行业节点父链断链或存在环路，无法归并到一级行业'
+          : '缺少 SW2021 当前行业归属',
+      });
+      continue;
+    }
+    if (entry.level1Nodes.size > 1) {
+      const names = Array.from(entry.level1Nodes.values()).map((x) => x.level1Name).join(' / ');
+      excluded.push({
+        instrumentId: entry.instrumentId,
+        canonicalCode: entry.canonicalCode,
+        stockName: entry.stockName,
+        reason: `存在多个冲突的 SW2021 一级行业归属（${names}），已排除`,
+      });
+      continue;
+    }
+    const [l1] = Array.from(entry.level1Nodes.values());
+    if (!industryMap.has(l1.level1NodeId)) {
+      industryMap.set(l1.level1NodeId, {
+        industryNodeId: l1.level1NodeId,
+        industryCode: l1.level1Code,
+        industryName: l1.level1Name,
+        candidates: [],
+      });
+    }
+    industryMap.get(l1.level1NodeId).candidates.push({
+      instrumentId: entry.instrumentId,
+      canonicalCode: entry.canonicalCode,
+      stockName: entry.stockName,
+      listDate: entry.listDate,
+      delistDate: entry.delistDate,
+      industryNodeId: l1.level1NodeId,
+      industryName: l1.level1Name,
+    });
+  }
+
+  return {
+    industries: Array.from(industryMap.values()).sort((a, b) => a.industryName.localeCompare(b.industryName, 'zh-CN')),
+    excluded,
+  };
+}
+
 /**
  * 纯函数：在单个自然年的交易日列表内，按停牌规则解析取价日与估值日。
  * - 年初目标日：该年首个交易日；若当日有连续停牌证据，向后最多顺延 5 个市场交易日。
@@ -620,10 +848,18 @@ async function runRealPrecheck({ industries, startYear = 2011, totalRounds = 15 
     }
 
     if (expectedLevel1Id && Array.from(groupLevel1Ids).some((id) => id !== expectedLevel1Id)) {
-      universeErrors.push(`第 ${groupIdx + 1} 组「${groupName || expectedLevel1Id}」存在不属于该一级行业的股票`);
+      const detail = stockReports
+        .slice(-(ind.codes || []).length)
+        .map((s) => `${s.stockName || s.canonicalCode}(${s.swIndustryName || '未分类'})`)
+        .join('、');
+      universeErrors.push(`第 ${groupIdx + 1} 组「${groupName || expectedLevel1Id}」存在不属于该一级行业的股票：${detail}`);
     }
     if (groupLevel1Ids.size > 1) {
-      universeErrors.push(`第 ${groupIdx + 1} 组「${groupName || (groupIdx + 1)}」内股票所属 SW2021 一级行业不一致，每组须同属单一一级行业`);
+      const detail = stockReports
+        .slice(-(ind.codes || []).length)
+        .map((s) => `${s.stockName || s.canonicalCode}(${s.swIndustryName || '未分类'})`)
+        .join('、');
+      universeErrors.push(`第 ${groupIdx + 1} 组「${groupName || (groupIdx + 1)}」内股票所属 SW2021 一级行业不一致，每组须同属单一一级行业：${detail}`);
     } else if (groupLevel1Ids.size === 1) {
       const [onlyId] = Array.from(groupLevel1Ids);
       if (usedLevel1Ids.has(onlyId)) {

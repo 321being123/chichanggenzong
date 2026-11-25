@@ -103,11 +103,74 @@ async function syncReportRows(client, rows, kind, companyId, sourceId, options =
       ? (() => { const { __statement_metrics, ...rest } = rawData; return rest; })()
       : rawData;
     if (options.reportTypeOnly && String(data.report_type || '') !== String(options.reportTypeOnly)) continue;
-    const sourceVersion = rowVersion(data), announced = asDate(data.ann_date), fAnnDate = asDate(data.f_ann_date || data.ann_date);
+    const { __statement_comparisons: _cmp, ...rawVersionPayload } = data;
+    const versionPayload = rawVersionPayload.__statement_coverage && typeof rawVersionPayload.__statement_coverage === 'object'
+      ? (() => {
+        const {
+          requested_metric_codes, returned_metric_codes, requested_batch_count,
+          returned_batch_count, complete, comparison_requested, comparison_complete, ...covRest
+        } = rawVersionPayload.__statement_coverage;
+        return { ...rawVersionPayload, __statement_coverage: covRest };
+      })()
+      : rawVersionPayload;
+    let sourceVersion = rowVersion(versionPayload);
+    const announced = asDate(data.ann_date), fAnnDate = asDate(data.f_ann_date || data.ann_date);
     // 报告期类型与金额币种都必须来自事实本身（R2-03）：港股 3 月年报不能被月份推断成 q1，
     // USD 报表金额也不能落成 CNY。行里没有币种时按证券主档币种兜底，而不是一律 CNY。
     const rowPeriodType = resolvePeriodType(data);
     const rowCurrency = String(data.currency || options.currency || (/\.(SH|SZ|BJ)$/i.test(String(options.tsCode || '')) ? 'CNY' : '')).toUpperCase() || null;
+    const targetTsCode = String(data.ts_code || options.tsCode || '').trim().toUpperCase();
+    const targetScope = String(data.report_type || '') === '1'
+      ? 'consolidated'
+      : String(data.statement_scope || 'consolidated');
+    const sameIdentity = sourceId ? (await client.query(
+      `SELECT source_version, raw_payload
+         FROM fundamental.financial_reports
+        WHERE company_id=$1 AND report_kind=$2 AND period_end=$3 AND source_id=$4
+          AND upper(COALESCE(raw_payload->>'ts_code','')) = $5
+          AND announced_at IS NOT DISTINCT FROM $6::date
+          AND f_ann_date IS NOT DISTINCT FROM $7::date
+          AND upper(COALESCE(NULLIF(raw_payload->>'currency',''),
+            CASE WHEN upper(COALESCE(raw_payload->>'ts_code','')) ~ '^[0-9]{6}[.](SH|SZ|BJ)$' THEN 'CNY' ELSE '' END)) = $8
+          AND COALESCE(statement_scope,'consolidated') = $9
+          AND COALESCE(NULLIF(report_type,''),'') = $10
+          AND COALESCE(NULLIF(comp_type,''),'') = $11
+          AND COALESCE(NULLIF(update_flag,''),'') = $12
+        ORDER BY CASE WHEN COALESCE((raw_payload->'__statement_coverage'->>'complete')::boolean, true) THEN 0 ELSE 1 END,
+          ingested_at DESC, report_id DESC
+        LIMIT 1`,
+      [
+        companyId, kind, asDate(data.end_date), sourceId, targetTsCode,
+        announced || null, fAnnDate || null, rowCurrency || '',
+        targetScope, String(data.report_type || ''), String(data.comp_type || ''), String(data.update_flag || ''),
+      ]
+    )).rows[0] : null;
+    const isIncomplete = Boolean(data.__statement_coverage && data.__statement_coverage.complete === false);
+    const missingPreviouslyCollectedField = Boolean(
+      sameIdentity && sameIdentity.raw_payload && typeof sameIdentity.raw_payload === 'object'
+      && Object.entries(FACT_MAP[kind] || {}).some(([sourceField]) =>
+        finite(sameIdentity.raw_payload[sourceField]) !== null && finite(data[sourceField]) === null
+      )
+    );
+    const prevCodes = Array.isArray(sameIdentity?.raw_payload?.__statement_coverage?.returned_metric_codes)
+      ? sameIdentity.raw_payload.__statement_coverage.returned_metric_codes : [];
+    const currCodeSet = new Set(Array.isArray(data.__statement_coverage?.returned_metric_codes)
+      ? data.__statement_coverage.returned_metric_codes : []);
+    const droppedCoverageMetrics = prevCodes.some(code => !currCodeSet.has(code));
+    const preserveExistingNonNull = Boolean(sameIdentity && (isIncomplete || missingPreviouslyCollectedField || droppedCoverageMetrics));
+    let reportPayload = data;
+    if (preserveExistingNonNull && sameIdentity.source_version) {
+      sourceVersion = sameIdentity.source_version;
+      if (data.__statement_coverage && prevCodes.length) {
+        reportPayload = {
+          ...data,
+          __statement_coverage: {
+            ...data.__statement_coverage,
+            returned_metric_codes: [...new Set([...prevCodes, ...currCodeSet])],
+          },
+        };
+      }
+    }
     let rawRecordId = null;
     if (options.runId && sourceId) {
       const rawKey = `${companyId}:${kind}:${asDate(data.end_date)}:${announced || ''}:${fAnnDate || ''}:${data.report_type || ''}:${data.update_flag || ''}`;
@@ -130,8 +193,53 @@ async function syncReportRows(client, rows, kind, companyId, sourceId, options =
         comp_type=COALESCE(NULLIF(EXCLUDED.comp_type,''),fundamental.financial_reports.comp_type),
         update_flag=COALESCE(NULLIF(EXCLUDED.update_flag,''),fundamental.financial_reports.update_flag),
         raw_record_id=COALESCE(EXCLUDED.raw_record_id,fundamental.financial_reports.raw_record_id),
-        raw_payload=EXCLUDED.raw_payload,ingested_at=now() RETURNING report_id`,
-    [companyId, kind, asDate(data.end_date), rowPeriodType, announced, fAnnDate, String(data.report_type || ''), String(data.comp_type || ''), sourceId, sourceVersion, data.update_flag || '', rawRecordId, JSON.stringify(data)])).rows[0];
+        raw_payload=CASE
+          WHEN ($14::boolean OR COALESCE((EXCLUDED.raw_payload->'__statement_coverage'->>'complete')::boolean, true) = false)
+            AND COALESCE((fundamental.financial_reports.raw_payload->'__statement_coverage'->>'complete')::boolean, false) = true
+          THEN CASE
+            WHEN (fundamental.financial_reports.raw_payload ? '__statement_comparisons')
+              OR (EXCLUDED.raw_payload ? '__statement_comparisons')
+            THEN jsonb_set(
+              fundamental.financial_reports.raw_payload || jsonb_strip_nulls(EXCLUDED.raw_payload)
+                || jsonb_build_object('__statement_coverage', CASE
+                  WHEN COALESCE((EXCLUDED.raw_payload->'__statement_coverage'->>'complete')::boolean, false) = true
+                  THEN EXCLUDED.raw_payload->'__statement_coverage'
+                  ELSE COALESCE(fundamental.financial_reports.raw_payload->'__statement_coverage', EXCLUDED.raw_payload->'__statement_coverage')
+                END),
+              '{__statement_comparisons}',
+              jsonb_strip_nulls(jsonb_build_object(
+                'yoy', NULLIF(COALESCE(fundamental.financial_reports.raw_payload->'__statement_comparisons'->'yoy', '{}'::jsonb) || COALESCE(EXCLUDED.raw_payload->'__statement_comparisons'->'yoy', '{}'::jsonb), '{}'::jsonb),
+                'qoq', NULLIF(COALESCE(fundamental.financial_reports.raw_payload->'__statement_comparisons'->'qoq', '{}'::jsonb) || COALESCE(EXCLUDED.raw_payload->'__statement_comparisons'->'qoq', '{}'::jsonb), '{}'::jsonb),
+                'single', NULLIF(COALESCE(fundamental.financial_reports.raw_payload->'__statement_comparisons'->'single', '{}'::jsonb) || COALESCE(EXCLUDED.raw_payload->'__statement_comparisons'->'single', '{}'::jsonb), '{}'::jsonb),
+                'single_yoy', NULLIF(COALESCE(fundamental.financial_reports.raw_payload->'__statement_comparisons'->'single_yoy', '{}'::jsonb) || COALESCE(EXCLUDED.raw_payload->'__statement_comparisons'->'single_yoy', '{}'::jsonb), '{}'::jsonb),
+                'single_qoq', NULLIF(COALESCE(fundamental.financial_reports.raw_payload->'__statement_comparisons'->'single_qoq', '{}'::jsonb) || COALESCE(EXCLUDED.raw_payload->'__statement_comparisons'->'single_qoq', '{}'::jsonb), '{}'::jsonb)
+              )),
+              true
+            )
+            ELSE fundamental.financial_reports.raw_payload || jsonb_strip_nulls(EXCLUDED.raw_payload)
+              || jsonb_build_object('__statement_coverage', CASE
+                WHEN COALESCE((EXCLUDED.raw_payload->'__statement_coverage'->>'complete')::boolean, false) = true
+                THEN EXCLUDED.raw_payload->'__statement_coverage'
+                ELSE COALESCE(fundamental.financial_reports.raw_payload->'__statement_coverage', EXCLUDED.raw_payload->'__statement_coverage')
+              END)
+          END
+          WHEN (fundamental.financial_reports.raw_payload ? '__statement_comparisons')
+            OR (EXCLUDED.raw_payload ? '__statement_comparisons')
+          THEN jsonb_set(
+            EXCLUDED.raw_payload,
+            '{__statement_comparisons}',
+            jsonb_strip_nulls(jsonb_build_object(
+              'yoy', NULLIF(COALESCE(fundamental.financial_reports.raw_payload->'__statement_comparisons'->'yoy', '{}'::jsonb) || COALESCE(EXCLUDED.raw_payload->'__statement_comparisons'->'yoy', '{}'::jsonb), '{}'::jsonb),
+              'qoq', NULLIF(COALESCE(fundamental.financial_reports.raw_payload->'__statement_comparisons'->'qoq', '{}'::jsonb) || COALESCE(EXCLUDED.raw_payload->'__statement_comparisons'->'qoq', '{}'::jsonb), '{}'::jsonb),
+              'single', NULLIF(COALESCE(fundamental.financial_reports.raw_payload->'__statement_comparisons'->'single', '{}'::jsonb) || COALESCE(EXCLUDED.raw_payload->'__statement_comparisons'->'single', '{}'::jsonb), '{}'::jsonb),
+              'single_yoy', NULLIF(COALESCE(fundamental.financial_reports.raw_payload->'__statement_comparisons'->'single_yoy', '{}'::jsonb) || COALESCE(EXCLUDED.raw_payload->'__statement_comparisons'->'single_yoy', '{}'::jsonb), '{}'::jsonb),
+              'single_qoq', NULLIF(COALESCE(fundamental.financial_reports.raw_payload->'__statement_comparisons'->'single_qoq', '{}'::jsonb) || COALESCE(EXCLUDED.raw_payload->'__statement_comparisons'->'single_qoq', '{}'::jsonb), '{}'::jsonb)
+            )),
+            true
+          )
+          ELSE EXCLUDED.raw_payload
+        END,ingested_at=now() RETURNING report_id`,
+    [companyId, kind, asDate(data.end_date), rowPeriodType, announced, fAnnDate, String(data.report_type || ''), String(data.comp_type || ''), sourceId, sourceVersion, data.update_flag || '', rawRecordId, JSON.stringify(reportPayload), preserveExistingNonNull])).rows[0];
     await client.query(`UPDATE fundamental.financial_reports
       SET f_ann_date=COALESCE($2,f_ann_date),report_type=COALESCE(NULLIF($3,''),report_type),comp_type=COALESCE(NULLIF($4,''),comp_type),statement_scope=CASE WHEN $3='1' THEN 'consolidated' ELSE statement_scope END,
       raw_record_id=COALESCE($5,raw_record_id)
@@ -164,7 +272,8 @@ async function syncReportRows(client, rows, kind, companyId, sourceId, options =
             WHEN upper(COALESCE(raw_payload->>'ts_code','')) ~ '^[0-9]{6}[.](SH|SZ|BJ)$' THEN 'CN'
             ELSE 'UNKNOWN'
           END
-        ORDER BY CASE WHEN report_type='1' THEN 0 ELSE 1 END,
+        ORDER BY CASE WHEN COALESCE((raw_payload->'__statement_coverage'->>'complete')::boolean, true) THEN 0 ELSE 1 END,
+          CASE WHEN report_type='1' THEN 0 ELSE 1 END,
           announced_at DESC NULLS LAST,ingested_at DESC,report_id DESC
       ) rn
       FROM fundamental.financial_reports
@@ -176,12 +285,305 @@ async function syncReportRows(client, rows, kind, companyId, sourceId, options =
      WHERE r.report_id=ranked.report_id`, [companyId, kind]);
 }
 
+function officialDividendSourceKey(row, fallbackCode = '') {
+  const code = row.ts_code || fallbackCode || '';
+  const period = asDate(row.end_date) || row.end_date || '';
+  const ann = asDate(row.ann_date || row.imp_ann_date) || row.ann_date || '';
+  const exDate = asDate(row.ex_date);
+  const payDate = asDate(row.pay_date);
+  const recordDate = asDate(row.record_date);
+  const eventDate = exDate || (payDate && recordDate ? `${payDate}:${recordDate}` : (payDate || recordDate || ''));
+  return `${code}:${period}:${ann}:${eventDate}`;
+}
+
+function legacyOfficialDividendSourceKeys(row = {}, fallbackId = '', fallbackCode = '') {
+  const codes = [...new Set([row.ts_code, fallbackCode, fallbackId != null && fallbackId !== '' ? String(fallbackId) : ''].filter(Boolean))];
+  const isoPeriod = asDate(row.end_date);
+  const periods = [...new Set([row.end_date, isoPeriod, isoPeriod ? isoPeriod.replace(/-/g, '') : ''].filter(Boolean))];
+  const isoAnn = asDate(row.ann_date || row.imp_ann_date);
+  const anns = [...new Set([row.ann_date, row.imp_ann_date, isoAnn, isoAnn ? isoAnn.replace(/-/g, '') : '', ''].map(v => v || ''))];
+  const exDate = asDate(row.ex_date);
+  const payDate = asDate(row.pay_date);
+  const recordDate = asDate(row.record_date);
+  const fallbackEventDates = exDate
+    ? [...new Set([payDate && recordDate ? `${payDate}:${recordDate}` : '', payDate, recordDate].filter(Boolean))]
+    : (payDate ? [...new Set([payDate, recordDate].filter(Boolean))] : []);
+  const keys = [];
+  for (const code of codes) {
+    for (const period of periods) {
+      for (const ann of anns) {
+        keys.push(`${code}:${period}:${ann}`);
+        for (const evDate of fallbackEventDates) keys.push(`${code}:${period}:${ann}:${evDate}`);
+      }
+    }
+  }
+  return [...new Set(keys)];
+}
+
+async function resolveAndUpgradeDividendSourceKey(client, { instrumentId, sourceId, newKey, legacyKeys, protectedKeys, batchPeers, fiscalPeriodEnd, announcedAt, exDate, payDate, recordDate, totalAmount, cashPerShare }) {
+  if (!instrumentId || !sourceId || !newKey) return { effectiveKey: newKey, skipWrite: false };
+  const protectedList = Array.isArray(protectedKeys) ? protectedKeys.filter(k => k && k !== newKey) : [];
+  // 1. 迟到/部分回包（如已有除净日后仅返回付款日或登记日）：
+  //    只有无日期冲突且能唯一锁定到一条已确认事件时才复用其更精确键；
+  //    同一批次内其他事件的键不得被复用或改写；命中多条候选时先按金额消歧，仍不唯一则跳过覆盖。
+  if (!exDate && (payDate || recordDate)) {
+    const candidates = (await client.query(
+      `SELECT source_key, total_cash_amount
+         FROM fundamental.corporate_actions
+        WHERE instrument_id=$1 AND action_type='dividend' AND source_id=$2
+          AND fiscal_period_end IS NOT DISTINCT FROM $6::date
+          AND announced_at IS NOT DISTINCT FROM $7::date
+          AND NOT (source_key = ANY($8::text[]))
+          AND ($3::date IS NULL OR ex_date IS NULL OR ex_date = $3::date)
+          AND ($4::date IS NULL OR pay_date IS NULL OR pay_date = $4::date)
+          AND ($5::date IS NULL OR record_date IS NULL OR record_date = $5::date)
+          AND (($3::date IS NOT NULL AND ex_date = $3::date)
+            OR ($4::date IS NOT NULL AND pay_date = $4::date)
+            OR ($5::date IS NOT NULL AND record_date = $5::date))
+          AND (ex_date IS NOT NULL
+            OR ($4::date IS NULL AND pay_date IS NOT NULL)
+            OR ($5::date IS NULL AND pay_date IS NOT NULL AND record_date IS NOT NULL))
+        ORDER BY (ex_date IS NOT NULL) DESC, (pay_date IS NOT NULL) DESC, action_id ASC`,
+      [instrumentId, sourceId, exDate || null, payDate || null, recordDate || null, fiscalPeriodEnd || null, announcedAt || null, protectedList],
+    )).rows;
+    if (candidates.length === 1) {
+      return { effectiveKey: candidates[0].source_key, skipWrite: false };
+    }
+    if (candidates.length > 1) {
+      const amountMatched = totalAmount != null
+        ? candidates.filter(c => c.total_cash_amount != null && Math.abs(Number(c.total_cash_amount) - Number(totalAmount)) < 1e-6)
+        : [];
+      if (amountMatched.length === 1) {
+        return { effectiveKey: amountMatched[0].source_key, skipWrite: false };
+      }
+      return { effectiveKey: null, skipWrite: true };
+    }
+  }
+  const legacyList = (Array.isArray(legacyKeys) ? legacyKeys : []).filter(k => k !== newKey && !protectedList.includes(k));
+  if (exDate && payDate && !recordDate) {
+    const partialCandidates = (await client.query(
+      `SELECT action_id, total_cash_amount, cash_per_share_pre_tax, to_char(record_date,'YYYY-MM-DD') AS record_date_iso
+         FROM fundamental.corporate_actions
+        WHERE instrument_id=$1 AND action_type='dividend' AND source_id=$2
+          AND fiscal_period_end IS NOT DISTINCT FROM $3::date
+          AND announced_at IS NOT DISTINCT FROM $4::date
+          AND ex_date IS NULL AND pay_date = $5::date
+          AND source_key <> $6
+          AND NOT (source_key = ANY($7::text[]))
+        ORDER BY record_date ASC NULLS LAST, action_id ASC`,
+      [instrumentId, sourceId, fiscalPeriodEnd || null, announcedAt || null, payDate, newKey, protectedList],
+    )).rows;
+    const eqNum = (a, b) => a != null && b != null && Math.abs(Number(a) - Number(b)) < 1e-6;
+    const neqNum = (a, b) => a != null && b != null && Math.abs(Number(a) - Number(b)) >= 1e-6;
+    const conflictsCandidate = (c, amt, cps) => neqNum(c.total_cash_amount, amt) || neqNum(c.cash_per_share_pre_tax, cps);
+    const sameEconomics = (c, amt, cps) => !conflictsCandidate(c, amt, cps)
+      && (eqNum(c.total_cash_amount, amt) || eqNum(c.cash_per_share_pre_tax, cps));
+    const matchScore = (c, amt, cps) => {
+      if (conflictsCandidate(c, amt, cps)) return -1;
+      return (eqNum(c.total_cash_amount, amt) ? 1 : 0) + (eqNum(c.cash_per_share_pre_tax, cps) ? 1 : 0);
+    };
+    const sameGroupPeers = (Array.isArray(batchPeers) ? batchPeers : []).filter(peer =>
+      peer.key !== newKey
+      && peer.endDate === (fiscalPeriodEnd || null)
+      && peer.annDate === (announcedAt || null)
+      && peer.payDate === (payDate || null));
+    let matched = [];
+    if (partialCandidates.length === 1 && !sameGroupPeers.length) {
+      matched = partialCandidates;
+    } else if (partialCandidates.length) {
+      const econCandidates = partialCandidates.filter(c => sameEconomics(c, totalAmount, cashPerShare));
+      if (econCandidates.length) {
+        const myScore = matchScore(econCandidates[0], totalAmount, cashPerShare);
+        const peerClaimedElsewhere = peer => partialCandidates.some(other =>
+          !econCandidates.some(ec => ec.action_id === other.action_id)
+          && matchScore(other, peer.totalAmount, peer.cashPerShare) > matchScore(econCandidates[0], peer.totalAmount, peer.cashPerShare),
+        );
+        const activePeers = sameGroupPeers.filter(p => !peerClaimedElsewhere(p));
+        const tiedPeers = activePeers.filter(p => matchScore(econCandidates[0], p.totalAmount, p.cashPerShare) === myScore);
+        const betterPeers = activePeers.filter(p => matchScore(econCandidates[0], p.totalAmount, p.cashPerShare) > myScore);
+        if (!betterPeers.length && myScore > 0) {
+          if (!tiedPeers.length) {
+            matched = [econCandidates[0]];
+          } else {
+            const allTied = [
+              { key: newKey, exDate },
+              ...tiedPeers.map(p => ({ key: p.key, exDate: p.exDate || '' })),
+            ].sort((a, b) => String(a.exDate).localeCompare(String(b.exDate)) || String(a.key).localeCompare(String(b.key)));
+            const existingTiedKeys = new Set(
+              (await client.query(
+                `SELECT source_key FROM fundamental.corporate_actions
+                  WHERE source_id=$1 AND source_key = ANY($2::text[]) AND ex_date IS NOT NULL`,
+                [sourceId, allTied.map(t => t.key)],
+              )).rows.map(r => r.source_key),
+            );
+            const remainingTied = allTied.filter(t => !existingTiedKeys.has(t.key));
+            const myRank = remainingTied.findIndex(t => t.key === newKey);
+            if (myRank >= 0 && myRank < econCandidates.length) {
+              matched = [econCandidates[myRank]];
+            }
+          }
+        }
+      }
+    }
+    if (matched.length === 1) {
+      const existingKeep = (await client.query(
+        `SELECT action_id, to_char(record_date,'YYYY-MM-DD') AS record_date_iso, total_cash_amount, cash_per_share_pre_tax
+           FROM fundamental.corporate_actions
+          WHERE source_id=$1 AND source_key=$2 LIMIT 1`,
+        [sourceId, newKey],
+      )).rows[0];
+      if (!existingKeep) {
+        const upgraded = await client.query(
+          `WITH locked AS (
+             SELECT action_id FROM fundamental.corporate_actions
+              WHERE action_id=$2 AND ex_date IS NULL AND pay_date = $3::date
+              FOR UPDATE
+           )
+           UPDATE fundamental.corporate_actions ca
+              SET source_key=$1
+             FROM locked
+            WHERE ca.action_id = locked.action_id
+              AND NOT EXISTS (
+                SELECT 1 FROM fundamental.corporate_actions dup
+                 WHERE dup.source_id=$4 AND dup.source_key=$1
+              )`,
+          [newKey, matched[0].action_id, payDate, sourceId],
+        );
+        if (upgraded.rowCount > 0) return { effectiveKey: newKey, skipWrite: false };
+      }
+      const keepRow = existingKeep || (await client.query(
+        `SELECT action_id, to_char(record_date,'YYYY-MM-DD') AS record_date_iso, total_cash_amount, cash_per_share_pre_tax
+           FROM fundamental.corporate_actions
+          WHERE source_id=$1 AND source_key=$2 LIMIT 1`,
+        [sourceId, newKey],
+      )).rows[0];
+      const bothHaveSameRecordDate = Boolean(
+        keepRow && keepRow.record_date_iso && matched[0].record_date_iso
+        && keepRow.record_date_iso === matched[0].record_date_iso,
+      );
+      const recordDateConsistent = Boolean(
+        keepRow
+        && (!recordDate || !matched[0].record_date_iso || recordDate === matched[0].record_date_iso)
+        && (!keepRow.record_date_iso || !matched[0].record_date_iso
+          || keepRow.record_date_iso === matched[0].record_date_iso),
+      );
+      const sameAsKeep = Boolean(
+        keepRow && recordDateConsistent
+        && (bothHaveSameRecordDate || (
+          !conflictsCandidate(matched[0], keepRow.total_cash_amount, keepRow.cash_per_share_pre_tax)
+          && !conflictsCandidate(matched[0], totalAmount, cashPerShare)
+        )),
+      );
+      if (sameAsKeep) {
+        await client.query(
+          `WITH del AS (
+             DELETE FROM fundamental.corporate_actions
+              WHERE action_id=$2 AND ex_date IS NULL AND pay_date = $3::date
+                AND EXISTS (
+                  SELECT 1 FROM fundamental.corporate_actions keep
+                   WHERE keep.source_id=$4 AND keep.source_key=$1
+                )
+              RETURNING record_date, cash_per_share_pre_tax, total_cash_amount, raw_payload
+           )
+           UPDATE fundamental.corporate_actions keep
+              SET record_date=COALESCE(keep.record_date, del.record_date),
+                  cash_per_share_pre_tax=COALESCE(keep.cash_per_share_pre_tax, del.cash_per_share_pre_tax),
+                  total_cash_amount=COALESCE(keep.total_cash_amount, del.total_cash_amount),
+                  raw_payload=COALESCE(jsonb_strip_nulls(del.raw_payload), '{}'::jsonb)
+                    || COALESCE(jsonb_strip_nulls(keep.raw_payload), '{}'::jsonb)
+                    || jsonb_strip_nulls(jsonb_build_object(
+                      'record_date', to_char(COALESCE(keep.record_date, del.record_date), 'YYYY-MM-DD'),
+                      'cash_div_tax', COALESCE(keep.cash_per_share_pre_tax, del.cash_per_share_pre_tax),
+                      'total_cash_amount', COALESCE(keep.total_cash_amount, del.total_cash_amount)
+                    ))
+             FROM del
+            WHERE keep.source_id=$4 AND keep.source_key=$1`,
+          [newKey, matched[0].action_id, payDate, sourceId],
+        );
+      }
+      return { effectiveKey: newKey, skipWrite: false };
+    }
+  }
+  if (!legacyList.length) return { effectiveKey: newKey, skipWrite: false };
+  // 2. 补齐更精确日期（如登记日→付款日、付款日→付款日+登记日、付款日/登记日→除净日、旧3段键→新4段键）：单条加锁原子升级。
+  await client.query(
+    `WITH locked AS (
+       SELECT action_id
+         FROM fundamental.corporate_actions
+        WHERE instrument_id=$2 AND action_type='dividend' AND source_id=$3
+          AND source_key = ANY($4::text[])
+          AND (($5::date IS NOT NULL AND ex_date = $5::date)
+            OR (ex_date IS NULL
+                AND (($5::date IS NOT NULL AND pay_date IS NOT DISTINCT FROM $6::date AND ($7::date IS NULL OR record_date IS NULL OR record_date = $7::date))
+                  OR ($6::date IS NOT NULL AND pay_date IS NULL AND record_date = $7::date)
+                  OR ($5::date IS NULL AND pay_date IS NOT NULL AND pay_date = $6::date AND ($7::date IS NULL OR record_date IS NULL OR record_date = $7::date)))))
+        ORDER BY (ex_date IS NOT NULL) DESC, (pay_date IS NOT NULL) DESC, action_id ASC
+        LIMIT 1
+        FOR UPDATE
+     )
+     UPDATE fundamental.corporate_actions ca
+        SET source_key=$1
+       FROM locked
+      WHERE ca.action_id = locked.action_id
+        AND NOT EXISTS (
+          SELECT 1 FROM fundamental.corporate_actions dup
+           WHERE dup.source_id=$3 AND dup.source_key=$1
+        )`,
+    [newKey, instrumentId, sourceId, legacyList, exDate || null, payDate || null, recordDate || null],
+  );
+  await client.query(
+    `DELETE FROM fundamental.corporate_actions
+      WHERE instrument_id=$1 AND action_type='dividend' AND source_id=$2
+        AND source_key = ANY($3::text[])
+        AND (($4::date IS NOT NULL AND ex_date = $4::date)
+          OR (ex_date IS NULL
+              AND (($4::date IS NOT NULL AND pay_date IS NOT DISTINCT FROM $5::date AND ($6::date IS NULL OR record_date IS NULL OR record_date = $6::date))
+                OR ($5::date IS NOT NULL AND pay_date IS NULL AND record_date = $6::date)
+                OR ($4::date IS NULL AND pay_date IS NOT NULL AND pay_date = $5::date AND ($6::date IS NULL OR record_date IS NULL OR record_date = $6::date)))))
+        AND EXISTS (
+          SELECT 1 FROM fundamental.corporate_actions keep
+           WHERE keep.source_id=$2 AND keep.source_key=$7
+        )`,
+    [instrumentId, sourceId, legacyList, exDate || null, payDate || null, recordDate || null, newKey],
+  );
+  return { effectiveKey: newKey, skipWrite: false };
+}
+
+function orderDividendBatchForUpsert(rows = []) {
+  return [...rows].sort((a, b) => {
+    const score = row => (!asDate(row && row.ex_date) ? 0 : (asDate(row && row.record_date) ? 1 : 2));
+    return score(a) - score(b);
+  });
+}
+
+function dividendBatchPeersOf(rows = [], fallbackCode = '') {
+  return (rows || []).filter(r => r && r.end_date).map(r => {
+    const cashPre = finite(r.cash_div_tax);
+    const base = finite(r.base_share);
+    const declaredTotal = finite(r.total_cash_amount);
+    const totalAmount = declaredTotal != null ? declaredTotal
+      : (cashPre != null && base != null ? cashPre * base * 10000 : null);
+    return {
+      key: officialDividendSourceKey(r, fallbackCode),
+      endDate: asDate(r.end_date),
+      annDate: asDate(r.ann_date || r.imp_ann_date),
+      payDate: asDate(r.pay_date),
+      exDate: asDate(r.ex_date),
+      totalAmount,
+      cashPerShare: cashPre,
+    };
+  });
+}
+
 // formulaVersion 由编排层传入，仓储不依赖 services 常量模块。
 // 理杏仁官方分红 → 标准分红事实（fundamental.corporate_actions），来源写 lixinger_official。
 // 只写事实、不动 legacy stock_dividends；同一事件与 Tushare 行并存，由现金收益按来源层级与事件键去重择一。
 async function syncOfficialDividends(client, instrumentId, sourceId, rows) {
   let written = 0;
-  for (const row of rows || []) {
+  const orderedRows = orderDividendBatchForUpsert(rows || []);
+  const batchPeers = dividendBatchPeersOf(orderedRows, instrumentId);
+  const batchKeys = [...new Set(batchPeers.map(p => p.key))];
+  for (const row of orderedRows) {
     if (!row || !row.end_date) continue;
     const cashPre = finite(row.cash_div_tax);
     const base = finite(row.base_share);
@@ -190,13 +592,47 @@ async function syncOfficialDividends(client, instrumentId, sourceId, rows) {
     const declaredTotal = finite(row.total_cash_amount);
     const amount = declaredTotal != null ? declaredTotal
       : (cashPre != null && base != null ? cashPre * base * 10000 : null);
+    const newKey = officialDividendSourceKey(row, instrumentId);
+    const { effectiveKey, skipWrite } = await resolveAndUpgradeDividendSourceKey(client, {
+      instrumentId,
+      sourceId,
+      newKey,
+      legacyKeys: legacyOfficialDividendSourceKeys(row, instrumentId),
+      protectedKeys: batchKeys,
+      batchPeers,
+      fiscalPeriodEnd: asDate(row.end_date),
+      announcedAt: asDate(row.ann_date),
+      exDate: asDate(row.ex_date),
+      payDate: asDate(row.pay_date),
+      recordDate: asDate(row.record_date),
+      totalAmount: amount,
+      cashPerShare: cashPre,
+    });
+    if (effectiveKey && !batchKeys.includes(effectiveKey)) batchKeys.push(effectiveKey);
+    if (skipWrite) {
+      written += 1;
+      continue;
+    }
     await client.query(`INSERT INTO fundamental.corporate_actions(instrument_id,action_type,fiscal_period_end,announced_at,record_date,ex_date,pay_date,status,cash_per_share_pre_tax,cash_per_share_after_tax,stock_dividend_ratio,capitalization_ratio,base_shares,total_cash_amount,currency_code,source_id,source_key,raw_payload)
       VALUES($1,'dividend',$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17::jsonb)
-      ON CONFLICT(source_id,source_key) DO UPDATE SET status=EXCLUDED.status,record_date=EXCLUDED.record_date,ex_date=EXCLUDED.ex_date,pay_date=EXCLUDED.pay_date,total_cash_amount=EXCLUDED.total_cash_amount,currency_code=EXCLUDED.currency_code,raw_payload=EXCLUDED.raw_payload,ingested_at=now()`,
+      ON CONFLICT(source_id,source_key) DO UPDATE SET
+        status=COALESCE(NULLIF(EXCLUDED.status,''),fundamental.corporate_actions.status),
+        record_date=COALESCE(EXCLUDED.record_date,fundamental.corporate_actions.record_date),
+        ex_date=COALESCE(EXCLUDED.ex_date,fundamental.corporate_actions.ex_date),
+        pay_date=COALESCE(EXCLUDED.pay_date,fundamental.corporate_actions.pay_date),
+        cash_per_share_pre_tax=COALESCE(EXCLUDED.cash_per_share_pre_tax,fundamental.corporate_actions.cash_per_share_pre_tax),
+        cash_per_share_after_tax=COALESCE(EXCLUDED.cash_per_share_after_tax,fundamental.corporate_actions.cash_per_share_after_tax),
+        stock_dividend_ratio=COALESCE(EXCLUDED.stock_dividend_ratio,fundamental.corporate_actions.stock_dividend_ratio),
+        capitalization_ratio=COALESCE(EXCLUDED.capitalization_ratio,fundamental.corporate_actions.capitalization_ratio),
+        base_shares=COALESCE(EXCLUDED.base_shares,fundamental.corporate_actions.base_shares),
+        total_cash_amount=COALESCE(EXCLUDED.total_cash_amount,fundamental.corporate_actions.total_cash_amount),
+        currency_code=COALESCE(NULLIF(EXCLUDED.currency_code,''),fundamental.corporate_actions.currency_code),
+        raw_payload=COALESCE(fundamental.corporate_actions.raw_payload,'{}'::jsonb)||jsonb_strip_nulls(EXCLUDED.raw_payload),
+        ingested_at=now()`,
     [instrumentId, asDate(row.end_date), asDate(row.ann_date), asDate(row.record_date), asDate(row.ex_date), asDate(row.pay_date),
       row.div_proc || '', cashPre, null, finite(row.stk_bo_rate), finite(row.stk_co_rate), base == null ? null : base * 10000, amount,
       String(row.currency || 'CNY').toUpperCase(),
-      sourceId, `${row.ts_code || instrumentId}:${row.end_date}:${row.ann_date || ''}`, JSON.stringify(row)]);
+      sourceId, effectiveKey, JSON.stringify(row)]);
     written += 1;
   }
   return written;
@@ -362,14 +798,48 @@ async function upsertShareCapital(params, tx) {
 }
 
 async function upsertCorporateAction(params, tx) {
+  let effectiveKey = params.sourceKey;
+  if (Array.isArray(params.legacySourceKeys) && params.legacySourceKeys.length) {
+    const resolved = await resolveAndUpgradeDividendSourceKey(tx, {
+      instrumentId: params.instrumentId,
+      sourceId: params.sourceId,
+      newKey: params.sourceKey,
+      legacyKeys: params.legacySourceKeys,
+      protectedKeys: params.protectedSourceKeys,
+      batchPeers: params.batchPeers,
+      fiscalPeriodEnd: params.fiscalPeriodEnd,
+      announcedAt: params.announcedAt,
+      exDate: params.exDate,
+      payDate: params.payDate,
+      recordDate: params.recordDate,
+      totalAmount: params.totalCashAmount,
+      cashPerShare: params.cashPerSharePreTax,
+    });
+    if (resolved.skipWrite) return null;
+    effectiveKey = resolved.effectiveKey;
+  }
   await tx.query(
     `INSERT INTO fundamental.corporate_actions(instrument_id,action_type,fiscal_period_end,announced_at,record_date,ex_date,pay_date,status,cash_per_share_pre_tax,cash_per_share_after_tax,stock_dividend_ratio,capitalization_ratio,base_shares,total_cash_amount,currency_code,source_id,source_key,raw_payload)
      VALUES($1,'dividend',$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17::jsonb) ON CONFLICT(source_id,source_key)
-     DO UPDATE SET status=EXCLUDED.status,record_date=EXCLUDED.record_date,ex_date=EXCLUDED.ex_date,pay_date=EXCLUDED.pay_date,total_cash_amount=EXCLUDED.total_cash_amount,currency_code=EXCLUDED.currency_code,raw_payload=EXCLUDED.raw_payload,ingested_at=now()`,
+     DO UPDATE SET
+       status=COALESCE(NULLIF(EXCLUDED.status,''),fundamental.corporate_actions.status),
+       record_date=COALESCE(EXCLUDED.record_date,fundamental.corporate_actions.record_date),
+       ex_date=COALESCE(EXCLUDED.ex_date,fundamental.corporate_actions.ex_date),
+       pay_date=COALESCE(EXCLUDED.pay_date,fundamental.corporate_actions.pay_date),
+       cash_per_share_pre_tax=COALESCE(EXCLUDED.cash_per_share_pre_tax,fundamental.corporate_actions.cash_per_share_pre_tax),
+       cash_per_share_after_tax=COALESCE(EXCLUDED.cash_per_share_after_tax,fundamental.corporate_actions.cash_per_share_after_tax),
+       stock_dividend_ratio=COALESCE(EXCLUDED.stock_dividend_ratio,fundamental.corporate_actions.stock_dividend_ratio),
+       capitalization_ratio=COALESCE(EXCLUDED.capitalization_ratio,fundamental.corporate_actions.capitalization_ratio),
+       base_shares=COALESCE(EXCLUDED.base_shares,fundamental.corporate_actions.base_shares),
+       total_cash_amount=COALESCE(EXCLUDED.total_cash_amount,fundamental.corporate_actions.total_cash_amount),
+       currency_code=COALESCE(NULLIF(EXCLUDED.currency_code,''),fundamental.corporate_actions.currency_code),
+       raw_payload=COALESCE(fundamental.corporate_actions.raw_payload,'{}'::jsonb)||jsonb_strip_nulls(EXCLUDED.raw_payload),
+       ingested_at=now()`,
     [params.instrumentId, params.fiscalPeriodEnd, params.announcedAt, params.recordDate, params.exDate, params.payDate, params.status,
       params.cashPerSharePreTax, params.cashPerShareAfterTax, params.stockDividendRatio, params.capitalizationRatio,
-      params.baseShares, params.totalCashAmount, params.currencyCode || 'CNY', params.sourceId, params.sourceKey, JSON.stringify(params.rawPayload || {})],
+      params.baseShares, params.totalCashAmount, params.currencyCode || 'CNY', params.sourceId, effectiveKey, JSON.stringify(params.rawPayload || {})],
   );
+  return effectiveKey;
 }
 
 async function upsertEarningsGuidance(params, tx) {
@@ -432,6 +902,10 @@ module.exports = {
   syncReportRows,
   writeStatementWideRow,
   syncOfficialDividends,
+  officialDividendSourceKey,
+  legacyOfficialDividendSourceKeys,
+  orderDividendBatchForUpsert,
+  dividendBatchPeersOf,
   syncSourcedDividendFacts,
   upsertAdjustmentFactor,
   upsertCompanyEvent,

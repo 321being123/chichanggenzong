@@ -210,6 +210,55 @@ check('列表正股行情只取最近两条，不再对全历史做窗口排序�
     '不得再对正股完整历史做窗口排序，否则首次列表会回退到秒级全历史扫描');
 });
 
+check('#85 历史新低聚合限定目标转债集合与严格排除当日，且不含拉黑（反馈 #85）', () => {
+  const repo = fs.readFileSync(path.join(__dirname, '..', 'repositories', 'convertibleBondListServiceRepository.js'), 'utf8');
+  const service = fs.readFileSync(path.join(__dirname, '..', 'services', 'convertibleBondListService.js'), 'utf8');
+  const html = fs.readFileSync(path.join(__dirname, '..', '..', 'public', 'index.html'), 'utf8');
+  const js = fs.readFileSync(path.join(__dirname, '..', '..', 'public', 'js', 'bond-list.js'), 'utf8');
+  const fnStart = repo.indexOf('async function fetchBondHistoricalMinClose');
+  const fnEnd = repo.indexOf('async function fetchUniverseRows');
+  assert.ok(fnStart > 0 && fnEnd > fnStart, '必须存在 fetchBondHistoricalMinClose');
+  const fnBody = repo.slice(fnStart, fnEnd);
+  assert.ok(/(?:instrument_id\s*=\s*ANY\(\$1::bigint\[\]\)|unnest\(\$1::bigint\[\]\))/.test(fnBody), '历史最低收盘价聚合必须限定在目标 instrument_id 集合，禁止全表扫描');
+  assert.ok(/trade_date\s*<\s*\$2::date/.test(fnBody), '历史最低收盘价基准窗口必须严格排除当日');
+  assert.ok(/historyDays >= 20/.test(service) && /bondPrice < prevMinClose/.test(service), '历史新低必须要求 >=20 天历史且严格小于前低');
+  assert.ok(!html.includes('显示已拉黑') && !js.includes('显示已拉黑'), '按用户决策暂不支持拉黑功能');
+  for (const id of ['bond-filter-price-min', 'bond-filter-price-max', 'bond-filter-remain-max', 'bond-filter-cap-ratio-max',
+    'bond-filter-debt-ratio-max', 'bond-filter-premium-max', 'bond-filter-ytm-min', 'bond-filter-years-min',
+    'bond-filter-years-max', 'bond-filter-rating-btn', 'bond-filter-hist-low', 'bond-list-filter-apply', 'bond-list-filter-reset']) {
+    assert.ok(html.includes(id), `index.html 应包含筛选控件 ${id}`);
+  }
+  assert.ok(js.includes('bondListMatchesCommittedFilters'), 'bond-list.js 应实现多条件筛选函数');
+});
+
+check('#85 多条件筛选边界、空值排除与历史新低严格小于前低', () => {
+  const vm = require('vm');
+  const js = fs.readFileSync(path.join(__dirname, '..', '..', 'public', 'js', 'bond-list.js'), 'utf8');
+  const sandbox = {
+    window: { BondListContract: { COLUMNS: [] } },
+    document: {},
+    bondListState: { rows: [], filtered: [], sortKey: 'double_low', sortDir: 1 },
+    escapeHtml: (s) => String(s || ''),
+  };
+  vm.runInNewContext(js, sandbox);
+  const fn = sandbox.bondListMatchesCommittedFilters;
+  const hitRow = {
+    price: 105, remain_size: 3.5, bond_market_cap_ratio: 0.12, asset_liability_ratio: 0.45,
+    conversion_premium: 0.25, maturity_yield_pre_tax: 0.02, remaining_years: 3.5, rating: 'AA',
+    is_historical_low: true, historical_low_status: 'hit',
+  };
+  const nullRow = { ...hitRow, asset_liability_ratio: null };
+  const flatRow = { ...hitRow, is_historical_low: false, historical_low_status: 'not_hit' };
+  const filters = {
+    priceMin: 100, priceMax: 110, remainMax: 5, capRatioMax: 15, debtRatioMax: 50,
+    premiumMax: 30, ytmMin: 1.5, yearsMin: 2, yearsMax: 5, selectedRatings: ['AA', 'AAA'], histLow: true,
+  };
+  assert.strictEqual(fn(hitRow, filters), true);
+  assert.strictEqual(fn(nullRow, filters), false, '已填数值条件时 null 字段不得命中');
+  assert.strictEqual(fn(flatRow, filters), false, '平前低/未创历史新低不得命中');
+  assert.strictEqual(fn({ ...hitRow, rating: 'A+' }, filters), false, '未选中评级不得命中');
+});
+
 const pass = tests.filter(item => item[0] === 'PASS').length;
 const fail = tests.filter(item => item[0] === 'FAIL').length;
 console.log('\n===== convertible-bond-list 测试汇总 =====');

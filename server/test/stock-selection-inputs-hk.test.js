@@ -216,9 +216,12 @@ async function main() {
     assert.ok(metrics.includes('q.bs.ta.t_o'), '总资产必须取原始值');
     assert.ok(!metrics.includes('q.ps.toi.t_o'), '金融类不发营业总收入，避免整批被判非法');
     const bankCodes = new Set(require('../dataAccess/lixingerReportMetrics').metricsOfType('HK', 'bank')
-      .map(item => `q.${item.code}.t_o`));
+      .map(item => item.code));
     assert.ok(calls.every(call => call.endpoint === 'hk/company/fs/bank'
-      && call.metricsList.length <= 128 && call.metricsList.every(metric => bankCodes.has(metric))));
+      && call.metricsList.length <= 128 && call.metricsList.every(metric => {
+        const base = String(metric).replace(/^q\./, '').replace(/\.(?:t(?:_o)?|t_(?:y2y|c2c)|c(?:_o)?|c_(?:y2y|c2c))$/, '');
+        return bankCodes.has(base);
+      })));
 
     calls.length = 0;
     await adapter.resolveFinancialReports({

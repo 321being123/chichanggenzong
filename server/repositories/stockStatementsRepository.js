@@ -95,7 +95,8 @@ function latestMarketReportPredicate(report, market, table) {
       AND COALESCE(market_version.statement_scope,'consolidated')=COALESCE(${report}.statement_scope,'consolidated')
       AND (market_version.available_at IS NULL OR market_version.available_at <= now())
       AND ${reportMarketPredicate('market_version', 'market_wide', market)}
-    ORDER BY CASE WHEN market_version.report_type='1' THEN 0 ELSE 1 END,
+    ORDER BY CASE WHEN COALESCE((market_version.raw_payload->'__statement_coverage'->>'complete')::boolean, true) THEN 0 ELSE 1 END,
+      CASE WHEN market_version.report_type='1' THEN 0 ELSE 1 END,
       market_version.announced_at DESC NULLS LAST,market_version.ingested_at DESC,market_version.report_id DESC LIMIT 1)`;
 }
 
@@ -144,6 +145,7 @@ async function listStatementRows({ tsCode, market = 'CN', type = 'balance', limi
        r.raw_payload->>'fiscal_year' AS fiscal_year,
        COALESCE(NULLIF(r.raw_payload->>'period_start',''), NULLIF(r.raw_payload->>'start_date',''), NULLIF(r.raw_payload->'__statement_coverage'->>'period_start','')) AS period_start,
        r.raw_payload->'__statement_coverage' AS statement_coverage,
+       r.raw_payload->'__statement_comparisons' AS statement_comparisons,
        c.raw_data->>'industry' AS industry,
        ${selectedMetrics}
     FROM fundamental.financial_reports r

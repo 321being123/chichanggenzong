@@ -353,8 +353,13 @@ async function main() {
   const projRepoSrc = require('fs').readFileSync(require('path').join(__dirname, '..', 'repositories', 'stockProjectionRepository.js'), 'utf8');
   assert.ok(projRepoSrc.includes('fundamental.financial_reports.raw_payload->\'__statement_comparisons\'->\'qoq\''), 'F-09: ON CONFLICT DO UPDATE 必须原子按桶合并 __statement_comparisons');
   assert.ok(!projRepoSrc.includes('SELECT raw_payload->\'__statement_comparisons\''), 'F-09: 不得用非原子的 JS 先读后写合并，避免并发丢失更新或跨市场继承');
-  assert.ok(projRepoSrc.includes('comparison_requested, comparison_complete'), 'F-05: 比较批次完成标志不得改变 source_version 导致旧有效比较值被新版本遮蔽');
-  assert.ok(projRepoSrc.includes('returned_metric_codes, requested_batch_count'), 'F-05: 原始批次完整性字段不得改变 source_version 导致空原值批次遮蔽已有科目');
+  // F-05（2026-11-26 事故后强化）：批次完成标志/批次完整性字段当然不能改变版本号，
+  // 但更强的保证是版本号根本不看内容——版本键只由业务身份（公司+报表+报告期+来源+
+  // 公告日+币种+口径）决定。原实现用整条 payload 的哈希，正是重复副本暴涨的根因。
+  assert.ok(projRepoSrc.includes('function reportIdentityVersion') && projRepoSrc.includes('normalizeUpdateFlag(parts.updateFlag)'),
+    'F-05: source_version 必须由业务身份决定');
+  assert.ok(!/sourceVersion\s*=\s*rowVersion\(/.test(projRepoSrc),
+    'F-05: 报告版本键不得再用整条 payload 哈希（重复采集会被判成新版本，2026-11-26 事故）');
   assert.ok(projRepoSrc.includes("data.__statement_coverage.complete === false") && projRepoSrc.includes('jsonb_strip_nulls(EXCLUDED.raw_payload)'), 'F-05: 标准批次为空的不完整批次必须合并回已有报告且不得用 null 覆盖已落库科目');
   assert.ok(projRepoSrc.includes('announced_at IS NOT DISTINCT FROM $6::date') && projRepoSrc.includes("COALESCE(statement_scope,'consolidated') = $9"), 'F-05: 不完整批次仅限同证券、同公告日、同币种、同列报范围报告合并');
   const stmtRepoSrc = require('fs').readFileSync(require('path').join(__dirname, '..', 'repositories', 'stockStatementsRepository.js'), 'utf8');

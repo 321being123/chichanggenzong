@@ -238,6 +238,7 @@ const MIGRATIONS = [
         WHERE close > 0
     `),
   },
+  { version: '213_company_instruments_instrument_index', up: () => require('./migrations/era17CompanyInstrumentsIndex').migration213CompanyInstrumentsInstrumentIndex(pool) },
 ];
 
 async function ensureMigrationsTable() {

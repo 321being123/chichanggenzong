@@ -5,7 +5,7 @@ const { ensureInstrumentIdentity } = require('../services/securityIdentity');
 const { upsertIndustryPath } = require('./industryRepository');
 const reportMetrics = require('../dataAccess/lixingerReportMetrics');
 const {
-  FACT_MAP, METRICS, analysisMetricValues, asDate, finite, hash, resolvePeriodType, rowVersion, stablePayload,
+  FACT_MAP, METRICS, analysisMetricValues, asDate, finite, hash, resolvePeriodType, stablePayload,
 } = require('../domain/stockFacts');
 
 async function sourceIds(client) {
@@ -90,6 +90,43 @@ async function writeStatementWideRow(client, params) {
   return columns.length;
 }
 
+// update_flag 的空值与 '0' 是同一件事（都是"未更正"），只是不同适配器写法不同：
+// 淘股吧/Tushare 写 '0'，Lixinger 适配器写 null。不归一化就会让同一份财报因为
+// 一个空字符串被当成两份不同报告各自入库（2026-11-26 事故主因之一）。
+function normalizeUpdateFlag(value) {
+  const text = String(value == null ? '' : value).trim();
+  return text || '0';
+}
+
+/**
+ * 报告版本键（source_version）必须是业务身份，不能是整条内容的哈希。
+ *
+ * 事故背景（2026-11-26）：原来用 rowVersion(整条 payload) 当版本号，而采集适配器
+ * 每次返回的字段个数、覆盖标记、对比数据都会变（同一份 2017 年中报在不同批次里
+ * 从 425 字节长到 7 KB），于是每次重采都被判成"新版本"插入新行。一天之内
+ * financial_reports 被灌进 107.9 万行重复副本，全表 216 万行里只有 118 万份真实报告，
+ * 全市场选股因此从 1 分钟级变成 8 分钟以上，触发 30 分钟任务超时。
+ *
+ * 现在：同一身份永远算同一个版本键，内容差异走 ON CONFLICT 就地更新（保留完整字段）；
+ * 每次采集的原始响应仍逐条留在 ops.raw_records（按内容哈希去重），追溯能力不变。
+ */
+function reportIdentityVersion(parts) {
+  return hash([
+    parts.companyId == null ? '' : parts.companyId,
+    parts.kind || '',
+    parts.periodEnd || '',
+    parts.sourceId == null ? '' : parts.sourceId,
+    parts.tsCode || '',
+    parts.reportType || '',
+    parts.compType || '',
+    normalizeUpdateFlag(parts.updateFlag),
+    parts.announcedAt || '',
+    parts.fAnnDate || '',
+    parts.currency || '',
+    parts.scope || '',
+  ].join('|'));
+}
+
 async function syncReportRows(client, rows, kind, companyId, sourceId, options = {}) {
   // 会计准则按市场隔离：港股标的走 HKFRS 宽表，其余走 CAS 宽表。
   const market = /\.HK$/i.test(String(options.tsCode || '')) ? 'HK' : 'CN';
@@ -103,17 +140,6 @@ async function syncReportRows(client, rows, kind, companyId, sourceId, options =
       ? (() => { const { __statement_metrics, ...rest } = rawData; return rest; })()
       : rawData;
     if (options.reportTypeOnly && String(data.report_type || '') !== String(options.reportTypeOnly)) continue;
-    const { __statement_comparisons: _cmp, ...rawVersionPayload } = data;
-    const versionPayload = rawVersionPayload.__statement_coverage && typeof rawVersionPayload.__statement_coverage === 'object'
-      ? (() => {
-        const {
-          requested_metric_codes, returned_metric_codes, requested_batch_count,
-          returned_batch_count, complete, comparison_requested, comparison_complete, ...covRest
-        } = rawVersionPayload.__statement_coverage;
-        return { ...rawVersionPayload, __statement_coverage: covRest };
-      })()
-      : rawVersionPayload;
-    let sourceVersion = rowVersion(versionPayload);
     const announced = asDate(data.ann_date), fAnnDate = asDate(data.f_ann_date || data.ann_date);
     // 报告期类型与金额币种都必须来自事实本身（R2-03）：港股 3 月年报不能被月份推断成 q1，
     // USD 报表金额也不能落成 CNY。行里没有币种时按证券主档币种兜底，而不是一律 CNY。
@@ -123,6 +149,14 @@ async function syncReportRows(client, rows, kind, companyId, sourceId, options =
     const targetScope = String(data.report_type || '') === '1'
       ? 'consolidated'
       : String(data.statement_scope || 'consolidated');
+    const rowUpdateFlag = normalizeUpdateFlag(data.update_flag);
+    // 身份键只认业务身份：同一份报告反复采集永远命中同一行，内容差异就地合并。
+    const sourceVersion = reportIdentityVersion({
+      companyId, kind, periodEnd: asDate(data.end_date), sourceId, tsCode: targetTsCode,
+      reportType: String(data.report_type || ''), compType: String(data.comp_type || ''),
+      updateFlag: rowUpdateFlag, announcedAt: announced || '', fAnnDate: fAnnDate || '',
+      currency: rowCurrency || '', scope: targetScope,
+    });
     const sameIdentity = sourceId ? (await client.query(
       `SELECT source_version, raw_payload
          FROM fundamental.financial_reports
@@ -135,14 +169,14 @@ async function syncReportRows(client, rows, kind, companyId, sourceId, options =
           AND COALESCE(statement_scope,'consolidated') = $9
           AND COALESCE(NULLIF(report_type,''),'') = $10
           AND COALESCE(NULLIF(comp_type,''),'') = $11
-          AND COALESCE(NULLIF(update_flag,''),'') = $12
+          AND COALESCE(NULLIF(update_flag,''),'0') = $12
         ORDER BY CASE WHEN COALESCE((raw_payload->'__statement_coverage'->>'complete')::boolean, true) THEN 0 ELSE 1 END,
           ingested_at DESC, report_id DESC
         LIMIT 1`,
       [
         companyId, kind, asDate(data.end_date), sourceId, targetTsCode,
         announced || null, fAnnDate || null, rowCurrency || '',
-        targetScope, String(data.report_type || ''), String(data.comp_type || ''), String(data.update_flag || ''),
+        targetScope, String(data.report_type || ''), String(data.comp_type || ''), rowUpdateFlag,
       ]
     )).rows[0] : null;
     const isIncomplete = Boolean(data.__statement_coverage && data.__statement_coverage.complete === false);
@@ -159,8 +193,9 @@ async function syncReportRows(client, rows, kind, companyId, sourceId, options =
     const droppedCoverageMetrics = prevCodes.some(code => !currCodeSet.has(code));
     const preserveExistingNonNull = Boolean(sameIdentity && (isIncomplete || missingPreviouslyCollectedField || droppedCoverageMetrics));
     let reportPayload = data;
-    if (preserveExistingNonNull && sameIdentity.source_version) {
-      sourceVersion = sameIdentity.source_version;
+    if (preserveExistingNonNull) {
+      // 版本键已由业务身份决定，不再需要"沿用旧版本号"来命中旧行：ON CONFLICT 一定命中同一行。
+      // 这里只把上一轮已采集到的指标代码合并回去，避免不完整批次把覆盖清单写窄。
       if (data.__statement_coverage && prevCodes.length) {
         reportPayload = {
           ...data,
@@ -173,7 +208,7 @@ async function syncReportRows(client, rows, kind, companyId, sourceId, options =
     }
     let rawRecordId = null;
     if (options.runId && sourceId) {
-      const rawKey = `${companyId}:${kind}:${asDate(data.end_date)}:${announced || ''}:${fAnnDate || ''}:${data.report_type || ''}:${data.update_flag || ''}`;
+      const rawKey = `${companyId}:${kind}:${asDate(data.end_date)}:${announced || ''}:${fAnnDate || ''}:${data.report_type || ''}:${rowUpdateFlag}`;
       const raw = (await client.query(`INSERT INTO ops.raw_records(run_id,source_id,dataset_code,source_key,source_updated_at,payload,payload_hash)
         VALUES($1,$2,$3,$4,$5,$6::jsonb,$7)
         ON CONFLICT(source_id,dataset_code,source_key,payload_hash)
@@ -239,7 +274,7 @@ async function syncReportRows(client, rows, kind, companyId, sourceId, options =
           )
           ELSE EXCLUDED.raw_payload
         END,ingested_at=now() RETURNING report_id`,
-    [companyId, kind, asDate(data.end_date), rowPeriodType, announced, fAnnDate, String(data.report_type || ''), String(data.comp_type || ''), sourceId, sourceVersion, data.update_flag || '', rawRecordId, JSON.stringify(reportPayload), preserveExistingNonNull])).rows[0];
+    [companyId, kind, asDate(data.end_date), rowPeriodType, announced, fAnnDate, String(data.report_type || ''), String(data.comp_type || ''), sourceId, sourceVersion, rowUpdateFlag, rawRecordId, JSON.stringify(reportPayload), preserveExistingNonNull])).rows[0];
     await client.query(`UPDATE fundamental.financial_reports
       SET f_ann_date=COALESCE($2,f_ann_date),report_type=COALESCE(NULLIF($3,''),report_type),comp_type=COALESCE(NULLIF($4,''),comp_type),statement_scope=CASE WHEN $3='1' THEN 'consolidated' ELSE statement_scope END,
       raw_record_id=COALESCE($5,raw_record_id)
@@ -900,6 +935,8 @@ module.exports = {
   syncAnalytics,
   syncQualityIssues,
   syncReportRows,
+  normalizeUpdateFlag,
+  reportIdentityVersion,
   writeStatementWideRow,
   syncOfficialDividends,
   officialDividendSourceKey,

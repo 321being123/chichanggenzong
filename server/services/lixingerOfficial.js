@@ -229,7 +229,7 @@ async function callEndpoint(endpointKey, params = {}, options = {}) {
       return {
         rows: cached.rows, total: cached.total, rawRecordId: recent.rows[0].raw_record_id,
         payloadHash: recent.rows[0].payload_hash, cached: true, empty: cached.rows.length === 0,
-        endpoint: endpoint.key, apiName,
+        endpoint: endpoint.key, apiName, requestKey,
       };
     }
   }
@@ -278,7 +278,7 @@ async function runWithRetry(ctx) {
         }).catch(() => {});
         return {
           rows: parsed.rows, total: parsed.total, rawRecordId, payloadHash,
-          cached: false, empty: parsed.rows.length === 0, endpoint: endpoint.key, apiName,
+          cached: false, empty: parsed.rows.length === 0, endpoint: endpoint.key, apiName, requestKey,
         };
       }, guardOptions);
     } catch (error) {

@@ -15,6 +15,7 @@
     "test:file": "node server/test/run-one.js",
     "check:date": "node scripts/check-date-boundary.js",
     "audit:selection-g0": "node server/scripts/stockSelectionG0Audit.js",
+    "audit:financial-health": "node server/scripts/auditFinancialReportHealth.js",
     "check:knowledge": "node scripts/check-knowledge.js",
     "setup:hooks": "node scripts/install-git-hooks.js",
     "audit:bonds": "node server/scripts/auditHeldConvertibleBondNoRevision.js",

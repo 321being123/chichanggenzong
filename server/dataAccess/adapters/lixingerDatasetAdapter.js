@@ -12,6 +12,7 @@
 // 后缀 `.t` 是"报告期累计"，与 Tushare 累计口径一致；`.c` 是单季，本项目不用。
 const { callEndpoint } = require('../../services/lixingerOfficial');
 const { resolveProviderIdentifier } = require('../../services/securityIdentity');
+const crypto = require('crypto');
 const reportMetrics = require('../lixingerReportMetrics');
 const {
   normalizeFinancialPeriodType, fiscalYearEndAnchors, inferFinancialPeriodType,
@@ -288,6 +289,47 @@ async function resolveValuationRowsDetailed({ codes = [], tradeDate, options = {
  */
 const MAX_RANGE_YEARS = 10;
 
+// 财报行只带本表的口径（INC-0054 第一阶段，规则见 domain/statementMetricPrefix）：
+// 三表各自只留自己那张表的科目与比较值，指标行按它实际使用的科目前缀保留。
+const statementMetricPrefix = require('../../domain/statementMetricPrefix');
+const trimByPrefix = statementMetricPrefix.trimMetricMap;
+const trimComparisonBuckets = statementMetricPrefix.trimComparisonBuckets;
+
+function allowedStatementPrefixes(kind, mapping) {
+  const used = new Set();
+  for (const value of Object.values((mapping && mapping[kind]) || {})) {
+    for (const code of (Array.isArray(value) ? value : [value])) {
+      const prefix = statementMetricPrefix.statementPrefixOf(code);
+      if (prefix) used.add(prefix);
+    }
+  }
+  return statementMetricPrefix.allowedPrefixesOf(kind, used);
+}
+
+function digestOf(values) {
+  const list = [...new Set((values || []).filter(Boolean).map(String))].sort();
+  if (!list.length) return null;
+  return crypto.createHash('sha256').update(list.join('\n')).digest('hex');
+}
+
+// 轻量审计指纹：只留去重后的端点、规模与摘要，用于把标准层一行回溯到当时的原文批次。
+// 逐条报文不在这里重复保存——原文仍按「来源＋请求键＋内容哈希」在 ops.raw_records 复用。
+function financialAuditOf({ endpoint, market, start, end, evidences }) {
+  const requests = (evidences || []).flatMap(item => (item && item.requests) || []);
+  const rawIds = [...new Set(requests.map(item => item.rawRecordId).filter(v => Number.isInteger(v)))]
+    .sort((a, b) => a - b);
+  return {
+    source: SOURCE,
+    endpoint,
+    market,
+    range: { start, end },
+    request_count: requests.length,
+    request_digest: digestOf(requests.map(item => item.requestKey)),
+    payload_digest: digestOf(requests.map(item => item.payloadHash)),
+    raw_record_ids: { count: rawIds.length, first: rawIds[0] == null ? null : rawIds[0], last: rawIds.length ? rawIds[rawIds.length - 1] : null },
+  };
+}
+
 function rangeChunks(startDate, endDate, years = MAX_RANGE_YEARS) {
   const from = dashDate(startDate), to = dashDate(endDate);
   if (!from || !to || from > to) return [];
@@ -305,13 +347,24 @@ function rangeChunks(startDate, endDate, years = MAX_RANGE_YEARS) {
 }
 
 // 区间取数：按 ≤10 年分段请求并拼接原始行（分段首尾不重叠，不需要去重）。
+// 同时把每段真实响应的请求键、内容哈希与原始记录 ID 收成去重证据（evidence），
+// 供标准层写一份可复查的轻量审计指纹；不为此额外请求、不改任何取值逻辑。
 async function callEndpointRange(endpoint, params, startDate, endDate, options = {}) {
   const rows = [];
+  const evidence = { requests: [], requestCount: 0 };
   for (const [from, to] of rangeChunks(startDate, endDate)) {
     const result = await callEndpoint(endpoint, { ...params, startDate: from, endDate: to }, options);
     rows.push(...(result.rows || []));
+    evidence.requestCount += 1;
+    evidence.requests.push({
+      requestKey: result.requestKey || null,
+      payloadHash: result.payloadHash || null,
+      rawRecordId: result.rawRecordId == null ? null : Number(result.rawRecordId),
+      rangeStart: from,
+      rangeEnd: to,
+    });
   }
-  return { rows };
+  return { rows, evidence };
 }
 
 /**
@@ -574,10 +627,12 @@ async function resolveFinancialReports({ tsCode, startDate, endDate, kinds = ['i
   };
   const merged = new Map();
   const batches = [metrics, ...extraBatches];
+  const responseEvidence = [];
   for (const [batchIndex, list] of batches.entries()) {
-    const { rows: batchRows } = await callEndpointRange(endpoint,
+    const { rows: batchRows, evidence } = await callEndpointRange(endpoint,
       { stockCodes: [code], metricsList: list }, start, end,
       { dataset: 'stock_financial_reports', targetDate: end, ...options });
+    responseEvidence.push(evidence);
     for (const item of batchRows) {
       // 同一份报告分散在多批响应里，必须按"报告身份"合并，不能按响应顺序拼接。
       // 公告日、币种和财年也是报告身份的一部分；同一报告期有重述或不同币种时不能跨批混拼。
@@ -604,9 +659,10 @@ async function resolveFinancialReports({ tsCode, startDate, endDate, kinds = ['i
   let comparisonReturnedBatches = 0;
   for (const list of comparisonBatches) {
     try {
-      const { rows: cmpRows } = await callEndpointRange(endpoint,
+      const { rows: cmpRows, evidence } = await callEndpointRange(endpoint,
         { stockCodes: [code], metricsList: list }, start, end,
         { dataset: 'stock_financial_reports', targetDate: end, ...options });
+      responseEvidence.push(evidence);
       if (Array.isArray(cmpRows) && cmpRows.length) {
         comparisonReturnedBatches++;
         for (const item of cmpRows) {
@@ -624,6 +680,9 @@ async function resolveFinancialReports({ tsCode, startDate, endDate, kinds = ['i
     .map(code => String(code).replace(/^q\./, '').replace(/\.t(?:_o)?$/, '')))]
     .filter(code => /^(bs|ps|cfs)\.[a-z0-9_]+$/.test(code));
   const out = { income: [], balance: [], cashflow: [], indicator: [] };
+  // 审计指纹与「本表允许的科目前缀」都按整次采集算一次，供每份报告的四类行复用。
+  const audit = financialAuditOf({ endpoint, market, start, end, evidences: responseEvidence });
+  const allowedPrefixesByKind = new Map(kinds.map(kind => [kind, allowedStatementPrefixes(kind, mapping)]));
   for (const { item, batches: returnedBatches } of rows) {
     const flat = flattenMetrics(item.q || {});
     // 三表原始科目：键形如 bs.ta.t / ps.toi.t / cfs.ncffoa.t，去掉粒度后缀后按代码交给落库层。
@@ -673,23 +732,6 @@ async function resolveFinancialReports({ tsCode, startDate, endDate, kinds = ['i
       // 官方报告类型原值留证；港股缺它就记 'unknown'，让上层按"年度未知"处理而不是按月份猜。
       report_period_label: item.reportType || null,
       fiscal_year: item.fiscalYear || item.fiscal_year || null,
-      __statement_coverage: {
-        source: SOURCE,
-        market,
-        fs_table_type: tableType,
-        fs_table_type_evidence: options.fsTableTypeEvidence || null,
-        value_basis: hk ? 'source_original_t_o' : 'source_t',
-        requested_metric_codes: requestedMetricCodes,
-        returned_metric_codes: Object.keys(statementMetrics),
-        requested_batch_count: batches.length,
-        returned_batch_count: returnedBatches.size,
-        complete: returnedBatches.size === batches.length,
-        comparison_requested: comparisonBatches.length > 0,
-        comparison_complete: comparisonBatches.length > 0 && comparisonReturnedBatches === comparisonBatches.length,
-      },
-      // 三表全量科目随行返回，落库层据此写宽表；没有科目时不挂空对象，避免污染原始留证。
-      ...(Object.keys(statementMetrics).length ? { __statement_metrics: statementMetrics } : {}),
-      ...(Object.keys(cleanComparisons).length ? { __statement_comparisons: cleanComparisons } : {}),
       period_type: reportPeriodType || 'unknown',
       currency: item.currency || null,
       // 官方响应未提供经核实的重述标志，不能人为标成未重述。
@@ -697,7 +739,36 @@ async function resolveFinancialReports({ tsCode, startDate, endDate, kinds = ['i
       source_code: SOURCE,
     };
     for (const kind of kinds) {
-      const row = { ...base };
+      const allowed = allowedPrefixesByKind.get(kind) || new Set();
+      const kindMetrics = trimByPrefix(statementMetrics, allowed);
+      const kindComparisons = trimComparisonBuckets(cleanComparisons, allowed);
+      // 覆盖清单也只留本表实际请求的科目：读端拿它判断「请求了但未披露」，
+      // 把别的表的科目带过来会让字段状态判成错误结论，也把每行撑大一个数量级。
+      const kindRequested = requestedMetricCodes.filter(codeCode => {
+        const prefix = statementMetricPrefix.statementPrefixOf(codeCode);
+        return !prefix || allowed.has(prefix);
+      });
+      const row = {
+        ...base,
+        __statement_coverage: {
+          source: SOURCE,
+          market,
+          fs_table_type: tableType,
+          fs_table_type_evidence: options.fsTableTypeEvidence || null,
+          value_basis: hk ? 'source_original_t_o' : 'source_t',
+          requested_metric_codes: kindRequested,
+          returned_metric_codes: Object.keys(kindMetrics),
+          requested_batch_count: batches.length,
+          returned_batch_count: returnedBatches.size,
+          complete: returnedBatches.size === batches.length,
+          comparison_requested: comparisonBatches.length > 0,
+          comparison_complete: comparisonBatches.length > 0 && comparisonReturnedBatches === comparisonBatches.length,
+          audit,
+        },
+        // 三表科目随行返回，落库层据此写宽表；没有科目时不挂空对象，避免污染原始留证。
+        ...(Object.keys(kindMetrics).length ? { __statement_metrics: kindMetrics } : {}),
+        ...(Object.keys(kindComparisons).length ? { __statement_comparisons: kindComparisons } : {}),
+      };
       let filled = 0;
       for (const [field, official] of Object.entries(mapping[kind] || {})) {
         // 候选字段按顺序取第一个非空值；全空才是真的没有这个指标。
@@ -709,7 +780,7 @@ async function resolveFinancialReports({ tsCode, startDate, endDate, kinds = ['i
       // 基础映射全空时，仍须保留字典中已返回的三表科目，不能把部分报告当空结果丢弃。
       const hasStatementMetric = reportMetrics.STATEMENTS.includes(kind)
         && reportMetrics.metricsByStatement(market, kind)
-          .some(metric => numberOrNull(statementMetrics[metric.code]) !== null);
+          .some(metric => numberOrNull(kindMetrics[metric.code]) !== null);
       if (filled || hasStatementMetric) out[kind].push(row);
     }
   }

@@ -7,6 +7,7 @@
 'use strict';
 
 const { persistCollectedData } = require('./financialDataArchitecture');
+const { checkHistoryCollectionSpace } = require('./diskGuard');
 const repo = require('../repositories/stockSelectionRepository');
 const { upsertIndustryPath } = require('../repositories/industryRepository');
 
@@ -108,53 +109,105 @@ async function readMeta(tsCode) {
 }
 
 /**
+ * 本次补采实际需要的种类与区间（INC-0054 第一阶段第 2 条）。
+ * 队列里带 collection_plan 时按它冻结的种类与最早缺口年份取数；
+ * 没有计划或计划不完整时退回原来的 12 年 × 四类——宁可多取也不漏补。
+ * 只缺分红时不再拉财报（方案：只缺分红就单独补分红）。
+ */
+function collectionWindowOf(gap, asOfDate) {
+  const plan = (gap && gap.collection_plan) || {};
+  const domains = Array.isArray(gap && gap.domains) ? gap.domains : [];
+  const onlyDividends = domains.includes('dividends') && !domains.includes('financial_reports');
+  // 没有 domains 信息时无法判断缺什么，分红要按保守口径照拉；明确不含 dividends 就不拉。
+  const needDividends = !domains.length || domains.includes('dividends');
+  const planned = (Array.isArray(plan.report_kinds) ? plan.report_kinds : [])
+    .filter(kind => REPORT_KINDS.includes(kind));
+  const periods = (Array.isArray(plan.report_periods) ? plan.report_periods : [])
+    .map(String).filter(year => /^\d{4}$/.test(year)).sort();
+  const fallbackStart = dashDate(shiftYears(asOfDate, HISTORY_YEARS)) || '2000-01-01';
+  const plannedStart = periods.length ? `${periods[0]}-01-01` : fallbackStart;
+  return {
+    kinds: onlyDividends ? [] : (planned.length ? planned : [...REPORT_KINDS]),
+    // 缺口年份比 12 年窗口更早时以窗口为准，不能把该覆盖的历史丢掉。
+    startDate: plannedStart < fallbackStart ? fallbackStart : plannedStart,
+    // 分红游标与财报缺口年份无关：财报只缺 2020 年时，分红不能被收窄成「2020 年起」，
+    // 否则港股 dividends 的成功水位会被写成 2020-01-01，2020 年以前永远不再补。
+    dividendStartDate: fallbackStart,
+    needDividends,
+    narrowed: periods.length > 0 || planned.length > 0,
+    onlyDividends,
+  };
+}
+
+/**
  * 单只证券补财报 + 分红：数据层负责主备来源与字段归一，persistCollectedData 负责落原表与原始留证。
  * 港股与 A 股走同一条链路，只在数据层内部按代码后缀选择官方端点（见 lixingerDatasetAdapter）。
+ * `deps` 只给回归测试注入数据层/仓储替身，生产调用保持默认实现。
  */
-async function collectOne(gap, asOfDate) {
-  const meta = await readMeta(gap.code);
+async function collectOne(gap, asOfDate, runContext = null, deps = {}) {
+  const readMetaFn = deps.readMeta || readMeta;
+  const persist = deps.persist || persistCollectedData;
+  const meta = await readMetaFn(gap.code);
   if (!meta) return { code: gap.code, ok: false, reason: 'instrument_missing' };
-  const startDate = dashDate(shiftYears(asOfDate, HISTORY_YEARS)) || '2000-01-01';
-  const { readFinancialReportRows, readDividendRows, readDividendRowsWithCoverage } = require('../dataAccess/marketDatasets');
+  const window = collectionWindowOf(gap, asOfDate);
+  const startDate = window.startDate;
+  const datasets = deps.datasets || require('../dataAccess/marketDatasets');
+  const { readFinancialReportRows, readDividendRows, readDividendRowsWithCoverage } = datasets;
   const bundle = {};
   let anyFinancial = false;
   // 港股财报端点按公司财报类型分流（2026-11-05 实测：银行/保险/证券端点指标名与普通公司一致，
   // 只是端点不同；类型取自 hk/company 档案，取不到就保留为未知，不猜成普通公司。
+  // 本次不采任何财报（例如只缺分红）时不需要档案：多查一次只是白耗一次外部请求。
   let fsTableType = null;
-  if (/^\d{5}\.HK$/i.test(String(meta.ts_code || ''))) {
+  if (window.kinds.length && /^\d{5}\.HK$/i.test(String(meta.ts_code || ''))) {
     try {
-      const { readCompanyProfiles } = require('../dataAccess/marketDatasets');
+      const { readCompanyProfiles } = datasets;
       const profiles = (await readCompanyProfiles({ codes: [meta.ts_code] })) || [];
       fsTableType = (profiles[0] && profiles[0].fsTableType) || null;
     } catch (_) { fsTableType = null; }
   }
-  const financial = await readFinancialReportRows({
-    tsCode: meta.ts_code, kinds: REPORT_KINDS, startDate, endDate: asOfDate, fsTableType,
-  });
+  const financial = window.kinds.length
+    ? await readFinancialReportRows({
+      tsCode: meta.ts_code, kinds: window.kinds, startDate, endDate: asOfDate, fsTableType,
+    })
+    : null;
   if (financial) {
     if (Array.isArray(financial.income) && financial.income.length) { bundle.income = financial.income; anyFinancial = true; }
     if (Array.isArray(financial.balance) && financial.balance.length) { bundle.balance = financial.balance; anyFinancial = true; }
     if (Array.isArray(financial.cashflow) && financial.cashflow.length) { bundle.cashflow = financial.cashflow; anyFinancial = true; }
     if (Array.isArray(financial.indicator) && financial.indicator.length) { bundle.indicators = financial.indicator; anyFinancial = true; }
   }
-  const divResult = typeof readDividendRowsWithCoverage === 'function'
-    ? await readDividendRowsWithCoverage({ tsCode: meta.ts_code, startDate, endDate: asOfDate })
-    : { rows: await readDividendRows({ tsCode: meta.ts_code, startDate, endDate: asOfDate }), coverage: null };
+  // 分红只在本次确实有分红缺口时拉取；游标用不受财报缺口年份收窄的窗口起点。
+  const dividendStart = window.dividendStartDate;
+  const divResult = !window.needDividends
+    ? null
+    : (typeof readDividendRowsWithCoverage === 'function'
+      ? await readDividendRowsWithCoverage({ tsCode: meta.ts_code, startDate: dividendStart, endDate: asOfDate })
+      : { rows: await readDividendRows({ tsCode: meta.ts_code, startDate: dividendStart, endDate: asOfDate }), coverage: null });
   const dividends = divResult && Array.isArray(divResult.rows) ? divResult.rows : (Array.isArray(divResult) ? divResult : null);
   const dividendCoverage = divResult && divResult.coverage && divResult.coverage.complete === true
-    ? { complete: true, startDate: dashDate(divResult.coverage.startDate) || startDate, endDate: dashDate(divResult.coverage.endDate) || dashDate(asOfDate) }
+    ? { complete: true, startDate: dashDate(divResult.coverage.startDate) || dividendStart, endDate: dashDate(divResult.coverage.endDate) || dashDate(asOfDate) }
     : null;
   if (Array.isArray(dividends) && dividends.length) bundle.dividends = dividends;
   if (!anyFinancial && !bundle.dividends) {
     // 官方返回空 = 本次没有可入库的新事实；不能当成"已补齐"，也不覆盖旧数据。
     return { code: gap.code, ok: false, reason: 'source_returned_empty', dividendCoverage };
   }
-  await persistCollectedData({
+  await persist({
     ts_code: meta.ts_code,
     name: meta.name,
     market: meta.market,
     list_date: meta.list_date,
     data: meta.raw_data || {},
+    // 采集批次要能追到发起者与目标范围（INC-0054 第一阶段第 3 条）：
+    // 事故当天 8,504 个 stock_analysis_direct 批次找不到父任务，只能靠现场推断。
+    collection_context: {
+      caller: (runContext && runContext.caller) || 'stock_selection_inputs',
+      callerMode: (runContext && runContext.callerMode) || 'selection_inputs',
+      jobRunId: (runContext && runContext.jobRunId) || null,
+      slotId: (runContext && runContext.slotId) || null,
+      targetRange: { market: meta.market, asOfDate },
+    },
   }, bundle);
   if (dividendCoverage && dividendCoverage.complete === true && /\.HK$/i.test(String(meta.ts_code || ''))) {
     const { datasetScope, markDatasetSuccess } = require('./datasetCursors');
@@ -169,6 +222,11 @@ async function collectOne(gap, asOfDate) {
     financials: anyFinancial,
     dividends: Boolean(bundle.dividends),
     dividendCoverage,
+    // 本次实际取数的范围随结果返回：补了什么、有没有按缺口收窄，必须能从任务回执看出来。
+    collection: {
+      kinds: window.kinds, startDate, narrowed: window.narrowed, onlyDividends: window.onlyDividends,
+      needDividends: window.needDividends, dividendStartDate: dividendStart,
+    },
   };
 }
 
@@ -530,10 +588,18 @@ async function syncSelectionInputs(input) {
     // attempts 是跨批次的尝试计数（R4-02）：只记上一批的失败会把更早的尝试记录丢掉。
     priorAttempts = lastRun.attempts && typeof lastRun.attempts === 'object' ? lastRun.attempts : {};
   } catch (_) { /* 读不到历史队列不影响本次补齐，只失去轮转顺序 */ }
+  // 根盘安全余量（INC-0054 第一阶段第 3 条 / F-08）：低于停止线就暂停历史补采。
+  // 必须在任何历史补采之前判定：港股目标池收盘价同样是一次历史行情补采，
+  // 放在它后面会让"已暂停"的第一批港股行情照常发起请求并写库。
+  // 仍照常审计并保存队列，剩余量如实回传，由外层标成 blocked——
+  // 不能把「空间不够」当成「补齐了」，也不能每轮都硬着头皮再写一批。
+  const space = await checkHistoryCollectionSpace();
+  const historySuspended = space.suspended === true;
   // 港股先补齐"在册目标池"的近一年收盘价，再审计缺口：
   // 没有行情就不在选股池里，估值缺口也就无从补起（见 syncHkTargetPoolBars 注释）。
+  // 低空间时跳过：暂停历史补采不能再先写一批港股目标池行情。
   let targetPool = null;
-  if (market === 'HK') {
+  if (market === 'HK' && !historySuspended) {
     try {
       targetPool = await syncHkTargetPoolBars({ asOfDate, maxCodes: limit });
     } catch (error) {
@@ -546,7 +612,7 @@ async function syncSelectionInputs(input) {
   const fundamentalQueue = orderByAttempts(fundamental, priorAttempts, previouslyFailed);
   // 行业分类先补：一次取数就能补齐一条完整路径，成本低，且它是"能否发布正式组合"的阻断项，
   // 不能被财报批次挤掉。
-  const industryBatch = industryQueue.slice(0, limit);
+  const industryBatch = historySuspended ? [] : industryQueue.slice(0, limit);
   const industryResults = [];
   for (const gap of industryBatch) {
     try {
@@ -555,11 +621,12 @@ async function syncSelectionInputs(input) {
       industryResults.push({ code: gap.code, ok: false, reason: 'industry_collect_failed', error: String(error.message || error).slice(0, 320) });
     }
   }
-  const batch = fundamentalQueue.slice(0, limit);
+  const batch = historySuspended ? [] : fundamentalQueue.slice(0, limit);
   const results = [];
+  const runContext = input.runContext && typeof input.runContext === 'object' ? input.runContext : null;
   for (const gap of batch) {
     try {
-      results.push(await collectOne(gap, asOfDate));
+      results.push(await collectOne(gap, asOfDate, runContext));
     } catch (error) {
       // 单只失败不阻断整批：失败原因留在结果里，剩余对象继续等下一次续跑。
       results.push({ code: gap.code, ok: false, reason: 'collect_failed', error: String(error.message || error).slice(0, 320) });
@@ -567,7 +634,7 @@ async function syncSelectionInputs(input) {
   }
   // 港股估值/收盘价：A 股有共享行情任务，港股没有，缺口会永远悬着（2026-11-05 生产实证：
   // 港股 daily_valuations 全历史 0 行）。因此只在港股补，A 股的 valuation 缺口仍如实记为剩余。
-  const valuationBatch = market === 'HK' ? orderByAttempts(valuation, priorAttempts, previouslyFailed).slice(0, limit) : [];
+  const valuationBatch = (historySuspended || market !== 'HK') ? [] : orderByAttempts(valuation, priorAttempts, previouslyFailed).slice(0, limit);
   const valuationResults = [];
   for (const gap of valuationBatch) {
     try {
@@ -655,6 +722,9 @@ async function syncSelectionInputs(input) {
       // 本次被尝试过的对象计数 +1（跨批次累加，清空后自动丢弃），下次批次按次数最少优先。
       attempts: pruneAttempts(nextAttempts, remainingCodes),
       failedReasons: failedResults.slice(0, 50).map(item => ({ code: item.code, reason: item.reason || 'unknown' })),
+      // 暂停证据：空间不足时本轮不采集，剩余量保持真实值，不能记成完成。
+      historySuspended,
+      disk: historySuspended ? space : null,
     },
   };
   await repo.saveInputGapQueue({ market, payload: queuePayload });
@@ -671,18 +741,23 @@ async function syncSelectionInputs(input) {
   // 来源失败属于"客观阻塞"，要等来源恢复，不能靠继续续批碰运气；
   // 仍有可补目标（未补到行情）是 partial，续批继续处理。
   const status = cleared ? 'succeeded'
-    : (targetPoolSourceFailed || targetPoolUnaudited) ? 'blocked'
-      : (!processedAny && targetPoolPending === 0 ? 'blocked' : 'partial');
+    : historySuspended ? 'blocked'
+      : (targetPoolSourceFailed || targetPoolUnaudited) ? 'blocked'
+        : (!processedAny && targetPoolPending === 0 ? 'blocked' : 'partial');
   const reason = cleared ? undefined
-    : (targetPoolSourceFailed || targetPoolUnaudited) ? 'selection_target_pool_sources_failed'
-      : targetPoolPending > 0 ? 'selection_target_pool_pending'
-        : unclassifiedBlocked ? 'selection_gap_unclassified'
-          : valuationBlocked && blockedOnlyByValuation(remaining) ? 'remaining_valuation_gap'
-            : 'selection_inputs_gaps_pending';
+    : historySuspended ? 'root_disk_low'
+      : (targetPoolSourceFailed || targetPoolUnaudited) ? 'selection_target_pool_sources_failed'
+        : targetPoolPending > 0 ? 'selection_target_pool_pending'
+          : unclassifiedBlocked ? 'selection_gap_unclassified'
+            : valuationBlocked && blockedOnlyByValuation(remaining) ? 'remaining_valuation_gap'
+              : 'selection_inputs_gaps_pending';
   return {
     ok: cleared,
     status,
     reason,
+    // 暂停历史补采的证据：外层据此标 blocked 并停止续批，而不是当作失败反复重试。
+    historySuspended,
+    disk: historySuspended ? space : null,
     market,
     asOfDate,
     processed: results.length,
@@ -735,7 +810,7 @@ function blockedOnlyByValuation(remaining) {
 }
 
 module.exports = {
-  syncSelectionInputs, collectOne, collectIndustryOne, classifyGaps, REPORT_KINDS, HISTORY_YEARS,
+  syncSelectionInputs, collectOne, collectIndustryOne, classifyGaps, collectionWindowOf, REPORT_KINDS, HISTORY_YEARS,
   collectHkMarketData, syncHkTargetPoolBars, resolveHkTargetPool, writeHkBars,
   classifyUnavailableHkCodes,
 };

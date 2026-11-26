@@ -148,7 +148,11 @@ async function refreshDividends(tsCode, today) {
   if (rows.length >= 2000 || rows.some(row => row.ts_code !== tsCode)) throw new Error('分红历史响应不完整或证券身份不一致，保留旧数据');
   const meta = await stockAnalysisRepository.readInstrumentMeta({ tsCode });
   if (!meta) throw new Error('缺少分红采集对应的证券档案');
-  await persistCollectedData({ ...meta.raw_data, ts_code: tsCode, name: meta.name, market: meta.market, list_date: meta.list_date }, { dividends: rows });
+  await persistCollectedData({
+    ...meta.raw_data, ts_code: tsCode, name: meta.name, market: meta.market, list_date: meta.list_date,
+    // 个股分红刷新：批次记录要能追到发起者（INC-0054 第一阶段第 3 条）。
+    collection_context: { caller: 'stock_analysis_dividends', callerMode: 'stock_analysis' },
+  }, { dividends: rows });
   // 非默认来源的分红行另写一份标准事实（带自己的来源），现金收益按「公告原文 > 官方 > 其他」择一，不会重复计息。
   // 是否"默认来源"由数据层标记（is_default_source），这里不判断具体是哪家。
   const primaryRows = rows.filter(row => row.source_code && !row.is_default_source);
@@ -341,7 +345,11 @@ async function refreshStockAnalysis(rawCode, reason = 'manual', options = {}) {
   ]);
   const repairedBasics=await repairZeroValuations(tsCode,fetchedBasics,basicFields),basics=repairedBasics.rows;
   if (!basics.length) throw new Error('历史估值数据为空，保留上一份结果');
-  await persistCollectedData(meta,{income,balance,cashflow,indicators,dividends,forecasts,daily,basics,factors,valuationIssues:repairedBasics.issues});
+  await persistCollectedData({
+    ...meta,
+    // 个股联网刷新：批次记录要能追到发起者（INC-0054 第一阶段第 3 条）。
+    collection_context: { caller: 'stock_analysis_refresh', callerMode: 'stock_analysis' },
+  },{income,balance,cashflow,indicators,dividends,forecasts,daily,basics,factors,valuationIssues:repairedBasics.issues});
   // 本轮真正拉过的低频数据组推进游标，下一轮才能按 TTL 跳过
   const fetchedDatasets = GATED_STOCK_DATASETS.filter(code => !skippedDatasets.includes(code));
   for (const dataset of fetchedDatasets) {

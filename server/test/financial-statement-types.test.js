@@ -70,6 +70,26 @@ async function main() {
   assert.deepStrictEqual(result.balance[0].__statement_coverage.fs_table_type_evidence,
     { source_code: 'lixinger_official', raw_record_id: 321, scope: 'current_company_profile' });
   assert.strictEqual(result.balance[0].__statement_coverage.complete, true);
+  // INC-0054 第一阶段：四类记录各只带本表的科目、比较值与请求清单。
+  // 原来每份报告行都把三表科目和全量请求清单复制一遍，一份报告被撑成四份近 10 KiB 的副本。
+  for (const [kind, prefix] of Object.entries({ balance: 'bs', income: 'ps', cashflow: 'cfs' })) {
+    assert.ok((result[kind] || []).length, `${kind} 应至少有一行`);
+    for (const row of result[kind]) {
+      const carried = [
+        ...Object.keys(row.__statement_metrics || {}),
+        ...Object.values(row.__statement_comparisons || {}).flatMap(map => Object.keys(map || {})),
+        ...((row.__statement_coverage && row.__statement_coverage.requested_metric_codes) || []),
+      ];
+      for (const code of carried) {
+        const matched = /^(bs|ps|cfs)\./.exec(String(code));
+        if (!matched) continue;
+        assert.strictEqual(matched[1], prefix, `${kind} 行不得携带其他报表的科目 ${code}`);
+      }
+    }
+  }
+  assert.ok(result.balance[0].__statement_coverage.audit, '标准层行必须保留可复查的轻量审计指纹');
+  assert.strictEqual(result.balance[0].__statement_coverage.audit.endpoint, 'cn/company/fs/bank',
+    '审计指纹必须记录本次采集的端点');
   calls.length = 0; addQuarterly = true;
   const annuals = await adapter.resolveAnnualNetProfits({ tsCode: '000001.SZ', startDate: '2025-01-01', endDate: '2025-12-31' });
   assert.strictEqual(annuals.length, 1, '年末但来源类型不是年报不能冒充年报');
@@ -86,6 +106,26 @@ async function main() {
     await assert.rejects(() => datasets.readFinancialReportRows({ tsCode: '000001.SZ' }),
       error => error.code === 'FINANCIAL_TYPE_UNKNOWN');
   } finally { adapter.resolveCnCompanyProfiles = oldProfile; }
+
+  // F-09（INC-0054 第二阶段）：停止刷新 ingested_at 后，同日原报/更正报的先后不能靠入库时间。
+  // 三处版本排序都必须把 update_flag='1' 排在 announced_at 之后、ingested_at 之前，
+  // 否则原报因字段补全刷新 ingested_at 就会反超同日更正报。纯源码断言放在连库之前，
+  // 数据库不可用时也能验证排序口径本身。
+  const fsNodeOrder = require('fs');
+  const pathNodeOrder = require('path');
+  const projOrderSrc = fsNodeOrder.readFileSync(
+    pathNodeOrder.join(__dirname, '..', 'repositories', 'stockProjectionRepository.js'), 'utf8').replace(/\s+/g, ' ');
+  const stmtOrderSrc = fsNodeOrder.readFileSync(
+    pathNodeOrder.join(__dirname, '..', 'repositories', 'stockStatementsRepository.js'), 'utf8').replace(/\s+/g, ' ');
+  assert.ok(projOrderSrc.includes(
+    "announced_at DESC NULLS LAST, CASE WHEN COALESCE(NULLIF(update_flag,''),'0')='1' THEN 0 ELSE 1 END, ingested_at DESC"),
+  'F-09: is_current_version 重算必须让同日 update_flag=1 优先于 ingested_at 新鲜度');
+  assert.ok(stmtOrderSrc.includes(
+    "market_version.announced_at DESC NULLS LAST, CASE WHEN COALESCE(NULLIF(market_version.update_flag,''),'0')='1' THEN 0 ELSE 1 END, market_version.ingested_at DESC"),
+  'F-09: 三表选版必须让同日更正报优先于原报的 ingested_at');
+  assert.ok(stmtOrderSrc.includes(
+    "candidate.announced_at DESC NULLS LAST, CASE WHEN COALESCE(NULLIF(candidate.update_flag,''),'0')='1' THEN 0 ELSE 1 END, candidate.ingested_at DESC"),
+  'F-09: 年度三表选版同样必须 update_flag=1 优先');
 
   // 仅在测试库事务中执行迁移，回滚后不能改变测试库或业务库的架构。
   const client = await pool.connect();
@@ -349,10 +389,52 @@ async function main() {
   });
   assert.strictEqual(compTypePayload.fields.find(f => f.code === 'ps.toi').values[0].single_reason, 'comparison_basis_uncomparable', 'F-06: comp_type 不同不得拆算单季');
 
-  // F-09: 原子合并 SQL 守卫与 A/H 隔离
+  // F-09（INC-0054 第二阶段）：合并规则从 SQL 搬到 JS，断言改为验证行为而不是 SQL 文本。
+  // ① 比较值完整采到时必须整体覆盖新值——「新窄值」必须能等于存储值，否则无变化跳过永远不收敛；
+  // ② 同一输入重放得到同一结果（收敛）；
+  // ③ 比较值批次部分失败时不得丢掉已采到的旧值，且合并时旧的三表全量宽值必须按本表前缀剪枝。
   const projRepoSrc = require('fs').readFileSync(require('path').join(__dirname, '..', 'repositories', 'stockProjectionRepository.js'), 'utf8');
-  assert.ok(projRepoSrc.includes('fundamental.financial_reports.raw_payload->\'__statement_comparisons\'->\'qoq\''), 'F-09: ON CONFLICT DO UPDATE 必须原子按桶合并 __statement_comparisons');
+  const { mergeReportPayload } = require('../repositories/stockProjectionRepository');
+  assert.ok(!projRepoSrc.includes("raw_payload->'__statement_comparisons'->'yoy'"),
+    'F-09: 比较值合并不许再写在 SQL 里（规则只能有一处，在 domain/statementMetricPrefix）');
   assert.ok(!projRepoSrc.includes('SELECT raw_payload->\'__statement_comparisons\''), 'F-09: 不得用非原子的 JS 先读后写合并，避免并发丢失更新或跨市场继承');
+  const fullCoverage = { complete: true, comparison_requested: true, comparison_complete: true };
+  const partialCoverage = { complete: true, comparison_requested: true, comparison_complete: false };
+  const wideRow = {
+    end_date: '2025-12-31', total_assets: 100, __statement_coverage: fullCoverage,
+    __statement_comparisons: { yoy: { 'bs.ta': 0.1, 'ps.toi': 0.2, 'cfs.ncffoa': 0.3 } },
+  };
+  const narrowRow = {
+    end_date: '2025-12-31', total_assets: 100, __statement_coverage: fullCoverage,
+    __statement_comparisons: { yoy: { 'bs.ta': 0.1 } },
+  };
+  const converged = mergeReportPayload({ previous: wideRow, incoming: narrowRow, kind: 'balance' });
+  assert.deepStrictEqual(converged.__statement_comparisons, { yoy: { 'bs.ta': 0.1 } },
+    'F-09: 比较值完整采集时必须整体覆盖，否则新窄值永远不等于存储的宽值，无变化跳过不收敛');
+  assert.deepStrictEqual(mergeReportPayload({ previous: converged, incoming: narrowRow, kind: 'balance' }), converged,
+    'F-09: 同一输入重放必须得到同一结果（收敛）');
+  // 完整采集时以新值为准：本次没返回的旧比较值键必须清掉，否则过期值会一直跟着走
+  const droppedStale = mergeReportPayload({
+    previous: { __statement_coverage: fullCoverage, __statement_comparisons: { yoy: { 'bs.ta': 0.1, 'bs.tl': 0.3 } } },
+    incoming: narrowRow,
+    kind: 'balance',
+  });
+  assert.deepStrictEqual(droppedStale.__statement_comparisons, { yoy: { 'bs.ta': 0.1 } },
+    'F-09: 比较值完整采集时本次未返回的旧键必须清掉（否则过期比较值永远留在行里）');
+  const partialMerged = mergeReportPayload({
+    previous: converged,
+    incoming: { ...narrowRow, __statement_coverage: partialCoverage, __statement_comparisons: { yoy: { 'bs.ta': 0.2 } } },
+    kind: 'balance',
+  });
+  assert.deepStrictEqual(partialMerged.__statement_comparisons, { yoy: { 'bs.ta': 0.2 } },
+    'F-09: 比较值批次部分失败时不得丢掉已采到的旧比较值');
+  const trimmedOnMerge = mergeReportPayload({
+    previous: wideRow,
+    incoming: { ...wideRow, __statement_coverage: partialCoverage, __statement_comparisons: { yoy: { 'bs.ta': 0.15 } } },
+    kind: 'balance',
+  });
+  assert.deepStrictEqual(Object.keys(trimmedOnMerge.__statement_comparisons.yoy), ['bs.ta'],
+    'F-09: 合并时旧的三表全量宽值必须按本表前缀剪枝，否则存量行永远不收敛');
   // F-05（2026-11-26 事故后强化）：批次完成标志/批次完整性字段当然不能改变版本号，
   // 但更强的保证是版本号根本不看内容——版本键只由业务身份（公司+报表+报告期+来源+
   // 公告日+币种+口径）决定。原实现用整条 payload 的哈希，正是重复副本暴涨的根因。
@@ -360,7 +442,7 @@ async function main() {
     'F-05: source_version 必须由业务身份决定');
   assert.ok(!/sourceVersion\s*=\s*rowVersion\(/.test(projRepoSrc),
     'F-05: 报告版本键不得再用整条 payload 哈希（重复采集会被判成新版本，2026-11-26 事故）');
-  assert.ok(projRepoSrc.includes("data.__statement_coverage.complete === false") && projRepoSrc.includes('jsonb_strip_nulls(EXCLUDED.raw_payload)'), 'F-05: 标准批次为空的不完整批次必须合并回已有报告且不得用 null 覆盖已落库科目');
+  assert.ok(projRepoSrc.includes("data.__statement_coverage.complete === false") && projRepoSrc.includes('function stripNullKeys') && projRepoSrc.includes('...stripNullKeys(next)'), 'F-05: 标准批次为空的不完整批次必须合并回已有报告且不得用 null 覆盖已落库科目');
   assert.ok(projRepoSrc.includes('announced_at IS NOT DISTINCT FROM $6::date') && projRepoSrc.includes("COALESCE(statement_scope,'consolidated') = $9"), 'F-05: 不完整批次仅限同证券、同公告日、同币种、同列报范围报告合并');
   const stmtRepoSrc = require('fs').readFileSync(require('path').join(__dirname, '..', 'repositories', 'stockStatementsRepository.js'), 'utf8');
   assert.ok(stmtRepoSrc.includes("market_version.raw_payload->'__statement_coverage'->>'complete'"), 'F-05: 读取选版必须优先选择完整批次报告');
@@ -435,6 +517,42 @@ async function main() {
     assert.strictEqual(Number(rows[0].bs_ca), 12000000, 'F-05: 同数不同集合新增科目应写入');
     assert.strictEqual(rows[0].statement_coverage.returned_metric_codes.length, 3, 'F-05: 覆盖元数据科目清单应取并集保留全部 3 项');
     assert.strictEqual(rows[0].statement_comparisons.yoy['bs.ta'], 0.2, 'F-05: 原同比应保留');
+
+    // INC-0054 第一阶段第 2 条：存量行带三表全量覆盖清单时，重采必须收敛到本表前缀。
+    // 不裁剪 prevCodes 的话 droppedCoverageMetrics 对存量行恒为 true，跨表旧科目会被灌回
+    // returned_metric_codes 并强制保留旧字段，覆盖清单永远不收敛、无变化跳过也永远不生效。
+    const isoCtid = async (sql, params) => (await isoClient.query(sql, params)).rows[0].ctid;
+    const wideCodesRow = {
+      ts_code: '600999.SH', end_date: '20191231', ann_date: '20200301', f_ann_date: '20200301',
+      report_type: '1', comp_type: '1', currency: 'CNY', period_type: 'annual', total_assets: 1000,
+      __statement_coverage: {
+        complete: true, requested_batch_count: 1, returned_batch_count: 1,
+        returned_metric_codes: ['bs.ta', 'ps.toi', 'cfs.ncffoa'],
+      },
+      __statement_metrics: { 'bs.ta': 1000 },
+    };
+    await projRepo.syncReportRows(isoClient, [wideCodesRow], 'balance', master.companyId, lixingerId,
+      { tsCode: '600999.SH', currency: 'CNY' });
+    const wideCodesReport = (await isoClient.query(
+      `SELECT report_id FROM fundamental.financial_reports
+        WHERE company_id=$1 AND report_kind='balance' AND period_end='2019-12-31'`, [master.companyId])).rows[0].report_id;
+    const narrowCodesRow = {
+      ...wideCodesRow,
+      __statement_coverage: { ...wideCodesRow.__statement_coverage, returned_metric_codes: ['bs.ta'] },
+    };
+    await projRepo.syncReportRows(isoClient, [narrowCodesRow], 'balance', master.companyId, lixingerId,
+      { tsCode: '600999.SH', currency: 'CNY' });
+    const narrowedCodes = (await isoClient.query(
+      "SELECT raw_payload->'__statement_coverage'->'returned_metric_codes' AS codes FROM fundamental.financial_reports WHERE report_id=$1",
+      [wideCodesReport])).rows[0].codes;
+    assert.deepStrictEqual(narrowedCodes, ['bs.ta'], '存量宽覆盖清单重采后必须收敛到本表前缀');
+    const narrowedCtid = await isoCtid(
+      'SELECT ctid::text AS ctid FROM fundamental.financial_reports WHERE report_id=$1', [wideCodesReport]);
+    await projRepo.syncReportRows(isoClient, [narrowCodesRow], 'balance', master.companyId, lixingerId,
+      { tsCode: '600999.SH', currency: 'CNY' });
+    assert.strictEqual(await isoCtid(
+      'SELECT ctid::text AS ctid FROM fundamental.financial_reports WHERE report_id=$1', [wideCodesReport]),
+    narrowedCtid, '覆盖清单收敛后第二轮重采必须跳过更新');
 
     // F-03 Round 11 & 12: 旧 3 段 source_key 分红记录原地升级、新旧并存去重、双旧键不撞唯一约束、不同付款日不误合并
     await isoClient.query(

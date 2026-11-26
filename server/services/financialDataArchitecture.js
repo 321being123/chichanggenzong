@@ -4,9 +4,38 @@
 const { withTransaction } = require('../db/transaction');
 const { STOCK_FORMULA_VERSION } = require('./analysisFreshness');
 const projection = require('../repositories/stockProjectionRepository');
+const { hasUpstreamStatementEvidence } = require('../domain/financialReportEvidence');
 const {
   analysisMetricValues, asDate, finite, hash, marketMultiple, rowVersion, stablePayload,
 } = require('../domain/stockFacts');
+
+// INC-0054 第一阶段：适配后的三表与指标不再逐条落原始报文。
+// 同一份报告原先在 income/balance/cashflow/indicators 四个数据集各存一份近 10 KiB 的完整
+// 副本（科目 + 比较值 + 覆盖清单），一天近 9.5 GiB。这些副本没有任何读端消费：
+// 真实上游应答由 lixingerOfficial 按「来源＋请求键＋内容哈希」留在 ops.raw_records 并复用，
+// 行内 __statement_coverage.audit 记录了这次采集的请求摘要、内容摘要与原始记录 ID，
+// 科目值本身完整写入三张宽表，标准事实仍在 financial_reports / financial_facts。
+const STATEMENT_DATASETS = new Set(['income', 'balance', 'cashflow', 'indicators']);
+
+// 只有「已经有上游真实应答留证」的财报行才跳过逐条转换报文；备源（Tushare 等）不写
+// lixinger_response，也没有 audit 指纹，停写就等于丢掉备源原始证据（第一阶段第 4 条）。
+function shouldPersistRawDataset(dataset, row) {
+  if (!STATEMENT_DATASETS.has(dataset)) return true;
+  return !hasUpstreamStatementEvidence(row);
+}
+
+// 一次采集里各数据集的实际来源行数。缺 source_code 的行按 tushare 记账（数据层默认来源）。
+function summarizeCollectionSources(bundle) {
+  const counts = {};
+  for (const [dataset, rows] of Object.entries(bundle || {})) {
+    if (dataset === 'valuationIssues' || !Array.isArray(rows)) continue;
+    for (const row of rows) {
+      const code = String((row && row.source_code) || 'tushare');
+      counts[code] = (counts[code] || 0) + 1;
+    }
+  }
+  return counts;
+}
 
 async function persistCollectedData(metadata, bundle) {
   const tsCode = metadata.ts_code;
@@ -30,13 +59,37 @@ async function persistCollectedData(metadata, bundle) {
       }
       return groups;
     };
+    // 采集批次按真实来源登记（INC-0054 第一阶段第 3 条）：原先一律记在 tushare 名下，
+    // 而四类财报报文实际来自理杏仁官方，事故回溯时无法从批次记录判断是谁写的。
+    // 单来源批次直接记该来源；混合来源批次保留来源集合与逐来源行数，便于按来源核算字节与缺口。
+    const sourceRowCounts = summarizeCollectionSources(bundle);
+    const sourceCodes = Object.keys(sourceRowCounts).sort();
+    const runSourceId = sourceCodes.length === 1 && sources[sourceCodes[0]] ? sources[sourceCodes[0]] : sources.tushare;
+    const context = metadata.collection_context && typeof metadata.collection_context === 'object'
+      ? metadata.collection_context : {};
     const runId = await projection.createIngestionRun({
-      sourceId: sources.tushare, datasetCode: 'stock_analysis_direct', requestRange: { ts_code: tsCode },
+      sourceId: runSourceId,
+      datasetCode: 'stock_analysis_direct',
+      requestRange: {
+        ts_code: tsCode,
+        source_codes: sourceCodes,
+        source_row_counts: sourceRowCounts,
+        // 调用标识：谁发起的采集（任务/脚本/人工），目标范围由上游透传，不在这里猜。
+        caller: context.caller || null,
+        caller_mode: context.callerMode || null,
+        job_run_id: context.jobRunId || null,
+        slot_id: context.slotId || null,
+        target_range: context.targetRange || null,
+      },
     }, client);
     let count = 0;
     for (const [dataset, rows] of Object.entries(bundle)) {
       if (dataset === 'valuationIssues' || !Array.isArray(rows)) continue;
+      // 四类财报转换报文：只有已具备上游真实应答留证的行才停写（见文件顶部注释）。
+      // 批次 row_count 仍按「实际落进 ops.raw_records 的行」计：已由理杏仁原文与审计指纹替代的行
+      // 不计入，避免用转换副本的行数继续掩盖真实留证量。判断必须逐行进行（混合来源同一数据集）。
       for (const row of rows) {
+        if (!shouldPersistRawDataset(dataset, row)) continue;
         await projection.insertRawRecord({
           runId, sourceId: sourceIdOf(row), datasetCode: dataset,
           sourceKey: `${tsCode}:${rowVersion(row)}`, payload: row, payloadHash: hash(JSON.stringify(row)),
@@ -104,16 +157,20 @@ async function persistCollectedData(metadata, bundle) {
       // 官方（非默认来源）行改按自己的来源落库，不再记在备源名下。键必须与
       // stockProjectionRepository.syncOfficialDividends 用的一致（同一来源、同一事件、同一行），
       // 否则 refreshDividends 里那条「另写标准分红事实」会再插一条同源副本，现金收益择一时出现并列。
+      // 备源行同样按事件身份建键（INC-0054）：整条报文哈希会让补录或文字微调各生成一条新记录。
+      const rowSourceId = sourceIdOf(r);
       const sourceKey = r.is_default_source === false
         ? projection.officialDividendSourceKey(r, tsCode)
-        : `${tsCode}:${rowVersion(r)}`;
+        : await projection.resolveDefaultDividendSourceKey(client, {
+          instrumentId: master.instrumentId, sourceId: rowSourceId, row: r, fallbackCode: tsCode,
+        });
       const writtenKey = await projection.upsertCorporateAction({
         instrumentId: master.instrumentId, fiscalPeriodEnd: asDate(r.end_date), announcedAt: asDate(r.ann_date || r.imp_ann_date),
         recordDate: asDate(r.record_date), exDate: asDate(r.ex_date), payDate: asDate(r.pay_date), status: r.div_proc || '',
         cashPerSharePreTax: cash, cashPerShareAfterTax: finite(r.cash_div), stockDividendRatio: finite(r.stk_bo_rate), capitalizationRatio: finite(r.stk_co_rate),
         baseShares: base == null ? null : base * 10000, totalCashAmount: totalCash,
         currencyCode: String(r.currency || master.currency || 'CNY').toUpperCase(),
-        sourceId: sourceIdOf(r), sourceKey,
+        sourceId: rowSourceId, sourceKey,
         legacySourceKeys: r.is_default_source === false ? projection.legacyOfficialDividendSourceKeys(r, master.instrumentId, tsCode) : [],
         protectedSourceKeys: r.is_default_source === false ? officialBatchDividendKeys : [],
         batchPeers: r.is_default_source === false ? officialBatchPeers : [],
@@ -125,12 +182,18 @@ async function persistCollectedData(metadata, bundle) {
     }
     for (const r of bundle.forecasts || []) {
       if (!asDate(r.end_date)) continue;
+      // 来源按行取（原先固定记 tushare，备源/官方混用时来源失真），
+      // 键改为「同一期、同一类型、同一公告日」的事件身份，摘要文字微调不再新增一条预告。
+      const forecastSourceId = sourceIdOf(r);
+      const sourceKey = await projection.resolveEarningsGuidanceSourceKey(client, {
+        companyId: master.companyId, sourceId: forecastSourceId, row: r, fallbackCode: tsCode,
+      });
       await projection.upsertEarningsGuidance({
         companyId: master.companyId, periodEnd: asDate(r.end_date), guidanceType: r.type || 'forecast', announcedAt: asDate(r.ann_date),
         profitMin: finite(r.net_profit_min) == null ? null : finite(r.net_profit_min) * 10000,
         profitMax: finite(r.net_profit_max) == null ? null : finite(r.net_profit_max) * 10000,
         changeMin: finite(r.p_change_min), changeMax: finite(r.p_change_max), summary: r.summary || '', changeReason: r.change_reason || '',
-        sourceId: sources.tushare, sourceKey: `${tsCode}:${rowVersion(r)}`, rawPayload: r,
+        sourceId: forecastSourceId, sourceKey, rawPayload: r,
       }, client);
     }
     if (['income', 'balance', 'cashflow', 'indicators'].some(kind => (bundle[kind] || []).length)) {
@@ -195,6 +258,8 @@ module.exports = {
   // 兼容出口：报表事实写入仍在同一仓储实现
   syncReportRows: projection.syncReportRows,
   persistCollectedData,
+  summarizeCollectionSources,
+  shouldPersistRawDataset,
   saveCollectedEvents,
   saveAnalysisResults,
 };

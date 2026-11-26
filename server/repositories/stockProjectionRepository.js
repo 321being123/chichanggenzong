@@ -4,6 +4,8 @@
 const { ensureInstrumentIdentity } = require('../services/securityIdentity');
 const { upsertIndustryPath } = require('./industryRepository');
 const reportMetrics = require('../dataAccess/lixingerReportMetrics');
+const statementMetricPrefix = require('../domain/statementMetricPrefix');
+const { hasUpstreamStatementEvidence } = require('../domain/financialReportEvidence');
 const {
   FACT_MAP, METRICS, analysisMetricValues, asDate, finite, hash, resolvePeriodType, stablePayload,
 } = require('../domain/stockFacts');
@@ -84,9 +86,14 @@ async function writeStatementWideRow(client, params) {
   }
   const placeholders = columns.map((_, index) => `$${index + 1}`);
   const updates = columns.slice(1).map(name => `${name}=EXCLUDED.${name}`).join(',');
-  await client.query(`INSERT INTO ${table}(${columns.join(',')})
+  // 同一份报告重采时列值往往一模一样：加 IS DISTINCT FROM 守卫，避免每次采集都把
+  // 整行（含 TOAST 与索引项）重写一遍——这是「行数没涨、表还在长」的写入放大器之一。
+  const compareColumns = columns.slice(1).map(name => `t.${name}`).join(',');
+  const compareExcluded = columns.slice(1).map(name => `EXCLUDED.${name}`).join(',');
+  await client.query(`INSERT INTO ${table} AS t(${columns.join(',')})
     VALUES(${placeholders.join(',')})
-    ON CONFLICT (report_id) DO UPDATE SET ${updates}, ingested_at=now()`, values);
+    ON CONFLICT (report_id) DO UPDATE SET ${updates}, ingested_at=now()
+    WHERE (${compareColumns}) IS DISTINCT FROM (${compareExcluded})`, values);
   return columns.length;
 }
 
@@ -125,6 +132,71 @@ function reportIdentityVersion(parts) {
     parts.currency || '',
     parts.scope || '',
   ].join('|'));
+}
+
+function stripNullKeys(payload) {
+  const out = {};
+  for (const [key, value] of Object.entries(payload || {})) {
+    if (value === null) continue;
+    out[key] = value;
+  }
+  return out;
+}
+
+function coverageCompleteFlag(payload) {
+  const coverage = payload && payload.__statement_coverage;
+  if (!coverage || coverage.complete === undefined || coverage.complete === null) return null;
+  return coverage.complete === true;
+}
+
+/**
+ * 报告主表 raw_payload 的合并规则（INC-0054 第一阶段；原实现是 SQL 里的一整段 jsonb 表达式）。
+ *
+ * 为什么搬到 JS：
+ * 1. 存量行的 __statement_comparisons 是三表全量的宽值，SQL 合并只会原样保留它，
+ *    于是「新采集的窄值」和「存储的宽值」永远不相等，内容没变的报告每次重采都被判成有变化、
+ *    整行连同 TOAST 与索引重写一遍——「无变化就跳过」永远不收敛；
+ * 2. 合并规则和适配层的裁剪规则必须共用同一份前缀表（domain/statementMetricPrefix），
+ *    否则两边各写一套，迟早再次出现「新窄旧宽」。
+ *
+ * 语义：
+ * - 本次采集不完整、或旧值明确完整时，保留旧行字段（新值覆盖同名键，null 不覆盖旧值）；
+ * - 比较值这次完整采到（comparison_requested 且 comparison_complete）→ 以新值为准整体覆盖，
+ *   这是「收敛」的关键：不读旧值，也不写回旧的全量宽值；
+ * - 比较值批次部分失败（或本次不采）→ 按桶合并旧值保底，合并前按本表前缀剪枝，避免越并越宽；
+ * - 覆盖清单不能被一次不完整采集写窄：新的明确完整才用新的，否则保留旧的。
+ */
+function mergeReportPayload({ previous, incoming, kind, preserveExistingNonNull = false } = {}) {
+  const old = previous && typeof previous === 'object' ? previous : null;
+  const next = incoming && typeof incoming === 'object' ? incoming : {};
+  const allowed = statementMetricPrefix.allowedPrefixesOf(kind);
+  const coverage = next.__statement_coverage || null;
+  const comparisonRequested = Boolean(coverage && coverage.comparison_requested);
+  const comparisonComplete = Boolean(coverage && coverage.comparison_complete);
+  const newComplete = coverageCompleteFlag(next);
+  const oldComplete = coverageCompleteFlag(old);
+  const hasComparisons = payload => Boolean(payload && payload.__statement_comparisons);
+  const keepOldFields = Boolean(old)
+    && (preserveExistingNonNull || newComplete === false)
+    && oldComplete === true;
+  const merged = keepOldFields ? { ...old, ...stripNullKeys(next) } : { ...next };
+  if (comparisonRequested && comparisonComplete) {
+    const trimmed = statementMetricPrefix.trimComparisonBuckets(next.__statement_comparisons, allowed);
+    if (Object.keys(trimmed).length) merged.__statement_comparisons = trimmed;
+    else delete merged.__statement_comparisons;
+  } else if (comparisonRequested || hasComparisons(next) || hasComparisons(old)) {
+    const buckets = statementMetricPrefix.mergeComparisonBuckets(
+      old && old.__statement_comparisons, next && next.__statement_comparisons, allowed
+    );
+    if (Object.keys(buckets).length) merged.__statement_comparisons = buckets;
+    else delete merged.__statement_comparisons;
+  }
+  if (keepOldFields) {
+    merged.__statement_coverage = newComplete === true
+      ? next.__statement_coverage
+      : (old && old.__statement_coverage) || next.__statement_coverage;
+  }
+  return merged;
 }
 
 async function syncReportRows(client, rows, kind, companyId, sourceId, options = {}) {
@@ -180,14 +252,19 @@ async function syncReportRows(client, rows, kind, companyId, sourceId, options =
       ]
     )).rows[0] : null;
     const isIncomplete = Boolean(data.__statement_coverage && data.__statement_coverage.complete === false);
+    const allowedPrefixes = statementMetricPrefix.allowedPrefixesOf(kind);
     const missingPreviouslyCollectedField = Boolean(
       sameIdentity && sameIdentity.raw_payload && typeof sameIdentity.raw_payload === 'object'
       && Object.entries(FACT_MAP[kind] || {}).some(([sourceField]) =>
         finite(sameIdentity.raw_payload[sourceField]) !== null && finite(data[sourceField]) === null
       )
     );
-    const prevCodes = Array.isArray(sameIdentity?.raw_payload?.__statement_coverage?.returned_metric_codes)
-      ? sameIdentity.raw_payload.__statement_coverage.returned_metric_codes : [];
+    const prevCodes = (Array.isArray(sameIdentity?.raw_payload?.__statement_coverage?.returned_metric_codes)
+      ? sameIdentity.raw_payload.__statement_coverage.returned_metric_codes : [])
+      // 存量行是三表全量的宽清单（例如 balance 行还带着 ps.* / cfs.*），新采集已按表裁剪。
+      // 不先按本表前缀裁剪，droppedCoverageMetrics 对存量行恒为 true，于是每次都把跨表旧科目
+      // 灌回 returned_metric_codes 并强制走保留旧字段——覆盖清单永远不收敛，无变化跳过也对它无效。
+      .filter(code => statementMetricPrefix.keepCodeForAllowed(code, allowedPrefixes));
     const currCodeSet = new Set(Array.isArray(data.__statement_coverage?.returned_metric_codes)
       ? data.__statement_coverage.returned_metric_codes : []);
     const droppedCoverageMetrics = prevCodes.some(code => !currCodeSet.has(code));
@@ -206,8 +283,20 @@ async function syncReportRows(client, rows, kind, companyId, sourceId, options =
         };
       }
     }
+    // 合并规则已从 SQL 搬到 JS（见 mergeReportPayload）：合并后的结果才参与「有没有变化」判断，
+    // 否则「新采集的窄值 vs 存储的宽值」永远不相等，存量行每次重采都会被重写。
+    const finalPayload = mergeReportPayload({
+      previous: sameIdentity && sameIdentity.raw_payload,
+      incoming: reportPayload,
+      kind,
+      preserveExistingNonNull,
+    });
     let rawRecordId = null;
-    if (options.runId && sourceId) {
+    // 第二条转换报文写入路径（INC-0054 第一阶段第 4 条）：带 runId 时原实现无条件把适配后的
+    // 整行（含 __statement_metrics）再存一份 ops.raw_records。理杏仁行的真实应答已由
+    // lixingerOfficial 按请求键＋内容哈希留证，行内 audit 也能回溯到那批原文，所以只在
+    // 「没有上游真实应答留证」的备源行上继续留证——备源缺原文时不得静默丢掉证据。
+    if (options.runId && sourceId && !hasUpstreamStatementEvidence(data)) {
       const rawKey = `${companyId}:${kind}:${asDate(data.end_date)}:${announced || ''}:${fAnnDate || ''}:${data.report_type || ''}:${rowUpdateFlag}`;
       const raw = (await client.query(`INSERT INTO ops.raw_records(run_id,source_id,dataset_code,source_key,source_updated_at,payload,payload_hash)
         VALUES($1,$2,$3,$4,$5,$6::jsonb,$7)
@@ -218,79 +307,67 @@ async function syncReportRows(client, rows, kind, companyId, sourceId, options =
       )).rows[0];
       rawRecordId = raw && raw.raw_record_id;
     }
-    const report = (await client.query(`INSERT INTO fundamental.financial_reports(company_id,report_kind,period_end,period_type,announced_at,f_ann_date,report_type,comp_type,source_id,source_version,update_flag,raw_record_id,raw_payload)
+    const report = (await client.query(`INSERT INTO fundamental.financial_reports AS t(company_id,report_kind,period_end,period_type,announced_at,f_ann_date,report_type,comp_type,source_id,source_version,update_flag,raw_record_id,raw_payload)
       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::jsonb) ON CONFLICT(company_id,report_kind,period_end,source_id,source_version)
-      DO UPDATE SET announced_at=COALESCE(EXCLUDED.announced_at,fundamental.financial_reports.announced_at),
-        f_ann_date=COALESCE(EXCLUDED.f_ann_date,fundamental.financial_reports.f_ann_date),
+      DO UPDATE SET announced_at=COALESCE(EXCLUDED.announced_at,t.announced_at),
+        f_ann_date=COALESCE(EXCLUDED.f_ann_date,t.f_ann_date),
         -- 报告期类型随重新采集更新：历史行曾按错误口径落成 other，不更新就永远取不到年度利润。
         period_type=EXCLUDED.period_type,
-        report_type=COALESCE(NULLIF(EXCLUDED.report_type,''),fundamental.financial_reports.report_type),
-        comp_type=COALESCE(NULLIF(EXCLUDED.comp_type,''),fundamental.financial_reports.comp_type),
-        update_flag=COALESCE(NULLIF(EXCLUDED.update_flag,''),fundamental.financial_reports.update_flag),
-        raw_record_id=COALESCE(EXCLUDED.raw_record_id,fundamental.financial_reports.raw_record_id),
-        raw_payload=CASE
-          WHEN ($14::boolean OR COALESCE((EXCLUDED.raw_payload->'__statement_coverage'->>'complete')::boolean, true) = false)
-            AND COALESCE((fundamental.financial_reports.raw_payload->'__statement_coverage'->>'complete')::boolean, false) = true
-          THEN CASE
-            WHEN (fundamental.financial_reports.raw_payload ? '__statement_comparisons')
-              OR (EXCLUDED.raw_payload ? '__statement_comparisons')
-            THEN jsonb_set(
-              fundamental.financial_reports.raw_payload || jsonb_strip_nulls(EXCLUDED.raw_payload)
-                || jsonb_build_object('__statement_coverage', CASE
-                  WHEN COALESCE((EXCLUDED.raw_payload->'__statement_coverage'->>'complete')::boolean, false) = true
-                  THEN EXCLUDED.raw_payload->'__statement_coverage'
-                  ELSE COALESCE(fundamental.financial_reports.raw_payload->'__statement_coverage', EXCLUDED.raw_payload->'__statement_coverage')
-                END),
-              '{__statement_comparisons}',
-              jsonb_strip_nulls(jsonb_build_object(
-                'yoy', NULLIF(COALESCE(fundamental.financial_reports.raw_payload->'__statement_comparisons'->'yoy', '{}'::jsonb) || COALESCE(EXCLUDED.raw_payload->'__statement_comparisons'->'yoy', '{}'::jsonb), '{}'::jsonb),
-                'qoq', NULLIF(COALESCE(fundamental.financial_reports.raw_payload->'__statement_comparisons'->'qoq', '{}'::jsonb) || COALESCE(EXCLUDED.raw_payload->'__statement_comparisons'->'qoq', '{}'::jsonb), '{}'::jsonb),
-                'single', NULLIF(COALESCE(fundamental.financial_reports.raw_payload->'__statement_comparisons'->'single', '{}'::jsonb) || COALESCE(EXCLUDED.raw_payload->'__statement_comparisons'->'single', '{}'::jsonb), '{}'::jsonb),
-                'single_yoy', NULLIF(COALESCE(fundamental.financial_reports.raw_payload->'__statement_comparisons'->'single_yoy', '{}'::jsonb) || COALESCE(EXCLUDED.raw_payload->'__statement_comparisons'->'single_yoy', '{}'::jsonb), '{}'::jsonb),
-                'single_qoq', NULLIF(COALESCE(fundamental.financial_reports.raw_payload->'__statement_comparisons'->'single_qoq', '{}'::jsonb) || COALESCE(EXCLUDED.raw_payload->'__statement_comparisons'->'single_qoq', '{}'::jsonb), '{}'::jsonb)
-              )),
-              true
-            )
-            ELSE fundamental.financial_reports.raw_payload || jsonb_strip_nulls(EXCLUDED.raw_payload)
-              || jsonb_build_object('__statement_coverage', CASE
-                WHEN COALESCE((EXCLUDED.raw_payload->'__statement_coverage'->>'complete')::boolean, false) = true
-                THEN EXCLUDED.raw_payload->'__statement_coverage'
-                ELSE COALESCE(fundamental.financial_reports.raw_payload->'__statement_coverage', EXCLUDED.raw_payload->'__statement_coverage')
-              END)
-          END
-          WHEN (fundamental.financial_reports.raw_payload ? '__statement_comparisons')
-            OR (EXCLUDED.raw_payload ? '__statement_comparisons')
-          THEN jsonb_set(
-            EXCLUDED.raw_payload,
-            '{__statement_comparisons}',
-            jsonb_strip_nulls(jsonb_build_object(
-              'yoy', NULLIF(COALESCE(fundamental.financial_reports.raw_payload->'__statement_comparisons'->'yoy', '{}'::jsonb) || COALESCE(EXCLUDED.raw_payload->'__statement_comparisons'->'yoy', '{}'::jsonb), '{}'::jsonb),
-              'qoq', NULLIF(COALESCE(fundamental.financial_reports.raw_payload->'__statement_comparisons'->'qoq', '{}'::jsonb) || COALESCE(EXCLUDED.raw_payload->'__statement_comparisons'->'qoq', '{}'::jsonb), '{}'::jsonb),
-              'single', NULLIF(COALESCE(fundamental.financial_reports.raw_payload->'__statement_comparisons'->'single', '{}'::jsonb) || COALESCE(EXCLUDED.raw_payload->'__statement_comparisons'->'single', '{}'::jsonb), '{}'::jsonb),
-              'single_yoy', NULLIF(COALESCE(fundamental.financial_reports.raw_payload->'__statement_comparisons'->'single_yoy', '{}'::jsonb) || COALESCE(EXCLUDED.raw_payload->'__statement_comparisons'->'single_yoy', '{}'::jsonb), '{}'::jsonb),
-              'single_qoq', NULLIF(COALESCE(fundamental.financial_reports.raw_payload->'__statement_comparisons'->'single_qoq', '{}'::jsonb) || COALESCE(EXCLUDED.raw_payload->'__statement_comparisons'->'single_qoq', '{}'::jsonb), '{}'::jsonb)
-            )),
-            true
-          )
-          ELSE EXCLUDED.raw_payload
-        END,ingested_at=now() RETURNING report_id`,
-    [companyId, kind, asDate(data.end_date), rowPeriodType, announced, fAnnDate, String(data.report_type || ''), String(data.comp_type || ''), sourceId, sourceVersion, rowUpdateFlag, rawRecordId, JSON.stringify(reportPayload), preserveExistingNonNull])).rows[0];
-    await client.query(`UPDATE fundamental.financial_reports
-      SET f_ann_date=COALESCE($2,f_ann_date),report_type=COALESCE(NULLIF($3,''),report_type),comp_type=COALESCE(NULLIF($4,''),comp_type),statement_scope=CASE WHEN $3='1' THEN 'consolidated' ELSE statement_scope END,
-      raw_record_id=COALESCE($5,raw_record_id)
-      WHERE report_id=$1`, [report.report_id, fAnnDate, String(data.report_type || ''), String(data.comp_type || ''), rawRecordId]);
+        report_type=COALESCE(NULLIF(EXCLUDED.report_type,''),t.report_type),
+        comp_type=COALESCE(NULLIF(EXCLUDED.comp_type,''),t.comp_type),
+        update_flag=COALESCE(NULLIF(EXCLUDED.update_flag,''),t.update_flag),
+        -- 列报范围原先靠 upsert 之后第二条 UPDATE 单独补写，这里并进同一条语句：
+        -- 两条语句各自判断变化时，第一条跳过更新、报告 ID 要再查一次，仍会漏掉范围变化。
+        statement_scope=CASE WHEN EXCLUDED.report_type='1' THEN 'consolidated' ELSE t.statement_scope END,
+        raw_record_id=COALESCE(EXCLUDED.raw_record_id,t.raw_record_id),
+        raw_payload=EXCLUDED.raw_payload,
+        ingested_at=now()
+      -- 内容完全一致的重复采集不再写新行版本（INC-0054 第一阶段）：原实现无条件刷新
+      -- ingested_at 并重写整条 raw_payload，等于每次重采都让 TOAST 与索引重写一遍。
+      -- 合并后的负载（mergeReportPayload）与原值相等时整行跳过，只在真的变了才写。
+      -- 比较时剔除 __statement_coverage.audit：那是「本次采集窗口/原文缓存」的审计指纹，
+      -- 含 range、request_digest、payload_digest 与 raw_record_ids。endDate 推进一天、
+      -- 新季报发布或 7 天原文缓存过期都会让它变，但业务科目、比较值和覆盖集合没变——
+      -- 把它算进「有没有变化」等于每天都把 10-12 年未变的历史行整行重写（TOAST/索引全刷）。
+      -- 旧行还没有审计指纹时仍要写一次，保证首次采集与升级后的行都带上可回溯证据。
+      WHERE (EXCLUDED.raw_payload #- '{__statement_coverage,audit}')
+              IS DISTINCT FROM (t.raw_payload #- '{__statement_coverage,audit}')
+         OR ((t.raw_payload #> '{__statement_coverage,audit}') IS NULL
+             AND (EXCLUDED.raw_payload #> '{__statement_coverage,audit}') IS NOT NULL)
+         OR EXCLUDED.period_type IS DISTINCT FROM t.period_type
+         OR COALESCE(EXCLUDED.f_ann_date,t.f_ann_date) IS DISTINCT FROM t.f_ann_date
+         OR COALESCE(NULLIF(EXCLUDED.report_type,''),t.report_type) IS DISTINCT FROM t.report_type
+         OR COALESCE(NULLIF(EXCLUDED.comp_type,''),t.comp_type) IS DISTINCT FROM t.comp_type
+         OR (CASE WHEN EXCLUDED.report_type='1' THEN 'consolidated' ELSE t.statement_scope END)
+              IS DISTINCT FROM t.statement_scope
+         OR COALESCE(EXCLUDED.raw_record_id,t.raw_record_id) IS DISTINCT FROM t.raw_record_id
+      RETURNING report_id`,
+    [companyId, kind, asDate(data.end_date), rowPeriodType, announced, fAnnDate, String(data.report_type || ''), String(data.comp_type || ''), sourceId, sourceVersion, rowUpdateFlag, rawRecordId, JSON.stringify(finalPayload)])).rows[0];
+    // DO UPDATE 在内容无变化时不返回行：必须在同一事务里取回已存在的那份报告，
+    // 否则财务事实、宽表与 current 标记会被整段跳过。
+    const reportId = report && report.report_id
+      ? report.report_id
+      : ((await client.query(
+        `SELECT report_id FROM fundamental.financial_reports
+          WHERE company_id=$1 AND report_kind=$2 AND period_end=$3 AND source_id=$4 AND source_version=$5`,
+        [companyId, kind, asDate(data.end_date), sourceId, sourceVersion]
+      )).rows[0] || {}).report_id;
+    if (!reportId) continue;
     for (const [sourceField, metricCode] of Object.entries(FACT_MAP[kind] || {})) {
       const value = finite(data[sourceField]);
       if (value === null) continue;
       const unit = metricCode === 'interest_coverage' ? 'multiple' : /roe|roa/.test(metricCode) ? 'percent' : 'currency';
       await client.query(`INSERT INTO fundamental.financial_facts(report_id,statement_type,metric_code,numeric_value,unit_code,currency_code,source_field)
-        VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(report_id,metric_code) DO UPDATE SET numeric_value=EXCLUDED.numeric_value,unit_code=EXCLUDED.unit_code,currency_code=EXCLUDED.currency_code,source_field=EXCLUDED.source_field`, [report.report_id, kind, metricCode, value, unit, unit === 'currency' ? rowCurrency : null, sourceField]);
+        VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(report_id,metric_code) DO UPDATE SET numeric_value=EXCLUDED.numeric_value,unit_code=EXCLUDED.unit_code,currency_code=EXCLUDED.currency_code,source_field=EXCLUDED.source_field
+        WHERE (fundamental.financial_facts.numeric_value,fundamental.financial_facts.unit_code,fundamental.financial_facts.currency_code,fundamental.financial_facts.source_field)
+          IS DISTINCT FROM (EXCLUDED.numeric_value,EXCLUDED.unit_code,EXCLUDED.currency_code,EXCLUDED.source_field)`,
+      [reportId, kind, metricCode, value, unit, unit === 'currency' ? rowCurrency : null, sourceField]);
     }
     // 三表全量科目：写对应准则的宽表（A股 CAS / 港股 HKFRS）。
     // 标准 20 个科目仍写 financial_facts，下游读取口径不变；两者互不替代。
     if (statementMetrics) {
       await writeStatementWideRow(client, {
-        reportId: report.report_id, companyId, market, kind,
+        reportId, companyId, market, kind,
         periodEnd: asDate(data.end_date), periodType: rowPeriodType, announcedAt: announced,
         currency: rowCurrency, sourceId, sourceVersion, rawRecordId, metrics: statementMetrics,
       });
@@ -309,7 +386,9 @@ async function syncReportRows(client, rows, kind, companyId, sourceId, options =
           END
         ORDER BY CASE WHEN COALESCE((raw_payload->'__statement_coverage'->>'complete')::boolean, true) THEN 0 ELSE 1 END,
           CASE WHEN report_type='1' THEN 0 ELSE 1 END,
-          announced_at DESC NULLS LAST,ingested_at DESC,report_id DESC
+          announced_at DESC NULLS LAST,
+          CASE WHEN COALESCE(NULLIF(update_flag,''),'0')='1' THEN 0 ELSE 1 END,
+          ingested_at DESC,report_id DESC
       ) rn
       FROM fundamental.financial_reports
       WHERE company_id=$1 AND report_kind=$2
@@ -317,7 +396,8 @@ async function syncReportRows(client, rows, kind, companyId, sourceId, options =
     UPDATE fundamental.financial_reports r
        SET is_current_version=(ranked.rn=1)
       FROM ranked
-     WHERE r.report_id=ranked.report_id`, [companyId, kind]);
+     WHERE r.report_id=ranked.report_id
+       AND r.is_current_version IS DISTINCT FROM (ranked.rn=1)`, [companyId, kind]);
 }
 
 function officialDividendSourceKey(row, fallbackCode = '') {
@@ -329,6 +409,60 @@ function officialDividendSourceKey(row, fallbackCode = '') {
   const recordDate = asDate(row.record_date);
   const eventDate = exDate || (payDate && recordDate ? `${payDate}:${recordDate}` : (payDate || recordDate || ''));
   return `${code}:${period}:${ann}:${eventDate}`;
+}
+
+// 备源（默认来源）分红和业绩预告原先用「整条报文哈希」当 source_key：
+// 同一笔分红/同一次预告只要字段补录、顺序或摘要文字变化，就会新增一条业务记录（INC-0054 同类范围）。
+// 改成事件身份键以后，必须先把历史行认回来——同事件已经存在时沿用它的键，改键当天不会又灌一批重复。
+//
+// 历史键只认旧格式（`代码:整条报文 sha256`，正则 `^[^:]+:[0-9a-f]{32,}$`），不认已迁移的事件键：
+// 事件键本身已经带除净/付款日，拿它来"认回"会把同公告日的另一笔分红也吞掉。
+// 认回还必须对齐除净日/付款日/登记日——同财年同公告日、不同除净日的两笔分红是两笔独立事件，
+// 原先只按 (证券, 来源, 财年期末, 公告日) 匹配会把它们互相覆盖成一条。
+async function resolveDefaultDividendSourceKey(client, { instrumentId, sourceId, row, fallbackCode = '' } = {}) {
+  const eventKey = officialDividendSourceKey(row || {}, fallbackCode);
+  const period = asDate((row || {}).end_date);
+  if (!instrumentId || !sourceId || !period) return eventKey;
+  const announced = asDate(row.ann_date || row.imp_ann_date) || null;
+  const { rows } = await client.query(
+    `SELECT source_key FROM fundamental.corporate_actions
+      WHERE instrument_id=$1 AND source_id=$2 AND action_type='dividend'
+        AND fiscal_period_end=$3::date AND announced_at IS NOT DISTINCT FROM $4::date
+        AND ex_date IS NOT DISTINCT FROM $5::date
+        AND pay_date IS NOT DISTINCT FROM $6::date
+        AND record_date IS NOT DISTINCT FROM $7::date
+        AND source_key ~ '^[^:]+:[0-9a-f]{32,}$'
+      ORDER BY action_id ASC LIMIT 1`,
+    [instrumentId, sourceId, period, announced, asDate(row.ex_date) || null,
+      asDate(row.pay_date) || null, asDate(row.record_date) || null],
+  );
+  if (rows.some(item => item.source_key === eventKey)) return eventKey;
+  // 已经有同事件的历史行（旧哈希键）就认它，不新增；只有确实没有才用事件键。
+  return rows.length ? rows[0].source_key : eventKey;
+}
+
+function earningsGuidanceEventKey(row = {}, fallbackCode = '') {
+  const period = asDate(row.end_date) || '';
+  const type = String(row.type || 'forecast');
+  const announced = asDate(row.ann_date) || '';
+  return `${fallbackCode || ''}:${period}:${type}:${announced}`;
+}
+
+async function resolveEarningsGuidanceSourceKey(client, { companyId, sourceId, row, fallbackCode = '' } = {}) {
+  const eventKey = earningsGuidanceEventKey(row || {}, fallbackCode);
+  const period = asDate((row || {}).end_date);
+  if (!companyId || !sourceId || !period) return eventKey;
+  const announced = asDate(row.ann_date) || null;
+  const type = String(row.type || 'forecast');
+  const { rows } = await client.query(
+    `SELECT source_key FROM fundamental.earnings_guidance
+      WHERE company_id=$1 AND source_id=$2 AND period_end=$3::date AND guidance_type=$4
+        AND announced_at IS NOT DISTINCT FROM $5::date
+      ORDER BY guidance_id ASC LIMIT 5`,
+    [companyId, sourceId, period, type, announced],
+  );
+  if (rows.some(item => item.source_key === eventKey)) return eventKey;
+  return rows.length ? rows[0].source_key : eventKey;
 }
 
 function legacyOfficialDividendSourceKeys(row = {}, fallbackId = '', fallbackCode = '') {
@@ -881,7 +1015,15 @@ async function upsertEarningsGuidance(params, tx) {
   await tx.query(
     `INSERT INTO fundamental.earnings_guidance(company_id,period_end,guidance_type,announced_at,profit_min,profit_max,change_min,change_max,summary,change_reason,currency_code,source_id,source_key,raw_payload)
      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'CNY',$11,$12,$13::jsonb) ON CONFLICT(source_id,source_key)
-     DO UPDATE SET raw_payload=EXCLUDED.raw_payload,ingested_at=now()`,
+     DO UPDATE SET profit_min=EXCLUDED.profit_min,profit_max=EXCLUDED.profit_max,
+       change_min=EXCLUDED.change_min,change_max=EXCLUDED.change_max,
+       summary=EXCLUDED.summary,change_reason=EXCLUDED.change_reason,
+       raw_payload=EXCLUDED.raw_payload,ingested_at=now()
+     WHERE (fundamental.earnings_guidance.profit_min,fundamental.earnings_guidance.profit_max,
+            fundamental.earnings_guidance.change_min,fundamental.earnings_guidance.change_max,
+            fundamental.earnings_guidance.summary,fundamental.earnings_guidance.change_reason)
+       IS DISTINCT FROM (EXCLUDED.profit_min,EXCLUDED.profit_max,EXCLUDED.change_min,EXCLUDED.change_max,
+            EXCLUDED.summary,EXCLUDED.change_reason)`,
     [params.companyId, params.periodEnd, params.guidanceType, params.announcedAt, params.profitMin, params.profitMax,
       params.changeMin, params.changeMax, params.summary, params.changeReason, params.sourceId, params.sourceKey, JSON.stringify(params.rawPayload || {})],
   );
@@ -937,6 +1079,10 @@ module.exports = {
   syncReportRows,
   normalizeUpdateFlag,
   reportIdentityVersion,
+  mergeReportPayload,
+  resolveDefaultDividendSourceKey,
+  resolveEarningsGuidanceSourceKey,
+  earningsGuidanceEventKey,
   writeStatementWideRow,
   syncOfficialDividends,
   officialDividendSourceKey,

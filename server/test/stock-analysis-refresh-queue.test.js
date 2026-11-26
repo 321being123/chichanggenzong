@@ -7,6 +7,8 @@ const servicePath = path.join(root, 'server/services/companyFinancialIncremental
 const nativeRequire = require('module').createRequire(servicePath);
 let targets = [{ instrument_id: 158867, company_id: 5388, list_date: '1996-11-01' }];
 let cursors = new Map(), historyCursors = new Map(), requests = [], snapshots = [], failKind = null, slotCalls = [], eventCalls = [], eventsFail = false;
+// F-08：同一入口低空间时只阻止全历史补采，普通增量继续；用可切换替身避免依赖测试机真实余量。
+let diskSuspended = false;
 const stock = {
   normalizeStockCode: code => code === '600763' ? '600763.SH' : code,
   isOrdinaryAStock: code => /^60\d{4}\.SH$/.test(code),
@@ -20,6 +22,9 @@ const context = { module: { exports: {} }, Date, console, process,
     : name === '../repositories/companyFinancialRepository' ? { findStockTargetRows: async () => targets }
     : name === './stockAnalysis' ? stock
     : name === './jobScheduleSlots' ? { enqueueManualJob: async (...args) => { slotCalls.push(args); return { slot_id: 42 }; } }
+    : name === './diskGuard' ? { checkHistoryCollectionSpace: async () => diskSuspended
+      ? { suspended: true, readable: true, freeBytes: 1, minFreeBytes: 2 }
+      : { suspended: false, readable: true, freeBytes: 50 * 1024 ** 3, minFreeBytes: 8 * 1024 ** 3 } }
     : nativeRequire(name),
   getCursors: dataset => dataset === 'financial_history' ? historyCursors : cursors,
   fetchReports: async (target, options) => { requests.push({ target, options }); return {}; },
@@ -37,6 +42,12 @@ const service = context.module.exports;
   assert.strictEqual(slotCalls[0][1].targetCodes.join(), '600763.SH');
   await assert.rejects(service.enqueueStockAnalysisSync('110001.SH'), /普通股票/);
   const options = { mode: 'stock_analysis', targetCodes: ['600763.SH'], asOfDate: '2026-10-20' };
+  // F-08：没有历史游标即 historyFull，低空间必须用受控错误阻止全历史补采，且不得发起采集。
+  diskSuspended = true;
+  await assert.rejects(service.syncRequestedStockAnalysis(options),
+    error => error.code === 'ROOT_DISK_LOW', '低空间时全历史补采必须被 ROOT_DISK_LOW 阻止');
+  assert.strictEqual(requests.length, 0, '被根盘止损阻止时不得发起任何财报请求');
+  diskSuspended = false;
   const result = await service.syncRequestedStockAnalysis(options);
   assert.strictEqual(result.publishDatasets, false, '单股成功不能发布全市场分区');
   const { stageCompletionEvidence, getJobDefinition } = require('../services/jobDefinitions');

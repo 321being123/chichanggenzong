@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "lastReviewed": "2026-11-25",
+  "lastReviewed": "2026-11-26",
   "rules": [
     {
       "id": "BOND-RATING-ISSUER-ONLY-001",
@@ -6345,6 +6345,182 @@
         {
           "file": "server/test/feedback-online-97-107.test.js",
           "pattern": "#103 AAAsti/AA+sti/AA-sti/AAsti/A+sti/A-sti/BBB+sti 统一归一化"
+        }
+      ],
+      "owner": "CodeBuddy",
+      "status": "local_verified"
+    },
+    {
+      "id": "FINANCIAL-REPORT-AUDIT-NO-REWRITE-001",
+      "title": "采集窗口、原文缓存或审计指纹变化不得单独触发财报主表重写，旧行缺指纹时仍须补写一次",
+      "implementation": {
+        "file": "server/repositories/stockProjectionRepository.js",
+        "symbol": "syncReportRows"
+      },
+      "tests": [
+        {
+          "file": "server/test/financial-report-identity.test.js",
+          "pattern": "只有采集窗口/缓存/审计指纹变化时不得重写主表行"
+        },
+        {
+          "file": "server/test/financial-report-identity.test.js",
+          "pattern": "旧行缺审计指纹时必须补写一次"
+        }
+      ],
+      "owner": "CodeBuddy",
+      "status": "local_verified"
+    },
+    {
+      "id": "FINANCIAL-REPORT-COVERAGE-PREFIX-001",
+      "title": "存量财报覆盖清单必须按本表前缀收敛，否则无变化跳过对它永不生效",
+      "implementation": {
+        "file": "server/domain/statementMetricPrefix.js",
+        "symbol": "keepCodeForAllowed"
+      },
+      "tests": [
+        {
+          "file": "server/test/financial-report-identity.test.js",
+          "pattern": "存量宽覆盖清单重采后必须收敛到本表前缀"
+        },
+        {
+          "file": "server/test/financial-statement-types.test.js",
+          "pattern": "存量宽覆盖清单重采后必须收敛到本表前缀"
+        }
+      ],
+      "owner": "CodeBuddy",
+      "status": "local_verified"
+    },
+    {
+      "id": "FINANCIAL-REPORT-RAW-EVIDENCE-001",
+      "title": "只有已具备上游真实应答留证的财报行才停写转换报文，备源必须继续保留原始留证",
+      "implementation": {
+        "file": "server/services/financialDataArchitecture.js",
+        "symbol": "shouldPersistRawDataset"
+      },
+      "tests": [
+        {
+          "file": "server/test/financial-report-identity.test.js",
+          "pattern": "理杏仁带审计指纹的财报行不得再写一份转换报文"
+        },
+        {
+          "file": "server/test/financial-report-identity.test.js",
+          "pattern": "备源（无上游原文留证）必须保留原始留证"
+        }
+      ],
+      "owner": "CodeBuddy",
+      "status": "local_verified"
+    },
+    {
+      "id": "DIVIDEND-EVENT-KEY-LEGACY-001",
+      "title": "备源分红历史键只认旧哈希格式且除净/付款/登记日一致，同公告日不同除净日必须独立留行",
+      "implementation": {
+        "file": "server/repositories/stockProjectionRepository.js",
+        "symbol": "resolveDefaultDividendSourceKey"
+      },
+      "tests": [
+        {
+          "file": "server/test/financial-event-keys.test.js",
+          "pattern": "同财年同公告日、不同除净日的两笔分红必须保留为 2 行"
+        }
+      ],
+      "owner": "CodeBuddy",
+      "status": "local_verified"
+    },
+    {
+      "id": "SELECTION-INPUTS-COLLECTION-PLAN-001",
+      "title": "混合财报缺口原因必须回退四类，补采窗口不得拉无关数据集或污染分红起点",
+      "implementation": {
+        "file": "server/services/stockSelectionService.js",
+        "symbol": "collectionPlanOf"
+      },
+      "tests": [
+        {
+          "file": "server/test/stock-selection-collection-plan.test.js",
+          "pattern": "混合原因时 report_kinds 必须为空"
+        },
+        {
+          "file": "server/test/stock-selection-collection-plan.test.js",
+          "pattern": "collectOne 取数窗口与请求裁剪验证通过"
+        }
+      ],
+      "owner": "CodeBuddy",
+      "status": "local_verified"
+    },
+    {
+      "id": "HISTORY-COLLECTION-DISK-GUARD-001",
+      "title": "选股目标池、批量历史补采和单股全历史刷新必须共用根盘余量止损，低空间时不得先发起一批历史采集",
+      "implementation": {
+        "file": "server/services/companyFinancialIncrementalSync.js",
+        "symbol": "runCompanyFinancialBackfill"
+      },
+      "tests": [
+        {
+          "file": "server/test/stock-selection-collection-plan.test.js",
+          "pattern": "F-08: 低空间时批量历史补采不得读取目标"
+        },
+        {
+          "file": "server/test/stock-selection-collection-plan.test.js",
+          "pattern": "F-08: 根盘检查必须在 syncHkTargetPoolBars 之前"
+        },
+        {
+          "file": "server/test/stock-analysis-refresh-queue.test.js",
+          "pattern": "低空间时全历史补采必须被 ROOT_DISK_LOW 阻止"
+        }
+      ],
+      "owner": "CodeBuddy",
+      "status": "local_verified"
+    },
+    {
+      "id": "FINANCIAL-REPORT-VERSION-UPDATE-FLAG-001",
+      "title": "同日财报版本排序必须把 update_flag=1 排在 announced_at 之后、ingested_at 之前，停止刷新 ingested_at 后更正报仍优先",
+      "implementation": {
+        "file": "server/repositories/stockProjectionRepository.js",
+        "symbol": "syncReportRows"
+      },
+      "tests": [
+        {
+          "file": "server/test/financial-statement-types.test.js",
+          "pattern": "F-09: is_current_version 重算必须让同日 update_flag=1 优先于 ingested_at 新鲜度"
+        },
+        {
+          "file": "server/test/financial-statement-types.test.js",
+          "pattern": "F-09: 三表选版必须让同日更正报优先于原报的 ingested_at"
+        },
+        {
+          "file": "server/test/financial-report-identity.test.js",
+          "pattern": "F-09: 同日更正报（update_flag=1）必须优先于后刷新 ingested_at 的原报"
+        }
+      ],
+      "owner": "CodeBuddy",
+      "status": "local_verified"
+    },
+    {
+      "id": "FINANCIAL-REPORT-HEALTH-AUDIT-ENTRY-001",
+      "title": "财报健康审计必须和既有运维审计一样登记 package.json 统一入口",
+      "implementation": {
+        "file": "package.json",
+        "symbol": "\"audit:financial-health\""
+      },
+      "tests": [
+        {
+          "file": "server/test/financial-report-health-audit.test.js",
+          "pattern": "F-10: 财报健康审计脚本必须在 package.json scripts 中登记统一入口"
+        }
+      ],
+      "owner": "CodeBuddy",
+      "status": "local_verified"
+    },
+    {
+      "id": "FINANCIAL-REPORT-HEALTH-AUDIT-001",
+      "title": "财报健康审计的到期口径必须与保留任务一致，并含单日有效载荷与最老积压告警",
+      "implementation": {
+        "file": "server/scripts/auditFinancialReportHealth.js",
+        "symbol": "auditRawBacklog"
+      },
+      "tests": [
+        {
+          "file": "server/test/financial-report-health-audit.test.js",
+          "pattern": "财报健康审计口径（白名单到期/最老积压/单日载荷）验证通过"
         }
       ],
       "owner": "CodeBuddy",

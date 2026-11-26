@@ -2498,6 +2498,58 @@ function isDelistedSecurityName(name) {
 }
 
 /**
+ * 缺口的采集计划（INC-0054 第一阶段第 2 条）：把「缺证券」细化到报告期、财报种类和必需字段。
+ *
+ * 原来队列只知道"这只股票缺财报"，补采一律按 12 年 × 四类全量重拉，真正的缺口
+ * （例如只缺某一年资产负债表）被整批历史数据淹没。这里从规则原因和年度异常里
+ * 推出本次真正需要的种类与报告期；推不出来时不缩小范围（保持原来的保守行为）。
+ */
+const REPORT_KIND_BY_REASON = Object.freeze({
+  // 净资产类缺口只需要资产负债表（R05）。
+  equity_unavailable: ['balance'],
+  equity_not_evaluable_no_report: ['balance'],
+  equity_currency_unknown: ['balance'],
+  source_currency_unverified: ['balance'],
+  fx_unavailable_not_evaluable: ['balance'],
+  // 利润口径未知要补利润表与指标表。
+  profit_status_unknown: ['income', 'indicator'],
+});
+
+// 财报域的原因前缀：R05（净资产）、RANK:profit_status_unknown（利润口径）、年度异常。
+// 其余原因属于行业/估值/未分类，不参与「补哪几张表」的判断。
+const FINANCIAL_REASON_PATTERN = /^(R05:|RANK:profit_status_unknown$|annual_anomaly:)/;
+
+function collectionPlanOf({ domains = [], reasons = [], rules = null, anomaly = null } = {}) {
+  const plan = {};
+  if (!domains.includes('financial_reports')) return plan;
+  const kinds = new Set();
+  const periods = new Set();
+  // 混合原因（例如同时有 R05 净资产缺口和未映射的年度异常）不能只按能识别的那一条收窄：
+  // 把 report_kinds 误收成 ['balance'] 会让其余三表永远补不到。只要存在一个无法映射到具体
+  // 报表的财报原因，就返回空数组，交给补采端保守回退四类全量。
+  let unmapped = false;
+  reasons.forEach(reason => {
+    // reasons 是跨 domain 的扁平清单（还可能含行业/估值原因），只有财报域的原因参与收窄。
+    if (!FINANCIAL_REASON_PATTERN.test(String(reason))) return;
+    const plain = String(reason).replace(/^R\d+:/, '').replace(/^RANK:/, '').replace(/^annual_anomaly:/, '');
+    const mapped = REPORT_KIND_BY_REASON[plain];
+    if (mapped) mapped.forEach(kind => kinds.add(kind));
+    else unmapped = true;
+  });
+  (anomaly && Array.isArray(anomaly.missingYears) ? anomaly.missingYears : [])
+    .forEach(year => { if (/^\d{4}$/.test(String(year))) periods.add(String(year)); });
+  const r05 = rules && rules.R05;
+  const requiredFields = [];
+  if (r05 && /^equity_|^source_currency|^fx_unavailable/.test(String(r05.reason || ''))) {
+    requiredFields.push('total_hldr_eqy_exc_min_int');
+  }
+  plan.report_kinds = unmapped ? [] : Array.from(kinds);
+  plan.report_periods = Array.from(periods).sort();
+  plan.required_fields = requiredFields;
+  return plan;
+}
+
+/**
  * 缺口的数据集归属（R2-04）：每个原因必须能落到"补什么"，
  * 补不了的（估值由共享行情任务负责）也要显式分类，不能变成"没有原因"。
  */
@@ -2565,6 +2617,9 @@ async function auditInputs({ market, asOfDate, strategyCode }) {
     // 明确不符合(FAIL)与当期风险(RISK)是结论，不是缺口；它们不该被反复"补齐"。
     if (!pending && !rankBlocked && !anomalyPending && item.industry) return;
     const classified = gapDomainsOf(item, anomaly);
+    const plan = collectionPlanOf({
+      domains: classified.domains, reasons: classified.reasons, rules: item.rules, anomaly,
+    });
     gaps.push({
       code: item.code,
       name: item.name,
@@ -2572,6 +2627,8 @@ async function auditInputs({ market, asOfDate, strategyCode }) {
       filterStatus: item.filterStatus,
       domains: classified.domains,
       reasons: classified.reasons,
+      // 采集计划随队列冻结：补采只按真正缺的种类/报告期取数，不再一律 12 年 × 四类全量。
+      ...(Object.keys(plan).length ? { collection_plan: plan } : {}),
     });
   });
   const domainCounts = gaps.reduce((acc, gap) => {
@@ -2635,6 +2692,7 @@ module.exports = {
   knowledgeCutoffFor,
   computeSelection,
   shouldBlockUniverseDrift,
+  collectionPlanOf,
   buildAnnualYears,
   computeTtmFromReports,
   computeAndPersist,

@@ -588,6 +588,18 @@ async function runHkAnalysisMode(reason, context) {
   };
 }
 
+// core 模式只处理 A 股普通股（INC-0054 第一阶段）：港股走独立的 stock_analysis_hk 模式
+// （按港交所开市日 18:55 运行）。此前把混合跟踪列表整批送进只支持 A 股的取数逻辑，
+// 每天固定二十余只港股失败并把任务落成 failed。这里显式分流并留下原因，对象集仍可审计。
+function partitionCoreTargets(stocks) {
+  const isHongKong = stock => /\.HK$/i.test(String((stock && stock.ts_code) || ''));
+  const list = Array.isArray(stocks) ? stocks : [];
+  return {
+    core: list.filter(stock => !isHongKong(stock)),
+    routed: list.filter(isHongKong).map(stock => ({ code: stock.ts_code, reason: 'routed_to_stock_analysis_hk' })),
+  };
+}
+
 async function runStockAnalysisRefresh(reason = 'scheduled', context = {}) {
   const mode = String(context.mode || 'core');
   // 选股模式必须在原"目标日只能当天"的限制之前分流：它要支持历史目标日与季度回溯。
@@ -611,6 +623,7 @@ async function runStockAnalysisRefresh(reason = 'scheduled', context = {}) {
       typeof item === 'string' ? item : item && (item.code || item.tsCode)).filter(Boolean));
     const stocks = (await trackedStocks()).filter(stock => !requestedCodes.size || requestedCodes.has(stock.ts_code));
     const { activeStocks, excluded } = await activeStockScope(stocks, target.targetDate);
+    const { core: coreStocks, routed: routedToHk } = partitionCoreTargets(activeStocks);
     const failures = [];
     const failureDetails = [];
     const dataDates = new Map();
@@ -626,7 +639,7 @@ async function runStockAnalysisRefresh(reason = 'scheduled', context = {}) {
       marketEvidence.set(tsCode, evidence);
       return evidence.dataAsOf;
     }
-    for (const stock of activeStocks) {
+    for (const stock of coreStocks) {
       try {
         await refreshAndMark(stock.ts_code, reason, { readOnly: true });
         ok++;
@@ -659,7 +672,7 @@ async function runStockAnalysisRefresh(reason = 'scheduled', context = {}) {
       }
       await new Promise(resolve => setTimeout(resolve, 300));
     }
-    const detail = `成功 ${ok}，失败 ${failed}，跳过 ${skipped.length}${recovered.length ? `，补跑救回 ${recovered.length}` : ''}`;
+    const detail = `成功 ${ok}，失败 ${failed}，跳过 ${skipped.length}${routedToHk.length ? `，分流港股 ${routedToHk.length}` : ''}${recovered.length ? `，补跑救回 ${recovered.length}` : ''}`;
     await finishJobRun(runId, failed === 0, detail);
     try {
       const stats = await dailyConsistencyStats();
@@ -681,22 +694,23 @@ async function runStockAnalysisRefresh(reason = 'scheduled', context = {}) {
     const failedDatasets = failures.filter(code => !recovered.includes(code));
     const skippedCodes = new Set(skipped.map(item => item.code));
     const firstFailure = failureDetails[0] || null;
-    const completedDates = activeStocks.map(stock => dataDates.get(stock.ts_code)).filter(Boolean);
-    const dataAsOf = activeStocks.length && failed === 0 && skipped.length === 0 && completedDates.length === activeStocks.length
+    const completedDates = coreStocks.map(stock => dataDates.get(stock.ts_code)).filter(Boolean);
+    const dataAsOf = coreStocks.length && failed === 0 && skipped.length === 0 && completedDates.length === coreStocks.length
       ? completedDates.sort()[0] : null;
     return {
       ok: failed === 0,
       status: failed === 0 ? 'succeeded' : 'partial',
       dataAsOf,
-      watermarkNotRequired: activeStocks.length === 0,
-      reason: activeStocks.length === 0 ? 'no-tracked-stocks' : undefined,
+      watermarkNotRequired: coreStocks.length === 0,
+      reason: coreStocks.length === 0 ? 'no-tracked-stocks' : undefined,
       excluded,
+      routed: routedToHk,
       completed: ok,
       failed,
       recovered,
       skipped,
       failedDatasets,
-      datasets: activeStocks.map(stock => ({ code: stock.ts_code, status: failedDatasets.includes(stock.ts_code) ? 'failed' : skippedCodes.has(stock.ts_code) ? 'skipped' : 'succeeded', dataAsOf: dataDates.get(stock.ts_code) || null, ...marketEvidence.get(stock.ts_code) })),
+      datasets: coreStocks.map(stock => ({ code: stock.ts_code, status: failedDatasets.includes(stock.ts_code) ? 'failed' : skippedCodes.has(stock.ts_code) ? 'skipped' : 'succeeded', dataAsOf: dataDates.get(stock.ts_code) || null, ...marketEvidence.get(stock.ts_code) })),
       ...(failedDatasets.length && firstFailure ? { error: firstFailure.error, errorCode: firstFailure.code, errorType: firstFailure.errorType, source: firstFailure.source } : {}),
     };
   } catch (error) {
@@ -720,4 +734,4 @@ function scheduleStockAnalysisRefresh() {
   console.log('[stock-analysis] 已调度：每日 08:20（上海时间）');
 }
 
-module.exports = { nextShanghaiDelay, latestStockAnalysisDate, targetDateStatus, trackedStocks, activeStockScope, verifiedStockDataDate, runStockAnalysisRefresh, scheduleStockAnalysisRefresh, runSelectionMode, enqueueDueSelectionQuarters, enqueueDueSelectionPeriods, quarterRunCompleted, SELECTION_MODES };
+module.exports = { nextShanghaiDelay, latestStockAnalysisDate, targetDateStatus, trackedStocks, activeStockScope, verifiedStockDataDate, partitionCoreTargets, runStockAnalysisRefresh, scheduleStockAnalysisRefresh, runSelectionMode, enqueueDueSelectionQuarters, enqueueDueSelectionPeriods, quarterRunCompleted, SELECTION_MODES };

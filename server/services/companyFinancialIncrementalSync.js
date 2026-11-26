@@ -9,6 +9,7 @@ const { statementApiFields } = require('./stockStatements');
 const { syncReportRows } = require('./financialDataArchitecture');
 const { markDatasetFailure, markDatasetSuccess } = require('./datasetCursors');
 const { getExternalCallStats } = require('./externalCallGuard');
+const { checkHistoryCollectionSpace } = require('./diskGuard');
 
 const JOB_NAME = 'company_financial_incremental_sync';
 const REPORT_KINDS = ['income', 'balance', 'cashflow', 'indicator'];
@@ -260,16 +261,50 @@ async function fetchCompanyReports(target, options = {}) {
   return { results, errors };
 }
 
+// 批次来源按「本批实际返回的行」统计，和 persistCollectedData 同一口径：
+// 官方来源行不能再记在 tushare 名下，否则事故回溯时无法从批次记录判断是谁写的。
+function summarizeReportSources(reportResult, kinds) {
+  const counts = {};
+  for (const kind of kinds) {
+    for (const row of reportResult.results[kind] || []) {
+      const code = String((row && row.source_code) || 'tushare');
+      counts[code] = (counts[code] || 0) + 1;
+    }
+  }
+  return counts;
+}
+
 async function persistCompanyReports(target, reportResult, options = {}) {
   const successful = [];
   const failed = [];
   let ingestionRunId = null;
   return withTransaction(async client => {
-    const source = await financialRepository.readTushareSource({}, client);
-    if (!source) throw new Error('未找到 Tushare 数据源登记');
-    ingestionRunId = await createIngestionRun({ sourceId: source.source_id, datasetCode: 'stock_financial_reports',
-      requestRange: { company_id: target.companyId, ts_code: target.tsCode, kinds: target.needs || REPORT_KINDS } }, client);
-    for (const kind of (target.needs || REPORT_KINDS)) {
+    const sourceIds = await financialRepository.readSourceIds(client);
+    const fallbackSource = await financialRepository.readTushareSource({}, client);
+    if (!fallbackSource) throw new Error('未找到 Tushare 数据源登记');
+    const kinds = target.needs || REPORT_KINDS;
+    const sourceRowCounts = summarizeReportSources(reportResult, kinds);
+    const sourceCodes = Object.keys(sourceRowCounts).sort();
+    // 单来源批次记该来源；混合来源批次保留来源集合与逐来源行数，来源列按备源登记（不伪造单来源）。
+    const runSourceId = sourceCodes.length === 1 && sourceIds.get(sourceCodes[0])
+      ? sourceIds.get(sourceCodes[0]) : fallbackSource.source_id;
+    const context = (options.collectionContext && typeof options.collectionContext === 'object')
+      ? options.collectionContext : {};
+    ingestionRunId = await createIngestionRun({ sourceId: runSourceId, datasetCode: 'stock_financial_reports',
+      requestRange: {
+        company_id: target.companyId,
+        ts_code: target.tsCode,
+        kinds,
+        source_codes: sourceCodes,
+        source_row_counts: sourceRowCounts,
+        // 调用上下文与目标范围：批次记录要能追到是哪次任务、哪个槽位发起的采集。
+        caller: context.caller || null,
+        caller_mode: context.callerMode || context.caller_mode || null,
+        job_run_id: context.jobRunId || context.job_run_id || null,
+        slot_id: context.slotId || context.slot_id || null,
+        target_range: context.targetRange || context.target_range || null,
+      } }, client);
+    for (const kind of kinds) {
       const rows = reportResult.results[kind] || [];
       const error = reportResult.errors[kind];
       const scope = `company:${target.companyId}:${kind}`;
@@ -281,10 +316,9 @@ async function persistCompanyReports(target, reportResult, options = {}) {
           if (!groups.has(code)) groups.set(code, []);
           groups.get(code).push(row);
         }
-        const sourceIdByCode = await financialRepository.readSourceIds(client);
         for (const [code, group] of groups) {
           // 来源 id 一律按登记表解析；缺登记就报错，不再按来源名做特殊兜底。
-          const sourceId = sourceIdByCode.get(code);
+          const sourceId = sourceIds.get(code);
           if (!sourceId) throw new Error(`未找到数据源登记：${code}`);
           await syncReportRows(client, group, kind, target.companyId, sourceId, { runId: ingestionRunId, reportTypeOnly: '1', tsCode: target.tsCode });
         }
@@ -359,6 +393,14 @@ async function runCompanyFinancialIncrementalSync(reason = 'scheduled', options 
         market: options.market,
         asOfDate: options.targetTradeDate || options.asOfDate || options.targetDate,
         batchLimit: options.batchLimit,
+        // 目标范围与调用标识随队列下传：批次记录要能追到是哪次任务、哪个槽位发起的采集。
+        runContext: {
+          caller: 'company_financial_incremental_sync',
+          callerMode: 'selection_inputs',
+          jobRunId: runId,
+          slotId: options.slotId || options.slot_id || null,
+          targetRange: { market: options.market || null, asOfDate: options.targetTradeDate || options.asOfDate || options.targetDate || null },
+        },
       });
       // R3-01：完成裁决必须与底层同一口径、同一全域剩余量。原实现只相加财报与行业，
       // 结果"只剩估值缺口"时外层仍报 succeeded/stageComplete=true 而停止续批；
@@ -379,7 +421,10 @@ async function runCompanyFinancialIncrementalSync(reason = 'scheduled', options 
       // P0-5：与 core 模式同一套续批进度与止损。此前 selection_inputs 只回 continuationRequired，
       // 上游执行器拿不到 noProgressCount / 起始时间，遇到「上游客观缺字段、采集再多也补不上」的
       // 缺口会无限 auto_retry 空耗外部配额（2026-11-05 生产实测 remaining 恒 448）。
-      const continuationRequired = !cleared;
+      // 根盘余量不足时暂停历史补采（INC-0054 第一阶段第 3 条）：不再续批空转，
+      // 也不能因为 remaining 不为 0 就把它当成"还能继续补"。等空间恢复后按正常槽位续跑。
+      const historySuspended = result.historySuspended === true;
+      const continuationRequired = !cleared && !historySuspended;
       const continuationCount = Number(options.continuationCount || 0) + (continuationRequired ? 1 : 0);
       const initialRemaining = Number(options.initialRemaining ?? remaining);
       const lastRemaining = remaining;
@@ -394,7 +439,8 @@ async function runCompanyFinancialIncrementalSync(reason = 'scheduled', options 
       await finishJobRun(runId, cleared,
         `选股输入补齐：处理 ${result.processed}（行业 ${result.industryProcessed || 0}），成功 ${result.succeeded}，`
         + `剩余待补 ${remaining}（财报 ${remainingFinancial}、行业 ${remainingIndustry}、估值 ${remainingValuation}、`
-        + `未分类 ${remainingUnclassified}、目标池未补行情 ${remainingTargetPool}）`);
+        + `未分类 ${remainingUnclassified}、目标池未补行情 ${remainingTargetPool}）`
+        + (historySuspended ? '；根盘可用空间低于停止线，已暂停历史补采' : ''));
       return Object.assign(result, {
         mode: 'selection_inputs',
         // 本阶段不发布数据集（写的是同一张标准表）；有剩余就续批，清空才算阶段完成。
@@ -402,6 +448,10 @@ async function runCompanyFinancialIncrementalSync(reason = 'scheduled', options 
         remainingFinancial, remainingIndustry, remainingValuation, remainingUnclassified,
         remainingTargetPool, remaining,
         continuationRequired,
+        // 暂停证据随结果回传：告警与人工复核靠它区分「补不完」和「不敢再补」。
+        historySuspended,
+        suspendReason: historySuspended ? 'root_disk_low' : undefined,
+        ...(historySuspended && result.disk ? { disk: result.disk } : {}),
         continuationCount, initialRemaining, lastRemaining, noProgressCount, continuationStartedAt,
         nextAttemptInMinutes: continuationRequired ? 1 : null,
         stageComplete: cleared,
@@ -451,7 +501,22 @@ async function runCompanyFinancialIncrementalSync(reason = 'scheduled', options 
       const cursors = await readFinancialCursors([target]);
       const reportResult = await fetchCompanyReports(target, { ...options, reportPeriods, cursor: cursors.get(`company:${target.companyId}:${target.needs[0]}`) });
       try {
-        const persisted = await persistCompanyReports(target, reportResult, options);
+        const persisted = await persistCompanyReports(target, reportResult, {
+          ...options,
+          // 采集批次必须能追到父任务与槽位（INC-0054 第一阶段第 3 条）。
+          collectionContext: {
+            caller: JOB_NAME,
+            callerMode: 'core',
+            jobRunId: runId,
+            slotId: options.slotId || options.slot_id || null,
+            targetRange: {
+              companyId: target.companyId,
+              tsCode: target.tsCode,
+              kinds: target.needs,
+              tradeDate: options.targetTradeDate || options.targetDate || options.asOfDate || null,
+            },
+          },
+        });
         if (!persisted.ok) failures.push({ companyId: target.companyId, tsCode: target.tsCode, failed: persisted.failed });
         else changed += 1;
       } catch (error) {
@@ -562,6 +627,17 @@ async function syncRequestedStockAnalysis(options) {
     const historyFull = !historyStart || historyStart > apiDate(row.list_date);
     // 当日成功采集复用数据库；失败及缺口只补本种报表，不重拉成功项。
     if (!historyFull && cursor && !cursor.last_error && apiDate(cursor.last_attempt_at) === today) continue;
+    // 全历史补采属于根盘容量止损范围（INC-0054 第一阶段第 3 条 / F-08）：
+    // 低空间时用受控错误阻止全历史补采；普通增量不受影响。
+    if (historyFull) {
+      const space = await checkHistoryCollectionSpace({ disk: options.disk });
+      if (space.suspended === true) {
+        const error = new Error('根盘可用空间低于停止线，已暂停全历史财报补采');
+        error.code = 'ROOT_DISK_LOW';
+        error.disk = space;
+        throw error;
+      }
+    }
     const startDate = historyFull ? apiDate(row.list_date) : kind === 'indicator' && cursor && cursor.last_success_date
       ? previousDate(cursor.last_success_date, 365)
       : cursor && cursor.last_source_update ? previousDate(cursor.last_source_update, 30) : apiDate(row.list_date);
@@ -575,7 +651,17 @@ async function syncRequestedStockAnalysis(options) {
     }
     const current = { ...target, needs: [kind] };
     const reportResult = await fetchCompanyReports(current, { ...options, startDate, reportPeriods, historyFull });
-    const persisted = await persistCompanyReports(current, reportResult, { ...options, historyStart: historyFull ? startDate : null });
+    const persisted = await persistCompanyReports(current, reportResult, {
+      ...options,
+      historyStart: historyFull ? startDate : null,
+      collectionContext: {
+        caller: JOB_NAME,
+        callerMode: 'stock_analysis',
+        jobRunId: options.jobRunId || options.job_run_id || null,
+        slotId: options.slotId || options.slot_id || null,
+        targetRange: { tsCode, kinds: [kind], historyStart: historyFull ? startDate : null },
+      },
+    });
     if (!persisted.ok) throw new Error(persisted.failed.map(item => `${item.kind}: ${item.error}`).join('；'));
   }
   await refreshDividends(tsCode, today);
@@ -586,6 +672,11 @@ async function syncRequestedStockAnalysis(options) {
 }
 
 async function runCompanyFinancialBackfill(options = {}) {
+  // F-08：批量历史补采执行前先判根盘余量；暂停时立即返回，不得发起任何外部请求或写库。
+  const space = await checkHistoryCollectionSpace({ disk: options.disk });
+  if (space.suspended === true) {
+    return { ok: false, status: 'blocked', reason: 'root_disk_low', historySuspended: true, disk: space, processed: 0, results: [] };
+  }
   const allTargets = await listTargetCompanies();
   const targets = options.targetScope === 'bond_underlyings'
     ? await listCurrentBondUnderlyingTargets()
@@ -599,7 +690,16 @@ async function runCompanyFinancialBackfill(options = {}) {
   const results = [];
   for (const target of pendingTargets.slice(offset, offset + limit)) {
     const reportResult = await fetchCompanyReports({ ...target, needs: REPORT_KINDS }, { ...options, reportPeriods, force: true });
-    results.push({ target, persisted: await persistCompanyReports({ ...target, needs: REPORT_KINDS }, reportResult, options) });
+    results.push({ target, persisted: await persistCompanyReports({ ...target, needs: REPORT_KINDS }, reportResult, {
+      ...options,
+      collectionContext: {
+        caller: 'company_financial_backfill',
+        callerMode: 'backfill',
+        jobRunId: options.jobRunId || options.job_run_id || null,
+        slotId: options.slotId || options.slot_id || null,
+        targetRange: { companyId: target.companyId, tsCode: target.tsCode, kinds: REPORT_KINDS },
+      },
+    }) });
   }
   return { ok: results.every(item => item.persisted.ok), total: pendingTargets.length, targetTotal: targets.length, offset, processed: results.length, results };
 }

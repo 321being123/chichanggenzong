@@ -97,7 +97,9 @@ function latestMarketReportPredicate(report, market, table) {
       AND ${reportMarketPredicate('market_version', 'market_wide', market)}
     ORDER BY CASE WHEN COALESCE((market_version.raw_payload->'__statement_coverage'->>'complete')::boolean, true) THEN 0 ELSE 1 END,
       CASE WHEN market_version.report_type='1' THEN 0 ELSE 1 END,
-      market_version.announced_at DESC NULLS LAST,market_version.ingested_at DESC,market_version.report_id DESC LIMIT 1)`;
+      market_version.announced_at DESC NULLS LAST,
+      CASE WHEN COALESCE(NULLIF(market_version.update_flag,''),'0')='1' THEN 0 ELSE 1 END,
+      market_version.ingested_at DESC,market_version.report_id DESC LIMIT 1)`;
 }
 
 async function listStatementRows({ tsCode, market = 'CN', type = 'balance', limit = 8, periodType = null, scope = null, tx = null } = {}) {
@@ -172,7 +174,9 @@ async function listAnnualStatements(tsCode, type, limit) {
           AND candidate.period_end=r.period_end AND candidate.period_type='annual'
           AND upper(COALESCE(candidate.raw_payload->>'ts_code',''))=upper($1)
         ORDER BY CASE WHEN candidate.report_type='1' THEN 0 ELSE 1 END,
-          candidate.announced_at DESC NULLS LAST,candidate.ingested_at DESC,candidate.report_id DESC LIMIT 1)
+          candidate.announced_at DESC NULLS LAST,
+          CASE WHEN COALESCE(NULLIF(candidate.update_flag,''),'0')='1' THEN 0 ELSE 1 END,
+          candidate.ingested_at DESC,candidate.report_id DESC LIMIT 1)
     ORDER BY r.period_end DESC LIMIT $3`, [tsCode, type, limit]);
 }
 

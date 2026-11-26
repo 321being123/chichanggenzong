@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "lastReviewed": "2026-11-22",
+  "lastReviewed": "2026-11-26",
   "rulesVersion": "layer-coupling-5",
   "defaultRole": "pending_contract",
   "scan": {
@@ -1789,6 +1789,20 @@
       "batch": 7,
       "status": "registered",
       "note": "数据库存储保留清理编排：约束保留天数边界并调用仓储分批清理过期原始报文与未发布试算运行，本文件 0 SQL/0 联网/0 DOM"
+    },
+    {
+      "path": "server/services/diskGuard.js",
+      "role": "application",
+      "batch": 7,
+      "status": "registered",
+      "note": "历史补采根盘安全余量判定：读主机磁盘余量并与停止线比较，返回暂停证据；0 SQL/0 联网/0 DOM，不写库"
+    },
+    {
+      "path": "server/domain/financialReportEvidence.js",
+      "role": "domain",
+      "batch": 2,
+      "status": "registered",
+      "note": "财报行是否已具备上游真实应答留证的纯判定（来源＋审计指纹），0 SQL/0 联网/0 DOM"
     },
     {
       "path": "server/services/marketCycleIndicesService.js",

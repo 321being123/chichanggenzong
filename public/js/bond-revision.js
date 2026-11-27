@@ -16,12 +16,17 @@ var BOND_REVISION_COLUMNS = [
   ['no_revision_valid_until','锁定至'],['next_eligible_date','重新起算日'],['official_announced_at','公告日'],['meeting_date','股东大会日'],
   ['price_after','新转股价'],['effective_date','生效日'],['official_source_url','公告']
 ];
-var BOND_REVISION_PERCENT = { conversion_premium_pct: true, distance_to_trigger_pct: true, trigger_ratio: true };
+// 下修快照里的单位并不统一：conversion_premium_pct 来自行情指标表，已经是百分数
+// （40.82 表示 40.82%），不能再乘 100；distance_to_trigger_pct 和 trigger_ratio
+// 是服务端计算出的比值（0.4082 / 0.85），展示时才换算成百分比。
+var BOND_REVISION_PERCENT_POINTS = { conversion_premium_pct: true };
+var BOND_REVISION_RATIO_PERCENT = { distance_to_trigger_pct: true, trigger_ratio: true };
 var BOND_REVISION_NUMBER = { bond_close: true, remain_size: true, stock_close: true, current_conv_price: true, conversion_value: true, stock_pb: true, net_asset_floor_value: true, trigger_price: true, price_after: true, remaining_days: true, rolling_remaining_days: true };
 
 function bondRevisionText(v) { return v === null || v === undefined || v === '' ? '—' : String(v); }
 function bondRevisionNumber(v, digits) { var n = Number(v); return Number.isFinite(n) ? n.toFixed(digits == null ? 2 : digits) : '—'; }
-function bondRevisionPercent(v) { var n = Number(v); return Number.isFinite(n) ? (n * 100).toFixed(2) + '%' : '—'; }
+function bondRevisionPercentPoints(v) { if (v === null || v === undefined || v === '') return '—'; var n = Number(v); return Number.isFinite(n) ? n.toFixed(2) + '%' : '—'; }
+function bondRevisionRatioPercent(v) { if (v === null || v === undefined || v === '') return '—'; var n = Number(v); return Number.isFinite(n) ? (n * 100).toFixed(2) + '%' : '—'; }
 function bondRevisionDate(v) { return v ? String(v).slice(0, 10) : '—'; }
 function bondRevisionStatus(v) {
   var cls = String(v || 'incomplete').replace(/[^a-z_]/g, '');
@@ -47,7 +52,8 @@ function bondRevisionCell(row, key) {
   if (key === 'matched_days') return row.required_days == null || row.matched_days == null ? '—' : escapeHtml(String(row.matched_days) + ' / ' + String(row.required_days) + ' | ' + String(row.observation_days || '—'));
   if (key === 'reached_floor') return row[key] == null ? '—' : (row[key] ? '下修到底' : '下修不到底');
   if (key === 'net_asset_floor_applicable') return row[key] == null ? '—' : (row[key] ? '不得低于' : '可低于');
-  if (BOND_REVISION_PERCENT[key]) return escapeHtml(bondRevisionPercent(row[key]));
+  if (BOND_REVISION_PERCENT_POINTS[key]) return escapeHtml(bondRevisionPercentPoints(row[key]));
+  if (BOND_REVISION_RATIO_PERCENT[key]) return escapeHtml(bondRevisionRatioPercent(row[key]));
   if (BOND_REVISION_NUMBER[key]) return escapeHtml(bondRevisionNumber(row[key], key === 'current_conv_price' ? 3 : 2));
   if (key.indexOf('date') >= 0) return escapeHtml(bondRevisionDate(row[key]));
   return escapeHtml(bondRevisionText(row[key]));

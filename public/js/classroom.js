@@ -1602,6 +1602,45 @@
     });
   }
 
+  function creationIndustryDetails(industries) {
+    return (industries || []).slice().sort(function (a, b) {
+      return (Number(b.qualifiedCount) || 0) - (Number(a.qualifiedCount) || 0) ||
+        (Number(b.verifiedCount) || 0) - (Number(a.verifiedCount) || 0) ||
+        String(a.industryName || '').localeCompare(String(b.industryName || ''), 'zh-CN');
+    }).slice(0, 8).map(function (ind) {
+      var parts = ['合格 ' + (Number(ind.qualifiedCount) || 0)];
+      if (ind.verifiedCount != null) parts.push('已核验 ' + Number(ind.verifiedCount || 0));
+      if (ind.coarseCount != null) parts.push('候选 ' + Number(ind.coarseCount || 0));
+      return ind.industryName + '（' + parts.join(' / ') + '）';
+    }).join('、');
+  }
+
+  // 反馈 #119：0 个合格行业必须说清是「核验未完成」还是「历史数据缺失」，
+  // 并列出可替代的已通过窗口，不能只用「候选不足」让用户反复猜。
+  function creationInsufficientText(res, enabledCount) {
+    var blockers = (res.windowStatus && res.windowStatus.blockers) || ['合格 SW2021 一级行业不足 4 个'];
+    var details = creationIndustryDetails(res.industries);
+    var verification = res.verification || {};
+    var extra = [];
+    if (verification.timedOut) {
+      extra.push('本次核验在时限内完成（已核验 ' + Number(verification.verifiedCount || 0) + '/' +
+        Number(verification.candidateCount || 0) + ' 只候选），可再次点击继续核验');
+    }
+    var reasons = Array.isArray(verification.rejectionSummary) ? verification.rejectionSummary : [];
+    if (reasons.length) {
+      extra.push('主要未通过原因：' + reasons.slice(0, 3).map(function (item) {
+        return item.reason + '（' + Number(item.count || 0) + ' 只）';
+      }).join('、'));
+    }
+    var wins = (res.availableWindows || [])
+      .filter(function (w) { return Number(w.startYear) !== Number(res.selectedStartYear); })
+      .map(function (w) { return w.startYear + '–' + w.endYear; });
+    if (wins.length) extra.push('已有可用历史窗口：' + wins.join('、') + '，可重选年份');
+    return '当前窗口候选不足（可用一级行业 ' + enabledCount + '/4）：' + blockers.join('；') +
+      (details ? ' ｜ 行业核验：' + details : '') +
+      (extra.length ? '。' + extra.join('；') : '') + '（也可切换为演示场次）';
+  }
+
   async function loadTeacherCreationOptions(pickRandomYear, autoSample) {
     const statusEl = $('teacher-window-status');
     $('teacher-create-error').textContent = '';
@@ -1641,15 +1680,10 @@
 
       if (statusEl) {
         if (!sufficient) {
-          const blockers = (res.windowStatus && res.windowStatus.blockers) || ['合格 SW2021 一级行业不足 4 个'];
-          const indDetails = teacherOptionsState.industries.slice(0, 8).map(function (i) {
-            return i.industryName + '(' + (i.qualifiedCount || 0) + '只)';
-          }).join('、');
           statusEl.innerHTML = '';
           const banner = document.createElement('div');
           banner.className = 'notice-banner';
-          banner.textContent = '当前窗口候选不足（可用一级行业 ' + enabledCount + '/4）：' + blockers.join('；') +
-            (indDetails ? (' ｜ 各行业通过核验数：' + indDetails) : '') + '（可切换为演示场次或重选年份）';
+          banner.textContent = creationInsufficientText(res, enabledCount);
           statusEl.appendChild(banner);
         } else {
           const wins = teacherOptionsState.availableWindows.map(function (w) { return w.startYear + '–' + w.endYear; }).join('、');

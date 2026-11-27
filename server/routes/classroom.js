@@ -30,7 +30,7 @@ function handleServiceError(err, res, next) {
 router.get('/admin/creation-options', requireLogin, requireAdmin, asyncHandler(async (req, res, next) => {
   try {
     const startYear = req.query.startYear ? Number(req.query.startYear) : null;
-    const out = await precheckService.getCreationOptions({ startYear });
+    const out = await precheckService.getCreationOptions({ startYear, currentWindowTimeoutMs: 60000 });
     res.json(out);
   } catch (err) {
     handleServiceError(err, res, next);

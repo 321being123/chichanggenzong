@@ -70,6 +70,19 @@ async function seedCalendar(pool) {
 
 async function cleanup(pool) {
   const codes = ALL_CODES;
+  await pool.query(
+    `DELETE FROM analytics.stock_selection_request_bindings
+      WHERE run_id IN (SELECT run_id FROM analytics.stock_selection_runs WHERE market=$1 AND as_of_date=$2::date)`,
+    [MARKET, AS_OF]);
+  await pool.query(
+    `DELETE FROM analytics.stock_selection_publication_events
+      WHERE from_run_id IN (SELECT run_id FROM analytics.stock_selection_runs WHERE market=$1 AND as_of_date=$2::date)
+         OR to_run_id IN (SELECT run_id FROM analytics.stock_selection_runs WHERE market=$1 AND as_of_date=$2::date)`,
+    [MARKET, AS_OF]);
+  await pool.query(
+    `DELETE FROM analytics.stock_selection_publications
+      WHERE run_id IN (SELECT run_id FROM analytics.stock_selection_runs WHERE market=$1 AND as_of_date=$2::date)`,
+    [MARKET, AS_OF]);
   await pool.query(`DELETE FROM analytics.stock_selection_runs WHERE market=$1 AND as_of_date=$2::date`, [MARKET, AS_OF]);
   await pool.query('DELETE FROM users WHERE username = $1', [RETRY_USER]);
   await pool.query(`DELETE FROM analytics.stock_selection_backtests WHERE market=$1 AND start_date=$2::date`, [MARKET, AS_OF]);
@@ -176,7 +189,8 @@ async function seed(pool) {
      VALUES ('000985','market_cap_weighted',$1::date,6000,15,1.5,'lixinger_official')
      ON CONFLICT DO NOTHING`, [AS_OF]);
 
-  // 第五只：只有行情与一份年报，没有估值（PB 待补）、没有分红。
+  // 第五只：有行情、一份年报与当年分红，但没有估值（PB 待补）。
+  // B2-1 起无分红会被 R04 确定性淘汰而不计入缺口，因此这里补齐分红以制造纯正的 PB 待补缺口。
   // 作用是让"存在待补对象时不得发布正式组合"这条断言**不依赖运行环境**：
   // 旧写法靠"全市场 5000+ 只里必然有缺数据的"，在干净 CI 空库上只有上面 4 只且全部完整，
   // 断言就反向失败（F13 的 CI 反例）。缺口由夹具自己制造后，任何库都能确定性复现。
@@ -214,6 +228,10 @@ async function seed(pool) {
   await pool.query(
     `INSERT INTO fundamental.financial_facts (report_id, statement_type, metric_code, numeric_value, unit_code, currency_code, source_field, is_calculated)
      VALUES ($1,'income','net_profit_parent',1e9,'CNY','CNY','n_income_attr_p',false)`, [gapReport.rows[0].report_id]);
+  await pool.query(
+    `INSERT INTO fundamental.corporate_actions (instrument_id, action_type, fiscal_period_end, announced_at, ex_date, status, cash_per_share_pre_tax, stock_dividend_ratio, capitalization_ratio, total_cash_amount, currency_code, source_id, source_key)
+     VALUES ($1,'dividend','2025-12-31','2026-05-01','2026-06-15','实施',0.5,0,0,1e8,'CNY',$2,$3)`,
+    [gapInstrumentId, sourceId, `${TEST_MARK}-DIV-GAP-2025`]);
   return { instrumentIds };
 }
 

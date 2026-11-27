@@ -761,6 +761,9 @@ async function computeGrahamSelection(input, { market, asOfDate, strategyCode, p
       withPrice: evaluated.filter(i => i.detail.price !== null).length,
       withEquity: evaluated.filter(i => i.detail.graham !== null).length,
       withIndustry: evaluated.filter(i => i.industry !== null).length,
+      // B2-1：格雷厄姆按自身 G01 合同独立收窄（FAIL/NOT_APPLICABLE 不再要求行业）。
+      industryRequiredCount: evaluated.filter(i => industryRequiredOf(i)).length,
+      withIndustryRequired: evaluated.filter(i => industryRequiredOf(i) && i.industry !== null).length,
       pbWindow: null,
     },
     universeEvidence: universeLoad.evidence,
@@ -961,12 +964,17 @@ async function computeSelection(input, tx) {
     passed: evaluated.filter(item => item.filterStatus === RULES.STATUS.PASS).length,
   };
 
+  // B2-1：覆盖率同时给「全市场分母」与「必需候选分母」——后者只含未淘汰、可能进入排名池的标的，
+  // 避免把已确定淘汰（A 类）与 RISK 的行业缺失算进必须补齐率。
+  const industryRequired = evaluated.filter(item => industryRequiredOf(item));
   const coverage = {
     universeCount: universe.length,
     withValuation: universe.filter(row => row.pb !== null && row.pb !== undefined).length,
     withPrice: universe.filter(row => row.price !== null && row.price !== undefined).length,
     withEquity: evaluated.filter(item => item.equityCny !== null).length,
     withIndustry: evaluated.filter(item => !!item.industry).length,
+    industryRequiredCount: industryRequired.length,
+    withIndustryRequired: industryRequired.filter(item => !!item.industry).length,
     withAnnualHistory: Array.from(profits.values()).filter(list => list.length >= params.requiredFiscalYears).length,
     companies: companyIds.length,
     pbWindow: { marketDays: pbWindow.marketDays, calendarDays: pbWindow.calendarDays, windowStart },
@@ -2609,13 +2617,38 @@ function collectionPlanOf({ domains = [], reasons = [], rules = null, anomaly = 
 }
 
 /**
+ * B2-1：该标的是否已被 A 类确定性证据淘汰（任何可靠 FAIL 或白名单内客观不适用）。
+ * V1/V2 由领域层给出 deterministicElimination；格雷厄姆单规则路径没有该字段，
+ * 按其自身 G01 合同独立判断（FAIL / NOT_APPLICABLE 均属确定性不入选），不套用四项规则白名单。
+ */
+function isDeterministicallyEliminated(item) {
+  const evidence = item && item.deterministicElimination;
+  if (evidence && evidence.eliminated === true) return true;
+  if (evidence && evidence.eliminated === false) return false;
+  const rules = (item && item.rules) || {};
+  return Object.values(rules).some(rule => rule
+    && (rule.status === RULES.STATUS.FAIL || rule.status === RULES.STATUS.NOT_APPLICABLE));
+}
+
+/**
+ * B2-1 行业补采收窄：只有未淘汰且可能进入排名池的标的才需要行业外采。
+ * PASS 与未淘汰的 PENDING 可能转成可发布候选；A 类淘汰与 RISK 永远不会进池。
+ */
+function industryRequiredOf(item) {
+  if (!item || isDeterministicallyEliminated(item)) return false;
+  if (item.filterStatus === RULES.STATUS.RISK) return false;
+  return item.filterStatus === RULES.STATUS.PASS || item.filterStatus === RULES.STATUS.PENDING;
+}
+
+/**
  * 缺口的数据集归属（R2-04）：每个原因必须能落到"补什么"，
  * 补不了的（估值由共享行情任务负责）也要显式分类，不能变成"没有原因"。
  */
-function gapDomainsOf(item, anomaly) {
+function gapDomainsOf(item, anomaly, options = {}) {
   const domains = new Set();
   const reasons = [];
   const add = (domain, reason) => { domains.add(domain); reasons.push(reason); };
+  const includeIndustry = options.includeIndustry !== false;
 
   if (item.filterStatus === RULES.STATUS.PENDING) {
     RULES.RULE_CODES.forEach(code => {
@@ -2640,7 +2673,7 @@ function gapDomainsOf(item, anomaly) {
     if (unknownYears.length) add('dividends', code);
     if (!unknownYears.length || (anomaly.missingYears || []).length) add('financial_reports', code);
   }
-  if (!item.industry) add('industry', 'industry_unverified');
+  if (includeIndustry && !item.industry) add('industry', 'industry_unverified');
   // 未识别原因也保留：不允许"有缺口但 reasons 为空"。
   if (!reasons.length) {
     const fallback = Array.from(new Set((item.exclusionReasons || []).map(row => row.code))).filter(Boolean);
@@ -2674,12 +2707,19 @@ function gapsFromComputed(computed) {
       return;
     }
     const anomaly = computed.anomalyById ? computed.anomalyById[item.instrumentId] : null;
+    // B2-1：A 类确定性淘汰与 RISK 是结论，不是缺口；也不再为它们入队补行业。
+    // 单规则诊断仍留在 item.rules 里，页面/历史证据能看到每条规则自己的状态与原因码。
+    if (isDeterministicallyEliminated(item) || item.filterStatus === RULES.STATUS.RISK) return;
     const pending = item.filterStatus === RULES.STATUS.PENDING;
     const rankBlocked = item.filterStatus === RULES.STATUS.PASS && item.rankReady === false;
     const anomalyPending = item.filterStatus === RULES.STATUS.PASS && anomaly && anomaly.status === RULES.STATUS.PENDING;
     // 明确不符合(FAIL)与当期风险(RISK)是结论，不是缺口；它们不该被反复"补齐"。
-    if (!pending && !rankBlocked && !anomalyPending && item.industry) return;
-    const classified = gapDomainsOf(item, anomaly);
+    // 行业补采同样收窄：只有可能进入排名池（PASS / 未淘汰 PENDING）才需要行业。
+    const needsIndustry = industryRequiredOf(item) && !item.industry;
+    if (!pending && !rankBlocked && !anomalyPending && !needsIndustry) return;
+    const classified = gapDomainsOf(item, anomaly, {
+      includeIndustry: industryRequiredOf(item),
+    });
     const plan = collectionPlanOf({
       domains: classified.domains, reasons: classified.reasons, rules: item.rules, anomaly,
     });
@@ -2802,6 +2842,10 @@ module.exports = {
   runQuarterly,
   runPeriodic,
   auditInputsForCodes,
+  gapsFromComputed,
+  gapDomainsOf,
+  isDeterministicallyEliminated,
+  industryRequiredOf,
   assessPeriodReadiness: readinessService.assessPeriodReadiness,
   nextDailyRecheckAt: readinessService.nextDailyRecheckAt,
   duePeriodicTargets,

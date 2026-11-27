@@ -115,6 +115,94 @@ async function readMeta(tsCode) {
   return repo.findInstrumentMeta({ tsCode });
 }
 
+function chunkCodes(list, size = 100) {
+  const out = [];
+  for (let i = 0; i < list.length; i += size) out.push(list.slice(i, i + size));
+  return out;
+}
+
+/**
+ * B2-2：批量解析 fsTableType，消除逐股查档案。
+ * 先读本地主档与近期已核实财报（repo.loadFsTableTypes），只对缺失代码按 ≤100 只/批
+ * 调用官方档案；官方响应由统一采集缓存留在 ops.raw_records，下次直接复用。
+ */
+async function resolveBatchFsTableTypes({ codes = [], deps = {} } = {}) {
+  const result = new Map();
+  const unique = Array.from(new Set((codes || []).map(code => String(code || '').trim().toUpperCase()).filter(Boolean)));
+  if (!unique.length) return result;
+  const loadLocal = deps.loadFsTableTypes || repo.loadFsTableTypes;
+  if (typeof loadLocal === 'function') {
+    try {
+      const local = await loadLocal({ codes: unique });
+      if (local instanceof Map) local.forEach((value, key) => { if (value) result.set(String(key).toUpperCase(), String(value)); });
+      else Object.entries(local || {}).forEach(([key, value]) => { if (value) result.set(String(key).toUpperCase(), String(value)); });
+    } catch (_) { /* 本地读失败不阻断，转官方批量核对 */ }
+  }
+  const missing = unique.filter(code => !result.get(code));
+  if (!missing.length) return result;
+  const datasets = deps.datasets || require('../dataAccess/marketDatasets');
+  const readHk = deps.readCompanyProfiles || datasets.readCompanyProfiles;
+  const readCn = deps.readCnCompanyProfiles || datasets.readCnCompanyProfiles;
+  const groups = [
+    { read: readHk, codes: missing.filter(code => /\.HK$/i.test(code)) },
+    { read: readCn, codes: missing.filter(code => !/\.HK$/i.test(code)) },
+  ];
+  for (const group of groups) {
+    if (typeof group.read !== 'function') continue;
+    for (const part of chunkCodes(group.codes)) {
+      try {
+        const profiles = (await group.read({ codes: part })) || [];
+        profiles.forEach(profile => {
+          if (profile && profile.code && profile.fsTableType) {
+            result.set(String(profile.code).toUpperCase(), String(profile.fsTableType));
+          }
+        });
+      } catch (_) { /* 单批失败留待下一次续批，不把整批财报补采打断 */ }
+    }
+  }
+  return result;
+}
+
+function dateKey(date) {
+  return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}-${String(date.getUTCDate()).padStart(2, '0')}`;
+}
+
+function addDays(text, days) {
+  const date = new Date(`${text}T00:00:00Z`);
+  date.setUTCDate(date.getUTCDate() + days);
+  return dateKey(date);
+}
+
+// 无本地日历时回退按工作日估算（只用于断档定位，不作为业务事实）。
+function weekdayDates(startDate, endDate) {
+  const out = [];
+  for (let cursor = startDate; cursor <= endDate; cursor = addDays(cursor, 1)) {
+    const day = new Date(`${cursor}T00:00:00Z`).getUTCDay();
+    if (day !== 0 && day !== 6) out.push(cursor);
+  }
+  return out;
+}
+
+/**
+ * B2-3：按本地已覆盖日期求真实缺失起止段。
+ * 尾部仅缺 1–5 天时只会得到一个短段，不会重拉 11 年全历史；内部断档按连续缺失日分段。
+ */
+function missingDateSegments({ expected = [], covered = new Set(), startDate, endDate } = {}) {
+  const expectedDays = Array.isArray(expected) && expected.length
+    ? expected.filter(day => day >= startDate && day <= endDate)
+    : weekdayDates(startDate, endDate);
+  const segments = [];
+  expectedDays.forEach((day, index) => {
+    if (covered.has(day)) return;
+    const previous = expectedDays[index - 1];
+    const last = segments[segments.length - 1];
+    // 相邻“应有交易日”都缺失才算同一段：周末/休市不切断区间，被覆盖日会切断区间。
+    if (last && previous === last.endDate) last.endDate = day;
+    else segments.push({ startDate: day, endDate: day });
+  });
+  return segments;
+}
+
 /**
  * 本次补采实际需要的种类与区间（INC-0054 第一阶段第 2 条）。
  * 队列里带 collection_plan 时按它冻结的种类与最早缺口年份取数；
@@ -164,9 +252,12 @@ async function collectOne(gap, asOfDate, runContext = null, deps = {}, timing = 
   let anyFinancial = false;
   // 港股财报端点按公司财报类型分流（2026-11-05 实测：银行/保险/证券端点指标名与普通公司一致，
   // 只是端点不同；类型取自 hk/company 档案，取不到就保留为未知，不猜成普通公司。
-  // 本次不采任何财报（例如只缺分红）时不需要档案：多查一次只是白耗一次外部请求。
-  let fsTableType = null;
-  if (window.kinds.length && /^\d{5}\.HK$/i.test(String(meta.ts_code || ''))) {
+  // B2-2：批量预取的 fsTableType 优先（同步入口已按 ≤100 只/批核对并复用缓存），
+  // 这里不再逐股查档案；只有批量结果缺失时才回退单只查询（安全兜底，不改变既有行为）。
+  let fsTableType = deps.fsTableTypeByCode
+    ? (deps.fsTableTypeByCode.get(String(meta.ts_code || '').toUpperCase()) || null)
+    : null;
+  if (window.kinds.length && !fsTableType && /^\d{5}\.HK$/i.test(String(meta.ts_code || ''))) {
     try {
       const { readCompanyProfiles } = datasets;
       const profiles = (await readCompanyProfiles({ codes: [meta.ts_code] })) || [];
@@ -176,6 +267,8 @@ async function collectOne(gap, asOfDate, runContext = null, deps = {}, timing = 
   const financial = window.kinds.length
     ? await readFinancialReportRows({
       tsCode: meta.ts_code, kinds: window.kinds, startDate, endDate: asOfDate, fsTableType,
+      // B2-2：选股补财报只取核心科目批次，不再拉三表全量与原生比较值。
+      profile: 'selection_core',
     })
     : null;
   if (financial) {
@@ -279,12 +372,14 @@ async function collectIndustryOne(gap, market) {
  * 标准层统一为小数股息率与「元」总市值，币种随行写入 HKD。
  * 官方分段取数部分失败时，已取到的行照常落库，剩余区间留给下一批，不用空值覆盖旧行。
  */
-async function collectHkMarketData(gap, asOfDate, timing = null) {
-  const meta = await readMeta(gap.code);
+async function collectHkMarketData(gap, asOfDate, timing = null, deps = {}) {
+  const readMetaFn = deps.readMeta || readMeta;
+  const meta = await readMetaFn(gap.code);
   if (!meta) return { code: gap.code, ok: false, reason: 'instrument_missing' };
   const instrumentId = meta.instrument_id === null || meta.instrument_id === undefined ? null : Number(meta.instrument_id);
   if (!instrumentId) return { code: gap.code, ok: false, reason: 'instrument_id_missing' };
-  const { readStockValuationSeriesBatch, readStockDailySeries } = require('../dataAccess/marketDatasets');
+  const datasets = deps.datasets || require('../dataAccess/marketDatasets');
+  const { readStockValuationSeriesBatch, readStockDailySeries } = datasets;
   const store = require('./convertibleBondAnalysisStore');
   const sources = await store.sourceIds();
   const officialId = sources.lixinger_official;
@@ -292,17 +387,49 @@ async function collectHkMarketData(gap, asOfDate, timing = null) {
 
   const valuationStart = dashDate(shiftYears(asOfDate, HK_VALUATION_YEARS)) || '2000-01-01';
   const priceStart = dashDate(shiftYears(asOfDate, HK_PRICE_YEARS)) || valuationStart;
+  // B2-3：历史估值也按 fsTableType 分流；选股补数要求类型先确认，未知类型不猜非金融端点，
+  // 留缺口等档案核对（也避免为此白查覆盖与日历）。
+  const fsTableType = deps.fsTableTypeByCode
+    ? (deps.fsTableTypeByCode.get(String(meta.ts_code || '').toUpperCase()) || null)
+    : (deps.fsTableType || null);
+  if (!fsTableType) return { code: gap.code, ok: false, reason: 'financial_type_unknown' };
+  // B2-3：先查本地已覆盖区间，只拉真实断档起止段。尾部只缺 1–5 天时不再重拉 11 年全历史；
+  // 内部断档按连续缺失日分段，每段仍由数据层按 ≤10 年自动再分段。
+  const loadCoverage = deps.loadHkCoverageDates || repo.loadHkCoverageDates;
+  const coverage = typeof loadCoverage === 'function'
+    ? await Promise.resolve(loadCoverage({ instrumentId, startDate: valuationStart, endDate: asOfDate }))
+      .catch(() => ({ valuation: new Set(), bars: new Set() }))
+    : { valuation: new Set(), bars: new Set() };
+  const loadCalendar = deps.loadHkTradeCalendar || repo.loadHkTradeCalendar;
+  const calendar = typeof loadCalendar === 'function'
+    ? await Promise.resolve(loadCalendar({ startDate: valuationStart, endDate: asOfDate })).catch(() => [])
+    : [];
+  const valuationSegments = missingDateSegments({
+    expected: calendar, covered: coverage.valuation, startDate: valuationStart, endDate: asOfDate,
+  });
+  const barSegments = missingDateSegments({
+    expected: calendar, covered: coverage.bars, startDate: priceStart, endDate: asOfDate,
+  });
   let rawValuations = [];
   let partial = false;
-  try {
-    rawValuations = await readStockValuationSeriesBatch({
-      codes: [meta.ts_code], startDate: valuationStart, endDate: asOfDate,
-    });
-  } catch (error) {
-    if (Array.isArray(error && error.partialRows)) {
-      rawValuations = error.partialRows;
-      partial = true;
-    } else throw error;
+  for (const segment of valuationSegments) {
+    try {
+      const rows = await readStockValuationSeriesBatch({
+        codes: [meta.ts_code], startDate: segment.startDate, endDate: segment.endDate, fsTableType,
+      });
+      rawValuations = rawValuations.concat(rows || []);
+    } catch (error) {
+      if (Array.isArray(error && error.partialRows)) {
+        rawValuations = rawValuations.concat(error.partialRows);
+        partial = true;
+        continue; // 已取到的行照常落库，剩余段留给下一次续批。
+      }
+      // 未知财报类型属于业务缺口，不中断其它证券；返回失败由缺口队列记录。
+      if (String(error && error.code) === 'HK_FS_TABLE_TYPE_UNKNOWN') {
+        return { code: gap.code, ok: false, reason: 'financial_type_unknown', partial: false };
+      }
+      throw error;
+    }
   }
   const valuations = (rawValuations || []).map(row => {
     const dividendYield = finite(row.dv_ttm);
@@ -324,9 +451,22 @@ async function collectHkMarketData(gap, asOfDate, timing = null) {
   const valuationWritten = await repo.upsertDailyValuationRows({ rows: valuations, sourceId: officialId });
   if (timing) timing.persistMs = (timing.persistMs || 0) + (Date.now() - valuationWriteStartedAt);
 
-  const rawBars = await readStockDailySeries({
-    tsCode: meta.ts_code, startDate: priceStart, endDate: asOfDate, market: 'hk',
-  });
+  let rawBars = [];
+  for (const segment of barSegments) {
+    try {
+      const rows = await readStockDailySeries({
+        tsCode: meta.ts_code, startDate: segment.startDate, endDate: segment.endDate, market: 'hk',
+      });
+      rawBars = rawBars.concat(rows || []);
+    } catch (error) {
+      if (Array.isArray(error && error.partialRows)) {
+        rawBars = rawBars.concat(error.partialRows);
+        partial = true;
+        continue;
+      }
+      throw error;
+    }
+  }
   const barWriteStartedAt = Date.now();
   const barWritten = await writeHkBars({
     rawBars, instrumentId, sources, officialId,
@@ -337,10 +477,12 @@ async function collectHkMarketData(gap, asOfDate, timing = null) {
   return {
     code: gap.code,
     ok,
-    reason: ok ? undefined : 'projection_returned_empty',
+    reason: ok ? undefined : (valuationSegments.length || barSegments.length ? 'projection_returned_empty' : 'already_covered'),
     valuations: valuationWritten,
     bars: barWritten,
     partial,
+    // 本次实际请求的断档段：证明尾部 1–5 天缺口没有重拉 11 年。
+    coverageSegments: { valuation: valuationSegments, bars: barSegments },
   };
 }
 
@@ -739,11 +881,18 @@ async function syncSelectionInputs(input) {
     }
   }
   const batch = historySuspended ? [] : takeWithinLimit(fundamentalQueue);
+  // B2-2：补采前批量解析 fsTableType（本地主档/近期财报优先，缺失才 ≤100 只/批查官方档案），
+  // 不再在 collectOne 里逐股查档案。
+  const financialFsTableTypes = await resolveBatchFsTableTypes({
+    codes: batch.map(gap => gap.code), deps: input.deps || {},
+  });
   const results = [];
   const runContext = input.runContext && typeof input.runContext === 'object' ? input.runContext : null;
   for (const gap of batch) {
     try {
-      results.push(await measure(timing, 'fetchMs', () => collectOne(gap, asOfDate, runContext, {}, timing)));
+      results.push(await measure(timing, 'fetchMs', () => collectOne(
+        gap, asOfDate, runContext, { fsTableTypeByCode: financialFsTableTypes }, timing,
+      )));
     } catch (error) {
       // 单只失败不阻断整批：失败原因留在结果里，剩余对象继续等下一次续跑。
       results.push({ code: gap.code, ok: false, reason: 'collect_failed', error: String(error.message || error).slice(0, 320) });
@@ -752,10 +901,15 @@ async function syncSelectionInputs(input) {
   // 港股估值/收盘价：A 股有共享行情任务，港股没有，缺口会永远悬着（2026-11-05 生产实证：
   // 港股 daily_valuations 全历史 0 行）。因此只在港股补，A 股的 valuation 缺口仍如实记为剩余。
   const valuationBatch = (historySuspended || market !== 'HK') ? [] : takeWithinLimit(orderByAttempts(valuation, priorAttempts, previouslyFailed));
+  const valuationFsTableTypes = await resolveBatchFsTableTypes({
+    codes: valuationBatch.map(gap => gap.code), deps: input.deps || {},
+  });
   const valuationResults = [];
   for (const gap of valuationBatch) {
     try {
-      valuationResults.push(await measure(timing, 'fetchMs', () => collectHkMarketData(gap, asOfDate, timing)));
+      valuationResults.push(await measure(timing, 'fetchMs', () => collectHkMarketData(
+        gap, asOfDate, timing, { fsTableTypeByCode: valuationFsTableTypes },
+      )));
     } catch (error) {
       valuationResults.push({ code: gap.code, ok: false, reason: 'valuation_collect_failed', error: String(error.message || error).slice(0, 320) });
     }
@@ -1031,4 +1185,5 @@ module.exports = {
   syncSelectionInputs, collectOne, collectIndustryOne, classifyGaps, collectionWindowOf, REPORT_KINDS, HISTORY_YEARS,
   collectHkMarketData, syncHkTargetPoolBars, resolveHkTargetPool, writeHkBars,
   classifyUnavailableHkCodes,
+  resolveBatchFsTableTypes, missingDateSegments,
 };

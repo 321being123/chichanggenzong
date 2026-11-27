@@ -143,10 +143,38 @@ function stripNullKeys(payload) {
   return out;
 }
 
+/**
+ * 三表全量覆盖标记（B2-2）：优先新字段 full_statements_complete，兼容旧 complete。
+ * 返回 null 表示没有覆盖证据（不能推断为完整）。
+ */
 function coverageCompleteFlag(payload) {
   const coverage = payload && payload.__statement_coverage;
-  if (!coverage || coverage.complete === undefined || coverage.complete === null) return null;
+  if (!coverage) return null;
+  if (coverage.full_statements_complete !== undefined && coverage.full_statements_complete !== null) {
+    return coverage.full_statements_complete === true;
+  }
+  if (coverage.complete === undefined || coverage.complete === null) return null;
   return coverage.complete === true;
+}
+
+/** 选股核心批次是否取齐；没有该字段时按 null（未知）。 */
+function coverageCoreFlag(payload) {
+  const coverage = payload && payload.__statement_coverage;
+  if (!coverage || coverage.core_complete === undefined || coverage.core_complete === null) return null;
+  return coverage.core_complete === true;
+}
+
+/**
+ * 数值真实更正（B2-2）：同一业务身份下，旧值非空且新值非空但不同。
+ * 从空到有值属于"轻量补空"，不是更正；不能用它把旧全量三表降级。
+ */
+function hasValueCorrection(previous, incoming, kind) {
+  if (!previous || !incoming) return false;
+  return Object.entries(FACT_MAP[kind] || {}).some(([sourceField]) => {
+    const before = finite(previous[sourceField]);
+    const after = finite(incoming[sourceField]);
+    return before !== null && after !== null && before !== after;
+  });
 }
 
 /**
@@ -175,26 +203,78 @@ function mergeReportPayload({ previous, incoming, kind, preserveExistingNonNull 
   const comparisonComplete = Boolean(coverage && coverage.comparison_complete);
   const newComplete = coverageCompleteFlag(next);
   const oldComplete = coverageCompleteFlag(old);
+  const newCoreComplete = coverageCoreFlag(next);
+  const oldCoreComplete = coverageCoreFlag(old);
   const hasComparisons = payload => Boolean(payload && payload.__statement_comparisons);
-  const keepOldFields = Boolean(old)
+  // B2-2 三类合并规则：
+  // ① 同版本轻量补空：旧行本身不是全量三表（旧 full 为 false/未知）→ 按字段补齐非空值，
+  //    合并 returned_metric_codes，保留旧的非空字段；
+  // ② 数值真实更正：即使旧行是全量，也必须采用新值，并把 full_statements_complete 置 false，
+  //    不拿旧期细项冒充更正后全量；
+  // ③ 旧全量三表防降级：同身份、同数值下轻量重采不得清空/覆盖旧全量行（宽表细项、
+  //    原生比较值与完整覆盖清单由 keepOldFields 保留）。
+  const valueCorrected = hasValueCorrection(old, next, kind);
+  const sameVersionLightBackfill = Boolean(old) && !valueCorrected
+    && oldComplete !== true && newComplete !== true;
+  const keepOldFields = Boolean(old) && !valueCorrected && !sameVersionLightBackfill
     && (preserveExistingNonNull || newComplete === false)
     && oldComplete === true;
-  const merged = keepOldFields ? { ...old, ...stripNullKeys(next) } : { ...next };
+  const merged = (keepOldFields || sameVersionLightBackfill)
+    ? { ...old, ...stripNullKeys(next) }
+    : { ...next };
+  if (sameVersionLightBackfill) {
+    const prevCodes = Array.isArray(old.__statement_coverage?.returned_metric_codes)
+      ? old.__statement_coverage.returned_metric_codes : [];
+    const currCodes = Array.isArray(next.__statement_coverage?.returned_metric_codes)
+      ? next.__statement_coverage.returned_metric_codes : [];
+    const dualState = next.__statement_coverage?.full_statements_complete !== undefined
+      || old.__statement_coverage?.full_statements_complete !== undefined;
+    merged.__statement_coverage = {
+      ...(old.__statement_coverage || {}),
+      ...(next.__statement_coverage || {}),
+      returned_metric_codes: [...new Set([...prevCodes, ...currCodes])],
+      ...(dualState ? {
+        // 轻量补空仍是轻量行：核心取齐以任一侧的 true 为准，三表全量明确保留 false。
+        core_complete: newCoreComplete === true || oldCoreComplete === true,
+        full_statements_complete: false,
+        complete: false,
+      } : {}),
+    };
+  }
   if (comparisonRequested && comparisonComplete) {
     const trimmed = statementMetricPrefix.trimComparisonBuckets(next.__statement_comparisons, allowed);
     if (Object.keys(trimmed).length) merged.__statement_comparisons = trimmed;
     else delete merged.__statement_comparisons;
-  } else if (comparisonRequested || hasComparisons(next) || hasComparisons(old)) {
+  } else if (!valueCorrected && (comparisonRequested || hasComparisons(next) || hasComparisons(old))) {
     const buckets = statementMetricPrefix.mergeComparisonBuckets(
       old && old.__statement_comparisons, next && next.__statement_comparisons, allowed
     );
     if (Object.keys(buckets).length) merged.__statement_comparisons = buckets;
     else delete merged.__statement_comparisons;
+  } else if (valueCorrected) {
+    // 正式更正来自轻量采集时，旧的比较值属于旧数值，不能再挂在新值上。
+    if (hasComparisons(next) && !comparisonComplete) {
+      const trimmed = statementMetricPrefix.trimComparisonBuckets(next.__statement_comparisons, allowed);
+      if (Object.keys(trimmed).length) merged.__statement_comparisons = trimmed;
+      else delete merged.__statement_comparisons;
+    } else {
+      delete merged.__statement_comparisons;
+    }
   }
   if (keepOldFields) {
     merged.__statement_coverage = newComplete === true
       ? next.__statement_coverage
       : (old && old.__statement_coverage) || next.__statement_coverage;
+  }
+  if (valueCorrected && next.__statement_coverage
+      && next.__statement_coverage.full_statements_complete !== undefined) {
+    // 真实更正：新行若来自轻量采集，明确标记三表全量需按需重采。
+    // 旧契约行（只有 complete）保持原形状，避免无意义字段差异触发重写。
+    merged.__statement_coverage = {
+      ...next.__statement_coverage,
+      full_statements_complete: newComplete === true,
+      complete: newComplete === true,
+    };
   }
   return merged;
 }

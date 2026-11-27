@@ -2521,6 +2521,80 @@ async function findInstrumentMeta({ tsCode }, tx) {
   return rows[0] || null;
 }
 
+/**
+ * B2-2：批量读取本地已核实的 fsTableType（财报类型）。
+ * 来源优先级：证券主档 raw_data → 最近一份财报的 __statement_coverage.fs_table_type → 顶层字段。
+ * 只读、不联网；缺失的代码由服务层按 ≤100 只/批向官方档案核对并回写原文缓存。
+ */
+async function loadFsTableTypes({ codes = [] } = {}, tx) {
+  const list = Array.from(new Set((codes || []).filter(Boolean).map(code => String(code))));
+  const result = new Map();
+  if (!list.length) return result;
+  const exec = executorOf(tx);
+  const { rows } = await exec(`
+    SELECT i.canonical_code AS code,
+           COALESCE(
+             NULLIF(lower(trim(i.raw_data->>'fs_table_type')), ''),
+             NULLIF(lower(trim(r.raw_payload->'__statement_coverage'->>'fs_table_type')), ''),
+             NULLIF(lower(trim(r.raw_payload->>'fs_table_type')), '')
+           ) AS fs_table_type
+      FROM core.instruments i
+      LEFT JOIN LATERAL (
+        SELECT fr.raw_payload
+          FROM core.company_instruments ci
+          JOIN fundamental.financial_reports fr ON fr.company_id = ci.company_id
+         WHERE ci.instrument_id = i.instrument_id
+         ORDER BY fr.ingested_at DESC NULLS LAST, fr.report_id DESC
+         LIMIT 1
+      ) r ON true
+     WHERE i.canonical_code = ANY($1::text[])`,
+  [list]);
+  rows.forEach(row => {
+    if (row.fs_table_type) result.set(String(row.code), String(row.fs_table_type));
+  });
+  return result;
+}
+
+/**
+ * B2-3：港股本地已覆盖的估值/行情交易日（单一证券、目标区间内）。
+ * 返回 Set 便于与本地交易日历求差集，只补真实断档起止段。
+ */
+async function loadHkCoverageDates({ instrumentId, startDate, endDate }, tx) {
+  const result = { valuation: new Set(), bars: new Set() };
+  if (!instrumentId || !startDate || !endDate) return result;
+  const exec = executorOf(tx);
+  const { rows } = await exec(`
+    SELECT 'valuation' AS dataset, v.trade_date::text AS trade_date
+      FROM market.daily_valuations v
+     WHERE v.instrument_id = $1::bigint
+       AND v.trade_date BETWEEN $2::date AND $3::date
+    UNION ALL
+    SELECT 'bar' AS dataset, b.trade_date::text AS trade_date
+      FROM market.daily_bars b
+     WHERE b.instrument_id = $1::bigint
+       AND b.trade_date BETWEEN $2::date AND $3::date`,
+  [instrumentId, startDate, endDate]);
+  rows.forEach(row => {
+    const target = row.dataset === 'valuation' ? result.valuation : result.bars;
+    target.add(String(row.trade_date).slice(0, 10));
+  });
+  return result;
+}
+
+/** 港股本地交易日历（HKEX 开市日）；缺日历时返回空数组，由服务层回退按周计算。 */
+async function loadHkTradeCalendar({ startDate, endDate }, tx) {
+  if (!startDate || !endDate) return [];
+  const exec = executorOf(tx);
+  const { rows } = await exec(`
+    SELECT trade_date::text AS trade_date
+      FROM market.trade_calendar
+     WHERE exchange = 'HKEX' AND is_open = true
+       AND trade_date BETWEEN $1::date AND $2::date
+     ORDER BY trade_date`,
+  [startDate, endDate]);
+  return rows.map(row => String(row.trade_date).slice(0, 10));
+}
+
 /** 这批代码里，谁在目标日往前 days 天内已经有收盘价（避免对同一批对象重复请求外部接口）。 */
 async function listCodesWithRecentBars({ codes = [], asOfDate, days = 60 }, tx) {
   const list = (codes || []).filter(Boolean);
@@ -2641,7 +2715,19 @@ async function upsertDailyValuationRows({ rows = [], sourceId }, tx) {
       total_market_cap=COALESCE(EXCLUDED.total_market_cap,market.daily_valuations.total_market_cap),
       circulating_market_cap=COALESCE(EXCLUDED.circulating_market_cap,market.daily_valuations.circulating_market_cap),
       currency_code=COALESCE(EXCLUDED.currency_code,market.daily_valuations.currency_code),
-      ingested_at=now()`, [JSON.stringify(list), sourceId]);
+      ingested_at=now()
+    -- B2-3：无变化行不触发物理更新与 ingested_at 刷新（重复快照不再制造死元组/TOAST 重写）。
+    WHERE (market.daily_valuations.pe_static,market.daily_valuations.pe_ttm,market.daily_valuations.pb,
+           market.daily_valuations.dividend_yield_ttm,market.daily_valuations.total_market_cap,
+           market.daily_valuations.circulating_market_cap,market.daily_valuations.currency_code)
+      IS DISTINCT FROM
+          (COALESCE(EXCLUDED.pe_static,market.daily_valuations.pe_static),
+           COALESCE(EXCLUDED.pe_ttm,market.daily_valuations.pe_ttm),
+           COALESCE(EXCLUDED.pb,market.daily_valuations.pb),
+           COALESCE(EXCLUDED.dividend_yield_ttm,market.daily_valuations.dividend_yield_ttm),
+           COALESCE(EXCLUDED.total_market_cap,market.daily_valuations.total_market_cap),
+           COALESCE(EXCLUDED.circulating_market_cap,market.daily_valuations.circulating_market_cap),
+           COALESCE(EXCLUDED.currency_code,market.daily_valuations.currency_code))`, [JSON.stringify(list), sourceId]);
   return list.length;
 }
 
@@ -2666,7 +2752,12 @@ async function upsertDailyBarRows({ rows = [], sourceId }, tx) {
            low numeric,close numeric,volume numeric,amount numeric)
     ON CONFLICT(instrument_id,trade_date,source_id) DO UPDATE SET
       open=EXCLUDED.open,high=EXCLUDED.high,low=EXCLUDED.low,close=EXCLUDED.close,
-      volume=EXCLUDED.volume,amount=EXCLUDED.amount,ingested_at=now()`, [JSON.stringify(list), sourceId]);
+      volume=EXCLUDED.volume,amount=EXCLUDED.amount,ingested_at=now()
+    -- B2-3：无变化行不触发物理更新与 ingested_at 刷新。
+    WHERE (market.daily_bars.open,market.daily_bars.high,market.daily_bars.low,market.daily_bars.close,
+           market.daily_bars.volume,market.daily_bars.amount)
+      IS DISTINCT FROM
+          (EXCLUDED.open,EXCLUDED.high,EXCLUDED.low,EXCLUDED.close,EXCLUDED.volume,EXCLUDED.amount)`, [JSON.stringify(list), sourceId]);
   return list.length;
 }
 
@@ -2919,5 +3010,6 @@ module.exports = {
   resolveInstrumentsByCodes, listIndustryOptions,
   saveInputGapQueue, readInputGapQueue, findInstrumentMeta, hasCompletedQuarterRun,
   upsertDailyValuationRows, upsertDailyBarRows, listCodesWithRecentBars, loadHkPeriodReadiness,
+  loadFsTableTypes, loadHkCoverageDates, loadHkTradeCalendar,
   insertBacktest, insertBacktestPeriods, findBacktest, listBacktestPeriods, listBacktests, previousPublishedRun, previousPublishedMembers, previousPersonalRun, previousPersonalMembers,
 };

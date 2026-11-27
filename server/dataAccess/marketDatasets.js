@@ -314,6 +314,15 @@ async function readCompanyProfiles({ codes = [] } = {}) {
   return [];
 }
 
+// A 股公司档案（批量：≤100 只/批）：官方 `cn/company`，只取 fsTableType 等身份字段。
+async function readCnCompanyProfiles({ codes = [] } = {}) {
+  const primary = await safeOfficial(() => official.resolveCnCompanyProfiles({ codes }), 'stock_financial_reports');
+  if (Array.isArray(primary.value) && primary.value.length) {
+    return primary.value.map(row => ({ ...row, source_code: official.SOURCE }));
+  }
+  return [];
+}
+
 async function readMutualMarketCompanies(options = {}) {
   const primary = await safeOfficial(() => official.resolveMutualMarketCompanies(options), 'mutual_market_universe');
   if (Array.isArray(primary.value) && primary.value.length) {
@@ -570,8 +579,8 @@ async function readStockValuationRows({ tradeDate } = {}) {
 // 完整性（R2-001）：官方计划段有失败时不再返回"看起来完整"的数组——
 // 抛 PARTIAL_RESULT，错误对象带 partialRows（已取到的官方行）与 failures（逐段诊断），
 // 调用方可以保留成功部分，但必须自己决定是否续跑，不能把非空结果当成整段成功。
-async function readStockValuationSeriesBatch({ codes = [], startDate, endDate } = {}) {
-  const detail = await readStockValuationSeriesDetailed({ codes, startDate, endDate });
+async function readStockValuationSeriesBatch({ codes = [], startDate, endDate, fsTableType = null, fsTableTypes = null } = {}) {
+  const detail = await readStockValuationSeriesDetailed({ codes, startDate, endDate, fsTableType, fsTableTypes });
   if (!detail) return [];
   if (!detail.complete) {
     const error = new Error(`官方估值历史未取全：计划 ${detail.planned} 段，成功 ${detail.succeeded} 段，失败 ${detail.failed} 段`);
@@ -585,11 +594,13 @@ async function readStockValuationSeriesBatch({ codes = [], startDate, endDate } 
 
 // 逐只估值区间批量的详细结果（R2-001）：回填脚本用它同时拿到成功行与失败区间，
 // 成功行照常幂等写入，失败区间不删旧行、不推进完整水位。
-async function readStockValuationSeriesDetailed({ codes = [], startDate, endDate } = {}) {
+async function readStockValuationSeriesDetailed({ codes = [], startDate, endDate, fsTableType = null, fsTableTypes = null } = {}) {
   const list = (codes || []).filter(Boolean);
   if (!list.length || !startDate || !endDate) return null;
   const primary = await safeOfficial(
-    () => official.resolveValuationSeriesDetailed({ codes: list, startDate, endDate }),
+    () => official.resolveValuationSeriesDetailed({
+      codes: list, startDate, endDate, options: { fsTableType, fsTableTypes },
+    }),
     'stock_valuation_series',
   );
   if (!primary.value) return null;
@@ -775,7 +786,8 @@ async function readFinancialStatementSeries({ tsCode, kind, startDate, endDate, 
 // ---------- 财报与分红 ----------
 
 // 财报（按报表类型）：官方优先；官方无数据时返回 null，由调用方沿用既有批量取数链路。
-async function readFinancialReportRows({ tsCode, kinds, startDate, endDate, fsTableType } = {}) {
+// profile: 'full'（默认）走三表全量 + 原生比较值；'selection_core' 只取选股核心指标批次。
+async function readFinancialReportRows({ tsCode, kinds, startDate, endDate, fsTableType, profile = 'full' } = {}) {
   let fsTableTypeEvidence = null;
   // 港股档案由上游提供；A 股缺类型时向 cn/company 核对完整证券身份。
   if (/^\d{6}\.(SH|SZ|BJ)$/i.test(String(tsCode || '')) && !fsTableType) {
@@ -796,17 +808,41 @@ async function readFinancialReportRows({ tsCode, kinds, startDate, endDate, fsTa
     error.code = 'FINANCIAL_TYPE_UNKNOWN';
     throw error;
   }
-  const primary = await safeOfficial(() => official.resolveFinancialReports({ tsCode, startDate, endDate, kinds, options: { fsTableType, fsTableTypeEvidence } }), 'financial_reports');
+  const selectedProfile = profile === 'selection_core' ? 'selection_core' : 'full';
+  const primary = await safeOfficial(() => official.resolveFinancialReports({
+    tsCode, startDate, endDate, kinds,
+    options: { fsTableType, fsTableTypeEvidence, profile: selectedProfile },
+  }), 'financial_reports');
   if (!primary.value) return null;
-  // 一个报告只返回部分指标批次时，不能让两个既有写入入口把它当完整采集成功。
-  // 官方原始响应由 Guard 留证；本次不发布标准事实，交由调用方记录失败并重试。
-  const incomplete = Object.values(primary.value).flatMap(rows => Array.isArray(rows) ? rows : [])
-    .filter(row => row && row.__statement_coverage && row.__statement_coverage.complete === false);
-  if (incomplete.length) {
-    const error = new Error(`财报存在 ${incomplete.length} 条分批未覆盖的报告，保留历史数据并重试`);
-    error.code = 'FINANCIAL_BATCH_INCOMPLETE';
-    error.retryable = true;
-    throw error;
+  const allRows = Object.values(primary.value).flatMap(rows => Array.isArray(rows) ? rows : []);
+  if (selectedProfile === 'selection_core') {
+    // 选股轻量档：只认核心批次取齐；未取齐一律拒绝落标准层，旧数据保持不动。
+    const coreIncomplete = allRows.filter(row => row && row.__statement_coverage
+      && row.__statement_coverage.core_complete !== true);
+    if (coreIncomplete.length) {
+      const error = new Error(`选股核心财报批次未取齐（${coreIncomplete.length} 条报告），保留历史数据并重试`);
+      error.code = 'FINANCIAL_CORE_INCOMPLETE';
+      error.retryable = true;
+      throw error;
+    }
+  } else {
+    // 一个报告只返回部分指标批次时，不能让两个既有写入入口把它当完整采集成功。
+    // 官方原始响应由 Guard 留证；本次不发布标准事实，交由调用方记录失败并重试。
+    // 兼容旧行：没有 full_statements_complete 时按 complete 判断。
+    const incomplete = allRows.filter(row => {
+      const coverage = row && row.__statement_coverage;
+      if (!coverage) return false;
+      const fullComplete = coverage.full_statements_complete === undefined
+        ? coverage.complete
+        : coverage.full_statements_complete;
+      return fullComplete === false;
+    });
+    if (incomplete.length) {
+      const error = new Error(`财报存在 ${incomplete.length} 条分批未覆盖的报告，保留历史数据并重试`);
+      error.code = 'FINANCIAL_BATCH_INCOMPLETE';
+      error.retryable = true;
+      throw error;
+    }
   }
   // 历史 .t 非原币；仅允许有明确币种的港股 .t_o 原始值或既有 HKD 报告进入标准层。
   if (/^\d{5}\.HK$/i.test(String(tsCode || '')) && Object.values(primary.value)
@@ -950,6 +986,7 @@ module.exports = {
   readIndexConstituents,
   readMutualMarketCompanies,
   readCompanyProfiles,
+  readCnCompanyProfiles,
   readIndexValuationSeries,
   readHkDailyByTencent,
   readIndustryClassification,

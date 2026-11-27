@@ -235,34 +235,39 @@ async function resolveValuationRowsDetailed({ codes = [], tradeDate, options = {
   if (!list.length || !tradeDate) return null;
   const date = dashDate(tradeDate);
   if (!date) return null;
-  const batches = chunk(list, VALUATION_CHUNK);
+  // B2-3：请求前先冻结计划。CN 仍走 non_financial；HK 按已确认 fsTableType 分组到各自端点，
+  // 未知/未准入类型不请求，单独记为缺口（不能硬发非金融端点）。
+  const plan = [];
+  const unknownTypeCodes = [];
+  for (const batch of chunk(list, VALUATION_CHUNK)) {
+    const cnBatch = batch.filter(item => !isHkCode(item.tsCode));
+    if (cnBatch.length) {
+      plan.push({ endpoint: 'cn/company/fundamental/non_financial', items: cnBatch, metrics: VALUATION_METRICS });
+    }
+    const hkBatch = batch.filter(item => isHkCode(item.tsCode));
+    const groups = new Map();
+    for (const item of hkBatch) {
+      const endpoint = hkFundamentalEndpointOf(resolveFsTableTypeOf(item, options));
+      if (!endpoint) { unknownTypeCodes.push(item.tsCode); continue; }
+      if (!groups.has(endpoint)) groups.set(endpoint, []);
+      groups.get(endpoint).push(item);
+    }
+    for (const [endpoint, items] of groups) {
+      plan.push({ endpoint, items, metrics: HK_VALUATION_METRICS });
+    }
+  }
   const rows = [];
   const failures = [];
   let attempted = 0;
   let emptyBatches = 0;
-  for (const batch of batches) {
+  for (const group of plan) {
     attempted += 1;
     try {
-      // 同一批次里可能混有 A 股与港股：按证券代码分组后分别走对应端点，
-      // 港股走 hk/company/fundamental/non_financial 并使用 bs.* 指标。
-      const hkBatch = batch.filter(item => isHkCode(item.tsCode));
-      const cnBatch = batch.filter(item => !isHkCode(item.tsCode));
-      const resultRows = [];
-      if (cnBatch.length) {
-        const cnResult = await callEndpoint('cn/company/fundamental/non_financial', {
-          stockCodes: cnBatch.map(item => item.code), date, metricsList: VALUATION_METRICS,
-        }, { dataset: 'stock_valuation', targetDate: date, ...options });
-        resultRows.push(...cnResult.rows);
-      }
-      if (hkBatch.length) {
-        const hkResult = await callEndpoint('hk/company/fundamental/non_financial', {
-          stockCodes: hkBatch.map(item => item.code), date, metricsList: HK_VALUATION_METRICS,
-        }, { dataset: 'stock_valuation', targetDate: date, ...options });
-        resultRows.push(...hkResult.rows);
-      }
-      const result = { rows: resultRows };
+      const result = await callEndpoint(group.endpoint, {
+        stockCodes: group.items.map(item => item.code), date, metricsList: group.metrics,
+      }, { dataset: 'stock_valuation', targetDate: date, ...options });
       if (!result.rows.length) emptyBatches += 1;
-      const byCode = new Map(batch.map(item => [item.code, item.tsCode]));
+      const byCode = new Map(group.items.map(item => [item.code, item.tsCode]));
       for (const row of result.rows) {
         const tsCode = byCode.get(String(row.stockCode));
         if (!tsCode) continue;
@@ -273,11 +278,43 @@ async function resolveValuationRowsDetailed({ codes = [], tradeDate, options = {
       if (isControlError(error)) throw error;
       // tsCodes 是站内代码（如 600519.SH），stockCodes 是供应商代码（如 600519）：缺口恢复按站内代码对齐，
       // 否则会出现"按供应商代码记、按站内代码查"永远匹配不上、快照缺口永不恢复。
-      failures.push(batchDiagnostic(error, { stockCodes: batch.map(item => item.code), tsCodes: batch.map(item => item.tsCode), tradeDate: date }));
+      failures.push(batchDiagnostic(error, {
+        endpoint: group.endpoint, stockCodes: group.items.map(item => item.code),
+        tsCodes: group.items.map(item => item.tsCode), tradeDate: date,
+      }));
     }
   }
-  return summarizeBatches({ rows, planned: batches.length, attempted, failures, emptyBatches,
-    scope: { kind: 'snapshot', tradeDate: date, codes: list.length } });
+  const summary = summarizeBatches({
+    rows, planned: plan.length, attempted, failures, emptyBatches,
+    scope: { kind: 'snapshot', tradeDate: date, codes: list.length },
+  });
+  // B2-3：逐证券核对 trade_date 与必需估值字段。漏返回、日期不符、字段不齐都显式留证，
+  // 供上层进入既有受控续补队列，不能把"计划批次成功"当"业务覆盖完整"。
+  const hkByCode = new Map();
+  list.filter(item => isHkCode(item.tsCode)).forEach(item => hkByCode.set(item.tsCode, item));
+  const rowByHk = new Map();
+  for (const row of rows) {
+    if (hkByCode.has(row.ts_code)) rowByHk.set(row.ts_code, row);
+  }
+  const missingCodes = [];
+  const dateMismatchCodes = [];
+  const fieldIncompleteCodes = [];
+  const unknownTypeSet = new Set(unknownTypeCodes);
+  for (const [tsCode] of hkByCode) {
+    if (unknownTypeSet.has(tsCode)) continue; // 未确认类型已单独记缺口，不重复算漏返回。
+    const row = rowByHk.get(tsCode);
+    if (!row) { missingCodes.push(tsCode); continue; }
+    if (dashDate(row.trade_date) !== date) { dateMismatchCodes.push(tsCode); continue; }
+    if (row.pb === null || row.pb === undefined || row.total_mv === null || row.total_mv === undefined) {
+      fieldIncompleteCodes.push(tsCode);
+    }
+  }
+  const gaps = { missingCodes, dateMismatchCodes, fieldIncompleteCodes, unknownTypeCodes };
+  return Object.assign(summary, {
+    gaps,
+    businessComplete: summary.complete
+      && !missingCodes.length && !dateMismatchCodes.length && !fieldIncompleteCodes.length && !unknownTypeCodes.length,
+  });
 }
 
 /**
@@ -401,7 +438,19 @@ async function resolveValuationSeriesDetailed({ codes = [], startDate, endDate, 
       attempted += 1;
       try {
         const hk = isHkCode(item.tsCode);
-        const result = await callEndpoint(hk ? 'hk/company/fundamental/non_financial' : 'cn/company/fundamental/non_financial', {
+        // B2-3：港股历史在显式提供 fsTableType 时按其路由；未提供时沿用既有 non_financial
+        // 兼容行为（单股分析等历史入口），显式类型不在目录内则留缺口，不硬发。
+        const fsType = hk ? resolveFsTableTypeOf(item, options) : null;
+        const hkEndpoint = hk ? (fsType ? hkFundamentalEndpointOf(fsType) : 'hk/company/fundamental/non_financial') : null;
+        if (hk && fsType && !hkEndpoint) {
+          failures.push({
+            code: 'HK_FS_TABLE_TYPE_UNKNOWN', retryable: false,
+            message: '港股财报类型未确认，拒绝选择估值端点',
+            tsCode: item.tsCode, from, to,
+          });
+          continue;
+        }
+        const result = await callEndpoint(hk ? hkEndpoint : 'cn/company/fundamental/non_financial', {
           stockCodes: [item.code], startDate: from, endDate: to,
           metricsList: hk ? HK_VALUATION_METRICS : VALUATION_METRICS,
         }, { dataset: 'stock_valuation', targetDate: end, ...options });
@@ -498,6 +547,34 @@ function fillStaticPe(rows, annuals) {
 // 港股没有流通市值等价字段，cmc 不请求；tsc（总股本）本链路不用。
 const HK_VALUATION_METRICS = ['pe_ttm', 'pb', 'dyr', 'mc'];
 
+// B2-3：港股估值/财报按已核实的 fsTableType 分流到各自官方端点。
+// 全部端点均已在 governance 目录准入；未确认类型或映射外类型一律留缺口，绝不硬发非金融端点。
+const HK_FUNDAMENTAL_ENDPOINTS = Object.freeze({
+  non_financial: 'hk/company/fundamental/non_financial',
+  bank: 'hk/company/fundamental/bank',
+  insurance: 'hk/company/fundamental/insurance',
+  security: 'hk/company/fundamental/security',
+  other_financial: 'hk/company/fundamental/other_financial',
+  reit: 'hk/company/fundamental/reit',
+});
+
+function hkFundamentalEndpointOf(type) {
+  const key = String(type || '').trim().toLowerCase();
+  return HK_FUNDAMENTAL_ENDPOINTS[key] || null;
+}
+
+// fsTableType 许可来自三类入口：按代码的 Map/对象、或按代码解析的函数；也兼容单值字符串。
+function resolveFsTableTypeOf(item, options = {}) {
+  const source = options.fsTableTypes !== undefined ? options.fsTableTypes : options.fsTableTypeByCode;
+  const single = options.fsTableType;
+  const code = String((item && item.code) || '').trim();
+  const tsCode = String((item && item.tsCode) || '').trim();
+  if (typeof source === 'function') return source(tsCode) || source(code) || single || null;
+  if (source instanceof Map) return source.get(tsCode) || source.get(code) || single || null;
+  if (source && typeof source === 'object') return source[tsCode] || source[code] || single || null;
+  return single || null;
+}
+
 // 港股金融类型各走自己的端点；只使用该类型的官方科目目录，禁止混发非金融类型科目。
 // 普通股专属指标仍可展示。归母合计只映射已验证的报告类型和对应原币科目。
 const HK_FINANCIAL_TABLE_TYPES = new Set(['bank', 'insurance', 'security', 'reit', 'other_financial']);
@@ -569,6 +646,12 @@ async function resolveFinancialReports({ tsCode, startDate, endDate, kinds = ['i
   const code = stockCodeOf(tsCode);
   const start = dashDate(startDate), end = dashDate(endDate);
   if (!code || !start || !end) return null;
+  // B2-2：双态数据合同。
+  // full（默认）：既有单股刷新与公司财务同步行为完全不变（三表全量 + 原生比较值）。
+  // selection_core：只请求标准核心指标批次，跳过 extraBatches 与 comparisonBatches，
+  //   供选股补财报使用（A 股 12 年从 28 次请求降到 2 次）。
+  const profile = String((options || {}).profile || 'full') === 'selection_core' ? 'selection_core' : 'full';
+  const selectionCore = profile === 'selection_core';
   const hk = isHkCode(tsCode);
   const market = hk ? 'HK' : 'CN';
   // 港股 .t 会被来源换算；.t_o 为官方报告原始值。缺失时不得回退 .t 冒充原币。
@@ -617,7 +700,7 @@ async function resolveFinancialReports({ tsCode, startDate, endDate, kinds = ['i
   // 因此除标准 17 项外，再按字典（A股 CAS / 港股 HKFRS 各自一套）分批发全量科目。
   // 两套准则科目不同，字典按市场取，禁止互相套用。
   const standardCodes = new Set(metrics);
-  const extraBatches = reportMetrics.requestBatchesOf(market, undefined, tableType, expression)
+  const extraBatches = selectionCore ? [] : reportMetrics.requestBatchesOf(market, undefined, tableType, expression)
     .map(batch => batch.filter(code => !standardCodes.has(code)
       && kinds.includes(reportMetrics.statementOfMetricKey(code.replace(/^q\./, '').replace(/\.t(?:_o)?$/, '')))))
     .filter(batch => batch.length);
@@ -628,10 +711,23 @@ async function resolveFinancialReports({ tsCode, startDate, endDate, kinds = ['i
   const merged = new Map();
   const batches = [metrics, ...extraBatches];
   const responseEvidence = [];
+  // 核心批次（标准科目）是否全部成功取齐；selection_core 下这是唯一计划批次。
+  // 单批失败不静默写半份标准事实：记录 core_complete=false 后由数据层拒绝落标准层。
+  let coreBatchFailed = false;
   for (const [batchIndex, list] of batches.entries()) {
-    const { rows: batchRows, evidence } = await callEndpointRange(endpoint,
-      { stockCodes: [code], metricsList: list }, start, end,
-      { dataset: 'stock_financial_reports', targetDate: end, ...options });
+    let batchRows;
+    let evidence;
+    try {
+      ({ rows: batchRows, evidence } = await callEndpointRange(endpoint,
+        { stockCodes: [code], metricsList: list }, start, end,
+        { dataset: 'stock_financial_reports', targetDate: end, ...options }));
+    } catch (error) {
+      if (selectionCore && batchIndex === 0 && !isControlError(error)) {
+        coreBatchFailed = true;
+        continue;
+      }
+      throw error;
+    }
     responseEvidence.push(evidence);
     for (const item of batchRows) {
       // 同一份报告分散在多批响应里，必须按"报告身份"合并，不能按响应顺序拼接。
@@ -653,7 +749,8 @@ async function resolveFinancialReports({ tsCode, startDate, endDate, kinds = ['i
     }
   }
   // 原生同比/环比与单季口径分批采集（单批严格 <=128 指标，单批失败不覆盖已有原值与旧对比值）。
-  const comparisonBatches = options.skipNativeComparisons
+  // selection_core 只保核心标准科目，不请求比较值批次。
+  const comparisonBatches = (selectionCore || options.skipNativeComparisons)
     ? []
     : reportMetrics.requestComparisonBatchesOf(market, undefined, tableType, expression, kinds);
   let comparisonReturnedBatches = 0;
@@ -684,6 +781,11 @@ async function resolveFinancialReports({ tsCode, startDate, endDate, kinds = ['i
   const audit = financialAuditOf({ endpoint, market, start, end, evidences: responseEvidence });
   const allowedPrefixesByKind = new Map(kinds.map(kind => [kind, allowedStatementPrefixes(kind, mapping)]));
   for (const { item, batches: returnedBatches } of rows) {
+    // B2-2：双态覆盖合同，`complete` 旧字段保留兼容，含义等同 full_statements_complete。
+    // - core_complete：本次按计划请求的选股核心科目批次是否全部成功取齐（请求级证据）；
+    // - full_statements_complete：该报表三表全量字典科目是否完整采集（selection_core 恒为 false）。
+    const coreComplete = !coreBatchFailed;
+    const fullStatementsComplete = !selectionCore && returnedBatches.size === batches.length;
     const flat = flattenMetrics(item.q || {});
     // 三表原始科目：键形如 bs.ta.t / ps.toi.t / cfs.ncffoa.t，去掉粒度后缀后按代码交给落库层。
     // 只收 bs/ps/cfs（m.* 是衍生指标，由三表算得，不入库）。
@@ -760,7 +862,11 @@ async function resolveFinancialReports({ tsCode, startDate, endDate, kinds = ['i
           returned_metric_codes: Object.keys(kindMetrics),
           requested_batch_count: batches.length,
           returned_batch_count: returnedBatches.size,
-          complete: returnedBatches.size === batches.length,
+          collection_profile: profile,
+          // 双态字段：选股核心批次是否取齐、三表全量是否完整。旧 `complete` 继续等于后者。
+          core_complete: coreComplete,
+          full_statements_complete: fullStatementsComplete,
+          complete: fullStatementsComplete,
           comparison_requested: comparisonBatches.length > 0,
           comparison_complete: comparisonBatches.length > 0 && comparisonReturnedBatches === comparisonBatches.length,
           audit,

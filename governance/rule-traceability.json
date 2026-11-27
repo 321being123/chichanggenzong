@@ -6673,6 +6673,158 @@
       ],
       "owner": "任务治理",
       "status": "local_verified"
+    },
+    {
+      "id": "SEL-ELIMINATION-WHITELIST-001",
+      "title": "硬过滤只对可靠 FAIL 与白名单内客观不适用原因码短路无关补采；未核实前置与 B 类 NOT_APPLICABLE 不得短路",
+      "implementation": {
+        "file": "server/domain/stockSelectionRules.js",
+        "symbol": "deterministicEliminationOf"
+      },
+      "tests": [
+        {
+          "file": "server/test/stock-selection-b2.test.js",
+          "pattern": "A 类 FAIL 短路无关 PENDING，单规则诊断原样保留"
+        },
+        {
+          "file": "server/test/stock-selection-b2.test.js",
+          "pattern": "A 类客观不适用白名单短路；未列出的 NOT_APPLICABLE 不短路"
+        },
+        {
+          "file": "server/test/stock-selection-b2.test.js",
+          "pattern": "V2 的 history_calendar_unverified 不得短路 PENDING"
+        },
+        {
+          "file": "server/test/stock-selection-b2.test.js",
+          "pattern": "同冻结输入下，A 类淘汰标的不改变其它候选名次/席位/权重"
+        }
+      ],
+      "owner": "投资策略选股中心",
+      "status": "local_verified"
+    },
+    {
+      "id": "SEL-INDUSTRY-NARROW-001",
+      "title": "行业补采只对 PASS 或未淘汰 PENDING 入队，A 类确定性淘汰与 RISK 不再触发行业外采",
+      "implementation": {
+        "file": "server/services/stockSelectionService.js",
+        "symbol": "industryRequiredOf"
+      },
+      "tests": [
+        {
+          "file": "server/test/stock-selection-b2.test.js",
+          "pattern": "行业补采收窄：A 类淘汰与 RISK 不入队，PASS/PENDING 才入队"
+        }
+      ],
+      "owner": "投资策略选股中心",
+      "status": "local_verified"
+    },
+    {
+      "id": "SEL-FINANCIAL-PROFILE-001",
+      "title": "选股补财报使用 selection_core 仅取核心批次，并以 core_complete 拒绝落标准层；三表全量防降级与真实更正降级标记独立判定",
+      "implementation": {
+        "file": "server/repositories/stockProjectionRepository.js",
+        "symbol": "mergeReportPayload"
+      },
+      "tests": [
+        {
+          "file": "server/test/stock-selection-b2.test.js",
+          "pattern": "selection_core 只发核心批次（12 年从 28 次降至 2 次）"
+        },
+        {
+          "file": "server/test/stock-selection-b2.test.js",
+          "pattern": "core_complete=false 时数据层拒绝落标准层"
+        },
+        {
+          "file": "server/test/stock-selection-b2-db.test.js",
+          "pattern": "轻量补空必须合并 returned_metric_codes"
+        },
+        {
+          "file": "server/test/stock-selection-b2-db.test.js",
+          "pattern": "同值轻量重采不得把旧全量行降级"
+        },
+        {
+          "file": "server/test/stock-selection-b2-db.test.js",
+          "pattern": "全量行被轻量更正后必须显式标记 full_statements_complete=false"
+        }
+      ],
+      "owner": "投资策略选股中心",
+      "status": "local_verified"
+    },
+    {
+      "id": "SEL-FS-TABLE-TYPE-BATCH-001",
+      "title": "补采前批量读取本地 fsTableType，只对缺失代码按 ≤100 只/批核对官方档案并复用缓存",
+      "implementation": {
+        "file": "server/services/stockSelectionInputsSync.js",
+        "symbol": "resolveBatchFsTableTypes"
+      },
+      "tests": [
+        {
+          "file": "server/test/stock-selection-b2.test.js",
+          "pattern": "批量 fsTableType：只对缺失代码按 ≤100 只/批查档案"
+        }
+      ],
+      "owner": "投资策略选股中心",
+      "status": "local_verified"
+    },
+    {
+      "id": "SEL-HK-VALUATION-ENDPOINT-001",
+      "title": "港股估值按已核实 fsTableType 分流非金融/银行等端点，未知类型留缺口不硬发；逐证券校验日期与必需字段",
+      "implementation": {
+        "file": "server/dataAccess/adapters/lixingerDatasetAdapter.js",
+        "symbol": "resolveValuationRowsDetailed"
+      },
+      "tests": [
+        {
+          "file": "server/test/stock-selection-b2.test.js",
+          "pattern": "港股非金融/银行按 fsTableType 分流；未知类型留缺口不硬发"
+        },
+        {
+          "file": "server/test/stock-selection-b2.test.js",
+          "pattern": "逐证券核对 trade_date 与必需字段；漏返回/日期不符/字段不齐进入缺口"
+        }
+      ],
+      "owner": "投资策略选股中心",
+      "status": "local_verified"
+    },
+    {
+      "id": "SEL-HK-GAP-SEGMENT-001",
+      "title": "港股历史估值/行情按本地已覆盖日期求真实断档段，尾部 1–5 天缺口不得重拉 11 年历史",
+      "implementation": {
+        "file": "server/services/stockSelectionInputsSync.js",
+        "symbol": "missingDateSegments"
+      },
+      "tests": [
+        {
+          "file": "server/test/stock-selection-b2.test.js",
+          "pattern": "尾部仅缺 1–5 天时只补断档段，不重拉 11 年历史"
+        },
+        {
+          "file": "server/test/stock-selection-b2.test.js",
+          "pattern": "collectHkMarketData 只请求本地未覆盖的尾部段"
+        }
+      ],
+      "owner": "投资策略选股中心",
+      "status": "local_verified"
+    },
+    {
+      "id": "SEL-WRITE-NOOP-GUARD-001",
+      "title": "估值与行情批量 upsert 使用 IS DISTINCT FROM 守卫，无变化行不刷新 ingested_at 或重写物理行",
+      "implementation": {
+        "file": "server/repositories/stockSelectionRepository.js",
+        "symbol": "upsertDailyValuationRows"
+      },
+      "tests": [
+        {
+          "file": "server/test/stock-selection-b2-db.test.js",
+          "pattern": "估值重复写无变化行时 ctid 不得变化"
+        },
+        {
+          "file": "server/test/stock-selection-b2-db.test.js",
+          "pattern": "行情重复写无变化行时 ctid 不得变化"
+        }
+      ],
+      "owner": "投资策略选股中心",
+      "status": "local_verified"
     }
   ]
 }

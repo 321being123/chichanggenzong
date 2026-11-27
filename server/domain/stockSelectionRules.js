@@ -35,6 +35,65 @@ const DEFAULT_PARAMS = Object.freeze({
 
 const RULE_CODES = Object.freeze(['R01', 'R02', 'R04', 'R05']);
 
+/**
+ * A 类确定性淘汰白名单（B2-1，2026-11-27）：只收「客观确实不适用」的 NOT_APPLICABLE 原因码。
+ *
+ * 背景：NOT_APPLICABLE 同时混着两类事实——
+ *   ① 客观不可评估（一份年报都没有、十年窗口先天为空、币种无法闭合）；
+ *   ② 未核实前置（日历未核实、覆盖未知、历史断档未查明）。
+ * 只有 ① 能证明「无论怎么补都不可能入选」，才允许短路其它无关补采。
+ * ② 必须继续按 PENDING 阻断正式发布，否则会把「没核实」洗成「已淘汰」。
+ *
+ * 白名单是显式、受测试锁定的；任何未列出的 NOT_APPLICABLE 一律按 B 类处理。
+ * 任一规则经可靠事实判 FAIL 同样属于 A 类（结论明确，不依赖其余规则）。
+ */
+const DETERMINISTIC_NOT_APPLICABLE_REASONS = Object.freeze([
+  'pb_not_evaluable_no_report',
+  'equity_not_evaluable_no_report',
+  'no_annual_report_not_evaluable',
+  'pb_non_positive_not_evaluable',
+  'pb_window_empty',
+  'pb_gap_source_unrecoverable',
+  'fx_unavailable_not_evaluable',
+  'dividend_currency_mixed_not_evaluable',
+  'dividend_currency_mismatch_not_evaluable',
+]);
+
+/**
+ * 判定一组规则是否已构成「确定性淘汰」。
+ * - 任一规则 FAIL → 淘汰（明确不符合，无需再补其它规则的数据）；
+ * - 否则任一 NOT_APPLICABLE 的原因码命中 A 类白名单 → 淘汰；
+ * - 其余（含未列入白名单的 NOT_APPLICABLE、所有 PENDING）都不是确定性淘汰，不得短路。
+ *
+ * 单规则诊断（rules.R01/R02/R04/R05 自身的 status/reason）保持原样，本函数只做汇总判定。
+ */
+function deterministicEliminationOf(rules) {
+  const entries = Object.entries(rules || {});
+  for (const [code, item] of entries) {
+    if (item && item.status === STATUS.FAIL) {
+      return { eliminated: true, code, status: STATUS.FAIL, reason: item.reason || null, basis: 'rule_fail' };
+    }
+  }
+  for (const [code, item] of entries) {
+    if (item && item.status === STATUS.NOT_APPLICABLE
+        && DETERMINISTIC_NOT_APPLICABLE_REASONS.includes(item.reason)) {
+      return { eliminated: true, code, status: STATUS.NOT_APPLICABLE, reason: item.reason, basis: 'not_applicable_whitelist' };
+    }
+  }
+  return { eliminated: false, code: null, status: null, reason: null, basis: null };
+}
+
+/**
+ * 汇总状态：有 A 类确定性淘汰时直接采用淘汰结论（FAIL 优先于 N/A），
+ * 否则沿用「PENDING > FAIL > NOT_APPLICABLE > PASS」的原优先级。
+ * 禁止把 NOT_APPLICABLE 全局提到 PENDING 之前——那会把未核实前置也当成淘汰。
+ */
+function aggregateRuleStatus(rules) {
+  const elimination = deterministicEliminationOf(rules);
+  if (elimination.eliminated) return { status: elimination.status, elimination };
+  return { status: worstStatus(RULE_CODES.map(code => (rules[code] || {}).status)), elimination };
+}
+
 function num(value) {
   if (value === null || value === undefined || value === '') return null;
   const n = Number(value);
@@ -263,7 +322,10 @@ function evaluateInstrument(facts, params = DEFAULT_PARAMS) {
   const r04 = evaluateDividendYield(facts, p);
   const r05 = evaluateEquity(facts, p);
   const rules = { R01: r01.rule, R02: r02.rule, R04: r04.rule, R05: r05.rule };
-  const ruleStatus = worstStatus(RULE_CODES.map(code => rules[code].status));
+  // B2-1：汇总时对「已命中 A 类确定性淘汰」的标的不再被其它无关规则的 PENDING 拉回待补。
+  // 单规则 status/reason 原样保留，仍可逐项看到每个缺口。
+  const aggregate = aggregateRuleStatus(rules);
+  const ruleStatus = aggregate.status;
 
   // 风险暂缓（SSV-02）：停牌、ST/退市风险、目标日已终止上市必须真的挡住入选，
   // 不能只写进原因却让组合继续接收。规则已明确不符合时保持 FAIL（明确的策略结论优先）。
@@ -330,6 +392,8 @@ function evaluateInstrument(facts, params = DEFAULT_PARAMS) {
     fxRate: r05.fxRate,
     fxDate: r05.fxDate,
     rules,
+    // B2-1：确定性淘汰证据（供服务层收窄行业补采与缺口入队；单规则状态不受影响）。
+    deterministicElimination: aggregate.elimination,
     filterStatus,
     riskHeld,
     riskReasons: risks,
@@ -598,6 +662,9 @@ module.exports = {
   STRATEGY_CODE,
   RULE_CODES,
   DEFAULT_PARAMS,
+  DETERMINISTIC_NOT_APPLICABLE_REASONS,
+  deterministicEliminationOf,
+  aggregateRuleStatus,
   evaluateInstrument,
   evaluateCurrentPb,
   evaluateHistoricalPb,

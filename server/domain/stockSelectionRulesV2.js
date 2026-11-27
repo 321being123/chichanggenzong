@@ -1,5 +1,6 @@
 // 投资策略选股中心 V2：纯规则计算（方案第 27.4、27.5 节）。
-// 与 V1（stockSelectionRules）并存：V1 冻结不动，V2 独立登记策略/公式/参数版本，服务按策略分派。
+// 与 V1（stockSelectionRules）并存：V1 单规则判定保持冻结，V2 独立登记策略/公式/参数版本；
+// B2-1 的 A 类确定性淘汰分级在两者共享的汇总层实现（只影响 filterStatus/缺口，不改单规则结论）。
 // 本文件只接收事实对象做判断，不含 SQL、不联网、不读环境变量。
 //
 // V2 与 V1 的差别只有三处（其余 R04/R05、11 财年异常、竞赛排名、风险、行业预算沿用基线）：
@@ -174,13 +175,6 @@ function num(value) {
 
 function rule(code, status, fields) {
   return Object.assign({ code, status }, fields || {});
-}
-
-function worstStatus(statuses) {
-  if (statuses.includes(STATUS.PENDING)) return STATUS.PENDING;
-  if (statuses.includes(STATUS.FAIL)) return STATUS.FAIL;
-  if (statuses.includes(STATUS.NOT_APPLICABLE)) return STATUS.NOT_APPLICABLE;
-  return STATUS.PASS;
 }
 
 /* ------------------------------------------------------------------ *
@@ -622,7 +616,10 @@ function evaluateInstrumentV2(facts, params = V2_PARAMS) {
   const r04 = V1.evaluateDividendYield(facts, p);
   const r05 = V1.evaluateEquity(facts, p);
   const rules = { R01: r01.rule, R02: r02.rule, R04: r04.rule, R05: r05.rule };
-  const ruleStatus = worstStatus(RULE_CODES.map(code => rules[code].status));
+  // B2-1：与 V1 共用同一套 A 类确定性淘汰白名单；未核实前置（history_calendar_unverified /
+  // history_coverage_unknown / history_gap_not_evaluable）不在白名单，仍按 PENDING/NA 阻断。
+  const aggregate = V1.aggregateRuleStatus(rules);
+  const ruleStatus = aggregate.status;
 
   // 风险暂缓：可靠停牌证据 → 本轮 RISK，不执行依赖当日价的 R01（valuationStatus=null）。
   const risks = [];
@@ -699,6 +696,8 @@ function evaluateInstrumentV2(facts, params = V2_PARAMS) {
     fxRate: r05.fxRate,
     fxDate: r05.fxDate,
     rules,
+    // B2-1：确定性淘汰证据（服务层据此短路无关补采、收窄行业外采）。
+    deterministicElimination: aggregate.elimination,
     filterStatus,
     riskHeld,
     riskStatus,

@@ -2007,18 +2007,62 @@ async function getPortfolio(runId, options = {}) {
   };
 }
 
+/**
+ * 淘汰详情历史回放（B3-2）：被裁剪的年度数组按该 run 的目标日与可见截止回查原表，
+ * 重算年度指纹并与写入时冻结的 `annual.yearsDigest` 比对。
+ * 只有指纹完全一致才把这些年份作为"当时事实"返回；不一致（被更正过/版本变化）时显式
+ * `verified:false` 且不返回年份，绝不拿今日修订后的报表冒充历史快照。
+ */
+async function historicalAnnualReplayOf(run, candidate, tx) {
+  const annual = candidate && candidate.detail ? candidate.detail.annual : null;
+  if (!annual || annual.yearsTrimmed !== true) {
+    return { required: false, verified: null, years: null, reason: 'frozen_detail_complete' };
+  }
+  const companyId = candidate.company_id === null || candidate.company_id === undefined
+    ? null : Number(candidate.company_id);
+  if (!Number.isFinite(companyId) || companyId <= 0) {
+    return { required: true, verified: false, years: null, reason: 'company_identity_missing' };
+  }
+  try {
+    const params = {
+      companyIds: [companyId], asOfDate: run.as_of_date_text,
+      availableBefore: run.knowledge_cutoff_text, market: run.market,
+    };
+    const [profits, dividends] = await Promise.all([
+      repo.loadAnnualProfits(params, tx),
+      repo.loadAnnualDividends(params, tx),
+    ]);
+    // 复用 annualFactsOf 这一唯一入口，保证回放与实时计算拿到的年度事实同源。
+    const rebuilt = annualFactsOf(
+      profits.get(String(companyId)) || [], dividends.get(String(companyId)) || [], candidate.code, null, null);
+    const years = rebuilt.years;
+    const matches = !!annual.yearsDigest && annual.yearsDigest === repo.annualYearsDigest(years);
+    return {
+      required: true, verified: matches,
+      years: matches ? years : null,
+      reason: matches ? 'frozen_digest_matched' : 'frozen_digest_mismatch',
+    };
+  } catch (error) {
+    // 回放查询失败不能伪造成"已验证一致"，也不能拖垮整个详情读取。
+    return { required: true, verified: false, years: null, reason: 'replay_query_failed' };
+  }
+}
+
 async function getStockDetail({ runId, code }) {
   const run = await repo.findRun(runId);
   if (!run) return null;
   const candidate = await repo.findCandidate({ runId, code });
   if (!candidate) return null;
   if (run.run_kind === 'personal') withPersonalSelection(candidate, await personalSelectionContext(run));
+  const historicalReplay = await historicalAnnualReplayOf(run, candidate);
   return {
     runId: Number(runId),
     market: run.market,
     asOfDate: run.as_of_date_text,
     strategyVersion: run.strategy_version,
     knowledgeCutoff: run.knowledge_cutoff_text,
+    historicalReplay,
+    historicalReplayVerified: historicalReplay.required ? historicalReplay.verified : null,
     candidate: {
       code: candidate.code,
       name: candidate.name,
@@ -2069,6 +2113,7 @@ async function getStockDetail({ runId, code }) {
       personalStatus: candidate.personalStatus || null,
       personalNonSelectionReasons: candidate.personalNonSelectionReasons || [],
       detail: candidate.detail,
+      historicalReplay,
     },
   };
 }
@@ -2316,7 +2361,7 @@ function exclusionOf(settings, market) {
  * - 用完整冻结投影（游标分页，不受 5000 行限制），保留源名次与全部判定，不补 rankReady；
  * - 本人行业/证券排除 → 按原 selection_order 递补 → 席位与行业上限。
  */
-async function createSimulation({ username, sourceRunId, positionRatio, budgetRatio, clientRequestId, expectedSettingsRevision, expectedSubjectId }) {
+async function createSimulation({ username, sourceRunId, positionRatio, budgetRatio, clientRequestId, expectedSettingsRevision, expectedSubjectId }, options = {}) {
   return withTransaction(async tx => {
     const summaryOf = run => {
       const summary = run && run.input_manifest && run.input_manifest.portfolio;
@@ -2477,6 +2522,8 @@ async function createSimulation({ username, sourceRunId, positionRatio, budgetRa
       inputManifest: Object.assign({}, payload, {
         clientRequestId: clientRequestId || null,
         defaultPositionRatio,
+        // B3-1：个人测算不再物理复制全市场候选；候选读取统一解析到 supersedes_run_id 的冻结公共源批次。
+        candidatesRefMode: 'source_run',
         requestInputs: { positionRatio: String(ratio), budgetRatio: budget === null ? '__null__' : String(budget) },
         settingsSnapshot: settings,
         portfolio: {
@@ -2497,7 +2544,7 @@ async function createSimulation({ username, sourceRunId, positionRatio, budgetRa
       periodStart: source.period_start_text || null, periodEnd: source.period_end_text || null,
       settingsRevision: stored.revision, settingsHash, computedAt: new Date(), isShadow: false,
     });
-    await repo.copyCandidates({ sourceRunId: Number(sourceRunId), targetRunId: runId }, tx);
+    // B3-1：不再调用 copyCandidates。个人 run 只写批次与 <=30 行成员，候选由读端解析到源批次。
     await repo.insertMembers(tx, runId, portfolio.members);
     if (clientRequestId) {
       const binding = await repo.bindStockSelectionRequest({ username, subjectId, requestId: clientRequestId, inputHash, runId }, tx);
@@ -2506,7 +2553,7 @@ async function createSimulation({ username, sourceRunId, positionRatio, budgetRa
       }
     }
     return { runId, reused: false, run: await repo.findRun(runId, tx), portfolio, settingsRevision: stored.revision };
-  });
+  }, { tx: options.tx });
 }
 
 /** 回测入口（实现在 stockSelectionBacktest，这里只做权限与参数校验后的转发）。 */
@@ -2816,6 +2863,7 @@ async function listIndustries({ market }) {
 module.exports = {
   // 内部工具（导出供回归断言「两处年度事实必须同源」，不是对外契约）。
   annualFactsOf,
+  historicalAnnualReplayOf,
   STRATEGY_VERSION,
   DEFAULT_STRATEGY_CODE,
   STRATEGY_CODES,

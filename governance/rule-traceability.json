@@ -6825,6 +6825,97 @@
       ],
       "owner": "投资策略选股中心",
       "status": "local_verified"
+    },
+    {
+      "id": "SEL-PERSONAL-CANDIDATE-REF-001",
+      "title": "个人测算零候选复制：只写 run 与≤30 行成员，候选读取统一解析 supersedes_run_id 的冻结公共源批次；历史已复制批次只读兼容",
+      "implementation": {
+        "file": "server/repositories/stockSelectionRepository.js",
+        "symbol": "resolveCandidateRunId"
+      },
+      "tests": [
+        { "file": "server/test/stock-selection-b3-db.test.js", "pattern": "个人测算不得写入任何候选行" },
+        { "file": "server/test/stock-selection-b3-db.test.js", "pattern": "个人候选列表必须解析到源批次全部候选" },
+        { "file": "server/test/stock-selection-b3-db.test.js", "pattern": "旧已复制个人批次仍读自有候选" },
+        { "file": "server/test/stock-selection-b3.test.js", "pattern": "createSimulation 不得再物理复制候选" }
+      ],
+      "owner": "投资策略选股中心",
+      "status": "local_verified"
+    },
+    {
+      "id": "SEL-ELIMINATION-DETAIL-COMPACT-001",
+      "title": "淘汰股 detail 裁剪 11 年年度数组但保留规则状态/原因码/年度指纹与来源版本；TTM 血缘只存一份",
+      "implementation": {
+        "file": "server/repositories/stockSelectionRepository.js",
+        "symbol": "compactCandidateDetail"
+      },
+      "tests": [
+        { "file": "server/test/stock-selection-b3-db.test.js", "pattern": "淘汰股必须裁剪 11 年年度数组" },
+        { "file": "server/test/stock-selection-b3-db.test.js", "pattern": "淘汰规则原因必须保留" },
+        { "file": "server/test/stock-selection-b3-db.test.js", "pattern": "淘汰详情受控裁剪必须实测减小" },
+        { "file": "server/test/stock-selection-b3.test.js", "pattern": "重复的 detail.ttm.evidenceRef 必须去掉" }
+      ],
+      "owner": "投资策略选股中心",
+      "status": "local_verified"
+    },
+    {
+      "id": "SEL-HISTORICAL-REPLAY-GUARD-001",
+      "title": "淘汰详情按目标日/可见截止回查原表，只有重算年度指纹与冻结证据一致才允许历史回放，否则显式 verified=false 且不返回年份",
+      "implementation": {
+        "file": "server/services/stockSelectionService.js",
+        "symbol": "historicalAnnualReplayOf"
+      },
+      "tests": [
+        { "file": "server/test/stock-selection-b3-db.test.js", "pattern": "指纹一致时允许历史回放" },
+        { "file": "server/test/stock-selection-b3-db.test.js", "pattern": "事实版本变化后必须拒绝把今日数据当历史回放" },
+        { "file": "server/test/stock-selection-b3-db.test.js", "pattern": "版本不一致必须显式 false" }
+      ],
+      "owner": "投资策略选股中心",
+      "status": "local_verified"
+    },
+    {
+      "id": "SEL-DIVIDEND-RAW-PROTECTED-001",
+      "title": "dividends 原始报文受保护，不得进入 7–14 天常规清理；调用方显式传入也必须拒绝",
+      "implementation": {
+        "file": "server/services/storageRetention.js",
+        "symbol": "PROTECTED_RAW_DATASETS"
+      },
+      "tests": [
+        { "file": "server/test/stock-selection-b3-db.test.js", "pattern": "超过 7 天的 dividends 原文不得被常规清理删除" },
+        { "file": "server/test/stock-selection-b3.test.js", "pattern": "dividends 不得进入常规原文清理白名单" },
+        { "file": "server/test/storage-retention.test.js", "pattern": "受保护数据集被拒绝时不得执行任何仓储删除" }
+      ],
+      "owner": "任务治理",
+      "status": "local_verified"
+    },
+    {
+      "id": "SEL-SELECTION-RETENTION-TIER-001",
+      "title": "选股批次分级留存：weekly/quarterly、已发布及被发布事件/回测/supersedes/source_daily_run_id 引用的批次永久保留，只清理过期无引用的 daily/preview/shadow/中间 personal",
+      "implementation": {
+        "file": "server/repositories/storageRetentionRepository.js",
+        "symbol": "pruneStaleSelectionRuns"
+      },
+      "tests": [
+        { "file": "server/test/stock-selection-b3-db.test.js", "pattern": "批次必须永久保留" },
+        { "file": "server/test/stock-selection-b3-db.test.js", "pattern": "批次必须被清理" },
+        { "file": "server/test/stock-selection-b3-db.test.js", "pattern": "dry-run 不得删除任何批次" }
+      ],
+      "owner": "任务治理",
+      "status": "local_verified"
+    },
+    {
+      "id": "SEL-STORAGE-CAPACITY-METRICS-001",
+      "title": "容量三口径只读核算：pg_column_size 明细字节、表内死元组/可复用空间与明确不执行 VACUUM FULL",
+      "implementation": {
+        "file": "server/repositories/storageRetentionRepository.js",
+        "symbol": "measureSelectionStorage"
+      },
+      "tests": [
+        { "file": "server/test/stock-selection-b3-db.test.js", "pattern": "容量核算必须给出 pg_column_size 指标" },
+        { "file": "server/test/stock-selection-b3-db.test.js", "pattern": "容量核算不得安排 VACUUM FULL" }
+      ],
+      "owner": "任务治理",
+      "status": "local_verified"
     }
   ]
 }

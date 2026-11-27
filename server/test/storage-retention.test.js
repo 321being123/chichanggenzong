@@ -35,6 +35,7 @@ const { JOB_DEFINITIONS } = require('../services/jobDefinitions');
   // 3. 服务层参数边界校验与仓储调用契约
   const originalDeleteRaw = repository.deleteExpiredUnreferencedRawRecords;
   const originalDeleteRuns = repository.deleteStalePartialSelectionRuns;
+  const originalPruneRuns = repository.pruneStaleSelectionRuns;
   const calls = [];
   try {
     repository.deleteExpiredUnreferencedRawRecords = async (params) => {
@@ -45,6 +46,10 @@ const { JOB_DEFINITIONS } = require('../services/jobDefinitions');
       calls.push({ kind: 'selection', ...params });
       return 3;
     };
+    repository.pruneStaleSelectionRuns = async (params) => {
+      calls.push({ kind: 'graded', ...params });
+      return { dryRun: params.dryRun, retentionDays: {}, deleted: { daily: 1, personal: 0, ephemeral: 0 }, total: 1 };
+    };
 
     const resDefault = await storageRetention.purgeStorageData();
     assert.strictEqual(resDefault.ok, true);
@@ -53,21 +58,45 @@ const { JOB_DEFINITIONS } = require('../services/jobDefinitions');
     assert.strictEqual(resDefault.deletedRawRecords, 42);
     assert.strictEqual(resDefault.deletedSelectionRuns, 3);
     assert.deepStrictEqual(calls[0].datasetCodes, ['lixinger_response', 'income', 'balance', 'indicators', 'cashflow']);
+    assert.deepStrictEqual(resDefault.selectionRetentionDays, { daily: 30, personal: 14, ephemeral: 7 });
+    assert.strictEqual(resDefault.selectionRetention.total, 1);
+    assert.deepStrictEqual(resDefault.protectedDatasets, ['dividends']);
 
     // 边界夹紧：下限 1 天、上限 365/90 天
     const resClamped = await storageRetention.purgeStorageData({
       rawRetentionDays: 0,
       selectionPartialRetentionDays: 999,
+      selectionDailyRetentionDays: 0,
+      selectionPersonalRetentionDays: 9999,
+      selectionEphemeralRetentionDays: 0,
       rawBatchSize: 10,
       selectionBatchSize: 9999,
     });
     assert.strictEqual(resClamped.rawRetentionDays, 1);
     assert.strictEqual(resClamped.selectionPartialRetentionDays, 90);
-    assert.strictEqual(calls[2].batchSize, 100);
-    assert.strictEqual(calls[3].batchSize, 500);
+    assert.deepStrictEqual(resClamped.selectionRetentionDays, { daily: 1, personal: 365, ephemeral: 1 });
+    const rawCalls = calls.filter(item => item.kind === 'raw');
+    const partialCalls = calls.filter(item => item.kind === 'selection');
+    assert.strictEqual(rawCalls[1].batchSize, 100);
+    assert.strictEqual(partialCalls[1].batchSize, 500);
+
+    // 分红原文红线：显式传入 dividends 必须在任何删除前失败关闭。
+    const before = calls.length;
+    await assert.rejects(
+      () => storageRetention.purgeStorageData({ datasetCodes: ['income', 'dividends'] }),
+      error => error.code === 'RAW_RECORD_PROTECTED_DATASET'
+    );
+    assert.strictEqual(calls.length, before, '受保护数据集被拒绝时不得执行任何仓储删除');
+    assert.ok(!storageRetention.DEFAULT_PRUNE_DATASETS.includes('dividends'), 'dividends 不得进入常规清理白名单');
+
+    // dry-run 透传：只盘点，不删除。
+    await storageRetention.purgeStorageData({ selectionDryRun: true });
+    assert.strictEqual(calls[calls.length - 1].kind, 'graded');
+    assert.strictEqual(calls[calls.length - 1].dryRun, true);
   } finally {
     repository.deleteExpiredUnreferencedRawRecords = originalDeleteRaw;
     repository.deleteStalePartialSelectionRuns = originalDeleteRuns;
+    repository.pruneStaleSelectionRuns = originalPruneRuns;
   }
 
   console.log('storage-retention.test.js passed');

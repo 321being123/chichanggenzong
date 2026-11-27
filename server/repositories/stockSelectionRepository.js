@@ -3,6 +3,7 @@
 // 事实仍读 core/market/fundamental 原表，本文件的写操作只落 analytics.stock_selection_* 产物与 users 设置。
 'use strict';
 
+const crypto = require('crypto');
 const { pool } = require('../db/connection');
 const reportMetrics = require('../dataAccess/lixingerReportMetrics');
 const {
@@ -1748,6 +1749,70 @@ async function insertRun(tx, run) {
   return Number(rows[0].run_id);
 }
 
+/**
+ * 年度事实指纹（B3-2）：只对参与判定的字段做固定顺序规范化后哈希。
+ * 淘汰股裁剪 `annual.years` 时保存该指纹，详情页回查原表后只有重算指纹一致，
+ * 才能把今日数据当作该 run 冻结的当年事实展示；不一致必须显式标 `historicalReplayVerified:false`。
+ */
+function annualYearsDigest(years) {
+  const rows = (Array.isArray(years) ? years : []).map(row => [
+    Number(row.year),
+    row.profit === undefined ? null : row.profit,
+    row.profitCurrency || null,
+    row.dividend === undefined ? null : row.dividend,
+    row.dividendKnown === true,
+    Array.isArray(row.dividendCurrencies) ? row.dividendCurrencies.map(String) : [],
+    row.dividendCurrencyUnknown === true,
+    row.complete === true,
+    row.sourceVersion || null,
+    row.dividendBasis || null,
+  ]).sort((a, b) => Number(a[0]) - Number(b[0]));
+  return crypto.createHash('sha256').update(JSON.stringify(rows)).digest('hex');
+}
+
+// 淘汰状态（FAIL / NOT_APPLICABLE / RISK）不再进入排名与组合，11 年年度数组只作历史解释用。
+const ELIMINATED_FILTER_STATUSES = new Set(['FAIL', 'NOT_APPLICABLE', 'RISK']);
+
+/**
+ * 候选写入投影（B3-2）：
+ * - `detail.ttm.evidenceRef` 与 `detail.ttmEvidenceRef` 是同一份 TTM 血缘，去掉前者只留一份；
+ * - 淘汰股裁剪 `annual.years` 全量数组，但保留规则状态/原因码（`detail.rules`）、年度异常结论
+ *   （`detail.anomaly`）、年度指纹与逐年 `sourceVersion`，不丢"当时为何被淘汰"的证据；
+ * - 不修改传入对象：计算层后续还要用原始 detail 做输入指纹与发布质量裁决。
+ */
+function compactCandidateDetail(item) {
+  const detail = Object.assign({}, item.detail || {}, {
+    rules: item.rules || {},
+    anomaly: item.anomaly || null,
+    rankReady: item.rankReady !== false,
+    rankBlockReasons: item.rankBlockReasons || [],
+    riskStatus: item.riskStatus || null,
+    valuationStatus: item.valuationStatus === undefined ? null : item.valuationStatus,
+    valuationPassReason: item.valuationPassReason === undefined ? null : item.valuationPassReason,
+    ttmEvidenceRef: item.ttmEvidenceRef || null,
+    ttmStatusBasis: item.ttmStatusBasis || null,
+  });
+  detail.ttm = item.detail && item.detail.ttm ? Object.assign({}, item.detail.ttm) : null;
+  if (detail.ttm) delete detail.ttm.evidenceRef;
+  const annual = detail.annual;
+  if (ELIMINATED_FILTER_STATUSES.has(String(item.filterStatus))
+    && annual && Array.isArray(annual.years) && annual.years.length) {
+    const sourceVersions = {};
+    annual.years.forEach(row => {
+      if (row && row.year !== undefined && row.sourceVersion) sourceVersions[String(row.year)] = row.sourceVersion;
+    });
+    detail.annual = Object.assign({}, annual, {
+      yearsTrimmed: true,
+      yearCount: annual.years.length,
+      yearRange: [Number(annual.years[0].year), Number(annual.years[annual.years.length - 1].year)],
+      yearsDigest: annualYearsDigest(annual.years),
+      sourceVersions,
+      years: [],
+    });
+  }
+  return detail;
+}
+
 async function insertCandidates(tx, runId, candidates) {
   const exec = executorOf(tx);
   const chunkSize = 200;
@@ -1800,21 +1865,9 @@ async function insertCandidates(tx, runId, candidates) {
         item.selectionOrder === undefined ? null : item.selectionOrder,
         item.filterStatus, item.dataQualityStatus || 'partial',
         JSON.stringify(item.exclusionReasons || []),
-        // 规则结果、原始事实副本与年度异常平铺保存，页面按 detail.rules / detail.annual 直接读取。
-        JSON.stringify(Object.assign({}, item.detail || {}, {
-          rules: item.rules || {},
-          anomaly: item.anomaly || null,
-          rankReady: item.rankReady !== false,
-          // V2：排名受阻原因必须随快照持久化（方案 27.4），不能只留内存字段。
-          rankBlockReasons: item.rankBlockReasons || [],
-          riskStatus: item.riskStatus || null,
-          valuationStatus: item.valuationStatus === undefined ? null : item.valuationStatus,
-          valuationPassReason: item.valuationPassReason === undefined ? null : item.valuationPassReason,
-          ttm: item.detail && item.detail.ttm ? item.detail.ttm : null,
-          // TTM 血缘证据（三段报表 + 公式）必须随快照持久化，不能只留一个状态字符串。
-          ttmEvidenceRef: item.ttmEvidenceRef || null,
-          ttmStatusBasis: item.ttmStatusBasis || null,
-        })),
+        // 规则结果、原始事实副本与年度异常平铺保存，页面按 detail.rules / detail.annual 直接读取；
+        // 淘汰股按 compactCandidateDetail 受控裁剪，纯冗余与全量年度数组不再重复占用 TOAST。
+        JSON.stringify(compactCandidateDetail(item)),
         item.historicalPbMin === undefined ? null : item.historicalPbMin,
         item.pbPositiveExtremaRatio === undefined ? null : item.pbPositiveExtremaRatio,
         item.pbPeProduct === undefined ? null : item.pbPeProduct,
@@ -2256,9 +2309,37 @@ const HK_NAME_FALLBACK = `
          ORDER BY q.fetched_at DESC LIMIT 1
       ) q ON true`;
 
+// 个人零复制批次（B3-1）：候选行属于 `supersedes_run_id` 指向的公共源批次。
+// 只对显式标记 `candidatesRefMode='source_run'`、或自有候选行数为 0 且存在来源批次的 personal 生效；
+// 历史已物理复制候选的旧 personal 批次仍读自己的行，不做迁移，只读回放语义不变。
+const EFFECTIVE_CANDIDATE_RUN_SQL = `(CASE
+      WHEN r.run_kind = 'personal'
+       AND (COALESCE(r.input_manifest->>'candidatesRefMode','') = 'source_run'
+         OR (r.supersedes_run_id IS NOT NULL
+             AND NOT EXISTS (SELECT 1 FROM analytics.stock_selection_candidates own_c WHERE own_c.run_id = r.run_id)))
+      THEN r.supersedes_run_id ELSE r.run_id END)`;
+
+async function resolveCandidateRunId(runId, tx) {
+  const exec = executorOf(tx);
+  const { rows } = await exec(`
+    SELECT r.run_id, r.run_kind, r.supersedes_run_id,
+           COALESCE(r.input_manifest->>'candidatesRefMode','') AS candidates_ref_mode,
+           EXISTS (SELECT 1 FROM analytics.stock_selection_candidates own_c WHERE own_c.run_id = r.run_id) AS has_own_candidates
+      FROM analytics.stock_selection_runs r
+     WHERE r.run_id = $1`, [runId]);
+  const row = rows[0];
+  if (!row) return Number(runId);
+  if (row.run_kind !== 'personal' || !row.supersedes_run_id) return Number(runId);
+  if (row.candidates_ref_mode === 'source_run' || row.has_own_candidates === false) {
+    return Number(row.supersedes_run_id);
+  }
+  return Number(runId);
+}
+
 async function listCandidates({ runId, limit, offset, filterStatus, orderBy }, tx) {
   const exec = executorOf(tx);
-  const params = [runId];
+  const candidateRunId = await resolveCandidateRunId(runId, tx);
+  const params = [candidateRunId];
   let where = 'WHERE c.run_id = $1';
   if (filterStatus) { params.push(filterStatus); where += ` AND c.filter_status = $${params.length}`; }
   params.push(limit, offset);
@@ -2286,6 +2367,7 @@ async function listCandidates({ runId, limit, offset, filterStatus, orderBy }, t
 /** 来源快照中的行业完整身份及受影响候选数；用于个人排除的可审计映射提示。 */
 async function listIndustryIdentityCounts(runId, tx) {
   const exec = executorOf(tx);
+  const candidateRunId = await resolveCandidateRunId(runId, tx);
   const { rows } = await exec(`
     SELECT industry_code AS code, MIN(industry_name) AS name,
            industry_system AS system, industry_version AS version,
@@ -2293,14 +2375,15 @@ async function listIndustryIdentityCounts(runId, tx) {
       FROM analytics.stock_selection_candidates
      WHERE run_id = $1 AND industry_code IS NOT NULL
      GROUP BY industry_system, industry_version, industry_code
-     ORDER BY industry_system NULLS LAST, industry_version NULLS LAST, industry_code`, [runId]);
+     ORDER BY industry_system NULLS LAST, industry_version NULLS LAST, industry_code`, [candidateRunId]);
   return rows;
 }
 
 async function findCandidate({ runId, code }, tx) {
   const exec = executorOf(tx);
+  const candidateRunId = await resolveCandidateRunId(runId, tx);
   const { rows } = await exec(`
-    SELECT * FROM analytics.stock_selection_candidates WHERE run_id = $1 AND code = $2 LIMIT 1`, [runId, code]);
+    SELECT * FROM analytics.stock_selection_candidates WHERE run_id = $1 AND code = $2 LIMIT 1`, [candidateRunId, code]);
   return rows[0] || null;
 }
 
@@ -2318,7 +2401,10 @@ async function listMembers(runId, tx) {
            c.pb_pe_product, c.historical_pb_min, c.historical_pb_max, c.pb_positive_extrema_ratio,
            c.valuation_status, c.valuation_pass_reason, c.ttm_profit_status
       FROM analytics.stock_selection_portfolio_members m
-      JOIN analytics.stock_selection_candidates c ON c.run_id = m.run_id AND c.instrument_id = m.instrument_id
+      JOIN analytics.stock_selection_runs r ON r.run_id = m.run_id
+      JOIN analytics.stock_selection_candidates c
+        ON c.run_id = ${EFFECTIVE_CANDIDATE_RUN_SQL}
+       AND c.instrument_id = m.instrument_id
       ${HK_NAME_FALLBACK}
      WHERE m.run_id = $1
      ORDER BY m.slot_no`, [runId]);
@@ -2847,7 +2933,9 @@ async function previousPublishedMembers(options, tx) {
            m.instrument_id, c.code, c.name, r.quarter, r.as_of_date::text AS as_of_date
       FROM analytics.stock_selection_portfolio_members m
       JOIN analytics.stock_selection_runs r ON r.run_id = m.run_id
-      JOIN analytics.stock_selection_candidates c ON c.run_id = m.run_id AND c.instrument_id = m.instrument_id
+      JOIN analytics.stock_selection_candidates c
+        ON c.run_id = ${EFFECTIVE_CANDIDATE_RUN_SQL}
+       AND c.instrument_id = m.instrument_id
      WHERE m.run_id = $1`, [previous.run_id]);
   return { run: previous, rows };
 }
@@ -2880,7 +2968,9 @@ async function previousPersonalMembers(options, tx) {
            m.instrument_id, c.code, c.name, r.quarter, r.as_of_date::text AS as_of_date
       FROM analytics.stock_selection_portfolio_members m
       JOIN analytics.stock_selection_runs r ON r.run_id = m.run_id
-      JOIN analytics.stock_selection_candidates c ON c.run_id = m.run_id AND c.instrument_id = m.instrument_id
+      JOIN analytics.stock_selection_candidates c
+        ON c.run_id = ${EFFECTIVE_CANDIDATE_RUN_SQL}
+       AND c.instrument_id = m.instrument_id
      WHERE m.run_id = $1`, [previous.run_id]);
   return { run: previous, rows };
 }
@@ -2933,9 +3023,9 @@ async function latestPublishedRun({ market, strategyId, periodType }, tx) {
 }
 
 /**
- * 个人测算复制源批次的候选快照（保留同一排名，不重新取数）。
- * 必须复制**全部判定证据**（三项名次、V2 估值/极值/TTM/覆盖列），
- * 否则个人结果会丢掉源批次的名次与原因，页面只能显示"无解释的空行"。
+ * 个人测算复制源批次的候选快照（历史机制，B3-1 起 createSimulation 不再调用）。
+ * 保留给回滚/旧数据修复路径；新个人批次只写 run 与 members，候选按 `candidatesRefMode='source_run'`
+ * 读取 `supersedes_run_id` 指向的源批次，不为每个个人结果物理复制全市场候选。
  */
 async function copyCandidates({ sourceRunId, targetRunId }, tx) {
   const exec = executorOf(tx);
@@ -2968,6 +3058,7 @@ async function copyCandidates({ sourceRunId, targetRunId }, tx) {
  */
 async function listCandidatesForProjection({ runId, batchSize = 1000 }, tx) {
   const exec = executorOf(tx);
+  const candidateRunId = await resolveCandidateRunId(runId, tx);
   const rows = [];
   let lastInstrumentId = 0;
   for (;;) {
@@ -2981,7 +3072,7 @@ async function listCandidatesForProjection({ runId, batchSize = 1000 }, tx) {
         FROM analytics.stock_selection_candidates
        WHERE run_id = $1 AND instrument_id > $2
        ORDER BY instrument_id
-       LIMIT $3`, [runId, lastInstrumentId, batchSize]);
+       LIMIT $3`, [candidateRunId, lastInstrumentId, batchSize]);
     if (!page.rows.length) break;
     page.rows.forEach(row => rows.push(row));
     lastInstrumentId = Number(page.rows[page.rows.length - 1].instrument_id);
@@ -3001,6 +3092,7 @@ module.exports = {
   publishRun, markRunFailure,
   findPublication, listPublicationEvents, markPublicationVisible, loadPublicationReplayEvidence,
   listRuns, findRun, findRunForUpdate, listCandidates, listIndustryIdentityCounts, findCandidate, listMembers, latestPublishedRun, copyCandidates,
+  resolveCandidateRunId, compactCandidateDetail, annualYearsDigest,
   hasPeriodRun,
   hasNoPeriodRunAtAll,
   listCandidatesForProjection,

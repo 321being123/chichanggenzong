@@ -494,13 +494,18 @@ async function main() {
       assert.strictEqual(rebuilds, 1,
         'buildAnnualYears 只允许在 annualFactsOf 内调用 1 次，第二处会让登记等字段只生效一路，实际 ' + rebuilds + ' 次');
       // 两处消费者必须传同一套原始行字段（含上市日期）：任一处漏传就会重演「只生效一路」。
+      // B3-2 起追加第三处只读消费者：淘汰详情历史回放复用同一 annualFactsOf，不得另建年度数组。
       const annualCalls = (src.match(/= annualFactsOf\(/g) || []).length;
-      assert.strictEqual(annualCalls, 2,
-        '年度事实只允许两处消费（三项名次 + 年度异常），实际 ' + annualCalls + ' 处');
+      assert.strictEqual(annualCalls, 3,
+        '年度事实只允许两处计算消费（三项名次 + 年度异常）+ 一处历史回放，实际 ' + annualCalls + ' 处');
       assert.ok(src.includes('annualFactsOf(profits, annualDividends, row.code, ctx.sourceGaps, row.list_date)'),
         '三项名次必须把上市日期传进年度事实');
       assert.ok(src.includes('annualFactsOf(profitRows, dividendRows, row.code, ctx.sourceGaps, row.list_date)'),
         '年度异常必须与名次用同一套参数（含上市日期）');
+      // 历史回放只能复用同一构造器；它只消费 years，因此不要求 list_date，但绝不能再造一份年度数组。
+      const replayBlock = src.slice(src.indexOf('async function historicalAnnualReplayOf'), src.indexOf('async function getStockDetail'));
+      assert.ok(replayBlock.includes('annualFactsOf('), '历史回放必须复用 annualFactsOf');
+      assert.ok(!replayBlock.includes('buildAnnualYears('), '历史回放不得另建年度数组构造器');
       // 年度异常不得再从 evaluated 取字段：它是规则输出，V1/V2 结构不同，取一次就漏一路。
       const anomalyBlock = src.slice(src.indexOf('年度异常独立判定'), src.indexOf('const ranking = isV2'));
       assert.ok(anomalyBlock.includes('universe.forEach'),

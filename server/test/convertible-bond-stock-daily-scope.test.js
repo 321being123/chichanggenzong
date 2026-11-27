@@ -49,7 +49,7 @@ assert.ok(datasets.includes("ts_code: group.join(','), trade_date: trade"), '数
 assert.ok(datasets.includes('const covered = new Set(officialRows.map(row => row.ts_code))'),
   '估值必须剔除主来源已覆盖的证券，避免同一证券同一天两行来源');
 assert.ok(datasets.includes("source_code: 'tushare'"), '回退行必须自带来源标签');
-assert.ok(adapter.includes("type: 'ex_rights'"), '官方日线必须显式取不复权序列');
+assert.ok(adapter.includes("adjustment = 'none'") && adapter.includes("'ex_rights'"), '官方日线默认必须显式取不复权序列');
 assert.ok(adapter.includes('/ 100'), '成交量股→手换算缺失');
 assert.ok(adapter.includes('/ 1000'), '成交额元→千元换算缺失');
 

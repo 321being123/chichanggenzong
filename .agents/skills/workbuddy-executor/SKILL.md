@@ -30,7 +30,7 @@ description: Use this skill when the user mentions workbuddy, WorkBuddy or CodeB
 
 - 派发前完成仓库规定的必读项，核对任务归属和已有实现。提供用户现象、预期结果、手头已有的证据、相关入口、权限边界和验收条件。确认范围足以开始时立即派发，把源码定位、复现、根因分析和局部方案留给 WorkBuddy。等待期间可做授权范围内的只读取证和验收准备。
 - 边界清楚时，一次委派 WorkBuddy 排查、提出并实施方案、跑定向回归、更新任务卡和权威文档。存在需要裁定的业务口径、鉴权、迁移或共享链路影响时，先委派它调查并提交证据、候选方案和待裁定项。协调 Agent 只裁定关键分歧，再用原会话继续实现。用户明确限定方案时按该方案派发。
-- 只有协调 Agent 能读取的生产反馈、权限或敏感环境证据，由协调 Agent 在授权内核查，向 WorkBuddy 提供完成排查所需的脱敏证据。WorkBuddy 给出需要核实的假设和最小查询范围。复发问题由 WorkBuddy 对照既有事故与实际调用链，覆盖原失败入口和同类消费者。回归同时覆盖既有入口和失败入口，例如退市固定价案例同时核对总览、完整账户、导出和净值。[INC-0053](../../../docs/incidents/INC-0053-退市固定价未进入当前估值.md)
+- 只有协调 Agent 能读取的生产反馈、权限或敏感环境证据，由协调 Agent 在授权内核查，向 WorkBuddy 提供完成排查所需的脱敏证据。WorkBuddy 给出需要核实的假设和最小查询范围。复发问题由 WorkBuddy 对照既有事故与实际调用链，覆盖原失败入口和同类消费者。
 - WorkBuddy 或 CLI 报告具体阻塞时，先按原因补证据或续跑。仍无法委派且协调 Agent 有权处理时，只接手受阻的最小一步，记录原因和范围，其余开发继续由 WorkBuddy 执行。
 
 ### Step 2：派发执行（Executor）
@@ -56,11 +56,22 @@ try {
 - `acceptEdits` 是自动接受编辑模式。本机 CodeBuddy CLI 2.185.0 曾在无头会话仍对 `Edit` / `Write` 要求审批，报 `requires approval but permission prompts are not available in non-interactive mode`，CLI 甚至可能退出码为 0。遇到该提示先查 `git status` / `git diff`，再用上述无头方式续跑。
 - `-y` 为本次调用跳过常规审批，高风险命令和受管策略仍可能挡住。官方用户级 `settings.json` 支持 `permissions.defaultMode = "bypassPermissions"`，会影响其他会话。项目流程使用单次参数即可，保持全局设置原样。若受管策略禁止绕过或仍要求审批，记录具体阻塞，保留现有授权边界。详见 [CodeBuddy 权限模式](https://www.codebuddy.cn/docs/cli/permission-modes)和[设置配置](https://www.codebuddy.ai/docs/zh/cli/settings)。
 
-### Step 3：证据交接与独立验收
+### Step 3：证据交接与独立验收（必须加载核查 Skill）
 
-1. WorkBuddy 按事项交回根因及文件位置、方案、实际改动、测试命令与结果、文档位置和未验项。记录会话 ID（可得时）及协调 Agent 实际承担的步骤。交付时按事实说明分工，只有实现由 WorkBuddy 完成时，就说明它负责实现。完整日志保留在原位置，摘要提供定位信息。
-2. 协调 Agent 独立检查 `git status`、差异清单和关键 diff，核对实现是否符合业务规则、是否越界，以及关键契约、权限、数据质量和失败分支是否保持正确。检查相应反例，确认测试没有跳过、弱化断言或吞掉异常。遇到证据冲突时再展开相关源码和日志。
-3. 协调 Agent 独立复跑能证明原问题修复和关键边界的测试。WorkBuddy 已通过的其余专项，按仓库规则核对当前代码树、测试环境和结果证据后采用。影响边界不清、代码在测试后变化、证据不全或出现回归时，补跑受影响的检查。
+在验收 WorkBuddy 交回的结果前，协调 Agent **必须先读取并加载对应核查 Skill**，严禁仅凭 WorkBuddy 的文字汇报直接放行：
+
+- **必加载核心核查 Skill（每次独立验收均加载）**：
+  - 项目交付核查与复验（Codex 编写）：`<repo>\.agents\skills\delivery-acceptance\SKILL.md`（若当前分支尚未合入 `codex/weekly-knowledge-1127`，兜底读取 `E:\CodexData\.codex\worktrees\weekly-knowledge-1127\portfolio-server\.agents\skills\delivery-acceptance\SKILL.md`）
+  - `C:\Users\戴存在\.workbuddy\skills\verification-before-completion\SKILL.md`（新鲜验证与证据门禁：未亲自复跑最新命令并核对输出前禁止宣称通过）
+  - `C:\Users\戴存在\.workbuddy\skills\requesting-code-review\SKILL.md`（独立 Diff / 契约 / 边界审查）
+- **按场景叠加加载的专项核查 Skill**：
+  - 文档与任务卡交接：`<repo>\.agents\skills\site-doc-handoff\SKILL.md`
+  - 线上发布与反馈回写闭环：`<repo>\.agents\skills\site-release-closeout\SKILL.md`
+  - 生产只读/线上配置与运行核查：`D:\Users\存在小站\.codebuddy\skills\production-audit\SKILL.md`
+
+1. WorkBuddy 按事项交回根因及文件位置、方案、实际改动、测试命令与结果、文档位置和未验项。记录会话 ID（可得时）及协调 Agent 实际承担的步骤。交付时按事实说明分工，只有实现由 WorkBuddy 完成时，就说明它负责实现。
+2. **加载核查 Skill 执行 Diff 与契约审查**：协调 Agent 独立检查 `git status`、差异清单和关键 diff，逐项核对实现是否符合业务规则、是否越界，以及关键契约、权限、SQL 参数、CSS 层叠/移动端适配、数据质量和失败分支是否保持正确。检查相应反例，确认测试没有跳过、弱化断言或吞掉异常。遇到证据冲突时再展开相关源码和日志。
+3. **加载核查 Skill 执行新鲜验证（Evidence Before Claims）**：协调 Agent 必须在当前代码树上**亲自重新运行**能证明原问题修复、关键边界与门禁（如相关专项回归、`npm.cmd run check:knowledge`、`npm.cmd run check:date`）的命令，并核对完整输出与退出码。WorkBuddy 已通过的其余专项，按仓库规则核对当前代码树、测试环境和结果证据后采用；若代码在测试后有改动、影响边界不清、证据不全或出现回归，必须补跑受影响的检查。
 
 ### Step 4：打回重改（Loop）
 若阶段验收不通过（回归测试失败、diff 存在上述隐患、不符合规范）：

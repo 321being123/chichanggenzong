@@ -2,6 +2,50 @@
 // 职责：只做三表渲染与视图切换；取数、缓存与请求序号在 presenters/stock-analysis-statements-presenter.js。
 // 约定：本文件不直接发请求（静态门禁 frontend_api_client 校验），也不决定何时采集。
 
+// #114：带虚线说明的科目文案。语义只描述通用列报含义，具体归属仍以当期报表列报和来源口径为准。
+var stockAnalysisStatementFieldHelpCodes = {
+  'ps.toi': '营业总收入：企业日常经营活动形成的收入总额，通常由营业收入、利息收入、已赚保费、手续费及佣金收入等按业务类型组成。',
+  'ps.oi': '营业收入：企业日常经营活动形成的收入，不含营业外收入；具体构成以报表列报为准。',
+  'ps.ii': '利息收入：金融、保险等业务按实际利率法确认的利息收入；非金融企业通常不单独列示。',
+  'ps.ep': '已赚保费：保险公司当期已赚取的保费收入，通常为保费收入减去未到期责任准备金变动后的金额。',
+  'ps.faci': '手续费及佣金收入：金融、保险等业务收取的手续费及佣金收入；非金融企业通常不单独列示。',
+  'ps.toc': '营业总成本：营业成本及税金、销售、管理、研发、财务等经营费用的合计，具体构成以报表列报为准。',
+  'ps.oc': '营业成本：企业日常经营活动发生的成本，通常与营业收入配比确认。',
+  'ps.ie': '利息支出：企业为筹资及经营业务发生的利息支出；金融企业通常计入营业成本或利息支出，非金融企业多见于财务费用。',
+  'ps.face': '手续费及佣金支出：金融、保险等业务发生的手续费及佣金支出；非金融企业通常不单独列示。',
+  'ps.s': '退保金：保险公司按规定向保单持有人退还的保费；非保险企业通常不适用。',
+  'ps.ce': '保险合同赔付支出：保险公司按保险合同约定支付的赔款及给付；非保险企业通常不适用。',
+  'ps.iiicr': '提取保险责任准备金净额：保险公司按规定提取的保险责任准备金扣除转回后的净额；非保险企业通常不适用。',
+  'ps.phdrfpip': '保单红利支出：保险公司按合同约定向保单持有人分配的保单红利支出；非保险企业通常不适用。',
+  'ps.rie': '分保费用：保险公司分出业务时支付给再保险人的分保费用；非保险企业通常不适用。',
+  'ps.tas': '税金及附加：企业经营活动发生的消费税、城市维护建设税、资源税、教育费附加等税费。',
+  'ps.se': '销售费用：企业销售商品、提供劳务过程中发生的费用，包括运输、装卸、广告、销售人员薪酬等。',
+  'ps.ae': '管理费用：企业为组织和管理生产经营活动发生的费用，包括管理人员薪酬、办公费、折旧摊销等。',
+  'ps.rade': '研发费用：企业进行研究与开发活动发生的费用化支出；资本化部分通常不计入本项目。',
+  'ps.fe': '财务费用：企业为筹集生产经营所需资金等发生的筹资费用，包括利息支出（减利息收入）、汇兑损益及相关手续费等；具体构成以报表列报为准。',
+  'ps.ieife': '利息费用：财务费用中归属于利息支出的部分，通常作为“财务费用”的其中项列示。',
+  'ps.iiife': '利息收入：财务费用中冲减利息支出的利息收入，通常作为“财务费用”的其中项列示。',
+  'ps.oic': '其他收益：与企业日常活动相关、但不宜计入营业收入或投资收益的政府补助等收益。',
+  'ps.ivi': '投资收益：企业对外投资取得的收益或发生的损失，包括联营合营企业投资收益、金融资产处置收益等。',
+  'ps.iifaajv': '对联营企业及合营企业的投资收益：按权益法确认的联营、合营企业投资损益，通常作为“投资收益”的其中项列示。',
+  'ps.iftdofamaac': '以摊余成本计量的金融资产终止确认产生的投资收益：处置或转移该类金融资产时确认的投资收益，通常作为“投资收益”的其中项列示。',
+  'ps.ei': '汇兑收益：外币货币性项目折算产生的汇兑收益，损失以负号或“汇兑损失”列示。',
+  'ps.op': '营业利润：营业收入减去营业成本、税金及附加、期间费用、减值损失，加上其他收益、投资收益等后的经营成果。',
+  'ps.noi': '营业外收入：与企业日常经营活动无直接关系的各项收入，如非流动资产毁损报废利得、政府补助等。',
+  'ps.ncadarg': '非流动资产毁损报废利得：非流动资产毁损、报废清理产生的净收益，通常作为“营业外收入”的其中项列示。',
+  'ps.noe': '营业外支出：与企业日常经营活动无直接关系的各项支出，如非流动资产毁损报废损失、捐赠支出等。',
+  'ps.ncadarl': '非流动资产毁损报废损失：非流动资产毁损、报废清理产生的净损失，通常作为“营业外支出”的其中项列示。',
+  'ps.tp': '利润总额：营业利润加上营业外收入、减去营业外支出后的利润，尚未扣除所得税费用。',
+  'ps.ite': '所得税费用：企业按税法规定确认的当期所得税和递延所得税费用。',
+  'ps.np': '净利润：利润总额扣除所得税费用后的净利润，包含归属于母公司股东和少数股东的损益。',
+};
+
+function stockAnalysisStatementFieldHelpText(field) {
+  if (!field) return '';
+  if (field.code && stockAnalysisStatementFieldHelpCodes[field.code]) return stockAnalysisStatementFieldHelpCodes[field.code];
+  return '';
+}
+
 function stockAnalysisSwitchView(view) {
   var statements = ['balance','income','cashflow'].includes(view);
   if (!statements) stockStatementState.requestToken++;
@@ -324,6 +368,10 @@ function stockAnalysisRenderStatements(data) {
   function hasFiniteNum(val) {
     return val != null && Number.isFinite(Number(val));
   }
+  // #112：只有“非零且有效”的原值/比较值才能证明该行有业务内容；0 与 0.00% 都不算。
+  function hasNonZeroNum(val) {
+    return hasFiniteNum(val) && Number(val) !== 0;
+  }
   function isAbnormalStatus(status, reason) {
     if (!status || status === 'available' || status === 'source_not_disclosed') return false;
     return reason !== 'comparable_period_missing' && reason !== 'comparable_value_missing' && reason !== 'zero_denominator' && reason !== 'source_not_disclosed';
@@ -336,22 +384,30 @@ function stockAnalysisRenderStatements(data) {
       var field = entry.field || byCode[entry.code];
       var code = entry.code || (field && field.code) || ('__idx_' + idx);
       fieldEntriesByCode[code] = entry;
-      var keep = entry.row_role === 'total' || Boolean(entry.is_group_rep) || (field && Array.isArray(field.values) && field.values.some(function(item) {
-        if (!item) return false;
-        if (hasFiniteNum(item.value) && Number(item.value) !== 0) return true;
-        if (dualStickyCols && hasFiniteNum(item.single_value) && Number(item.single_value) !== 0) return true;
-        if (showYoy && (hasFiniteNum(item.yoy) || hasFiniteNum(item.change))) return true;
-        if (showQoq && hasFiniteNum(item.qoq)) return true;
-        if (dualStickyCols && ((showYoy && hasFiniteNum(item.single_yoy)) || (showQoq && hasFiniteNum(item.single_qoq)))) return true;
-        if (item.status && item.status !== 'available' && item.status !== 'source_not_disclosed') return true;
+      // 行是否保留由“是否有实质内容”决定：
+      // - 总计/分组代表行始终保留；
+      // - 任一期间有非零原值或非零同比/环比，保留；
+      // - 全 null 且有采集不完整/不可比等异常状态，保留并展示原因；
+      // - 原值全为 0（即使比较值为 0 或比较状态异常）不保留（#112）。
+      var substantive = false;
+      var anyOriginal = false;
+      var abnormal = false;
+      (field && Array.isArray(field.values) ? field.values : []).forEach(function(item) {
+        if (!item) return;
+        if (hasFiniteNum(item.value) || (dualStickyCols && hasFiniteNum(item.single_value))) anyOriginal = true;
+        if (hasNonZeroNum(item.value) || (dualStickyCols && hasNonZeroNum(item.single_value))) substantive = true;
+        if (showYoy && (hasNonZeroNum(item.yoy) || hasNonZeroNum(item.change))) substantive = true;
+        if (showQoq && hasNonZeroNum(item.qoq)) substantive = true;
+        if (dualStickyCols && ((showYoy && hasNonZeroNum(item.single_yoy)) || (showQoq && hasNonZeroNum(item.single_qoq)))) substantive = true;
+        if (item.status && item.status !== 'available' && item.status !== 'source_not_disclosed') abnormal = true;
         var yoyStatus = item.yoy_status !== undefined ? item.yoy_status : item.comparison_status;
         var yoyReason = item.yoy_reason !== undefined ? item.yoy_reason : item.comparison_reason;
-        if (showYoy && isAbnormalStatus(yoyStatus, yoyReason)) return true;
+        if (showYoy && isAbnormalStatus(yoyStatus, yoyReason)) abnormal = true;
         var qoqStatus = item.qoq_status !== undefined ? item.qoq_status : (compareMode === 'qoq' ? item.comparison_status : null);
         var qoqReason = item.qoq_reason !== undefined ? item.qoq_reason : (compareMode === 'qoq' ? item.comparison_reason : null);
-        if (showQoq && isAbnormalStatus(qoqStatus, qoqReason)) return true;
-        return false;
-      }));
+        if (showQoq && isAbnormalStatus(qoqStatus, qoqReason)) abnormal = true;
+      });
+      var keep = entry.row_role === 'total' || Boolean(entry.is_group_rep) || substantive || (!anyOriginal && abnormal);
       if (keep) {
         keptCodes[code] = true;
       }
@@ -388,6 +444,12 @@ function stockAnalysisRenderStatements(data) {
     }
     return filtered;
   })(model.rows, model.byCode);
+  // #110/#113：父行本身是普通科目（不是结构小计）时，用中性父级样式与子项区分，
+  // 避免「财务费用 / 营业外收入」被误读成与「营业利润 / 利润总额」同级的小计。
+  var parentCodes = {};
+  model.rows.forEach(function(entry) {
+    if (entry.kind === 'field' && entry.parent_code) parentCodes[entry.parent_code] = true;
+  });
   var commonComparisonReasons = {};
 
   function renderChangeCell(rawVal, unit, source, status, reason, headersAttr, extraCls) {
@@ -405,8 +467,9 @@ function stockAnalysisRenderStatements(data) {
     if (entry.kind === 'section') {
       var secDepth = Math.max(0, Math.min(4, Number(entry.depth) || 0));
       var groupAttr = entry.group_id ? ' data-group-id="' + escapeHtml(entry.group_id) + '"' : '';
-      // 整行分组标题独占整行：不再被固定首列宽度挤压折行（#105）。
-      return '<tr class="statement-section statement-section-' + escapeHtml(data.type) + ' statement-role-section statement-level-' + secDepth + '" data-statement-level="' + (Number(entry.depth) || 0) + '"' + groupAttr + '><th scope="row" colspan="' + columnCount + '" class="statement-section-cell statement-section-title">' + escapeHtml(entry.label) + '</th></tr>';
+      // 整行分组标题独占整行：不再被固定首列宽度挤压折行（#105/#111）。
+      // 一级活动分组、二级「现金流入/流出」和科目行使用不同层级样式，文字本身强制不折行。
+      return '<tr class="statement-section statement-section-' + escapeHtml(data.type) + ' statement-role-section statement-level-' + secDepth + '" data-statement-level="' + (Number(entry.depth) || 0) + '"' + groupAttr + '><th scope="row" colspan="' + columnCount + '" class="statement-section-cell statement-section-title"><span class="statement-section-text">' + escapeHtml(entry.label) + '</span></th></tr>';
     }
     var field = entry.field || model.byCode[entry.code];
     if (!field) return '';
@@ -459,6 +522,11 @@ function stockAnalysisRenderStatements(data) {
     });
     var relationReason = stockAnalysisStatementRelationReason(entry.relation_status);
     if (relationReason) statusMessages.push('层级关系：' + relationReason);
+    // #114：科目含义放在说明最前；数据状态/层级降级原因随后，悬停、键盘聚焦和点按都能读到。
+    // 只为已有点击说明的行、以及金融/保险专项科目补语义说明，避免给所有正常科目新增下划线。
+    var fieldHelp = stockAnalysisStatementFieldHelpText(field);
+    var alwaysHelp = /^ps\.(ie|face|iiicr|phdrfpip|s|ce|rie)$/.test(String(field.code || ''));
+    if (fieldHelp && (statusMessages.length || alwaysHelp)) statusMessages.unshift(fieldHelp);
 
     var cells = (field.values || []).map(function(item, periodIndex) {
       var isYearEnd = yearGroups.some(function(g, gi) { return gi < yearGroups.length - 1 && g.endIdx === periodIndex; });
@@ -482,8 +550,10 @@ function stockAnalysisRenderStatements(data) {
     var rowRole = entry.row_role || 'line';
     var parentCode = entry.parent_code || null;
     var parentField = parentCode && model.byCode[parentCode] ? model.byCode[parentCode] : null;
+    var hasChildren = Boolean(parentCodes[field.code]);
     var rowClass = 'statement-item statement-role-' + escapeHtml(rowRole) + ' statement-level-' + visualLevel
       + (rowRole === 'total' ? ' statement-parent statement-total' : rowRole === 'subtotal' ? ' statement-parent' : '')
+      + (hasChildren ? ' statement-has-children' : '')
       + (entry.is_group_rep ? ' statement-section-total' : '');
     var branch = parentCode ? '<span class="statement-branch" aria-hidden="true">└</span>' : '';
     var parentAttr = parentCode ? ' data-parent-code="' + escapeHtml(parentCode) + '"' : '';
@@ -494,12 +564,15 @@ function stockAnalysisRenderStatements(data) {
     var unit = keepUnit ? '<small class="statement-unit">' + escapeHtml(keepUnit) + '</small>' : '';
     var srParent = parentField ? '<span class="statement-sr-parent">（隶属：' + escapeHtml(parentField.label) + '）</span>' : '';
     var labelHtml = statusMessages.length
-      ? '<details class="statement-label-tip"><summary class="statement-label statement-label-has-tip" aria-label="' + escapeHtml(field.label + '：查看状态与口径说明') + '">' + escapeHtml(field.label) + '</summary><div class="statement-label-tip-body">' + escapeHtml(statusMessages.join('；')) + '</div></details>'
+      ? '<details class="statement-label-tip"><summary class="statement-label statement-label-has-tip" aria-label="' + escapeHtml(field.label + '：查看科目说明与数据状态') + '">' + escapeHtml(field.label) + '</summary><div class="statement-label-tip-body">' + escapeHtml(statusMessages.join('；')) + '</div></details>'
       : '<span class="statement-label">' + escapeHtml(field.label) + '</span>';
     var basisCell = dualStickyCols ? '<th scope="row" class="statement-col-basis">当期</th>' : '';
-    var primaryTr = '<tr class="' + rowClass + '" data-statement-level="' + depth + '"' + roleAttr + groupAttr + codeAttr + parentAttr + '><th scope="row" class="statement-col-name">' + branch + labelHtml + srParent + unit + '</th>' + basisCell + cells + '</tr>';
+    // #109：当期/单季（或当期/半年）两行的指标名称共用同一单元格，垂直合并而不是留空单元格。
+    var hasSubRow = dualStickyCols && ['currency', 'per_share'].includes(field.measure_type);
+    var nameRowspan = hasSubRow ? ' rowspan="2"' : '';
+    var primaryTr = '<tr class="' + rowClass + '" data-statement-level="' + depth + '"' + roleAttr + groupAttr + codeAttr + parentAttr + '><th scope="row" class="statement-col-name"' + nameRowspan + '>' + branch + labelHtml + srParent + unit + '</th>' + basisCell + cells + '</tr>';
 
-    if (!dualStickyCols || !['currency', 'per_share'].includes(field.measure_type)) {
+    if (!hasSubRow) {
       return primaryTr;
     }
     var isSemiannualFilter = periodFilter === 'semiannual';
@@ -530,7 +603,8 @@ function stockAnalysisRenderStatements(data) {
       if (showQoq) out += renderChangeCell(showSubInCol ? subQoqVal : null, 'ratio', subSrc, showSubInCol && subQoqVal == null && subReason ? 'not_applicable' : null, subReason, 'stmt-period-' + periodIndex + ' stmt-qoq-' + periodIndex, endCls);
       return out;
     }).join('');
-    var subTr = '<tr class="' + rowClass + ' statement-subperiod-row" data-statement-level="' + depth + '"' + roleAttr + groupAttr + codeAttr + parentAttr + '><th scope="row" class="statement-col-name"><span class="statement-subperiod-indent"></span></th><th scope="row" class="statement-col-basis">' + escapeHtml(subRowLabel) + '</th>' + subCells + '</tr>';
+    // 名称单元格已由 primaryTr 以 rowspan=2 合并，子行只保留口径列和数值列。
+    var subTr = '<tr class="' + rowClass + ' statement-subperiod-row" data-statement-level="' + depth + '"' + roleAttr + groupAttr + codeAttr + parentAttr + '><th scope="row" class="statement-col-basis">' + escapeHtml(subRowLabel) + '</th>' + subCells + '</tr>';
     return primaryTr + subTr;
   }).join('');
 

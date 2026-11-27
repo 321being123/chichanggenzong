@@ -27,7 +27,12 @@
 
   function normalizeHeaderCells(table) {
     if (!table || !table.querySelectorAll) return;
+    var isStatementMatrix = Boolean(table.classList && table.classList.contains('stock-analysis-statements-table'));
     table.querySelectorAll('th').forEach(function (cell) {
+      // #109/#111：财报三表的行头由 View 自己生成 label/层级（含 details 说明），
+      // 不能被通用表头包装成居中 inline-block，也不能被 splitLongHeaderLabel 插入 <br>。
+      // 左上角「默认单位：亿元」同样跳过，否则会被拆成两行（#109-1）。
+      if (isStatementMatrix && (cell.closest('tbody') || cell.classList.contains('statement-col-corner'))) return;
       var hasLabel = false;
       Array.prototype.forEach.call(cell.children, function (child) {
         if (child.classList && child.classList.contains('biz-table-head-label')) hasLabel = true;

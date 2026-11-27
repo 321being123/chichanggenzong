@@ -239,6 +239,7 @@ const MIGRATIONS = [
     `),
   },
   { version: '213_company_instruments_instrument_index', up: () => require('./migrations/era17CompanyInstrumentsIndex').migration213CompanyInstrumentsInstrumentIndex(pool) },
+  { version: '214_selection_audit_indexes', up: () => require('./migrations/era17SelectionAuditIndexes').migration214SelectionAuditIndexes(pool) },
 ];
 
 async function ensureMigrationsTable() {

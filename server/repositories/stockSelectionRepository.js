@@ -619,6 +619,11 @@ async function loadEquityFacts({ companyIds, asOfDate, availableBefore, market =
       FROM fundamental.financial_reports r
       JOIN fundamental.financial_facts f ON f.report_id = r.report_id AND f.metric_code = 'equity_parent'
      WHERE r.company_id = ANY($1::bigint[])
+       -- equity_parent 只出现在合并资产负债表（2026-11-27 生产实测：283,010 条 equity_parent
+       -- 全部为 report_kind='balance'，涉及 8,415 家公司）。显式限定报表类型后候选行
+       -- 从 118 万降到 30 万，全市场口径由 260 秒降到可接受区间；
+       -- 这个条件与 facts 侧 metric_code 的连接等价，不改变任何取数结果。
+       AND r.report_kind = 'balance'
        AND ${marketPredicate}
        AND r.statement_scope = 'consolidated'
        AND r.announced_at IS NOT NULL
@@ -978,16 +983,33 @@ async function loadAnnualDividends({ companyIds, asOfDate, availableBefore, mark
       -- R5-02：财年期末集合必须与利润查询用**同一套信息截止**。
       -- 只过滤公告日会让"公告在目标日前、但目标日之后才可取到"的年报版本混进来，
       -- 把旧季度的分红从"待补"变成"通过"（未来数据泄漏）。
-      SELECT DISTINCT r.company_id, r.period_end
-        FROM fundamental.financial_reports r
-       WHERE r.company_id = ANY($1::bigint[])
-         AND r.report_kind = 'income'
-         AND ${reportPeriodTypeExpression('r')} = 'annual'
-         AND r.statement_scope = 'consolidated'
-         AND ${marketReportPredicate}
-         AND r.announced_at IS NOT NULL
-         AND r.announced_at < $2::date
-         AND ($3::timestamptz IS NULL OR r.available_at IS NULL OR r.available_at < $3::timestamptz)
+      -- 期间类型分两支：声明类型明确的走等值（可命中索引），只有声明为空/unknown 的少数存量行
+      -- 才回退官方标签。生产实测两者等价（同为 90,301 行），但合并成一句 COALESCE+标签表达式时
+      -- 全表逐行解 JSON，单这条过滤就要 13 秒并让索引失效（2026-11-27 定位）。
+      SELECT DISTINCT company_id, period_end FROM (
+        SELECT r.company_id, r.period_end
+          FROM fundamental.financial_reports r
+         WHERE r.company_id = ANY($1::bigint[])
+           AND r.report_kind = 'income'
+           AND r.statement_scope = 'consolidated'
+           AND r.period_type = 'annual'
+           AND ${marketReportPredicate}
+           AND r.announced_at IS NOT NULL
+           AND r.announced_at < $2::date
+           AND ($3::timestamptz IS NULL OR r.available_at IS NULL OR r.available_at < $3::timestamptz)
+        UNION ALL
+        SELECT r.company_id, r.period_end
+          FROM fundamental.financial_reports r
+         WHERE r.company_id = ANY($1::bigint[])
+           AND r.report_kind = 'income'
+           AND r.statement_scope = 'consolidated'
+           AND COALESCE(r.period_type, 'unknown') IN ('', 'unknown')
+           AND ${reportPeriodTypeExpression('r')} = 'annual'
+           AND ${marketReportPredicate}
+           AND r.announced_at IS NOT NULL
+           AND r.announced_at < $2::date
+           AND ($3::timestamptz IS NULL OR r.available_at IS NULL OR r.available_at < $3::timestamptz)
+      ) declared_or_label_annual
     ), visible_actions AS (
       -- 可见性先于去重：同一笔分红备源公告更晚时，不能因为"官方那条还没到公告日"
       -- 就把一条本来可见的记录整笔丢掉，否则旧季度会把已可见分红当成"该年没有分红"。
@@ -1033,6 +1055,42 @@ async function loadAnnualDividends({ companyIds, asOfDate, availableBefore, mark
       UNION ALL
       -- 无除息日的行（官方"该财年不派现"= 实施 + 每股 0）不参与按除息日去重，原样保留。
       SELECT * FROM visible_actions WHERE ex_date IS NULL
+    ), ca_year AS (
+      -- 分红明细先按「证券 + 财年」预聚合：与年报期末关联时键是整数年份，
+      -- 不再对每一条分红行做 date_part(...) 表达式比较（原写法把函数压在连接条件里，
+      -- 全市场口径下无法走哈希连接，118 万行财报表 + 11 万条分红时单条要跑数百秒）。
+      SELECT ca.instrument_id,
+             date_part('year', ca.fiscal_period_end)::int AS fiscal_year,
+             SUM(CASE WHEN ${implemented} THEN COALESCE(${amountExpr}, 0) ELSE 0 END) AS implemented_cash,
+             STRING_AGG(DISTINCT NULLIF(upper(trim(ca.currency_code)), ''), ',')
+               FILTER (WHERE ${implemented} AND COALESCE(${amountExpr}, 0) <> 0) AS dividend_currencies,
+             COUNT(ca.action_id) FILTER (WHERE ${implemented} AND COALESCE(${amountExpr}, 0) <> 0
+               AND COALESCE(trim(ca.currency_code), '') = '')::int AS dividend_currency_unknown_count,
+             COUNT(ca.action_id) FILTER (WHERE ${implemented})::int AS implemented_count,
+             COUNT(ca.action_id) FILTER (WHERE ${implemented} AND ${amountExpr} IS NULL
+               AND COALESCE(ca.stock_dividend_ratio, 0) = 0
+               AND COALESCE(ca.capitalization_ratio, 0) = 0)::int AS amount_missing_count,
+             COUNT(ca.action_id) FILTER (WHERE ca.status = '实施' AND ca.ex_date IS NULL
+               AND ca.cash_per_share_pre_tax IS NULL AND ca.total_cash_amount IS NULL)::int AS amount_unknown_count,
+             COUNT(ca.action_id) FILTER (WHERE ca.action_id IS NOT NULL AND NOT (${implemented}))::int AS not_implemented_count,
+             COUNT(ca.action_id) FILTER (WHERE ca.status IN ('预案', '股东大会通过')
+               AND ca.fiscal_period_end <= ($2::date - INTERVAL '2 years'))::int AS stale_plan_count,
+             COUNT(ca.action_id) FILTER (WHERE ${explicitZero})::int AS year_zero_count,
+             BOOL_OR(${implemented}) AS has_any_implemented,
+             COUNT(ca.action_id)::int AS event_count
+        FROM ca_kept ca
+       WHERE ca.fiscal_period_end IS NOT NULL
+       GROUP BY 1, 2
+    ), ca_month AS (
+      -- 「财年末那笔已实施」按年报期末所在月份取值，月份依赖年报本身，
+      -- 不能提前并进财年合计，因此单独按「证券 + 财年 + 月份」留一份已实施笔数。
+      SELECT ca.instrument_id,
+             date_part('year', ca.fiscal_period_end)::int AS fiscal_year,
+             date_part('month', ca.fiscal_period_end)::int AS fiscal_month,
+             COUNT(ca.action_id) FILTER (WHERE ${implemented})::int AS implemented_count
+        FROM ca_kept ca
+       WHERE ca.fiscal_period_end IS NOT NULL
+       GROUP BY 1, 2, 3
     ), per_instrument AS (
       -- 以「公司实际年报期末」为主表（2026-11-04 口径）：财报采到了就证明这家公司被采集过，
       -- 某个财年一笔分红记录都没有，就是该财年**确实没有分红事件**，判 0 而不是未知。
@@ -1040,26 +1098,21 @@ async function loadAnnualDividends({ companyIds, asOfDate, availableBefore, mark
       SELECT ci.company_id,
              date_part('year', ae.period_end)::int AS fiscal_year,
              ci.instrument_id,
-             SUM(CASE WHEN ${implemented} THEN COALESCE(${amountExpr}, 0) ELSE 0 END) AS implemented_cash,
-             STRING_AGG(DISTINCT NULLIF(upper(trim(ca.currency_code)), ''), ',')
-               FILTER (WHERE ${implemented} AND COALESCE(${amountExpr}, 0) <> 0) AS dividend_currencies,
-             COUNT(ca.action_id) FILTER (WHERE ${implemented} AND COALESCE(${amountExpr}, 0) <> 0
-               AND COALESCE(trim(ca.currency_code), '') = '')::int AS dividend_currency_unknown_count,
-             COUNT(ca.action_id) FILTER (WHERE ${implemented})::int AS implemented_count,
+             SUM(COALESCE(cy.implemented_cash, 0)) AS implemented_cash,
+             STRING_AGG(DISTINCT cy.dividend_currencies, ',') AS dividend_currencies,
+             SUM(COALESCE(cy.dividend_currency_unknown_count, 0))::int AS dividend_currency_unknown_count,
+             SUM(COALESCE(cy.implemented_count, 0))::int AS implemented_count,
              -- 纯送转方案（只有送股/转增比例、没有一分现金）的现金分红就是 0，不算"金额缺失"：
              -- 2026-11-08 生产实测全库 804 条「实施但现金全空」里 800 条带送转比例
              -- （600959 的 2015 是 10 转 3，cash 全空但 capitalization_ratio=0.3），
              -- 把它们当"没采到"会让这类年份永远挂在待补上。
-             COUNT(ca.action_id) FILTER (WHERE ${implemented} AND ${amountExpr} IS NULL
-               AND COALESCE(ca.stock_dividend_ratio, 0) = 0
-               AND COALESCE(ca.capitalization_ratio, 0) = 0)::int AS amount_missing_count,
+             SUM(COALESCE(cy.amount_missing_count, 0))::int AS amount_missing_count,
              -- 「已实施但完全没有金额」既不是零分红也不是已知金额（R4-04 对照用例）：
              -- 官方偶尔只给状态、不给钱数，这种年份必须保持未知，不能被后面的"预案判零"规则吞掉。
              -- 只认"连除息日都没有"的空实施记录：官方会给一批「实施 + 无金额 + 有除息日」的
              -- 中期空记录，它们不携带任何金额信息（2026-11-05 口径），不能反过来把整年判未知；
              -- 而同财年已有真实年度分红时必须仍然算已知。
-             COUNT(ca.action_id) FILTER (WHERE ca.status = '实施' AND ca.ex_date IS NULL
-               AND ca.cash_per_share_pre_tax IS NULL AND ca.total_cash_amount IS NULL)::int AS amount_unknown_count,
+             SUM(COALESCE(cy.amount_unknown_count, 0))::int AS amount_unknown_count,
              -- 「财年末那笔已实施」必须落到本财年期末所在月份，不能用"本财年有过任何一笔实施"代替（R5-02）：
              -- 只有中期分红而年末尚未公告时，该财年仍是未知，不是零分红。
              -- 判据用**同年月**而非精确相等（2026-11-08 生产实测）：港股早年分红记录的
@@ -1067,16 +1120,14 @@ async function loadAnnualDividends({ companyIds, asOfDate, availableBefore, mark
              -- 精确相等会把已实施的末期股息当成"只有中期"，整年永远挂在分红未知上
              -- （港股 96 只挂 2015/2016，正是这一位之差）。同年月既不把中期分红
              -- （财年中期 9-30 对期末 12-31）算成末期，也不再依赖"日"这一位的来源差异。
-             COUNT(ca.action_id) FILTER (WHERE ${implemented}
-               AND date_trunc('month', ca.fiscal_period_end) = date_trunc('month', ae.period_end))::int AS year_end_implemented_count,
-             COUNT(ca.action_id) FILTER (WHERE ca.action_id IS NOT NULL AND NOT (${implemented}))::int AS not_implemented_count,
+             SUM(COALESCE(cm.implemented_count, 0))::int AS year_end_implemented_count,
+             SUM(COALESCE(cy.not_implemented_count, 0))::int AS not_implemented_count,
              -- 财年期末已过 2 年以上、状态仍停在预案/股东大会通过且该财年从未实施：
              -- 这种历史方案就是"没有落地"，再等也不会变，与"金额未知"要分开。
-             COUNT(ca.action_id) FILTER (WHERE ca.status IN ('预案', '股东大会通过')
-               AND ca.fiscal_period_end <= ($2::date - INTERVAL '2 years'))::int AS stale_plan_count,
-             COUNT(ca.action_id) FILTER (WHERE ${explicitZero})::int AS year_zero_count,
-             BOOL_OR(${implemented}) AS has_any_implemented,
-             COUNT(ca.action_id)::int AS event_count,
+             SUM(COALESCE(cy.stale_plan_count, 0))::int AS stale_plan_count,
+             SUM(COALESCE(cy.year_zero_count, 0))::int AS year_zero_count,
+             BOOL_OR(cy.has_any_implemented) AS has_any_implemented,
+             SUM(COALESCE(cy.event_count, 0))::int AS event_count,
              -- 「零分红」只在财年已经充分尘埃落定时成立：年报出了不等于分红已经公布，
              -- 分红方案公告晚于年报、甚至跨年才实施都常见。给足 1 年，避免把"尚未公告"误判成"没有分红"。
              BOOL_OR(ae.period_end <= ($2::date - INTERVAL '1 year')) AS fiscal_year_settled
@@ -1086,10 +1137,14 @@ async function loadAnnualDividends({ companyIds, asOfDate, availableBefore, mark
         -- 按「证券 + 财年」关联，而不是按 period_end 精确相等（R5-02）：
         -- 中期分红的 fiscal_period_end 是期中日期，精确相等会让它以"该财年一笔记录都没有"的身份消失，
         -- 于是"只有中期记录"被误判成"该财年零分红"。
-        LEFT JOIN ca_kept ca
-          ON ca.instrument_id = ci.instrument_id
-         AND ca.fiscal_period_end IS NOT NULL
-         AND date_part('year', ca.fiscal_period_end) = date_part('year', ae.period_end)
+        -- 预聚合后的 ca_year / ca_month 用整数年份做连接键，不再对每一条分红行套 date_part 函数。
+        LEFT JOIN ca_year cy
+          ON cy.instrument_id = ci.instrument_id
+         AND cy.fiscal_year = date_part('year', ae.period_end)::int
+        LEFT JOIN ca_month cm
+          ON cm.instrument_id = ci.instrument_id
+         AND cm.fiscal_year = date_part('year', ae.period_end)::int
+         AND cm.fiscal_month = date_part('month', ae.period_end)::int
        WHERE ci.company_id = ANY($1::bigint[])
        GROUP BY 1, 2, 3
     )

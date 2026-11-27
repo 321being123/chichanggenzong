@@ -4,7 +4,7 @@ const { auditEvent } = require('../db');
 const { mailer } = require('../config');
 const { sanitizeJobError } = require('./jobErrorSanitizer');
 const { getRegisteredJobDefinition } = require('./jobDefinitions');
-const { verifySlotRecoveryEvidence, sameSlotRecoveryScope, slotWaitingState, recoveryScopeFilter } = require('./jobRecoveryEvidence');
+const { verifySlotRecoveryEvidence, sameSlotRecoveryScope, slotWaitingState, recoveryScopeFilter, verifyLegacyAliasEvidence } = require('./jobRecoveryEvidence');
 const txControl = require('../repositories/transactionControl');
 const { claimAlertDelivery, claimRecoverySummaryAlerts, loadResolutionCandidates } = require('../repositories/jobAlertMailerRepository.js');
 const repository = require('../repositories/jobAlertMailerRepository.js');
@@ -153,7 +153,7 @@ function classifyAlertDisposition(alert = {}, verification = {}) {
 }
 
 // 运行时自动收敛和历史告警调和共用这一个证据入口；historical 只表示历史槽位额外需要连续三次成功。
-async function verifyAlertScope(alert, query = (sql, params) => repository.runQuery(sql, params), options = {}) {
+async function verifyAlertScopeCore(alert, query = (sql, params) => repository.runQuery(sql, params), options = {}) {
   const scope = parseAlertScope(alert);
   const historical = Boolean(options.historical);
   const alertType = String(alert.alert_type || '');
@@ -332,6 +332,38 @@ async function verifyAlertScope(alert, query = (sql, params) => repository.runQu
     };
   }
   return { recovered: false, evidence: null, reason: 'unknown_scope' };
+}
+
+/**
+ * 阶段 3 旧任务码告警的追加证据（方案 5.4）：原作用域证据不足时，只允许对
+ * failure / failure_warning / late / degraded 四类按 LEGACY_JOB_ALIAS_MAP 追溯新任务证据；
+ * 数据质量（dataset 作用域）与其他人工处置类告警不参与别名归档。
+ */
+const LEGACY_ALIAS_ALERT_TYPES = new Set(['failure', 'failure_warning', 'late', 'degraded']);
+
+async function verifyAlertScope(alert, query = (sql, params) => repository.runQuery(sql, params), options = {}) {
+  const verification = await verifyAlertScopeCore(alert, query, options);
+  if (verification.recovered) return verification;
+  const scope = parseAlertScope(alert);
+  if (!['slot', 'job'].includes(scope.type)) return verification;
+  if (!LEGACY_ALIAS_ALERT_TYPES.has(String(alert.alert_type || ''))) return verification;
+  let alias = null;
+  try {
+    alias = await verifyLegacyAliasEvidence(alert, query);
+  } catch (error) {
+    return { ...verification, legacyAlias: { recovered: false, reason: 'legacy_alias_evidence_error', evidence: { error: error && error.message } } };
+  }
+  if (!alias) return verification;
+  if (alias.recovered) return alias;
+  return {
+    ...verification,
+    evidence: {
+      ...(verification.evidence ? { base: verification.evidence } : {}),
+      legacyAlias: alias.evidence,
+    },
+    legacyAlias: alias,
+    aliasReason: alias.reason,
+  };
 }
 
 async function recordResolutionFailure(error, context = {}) {
@@ -556,6 +588,23 @@ async function resolveAlertsByCandidates(candidates, caller) {
     if (rows[0]) resolvedRows.push({ ...rows[0], verification });
   }
   if (resolvedRows.length) {
+    // 旧任务码告警按 LEGACY_JOB_ALIAS_MAP 归档时必须留下映射依据（槽号/业务日/data_as_of/新任务），
+    // 便于事后核对“不是批量清零，而是按证据逐条归档”。
+    for (const resolved of resolvedRows) {
+      const evidence = resolved.verification && resolved.verification.evidence || {};
+      if (!evidence.mode || !String(evidence.mode).startsWith('legacy_alias_')) continue;
+      await auditEvent({
+        actor: 'system:worker', action: 'job_alert_legacy_alias_resolved', target: String(resolved.alert_id || ''),
+        detail: '旧任务码告警按映射证据归档', result: 'success',
+        metadata: {
+          legacyJobCode: evidence.legacyJobCode, legacyMode: evidence.legacyMode,
+          aliasGroup: evidence.aliasGroup, successorJobCode: evidence.successorJobCode,
+          legacySlotId: evidence.legacySlotId, businessDate: evidence.businessDate,
+          partitionKey: evidence.partitionKey || null,
+          dataAsOf: Array.isArray(evidence.sequence) ? evidence.sequence.map(item => item.dataAsOf) : null,
+        },
+      }).catch(error => console.warn('[job-alert] 旧任务码归档审计写入失败:', error.message));
+    }
     const first = resolvedRows[0];
     await sendRecoveryAlert({
       alertKey: `slot:${first.slot_id || caller.slotId || 'job'}:recovered`,

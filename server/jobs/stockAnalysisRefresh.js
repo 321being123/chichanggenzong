@@ -5,6 +5,7 @@ const { pool } = require('../db/connection');
 const stockRefreshRepository = require('../repositories/stockRefreshRepository');
 const { datasetScope, markDatasetFailure, markDatasetSuccess } = require('../services/datasetCursors');
 const { dailyConsistencyStats } = require('./consistencyStats');
+const { selectionLegacySlotsEnabled } = require('../services/jobDefinitions');
 const CoreDate = require('../../public/shared/core-date.js');
 
 const ANALYSIS_DATASET = 'stock_analysis';
@@ -19,6 +20,8 @@ const SELECTION_MODES = Object.freeze([
   'selection_daily', 'selection_weekly',
   // 就绪时段触发的到期检查（18:40）：只入队日/周槽，计算由对应槽执行（B05）。
   'selection_periodic',
+  // 阶段 1B 单一槽位轻量归档（18:40）：串行跑双市场×双策略，每项只落入选 ≤30 席。
+  'selection_archive_light',
 ]);
 
 function selectionDatasetCode(market, kind) {
@@ -30,8 +33,219 @@ function quarterDateFallback(quarter) {
   return require('../services/stockSelectionService').quarterEndDate(quarter);
 }
 
+function archiveLightStrategies() {
+  // 阶段 1B 合同：单槽串行归档必须覆盖当前默认策略（尊重 STOCK_SELECTION_STRATEGY，
+  // 未配置时仍是 V1）+ V2 + 格雷厄姆，去重后执行；不能用固定双策略让实时默认与归档割裂。
+  const service = require('../services/stockSelectionService');
+  return Array.from(new Set([
+    service.DEFAULT_STRATEGY_CODE,
+    'investment_essentials_adapted_v2',
+    'graham_net_net_v1',
+  ].filter(Boolean)));
+}
+
+/**
+ * 阶段 1B 单一槽位轻量归档（方案 4.5）：零改 job_code，在 stock_analysis_refresh 下
+ * 串行跑双市场 × 双策略（含影子），每项只落入选 ≤30 席；本周/本季最后开市日由
+ * resolvePeriodTarget 自己判定，不在非末日提前形成正式周/季结果。
+ */
+async function runSelectionArchiveLight(reason, context = {}) {
+  const service = require('../services/stockSelectionService');
+  const targetDate = String(context.targetDate || context.businessDate
+    || CoreDate.todayInZone('Asia/Shanghai')).slice(0, 10);
+  const shadowEnabled = String(process.env.STOCK_SELECTION_SHADOW || '') === '1';
+  const items = [];
+  let partial = false;
+  let anySession = false;
+  const datasetCodes = new Set();
+  // 续跑时只跳过同一目标日已成功的子项；不同业务日绝不能因同名键被误跳过。
+  const completedKeys = new Set(Array.isArray(context.completedKeys)
+    ? context.completedKeys.map(String).filter(Boolean) : []);
+  const itemKey = (market, strategyCode, periodType, shadow) => [
+    targetDate, market, strategyCode, periodType, shadow ? 'shadow' : 'live',
+  ].join(':');
+
+  const datasetFor = (market, prefix) => `stock_selection_${prefix}_${market === 'HK' ? 'hk' : 'cn'}`;
+
+  for (const market of ['CN', 'HK']) {
+    for (const strategyCode of archiveLightStrategies()) {
+      for (const periodType of ['day', 'week']) {
+        const mode = periodType === 'day' ? 'selection_daily' : 'selection_weekly';
+        const datasetCode = datasetFor(market, periodType === 'day' ? 'daily' : 'weekly');
+        const periodKey = resultPeriodKeyOf(context, targetDate, periodType);
+        // 周度只在“本周最后一个已确认开市日”形成结果；其余日期明确跳过，
+        // 不能把 period_not_finished 当成失败让每个工作日都续跑告警。
+        if (periodType === 'week') {
+          let weekTarget = null;
+          try {
+            weekTarget = await service.resolvePeriodTarget({ market, periodType: 'week', date: targetDate });
+          } catch (error) {
+            partial = true;
+            items.push({ market, strategyCode, periodType, mode, status: 'failed', ok: false, error: error.message });
+            continue;
+          }
+          if (!weekTarget || weekTarget.asOfDate !== targetDate) {
+            items.push({
+              market, strategyCode, periodType, mode, status: 'skipped', ok: true,
+              reason: weekTarget ? (weekTarget.reason || 'period_not_finished') : 'period_not_finished',
+            });
+            continue;
+          }
+        }
+        const runOne = async shadow => {
+          const shadowCode = shadow ? datasetFor(market, 'shadow') : datasetCode;
+          datasetCodes.add(shadowCode);
+          const key = itemKey(market, strategyCode, periodType, shadow);
+          if (completedKeys.has(key)) {
+            items.push({
+              market, strategyCode, periodType, shadow, mode, datasetCode: shadowCode,
+              status: 'skipped', ok: true, reason: 'already_completed', stageCompletedKind: null,
+            });
+            return;
+          }
+          try {
+            const result = await service.runPeriodic({
+              market, periodType, targetDate, strategyCode, shadow,
+              requestId: context.requestId,
+              slotId: context.slotId,
+              executionToken: context.executionToken,
+              actor: context.actor,
+              datasetPublication: ({ runId, asOfDate, computed, qualityStatus, businessStatus }) => ({
+                datasetCode: shadowCode,
+                options: {
+                  partitionKey: asOfDate,
+                  dataAsOf: asOfDate,
+                  rowCount: computed.portfolio ? computed.portfolio.members.length : 0,
+                  allowEmpty: true,
+                  diagnostics: {
+                    quality_status: qualityStatus,
+                    business_status: businessStatus,
+                    query_status: 'success',
+                    coverage_status: shadow
+                      ? 'shadow_only'
+                      : (computed.portfolio && computed.portfolio.members.length === 0 ? 'verified_no_member' : 'released'),
+                    run_id: runId,
+                    period_type: periodType,
+                    period_key: periodKey,
+                    is_shadow: shadow,
+                    strategy_code: strategyCode,
+                    archive_mode: 'light',
+                  },
+                  reason: `job:stock_analysis_refresh:selection_archive_light:${mode}${shadow ? ':shadow' : ''}`,
+                },
+              }),
+            });
+            items.push({
+              market, strategyCode, periodType, shadow, mode, datasetCode: shadowCode,
+              status: result.status, ok: result.ok === true, runId: result.runId || null,
+              stageCompletedKind: result.stageCompletedKind || null,
+              reason: result.reason || null, selectedCount: result.selectedCount || 0,
+            });
+            if (result.status !== 'no_session') anySession = true;
+            if (result.ok === true && result.status !== 'not_ready') completedKeys.add(key);
+            // 整周期休市是正常运营证据，不算失败；未就绪/日历缺档才需要续跑。
+            if (result.status !== 'no_session' && (result.ok !== true || result.status === 'not_ready')) partial = true;
+          } catch (error) {
+            partial = true;
+            items.push({
+              market, strategyCode, periodType, shadow, mode, datasetCode: shadowCode,
+              status: 'failed', ok: false, error: error.message,
+            });
+          }
+        };
+        await runOne(false);
+        if (shadowEnabled && strategyCode !== 'graham_net_net_v1') await runOne(true);
+      }
+      // 季度最后开市日顺带落季指针；未到最后开市日 resolvePeriodTarget 会返回未来日期，直接跳过。
+      try {
+        const quarterTarget = await service.resolvePeriodTarget({ market, periodType: 'quarter', date: targetDate });
+        if (quarterTarget && quarterTarget.asOfDate === targetDate) {
+          const quarter = service.quarterOf(targetDate);
+          const snapshotCode = datasetFor(market, 'snapshot');
+          datasetCodes.add(snapshotCode);
+          const quarterKey = itemKey(market, strategyCode, 'quarter', false);
+          if (completedKeys.has(quarterKey)) {
+            items.push({
+              market, strategyCode, periodType: 'quarter', quarter, mode: 'selection_quarterly',
+              datasetCode: snapshotCode, status: 'skipped', ok: true, reason: 'already_completed',
+              runId: null, selectedCount: 0,
+            });
+            continue;
+          }
+          const result = await service.runQuarterly({
+            market, quarter, strategyCode,
+            requestId: context.requestId,
+            slotId: context.slotId,
+            executionToken: context.executionToken,
+            actor: context.actor,
+          });
+          const { publishDatasetSnapshot } = require('../services/datasetPartitionRegistry');
+          if (result.ok === true) {
+            await publishDatasetSnapshot(snapshotCode, {
+              partitionKey: result.quarterDate || targetDate,
+              dataAsOf: result.quarterDate || targetDate,
+              rowCount: result.selectedCount || 0,
+              allowEmpty: true,
+              diagnostics: {
+                quality_status: result.qualityStatus, business_status: result.businessStatus,
+                query_status: 'success', coverage_status: result.published ? 'released' : 'preview_only',
+                run_id: result.runId || null, archive_mode: 'light', strategy_code: strategyCode,
+              },
+              reason: 'job:stock_analysis_refresh:selection_archive_light:quarter',
+            }).catch(error => ({ published: false, error: error.message }));
+            completedKeys.add(quarterKey);
+          }
+          items.push({
+            market, strategyCode, periodType: 'quarter', quarter, mode: 'selection_quarterly',
+            datasetCode: snapshotCode, status: result.status, ok: result.ok === true,
+            runId: result.runId || null, selectedCount: result.selectedCount || 0, reason: result.reason || null,
+          });
+          anySession = true;
+          if (result.ok !== true) partial = true;
+        }
+      } catch (error) {
+        partial = true;
+        items.push({ market, strategyCode, periodType: 'quarter', status: 'failed', ok: false, error: error.message });
+      }
+    }
+  }
+
+  const complete = !partial;
+  return {
+    ok: complete,
+    status: complete ? 'succeeded' : 'partial',
+    mode: 'selection_archive_light',
+    targetDate,
+    items,
+    publishDatasets: false,
+    publishDatasetCodes: Array.from(datasetCodes),
+    completedKeys: Array.from(completedKeys),
+    stageComplete: complete,
+    stageCompletedKind: complete ? (anySession ? 'archive_light_completed' : 'archive_light_no_session') : undefined,
+    ...(complete ? {} : {
+      continuationRequired: true,
+      reason: 'selection_archive_light_partial',
+      pendingStages: ['selection_archive_light'],
+    }),
+    datasetDiagnostics: Object.fromEntries(Array.from(datasetCodes).map(code => [code, {
+      query_status: 'success',
+      coverage_status: partial ? 'partial' : 'released',
+      archive_mode: 'light',
+      stage_completed_kind: complete ? (anySession ? 'archive_light_completed' : 'archive_light_no_session') : 'archive_light_partial',
+    }])),
+    externalCalls: 0,
+  };
+}
+
+function resultPeriodKeyOf(context, targetDate, periodType) {
+  if (context.periodKey) return context.periodKey;
+  const { periodKeyOf } = require('../services/stockSelectionPeriods');
+  return periodKeyOf(periodType, targetDate) || null;
+}
+
 async function runSelectionMode(mode, reason, context) {
   const service = require('../services/stockSelectionService');
+  if (mode === 'selection_archive_light') return runSelectionArchiveLight(reason, context);
   // 到期检查模式（方案 27.8 / B05）：在数据就绪时段（默认 18:40）跨市场执行，
   // 只做"到期→入队"，计算由日/周槽自己领取执行；不要求单一 market，也不在这里算组合。
   if (mode === 'selection_periodic') {
@@ -699,19 +913,24 @@ async function runStockAnalysisRefresh(reason = 'scheduled', context = {}) {
       const stats = await dailyConsistencyStats();
       console.log(`[一致性统计] 股票快照 ${stats.stock_snapshots} 份，待补水位 ${stats.stock_legacy_watermark} 份；转债快照 ${stats.bond_snapshots} 份，转股价错配 ${stats.bond_conv_price_mismatch} 份`);
     } catch (e) { console.warn('[一致性统计] 统计失败（不影响任务）:', e.message); }
-    // 季度选股排队失败不影响原有个股分析任务结论，差异留在日志与选股批次状态里。
-    try {
-      const queuedSelection = await enqueueDueSelectionQuarters();
-      if (queuedSelection.length) console.log('[选股] 已排队季度任务:', queuedSelection.map(item => `${item.market}${item.quarter}`).join(','));
-    } catch (e) { console.warn('[选股] 季度排队失败（不影响个股分析）:', e.message); }
-    // 日/周自动排队：与季度同一个 Runner 与槽位，失败同样不拖累个股分析。
-    try {
-      const queuedPeriodic = await enqueueDueSelectionPeriods();
-      if (queuedPeriodic.length) {
-        console.log('[选股] 已排队日/周任务:', queuedPeriodic
-          .map(item => `${item.market}${item.mode}${item.shadow ? '(shadow)' : ''}${item.periodKey}`).join(','));
-      }
-    } catch (e) { console.warn('[选股] 日/周排队失败（不影响个股分析）:', e.message); }
+    // 季度/日周自动排队：只有 STOCK_SELECTION_LEGACY_SLOTS=1 才恢复旧裂变链路。
+    // 置 0（默认）时由 18:40 单一 selection_archive_light 槽串行归档，避免同名槽位一天裂变十余个。
+    if (selectionLegacySlotsEnabled()) {
+      try {
+        const queuedSelection = await enqueueDueSelectionQuarters();
+        if (queuedSelection.length) console.log('[选股] 已排队季度任务:', queuedSelection.map(item => `${item.market}${item.quarter}`).join(','));
+      } catch (e) { console.warn('[选股] 季度排队失败（不影响个股分析）:', e.message); }
+      // 日/周自动排队：与季度同一个 Runner 与槽位，失败同样不拖累个股分析。
+      try {
+        const queuedPeriodic = await enqueueDueSelectionPeriods();
+        if (queuedPeriodic.length) {
+          console.log('[选股] 已排队日/周任务:', queuedPeriodic
+            .map(item => `${item.market}${item.mode}${item.shadow ? '(shadow)' : ''}${item.periodKey}`).join(','));
+        }
+      } catch (e) { console.warn('[选股] 日/周排队失败（不影响个股分析）:', e.message); }
+    } else {
+      console.log('[选股] STOCK_SELECTION_LEGACY_SLOTS=0：旧日/周/季裂变排队已关闭，改由 selection_archive_light 单槽归档');
+    }
     const failedDatasets = failures.filter(code => !recovered.includes(code));
     const skippedCodes = new Set(skipped.map(item => item.code));
     const firstFailure = failureDetails[0] || null;
@@ -755,4 +974,4 @@ function scheduleStockAnalysisRefresh() {
   console.log('[stock-analysis] 已调度：每日 08:20（上海时间）');
 }
 
-module.exports = { nextShanghaiDelay, latestStockAnalysisDate, targetDateStatus, trackedStocks, activeStockScope, verifiedStockDataDate, partitionCoreTargets, runStockAnalysisRefresh, scheduleStockAnalysisRefresh, runSelectionMode, enqueueDueSelectionQuarters, enqueueDueSelectionPeriods, quarterRunCompleted, SELECTION_MODES };
+module.exports = { nextShanghaiDelay, latestStockAnalysisDate, targetDateStatus, trackedStocks, activeStockScope, verifiedStockDataDate, partitionCoreTargets, runStockAnalysisRefresh, scheduleStockAnalysisRefresh, runSelectionMode, runSelectionArchiveLight, archiveLightStrategies, enqueueDueSelectionQuarters, enqueueDueSelectionPeriods, quarterRunCompleted, SELECTION_MODES };

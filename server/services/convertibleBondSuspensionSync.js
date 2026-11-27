@@ -4,6 +4,22 @@ const { publishDatasetPartition } = require('./datasetPartitions');
 const txControl = require('../repositories/transactionControl');
 const { tushareSourceId } = require('../repositories/convertibleBondSuspensionSyncRepository.js');
 const repository = require('../repositories/convertibleBondSuspensionSyncRepository.js');
+const pbProjectionSync = require('./pbProjectionSync');
+
+function monthsOfSuspensionRows(rows) {
+  const seen = new Set();
+  const months = [];
+  for (const row of rows || []) {
+    const year = Number(String(row.trade_date || '').slice(0, 4));
+    const month = Number(String(row.trade_date || '').slice(5, 7));
+    if (!Number.isInteger(year) || !Number.isInteger(month)) continue;
+    const key = `${year}-${month}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    months.push({ year, month });
+  }
+  return months;
+}
 
 function compactDate(value) {
   const text = String(value || '').replace(/-/g, '').slice(0, 8);
@@ -96,6 +112,10 @@ async function syncConvertibleBondSuspensions({ startDate, endDate, targetCodes 
     await txControl.begin(client);
     const result = await repository.insert_market_stock_suspend_calendar([JSON.stringify(rows), sourceId], client);
     await txControl.commit(client);
+    // 触发面 4：停牌补录/撤销会改变 exempt_days，按受影响月份整月重算。
+    if (rows.length) {
+      await pbProjectionSync.safeSyncSuspendChange({ market: 'CN', months: monthsOfSuspensionRows(rows) });
+    }
     return {
       ok: true,
       status: 'succeeded',

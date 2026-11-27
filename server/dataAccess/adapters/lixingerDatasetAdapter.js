@@ -1302,6 +1302,7 @@ module.exports = {
   MAX_RANGE_YEARS,
   rangeChunks,
   mergeMetricTree,
+  stockCodeOf,
   REPORT_METRICS,
   pickFirstMetric,
   VALUATION_METRICS,

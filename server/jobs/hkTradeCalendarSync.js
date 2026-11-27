@@ -4,6 +4,22 @@ const calendarRepository = require('../repositories/tradeCalendarRepository');
 const referenceDatasets = require('../dataAccess/referenceDatasets');
 const { scheduleForDate, supportedScheduleYears } = require('../config/hkexAnnualSchedules');
 const { invalidateMarketStateCache } = require('../services/marketState');
+const pbProjectionSync = require('../services/pbProjectionSync');
+
+function monthsOfDates(dates) {
+  const seen = new Set();
+  const months = [];
+  for (const date of dates || []) {
+    const year = Number(String(date).slice(0, 4));
+    const month = Number(String(date).slice(5, 7));
+    if (!Number.isInteger(year) || !Number.isInteger(month)) continue;
+    const key = `${year}-${month}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    months.push({ year, month });
+  }
+  return months;
+}
 
 function dateText(value) {
   const text = String(value || '').replace(/-/g, '').slice(0, 8);
@@ -134,12 +150,13 @@ async function upsertCalendarFacts({ tushareRows, officialRows }) {
     ...(tushareRows || []).map(row => row.tradeDate),
     ...(officialRows || []).map(row => row.tradeDate),
   ])].sort();
-  if (!allDates.length) return { rows: 0, conflicts: [] };
+  if (!allDates.length) return { rows: 0, conflicts: [], dates: [] };
   const existingRows = await calendarRepository.loadCalendarRowsByDates('HKEX', allDates);
   const existingByDate = new Map(existingRows.map(row => [String(row.trade_date).slice(0, 10), row]));
   const tushareByDate = new Map((tushareRows || []).map(row => [row.tradeDate, row]));
   const officialByDate = new Map((officialRows || []).map(row => [row.tradeDate, row.schedule]));
   const conflicts = [];
+  const writtenDates = [];
   let written = 0;
   for (const tradeDate of allDates) {
     const existing = existingByDate.get(tradeDate);
@@ -190,10 +207,11 @@ async function upsertCalendarFacts({ tushareRows, officialRows }) {
     await calendarRepository.upsertCalendarRow('HKEX', {
       tradeDate, isOpen: effectiveOpen, sourceCode, rawPayload,
     });
+    writtenDates.push(tradeDate);
     written++;
   }
   invalidateMarketStateCache({ market: 'HK' });
-  return { rows: written, conflicts };
+  return { rows: written, conflicts, dates: writtenDates };
 }
 
 async function syncHkTradeCalendar({ fromDate, toDate, fetchImpl, manualCorrection } = {}) {
@@ -221,6 +239,8 @@ async function syncHkTradeCalendar({ fromDate, toDate, fetchImpl, manualCorrecti
       },
     };
     const stored = await upsertCalendarFacts({ officialRows: [...officialRowsForSupportedYears(), correctionRow] });
+    // 触发面 3：港交所人工修正后整月重算受影响月份。
+    await pbProjectionSync.safeSyncCalendarChange({ market: 'HK', months: monthsOfDates(stored.dates) });
     return {
       ok: true,
       status: 'succeeded',
@@ -243,6 +263,10 @@ async function syncHkTradeCalendar({ fromDate, toDate, fetchImpl, manualCorrecti
     sourceError = error;
   }
   const stored = await upsertCalendarFacts({ tushareRows: rows, officialRows: officialRowsForSupportedYears() });
+  // 触发面 3：只对本次实际写入的港股日历日期整月重算。
+  if (stored.dates.length) {
+    await pbProjectionSync.safeSyncCalendarChange({ market: 'HK', months: monthsOfDates(stored.dates) });
+  }
   if (sourceError) return { ok: false, rows: stored.rows, sourceError: sourceError.message, conflicts: stored.conflicts };
   if (!rows.length) return { ok: false, rows: stored.rows, reason: 'HKEX 日历返回空结果，未覆盖旧数据', conflicts: stored.conflicts };
   const expectedDates = everyDate(range.fromDate, range.toDate);

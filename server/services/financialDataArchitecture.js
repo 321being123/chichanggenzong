@@ -5,6 +5,7 @@ const { withTransaction } = require('../db/transaction');
 const { STOCK_FORMULA_VERSION } = require('./analysisFreshness');
 const projection = require('../repositories/stockProjectionRepository');
 const { hasUpstreamStatementEvidence } = require('../domain/financialReportEvidence');
+const pbProjectionSync = require('./pbProjectionSync');
 const {
   analysisMetricValues, asDate, finite, hash, marketMultiple, rowVersion, stablePayload,
 } = require('../domain/stockFacts');
@@ -39,7 +40,12 @@ function summarizeCollectionSources(bundle) {
 
 async function persistCollectedData(metadata, bundle) {
   const tsCode = metadata.ts_code;
-  return withTransaction(async client => {
+  // 触发面 1：日常估值入库。交易日期在事务前提取，事务提交后再同步投影；
+  // 投影失败不得回滚已经落库的标准事实，由 safeSyncValuations 记录并交给对账。
+  const valuationDates = Array.from(new Set((bundle.basics || [])
+    .map(row => asDate(row && row.trade_date))
+    .filter(Boolean)));
+  const master = await withTransaction(async client => {
     const sources = await projection.sourceIds(client);
     const master = await projection.ensureMaster(client, tsCode, sources, metadata);
     // 行里自带 source_code：写标准事实时按行取来源，不再一律记在 tushare 名下
@@ -208,6 +214,14 @@ async function persistCollectedData(metadata, bundle) {
     await projection.finishIngestionRun({ runId, rowCount: count }, client);
     return master;
   });
+  // 触发面 1：估值入库提交后同步 PB 投影（只重算本证券与受影响月份）。
+  if (valuationDates.length && master && master.instrumentId) {
+    const market = (master.legacy && master.legacy.market) || (tsCode.endsWith('.HK') ? 'HK' : 'CN');
+    await pbProjectionSync.safeSyncValuations({
+      market, dates: valuationDates, instrumentIds: [master.instrumentId],
+    });
+  }
+  return master;
 }
 
 async function saveCollectedEvents(tsCode, events) {

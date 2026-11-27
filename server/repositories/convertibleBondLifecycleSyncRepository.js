@@ -67,7 +67,8 @@ async function insert_fundamental_convertible_bond_issuance(params, client = poo
 
 async function update_core_instruments(params, client = pool) {
   return client.query(`UPDATE core.instruments SET list_date=$2::date,status=CASE WHEN $2::date>CURRENT_DATE THEN 'pending_listing' ELSE 'listed' END,updated_at=now()
-        WHERE instrument_id=$1 AND (list_date IS NULL OR list_date<>$2::date)`, params);
+        WHERE instrument_id=$1 AND (list_date IS NULL OR list_date<>$2::date)
+        RETURNING instrument_id, asset_class, market`, params);
 }
 
 async function select_ops_sync_cursors(params, client = pool) {

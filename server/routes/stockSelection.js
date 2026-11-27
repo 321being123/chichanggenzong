@@ -140,6 +140,67 @@ router.get('/industries', requireLogin, asyncHandler(async (req, res) => {
   res.json(await service.listIndustries({ market }));
 }));
 
+/**
+ * 实时筛选（方案 4.6）：任意目标日按市场/策略即时计算，并叠加当前登录用户的个人排除。
+ * 必须 requireLogin；并发、SQL 超时、single-flight 与分区水位缓存由服务层统一兜底。
+ */
+router.post('/screen', requireLogin, asyncHandler(async (req, res) => {
+  const body = req.body || {};
+  const market = String(body.market || '').toUpperCase();
+  if (!['CN', 'HK'].includes(market)) return res.status(400).json({ error: '市场参数不合法' });
+  const asOfDate = String(body.asOfDate || '').slice(0, 10);
+  if (!isRealDate(asOfDate)) return res.status(400).json({ error: '目标日期不存在（请检查年月日）' });
+  const strategyCode = body.strategyCode === undefined || body.strategyCode === null || body.strategyCode === ''
+    ? undefined : String(body.strategyCode).trim().toLowerCase();
+  if (strategyCode && !service.STRATEGY_CODES.includes(strategyCode)) {
+    return res.status(400).json({ error: '策略版本不合法' });
+  }
+  const filterStatus = body.filterStatus ? String(body.filterStatus).toUpperCase() : null;
+  if (filterStatus && !['PASS', 'FAIL', 'PENDING', 'NOT_APPLICABLE', 'RISK'].includes(filterStatus)) {
+    return res.status(400).json({ error: '筛选状态不合法' });
+  }
+  const limit = intParam(body.limit, 50, MAX_PAGE_SIZE) || 50;
+  const offset = intParam(body.offset, 0);
+  try {
+    const stored = await service.getSettings(req.session.user);
+    const settings = stored.settings || {};
+    const exclusion = service.exclusionOf(settings, market);
+    const ratioSource = market === 'CN' ? settings.positionRatioA : settings.positionRatioHk;
+    const positionRatio = service.PORTFOLIO.clampRatio(ratioSource, 1);
+    const result = await service.screenStocksRealtime({
+      market, asOfDate, strategyCode, exclusion, positionRatio,
+      limit, offset, filterStatus, orderBy: body.orderBy === 'code' ? 'code' : 'rank',
+      personalFlags: true,
+    });
+    res.json(Object.assign({ ok: true }, result));
+  } catch (error) {
+    res.status(error.status || 500).json(errorPayload(error));
+  }
+}));
+
+router.get('/screen/stocks/:code', requireLogin, asyncHandler(async (req, res) => {
+  const market = String(req.query.market || '').toUpperCase();
+  if (!['CN', 'HK'].includes(market)) return res.status(400).json({ error: '市场参数不合法' });
+  const asOfDate = String(req.query.asOfDate || '').slice(0, 10);
+  if (!isRealDate(asOfDate)) return res.status(400).json({ error: '目标日期不存在（请检查年月日）' });
+  const strategyCode = req.query.strategyCode === undefined || req.query.strategyCode === ''
+    ? undefined : String(req.query.strategyCode).trim().toLowerCase();
+  if (strategyCode && !service.STRATEGY_CODES.includes(strategyCode)) {
+    return res.status(400).json({ error: '策略版本不合法' });
+  }
+  try {
+    const stored = await service.getSettings(req.session.user);
+    const exclusion = service.exclusionOf(stored.settings || {}, market);
+    const detail = await service.screenStockRealtime({
+      market, asOfDate, strategyCode, code: String(req.params.code || ''), exclusion,
+    });
+    if (!detail) return res.status(404).json({ error: '该股票不在目标日筛选范围内' });
+    res.json(detail);
+  } catch (error) {
+    res.status(error.status || 500).json(errorPayload(error));
+  }
+}));
+
 router.get('/runs', requireLogin, asyncHandler(async (req, res) => {
   const market = req.query.market ? String(req.query.market).toUpperCase() : null;
   if (market && !['CN', 'HK'].includes(market)) return res.status(400).json({ error: '市场参数不合法' });

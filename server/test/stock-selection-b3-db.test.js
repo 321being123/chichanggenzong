@@ -179,20 +179,22 @@ async function transactionalChecks(client) {
     // 本 DDL 只改列存储策略且随事务回滚，不重写表。
     await client.query('ALTER TABLE analytics.stock_selection_candidates ALTER COLUMN detail SET STORAGE EXTERNAL');
     const { strategyId, sourceRunId, companyId, annualFromLoader } = await seedFixtures(client, { userTag: tag, codes, withFinancials: true });
-    // ---------- B3-1 写入侧：零候选复制 ----------
+    // ---------- 阶段 1B 写入侧：个人测算只写入选 ≤30 席候选 ----------
     const first = await service.createSimulation({
       username: tag, sourceRunId, positionRatio: 1,
     }, { tx: client });
     const personalRunId = Number(first.runId);
     const own = await client.query(
       `SELECT COUNT(*)::int AS count FROM analytics.stock_selection_candidates WHERE run_id = $1`, [personalRunId]);
-    eq(own.rows[0].count, 0, '个人测算不得写入任何候选行');
     const memberCount = await client.query(
       `SELECT COUNT(*)::int AS count FROM analytics.stock_selection_portfolio_members WHERE run_id = $1`, [personalRunId]);
+    eq(own.rows[0].count, memberCount.rows[0].count, '个人测算只写与成员一一对应的候选（≤30 行）');
     eq(memberCount.rows[0].count, 1, '个人测算只写成员（剩余 PASS 1 只，另一只被本人排除）');
+    ok(own.rows[0].count <= 30, '个人候选行必须 ≤30');
     const runRow = await repo.findRun(personalRunId, client);
     eq(runRow.supersedes_run_id !== null && Number(runRow.supersedes_run_id), sourceRunId, '个人批次必须绑定来源批次');
     eq(runRow.input_manifest.candidatesRefMode, 'source_run', '必须显式标记候选引用模式');
+    eq(runRow.input_manifest.archiveMode, 'light', '个人批次必须标记轻量归档');
     ok(Array.isArray(runRow.input_manifest.portfolio.selectionOutcomes), '必须冻结未入选原因');
     ok(runRow.input_manifest.settingsSnapshot, '必须冻结设置快照');
 

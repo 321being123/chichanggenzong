@@ -135,8 +135,10 @@ assert.strictEqual(definitions.getJobDefinition('index_recent').dataDatePolicy, 
 assert.strictEqual(definitions.getJobDefinition('arbitrage_sync').maxExternalCallsPerRun, null, '套利公告不得设置臆造调用上限');
 assert.strictEqual(definitions.getJobDefinition('arbitrage_reparse').maxExternalCallsPerRun, null, '套利公告重解析不得设置臆造调用上限');
 assert.deepStrictEqual(definitions.getJobDefinition('arbitrage_reparse').externalApis, ['cninfo', 'hkex'], '套利公告重解析必须声明官方 PDF 来源');
-assert.strictEqual(definitions.JOB_DEFINITIONS.filter(job => job.externalApis.includes('new_share')).length, 1,
-  'new_share在任务契约中只能有一个采集者');
+// 阶段 3 收敛后，自动排程的 new_share 采集者只剩 exchange_announcements_sync；
+// 旧的 ipo_history_sync 保留定义仅供手工定向触发（supersededBy），不再构成第二个采集入口。
+assert.strictEqual(definitions.JOB_DEFINITIONS.filter(job => job.externalApis.includes('new_share') && !job.supersededBy && !job.manualOnly).length, 1,
+  'new_share 在自动排程的任务契约中只能有一个采集者');
 assert.ok(definitions.getJobDefinition('hk_trade_rules_sync').catchupMode === 'latest_only');
 assert.ok(/WHERE \(status='pending'[\s\S]*status IN \('failed','waiting_external'\)/.test(slots), 'degraded/blocked 不得直接进入待执行筛选');
 assert.ok(/status IN \('pending','failed','waiting_external'\)/.test(slots), '领取任务不得领取 degraded');

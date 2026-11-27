@@ -11,6 +11,10 @@ const traceabilityPath = path.join(__dirname, '..', 'governance', 'rule-traceabi
 function scheduleOf(job) {
   if (job.disabled) return `已暂停：${job.disabledReason}`;
   if (job.manualOnly) return '人工';
+  // 阶段 3 收敛：旧任务保留定义与手工补跑入口，但计划槽由带 supersededBy 的新任务生成。
+  if (Array.isArray(job.supersededBy) && job.supersededBy.length) {
+    return `已收敛：${job.supersededBy.join(' / ')}（不再自动排程，保留手工补跑）`;
+  }
   if (job.marketCalendarPolicy === 'hk-close') return 'HKEX 收市 + 20 分钟（全日 16:30，半日 12:30）';
   if (job.marketCalendarPolicy === 'hk-rate') return 'HKEX 收市 + 25 分钟；仅 A 股开市日 16:15';
   if (job.marketCalendarPolicy === 'nav-snapshot') return '固定 18:30（等当日回购利率发布；两市都休市则不生成）';

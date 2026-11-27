@@ -10,6 +10,11 @@ const {
   fiscalYearEndAnchors, inferFinancialPeriodType, resolveFinancialPeriodType,
 } = require('../domain/financialReportPeriod');
 const { reportPeriodTypeExpression } = require('./reportPeriodSql');
+const pbProjectionRepository = require('./pbProjectionRepository');
+
+// PB 投影读开关：生产未显式设置时默认关闭（先部署、回填验收后再置 1）；
+// 非生产默认开启，测试可在同一进程内切换两条路径做零差异对照。
+const { projectionReadEnabled } = require('../domain/pbProjectionConfig');
 
 // 存量报告期类型可能有 unknown（反馈 #102）。先用官方标签归一，再用同公司已确认年报的
 // 财年锚点识别半年报/季报；仍不能确定的保持 unknown，由调用方过滤，绝不按自然月份猜。
@@ -365,6 +370,14 @@ async function loadPbWindow({ market, windowStart, asOfDate, instrumentIds = nul
   const scopedIds = Array.isArray(instrumentIds) && instrumentIds.length
     ? Array.from(new Set(instrumentIds.map(id => Number(id)).filter(id => Number.isFinite(id))))
     : null;
+  // 2026-11-27 PB 两步按月投影：中段读月汇总，头尾不完整月严格按精确日期边界读 picked。
+  // 投影未初始化时由仓储抛出 PB_PROJECTION_NOT_READY，绝不静默回退成「全市场零覆盖」。
+  if (projectionReadEnabled()) {
+    const projected = await pbProjectionRepository.loadProjectedPbWindow({
+      market, windowStart, asOfDate, instrumentIds: scopedIds,
+    }, tx);
+    return mapPbWindowResult(projected, windowStart, asOfDate);
+  }
   const detail = await exec(`
     WITH cal AS (
       SELECT trade_date FROM market.trade_calendar
@@ -479,8 +492,20 @@ async function loadPbWindow({ market, windowStart, asOfDate, instrumentIds = nul
        WHERE i.market = $1 AND v.trade_date > $2::date AND v.trade_date <= $3::date`, [market, windowStart, asOfDate]);
     marketDayCount = Number((marketDays.rows[0] || {}).market_days || 0);
   }
+  return mapPbWindowResult({
+    rows: detail.rows,
+    marketDays: marketDayCount,
+    calendarDays: calendarCount,
+  }, windowStart, asOfDate);
+}
+
+/**
+ * 把「原始行（legacy daily_valuations 或投影三段合并）」映射成选股规则消费的窗口证据。
+ * 两种来源的 SQL 必须产出同一组字段；任何字段增删都要同步 pb-projection-equivalence 测试。
+ */
+function mapPbWindowResult({ rows = [], marketDays = 0, calendarDays = 0 }, windowStart, asOfDate) {
   const byInstrument = new Map();
-  detail.rows.forEach(row => {
+  rows.forEach(row => {
     const expectedDays = Number(row.expected_days || 0);
     // 两个口径必须分开，不能互相顶替：
     //   V1「十年 PB 覆盖」= 有观测（含负 PB 这类真实非正事实）——2026-11-04 口径，不能改成只算正值；
@@ -489,7 +514,7 @@ async function loadPbWindow({ market, windowStart, asOfDate, instrumentIds = nul
     const positiveDays = Number(row.covered_days || 0);
     const listDate = row.list_date || null;
     const effectiveStart = row.effective_start || listDate || null;
-    const gapOf = days => (calendarCount === 0 ? null : Math.max(expectedDays - days, 0));
+    const gapOf = days => (calendarDays === 0 ? null : Math.max(expectedDays - days, 0));
     byInstrument.set(String(row.instrument_id), {
       // V1 合同（R02「十年内出现过 PB>1」）沿用原字段，语义不变。
       maxPb: row.max_pb === null ? null : Number(row.max_pb),
@@ -507,7 +532,7 @@ async function loadPbWindow({ market, windowStart, asOfDate, instrumentIds = nul
       invalidDays: Number(row.invalid_days || 0),
       missingDays: gapOf(observedDays),
       exemptDays: Number(row.exempt_days || 0),
-      calendarComplete: calendarCount > 0,
+      calendarComplete: calendarDays > 0,
       windowStart,
       windowEnd: asOfDate,
       effectiveStart,
@@ -522,8 +547,8 @@ async function loadPbWindow({ market, windowStart, asOfDate, instrumentIds = nul
   });
   return {
     byInstrument,
-    marketDays: marketDayCount,
-    calendarDays: calendarCount,
+    marketDays,
+    calendarDays,
   };
 }
 
@@ -2494,9 +2519,26 @@ async function listCandidates({ runId, limit, offset, filterStatus, orderBy }, t
   return { rows, total: rows.length ? Number(rows[0].total) : 0 };
 }
 
-/** 来源快照中的行业完整身份及受影响候选数；用于个人排除的可审计映射提示。 */
+/**
+ * 来源快照中的行业完整身份及受影响候选数；用于个人排除的可审计映射提示。
+ * 轻量归档（≤30 席候选）把全市场一级行业计数冻结在 runs.input_manifest.industryIdentityCounts，
+ * 归档读取必须优先用这份摘要，缺失时才回退查候选表（历史旧批次仍走原口径）。
+ */
 async function listIndustryIdentityCounts(runId, tx) {
   const exec = executorOf(tx);
+  const manifest = await exec(`
+    SELECT input_manifest->'industryIdentityCounts' AS counts
+      FROM analytics.stock_selection_runs WHERE run_id = $1`, [runId]);
+  const stored = manifest.rows[0] && manifest.rows[0].counts;
+  if (Array.isArray(stored)) {
+    return stored.map(item => ({
+      code: item && item.code !== undefined ? item.code : null,
+      name: item && item.name !== undefined ? item.name : null,
+      system: item && item.system !== undefined ? item.system : null,
+      version: item && item.version !== undefined ? item.version : null,
+      affected_count: Number(item && (item.affectedCount === undefined ? item.affected_count : item.affectedCount) || 0),
+    }));
+  }
   const candidateRunId = await resolveCandidateRunId(runId, tx);
   const { rows } = await exec(`
     SELECT industry_code AS code, MIN(industry_name) AS name,
@@ -3182,6 +3224,54 @@ async function copyCandidates({ sourceRunId, targetRunId }, tx) {
     ON CONFLICT (run_id, instrument_id) DO NOTHING`, [sourceRunId, targetRunId]);
 }
 
+/** 周度受控复用（B4-1A / F-13）：只复制源 daily 的入选成员候选（≤30 行），保持轻量归档。 */
+async function copyMemberCandidates({ sourceRunId, targetRunId }, tx) {
+  const exec = executorOf(tx);
+  await exec(`
+    INSERT INTO analytics.stock_selection_candidates
+      (run_id, instrument_id, company_id, code, name, industry_code, industry_name, industry_system, industry_version,
+       current_pb, historical_pb_max, historical_pb_min, current_pe, profit_status, dividend_yield,
+       equity_amount, equity_currency, equity_cny, fx_rate, fx_date,
+       pb_rank, pe_rank, dividend_rank, total_score, selection_order,
+       filter_status, data_quality_status, exclusion_reasons, detail,
+       pb_positive_extrema_ratio, pb_pe_product, valuation_status, valuation_pass_reason,
+       ttm_profit_status, rank_ready, rank_block_reasons,
+       pb_covered_days, pb_expected_days, pb_gap_days, pb_history_years)
+    SELECT $2, c.instrument_id, c.company_id, c.code, c.name, c.industry_code, c.industry_name, c.industry_system, c.industry_version,
+           c.current_pb, c.historical_pb_max, c.historical_pb_min, c.current_pe, c.profit_status, c.dividend_yield,
+           c.equity_amount, c.equity_currency, c.equity_cny, c.fx_rate, c.fx_date,
+           c.pb_rank, c.pe_rank, c.dividend_rank, c.total_score, c.selection_order,
+           c.filter_status, c.data_quality_status, c.exclusion_reasons, c.detail,
+           c.pb_positive_extrema_ratio, c.pb_pe_product, c.valuation_status, c.valuation_pass_reason,
+           c.ttm_profit_status, c.rank_ready, c.rank_block_reasons,
+           c.pb_covered_days, c.pb_expected_days, c.pb_gap_days, c.pb_history_years
+      FROM analytics.stock_selection_candidates c
+      JOIN analytics.stock_selection_portfolio_members m
+        ON m.run_id = $1 AND m.instrument_id = c.instrument_id
+     WHERE c.run_id = $1
+    ON CONFLICT (run_id, instrument_id) DO NOTHING`, [sourceRunId, targetRunId]);
+}
+
+/**
+ * 实时筛选缓存键的“目标市场 + 目标日”分区水位：只统计该市场、且分区日期不晚于目标日的
+ * 实际依赖数据集。禁止用全站最新入库水位，否则今日凌晨入库会让所有历史日期缓存一起失效。
+ */
+async function loadSelectionPartitionWatermark({ market, asOfDate, datasetCodes }, tx) {
+  const exec = executorOf(tx);
+  const codes = Array.isArray(datasetCodes) && datasetCodes.length ? datasetCodes : [];
+  const { rows } = await exec(`
+    SELECT dataset_code, scope_key,
+           COALESCE(MAX(published_at), MAX(updated_at))::text AS watermark_at,
+           MAX(partition_key)::text AS max_partition_key
+      FROM ops.dataset_partitions
+     WHERE dataset_code = ANY($1::text[])
+       AND scope_key IN ($2::text, 'GLOBAL')
+       AND partition_key <= $3::date
+     GROUP BY dataset_code, scope_key
+     ORDER BY dataset_code, scope_key`, [codes, market, asOfDate]);
+  return rows.map(row => `${row.dataset_code}:${row.scope_key}:${row.watermark_at || ''}:${row.max_partition_key || ''}`).join(';');
+}
+
 /** 周度受控复用（B4-1A / F-13）：把源 daily 的组合成员原样复制到新 weekly 批次。 */
 async function copyMembers({ sourceRunId, targetRunId }, tx) {
   const exec = executorOf(tx);
@@ -3237,6 +3327,7 @@ module.exports = {
   findPublication, listPublicationEvents, markPublicationVisible, loadPublicationReplayEvidence,
   listRuns, findRun, findRunForUpdate, listReusableDailyRuns, loadComputationInputWatermark,
   listCandidates, listIndustryIdentityCounts, findCandidate, listMembers, latestPublishedRun, copyCandidates, copyMembers,
+  copyMemberCandidates, loadSelectionPartitionWatermark,
   resolveCandidateRunId, compactCandidateDetail, annualYearsDigest,
   hasPeriodRun,
   hasNoPeriodRunAtAll,

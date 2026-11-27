@@ -100,6 +100,30 @@ async function purgeStorageData(options = {}) {
     }, options.client)
     : { skipped: true, reason: 'disabled_by_config' };
 
+  // 每周 PB 投影抽样对账：部署在清理任务末尾（04:00 波次），生产默认执行，
+  // 测试/本地默认关闭（不拖慢单测）；显式 force 或 PB_PROJECTION_RECONCILE_ENABLED=1 才执行。
+  // 对账内部有 7 天水位，重复调用不会每天重跑；且投影未回填时对账自身会跳过，
+  // 这里再叠加读开关，确保 PB_PROJECTION_READ_ENABLED=0 的"先部署后回填"阶段不会自动对账。
+  const pbProjectionSync = require('./pbProjectionSync');
+  const projectionRead = pbProjectionSync.projectionReadEnabled();
+  const reconcileEnabled = projectionRead && booleanOption(
+    options.pbProjectionReconcile ?? process.env.PB_PROJECTION_RECONCILE_ENABLED,
+    process.env.NODE_ENV === 'production',
+  );
+  let pbProjectionReconcile = { skipped: true, reason: 'disabled_by_config' };
+  if (reconcileEnabled || booleanOption(options.forcePbProjectionReconcile, false)) {
+    try {
+      pbProjectionReconcile = await pbProjectionSync.reconcilePbProjectionSample({
+        markets: ['CN', 'HK'],
+        enabled: reconcileEnabled,
+        force: booleanOption(options.forcePbProjectionReconcile, false),
+      });
+    } catch (error) {
+      // 对账失败不能阻塞保留清理；留下结果由下一次运行重试。
+      pbProjectionReconcile = { ok: false, error: error.message };
+    }
+  }
+
   return {
     ok: true,
     rawRetentionDays,
@@ -110,6 +134,7 @@ async function purgeStorageData(options = {}) {
     deletedRawRecords,
     deletedSelectionRuns,
     selectionRetention,
+    pbProjectionReconcile,
   };
 }
 

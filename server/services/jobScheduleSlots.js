@@ -1,7 +1,7 @@
 const layerSql = require('../repositories/jobScheduleSlotsRepository');
 const os = require('os');
 const { pool } = require('../db/connection');
-const { JOB_DEFINITIONS, getJobDefinition, getRegisteredJobDefinition, PARTITION_DATE_POLICIES, stageCompletionEvidence } = require('./jobDefinitions');
+const { JOB_DEFINITIONS, getJobDefinition, getRegisteredJobDefinition, PARTITION_DATE_POLICIES, stageCompletionEvidence, CONVERGED_JOB_CODES, jobConvergenceEnabled } = require('./jobDefinitions');
 const { getMarketState, isCnTradingDate, prefetchMarketFacts, parseClock } = require('./marketState');
 const { sanitizeJobError, sanitizeJobResult } = require('./jobErrorSanitizer');
 const { ACTIVE_ALERT_WHERE } = require('./jobAlertMailer');
@@ -67,7 +67,16 @@ function previousDate(dateTextValue) {
 //   weekdays：交易日当天执行。适用于收盘价、净值等当天即可取到的数据。
 // 两者都复用 isWeekday，已内置节假日判断。
 function isSlotDayAllowed(dateTextValue, definition) {
-  if (definition.afterTradingDay) return isWeekday(previousDate(dateTextValue));
+  if (definition.afterTradingDay) {
+    const previous = previousDate(dateTextValue);
+    // 港股波次任务按港交所日历判断“前一天是否港股开市日”：CN 休市而港股开市时必须照常生成槽位。
+    // 港交所日历本身是异步的，这里只做“前一工作日”粗筛，实际开市由 resolveScheduleForDate 的 hk-open 复核。
+    if (definition.marketCalendarPolicy && String(definition.marketCalendarPolicy).startsWith('hk')) {
+      const day = new Date(`${previous}T00:00:00Z`).getUTCDay();
+      return day >= 1 && day <= 5;
+    }
+    return isWeekday(previous);
+  }
   if (definition.calendarWeekdays) {
     const day = new Date(`${dateTextValue}T00:00:00Z`).getUTCDay();
     return day >= 1 && day <= 5;
@@ -84,9 +93,13 @@ function formatClock(minutes) {
 async function resolveScheduleForDate(definition, schedule, businessDate) {
   const policy = schedule.marketCalendarPolicy || definition.marketCalendarPolicy;
   if (!policy) return schedule;
-  const hk = await getMarketState({ market: 'HK', businessDate, time: '00:00' });
+  // afterTradingDay 任务在“收盘日的次日”执行：市场日历必须按实际交易日（前一天）判断，
+  // 否则周六凌晨的港股槽会因“周六休市”被整批丢弃。scheduledFor 仍落在执行日。
+  const calendarDate = (schedule.afterTradingDay != null ? schedule.afterTradingDay : definition.afterTradingDay)
+    ? previousDate(businessDate) : businessDate;
+  const hk = await getMarketState({ market: 'HK', businessDate: calendarDate, time: '00:00' });
   if (policy === 'hk-open') return hk.status === 'open' ? schedule : null;
-  const cn = await getMarketState({ market: 'CN', businessDate, time: '00:00' });
+  const cn = await getMarketState({ market: 'CN', businessDate: calendarDate, time: '00:00' });
   if (policy === 'hk-close') {
     if (hk.status !== 'open' || !hk.closeQuoteTime) return null;
     const minute = parseClock(hk.closeQuoteTime);
@@ -187,6 +200,18 @@ function slotMode(slot) {
 function dependenciesForMode(modeMap, mode, fallback) {
   if (modeMap && Object.prototype.hasOwnProperty.call(modeMap, mode)) return modeMap[mode] || [];
   return fallback || [];
+}
+
+/**
+ * 阶段 3 收敛后的任务码依赖解析：带 supersededBy 的旧任务不再自动排程，其任务码依赖
+ * （如 convertible_bond_universe_refresh）已由新收敛任务的数据集分区依赖承接。
+ * 手工补跑/重试旧任务时不能因“已收敛的上游没有计划槽”被永久判为依赖未成功；
+ * 数据集分区门禁（datasetDependencyState）仍照常执行，不放松任何完成证据。
+ */
+function scheduledDependenciesFor(definition, slot) {
+  const dependencies = dependenciesForMode(definition.modeDependencyCodes, slotMode(slot), definition.dependencyCodes);
+  if (jobConvergenceEnabled() && definition && definition.supersededBy) return [];
+  return dependencies;
 }
 
 function readinessDatasetRequirements(slot, definition) {
@@ -680,8 +705,14 @@ async function syncScheduleSlots(now = new Date()) {
   }
   await prefetchMarketFacts('HK', allDates);
   const created = [];
+  // 阶段 2/3 波次收敛（方案 5.2 / 5.3）：默认只排波次一 + 7 个凌晨收敛任务；
+  // 带 supersededBy 的旧任务保留定义、手工补跑与旧槽查询，但不再自动生成计划槽。
+  // JOB_CONVERGENCE_ENABLED=0 时恢复旧排程并跳过新收敛任务，一键回退。
+  const convergenceEnabled = jobConvergenceEnabled();
   for (const definition of JOB_DEFINITIONS) {
     if (definition.manualOnly || definition.disabled) continue;
+    if (convergenceEnabled && definition.supersededBy) continue;
+    if (!convergenceEnabled && CONVERGED_JOB_CODES.includes(definition.jobCode)) continue;
     const schedules = [
       { hour: definition.hour, minute: definition.minute, mode: definition.mode || 'core' },
       ...(definition.additionalSchedules || []),
@@ -743,7 +774,7 @@ async function claimSlot(slotId, workerId = WORKER_ID, triggerType = 'scheduled'
   // R4-01：领取必须按槽位模式解析依赖。原实现读全局 dependencyCodes，
   // 导致显式声明"无依赖"的选股模式仍被 A 股转债链挡住（待执行筛选却已按模式放行），
   // 出现"列为 due 但永远领不到"的僵局。
-  const dependencies = dependenciesForMode(definition.modeDependencyCodes, slotMode(lookup.rows[0]), definition.dependencyCodes);
+  const dependencies = scheduledDependenciesFor(definition, lookup.rows[0]);
   if (dependencies.length) {
     const states = await taskDependencyStates(lookup.rows[0], dependencies);
     if (dependencies.some(code => ['failed', 'degraded', 'blocked'].includes(states.get(code)))) {
@@ -897,7 +928,7 @@ async function listDueSlots(limit = 20, options = {}) {
   for (const slot of rows) {
     const definition = getJobDefinition(slot.job_code);
     if (retryProgressOf(slot).count >= attemptLimit(slot,definition)) continue;
-    const dependencies = dependenciesForMode(definition.modeDependencyCodes, slotMode(slot), definition.dependencyCodes);
+    const dependencies = scheduledDependenciesFor(definition, slot);
     if (dependencies.length) {
       const states = await taskDependencyStates(slot, dependencies);
       const dependencyFailed = dependencies.some(code => ['failed', 'degraded', 'blocked'].includes(states.get(code)));
@@ -1505,7 +1536,8 @@ async function listJobSlots(options = {}) {
       label: labels.get(row.job_code) || row.job_code,
       category: definition.category, importance: definition.importance,
       // R4-01：展示的依赖也要按槽位模式解析，不能显示 core 的转债链而实际可领取。
-      dependency_codes: dependenciesForMode(definition.modeDependencyCodes, slotMode(row), definition.dependencyCodes),
+      // 阶段 3 收敛后旧任务的任务码依赖已由新任务数据集依赖承接，展示同步为空。
+      dependency_codes: scheduledDependenciesFor(definition, row),
       deadline_at: new Date(lateAt).toISOString(), max_attempts: definition.maxAttempts,
       waiting_state: waitingState,
       is_late: ['pending', 'running', 'failed', 'degraded'].includes(row.status) && lateAt < Date.now()
@@ -1520,7 +1552,7 @@ async function getJobSlot(slotId) {
   const [runs, dependencies, alerts, audits] = await Promise.all([
     repository.select_job_runs_2([slotId, rows[0].last_run_id || 0]),
     repository.select_ops_job_schedule_slots_8([rows[0].business_date,
-      dependenciesForMode(definition.modeDependencyCodes, slotMode(rows[0]), definition.dependencyCodes), rows[0].scheduled_for]),
+      scheduledDependenciesFor(definition, rows[0]), rows[0].scheduled_for]),
     repository.select_ops_alert_notifications([slotId]),
     repository.select_admin_audit_log([String(slotId)]),
   ]);
@@ -1678,6 +1710,7 @@ module.exports = {
   waitForReadinessSlot, reconcileReadinessSlots, isReadinessPilot, nextReadinessCheckpoint, readinessMoment,
   listJobSlots, getJobSlot, validateJobSlot, heartbeat, getJobOverview, queryDataAsOf, isDataAsOfFresh, resolveDataAsOf, expectedDataDate,
   isSlotDayAllowed, isWeekday, previousDate, resolveScheduleForDate,
+  scheduledDependenciesFor,
   previousTradingDateOf, resolveScheduleTargetTradeDate,
   resolveDatasetPartitionDate, datasetDependencyState, recoverNavDependencies, attemptLimit, retryProgressOf, sweepStaleSlots,
   reconcileSlot, pendingNeedsTakeoverCheck, blockReasonOf,

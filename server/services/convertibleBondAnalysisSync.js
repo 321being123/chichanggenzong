@@ -32,6 +32,7 @@ const { isActiveBond, isPendingListingBond, isDelistedBond, filterPublicBonds } 
 const { ANNOUNCEMENT_OVERLAP_DAYS, BOND_FIRSTDAY_SCRIPT, BOND_GAP_QUEUE_SCHEMA_VERSION, BOND_ISSUE_RESULT_SCRIPT, BOND_LIQUIDITY_SCRIPT, CN_OFFSET_MS, DAILY_FIELDS, FORMULA_VERSION, PROFILE_FIELDS, STOCK_STATUS_FIELDS, UNIFIED_ANNOUNCEMENT_KEYWORDS, addDays, defaultBondTargetTradeDate, finite, isoDate, normalizeBondCode, revisionDecision } = require('./convertibleBondAnalysisCore.js');
 const { announcementSourceId, announcementSourceKey, backfillMissingRatings, ensureStockUniverse, extractNoRevisionPeriods, extractPriceChangeDetails, loadNoRevisionCache, loadPriceChangeCache, loadRevisionEventCache, loadTrackedDelistedStocks, pythonCandidates, saveDailyBar, saveFullStockMarketPartition, saveProfile, saveRevisionEvents, sourceIds } = require('./convertibleBondAnalysisStore.js');
 const txControl = require('../repositories/transactionControl');
+const pbProjectionSync = require('./pbProjectionSync');
 
 function announcementMatchesBond(event, profile) {
   const title = String(event.title || ''), name = String(profile.bond_short_name || '');
@@ -751,6 +752,8 @@ async function syncConvertibleBondUniverse(reason = 'scheduled', options = {}) {
     let saved = 0;
     let tushareSourceId = null;
     const convPriceChanges = [];
+    // 触发面 1：本事务实际写入的估值交易日，提交后同步 PB 投影（只重算涉及月份）。
+    const projectionValuationDates = new Set();
     try {
       await txControl.begin(client);
       const sources = await sourceIds(client);
@@ -788,7 +791,8 @@ async function syncConvertibleBondUniverse(reason = 'scheduled', options = {}) {
         const valuations = valuationBySource.get(code) || [];
         const sourceId = sources[code];
         if (!sourceId || (!bars.length && !valuations.length)) continue;
-        await saveFullStockMarketPartition(client, stockInstrumentMap, bars, valuations, sourceId, []);
+        const part = await saveFullStockMarketPartition(client, stockInstrumentMap, bars, valuations, sourceId, []);
+        for (const day of part.valuationDates || []) projectionValuationDates.add(day);
       }
       const adjustmentSourceId = sources.tushare;
       if (adjustmentSourceId && stockAdjustmentRows.length) {
@@ -828,6 +832,12 @@ async function syncConvertibleBondUniverse(reason = 'scheduled', options = {}) {
       await repository.insert_ops_sync_cursors([unresolvedCodes.length ? null : isoDate(daily.tradeDate)], client);
       await writeBondGapQueue(client.query.bind(client), gapQueue);
       await txControl.commit(client);
+      if (projectionValuationDates.size) {
+        // 投影失败不得回滚标准事实；safeSync 记录并由下一次对账兜底。
+        await pbProjectionSync.safeSyncValuations({
+          market: 'CN', dates: Array.from(projectionValuationDates).sort(),
+        });
+      }
       console.log(`[主同步] 可转债全量同步已提交（${saved} 只，行情日期 ${daily.tradeDate}）`);
     } catch (error) { await txControl.rollback(client); throw error; }
     finally { client.release(); }
@@ -1044,6 +1054,10 @@ async function getRecentOpenDays(days = 90, endDate = null) {
   })).filter(row => row.trade_date);
   if (rows.length) {
     await repository.insert_market_trade_calendar([JSON.stringify(rows)]);
+    // 触发面 3：交易日历写入后按实际涉及月份重算 CN 投影的 listed_days。
+    const months = Array.from(new Set(rows.map(row => String(row.trade_date).slice(0, 7))))
+      .map(key => ({ year: Number(key.slice(0, 4)), month: Number(key.slice(5, 7)) }));
+    await pbProjectionSync.safeSyncCalendarChange({ market: 'CN', months });
   }
   return rows.filter(row => row.is_open).map(row => row.trade_date).sort();
 }
@@ -1630,6 +1644,8 @@ async function backfillUnderlyingStockMarket({ windowDays = 500, targetTradeDate
   let savedValuations = 0;
   let emptyDays = 0;
   let repairedBars = 0;
+  // 本轮回补实际写入的估值日；所有事务提交后统一按涉及月份同步投影。
+  const projectionValuationDates = new Set();
   try {
     const { rows } = await repository.select_fundamental_convertible_bond_profiles_1([isoDate(targetTradeDate) || tsDateStr(new Date())]);
     const instrumentMap = new Map(rows.map(row => [row.canonical_code, row.instrument_id]));
@@ -1714,6 +1730,7 @@ async function backfillUnderlyingStockMarket({ windowDays = 500, targetTradeDate
             barsBySource.get(code) || [], valuationsBySource.get(code) || [], sourceId);
           saved.bars += part.bars;
           saved.valuations += part.valuations;
+          for (const day of part.valuationDates || []) projectionValuationDates.add(day);
         }
         await txControl.commit(client);
         savedBars += saved.bars;
@@ -1784,6 +1801,11 @@ async function backfillUnderlyingStockMarket({ windowDays = 500, targetTradeDate
         };
       }
       if (repairedBars) console.log(`[股债分析缓存] 按正股代码补齐 ${repairedBars} 行最近行情`);
+    }
+    if (projectionValuationDates.size) {
+      await pbProjectionSync.safeSyncValuations({
+        market: 'CN', dates: Array.from(projectionValuationDates).sort(),
+      });
     }
     await finishJobRun(runId, true, `补齐 ${filledDays} 个交易日（行情 ${savedBars} 行、估值 ${savedValuations} 行、按代码补 ${repairedBars} 行，空日 ${emptyDays}），覆盖 ${instrumentMap.size} 只正股`);
     return { skipped: false, filled_days: filledDays, saved_bars: savedBars, saved_valuations: savedValuations, repaired_bars: repairedBars, empty_days: emptyDays, stock_count: instrumentMap.size };

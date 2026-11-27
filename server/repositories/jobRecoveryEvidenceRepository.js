@@ -42,5 +42,28 @@ function verifySlotRecoveryEvidenceLayerQuery2(executor, parts, ...args) { retur
          FROM ops.dataset_partitions
         WHERE dataset_code=ANY($1::text[]) AND partition_key=$2::date`, ...args); }
 
+// 阶段 3 旧任务码告警映射：旧告警只带 slot_id / job_code，阶段模式必须从原计划槽的
+// request_payload 读取；映射证据（数据集分区 / 连续成功）都按该任务的目标日核对。
+function loadLegacyAlertSlot(executor, parts, ...args) {
+  return executor(`SELECT slot_id,job_code,business_date,scheduled_for,status,request_payload
+       FROM ops.job_schedule_slots WHERE slot_id=$1`, ...args);
+}
+
+function loadLegacyAliasDatasetEvidence(executor, parts, ...args) {
+  return executor(`SELECT dataset_code,scope_key,partition_key::text,status,is_stale,diagnostics
+       FROM ops.dataset_partitions
+      WHERE dataset_code=ANY($1::text[]) AND partition_key=$2::date`, ...args);
+}
+
+// 只取原告警之后的后续实例；最新一条失败就说明当前仍未恢复，不能被更早的成功掩盖。
+function loadLegacySuccessorSuccesses(executor, parts, ...args) {
+  return executor(`SELECT slot_id,job_code,business_date,scheduled_for,status,data_as_of,result_summary
+       FROM ops.job_schedule_slots
+      WHERE job_code=$1 AND scheduled_for > $2::timestamptz
+        AND status IN ('succeeded','degraded','failed')
+      ORDER BY scheduled_for DESC, slot_id DESC LIMIT $3`, ...args);
+}
+
 module.exports = {
-  verifySlotRecoveryEvidenceLayerQuery1, verifySlotRecoveryEvidenceLayerQuery2, recoveryScopeFilter, runQuery };
+  verifySlotRecoveryEvidenceLayerQuery1, verifySlotRecoveryEvidenceLayerQuery2, recoveryScopeFilter, runQuery,
+  loadLegacyAlertSlot, loadLegacyAliasDatasetEvidence, loadLegacySuccessorSuccesses };

@@ -16,6 +16,7 @@ const { Client } = require('pg');
 const { testDatabaseConfig } = require('./lib/testDatabase');
 const { pool } = require('../db/connection');
 const repo = require('../repositories/stockSelectionRepository');
+const pbProjectionRepository = require('../repositories/pbProjectionRepository');
 const registry = require('../services/datasetPartitionRegistry');
 const readiness = require('../services/stockSelectionReadiness');
 
@@ -124,6 +125,14 @@ async function run() {
     }
 
     // ---------- 1. loadUniverse 收窄与全市场逐字段一致 ----------
+    // PB 投影与 daily_valuations 同源：同一事务内按夹具窗口重建，保证读写口径一致。
+    await pbProjectionRepository.rebuildProjectionRange({
+      market: 'CN',
+      fromDate: PB_WINDOW_START,
+      toDate: CN_DATE,
+      months: pbProjectionRepository.monthsBetween(PB_WINDOW_START, CN_DATE),
+      instrumentIds: [aId, bId],
+    }, client);
     const fullUniverse = await repo.loadUniverse({ market: 'CN', asOfDate: CN_DATE }, client);
     const fullCodes = fullUniverse.map(row => row.code);
     ok(fullCodes.includes('990001.SH') && fullCodes.includes('990002.SH'),

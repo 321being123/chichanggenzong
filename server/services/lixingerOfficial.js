@@ -270,6 +270,14 @@ async function runWithRetry(ctx) {
         const parsed = unwrapPayload(payload, endpoint);
         const payloadJson = JSON.stringify(payload);
         const payloadHash = sha256(payloadJson);
+        // 只读探针（persist:false）：仍走统一 Guard 与接口准入，但不写 ops.raw_records、
+        // 不推进接口权限状态。用于阶段 0 的上游就绪探测，避免把探针结果伪装成一次正式采集。
+        if (options.persist === false) {
+          return {
+            rows: parsed.rows, total: parsed.total, rawRecordId: null, payloadHash,
+            cached: false, empty: parsed.rows.length === 0, endpoint: endpoint.key, apiName, requestKey,
+          };
+        }
         const saved = await repository.saveResponse({ sourceCode: SOURCE, requestKey, payloadJson, payloadHash }, client);
         const rawRecordId = saved.rows[0] ? saved.rows[0].raw_record_id : null;
         await recordEndpointPermission(SOURCE, 'primary', apiName, fingerprint, {

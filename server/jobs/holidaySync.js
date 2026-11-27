@@ -3,9 +3,29 @@
 const { tushareQuery, normDate } = require('../services/market');
 const { loadHolidays, saveHolidays, getHolidayLoadError } = require('../config/holidays');
 const calendarRepository = require('../repositories/tradeCalendarRepository');
+const pbProjectionSync = require('../services/pbProjectionSync');
 const CoreDate = require('../../public/shared/core-date');
 
 const REFRESH_DAYS = 30;
+
+function monthsOfDates(dates) {
+  const seen = new Set();
+  const months = [];
+  for (const date of dates || []) {
+    const year = Number(String(date).slice(0, 4));
+    const month = Number(String(date).slice(5, 7));
+    if (!Number.isInteger(year) || !Number.isInteger(month)) continue;
+    const key = `${year}-${month}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    months.push({ year, month });
+  }
+  return months;
+}
+
+function monthsOfYear(year) {
+  return Array.from({ length: 12 }, (_, index) => ({ year: Number(year), month: index + 1 }));
+}
 
 function daysSince(obj) {
   if (!obj || !obj.updatedAt) return 9999;
@@ -92,11 +112,14 @@ async function saveManualHolidays(year, dates) {
     return { ok: true };
   });
   if (!result.ok) throw new Error('日历同步正在执行，请稍后保存');
+  // 触发面 3：人工整年日历重写后，listed_days 可能整体变化，按全年 12 个月整月重算。
+  await pbProjectionSync.safeSyncCalendarChange({ market: 'CN', months: monthsOfYear(year) });
   return result;
 }
 
 async function ensureHolidaysCurrent({ businessDate = CoreDate.todayInZone('Asia/Shanghai') } = {}) {
-  return withCalendarLock(async client => {
+  const changedMonths = [];
+  const result = await withCalendarLock(async client => {
   const obj = loadHolidays();
   const loadError = getHolidayLoadError();
   if (loadError) throw new Error(`运行时休市日历不可写或已损坏：${loadError.message}`);
@@ -133,6 +156,7 @@ async function ensureHolidaysCurrent({ businessDate = CoreDate.todayInZone('Asia
       throw new Error(`${targetYear}年官方日历与现有配置冲突，保留旧值并等待核对`);
     }
     await storeCalendar(client, fetched, 'tushare');
+    changedMonths.push(...monthsOfDates(fetched.map(row => row.trade_date)));
     nextObj.years[targetYear] = incomingHolidays;
   }
   const nextTradeDate = await calendarRepository.findNextTradingDate(businessDate, client);
@@ -144,6 +168,11 @@ async function ensureHolidaysCurrent({ businessDate = CoreDate.todayInZone('Asia
     datasetDiagnostics: { trade_calendar: { query_status: 'success', quality_status: 'passed',
       coverage_status: 'complete', exchange: 'SSE', next_trade_date: nextTradeDate } } };
   });
+  // 触发面 3：只对本次真正写过的月份整月重算，避免每天全量扫十年。
+  if (changedMonths.length) {
+    await pbProjectionSync.safeSyncCalendarChange({ market: 'CN', months: changedMonths });
+  }
+  return result;
 }
 
 module.exports = { ensureHolidaysCurrent, fetchTradeCal, saveManualHolidays, datesForYear, validateCalendarRows };

@@ -606,17 +606,23 @@
     <div id="ss-market-cards" class="ss-cards bond-feature-stats" hidden></div>
     <div class="table-wrap ss-source-panel">
       <div class="ss-toolbar bond-feature-toolbar">
+        <div class="ss-view-switch" id="ss-view-mode" role="tablist" aria-label="选择筛选方式">
+          <button type="button" class="ss-view-tab active" data-ss-mode="realtime" role="tab" aria-selected="true">实时按日筛选</button>
+          <button type="button" class="ss-view-tab" data-ss-mode="archive" role="tab" aria-selected="false">历史归档快照</button>
+        </div>
         <div class="bond-sub-nav ss-period-tabs" id="ss-period-tabs" aria-label="选择结果周期">
           <button type="button" class="bond-sub-tab" data-ss-period="daily">每日动态</button>
           <button type="button" class="bond-sub-tab" data-ss-period="weekly">每周正式</button>
           <button type="button" class="bond-sub-tab" data-ss-period="quarter">历史季度</button>
         </div>
         <div class="ss-toolbar-right">
-          <label>来源批次<select id="ss-run-select" aria-label="选择公共来源批次"><option value="">正在读取...</option></select></label>
+          <label class="ss-date-field" id="ss-date-field">目标日期<input type="date" id="ss-asof-date" aria-label="实时筛选目标日期"></label>
+          <label id="ss-run-field">来源批次<select id="ss-run-select" aria-label="选择公共来源批次"><option value="">正在读取...</option></select></label>
           <button type="button" class="btn btn-outline btn-sm" id="ss-run-load-more">加载更早来源</button>
           <button type="button" class="btn btn-outline btn-sm" id="ss-exclusion-toggle" aria-expanded="false" aria-controls="ss-exclusions">排除管理（0）</button>
         </div>
       </div>
+      <div id="ss-archive-hint" class="ss-archive-hint" hidden>历史归档快照（仅展示入选组合与轻量化摘要；查看全市场明细请切换至实时按日筛选）</div>
       <div id="ss-run-header" class="ss-run-header"></div>
       <div id="ss-exclusions" class="ss-exclusions" hidden></div>
       <div class="ss-portfolio-block">
@@ -626,7 +632,7 @@
     </div>
     <div id="ss-detail" class="ss-detail" hidden></div>
     <div class="table-wrap">
-      <div class="table-header"><h3>结果批次（候选）</h3></div>
+      <div class="table-header"><h3 id="ss-candidates-title">结果批次（候选）</h3></div>
       <div id="ss-candidates"></div>
     </div>
   </div>

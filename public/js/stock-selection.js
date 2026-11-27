@@ -74,12 +74,64 @@ function ssTargetFromNode(node) {
   };
 }
 
+// 模式切换：实时按日筛选（/screen）与历史归档快照（/runs）共用同一套表格和排除交互。
+// 归档模式显式提示只展示入选组合与轻量化摘要，避免把陈旧快照误当最新全市场结果。
+function ssRenderViewMode(state) {
+  var mode = state && state.viewMode === 'realtime' ? 'realtime' : 'archive';
+  if (typeof document.querySelectorAll === 'function') {
+    document.querySelectorAll('[data-ss-mode]').forEach(function (button) {
+      var active = button.dataset && button.dataset.ssMode === mode;
+      button.classList.toggle('active', active);
+      button.setAttribute('aria-selected', active ? 'true' : 'false');
+    });
+  }
+  var periodTabs = ssEl('ss-period-tabs'); if (periodTabs) periodTabs.hidden = mode === 'realtime';
+  var runField = ssEl('ss-run-field'); if (runField) runField.hidden = mode === 'realtime';
+  var runMore = ssEl('ss-run-load-more'); if (runMore) runMore.hidden = mode === 'realtime';
+  var dateField = ssEl('ss-date-field'); if (dateField) dateField.hidden = mode !== 'realtime';
+  var dateInput = ssEl('ss-asof-date'); if (dateInput && state && state.asOfDate) dateInput.value = state.asOfDate;
+  var hint = ssEl('ss-archive-hint');
+  if (hint) {
+    if (mode === 'archive') {
+      hint.hidden = false;
+      hint.textContent = state && state.realtimeDisabled
+        ? '实时按日筛选当前已停用，页面仅展示历史归档快照（仅展示入选组合与轻量化摘要）。'
+        : '历史归档快照（仅展示入选组合与轻量化摘要；查看全市场明细请切换至实时按日筛选）';
+    } else {
+      hint.hidden = true; hint.textContent = '';
+    }
+  }
+  var title = ssEl('ss-candidates-title');
+  if (title) title.textContent = mode === 'realtime' ? '实时筛选结果（候选）' : '结果批次（候选）';
+}
+
+// 实时筛选结果头部：目标日、策略、质量/门槛和计算时刻；没有归档批次号。
+function ssRenderRealtimeHeader(state) {
+  var root = ssEl('ss-run-header'); if (!root) return; ssCloseMetricTooltip(false);
+  var meta = state && state.realtimeMeta;
+  if (!meta) { root.innerHTML = ''; return; }
+  var strategy = state.scheme === 'graham_net_net' ? '格雷厄姆净流动资产' : (ssIsV2(state) ? '投资要义 V2' : '投资要义 V1');
+  var gate = meta.gate && meta.gate.status ? (SS_GATE_TEXT[meta.gate.status] || meta.gate.status) : '';
+  var computedAt = meta.computedAt ? String(meta.computedAt).replace('T', ' ').slice(0, 19) : '';
+  root.innerHTML = '<div class="ss-run-meta"><span class="ss-tag ss-tag-ok">实时按日筛选</span>'
+    + '<span>目标日 ' + ssEsc(meta.asOfDate || state.asOfDate) + '</span>'
+    + '<span>策略 ' + ssEsc(strategy) + '</span>'
+    + '<span>结果 ' + ssEsc(state.realtimeTotal) + ' 只</span>'
+    + (gate ? '<span>' + ssEsc(gate) + '</span>' : '')
+    + (computedAt ? '<span>计算于 ' + ssEsc(computedAt) + '</span>' : '')
+    + '</div><div class="ss-run-note">按目标日实时计算全市场结果，只读数据库、不写入归档；组合与候选随日期、市场、策略和个人排除实时变化。</div>';
+}
+
 function ssInitView() {
   if (window.__ssReady) return; window.__ssReady = true;
   var tabs = ssEl('ss-tabs');
   if (tabs) tabs.addEventListener('click', function (event) { var button = event.target.closest('[data-ss-market]'); if (button && window.StockSelectionPresenter) window.StockSelectionPresenter.switchMarket(button.dataset.ssMarket); });
   var schemeTabs = ssEl('ss-scheme-tabs');
   if (schemeTabs) schemeTabs.addEventListener('click', function (event) { var button = event.target.closest('[data-ss-scheme]'); if (button && window.StockSelectionPresenter) window.StockSelectionPresenter.selectScheme(button.dataset.ssScheme); });
+  var viewMode = ssEl('ss-view-mode');
+  if (viewMode) viewMode.addEventListener('click', function (event) { var button = event.target.closest('[data-ss-mode]'); if (button && window.StockSelectionPresenter) window.StockSelectionPresenter.switchViewMode(button.dataset.ssMode); });
+  var asOfDate = ssEl('ss-asof-date');
+  if (asOfDate) asOfDate.addEventListener('change', function (event) { if (window.StockSelectionPresenter) window.StockSelectionPresenter.setAsOfDate(event.target.value); });
   var runSelect = ssEl('ss-run-select');
   if (runSelect) runSelect.addEventListener('change', function (event) { if (window.StockSelectionPresenter) window.StockSelectionPresenter.selectRun(event.target.value); });
   var runMore = ssEl('ss-run-load-more');
@@ -411,7 +463,7 @@ function ssRenderCandidates(state) {
   var focusedAction = active && focusedRow ? active.getAttribute('data-ss-action') : null;
   var focusedActionFamily = ssActionFamily(focusedAction);
   if (!list.length) {
-    root.innerHTML = '<div class="ss-empty">当前市场 / 周期 / 来源暂无候选结果</div>';
+    root.innerHTML = '<div class="ss-empty">' + (state.viewMode === 'realtime' ? '当前市场 / 目标日 / 策略暂无候选结果' : '当前市场 / 周期 / 来源暂无候选结果') + '</div>';
     if (focusedRow) ssRestoreRowFocus(root, focusedCode, focusedAction, focusedActionFamily, ssEl('ss-exclusions') || ssEl('ss-run-header') || root);
     return;
   }
@@ -455,7 +507,8 @@ function ssRenderCandidates(state) {
   var newViewport = root.querySelector('.biz-table-scroll'); if (newViewport && oldScrollLeft !== null) newViewport.scrollLeft = oldScrollLeft;
   if (focusedCode) ssRestoreRowFocus(root, focusedCode, focusedAction, focusedActionFamily, root.querySelector('.ss-list-foot') || ssEl('ss-exclusions') || root);
   var more = ssEl('ss-load-more'); if (more) more.addEventListener('click', function () { if (window.StockSelectionPresenter) window.StockSelectionPresenter.loadMore(); });
-  if (window.BusinessTable) window.BusinessTable.attach(root, { page: '#main-stock-selection' }); ssRenderRunHeader(state);
+  if (window.BusinessTable) window.BusinessTable.attach(root, { page: '#main-stock-selection' });
+  if (state.viewMode === 'realtime') ssRenderRealtimeHeader(state); else ssRenderRunHeader(state);
 }
 
 function ssRenderPortfolio(state) {
@@ -466,7 +519,7 @@ function ssRenderPortfolio(state) {
   var focusedAction = active && focusedRow ? active.getAttribute('data-ss-action') : null;
   var focusedActionFamily = ssActionFamily(focusedAction);
   var portfolio = state.portfolio;
-  if (!portfolio) { root.innerHTML = '<div class="ss-empty">当前市场 / 周期 / 来源暂无目标组合</div>'; return; }
+  if (!portfolio) { root.innerHTML = '<div class="ss-empty">' + (state.viewMode === 'realtime' ? '当前市场 / 目标日 / 策略暂无目标组合' : '当前市场 / 周期 / 来源暂无目标组合') + '</div>'; return; }
   var rows = (portfolio.members || []).map(function (member) {
     var industry = member.industryCode ? { code: member.industryCode, name: member.industryName, system: member.industrySystem, version: member.industryVersion } : null;
     var item = { code: member.code, name: member.name, instrumentId: member.instrumentId, industry: industry };
@@ -545,7 +598,8 @@ function ssRenderDetail(state) {
   var candidate = detail.candidate; var rules = (candidate.detail && candidate.detail.rules) || {};
   var labels = { R01: '当前 PB', R02: '十年 PB', R04: '股息率', R05: '净资产' };
   var rows = ['R01', 'R02', 'R04', 'R05'].map(function (code) { var rule = rules[code] || {}; return '<tr><td>' + ssEsc(labels[code]) + '</td><td>' + ssEsc(rule.status || '--') + '</td><td>' + ssEsc(rule.reason || '') + '</td><td class="text-right">' + (rule.value === null || rule.value === undefined ? '--' : Number(rule.value).toFixed(4)) + '</td></tr>'; }).join('');
-  root.hidden = false; root.innerHTML = '<div class="ss-detail-head"><h3>' + ssEsc(candidate.name || candidate.code) + '（' + ssEsc(candidate.code) + '）</h3><button class="btn btn-outline btn-sm" id="ss-detail-close">关闭</button></div><div class="ss-detail-meta">批次 #' + ssEsc(detail.runId) + ' · 目标日 ' + ssEsc(detail.asOfDate) + ' · 行业 ' + ssEsc(candidate.industry ? candidate.industry.name : '待核验') + ' · PB ' + (candidate.currentPb === null ? '--' : Number(candidate.currentPb).toFixed(3)) + ' · PE（TTM） ' + (candidate.currentPe === null ? '--' : Number(candidate.currentPe).toFixed(2)) + ' · 股息率 ' + (candidate.dividendYield === null ? '--' : (Number(candidate.dividendYield) * 100).toFixed(2) + '%') + '</div><div class="biz-table-scroll"><table class="biz-table"><thead><tr><th>规则</th><th>结论</th><th>原因</th><th class="text-right">取值</th></tr></thead><tbody>' + rows + '</tbody></table></div>';
+  var batchLabel = detail.runId === null || detail.runId === undefined ? '实时筛选' : '批次 #' + ssEsc(detail.runId);
+  root.hidden = false; root.innerHTML = '<div class="ss-detail-head"><h3>' + ssEsc(candidate.name || candidate.code) + '（' + ssEsc(candidate.code) + '）</h3><button class="btn btn-outline btn-sm" id="ss-detail-close">关闭</button></div><div class="ss-detail-meta">' + batchLabel + ' · 目标日 ' + ssEsc(detail.asOfDate) + ' · 行业 ' + ssEsc(candidate.industry ? candidate.industry.name : '待核验') + ' · PB ' + (candidate.currentPb === null || candidate.currentPb === undefined ? '--' : Number(candidate.currentPb).toFixed(3)) + ' · PE（TTM） ' + (candidate.currentPe === null || candidate.currentPe === undefined ? '--' : Number(candidate.currentPe).toFixed(2)) + ' · 股息率 ' + (candidate.dividendYield === null || candidate.dividendYield === undefined ? '--' : (Number(candidate.dividendYield) * 100).toFixed(2) + '%') + '</div><div class="biz-table-scroll"><table class="biz-table"><thead><tr><th>规则</th><th>结论</th><th>原因</th><th class="text-right">取值</th></tr></thead><tbody>' + rows + '</tbody></table></div>';
   var personalLabel = ssPersonalCandidateLabel(candidate);
   if (personalLabel) {
     var selectionNote = document.createElement('div'); selectionNote.className = 'ss-detail-note';
@@ -555,4 +609,4 @@ function ssRenderDetail(state) {
   var close = ssEl('ss-detail-close'); if (close) close.addEventListener('click', function () { state.detail = null; ssRenderDetail(state); });
 }
 
-window.StockSelectionView = { init: ssInitView, setStatus: ssSetStatus, setError: ssSetError, renderMarkets: ssRenderMarkets, renderRuns: ssRenderRuns, renderPeriodTabs: ssRenderPeriodTabs, renderRuleScope: ssRenderRuleScope, renderRunHeader: ssRenderRunHeader, renderCandidates: ssRenderCandidates, renderPortfolio: ssRenderPortfolio, renderExclusions: ssRenderExclusions, renderDetail: ssRenderDetail };
+window.StockSelectionView = { init: ssInitView, setStatus: ssSetStatus, setError: ssSetError, renderMarkets: ssRenderMarkets, renderRuns: ssRenderRuns, renderPeriodTabs: ssRenderPeriodTabs, renderRuleScope: ssRenderRuleScope, renderViewMode: ssRenderViewMode, renderRealtimeHeader: ssRenderRealtimeHeader, renderRunHeader: ssRenderRunHeader, renderCandidates: ssRenderCandidates, renderPortfolio: ssRenderPortfolio, renderExclusions: ssRenderExclusions, renderDetail: ssRenderDetail };

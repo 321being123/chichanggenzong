@@ -8,6 +8,7 @@ const path = require('path');
 const fs = require('fs');
 const vm = require('vm');
 require('dotenv').config({ path: path.join(__dirname, '..', '..', '.env') });
+const pbProjectionRepository = require('../repositories/pbProjectionRepository');
 
 const TEST_MARK = '6099';
 const MARKET = 'CN';
@@ -70,6 +71,11 @@ async function seedCalendar(pool) {
 
 async function cleanup(pool) {
   const codes = ALL_CODES;
+  // 旧投影表可能保留 instrument_id 外键且无级联；删证券前先按代码清理投影行。
+  await pool.query(`DELETE FROM analytics.stock_daily_pb_picked
+     WHERE instrument_id IN (SELECT instrument_id FROM core.instruments WHERE canonical_code = ANY($1))`, [codes]);
+  await pool.query(`DELETE FROM analytics.instrument_pb_monthly_summary
+     WHERE instrument_id IN (SELECT instrument_id FROM core.instruments WHERE canonical_code = ANY($1))`, [codes]);
   await pool.query(
     `DELETE FROM analytics.stock_selection_request_bindings
       WHERE run_id IN (SELECT run_id FROM analytics.stock_selection_runs WHERE market=$1 AND as_of_date=$2::date)`,
@@ -102,6 +108,8 @@ async function cleanup(pool) {
     `SELECT instrument_id FROM core.instruments WHERE canonical_code = ANY($1)`, [codes]);
   const instrumentIds = instruments.map(row => row.instrument_id);
   if (instrumentIds.length) {
+    await pool.query(`DELETE FROM analytics.stock_daily_pb_picked WHERE instrument_id = ANY($1::bigint[])`, [instrumentIds]);
+    await pool.query(`DELETE FROM analytics.instrument_pb_monthly_summary WHERE instrument_id = ANY($1::bigint[])`, [instrumentIds]);
     await pool.query(`DELETE FROM market.daily_valuations WHERE instrument_id = ANY($1::bigint[]) AND trade_date=$2::date`, [instrumentIds, AS_OF]);
     await pool.query(`DELETE FROM market.daily_bars WHERE instrument_id = ANY($1::bigint[]) AND trade_date=$2::date`, [instrumentIds, AS_OF]);
     await pool.query(`DELETE FROM fundamental.corporate_actions WHERE instrument_id = ANY($1::bigint[])`, [instrumentIds]);
@@ -259,7 +267,16 @@ async function main() {
     // 必须清掉同一市场的旧 artifact，否则新证券不在旧名单里会被判成"历史池不可恢复"。
     // 这正是生产语义（今日名单不能回填历史），测试要显式声明自己的目标日是新造的。
     await pool.query('DELETE FROM analytics.stock_selection_universe_artifacts WHERE market = $1', [MARKET]);
-    await seed(pool);
+    const seeded = await seed(pool);
+    // PB 投影与 daily_valuations 同源：测试直接写标准事实后按同一窗口重建投影，
+    // 让 PB_PROJECTION_READ_ENABLED 默认开启时仍能验证十年覆盖与缺口口径。
+    await pbProjectionRepository.rebuildProjectionRange({
+      market: MARKET,
+      fromDate: '2016-09-30',
+      toDate: AS_OF,
+      months: pbProjectionRepository.monthsBetween('2016-09-30', AS_OF),
+      instrumentIds: seeded.instrumentIds,
+    });
 
     // ===== 整改反例的真库取证（SSV-04 / SSV-09）=====
     const repo = require('../repositories/stockSelectionRepository');

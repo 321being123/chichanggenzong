@@ -97,6 +97,22 @@ assert.deepStrictEqual(directTransportCalls('window.adminFetchMe()'), ['adminFet
   assert(w.document.getElementById('jobs-slots-tbody').textContent.includes('等待复查'), 'waiting_readiness 必须显示为等待复查');
   assert(w.document.getElementById('jobs-alerts-tbody').textContent.includes('归并 2 条告警'), '归并告警必须保留可展开入口');
   assert(w.document.getElementById('jobs-summary').textContent.includes('告警组数'), '汇总必须使用归并组口径');
+  // 同名任务按子模式/市场展示：stock_analysis_refresh 一天多个槽位必须可区分（方案 5.5）。
+  assert.strictEqual(w.formatSlotDisplayName({ job_code: 'stock_analysis_refresh', request_payload: { mode: 'selection_archive_light', market: 'CN' } }), '个股分析刷新（选股轻量归档 · A股）');
+  assert.strictEqual(w.formatSlotDisplayName({ job_code: 'stock_analysis_refresh', request_payload: { mode: 'stock_analysis_hk' } }), '个股分析刷新（港股）');
+  assert.strictEqual(w.formatSlotDisplayName({ job_code: 'stock_analysis_refresh', request_payload: { mode: 'selection_daily', market: 'HK' } }), '个股分析刷新（日度选股 · 港股）');
+  assert.strictEqual(w.formatSlotDisplayName({ job_code: 'stock_analysis_refresh', request_payload: { mode: 'selection_weekly', market: 'CN' } }), '个股分析刷新（周度选股 · A股）');
+  assert.strictEqual(w.formatSlotDisplayName({ job_code: 'stock_analysis_refresh', request_payload: { mode: 'selection_quarterly', market: 'CN' } }), '个股分析刷新（季度选股 · A股）');
+  w.adminPaintJobs([
+    { counts: [], alerts: [], workers: [], health: {} },
+    { list: [
+      { slot_id: 2, job_code: 'stock_analysis_refresh', request_payload: { mode: 'selection_archive_light', market: 'CN' }, scheduled_for: '2026-11-19T10:40:00Z', status: 'pending', attempt_count: 0, max_attempts: 3 },
+      { slot_id: 3, job_code: 'stock_analysis_refresh', request_payload: { mode: 'stock_analysis_hk' }, scheduled_for: '2026-11-19T10:55:00Z', status: 'pending', attempt_count: 0, max_attempts: 3 },
+    ] },
+    { recent: [] }, { list: [] }, { list: [] },
+  ]);
+  assert(w.document.getElementById('jobs-slots-tbody').textContent.includes('个股分析刷新（选股轻量归档 · A股）'), '槽位列表必须显示子模式与市场');
+  assert(w.document.getElementById('jobs-slots-tbody').textContent.includes('个股分析刷新（港股）'), '港股子模式必须可区分');
   // 告警组数必须取总览的归并组合计，不能取列表长度：列表有上限（页面按 30 组拉取），
   // 31 组时任务页会显示 30，与运营分析对不上（2026-11-19 复验 P2）。
   const statValue = label => {

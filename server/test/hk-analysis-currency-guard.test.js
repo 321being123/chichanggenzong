@@ -104,7 +104,7 @@ async function main() {
     assert.strictEqual(snapshot.valuation.pe_ttm, 12);
     assert.strictEqual(old.cashflow.latest_year.operating, 40, '不能修改已保存的快照对象');
     assert.strictEqual(hk.publicSnapshotOf(old).cashflow.latest_year.operating, null);
-    assert.strictEqual(hk.publicSnapshotOf(analysis).display.formula_version, 'hk-7');
+    assert.strictEqual(hk.publicSnapshotOf(analysis).display.formula_version, 'hk-8');
     assert.strictEqual((await hk.refreshHkAnalysis('00005.HK')).cashflow.latest_year.operating, null);
     // hk-6 旧快照在 hk-7 下自动失效保护（汇率读取修复 + 图表币种口径变化）
     const oldHk6 = { ...old, display: { ...old.display, formula_version: 'hk-6' } };

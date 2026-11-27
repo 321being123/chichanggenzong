@@ -67,6 +67,22 @@ const PERIOD_TYPE_ALIASES = Object.freeze({
   第三季度报告: 'q3',
 });
 
+// 页面展示用中文标签（反馈 #116）：英文报告期类型不得直接出现在「最新报告」。
+// 未登记的类型保留原值，由调用方决定是否显示，不能把未知值改写成「年报」。
+const PERIOD_TYPE_LABELS = Object.freeze({
+  annual: '年报',
+  semiannual: '半年报',
+  q1: '一季报',
+  q3: '三季报',
+});
+
+function financialPeriodLabel(value) {
+  const normalized = normalizeFinancialPeriodType(value);
+  if (normalized) return PERIOD_TYPE_LABELS[normalized];
+  const text = String(value == null ? '' : value).trim();
+  return text && text.toLowerCase() !== 'unknown' ? text : '';
+}
+
 function normalizeFinancialPeriodType(value) {
   let text = String(value == null ? '' : value).trim().toLowerCase();
   if (!text || text === 'unknown' || text === 'other') return null;
@@ -178,6 +194,8 @@ function resolveFinancialPeriodType({ periodType, periodEnd, reportPeriodLabel, 
 module.exports = {
   KNOWN_PERIOD_TYPES,
   PERIOD_TYPE_ALIASES,
+  PERIOD_TYPE_LABELS,
+  financialPeriodLabel,
   normalizeFinancialPeriodType,
   fiscalYearEndAnchors,
   inferFinancialPeriodType,

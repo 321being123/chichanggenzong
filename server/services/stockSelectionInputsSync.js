@@ -14,9 +14,11 @@ const { upsertIndustryPath } = require('../repositories/industryRepository');
 // 财报历史要覆盖"最新一年 + 此前十年"（方案 5.2 的 11 个完整财年），再往前留一年缓冲。
 const HISTORY_YEARS = 12;
 const REPORT_KINDS = ['income', 'balance', 'cashflow', 'indicator'];
-// 港股估值要覆盖十年 PB 窗口（R02），再留一年缓冲；收盘价只需覆盖近一年（R04 分母 + 60 天窗口判定）。
+// 港股估值要覆盖十年 PB 窗口（R02），再留一年缓冲；选股收盘价只需覆盖近一年（R04 分母 + 60 天窗口判定）。
+// 个股分析页需要完整十年股价（反馈 #117），单股刷新通过 historyYears 单独扩大到 11 年，不放大选股批次。
 const HK_VALUATION_YEARS = 11;
 const HK_PRICE_YEARS = 1;
+const HK_ANALYSIS_PRICE_YEARS = 11;
 
 function finite(value) {
   if (value === null || value === undefined || value === '') return null;
@@ -426,14 +428,17 @@ async function collectHkMarketData(gap, asOfDate, timing = null, deps = {}) {
   const instrumentId = meta.instrument_id === null || meta.instrument_id === undefined ? null : Number(meta.instrument_id);
   if (!instrumentId) return { code: gap.code, ok: false, reason: 'instrument_id_missing' };
   const datasets = deps.datasets || require('../dataAccess/marketDatasets');
-  const { readStockValuationSeriesBatch, readStockDailySeries } = datasets;
+  const { readStockValuationSeriesBatch, readStockDailySeries, readStockForwardAdjustedSeries } = datasets;
   const store = require('./convertibleBondAnalysisStore');
   const sources = await store.sourceIds();
   const officialId = sources.lixinger_official;
   if (!officialId) return { code: gap.code, ok: false, reason: 'valuation_source_missing' };
 
   const valuationStart = dashDate(shiftYears(asOfDate, HK_VALUATION_YEARS)) || '2000-01-01';
-  const priceStart = dashDate(shiftYears(asOfDate, HK_PRICE_YEARS)) || valuationStart;
+  // 单股分析刷新传入 historyYears=11 时才拉十年日线；选股补数仍按一年，避免放大全市场批次。
+  const priceYears = Number(gap.historyYears) > 0 ? Number(gap.historyYears) : HK_PRICE_YEARS;
+  const priceStart = dashDate(shiftYears(asOfDate, priceYears)) || valuationStart;
+  const includeAdjustments = gap.includeAdjustments === true && priceYears >= HK_ANALYSIS_PRICE_YEARS;
   // B2-3：历史估值也按 fsTableType 分流；选股补数要求类型先确认，未知类型不猜非金融端点，
   // 留缺口等档案核对（也避免为此白查覆盖与日历）。
   const fsTableType = deps.fsTableTypeByCode
@@ -499,7 +504,12 @@ async function collectHkMarketData(gap, asOfDate, timing = null, deps = {}) {
   if (timing) timing.persistMs = (timing.persistMs || 0) + (Date.now() - valuationWriteStartedAt);
 
   let rawBars = [];
-  for (const segment of barSegments) {
+  // 单股分析刷新需要十年收盘价才能画完整前复权曲线；此时整段重取一次，
+  // 同时作为前复权因子的分母。选股仍只补真实断档段。
+  const barFetchSegments = includeAdjustments && priceYears >= HK_ANALYSIS_PRICE_YEARS
+    ? [{ startDate: priceStart, endDate: asOfDate }]
+    : barSegments;
+  for (const segment of barFetchSegments) {
     try {
       const rows = await readStockDailySeries({
         tsCode: meta.ts_code, startDate: segment.startDate, endDate: segment.endDate, market: 'hk',
@@ -520,16 +530,46 @@ async function collectHkMarketData(gap, asOfDate, timing = null, deps = {}) {
   });
   if (timing) timing.persistMs = (timing.persistMs || 0) + (Date.now() - barWriteStartedAt);
 
+  let adjustmentWritten = 0;
+  if (includeAdjustments) {
+    let forwardRows = [];
+    for (const segment of barFetchSegments) {
+      try {
+        const rows = await readStockForwardAdjustedSeries({
+          tsCode: meta.ts_code, startDate: segment.startDate, endDate: segment.endDate, market: 'hk',
+        });
+        forwardRows = forwardRows.concat(rows || []);
+      } catch (error) {
+        // 前复权只是派生指标；取不到时保持因子缺失，不影响不复权收盘价和估值。
+        if (String(error && error.code) === 'JOB_BUDGET_EXCEEDED') throw error;
+        partial = true;
+      }
+    }
+    const rawCloseByDate = new Map(rawBars.map(row => [normalizeTradeDate(row.trade_date), finite(row.close)]));
+    const factorRows = forwardRows.map(row => {
+      const tradeDate = normalizeTradeDate(row.trade_date);
+      const forwardClose = finite(row.close);
+      const rawClose = rawCloseByDate.get(tradeDate);
+      if (!tradeDate || forwardClose === null || forwardClose <= 0 || rawClose === null || rawClose <= 0) return null;
+      return { tradeDate, adjFactor: forwardClose / rawClose };
+    }).filter(Boolean);
+    if (factorRows.length) {
+      adjustmentWritten = await require('../repositories/hkSecurityAnalysisRepository')
+        .saveAdjustmentFactors({ instrumentId, sourceId: officialId, rows: factorRows });
+    }
+  }
+
   const ok = valuationWritten > 0 || barWritten > 0;
   return {
     code: gap.code,
     ok,
-    reason: ok ? undefined : (valuationSegments.length || barSegments.length ? 'projection_returned_empty' : 'already_covered'),
+    reason: ok ? undefined : (valuationSegments.length || barFetchSegments.length ? 'projection_returned_empty' : 'already_covered'),
     valuations: valuationWritten,
     bars: barWritten,
+    adjustments: adjustmentWritten,
     partial,
     // 本次实际请求的断档段：证明尾部 1–5 天缺口没有重拉 11 年。
-    coverageSegments: { valuation: valuationSegments, bars: barSegments },
+    coverageSegments: { valuation: valuationSegments, bars: barFetchSegments },
   };
 }
 

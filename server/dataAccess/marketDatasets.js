@@ -516,6 +516,17 @@ async function readStockDailySeries({ tsCode, startDate, endDate, market = 'cn' 
   return tsRows(data).map(row => ({ ...row, source_code: 'tushare', price_adjust: 'none' }));
 }
 
+// 单只前复权日线：官方 candlestick type=forward，仅用于港股复权因子派生。
+// 绝不用它替换 market.daily_bars 的不复权收盘价；拿不到就返回空，由调用方保持缺失。
+async function readStockForwardAdjustedSeries({ tsCode, startDate, endDate, market = 'hk' } = {}) {
+  const primary = await safeOfficial(
+    () => official.resolveStockDaily({ tsCode, startDate, endDate, market, adjustment: 'forward' }),
+    'stock_daily',
+  );
+  if (!primary.value || !primary.value.length) return [];
+  return primary.value.map(row => ({ ...row, price_adjust: 'qfq' }));
+}
+
 // 批量日线（按需求集合）：官方逐只优先，官方没覆盖的代码由 Tushare 按代码补。
 async function readStockDailyBatch({ tsCodes, tradeDate } = {}) {
   const list = Array.from(new Set((tsCodes || []).filter(Boolean)));
@@ -996,6 +1007,7 @@ module.exports = {
   readConvertibleBondQuotes,
   readDividendRows,
   readDividendRowsWithCoverage,
+  readStockForwardAdjustedSeries,
   readFinancialReportRows,
   readFinancialStatementSeries,
   readIndexCloseSeries,

@@ -89,10 +89,13 @@ const REPORT_TABLES = Object.freeze({
   balance: 'fundamental.statement_balance_hkfrs',
   cashflow: 'fundamental.statement_cashflow_hkfrs',
 });
+// 反馈 #115/#118：除基础三表外补充官方已有的分红与安全性字段。
+// 分红率/分红金额直接取理杏仁年报指标，不再依赖本地分红事件是否采集完整；
+// 现金、短期投资与有息负债用于净现金安全额，利润总额与利息支出用于利息保障倍数。
 const REPORT_SELECTS = Object.freeze({
-  income: 'w.ps_npatoshopc,w.ps_np,w.ps_toi,w.ps_oi,w.ps_beps',
-  balance: 'w.bs_tetoshopc,w.bs_tetshaoehopc,w.bs_ta,w.bs_tl,w.bs_gw',
-  cashflow: 'w.cfs_ncffoa',
+  income: 'w.ps_npatoshopc,w.ps_np,w.ps_toi,w.ps_oi,w.ps_beps,w.ps_da,w.ps_d_np_r,w.ps_tp,w.ps_ie,w.ps_fc,w.ps_fe',
+  balance: 'w.bs_tetoshopc,w.bs_tetshaoehopc,w.bs_ta,w.bs_tl,w.bs_gw,w.bs_cabb,w.bs_sti,w.bs_cfiafvtpol,w.bs_stl,w.bs_stpl,w.bs_ltl,w.bs_ltpl,w.bs_bp,w.bs_stbp,w.bs_stlcofcb,w.bs_ltlcofcb,w.bs_stll,w.bs_ltll',
+  cashflow: 'w.cfs_ncffoa,w.cfs_ncffia',
 });
 const REPORT_KINDS = Object.freeze(['income', 'balance', 'cashflow']);
 
@@ -152,7 +155,27 @@ async function searchInstrumentCandidates(text, tx) {
   return rows;
 }
 
+// 港股复权因子：由官方前复权收盘价 / 不复权收盘价派生，写入现有 market.adjustment_factors。
+// 只写官方来源；同一日期重复刷新覆盖，不新建平行价格表。
+async function saveAdjustmentFactors({ instrumentId, sourceId, rows = [] }, tx) {
+  const runner = tx || pool;
+  const valid = (rows || []).filter(row => row && row.tradeDate && Number.isFinite(Number(row.adjFactor)) && Number(row.adjFactor) > 0);
+  if (!instrumentId || !sourceId || !valid.length) return 0;
+  const dates = valid.map(row => String(row.tradeDate).slice(0, 10));
+  const factors = valid.map(row => Number(row.adjFactor));
+  await runner.query(
+    `INSERT INTO market.adjustment_factors(instrument_id,trade_date,source_id,adj_factor)
+     SELECT $1::bigint,d::date,$2::smallint,f
+       FROM unnest($3::text[],$4::numeric[]) AS t(d,f)
+     ON CONFLICT(instrument_id,trade_date,source_id)
+     DO UPDATE SET adj_factor=EXCLUDED.adj_factor,ingested_at=now()`,
+    [instrumentId, sourceId, dates, factors],
+  );
+  return valid.length;
+}
+
 module.exports = {
   readHkCoverage, listTrackedHkCodes, readRefreshSlotForUser,
   readHkReportFacts, listHkStatementRows, searchInstrumentCandidates,
+  saveAdjustmentFactors,
 };

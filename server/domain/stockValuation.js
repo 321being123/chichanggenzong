@@ -234,9 +234,14 @@ function buildAnalysis(data, options = {}) {
   const annualDividend = dividendRows.filter(item => String(item.row.end_date || '').startsWith(latestAnnualYear)).reduce((sum, item) => sum + (item.amount || 0), 0);
   const cumulativeDividend = actualDividendRows.reduce((sum, item) => sum + (item.amount || 0), 0);
   const cumulativeProfit = annualIncome.reduce((sum, row) => sum + (finite(row.n_income_attr_p) || 0), 0);
-  const cumulativePayoutRatio = signedRatio(cumulativeDividend, cumulativeProfit);
+  // 反馈 #115：亏损年度且没有现金分红时，分红率按 0% 展示；只有“亏损但仍有分红”才保留负比例。
+  const latestAnnualLossNoDividend = staticProfit != null && staticProfit <= 0 && annualDividend === 0;
+  const cumulativeLossNoDividend = cumulativeProfit <= 0 && cumulativeDividend === 0;
+  const cumulativePayoutRatio = cumulativeLossNoDividend ? 0 : signedRatio(cumulativeDividend, cumulativeProfit);
   const ttmEarningsYield = signedRatio(ttmProfit, marketCap);
-  const averageDividendYield = cumulativePayoutRatio == null || ttmEarningsYield == null ? null : cumulativePayoutRatio * ttmEarningsYield;
+  const averageDividendYield = cumulativeLossNoDividend
+    ? 0
+    : (cumulativePayoutRatio == null || ttmEarningsYield == null ? null : cumulativePayoutRatio * ttmEarningsYield);
   const dividendByYear = new Map();
   dividendRows.forEach(item => {
     const year = String(item.row.end_date || '').slice(0, 4);
@@ -291,7 +296,7 @@ function buildAnalysis(data, options = {}) {
       market_cap: marketCap, a_share_market_cap: marketCap, circulating_market_cap: circulatingMarketCap, free_float_market_cap: freeFloatMarketCap,
       annualized_return_since_listing: annualizedSinceListing, return_start_date: earliestValuation?.trade_date || '',
       pe_ttm: peTtm, pe_static: peStatic, pe_forecast: signedRatio(marketCap, forecastProfit), pe_forecast_basis: peForecastBasis, pe_three_year_avg: peAvg3,
-      pb, pb_ex_goodwill: pbExGoodwill, dividend_yield: signedRatio(dividend12m, marketCap), payout_ratio: signedRatio(annualDividend, staticProfit),
+      pb, pb_ex_goodwill: pbExGoodwill, dividend_yield: signedRatio(dividend12m, marketCap), payout_ratio: latestAnnualLossNoDividend ? 0 : signedRatio(annualDividend, staticProfit),
       cumulative_payout_ratio: cumulativePayoutRatio, average_dividend_yield: averageDividendYield,
       cumulative_dividend: cumulativeDividend, cumulative_profit: cumulativeProfit,
       roe: finite(indicatorMap.get(annualIncome[0]?.end_date)?.roe), roa: calculatedRoa,

@@ -15,6 +15,7 @@
 .stock-analysis-section{margin-top:14px;padding:18px;border:1px solid var(--border);border-radius:var(--r-xl);background:var(--bg-surface);box-shadow:var(--shadow-xs)}
 .stock-analysis-section h3{margin:0 0 14px;font-size:16px;color:#202636}
 .stock-analysis-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px}
+.stock-analysis-grid>.stock-analysis-cashflow-note{grid-column:1/-1;font-size:12px;line-height:1.6}
 .stock-analysis-info-group{margin-top:18px}.stock-analysis-info-group:first-child{margin-top:0}.stock-analysis-info-group h4{margin:0 0 9px;padding-bottom:7px;border-bottom:1px solid #e8ebf0;color:#526173;font-size:13px;font-weight:600}
 .stock-analysis-metric{padding:12px;border-radius:9px;background:#f7f9fc;border:1px solid #edf0f5}
 .stock-analysis-metric span{display:block;color:#6e6e6e;font-size:12px;margin-bottom:5px}.stock-analysis-metric strong{font-size:17px;color:#222}.stock-analysis-metric small{display:block;margin-top:5px;color:#6e6e6e;line-height:1.45}

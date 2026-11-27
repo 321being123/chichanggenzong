@@ -1036,16 +1036,23 @@ async function resolveIndexValuation({ indexCode, startDate, endDate, market = '
   return [...byDay.values()].sort((a, b) => (a.day < b.day ? -1 : a.day > b.day ? 1 : 0));
 }
 
-// 股票/港股日线（不复权）：官方 `cn|hk/company/candlestick`，type=ex_rights。
+// 股票/港股日线：官方 `cn|hk/company/candlestick`。
+// - adjustment='none'（默认）：type=ex_rights，不复权；现有收盘价链路只认这一口径。
+// - adjustment='forward'：type=forward + adjustForwardDate=end，前复权；反馈 #115/#117 用它
+//   与不复权收盘价比值生成港股复权因子，绝不写进 market.daily_bars 的收盘价列。
 // 单位换算回 Tushare 口径：官方 volume 是股 → 手(/100)，amount 是元 → 千元(/1000)。
-async function resolveStockDaily({ tsCode, startDate, endDate, market = 'cn', options = {} } = {}) {
+async function resolveStockDaily({ tsCode, startDate, endDate, market = 'cn', adjustment = 'none', options = {} } = {}) {
   const resolved = await officialStockCode(tsCode).catch(() => null);
   const code = (typeof resolved === 'string' && resolved) || stockCodeOf(tsCode);
   const start = dashDate(startDate), end = dashDate(endDate);
   if (!code || !start || !end) return null;
   const endpoint = market === 'hk' ? 'hk/company/candlestick' : 'cn/company/candlestick';
-  const result = await callEndpointRange(endpoint, { stockCode: code, type: 'ex_rights' }, start, end,
+  const params = { stockCode: code, type: adjustment === 'forward' ? 'forward' : adjustment === 'backward' ? 'backward' : 'ex_rights' };
+  if (adjustment === 'forward') params.adjustForwardDate = end;
+  if (adjustment === 'backward') params.adjustBackwardDate = start;
+  const result = await callEndpointRange(endpoint, params, start, end,
     { dataset: 'market_daily_bars', targetDate: end, ...options });
+  const priceAdjust = adjustment === 'forward' ? 'qfq' : adjustment === 'backward' ? 'hfq' : 'none';
   const byDay = new Map();
   for (const row of result.rows) {
     const tradeDate = isoDate(row.date);
@@ -1061,6 +1068,7 @@ async function resolveStockDaily({ tsCode, startDate, endDate, market = 'cn', op
       vol: numberOrNull(row.volume) === null ? null : numberOrNull(row.volume) / 100,
       amount: numberOrNull(row.amount) === null ? null : numberOrNull(row.amount) / 1000,
       source_code: SOURCE,
+      price_adjust: priceAdjust,
     });
   }
   return [...byDay.values()].sort((a, b) => (a.trade_date < b.trade_date ? -1 : a.trade_date > b.trade_date ? 1 : 0));

@@ -7036,6 +7036,16 @@
       ],
       "owner": "投资策略选股中心",
       "status": "local_verified"
+    },
+    {
+      "id": "STOCK-ANALYSIS-CHART-DATE-001",
+      "title": "个股分析估值图日期刻度与 tooltip 统一显示 YYYY/M/D，禁止把 YYYYMMDD 截成 7 位",
+      "implementation": { "file": "public/js/stock-analysis-valuation-chart.js", "symbol": "chartDate" },
+      "tests": [
+        { "file": "server/test/feedback-online-115-118.test.js", "pattern": "#117: 禁止再截断成 2025093" }
+      ],
+      "owner": "证券分析",
+      "status": "local_verified"
     }
   ]
 }

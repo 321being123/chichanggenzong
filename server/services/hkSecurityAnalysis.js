@@ -7,18 +7,26 @@ const hkRepository = require('../repositories/hkSecurityAnalysisRepository');
 const { saveAnalysisResults } = require('./financialDataArchitecture');
 const statementService = require('./stockStatementService');
 const contract = require('../domain/securityAnalysisContract');
+const { financialPeriodLabel } = require('../domain/financialReportPeriod');
 
-const FORMULA_VERSION = 'hk-7';
+const FORMULA_VERSION = 'hk-8';
 const { FORMULA_VERSION: STATEMENT_FORMULA_VERSION } = require('./hkStockStatements');
 
 // 港股 HKFRS 宽表字段对照（唯一登记位置）。现金流官方只有 7 个汇总项，没有资本开支，
-// 因此自由现金流恒为「不可计算」，绝不用 null→0 或退化成经营现金流。
+// 因此自由现金流仍不可计算；但经营现金流均值、净现金安全额与利息保障倍数可用三表计算。
+// 分红率/分红金额优先取官方年报指标（ps.d_np_r / ps.da），不再依赖本地分红事件是否完整。
 const HK_FACT_COLUMNS = Object.freeze({
   income: Object.freeze({
     profit: ['ps_npatoshopc', 'ps_np'], revenue: ['ps_toi', 'ps_oi'], eps: ['ps_beps'],
+    dividendAmount: ['ps_da'], payoutRatioSource: ['ps_d_np_r'],
+    totalProfit: ['ps_tp'], interestExpense: ['ps_ie', 'ps_fc', 'ps_fe'],
   }),
   balance: Object.freeze({
     equity: ['bs_tetoshopc', 'bs_tetshaoehopc'], assets: ['bs_ta'], liabilities: ['bs_tl'], goodwill: ['bs_gw'],
+    cash: ['bs_cabb'], shortTermInvestments: ['bs_sti', 'bs_cfiafvtpol'],
+    shortTermBorrowings: ['bs_stl', 'bs_stpl'], longTermBorrowings: ['bs_ltl', 'bs_ltpl'],
+    bondsPayable: ['bs_bp', 'bs_stbp'], convertibleBonds: ['bs_stlcofcb', 'bs_ltlcofcb'],
+    leaseLiabilities: ['bs_stll', 'bs_ltll'],
   }),
   cashflow: Object.freeze({
     operating: ['cfs_ncffoa'], capex: [],
@@ -64,6 +72,9 @@ async function readHkReportFacts(tsCode, limit = 20, tx) {
         source_version: row.source_version || null, company_id: row.company_id,
         report_ids: [], profit: null, revenue: null, eps: null, equity: null,
         assets: null, liabilities: null, goodwill: null, operating: null, capex: null,
+        dividendAmount: null, payoutRatioSource: null, totalProfit: null, interestExpense: null,
+        cash: null, shortTermInvestments: null, shortTermBorrowings: null, longTermBorrowings: null,
+        bondsPayable: null, convertibleBonds: null, leaseLiabilities: null,
         balance_coverage: null, currency_unverified: false,
       };
       group.report_ids.push({
@@ -531,80 +542,191 @@ function buildHkAnalysis(data, options = {}) {
     cumulativeProfitTotal = validAnnualProfits.reduce((sum, item) => sum + item.profit, 0);
   }
 
-  if (dividends.length === 0) {
-    if (latestYearCoverageVerified && contract.finite(latest.dv_ttm) === 0) {
-      if (latestAnnualProfitInMarket !== null && latestAnnualProfitInMarket > 0) {
-        payoutRatio = 0;
-        payoutRatioStatus = { value: 0, status: contract.FIELD_STATUS.AVAILABLE, reason: 'verified_zero_dividend' };
+  // 官方年报已直接给出分红金额（ps.da）与分红率（ps.d_np_r）。它们是来源事实，
+  // 优先于本地分红事件采集；后者覆盖未核验时仍可算出累计分红率（反馈 #115）。
+  const sourceAnnualDividends = annual
+    .filter(group => !group.currency_unverified && contract.finite(group.profit) !== null
+      && contract.finite(group.dividendAmount) !== null)
+    .map(group => ({
+      year: String(group.period_end).slice(0, 4),
+      profit: convertToMarketCurrency(group.profit, group.currency),
+      dividend: convertToMarketCurrency(group.dividendAmount, group.currency),
+    }))
+    .filter(item => item.profit !== null && item.dividend !== null && item.dividend >= 0);
+  const sourceDividendYears = new Set(sourceAnnualDividends.map(item => item.year));
+  const sourceCumulativeProfit = sourceAnnualDividends.reduce((sum, item) => sum + item.profit, 0);
+  const sourceCumulativeDividend = sourceAnnualDividends.reduce((sum, item) => sum + item.dividend, 0);
+  const latestSourceDividend = sourceAnnualDividends.find(item => item.year === latestAnnualYear);
+  // 宽表 `_r` 科目按官方小数比例存库（0.35 表示 35%），与三表页面 value*100 的口径一致。
+  const sourcePayoutRaw = latestAnnual && !latestAnnual.currency_unverified ? contract.finite(latestAnnual.payoutRatioSource) : null;
+  const sourcePayout = sourcePayoutRaw !== null ? Math.max(0, sourcePayoutRaw) : null;
+
+  let payoutFromSource = false;
+  if (sourcePayout !== null || (latestSourceDividend && latestSourceDividend.dividend >= 0)) {
+    payoutFromSource = true;
+    if (latestAnnualProfitInMarket !== null && latestAnnualProfitInMarket <= 0) {
+      const latestDividendKnown = latestSourceDividend ? latestSourceDividend.dividend : 0;
+      if (latestDividendKnown > 0) {
+        payoutRatioStatus = contract.metric(null, contract.FIELD_STATUS.NOT_APPLICABLE, '最近年报亏损但存在分红，分红率不适用');
       } else {
-        payoutRatioStatus = contract.metric(null, contract.FIELD_STATUS.NOT_APPLICABLE, 'latest_annual_loss_or_missing');
+        // 反馈 #115：年报亏损且官方年报明确无分红时，分红率按 0% 展示，不再写「不适用」。
+        payoutRatio = 0;
+        payoutRatioStatus = { value: 0, status: contract.FIELD_STATUS.AVAILABLE, reason: 'latest_annual_loss_zero_dividend' };
       }
-      if (fullRangeCoverageVerified && cumulativeProfitTotal !== null && cumulativeProfitTotal > 0) {
+    } else if (sourcePayout !== null) {
+      payoutRatio = sourcePayout;
+      payoutRatioStatus = { value: payoutRatio, status: contract.FIELD_STATUS.AVAILABLE, reason: 'source_reported' };
+    } else if (latestSourceDividend && latestAnnualProfitInMarket !== null && latestAnnualProfitInMarket > 0) {
+      payoutRatio = latestSourceDividend.dividend / latestAnnualProfitInMarket;
+      payoutRatioStatus = { value: payoutRatio, status: contract.FIELD_STATUS.AVAILABLE, reason: 'source_reported' };
+    }
+  }
+
+  let cumulativeFromSource = false;
+  if (sourceAnnualDividends.length > 0) {
+    cumulativeFromSource = true;
+    cumulativeDividendTotal = sourceCumulativeDividend;
+    if (sourceCumulativeProfit > 0) {
+      cumulativePayoutRatio = sourceCumulativeDividend / sourceCumulativeProfit;
+      cumulativePayoutStatus = {
+        value: cumulativePayoutRatio, status: contract.FIELD_STATUS.AVAILABLE,
+        reason: sourceDividendYears.size === validAnnualProfits.length ? 'source_reported' : 'source_reported_partial_years',
+        covered_years: sourceDividendYears.size,
+      };
+    } else if (sourceCumulativeProfit <= 0) {
+      if (sourceCumulativeDividend === 0) {
         cumulativePayoutRatio = 0;
-        cumulativeDividendTotal = 0;
-        cumulativePayoutStatus = { value: 0, status: contract.FIELD_STATUS.AVAILABLE, reason: 'verified_zero_dividend' };
+        cumulativePayoutStatus = { value: 0, status: contract.FIELD_STATUS.AVAILABLE, reason: 'cumulative_loss_zero_dividend' };
         averageDividendYield = 0;
-        averageDividendYieldStatus = { value: 0, status: contract.FIELD_STATUS.AVAILABLE, reason: 'verified_zero_dividend' };
-      } else if (fullRangeCoverageVerified && cumulativeProfitTotal !== null && cumulativeProfitTotal <= 0) {
+        averageDividendYieldStatus = { value: 0, status: contract.FIELD_STATUS.AVAILABLE, reason: 'cumulative_loss_zero_dividend' };
+      } else {
         cumulativePayoutStatus = contract.metric(null, contract.FIELD_STATUS.NOT_APPLICABLE, '历史累计亏损，不适用');
         averageDividendYieldStatus = contract.metric(null, contract.FIELD_STATUS.NOT_APPLICABLE, '历史累计亏损，不适用');
+      }
+    }
+  }
+
+  if (dividends.length === 0) {
+    if (latestYearCoverageVerified && contract.finite(latest.dv_ttm) === 0) {
+      if (!payoutFromSource) {
+        if (latestAnnualProfitInMarket !== null && latestAnnualProfitInMarket > 0) {
+          payoutRatio = 0;
+          payoutRatioStatus = { value: 0, status: contract.FIELD_STATUS.AVAILABLE, reason: 'verified_zero_dividend' };
+        } else if (latestAnnualProfitInMarket !== null && latestAnnualProfitInMarket <= 0) {
+          // 反馈 #115：已核验零分红时，亏损年度也按 0% 展示。
+          payoutRatio = 0;
+          payoutRatioStatus = { value: 0, status: contract.FIELD_STATUS.AVAILABLE, reason: 'verified_zero_dividend_on_loss' };
+        } else {
+          payoutRatioStatus = contract.metric(null, contract.FIELD_STATUS.NOT_APPLICABLE, 'latest_annual_loss_or_missing');
+        }
+      }
+      if (!cumulativeFromSource && fullRangeCoverageVerified && cumulativeProfitTotal !== null) {
+        if (cumulativeProfitTotal > 0) {
+          cumulativePayoutRatio = 0;
+          cumulativeDividendTotal = 0;
+          cumulativePayoutStatus = { value: 0, status: contract.FIELD_STATUS.AVAILABLE, reason: 'verified_zero_dividend' };
+          averageDividendYield = 0;
+          averageDividendYieldStatus = { value: 0, status: contract.FIELD_STATUS.AVAILABLE, reason: 'verified_zero_dividend' };
+        } else if (cumulativeProfitTotal <= 0) {
+          cumulativePayoutRatio = 0;
+          cumulativeDividendTotal = 0;
+          cumulativePayoutStatus = { value: 0, status: contract.FIELD_STATUS.AVAILABLE, reason: 'cumulative_loss_zero_dividend' };
+          averageDividendYield = 0;
+          averageDividendYieldStatus = { value: 0, status: contract.FIELD_STATUS.AVAILABLE, reason: 'cumulative_loss_zero_dividend' };
+        }
       }
     }
   } else {
     const hasLatestYearEvents = Boolean(latestAnnualYear && dividendByYear.has(latestAnnualYear));
     const latestYearUnconvertible = Boolean(latestAnnualYear && unconvertibleDividendYears.has(latestAnnualYear));
-    if (latestYearUnconvertible) {
-      payoutRatioStatus = contract.metric(null, contract.FIELD_STATUS.SOURCE_UNAVAILABLE, 'fx_rate_missing');
-    } else if (hasLatestYearEvents || latestYearCoverageVerified) {
-      const latestYearDiv = hasLatestYearEvents ? dividendByYear.get(latestAnnualYear).total : 0;
-      if (latestAnnualProfitInMarket !== null && latestAnnualProfitInMarket > 0) {
-        payoutRatio = latestYearDiv / latestAnnualProfitInMarket;
-        payoutRatioStatus = {
-          ...contract.metric(payoutRatio, contract.FIELD_STATUS.AVAILABLE, dividendEstimatedAny ? '按股本估算' : null),
-          is_estimated: dividendEstimatedAny,
-          basis: dividendEstimationBasis,
-        };
-      } else if (latestAnnualProfitInMarket !== null && latestAnnualProfitInMarket <= 0) {
-        payoutRatioStatus = contract.metric(null, contract.FIELD_STATUS.NOT_APPLICABLE, '最近年报亏损，不适用');
+    if (!payoutFromSource) {
+      if (latestYearUnconvertible) {
+        payoutRatioStatus = contract.metric(null, contract.FIELD_STATUS.SOURCE_UNAVAILABLE, 'fx_rate_missing');
+      } else if (hasLatestYearEvents || latestYearCoverageVerified) {
+        const latestYearDiv = hasLatestYearEvents ? dividendByYear.get(latestAnnualYear).total : 0;
+        if (latestAnnualProfitInMarket !== null && latestAnnualProfitInMarket > 0) {
+          payoutRatio = latestYearDiv / latestAnnualProfitInMarket;
+          payoutRatioStatus = {
+            ...contract.metric(payoutRatio, contract.FIELD_STATUS.AVAILABLE, dividendEstimatedAny ? '按股本估算' : null),
+            is_estimated: dividendEstimatedAny,
+            basis: dividendEstimationBasis,
+          };
+        } else if (latestAnnualProfitInMarket !== null && latestAnnualProfitInMarket <= 0) {
+          if (latestYearDiv === 0) {
+            // 反馈 #115：亏损年度且当期无分红，按 0% 展示。
+            payoutRatio = 0;
+            payoutRatioStatus = { value: 0, status: contract.FIELD_STATUS.AVAILABLE, reason: 'latest_annual_loss_zero_dividend' };
+          } else {
+            payoutRatioStatus = contract.metric(null, contract.FIELD_STATUS.NOT_APPLICABLE, '最近年报亏损但存在分红，分红率不适用');
+          }
+        }
       }
     }
 
     const anyYearUnconvertible = unconvertibleDividendYears.size > 0;
     const allYearsHaveEvents = validAnnualProfits.length > 0 && validAnnualProfits.every(item => dividendByYear.has(item.year));
-    if (anyYearUnconvertible) {
-      cumulativePayoutStatus = contract.metric(null, contract.FIELD_STATUS.SOURCE_UNAVAILABLE, 'fx_rate_missing');
-      averageDividendYieldStatus = contract.metric(null, contract.FIELD_STATUS.SOURCE_UNAVAILABLE, 'fx_rate_missing');
-    } else if (validAnnualProfits.length > 0 && (fullRangeCoverageVerified || allYearsHaveEvents)) {
-      let sumDiv = 0;
-      for (const item of validAnnualProfits) {
-        const entry = dividendByYear.get(item.year);
-        if (entry) sumDiv += entry.total;
-      }
-      cumulativeDividendTotal = sumDiv;
-      if (cumulativeProfitTotal > 0) {
-        cumulativePayoutRatio = sumDiv / cumulativeProfitTotal;
-        cumulativePayoutStatus = {
-          ...contract.metric(cumulativePayoutRatio, contract.FIELD_STATUS.AVAILABLE, dividendEstimatedAny ? '按股本估算' : null),
-          is_estimated: dividendEstimatedAny,
-          basis: dividendEstimationBasis,
-        };
-        const ttmProfitInMarket = ttm.value !== null
-          ? convertToMarketCurrency(ttm.value, (latestInterim || latestAnnual).currency)
-          : null;
-        if (cap.value > 0 && ttmProfitInMarket !== null) {
-          averageDividendYield = cumulativePayoutRatio * (ttmProfitInMarket / cap.value);
-          averageDividendYieldStatus = {
-            ...contract.metric(averageDividendYield, contract.FIELD_STATUS.AVAILABLE, dividendEstimatedAny ? '按股本估算' : null),
+    if (!cumulativeFromSource) {
+      if (anyYearUnconvertible) {
+        cumulativePayoutStatus = contract.metric(null, contract.FIELD_STATUS.SOURCE_UNAVAILABLE, 'fx_rate_missing');
+        averageDividendYieldStatus = contract.metric(null, contract.FIELD_STATUS.SOURCE_UNAVAILABLE, 'fx_rate_missing');
+      } else if (validAnnualProfits.length > 0 && (fullRangeCoverageVerified || allYearsHaveEvents)) {
+        let sumDiv = 0;
+        for (const item of validAnnualProfits) {
+          const entry = dividendByYear.get(item.year);
+          if (entry) sumDiv += entry.total;
+        }
+        cumulativeDividendTotal = sumDiv;
+        if (cumulativeProfitTotal > 0) {
+          cumulativePayoutRatio = sumDiv / cumulativeProfitTotal;
+          cumulativePayoutStatus = {
+            ...contract.metric(cumulativePayoutRatio, contract.FIELD_STATUS.AVAILABLE, dividendEstimatedAny ? '按股本估算' : null),
             is_estimated: dividendEstimatedAny,
             basis: dividendEstimationBasis,
           };
+          const ttmProfitInMarket = ttm.value !== null
+            ? convertToMarketCurrency(ttm.value, (latestInterim || latestAnnual).currency)
+            : null;
+          if (cap.value > 0 && ttmProfitInMarket !== null) {
+            averageDividendYield = cumulativePayoutRatio * (ttmProfitInMarket / cap.value);
+            averageDividendYieldStatus = {
+              ...contract.metric(averageDividendYield, contract.FIELD_STATUS.AVAILABLE, dividendEstimatedAny ? '按股本估算' : null),
+              is_estimated: dividendEstimatedAny,
+              basis: dividendEstimationBasis,
+            };
+          } else {
+            averageDividendYieldStatus = contract.metric(null, contract.FIELD_STATUS.MISSING, 'missing_ttm_profit_or_cap');
+          }
+        } else if (cumulativeProfitTotal !== null && cumulativeProfitTotal <= 0 && sumDiv === 0) {
+          cumulativePayoutRatio = 0;
+          cumulativePayoutStatus = { value: 0, status: contract.FIELD_STATUS.AVAILABLE, reason: 'cumulative_loss_zero_dividend' };
+          averageDividendYield = 0;
+          averageDividendYieldStatus = { value: 0, status: contract.FIELD_STATUS.AVAILABLE, reason: 'cumulative_loss_zero_dividend' };
         } else {
-          averageDividendYieldStatus = contract.metric(null, contract.FIELD_STATUS.MISSING, 'missing_ttm_profit_or_cap');
+          cumulativePayoutStatus = contract.metric(null, contract.FIELD_STATUS.NOT_APPLICABLE, '历史累计亏损，不适用');
+          averageDividendYieldStatus = contract.metric(null, contract.FIELD_STATUS.NOT_APPLICABLE, '历史累计亏损，不适用');
         }
-      } else {
-        cumulativePayoutStatus = contract.metric(null, contract.FIELD_STATUS.NOT_APPLICABLE, '历史累计亏损，不适用');
-        averageDividendYieldStatus = contract.metric(null, contract.FIELD_STATUS.NOT_APPLICABLE, '历史累计亏损，不适用');
       }
+    }
+  }
+
+  // 平均股息率＝累计分红率 × TTM 盈利收益率；累计分红率为 0 时结果必为 0，
+  // 不因利润为负或缺少 TTM 再变回「--」（反馈 #115）。
+  if (cumulativePayoutRatio === 0) {
+    averageDividendYield = 0;
+    averageDividendYieldStatus = { value: 0, status: contract.FIELD_STATUS.AVAILABLE, reason: 'zero_cumulative_payout' };
+  } else if (cumulativePayoutRatio !== null && averageDividendYieldStatus.value === null) {
+    const ttmProfitInMarket = ttm.value !== null
+      ? convertToMarketCurrency(ttm.value, (latestInterim || latestAnnual).currency)
+      : null;
+    if (cap.value > 0 && ttmProfitInMarket !== null && ttmProfitInMarket <= 0) {
+      // 反馈 #115：TTM 利润为负时平均股息率没有可解释的经济含义，按 0% 展示。
+      averageDividendYield = 0;
+      averageDividendYieldStatus = { value: 0, status: contract.FIELD_STATUS.AVAILABLE, reason: 'non_positive_ttm_profit_zero_yield' };
+    } else if (cap.value > 0 && ttmProfitInMarket !== null) {
+      averageDividendYield = cumulativePayoutRatio * (ttmProfitInMarket / cap.value);
+      averageDividendYieldStatus = { value: averageDividendYield, status: contract.FIELD_STATUS.AVAILABLE, reason: null };
+    } else {
+      averageDividendYieldStatus = contract.metric(null, contract.FIELD_STATUS.MISSING, 'missing_ttm_profit_or_cap');
     }
   }
 
@@ -617,12 +739,83 @@ function buildHkAnalysis(data, options = {}) {
     ? cap.value / liabilitiesInMarket
     : null;
 
-  const historySeries = valuations.map(row => ({
-    date: row.trade_date,
-    price: contract.finite(row.close),
-    pe: contract.finite(row.pe_ttm),
-    pb: contract.finite(row.pb),
-  }));
+  // 财务安全性（反馈 #118）：港股三表已有货币资金、短期投资、借款/债券/租赁负债与利润总额、利息支出，
+  // 过去这些字段没有映射，导致净现金安全额与利息保障倍数被硬编码为 null。
+  const safetyBalance = latestBalanceForSafety || latestAnnualBalance || null;
+  const safetyBalanceComplete = Boolean(safetyBalance && safetyBalance.balance_coverage && safetyBalance.balance_coverage.complete === true);
+  const safetyInMarket = value => (safetyBalance && value !== null && value !== undefined
+    ? convertToMarketCurrency(value, safetyBalance.currency) : null);
+  const cash = safetyBalance ? safetyInMarket(safetyBalance.cash) : null;
+  const shortInvestments = safetyBalance ? safetyInMarket(safetyBalance.shortTermInvestments) : null;
+  const debtParts = safetyBalance ? [
+    safetyBalance.shortTermBorrowings, safetyBalance.longTermBorrowings,
+    safetyBalance.bondsPayable, safetyBalance.convertibleBonds, safetyBalance.leaseLiabilities,
+  ].map(safetyInMarket).filter(value => value !== null) : [];
+  let netCash = null;
+  let netCashStatus = contract.metric(null, contract.FIELD_STATUS.MISSING, 'missing_balance_sheet');
+  if (safetyBalance && cash !== null) {
+    if (debtParts.length) {
+      netCash = cash + (shortInvestments || 0) - debtParts.reduce((sum, value) => sum + value, 0);
+      netCashStatus = contract.metric(netCash, contract.FIELD_STATUS.AVAILABLE);
+    } else if (safetyBalanceComplete) {
+      // 已请求且完整但来源未披露借款科目：按无有息负债处理，仍保留“已核验未披露”的依据。
+      netCash = cash + (shortInvestments || 0);
+      netCashStatus = { value: netCash, status: contract.FIELD_STATUS.AVAILABLE, reason: 'interest_debt_not_disclosed_treated_as_zero' };
+    } else {
+      netCashStatus = contract.metric(null, contract.FIELD_STATUS.SOURCE_UNAVAILABLE, 'interest_debt_not_collected');
+    }
+  }
+
+  const safetyIncome = latestAnnual && !latestAnnual.currency_unverified ? latestAnnual : null;
+  const totalProfitInMarket = safetyIncome && safetyIncome.totalProfit !== null
+    ? convertToMarketCurrency(safetyIncome.totalProfit, safetyIncome.currency) : null;
+  const interestExpenseInMarket = safetyIncome && safetyIncome.interestExpense !== null
+    ? convertToMarketCurrency(safetyIncome.interestExpense, safetyIncome.currency) : null;
+  let interestCoverage = null;
+  let interestCoverageStatus = contract.metric(null, contract.FIELD_STATUS.MISSING, 'missing_annual_report');
+  if (safetyIncome && totalProfitInMarket !== null && interestExpenseInMarket !== null) {
+    if (interestExpenseInMarket <= 0) {
+      interestCoverageStatus = contract.metric(null, contract.FIELD_STATUS.NOT_APPLICABLE, 'no_interest_expense');
+    } else {
+      interestCoverage = (totalProfitInMarket + interestExpenseInMarket) / interestExpenseInMarket;
+      interestCoverageStatus = contract.metric(interestCoverage, contract.FIELD_STATUS.AVAILABLE);
+    }
+  } else if (safetyIncome && (safetyIncome.totalProfit === null || safetyIncome.interestExpense === null)) {
+    interestCoverageStatus = contract.metric(null, contract.FIELD_STATUS.SOURCE_UNAVAILABLE, 'interest_or_profit_not_disclosed');
+  }
+
+  // 经营现金流均值（反馈 #118）：只使用同币种、已核验的年度现金流报告；自由现金流因港股
+  // 官方现金流只有 7 个汇总项、不含资本开支，继续保持不可计算并给出逐项原因。
+  const annualCashflowFacts = consolidatedFacts
+    .filter(group => isAnnual(group) && ofKind(group, 'cashflow') && !group.currency_unverified && group.operating !== null)
+    .sort((a, b) => String(b.period_end).localeCompare(String(a.period_end)));
+  // 均值保持财报原币：同一公司的年度现金流通常同币种；币种变化时只取与最新年度同币种的行，
+  // 不把 CNY/USD 金额直接相加。
+  const cashflowCurrency = latestAnnualCashflow ? latestAnnualCashflow.currency : null;
+  const operatingValues = annualCashflowFacts
+    .filter(group => group.currency === cashflowCurrency && group.operating !== null)
+    .map(group => contract.finite(group.operating))
+    .filter(value => value !== null);
+  const averageOf = (values, count) => {
+    const slice = values.slice(0, count);
+    return slice.length ? slice.reduce((sum, value) => sum + value, 0) / slice.length : null;
+  };
+  const average3Operating = averageOf(operatingValues, 3);
+  const average5Operating = averageOf(operatingValues, 5);
+  const freeCashReason = capexMissing ? 'capex_not_disclosed' : 'capex_or_operating_missing';
+
+  // 图表标为「前复权股价」：有官方复权因子时用 close×factor；没有因子时保留原始收盘价，
+  // 由 priceSeriesStatus 标注未复权，不能把缺失因子伪装成已复权。
+  const historySeries = valuations.map(row => {
+    const close = contract.finite(row.close);
+    const factor = contract.finite(row.adj_factor);
+    return {
+      date: row.trade_date,
+      price: close !== null && factor !== null && factor > 0 ? close * factor : close,
+      pe: contract.finite(row.pe_ttm),
+      pb: contract.finite(row.pb),
+    };
+  });
   const stabilityYears = annual.slice(0, 20).map(group => {
     const yr = String(group.period_end).slice(0, 4);
     const divEntry = dividendByYear.get(yr);
@@ -653,7 +846,8 @@ function buildHkAnalysis(data, options = {}) {
     annualized_return_since_listing: { ...statusOf(annualizedReturnStatus), return_start_mode: returnStartMode, return_start_date: returnStartDate },
     ttm_profit: { ...statusOf(ttm), currency: ttm.value === null ? null : (latestInterim || latestAnnual).currency }, dividend_yield: statusOf(dividend12m.yield),
     payout_ratio: payoutRatioStatus, cumulative_payout_ratio: cumulativePayoutStatus, average_dividend_yield: averageDividendYieldStatus,
-    free_cashflow: statusOf(freeCash), pe_percentile: { value: pePercentile.value, status: pePercentile.status },
+    free_cashflow: statusOf(freeCash), net_cash: netCashStatus, interest_coverage: interestCoverageStatus,
+    pe_percentile: { value: pePercentile.value, status: pePercentile.status },
     ten_year_stability: { value: stability.value, status: stability.status },
   };
   const version = contract.analysisVersionOf({
@@ -691,7 +885,8 @@ function buildHkAnalysis(data, options = {}) {
     latest_report: latestFact ? {
       end_date: latestFact.period_end,
       ann_date: latestFact.announced_at || '',
-      type: isAnnual(latestFact) ? '年报' : (latestFact.period_type || '报告期类型未标注'),
+      // 反馈 #116：semiannual/annual/q1/q3 统一显示中文，不再把英文报告期直接放到页面。
+      type: financialPeriodLabel(latestFact.period_type) || (isAnnual(latestFact) ? '年报' : '报告期类型未标注'),
       currency: latestFact.currency, accounting_standard: 'HKFRS',
       version: latestFact.source_version, report_ids: latestFact.report_ids,
     } : { end_date: '', ann_date: '', type: '资料未就绪' },
@@ -732,21 +927,32 @@ function buildHkAnalysis(data, options = {}) {
     percentiles: {
       price: null, pe: pePercentile.value, pb: pbPercentile.value,
       pe_status: pePercentile.status, pb_status: pbPercentile.status,
-      history: historySeries, bands: {}, current: { price, pe: peTtm, pb },
+      history: historySeries, bands: {}, current: {
+        price: historySeries.length && historySeries[historySeries.length - 1].price !== null
+          ? historySeries[historySeries.length - 1].price : price,
+        pe: peTtm, pb,
+      },
       note: '港股正估值分位只用可比的有效正样本；当前值为非正时不输出。价格与估值独立读取，缺复权因子时标注未复权且不计算依赖复权的分位。',
     },
     growth: { ten_year_average: {}, periods: {}, latest_interim_yoy: null, status: contract.FIELD_STATUS.INSUFFICIENT_HISTORY },
     safety: {
-      net_cash: null, interest_coverage: null, market_cap_to_liability: marketCapToLiability,
-      report_end_date: latestFact ? latestFact.period_end : null,
+      net_cash: netCash, interest_coverage: interestCoverage, market_cap_to_liability: marketCapToLiability,
+      net_cash_reason: netCashStatus.status === contract.FIELD_STATUS.AVAILABLE ? netCashStatus.reason : (netCashStatus.reason || 'net_cash_unavailable'),
+      interest_coverage_reason: interestCoverageStatus.status === contract.FIELD_STATUS.AVAILABLE ? null : interestCoverageStatus.reason,
+      report_end_date: safetyIncome ? safetyIncome.period_end : (latestFact ? latestFact.period_end : null),
       industry_note: options.financial ? '金融公司按已验证适用指标展示，不套普通企业结论' : '',
     },
     cashflow: {
       status: freeCash.status,
-      latest_year: { end_date: latestAnnualCashflow ? latestAnnualCashflow.period_end : null,
-        currency: latestAnnualCashflow ? latestAnnualCashflow.currency : null, operating: operatingLatest, free: freeCash.value },
-      average_3y: { operating: null, free: null }, average_5y: { operating: null, free: null },
-      note: capexMissing ? '港股官方现金流科目未提供资本开支，自由现金流不可计算' : '',
+      latest_year: {
+        end_date: latestAnnualCashflow ? latestAnnualCashflow.period_end : null,
+        currency: latestAnnualCashflow ? latestAnnualCashflow.currency : null,
+        operating: operatingLatest, free: freeCash.value,
+        free_reason: freeCash.status === contract.FIELD_STATUS.AVAILABLE ? null : freeCashReason,
+      },
+      average_3y: { operating: average3Operating, free: null, free_reason: 'capex_not_disclosed', currency: cashflowCurrency },
+      average_5y: { operating: average5Operating, free: null, free_reason: 'capex_not_disclosed', currency: cashflowCurrency },
+      note: capexMissing ? '港股官方现金流科目仅提供7个汇总项，未披露资本开支；经营现金流与均值可算，自由现金流不可计算。' : '',
     },
     events: events.map(row => Object.assign({}, row, { event_date: row.event_date })),
     data_quality: {

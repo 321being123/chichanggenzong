@@ -2259,29 +2259,174 @@ async function findRunForUpdate(runId, tx) {
  * 是否真能复用由服务层比对 `computationInputHash` 与 `computationOutputHash` 后决定；
  * 仓储不自行把「有 daily」当成「可复用」。
  */
+/**
+ * 可复用的共享非影子 daily（B4-1A / F-13）。
+ * 除双向哈希外，还带出周度受控复用判定所需的冻结清单、运行列与内容行数：
+ * - `inputManifest` 携带 daily 落库时的 `computationInputWatermark` 与质量/覆盖摘要；
+ * - `strategyId` 让复用路径直接沿用源 daily 的策略身份，不重复猜测；
+ * - `candidateCount`/`memberCount` 用于证明源 daily 的候选与成员完整存在。
+ * 只读，不修改任何批次。
+ */
 async function listReusableDailyRuns(tx, { market, strategyId, asOfDate, knowledgeCutoff }) {
   const exec = executorOf(tx);
   const { rows } = await exec(`
-    SELECT run_id, revision, computed_at,
-           input_manifest->>'computationInputHash' AS computation_input_hash,
-           input_manifest->>'computationOutputHash' AS computation_output_hash,
-           knowledge_cutoff::text AS knowledge_cutoff_text
-      FROM analytics.stock_selection_runs
-     WHERE market = $1 AND strategy_id = $2 AND as_of_date = $3::date
-       AND run_kind = 'daily' AND is_shadow = false
-       AND quality_status = 'passed'
-       AND COALESCE(pending_count, 0) = 0
-       AND knowledge_cutoff = $4::timestamptz
-     ORDER BY revision DESC, computed_at DESC NULLS LAST, run_id DESC`,
+    SELECT r.run_id, r.revision, r.computed_at, r.strategy_id,
+           r.quality_status, r.business_status, r.pending_count, r.selected_count,
+           r.universe_count, r.market_pb, r.market_pe, r.benchmark_code, r.valuation_method,
+           r.position_ratio, r.is_shadow,
+           r.input_manifest,
+           r.input_manifest->>'computationInputHash' AS computation_input_hash,
+           r.input_manifest->>'computationOutputHash' AS computation_output_hash,
+           r.knowledge_cutoff::text AS knowledge_cutoff_text,
+           (SELECT COUNT(*)::int FROM analytics.stock_selection_candidates c WHERE c.run_id = r.run_id) AS candidate_count,
+           (SELECT COUNT(*)::int FROM analytics.stock_selection_portfolio_members m WHERE m.run_id = r.run_id) AS member_count
+      FROM analytics.stock_selection_runs r
+     WHERE r.market = $1 AND r.strategy_id = $2 AND r.as_of_date = $3::date
+       AND r.run_kind = 'daily' AND r.is_shadow = false
+       AND r.quality_status = 'passed'
+       AND COALESCE(r.pending_count, 0) = 0
+       AND r.knowledge_cutoff = $4::timestamptz
+     ORDER BY r.revision DESC, r.computed_at DESC NULLS LAST, r.run_id DESC`,
   [market, strategyId, asOfDate, knowledgeCutoff]);
   return rows.map(row => ({
     runId: Number(row.run_id),
     revision: Number(row.revision),
     computedAt: row.computed_at,
+    strategyId: row.strategy_id === null || row.strategy_id === undefined ? null : Number(row.strategy_id),
+    qualityStatus: row.quality_status || null,
+    businessStatus: row.business_status || null,
+    pendingCount: Number(row.pending_count || 0),
+    selectedCount: Number(row.selected_count || 0),
+    universeCount: row.universe_count === null || row.universe_count === undefined ? null : Number(row.universe_count),
+    marketPb: row.market_pb === null || row.market_pb === undefined ? null : Number(row.market_pb),
+    marketPe: row.market_pe === null || row.market_pe === undefined ? null : Number(row.market_pe),
+    benchmarkCode: row.benchmark_code || null,
+    valuationMethod: row.valuation_method || null,
+    positionRatio: row.position_ratio === null || row.position_ratio === undefined ? null : Number(row.position_ratio),
+    inputManifest: row.input_manifest && typeof row.input_manifest === 'object' ? row.input_manifest : {},
     computationInputHash: row.computation_input_hash || null,
     computationOutputHash: row.computation_output_hash || null,
     knowledgeCutoff: row.knowledge_cutoff_text || null,
+    candidateCount: Number(row.candidate_count || 0),
+    memberCount: Number(row.member_count || 0),
   }));
+}
+
+/**
+ * 计算输入轻量水印（B4-1A / F-13）：一次性汇总目标日纯计算所依赖的冻结事实指纹，
+ * 不跑十年 PB 窗口排序、也不跑四条规则引擎。用聚合值（行数/求和/最大值/摘要哈希）覆盖：
+ * 股票池 artifact、指数估值、目标日前估值与当日日线、交易日历/停牌、汇率、
+ * 可见财报与事实、分红事件、行业归属与分类版本。
+ * 任何一只证券的 PB、年度利润、分红、行业版本或汇率原地变化都会改变对应聚合值，
+ * 因此可用于「同输入受控复用」与「输入变化即拒绝复用」的严格比对。
+ */
+async function loadComputationInputWatermark({ market, asOfDate, knowledgeCutoff = null }, tx) {
+  const config = marketConfig(market);
+  const exec = executorOf(tx);
+  const { rows } = await exec(`
+    SELECT
+      (SELECT content_hash
+         FROM analytics.stock_selection_universe_artifacts
+        WHERE market = $1 AND target_date = $2::date
+        ORDER BY created_at DESC NULLS LAST, artifact_id DESC LIMIT 1) AS universe_artifact_hash,
+      (SELECT COUNT(*)::text
+         FROM analytics.stock_selection_universe_artifacts
+        WHERE market = $1 AND target_date = $2::date) AS universe_artifact_count,
+      (SELECT md5(COALESCE(string_agg(t.index_code || ':' || COALESCE(t.pb::text, '') || ':'
+                     || COALESCE(t.pe_ttm::text, '') || ':' || t.trade_date::text, '|' ORDER BY t.index_code), ''))
+         FROM (
+           SELECT DISTINCT ON (iv.index_code) iv.index_code, iv.pb, iv.pe_ttm, iv.trade_date
+             FROM market.index_valuation_history iv
+            WHERE iv.index_code = ANY($3::text[])
+              AND iv.valuation_method = 'market_cap_weighted'
+              AND iv.trade_date <= $2::date
+            ORDER BY iv.index_code, iv.trade_date DESC,
+                     CASE WHEN iv.source_code LIKE 'lixinger%' THEN 0 ELSE 1 END
+         ) t) AS market_valuation_digest,
+      (SELECT COUNT(*)::text FROM market.daily_valuations WHERE trade_date <= $2::date) AS valuation_rows,
+      (SELECT COALESCE(SUM(pb), 0)::text FROM market.daily_valuations WHERE trade_date <= $2::date) AS valuation_pb_sum,
+      (SELECT COALESCE(SUM(pe_ttm), 0)::text FROM market.daily_valuations WHERE trade_date <= $2::date) AS valuation_pe_sum,
+      (SELECT COALESCE(SUM(dividend_yield_ttm), 0)::text FROM market.daily_valuations WHERE trade_date <= $2::date) AS valuation_div_sum,
+      (SELECT COALESCE(MAX(ingested_at)::text, '') FROM market.daily_valuations WHERE trade_date <= $2::date) AS valuation_ingested_max,
+      (SELECT COUNT(*)::text FROM market.daily_bars WHERE trade_date = $2::date) AS bar_rows_on_date,
+      (SELECT COALESCE(SUM(close), 0)::text FROM market.daily_bars WHERE trade_date = $2::date) AS bar_close_sum,
+      (SELECT COUNT(*)::text FROM market.trade_calendar
+        WHERE exchange = ANY($4::text[]) AND trade_date <= $2::date) AS calendar_rows,
+      (SELECT COALESCE(MAX(trade_date)::text, '') FROM market.trade_calendar
+        WHERE exchange = ANY($4::text[]) AND trade_date <= $2::date) AS calendar_max_date,
+      (SELECT COUNT(*)::text FROM market.stock_suspend_calendar WHERE trade_date <= $2::date) AS suspend_rows,
+      (SELECT COALESCE(MAX(trade_date)::text, '') FROM market.stock_suspend_calendar
+        WHERE trade_date <= $2::date) AS suspend_max_date,
+      (SELECT COUNT(*)::text FROM market.fx_rates) AS fx_rows,
+      (SELECT COALESCE(SUM(rate), 0)::text FROM market.fx_rates) AS fx_rate_sum,
+      (SELECT COALESCE(MAX(rate_date)::text, '') FROM market.fx_rates) AS fx_max_date,
+      (SELECT COUNT(*)::text FROM fundamental.financial_reports r
+        WHERE r.announced_at IS NOT NULL AND r.announced_at < $2::date
+          AND ($5::timestamptz IS NULL OR r.available_at IS NULL OR r.available_at < $5::timestamptz)) AS report_rows,
+      (SELECT COALESCE(MAX(r.report_id), 0)::text FROM fundamental.financial_reports r
+        WHERE r.announced_at IS NOT NULL AND r.announced_at < $2::date
+          AND ($5::timestamptz IS NULL OR r.available_at IS NULL OR r.available_at < $5::timestamptz)) AS report_max_id,
+      (SELECT COALESCE(MAX(r.ingested_at)::text, '') FROM fundamental.financial_reports r
+        WHERE r.announced_at IS NOT NULL AND r.announced_at < $2::date
+          AND ($5::timestamptz IS NULL OR r.available_at IS NULL OR r.available_at < $5::timestamptz)) AS report_max_ingested,
+      (SELECT COUNT(*)::text FROM fundamental.financial_facts f
+         JOIN fundamental.financial_reports r ON r.report_id = f.report_id
+        WHERE r.announced_at IS NOT NULL AND r.announced_at < $2::date
+          AND ($5::timestamptz IS NULL OR r.available_at IS NULL OR r.available_at < $5::timestamptz)) AS fact_rows,
+      (SELECT COALESCE(SUM(f.numeric_value), 0)::text FROM fundamental.financial_facts f
+         JOIN fundamental.financial_reports r ON r.report_id = f.report_id
+        WHERE r.announced_at IS NOT NULL AND r.announced_at < $2::date
+          AND ($5::timestamptz IS NULL OR r.available_at IS NULL OR r.available_at < $5::timestamptz)) AS fact_value_sum,
+      (SELECT COALESCE(MAX(f.fact_id), 0)::text FROM fundamental.financial_facts f
+         JOIN fundamental.financial_reports r ON r.report_id = f.report_id
+        WHERE r.announced_at IS NOT NULL AND r.announced_at < $2::date
+          AND ($5::timestamptz IS NULL OR r.available_at IS NULL OR r.available_at < $5::timestamptz)) AS fact_max_id,
+      (SELECT COUNT(*)::text FROM fundamental.corporate_actions
+        WHERE action_type = 'dividend') AS dividend_rows,
+      (SELECT COALESCE(SUM(total_cash_amount), 0)::text FROM fundamental.corporate_actions
+        WHERE action_type = 'dividend') AS dividend_cash_sum,
+      (SELECT COALESCE(SUM(cash_per_share_pre_tax), 0)::text FROM fundamental.corporate_actions
+        WHERE action_type = 'dividend') AS dividend_per_share_sum,
+      (SELECT COUNT(*)::text FROM core.company_industry_memberships) AS industry_membership_rows,
+      (SELECT COALESCE(MAX(membership_id), 0)::text FROM core.company_industry_memberships) AS industry_membership_max_id,
+      (SELECT md5(COALESCE(string_agg(tx.taxonomy_code || ':' || COALESCE(tx.version, ''), '|'
+                     ORDER BY tx.taxonomy_code), ''))
+         FROM core.industry_taxonomies tx) AS industry_taxonomy_digest`,
+  [market, asOfDate, config.indexCodes, config.calendarExchanges, knowledgeCutoff]);
+  const row = rows[0] || {};
+  // 全部值统一为字符串/计数，保证 daily 落库的 JSON 与 weekly 实时重算的序列化结果完全一致。
+  const numeric = key => (row[key] === null || row[key] === undefined ? null : String(row[key]));
+  return {
+    universeArtifactHash: row.universe_artifact_hash || null,
+    universeArtifactCount: numeric('universe_artifact_count'),
+    marketValuationDigest: row.market_valuation_digest || null,
+    valuationRows: numeric('valuation_rows'),
+    valuationPbSum: numeric('valuation_pb_sum'),
+    valuationPeSum: numeric('valuation_pe_sum'),
+    valuationDivSum: numeric('valuation_div_sum'),
+    valuationIngestedMax: row.valuation_ingested_max || null,
+    barRowsOnDate: numeric('bar_rows_on_date'),
+    barCloseSum: numeric('bar_close_sum'),
+    calendarRows: numeric('calendar_rows'),
+    calendarMaxDate: row.calendar_max_date || null,
+    suspendRows: numeric('suspend_rows'),
+    suspendMaxDate: row.suspend_max_date || null,
+    fxRows: numeric('fx_rows'),
+    fxRateSum: numeric('fx_rate_sum'),
+    fxMaxDate: row.fx_max_date || null,
+    reportRows: numeric('report_rows'),
+    reportMaxId: numeric('report_max_id'),
+    reportMaxIngested: row.report_max_ingested || null,
+    factRows: numeric('fact_rows'),
+    factValueSum: numeric('fact_value_sum'),
+    factMaxId: numeric('fact_max_id'),
+    dividendRows: numeric('dividend_rows'),
+    dividendCashSum: numeric('dividend_cash_sum'),
+    dividendPerShareSum: numeric('dividend_per_share_sum'),
+    industryMembershipRows: numeric('industry_membership_rows'),
+    industryMembershipMaxId: numeric('industry_membership_max_id'),
+    industryTaxonomyDigest: row.industry_taxonomy_digest || null,
+  };
 }
 
 // 港股主档名可能是英文或代码（如 01114.HK 的 BRILLIANCE CHI）；腾讯行情缓存里已有中文名，
@@ -3037,6 +3182,20 @@ async function copyCandidates({ sourceRunId, targetRunId }, tx) {
     ON CONFLICT (run_id, instrument_id) DO NOTHING`, [sourceRunId, targetRunId]);
 }
 
+/** 周度受控复用（B4-1A / F-13）：把源 daily 的组合成员原样复制到新 weekly 批次。 */
+async function copyMembers({ sourceRunId, targetRunId }, tx) {
+  const exec = executorOf(tx);
+  await exec(`
+    INSERT INTO analytics.stock_selection_portfolio_members
+      (run_id, instrument_id, slot_no, industry_code, industry_system, industry_version,
+       weight_in_market_budget, weight_in_equity_target, issuer_duplicate, weight_in_invested_equity, detail)
+    SELECT $2, instrument_id, slot_no, industry_code, industry_system, industry_version,
+           weight_in_market_budget, weight_in_equity_target, issuer_duplicate, weight_in_invested_equity, detail
+      FROM analytics.stock_selection_portfolio_members
+     WHERE run_id = $1
+    ON CONFLICT (run_id, instrument_id) DO NOTHING`, [sourceRunId, targetRunId]);
+}
+
 /**
  * 个人派生用的完整冻结投影（方案 27.9）：分页游标读取源批次**全部**候选，
  * 显式带出 detail/company_id/rankReady/reasons，不再用 5000 行上限截断、也不补 rankReady=true。
@@ -3076,7 +3235,8 @@ module.exports = {
   upsertStrategy, findStrategyId, findRunByIdempotencyKey, nextRevision, insertRun, insertCandidates, insertMembers,
   publishRun, markRunFailure,
   findPublication, listPublicationEvents, markPublicationVisible, loadPublicationReplayEvidence,
-  listRuns, findRun, findRunForUpdate, listReusableDailyRuns, listCandidates, listIndustryIdentityCounts, findCandidate, listMembers, latestPublishedRun, copyCandidates,
+  listRuns, findRun, findRunForUpdate, listReusableDailyRuns, loadComputationInputWatermark,
+  listCandidates, listIndustryIdentityCounts, findCandidate, listMembers, latestPublishedRun, copyCandidates, copyMembers,
   resolveCandidateRunId, compactCandidateDetail, annualYearsDigest,
   hasPeriodRun,
   hasNoPeriodRunAtAll,

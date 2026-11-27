@@ -245,20 +245,39 @@ async function phaseReuse(client, sourceId) {
   await client.query(`DELETE FROM analytics.stock_selection_universe_artifacts WHERE market='CN' AND target_date=$1::date`, [AS_OF]);
   await seedCalendar(client);
   const stocks = await seedCompleteStocks(client, sourceId);
+  // 计数断言：命中复用必须真正跳过全市场纯计算（0 次 loadPbWindow）。
+  let loadPbWindowCalls = 0;
+  const originalLoadPbWindow = repo.loadPbWindow;
+  repo.loadPbWindow = async (...args) => {
+    loadPbWindowCalls += 1;
+    return originalLoadPbWindow.apply(repo, args);
+  };
+  const watermarkQuery = () => ({
+    market: 'CN', asOfDate: AS_OF, knowledgeCutoff: service.knowledgeCutoffFor('CN', AS_OF),
+  });
+  const watermarkOf = () => repo.loadComputationInputWatermark(watermarkQuery(), client);
 
   const daily0 = await service.computeAndPersist(dailyInput(), { tx: client });
   eq(daily0.run.quality_status, 'passed', `daily 基线必须质量通过：${qualitySummary(daily0)}`);
   const dailyHash = daily0.run.input_manifest.computationInputHash;
   const dailyOutputHash = daily0.run.input_manifest.computationOutputHash;
   ok(dailyHash && dailyOutputHash, 'daily 必须持久化 computationInputHash 与 computationOutputHash');
+  const dailyWatermark = daily0.run.input_manifest.computationInputWatermark;
+  const dailyWatermarkHash = daily0.run.input_manifest.computationInputWatermarkHash;
+  ok(dailyWatermark && dailyWatermarkHash, 'daily 必须持久化 computationInputWatermark 与哈希');
+  // 水印必须由轻量聚合构成且可由同一仓储重算一致。
+  assert.deepStrictEqual(await watermarkOf(), dailyWatermark, 'daily 冻结水印必须与实时重算完全一致');
 
-  // ---------- 正例 ----------
+  // ---------- 正例：命中复用，跳过 computeSelection ----------
+  loadPbWindowCalls = 0;
   const weekly0 = await service.computeAndPersist(weeklyInput(), { tx: client });
+  eq(loadPbWindowCalls, 0, '命中复用时本次 weekly 不得调用 loadPbWindow（真正跳过全市场纯计算）');
   eq(weekly0.run.quality_status, 'passed', `weekly 复用批次质量必须通过：${qualitySummary(weekly0)}`);
   ne(Number(weekly0.runId), Number(daily0.runId), '复用也必须新建独立 weekly run，不得改 daily 类型');
   eq(Number(weekly0.run.source_daily_run_id), Number(daily0.runId), 'weekly 必须记录 source_daily_run_id');
   const reuse0 = weekly0.run.input_manifest.computationReuse || {};
   eq(reuse0.reused, true, '同输入/同输出的 passed daily 存在时 weekly 必须命中复用');
+  eq(reuse0.skippedComputeSelection, true, '命中复用必须显式标记跳过 computeSelection');
   eq(reuse0.sourceComputationInputHash, dailyHash, '复用必须记录源 daily 的输入哈希');
   eq(reuse0.sourceComputationOutputHash, dailyOutputHash, '复用必须记录源 daily 的输出哈希');
   eq(weekly0.run.input_manifest.computationInputHash, dailyHash, 'weekly 的 computationInputHash 必须与 daily 相同');
@@ -272,11 +291,31 @@ async function phaseReuse(client, sourceId) {
     'SELECT COUNT(*)::int AS c FROM analytics.stock_selection_portfolio_members WHERE run_id=$1', [weekly0.runId]);
   eq(Number(weeklyCandidates.rows[0].c), stocks.length, '复用批次必须新建自己的候选行');
   ok(Number(weeklyMembers.rows[0].c) > 0, '复用批次必须新建自己的组合成员');
+  // 候选与成员必须与源 daily 逐行对账一致（不是空壳/部分复制）。
+  const dailyCandidates = await client.query(
+    `SELECT instrument_id, code, current_pb::text AS pb, filter_status, selection_order::text AS selection_order
+       FROM analytics.stock_selection_candidates WHERE run_id=$1 ORDER BY instrument_id`, [daily0.runId]);
+  const copiedCandidates = await client.query(
+    `SELECT instrument_id, code, current_pb::text AS pb, filter_status, selection_order::text AS selection_order
+       FROM analytics.stock_selection_candidates WHERE run_id=$1 ORDER BY instrument_id`, [weekly0.runId]);
+  assert.deepStrictEqual(copiedCandidates.rows, dailyCandidates.rows, '复用候选必须与源 daily 逐行一致');
+  const dailyMembers = await client.query(
+    `SELECT instrument_id, slot_no, weight_in_market_budget::text AS w
+       FROM analytics.stock_selection_portfolio_members WHERE run_id=$1 ORDER BY instrument_id`, [daily0.runId]);
+  const copiedMembers = await client.query(
+    `SELECT instrument_id, slot_no, weight_in_market_budget::text AS w
+       FROM analytics.stock_selection_portfolio_members WHERE run_id=$1 ORDER BY instrument_id`, [weekly0.runId]);
+  assert.deepStrictEqual(copiedMembers.rows, dailyMembers.rows, '复用成员必须与源 daily 逐行一致');
 
   // ---------- 反例 1：同证券数量但 PB 变化 ----------
+  const wmBeforePb = await watermarkOf();
   await client.query(`UPDATE market.daily_valuations SET pb=1.25 WHERE instrument_id=$1 AND trade_date=$2::date`,
     [stocks[0].instrumentId, AS_OF]);
+  const wmAfterPb = await watermarkOf();
+  ok(JSON.stringify(wmAfterPb) !== JSON.stringify(wmBeforePb), 'PB 原地变化必须立即改变轻量水印');
+  loadPbWindowCalls = 0;
   const weeklyPb = await service.computeAndPersist(weeklyInput(), { tx: client });
+  ok(loadPbWindowCalls > 0, 'PB 变化拒绝复用后必须执行 loadPbWindow 完整重算');
   eq(weeklyPb.computed.evaluated.length, stocks.length, 'PB 变化反例必须保持同证券数量');
   assertRejected(weeklyPb, 'PB 变化');
   const pbCandidate = await client.query(
@@ -288,13 +327,18 @@ async function phaseReuse(client, sourceId) {
   eq(daily1.run.quality_status, 'passed', `PB 变化后的 daily 基线必须通过：${qualitySummary(daily1)}`);
 
   // ---------- 反例 2：同证券数量但年度利润变化 ----------
+  const wmBeforeProfit = await watermarkOf();
   const profitReport = await client.query(
     `SELECT report_id FROM fundamental.financial_reports
       WHERE company_id=$1 AND report_kind='income' AND period_end='2015-12-31'`, [stocks[0].companyId]);
   await client.query(
     `UPDATE fundamental.financial_facts SET numeric_value=1.2e9
       WHERE report_id=$1 AND metric_code='net_profit_parent'`, [profitReport.rows[0].report_id]);
+  const wmAfterProfit = await watermarkOf();
+  ok(JSON.stringify(wmAfterProfit) !== JSON.stringify(wmBeforeProfit), '年度利润原地变化必须立即改变轻量水印');
+  loadPbWindowCalls = 0;
   const weeklyProfit = await service.computeAndPersist(weeklyInput(), { tx: client });
+  ok(loadPbWindowCalls > 0, '年度利润变化拒绝复用后必须执行 loadPbWindow 完整重算');
   eq(weeklyProfit.computed.evaluated.length, stocks.length, '年度利润变化反例必须保持同证券数量');
   assertRejected(weeklyProfit, '年度利润变化');
 
@@ -302,10 +346,15 @@ async function phaseReuse(client, sourceId) {
   eq(daily2.run.quality_status, 'passed', `利润变化后的 daily 基线必须通过：${qualitySummary(daily2)}`);
 
   // ---------- 反例 3：同证券数量但分红变化 ----------
+  const wmBeforeDividend = await watermarkOf();
   await client.query(
     `UPDATE fundamental.corporate_actions SET cash_per_share_pre_tax=0.9, total_cash_amount=1.8e8
       WHERE instrument_id=$1 AND fiscal_period_end='2020-12-31'`, [stocks[0].instrumentId]);
+  const wmAfterDividend = await watermarkOf();
+  ok(JSON.stringify(wmAfterDividend) !== JSON.stringify(wmBeforeDividend), '分红原地变化必须立即改变轻量水印');
+  loadPbWindowCalls = 0;
   const weeklyDividend = await service.computeAndPersist(weeklyInput(), { tx: client });
+  ok(loadPbWindowCalls > 0, '分红变化拒绝复用后必须执行 loadPbWindow 完整重算');
   eq(weeklyDividend.computed.evaluated.length, stocks.length, '分红变化反例必须保持同证券数量');
   assertRejected(weeklyDividend, '分红变化');
 
@@ -313,9 +362,14 @@ async function phaseReuse(client, sourceId) {
   eq(daily3.run.quality_status, 'passed', `分红变化后的 daily 基线必须通过：${qualitySummary(daily3)}`);
 
   // ---------- 反例 4：同证券数量但行业版本变化 ----------
+  const wmBeforeIndustry = await watermarkOf();
   await client.query(
     `UPDATE core.industry_taxonomies SET version = COALESCE(version,'2021') || '-b4' WHERE taxonomy_code='SW2021'`);
+  const wmAfterIndustry = await watermarkOf();
+  ok(JSON.stringify(wmAfterIndustry) !== JSON.stringify(wmBeforeIndustry), '行业版本原地变化必须立即改变轻量水印');
+  loadPbWindowCalls = 0;
   const weeklyIndustry = await service.computeAndPersist(weeklyInput(), { tx: client });
+  ok(loadPbWindowCalls > 0, '行业版本变化拒绝复用后必须执行 loadPbWindow 完整重算');
   eq(weeklyIndustry.computed.evaluated.length, stocks.length, '行业版本变化反例必须保持同证券数量');
   assertRejected(weeklyIndustry, '行业版本变化');
 
@@ -357,13 +411,16 @@ async function phaseReuse(client, sourceId) {
   eq(candidateIds.join(','), String(validId), '只有 passed 且无缺口的非影子 daily 可进入复用候选');
   ok(candidates[0].computationInputHash === 'hash-x' && candidates[0].computationOutputHash === 'hash-y',
     '复用候选必须原样带出输入/输出哈希供服务层比对');
+  repo.loadPbWindow = originalLoadPbWindow;
 }
 
 function assertRejected(result, label) {
   eq(result.run.source_daily_run_id, null, `${label} → 不得记录 source_daily_run_id`);
   const reuse = (result.run.input_manifest && result.run.input_manifest.computationReuse) || {};
   eq(reuse.reused, false, `${label} → 必须拒绝复用`);
-  eq(reuse.reason, 'computation_hash_mismatch', `${label} → 拒绝原因必须是哈希不一致`);
+  eq(reuse.skippedComputeSelection, false, `${label} → 不得标记跳过 computeSelection`);
+  ok(['input_watermark_mismatch', 'computation_hash_mismatch', 'source_daily_incomplete', 'strategy_or_position_mismatch']
+    .includes(reuse.reason), `${label} → 拒绝原因必须可诊断（实际 ${reuse.reason}）`);
 }
 
 async function runPhase(client, label, fn, sourceId) {

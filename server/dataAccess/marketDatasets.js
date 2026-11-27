@@ -538,7 +538,7 @@ async function readStockDailyBatch({ tsCodes, tradeDate } = {}) {
 // 宇宙由 Tushare daily_basic 的当日代码清单确定（官方没有"按交易日列全市场"的清单接口）。
 // 业务覆盖裁决（R2-001）：官方批次部分失败时，保留已经取到的官方行，缺的代码按同口径备源补齐并标来源；
 // 官方失败证据写入日志，不能因此声称"官方采集完整"。
-async function readStockValuationRows({ tradeDate } = {}) {
+async function readStockValuationRows({ tradeDate, fsTableTypes = null } = {}) {
   if (!tradeDate) return [];
   const universeData = await tushareQuery('daily_basic', { trade_date: String(tradeDate).replace(/-/g, '') },
     'ts_code,trade_date,pe,pe_ttm,pb,dv_ttm,total_mv,circ_mv', { failoverOnEmpty: true });
@@ -547,7 +547,11 @@ async function readStockValuationRows({ tradeDate } = {}) {
   let officialRows = [];
   if (codes.length) {
     try {
-      const detail = await official.resolveValuationRowsDetailed({ codes, tradeDate });
+      // F-11：把按代码解析的 fsTableType 透传到官方快照，供港股按适用端点分组；
+      // A 股仍走 non_financial，行为不变。
+      const detail = await official.resolveValuationRowsDetailed({
+        codes, tradeDate, options: { fsTableTypes },
+      });
       officialRows = (detail && detail.rows) || [];
       if (detail && !detail.complete) {
         console.warn(`[数据层] stock_valuation 官方快照未取全（计划 ${detail.planned} 批，失败 ${detail.failed} 批，空 ${detail.emptyBatches} 批），缺失代码按备源补齐`);
@@ -569,6 +573,18 @@ async function readStockValuationRows({ tradeDate } = {}) {
   const covered = new Set(officialRows.map(row => row.ts_code));
   const fallbackRows = universeRows.filter(row => !covered.has(row.ts_code)).map(row => ({ ...row, source_code: 'tushare' }));
   return [...officialRows, ...fallbackRows];
+}
+
+// 单日估值快照的详细结果（F-11）：供选股补数按目标日一次性取一批证券的估值，
+// 港股按已确认的 `fsTableType` 分组路由到各自官方端点（非金融/银行/保险/证券/其他金融/REIT）。
+// 返回适配层的 rows 与 gaps（missing/dateMismatch/fieldIncomplete/unknownType），
+// 调用方逐证券核对并只把真实缺口留给续补队列，不能把"批次成功"当"业务覆盖完整"。
+async function readValuationSnapshotDetailed({ codes = [], tradeDate, fsTableTypes = null, options = {} } = {}) {
+  const list = Array.from(new Set((codes || []).filter(Boolean).map(code => String(code))));
+  if (!list.length || !tradeDate) return null;
+  return official.resolveValuationRowsDetailed({
+    codes: list, tradeDate, options: Object.assign({}, options, { fsTableTypes }),
+  });
 }
 
 // 逐只估值区间批量（历史回填专用）：按「代码批 × 日期区间」取官方估值，只回官方不回落备源。
@@ -1001,6 +1017,7 @@ module.exports = {
   normalizeHkSecurityCode,
   readStockValuationHistory,
   readStockValuationRows,
+  readValuationSnapshotDetailed,
   readStockValuationSeriesBatch,
   readStockValuationSeriesDetailed,
   readTotalAShareMarketCap,

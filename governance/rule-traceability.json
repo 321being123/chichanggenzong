@@ -6956,6 +6956,86 @@
       ],
       "owner": "投资策略选股中心",
       "status": "local_verified"
+    },
+    {
+      "id": "SEL-COMPUTE-REUSE-WATERMARK-001",
+      "title": "周度受控复用在调用 computeSelection 之前用轻量聚合水印与源 daily 冻结哈希严格比对；命中才跳过全市场纯计算，并仍新建独立 weekly run 与复制候选/成员，输入变化立即拒绝复用",
+      "implementation": {
+        "file": "server/repositories/stockSelectionRepository.js",
+        "symbol": "loadComputationInputWatermark"
+      },
+      "tests": [
+        { "file": "server/test/stock-selection-b4-db.test.js", "pattern": "daily 必须持久化 computationInputWatermark 与哈希" },
+        { "file": "server/test/stock-selection-b4-db.test.js", "pattern": "命中复用时本次 weekly 不得调用 loadPbWindow" },
+        { "file": "server/test/stock-selection-b4-db.test.js", "pattern": "PB 原地变化必须立即改变轻量水印" },
+        { "file": "server/test/stock-selection-b4-db.test.js", "pattern": "年度利润原地变化必须立即改变轻量水印" },
+        { "file": "server/test/stock-selection-b4-db.test.js", "pattern": "分红原地变化必须立即改变轻量水印" },
+        { "file": "server/test/stock-selection-b4-db.test.js", "pattern": "行业版本原地变化必须立即改变轻量水印" },
+        { "file": "server/test/stock-selection-b4-db.test.js", "pattern": "复用候选必须与源 daily 逐行一致" },
+        { "file": "server/test/stock-selection-b4-db.test.js", "pattern": "复用成员必须与源 daily 逐行一致" }
+      ],
+      "owner": "投资策略选股中心",
+      "status": "local_verified"
+    },
+    {
+      "id": "SEL-HK-SNAPSHOT-BATCH-001",
+      "title": "港股目标日估值先按 fsTableType 做多端点批量单日快照并批量落库，逐证券核对目标日/必需字段后才跳过逐股序列；漏码/日期不符/字段不齐/未知类型/历史断档才回退受 batchLimit 约束的断档补采",
+      "implementation": {
+        "file": "server/dataAccess/marketDatasets.js",
+        "symbol": "readValuationSnapshotDetailed"
+      },
+      "tests": [
+        { "file": "server/test/stock-selection-inputs-hk.test.js", "pattern": "F-11 港股目标日多端点批量估值快照" },
+        { "file": "server/test/stock-selection-inputs-hk.test.js", "pattern": "目标日已补齐的港股不得再逐股拉序列" },
+        { "file": "server/test/stock-selection-inputs-hk.test.js", "pattern": "未知类型与未补齐的港股必须继续留在剩余缺口" }
+      ],
+      "owner": "投资策略选股中心",
+      "status": "local_verified"
+    },
+    {
+      "id": "SEL-RETENTION-DRYRUN-DEFAULT-001",
+      "title": "storage_retention 分级清理默认只读盘点（dryRun=true），未显式 selectionDryRun:false 或环境变量 false 时不真删生产存量",
+      "implementation": {
+        "file": "server/services/storageRetention.js",
+        "symbol": "purgeStorageData"
+      },
+      "tests": [
+        { "file": "server/test/storage-retention.test.js", "pattern": "默认 purgeStorageData 必须是 dry-run" },
+        { "file": "server/test/storage-retention.test.js", "pattern": "显式 selectionDryRun:false 才透传真实删除" },
+        { "file": "server/test/stock-selection-b3-db.test.js", "pattern": "默认 purgeStorageData 必须 dry-run" }
+      ],
+      "owner": "任务治理",
+      "status": "local_verified"
+    },
+    {
+      "id": "SEL-RETENTION-DAILY-REF-001",
+      "title": "daily 30 天清理不再要求 published_at IS NULL，只按真实业务引用（发布指针/事件/回测/supersedes/source_daily_run_id/请求绑定）保护；请求绑定保护覆盖 daily/ephemeral/personal，weekly/quarterly 永不进入清理",
+      "implementation": {
+        "file": "server/repositories/storageRetentionRepository.js",
+        "symbol": "deleteStaleDailySelectionRuns"
+      },
+      "tests": [
+        { "file": "server/test/stock-selection-b3-db.test.js", "pattern": "被发布指针引用的 daily" },
+        { "file": "server/test/stock-selection-b3-db.test.js", "pattern": "仅有 published_at 无任何引用的旧 daily" },
+        { "file": "server/test/stock-selection-b3-db.test.js", "pattern": "被请求绑定引用的 daily" },
+        { "file": "server/test/stock-selection-b3-db.test.js", "pattern": "被请求绑定引用的 preview" },
+        { "file": "server/test/stock-selection-b3-db.test.js", "pattern": "被请求绑定引用的 personal" }
+      ],
+      "owner": "任务治理",
+      "status": "local_verified"
+    },
+    {
+      "id": "SEL-FS-TABLE-TYPE-NO-REPEAT-001",
+      "title": "批量入口已核对过档案仍拿不到 fsTableType 时，collectOne 不再为同一只港股重复发单只 readCompanyProfiles",
+      "implementation": {
+        "file": "server/services/stockSelectionInputsSync.js",
+        "symbol": "collectOne"
+      },
+      "tests": [
+        { "file": "server/test/stock-selection-inputs-hk.test.js", "pattern": "F-14 批量已查档案仍无类型时" }
+      ],
+      "owner": "投资策略选股中心",
+      "status": "local_verified"
     }
   ]
 }

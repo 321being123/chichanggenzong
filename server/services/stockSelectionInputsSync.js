@@ -257,7 +257,11 @@ async function collectOne(gap, asOfDate, runContext = null, deps = {}, timing = 
   let fsTableType = deps.fsTableTypeByCode
     ? (deps.fsTableTypeByCode.get(String(meta.ts_code || '').toUpperCase()) || null)
     : null;
-  if (window.kinds.length && !fsTableType && /^\d{5}\.HK$/i.test(String(meta.ts_code || ''))) {
+  // F-14：批量入口已经查过档案（记录在 fsTableTypeChecked）仍拿不到类型时，不再为同一只港股重复发单只档案。
+  // 没有批量检查证据（直调 collectOne）才保留单只兜底，避免破坏既有入口。
+  const batchChecked = deps.fsTableTypeChecked instanceof Set
+    && deps.fsTableTypeChecked.has(String(meta.ts_code || '').toUpperCase());
+  if (window.kinds.length && !fsTableType && !batchChecked && /^\d{5}\.HK$/i.test(String(meta.ts_code || ''))) {
     try {
       const { readCompanyProfiles } = datasets;
       const profiles = (await readCompanyProfiles({ codes: [meta.ts_code] })) || [];
@@ -361,6 +365,49 @@ async function collectIndustryOne(gap, market) {
     level: info.industry_level,
     path: (info.industry_path || []).join(' / '),
   };
+}
+
+/**
+ * F-11：判断港股估值缺口是否必须回补多日历史序列。
+ * 只有明确指向十年 PB 窗口/历史覆盖的原因（R02、history_*、coverage_unknown、gap_not_evaluable）
+ * 才需要逐只拉序列；仅目标日估值缺失（R01/pb_unavailable）由多端点单日快照即可补齐。
+ */
+function needsHistoricalValuation(gap) {
+  const reasons = Array.isArray(gap && gap.reasons) ? gap.reasons : [];
+  return reasons.some(reason => /^R02:/i.test(String(reason))
+    || /history|pb_window|pbwindow|coverage_unknown|gap_not_evaluable/i.test(String(reason)));
+}
+
+/**
+ * F-11：把官方港股单日快照行换算成标准层估值行。
+ * 口径与 collectHkMarketData 一致：`dv_ttm` 百分数点 → 小数股息率，`total_mv` 万元 → 元，币种随行写 HKD。
+ */
+function mapHkValuationSnapshotRows(rawRows, metaByCode) {
+  const rows = [];
+  const countByCode = new Map();
+  (rawRows || []).forEach(row => {
+    const code = String((row && row.ts_code) || '').toUpperCase();
+    const meta = metaByCode.get(code) || null;
+    if (!meta || !meta.instrument_id) return;
+    const tradeDate = normalizeTradeDate(row.trade_date);
+    if (!tradeDate) return;
+    const dividendYield = finite(row.dv_ttm);
+    const totalMv = finite(row.total_mv);
+    const circMv = finite(row.circ_mv);
+    rows.push({
+      instrumentId: Number(meta.instrument_id),
+      tradeDate,
+      peStatic: finite(row.pe),
+      peTtm: finite(row.pe_ttm),
+      pb: finite(row.pb),
+      dividendYield: dividendYield === null ? null : dividendYield / 100,
+      totalMarketCap: totalMv === null ? null : totalMv * 10000,
+      circulatingMarketCap: circMv === null ? null : circMv * 10000,
+      currencyCode: row.currency || meta.currency_code || 'HKD',
+    });
+    countByCode.set(code, (countByCode.get(code) || 0) + 1);
+  });
+  return { rows, countByCode };
 }
 
 /**
@@ -509,6 +556,77 @@ async function writeHkBars({ rawBars, instrumentId, sources, officialId }) {
     written += await repo.upsertDailyBarRows({ rows, sourceId: sources[sourceCode] || officialId });
   }
   return written;
+}
+
+/**
+ * F-11：港股目标日多端点批量估值快照。
+ * 先按已确认 fsTableType 分组调用官方单日快照（≤100 只/批，适配层内部再按端点分组），
+ * 一次性落库目标日估值；随后逐证券核对返回行是否「同一目标日 + pb/total_mv 齐备」。
+ * 只有通过核对的代码才允许跳过逐股序列；漏码/日期不符/字段不齐/未知类型仍留在缺口队列。
+ * 返回 filledCodes（可视为目标日已补）、逐代码行数与适配层原始 gaps 证据。
+ */
+async function collectHkValuationSnapshot({ codes = [], asOfDate, fsTableTypeByCode = null, deps = {} } = {}) {
+  const datasets = deps.datasets || require('../dataAccess/marketDatasets');
+  const readSnapshot = deps.readValuationSnapshotDetailed || datasets.readValuationSnapshotDetailed;
+  if (typeof readSnapshot !== 'function') return { supported: false };
+  const unique = Array.from(new Set((codes || []).map(code => String(code || '').toUpperCase()).filter(Boolean)));
+  if (!unique.length) {
+    return { supported: true, filledCodes: new Set(), rowCountByCode: new Map(), rows: [], written: 0, gaps: {} };
+  }
+  let detail = null;
+  try {
+    detail = await readSnapshot({ codes: unique, tradeDate: asOfDate, fsTableTypes: fsTableTypeByCode, options: {} });
+  } catch (error) {
+    // 快照失败不阻断整批：返回 error 证据，由调用方回退逐股断档补采，不能把失败当"已补齐"。
+    return {
+      supported: true, error: String(error.message || error).slice(0, 320),
+      filledCodes: new Set(), rowCountByCode: new Map(), rows: [], written: 0, gaps: {},
+    };
+  }
+  if (!detail) {
+    return { supported: true, filledCodes: new Set(), rowCountByCode: new Map(), rows: [], written: 0, gaps: {} };
+  }
+  const resolveInstruments = deps.resolveInstrumentsByCodes || repo.resolveInstrumentsByCodes;
+  const metaRows = typeof resolveInstruments === 'function'
+    ? await Promise.resolve(resolveInstruments({ market: 'HK', codes: unique })).catch(() => [])
+    : [];
+  const metaByCode = new Map((metaRows || []).map(row => [String(row.code || '').toUpperCase(), row]));
+  const { rows, countByCode } = mapHkValuationSnapshotRows(detail.rows, metaByCode);
+  let written = 0;
+  if (rows.length) {
+    const store = deps.store || require('./convertibleBondAnalysisStore');
+    const sources = await (deps.sourceIds ? deps.sourceIds() : store.sourceIds());
+    const officialId = sources && sources.lixinger_official;
+    if (!officialId) {
+      return {
+        supported: true, error: 'valuation_source_missing',
+        filledCodes: new Set(), rowCountByCode: countByCode, rows, written: 0, gaps: detail.gaps || {},
+      };
+    }
+    const upsert = deps.upsertDailyValuationRows || repo.upsertDailyValuationRows;
+    written = await upsert({ rows, sourceId: officialId });
+  }
+  const gaps = detail.gaps || {};
+  const gapCodes = new Set([
+    ...(gaps.missingCodes || []),
+    ...(gaps.dateMismatchCodes || []),
+    ...(gaps.fieldIncompleteCodes || []),
+    ...(gaps.unknownTypeCodes || []),
+  ].map(code => String(code || '').toUpperCase()));
+  // 逐证券核对：同目标日且 pb/total_mv 齐备、且不在适配层 gaps 中，才视为目标日已补。
+  const validCodes = new Set();
+  (detail.rows || []).forEach(row => {
+    const code = String((row && row.ts_code) || '').toUpperCase();
+    if (!code || gapCodes.has(code) || !metaByCode.has(code)) return;
+    if (normalizeTradeDate(row.trade_date) !== asOfDate) return;
+    if (finite(row.pb) === null || finite(row.total_mv) === null) return;
+    validCodes.add(code);
+  });
+  return {
+    supported: true, filledCodes: validCodes, rowCountByCode: countByCode, rows, written,
+    gaps, error: null,
+    businessComplete: detail.businessComplete === true,
+  };
 }
 
 /**
@@ -888,10 +1006,13 @@ async function syncSelectionInputs(input) {
   });
   const results = [];
   const runContext = input.runContext && typeof input.runContext === 'object' ? input.runContext : null;
+  // F-14：把本批"已批量核对过档案"的代码集合下沉给 collectOne，避免同一只港股重复单只查档案。
+  const financialFsTableTypeChecked = new Set(batch.map(gap => String(gap.code || '').toUpperCase()));
   for (const gap of batch) {
     try {
       results.push(await measure(timing, 'fetchMs', () => collectOne(
-        gap, asOfDate, runContext, { fsTableTypeByCode: financialFsTableTypes }, timing,
+        gap, asOfDate, runContext,
+        { fsTableTypeByCode: financialFsTableTypes, fsTableTypeChecked: financialFsTableTypeChecked }, timing,
       )));
     } catch (error) {
       // 单只失败不阻断整批：失败原因留在结果里，剩余对象继续等下一次续跑。
@@ -905,13 +1026,58 @@ async function syncSelectionInputs(input) {
     codes: valuationBatch.map(gap => gap.code), deps: input.deps || {},
   });
   const valuationResults = [];
-  for (const gap of valuationBatch) {
-    try {
-      valuationResults.push(await measure(timing, 'fetchMs', () => collectHkMarketData(
-        gap, asOfDate, timing, { fsTableTypeByCode: valuationFsTableTypes },
-      )));
-    } catch (error) {
-      valuationResults.push({ code: gap.code, ok: false, reason: 'valuation_collect_failed', error: String(error.message || error).slice(0, 320) });
+  let valuationSnapshot = null;
+  const valuationSeriesGaps = [];
+  if (valuationBatch.length) {
+    // F-11：先按已确认 fsTableType 做目标日多端点批量快照，一次性补齐当日估值；
+    // 只有快照缺失/字段不齐或确有历史窗口断档的标的，才回退逐股断档序列（受 batchLimit 约束）。
+    const knownCodes = valuationBatch
+      .filter(gap => valuationFsTableTypes.get(String(gap.code || '').toUpperCase()))
+      .map(gap => gap.code);
+    if (knownCodes.length) {
+      try {
+        valuationSnapshot = await measure(timing, 'fetchMs', () => collectHkValuationSnapshot({
+          codes: knownCodes, asOfDate, fsTableTypeByCode: valuationFsTableTypes, deps: input.deps || {},
+        }));
+      } catch (error) {
+        valuationSnapshot = {
+          supported: true, error: String(error.message || error).slice(0, 320),
+          filledCodes: new Set(), rowCountByCode: new Map(),
+        };
+      }
+    }
+    const filled = valuationSnapshot && valuationSnapshot.filledCodes instanceof Set
+      ? valuationSnapshot.filledCodes : new Set();
+    const rowCountByCode = valuationSnapshot && valuationSnapshot.rowCountByCode instanceof Map
+      ? valuationSnapshot.rowCountByCode : new Map();
+    const snapshotUsable = valuationSnapshot && valuationSnapshot.supported !== false && !valuationSnapshot.error;
+    for (const gap of valuationBatch) {
+      const code = String(gap.code || '').toUpperCase();
+      const fsType = valuationFsTableTypes.get(code) || null;
+      // 未知类型不硬发非金融端点，保留缺口等档案核对。
+      if (!fsType) {
+        valuationResults.push({ code: gap.code, ok: false, reason: 'financial_type_unknown' });
+        continue;
+      }
+      // 快照已补齐目标日且缺口不含历史窗口断档 → 不再逐股拉序列。
+      if (snapshotUsable && filled.has(code) && !needsHistoricalValuation(gap)) {
+        valuationResults.push({
+          code: gap.code, ok: true, reason: 'valuation_snapshot_filled',
+          valuations: Number(rowCountByCode.get(code) || 1), bars: 0,
+        });
+        continue;
+      }
+      // 快照不可用（失败/缺函数）或该标的仍需历史/行情断档 → 回退逐股断档补采。
+      valuationSeriesGaps.push(gap);
+    }
+    for (const gap of valuationSeriesGaps) {
+      try {
+        valuationResults.push(await measure(timing, 'fetchMs', () => collectHkMarketData(
+          gap, asOfDate, timing, { fsTableTypeByCode: valuationFsTableTypes },
+        )));
+      } catch (error) {
+        valuationResults.push({ code: gap.code, ok: false, reason: 'valuation_collect_failed', error: String(error.message || error).slice(0, 320) });
+      }
     }
   }
   const attempted = results.concat(industryResults, valuationResults);
@@ -1056,6 +1222,16 @@ async function syncSelectionInputs(input) {
       valuationSucceeded: valuationResults.filter(item => item.ok).length,
       valuationRows: valuationResults.reduce((sum, item) => sum + Number(item.valuations || 0), 0),
       valuationBars: valuationResults.reduce((sum, item) => sum + Number(item.bars || 0), 0),
+      // F-11 证据：目标日多端点快照确实被调用、命中/写入/仍需序列的代码数量与适配层 gaps，
+      // 用于证明日常只缺目标日估值时没有逐股拉 11 年序列。
+      valuationSnapshot: valuationSnapshot ? {
+        supported: valuationSnapshot.supported !== false,
+        filled: valuationSnapshot.filledCodes instanceof Set ? valuationSnapshot.filledCodes.size : 0,
+        written: Number(valuationSnapshot.written || 0),
+        seriesCodes: valuationSeriesGaps.length,
+        gaps: valuationSnapshot.gaps || null,
+        error: valuationSnapshot.error || null,
+      } : null,
       targetPool: targetPool ? Object.assign({}, targetPool, {
         // 批后真实剩余（不是批前统计），并给出未处理对象明细供续跑核对。
         pendingAfter: targetPoolPending,
@@ -1184,6 +1360,7 @@ function blockedOnlyByValuation(remaining) {
 module.exports = {
   syncSelectionInputs, collectOne, collectIndustryOne, classifyGaps, collectionWindowOf, REPORT_KINDS, HISTORY_YEARS,
   collectHkMarketData, syncHkTargetPoolBars, resolveHkTargetPool, writeHkBars,
+  collectHkValuationSnapshot, needsHistoricalValuation,
   classifyUnavailableHkCodes,
   resolveBatchFsTableTypes, missingDateSegments,
 };

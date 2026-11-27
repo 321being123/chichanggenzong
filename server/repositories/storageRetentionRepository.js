@@ -52,6 +52,7 @@ async function deleteStalePartialSelectionRuns({
             AND NOT EXISTS (SELECT 1 FROM analytics.stock_selection_publication_events e
                              WHERE e.from_run_id = r.run_id OR e.to_run_id = r.run_id)
             AND NOT EXISTS (SELECT 1 FROM analytics.stock_selection_backtest_periods bp WHERE bp.run_id = r.run_id)
+            AND NOT EXISTS (SELECT 1 FROM analytics.stock_selection_request_bindings b WHERE b.run_id = r.run_id)
             AND NOT EXISTS (SELECT 1 FROM analytics.stock_selection_runs r2
                              WHERE r2.supersedes_run_id = r.run_id OR r2.source_daily_run_id = r.run_id)
           LIMIT $2
@@ -71,10 +72,11 @@ async function deleteStalePartialSelectionRuns({
 /**
  * 选股批次分级留存（B3-2，D-3 已获用户授权）：
  * - `weekly` / `quarterly` 正式发布批次永不进本清理；
- * - 任何已发布批次、被发布指针/发布事件/历史回测/其他 run 的 `supersedes_run_id` 或
+ * - 任何被发布指针/发布事件/历史回测/请求绑定/其他 run 的 `supersedes_run_id` 或
  *   `source_daily_run_id` 引用的批次一律永久保留（`NOT EXISTS` 逐项反查）；
- * - 过期无引用：非影子 `daily`（默认 30 天）、中间 `personal`（默认 14 天，必须存在同源同主体更新批次）、
- *   `preview` 与影子批次（默认 7 天）。
+ * - 过期无引用：非影子 `daily`（默认 30 天，不再要求 `published_at IS NULL`——正式日批次发布后
+ *   必然置位 `published_at`，只认真实业务引用，避免该档位永不命中）、中间 `personal`
+ *   （默认 14 天，必须存在同源同主体更新批次）、`preview` 与影子批次（默认 7 天）。
  * 只按小批次删除，不执行 `VACUUM FULL`；dryRun 只统计不删除。
  */
 async function countStaleSelectionRunsByClass({
@@ -88,11 +90,11 @@ async function countStaleSelectionRunsByClass({
          FROM analytics.stock_selection_runs r
         WHERE r.run_kind = 'daily' AND r.is_shadow = false
           AND r.created_at < now() - make_interval(days => $1)
-          AND r.published_at IS NULL
           AND NOT EXISTS (SELECT 1 FROM analytics.stock_selection_publications p WHERE p.run_id = r.run_id)
           AND NOT EXISTS (SELECT 1 FROM analytics.stock_selection_publication_events e
                            WHERE e.from_run_id = r.run_id OR e.to_run_id = r.run_id)
           AND NOT EXISTS (SELECT 1 FROM analytics.stock_selection_backtest_periods bp WHERE bp.run_id = r.run_id)
+          AND NOT EXISTS (SELECT 1 FROM analytics.stock_selection_request_bindings b WHERE b.run_id = r.run_id)
           AND NOT EXISTS (SELECT 1 FROM analytics.stock_selection_runs ref
                            WHERE ref.supersedes_run_id = r.run_id OR ref.source_daily_run_id = r.run_id)
        UNION ALL
@@ -105,6 +107,7 @@ async function countStaleSelectionRunsByClass({
           AND NOT EXISTS (SELECT 1 FROM analytics.stock_selection_publication_events e
                            WHERE e.from_run_id = r.run_id OR e.to_run_id = r.run_id)
           AND NOT EXISTS (SELECT 1 FROM analytics.stock_selection_backtest_periods bp WHERE bp.run_id = r.run_id)
+          AND NOT EXISTS (SELECT 1 FROM analytics.stock_selection_request_bindings b WHERE b.run_id = r.run_id)
           AND NOT EXISTS (SELECT 1 FROM analytics.stock_selection_runs ref
                            WHERE ref.supersedes_run_id = r.run_id OR ref.source_daily_run_id = r.run_id)
        UNION ALL
@@ -144,11 +147,11 @@ async function deleteStaleDailySelectionRuns({ retentionDays, batchSize = 50, ma
            FROM analytics.stock_selection_runs r
           WHERE r.run_kind = 'daily' AND r.is_shadow = false
             AND r.created_at < now() - make_interval(days => $1)
-            AND r.published_at IS NULL
             AND NOT EXISTS (SELECT 1 FROM analytics.stock_selection_publications p WHERE p.run_id = r.run_id)
             AND NOT EXISTS (SELECT 1 FROM analytics.stock_selection_publication_events e
                              WHERE e.from_run_id = r.run_id OR e.to_run_id = r.run_id)
             AND NOT EXISTS (SELECT 1 FROM analytics.stock_selection_backtest_periods bp WHERE bp.run_id = r.run_id)
+            AND NOT EXISTS (SELECT 1 FROM analytics.stock_selection_request_bindings b WHERE b.run_id = r.run_id)
             AND NOT EXISTS (SELECT 1 FROM analytics.stock_selection_runs ref
                              WHERE ref.supersedes_run_id = r.run_id OR ref.source_daily_run_id = r.run_id)
           LIMIT $2
@@ -177,6 +180,7 @@ async function deleteStaleEphemeralSelectionRuns({ retentionDays, batchSize = 50
             AND NOT EXISTS (SELECT 1 FROM analytics.stock_selection_publication_events e
                              WHERE e.from_run_id = r.run_id OR e.to_run_id = r.run_id)
             AND NOT EXISTS (SELECT 1 FROM analytics.stock_selection_backtest_periods bp WHERE bp.run_id = r.run_id)
+            AND NOT EXISTS (SELECT 1 FROM analytics.stock_selection_request_bindings b WHERE b.run_id = r.run_id)
             AND NOT EXISTS (SELECT 1 FROM analytics.stock_selection_runs ref
                              WHERE ref.supersedes_run_id = r.run_id OR ref.source_daily_run_id = r.run_id)
           LIMIT $2

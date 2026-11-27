@@ -86,6 +86,9 @@ async function purgeStorageData(options = {}) {
 
   const selectionRetentionEnabled = booleanOption(
     options.selectionRunRetentionEnabled ?? process.env.SELECTION_RUN_RETENTION_ENABLED, true);
+  // F-12 红线：默认只跑只读分级盘点（dry-run），返回待清理数量，绝不自动真删生产存量。
+  // 只有显式传 selectionDryRun:false 或设置 SELECTION_RETENTION_DRY_RUN=false 才执行删除。
+  // 这保证上线次日 02:15 不会在未经生产只读盘点与单独授权前清理 personal/preview/shadow/daily。
   const selectionRetention = selectionRetentionEnabled
     ? await repository.pruneStaleSelectionRuns({
       dailyRetentionDays,
@@ -93,7 +96,7 @@ async function purgeStorageData(options = {}) {
       ephemeralRetentionDays,
       batchSize: clampInt(options.selectionBatchSize, 50, 10, 500),
       maxBatches: clampInt(options.selectionMaxBatches, 20, 1, 200),
-      dryRun: booleanOption(options.selectionDryRun ?? process.env.SELECTION_RETENTION_DRY_RUN, false),
+      dryRun: booleanOption(options.selectionDryRun ?? process.env.SELECTION_RETENTION_DRY_RUN, true),
     }, options.client)
     : { skipped: true, reason: 'disabled_by_config' };
 

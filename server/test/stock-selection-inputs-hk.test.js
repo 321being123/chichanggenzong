@@ -33,12 +33,23 @@ function buildEnv(options = {}) {
 
   const repoStub = {
     readInputGapQueue: async () => null,
-    saveInputGapQueue: async payload => { calls.savedQueue = payload; return 1; },
+    saveInputGapQueue: async arg => { calls.savedQueue = arg && arg.payload !== undefined ? arg.payload : arg; return 1; },
     findInstrumentMeta: async ({ tsCode }) => ({
       instrument_id: Number(String(tsCode).replace(/\D/g, '').slice(-4)) || 1,
       ts_code: tsCode, name: '测试', market: 'HK', currency_code: 'HKD', raw_data: {},
     }),
+    // F-11：批量快照落库前需要把证券代码绑定到 instrument_id（不逐股查档案）。
+    resolveInstrumentsByCodes: async ({ codes = [] } = {}) => codes.map((code, index) => ({
+      instrument_id: Number(String(code).replace(/\D/g, '').slice(-4)) || (9000 + index),
+      code, name: '测试', market: 'HK',
+    })),
     listCodesWithRecentBars: async () => new Set(options.coveredCodes || []),
+    // 断档补采只覆盖夹具声明的日期范围，避免回退到 11 年逐日估算。
+    loadHkCoverageDates: async () => ({
+      valuation: new Set(options.coveredValuationDates || []),
+      bars: new Set(options.coveredBarDates || []),
+    }),
+    loadHkTradeCalendar: async () => options.calendar || [],
     upsertDailyValuationRows: async ({ rows, sourceId }) => { calls.valuations.push({ rows, sourceId }); return rows.length; },
     upsertDailyBarRows: async ({ rows, sourceId }) => { calls.bars.push({ rows, sourceId }); return rows.length; },
   };
@@ -49,9 +60,15 @@ function buildEnv(options = {}) {
     ]),
     readMutualMarketCompanies: async () => (options.mutualMarketCompanies || []),
     // 财报类型未知时批量补查；默认给非金融，保持既有用例语义不变。
-    readCompanyProfiles: async ({ codes = [] } = {}) => (options.companyProfiles
-      ? options.companyProfiles
-      : codes.map(code => ({ code, name: null, fsTableType: 'non_financial' }))),
+    // 支持传函数（按 codes 动态返回）或固定数组（既有用例）。
+    readCompanyProfiles: async ({ codes = [] } = {}) => {
+      if (options.companyProfiles === undefined) {
+        return codes.map(code => ({ code, name: null, fsTableType: 'non_financial' }));
+      }
+      return typeof options.companyProfiles === 'function'
+        ? options.companyProfiles(codes)
+        : options.companyProfiles;
+    },
     readStockValuationSeriesBatch: async ({ codes }) => {
       calls.fetchedValuationCodes.push(...codes);
       // 官方真实返回的 trade_date 是紧凑格式（2026-11-05 实测：估值与日线都给 20261104），
@@ -70,6 +87,7 @@ function buildEnv(options = {}) {
     // 财报/分红：本用例只验证估值与行情，返回空即不进 persistCollectedData。
     readFinancialReportRows: async () => null,
     readDividendRows: async () => [],
+    ...(options.datasets || {}),
   };
 
   const storeStub = { sourceIds: async () => ({ lixinger_official: 9, tencent: 3, tushare: 1 }) };
@@ -83,6 +101,9 @@ function buildEnv(options = {}) {
       const gaps = auditCall === 1 ? (gapSets.before || []) : (gapSets.after || []);
       return { gaps, coverage: { universeCount: 2 }, domainCounts: {} };
     },
+    auditInputsForCodes: options.auditInputsForCodes || (async ({ codes = [] }) => ({
+      gaps: [], evaluatedCodes: codes, universeCount: codes.length,
+    })),
   };
 
   stub(REPO, repoStub);
@@ -113,6 +134,111 @@ async function main() {
     assert.strictEqual(written[0].tradeDate, '2026-11-04', '官方紧凑日期 20261104 必须归一成标准层日期');
     assert.strictEqual(calls.valuations[0].sourceId, 9, '来源必须记在官方名下');
     assert.strictEqual(result.valuationProcessed, 1);
+  });
+
+  await check('F-11 港股目标日多端点批量估值快照：仅缺目标日估值不逐股拉序列', async () => {
+    const valuationGap = (code, reason) => ({ code, name: code, domains: ['valuation'], reasons: [reason] });
+    const gapsBefore = [
+      valuationGap('00001.HK', 'R01:pb_unavailable'),
+      valuationGap('00939.HK', 'R01:pb_unavailable'),
+      valuationGap('09999.HK', 'R01:pb_unavailable'),
+      valuationGap('00002.HK', 'R02:history_coverage_unknown'),
+      valuationGap('00003.HK', 'R01:pb_unavailable'),
+      valuationGap('00004.HK', 'R01:pb_unavailable'),
+      valuationGap('00005.HK', 'R01:pb_unavailable'),
+    ];
+    const fsTypeByCode = {
+      '00001.HK': 'non_financial', '00939.HK': 'bank',
+      '00002.HK': 'non_financial', '00003.HK': 'non_financial',
+      '00004.HK': 'non_financial', '00005.HK': 'non_financial', '09999.HK': null,
+    };
+    const snapshotCalls = [];
+    const snapshotRows = [
+      { ts_code: '00001.HK', trade_date: '2026-11-04', pb: 0.8, pe_ttm: 9, dv_ttm: 5, total_mv: 1000, circ_mv: null, currency: 'HKD' },
+      { ts_code: '00939.HK', trade_date: '2026-11-04', pb: 0.6, pe_ttm: 5, dv_ttm: 6, total_mv: 2000, circ_mv: null, currency: 'HKD' },
+      { ts_code: '00002.HK', trade_date: '2026-11-04', pb: 0.5, pe_ttm: 4, dv_ttm: 7, total_mv: 3000, circ_mv: null, currency: 'HKD' },
+      // 00003 漏返回；00004 日期不符；00005 字段不齐（pb 缺失）。
+      { ts_code: '00004.HK', trade_date: '2026-11-03', pb: 0.9, pe_ttm: 8, total_mv: 4000, currency: 'HKD' },
+      { ts_code: '00005.HK', trade_date: '2026-11-04', pb: null, pe_ttm: 8, total_mv: 5000, currency: 'HKD' },
+    ];
+    const stillGap = new Set(['00002.HK', '00003.HK', '00004.HK', '00005.HK', '09999.HK']);
+    const { service, calls } = buildEnv({
+      coveredCodes: ['00001.HK', '00939.HK', '00002.HK', '00003.HK', '00004.HK', '00005.HK'],
+      coveredValuationDates: ['2026-11-03'], coveredBarDates: ['2026-11-03'],
+      calendar: ['2026-11-03', '2026-11-04'],
+      constituents: gapsBefore.map(gap => ({ code: gap.code, name: gap.code })),
+      companyProfiles: codes => codes.map(code => ({ code, fsTableType: fsTypeByCode[code] || null })),
+      gaps: { before: gapsBefore, after: gapsBefore.filter(gap => stillGap.has(gap.code)) },
+      datasets: {
+        readValuationSnapshotDetailed: async ({ codes, tradeDate, fsTableTypes }) => {
+          snapshotCalls.push({ codes: codes.slice(), tradeDate, fsTableTypes });
+          return {
+            rows: snapshotRows.filter(row => codes.includes(row.ts_code)),
+            complete: true, planned: 1, attempted: 1, succeeded: 1, failed: 0, notAttempted: 0, emptyBatches: 0,
+            gaps: {
+              missingCodes: ['00003.HK'], dateMismatchCodes: ['00004.HK'],
+              fieldIncompleteCodes: ['00005.HK'], unknownTypeCodes: [],
+            },
+            businessComplete: false,
+          };
+        },
+      },
+      auditInputsForCodes: async ({ codes = [] }) => ({
+        gaps: gapsBefore.filter(gap => stillGap.has(gap.code) && codes.includes(gap.code)),
+        evaluatedCodes: codes,
+        universeCount: codes.length,
+      }),
+    });
+    const result = await service.syncSelectionInputs({ market: 'HK', asOfDate: '2026-11-04' });
+
+    // 1) 多端点批量快照被实际调用（一次），且已按 fsTableType 分组路由。
+    assert.strictEqual(snapshotCalls.length, 1, '目标日估值必须走一次多端点批量快照，而不是逐股序列');
+    assert.deepStrictEqual(snapshotCalls[0].codes.slice().sort(),
+      ['00001.HK', '00002.HK', '00003.HK', '00004.HK', '00005.HK', '00939.HK'],
+      '未知类型不得硬发非金融端点，应排除在快照请求之外');
+    assert.strictEqual(snapshotCalls[0].tradeDate, '2026-11-04');
+    assert.ok(snapshotCalls[0].fsTableTypes instanceof Map, '必须透传按代码解析的 fsTableType');
+    assert.strictEqual(snapshotCalls[0].fsTableTypes.get('00939.HK'), 'bank', '银行必须路由到 bank 端点组');
+
+    // 2) 快照落库正确：三只齐备的港股写入目标日估值。
+    const snapshotWritten = calls.valuations[0].rows.map(row => row.instrumentId);
+    assert.strictEqual(snapshotWritten.length, 5, '快照返回的 5 行必须一次性落库（含日期不符/字段不齐行照常保留原文）');
+    const snapshotTradeDates = calls.valuations[0].rows.map(row => row.tradeDate);
+    assert.ok(snapshotTradeDates.includes('2026-11-04'));
+
+    // 3) 仅缺目标日估值的港股不再逐股拉 11 年序列；历史/漏码/日期不符/字段不齐才续补。
+    assert.ok(!calls.fetchedValuationCodes.includes('00001.HK'), '目标日已补齐的港股不得再逐股拉序列');
+    assert.ok(!calls.fetchedValuationCodes.includes('00939.HK'), '银行目标日已补齐不得再逐股拉序列');
+    assert.deepStrictEqual(calls.fetchedValuationCodes.slice().sort(),
+      ['00002.HK', '00003.HK', '00004.HK', '00005.HK'],
+      '只有历史断档/漏码/日期不符/字段不齐的港股才回退序列');
+
+    // 4) 未知类型/漏码/日期不符/字段不齐仍留在剩余缺口队列中。
+    assert.strictEqual(result.remainingValuation, 5, '未知类型与未补齐的港股必须继续留在剩余缺口');
+    const remainingCodes = calls.savedQueue.gaps.map(gap => gap.code).sort();
+    assert.deepStrictEqual(remainingCodes,
+      ['00002.HK', '00003.HK', '00004.HK', '00005.HK', '09999.HK'],
+      '剩余缺口队列必须包含未知类型与未补齐目标日估值的港股');
+  });
+
+  await check('F-14 批量已查档案仍无类型时，collectOne 不再单只重查档案', async () => {
+    let profileCalls = 0;
+    const { service } = buildEnv({});
+    const result = await service.collectOne(
+      { code: '09999.HK', name: '09999.HK', domains: ['financial_reports'] },
+      '2026-11-04', null,
+      {
+        fsTableTypeByCode: new Map(),
+        fsTableTypeChecked: new Set(['09999.HK']),
+        datasets: {
+          readCompanyProfiles: async () => { profileCalls += 1; return [{ code: '09999.HK', fsTableType: 'non_financial' }]; },
+          readFinancialReportRows: async () => null,
+          readDividendRows: async () => [],
+        },
+      },
+    );
+    assert.strictEqual(profileCalls, 0, '批量已核对过档案仍无类型时不得再为同一只港股发单只档案');
+    assert.strictEqual(result.reason, 'source_returned_empty');
   });
 
   await check('A 股估值缺口不进本任务：保持原有边界（等共享行情任务）', async () => {

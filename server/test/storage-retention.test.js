@@ -60,6 +60,10 @@ const { JOB_DEFINITIONS } = require('../services/jobDefinitions');
     assert.deepStrictEqual(calls[0].datasetCodes, ['lixinger_response', 'income', 'balance', 'indicators', 'cashflow']);
     assert.deepStrictEqual(resDefault.selectionRetentionDays, { daily: 30, personal: 14, ephemeral: 7 });
     assert.strictEqual(resDefault.selectionRetention.total, 1);
+    // F-12 红线：默认只跑只读分级盘点，绝不自动真删存量。
+    assert.strictEqual(resDefault.selectionRetention.dryRun, true, '默认 purgeStorageData 必须是 dry-run（0 真删）');
+    const defaultGraded = calls.filter(item => item.kind === 'graded').pop();
+    assert.strictEqual(defaultGraded.dryRun, true, '默认 graded 清理调用必须透传 dryRun=true');
     assert.deepStrictEqual(resDefault.protectedDatasets, ['dividends']);
 
     // 边界夹紧：下限 1 天、上限 365/90 天
@@ -93,6 +97,10 @@ const { JOB_DEFINITIONS } = require('../services/jobDefinitions');
     await storageRetention.purgeStorageData({ selectionDryRun: true });
     assert.strictEqual(calls[calls.length - 1].kind, 'graded');
     assert.strictEqual(calls[calls.length - 1].dryRun, true);
+    // 显式关闭 dry-run 时才允许真实删除（生产存量清理仍需单独授权）。
+    await storageRetention.purgeStorageData({ selectionDryRun: false });
+    assert.strictEqual(calls[calls.length - 1].kind, 'graded');
+    assert.strictEqual(calls[calls.length - 1].dryRun, false, '显式 selectionDryRun:false 才透传真实删除');
   } finally {
     repository.deleteExpiredUnreferencedRawRecords = originalDeleteRaw;
     repository.deleteStalePartialSelectionRuns = originalDeleteRuns;

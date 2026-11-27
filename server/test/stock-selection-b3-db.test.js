@@ -332,7 +332,17 @@ async function transactionalChecks(client) {
 
     // ---------- B3-2 分级留存：只删过期无引用批次 ----------
     const oldDaily = await insertRunRow(client, { strategyId, runKind: 'daily', inputHash: `old-daily-${tag}`, createdAtDaysAgo: 40 });
+    // 真正被发布指针引用的 daily：指针行存在，必须永久保留。
     const publishedDaily = await insertRunRow(client, { strategyId, runKind: 'daily', inputHash: `pub-daily-${tag}`, createdAtDaysAgo: 40, published: true });
+    await client.query(
+      `INSERT INTO analytics.stock_selection_publications
+         (market, strategy_id, period_type, period_key, run_id, pointer_revision, activated_at)
+       VALUES ($1, $2, 'day', $3, $4, 1, now())`,
+      [MARKET, strategyId, `D:${AS_OF}`, publishedDaily]);
+    // 仅有 published_at、但没有任何真实业务引用的旧 daily：新规则下应被清理（30 天档位不再空转）。
+    const stalePublishedNoPointer = await insertRunRow(client, {
+      strategyId, runKind: 'daily', inputHash: `stale-pub-${tag}`, createdAtDaysAgo: 40, published: true, asOf: '2026-10-01',
+    });
     const oldWeekly = await insertRunRow(client, { strategyId, runKind: 'weekly', inputHash: `old-weekly-${tag}`, createdAtDaysAgo: 40 });
     const oldPreview = await insertRunRow(client, { strategyId, runKind: 'preview', inputHash: `old-preview-${tag}`, createdAtDaysAgo: 10 });
     const oldShadow = await insertRunRow(client, { strategyId, runKind: 'weekly', inputHash: `old-shadow-${tag}`, createdAtDaysAgo: 10, isShadow: true });
@@ -347,12 +357,27 @@ async function transactionalChecks(client) {
       `INSERT INTO analytics.stock_selection_publication_events
          (market, strategy_id, period_type, period_key, action, from_run_id, to_run_id)
        VALUES ($1, $2, 'day', $3, 'publish', NULL, $4)`, [MARKET, strategyId, `D:${AS_OF}`, referencedByEvent]);
+    // 请求绑定保护必须统一覆盖 daily / ephemeral / personal 三类。
+    const bindingDaily = await insertRunRow(client, { strategyId, runKind: 'daily', inputHash: `bind-daily-${tag}`, createdAtDaysAgo: 40, asOf: '2026-09-01' });
+    const bindingPreview = await insertRunRow(client, { strategyId, runKind: 'preview', inputHash: `bind-preview-${tag}`, createdAtDaysAgo: 10, asOf: '2026-09-02' });
     const oldPersonal = await insertRunRow(client, {
       strategyId, runKind: 'personal', inputHash: `old-p-${tag}`, owner: tag, supersedes: sourceRunId, createdAtDaysAgo: 20,
     });
     const newPersonal = await insertRunRow(client, {
       strategyId, runKind: 'personal', inputHash: `new-p-${tag}`, owner: tag, supersedes: sourceRunId, createdAtDaysAgo: 0,
     });
+    const bindingPersonal = await insertRunRow(client, {
+      strategyId, runKind: 'personal', inputHash: `bind-p-${tag}`, owner: tag, supersedes: sourceRunId, createdAtDaysAgo: 20,
+    });
+    let bindingSeq = 0;
+    for (const boundRunId of [bindingDaily, bindingPreview, bindingPersonal]) {
+      bindingSeq += 1;
+      await client.query(
+        `INSERT INTO analytics.stock_selection_request_bindings
+           (owner_username, owner_subject_id, client_request_id, input_hash, run_id)
+         VALUES ($1, NULL, $2, $3, $4)`,
+        [tag, `b3-bind-${tag}-${bindingSeq}`, `bind-hash-${tag}-${bindingSeq}`, boundRunId]);
+    }
     const oldPartial = await insertRunRow(client, {
       strategyId, runKind: 'daily', inputHash: `old-partial-${tag}`, createdAtDaysAgo: 5, qualityStatus: 'partial',
     });
@@ -362,7 +387,18 @@ async function transactionalChecks(client) {
     await insertRunRow(client, {
       strategyId, runKind: 'personal', inputHash: `kept-partial-p-${tag}`, owner: tag, supersedes: keptPartial, createdAtDaysAgo: 4,
     });
-    const dryRunProbe = await insertRunRow(client, { strategyId, runKind: 'daily', inputHash: `dry-${tag}`, createdAtDaysAgo: 40 });
+    const dryRunProbe = await insertRunRow(client, {
+      strategyId, runKind: 'daily', inputHash: `dry-${tag}`, createdAtDaysAgo: 40, asOf: '2026-09-03',
+    });
+
+    // F-12：默认 purgeStorageData 只做只读盘点，不得真删任何选股批次。
+    const defaultPurge = await retentionService.purgeStorageData({
+      client, rawRetentionDays: 7, selectionPartialRetentionDays: 90,
+      rawBatchSize: 10000, rawMaxBatches: 500,
+    });
+    eq(defaultPurge.selectionRetention.dryRun, true, '默认 purgeStorageData 必须 dry-run（0 真删）');
+    const dryAfterDefault = await client.query(`SELECT 1 FROM analytics.stock_selection_runs WHERE run_id = $1`, [dryRunProbe]);
+    eq(dryAfterDefault.rowCount, 1, '默认 purgeStorageData 不得删除任何选股批次');
 
     const dry = await retentionRepository.pruneStaleSelectionRuns({
       dailyRetentionDays: 30, personalRetentionDays: 14, ephemeralRetentionDays: 7, dryRun: true,
@@ -381,8 +417,11 @@ async function transactionalChecks(client) {
       `SELECT run_id FROM analytics.stock_selection_runs WHERE strategy_id = $1`, [strategyId]);
     const remainingIds = new Set(remaining.rows.map(row => Number(row.run_id)));
     for (const [label, id] of [
-      ['已发布 daily', publishedDaily], ['weekly', oldWeekly], ['被 supersedes_run_id 引用', referencedBySupersedes],
+      ['被发布指针引用的 daily', publishedDaily], ['weekly', oldWeekly],
+      ['被 supersedes_run_id 引用', referencedBySupersedes],
       ['被 source_daily_run_id 引用', referencedBySourceDaily], ['被发布事件引用', referencedByEvent],
+      ['被请求绑定引用的 daily', bindingDaily], ['被请求绑定引用的 preview', bindingPreview],
+      ['被请求绑定引用的 personal', bindingPersonal],
       ['最新 personal', newPersonal], ['仅一份 personal', personalRunId], ['第二份 personal', secondId],
       ['被 supersedes 引用的旧式 personal', legacyId],
     ]) {
@@ -390,7 +429,7 @@ async function transactionalChecks(client) {
     }
     for (const [label, id] of [
       ['超期无引用 daily', oldDaily], ['超期 preview', oldPreview], ['超期影子批次', oldShadow],
-      ['过期中间 personal', oldPersonal],
+      ['过期中间 personal', oldPersonal], ['仅有 published_at 无任何引用的旧 daily', stalePublishedNoPointer],
     ]) {
       ok(!remainingIds.has(Number(id)), `${label} 批次必须被清理`);
     }

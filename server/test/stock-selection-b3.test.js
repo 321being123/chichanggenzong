@@ -88,7 +88,7 @@ try {
   eq(defaults.selectionRetentionDays.personal, 14, '中间 personal 默认保留 14 天');
   eq(defaults.selectionRetentionDays.ephemeral, 7, 'preview/shadow 默认保留 7 天');
   eq(defaults.selectionRetention.deleted.daily, 1, '分级留存结果必须回传');
-  eq(calls.filter(item => item.kind === 'prune')[0].dryRun, false, '默认执行清理，不是 dry-run');
+  eq(calls.filter(item => item.kind === 'prune')[0].dryRun, true, '默认只读盘点（dry-run），不自动真删存量');
 
   const dry = await storageRetention.purgeStorageData({ selectionDryRun: true, selectionDailyRetentionDays: 0, selectionEphemeralRetentionDays: 999 });
   eq(dry.selectionRetentionDays.daily, 1, 'daily 窗口下限 1 天');
@@ -161,7 +161,11 @@ ok(repoSource.includes("candidatesRefMode") && repoSource.includes("source_run")
 ok(repoSource.includes('EFFECTIVE_CANDIDATE_RUN_SQL'), '成员与基线读取必须走同一有效候选批次表达式');
 
 const serviceSource = fs.readFileSync(path.join(__dirname, '..', 'services', 'stockSelectionService.js'), 'utf8');
-ok(!/repo\.copyCandidates\s*\(/.test(serviceSource), 'createSimulation 不得再物理复制候选');
+// createSimulation 仍必须零候选复制；周度受控复用允许 repo.copyCandidates，因此只锁定该函数体。
+const createSimulationStart = serviceSource.indexOf('async function createSimulation(');
+const createSimulationEnd = createSimulationStart < 0 ? -1 : serviceSource.indexOf('\nasync function ', createSimulationStart + 1);
+const createSimulationBody = createSimulationStart < 0 ? '' : serviceSource.slice(createSimulationStart, createSimulationEnd < 0 ? serviceSource.length : createSimulationEnd);
+ok(createSimulationBody.length > 0 && !/repo\.copyCandidates\s*\(/.test(createSimulationBody), 'createSimulation 不得再物理复制候选');
 ok(serviceSource.includes("candidatesRefMode: 'source_run'"), '个人批次必须显式标记候选引用模式');
 ok(serviceSource.includes('historicalReplayVerified'), '详情必须显式返回历史回放是否可证明一致');
 ok(serviceSource.includes('historicalAnnualReplayOf'), '详情必须按冻结指纹核验历史回放');

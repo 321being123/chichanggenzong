@@ -77,6 +77,23 @@ function hashOf(value) {
 }
 
 /**
+ * 键顺序无关的稳定哈希（用于比对经 JSONB 往返的对象）：JSONB 会重排对象键，
+ * 直接 JSON.stringify 会把"内容相同、键序不同"误判为不一致。比较参数等冻结输入时使用本函数。
+ */
+function stableHashOf(value) {
+  const normalize = input => {
+    if (Array.isArray(input)) return input.map(normalize);
+    if (input && typeof input === 'object') {
+      const out = {};
+      Object.keys(input).sort().forEach(key => { out[key] = normalize(input[key]); });
+      return out;
+    }
+    return input;
+  };
+  return crypto.createHash('sha256').update(JSON.stringify(normalize(value))).digest('hex');
+}
+
+/**
  * 批量取数执行器：事务连接上不允许并发发送查询（pg 会告警并可能错序），
  * 因此在事务内按顺序执行；无事务（只读预览）时并行，减少往返。
  */
@@ -774,6 +791,19 @@ async function computeGrahamSelection(input, { market, asOfDate, strategyCode, p
   };
 }
 
+/**
+ * 纯计算参数解析（B4-1A / F-13）：computeSelection 与周度受控复用的「跑前预判」共用同一份口径，
+ * 避免两处参数漂移导致同一输入得到不同哈希。internalParams 只给回测/审计的阶梯对照使用。
+ */
+function resolveSelectionParams(input) {
+  const strategyCode = normalizeStrategyCode(input && input.strategyCode);
+  const isV2 = strategyCode === RULES_V2.STRATEGY_CODE_V2;
+  const params = isV2
+    ? Object.assign({}, RULES_V2.V2_PARAMS, sanitizeV2Overrides(input && input.params), (input && input.internalParams) || {})
+    : Object.assign({}, RULES.DEFAULT_PARAMS, (input && input.params) || {}, (input && input.internalParams) || {});
+  return { strategyCode, isV2, params };
+}
+
 async function computeSelection(input, tx) {
   const market = normalizeMarket(input.market);
   const asOfDate = String(input.asOfDate || '');
@@ -784,12 +814,8 @@ async function computeSelection(input, tx) {
   }
   // 策略分派（方案 27.2）：V1 与 V2 各自登记参数/公式，服务不能写死 V1 常量。
   // V2 的阈值与比较方式固化在公式版本里，不接受浏览器请求覆盖公共策略。
-  const strategyCode = normalizeStrategyCode(input.strategyCode);
-  const isV2 = strategyCode === RULES_V2.STRATEGY_CODE_V2;
-  // internalParams 只给回测/审计的阶梯对照使用（不经 HTTP 入口），保证浏览器仍不能覆盖公共策略。
-  const params = isV2
-    ? Object.assign({}, RULES_V2.V2_PARAMS, sanitizeV2Overrides(input.params), input.internalParams || {})
-    : Object.assign({}, RULES.DEFAULT_PARAMS, input.params || {}, input.internalParams || {});
+  // 抽成 resolveSelectionParams，供周度受控复用在跑全市场计算之前取得同一份参数。
+  const { strategyCode, isV2, params } = resolveSelectionParams(input);
   const positionRatio = PORTFOLIO.clampRatio(input.positionRatio, 1);
   const valuation = await repo.loadMarketValuation({ market, asOfDate }, tx);
   // V2 取消市场指数 PB 配置门槛（方案 27.3）：指数估值只做可选展示，缺失/异常不阻断计算与发布。
@@ -1263,6 +1289,107 @@ async function publishPartitionInTransaction({ input, tx, runId, computed, quali
   return publication;
 }
 
+function sameNumberish(left, right) {
+  if (left === null || left === undefined || right === null || right === undefined) {
+    return (left === null || left === undefined) && (right === null || right === undefined);
+  }
+  return Number(left) === Number(right);
+}
+
+/**
+ * 周度受控复用判定（B4-1A / F-13）：**在调用 computeSelection 之前**执行，
+ * 只有源 daily 与当前实时轻量水印 100% 相等、策略参数/版本/基础仓位一致、
+ * 且源候选与成员完整存在时才命中，从而真正跳过十年 PB 窗口与全池四规则重算。
+ * 返回 `{ matched, candidate, currentWatermark, strategyId }`；
+ * 未命中时带 `reason` 供 computationReuse 证据使用。
+ */
+async function resolveWeeklyReuse({ market, asOfDate, strategyCode, params, positionRatio, strategyVersion }, tx) {
+  const strategyId = await repo.findStrategyId({ market, strategyCode }, tx);
+  if (!strategyId) return { matched: false, reason: 'no_qualified_daily', strategyId: null };
+  const knowledgeCutoff = knowledgeCutoffFor(market, asOfDate);
+  const candidates = await repo.listReusableDailyRuns(tx, { market, strategyId, asOfDate, knowledgeCutoff });
+  if (!candidates.length) return { matched: false, reason: 'no_qualified_daily', strategyId };
+  const currentWatermark = await repo.loadComputationInputWatermark({ market, asOfDate, knowledgeCutoff }, tx);
+  const currentWatermarkHash = hashOf(currentWatermark);
+  const paramsHash = stableHashOf(params || {});
+  let sawWatermarkMatch = false;
+  let mismatchReason = null;
+  for (const candidate of candidates) {
+    const manifest = candidate.inputManifest || {};
+    // 用 daily 落库时的水印哈希与本次实时重算哈希比对：哈希在两次都由同一序列化函数生成，
+    // 不受 JSONB 键顺序影响；缺失水印哈希的旧批次不参与复用。
+    const dailyWatermarkHash = manifest.computationInputWatermarkHash || null;
+    if (!dailyWatermarkHash || dailyWatermarkHash !== currentWatermarkHash) continue;
+    sawWatermarkMatch = true;
+    // 同策略代码/版本/参数/基础仓位：任一不符都不能拿源输出冒充本次输入。
+    if (manifest.strategyCode && String(manifest.strategyCode) !== strategyCode) {
+      mismatchReason = 'strategy_or_position_mismatch'; continue;
+    }
+    if (manifest.strategyVersion && String(manifest.strategyVersion) !== String(strategyVersion || '')) {
+      mismatchReason = 'strategy_or_position_mismatch'; continue;
+    }
+    if (stableHashOf(manifest.params || {}) !== paramsHash) { mismatchReason = 'strategy_or_position_mismatch'; continue; }
+    if (!sameNumberish(candidate.positionRatio, positionRatio)) { mismatchReason = 'strategy_or_position_mismatch'; continue; }
+    if (!candidate.computationInputHash || !candidate.computationOutputHash) {
+      mismatchReason = 'source_hash_missing'; continue;
+    }
+    // 源 daily 的候选与成员必须完整存在：候选为空或成员数与 selected_count 不符都不能复用。
+    if (!candidate.candidateCount || candidate.candidateCount <= 0) {
+      mismatchReason = 'source_daily_incomplete'; continue;
+    }
+    if (candidate.memberCount !== candidate.selectedCount) {
+      mismatchReason = 'source_daily_incomplete'; continue;
+    }
+    return {
+      matched: true, candidate, currentWatermark, strategyId,
+      knowledgeCutoff,
+    };
+  }
+  return {
+    matched: false,
+    reason: sawWatermarkMatch ? (mismatchReason || 'source_daily_incomplete') : 'input_watermark_mismatch',
+    currentWatermark,
+    strategyId,
+  };
+}
+
+/** 命中共用时构造最小 computed 形状：只提供建 run/manifest/分区所需字段，不伪造候选或规则结论。 */
+function hydrateReusedWeeklyComputed(candidate, { market, asOfDate, strategyCode, params, positionRatio }) {
+  const manifest = candidate.inputManifest || {};
+  const members = Array.from({ length: Math.max(0, Number(candidate.selectedCount) || 0) }, (_, index) => ({ slotNo: index + 1 }));
+  const coverage = Object.assign({}, (manifest.coverage && typeof manifest.coverage === 'object') ? manifest.coverage : {}, {
+    universeCount: candidate.universeCount === null || candidate.universeCount === undefined
+      ? ((manifest.coverage && manifest.coverage.universeCount) || 0) : candidate.universeCount,
+  });
+  const quality = Object.assign({}, (manifest.quality && typeof manifest.quality === 'object') ? manifest.quality : {}, {
+    pendingCount: candidate.pendingCount,
+    universeCount: coverage.universeCount,
+    selectedCount: candidate.selectedCount,
+  });
+  return {
+    market,
+    asOfDate,
+    strategyCode: manifest.strategyCode || strategyCode,
+    params: (manifest.params && typeof manifest.params === 'object') ? manifest.params : params,
+    positionRatio: candidate.positionRatio === null || candidate.positionRatio === undefined ? positionRatio : candidate.positionRatio,
+    valuation: {
+      benchmarkCode: candidate.benchmarkCode || manifest.benchmarkCode || null,
+      valuationMethod: candidate.valuationMethod || manifest.valuationMethod || null,
+      pb: candidate.marketPb,
+      pe: candidate.marketPe,
+    },
+    coverage,
+    quality,
+    portfolio: { members },
+    evaluated: [],
+    ranked: [],
+    anomalyById: {},
+    gate: { eligible: true, status: 'ok' },
+    universeEvidence: null,
+    reusedFromDailyRunId: candidate.runId,
+  };
+}
+
 /**
  * 计算并落库（正式季度/每日/每周 / 预览 / 个人测算共用一条路径）。
  * 只有共享非影子且质量通过的 quarterly/daily/weekly 才移动对应渠道的正式发布指针；
@@ -1287,79 +1414,151 @@ async function computeAndPersist(input, options = {}) {
     throw error;
   }
   return withTransaction(async tx => {
+    const market = normalizeMarket(input.market);
+    const asOfDate = String(input.asOfDate || '');
+    const resolved = resolveSelectionParams(input);
+    const strategyVersion = input.strategyVersion || (resolved.isV2 ? 'v2' : STRATEGY_VERSION);
+    const positionRatio = PORTFOLIO.clampRatio(input.positionRatio, 1);
+    // B4-1A / F-13：非影子 weekly 在调用 computeSelection **之前**先做受控复用判定。
+    // 只有同市场/同策略/同目标日/同信息截止/同参数与基础仓位，且实时轻量水印与源 daily 冻结水印
+    // 100% 相等、源候选/成员完整时才跳过全市场纯计算；否则完整重算。
+    let reusePlan = { matched: false, reason: null };
+    if (runKind === 'weekly' && !isShadow) {
+      reusePlan = await resolveWeeklyReuse({
+        market, asOfDate, strategyCode: resolved.strategyCode, params: resolved.params,
+        positionRatio, strategyVersion,
+      }, tx);
+    }
     // 生产/预览发布路径：名单漂移只留证、不永久阻断发布；回测与审计不经过这里，仍严格。
-    const computed = await computeSelection(Object.assign({}, input, { allowUniverseDrift: true }), tx);
+    const computed = reusePlan.matched
+      ? hydrateReusedWeeklyComputed(reusePlan.candidate, {
+        market, asOfDate, strategyCode: resolved.strategyCode, params: resolved.params, positionRatio,
+      })
+      : await computeSelection(Object.assign({}, input, { allowUniverseDrift: true }), tx);
     const isV2 = computed.strategyCode === RULES_V2.STRATEGY_CODE_V2;
-    const strategyVersion = input.strategyVersion || (isV2 ? 'v2' : STRATEGY_VERSION);
-    const strategyId = await repo.upsertStrategy(tx, {
-      strategyCode: computed.strategyCode,
-      market: computed.market,
-      version: strategyVersion,
-      formulaVersion: computed.params.formulaVersion,
-      adapterVersion: computed.params.adapterVersion,
-      riskVersion: computed.params.riskVersion,
-      industryVersion: computed.params.industryVersion,
-      effectiveFrom: computed.asOfDate,
-      parameters: computed.params,
-      contentHash: hashOf({ strategy: computed.strategyCode, params: computed.params, version: strategyVersion }),
-    });
+    const isGraham = computed.strategyCode === GRAHAM_RULES.STRATEGY_CODE_GRAHAM;
+    const strategyId = reusePlan.matched
+      ? reusePlan.strategyId
+      : await repo.upsertStrategy(tx, {
+        strategyCode: computed.strategyCode,
+        market: computed.market,
+        version: strategyVersion,
+        formulaVersion: computed.params.formulaVersion,
+        adapterVersion: computed.params.adapterVersion,
+        riskVersion: computed.params.riskVersion,
+        industryVersion: computed.params.industryVersion,
+        effectiveFrom: computed.asOfDate,
+        parameters: computed.params,
+        contentHash: hashOf({ strategy: computed.strategyCode, params: computed.params, version: strategyVersion }),
+      });
     // 周期身份：日/周/季由 run_kind 决定；预览与个人不做正式周期发布，但同样记录归属周期便于筛选。
     const periodType = input.periodType || PERIOD_TYPE_OF_KIND[runKind] || 'day';
     const periodKey = input.periodKey || PERIODS.periodKeyOf(periodType, computed.asOfDate);
     const periodRange = periodKey ? PERIODS.periodRangeOf(periodType, periodKey) : null;
-    const manifestExtra = {
-      positionRatio: computed.positionRatio,
-      industryLimitRatio: computed.params.industryLimitRatio,
-      owner: input.ownerUsername || null,
-      sourceRunId: input.sourceRunId || null,
-    };
-    const isGraham = computed.strategyCode === GRAHAM_RULES.STRATEGY_CODE_GRAHAM;
-    // V1 的输入哈希保持原样（不因 V2 上线漂移）；V2 与格雷厄姆低估额外绑定策略/周期/精度/影子身份。
-    if (isV2 || isGraham) {
-      manifestExtra.strategyCode = computed.strategyCode;
-      manifestExtra.precisionPolicyVersion = computed.params.precisionPolicyVersion;
-      manifestExtra.pbExtremaPolicy = computed.params.pbExtremaPolicy;
-      if (runKind === 'daily' || runKind === 'weekly') {
+    let manifest;
+    let inputHash;
+    let computationInputHash;
+    let computationOutputHash;
+    let computationReuse = null;
+    let computationInputWatermark = null;
+    let computationInputWatermarkHash = null;
+    let resolvedSourceDailyRunId = input.sourceDailyRunId || null;
+    if (reusePlan.matched) {
+      // 命中复用：冻结源 daily 的基础清单与双向哈希，只按本次渠道身份重建 weekly manifest。
+      // 不重新计算 computationInputHash/OutputHash——命中前提就是水印 100% 相等且源输出完整。
+      const sourceManifest = reusePlan.candidate.inputManifest || {};
+      resolvedSourceDailyRunId = reusePlan.candidate.runId;
+      computationInputHash = sourceManifest.computationInputHash || reusePlan.candidate.computationInputHash;
+      computationOutputHash = sourceManifest.computationOutputHash || reusePlan.candidate.computationOutputHash;
+      computationInputWatermark = sourceManifest.computationInputWatermark || reusePlan.currentWatermark;
+      computationInputWatermarkHash = sourceManifest.computationInputWatermarkHash
+        || (reusePlan.currentWatermark ? hashOf(reusePlan.currentWatermark) : null);
+      computationReuse = {
+        reused: true,
+        skippedComputeSelection: true,
+        sourceDailyRunId: reusePlan.candidate.runId,
+        sourceComputationInputHash: computationInputHash,
+        sourceComputationOutputHash: computationOutputHash,
+        sourceKnowledgeCutoff: reusePlan.candidate.knowledgeCutoff,
+        computationInputHash,
+        computationOutputHash,
+        computationInputWatermarkHash,
+      };
+      const base = Object.assign({}, sourceManifest);
+      delete base.quality;
+      delete base.coverage;
+      delete base.computationInputHash;
+      delete base.computationOutputHash;
+      delete base.computationReuse;
+      delete base.computationInputWatermark;
+      delete base.computationInputWatermarkHash;
+      // 渠道/用途封装不继承源 daily：V2/格雷厄姆按本次 weekly 身份重建，V1 保持与常规 manifest 一致。
+      delete base.strategyCode;
+      delete base.precisionPolicyVersion;
+      delete base.pbExtremaPolicy;
+      delete base.periodType;
+      delete base.periodKey;
+      delete base.isShadow;
+      delete base.settingsHash;
+      const manifestExtra = {
+        positionRatio: computed.positionRatio,
+        industryLimitRatio: computed.params.industryLimitRatio,
+        owner: input.ownerUsername || null,
+        sourceRunId: input.sourceRunId || null,
+      };
+      if (isV2 || isGraham) {
+        manifestExtra.strategyCode = computed.strategyCode;
+        manifestExtra.precisionPolicyVersion = computed.params.precisionPolicyVersion;
+        manifestExtra.pbExtremaPolicy = computed.params.pbExtremaPolicy;
         manifestExtra.periodType = periodType;
         manifestExtra.periodKey = periodKey;
-        manifestExtra.isShadow = isShadow;
+        manifestExtra.isShadow = false;
+        if (input.settingsHash) manifestExtra.settingsHash = input.settingsHash;
       }
-      if (input.settingsHash) manifestExtra.settingsHash = input.settingsHash;
-    }
-    const manifest = manifestOf(computed, manifestExtra);
-    const inputHash = hashOf(manifest);
-    // B4-1A：独立计算语义哈希（排除 run_kind/周期/渠道封装），并把纯计算产物证据哈希一并落库。
-    const computationInputHash = computationInputHashOf(computed, strategyVersion);
-    const computationOutputHash = computationOutputHashOf(computed);
-    // 周度受控复用（方案 27.6）：仅非影子 weekly 查找同市场/同目标日/同信息截止、质量通过且
-    // 无待裁决缺口的共享非影子 daily，并逐项比对当前重算的输入/输出哈希。命中只记录来源与双向
-    // 证据；下面的建 run/manifest/候选/成员、租约、质量、CAS 与发布事务校验一律照常完整执行。
-    let computationReuse = null;
-    let resolvedSourceDailyRunId = input.sourceDailyRunId || null;
-    if (runKind === 'weekly' && !isShadow) {
-      const reuseKnowledgeCutoff = knowledgeCutoffFor(computed.market, computed.asOfDate);
-      const dailyCandidates = await repo.listReusableDailyRuns(tx, {
-        market: computed.market, strategyId, asOfDate: computed.asOfDate, knowledgeCutoff: reuseKnowledgeCutoff,
-      });
-      const match = dailyCandidates.find(candidate => candidate.computationInputHash === computationInputHash
-        && candidate.computationOutputHash === computationOutputHash);
-      if (match) {
-        if (!resolvedSourceDailyRunId) resolvedSourceDailyRunId = match.runId;
-        computationReuse = {
-          reused: true,
-          sourceDailyRunId: match.runId,
-          sourceComputationInputHash: match.computationInputHash,
-          sourceComputationOutputHash: match.computationOutputHash,
-          sourceKnowledgeCutoff: match.knowledgeCutoff,
-          computationInputHash,
-          computationOutputHash,
-        };
-      } else {
+      manifest = Object.assign(base, manifestExtra);
+      inputHash = hashOf(manifest);
+    } else {
+      const manifestExtra = {
+        positionRatio: computed.positionRatio,
+        industryLimitRatio: computed.params.industryLimitRatio,
+        owner: input.ownerUsername || null,
+        sourceRunId: input.sourceRunId || null,
+      };
+      // V1 的输入哈希保持原样（不因 V2 上线漂移）；V2 与格雷厄姆低估额外绑定策略/周期/精度/影子身份。
+      if (isV2 || isGraham) {
+        manifestExtra.strategyCode = computed.strategyCode;
+        manifestExtra.precisionPolicyVersion = computed.params.precisionPolicyVersion;
+        manifestExtra.pbExtremaPolicy = computed.params.pbExtremaPolicy;
+        if (runKind === 'daily' || runKind === 'weekly') {
+          manifestExtra.periodType = periodType;
+          manifestExtra.periodKey = periodKey;
+          manifestExtra.isShadow = isShadow;
+        }
+        if (input.settingsHash) manifestExtra.settingsHash = input.settingsHash;
+      }
+      manifest = manifestOf(computed, manifestExtra);
+      inputHash = hashOf(manifest);
+      // B4-1A：独立计算语义哈希（排除 run_kind/周期/渠道封装），并把纯计算产物证据哈希一并落库。
+      computationInputHash = computationInputHashOf(computed, strategyVersion);
+      computationOutputHash = computationOutputHashOf(computed);
+      // 轻量水印：daily/weekly 非影子批次落库，供后续 weekly 受控复用严格比对（不跑十年 PB 窗口）。
+      if (!isShadow && (runKind === 'daily' || runKind === 'weekly')) {
+        computationInputWatermark = await repo.loadComputationInputWatermark({
+          market: computed.market, asOfDate: computed.asOfDate,
+          knowledgeCutoff: knowledgeCutoffFor(computed.market, computed.asOfDate),
+        }, tx);
+        computationInputWatermarkHash = hashOf(computationInputWatermark);
+      }
+      // 周度受控复用未命中（无合格 daily / 水印不符 / 源不完整）：保留可诊断证据，本批完整重算。
+      if (runKind === 'weekly' && !isShadow) {
         computationReuse = {
           reused: false,
-          reason: dailyCandidates.length ? 'computation_hash_mismatch' : 'no_qualified_daily',
+          skippedComputeSelection: false,
+          reason: reusePlan.reason || 'no_qualified_daily',
           computationInputHash,
           computationOutputHash,
+          currentWatermark: reusePlan.currentWatermark || null,
+          currentWatermarkHash: reusePlan.currentWatermark ? hashOf(reusePlan.currentWatermark) : null,
         };
       }
     }
@@ -1391,8 +1590,19 @@ async function computeAndPersist(input, options = {}) {
     const revision = isFormal
       ? await repo.nextRevision(tx, { market: computed.market, quarter, strategyId, periodType, periodKey, runKind })
       : 1;
-    const status = statusOf(computed, computed.quality);
-    const publishable = isFormal && computed.quality.publishable;
+    const status = reusePlan.matched
+      ? {
+        executionStatus: 'succeeded',
+        qualityStatus: reusePlan.candidate.qualityStatus,
+        businessStatus: reusePlan.candidate.businessStatus,
+      }
+      : statusOf(computed, computed.quality);
+    const qualityPublishable = reusePlan.matched
+      ? (computed.quality && computed.quality.publishable !== undefined
+        ? computed.quality.publishable === true
+        : status.qualityStatus === 'passed')
+      : computed.quality.publishable;
+    const publishable = isFormal && qualityPublishable;
     const computedAt = new Date();
     const runId = await repo.insertRun(tx, {
       strategyId, market: computed.market, runKind, ownerUsername: input.ownerUsername || null,
@@ -1407,6 +1617,8 @@ async function computeAndPersist(input, options = {}) {
         computationInputHash,
         computationOutputHash,
         computationReuse,
+        computationInputWatermark: computationInputWatermark || null,
+        computationInputWatermarkHash: computationInputWatermarkHash || null,
       }),
       universeCount: computed.coverage.universeCount,
       pendingCount: computed.quality.pendingCount,
@@ -1431,23 +1643,29 @@ async function computeAndPersist(input, options = {}) {
       computedAt,
       isShadow,
     });
-    // 候选要保存全市场逐项决策，不能只留最有希望的 30 只。
-    const rankedById = new Map(computed.ranked.map(item => [item.instrumentId, item]));
-    const rows = computed.evaluated.map(item => {
-      const rankedRow = rankedById.get(item.instrumentId) || {};
-      return Object.assign({}, item, {
-        anomaly: computed.anomalyById[item.instrumentId] || null,
-        totalScore: rankedRow.totalScore,
-        pbRank: rankedRow.pbRank,
-        peRank: rankedRow.peRank,
-        dividendRank: rankedRow.dividendRank,
-        selectionOrder: rankedRow.selectionOrder,
-        rankReady: item.rankReady === true,
-        rankBlockReasons: item.rankBlockReasons || [],
+    if (reusePlan.matched) {
+      // 命中复用：候选与成员从源 daily 原样复制到新 weekly 批次，保证独立 run_id 且内容对账一致。
+      await repo.copyCandidates({ sourceRunId: reusePlan.candidate.runId, targetRunId: runId }, tx);
+      await repo.copyMembers({ sourceRunId: reusePlan.candidate.runId, targetRunId: runId }, tx);
+    } else {
+      // 候选要保存全市场逐项决策，不能只留最有希望的 30 只。
+      const rankedById = new Map(computed.ranked.map(item => [item.instrumentId, item]));
+      const rows = computed.evaluated.map(item => {
+        const rankedRow = rankedById.get(item.instrumentId) || {};
+        return Object.assign({}, item, {
+          anomaly: computed.anomalyById[item.instrumentId] || null,
+          totalScore: rankedRow.totalScore,
+          pbRank: rankedRow.pbRank,
+          peRank: rankedRow.peRank,
+          dividendRank: rankedRow.dividendRank,
+          selectionOrder: rankedRow.selectionOrder,
+          rankReady: item.rankReady === true,
+          rankBlockReasons: item.rankBlockReasons || [],
+        });
       });
-    });
-    await repo.insertCandidates(tx, runId, rows);
-    await repo.insertMembers(tx, runId, computed.portfolio.members);
+      await repo.insertCandidates(tx, runId, rows);
+      await repo.insertMembers(tx, runId, computed.portfolio.members);
+    }
     let publish = null;
     if (publishable) {
       // 指针 CAS：先读当前渠道指针并声明期望值；指针已被别的批次改写就拒绝，不能盲写（AC-04）。

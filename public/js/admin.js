@@ -575,8 +575,85 @@ function replaceWholeCode(text, code, label) {
   const matcher = new RegExp('(^|[^A-Za-z0-9_])' + escapeRegExp(code) + '(?![A-Za-z0-9_])', 'g');
   return text.replace(matcher, function (all, prefix) { return prefix + label; });
 }
+// 后台任务常见技术错误 → 中文大白话（反馈 #108）。这里只处理可稳定识别的
+// 完整句式/错误码；未命中的原文继续原样保留，并可在折叠的原始技术详情中查看。
+function replaceTechnicalErrorText(text) {
+  return String(text || '')
+    .replace(/job child process exited (?:null|undefined) without result/gi, '后台任务子进程异常退出，没有返回执行结果')
+    .replace(/job child process exited (-?\d+) without result/gi, function (all, code) {
+      return '后台任务子进程异常退出（退出码 ' + code + '），没有返回执行结果';
+    })
+    .replace(/child process exited with code (-?\d+)/gi, function (all, code) {
+      return '子进程异常退出（退出码 ' + code + '）';
+    })
+    .replace(/spawn\s+([^\s]+)\s+ENOENT/gi, '启动任务程序失败：找不到可执行文件')
+    .replace(/spawn\s+([^\s]+)\s+EACCES/gi, '启动任务程序失败：没有执行权限')
+    .replace(/Cannot find module ['"]([^'"]+)['"]/gi, '缺少运行依赖：$1')
+    .replace(/\bENOENT\b/gi, '文件或目录不存在')
+    .replace(/\bEACCES\b/gi, '没有文件访问权限')
+    .replace(/ENOSPC: no space left on device/gi, '磁盘空间不足，无法继续写入')
+    .replace(/JavaScript heap out of memory|FATAL ERROR: Reached heap limit|out of memory/gi, '内存不足，程序被中止')
+    .replace(/(?:connect\s+)?ETIMEDOUT/gi, '连接上游服务超时')
+    .replace(/(?:connect\s+)?ECONNREFUSED/gi, '连接被拒绝，目标服务可能未启动')
+    .replace(/(?:connect\s+)?ECONNRESET|socket hang up/gi, '网络连接被中断')
+    .replace(/getaddrinfo ENOTFOUND\s*([^\s]*)/gi, '域名解析失败，请检查网络')
+    .replace(/\bfetch failed\b/gi, '网络请求失败')
+    .replace(/timeout of (\d+)ms exceeded/gi, function (all, ms) {
+      return '请求超时（超过 ' + Math.max(1, Math.round(Number(ms) / 1000)) + ' 秒）';
+    })
+    .replace(/Task timed out after ([\d.]+) seconds?/gi, function (all, seconds) {
+      return '任务执行超时（超过 ' + seconds + ' 秒）';
+    })
+    .replace(/canceling statement due to statement timeout/gi, '数据库查询超时')
+    .replace(/duplicate key value violates unique constraint/gi, '写入重复数据（唯一约束冲突）')
+    .replace(/null value in column "[^"]+" violates not-null constraint/gi, '必填字段缺失，无法写入数据库')
+    .replace(/violates check constraint "[^"]+"/gi, '数据不符合数据库校验规则')
+    .replace(/deadlock detected/gi, '数据库死锁，本次执行已中断')
+    .replace(/too many clients already/gi, '数据库连接数已满，请稍后重试')
+    .replace(/Connection terminated unexpectedly/gi, '数据库连接意外中断')
+    .replace(/password authentication failed/gi, '数据库账号或密码不正确')
+    .replace(/relation "[^"]+" does not exist/gi, '数据库表不存在，可能尚未完成迁移')
+    .replace(/column "[^"]+" does not exist/gi, '数据库字段不存在，可能尚未完成迁移')
+    .replace(/invalid input syntax for type/gi, '数据格式不正确，无法写入数据库')
+    .replace(/Unexpected token .* in JSON|Unexpected end of JSON input/gi, '返回内容不是有效 JSON（可能收到错误页面）')
+    .replace(/Cannot read propert(?:y|ies) of (?:undefined|null)/gi, '程序读取到空数据（内部字段缺失）')
+    .replace(/Cannot set propert(?:y|ies) of (?:undefined|null)/gi, '程序写入空对象失败（内部字段缺失）')
+    .replace(/is not a function/gi, '程序内部调用异常')
+    .replace(/is not defined/gi, '程序内部变量未定义')
+    .replace(/Invalid login|535 Authentication failed|535 5\.7\.8/gi, '邮箱登录失败，SMTP 授权码可能已失效')
+    .replace(/\bHTTP (50[0234])\b/gi, function (all, code) { return '上游服务暂时不可用（HTTP ' + code + '）'; })
+    .replace(/Request failed with status code (\d{3})/gi, function (all, code) {
+      return '上游接口返回错误（HTTP ' + code + '）';
+    });
+}
+function jobErrorTypeLabel(type) {
+  const key = String(type || '').trim();
+  if (!key) return '';
+  const labels = {
+    Error: '程序异常', TypeError: '数据类型异常', ReferenceError: '程序引用异常',
+    RangeError: '数值范围异常', SyntaxError: '数据格式异常', URIError: '地址格式异常',
+    TimeoutError: '执行超时', JobTimeout: '执行超时', AbortError: '执行被中止',
+    HTTPError: '上游接口错误', FetchError: '网络请求失败', DatabaseError: '数据库操作失败',
+    QueryError: '数据库查询失败', ValidationError: '数据校验失败',
+  };
+  if (labels[key]) return labels[key];
+  const lower = key.toLowerCase();
+  if (/timeout|timedout/.test(lower)) return '执行超时';
+  if (/network|fetch|socket|econn/.test(lower)) return '网络请求失败';
+  if (/database|sql|query|postgres/.test(lower)) return '数据库操作失败';
+  if (/validation|invalid/.test(lower)) return '数据校验失败';
+  return '程序异常';
+}
+function jobErrorHtml(value, limit) {
+  const raw = value == null ? '' : String(value).trim();
+  if (!raw) return '无';
+  const translated = jobDisplayText(raw, limit);
+  return escapeHtml(translated)
+    + '<details class="job-result-raw job-error-raw"><summary>查看原始技术详情</summary><pre>'
+    + escapeHtml(raw) + '</pre></details>';
+}
 function translateJobText(value) {
-  let text = String(value || '')
+  let text = replaceTechnicalErrorText(String(value || ''))
     .replace(/\bmarket_close:([^#、，\s]+)#(\d+)/g, function (all, market, id) { return jobLabel('market_close:' + market) + '#' + id; });
   Object.keys(JOB_LABELS).forEach(function (code) {
     text = text.split(code + '#').join(JOB_LABELS[code] + '#');
@@ -600,8 +677,6 @@ function translateJobText(value) {
     .replace(/\btrade_date=/g, '交易日期：')
     .replace(/\bwindow_start=/g, '开始日期：')
     .replace(/\bwindow_end=/g, '结束日期：')
-    .replace(/\bspawn\b/g, '启动程序失败')
-    .replace(/\bENOENT\b/g, '文件不存在')
     .replace(/\/opt\/portfolio\/[^\s|]+/g, 'Python 任务程序')
     .replace(/\balready_running\b/g, '已有同类任务运行')
     .replace(/\bnot_configured\b/g, '未配置，已跳过')
@@ -1105,9 +1180,19 @@ function adminPaintJobSlotDetail(d) {
     const list = function (items, mapper, empty) {
       return (items || []).map(mapper).join('') || '<li>' + empty + '</li>';
     };
-    const runs = list(d.runs, function (run) { return '<li>' + escapeHtml(jobStatusLabel(run.status)) + ' / ' + fmtTime(run.started_at) + ' / ' + escapeHtml(jobTriggerLabel(run.trigger_type)) + ' / 外部请求 ' + Number(run.external_call_count || 0) + ' 次 / ' + escapeHtml(run.error_type || '') + ' / ' + escapeHtml(jobDisplayText(run.detail || '', 1000)) + '</li>'; }, '暂无执行记录');
+    const runs = list(d.runs, function (run) {
+      const rawRun = [
+        run.error_type ? 'error_type: ' + run.error_type : '',
+        run.detail ? 'detail: ' + (typeof run.detail === 'object' ? jobResultRawText(run.detail) : run.detail) : '',
+      ].filter(Boolean).join('\n');
+      const translatedRun = jobDisplayText(run.detail || '', 1000);
+      const runRaw = rawRun
+        ? '<details class="job-result-raw job-error-raw"><summary>查看原始技术详情</summary><pre>' + escapeHtml(rawRun) + '</pre></details>'
+        : '';
+      return '<li>' + escapeHtml(jobStatusLabel(run.status)) + ' / ' + fmtTime(run.started_at) + ' / ' + escapeHtml(jobTriggerLabel(run.trigger_type)) + ' / 外部请求 ' + Number(run.external_call_count || 0) + ' 次 / ' + escapeHtml(jobErrorTypeLabel(run.error_type) || '-') + ' / ' + escapeHtml(translatedRun || '-') + runRaw + '</li>';
+    }, '暂无执行记录');
     const deps = list(d.dependencies, function (dep) { return '<li>' + escapeHtml(jobLabel(dep.job_code)) + '：' + escapeHtml(jobStatusLabel(dep.status)) + '，数据日期 ' + escapeHtml(dep.data_as_of ? String(dep.data_as_of).slice(0, 10) : '-') + '</li>'; }, '无前置依赖');
-    const alerts = list(d.alerts, function (alert) { return '<li>' + escapeHtml(jobStatusLabel(alert.status)) + ' / 尝试 ' + Number(alert.send_attempts || 0) + ' / ' + escapeHtml(jobDisplayText(alert.last_send_error || alert.subject || '', 1000)) + '</li>'; }, '无告警记录');
+    const alerts = list(d.alerts, function (alert) { return '<li>' + escapeHtml(jobStatusLabel(alert.status)) + ' / 尝试 ' + Number(alert.send_attempts || 0) + ' / ' + (alert.last_send_error ? jobErrorHtml(alert.last_send_error, 1000) : escapeHtml(alert.subject || '')) + '</li>'; }, '无告警记录');
     const audits = list(d.audits, function (audit) { return '<li>' + escapeHtml(audit.actor || '-') + ' / ' + escapeHtml(jobActionLabel(audit.action)) + ' / ' + escapeHtml(audit.created_at || '') + '</li>'; }, '无审计记录');
     const freshness = d.freshness_validation || {};
     const summary = d.result_summary || {};
@@ -1127,7 +1212,7 @@ function adminPaintJobSlotDetail(d) {
     const waitingText = waitingState
       ? (translateJobText(waitingState.label || '等待中') + (waitingReason ? '（原因：' + waitingReason + '）' : ''))
       : '当前不需要等待复查';
-    const html = '<div class="job-detail"><p><b>任务：</b>' + escapeHtml(jobLabel(d.job_code)) + '</p><p><b>计划时间：</b>' + fmtTime(d.scheduled_for) + '</p><p><b>业务执行结果：</b></p>' + renderJobResultHtml(d.business_execution || d.result_summary || {}) + '<p><b>续批与止损：</b>' + escapeHtml(continuation) + '</p><p><b>等待复查：</b>' + escapeHtml(waitingText) + '</p><p><b>数据新鲜度校验：</b>' + escapeHtml(freshness.status === 'passed' ? '通过' : freshness.status === 'not_required' ? '不需要水位校验' : freshness.status === 'degraded' ? '未达到目标日期' : '待校验') + '；数据日期 ' + escapeHtml(freshness.dataAsOf ? String(freshness.dataAsOf).slice(0, 10) : '-') + '；业务日期 ' + escapeHtml(freshness.businessDate || '-') + '</p><p><b>计划状态：</b>' + jobSlotStatusTag(d.status, false, Boolean(waitingState)) + '</p><p><b>最近错误：</b>' + escapeHtml(jobDisplayText(d.last_error || '无', 1000)) + '</p><p><b>执行尝试：</b></p><ul>' + runs + '</ul><p><b>依赖：</b></p><ul>' + deps + '</ul><p><b>邮件告警：</b></p><ul>' + alerts + '</ul><p><b>人工审计：</b></p><ul>' + audits + '</ul></div>';
+    const html = '<div class="job-detail"><p><b>任务：</b>' + escapeHtml(jobLabel(d.job_code)) + '</p><p><b>计划时间：</b>' + fmtTime(d.scheduled_for) + '</p><p><b>业务执行结果：</b></p>' + renderJobResultHtml(d.business_execution || d.result_summary || {}) + '<p><b>续批与止损：</b>' + escapeHtml(continuation) + '</p><p><b>等待复查：</b>' + escapeHtml(waitingText) + '</p><p><b>数据新鲜度校验：</b>' + escapeHtml(freshness.status === 'passed' ? '通过' : freshness.status === 'not_required' ? '不需要水位校验' : freshness.status === 'degraded' ? '未达到目标日期' : '待校验') + '；数据日期 ' + escapeHtml(freshness.dataAsOf ? String(freshness.dataAsOf).slice(0, 10) : '-') + '；业务日期 ' + escapeHtml(freshness.businessDate || '-') + '</p><p><b>计划状态：</b>' + jobSlotStatusTag(d.status, false, Boolean(waitingState)) + '</p><div class="job-detail-row"><b>最近错误：</b>' + jobErrorHtml(d.last_error || '', 1000) + '</div><p><b>执行尝试：</b></p><ul>' + runs + '</ul><p><b>依赖：</b></p><ul>' + deps + '</ul><p><b>邮件告警：</b></p><ul>' + alerts + '</ul><p><b>人工审计：</b></p><ul>' + audits + '</ul></div>';
     openAdminModal('任务详情', html, '<button class="btn btn-outline" data-act="closeAdminModal">关闭</button>');
 }
 

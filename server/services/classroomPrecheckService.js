@@ -1333,6 +1333,40 @@ async function verifyCandidateBatch({ candidates, startYear, totalRounds, tradeD
 }
 
 /**
+ * 把逐只股票的核验失败原因归并为可读类别，避免建场页只显示「0 只」。
+ * 原始 reason 仍保留在服务端 rejected 明细中，不改变预检口径。
+ */
+function summarizeCandidateRejection(reason) {
+  const text = String(reason || '');
+  if (/交易日历/.test(text)) return '交易日历缺失';
+  if (/估值|市值快照|市值/.test(text)) return '缺少期初估值/市值快照';
+  if (/复权/.test(text)) return '缺少或无效的复权因子';
+  if (/顺序异常/.test(text)) return '首尾取价日顺序异常';
+  if (/缺行情|缺少.*收盘|无.*行情|收盘价非正/.test(text)) return '缺少年初/年末行情';
+  if (/停牌/.test(text)) return '停牌证据不足';
+  return '历史行情数据不完整';
+}
+
+function aggregateRejectionSummary(items, limit = 4) {
+  const counts = new Map();
+  for (const item of (items || [])) {
+    const key = summarizeCandidateRejection(item && item.reason);
+    counts.set(key, (counts.get(key) || 0) + 1);
+  }
+  return Array.from(counts.entries())
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], 'zh-CN'))
+    .slice(0, limit)
+    .map(([reason, count]) => ({ reason, count }));
+}
+
+function emptyVerification() {
+  return {
+    timedOut: false, candidateCount: 0, verifiedCount: 0, rejectedCount: 0,
+    remainingIndustryCount: 0, qualifiedIndustryCount: 0, rejectionSummary: [],
+  };
+}
+
+/**
  * 分批核验指定历史窗口的 SW2021 一级行业与股票覆盖状态；支持缓存复用与超时保留进度。
  */
 async function verifyIndustryPool({
@@ -1356,6 +1390,7 @@ async function verifyIndustryPool({
     return {
       windowStatus: { pass: false, blockers: [windowCheck.reason], calendarOk: false, bondWealthCovered: false, cbCalibrated: false },
       dataVersion: '',
+      verification: emptyVerification(),
       industries: [],
       excluded: [],
       timedOut: false,
@@ -1470,6 +1505,7 @@ async function verifyIndustryPool({
     return {
       windowStatus,
       dataVersion,
+      verification: emptyVerification(),
       industries: [],
       excluded: [],
       timedOut: false,
@@ -1480,6 +1516,7 @@ async function verifyIndustryPool({
     return {
       windowStatus,
       dataVersion,
+      verification: emptyVerification(),
       industries: [],
       excluded: [],
       timedOut: false,
@@ -1554,6 +1591,8 @@ async function verifyIndustryPool({
       coarseCount: ind.candidates.length,
       verifiedCount: ind.nextCursor,
       qualifiedCount: ind.qualified.length,
+      rejectedCount: ind.rejected.length,
+      rejectionSummary: aggregateRejectionSummary(ind.rejected, 2),
       enabled,
       completed: exhausted,
       status,
@@ -1562,9 +1601,25 @@ async function verifyIndustryPool({
   });
 
   const qualifiedIndustriesCount = industries.filter((i) => i.enabled).length;
+  const verification = {
+    timedOut,
+    candidateCount: industries.reduce((total, item) => total + Number(item.coarseCount || 0), 0),
+    verifiedCount: industries.reduce((total, item) => total + Number(item.verifiedCount || 0), 0),
+    rejectedCount: industries.reduce((total, item) => total + Number(item.rejectedCount || 0), 0),
+    remainingIndustryCount: industries.filter((item) => item.status === 'verifying').length,
+    qualifiedIndustryCount: qualifiedIndustriesCount,
+    rejectionSummary: aggregateRejectionSummary(cached.industries.flatMap((item) => item.rejected)),
+  };
   const fullBlockers = [...windowStatus.blockers];
   if (qualifiedIndustriesCount < 4) {
     fullBlockers.push(`当前仅有 ${qualifiedIndustriesCount} 个合格一级行业（需至少 4 个且每行业至少 3 只合格股）`);
+  }
+  if (!verification.candidateCount) {
+    fullBlockers.push('当前窗口没有可核验的候选股票（上市/退市日期或行业归属过滤后为空）');
+  }
+  // 超时是「核验未完成」，不能伪装成已完整核验后仍是 0 只；保留进度并提示重试继续。
+  if (timedOut && qualifiedIndustriesCount < 4) {
+    fullBlockers.push(`行业核验未在本次时限内完成（已核验 ${verification.verifiedCount}/${verification.candidateCount} 只候选），可再次加载继续核验`);
   }
 
   return {
@@ -1577,6 +1632,7 @@ async function verifyIndustryPool({
     dataVersion,
     taxonomy: 'SW2021',
     survivorBiasNotice: SURVIVOR_BIAS_NOTICE,
+    verification,
     industries,
     excluded: cached.excluded,
     timedOut,
@@ -1586,7 +1642,7 @@ async function verifyIndustryPool({
 /**
  * 列出可建场的 15 年历史窗口及当前窗口的一级行业选项。
  */
-async function getCreationOptions({ startYear = null, totalRounds = 15, timeoutMs = 4000, now = new Date() } = {}) {
+async function getCreationOptions({ startYear = null, totalRounds = 15, timeoutMs = 4000, currentWindowTimeoutMs = null, now = new Date() } = {}) {
   const sseYears = await repo.fetchAvailableSseYears();
   const sseYearMap = new Map(sseYears.map((r) => [Number(r.year), r]));
   const maxCompletedYear = getShanghaiCurrentYear(now) - 1;
@@ -1639,9 +1695,8 @@ async function getCreationOptions({ startYear = null, totalRounds = 15, timeoutM
         startYear: sy,
         endYear: sy + totalRounds - 1,
         timedOut: Boolean(poolRes.timedOut),
-        blockers: poolRes.timedOut && !poolRes.windowStatus.pass
-          ? [...poolRes.windowStatus.blockers, '本窗口行业核验未在本次时限内完成，可重试继续']
-          : poolRes.windowStatus.blockers,
+        verification: poolRes.verification || emptyVerification(),
+        blockers: poolRes.windowStatus.blockers,
       });
     }
   }
@@ -1655,7 +1710,8 @@ async function getCreationOptions({ startYear = null, totalRounds = 15, timeoutM
     totalRounds,
     initialBatchSize: 10,
     requireFullIndustry: false,
-    timeoutMs,
+    // 当前选中窗口允许使用更长的核验时间；逐窗口可用性扫描仍用短超时，避免首屏被大量窗口拖慢。
+    timeoutMs: currentWindowTimeoutMs != null ? currentWindowTimeoutMs : timeoutMs,
     now,
     sharedBase,
     // 当前窗口同样先过公共门禁：门禁失败的窗口不允许再发起候选股票查询（F-01）。

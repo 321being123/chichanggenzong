@@ -619,11 +619,6 @@ async function loadEquityFacts({ companyIds, asOfDate, availableBefore, market =
       FROM fundamental.financial_reports r
       JOIN fundamental.financial_facts f ON f.report_id = r.report_id AND f.metric_code = 'equity_parent'
      WHERE r.company_id = ANY($1::bigint[])
-       -- equity_parent 只出现在合并资产负债表（2026-11-27 生产实测：283,010 条 equity_parent
-       -- 全部为 report_kind='balance'，涉及 8,415 家公司）。显式限定报表类型后候选行
-       -- 从 118 万降到 30 万，全市场口径由 260 秒降到可接受区间；
-       -- 这个条件与 facts 侧 metric_code 的连接等价，不改变任何取数结果。
-       AND r.report_kind = 'balance'
        AND ${marketPredicate}
        AND r.statement_scope = 'consolidated'
        AND r.announced_at IS NOT NULL

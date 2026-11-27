@@ -35,8 +35,9 @@ function historicalKindFor(code, position = {}) {
   if (subtype === '港股' || /^\d{5}$/.test(rawCode)) return 'hk_stock';
   // 统一代码分类优先于旧持仓中的“股权/沪市”标签，避免基金走股票日线。
   if (classifyCode.isFundEtfCode(rawCode)) return 'fund';
-  if (subtype === '可转债' || type === '债权' || /债/.test(String(position.name || '')) || /^(11|12)\d{4}$/.test(rawCode)) return 'bond';
+  // 债券基金/可转债基金仍是基金份额，必须先按“基金”归类，不能因为资产类别是债权就走债券日线。
   if (subtype.indexOf('基金') >= 0 || subtype.indexOf('ETF') >= 0 || type === '基金') return 'fund';
+  if (subtype === '可转债' || type === '债权' || /债/.test(String(position.name || '')) || /^(11|12)\d{4}$/.test(rawCode)) return 'bond';
   return 'stock';
 }
 

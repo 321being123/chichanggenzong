@@ -370,6 +370,36 @@ body:has(.nav) { padding-top: var(--site-nav-height, 52px); }
 .tag-under { background: var(--down-soft); color: var(--down); }
 .tag-ok { background: var(--primary-soft); color: var(--primary-text); }
 
+/* ===== 盈亏概览（#124）与总资产显隐（#125） ===== */
+.pnl-overview { margin-bottom: 18px; }
+.pnl-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
+.pnl-head h3 { margin: 0; font-size: 14px; font-weight: 600; color: var(--text-primary); }
+.pnl-note { font-size: 12px; color: var(--text-muted); }
+.pnl-cards { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; }
+.pnl-card { background: var(--bg-surface); border: 1px solid var(--border-default); border-radius: var(--r-lg); padding: 14px 16px; box-shadow: var(--shadow-xs); min-width: 0; }
+.pnl-card .label { font-size: var(--fs-xs); color: var(--text-muted); margin-bottom: 4px; }
+.pnl-card .value { font-size: 20px; font-weight: 600; line-height: 1.25; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.pnl-card .sub { font-size: var(--fs-xs); color: var(--text-muted); margin-top: 5px; font-variant-numeric: tabular-nums; }
+.pnl-range { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 12px; font-size: 12px; color: var(--text-muted); }
+.pnl-range label { display: inline-flex; align-items: center; gap: 6px; margin: 0; }
+.pnl-range input[type="date"] { height: 34px; padding: 0 8px; border: 1px solid var(--border-strong); border-radius: var(--r-md); font-size: 13px; color: var(--text-primary); background: var(--bg-surface); }
+.pnl-range .btn { min-height: 34px; }
+.stat-privacy-toggle { width: 28px; height: 24px; margin-left: 4px; padding: 0; border: 1px solid var(--border-default); border-radius: var(--r-sm); background: var(--bg-surface); color: var(--text-muted); cursor: pointer; font-size: 12px; line-height: 1; vertical-align: middle; }
+.stat-privacy-toggle:hover { border-color: var(--border-strong); color: var(--text-primary); }
+.stat-privacy-toggle:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+
+/* 智能导入数量步进（#121）：不依赖原生微调箭头，点击 +/- 才变化 */
+.qty-stepper { display: inline-flex; align-items: stretch; vertical-align: middle; }
+.qty-stepper .qty-step-btn { width: 26px; min-height: 28px; padding: 0; border: 1px solid var(--border-strong); background: var(--bg-surface); color: var(--text-primary); cursor: pointer; font-size: 14px; line-height: 1; }
+.qty-stepper .qty-step-btn:first-child { border-radius: var(--r-sm) 0 0 var(--r-sm); }
+.qty-stepper .qty-step-btn:last-child { border-radius: 0 var(--r-sm) var(--r-sm) 0; }
+.qty-stepper .qty-step-btn:hover { background: var(--bg-muted); }
+.qty-stepper .qty-step-btn:focus-visible { outline: none; box-shadow: var(--focus-ring); position: relative; z-index: 1; }
+.qty-stepper .qty-stepper-input { width: 58px; height: 28px; padding: 0 4px; text-align: center; border-left: 0; border-right: 0; border-radius: 0; -moz-appearance: textfield; }
+.qty-stepper .qty-stepper-input::-webkit-outer-spin-button,
+.qty-stepper .qty-stepper-input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+.trade-secondary-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+
 /* ===== 图表 ===== */
 .chart-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 18px; }
 .chart-box { background: var(--bg-surface); border: 1px solid var(--border-default); border-radius: var(--r-lg); padding: 18px; box-shadow: var(--shadow-xs); }
@@ -1978,6 +2008,14 @@ input[type="search"] {
   .stat-card { padding: 14px; }
   .stat-card .value { font-size: 20px; overflow-wrap: anywhere; }
   .stat-card .stat-top { flex-wrap: wrap; gap: 4px; }
+  .stat-privacy-toggle { min-width: 44px; min-height: 44px; font-size: 14px; }
+  .pnl-cards { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+  .pnl-card { padding: 12px; }
+  .pnl-range input[type="date"] { min-height: 44px; font-size: 16px; }
+  .pnl-range .btn { min-height: 44px; }
+  .qty-stepper .qty-step-btn { width: 44px; min-height: 44px; font-size: 16px; }
+  .qty-stepper .qty-stepper-input { width: 72px; height: 44px; font-size: 16px; }
+  .trade-secondary-actions .btn { min-height: 44px; }
   .chart-grid, .home-hero-article-grid, .home-market-cycle-grid, .home-capability-grid,
   .home-content-grid-secondary .home-side-stack { grid-template-columns: minmax(0,1fr); }
   .home-latest-feature, .home-detail-card, .home-cycle-card, .chart-box { padding: 16px; }
@@ -2160,3 +2198,8 @@ input[type="search"] {
 .u-h-sm { font-size:14px; font-weight:600; color:var(--text-primary); margin-bottom:6px; }
 .u-check-label { font-size:14px; color:var(--text-primary); cursor:pointer; user-select:none; }
 .u-check-box { flex-shrink:0; accent-color:var(--primary); width:18px; height:18px; }
+
+/* 极窄手机：盈亏卡片单列，金额不压缩换行 */
+@media (max-width: 480px) {
+  .pnl-cards { grid-template-columns: minmax(0, 1fr); }
+}

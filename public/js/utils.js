@@ -131,7 +131,7 @@ function calcSummary() {
 }
 
 function getSubtypeTag(st) {
-  var map = { '沪市': '<span class="tag tag-a">沪市</span>', '深市': '<span class="tag tag-a">深市</span>', '京市': '<span class="tag tag-a">京市</span>', '港股': '<span class="tag tag-hk">港股</span>', '美股': '<span class="tag tag-us">美股</span>', '可转债': '<span class="tag tag-cb">可转债</span>', '信用债': '<span class="tag tag-bond">信用债</span>', '基金/ETF': '<span class="tag tag-etf">基金/ETF</span>' };
+  var map = { '沪市': '<span class="tag tag-a">沪市</span>', '深市': '<span class="tag tag-a">深市</span>', '京市': '<span class="tag tag-a">京市</span>', '港股': '<span class="tag tag-hk">港股</span>', '美股': '<span class="tag tag-us">美股</span>', '可转债': '<span class="tag tag-cb">可转债</span>', '信用债': '<span class="tag tag-bond">信用债</span>', '基金/ETF': '<span class="tag tag-etf">基金/ETF</span>', '债券基金': '<span class="tag tag-bond">债券基金</span>' };
   return map[st] || '<span class="tag">' + escapeHtml(st || '-') + '</span>';
 }
 
@@ -148,7 +148,7 @@ function getTypeTagClass(type) {
 }
 
 function getSubtypeColor(st) {
-  var map = { '沪市': '#d93025', '深市': '#ef6c00', '京市': '#2e7d32', '港股': '#7b1fa2', '美股': '#283593', '可转债': '#00838f', '信用债': '#3f51b5', '基金/ETF': '#c62828' };
+  var map = { '沪市': '#d93025', '深市': '#ef6c00', '京市': '#2e7d32', '港股': '#7b1fa2', '美股': '#283593', '可转债': '#00838f', '信用债': '#3f51b5', '基金/ETF': '#c62828', '债券基金': '#3f51b5' };
   return map[st] || '#666';
 }
 

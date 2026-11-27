@@ -149,6 +149,8 @@
 <!-- 总览页: 统计卡片 + 图表 + 持仓明细(全部) + 收益走势 -->
 <div class="page active" id="page-dashboard">
   <div class="stats" id="stats-container"></div>
+  <!-- #124：今日、本月、本年与可选区间盈亏（复用现有净值/归因/现金流数据） -->
+  <div id="pnl-overview"></div>
   <div class="chart-grid">
     <div class="chart-box">
       <div class="chart-title"><h3>资产类别比例</h3><span class="chart-total" id="chart-total-1"></span></div>
@@ -252,7 +254,7 @@
       </div>
       <div class="form-row">
         <div class="form-group"><label>资产类型 <span class="auto-hint">自动识别</span></label><select id="trade-type"><option value="股权">股权</option><option value="债权">债权</option><option value="现金">现金</option></select></div>
-        <div class="form-group"><label>细类 <span class="auto-hint">自动识别</span></label><select id="trade-subtype" data-act="autoCalcTrade"><option>沪市</option><option>深市</option><option>京市</option><option>港股</option><option>美股</option><option>可转债</option><option>信用债</option><option>基金/ETF</option><option>场外基金</option></select></div>
+        <div class="form-group"><label>细类 <span class="auto-hint">自动识别</span></label><select id="trade-subtype" data-act="autoCalcTrade"><option>沪市</option><option>深市</option><option>京市</option><option>港股</option><option>美股</option><option>可转债</option><option>信用债</option><option>基金/ETF</option><option>债券基金</option><option>场外基金</option></select></div>
         <div class="form-group"><label>备注</label><input id="trade-note" placeholder="可选"></div>
       </div>
       <button class="btn btn-primary" data-act="addTrade">➕ 记录交易</button>
@@ -280,6 +282,11 @@
             <img id="qr-image" src="" alt="二维码">
             <p class="u-hint-8" id="qr-status">手机扫码上传图片</p>
           </div>
+        </div>
+        <!-- #122：智能导入与手动录入共用同一套资金/税费弹窗，不复制业务逻辑 -->
+        <div class="trade-secondary-actions">
+          <button class="btn btn-outline" data-act="showCashFlowModal">💰 资金转入转出</button>
+          <button class="btn btn-outline" data-act="openFeeSettings">⚙ 税费设置</button>
         </div>
         <div id="vision-queue" class="u-mt-16"></div>
         <div id="smart-loading" class="u-smart-loading"><span class="spinner"></span>AI识别中...</div>
@@ -1288,7 +1295,7 @@
       <div class="form-group"><label>证券代码</label><input id="modal-code" placeholder="如 601919"></div>
       <div class="form-group"><label>证券名称</label><input id="modal-name" placeholder="自动获取"></div>
       <div class="form-group"><label>现价</label><input id="modal-price" type="number" step="0.001" placeholder="0.000" inputmode="decimal"></div>
-      <div class="form-group"><label>数量</label><input id="modal-qty" type="number" step="1" placeholder="0" inputmode="decimal"></div>
+      <div class="form-group"><label>数量</label><input id="modal-qty" type="number" step="1" min="1" placeholder="0" inputmode="decimal"></div>
       <div class="form-group"><label>成本价</label><input id="modal-cost" type="number" step="0.001" placeholder="同现价" inputmode="decimal"></div>
       <div class="form-group"><label>类型</label>
         <select id="modal-type">
@@ -1306,6 +1313,8 @@
           <option value="美股">美股</option>
           <option value="可转债">可转债</option>
           <option value="信用债">信用债</option>
+          <option value="基金/ETF">基金/ETF</option>
+          <option value="债券基金">债券基金</option>
           <option value="ETF">ETF</option>
           <option value="LOF">LOF</option>
           <option value="现金">现金</option>

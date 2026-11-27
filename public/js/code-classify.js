@@ -6,7 +6,7 @@
 //
 // 返回: { type, subtype, market, isHK }
 //   type    '股权' | '债权'
-//   subtype '沪市' | '深市' | '京市' | '港股' | '美股' | '可转债' | '信用债' | '基金/ETF'
+//   subtype '沪市' | '深市' | '京市' | '港股' | '美股' | '可转债' | '信用债' | '基金/ETF' | '债券基金'
 //   market  'sh' | 'sz' | 'bj' | 'hk' | 'kcb' | 'us'
 //   isHK    boolean
 //
@@ -67,6 +67,16 @@
     return /^\d{6}$/.test(code) && (code.charAt(0) === '5' || /^(15|16|17|180|181|184)/.test(code));
   }
 
+  // 可转债/债券基金与 ETF 仍是基金份额，行情和费用走基金口径；但资产类别属于债权。
+  // 只按名称识别“债券基金/可转债基金/债券ETF”，避免把名称含“债”的股票误归类。
+  var BOND_FUND_NAME = /(可转债|转债|债券|纯债|信用债|国债|政金债|金融债|利率债|短债|中短债)/;
+  var FUND_NAME = /(基金|ETF|LOF)/i;
+  function isBondFundName(rawName) {
+    var name = normalizeInstrumentName(rawName);
+    if (!name || !BOND_FUND_NAME.test(name)) return false;
+    return FUND_NAME.test(name);
+  }
+
   function classifyCode(rawCode) {
     if (!rawCode) return null;
     var rawName = arguments.length > 1 ? arguments[1] : '';
@@ -93,7 +103,14 @@
     } else if (first2 === '13') {
       type = '债权'; subtype = '信用债'; market = 'sh';
     } else if (isFundEtfCode(code)) {
-      type = '股权'; subtype = '基金/ETF'; market = first1 === '5' ? 'sh' : 'sz';
+      if (isBondFundName(rawName)) {
+        type = '债权'; subtype = '债券基金'; market = first1 === '5' ? 'sh' : 'sz';
+      } else {
+        type = '股权'; subtype = '基金/ETF'; market = first1 === '5' ? 'sh' : 'sz';
+      }
+    } else if (isBondFundName(rawName)) {
+      // 场外债券基金/债券型基金：名称明确带“基金/ETF/LOF”，代码不在场内基金段。
+      type = '债权'; subtype = '债券基金'; market = first1 === '5' ? 'sh' : 'sz';
     } else if (first3 === '688' || first1 === '6') {
       type = '股权'; subtype = '沪市'; market = (first3 === '688') ? 'kcb' : 'sh';
     } else if (first2 === '00' || first2 === '30') {

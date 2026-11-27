@@ -454,14 +454,27 @@ function isPublishedDatasetEvidence(row, code, options = {}) {
   return true;
 }
 
-async function areDatasetPartitionsPublished(datasetCodes, businessDate,context={}) {
-  const datasets = datasetCodes.filter(code => DATASET_PARTITION_REGISTRY[code]);
-  if (datasets.length !== datasetCodes.length) return false;
-  if (!datasets.length) return true;
+/**
+ * 读取一批数据集的已发布证据（B1-2 前置就绪检查的唯一入口）：
+ * 返回逐数据集状态与**精确缺失清单**，供日/周选股槽在计算前给出"还缺哪个分区"，
+ * 不再只拿一个布尔值去猜。判据仍是 isPublishedDatasetEvidence 这一份。
+ */
+async function readDatasetPartitions(datasetCodes, businessDate, context = {}) {
+  const requested = Array.isArray(datasetCodes) ? [...new Set(datasetCodes.map(String))] : [];
+  const datasets = requested.filter(code => DATASET_PARTITION_REGISTRY[code]);
   const partitionKey = dateValue(businessDate);
-  if (!partitionKey) return false;
-  const scopes = datasets.map(code => resolveDatasetScope(code,context));
-  if(scopes.some(scope=>!scope))return false;
+  const empty = {
+    partitionKey,
+    rows: [],
+    byCodeAndScope: new Map(),
+    missingCodes: requested.slice(),
+    unregisteredCodes: requested.filter(code => !DATASET_PARTITION_REGISTRY[code]),
+    evidence: [],
+  };
+  if (!requested.length) return { ...empty, missingCodes: [], unregisteredCodes: [] };
+  if (!partitionKey || datasets.length !== requested.length) return empty;
+  const scopes = datasets.map(code => resolveDatasetScope(code, context));
+  if (scopes.some(scope => !scope)) return empty;
   const { rows } = await pool.query(
     `SELECT dataset_code,scope_key,status,is_stale,diagnostics
        FROM ops.dataset_partitions
@@ -469,10 +482,33 @@ async function areDatasetPartitionsPublished(datasetCodes, businessDate,context=
     [datasets, scopes, partitionKey]
   );
   const byCodeAndScope = new Map(rows.map(row => [`${row.dataset_code}:${row.scope_key}`, row]));
-  return datasets.every(code => {
-    const scopeKey = resolveDatasetScope(code,context);
-    return isPublishedDatasetEvidence(byCodeAndScope.get(`${code}:${scopeKey}`), code);
+  const evidence = datasets.map((code, index) => {
+    const scopeKey = scopes[index];
+    const row = byCodeAndScope.get(`${code}:${scopeKey}`) || null;
+    return {
+      datasetCode: code,
+      scopeKey,
+      partitionKey,
+      published: isPublishedDatasetEvidence(row, code),
+      row,
+    };
   });
+  return {
+    partitionKey,
+    rows,
+    byCodeAndScope,
+    missingCodes: evidence.filter(item => !item.published).map(item => item.datasetCode),
+    unregisteredCodes: requested.filter(code => !DATASET_PARTITION_REGISTRY[code]),
+    evidence,
+  };
+}
+
+async function areDatasetPartitionsPublished(datasetCodes, businessDate,context={}) {
+  const datasets = datasetCodes.filter(code => DATASET_PARTITION_REGISTRY[code]);
+  if (datasets.length !== datasetCodes.length) return false;
+  if (!datasets.length) return true;
+  const result = await readDatasetPartitions(datasets, businessDate, context);
+  return Boolean(result.partitionKey) && result.missingCodes.length === 0;
 }
 
 async function areJobDatasetsPublished(jobCode, businessDate, requestedDatasets = null,context={}) {
@@ -485,4 +521,4 @@ async function areJobDatasetsPublished(jobCode, businessDate, requestedDatasets 
   return areDatasetPartitionsPublished(datasets, businessDate,context);
 }
 
-module.exports = { DATASET_PARTITION_REGISTRY, MARKET_SCOPED_DATASETS, marketPredicateFor, readSnapshot, publishDatasetSnapshot, publishJobDatasets, areJobDatasetsPublished,resolveDatasetScope, isPublishedDatasetEvidence, STRICT_QUALITY_DATASETS };
+module.exports = { DATASET_PARTITION_REGISTRY, MARKET_SCOPED_DATASETS, marketPredicateFor, readSnapshot, readDatasetPartitions, publishDatasetSnapshot, publishJobDatasets, areJobDatasetsPublished,resolveDatasetScope, isPublishedDatasetEvidence, STRICT_QUALITY_DATASETS };

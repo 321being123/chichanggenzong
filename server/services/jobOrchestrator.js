@@ -5,6 +5,7 @@ const { sanitizeJobError, sanitizeJobResult } = require('./jobErrorSanitizer');
 const { JOB_DEFINITIONS, getJobDefinition, getRegisteredJobDefinition } = require('./jobDefinitions');
 const { readRunStatus } = require('../repositories/jobOrchestratorRepository.js');
 const repository = require('../repositories/jobOrchestratorRepository.js');
+const { waitReasonPolicy } = require('./jobRecoveryEvidence');
 const {
   WORKER_ID, syncScheduleSlots, recoverExpiredSlots, listDueSlots, sweepStaleSlots,
   claimSlot, completeSlot, deferSlot, waitForExternalSlot, continueSlot, mergeSlotExternalCallSummary, touchSlot, queryDataAsOf, isDataAsOfFresh, expectedDataDate,
@@ -1002,7 +1003,17 @@ async function runSlot(slot, reason = reasonForSlot(slot)) {
       const slotLimit = Number(definition.slotExternalCallsLimit || 0);
       const slotTotal = Number(runContext.slotExternalCallsTotal || 0) + Number(result.attemptExternalCalls || result.externalCalls || 0);
       const continuationStartedAt = result.continuationStartedAt || runContext.continuationStartedAt || new Date().toISOString();
-      const continuationMaxAgeHours = Math.max(Number(result.continuationMaxAgeHours || runContext.continuationMaxAgeHours || 24), 1);
+      // 已登记等待原因的有效期可以长于通用续批上限：选股"输入未就绪"要等下一个交易日分区
+      // （周五→周一约 62.5h，长假更久），通用 24h 会在上游正常发布前先把槽判成续批超龄。
+      // 这里取两者较大值；原因自身的硬上限仍由 waitReasonPolicy 与续批止损共同执行。
+      const waitPolicy = waitReasonPolicy(result.waitReason, claimed.job_code);
+      const waitPolicyHours = waitPolicy && waitPolicy.extendsContinuationMaxAge
+        ? Number(waitPolicy.maxWaitHours || 0) : 0;
+      const continuationMaxAgeHours = Math.max(
+        Number(result.continuationMaxAgeHours || runContext.continuationMaxAgeHours || 24),
+        waitPolicyHours,
+        1,
+      );
       const continuationAgeExceeded = Number.isFinite(Date.parse(continuationStartedAt))
         && Date.now() - Date.parse(continuationStartedAt) >= continuationMaxAgeHours * 60 * 60 * 1000;
       result.continuationStartedAt = continuationStartedAt;

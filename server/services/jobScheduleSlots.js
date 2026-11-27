@@ -430,11 +430,20 @@ async function expireContinuationSlot(slot, definition, now) {
   if (waiting.exempt) return null;
   const startedAt = Date.parse(summary.continuationStartedAt || '');
   if (!Number.isFinite(startedAt)) return null;
-  const maxAgeHours = Math.max(Number(summary.continuationMaxAgeHours || definition.continuationMaxAgeHours || 24), 1);
-  // 已登记原因但超过该原因的最长等待时限时，按原因时限判定，不再无限延长。
+  // 已登记原因的有效期可以长于通用续批上限（例如选股等待要跨周末与长假）：
+  // 通用 24h 不能在上游正常发布前先把槽停掉；最终仍受该原因自己的硬上限约束。
   const policy = require('./jobRecoveryEvidence').waitReasonPolicy(summary.waitReason, slot.job_code);
-  const reasonExpired = Boolean(policy) && Number(policy.maxWaitHours || 0) > 0
-    && new Date(now).getTime() - startedAt >= Number(policy.maxWaitHours) * 3600000;
+  const policyHours = policy ? Math.max(Number(policy.maxWaitHours || 0), 0) : 0;
+  // 只有显式允许的原因才把通用续批上限延长到自身有效期；其他原因维持原续批止损语义。
+  const extensionHours = policy && policy.extendsContinuationMaxAge ? policyHours : 0;
+  const maxAgeHours = Math.max(
+    Number(summary.continuationMaxAgeHours || definition.continuationMaxAgeHours || 24),
+    extensionHours,
+    1,
+  );
+  // 已登记原因但超过该原因的最长等待时限时，按原因时限判定，不再无限延长。
+  const reasonExpired = Boolean(policy) && policyHours > 0
+    && new Date(now).getTime() - startedAt >= policyHours * 3600000;
   if (!reasonExpired && new Date(now).getTime() - startedAt < maxAgeHours * 3600000) return null;
   const cause = reasonExpired
     ? `等待原因 ${policy.key} 已超过 ${policy.maxWaitHours} 小时有效期限`

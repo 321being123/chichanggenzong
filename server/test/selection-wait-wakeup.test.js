@@ -61,17 +61,19 @@ ok(!/result\.nextAttemptInMinutes \|\| 1/.test(orchestrator), '不得保留"取�
 ok(/waitReason: 'selection_not_ready'/.test(refresh), '未就绪必须登记等待原因');
 ok(/pendingStages: \['selection_period_computation'\]/.test(refresh), '必须声明待完成阶段');
 ok(/remaining: Number\(result\.pendingCount \|\| 0\)/.test(refresh), '必须给出剩余待补数量');
-ok(/nextCheckAt: nextSelectionRecheckAt\(\)/.test(refresh), '必须给出绝对复查时刻');
+ok(/nextCheckAt: result\.nextCheckAt \|\| nextSelectionRecheckAt\(\)/.test(refresh),
+  '必须给出绝对复查时刻（优先采用就绪检查的次日 09:05，缺省才退回通用复查节奏）');
 ok(/waitContext: \{/.test(refresh) && /periodKey: result\.periodKey \|\| context\.periodKey/.test(refresh),
   '必须给出目标市场与周期键');
 
 // ---------- 3. 等待原因必须登记，且只在证据齐备时才算有效等待 ----------
 const policy = waitReasonPolicy('selection_not_ready', 'stock_analysis_refresh');
 ok(policy, '选股等待原因必须已登记');
-eq(policy.maxWaitHours, 24, '选股等待不得超过续批止损时限');
+eq(policy.maxWaitHours, 336, '选股等待硬上限必须覆盖最长休市（14 天），不能在周五/长假前误判止损');
 eq(waitReasonPolicy('selection_not_ready', 'nav_snapshot'), null, '等待原因不得跨任务生效');
 ok(Object.prototype.hasOwnProperty.call(WAIT_REASON_POLICIES, 'selection_not_ready'), '登记表必须显式包含该原因');
 ok(/waitContext/.test(slotsSource), '续批止损摘要必须带上等待目标');
+ok(/waitReasonPolicy/.test(orchestrator), '编排器续批上限必须读取已登记原因的有效期');
 
 const future = '2026-11-10T14:00:00.000Z';
 const waitingSlot = (summary = {}, overrides = {}) => ({
@@ -101,11 +103,38 @@ const missingRemaining = slotWaitingState(waitingSlot({ remaining: undefined }),
 eq(missingRemaining.exempt, false, '缺剩余数量的等待不得豁免止损');
 eq(missingRemaining.kind, 'continuation', '证据不全只能算普通续批');
 
+// 周五 18:30 → 下周一 09:05（约 62.5h）：旧 24h 上限会在上游正常发布前止损，必须保持有效等待。
+const weekendNow = new Date('2026-11-29T04:00:00.000Z'); // 周日 12:00（上海）
+const weekendWait = slotWaitingState(waitingSlot({
+  continuationStartedAt: '2026-11-27T10:30:00.000Z', // 周五 18:30
+  nextAttemptAt: '2026-11-30T01:05:00.000Z', // 周一 09:05
+}, { next_attempt_at: '2026-11-30T01:05:00.000Z' }), weekendNow);
+eq(weekendWait.exempt, true, '周五到周一的跨休市等待必须豁免止损');
+eq(weekendWait.waitReasonExpired, false, '周末等待不得被判为超过有效期限');
+
+// 春节/国庆长假：2026-02-13 18:30 → 2026-02-23 09:05（约 9.6 天），仍在 14 天硬上限内。
+const holidayNow = new Date('2026-02-18T04:00:00.000Z'); // 长假中段
+const holidayWait = slotWaitingState(waitingSlot({
+  continuationStartedAt: '2026-02-13T10:30:00.000Z',
+  nextAttemptAt: '2026-02-23T01:05:00.000Z',
+}, { next_attempt_at: '2026-02-23T01:05:00.000Z' }), holidayNow);
+eq(holidayWait.exempt, true, '长假跨休市等待必须豁免止损');
+eq(holidayWait.waitReasonExpired, false, '长假中段不得被判为超过有效期限');
+
+// 硬上限仍然存在：超过 336h 必须失效，不能变成无限豁免。
 const expired = slotWaitingState(waitingSlot({
-  continuationStartedAt: new Date(now.getTime() - 25 * 3600000).toISOString(),
+  continuationStartedAt: new Date(now.getTime() - 337 * 3600000).toISOString(),
 }), now);
-eq(expired.exempt, false, '超过 24 小时必须失去豁免');
+eq(expired.exempt, false, '超过 336 小时硬上限必须失去豁免');
 eq(expired.waitReasonExpired, true, '超期必须显式可查');
+
+// 编排器按登记原因延长续批上限后，周一 09:05 的绝对复查时间必须被直接采用（不再截到 24h）。
+const weekendAbsolute = resolveContinuationWait({
+  nextCheckAt: '2026-11-30T01:05:00.000Z',
+  continuationMaxAgeHours: policy.maxWaitHours,
+}, { now: new Date('2026-11-27T10:30:00.000Z') });
+eq(weekendAbsolute.rejected, null, '策略上限内的跨周末复查时间必须被采用');
+eq(weekendAbsolute.nextAttemptAt.toISOString(), '2026-11-30T01:05:00.000Z', '跨周末复查不得被截断成 24h');
 
 const notDue = slotWaitingState(waitingSlot({}, { next_attempt_at: '2026-11-10T13:00:00.000Z' }), now);
 eq(notDue.waiting, false, '已到期的等待不再是等待');

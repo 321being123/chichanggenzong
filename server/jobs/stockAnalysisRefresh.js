@@ -217,14 +217,20 @@ async function runSelectionMode(mode, reason, context) {
     }
     const publishedFormal = !shadow && result.published === true;
     const zeroSelection = publishedFormal && Number(result.selectedCount || 0) === 0;
+    // 前置就绪检查未通过（B1-2）：本模式没有计算、没有写批次，只是等待上游分区。
+    // 终态必须显式标 not_ready，不能落成 daily_recorded / weekly_published 的假完成证据。
+    const notReady = result.readinessStatus === 'not_ready';
     // 分区已在服务事务内与指针/事件一起提交；这里只消费提交结果，不再另开事务写第二次。
     const publication = result.datasetPublication || { published: false, reason: 'not_published' };
-    const publicationFailed = (publishedFormal || shadow) && !publication.published;
+    // F-09：未就绪时本来就不会有分区发布，不能把它记成分区写入失败。
+    // 必须先判定 notReady，再判定 publicationFailed；否则影子槽未就绪会被误报 failed。
+    const publicationFailed = !notReady && (publishedFormal || shadow) && !publication.published;
     // 终态：影子只证明"影子评估完成"，正式日结果记 daily_recorded，正式周度按是否零合格分开记。
     const stageCompletedKind = publicationFailed ? 'failed'
-      : shadow ? 'shadow_evaluated'
-        : periodType === 'day' ? 'daily_recorded'
-          : zeroSelection ? 'no_eligible_member' : 'weekly_published';
+      : notReady ? 'not_ready'
+        : shadow ? 'shadow_evaluated'
+          : periodType === 'day' ? 'daily_recorded'
+            : zeroSelection ? 'no_eligible_member' : 'weekly_published';
     // 日结果即使全部通过也不推进 weekly 指针：它只在自己的 day 渠道发布。
     const stageComplete = shadow ? Boolean(publication.published) : publishedFormal && Boolean(publication.published);
     return {
@@ -252,7 +258,9 @@ async function runSelectionMode(mode, reason, context) {
       ...(stageComplete ? {} : {
         continuationRequired: true,
         reason: result.readinessStatus === 'not_ready' ? 'selection_not_ready' : 'selection_not_publishable',
-        nextCheckAt: nextSelectionRecheckAt(),
+        // 未就绪时必须用 Runner 给出的精确复查时刻（默认次日 09:05），不能退回 30 分钟轮询：
+        // 到点只是复查节奏，不等于数据就绪，也不改目标日 T。
+        nextCheckAt: result.nextCheckAt || nextSelectionRecheckAt(),
         pendingStages: ['selection_period_computation'],
         remaining: Number(result.pendingCount || 0),
         waitContext: {
@@ -263,7 +271,15 @@ async function runSelectionMode(mode, reason, context) {
           readinessStatus: result.readinessStatus || null,
         },
         ...(result.readinessStatus === 'not_ready'
-          ? { waitReason: 'selection_not_ready', missingDatasets: [datasetCode], readinessStatus: 'not_ready' }
+          ? {
+            waitReason: 'selection_not_ready',
+            // 精确缺失清单来自就绪检查（上游分区/域）；不再用"selection 数据集未发布"倒推。
+            missingDatasets: Array.isArray(result.missingDatasets) && result.missingDatasets.length
+              ? result.missingDatasets : [datasetCode],
+            missingDomains: Array.isArray(result.missingDomains) ? result.missingDomains : [],
+            readinessStatus: 'not_ready',
+            readinessEvidence: result.readinessEvidence || null,
+          }
           : {}),
       }),
       ...(publicationFailed ? {
@@ -274,14 +290,19 @@ async function runSelectionMode(mode, reason, context) {
         [datasetCode]: {
           partition_row_count: result.selectedCount,
           quality_status: result.qualityStatus,
-          query_status: 'success',
-          coverage_status: shadow ? 'shadow_only' : (publishedFormal ? 'released' : 'preview_only'),
+          query_status: notReady ? 'not_started' : 'success',
+          coverage_status: notReady ? 'not_ready'
+            : shadow ? 'shadow_only' : (publishedFormal ? 'released' : 'preview_only'),
           run_id: result.runId,
           period_type: periodType,
           period_key: result.periodKey,
           is_shadow: shadow,
           published: Boolean(publication && publication.published),
           stage_completed_kind: stageCompletedKind,
+          ...(notReady ? {
+            missing_datasets: result.missingDatasets || [],
+            missing_domains: result.missingDomains || [],
+          } : {}),
         },
       },
       selectionRunId: result.runId,

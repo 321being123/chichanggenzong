@@ -149,10 +149,18 @@ function marketConfig(market) {
   return config;
 }
 
-/** 目标日股票池 + 当日估值/收盘价/停牌/公司关联，单次批量取数。 */
-async function loadUniverse({ market, asOfDate, availableBefore = null }, tx) {
+/**
+ * 目标日股票池 + 当日估值/收盘价/停牌/公司关联，单次批量取数。
+ * `codes` 只给续批定点复核使用：传入时把 WHERE 收窄到这批代码，
+ * 供 stockSelectionService.auditInputsForCodes 做"本批对象规则重算"，
+ * 不改变全市场调用的默认语义（不传即全市场）。
+ */
+async function loadUniverse({ market, asOfDate, availableBefore = null, codes = null }, tx) {
   const config = marketConfig(market);
   const exec = executorOf(tx);
+  const list = Array.isArray(codes) && codes.length
+    ? Array.from(new Set(codes.map(code => String(code || '').trim().toUpperCase()).filter(Boolean)))
+    : null;
   const { rows } = await exec(`
     SELECT i.instrument_id, i.canonical_code AS code, i.name, i.market, i.currency_code,
            i.exchange_code, i.list_date::text AS list_date, i.delist_date::text AS delist_date,
@@ -257,6 +265,8 @@ async function loadUniverse({ market, asOfDate, availableBefore = null }, tx) {
        AND (i.market = 'HK' OR i.exchange_code = ANY($3::text[]))
        AND (i.list_date IS NULL OR i.list_date <= $2::date)
        AND (i.delist_date IS NULL OR i.delist_date > $2::date)
+       -- 续批定点复核：只评估本批对象（$5 为空时保持全市场）。
+       AND ($5::text[] IS NULL OR upper(i.canonical_code) = ANY($5::text[]))
        -- 从未有过任何行情/估值的证券（已退市、已摘牌、吸收合并后残留主档）不构成可评估对象。
        -- 真停牌的历史上一定有成交记录，所以按"有没有过数据"区分，不看名称、也不依赖主档 status 是否已更新。
        AND (EXISTS (SELECT 1 FROM market.daily_bars bx WHERE bx.instrument_id = i.instrument_id)
@@ -267,7 +277,7 @@ async function loadUniverse({ market, asOfDate, availableBefore = null }, tx) {
                    WHERE bt.instrument_id = i.instrument_id
                      AND bt.trade_date <= $2::date
                      AND bt.trade_date > ($2::date - INTERVAL '60 days'))
-     ORDER BY i.canonical_code`, [market, asOfDate, config.exchanges, availableBefore || null]);
+     ORDER BY i.canonical_code`, [market, asOfDate, config.exchanges, availableBefore || null, list]);
   return rows;
 }
 
@@ -390,10 +400,16 @@ async function loadUniverseRoster({ market, asOfDate }, tx) {
  * - 有效日：当天有同口径有效 PB（>0），同一天多来源时按官方优先择一，不跨来源拼值；
  * - gapDays = 应有日 − 有效日：>0 说明未覆盖区间可能藏有 PB>1 正证，只能待补。
  * 日历为空时 gapDays 返回 null（未知），绝不当作"无缺口"。
+ *
+ * `instrumentIds` 只给续批定点复核使用：传入时只统计这批证券的 PB 窗口，
+ * 避免为 20 只标的重算全市场十年序列（全市场默认调用保持原语义）。
  */
-async function loadPbWindow({ market, windowStart, asOfDate }, tx) {
+async function loadPbWindow({ market, windowStart, asOfDate, instrumentIds = null }, tx) {
   const config = marketConfig(market);
   const exec = executorOf(tx);
+  const scopedIds = Array.isArray(instrumentIds) && instrumentIds.length
+    ? Array.from(new Set(instrumentIds.map(id => Number(id)).filter(id => Number.isFinite(id))))
+    : null;
   const detail = await exec(`
     WITH cal AS (
       SELECT trade_date FROM market.trade_calendar
@@ -405,6 +421,7 @@ async function loadPbWindow({ market, windowStart, asOfDate }, tx) {
         FROM core.instruments
        WHERE market = $4 AND asset_class = 'stock'
          AND COALESCE(raw_data->>'identity_backfill', '') <> 'tencent_quote_fund_etf'
+         AND ($5::bigint[] IS NULL OR instrument_id = ANY($5::bigint[]))
     ),
     exempt AS (
       -- 停牌豁免一次性按证券聚合：原实现把它写成 expect 里的相关子查询，
@@ -458,6 +475,7 @@ async function loadPbWindow({ market, windowStart, asOfDate }, tx) {
             JOIN cal c2 ON c2.trade_date = v.trade_date
             LEFT JOIN ops.data_sources s ON s.source_id = v.source_id
            WHERE v.trade_date > $1::date AND v.trade_date <= $2::date
+             AND ($5::bigint[] IS NULL OR v.instrument_id = ANY($5::bigint[]))
              -- 负 PB 是"净资产为负"的真实取值，不是缺失：只排除 NULL（2026-11-04）。
              -- 'NaN' 是 PG NUMERIC 的合法值，但比较恒为 false，必须单独归入 invalid 而不是"缺失"。
              AND v.pb IS NOT NULL
@@ -483,12 +501,7 @@ async function loadPbWindow({ market, windowStart, asOfDate }, tx) {
            c.series_digest, c.series_rows
       FROM expect e
       LEFT JOIN covered c USING (instrument_id)`,
-  [windowStart, asOfDate, config.calendarExchanges, market]);
-  const marketDays = await exec(`
-      SELECT COUNT(DISTINCT v.trade_date)::int AS market_days
-        FROM market.daily_valuations v
-        JOIN core.instruments i ON i.instrument_id = v.instrument_id
-       WHERE i.market = $1 AND v.trade_date > $2::date AND v.trade_date <= $3::date`, [market, windowStart, asOfDate]);
+  [windowStart, asOfDate, config.calendarExchanges, market, scopedIds]);
   const calendarDays = await exec(`
       SELECT COUNT(*)::int AS calendar_days
         FROM market.trade_calendar
@@ -496,6 +509,21 @@ async function loadPbWindow({ market, windowStart, asOfDate }, tx) {
          AND COALESCE(is_open, true) = true`,
   [config.calendarExchanges, windowStart, asOfDate]);
   const calendarCount = Number((calendarDays.rows[0] || {}).calendar_days || 0);
+  // F-08：定点复核（scopedIds 非空）只算本批证券，绝不能为了一个市场级证据字段
+  // 再去扫全市场十年 market.daily_valuations（隔离库实测输入约 18.1 万行）。
+  // marketDays 只用于证据展示、不参与任何规则判定；收窄模式直接复用已核验的交易日历分母，
+  // 保证与全市场审计对同一证券的规则结论、逐字段证据完全一致。
+  let marketDayCount;
+  if (scopedIds) {
+    marketDayCount = calendarCount;
+  } else {
+    const marketDays = await exec(`
+      SELECT COUNT(DISTINCT v.trade_date)::int AS market_days
+        FROM market.daily_valuations v
+        JOIN core.instruments i ON i.instrument_id = v.instrument_id
+       WHERE i.market = $1 AND v.trade_date > $2::date AND v.trade_date <= $3::date`, [market, windowStart, asOfDate]);
+    marketDayCount = Number((marketDays.rows[0] || {}).market_days || 0);
+  }
   const byInstrument = new Map();
   detail.rows.forEach(row => {
     const expectedDays = Number(row.expected_days || 0);
@@ -539,7 +567,7 @@ async function loadPbWindow({ market, windowStart, asOfDate }, tx) {
   });
   return {
     byInstrument,
-    marketDays: Number((marketDays.rows[0] || {}).market_days || 0),
+    marketDays: marketDayCount,
     calendarDays: calendarCount,
   };
 }
@@ -2510,6 +2538,76 @@ async function listCodesWithRecentBars({ codes = [], asOfDate, days = 60 }, tx) 
 }
 
 /**
+ * 港股目标日上游覆盖证据（B1-2 前置就绪检查）。
+ * 只读目标日 T 的港股行情/估值覆盖与 HKD→CNY 汇率水位，不借用 A 股分区：
+ * 港股与 A 股日历、开市日和采集窗口各自独立，拿 CN 分区做前提会让港股独立开市日永远 not_ready。
+ *
+ * 覆盖必须按**同一证券**双齐判定（F-07）：目标池 = 在册且近 60 日有行情的港股可评估池，
+ * 排除目标日 asOfDate 停牌（suspend_type='S'）的证券；只有同一证券在 T 日同时具备
+ * 有效行情（daily_bars.close 非空）与有效估值（daily_valuations.pb 非空）才算覆盖。
+ * 全池任一证券缺任一侧都回传 missingCoverageCount，禁止"两条记录各有 1 条"就提前放行。
+ */
+async function loadHkPeriodReadiness({ asOfDate }, tx) {
+  if (!asOfDate) {
+    return {
+      targetCount: 0, bothReadyCount: 0, missingBarCount: 0,
+      missingValuationCount: 0, missingCoverageCount: 0, fxDate: null,
+    };
+  }
+  const exec = executorOf(tx);
+  const { rows } = await exec(`
+    WITH target AS (
+      SELECT i.instrument_id
+        FROM core.instruments i
+       WHERE i.market = 'HK' AND i.asset_class = 'stock'
+         AND COALESCE(i.raw_data->>'identity_backfill', '') <> 'tencent_quote_fund_etf'
+         AND (i.list_date IS NULL OR i.list_date <= $1::date)
+         AND (i.delist_date IS NULL OR i.delist_date > $1::date)
+         AND EXISTS (SELECT 1 FROM market.daily_bars bt
+                      WHERE bt.instrument_id = i.instrument_id
+                        AND bt.trade_date <= $1::date
+                        AND bt.trade_date > ($1::date - INTERVAL '60 days'))
+         AND NOT EXISTS (SELECT 1 FROM market.stock_suspend_calendar sc
+                          WHERE sc.instrument_id = i.instrument_id
+                            AND sc.trade_date = $1::date AND sc.suspend_type = 'S')
+    ),
+    bar_ready AS (
+      SELECT DISTINCT b.instrument_id
+        FROM market.daily_bars b
+       WHERE b.trade_date = $1::date AND b.close IS NOT NULL
+    ),
+    valuation_ready AS (
+      SELECT DISTINCT v.instrument_id
+        FROM market.daily_valuations v
+       WHERE v.trade_date = $1::date AND v.pb IS NOT NULL
+    )
+    SELECT
+      COUNT(*)::int AS target_count,
+      COUNT(*) FILTER (WHERE b.instrument_id IS NOT NULL AND v.instrument_id IS NOT NULL)::int AS both_ready_count,
+      COUNT(*) FILTER (WHERE b.instrument_id IS NULL)::int AS missing_bar_count,
+      COUNT(*) FILTER (WHERE v.instrument_id IS NULL)::int AS missing_valuation_count,
+      (SELECT MAX(f.rate_date)::text
+         FROM market.fx_rates f
+        WHERE f.base_currency = 'HKD' AND f.quote_currency = 'CNY' AND f.rate_date <= $1::date) AS fx_date
+      FROM target t
+      LEFT JOIN bar_ready b USING (instrument_id)
+      LEFT JOIN valuation_ready v USING (instrument_id)`,
+  [asOfDate]);
+  const row = rows[0] || {};
+  const targetCount = Number(row.target_count || 0);
+  const bothReadyCount = Number(row.both_ready_count || 0);
+  return {
+    targetCount,
+    bothReadyCount,
+    missingBarCount: Number(row.missing_bar_count || 0),
+    missingValuationCount: Number(row.missing_valuation_count || 0),
+    // 双齐缺口 = 目标池证券数 − 同证券双齐数（同一证券同时缺两侧时只算 1 个覆盖缺口）。
+    missingCoverageCount: Math.max(targetCount - bothReadyCount, 0),
+    fxDate: row.fx_date ? String(row.fx_date).slice(0, 10) : null,
+  };
+}
+
+/**
  * 港股选股补估值：批量按 (instrument_id, trade_date, source_id) 幂等写入。
  * 行由数据层给出标准字段（total_market_cap 已是元、dividend_yield_ttm 已是小数），
  * 这里只负责落库，不做单位换算与口径判断；币种必须随行写入，避免 HKD 被当成人民币。
@@ -2820,6 +2918,6 @@ module.exports = {
   findStockSelectionRequestBinding, bindStockSelectionRequest,
   resolveInstrumentsByCodes, listIndustryOptions,
   saveInputGapQueue, readInputGapQueue, findInstrumentMeta, hasCompletedQuarterRun,
-  upsertDailyValuationRows, upsertDailyBarRows, listCodesWithRecentBars,
+  upsertDailyValuationRows, upsertDailyBarRows, listCodesWithRecentBars, loadHkPeriodReadiness,
   insertBacktest, insertBacktestPeriods, findBacktest, listBacktestPeriods, listBacktests, previousPublishedRun, previousPublishedMembers, previousPersonalRun, previousPersonalMembers,
 };

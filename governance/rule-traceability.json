@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "lastReviewed": "2026-11-26",
+  "lastReviewed": "2026-11-27",
   "rules": [
     {
       "id": "BOND-RATING-ISSUER-ONLY-001",
@@ -6524,6 +6524,154 @@
         }
       ],
       "owner": "CodeBuddy",
+      "status": "local_verified"
+    },
+    {
+      "id": "SEL-QUEUE-IDENTITY-001",
+      "title": "选股缺口续批必须绑定四维队列身份，同身份不跑全市场审计，剩余清零前强制全市场终审且终审新缺口不得报完成",
+      "implementation": {
+        "file": "server/services/stockSelectionInputsSync.js",
+        "symbol": "syncSelectionInputs"
+      },
+      "tests": [
+        {
+          "file": "server/test/stock-selection-inputs-queue-batch.test.js",
+          "pattern": "同身份续批批前不得再跑全市场审计"
+        },
+        {
+          "file": "server/test/stock-selection-inputs-queue-batch.test.js",
+          "pattern": "终审发现新缺口时必须保持 partial"
+        }
+      ],
+      "owner": "投资策略选股中心",
+      "status": "local_verified"
+    },
+    {
+      "id": "SEL-READINESS-PRECHECK-001",
+      "title": "日周选股槽在计算前必须按本市场目标日已发布分区/港股覆盖与汇率证据判定就绪，未就绪不执行全市场计算且不写 partial 试算批次",
+      "implementation": {
+        "file": "server/services/stockSelectionReadiness.js",
+        "symbol": "assessPeriodReadiness"
+      },
+      "tests": [
+        {
+          "file": "server/test/stock-selection-period-readiness.test.js",
+          "pattern": "未就绪时不得执行全市场 computeSelection"
+        },
+        {
+          "file": "server/test/stock-selection-period-readiness.test.js",
+          "pattern": "港股就绪不得读取 A 股分区"
+        },
+        {
+          "file": "server/test/stock-selection-period-readiness.test.js",
+          "pattern": "行情与估值分属不同证券时不得就绪"
+        },
+        {
+          "file": "server/test/stock-selection-period-readiness.test.js",
+          "pattern": "目标池仍有 1 只未双齐时必须 not_ready"
+        },
+        {
+          "file": "server/test/stock-selection-readiness-db.test.js",
+          "pattern": "证券 A 仅有行情、证券 B 仅有估值时必须 not_ready"
+        },
+        {
+          "file": "server/test/stock-selection-readiness-db.test.js",
+          "pattern": "港股目标池同证券双齐且汇率有效时必须就绪"
+        },
+        {
+          "file": "server/test/stock-selection-period-readiness.test.js",
+          "pattern": "影子槽未就绪必须返回 partial"
+        }
+      ],
+      "owner": "投资策略选股中心",
+      "status": "local_verified"
+    },
+    {
+      "id": "SEL-TARGETED-REAUDIT-001",
+      "title": "续批定点复核的规则结论必须与全市场审计对同一证券逐字段一致，否则不得原地删除缺口",
+      "implementation": {
+        "file": "server/services/stockSelectionService.js",
+        "symbol": "auditInputsForCodes"
+      },
+      "tests": [
+        {
+          "file": "server/test/stock-selection-targeted-reaudit.test.js",
+          "pattern": "定点复核的规则结论必须与全市场审计逐字段一致"
+        },
+        {
+          "file": "server/test/stock-selection-readiness-db.test.js",
+          "pattern": "loadUniverse 收窄结果必须与全市场逐字段一致"
+        },
+        {
+          "file": "server/test/stock-selection-readiness-db.test.js",
+          "pattern": "定点复核不得触发全市场估值交易日聚合"
+        }
+      ],
+      "owner": "投资策略选股中心",
+      "status": "local_verified"
+    },
+    {
+      "id": "SEL-FINAL-AUDIT-SKIP-001",
+      "title": "批前全审已零缺口且本批未处理标的时不得重复全市场终审；增量续批或本批处理后清零仍必须终审",
+      "implementation": {
+        "file": "server/services/stockSelectionInputsSync.js",
+        "symbol": "syncSelectionInputs"
+      },
+      "tests": [
+        {
+          "file": "server/test/stock-selection-inputs-queue-batch.test.js",
+          "pattern": "首次建队 0 缺口只允许批前一次全市场审计"
+        },
+        {
+          "file": "server/test/stock-selection-inputs-queue-batch.test.js",
+          "pattern": "增量续批清零仍必须跑一次全市场终审"
+        },
+        {
+          "file": "server/test/stock-selection-inputs-queue-batch.test.js",
+          "pattern": "低磁盘同身份空队列不得报告完成"
+        }
+      ],
+      "owner": "投资策略选股中心",
+      "status": "local_verified"
+    },
+    {
+      "id": "SEL-BATCH-QUOTA-001",
+      "title": "续批行业/财报/港股估值必须共享同一批证券配额，去重后本批证券数不得超过 batchLimit",
+      "implementation": {
+        "file": "server/services/stockSelectionInputsSync.js",
+        "symbol": "takeWithinLimit"
+      },
+      "tests": [
+        {
+          "file": "server/test/stock-selection-inputs-queue-batch.test.js",
+          "pattern": "行业缺口与财报缺口分属不同证券时，batchLimit=1 只能处理 1 只证券"
+        }
+      ],
+      "owner": "投资策略选股中心",
+      "status": "local_verified"
+    },
+    {
+      "id": "SEL-WAIT-CALENDAR-001",
+      "title": "选股未就绪复查必须跳到本市场下一交易日 09:05，证据等待硬上限覆盖周末与长假且超期止损",
+      "implementation": {
+        "file": "server/services/stockSelectionReadiness.js",
+        "symbol": "nextDailyRecheckAt"
+      },
+      "tests": [
+        {
+          "file": "server/test/stock-selection-period-readiness.test.js",
+          "pattern": "周五 18:30 未就绪必须跳到下周一 09:05"
+        },
+        {
+          "file": "server/test/selection-wait-wakeup.test.js",
+          "pattern": "长假跨休市等待必须豁免止损"
+        },
+        {
+          "file": "server/test/selection-wait-wakeup.test.js",
+          "pattern": "超过 336 小时硬上限必须失去豁免"
+        }
+      ],
+      "owner": "任务治理",
       "status": "local_verified"
     }
   ]

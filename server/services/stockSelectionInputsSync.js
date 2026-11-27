@@ -71,6 +71,13 @@ function classifyGaps(gaps) {
   return { fundamental, financial: fundamental, industry, valuation, unclassified };
 }
 
+function domainCountsOfGaps(gaps) {
+  return (gaps || []).reduce((acc, gap) => {
+    (Array.isArray(gap.domains) ? gap.domains : []).forEach(domain => { acc[domain] = (acc[domain] || 0) + 1; });
+    return acc;
+  }, {});
+}
+
 /**
  * 批次公平的顺序（R4-02）：按"累计被尝试次数"升序排队，同一次数内上次失败/无进展的排后，再按审计原序。
  * 只把"上一批失败的对象"挪到队尾是不够的——每轮只保存本批集合会让更早的尝试记录丢失，
@@ -144,7 +151,7 @@ function collectionWindowOf(gap, asOfDate) {
  * 港股与 A 股走同一条链路，只在数据层内部按代码后缀选择官方端点（见 lixingerDatasetAdapter）。
  * `deps` 只给回归测试注入数据层/仓储替身，生产调用保持默认实现。
  */
-async function collectOne(gap, asOfDate, runContext = null, deps = {}) {
+async function collectOne(gap, asOfDate, runContext = null, deps = {}, timing = null) {
   const readMetaFn = deps.readMeta || readMeta;
   const persist = deps.persist || persistCollectedData;
   const meta = await readMetaFn(gap.code);
@@ -193,6 +200,7 @@ async function collectOne(gap, asOfDate, runContext = null, deps = {}) {
     // 官方返回空 = 本次没有可入库的新事实；不能当成"已补齐"，也不覆盖旧数据。
     return { code: gap.code, ok: false, reason: 'source_returned_empty', dividendCoverage };
   }
+  const persistStartedAt = Date.now();
   await persist({
     ts_code: meta.ts_code,
     name: meta.name,
@@ -209,6 +217,7 @@ async function collectOne(gap, asOfDate, runContext = null, deps = {}) {
       targetRange: { market: meta.market, asOfDate },
     },
   }, bundle);
+  if (timing) timing.persistMs = (timing.persistMs || 0) + (Date.now() - persistStartedAt);
   if (dividendCoverage && dividendCoverage.complete === true && /\.HK$/i.test(String(meta.ts_code || ''))) {
     const { datasetScope, markDatasetSuccess } = require('./datasetCursors');
     await markDatasetSuccess(datasetScope('hk', meta.ts_code), 'dividends', {
@@ -270,7 +279,7 @@ async function collectIndustryOne(gap, market) {
  * 标准层统一为小数股息率与「元」总市值，币种随行写入 HKD。
  * 官方分段取数部分失败时，已取到的行照常落库，剩余区间留给下一批，不用空值覆盖旧行。
  */
-async function collectHkMarketData(gap, asOfDate) {
+async function collectHkMarketData(gap, asOfDate, timing = null) {
   const meta = await readMeta(gap.code);
   if (!meta) return { code: gap.code, ok: false, reason: 'instrument_missing' };
   const instrumentId = meta.instrument_id === null || meta.instrument_id === undefined ? null : Number(meta.instrument_id);
@@ -311,14 +320,18 @@ async function collectHkMarketData(gap, asOfDate) {
       currencyCode: row.currency || meta.currency_code || 'HKD',
     };
   }).filter(row => row.tradeDate);
+  const valuationWriteStartedAt = Date.now();
   const valuationWritten = await repo.upsertDailyValuationRows({ rows: valuations, sourceId: officialId });
+  if (timing) timing.persistMs = (timing.persistMs || 0) + (Date.now() - valuationWriteStartedAt);
 
   const rawBars = await readStockDailySeries({
     tsCode: meta.ts_code, startDate: priceStart, endDate: asOfDate, market: 'hk',
   });
+  const barWriteStartedAt = Date.now();
   const barWritten = await writeHkBars({
     rawBars, instrumentId, sources, officialId,
   });
+  if (timing) timing.persistMs = (timing.persistMs || 0) + (Date.now() - barWriteStartedAt);
 
   const ok = valuationWritten > 0 || barWritten > 0;
   return {
@@ -554,9 +567,63 @@ async function syncHkTargetPoolBars({ asOfDate, maxCodes } = {}) {
 }
 
 /**
+ * 缺口队列的四维身份（B1-1）：market / asOfDate / strategyCode / inputVersion。
+ * inputVersion 冻结当日股票池 artifact 内容哈希、策略与公式版本、港股目标池指纹——
+ * 任一变化都说明"队列对应的计算输入已经不是同一件事"，必须批前重审；
+ * 身份不变时续批直接消费冻结队列，不再每批跑两遍全市场审计。
+ */
+function hashJson(value) {
+  return require('crypto').createHash('sha256').update(JSON.stringify(value)).digest('hex');
+}
+
+function strategyParamsOf(strategyCode) {
+  if (strategyCode === 'investment_essentials_adapted_v2') return require('../domain/stockSelectionRulesV2').V2_PARAMS;
+  if (strategyCode === 'graham_net_net_v1') return require('../domain/stockSelectionGrahamRules').GRAHAM_PARAMS;
+  return require('../domain/stockSelectionRules').DEFAULT_PARAMS;
+}
+
+async function resolveQueueIdentity({ market, asOfDate, strategyCode, targetSetHash = null }) {
+  let universeContentHash = null;
+  try {
+    const artifact = await repo.findUniverseArtifact({ market, targetDate: asOfDate });
+    universeContentHash = artifact ? artifact.content_hash || null : null;
+  } catch (_) { universeContentHash = null; }
+  const code = strategyCode || require('./stockSelectionService').DEFAULT_STRATEGY_CODE || 'default';
+  const params = strategyParamsOf(code);
+  return {
+    market,
+    asOfDate,
+    strategyCode: code,
+    inputVersion: hashJson({
+      universeContentHash,
+      strategyCode: code,
+      formulaVersion: (params && params.formulaVersion) || null,
+      params: params || null,
+      targetSetHash: targetSetHash || null,
+    }),
+  };
+}
+
+function sameQueueIdentity(left, right) {
+  if (!left || !right) return false;
+  return String(left.market || '') === String(right.market || '')
+    && String(left.asOfDate || '') === String(right.asOfDate || '')
+    && String(left.strategyCode || '') === String(right.strategyCode || '')
+    && String(left.inputVersion || '') === String(right.inputVersion || '');
+}
+
+function emptyTiming() {
+  return { targetPoolMs: 0, auditMs: 0, fetchMs: 0, persistMs: 0, targetedReauditMs: 0, finalAuditMs: 0 };
+}
+
+async function measure(timing, key, task) {
+  const startedAt = Date.now();
+  try { return await task(); } finally { timing[key] = (timing[key] || 0) + (Date.now() - startedAt); }
+}
+
+/**
  * 执行一次选股输入补齐。
- * @param {{market:'CN'|'HK', asOfDate:string, batchLimit?:number}} input
- * @param {{targetPool?:{codes:string[]}}} [options]
+ * @param {{market:'CN'|'HK', asOfDate:string, batchLimit?:number, strategyCode?:string, forceFullAudit?:boolean}} input
  */
 async function syncSelectionInputs(input) {
   const service = require('./stockSelectionService');
@@ -574,15 +641,20 @@ async function syncSelectionInputs(input) {
   }
   const limit = Number.isFinite(Number(input.batchLimit)) && Number(input.batchLimit) > 0
     ? Math.floor(Number(input.batchLimit)) : 20;
+  const strategyCode = input.strategyCode ? String(input.strategyCode).toLowerCase() : null;
+  const timing = emptyTiming();
   // 上一次的续跑进度必须在审计**之前**读取（R3-02）：auditInputs 会把同一市场的
   // cursor_payload 整体替换掉（它只写本次审计结果），若在审计后再读，
   // 拿到的永远是刚被清空 lastRun 的新记录，失败轮转等于从未生效，
   // 全市场批次会被固定的失败前缀反复占满、后面的股票永远轮不到。
   let previouslyFailed = new Set();
   let priorAttempts = {};
+  let priorPayload = {};
   try {
     const lastQueue = await repo.readInputGapQueue({ market });
-    const lastRun = (lastQueue && lastQueue.cursor_payload && lastQueue.cursor_payload.lastRun) || {};
+    priorPayload = (lastQueue && lastQueue.cursor_payload && typeof lastQueue.cursor_payload === 'object')
+      ? lastQueue.cursor_payload : {};
+    const lastRun = (priorPayload && priorPayload.lastRun) || {};
     // failedCodes = 本次失败；deferredCodes = 返回了结果但缺口仍未解除（无进展也不能占着队首）。
     previouslyFailed = new Set([...(lastRun.failedCodes || []), ...(lastRun.deferredCodes || [])]);
     // attempts 是跨批次的尝试计数（R4-02）：只记上一批的失败会把更早的尝试记录丢掉。
@@ -601,32 +673,77 @@ async function syncSelectionInputs(input) {
   let targetPool = null;
   if (market === 'HK' && !historySuspended) {
     try {
-      targetPool = await syncHkTargetPoolBars({ asOfDate, maxCodes: limit });
+      targetPool = await measure(timing, 'targetPoolMs', () => syncHkTargetPoolBars({ asOfDate, maxCodes: limit }));
     } catch (error) {
       targetPool = { targetCount: 0, pending: 0, processed: 0, succeeded: 0, reason: 'target_pool_bars_failed', error: String(error.message || error).slice(0, 320) };
     }
   }
-  const audit = await service.auditInputs({ market, asOfDate });
-  const { financial: fundamental, industry, valuation, unclassified } = classifyGaps(audit.gaps || []);
+  // 队列身份（B1-1）：只有"没有冻结队列 / 四维身份变化 / 队列被标为需重审 / 显式强制全审"
+  // 才批前跑一次全市场 auditInputs 重建队列；同身份续批直接消费冻结队列，批前零全市场扫描。
+  const targetSetHash = targetPool ? (targetPool.targetSetHash || null) : null;
+  const priorIdentity = priorPayload.queueIdentity || null;
+  const identityBefore = await resolveQueueIdentity({ market, asOfDate, strategyCode, targetSetHash });
+  const hasFrozenQueue = Array.isArray(priorPayload.gaps);
+  const identityChanged = !sameQueueIdentity(priorIdentity, identityBefore);
+  const forceFullAudit = input.forceFullAudit === true || input.forceAudit === true;
+  const preAuditRequired = forceFullAudit || !hasFrozenQueue || priorPayload.needsReaudit === true || identityChanged;
+  let auditMode = 'incremental';
+  let queueGaps;
+  let queueCoverage = priorPayload.coverage || null;
+  let queueQuality = priorPayload.quality || null;
+  let queueUniverseCount = priorPayload.universeCount === undefined ? null : priorPayload.universeCount;
+  let frozenIdentity = identityBefore;
+  if (preAuditRequired) {
+    const audit = await measure(timing, 'auditMs', () => service.auditInputs({
+      market, asOfDate, strategyCode: strategyCode || undefined,
+    }));
+    queueGaps = Array.isArray(audit.gaps) ? audit.gaps : [];
+    queueCoverage = audit.coverage || queueCoverage;
+    queueQuality = audit.quality || queueQuality;
+    queueUniverseCount = audit.coverage ? audit.coverage.universeCount : queueUniverseCount;
+    auditMode = 'full';
+    // 全市场审计可能首次固化当日 artifact：身份必须按审计后的输入重算，否则下次续批
+    // 会把"artifact 从无到有"当成身份变化、每次重新全审。
+    frozenIdentity = await resolveQueueIdentity({ market, asOfDate, strategyCode, targetSetHash });
+  } else {
+    // 冻结队列原样消费（深拷贝避免原地修改上一份载荷）。
+    queueGaps = JSON.parse(JSON.stringify(priorPayload.gaps));
+  }
+  const { financial: fundamental, industry, valuation, unclassified } = classifyGaps(queueGaps);
   const industryQueue = orderByAttempts(industry, priorAttempts, previouslyFailed);
   const fundamentalQueue = orderByAttempts(fundamental, priorAttempts, previouslyFailed);
+  // 统一批次配额（F-08）：行业优先占额，剩余名额依次分配给财报与港股估值。
+  // 同一只证券即使同时命中多个域也只占 1 个证券名额（各域仍各自取数），
+  // 保证最终去重后的本批处理证券数不超过 batchLimit，而不是每个域各自 slice(0, limit)。
+  const batchCodes = new Set();
+  const takeWithinLimit = queue => {
+    const picked = [];
+    for (const gap of queue) {
+      const key = String(gap.code || '').toUpperCase();
+      if (batchCodes.has(key)) { picked.push(gap); continue; }
+      if (batchCodes.size >= limit) continue;
+      batchCodes.add(key);
+      picked.push(gap);
+    }
+    return picked;
+  };
   // 行业分类先补：一次取数就能补齐一条完整路径，成本低，且它是"能否发布正式组合"的阻断项，
   // 不能被财报批次挤掉。
-  const industryBatch = historySuspended ? [] : industryQueue.slice(0, limit);
+  const industryBatch = historySuspended ? [] : takeWithinLimit(industryQueue);
   const industryResults = [];
   for (const gap of industryBatch) {
     try {
-      industryResults.push(await collectIndustryOne(gap, market));
+      industryResults.push(await measure(timing, 'fetchMs', () => collectIndustryOne(gap, market)));
     } catch (error) {
       industryResults.push({ code: gap.code, ok: false, reason: 'industry_collect_failed', error: String(error.message || error).slice(0, 320) });
     }
   }
-  const batch = historySuspended ? [] : fundamentalQueue.slice(0, limit);
+  const batch = historySuspended ? [] : takeWithinLimit(fundamentalQueue);
   const results = [];
   const runContext = input.runContext && typeof input.runContext === 'object' ? input.runContext : null;
   for (const gap of batch) {
     try {
-      results.push(await collectOne(gap, asOfDate, runContext));
+      results.push(await measure(timing, 'fetchMs', () => collectOne(gap, asOfDate, runContext, {}, timing)));
     } catch (error) {
       // 单只失败不阻断整批：失败原因留在结果里，剩余对象继续等下一次续跑。
       results.push({ code: gap.code, ok: false, reason: 'collect_failed', error: String(error.message || error).slice(0, 320) });
@@ -634,19 +751,45 @@ async function syncSelectionInputs(input) {
   }
   // 港股估值/收盘价：A 股有共享行情任务，港股没有，缺口会永远悬着（2026-11-05 生产实证：
   // 港股 daily_valuations 全历史 0 行）。因此只在港股补，A 股的 valuation 缺口仍如实记为剩余。
-  const valuationBatch = (historySuspended || market !== 'HK') ? [] : orderByAttempts(valuation, priorAttempts, previouslyFailed).slice(0, limit);
+  const valuationBatch = (historySuspended || market !== 'HK') ? [] : takeWithinLimit(orderByAttempts(valuation, priorAttempts, previouslyFailed));
   const valuationResults = [];
   for (const gap of valuationBatch) {
     try {
-      valuationResults.push(await collectHkMarketData(gap, asOfDate));
+      valuationResults.push(await measure(timing, 'fetchMs', () => collectHkMarketData(gap, asOfDate, timing)));
     } catch (error) {
       valuationResults.push({ code: gap.code, ok: false, reason: 'valuation_collect_failed', error: String(error.message || error).slice(0, 320) });
     }
   }
   const attempted = results.concat(industryResults, valuationResults);
-  // 重新审计：剩余量以"补完后仍待补"为准，不用本批处理数冒充完成。
-  const after = await service.auditInputs({ market, asOfDate });
-  const remaining = classifyGaps(after.gaps || []);
+  const attemptedCodes = [...new Set(attempted.map(item => item.code))];
+  // 续批定点复核（B1-1）：只对本批对象重读事实与规则，不再跑全市场 auditInputs。
+  // 只有"本批对象仍在可评估池"时才能用复核结论删除缺口；不在池内的代码
+  // （例如港股尚未补到行情、loadUniverse 分母里没有它）必须保留原缺口，不能当成已补齐。
+  let targeted = { gaps: [], evaluatedCodes: [] };
+  let targetedFailed = false;
+  if (attemptedCodes.length) {
+    try {
+      targeted = await measure(timing, 'targetedReauditMs', () => service.auditInputsForCodes({
+        market, asOfDate, strategyCode: strategyCode || undefined, codes: attemptedCodes,
+      })) || { gaps: [], evaluatedCodes: [] };
+    } catch (error) {
+      targetedFailed = true;
+      targeted = { gaps: [], evaluatedCodes: [], error: String(error.message || error).slice(0, 320) };
+    }
+  }
+  const evaluatedCodes = new Set((targeted.evaluatedCodes || []).map(code => String(code || '').toUpperCase()));
+  const targetedGapByCode = new Map((targeted.gaps || []).map(gap => [String(gap.code || '').toUpperCase(), gap]));
+  // 原地合并：已核实解除 → 删除；仍有缺口 → 用定点复核结果替换；无法评估 → 保留原项。
+  const mergedGaps = new Map(queueGaps.map(gap => [String(gap.code || '').toUpperCase(), gap]));
+  if (!targetedFailed) {
+    for (const code of attemptedCodes) {
+      const key = String(code || '').toUpperCase();
+      const refreshed = targetedGapByCode.get(key);
+      if (refreshed) mergedGaps.set(key, refreshed);
+      else if (evaluatedCodes.has(key)) mergedGaps.delete(key);
+    }
+  }
+  let queueAfter = Array.from(mergedGaps.values());
   // 目标池批后复核（F05）。
   // 修复前完成判定只数 auditInputs 的缺口，而 auditInputs 的分母是 loadUniverse（只含近 60 天
   // 有行情的证券）：目标池里"还没补到行情"的股票根本不在分母里，于是 3 只目标只处理 1 只也能
@@ -662,32 +805,93 @@ async function syncSelectionInputs(input) {
   const targetPoolUnaudited = market === 'HK' && !targetPool;
   const targetPoolIncomplete = targetPoolSourceFailed || targetPoolPending > 0
     || targetPoolUnaudited || Boolean(targetPoolAfter && targetPoolAfter.error);
+  let remaining = classifyGaps(queueAfter);
+  let blockingRemaining = remaining.fundamental.length + remaining.industry.length
+    + remaining.valuation.length + remaining.unclassified.length;
+  // 清零门禁（B1-1）：原地更新后剩余量归零，只是"本批看到的队列"归零。
+  // 宣告 cleared 之前必须跑一次完整全市场 auditInputs 终审；终审发现新缺口就回写最新队列并保持 partial，
+  // 绝不凭局部计数误报完成。唯一例外是批前刚做过全市场全审且本批 0 标的（见下）。
+  let finalAudit = null;
+  let finalAuditFailed = false;
+  // 批前刚做过全市场全审、且本批没有处理任何标的时，队列内容就是那次全审的结论；
+  // 0 变更下再跑一遍全市场终审没有新信息，只会白扫一遍全市场（B1-1 基线单次约 197s）。
+  // 反向条件必须保留：增量续批（批前未全审）或本批改动过数据后剩余归零时，终审仍是完成前提。
+  const finalAuditCoveredByPreAudit = auditMode === 'full' && attemptedCodes.length === 0;
+  let queueCoverageFinal = queueCoverage;
+  let queueQualityFinal = queueQuality;
+  let queueUniverseCountFinal = queueUniverseCount;
+  if (!finalAuditCoveredByPreAudit
+      && blockingRemaining === 0 && !targetPoolIncomplete && !targetedFailed && !historySuspended) {
+    try {
+      finalAudit = await measure(timing, 'finalAuditMs', () => service.auditInputs({
+        market, asOfDate, strategyCode: strategyCode || undefined,
+      }));
+      queueAfter = Array.isArray(finalAudit.gaps) ? finalAudit.gaps : [];
+      queueCoverageFinal = finalAudit.coverage || queueCoverageFinal;
+      queueQualityFinal = finalAudit.quality || queueQualityFinal;
+      queueUniverseCountFinal = finalAudit.coverage ? finalAudit.coverage.universeCount : queueUniverseCountFinal;
+      remaining = classifyGaps(queueAfter);
+      blockingRemaining = remaining.fundamental.length + remaining.industry.length
+        + remaining.valuation.length + remaining.unclassified.length;
+    } catch (error) {
+      // 终审失败无法证明"全市场已清零"：不能报完成，保留队列等待下一次续批。
+      finalAuditFailed = true;
+      finalAudit = { error: String(error.message || error).slice(0, 320) };
+    }
+  }
   const failedResults = attempted.filter(item => !item.ok);
-  const remainingCodes = new Set((after.gaps || []).map(gap => gap.code));
+  const remainingCodes = new Set(queueAfter.map(gap => String(gap.code || '').toUpperCase()));
   const failedCodes = failedResults.map(item => item.code);
   // 本批"跑完了但缺口仍未解除"的对象同样要排到队尾（R3-02）：只轮转抛错对象时，
   // 一批"能返回数据但补不齐"的股票会稳稳占住队首，后面的对象永远轮不到。
   const deferredCodes = [...new Set(attempted
     .map(item => item.code)
-    .filter(code => remainingCodes.has(code) && !failedCodes.includes(code)))];
+    .filter(code => remainingCodes.has(String(code || '').toUpperCase()) && !failedCodes.includes(code)))];
   // 本批被尝试过的对象都要累加计数（不论成功与否）：这是"谁还没轮到"的唯一依据。
   const nextAttempts = Object.assign({}, priorAttempts);
   attempted.forEach(item => {
     nextAttempts[item.code] = Number(nextAttempts[item.code] || 0) + 1;
   });
-  // 队列里同时保留：补齐摘要 + 补齐后仍待补的对象明细（明细来自重新审计，不是本批结果倒推）。
+  // 本批实际解除的队列缺口数：批前有缺口、批后权威队列里已不存在。
+  const queueCodesBefore = new Set(queueGaps.map(gap => String(gap.code || '').toUpperCase()));
+  const queueGapsCleared = attemptedCodes
+    .filter(code => queueCodesBefore.has(String(code || '').toUpperCase()) && !remainingCodes.has(String(code || '').toUpperCase()))
+    .length;
+  // 队列里同时保留：补齐摘要 + 补齐后仍待补的对象明细（明细来自定点复核/终审，不是本批结果倒推）。
   const queuePayload = {
     market,
     asOfDate,
     generatedAt: new Date().toISOString(),
-    universeCount: after.coverage ? after.coverage.universeCount : null,
-    gapCount: (after.gaps || []).length,
-    domainCounts: after.domainCounts || {},
-    coverage: after.coverage,
-    quality: after.quality,
-    gaps: after.gaps || [],
+    // 冻结队列身份：下次续批据四维键判断能否直接消费本队列。
+    queueIdentity: frozenIdentity,
+    // 本批复核失败/终审失败时置位：下次批前强制全市场重审，避免用过期队列继续续批。
+    needsReaudit: Boolean(targetedFailed || finalAuditFailed || priorPayload.needsReaudit === true && auditMode !== 'full'),
+    auditMode,
+    universeCount: queueUniverseCountFinal,
+    gapCount: queueAfter.length,
+    domainCounts: domainCountsOfGaps(queueAfter),
+    coverage: queueCoverageFinal,
+    quality: queueQualityFinal,
+    gaps: queueAfter,
     truncated: false,
     lastRun: {
+      // 分阶段耗时：基线剖析与"续批是否还在扫全市场"的验收证据。
+      timing,
+      auditMode,
+      queueIdentity: frozenIdentity,
+      targeted: {
+        codes: attemptedCodes.length,
+        evaluated: evaluatedCodes.size,
+        cleared: queueGapsCleared,
+        failed: targetedFailed,
+      },
+      finalAudit: {
+        performed: Boolean(finalAudit && !finalAudit.error),
+        failed: finalAuditFailed,
+        skippedByPreAudit: finalAuditCoveredByPreAudit,
+        gapCount: finalAudit && Array.isArray(finalAudit.gaps) ? finalAudit.gaps.length : null,
+        error: finalAudit && finalAudit.error ? finalAudit.error : null,
+      },
       processed: results.length,
       succeeded: results.filter(item => item.ok).length,
       failed: results.filter(item => !item.ok).length,
@@ -730,27 +934,35 @@ async function syncSelectionInputs(input) {
   await repo.saveInputGapQueue({ market, payload: queuePayload });
   // 完成判定（R2-04）：本任务能补的（财报/分红/行业）与不能补但必需的（估值）都必须清空；
   // 未识别的缺口也不允许当完成。处理 0 个而仍有缺口时更不能报 succeeded。
-  const blockingRemaining = remaining.fundamental.length + remaining.industry.length
-    + remaining.valuation.length + remaining.unclassified.length;
-  // 完成必须同时满足：目标来源完整、每个目标都有归属、批后真实剩余为零、必需数据缺口已闭合（F05）。
-  const cleared = blockingRemaining === 0 && !targetPoolIncomplete;
+  // B1-1：blockingRemaining 已按"定点复核 + 清零终审"后的权威队列计算；终审失败或定点复核失败
+  // 都不能宣告完成（无法证明全市场已清零）。
+  // F-06：完成还必须有本轮的有效全市场终审证据（或批前全审且本批 0 标的的等价证据），
+  // 且本轮不能处于低磁盘暂停状态——低磁盘空队列只是"没补"，不是"补齐了"。
+  const hasFullAuditEvidence = Boolean((finalAudit && !finalAudit.error) || finalAuditCoveredByPreAudit);
+  const cleared = blockingRemaining === 0 && !targetPoolIncomplete && !finalAuditFailed
+    && !targetedFailed && !historySuspended && hasFullAuditEvidence;
   const unclassifiedBlocked = remaining.unclassified.length > 0;
   const valuationBlocked = remaining.valuation.length > 0;
   const processedAny = results.length + industryResults.length + valuationResults.length > 0
-    || Boolean(targetPool && targetPool.processed);
+    || Boolean(targetPool && targetPool.processed)
+    || Boolean(finalAudit && !finalAudit.error);
   // 来源失败属于"客观阻塞"，要等来源恢复，不能靠继续续批碰运气；
   // 仍有可补目标（未补到行情）是 partial，续批继续处理。
   const status = cleared ? 'succeeded'
     : historySuspended ? 'blocked'
-      : (targetPoolSourceFailed || targetPoolUnaudited) ? 'blocked'
-        : (!processedAny && targetPoolPending === 0 ? 'blocked' : 'partial');
+      : finalAuditFailed ? 'blocked'
+        : (targetPoolSourceFailed || targetPoolUnaudited) ? 'blocked'
+          : (!hasFullAuditEvidence && blockingRemaining === 0 && !targetPoolIncomplete && !targetedFailed) ? 'blocked'
+            : (!processedAny && targetPoolPending === 0 ? 'blocked' : 'partial');
   const reason = cleared ? undefined
     : historySuspended ? 'root_disk_low'
-      : (targetPoolSourceFailed || targetPoolUnaudited) ? 'selection_target_pool_sources_failed'
-        : targetPoolPending > 0 ? 'selection_target_pool_pending'
-          : unclassifiedBlocked ? 'selection_gap_unclassified'
-            : valuationBlocked && blockedOnlyByValuation(remaining) ? 'remaining_valuation_gap'
-              : 'selection_inputs_gaps_pending';
+      : finalAuditFailed ? 'selection_inputs_final_audit_failed'
+        : (targetPoolSourceFailed || targetPoolUnaudited) ? 'selection_target_pool_sources_failed'
+          : targetPoolPending > 0 ? 'selection_target_pool_pending'
+            : (!hasFullAuditEvidence && blockingRemaining === 0) ? 'selection_inputs_final_audit_missing'
+              : unclassifiedBlocked ? 'selection_gap_unclassified'
+                : valuationBlocked && blockedOnlyByValuation(remaining) ? 'remaining_valuation_gap'
+                  : 'selection_inputs_gaps_pending';
   return {
     ok: cleared,
     status,
@@ -782,7 +994,13 @@ async function syncSelectionInputs(input) {
     remainingUnclassified: queuePayload.lastRun.remainingUnclassified,
     gapCount: queuePayload.gapCount,
     domainCounts: queuePayload.domainCounts,
-    coverage: after.coverage,
+    coverage: queueCoverageFinal,
+    auditMode,
+    queueIdentity: frozenIdentity,
+    timing,
+    finalAuditPerformed: Boolean(finalAudit && !finalAudit.error),
+    // 本批实际尝试的证券（跨域去重后），用于核验统一配额没有超限。
+    attemptedCodes: attemptedCodes.slice(0, 200),
     batchResults: results.slice(0, 50),
     industryResults: industryResults.slice(0, 50),
   };

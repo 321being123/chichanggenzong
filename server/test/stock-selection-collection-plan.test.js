@@ -233,7 +233,7 @@ async function verifyHistoryCollectionDiskGuards() {
 
   const inputsSrc = fs.readFileSync(path.join(__dirname, '..', 'services', 'stockSelectionInputsSync.js'), 'utf8');
   const spaceIndex = inputsSrc.indexOf('const space = await checkHistoryCollectionSpace();');
-  const hkBarsIndex = inputsSrc.indexOf('await syncHkTargetPoolBars({ asOfDate, maxCodes: limit })');
+  const hkBarsIndex = inputsSrc.indexOf('syncHkTargetPoolBars({ asOfDate, maxCodes: limit })');
   assert.ok(spaceIndex >= 0, 'F-08: 选股补采必须检查根盘余量');
   assert.ok(hkBarsIndex >= 0, 'F-08: 港股目标池补采入口必须存在（顺序断言基准）');
   assert.ok(spaceIndex < hkBarsIndex,

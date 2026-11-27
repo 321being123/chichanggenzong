@@ -1679,6 +1679,13 @@
       "note": "选股用例编排：读标准事实→调纯规则→质量裁决→事务落库；0 SQL/0 联网/0 DOM"
     },
     {
+      "path": "server/services/stockSelectionReadiness.js",
+      "role": "application",
+      "batch": 3,
+      "status": "registered",
+      "note": "日/周选股前置就绪检查：按目标日已发布分区与港股同证券覆盖证据判定；SQL 在 stockSelectionRepository，本模块 0 SQL/0 联网/0 DOM"
+    },
+    {
       "path": "server/services/stockSelectionInputsSync.js",
       "role": "application",
       "batch": 3,

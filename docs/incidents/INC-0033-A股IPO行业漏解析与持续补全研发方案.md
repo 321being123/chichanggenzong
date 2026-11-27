@@ -510,3 +510,5 @@ v10 修复代码前后格式、代码标签、大类与子类拼接和标准号�
 本次修复（`0.9.4.27`–`0.9.4.28`）：① `ipo_lib_fetch._fetch_exchange_ipo_issuance_detail` 在正式发行/风险公告（不含初步询价）尚未披露且已取得官方来源文档证据时，统一标记 `status='not_disclosed'`、`reason='official_issuance_announcement_not_published'`，不再误报 `parse_miss`；一旦正式发行公告已披露但仍未解析出 `industry_pe`，仍保持 `parse_miss` 告警。② `ipo_history_sync._industry_pe_state` 将深交所官方招股书域名 `reportdocs.static.szse.cn` 纳入 `official_hosts['szse']` 白名单，对带官方证据的 `official_issuance_announcement_not_published` 按次日 `retry_after` 豁免当日告警并次日自动复查（`test_ipo_unit.py` 与 `test_ipo_history_sync.py` 78/78 通过）。
 
 2026-11-24 共用调度定义核对：持仓收盘价任务改点限定于 market_close 内地品种。IPO 行业与行业 PE 的定向任务定义、业务日和数据源继续按本方案。
+
+2026-11-27 共用编排器核对：`jobOrchestrator` 仅按已登记等待原因（`selection_not_ready`）延长续批年龄上限，不触发、不修改 `ipo_history_sync` 的任何行业/行业 PE/产业链采集、定向范围与原文证据门槛；本方案的行业事实与 PE 隔离结论不变。

@@ -80,12 +80,20 @@ const WAIT_REASON_POLICIES = Object.freeze({
     description: '资料字段待官方后续披露，按 Runner 返回的冷却时间复查',
   },
   // 方案 27.38 P1：日/周选股"输入未就绪"是等数据补齐的正常等待，但必须有复查时刻、
-  // 待完成阶段和剩余数量才有资格算证据等待；缺口清空前一律不发布，超过 24 小时仍进止损。
+  // 待完成阶段和剩余数量才有资格算证据等待；缺口清空前一律不发布。
+  // 上限不能按 24 小时写死：CN 的 stock_daily/stock_valuation 分区由工作日 08:00 的共享采集发布，
+  // 周五 18:30 入队的槽要等到下周一 08:00（约 62.5h），春节/国庆跨休市更长（近年最长约 10 天）。
+  // 24h 会让每周五和长假前最后一个交易日在**上游正常发布前**被误判止损并告警。
+  // 336h（14 天）是明确硬上限：覆盖最长休市 + 下一交易日复核余量，超过仍按合同触发止损，
+  // 不是无限豁免；证据字段缺任何一项仍立即退回普通续批。
   selection_not_ready: {
     jobs: ['stock_analysis_refresh'],
-    maxWaitHours: 24,
+    maxWaitHours: 336,
+    // 只有本原因允许把续批年龄上限从任务默认值延长到 maxWaitHours：
+    // 其他已登记原因（如 field_recheck_cooldown）沿用各自原有续批止损语义，不因本次修订被放宽。
+    extendsContinuationMaxAge: true,
     evidenceFields: ['nextAttemptAt', 'pendingStages', 'remaining'],
-    description: '选股周期输入未就绪，按 Runner 给出的复查时刻等待，缺口清空前置为未发布',
+    description: '选股周期输入未就绪，按 Runner 给出的下一个交易日复查时刻等待，缺口清空前置为未发布',
   },
 });
 

@@ -10,6 +10,7 @@ const RULES_V2 = require('../domain/stockSelectionRulesV2');
 const GRAHAM_RULES = require('../domain/stockSelectionGrahamRules');
 const PORTFOLIO = require('../domain/stockSelectionPortfolio');
 const PERIODS = require('./stockSelectionPeriods');
+const readinessService = require('./stockSelectionReadiness');
 const repo = require('../repositories/stockSelectionRepository');
 const { withTransaction } = require('../db/transaction');
 const CoreDate = require('../../public/shared/core-date.js');
@@ -456,7 +457,23 @@ function buildRuleFacts(row, ctx) {
  *   绝不用今天的主档替换已经固化的历史名单，也不把重建说成"当时真实可见"；
  * - 固化成员在新主档里完全找不到（或取不到任何行）时返回 universe_not_recoverable，回测据此判不可还原。
  */
-async function loadUniverseWithArtifact({ market, asOfDate, knowledgeCutoff, writeArtifact = true }, tx) {
+async function loadUniverseWithArtifact({ market, asOfDate, knowledgeCutoff, writeArtifact = true, restrictCodes = null }, tx) {
+  // 续批定点复核（B1-1）：只重读本批对象，不读/不写当日 artifact。
+  // artifact 是"全市场冻结名单"的证据，用 20 只子集读写它会把名单偷换成子集。
+  if (Array.isArray(restrictCodes) && restrictCodes.length) {
+    const rows = await repo.loadUniverse({ market, asOfDate, availableBefore: knowledgeCutoff, codes: restrictCodes }, tx);
+    return {
+      rows,
+      artifact: null,
+      drift: null,
+      evidence: {
+        restricted: true,
+        memberCount: rows.length,
+        poolDefinition: 'restricted_reaudit',
+        requestedCodes: restrictCodes.length,
+      },
+    };
+  }
   // C0：先定"名单"（生命周期 + 市场/交易所准入，不含行情），再单独判断"能不能交易"。
   // 不能因为今天没行情就把证券从历史名单里抹掉，也不能用今天有行情的子集冒充目标池。
   const roster = await repo.loadUniverseRoster({ market, asOfDate }, tx);
@@ -780,6 +797,8 @@ async function computeSelection(input, tx) {
   const knowledgeCutoff = knowledgeCutoffFor(market, asOfDate);
   const universeLoad = await loadUniverseWithArtifact({
     market, asOfDate, knowledgeCutoff,
+    // 续批定点复核只重读本批代码；全市场审计/发布路径保持原行为。
+    restrictCodes: Array.isArray(input.restrictCodes) && input.restrictCodes.length ? input.restrictCodes : null,
     // 只读审计（G0）传 false：不固化 artifact，也不写业务表。
     writeArtifact: input.writeUniverseArtifact !== false,
   }, tx);
@@ -811,11 +830,13 @@ async function computeSelection(input, tx) {
 
   const companyIds = Array.from(new Set(universe.map(row => row.company_id).filter(id => id !== null && id !== undefined)));
   const instrumentIds = universe.map(row => row.instrument_id);
+  // 续批定点复核才把 PB 窗口收窄到本批证券；全市场计算保持原查询。
+  const restrictedInstrumentIds = Array.isArray(input.restrictCodes) && input.restrictCodes.length ? instrumentIds : null;
   const windowStart = shiftYears(asOfDate, params.pbLookbackYears);
   const dividendWindowStart = shiftMonths(asOfDate, params.dividendWindowMonths);
   // 信息可见截止（knowledgeCutoff）已在宇宙查询前算好：同一批计算共用同一个截止时刻。
   const [pbWindow, equity, profits, dividends, annualDividends, industries, ttmReports] = await runBatched([
-    () => repo.loadPbWindow({ market, windowStart, asOfDate }, tx),
+    () => repo.loadPbWindow({ market, windowStart, asOfDate, instrumentIds: restrictedInstrumentIds }, tx),
     () => repo.loadEquityFacts({ companyIds, asOfDate, availableBefore: knowledgeCutoff, market }, tx),
     () => repo.loadAnnualProfits({ companyIds, asOfDate, availableBefore: knowledgeCutoff, market }, tx),
     () => repo.loadDividendWindow({ instrumentIds, windowStart: dividendWindowStart, asOfDate, market }, tx),
@@ -1487,6 +1508,44 @@ async function runPeriodic(input) {
     };
   }
   const runKind = periodType === 'day' ? 'daily' : 'weekly';
+  // 前置就绪检查（B1-2）：先按本市场目标日 T 的已发布上游证据判定能不能算。
+  // 未就绪时立即返回，不调用 computeSelection、不写 runs/candidates 的 partial 试算批次。
+  const readiness = await readinessService.assessPeriodReadiness({
+    market, periodType, asOfDate: target.asOfDate, periodKey: target.periodKey,
+    // 调用方显式给出的时钟必须透传（回测/回归固定"现在"）；未传时保持就绪模块默认的 new Date()。
+    now: input.now,
+  });
+  if (readiness.ready !== true) {
+    return {
+      ok: true,
+      status: 'not_ready',
+      reason: 'selection_not_ready',
+      readinessStatus: 'not_ready',
+      waitReason: 'selection_not_ready',
+      market,
+      periodType,
+      periodKey: target.periodKey,
+      periodStart: target.periodStart,
+      periodEnd: target.periodEnd,
+      asOfDate: target.asOfDate,
+      shadow,
+      runId: null,
+      reused: false,
+      qualityStatus: null,
+      businessStatus: null,
+      published: false,
+      selectedCount: 0,
+      pendingCount: 0,
+      qualityReasons: [],
+      nextCheckAt: readiness.nextCheckAt,
+      // 精确缺失分区/域清单：由就绪检查给出，不用"selection 数据集没写"这种结果倒推。
+      missingDatasets: readiness.missingDatasets || [],
+      missingDomains: readiness.missingDomains || [],
+      readinessEvidence: readiness.evidence || {},
+      strategyCode,
+      datasetPublication: null,
+    };
+  }
   const result = await computeAndPersist({
     market,
     asOfDate: target.asOfDate,
@@ -2601,11 +2660,15 @@ function gapDomainsOf(item, anomaly) {
  * - 因此不会出现"gapCount=1 但 reasons=[]"导致补齐任务处理 0 个还报成功；
  * - 明细全量持久化（不再按 5000 条截断），续跑队列因此完整。
  */
-async function auditInputs({ market, asOfDate, strategyCode }) {
-  const computed = await computeSelection({ market, asOfDate, positionRatio: 1, strategyCode });
+/**
+ * 从一次计算的结果提取"应补未补"清单（B1-1 定点复核复用同一套规则）：
+ * 全市场 auditInputs 与本批 auditInputsForCodes 必须用同一份缺口判定，
+ * 否则续批"同一只股票"在两次审计里会得到不同结论。
+ */
+function gapsFromComputed(computed) {
   const gaps = [];
   const excludedDelisted = [];
-  computed.evaluated.forEach(item => {
+  (computed.evaluated || []).forEach(item => {
     if (isDelistedSecurityName(item.name)) {
       excludedDelisted.push({ code: item.code, name: item.name });
       return;
@@ -2631,10 +2694,20 @@ async function auditInputs({ market, asOfDate, strategyCode }) {
       ...(Object.keys(plan).length ? { collection_plan: plan } : {}),
     });
   });
-  const domainCounts = gaps.reduce((acc, gap) => {
-    gap.domains.forEach(domain => { acc[domain] = (acc[domain] || 0) + 1; });
+  return { gaps, excludedDelisted };
+}
+
+function domainCountsOf(gaps) {
+  return (gaps || []).reduce((acc, gap) => {
+    (gap.domains || []).forEach(domain => { acc[domain] = (acc[domain] || 0) + 1; });
     return acc;
   }, {});
+}
+
+async function auditInputs({ market, asOfDate, strategyCode }) {
+  const computed = await computeSelection({ market, asOfDate, positionRatio: 1, strategyCode });
+  const { gaps, excludedDelisted } = gapsFromComputed(computed);
+  const domainCounts = domainCountsOf(gaps);
   const payload = {
     market: computed.market,
     asOfDate: computed.asOfDate,
@@ -2651,6 +2724,36 @@ async function auditInputs({ market, asOfDate, strategyCode }) {
   };
   const queueId = await repo.saveInputGapQueue({ market: computed.market, payload });
   return { queueId, gapCount: gaps.length, domainCounts, excludedDelisted, coverage: computed.coverage, quality: computed.quality, gaps };
+}
+
+/**
+ * 续批定点复核（B1-1）：只对本批处理过的代码重读事实并重算规则。
+ * - 不跑全市场审计、不写 artifact、不写缺口队列（队列由调用方原地合并）；
+ * - 返回 universeCodes 供调用方区分"已核实解除"与"不在可评估池、无法确认"：
+ *   后者必须保留原缺口项（例如港股尚未补到行情的标的），不能被当成已补齐。
+ */
+async function auditInputsForCodes({ market, asOfDate, strategyCode, codes = [] }) {
+  const normalized = normalizeMarket(market);
+  const list = Array.from(new Set((codes || []).map(code => String(code || '').trim().toUpperCase()).filter(Boolean)));
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(asOfDate || '')) || !list.length) {
+    return { market: normalized, asOfDate: asOfDate || null, gaps: [], evaluatedCodes: [], universeCount: 0 };
+  }
+  const computed = await computeSelection({
+    market: normalized, asOfDate, positionRatio: 1, strategyCode,
+    restrictCodes: list,
+    // 子集计算不得固化/覆盖当日全市场 artifact，也不按名单漂移阻断（本路径只取缺口结论）。
+    writeUniverseArtifact: false,
+    allowUniverseDrift: true,
+  });
+  const { gaps } = gapsFromComputed(computed);
+  return {
+    market: normalized,
+    asOfDate,
+    codes: list,
+    gaps,
+    evaluatedCodes: (computed.evaluated || []).map(item => String(item.code || '').toUpperCase()),
+    universeCount: computed.coverage ? Number(computed.coverage.universeCount || 0) : 0,
+  };
 }
 
 /** 行业下拉：只读库内合法一级分类，不现场调用行业源（方案 27.10）。 */
@@ -2698,6 +2801,9 @@ module.exports = {
   computeAndPersist,
   runQuarterly,
   runPeriodic,
+  auditInputsForCodes,
+  assessPeriodReadiness: readinessService.assessPeriodReadiness,
+  nextDailyRecheckAt: readinessService.nextDailyRecheckAt,
   duePeriodicTargets,
   hasPeriodRun,
   pendingQuarter,

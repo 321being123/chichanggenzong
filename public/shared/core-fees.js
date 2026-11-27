@@ -37,6 +37,7 @@ function getFeeGroup(subtype) {
     case '美股': return 'us_stock';
     case '可转债': return 'ashare_bond';
     case '基金/ETF':
+    case '债券基金':
     case 'ETF':
     case 'LOF': return 'ashare_fund';
     case '场外基金': return 'otc_fund';

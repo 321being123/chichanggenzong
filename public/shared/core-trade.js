@@ -1051,7 +1051,11 @@ function renderSmartItems() {
       '<td><input type="number" id="s-price-' + rid + '" value="' + (item.price === null || item.price === undefined ? '' : escapeHtml(String(item.price))) + '" step="0.001" class="u-input-xs" placeholder="' + (isTrade ? '成交价' : '成本价') + '"></td>' +
       '<td data-style="font-size:11px;color:#6e6e6e;">' + (isTrade ? '-' : escapeHtml(item._v && item._v.costSource === 'avg_buy_price' ? '买入均价' : item._v && item._v.costSource === 'cost' ? '成本价' : '缺失')) + '</td>' +
       '<td class="text-right" data-style="font-size:12px;color:#6e6e6e;">' + (isTrade ? '-' : (item.market_price === null || item.market_price === undefined ? '-' : escapeHtml(String(item.market_price)))) + '</td>' +
-      '<td><input type="number" id="s-qty-' + rid + '" value="' + (item.quantity === null || item.quantity === undefined ? '' : escapeHtml(String(item.quantity))) + '" step="0.0001" class="u-input-xs"></td>' +
+      '<td><div class="qty-stepper">' +
+        '<button type="button" class="qty-step-btn" data-act="stepSmartQty" data-arg1="' + rid + '" data-arg2="-1" aria-label="减少数量">−</button>' +
+        '<input type="number" id="s-qty-' + rid + '" value="' + (item.quantity === null || item.quantity === undefined ? '' : escapeHtml(String(item.quantity))) + '" min="1" step="1" inputmode="numeric" class="u-input-xs qty-stepper-input" aria-label="数量">' +
+        '<button type="button" class="qty-step-btn" data-act="stepSmartQty" data-arg1="' + rid + '" data-arg2="1" aria-label="增加数量">+</button>' +
+      '</div></td>' +
       '<td><select id="s-unit-' + rid + '" data-style="padding:6px 4px;border:1px solid #e0e0e0;border-radius:6px;font-size:12px;">' +
         ['', '股', '张', '手', '份'].map(function(u) {
           return '<option value="' + u + '"' + (unit === u ? ' selected' : '') + '>' + (u === '' ? '未知' : u) + '</option>';
@@ -1082,8 +1086,39 @@ function renderSmartItems() {
       if (status) status.innerHTML = renderSmartRowStatus(found.item);
     });
   });
+  // 手动输入数量后同步重校验；步进按钮走 stepSmartQty，不依赖原生微调箭头。
+  result.querySelectorAll('input[id^="s-qty-"]').forEach(function(input) {
+    input.addEventListener('change', function() {
+      var rowId = input.id.slice('s-qty-'.length);
+      if (rowId) revalidateSmartRow(rowId);
+    });
+  });
   if (window.BusinessTable) window.BusinessTable.attach(result, { page: '#page-trades', top: '#main-holdings > .holdings-header', sticky: false });
 }
+
+// #121：数量步进只由点击触发，最小值为 1；不再依赖过小的原生微调箭头。
+function stepSmartQty(rowId, delta) {
+  var input = document.getElementById('s-qty-' + rowId);
+  if (!input) return;
+  var change = Number(delta) || 0;
+  var current = Number(input.value);
+  if (!isFinite(current)) current = 1;
+  var next = Math.max(1, Math.round((current + change) * 10000) / 10000);
+  input.value = String(next);
+  revalidateSmartRow(rowId);
+}
+
+// #121：聚焦数量输入框时，鼠标滚轮不得意外增减数值；键盘方向键仍保留原生步进。
+(function guardQuantityWheel() {
+  if (typeof document === 'undefined' || !document.addEventListener) return;
+  document.addEventListener('wheel', function(e) {
+    var t = e.target;
+    if (!t || t.tagName !== 'INPUT' || t.type !== 'number') return;
+    if (document.activeElement !== t) return;
+    if (!/^(s-qty-|trade-qty$|modal-qty$)/.test(t.id || '')) return;
+    e.preventDefault();
+  }, { passive: false });
+})();
 
 function renderSmartRowStatus(item) {
   var v = item._v || { status: 'ok', issues: [] };

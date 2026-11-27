@@ -231,7 +231,9 @@ async function updatePositionFields(params, tx) {
   const patch = params.patch || {};
   const cols = Object.keys(patch).filter((k) => POSITION_EDITABLE_COLUMNS.has(k));
   if (!cols.length) return { rowCount: 0 };
-  const sets = cols.map((c, i) => `${c}=${i + 4}`);
+  // 参数占位符必须是 $4、$5…；遗漏 `$` 会把列值当成数字常量，参数数量与占位符不一致，
+  // PostgreSQL 直接报 “bind message supplies N parameters, but prepared statement requires M”。
+  const sets = cols.map((c, i) => `${c}=$${i + 4}`);
   const args = [params.username, params.accountName, params.posId, ...cols.map((c) => patch[c])];
   return runner.query(
     `UPDATE positions SET ${sets.join(', ')} WHERE username=$1 AND account_name=$2 AND id=$3`,

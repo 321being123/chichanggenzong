@@ -107,6 +107,211 @@ function valuationIncompleteText(valuation) {
   return '估值不完整（' + present.join('；') + '）';
 }
 
+// ===== #125 总资产显隐偏好 =====
+var STATS_PRIVACY_KEY = 'portfolio.statsHidden';
+function statsHidden() {
+  try { return localStorage.getItem(STATS_PRIVACY_KEY) === '1'; } catch (e) { return false; }
+}
+function toggleStatsPrivacy() {
+  try { localStorage.setItem(STATS_PRIVACY_KEY, statsHidden() ? '0' : '1'); } catch (e) {}
+  renderStats();
+}
+function applyStatsPrivacy() {
+  var hidden = statsHidden();
+  var btn = document.getElementById('stats-privacy-toggle');
+  if (btn) {
+    btn.textContent = hidden ? '🙈' : '👁';
+    if (typeof btn.setAttribute === 'function') {
+      btn.setAttribute('aria-pressed', hidden ? 'true' : 'false');
+      btn.setAttribute('aria-label', hidden ? '显示金额' : '隐藏金额');
+      btn.setAttribute('title', hidden ? '显示金额' : '隐藏金额');
+    }
+  }
+  if (!hidden) return;
+  ['stat-total', 'stat-equity', 'stat-debt', 'stat-cash', 'stat-total-sub',
+    'pnl-today', 'pnl-month', 'pnl-year', 'pnl-custom'].forEach(function (id) {
+    var el = document.getElementById(id);
+    if (el) el.textContent = '****';
+  });
+  var change = document.getElementById('stat-change');
+  if (change) change.innerHTML = '<span>****</span>';
+}
+
+// ===== #124 今日/本月/本年/可选区间盈亏 =====
+var pnlCustomRange = { start: '', end: '' };
+
+function pnlRows() {
+  var rows = (typeof getPerformanceNavHistory === 'function')
+    ? getPerformanceNavHistory()
+    : (data.performanceHistory || data.navHistory || []);
+  return (rows || []).filter(function (r) {
+    return r && r.date && r.totalAsset != null && Number.isFinite(Number(r.totalAsset));
+  }).map(function (r) {
+    return { date: String(r.date).slice(0, 10), totalAsset: Number(r.totalAsset) };
+  }).sort(function (a, b) { return a.date.localeCompare(b.date); });
+}
+
+function pnlExternalFlow(startDate, endDate) {
+  return (data.cashFlows || []).filter(function (cf) {
+    if (typeof NavMath === 'undefined' || !NavMath.isExternalTransfer(cf)) return false;
+    var d = String(cf.date || '').slice(0, 10);
+    return d > startDate && d <= endDate;
+  }).reduce(function (sum, cf) { return sum + (Number(cf.amount) || 0); }, 0);
+}
+
+// 区间盈亏 = 期末总资产 − 期初总资产 − 区间净入金；与收益页累计收益口径一致。
+function computePnlBetween(startDate, endDate) {
+  var rows = pnlRows();
+  if (!rows.length) return { amount: null, reason: '暂无净值记录' };
+  var baseRow = null, endRow = null, firstAfter = null;
+  rows.forEach(function (r) {
+    if (r.date <= endDate) endRow = r;
+    // 区间起点用“起点之前的最后一个快照”作基准，使起始日当天的变化也计入区间。
+    if (r.date < startDate) baseRow = r;
+    else if (!firstAfter) firstAfter = r;
+  });
+  if (!endRow) return { amount: null, reason: '区间内无净值记录' };
+  // 请求到今天但当天完整估值/净值尚未生成时，不能拿上一日记录冒充“本月/本年至今”。
+  var today = todayCN();
+  if (endDate >= today && endRow.date < today) return { amount: null, reason: '今日净值未就绪' };
+  var partial = false;
+  if (!baseRow) { baseRow = firstAfter; partial = true; }
+  if (!baseRow) return { amount: null, reason: '区间内无净值记录' };
+  if (baseRow.date === endRow.date) {
+    return { amount: null, baseDate: baseRow.date, endDate: endRow.date, partial: partial, reason: '区间内仅一条净值记录' };
+  }
+  if (baseRow.date > endRow.date) return { amount: null, reason: '区间起点晚于终点' };
+  var flow = pnlExternalFlow(baseRow.date, endRow.date);
+  var amount = endRow.totalAsset - baseRow.totalAsset - flow;
+  var denom = baseRow.totalAsset + flow;
+  return {
+    amount: amount,
+    pct: denom > 0 ? amount / denom : null,
+    baseDate: baseRow.date,
+    endDate: endRow.date,
+    netFlow: flow,
+    partial: partial
+  };
+}
+
+function computeTodayPnl() {
+  var live = data.navAttribution;
+  var today = todayCN();
+  if (live && live.complete === true && live.currentDate === today &&
+      live.totalChange != null && Number.isFinite(Number(live.totalChange))) {
+    var base = Number(live.previousTotalAsset);
+    return {
+      amount: Number(live.totalChange),
+      pct: base > 0 ? Number(live.totalChange) / base : null,
+      baseDate: live.previousDate || '',
+      endDate: today
+    };
+  }
+  return { amount: null, reason: '今日归因未就绪' };
+}
+
+function pnlCardHtml(id, label) {
+  return '<div class="pnl-card"><div class="label">' + label + '</div>' +
+    '<div class="value" id="' + id + '">—</div><div class="sub" id="' + id + '-sub"></div></div>';
+}
+
+function pnlValueText(result) {
+  if (result.amount == null || !Number.isFinite(Number(result.amount))) return '—';
+  var amount = Number(result.amount);
+  return (amount > 0 ? '+' : '') + fmt(amount);
+}
+
+function pnlPctText(result) {
+  if (result.pct == null || !Number.isFinite(Number(result.pct))) return '';
+  var pct = Number(result.pct) * 100;
+  return (pct > 0 ? '+' : '') + pct.toFixed(2) + '%';
+}
+
+function pnlColor(result) {
+  if (result.amount == null || !Number.isFinite(Number(result.amount))) return 'var(--text-muted)';
+  if (Number(result.amount) > 0) return 'var(--up)';
+  if (Number(result.amount) < 0) return 'var(--down)';
+  return 'var(--text-primary)';
+}
+
+function pnlSubText(result) {
+  if (result.amount == null) return result.reason || '数据不足';
+  var text = '自 ' + result.baseDate + ' 至 ' + result.endDate;
+  if (result.partial) text += '（记录起点）';
+  var pct = pnlPctText(result);
+  if (pct) text += ' · ' + pct;
+  return text;
+}
+
+function pnlTodaySubText(result) {
+  if (result.amount == null) return result.reason || '数据不足';
+  var text = result.baseDate ? '对比 ' + result.baseDate : '';
+  var pct = pnlPctText(result);
+  if (pct) text += (text ? ' · ' : '') + pct;
+  return text;
+}
+
+function renderPnlOverview() {
+  var container = document.getElementById('pnl-overview');
+  if (!container || typeof container.querySelector !== 'function') return;
+  var today = todayCN();
+  if (!pnlCustomRange.start) pnlCustomRange.start = today.slice(0, 7) + '-01';
+  if (!pnlCustomRange.end) pnlCustomRange.end = today;
+  if (!container.querySelector('.pnl-card')) {
+    container.innerHTML =
+      '<div class="pnl-overview">' +
+        '<div class="pnl-head"><h3>盈亏概览</h3><span class="pnl-note">按净值记录与外部资金流水估算，缺记录时显示 —</span></div>' +
+        '<div class="pnl-cards">' +
+          pnlCardHtml('pnl-today', '今日盈亏') +
+          pnlCardHtml('pnl-month', '本月盈亏') +
+          pnlCardHtml('pnl-year', '本年盈亏') +
+          pnlCardHtml('pnl-custom', '可选期间盈亏') +
+        '</div>' +
+        '<div class="pnl-range">' +
+          '<label>区间 <input type="date" id="pnl-start" aria-label="盈亏区间开始日期"></label>' +
+          '<span>至</span>' +
+          '<label><input type="date" id="pnl-end" aria-label="盈亏区间结束日期"></label>' +
+          '<button type="button" class="btn btn-outline btn-sm" data-act="queryPnlRange">查询</button>' +
+        '</div>' +
+      '</div>';
+  }
+  var startInput = document.getElementById('pnl-start');
+  var endInput = document.getElementById('pnl-end');
+  if (startInput && document.activeElement !== startInput) startInput.value = pnlCustomRange.start;
+  if (endInput && document.activeElement !== endInput) endInput.value = pnlCustomRange.end;
+
+  var todayResult = computeTodayPnl();
+  var monthResult = computePnlBetween(today.slice(0, 7) + '-01', today);
+  var yearResult = computePnlBetween(today.slice(0, 4) + '-01-01', today);
+  var customResult = computePnlBetween(pnlCustomRange.start, pnlCustomRange.end);
+  [
+    ['pnl-today', todayResult, pnlTodaySubText(todayResult)],
+    ['pnl-month', monthResult, pnlSubText(monthResult)],
+    ['pnl-year', yearResult, pnlSubText(yearResult)],
+    ['pnl-custom', customResult, pnlSubText(customResult)]
+  ].forEach(function (item) {
+    var valueEl = document.getElementById(item[0]);
+    var subEl = document.getElementById(item[0] + '-sub');
+    if (valueEl) {
+      valueEl.textContent = pnlValueText(item[1]);
+      valueEl.style.color = pnlColor(item[1]);
+    }
+    if (subEl) subEl.textContent = item[2];
+  });
+}
+
+function queryPnlRange() {
+  var startInput = document.getElementById('pnl-start');
+  var endInput = document.getElementById('pnl-end');
+  var start = startInput ? String(startInput.value || '') : '';
+  var end = endInput ? String(endInput.value || '') : '';
+  if (!start || !end) { showToast('请选择盈亏区间起止日期'); return; }
+  if (start > end) { showToast('开始日期不能晚于结束日期'); return; }
+  pnlCustomRange = { start: start, end: end };
+  renderPnlOverview();
+  applyStatsPrivacy();
+}
+
 function renderStats() {
   var s = calcSummary();
   var container = document.getElementById('stats-container');
@@ -127,7 +332,7 @@ function renderStats() {
     container.innerHTML = 
       '<div class="stat-card">' +
         '<div class="stat-top">' +
-          '<div><div class="label">总资产</div><div class="value" id="stat-total"></div><div class="sub" id="stat-total-sub"></div><div class="sub u-fs-13" id="stat-change" ></div></div>' +
+          '<div><div class="label">总资产 <button type="button" id="stats-privacy-toggle" class="stat-privacy-toggle" data-act="toggleStatsPrivacy" aria-pressed="false" aria-label="隐藏金额" title="隐藏金额">👁</button></div><div class="value" id="stat-total"></div><div class="sub" id="stat-total-sub"></div><div class="sub u-fs-13" id="stat-change" ></div></div>' +
           '<div class="stat-icon icon-bg-blue">💰</div>' +
         '</div>' +
         '<div class="bar-wrap"><div class="bar-fill" id="bar-total" data-style="width:100%;background:#1a73e8;"></div></div>' +
@@ -183,8 +388,9 @@ function renderStats() {
       var arrow = changeAmt >= 0 ? '▲' : '▼';
       var color = changeAmt >= 0 ? '#d93025' : '#137333';
       scEl.innerHTML = '<span data-style="color:' + color + ';">' + (changeAmt === 0 ? '0' : arrow + ' ' + fmt(Math.abs(changeAmt)) + ' (' + (changeAmt >= 0 ? '+' : '') + changePct.toFixed(2) + '%)') + '</span>';
-      // 悬浮浮框：分解今日涨跌（股价影响 + 汇率影响 + 计算过程）
-      bindChangeTip(scEl, changeAmt, changePct);
+      // 悬浮浮框：分解今日涨跌（股价影响 + 汇率影响 + 计算过程）；隐私模式下不绑定。
+      if (!statsHidden()) bindChangeTip(scEl, changeAmt, changePct);
+      else scEl.innerHTML = '<span>****</span>';
     } else {
       scEl.textContent = '-';
       scEl.style.color = '';
@@ -203,11 +409,14 @@ function renderStats() {
   if (el('stat-debt-pct')) el('stat-debt-pct').textContent = '占比 ' + fmtPct(s.debtPct);
   if (el('stat-cash')) el('stat-cash').textContent = fmt(s.cash);
   if (el('stat-cash-pct')) el('stat-cash-pct').textContent = '占比 ' + fmtPct(s.cashPct) +
-    (data.cashIncludesEstimates ? ' · 含现金收益估算 ' + fmt(data.cashEstimatedDelta) + ' 元' : '') +
-    (data.cashIncomeState && data.cashIncomeState.pending && data.cashIncomeState.pending.length ? ' · ' + data.cashIncomeState.pending.length + '项待核验' : '');
+    (statsHidden() ? '' :
+      (data.cashIncludesEstimates ? ' · 含现金收益估算 ' + fmt(data.cashEstimatedDelta) + ' 元' : '') +
+      (data.cashIncomeState && data.cashIncomeState.pending && data.cashIncomeState.pending.length ? ' · ' + data.cashIncomeState.pending.length + '项待核验' : ''));
   if (el('bar-equity')) el('bar-equity').style.width = (s.equityPct * 100) + '%';
   if (el('bar-debt')) el('bar-debt').style.width = (s.debtPct * 100) + '%';
   if (el('bar-cash')) el('bar-cash').style.width = (s.cashPct * 100) + '%';
+  renderPnlOverview();
+  applyStatsPrivacy();
 }
 
 // 只统计两个日期之间（不含首尾）的有效交易日，避免把周末/休市日误当成漏算日。
@@ -487,7 +696,7 @@ function getTodayProfit(position, overrideRate) {
 
 // 估值列颜色（与可转债估值页一致，bond-valuation.css 已加载）
 var POS_EVAL_CLASS = { '低估': 'val-low', '偏低估': 'val-low2', '合理': 'val-mid', '偏高估': 'val-high1', '高估': 'val-high', '风险折价': 'val-risk', '数据不足': 'val-none' };
-var POS_SUBTYPE_CLASS = { '沪市': 'pos-subtype-sh', '深市': 'pos-subtype-sz', '京市': 'pos-subtype-bj', '港股': 'pos-subtype-hk', '美股': 'pos-subtype-us', '可转债': 'pos-subtype-cb', '信用债': 'pos-subtype-credit', '基金/ETF': 'pos-subtype-fund' };
+var POS_SUBTYPE_CLASS = { '沪市': 'pos-subtype-sh', '深市': 'pos-subtype-sz', '京市': 'pos-subtype-bj', '港股': 'pos-subtype-hk', '美股': 'pos-subtype-us', '可转债': 'pos-subtype-cb', '信用债': 'pos-subtype-credit', '基金/ETF': 'pos-subtype-fund', '债券基金': 'pos-subtype-credit' };
 var POSITION_PRICE_QUALITY_TEXT = { stale_reference: '历史价未确认', derived_reference: '导入派生价', unverified_reference: '未核实价', legacy_unverified: '遗留价未确认', manual_delisted: '退市固定价' };
 function getPositionTrendClass(value, hasData, zeroIsPositive) {
   if (!hasData) return 'muted-cell';

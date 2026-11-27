@@ -7036,6 +7036,34 @@
       ],
       "owner": "投资策略选股中心",
       "status": "local_verified"
+    },
+    {
+      "id": "REPOSITORY-SQL-PLACEHOLDER-001",
+      "title": "仓储动态 SET 拼接必须使用 $n 占位符，不得把列值写成数字常量，占位符数量必须与参数数组一致",
+      "implementation": {
+        "file": "server/repositories/accountsRepository.js",
+        "symbol": "updatePositionFields"
+      },
+      "tests": [
+        { "file": "server/test/feedback-online-121-125.test.js", "pattern": "SQL 中不得残留把列值写成数字常量的占位" },
+        { "file": "server/test/feedback-online-121-125.test.js", "pattern": "占位符数量必须与参数数组长度一致" }
+      ],
+      "owner": "账户与持仓",
+      "status": "local_verified"
+    },
+    {
+      "id": "SECURITY-CLASSIFY-BOND-FUND-001",
+      "title": "名称明确的债券基金/可转债基金/ETF 归为债权「债券基金」，但行情与费用仍走基金口径",
+      "implementation": {
+        "file": "public/js/code-classify.js",
+        "symbol": "classifyCode"
+      },
+      "tests": [
+        { "file": "server/test/feedback-online-121-125.test.js", "pattern": "可转债 ETF 必须识别为债权资产" },
+        { "file": "server/test/feedback-online-121-125.test.js", "pattern": "债券基金仍必须走基金日线" }
+      ],
+      "owner": "账户与持仓",
+      "status": "local_verified"
     }
   ]
 }

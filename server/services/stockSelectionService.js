@@ -596,10 +596,14 @@ async function computeGrahamSelection(input, { market, asOfDate, strategyCode, p
   const gate = RULES_V2.evaluateMarketGateV2(valuation);
   const universe = universeLoad.rows;
   const companyIds = Array.from(new Set(universe.map(row => row.company_id).filter(id => id !== null && id !== undefined)));
-  const [balances, industries] = await runBatched([
+  const [balances, industries, equityFacts] = await runBatched([
     () => repo.loadGrahamBalanceFacts({ companyIds, asOfDate, availableBefore: knowledgeCutoff, market }, tx),
     () => repo.loadIndustries({ companyIds, market, asOfDate }, tx),
+    // B4-1B：格雷厄姆也走 loadUniverse，PB 空值回退同样复用批量净资产事实，
+    // 保证 currentPb 等展示口径与投资要义路径一致、不因移除 LATERAL 而回归为 NULL。
+    () => repo.loadEquityFacts({ companyIds, asOfDate, availableBefore: knowledgeCutoff, market }, tx),
   ], tx);
+  applyEquityPbFallback(universe, equityFacts);
 
   const targetCurrency = market === 'HK' ? 'HKD' : 'CNY';
   const fxPairs = [];
@@ -850,6 +854,9 @@ async function computeSelection(input, tx) {
     // 自算 TTM 的三段报表：与权益/年度利润同一可见截止，不用今天的最新投影补历史。
     () => repo.loadTtmInputs({ companyIds, asOfDate, availableBefore: knowledgeCutoff, market }, tx),
   ], tx);
+  // B4-1B：loadUniverse 只返回源站 PB，空值回退在这里复用刚加载的批量净资产事实完成，
+  // 与原先逐股 COALESCE(v.pb, 总市值/归母权益) 同币种闭合口径一致；负净资产如实为负 PB。
+  applyEquityPbFallback(universe, equity);
   // 逐公司先算一次 TTM，供 buildRuleFacts 直接取用（不在每只股票里重复算）。
   const ttm = new Map();
   companyIds.forEach(companyId => {
@@ -1037,6 +1044,80 @@ function inputsDigestOf(computed) {
   return hashOf(rows);
 }
 
+/**
+ * 十进制除法（B4-1B）：把两个 NUMERIC 文本/数值按定点小数相除，返回规范化字符串。
+ * 用 BigInt 保留原文精度，避免 JS 浮点把 `总市值 ÷ 归母净资产` 的末位算偏；
+ * 无法解析或除数为 0 时返回 null（与原 SQL 的 NULL 语义一致，绝不猜）。
+ */
+function decimalRatio(numerator, denominator, scale = 16) {
+  const parse = value => {
+    const text = String(value == null ? '' : value).trim();
+    if (!/^[-+]?\d+(?:\.\d+)?$/.test(text)) return null;
+    const negative = text.startsWith('-');
+    const body = text.replace(/^[-+]/, '');
+    const [intPart, fracPart = ''] = body.split('.');
+    const digits = BigInt((intPart || '0') + fracPart);
+    return { digits: negative ? -digits : digits, scale: fracPart.length };
+  };
+  const left = parse(numerator);
+  const right = parse(denominator);
+  if (!left || !right || right.digits === 0n) return null;
+  const commonScale = Math.max(left.scale, right.scale);
+  const leftInt = left.digits * (10n ** BigInt(commonScale - left.scale));
+  const rightInt = right.digits * (10n ** BigInt(commonScale - right.scale));
+  const multiplier = 10n ** BigInt(scale);
+  const scaledNumerator = leftInt * multiplier;
+  let quotient = scaledNumerator / rightInt;
+  const remainder = scaledNumerator % rightInt;
+  if (remainder !== 0n) {
+    const absRemainder = remainder < 0n ? -remainder : remainder;
+    const absDenominator = rightInt < 0n ? -rightInt : rightInt;
+    if (absRemainder * 2n >= absDenominator) {
+      quotient += (leftInt < 0n) === (rightInt < 0n) ? 1n : -1n;
+    }
+  }
+  const negative = quotient < 0n;
+  let digits = (negative ? -quotient : quotient).toString();
+  if (scale > 0) {
+    if (digits.length <= scale) digits = '0'.repeat(scale - digits.length + 1) + digits;
+    digits = `${digits.slice(0, digits.length - scale)}.${digits.slice(digits.length - scale)}`;
+    digits = digits.replace(/0+$/, '').replace(/\.$/, '');
+  }
+  if (!digits || digits === '-0') digits = '0';
+  return `${negative && digits !== '0' ? '-' : ''}${digits}`;
+}
+
+/**
+ * PB 空值回退（B4-1B）：loadUniverse 只返回源站原值，这里复用随后加载的 `loadEquityFacts`
+ * 批量结果，在内存完成与原 COALESCE 表达式等价的同币种闭合回退，不再逐股跑财报 LATERAL。
+ *
+ * 红线（对齐 fdb52bb3）：
+ * - 使用 loadEquityFacts 已撤销 `report_kind='balance'` 限制后的完整净资产事实，不漏非 balance 净资产；
+ * - 仅当「总市值非空、归母权益非空且非零、权益币种与估值币种相同」时才相除，否则留 NULL；
+ * - 负净资产如实得到负 PB；币种不一致（如 HKD 报表对 CNY 估值）不闭合，保持缺失；
+ * - 只覆盖源站 PB 为空的行；源站已有 PB 一律不动。
+ */
+function applyEquityPbFallback(rows, equityByCompany) {
+  const list = Array.isArray(rows) ? rows : [];
+  const equityMap = equityByCompany instanceof Map ? equityByCompany : new Map();
+  for (const row of list) {
+    const companyKey = row && row.company_id !== null && row.company_id !== undefined
+      ? String(row.company_id) : null;
+    const equity = companyKey ? equityMap.get(companyKey) || null : null;
+    if (!equity) continue;
+    // 证据字段与原 eq LATERAL 一致：即使权益数值不可用，币种也随事实返回。
+    if (equity.currency) row.equity_currency = equity.currency;
+    if (row.pb !== null && row.pb !== undefined) continue;
+    if (row.total_market_cap === null || row.total_market_cap === undefined) continue;
+    if (equity.amount === null || equity.amount === undefined) continue;
+    if (!equity.currency || !row.valuation_currency) continue;
+    if (String(equity.currency).toUpperCase() !== String(row.valuation_currency).toUpperCase()) continue;
+    const ratio = decimalRatio(row.total_market_cap, equity.amount);
+    if (ratio !== null) row.pb = ratio;
+  }
+  return list;
+}
+
 function manifestOf(computed, extra) {
   return Object.assign({
     market: computed.market,
@@ -1063,6 +1144,74 @@ function manifestOf(computed, extra) {
     } : null,
     inputsDigest: inputsDigestOf(computed),
   }, extra || {});
+}
+
+/**
+ * 纯计算输入清单（B4-1A，严格沿用原方案 27.6）：
+ * 只包含纯计算语义与全部冻结事实——市场、目标日、策略代码/版本、参数/公式版本、基础仓位/
+ * 行业约束、证券集合、股票池 artifact、逐股输入指纹（PB/权益/年度利润/分红/行业/FX/覆盖证据）。
+ * **明确排除** run_kind、period_type/period_key、owner/sourceRunId/settingsHash 等渠道与用途封装，
+ * 因此同一目标日的 daily 与 weekly 在同一批事实下会得到相同的 computationInputHash。
+ */
+function computationInputManifestOf(computed, strategyVersion) {
+  return {
+    market: computed.market,
+    asOfDate: computed.asOfDate,
+    strategyCode: computed.strategyCode,
+    strategyVersion: strategyVersion || null,
+    params: computed.params,
+    positionRatio: computed.positionRatio,
+    benchmarkCode: computed.valuation.benchmarkCode,
+    valuationMethod: computed.valuation.valuationMethod,
+    marketPb: computed.valuation.pb,
+    marketPe: computed.valuation.pe,
+    universeDigest: hashOf(computed.evaluated.map(item => item.code).sort()),
+    universeArtifact: computed.universeEvidence ? {
+      contentHash: computed.universeEvidence.contentHash,
+      memberCount: computed.universeEvidence.memberCount,
+      replayType: computed.universeEvidence.replayType,
+    } : null,
+    inputsDigest: inputsDigestOf(computed),
+  };
+}
+
+function computationInputHashOf(computed, strategyVersion) {
+  return hashOf(computationInputManifestOf(computed, strategyVersion));
+}
+
+/**
+ * 纯计算产物证据哈希（B4-1A）：候选逐股决策、排名、组合成员席位/权重与质量裁决。
+ * 用于证明复用的 daily 输出与本次 weekly 重算结果一致；不含任何渠道元数据。
+ */
+function computationOutputHashOf(computed) {
+  const evaluated = (computed.evaluated || []).map(item => [
+    item.instrumentId, item.code, item.filterStatus, item.dataQualityStatus,
+    item.currentPb, item.currentPe, item.dividendYield, item.equityCny, item.rankReady === true,
+  ]).sort((a, b) => Number(a[0]) - Number(b[0]));
+  const ranked = (computed.ranked || []).map(item => [
+    item.instrumentId, item.totalScore, item.pbRank, item.peRank, item.dividendRank, item.selectionOrder,
+  ]).sort((a, b) => Number(a[0]) - Number(b[0]));
+  const members = (computed.portfolio.members || []).map(member => [
+    member.instrumentId, member.slotNo, member.weightInMarketBudget,
+    member.weightInEquityTarget, member.weightInInvestedEquity,
+  ]).sort((a, b) => Number(a[0]) - Number(b[0]));
+  const quality = computed.quality || {};
+  return hashOf({
+    evaluated,
+    ranked,
+    members,
+    quality: {
+      publishable: quality.publishable === true,
+      reasons: quality.reasons || [],
+      universeCount: quality.universeCount,
+      poolSize: quality.poolSize,
+      pendingCount: quality.pendingCount,
+      passed: quality.passed,
+      failures: quality.failures,
+      notEvaluableCount: quality.notEvaluableCount,
+      riskHeldCount: quality.riskHeldCount,
+    },
+  });
 }
 
 function businessStatusOf(computed, quality) {
@@ -1119,7 +1268,7 @@ async function publishPartitionInTransaction({ input, tx, runId, computed, quali
  * 只有共享非影子且质量通过的 quarterly/daily/weekly 才移动对应渠道的正式发布指针；
  * 影子只保存影子批次（分区由 Runner 另行发布），个人与预览永不发布。
  */
-async function computeAndPersist(input) {
+async function computeAndPersist(input, options = {}) {
   const runKind = input.runKind || 'preview';
   if (!['quarterly', 'daily', 'weekly', 'preview', 'personal'].includes(runKind)) {
     const error = new Error('运行类型不合法');
@@ -1179,6 +1328,41 @@ async function computeAndPersist(input) {
     }
     const manifest = manifestOf(computed, manifestExtra);
     const inputHash = hashOf(manifest);
+    // B4-1A：独立计算语义哈希（排除 run_kind/周期/渠道封装），并把纯计算产物证据哈希一并落库。
+    const computationInputHash = computationInputHashOf(computed, strategyVersion);
+    const computationOutputHash = computationOutputHashOf(computed);
+    // 周度受控复用（方案 27.6）：仅非影子 weekly 查找同市场/同目标日/同信息截止、质量通过且
+    // 无待裁决缺口的共享非影子 daily，并逐项比对当前重算的输入/输出哈希。命中只记录来源与双向
+    // 证据；下面的建 run/manifest/候选/成员、租约、质量、CAS 与发布事务校验一律照常完整执行。
+    let computationReuse = null;
+    let resolvedSourceDailyRunId = input.sourceDailyRunId || null;
+    if (runKind === 'weekly' && !isShadow) {
+      const reuseKnowledgeCutoff = knowledgeCutoffFor(computed.market, computed.asOfDate);
+      const dailyCandidates = await repo.listReusableDailyRuns(tx, {
+        market: computed.market, strategyId, asOfDate: computed.asOfDate, knowledgeCutoff: reuseKnowledgeCutoff,
+      });
+      const match = dailyCandidates.find(candidate => candidate.computationInputHash === computationInputHash
+        && candidate.computationOutputHash === computationOutputHash);
+      if (match) {
+        if (!resolvedSourceDailyRunId) resolvedSourceDailyRunId = match.runId;
+        computationReuse = {
+          reused: true,
+          sourceDailyRunId: match.runId,
+          sourceComputationInputHash: match.computationInputHash,
+          sourceComputationOutputHash: match.computationOutputHash,
+          sourceKnowledgeCutoff: match.knowledgeCutoff,
+          computationInputHash,
+          computationOutputHash,
+        };
+      } else {
+        computationReuse = {
+          reused: false,
+          reason: dailyCandidates.length ? 'computation_hash_mismatch' : 'no_qualified_daily',
+          computationInputHash,
+          computationOutputHash,
+        };
+      }
+    }
     const quarter = input.quarter || quarterOf(computed.asOfDate);
     const ownerSubjectId = input.ownerSubjectId || null;
     // 业务身份范围锁：并发/重试必须在锁内重查内容幂等键；锁外各算一次再让随机失败者退出，
@@ -1217,7 +1401,13 @@ async function computeAndPersist(input) {
       executionStatus: status.executionStatus,
       qualityStatus: status.qualityStatus,
       businessStatus: status.businessStatus,
-      inputHash, inputManifest: Object.assign(manifest, { quality: computed.quality, coverage: computed.coverage }),
+      inputHash, inputManifest: Object.assign(manifest, {
+        quality: computed.quality,
+        coverage: computed.coverage,
+        computationInputHash,
+        computationOutputHash,
+        computationReuse,
+      }),
       universeCount: computed.coverage.universeCount,
       pendingCount: computed.quality.pendingCount,
       selectedCount: computed.portfolio.members.length,
@@ -1233,7 +1423,7 @@ async function computeAndPersist(input) {
       periodType, periodKey,
       periodStart: periodRange ? periodRange.periodStart : null,
       periodEnd: periodRange ? periodRange.periodEnd : null,
-      sourceDailyRunId: input.sourceDailyRunId || null,
+      sourceDailyRunId: resolvedSourceDailyRunId,
       settingsRevision: input.settingsRevision === undefined ? null : input.settingsRevision,
       settingsHash: input.settingsHash || null,
       ownerSubjectId: input.ownerSubjectId || null,
@@ -1287,7 +1477,7 @@ async function computeAndPersist(input) {
     }
     const run = await repo.findRun(runId, tx);
     return { runId, reused: false, run, computed, publish, periodType, periodKey, isShadow, datasetPublication };
-  }).then(async result => {
+  }, options).then(async result => {
     // 提交成功后补"可见确认"时刻：事务内 now() 不能冒称对外可见时间（方案 27.7）。
     // 确认失败不能再被静默吞掉：events.visible_at IS NULL 即持久待补证据，调用方必须能看到。
     if (result.publish && result.publish.eventId) {
@@ -1596,6 +1786,11 @@ async function runPeriodic(input) {
     readinessStatus,
     quality,
     strategyCode,
+    // B4-1A 周度受控复用证据：命中来源 daily 与双向哈希由 input_manifest 原样回传，便于任务与验收核对。
+    sourceDailyRunId: result.run ? result.run.source_daily_run_id : null,
+    computationReuse: (result.run && result.run.input_manifest && result.run.input_manifest.computationReuse) || null,
+    computationInputHash: (result.run && result.run.input_manifest && result.run.input_manifest.computationInputHash) || null,
+    computationOutputHash: (result.run && result.run.input_manifest && result.run.input_manifest.computationOutputHash) || null,
     // 分区发布结果必须回传：Runner 用它判定 stageComplete 与失败原因，不能只报 published。
     datasetPublication: result.datasetPublication || null,
   };
@@ -2887,6 +3082,10 @@ module.exports = {
   buildAnnualYears,
   computeTtmFromReports,
   computeAndPersist,
+  computationInputHashOf,
+  computationOutputHashOf,
+  applyEquityPbFallback,
+  decimalRatio,
   runQuarterly,
   runPeriodic,
   auditInputsForCodes,

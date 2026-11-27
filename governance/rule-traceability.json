@@ -6916,6 +6916,46 @@
       ],
       "owner": "任务治理",
       "status": "local_verified"
+    },
+    {
+      "id": "SEL-WEEKLY-COMPUTATION-REUSE-001",
+      "title": "周度仅在同市场/同目标日/同信息截止且 computation_input_hash 与源输出证据哈希完全一致、daily 已 passed 无待裁决缺口时复用纯计算，仍新建独立 weekly run/manifest/候选/成员并完整过发布与 CAS；任一冻结事实变化一律完整重算",
+      "implementation": {
+        "file": "server/services/stockSelectionService.js",
+        "symbol": "computationInputHashOf"
+      },
+      "tests": [
+        { "file": "server/test/stock-selection-b4.test.js", "pattern": "同一冻结事实下 daily 与 weekly 的 computation_input_hash 必须相同" },
+        { "file": "server/test/stock-selection-b4.test.js", "pattern": "PB 变化必须改变 computation_input_hash" },
+        { "file": "server/test/stock-selection-b4.test.js", "pattern": "年度利润变化必须改变 computation_input_hash" },
+        { "file": "server/test/stock-selection-b4.test.js", "pattern": "分红变化必须改变 computation_input_hash" },
+        { "file": "server/test/stock-selection-b4.test.js", "pattern": "行业版本变化必须改变 computation_input_hash" },
+        { "file": "server/test/stock-selection-b4-db.test.js", "pattern": "同输入/同输出的 passed daily 存在时 weekly 必须命中复用" },
+        { "file": "server/test/stock-selection-b4-db.test.js", "pattern": "复用也必须新建独立 weekly run" },
+        { "file": "server/test/stock-selection-b4-db.test.js", "pattern": "必须拒绝复用" },
+        { "file": "server/test/stock-selection-b4-db.test.js", "pattern": "影子 daily 不得进入复用候选" },
+        { "file": "server/test/stock-selection-b4-db.test.js", "pattern": "只有 passed 且无缺口的非影子 daily 可进入复用候选" }
+      ],
+      "owner": "投资策略选股中心",
+      "status": "local_verified"
+    },
+    {
+      "id": "SEL-LOADUNIVERSE-PB-FALLBACK-001",
+      "title": "loadUniverse 不再对全市场逐股跑 pe_static 归母净利或 PB 回退归母净资产 LATERAL；PB 空值复用 loadEquityFacts 批量结果在内存完成同币种闭合回退，保留完整净资产语义、负净资产与异币种留空口径",
+      "implementation": {
+        "file": "server/services/stockSelectionService.js",
+        "symbol": "applyEquityPbFallback"
+      },
+      "tests": [
+        { "file": "server/test/stock-selection-b4.test.js", "pattern": "同币种非零净资产：PB 空值回退得到负 PB" },
+        { "file": "server/test/stock-selection-b4.test.js", "pattern": "非 balance 报表携带的归母净资产同样参与回退" },
+        { "file": "server/test/stock-selection-b4.test.js", "pattern": "源站已有 PB 一律不动" },
+        { "file": "server/test/stock-selection-b4-db.test.js", "pattern": "loadUniverse 不得再跑 PB 空值回退的归母净资产 LATERAL" },
+        { "file": "server/test/stock-selection-b4-db.test.js", "pattern": "非 balance 报表的净资产：6 亿 ÷ 3 亿 = 2" },
+        { "file": "server/test/stock-selection-b4-db.test.js", "pattern": "异币种（HKD 报表 / CNY 估值）不得相除" }
+      ],
+      "owner": "投资策略选股中心",
+      "status": "local_verified"
     }
   ]
 }

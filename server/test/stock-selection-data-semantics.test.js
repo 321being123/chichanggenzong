@@ -421,9 +421,16 @@ async function main() {
     });
 
     await check('源站 PB 为空时按总市值÷归母净资产现算，负净资产如实为负 PB', async () => {
+      // B4-1B：loadUniverse 只返回源站原值，PB 空值回退改为复用 loadEquityFacts 批量结果在内存完成。
       const universe = await repo.loadUniverse({ market: 'CN', asOfDate: AS_OF });
+      const raw = universe.find(item => String(item.instrument_id) === String(negativeFromSource.instrumentId));
+      assert.ok(raw, '该证券必须在池内');
+      assert.strictEqual(raw.pb, null, '源站 PB 为空时 loadUniverse 只返回原值，不再逐股跑净资产 LATERAL');
+      const equity = await repo.loadEquityFacts({
+        companyIds: [negativeFromSource.companyId], asOfDate: AS_OF, market: 'CN',
+      });
+      require('../services/stockSelectionService').applyEquityPbFallback(universe, equity);
       const row = universe.find(item => String(item.instrument_id) === String(negativeFromSource.instrumentId));
-      assert.ok(row, '该证券必须在池内');
       assert.strictEqual(Number(row.pb), -5, '总市值 10 亿 ÷ 归母净资产 -2 亿 = -5');
     });
 

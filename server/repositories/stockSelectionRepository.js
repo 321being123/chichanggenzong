@@ -156,7 +156,7 @@ function marketConfig(market) {
  * 供 stockSelectionService.auditInputsForCodes 做"本批对象规则重算"，
  * 不改变全市场调用的默认语义（不传即全市场）。
  */
-async function loadUniverse({ market, asOfDate, availableBefore = null, codes = null }, tx) {
+async function loadUniverse({ market, asOfDate, codes = null }, tx) {
   const config = marketConfig(market);
   const exec = executorOf(tx);
   const list = Array.isArray(codes) && codes.length
@@ -167,23 +167,13 @@ async function loadUniverse({ market, asOfDate, availableBefore = null, codes = 
            i.exchange_code, i.list_date::text AS list_date, i.delist_date::text AS delist_date,
            ${RISK_NAME_SQL} AS risk_warning,
            ci.company_id,
-           -- PB 回退必须币种闭合（F09）：市值与归母权益币种不一致时相除没有意义，
-           -- 这种情况宁可留 NULL 让规则判"待补/不可评估"，也不生成一个错误量纲的 PB。
-           COALESCE(v.pb, CASE WHEN v.total_market_cap IS NOT NULL
-                                AND eq.equity IS NOT NULL AND eq.equity <> 0
-                                AND eq.equity_currency IS NOT NULL AND v.currency_code IS NOT NULL
-                                AND upper(eq.equity_currency) = upper(v.currency_code)
-                               THEN v.total_market_cap / eq.equity END) AS pb,
-           eq.equity_currency,
-           -- 官方估值接口不提供静态市盈率（实测 metricsList 报 (pe,pe_static) are invalid price metrics），
-           -- 按站内既定口径现算：当前总市值 ÷ 最近一期已公告年报归母净利（600519 校验与 Tushare 完全一致）。
-           -- 这是同一口径的定义式计算，不是估算兜底；归母净利缺失或为 0 时保持 NULL，不猜。
-           -- 2026-11-05 起选股排名与页面展示统一使用 pe_ttm（滚动十二个月），静态 PE 只保留作排查参考。
-           COALESCE(v.pe_static, CASE WHEN v.total_market_cap IS NOT NULL
-                                        AND np.net_profit IS NOT NULL AND np.net_profit <> 0
-                                        AND np.net_profit_currency IS NOT NULL AND v.currency_code IS NOT NULL
-                                        AND upper(np.net_profit_currency) = upper(v.currency_code)
-                                       THEN v.total_market_cap / np.net_profit END) AS pe_static,
+           -- B4-1B：PB 源值直接返回，PB 空值回退改由服务层复用「随后加载的 loadEquityFacts 批量结果」
+           -- 在内存中完成（applyEquityPbFallback），不再对全市场逐股跑归母净资产 LATERAL。
+           -- 回退口径与原 COALESCE 表达式一致：总市值与归母权益同币种、权益非零时才相除；否则留 NULL。
+           v.pb AS pb,
+           -- 静态 PE 自 2026-11-05 起已不参与选股排名（统一用 pe_ttm），只保留源字段供排查。
+           -- 这里不再为它逐股现算归母净利，删除对应财报 LATERAL（B4-1B）。
+           v.pe_static AS pe_static,
            v.pe_ttm, v.dividend_yield_ttm, v.total_market_cap, v.currency_code AS valuation_currency,
            v.trade_date::text AS valuation_date,
            b.close AS price, b.trade_date::text AS price_date,
@@ -196,42 +186,6 @@ async function loadUniverse({ market, asOfDate, availableBefore = null, codes = 
            AND (c.valid_to IS NULL OR c.valid_to >= $2::date)
          ORDER BY c.valid_from DESC NULLS LAST LIMIT 1
       ) ci ON true
-      -- 最近一期已公告年报归母净利：静态 PE 定义式的分母（与读取估值序列的 fillStaticPe 同一口径）。
-      -- 可见时点必须与 loadEquityFacts / loadAnnualProfits 同源（F09）：只按 announced_at 截断，
-      -- 会让同一批计算里的 PE 和净资产规则落在不同版本的报表上。
-      LEFT JOIN LATERAL (
-        SELECT CASE WHEN ${marketFinancialUnverifiedPredicate('r', 'income', 'i.market')}
-                    THEN NULL ELSE ${SAFE_FINANCIAL_FACT_SQL} END AS net_profit,
-               f.currency_code AS net_profit_currency
-          FROM fundamental.financial_reports r
-          JOIN fundamental.financial_facts f ON f.report_id = r.report_id AND f.metric_code = 'net_profit_parent'
-         WHERE r.company_id = ci.company_id
-           AND r.report_kind = 'income'
-           AND ${reportPeriodTypeExpression('r')} = 'annual'
-           AND r.statement_scope = 'consolidated'
-           AND ${marketFinancialPredicate('r', 'income', 'i.market')}
-           AND r.announced_at IS NOT NULL AND r.announced_at < $2::date
-           AND ($4::timestamptz IS NULL OR r.available_at IS NULL OR r.available_at < $4::timestamptz)
-         ORDER BY r.period_end DESC, r.announced_at DESC
-         LIMIT 1
-      ) np ON true
-      -- 最近一期已公告归母净资产：源站对"净资产为负"的股票直接不给 PB（字段为空，不是没有这一行），
-      -- 所以 PB 为空时要按同一定义式现算（总市值 ÷ 归母净资产），负值如实判为净资产为负。
-      LEFT JOIN LATERAL (
-        SELECT CASE WHEN ${marketFinancialUnverifiedPredicate('r', 'balance', 'i.market')}
-                    THEN NULL ELSE ${SAFE_FINANCIAL_FACT_SQL} END AS equity,
-               f.currency_code AS equity_currency
-          FROM fundamental.financial_reports r
-          JOIN fundamental.financial_facts f ON f.report_id = r.report_id AND f.metric_code = 'equity_parent'
-         WHERE r.company_id = ci.company_id
-           AND r.report_kind = 'balance'
-           AND r.statement_scope = 'consolidated'
-           AND ${marketFinancialPredicate('r', 'balance', 'i.market')}
-           AND r.announced_at IS NOT NULL AND r.announced_at < $2::date
-           AND ($4::timestamptz IS NULL OR r.available_at IS NULL OR r.available_at < $4::timestamptz)
-         ORDER BY r.period_end DESC, r.announced_at DESC
-         LIMIT 1
-      ) eq ON true
       -- 停牌先判：只有"当天确实停牌（S=停牌，R=复牌不算）"才允许把估值/价格回退到停牌前最后交易日。
       LEFT JOIN LATERAL (
         SELECT sc.suspend_type FROM market.stock_suspend_calendar sc
@@ -266,8 +220,8 @@ async function loadUniverse({ market, asOfDate, availableBefore = null, codes = 
        AND (i.market = 'HK' OR i.exchange_code = ANY($3::text[]))
        AND (i.list_date IS NULL OR i.list_date <= $2::date)
        AND (i.delist_date IS NULL OR i.delist_date > $2::date)
-       -- 续批定点复核：只评估本批对象（$5 为空时保持全市场）。
-       AND ($5::text[] IS NULL OR upper(i.canonical_code) = ANY($5::text[]))
+       -- 续批定点复核：只评估本批对象（$4 为空时保持全市场）。
+       AND ($4::text[] IS NULL OR upper(i.canonical_code) = ANY($4::text[]))
        -- 从未有过任何行情/估值的证券（已退市、已摘牌、吸收合并后残留主档）不构成可评估对象。
        -- 真停牌的历史上一定有成交记录，所以按"有没有过数据"区分，不看名称、也不依赖主档 status 是否已更新。
        AND (EXISTS (SELECT 1 FROM market.daily_bars bx WHERE bx.instrument_id = i.instrument_id)
@@ -278,7 +232,7 @@ async function loadUniverse({ market, asOfDate, availableBefore = null, codes = 
                    WHERE bt.instrument_id = i.instrument_id
                      AND bt.trade_date <= $2::date
                      AND bt.trade_date > ($2::date - INTERVAL '60 days'))
-     ORDER BY i.canonical_code`, [market, asOfDate, config.exchanges, availableBefore || null, list]);
+     ORDER BY i.canonical_code`, [market, asOfDate, config.exchanges, list]);
   return rows;
 }
 
@@ -2299,6 +2253,37 @@ async function findRunForUpdate(runId, tx) {
   return rows[0] || null;
 }
 
+/**
+ * 周度受控复用候选（B4-1A，方案 27.6）：同市场、同策略、同目标日 T、同信息截止的
+ * 共享非影子完整 daily 批次。只返回质量已通过且无待裁决缺口（pending_count=0）的批次。
+ * 是否真能复用由服务层比对 `computationInputHash` 与 `computationOutputHash` 后决定；
+ * 仓储不自行把「有 daily」当成「可复用」。
+ */
+async function listReusableDailyRuns(tx, { market, strategyId, asOfDate, knowledgeCutoff }) {
+  const exec = executorOf(tx);
+  const { rows } = await exec(`
+    SELECT run_id, revision, computed_at,
+           input_manifest->>'computationInputHash' AS computation_input_hash,
+           input_manifest->>'computationOutputHash' AS computation_output_hash,
+           knowledge_cutoff::text AS knowledge_cutoff_text
+      FROM analytics.stock_selection_runs
+     WHERE market = $1 AND strategy_id = $2 AND as_of_date = $3::date
+       AND run_kind = 'daily' AND is_shadow = false
+       AND quality_status = 'passed'
+       AND COALESCE(pending_count, 0) = 0
+       AND knowledge_cutoff = $4::timestamptz
+     ORDER BY revision DESC, computed_at DESC NULLS LAST, run_id DESC`,
+  [market, strategyId, asOfDate, knowledgeCutoff]);
+  return rows.map(row => ({
+    runId: Number(row.run_id),
+    revision: Number(row.revision),
+    computedAt: row.computed_at,
+    computationInputHash: row.computation_input_hash || null,
+    computationOutputHash: row.computation_output_hash || null,
+    knowledgeCutoff: row.knowledge_cutoff_text || null,
+  }));
+}
+
 // 港股主档名可能是英文或代码（如 01114.HK 的 BRILLIANCE CHI）；腾讯行情缓存里已有中文名，
 // 仅对名称不含汉字的港股回退，中文名、A 股与所有计算字段都不变。
 const HK_NAME_FALLBACK = `
@@ -3091,7 +3076,7 @@ module.exports = {
   upsertStrategy, findStrategyId, findRunByIdempotencyKey, nextRevision, insertRun, insertCandidates, insertMembers,
   publishRun, markRunFailure,
   findPublication, listPublicationEvents, markPublicationVisible, loadPublicationReplayEvidence,
-  listRuns, findRun, findRunForUpdate, listCandidates, listIndustryIdentityCounts, findCandidate, listMembers, latestPublishedRun, copyCandidates,
+  listRuns, findRun, findRunForUpdate, listReusableDailyRuns, listCandidates, listIndustryIdentityCounts, findCandidate, listMembers, latestPublishedRun, copyCandidates,
   resolveCandidateRunId, compactCandidateDetail, annualYearsDigest,
   hasPeriodRun,
   hasNoPeriodRunAtAll,

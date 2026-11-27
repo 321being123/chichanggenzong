@@ -897,6 +897,12 @@ async function runSlot(slot, reason = reasonForSlot(slot)) {
     ...selectionContextOf(claimed),
     pendingStages: claimed.result_summary && Array.isArray(claimed.result_summary.pendingStages)
       ? claimed.result_summary.pendingStages : [],
+    // 凌晨收敛任务在计划槽里固定「上一交易日」目标；业务日只是执行日，不能顶替目标交易日。
+    ...(claimed.request_payload && /^\d{4}-\d{2}-\d{2}$/.test(String(claimed.request_payload.targetTradeDate || ''))
+      ? { targetTradeDate: String(claimed.request_payload.targetTradeDate).slice(0, 10) } : {}),
+    // 选股轻量归档续跑：同一目标日已成功子项不重复计算。
+    ...(claimed.job_code === 'stock_analysis_refresh' && claimed.result_summary && Array.isArray(claimed.result_summary.completedKeys)
+      ? { completedKeys: claimed.result_summary.completedKeys } : {}),
     continuationCount: Number(claimed.result_summary && claimed.result_summary.continuationCount || 0),
     initialRemaining: claimed.result_summary && claimed.result_summary.initialRemaining,
     lastRemaining: claimed.result_summary && claimed.result_summary.lastRemaining,

@@ -8,7 +8,40 @@ var ssState = {
   industries: [], detail: null, periodType: null, periodUserSelected: false, strategyCode: null, scheme: 'essentials',
   loading: false, loadingKey: null, runListLoading: false, seq: 0, contextVersion: 0, detailVersion: 0,
   error: null, pendingSimulation: null, simulationError: null, pendingSettingsOperation: null,
+  // 实时按日筛选（方案 4.6 / 8）：默认实时；服务端停用时回退历史归档快照。
+  viewMode: 'realtime', asOfDate: ssShanghaiToday(), asOfDateUserSelected: false, realtimeDisabled: false, realtimeMeta: null, realtimeTotal: 0,
 };
+
+// 业务日期统一按上海时区；前端只用于默认目标日，不参与任何跨时区截断。
+function ssShanghaiToday() {
+  try {
+    return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+  } catch (error) {
+    var now = new Date();
+    return new Date(now.getTime() - now.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+  }
+}
+function ssIsRealtimeMode() { return ssState.viewMode === 'realtime' && !ssState.realtimeDisabled; }
+// 当前市场最近可用估值日：优先明确字段，再退回指数最新日期；都没有时返回 null 由调用方兜底。
+function ssLatestAvailableAsOfDate(marketResult, market) {
+  var list = marketResult && Array.isArray(marketResult.markets) ? marketResult.markets : [];
+  var target = null;
+  for (var i = 0; i < list.length; i += 1) {
+    if (list[i] && String(list[i].market || '').toUpperCase() === String(market || '').toUpperCase()) { target = list[i]; break; }
+  }
+  if (!target) target = list[0] || null;
+  if (!target) return null;
+  var candidates = [target.latestValuationDate, target.latestAsOfDate, target.latestPublishedDate, target.asOfDate];
+  for (var j = 0; j < candidates.length; j += 1) {
+    var text = String(candidates[j] || '').slice(0, 10);
+    if (/^\d{4}-\d{2}-\d{2}$/.test(text)) return text;
+  }
+  return null;
+}
+function ssRealtimeApiAvailable() { return !!(window.StockSelectionApi && typeof window.StockSelectionApi.screen === 'function'); }
+function ssRealtimeStrategyCode() {
+  return ssState.scheme === 'graham_net_net' ? 'graham_net_net_v1' : (ssState.strategyCode || undefined);
+}
 
 var SS_PAGE_SIZE = 50;
 var SS_RUN_PAGE_SIZE = 20;
@@ -166,6 +199,7 @@ function ssResetDisplayedRun() {
   ssState.run = null; ssState.personalRunId = null; ssState.candidates = [];
   ssState.candidateTotal = 0; ssState.candidateOffset = 0; ssState.portfolio = null; ssState.detail = null;
   ssState.detailVersion += 1; ssState.pendingSimulation = null; ssState.simulationError = null;
+  ssState.realtimeMeta = null; ssState.realtimeTotal = 0;
   if (typeof ssRenderRunHeader === 'function') ssRenderRunHeader(ssState);
   if (typeof ssRenderCandidates === 'function') ssRenderCandidates(ssState);
   if (typeof ssRenderPortfolio === 'function') ssRenderPortfolio(ssState);
@@ -277,6 +311,12 @@ async function ssResolveInitialSource(runs, guard, requestOwner) {
 
 async function loadStockSelection() {
   if (typeof ssInitView === 'function') ssInitView();
+  if (ssIsRealtimeMode() && ssRealtimeApiAvailable()) return ssLoadRealtimeSelection();
+  // 实时接口脚本缺失或服务端已停用：平滑切回历史归档快照，不报空页。
+  if (ssState.viewMode === 'realtime') {
+    ssState.viewMode = 'archive';
+    if (typeof ssRenderViewMode === 'function') ssRenderViewMode(ssState);
+  }
   if (!window.StockSelectionApi) { if (typeof ssSetError === 'function') ssSetError(new Error('页面脚本未加载完成，请刷新重试')); return; }
   var guard = ssBeginLoad('context:' + ssState.market + ':' + ssState.periodType); if (!guard) return;
   var requestOwner = { ownerUser: ssState.ownerUser, ownerIdentity: ssState.ownerIdentity || '' };
@@ -332,6 +372,184 @@ async function loadStockSelection() {
     if (guard.current() && typeof ssSetError === 'function') ssSetError(error);
   }
   finally { if (guard.current()) ssState.loading = false; }
+}
+
+// ===== 实时按日筛选（方案 4.6 / 8）=====
+// 只调用 POST /screen 与 GET /screen/stocks/:code，复用既有策略引擎与个人排除；
+// 不落归档、不复制计算公式。历史归档切换仍走原 /runs 读路径。
+async function ssLoadRealtimeSelection() {
+  var api = window.StockSelectionApi;
+  if (!api || typeof api.screen !== 'function') { ssState.viewMode = 'archive'; return loadStockSelection(); }
+  var guard = ssBeginLoad('realtime:' + ssState.market + ':' + ssState.scheme + ':' + String(ssState.asOfDate || ''));
+  if (!guard) return;
+  var requestOwner = { ownerUser: ssState.ownerUser, ownerIdentity: ssState.ownerIdentity || '' };
+  ssState.loading = true; ssResetDisplayedRun();
+  if (typeof ssRenderViewMode === 'function') ssRenderViewMode(ssState);
+  if (typeof ssSetStatus === 'function') ssSetStatus('正在按目标日实时筛选...');
+  try {
+    var requestedStrategy = ssState.scheme === 'graham_net_net' ? 'graham_net_net_v1' : undefined;
+    var marketResult = await api.getMarkets({ strategy: requestedStrategy });
+    if (!guard.current()) return;
+    // 首次进入且用户未手动选日期：跟随当前市场最近可用估值日，避免把当天盘中/周末误判成 PB 缺口。
+    if (!ssState.asOfDateUserSelected) {
+      var latestAsOfDate = ssLatestAvailableAsOfDate(marketResult, ssState.market);
+      if (latestAsOfDate) ssState.asOfDate = latestAsOfDate;
+    }
+    var asOfDate = /^\d{4}-\d{2}-\d{2}$/.test(String(ssState.asOfDate || '')) ? ssState.asOfDate : ssShanghaiToday();
+    ssState.asOfDate = asOfDate;
+    if (typeof ssRenderViewMode === 'function') ssRenderViewMode(ssState);
+    ssState.strategyCode = requestedStrategy || marketResult.strategyCode || ssState.strategyCode || null;
+    ssState.markets = marketResult.markets || [];
+    if (typeof ssRenderRuleScope === 'function') ssRenderRuleScope(ssState);
+    if (typeof ssRenderMarketTabs === 'function') ssRenderMarketTabs(ssState);
+    if (typeof ssRenderMarkets === 'function') ssRenderMarkets(ssState);
+    if (typeof ssRenderPeriodTabs === 'function') ssRenderPeriodTabs(ssState);
+    var results = await Promise.all([
+      api.getSettings().catch(function (error) {
+        if (guard.current() && error && error.status === 401) ssHandleAuthFailure(requestOwner, error);
+        return { error: error };
+      }),
+      api.listIndustries(ssState.market).catch(function (error) {
+        if (guard.current() && error && error.status === 401) ssHandleAuthFailure(requestOwner, error);
+        return { error: error };
+      }),
+    ]);
+    if (!guard.current()) return;
+    ssSettingsResult(results[0]);
+    if (!guard.current()) return;
+    if (results[1] && results[1].error && results[1].error.status === 401 && ssHandleAuthFailure(requestOwner, results[1].error)) return;
+    ssState.industries = results[1].industries || [];
+    if (typeof ssRenderExclusions === 'function') ssRenderExclusions(ssState);
+    var screen = await api.screen({
+      market: ssState.market, asOfDate: asOfDate, strategyCode: ssRealtimeStrategyCode(),
+      limit: SS_PAGE_SIZE, offset: 0, personalFlags: true,
+    });
+    if (!guard.current()) return;
+    ssApplyRealtimeScreen(screen, false);
+    if (typeof ssRenderCandidates === 'function') ssRenderCandidates(ssState);
+    if (typeof ssRenderPortfolio === 'function') ssRenderPortfolio(ssState);
+    if (typeof ssRenderExclusions === 'function') ssRenderExclusions(ssState);
+    if (typeof ssRenderDetail === 'function') ssRenderDetail(ssState);
+    if (typeof ssRenderViewMode === 'function') ssRenderViewMode(ssState);
+    if (typeof ssSetStatus === 'function') ssSetStatus('');
+  } catch (error) {
+    if (guard.current() && error && error.status === 401) { ssHandleAuthFailure(requestOwner, error); return; }
+    if (guard.current() && error && error.code === 'STOCK_SELECTION_REALTIME_DISABLED') {
+      ssState.realtimeDisabled = true;
+      ssState.viewMode = 'archive';
+      ssState.loading = false;
+      if (typeof ssRenderViewMode === 'function') ssRenderViewMode(ssState);
+      if (typeof ssSetStatus === 'function') ssSetStatus('实时筛选已停用，已切换为历史归档快照。');
+      return loadStockSelection();
+    }
+    if (guard.current() && typeof ssSetError === 'function') ssSetError(error);
+  } finally { if (guard.current()) ssState.loading = false; }
+}
+
+function ssApplyRealtimeScreen(screen, append) {
+  screen = screen || {};
+  ssState.realtimeMeta = {
+    asOfDate: screen.asOfDate || ssState.asOfDate,
+    strategyCode: screen.strategyCode || ssState.strategyCode,
+    quality: screen.quality || null,
+    coverage: screen.coverage || null,
+    valuation: screen.valuation || null,
+    gate: screen.gate || null,
+    computedAt: screen.computedAt || null,
+    cache: screen.cache || null,
+  };
+  ssState.realtimeTotal = Number(screen.total || 0);
+  ssState.candidateTotal = ssState.realtimeTotal;
+  ssState.candidates = append ? ssState.candidates.concat(screen.candidates || []) : (screen.candidates || []);
+  ssState.candidateOffset = ssState.candidates.length;
+  ssState.portfolio = ssNormalizeRealtimePortfolio(screen);
+  ssState.detail = null;
+  ssState.run = null;
+  ssState.sourceRunId = null;
+  ssState.personalRunId = null;
+}
+
+// 实时组合只转发服务端已算好的席位、权重和行业分布；前端只做字段名映射，不重算组合。
+function ssNormalizeRealtimePortfolio(screen) {
+  var raw = (screen && screen.portfolio) || {};
+  var byCode = Object.create(null);
+  (screen && screen.candidates || []).forEach(function (item) { if (item && item.code) byCode[String(item.code).toUpperCase()] = item; });
+  var slots = Number(raw.slots || raw.slotsPerMarket || 30) || 30;
+  var members = (raw.members || []).map(function (member) {
+    var industry = member.industry || null;
+    var candidate = byCode[String(member.code || '').toUpperCase()] || null;
+    function pick(key) {
+      if (member[key] !== undefined && member[key] !== null) return member[key];
+      return candidate && candidate[key] !== undefined ? candidate[key] : null;
+    }
+    return {
+      code: member.code, name: member.name, instrumentId: member.instrumentId, slotNo: member.slotNo,
+      industryCode: industry ? industry.code : (member.industryCode || null),
+      industryName: industry ? industry.name : (member.industryName || null),
+      industrySystem: industry ? industry.system : (member.industrySystem || null),
+      industryVersion: industry ? industry.version : (member.industryVersion || null),
+      // 成员自带字段优先；只有旧批次/缺字段时才回退当前首屏候选（不依赖 50 行以外反查）。
+      currentPb: pick('currentPb'), currentPe: pick('currentPe'), dividendYield: pick('dividendYield'),
+      debtToAssetRatio: pick('debtToAssetRatio'), debtToAssetPeriodEnd: pick('debtToAssetPeriodEnd'),
+      latestProfitYoy: pick('latestProfitYoy'), latestProfitPeriodEnd: pick('latestProfitPeriodEnd'),
+      totalScore: pick('totalScore'), pbPositiveExtremaRatio: pick('pbPositiveExtremaRatio'),
+      pbPeProduct: pick('pbPeProduct'), historicalPbMin: pick('historicalPbMin'), historicalPbMax: pick('historicalPbMax'),
+      valuationStatus: pick('valuationStatus'), valuationPassReason: pick('valuationPassReason'),
+      ttmProfitStatus: pick('ttmProfitStatus'), rankReady: pick('rankReady'),
+      issuerDuplicate: member.issuerDuplicate === true,
+      weightInMarketBudget: member.weightInMarketBudget === undefined ? null : member.weightInMarketBudget,
+    };
+  });
+  var selected = members.length;
+  return {
+    members: members, selectedCount: selected, slots: slots,
+    positionRatio: raw.positionRatio === undefined ? 1 : raw.positionRatio,
+    unfilledSlots: raw.unfilledSlots === undefined ? Math.max(0, slots - selected) : raw.unfilledSlots,
+    equityWeightInMarketBudget: raw.equityWeightInMarketBudget === undefined ? null : raw.equityWeightInMarketBudget,
+    cashWeightInMarketBudget: raw.cashWeightInMarketBudget === undefined ? null : raw.cashWeightInMarketBudget,
+    industryBreakdown: raw.industryBreakdown || [],
+    changes: null,
+    sourceIndustryIdentityCounts: (screen && screen.industryIdentityCounts) || [],
+  };
+}
+
+async function ssLoadMoreRealtimeCandidates() {
+  if (ssState.loading || ssState.candidates.length >= ssState.candidateTotal) return;
+  var contextVersion = ssState.contextVersion;
+  var seq = ++ssCandidateLoadSeq;
+  var requestOwner = { ownerUser: typeof username === 'string' ? username : '', ownerIdentity: typeof accountIdentity === 'string' ? accountIdentity : '' };
+  try {
+    var screen = await window.StockSelectionApi.screen({
+      market: ssState.market, asOfDate: ssState.asOfDate, strategyCode: ssRealtimeStrategyCode(),
+      limit: SS_PAGE_SIZE, offset: ssState.candidates.length, personalFlags: true,
+    });
+    if (seq !== ssCandidateLoadSeq || ssState.contextVersion !== contextVersion) return;
+    ssState.candidates = ssState.candidates.concat(screen.candidates || []);
+    ssState.candidateOffset = ssState.candidates.length;
+    ssState.candidateTotal = Number(screen.total || ssState.candidateTotal);
+    if (typeof ssRenderCandidates === 'function') ssRenderCandidates(ssState);
+  } catch (error) {
+    if (seq !== ssCandidateLoadSeq || ssState.contextVersion !== contextVersion) return;
+    if (error && error.status === 401 && ssHandleAuthFailure(requestOwner, error)) return;
+    if (typeof ssShowToast === 'function') ssShowToast('加载候选失败：' + (error.message || error));
+  }
+}
+
+async function ssOpenRealtimeStock(code) {
+  var detailVersion = ++ssState.detailVersion; var contextVersion = ssState.contextVersion;
+  var requestOwner = { ownerUser: typeof username === 'string' ? username : '', ownerIdentity: typeof accountIdentity === 'string' ? accountIdentity : '' };
+  var isCurrent = function () { return detailVersion === ssState.detailVersion && contextVersion === ssState.contextVersion; };
+  try {
+    var detail = await window.StockSelectionApi.getScreenStock(code, {
+      market: ssState.market, asOfDate: ssState.asOfDate, strategyCode: ssRealtimeStrategyCode(),
+    });
+    if (!isCurrent()) return;
+    ssState.detail = detail; if (typeof ssRenderDetail === 'function') ssRenderDetail(ssState);
+  } catch (error) {
+    if (!isCurrent()) return;
+    if (error && error.status === 401 && ssHandleAuthFailure(requestOwner, error)) return;
+    if (typeof ssShowToast === 'function') ssShowToast('读取详情失败：' + (error.message || error));
+  }
 }
 
 function ssHasPersonalExclusions() {
@@ -421,6 +639,7 @@ async function ssLoadMoreRuns() {
 }
 
 async function ssLoadMoreCandidates() {
+  if (ssState.viewMode === 'realtime' && !ssState.runId) return ssLoadMoreRealtimeCandidates();
   if (!ssState.runId || ssState.candidates.length >= ssState.candidateTotal) return;
   if (ssState.loading) return;
   var runId = Number(ssState.runId); var offset = Number(ssState.candidateOffset);
@@ -437,6 +656,7 @@ async function ssLoadMoreCandidates() {
 }
 
 async function ssOpenStock(code) {
+  if (ssState.viewMode === 'realtime' && !ssState.runId) return ssOpenRealtimeStock(code);
   if (!ssState.runId) return;
   var runId = ssState.runId; var detailVersion = ++ssState.detailVersion; var contextVersion = ssState.contextVersion;
   var requestOwner = { ownerUser: typeof username === 'string' ? username : '', ownerIdentity: typeof accountIdentity === 'string' ? accountIdentity : '' };
@@ -465,6 +685,34 @@ async function ssSwitchMarket(market) {
 async function ssSwitchPeriod(periodType) {
   var type = String(periodType || ''); if (!SS_KIND_BY_PERIOD[type] || type === ssState.periodType) return;
   ssRememberSourceSelection(); ssState.periodType = type; ssState.periodUserSelected = true; ssState.seq += 1; ssState.contextVersion += 1; ssResetDisplayedRun(); if (typeof ssRenderPeriodTabs === 'function') ssRenderPeriodTabs(ssState); await loadStockSelection();
+}
+// 实时按日筛选 / 历史归档快照切换：同一市场与策略，切换后重新取数，屏幕滚动与个人排除保留。
+async function ssSwitchViewMode(mode) {
+  var next = mode === 'archive' ? 'archive' : 'realtime';
+  if (next === 'realtime' && !ssRealtimeApiAvailable()) {
+    if (typeof ssShowToast === 'function') ssShowToast('实时筛选脚本尚未加载，请刷新页面后重试');
+    return;
+  }
+  if (next === ssState.viewMode) return;
+  ssRememberSourceSelection();
+  ssState.viewMode = next; ssState.seq += 1; ssState.contextVersion += 1;
+  ssResetDisplayedRun();
+  if (typeof ssRenderViewMode === 'function') ssRenderViewMode(ssState);
+  await loadStockSelection();
+}
+async function ssSetAsOfDate(value) {
+  var text = String(value || '').trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) return;
+  // 用户显式选择后，后续实时请求必须严格使用该日期，不再自动跟随最近可用估值日。
+  ssState.asOfDateUserSelected = true;
+  if (text === ssState.asOfDate && ssState.viewMode === 'realtime') return;
+  ssState.asOfDate = text;
+  if (ssState.viewMode !== 'realtime') {
+    if (typeof ssShowToast === 'function') ssShowToast('已切换目标日期，请点击“实时按日筛选”查看该日结果');
+    return;
+  }
+  ssState.seq += 1; ssState.contextVersion += 1;
+  await loadStockSelection();
 }
 async function ssSelectRun(runId) {
   var id = Number(runId); if (!id || id === Number(ssState.sourceRunId)) return;
@@ -828,6 +1076,13 @@ async function ssSaveSettingsAndSimulate(settingsPayload, options) {
     ssState.pendingSettingsOperation.attemptedSettings = JSON.parse(JSON.stringify(saved.settings || settingsPayload));
     ssState.pendingSettingsOperation.expectedRevision = Number(saved.revision);
   }
+  // 实时模式：个人排除由 /screen 服务端直接叠加，保存后重跑实时筛选，不再派生个人归档批次。
+  if (ssState.viewMode === 'realtime' && !ssState.realtimeDisabled && ssSameOwner(context) && ssRealtimeApiAvailable()) {
+    ssState.pendingSettingsOperation = null;
+    ssState.settingsSaveError = null;
+    await ssLoadRealtimeSelection();
+    return { realtime: true };
+  }
   ssState.settingsSaveError = null;
   var simulation = await ssSimulate({
     operationContext: context, sourceRunId: context.sourceRunId, settingsRevision: saved.revision,
@@ -961,7 +1216,8 @@ function ssSelectScheme(scheme) {
 
 window.StockSelectionPresenter = {
   state: ssState, load: loadStockSelection, switchMarket: ssSwitchMarket, selectScheme: ssSelectScheme, selectRun: ssSelectRun, loadMoreRuns: ssLoadMoreRuns,
-  switchPeriod: ssSwitchPeriod, loadMore: ssLoadMoreCandidates, openStock: ssOpenStock, openInAnalysis: ssOpenInAnalysis,
+  switchPeriod: ssSwitchPeriod, switchViewMode: ssSwitchViewMode, setAsOfDate: ssSetAsOfDate,
+  loadMore: ssLoadMoreCandidates, openStock: ssOpenStock, openInAnalysis: ssOpenInAnalysis,
   saveSettings: ssSaveSettings, saveSettingsAndSimulate: ssSaveSettingsAndSimulate, simulate: ssSimulate,
   retrySimulation: ssRetrySimulation,
   excludeTarget: ssExcludeTarget, restoreExclusion: ssRestoreExclusion, retrySettings: ssRetrySettings,

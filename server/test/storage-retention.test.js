@@ -101,10 +101,51 @@ const { JOB_DEFINITIONS } = require('../services/jobDefinitions');
     await storageRetention.purgeStorageData({ selectionDryRun: false });
     assert.strictEqual(calls[calls.length - 1].kind, 'graded');
     assert.strictEqual(calls[calls.length - 1].dryRun, false, '显式 selectionDryRun:false 才透传真实删除');
+
+    // P0-2：生产先部署后回填阶段（读开关未开启）不得自动跑每周对账。
+    const pbSync = require('../services/pbProjectionSync');
+    const originalReconcile = pbSync.reconcilePbProjectionSample;
+    let reconcileCalls = 0;
+    pbSync.reconcilePbProjectionSample = async () => { reconcileCalls += 1; return { ok: true }; };
+    const oldReadEnabled = process.env.PB_PROJECTION_READ_ENABLED;
+    process.env.PB_PROJECTION_READ_ENABLED = '0';
+    try {
+      const gated = await storageRetention.purgeStorageData({ pbProjectionReconcile: '1' });
+      assert.deepStrictEqual(gated.pbProjectionReconcile, { skipped: true, reason: 'disabled_by_config' },
+        '投影读开关关闭时对账必须跳过');
+      assert.strictEqual(reconcileCalls, 0, '未回填阶段不得触发投影对账');
+    } finally {
+      pbSync.reconcilePbProjectionSample = originalReconcile;
+      if (oldReadEnabled === undefined) delete process.env.PB_PROJECTION_READ_ENABLED;
+      else process.env.PB_PROJECTION_READ_ENABLED = oldReadEnabled;
+    }
   } finally {
     repository.deleteExpiredUnreferencedRawRecords = originalDeleteRaw;
     repository.deleteStalePartialSelectionRuns = originalDeleteRuns;
     repository.pruneStaleSelectionRuns = originalPruneRuns;
+  }
+
+  // P0-2：生产未显式设置读开关时必须默认关闭，先安全部署/回填，再显式置 1。
+  {
+    const { projectionReadEnabled } = require('../domain/pbProjectionConfig');
+    const oldNodeEnv = process.env.NODE_ENV;
+    const oldReadEnabled = process.env.PB_PROJECTION_READ_ENABLED;
+    try {
+      process.env.NODE_ENV = 'production';
+      delete process.env.PB_PROJECTION_READ_ENABLED;
+      assert.strictEqual(projectionReadEnabled(), false, '生产未显式设置投影读开关必须默认关闭');
+      process.env.PB_PROJECTION_READ_ENABLED = '1';
+      assert.strictEqual(projectionReadEnabled(), true, '回填验收后显式置 1 必须开启投影读');
+      process.env.PB_PROJECTION_READ_ENABLED = '0';
+      assert.strictEqual(projectionReadEnabled(), false, '生产置 0 必须回退原查询');
+      process.env.NODE_ENV = 'development';
+      delete process.env.PB_PROJECTION_READ_ENABLED;
+      assert.strictEqual(projectionReadEnabled(), true, '非生产未设置时默认开启便于本地验证');
+    } finally {
+      if (oldNodeEnv === undefined) delete process.env.NODE_ENV; else process.env.NODE_ENV = oldNodeEnv;
+      if (oldReadEnabled === undefined) delete process.env.PB_PROJECTION_READ_ENABLED;
+      else process.env.PB_PROJECTION_READ_ENABLED = oldReadEnabled;
+    }
   }
 
   console.log('storage-retention.test.js passed');

@@ -9,6 +9,7 @@
 const assert = require('assert');
 const path = require('path');
 require('dotenv').config({ path: path.join(__dirname, '..', '..', '.env') });
+const pbProjectionRepository = require('../repositories/pbProjectionRepository');
 
 const MARK = '6098';
 const CODES = [`${MARK}01.SH`, `${MARK}02.SH`, `${MARK}03.SH`, `${MARK}04.SH`, `${MARK}05.SH`,
@@ -39,6 +40,8 @@ async function cleanup(pool) {
   const ids = rows.map(row => row.instrument_id);
   if (ids.length) {
     await pool.query(`DELETE FROM fundamental.corporate_actions WHERE instrument_id = ANY($1::bigint[])`, [ids]);
+    await pool.query(`DELETE FROM analytics.stock_daily_pb_picked WHERE instrument_id = ANY($1::bigint[])`, [ids]);
+    await pool.query(`DELETE FROM analytics.instrument_pb_monthly_summary WHERE instrument_id = ANY($1::bigint[])`, [ids]);
     await pool.query(`DELETE FROM market.daily_valuations WHERE instrument_id = ANY($1::bigint[])`, [ids]);
     await pool.query(`DELETE FROM market.daily_bars WHERE instrument_id = ANY($1::bigint[])`, [ids]);
     await pool.query(`DELETE FROM core.company_instruments WHERE instrument_id = ANY($1::bigint[])`, [ids]);
@@ -326,6 +329,15 @@ async function main() {
     await insertAction(pool, staleWithInterim.instrumentId, sourceId, {
       fiscalPeriodEnd: '2022-12-31', announcedAt: '2023-04-29', exDate: null,
       status: '预案', cash: null, total: null, key: 'swi-plan',
+    });
+
+    // PB 投影与 daily_valuations 同源：测试直接写标准事实后，按同一窗口重建投影，
+    // 避免 PB_PROJECTION_READ_ENABLED 默认开启时读到空投影而误判零覆盖。
+    await pbProjectionRepository.rebuildProjectionRange({
+      market: 'CN',
+      fromDate: CAL_FROM,
+      toDate: CAL_TO,
+      months: pbProjectionRepository.monthsBetween(CAL_FROM, CAL_TO),
     });
 
     await check('送转后每股股息按官方送转比例折算到 T 日股本单位', async () => {

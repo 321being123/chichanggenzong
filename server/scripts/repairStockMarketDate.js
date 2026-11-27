@@ -1,4 +1,5 @@
 const { pool } = require('../db');
+const pbProjectionSync = require('../services/pbProjectionSync');
 // 行情与估值都属于「行情/估值数据集」：脚本只表达"要哪一天的行情与估值"，
 // 具体来源（官方优先、原来源补齐）与日期格式转换都由数据层负责。
 const marketDatasets = require('../dataAccess/marketDatasets');
@@ -78,6 +79,12 @@ const isoDate = value => {
       valuationRowCount += result.rowCount;
     }
     await client.query('COMMIT');
+    if (valuations.length) {
+      // 触发面 1：修复脚本写完估值后同步 PB 投影，避免页面读到旧投影。
+      await pbProjectionSync.safeSyncValuations({
+        market: 'CN', dates: Array.from(new Set(valuations.map(row => row.trade_date))).sort(),
+      });
+    }
     console.log(JSON.stringify({ targetDate, instrumentCount: instrumentMap.size, dailyRows: dailyData.length, bars: bars.length, barRowCount, valuations: valuations.length, valuationRowCount }));
   } catch (error) {
     await client.query('ROLLBACK');

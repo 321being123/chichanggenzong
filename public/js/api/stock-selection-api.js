@@ -33,6 +33,15 @@
       return global.siteApi.get(base('/runs') + (qs.toString() ? '?' + qs.toString() : '')).then(jsonOf);
     },
     getRun: function (runId) { return global.siteApi.get(base('/runs/' + runId)).then(jsonOf); },
+    // 实时按日筛选（方案 4.6）：必须登录，服务端叠加当前用户个人排除，不落归档。
+    screen: function (body) { return global.siteApi.post(base('/screen'), body || {}).then(jsonOf); },
+    getScreenStock: function (code, query) {
+      var qs = new URLSearchParams();
+      Object.keys(query || {}).forEach(function (key) {
+        if (query[key] !== undefined && query[key] !== null && query[key] !== '') qs.set(key, query[key]);
+      });
+      return global.siteApi.get(base('/screen/stocks/' + encodeURIComponent(code)) + (qs.toString() ? '?' + qs.toString() : '')).then(jsonOf);
+    },
     getCandidates: function (runId, query) {
       var qs = new URLSearchParams();
       Object.keys(query || {}).forEach(function (key) {

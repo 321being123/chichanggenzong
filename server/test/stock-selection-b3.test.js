@@ -166,7 +166,10 @@ const createSimulationStart = serviceSource.indexOf('async function createSimula
 const createSimulationEnd = createSimulationStart < 0 ? -1 : serviceSource.indexOf('\nasync function ', createSimulationStart + 1);
 const createSimulationBody = createSimulationStart < 0 ? '' : serviceSource.slice(createSimulationStart, createSimulationEnd < 0 ? serviceSource.length : createSimulationEnd);
 ok(createSimulationBody.length > 0 && !/repo\.copyCandidates\s*\(/.test(createSimulationBody), 'createSimulation 不得再物理复制候选');
-ok(serviceSource.includes("candidatesRefMode: 'source_run'"), '个人批次必须显式标记候选引用模式');
+ok(/candidatesRefMode: lightSource \? 'self' : 'source_run'/.test(serviceSource),
+  '个人批次必须按源批次类型显式选择候选引用模式（轻量源=self，历史全量源=source_run）');
+ok(serviceSource.includes('insertPersonalSelectedCandidates'), '个人批次必须只写入选 ≤30 席对应候选');
+ok(serviceSource.includes('archiveMode: \'light\''), '个人批次必须标记轻量归档');
 ok(serviceSource.includes('historicalReplayVerified'), '详情必须显式返回历史回放是否可证明一致');
 ok(serviceSource.includes('historicalAnnualReplayOf'), '详情必须按冻结指纹核验历史回放');
 

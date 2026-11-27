@@ -271,3 +271,7 @@ Tushare 官方文档只把 `stock_basic.industry` 定义为“所属行业”，
 2026-11-24 共用调度定义核对：本次将内地持仓报价任务调整至 15:30。IPO 行业、行业 PE 解析及其正式公告判定仍执行本 ADR。
 
 2026-11-27 路由核对（选股就绪与续批等待）：`jobOrchestrator` 仅按已登记等待原因延长续批年龄上限，`jobScheduleSlots` 同步按原因上限延长止损；未触碰 A 股 IPO 行业事实、行业 PE 口径、产业链字段、`industry` 字段写入或下游消费。本 ADR 决策与实现边界不变。
+
+## 2026-11-27 核对记录（选股阶段 1B）
+
+本轮 `jobDefinitions.js` 新增 `selection_archive_light` 模式与调度开关，仅作用于 `stock_analysis_refresh`；A 股 IPO 行业采集、行业 PE 与产业链补全的凭据、口径、定向补全入口均未改变，IPO 相关任务契约与数据集声明不变。ADR-0004 的既有结论不变。

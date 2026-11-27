@@ -7,6 +7,7 @@
 'use strict';
 
 const { persistCollectedData } = require('./financialDataArchitecture');
+const pbProjectionSync = require('./pbProjectionSync');
 const { checkHistoryCollectionSpace } = require('./diskGuard');
 const repo = require('../repositories/stockSelectionRepository');
 const { upsertIndustryPath } = require('../repositories/industryRepository');
@@ -502,6 +503,14 @@ async function collectHkMarketData(gap, asOfDate, timing = null, deps = {}) {
   const valuationWriteStartedAt = Date.now();
   const valuationWritten = await repo.upsertDailyValuationRows({ rows: valuations, sourceId: officialId });
   if (timing) timing.persistMs = (timing.persistMs || 0) + (Date.now() - valuationWriteStartedAt);
+  // 触发面 1（港股估值补齐）：写入提交后同步投影，失败不回滚标准事实。
+  if (valuationWritten && valuations.length) {
+    await pbProjectionSync.safeSyncValuations({
+      market: 'HK',
+      dates: valuations.map(row => row.tradeDate),
+      instrumentIds: valuations.map(row => row.instrumentId),
+    });
+  }
 
   let rawBars = [];
   // 单股分析刷新需要十年收盘价才能画完整前复权曲线；此时整段重取一次，
@@ -645,6 +654,13 @@ async function collectHkValuationSnapshot({ codes = [], asOfDate, fsTableTypeByC
     }
     const upsert = deps.upsertDailyValuationRows || repo.upsertDailyValuationRows;
     written = await upsert({ rows, sourceId: officialId });
+    if (written && rows.length) {
+      await pbProjectionSync.safeSyncValuations({
+        market: 'HK',
+        dates: rows.map(row => row.tradeDate),
+        instrumentIds: rows.map(row => row.instrumentId),
+      });
+    }
   }
   const gaps = detail.gaps || {};
   const gapCodes = new Set([

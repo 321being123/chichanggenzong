@@ -6828,18 +6828,69 @@
     },
     {
       "id": "SEL-PERSONAL-CANDIDATE-REF-001",
-      "title": "个人测算零候选复制：只写 run 与≤30 行成员，候选读取统一解析 supersedes_run_id 的冻结公共源批次；历史已复制批次只读兼容",
+      "title": "个人测算轻量落库：只写 run、≤30 行成员及对应 ≤30 行候选；轻量源批次解析自身候选，历史全量源批次保持 source_run 兼容",
       "implementation": {
         "file": "server/repositories/stockSelectionRepository.js",
         "symbol": "resolveCandidateRunId"
       },
       "tests": [
-        { "file": "server/test/stock-selection-b3-db.test.js", "pattern": "个人测算不得写入任何候选行" },
-        { "file": "server/test/stock-selection-b3-db.test.js", "pattern": "个人候选列表必须解析到源批次全部候选" },
+        { "file": "server/test/stock-selection-b3-db.test.js", "pattern": "个人测算只写与成员一一对应的候选（≤30 行）" },
+        { "file": "server/test/stock-selection-b3-db.test.js", "pattern": "个人批次必须标记轻量归档" },
         { "file": "server/test/stock-selection-b3-db.test.js", "pattern": "旧已复制个人批次仍读自有候选" },
+        { "file": "server/test/stock-selection-realtime-and-light-archive.test.js", "pattern": "个人测算候选必须与成员一一对应" },
+        { "file": "server/test/stock-selection-realtime-and-light-archive.test.js", "pattern": "同 clientRequestId 必须幂等复用个人批次" },
         { "file": "server/test/stock-selection-b3.test.js", "pattern": "createSimulation 不得再物理复制候选" }
       ],
       "owner": "投资策略选股中心",
+      "status": "local_verified"
+    },
+    {
+      "id": "SEL-REALTIME-SCREEN-001",
+      "title": "实时筛选接口强制 requireLogin，并发信号量超限 503，SQL statement_timeout 硬中止，同键 single-flight 且按市场+目标日分区水位缓存",
+      "implementation": {
+        "file": "server/services/stockSelectionService.js",
+        "symbol": "screenStocksRealtime"
+      },
+      "tests": [
+        { "file": "server/test/stock-selection-realtime-and-light-archive.test.js", "pattern": "未登录 POST /screen 必须 401" },
+        { "file": "server/test/stock-selection-realtime-and-light-archive.test.js", "pattern": "同键并发必须 single-flight，DB 只查 1 次" },
+        { "file": "server/test/stock-selection-realtime-and-light-archive.test.js", "pattern": "超过并发信号量必须返回 503 中文提示" },
+        { "file": "server/test/stock-selection-realtime-and-light-archive.test.js", "pattern": "SQL 超时必须触发 statement_timeout" },
+        { "file": "server/test/stock-selection-realtime-and-light-archive.test.js", "pattern": "更晚日期的分区入库不得让历史日期缓存失效" }
+      ],
+      "owner": "投资策略选股中心",
+      "status": "local_verified"
+    },
+    {
+      "id": "SEL-LIGHT-ARCHIVE-001",
+      "title": "正式归档仅落入选 ≤30 席候选，全市场一级行业计数冻结在 runs.input_manifest.industryIdentityCounts；候选列表与单股原因对轻量批次自动路由实时引擎还原",
+      "implementation": {
+        "file": "server/services/stockSelectionService.js",
+        "symbol": "getCandidates"
+      },
+      "tests": [
+        { "file": "server/test/stock-selection-realtime-and-light-archive.test.js", "pattern": "正式日归档必须标记 archiveMode=light" },
+        { "file": "server/test/stock-selection-realtime-and-light-archive.test.js", "pattern": "正式归档只落入选成员对应候选" },
+        { "file": "server/test/stock-selection-realtime-and-light-archive.test.js", "pattern": "轻量归档批次的候选列表必须由实时引擎还原全市场" },
+        { "file": "server/test/stock-selection-realtime-and-light-archive.test.js", "pattern": "轻量批次未入选单股必须由实时引擎还原排除原因" }
+      ],
+      "owner": "投资策略选股中心",
+      "status": "local_verified"
+    },
+    {
+      "id": "SEL-ARCHIVE-LIGHT-SLOT-001",
+      "title": "stock_analysis_refresh 下新增 selection_archive_light 单槽，串行归档双市场×双策略；STOCK_SELECTION_LEGACY_SLOTS=0/1 切换旧裂变排队且不改 job_code",
+      "implementation": {
+        "file": "server/jobs/stockAnalysisRefresh.js",
+        "symbol": "runSelectionArchiveLight"
+      },
+      "tests": [
+        { "file": "server/test/stock-selection-realtime-and-light-archive.test.js", "pattern": "默认 STOCK_SELECTION_LEGACY_SLOTS=0 时 18:40 必须启用 selection_archive_light 单槽" },
+        { "file": "server/test/stock-selection-realtime-and-light-archive.test.js", "pattern": "STOCK_SELECTION_LEGACY_SLOTS=1 必须恢复 18:40 selection_periodic" },
+        { "file": "server/test/stock-selection-realtime-and-light-archive.test.js", "pattern": "全部分市场/策略成功后 archive_light 必须完成" },
+        { "file": "server/test/stock-selection-realtime-and-light-archive.test.js", "pattern": "必须串行跑 2 市场×策略集合×日/周 + 影子" }
+      ],
+      "owner": "任务编排与选股中心",
       "status": "local_verified"
     },
     {
@@ -7074,6 +7125,103 @@
       ],
       "owner": "证券分析",
       "status": "local_verified"
-    }
-  ]
+    },
+    {
+      "id": "SEL-REALTIME-FRONTEND-001",
+      "title": "选股页实时按日筛选与历史归档切换：实时走 /screen、归档回 /runs 并显式提示只展示入选组合与轻量化摘要；STOCK_SELECTION_REALTIME_DISABLED 时平滑回退而不报空页；实时模式保存个人排除后重跑 /screen 而非派生归档批次",
+      "implementation": {
+        "file": "public/js/presenters/stock-selection-presenter.js",
+        "symbol": "ssLoadRealtimeSelection"
+      },
+      "tests": [
+        { "file": "server/test/stock-selection-ux-behavior.test.js", "pattern": "实时模式默认取最近可用估值日调用 /screen 并渲染组合与候选" },
+        { "file": "server/test/stock-selection-ux-behavior.test.js", "pattern": "STOCK_SELECTION_REALTIME_DISABLED 平滑回退历史归档快照" },
+        { "file": "server/test/stock-selection-frontend.test.js", "pattern": "页面提供实时/归档切换、日期选择器和归档提示" }
+      ],
+      "owner": "投资策略选股中心",
+      "status": "local_verified"
+    },
+    {
+      "id": "ADMIN-SLOT-MODE-DISPLAY-001",
+      "title": "后台槽位名称按 job_code 子模式与市场显示（含 selection_archive_light），只改展示，不改任何 job_code 或排程时刻",
+      "implementation": {
+        "file": "public/js/admin.js",
+        "symbol": "formatSlotDisplayName"
+      },
+      "tests": [
+        { "file": "server/test/admin-layer-presenter.test.js", "pattern": "个股分析刷新（选股轻量归档 · A股）" },
+        { "file": "server/test/admin-layer-presenter.test.js", "pattern": "个股分析刷新（港股）" }
+      ],
+    "owner": "任务治理",
+    "status": "local_verified"
+  },
+  {
+    "id": "JOB-CONVERGENCE-NIGHTLY-001",
+    "title": "波次二凌晨任务收敛：7 个新任务码按 afterTradingDay + previous_trading_day 串行复用既有 Runner，逐子阶段失败隔离且受 JOB_CONVERGENCE_ENABLED 控制，旧任务码保留手工入口但不再自动排槽",
+    "implementation": {
+      "file": "server/services/jobConvergence.js",
+      "symbol": "runCnStockEodSync"
+    },
+    "tests": [
+      {
+        "file": "server/test/job-convergence-stage234.test.js",
+        "pattern": "JOB_CONVERGENCE_ENABLED=1/0 槽位收敛与回滚"
+      },
+      {
+        "file": "server/test/job-convergence-stage234.test.js",
+        "pattern": "现金分红失败不阻断换股结算"
+      },
+      {
+        "file": "server/test/job-convergence-stage234.test.js",
+        "pattern": "安全评分失败不回滚已发布估值分区"
+      }
+    ],
+    "owner": "任务治理",
+    "status": "local_verified"
+  },
+  {
+    "id": "JOB-CONVERGENCE-ALIAS-001",
+    "title": "阶段 3 旧任务码历史告警只按 LEGACY_JOB_ALIAS_MAP 的同数据集分区证据或新任务连续 3 次成功且 data_as_of 达标证据归档，禁止空证据、跨作用域和批量清零",
+    "implementation": {
+      "file": "server/services/jobRecoveryEvidence.js",
+      "symbol": "LEGACY_JOB_ALIAS_MAP"
+    },
+    "tests": [
+      {
+        "file": "server/test/job-convergence-stage234.test.js",
+        "pattern": "同数据集分区已发布且质量通过才允许归档"
+      },
+      {
+        "file": "server/test/job-convergence-stage234.test.js",
+        "pattern": "连续序列最新一条失败即拒绝归档"
+      },
+      {
+        "file": "server/test/job-convergence-stage234.test.js",
+        "pattern": "跨作用域拒绝：任务码不变家族与数据质量告警不参与别名归档"
+      }
+    ],
+    "owner": "任务治理",
+    "status": "local_verified"
+  },
+  {
+    "id": "SELECTION-CANDIDATE-PRUNE-001",
+    "title": "阶段 4 存量冗余候选清理只删除未入选 portfolio_members 的历史 daily/weekly 行，默认 dry-run、生产需 --allow-production，清理后断链必须为 0 且不执行 CREATE EXTENSION",
+    "implementation": {
+      "file": "server/scripts/pruneSelectionCandidates.js",
+      "symbol": "PRUNABLE_PREDICATE"
+    },
+    "tests": [
+      {
+        "file": "server/test/job-convergence-stage234.test.js",
+        "pattern": "--execute 只删未入选行，入选行与季度批次全保留"
+      },
+      {
+        "file": "server/test/job-convergence-stage234.test.js",
+        "pattern": "NODE_ENV=production 缺少 --allow-production 必须拒绝执行"
+      }
+    ],
+    "owner": "投资策略选股中心",
+    "status": "local_verified"
+  }
+]
 }

@@ -23,6 +23,7 @@ const { Client } = require('pg');
 const { testDatabaseConfig } = require('./lib/testDatabase');
 const { pool } = require('../db/connection');
 const repo = require('../repositories/stockSelectionRepository');
+const pbProjectionRepository = require('../repositories/pbProjectionRepository');
 const service = require('../services/stockSelectionService');
 const PERIODS = require('../services/stockSelectionPeriods');
 
@@ -245,6 +246,16 @@ async function phaseReuse(client, sourceId) {
   await client.query(`DELETE FROM analytics.stock_selection_universe_artifacts WHERE market='CN' AND target_date=$1::date`, [AS_OF]);
   await seedCalendar(client);
   const stocks = await seedCompleteStocks(client, sourceId);
+  // PB 投影与 daily_valuations 同源：测试直接写标准事实后按同一窗口重建投影，
+  // 让默认开启的 PB_PROJECTION_READ_ENABLED 仍验证真实输入而非空投影。
+  const stockIds = stocks.map(item => item.instrumentId);
+  await pbProjectionRepository.rebuildProjectionRange({
+    market: 'CN',
+    fromDate: '2016-11-20',
+    toDate: AS_OF,
+    months: pbProjectionRepository.monthsBetween('2016-11-20', AS_OF),
+    instrumentIds: stockIds,
+  }, client);
   // 计数断言：命中复用必须真正跳过全市场纯计算（0 次 loadPbWindow）。
   let loadPbWindowCalls = 0;
   const originalLoadPbWindow = repo.loadPbWindow;
@@ -311,6 +322,10 @@ async function phaseReuse(client, sourceId) {
   const wmBeforePb = await watermarkOf();
   await client.query(`UPDATE market.daily_valuations SET pb=1.25 WHERE instrument_id=$1 AND trade_date=$2::date`,
     [stocks[0].instrumentId, AS_OF]);
+  await pbProjectionRepository.rebuildProjectionRange({
+    market: 'CN', fromDate: AS_OF, toDate: AS_OF,
+    months: pbProjectionRepository.monthsBetween(AS_OF, AS_OF), instrumentIds: stockIds,
+  }, client);
   const wmAfterPb = await watermarkOf();
   ok(JSON.stringify(wmAfterPb) !== JSON.stringify(wmBeforePb), 'PB 原地变化必须立即改变轻量水印');
   loadPbWindowCalls = 0;

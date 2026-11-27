@@ -10,6 +10,7 @@ const { childProcessEnv, mergeExternalCallStatsFromStderr } = require('./externa
 const txControl = require('../repositories/transactionControl');
 const { sourceIds } = require('../repositories/convertibleBondLifecycleSyncRepository.js');
 const repository = require('../repositories/convertibleBondLifecycleSyncRepository.js');
+const pbProjectionSync = require('./pbProjectionSync');
 
 const ISSUE_FIELDS = 'ts_code,ann_date,res_ann_date,issue_size,issue_price,issue_type,shd_ration_record_date,shd_ration_ratio,onl_date,onl_name,onl_size,onl_pch_num,offl_size,shd_ration_size';
 const OVERLAP_DAYS = 3;
@@ -164,10 +165,12 @@ async function saveOfficialRow(client, row, sources) {
     await upsertEvent(client, instrumentId, type, date, sourceId,
       `${source}:${row.sourceKey}:${type}:${isoDate(date)}`, row, true);
   }
+  let updatedInstrument = null;
   if (row.listing_date) {
-    await repository.update_core_instruments([instrumentId, isoDate(row.listing_date)], client);
+    const updated = await repository.update_core_instruments([instrumentId, isoDate(row.listing_date)], client);
+    updatedInstrument = (updated && updated.rows && updated.rows[0]) || null;
   }
-  return canonicalCode;
+  return { code: canonicalCode, updatedInstrument };
 }
 
 async function syncConvertibleBondLifecycleFacts({ toDate, officialEvents = [], includeTushare = true } = {}) {
@@ -185,6 +188,8 @@ async function syncConvertibleBondLifecycleFacts({ toDate, officialEvents = [], 
   }
   const client = await pool.connect();
   let runId = null;
+  // 触发面 5：主档 list_date 更新后（尤其股票）需要重算受影响证券的 PB 月汇总。
+  const updatedStockMarkets = new Map();
   try {
     await txControl.begin(client);
     const sources = await sourceIds(client);
@@ -206,10 +211,16 @@ async function syncConvertibleBondLifecycleFacts({ toDate, officialEvents = [], 
       }
     }
     for (const row of officialRows) {
-      const code = await saveOfficialRow(client, row, sources);
+      const saved = await saveOfficialRow(client, row, sources);
+      const code = saved && saved.code;
       if (!code) {
         excludedInvalidCodes.push({ source: row.source || 'official', code: String(row.bond_code || ''), sourceKey: row.sourceKey || row.url || '', reason: 'invalid_bond_code' });
         continue;
+      }
+      if (saved.updatedInstrument && String(saved.updatedInstrument.asset_class) === 'stock') {
+        const market = String(saved.updatedInstrument.market || 'CN').toUpperCase();
+        if (!updatedStockMarkets.has(market)) updatedStockMarkets.set(market, new Set());
+        updatedStockMarkets.get(market).add(Number(saved.updatedInstrument.instrument_id));
       }
       persisted.add(code);
       for (const [eventType, value] of [['shareholder_record', row.shareholder_record_date],
@@ -229,6 +240,9 @@ async function syncConvertibleBondLifecycleFacts({ toDate, officialEvents = [], 
     }
     await repository.update_ops_ingestion_runs([runId, persisted.size], client);
     await txControl.commit(client);
+    for (const [market, instrumentIds] of updatedStockMarkets) {
+      await pbProjectionSync.safeSyncInstrumentChange({ market, instrumentIds: Array.from(instrumentIds) });
+    }
     return { ok: true, fromDate: window.startDate, toDate: window.endDate, issueCount: issueRows.length,
       officialCount: officialRows.length, eventCount: uniqueExpected.length,
       qualityStatus: 'passed', persistedCodes: [...persisted].filter(Boolean), excludedInvalidCodes };

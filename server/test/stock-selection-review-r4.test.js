@@ -38,6 +38,8 @@ async function main() {
 // ===================== R4-01：选股领取不得继承 A 股转债依赖 =====================
 async function runR401() {
   await check('R4-01 选股槽领取按模式解析依赖，不再被转债链挡住', async () => {
+    const oldConvergence = process.env.JOB_CONVERGENCE_ENABLED;
+    process.env.JOB_CONVERGENCE_ENABLED = '0';
     const patched = patchSlotsRepository();
     try {
       const { claimSlot } = require('../services/jobScheduleSlots');
@@ -52,7 +54,11 @@ async function runR401() {
       const blocked = await claimSlot(9, 'test-worker', 'scheduled');
       assert.strictEqual(blocked, null, 'core 模式仍要被缺失的转债上游阻断');
       assert.strictEqual(patched.depQueries, 1, 'core 模式必须按原规则查询依赖状态');
-    } finally { patched.restore(); }
+    } finally {
+      patched.restore();
+      if (oldConvergence === undefined) delete process.env.JOB_CONVERGENCE_ENABLED;
+      else process.env.JOB_CONVERGENCE_ENABLED = oldConvergence;
+    }
   });
 
   await check('R4-01 blocked 槽的恢复分支同样按模式解析依赖', async () => {
@@ -261,6 +267,8 @@ async function runDatabaseChecks() {
   const migrations = require('../db/migrations');
 
   await check('R4-01 真库：选股槽在转债链缺失时可领取，core 仍被阻断', async () => {
+    const oldConvergence = process.env.JOB_CONVERGENCE_ENABLED;
+    process.env.JOB_CONVERGENCE_ENABLED = '0';
     await migrations.runMigrations();
     // 前面的进程内用例把调度服务与仓储放进了替身缓存，真库段必须重新加载真实模块。
     delete require.cache[require.resolve('../repositories/jobScheduleSlotsRepository')];
@@ -292,6 +300,8 @@ async function runDatabaseChecks() {
       const claimedCore = await slots.claimSlot(coreSlot.slot_id, 'r4-test-worker');
       assert.strictEqual(claimedCore, null, 'core 模式仍要被缺失的转债上游阻断');
     } finally {
+      if (oldConvergence === undefined) delete process.env.JOB_CONVERGENCE_ENABLED;
+      else process.env.JOB_CONVERGENCE_ENABLED = oldConvergence;
       if (slotIds.length) {
         await pool.query(`DELETE FROM ops.job_schedule_slots WHERE slot_id = ANY($1::bigint[])`, [slotIds]).catch(() => {});
       }

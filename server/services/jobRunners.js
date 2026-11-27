@@ -159,10 +159,15 @@ async function runJobByCode(jobCode, reason = 'manual-retry', businessDate, cont
       });
     }
     case 'convertible_bond_revision_motive_inputs_sync':
-      return require('../services/convertibleBondRevisionMotiveService').syncRevisionMotiveInputs({
-        businessDate: businessDate && /^\d{4}-\d{2}-\d{2}$/.test(String(businessDate)) ? String(businessDate) : undefined,
-        limit: context.limit,
-      });
+      {
+        // 凌晨收敛任务把目标交易日（上一交易日）放在 context.businessDate；手工补跑仍用计划业务日。
+        // 持有人/质押报告期的目标截止日必须取已收盘的目标日，不能用周六等执行日冒充。
+        const motiveDate = context.businessDate || businessDate;
+        return require('../services/convertibleBondRevisionMotiveService').syncRevisionMotiveInputs({
+          businessDate: motiveDate && /^\d{4}-\d{2}-\d{2}$/.test(String(motiveDate)) ? String(motiveDate) : undefined,
+          limit: context.limit,
+        });
+      }
     case 'convertible_bond_revision_motive_calculate':
       return require('../services/convertibleBondRevisionMotiveService').calculateConvertibleBondRevisionMotiveScores(
         businessDate && /^\d{4}-\d{2}-\d{2}$/.test(String(businessDate)) ? String(businessDate) : undefined
@@ -196,6 +201,21 @@ async function runJobByCode(jobCode, reason = 'manual-retry', businessDate, cont
         businessDate,
       });
     }
+    // ===== 波次二凌晨收敛任务（阶段 2/3）：只编排既有 Runner，不复制业务实现 =====
+    case 'cn_stock_eod_sync':
+      return require('./jobConvergence').runCnStockEodSync(reason, businessDate, context, runJobByCode);
+    case 'hk_stock_eod_sync':
+      return require('./jobConvergence').runHkStockEodSync(reason, businessDate, context, runJobByCode);
+    case 'convertible_bond_eod_sync':
+      return require('./jobConvergence').runConvertibleBondEodSync(reason, businessDate, context, runJobByCode);
+    case 'exchange_announcements_sync':
+      return require('./jobConvergence').runExchangeAnnouncementsSync(reason, businessDate, context, runJobByCode);
+    case 'bond_analytics_refresh':
+      return require('./jobConvergence').runBondAnalyticsRefresh(reason, businessDate, context, runJobByCode);
+    case 'stock_analytics_refresh':
+      return require('./jobConvergence').runStockAnalyticsRefresh(reason, businessDate, context, runJobByCode);
+    case 'system_retention':
+      return require('./jobConvergence').runSystemRetention(reason, businessDate, context, runJobByCode);
     default:
       if (jobCode && jobCode.indexOf('market_close:') === 0) {
         const label = jobCode.slice('market_close:'.length);

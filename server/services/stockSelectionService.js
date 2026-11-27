@@ -34,6 +34,124 @@ const PERIOD_TYPE_OF_KIND = Object.freeze({
 // 收盘可见时点：A股 15:00、港股 16:00（当地）。只有日期没有时刻的公告保守地从下一交易日视为可用。
 const CLOSE_CUTOFF = Object.freeze({ CN: 'T15:00:00+08:00', HK: 'T16:00:00+08:00' });
 
+// ===== 实时筛选：开关、并发、SQL 超时与分区水位 LRU 缓存（方案 4.6） =====
+const SCREEN_PARTITION_DATASETS = Object.freeze({
+  CN: ['stock_master', 'stock_daily', 'stock_valuation', 'stock_financial_reports', 'stock_suspend_calendar', 'stock_adj_factor', 'stock_selection_inputs_cn'],
+  HK: ['stock_master', 'stock_daily', 'stock_valuation', 'stock_financial_reports', 'hk_trade_calendar', 'hk_trade_rules', 'position_close_bars_hk', 'stock_selection_inputs_hk'],
+});
+
+function realtimeSelectionEnabled() {
+  const raw = process.env.STOCK_SELECTION_REALTIME;
+  return String(raw === undefined || raw === null || raw === '' ? '1' : raw).trim() !== '0';
+}
+
+function legacySelectionSlotsEnabled() {
+  return String(process.env.STOCK_SELECTION_LEGACY_SLOTS || '0').trim() === '1';
+}
+
+function screenStatementTimeoutMs() {
+  const value = Number(process.env.SCREEN_STATEMENT_TIMEOUT_MS || 15000);
+  return Number.isFinite(value) && value > 0 ? Math.floor(value) : 15000;
+}
+
+function screenMaxConcurrent() {
+  const value = Number(process.env.MAX_CONCURRENT_SCREEN_COMPUTE || 2);
+  return Number.isFinite(value) && value > 0 ? Math.floor(value) : 2;
+}
+
+function screenCacheTtlMs() {
+  const value = Number(process.env.SCREEN_CACHE_TTL_MS || 5 * 60 * 1000);
+  return Number.isFinite(value) && value > 0 ? Math.floor(value) : 5 * 60 * 1000;
+}
+
+function screenCacheMaxKeys() {
+  const value = Number(process.env.SCREEN_CACHE_MAX_KEYS || 20);
+  return Number.isFinite(value) && value > 0 ? Math.floor(value) : 20;
+}
+
+function screenOverloadedError() {
+  const error = new Error('实时筛选计算繁忙，请稍后重试');
+  error.status = 503;
+  error.code = 'STOCK_SELECTION_SCREEN_BUSY';
+  return error;
+}
+
+function screenDisabledError() {
+  const error = new Error('实时筛选接口已停用，请使用历史归档快照');
+  error.status = 503;
+  error.code = 'STOCK_SELECTION_REALTIME_DISABLED';
+  return error;
+}
+
+const screenComputeState = { active: 0, waiters: [] };
+
+function releaseScreenComputeSlot() {
+  const next = screenComputeState.waiters.shift();
+  if (next) {
+    if (next.timer) clearTimeout(next.timer);
+    next.resolve();
+    return;
+  }
+  screenComputeState.active = Math.max(0, screenComputeState.active - 1);
+}
+
+function acquireScreenComputeSlot({ maxConcurrent = screenMaxConcurrent(), waitMs = 1500 } = {}) {
+  const limit = Math.max(1, Number(maxConcurrent) || 1);
+  if (screenComputeState.active < limit) {
+    screenComputeState.active += 1;
+    return Promise.resolve(releaseScreenComputeSlot);
+  }
+  return new Promise((resolve, reject) => {
+    const waiter = { resolve: null, reject: null, timer: null };
+    const grant = () => {
+      if (waiter.timer) clearTimeout(waiter.timer);
+      // 槽位由 releaseScreenComputeSlot 直接移交，active 保持不变。
+      waiter.resolve(releaseScreenComputeSlot);
+    };
+    waiter.resolve = grant;
+    waiter.reject = reject;
+    waiter.timer = setTimeout(() => {
+      const index = screenComputeState.waiters.indexOf(waiter);
+      if (index >= 0) screenComputeState.waiters.splice(index, 1);
+      reject(screenOverloadedError());
+    }, Math.max(1, Number(waitMs) || 1));
+    if (waiter.timer.unref) waiter.timer.unref();
+    screenComputeState.waiters.push(waiter);
+  });
+}
+
+const screenCache = new Map();
+const screenInflight = new Map();
+
+function pruneScreenCache(now = Date.now()) {
+  for (const [key, item] of screenCache) {
+    if (!item || item.expiresAt <= now) screenCache.delete(key);
+  }
+  while (screenCache.size > screenCacheMaxKeys()) {
+    const oldest = screenCache.keys().next().value;
+    if (oldest === undefined) break;
+    screenCache.delete(oldest);
+  }
+}
+
+function readScreenCache(key, now = Date.now()) {
+  const item = screenCache.get(key);
+  if (!item || item.expiresAt <= now) {
+    if (item) screenCache.delete(key);
+    return null;
+  }
+  // Map 重新插入保持 LRU 顺序。
+  screenCache.delete(key);
+  screenCache.set(key, item);
+  return item.entry;
+}
+
+function writeScreenCache(key, entry) {
+  screenCache.delete(key);
+  screenCache.set(key, { entry, expiresAt: Date.now() + screenCacheTtlMs() });
+  pruneScreenCache();
+}
+
 function pad2(value) { return String(value).padStart(2, '0'); }
 
 function quarterOf(date) {
@@ -712,11 +830,17 @@ async function computeGrahamSelection(input, { market, asOfDate, strategyCode, p
 
   const excludedCodes = new Set((input.excludedCodes || []).map(c => String(c || '').trim().toUpperCase()).filter(Boolean));
   const excludedIndustries = new Set((input.excludedIndustryCodes || []).map(c => String(c || '').trim()).filter(Boolean));
+  const excludedInstrumentIds = new Set((input.excludedInstrumentIds || []).map(id => Number(id)));
+  const excludedIndustryKeys = new Set((input.excludedIndustryKeys || []).map(key => String(key)));
   const selected = [];
   for (const item of ranked) {
     if (selected.length >= params.slotsPerMarket) break;
     if (excludedCodes.has(String(item.code || '').toUpperCase())) continue;
-    if (item.industry && excludedIndustries.has(String(item.industry.code || ''))) continue;
+    if (excludedInstrumentIds.has(Number(item.instrumentId))) continue;
+    if (item.industry && item.industry.code) {
+      if (excludedIndustries.has(String(item.industry.code))) continue;
+      if (excludedIndustryKeys.has(PORTFOLIO.industryIdentityKey(item.industry))) continue;
+    }
     selected.push(item);
   }
   // 席位与权重一律走共享构造器（buildSelectedPortfolio）：members 表的 slot_no /
@@ -937,6 +1061,7 @@ async function computeSelection(input, tx) {
     params,
     excludedInstrumentIds: input.excludedInstrumentIds || null,
     excludedIndustryCodes: input.excludedIndustryCodes || null,
+    excludedIndustryKeys: input.excludedIndustryKeys || null,
   });
 
   // 质量裁决：PENDING 表示"未知"，FAIL 是"明确不符合"，RISK 是"当期风险暂缓"。
@@ -1562,6 +1687,17 @@ async function computeAndPersist(input, options = {}) {
         };
       }
     }
+    // 轻量归档（方案 4.4）：正式季度/每日/每周（含影子）只落入选 ≤30 席候选；
+    // 全市场行业计数摘要冻结在 manifest，读取端不再扫全市场候选表。
+    const lightArchive = ['quarterly', 'daily', 'weekly'].includes(runKind);
+    if (lightArchive) {
+      manifest.archiveMode = 'light';
+      if (!Array.isArray(manifest.industryIdentityCounts)) {
+        manifest.industryIdentityCounts = Array.isArray((reusePlan.matched && reusePlan.candidate.inputManifest || {}).industryIdentityCounts)
+          ? reusePlan.candidate.inputManifest.industryIdentityCounts
+          : industryIdentityCountsOfEvaluated(computed.evaluated);
+      }
+    }
     const quarter = input.quarter || quarterOf(computed.asOfDate);
     const ownerSubjectId = input.ownerSubjectId || null;
     // 业务身份范围锁：并发/重试必须在锁内重查内容幂等键；锁外各算一次再让随机失败者退出，
@@ -1644,11 +1780,11 @@ async function computeAndPersist(input, options = {}) {
       isShadow,
     });
     if (reusePlan.matched) {
-      // 命中复用：候选与成员从源 daily 原样复制到新 weekly 批次，保证独立 run_id 且内容对账一致。
-      await repo.copyCandidates({ sourceRunId: reusePlan.candidate.runId, targetRunId: runId }, tx);
+      // 命中复用：成员与“入选成员候选”从源 daily 原样复制到新 weekly 批次，
+      // 保证独立 run_id 且内容对账一致；不再复制全市场被淘汰行（轻量归档）。
+      await repo.copyMemberCandidates({ sourceRunId: reusePlan.candidate.runId, targetRunId: runId }, tx);
       await repo.copyMembers({ sourceRunId: reusePlan.candidate.runId, targetRunId: runId }, tx);
     } else {
-      // 候选要保存全市场逐项决策，不能只留最有希望的 30 只。
       const rankedById = new Map(computed.ranked.map(item => [item.instrumentId, item]));
       const rows = computed.evaluated.map(item => {
         const rankedRow = rankedById.get(item.instrumentId) || {};
@@ -1663,7 +1799,9 @@ async function computeAndPersist(input, options = {}) {
           rankBlockReasons: item.rankBlockReasons || [],
         });
       });
-      await repo.insertCandidates(tx, runId, rows);
+      // 轻量归档只保存入选 ≤30 席的候选；全市场被淘汰行由实时筛选引擎按需还原。
+      const selectedIds = new Set((computed.portfolio.members || []).map(member => Number(member.instrumentId)));
+      await repo.insertCandidates(tx, runId, lightArchive ? rows.filter(row => selectedIds.has(Number(row.instrumentId))) : rows);
       await repo.insertMembers(tx, runId, computed.portfolio.members);
     }
     let publish = null;
@@ -2124,6 +2262,10 @@ async function getMarkets({ strategyCode, periodType } = {}) {
       // 页面名称必须写清是"市场代理"，不能标成精确全市场整体 PB（方案 3.2）。
       proxyLabel: market === 'CN' ? '中证全指PB（A股市场代理）' : '恒生指数PB（港股市场代理）',
       asOfDate: latest.tradeDate,
+      // 前端首次进入实时模式时优先使用最近可用估值日，避免盘中/周末把当天误算成 PB 缺口。
+      latestAsOfDate: latest.tradeDate,
+      latestValuationDate: latest.tradeDate,
+      latestPublishedDate: published ? (published.as_of_date || null) : null,
       pb: latest.pb,
       pe: latest.pe,
       sourceCode: latest.sourceCode,
@@ -2228,10 +2370,542 @@ function withPersonalSelection(row, context) {
   });
 }
 
+function industryIdentityCountsOfEvaluated(evaluated) {
+  const map = new Map();
+  (evaluated || []).forEach(item => {
+    const industry = item && item.industry;
+    if (!industry || !industry.code) return;
+    const key = [industry.system || '', industry.version || '', String(industry.code)].join('::');
+    const entry = map.get(key) || {
+      code: String(industry.code), name: industry.name || null,
+      system: industry.system || null, version: industry.version || null, affectedCount: 0,
+    };
+    entry.affectedCount += 1;
+    map.set(key, entry);
+  });
+  return Array.from(map.values());
+}
+
+function industryIdentityCountsOfProjectionRows(rows) {
+  const map = new Map();
+  (rows || []).forEach(row => {
+    if (!row || !row.industry_code) return;
+    const key = [row.industry_system || '', row.industry_version || '', String(row.industry_code)].join('::');
+    const entry = map.get(key) || {
+      code: String(row.industry_code), name: row.industry_name || null,
+      system: row.industry_system || null, version: row.industry_version || null, affectedCount: 0,
+    };
+    entry.affectedCount += 1;
+    map.set(key, entry);
+  });
+  return Array.from(map.values());
+}
+
+/** 把一次纯计算快照压成与仓储 listCandidates 同形的行，供实时分页/单股详情共用。 */
+function projectionRowsOfComputed(computed) {
+  const rankedById = new Map((computed.ranked || []).map(item => [Number(item.instrumentId), item]));
+  const anomalyById = computed.anomalyById || {};
+  return (computed.evaluated || []).map(item => {
+    const instrumentId = Number(item.instrumentId);
+    const rankedRow = rankedById.get(instrumentId) || {};
+    const anomaly = anomalyById[instrumentId] || item.anomaly || null;
+    const detail = repo.compactCandidateDetail(Object.assign({}, item, {
+      anomaly,
+      rankReady: item.rankReady !== false,
+      rankBlockReasons: item.rankBlockReasons || [],
+    }));
+    const pbWindow = (item.detail && item.detail.pbWindow) || {};
+    const industry = item.industry || null;
+    return {
+      instrument_id: instrumentId,
+      company_id: item.companyId === null || item.companyId === undefined ? null : Number(item.companyId),
+      code: item.code,
+      name: item.name || null,
+      industry_code: industry ? industry.code : null,
+      industry_name: industry ? industry.name : null,
+      industry_system: industry ? industry.system : null,
+      industry_version: industry ? industry.version : null,
+      current_pb: item.currentPb === undefined ? null : item.currentPb,
+      historical_pb_max: item.historicalPbMax === undefined ? null : item.historicalPbMax,
+      historical_pb_min: item.historicalPbMin === undefined ? null : item.historicalPbMin,
+      current_pe: item.currentPe === undefined ? null : item.currentPe,
+      profit_status: item.profitStatus || null,
+      dividend_yield: item.dividendYield === undefined ? null : item.dividendYield,
+      equity_amount: item.equityAmount === undefined ? null : item.equityAmount,
+      equity_currency: item.equityCurrency || null,
+      equity_cny: item.equityCny === undefined ? null : item.equityCny,
+      fx_rate: item.fxRate === undefined ? null : item.fxRate,
+      fx_date: item.fxDate || null,
+      pb_rank: rankedRow.pbRank === undefined ? (item.pbRank === undefined ? null : item.pbRank) : rankedRow.pbRank,
+      pe_rank: rankedRow.peRank === undefined ? (item.peRank === undefined ? null : item.peRank) : rankedRow.peRank,
+      dividend_rank: rankedRow.dividendRank === undefined ? (item.dividendRank === undefined ? null : item.dividendRank) : rankedRow.dividendRank,
+      total_score: rankedRow.totalScore === undefined ? (item.totalScore === undefined ? null : item.totalScore) : rankedRow.totalScore,
+      selection_order: rankedRow.selectionOrder === undefined ? (item.selectionOrder === undefined ? null : item.selectionOrder) : rankedRow.selectionOrder,
+      filter_status: item.filterStatus,
+      data_quality_status: item.dataQualityStatus || 'partial',
+      exclusion_reasons: item.exclusionReasons || [],
+      pb_positive_extrema_ratio: item.pbPositiveExtremaRatio === undefined ? null : item.pbPositiveExtremaRatio,
+      pb_pe_product: item.pbPeProduct === undefined ? null : item.pbPeProduct,
+      valuation_status: item.valuationStatus === undefined ? null : item.valuationStatus,
+      valuation_pass_reason: item.valuationPassReason === undefined ? null : item.valuationPassReason,
+      ttm_profit_status: item.ttmProfitStatus || null,
+      rank_ready: item.rankReady === undefined ? null : item.rankReady === true,
+      rank_block_reasons: item.rankBlockReasons || [],
+      pb_covered_days: pbWindow.coveredDays === undefined ? null : pbWindow.coveredDays,
+      pb_expected_days: pbWindow.expectedDays === undefined ? null : pbWindow.expectedDays,
+      pb_gap_days: pbWindow.gapDays === undefined ? null : pbWindow.gapDays,
+      pb_history_years: pbWindow.historyYears === undefined ? null : pbWindow.historyYears,
+      detail,
+    };
+  });
+}
+
+function rankedPortfolioItemOf(row) {
+  return {
+    instrumentId: Number(row.instrument_id),
+    code: row.code,
+    name: row.name || null,
+    companyId: row.company_id === null || row.company_id === undefined ? null : Number(row.company_id),
+    currentPb: row.current_pb === null || row.current_pb === undefined ? null : Number(row.current_pb),
+    currentPe: row.current_pe === null || row.current_pe === undefined ? null : Number(row.current_pe),
+    dividendYield: row.dividend_yield === null || row.dividend_yield === undefined ? null : Number(row.dividend_yield),
+    profitStatus: row.profit_status,
+    ttmProfitStatus: row.ttm_profit_status || row.profit_status,
+    filterStatus: row.filter_status,
+    rankReady: row.rank_ready === null || row.rank_ready === undefined
+      ? !(row.detail && row.detail.rankReady === false) : row.rank_ready === true,
+    selectionOrder: row.selection_order,
+    industry: row.industry_code ? {
+      code: row.industry_code, name: row.industry_name,
+      system: row.industry_system, version: row.industry_version,
+    } : null,
+  };
+}
+
+function grahamPortfolioOfEntry(entry, exclusion, positionRatio) {
+  const excludedIds = new Set((exclusion.instrumentIds || []).map(Number));
+  const excludedCodes = new Set((exclusion.industryCodes || []).map(String));
+  const excludedKeys = new Set((exclusion.industryKeys || []).map(String));
+  const ranked = entry.rows
+    .filter(row => row.filter_status === RULES.STATUS.PASS && row.total_score !== null && row.total_score !== undefined)
+    .slice()
+    .sort((a, b) => {
+      const diff = Number(b.total_score) - Number(a.total_score);
+      if (diff !== 0) return diff;
+      return String(a.code || '').localeCompare(String(b.code || ''));
+    });
+  const selected = [];
+  for (const row of ranked) {
+    if (selected.length >= Number(entry.params.slotsPerMarket || 30)) break;
+    if (excludedIds.has(Number(row.instrument_id))) continue;
+    if (row.industry_code && (excludedCodes.has(String(row.industry_code))
+      || excludedKeys.has(PORTFOLIO.industryIdentityKey({ code: row.industry_code, system: row.industry_system, version: row.industry_version })))) continue;
+    selected.push(rankedPortfolioItemOf(row));
+  }
+  return PORTFOLIO.buildSelectedPortfolio({
+    selected,
+    positionRatio,
+    slots: Number(entry.params.slotsPerMarket || 30),
+    params: entry.params,
+  });
+}
+
+function portfolioOfEntry(entry, exclusion = {}, positionRatio = 1) {
+  if (entry.strategyCode === GRAHAM_RULES.STRATEGY_CODE_GRAHAM) {
+    return grahamPortfolioOfEntry(entry, exclusion, positionRatio);
+  }
+  const ranked = entry.rows.filter(row => row.filter_status === RULES.STATUS.PASS).map(rankedPortfolioItemOf);
+  const anomalyById = {};
+  entry.rows.forEach(row => {
+    if (row.detail && row.detail.anomaly) anomalyById[Number(row.instrument_id)] = row.detail.anomaly;
+  });
+  return PORTFOLIO.buildPortfolio({
+    ranked,
+    anomalyById,
+    positionRatio,
+    slots: Number(entry.params.slotsPerMarket || 30),
+    industryLimitRatio: entry.params.industryLimitRatio,
+    params: entry.params,
+    excludedInstrumentIds: exclusion.instrumentIds || null,
+    excludedIndustryKeys: exclusion.industryKeys || null,
+    excludedIndustryCodes: exclusion.industryCodes || null,
+  });
+}
+
+function paginateScreenEntry(entry, { limit = 50, offset = 0, filterStatus = null, orderBy = 'rank' } = {}) {
+  let rows = entry.rows;
+  if (filterStatus) rows = rows.filter(row => row.filter_status === filterStatus);
+  const sorted = rows.slice().sort((a, b) => {
+    if (orderBy === 'code') return String(a.code || '').localeCompare(String(b.code || ''));
+    const left = a.selection_order === null || a.selection_order === undefined ? 100000 : Number(a.selection_order);
+    const right = b.selection_order === null || b.selection_order === undefined ? 100000 : Number(b.selection_order);
+    if (left !== right) return left - right;
+    return String(a.code || '').localeCompare(String(b.code || ''));
+  });
+  const safeLimit = Math.max(0, Number(limit) || 0);
+  const safeOffset = Math.max(0, Number(offset) || 0);
+  return { rows: sorted.slice(safeOffset, safeOffset + safeLimit), total: sorted.length };
+}
+
+function screenCandidateEnvelope(row) {
+  return {
+    instrumentId: Number(row.instrument_id),
+    code: row.code,
+    name: row.name,
+    industry: row.industry_code ? {
+      code: row.industry_code, name: row.industry_name,
+      system: row.industry_system, version: row.industry_version,
+    } : null,
+    currentPb: row.current_pb === null || row.current_pb === undefined ? null : Number(row.current_pb),
+    historicalPbMax: row.historical_pb_max === null || row.historical_pb_max === undefined ? null : Number(row.historical_pb_max),
+    historicalPbMin: row.historical_pb_min === null || row.historical_pb_min === undefined ? null : Number(row.historical_pb_min),
+    currentPe: row.current_pe === null || row.current_pe === undefined ? null : Number(row.current_pe),
+    profitStatus: row.profit_status,
+    dividendYield: row.dividend_yield === null || row.dividend_yield === undefined ? null : Number(row.dividend_yield),
+    equityAmount: row.equity_amount === null || row.equity_amount === undefined ? null : Number(row.equity_amount),
+    equityCurrency: row.equity_currency,
+    equityCny: row.equity_cny === null || row.equity_cny === undefined ? null : Number(row.equity_cny),
+    fxRate: row.fx_rate === null || row.fx_rate === undefined ? null : Number(row.fx_rate),
+    fxDate: row.fx_date,
+    pbRank: row.pb_rank,
+    peRank: row.pe_rank,
+    dividendRank: row.dividend_rank,
+    totalScore: row.total_score === null || row.total_score === undefined ? null : Number(row.total_score),
+    selectionOrder: row.selection_order,
+    filterStatus: row.filter_status,
+    dataQualityStatus: row.data_quality_status,
+    exclusionReasons: row.exclusion_reasons || [],
+    pbPositiveExtremaRatio: row.pb_positive_extrema_ratio === null || row.pb_positive_extrema_ratio === undefined
+      ? null : Number(row.pb_positive_extrema_ratio),
+    pbPeProduct: row.pb_pe_product === null || row.pb_pe_product === undefined ? null : Number(row.pb_pe_product),
+    valuationStatus: row.valuation_status || null,
+    valuationPassReason: row.valuation_pass_reason || null,
+    ttmProfitStatus: row.ttm_profit_status || null,
+    rankReady: row.rank_ready === null || row.rank_ready === undefined ? null : row.rank_ready === true,
+    rankBlockReasons: row.rank_block_reasons || [],
+    personalExcluded: row.personalExcluded === true,
+    personalExclusionReasons: row.personalExclusionReasons || [],
+    personalSelected: row.personalSelected === true,
+    personalStatus: row.personalStatus || null,
+    personalNonSelectionReasons: row.personalNonSelectionReasons || [],
+    // 实时候选按页返回已裁剪的规则/年度证据，格雷厄姆表与单股详情复用同一 detail；
+    // 不在此复制公式，detail 仍由 compactCandidateDetail 生成。
+    detail: row.detail || null,
+    pbCoverage: {
+      coveredDays: row.pb_covered_days === undefined ? null : row.pb_covered_days,
+      expectedDays: row.pb_expected_days === undefined ? null : row.pb_expected_days,
+      gapDays: row.pb_gap_days === undefined ? null : row.pb_gap_days,
+      historyYears: row.pb_history_years === undefined || row.pb_history_years === null ? null : Number(row.pb_history_years),
+    },
+  };
+}
+
+function isLightArchiveRun(run) {
+  return !!(run && run.input_manifest && run.input_manifest.archiveMode === 'light');
+}
+
+function isRealtimeRoutedRun(run) {
+  return isLightArchiveRun(run)
+    && !(run.input_manifest && run.input_manifest.candidatesRefMode === 'source_run');
+}
+
+function exclusionFromRun(run) {
+  const manifest = (run && run.input_manifest) || {};
+  const settings = manifest.settingsSnapshot || {};
+  const exclusion = exclusionOf(settings, run.market);
+  if (Array.isArray(manifest.excludedInstrumentIds)) exclusion.instrumentIds = manifest.excludedInstrumentIds.map(Number);
+  if (Array.isArray(manifest.excludedIndustryKeys)) exclusion.industryKeys = manifest.excludedIndustryKeys.map(String);
+  const legacyIndustryCodes = !Array.isArray(manifest.excludedIndustryKeys) && Array.isArray(manifest.excludedIndustryCodes)
+    ? manifest.excludedIndustryCodes.map(String) : [];
+  return { exclusion, legacyIndustryCodes };
+}
+
+async function loadScreenDataset({ market, asOfDate, strategyCode, waitMs, maxConcurrent } = {}) {
+  const normalizedMarket = normalizeMarket(market);
+  const date = String(asOfDate || '');
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    const error = new Error('目标日参数不合法');
+    error.status = 400;
+    throw error;
+  }
+  const resolvedStrategy = normalizeStrategyCode(strategyCode);
+  const watermark = await repo.loadSelectionPartitionWatermark({
+    market: normalizedMarket, asOfDate: date, datasetCodes: SCREEN_PARTITION_DATASETS[normalizedMarket],
+  });
+  const cacheKey = `${normalizedMarket}:${resolvedStrategy}:${date}:${watermark}`;
+  const cached = readScreenCache(cacheKey);
+  if (cached) return { entry: cached, cacheKey, cacheHit: true, singleFlight: false };
+  if (screenInflight.has(cacheKey)) {
+    const entry = await screenInflight.get(cacheKey);
+    return { entry, cacheKey, cacheHit: false, singleFlight: true };
+  }
+  const promise = (async () => {
+    const release = await acquireScreenComputeSlot({ maxConcurrent, waitMs });
+    try {
+      const timeoutMs = screenStatementTimeoutMs();
+      const computed = await withTransaction(async tx => {
+        // 请求级硬中止：慢查询只影响本次请求，不拖垮 Web 进程与连接池。
+        await tx.query(`SET LOCAL statement_timeout = ${timeoutMs}`);
+        return computeSelection({
+          market: normalizedMarket,
+          asOfDate: date,
+          strategyCode: resolvedStrategy,
+          positionRatio: 1,
+          writeUniverseArtifact: false,
+          allowUniverseDrift: true,
+        }, tx);
+      });
+      const entry = {
+        market: normalizedMarket,
+        asOfDate: date,
+        strategyCode: computed.strategyCode || resolvedStrategy,
+        params: computed.params || {},
+        quality: computed.quality || {},
+        coverage: computed.coverage || {},
+        valuation: computed.valuation || null,
+        gate: computed.gate || null,
+        rows: projectionRowsOfComputed(computed),
+        industryIdentityCounts: industryIdentityCountsOfEvaluated(computed.evaluated),
+        computedAt: new Date().toISOString(),
+        cacheKey,
+      };
+      writeScreenCache(cacheKey, entry);
+      return entry;
+    } finally {
+      release();
+    }
+  })().finally(() => { screenInflight.delete(cacheKey); });
+  screenInflight.set(cacheKey, promise);
+  const entry = await promise;
+  return { entry, cacheKey, cacheHit: false, singleFlight: false };
+}
+
+function portfolioSummaryOf(portfolio) {
+  return {
+    members: (portfolio && portfolio.members) || [],
+    selectedCount: portfolio && portfolio.members ? portfolio.members.length : 0,
+    slots: portfolio && portfolio.slots !== undefined ? portfolio.slots : null,
+    positionRatio: portfolio && portfolio.positionRatio !== undefined ? portfolio.positionRatio : null,
+    industryLimitRatio: portfolio && portfolio.industryLimitRatio !== undefined ? portfolio.industryLimitRatio : null,
+    industryBreakdown: (portfolio && portfolio.industryBreakdown) || [],
+    equityWeightInMarketBudget: portfolio && portfolio.equityWeightInMarketBudget !== undefined
+      ? portfolio.equityWeightInMarketBudget : null,
+    cashWeightInMarketBudget: portfolio && portfolio.cashWeightInMarketBudget !== undefined
+      ? portfolio.cashWeightInMarketBudget : null,
+    unfilledSlots: portfolio && portfolio.unfilledSlots !== undefined ? portfolio.unfilledSlots : null,
+    excludedCount: portfolio && portfolio.excludedCount !== undefined ? portfolio.excludedCount : 0,
+    skipped: (portfolio && portfolio.skipped) || [],
+    watchlist: (portfolio && portfolio.watchlist) || [],
+    weightBasis: portfolio && portfolio.weightBasis ? portfolio.weightBasis : null,
+  };
+}
+
+/**
+ * 实时组合席位补全（P1-1）：组合成员必须与旧版 getPortfolio 展示字段一致，
+ * 但只查入选的 ≤30 家公司，不能依赖前端首屏 50 行候选反查。
+ * 公式与判定全部复用已算好的行（row），这里只做字段映射与基本面读取。
+ */
+async function enrichRealtimePortfolioMembers(portfolio, entry, { market, asOfDate } = {}) {
+  const members = (portfolio && portfolio.members) || [];
+  if (!members.length) return portfolio;
+  const rowById = new Map((entry.rows || []).map(row => [Number(row.instrument_id), row]));
+  const companyIds = Array.from(new Set(members
+    .map(member => Number(member.companyId))
+    .filter(companyId => Number.isFinite(companyId) && companyId > 0)));
+  let fundamentals = new Map();
+  if (companyIds.length) {
+    fundamentals = await repo.loadMemberFundamentals({
+      companyIds,
+      asOfDate,
+      availableBefore: knowledgeCutoffFor(market, asOfDate),
+      market,
+    });
+  }
+  const num = value => (value === null || value === undefined || value === '' ? null : Number(value));
+  for (const member of members) {
+    const row = rowById.get(Number(member.instrumentId)) || {};
+    const fundamental = fundamentals.get(String(member.companyId)) || {};
+    Object.assign(member, {
+      currentPb: num(row.current_pb),
+      currentPe: num(row.current_pe),
+      dividendYield: num(row.dividend_yield),
+      totalScore: num(row.total_score),
+      pbPositiveExtremaRatio: num(row.pb_positive_extrema_ratio),
+      pbPeProduct: num(row.pb_pe_product),
+      historicalPbMin: num(row.historical_pb_min),
+      historicalPbMax: num(row.historical_pb_max),
+      valuationStatus: row.valuation_status || null,
+      valuationPassReason: row.valuation_pass_reason || null,
+      ttmProfitStatus: row.ttm_profit_status || row.profit_status || null,
+      rankReady: row.rank_ready === null || row.rank_ready === undefined
+        ? !(row.detail && row.detail.rankReady === false) : row.rank_ready === true,
+      debtToAssetRatio: num(fundamental.debtToAssetRatio),
+      debtToAssetPeriodEnd: fundamental.debtToAssetPeriodEnd || null,
+      latestProfitYoy: num(fundamental.latestProfitYoy),
+      latestProfitPeriodEnd: fundamental.latestProfitPeriodEnd || null,
+    });
+  }
+  return portfolio;
+}
+
+async function screenStocksRealtime(input = {}, options = {}) {
+  if (!realtimeSelectionEnabled()) throw screenDisabledError();
+  const market = normalizeMarket(input.market);
+  const asOfDate = String(input.asOfDate || '');
+  const strategyCode = normalizeStrategyCode(input.strategyCode);
+  const positionRatio = PORTFOLIO.clampRatio(input.positionRatio, 1);
+  const exclusion = input.exclusion || { instrumentIds: [], industryKeys: [], industryCodes: [] };
+  const load = await loadScreenDataset({
+    market, asOfDate, strategyCode, waitMs: options.waitMs, maxConcurrent: options.maxConcurrent,
+  });
+  const entry = load.entry;
+  const portfolio = portfolioOfEntry(entry, exclusion, positionRatio);
+  await enrichRealtimePortfolioMembers(portfolio, entry, { market, asOfDate: entry.asOfDate || asOfDate });
+  const page = paginateScreenEntry(entry, {
+    limit: input.limit === undefined ? 50 : input.limit,
+    offset: input.offset === undefined ? 0 : input.offset,
+    filterStatus: input.filterStatus || null,
+    orderBy: input.orderBy || 'rank',
+  });
+  let rows = page.rows;
+  if (input.personalFlags === true) {
+    const context = {
+      exclusion,
+      selected: new Set(portfolio.members.map(member => Number(member.instrumentId))),
+      outcomes: new Map(),
+      legacyIndustryCodes: input.legacyIndustryCodes || [],
+    };
+    rows = rows.map(row => withPersonalSelection(Object.assign({}, row), context));
+  }
+  return {
+    market: entry.market,
+    asOfDate: entry.asOfDate,
+    strategyCode: entry.strategyCode,
+    positionRatio,
+    quality: entry.quality,
+    coverage: entry.coverage,
+    valuation: entry.valuation,
+    gate: entry.gate,
+    industryIdentityCounts: entry.industryIdentityCounts,
+    portfolio: portfolioSummaryOf(portfolio),
+    total: page.total,
+    limit: input.limit === undefined ? 50 : input.limit,
+    offset: input.offset === undefined ? 0 : input.offset,
+    candidates: rows.map(screenCandidateEnvelope),
+    cache: { key: load.cacheKey, hit: load.cacheHit, singleFlight: load.singleFlight },
+    computedAt: entry.computedAt,
+  };
+}
+
+function stockDetailEnvelope(run, candidate, historicalReplay = { required: false, verified: null, years: null, reason: 'realtime_recomputed' }, entry = null) {
+  return {
+    runId: run && run.run_id !== undefined ? Number(run.run_id) : null,
+    market: run ? run.market : (entry ? entry.market : null),
+    asOfDate: run ? run.as_of_date_text : (entry ? entry.asOfDate : null),
+    strategyVersion: run ? run.strategy_version : (entry ? entry.strategyCode : null),
+    knowledgeCutoff: run ? run.knowledge_cutoff_text : null,
+    historicalReplay,
+    historicalReplayVerified: historicalReplay.required ? historicalReplay.verified : null,
+    candidate: {
+      code: candidate.code,
+      name: candidate.name,
+      instrumentId: Number(candidate.instrument_id),
+      companyId: candidate.company_id === null || candidate.company_id === undefined ? null : Number(candidate.company_id),
+      industry: candidate.industry_code ? {
+        code: candidate.industry_code, name: candidate.industry_name,
+        system: candidate.industry_system, version: candidate.industry_version,
+      } : null,
+      currentPb: candidate.current_pb === null ? null : Number(candidate.current_pb),
+      historicalPbMax: candidate.historical_pb_max === null ? null : Number(candidate.historical_pb_max),
+      historicalPbMin: candidate.historical_pb_min === null || candidate.historical_pb_min === undefined
+        ? null : Number(candidate.historical_pb_min),
+      pbPositiveExtremaRatio: candidate.pb_positive_extrema_ratio === null || candidate.pb_positive_extrema_ratio === undefined
+        ? null : Number(candidate.pb_positive_extrema_ratio),
+      pbPeProduct: candidate.pb_pe_product === null || candidate.pb_pe_product === undefined
+        ? null : Number(candidate.pb_pe_product),
+      valuationStatus: candidate.valuation_status || null,
+      valuationPassReason: candidate.valuation_pass_reason || null,
+      ttmProfitStatus: candidate.ttm_profit_status || null,
+      rankReady: candidate.rank_ready === null || candidate.rank_ready === undefined ? null : candidate.rank_ready === true,
+      rankBlockReasons: candidate.rank_block_reasons || [],
+      pbCoverage: {
+        coveredDays: candidate.pb_covered_days === null || candidate.pb_covered_days === undefined ? null : Number(candidate.pb_covered_days),
+        expectedDays: candidate.pb_expected_days === null || candidate.pb_expected_days === undefined ? null : Number(candidate.pb_expected_days),
+        gapDays: candidate.pb_gap_days === null || candidate.pb_gap_days === undefined ? null : Number(candidate.pb_gap_days),
+        historyYears: candidate.pb_history_years === null || candidate.pb_history_years === undefined ? null : Number(candidate.pb_history_years),
+      },
+      currentPe: candidate.current_pe === null ? null : Number(candidate.current_pe),
+      profitStatus: candidate.profit_status,
+      dividendYield: candidate.dividend_yield === null ? null : Number(candidate.dividend_yield),
+      equityAmount: candidate.equity_amount === null ? null : Number(candidate.equity_amount),
+      equityCurrency: candidate.equity_currency,
+      equityCny: candidate.equity_cny === null ? null : Number(candidate.equity_cny),
+      fxRate: candidate.fx_rate === null ? null : Number(candidate.fx_rate),
+      fxDate: candidate.fx_date,
+      pbRank: candidate.pb_rank,
+      peRank: candidate.pe_rank,
+      dividendRank: candidate.dividend_rank,
+      totalScore: candidate.total_score,
+      selectionOrder: candidate.selection_order,
+      filterStatus: candidate.filter_status,
+      dataQualityStatus: candidate.data_quality_status,
+      exclusionReasons: candidate.exclusion_reasons,
+      personalExcluded: candidate.personalExcluded === true,
+      personalExclusionReasons: candidate.personalExclusionReasons || [],
+      personalSelected: candidate.personalSelected === true,
+      personalStatus: candidate.personalStatus || null,
+      personalNonSelectionReasons: candidate.personalNonSelectionReasons || [],
+      detail: candidate.detail,
+      historicalReplay,
+    },
+  };
+}
+
+async function screenStockRealtime({ market, asOfDate, strategyCode, code, run = null, exclusion = null, legacyIndustryCodes = [] } = {}, options = {}) {
+  if (!realtimeSelectionEnabled()) throw screenDisabledError();
+  const resolvedStrategy = normalizeStrategyCode(strategyCode);
+  const load = await loadScreenDataset({
+    market, asOfDate, strategyCode: resolvedStrategy, waitMs: options.waitMs, maxConcurrent: options.maxConcurrent,
+  });
+  const entry = load.entry;
+  const targetCode = String(code || '').trim();
+  let row = entry.rows.find(item => String(item.code || '').toUpperCase() === targetCode.toUpperCase());
+  if (!row) return null;
+  if (run && run.run_kind === 'personal') {
+    const context = await personalSelectionContext(run);
+    row = withPersonalSelection(Object.assign({}, row), context);
+  } else if (!run && exclusion) {
+    const portfolio = portfolioOfEntry(entry, exclusion, 1);
+    const context = {
+      exclusion,
+      selected: new Set(portfolio.members.map(member => Number(member.instrumentId))),
+      outcomes: new Map(),
+      legacyIndustryCodes,
+    };
+    row = withPersonalSelection(Object.assign({}, row), context);
+  }
+  return stockDetailEnvelope(run, row, { required: false, verified: null, years: null, reason: 'realtime_recomputed' }, entry);
+}
+
 async function getCandidates(query) {
-  const result = await repo.listCandidates(query);
   const run = await repo.findRun(query.runId);
-  if (!run || run.run_kind !== 'personal') return result;
+  if (!run) return { rows: [], total: 0 };
+  // 轻量归档批次不再保存全市场被淘汰行：候选页签按该批次冻结的
+  // (market, strategyCode, asOfDate) 自动路由实时引擎还原；旧全量批次仍查表。
+  if (realtimeSelectionEnabled() && isRealtimeRoutedRun(run)) {
+    const load = await loadScreenDataset({
+      market: run.market, strategyCode: run.strategy_code, asOfDate: run.as_of_date_text,
+    });
+    const page = paginateScreenEntry(load.entry, query);
+    let rows = page.rows;
+    if (run.run_kind === 'personal') {
+      const context = await personalSelectionContext(run);
+      rows = rows.map(row => withPersonalSelection(Object.assign({}, row), context));
+    }
+    return { rows, total: page.total };
+  }
+  const result = await repo.listCandidates(query);
+  if (run.run_kind !== 'personal') return result;
   const context = await personalSelectionContext(run);
   result.rows = result.rows.map(row => withPersonalSelection(row, context));
   return result;
@@ -2251,8 +2925,9 @@ async function getPortfolio(runId, options = {}) {
   });
   const sourceRun = run.run_kind === 'personal' && run.supersedes_run_id
     ? await repo.findRun(run.supersedes_run_id) : null;
-  const sourceIndustryIdentityCounts = await repo.listIndustryIdentityCounts(
-    sourceRun ? Number(sourceRun.run_id) : Number(runId));
+  // 轻量归档把全市场一级行业计数冻结在 runs.input_manifest；仓储优先读摘要，缺失才回退查表，
+  // 因此这里按本批次读取即可（个人批次也冻结了自己的全市场计数）。
+  const sourceIndustryIdentityCounts = await repo.listIndustryIdentityCounts(Number(runId));
   let baseline;
   if (options.baselineRunId) {
     const requested = await repo.findRun(options.baselineRunId);
@@ -2464,71 +3139,25 @@ async function historicalAnnualReplayOf(run, candidate, tx) {
 async function getStockDetail({ runId, code }) {
   const run = await repo.findRun(runId);
   if (!run) return null;
+  // 轻量归档批次未保存被淘汰行：单股原因按该批次冻结的 (market, strategyCode, asOfDate)
+  // 自动路由实时引擎还原；旧全量批次仍读原表，历史回放语义不变。
+  if (realtimeSelectionEnabled() && isRealtimeRoutedRun(run)) {
+    return screenStockRealtime({
+      market: run.market,
+      strategyCode: run.strategy_code,
+      asOfDate: run.as_of_date_text,
+      code,
+      run,
+      legacyIndustryCodes: exclusionFromRun(run).legacyIndustryCodes,
+    });
+  }
   const candidate = await repo.findCandidate({ runId, code });
   if (!candidate) return null;
   if (run.run_kind === 'personal') withPersonalSelection(candidate, await personalSelectionContext(run));
   const historicalReplay = await historicalAnnualReplayOf(run, candidate);
-  return {
-    runId: Number(runId),
-    market: run.market,
-    asOfDate: run.as_of_date_text,
-    strategyVersion: run.strategy_version,
-    knowledgeCutoff: run.knowledge_cutoff_text,
-    historicalReplay,
-    historicalReplayVerified: historicalReplay.required ? historicalReplay.verified : null,
-    candidate: {
-      code: candidate.code,
-      name: candidate.name,
-      instrumentId: Number(candidate.instrument_id),
-      companyId: candidate.company_id === null ? null : Number(candidate.company_id),
-      industry: candidate.industry_code ? {
-        code: candidate.industry_code, name: candidate.industry_name,
-        system: candidate.industry_system, version: candidate.industry_version,
-      } : null,
-      currentPb: candidate.current_pb === null ? null : Number(candidate.current_pb),
-      historicalPbMax: candidate.historical_pb_max === null ? null : Number(candidate.historical_pb_max),
-      historicalPbMin: candidate.historical_pb_min === null || candidate.historical_pb_min === undefined
-        ? null : Number(candidate.historical_pb_min),
-      pbPositiveExtremaRatio: candidate.pb_positive_extrema_ratio === null || candidate.pb_positive_extrema_ratio === undefined
-        ? null : Number(candidate.pb_positive_extrema_ratio),
-      pbPeProduct: candidate.pb_pe_product === null || candidate.pb_pe_product === undefined
-        ? null : Number(candidate.pb_pe_product),
-      valuationStatus: candidate.valuation_status || null,
-      valuationPassReason: candidate.valuation_pass_reason || null,
-      ttmProfitStatus: candidate.ttm_profit_status || null,
-      rankReady: candidate.rank_ready === null || candidate.rank_ready === undefined ? null : candidate.rank_ready === true,
-      rankBlockReasons: candidate.rank_block_reasons || [],
-      pbCoverage: {
-        coveredDays: candidate.pb_covered_days === null || candidate.pb_covered_days === undefined ? null : Number(candidate.pb_covered_days),
-        expectedDays: candidate.pb_expected_days === null || candidate.pb_expected_days === undefined ? null : Number(candidate.pb_expected_days),
-        gapDays: candidate.pb_gap_days === null || candidate.pb_gap_days === undefined ? null : Number(candidate.pb_gap_days),
-        historyYears: candidate.pb_history_years === null || candidate.pb_history_years === undefined ? null : Number(candidate.pb_history_years),
-      },
-      currentPe: candidate.current_pe === null ? null : Number(candidate.current_pe),
-      profitStatus: candidate.profit_status,
-      dividendYield: candidate.dividend_yield === null ? null : Number(candidate.dividend_yield),
-      equityAmount: candidate.equity_amount === null ? null : Number(candidate.equity_amount),
-      equityCurrency: candidate.equity_currency,
-      equityCny: candidate.equity_cny === null ? null : Number(candidate.equity_cny),
-      fxRate: candidate.fx_rate === null ? null : Number(candidate.fx_rate),
-      fxDate: candidate.fx_date,
-      pbRank: candidate.pb_rank,
-      peRank: candidate.pe_rank,
-      dividendRank: candidate.dividend_rank,
-      totalScore: candidate.total_score,
-      selectionOrder: candidate.selection_order,
-      filterStatus: candidate.filter_status,
-      dataQualityStatus: candidate.data_quality_status,
-      exclusionReasons: candidate.exclusion_reasons,
-      personalExcluded: candidate.personalExcluded === true,
-      personalExclusionReasons: candidate.personalExclusionReasons || [],
-      personalSelected: candidate.personalSelected === true,
-      personalStatus: candidate.personalStatus || null,
-      personalNonSelectionReasons: candidate.personalNonSelectionReasons || [],
-      detail: candidate.detail,
-      historicalReplay,
-    },
-  };
+  return stockDetailEnvelope(Object.assign({}, run, {
+    run_id: run.run_id === undefined ? runId : run.run_id,
+  }), candidate, historicalReplay);
 }
 
 const SETTINGS_SCHEMA_VERSION = 2;
@@ -2768,6 +3397,85 @@ function exclusionOf(settings, market) {
   return { industryFilters, industryCodes, industryKeys, instrumentIds };
 }
 
+function candidateInsertRowOfProjection(row) {
+  const detail = row.detail || {};
+  return {
+    instrumentId: Number(row.instrument_id),
+    companyId: row.company_id === null || row.company_id === undefined ? null : Number(row.company_id),
+    code: row.code,
+    name: row.name,
+    industry: row.industry_code ? {
+      code: row.industry_code, name: row.industry_name,
+      system: row.industry_system, version: row.industry_version,
+    } : null,
+    currentPb: row.current_pb,
+    historicalPbMax: row.historical_pb_max,
+    historicalPbMin: row.historical_pb_min,
+    currentPe: row.current_pe,
+    profitStatus: row.profit_status || 'unknown',
+    dividendYield: row.dividend_yield,
+    equityAmount: row.equity_amount,
+    equityCurrency: row.equity_currency,
+    equityCny: row.equity_cny,
+    fxRate: row.fx_rate,
+    fxDate: row.fx_date,
+    pbRank: row.pb_rank,
+    peRank: row.pe_rank,
+    dividendRank: row.dividend_rank,
+    totalScore: row.total_score,
+    selectionOrder: row.selection_order,
+    filterStatus: row.filter_status,
+    dataQualityStatus: row.data_quality_status || 'partial',
+    exclusionReasons: row.exclusion_reasons || [],
+    // detail 已由 compactCandidateDetail 生成；把顶层规则/异常一并带回，避免二次裁剪时被空对象覆盖。
+    rules: detail.rules || {},
+    anomaly: detail.anomaly || null,
+    rankReady: row.rank_ready,
+    rankBlockReasons: row.rank_block_reasons || [],
+    riskStatus: detail.riskStatus || null,
+    valuationStatus: row.valuation_status,
+    valuationPassReason: row.valuation_pass_reason,
+    ttmEvidenceRef: detail.ttmEvidenceRef || null,
+    ttmStatusBasis: detail.ttmStatusBasis || null,
+    detail,
+    pbPositiveExtremaRatio: row.pb_positive_extrema_ratio,
+    pbPeProduct: row.pb_pe_product,
+    ttmProfitStatus: row.ttm_profit_status,
+    pbCoverage: {
+      coveredDays: row.pb_covered_days,
+      expectedDays: row.pb_expected_days,
+      gapDays: row.pb_gap_days,
+      historyYears: row.pb_history_years,
+    },
+  };
+}
+
+/**
+ * 个人测算的冻结投影：轻量归档源批次不再保存全市场候选，必须用同一套规则引擎重建，
+ * 不能拿 ≤30 席成员冒充全市场；历史全量批次仍读自己的候选行（零迁移）。
+ */
+async function loadProjectionRowsForSource(source, tx) {
+  if (isLightArchiveRun(source)) {
+    const computed = await computeSelection({
+      market: source.market,
+      asOfDate: source.as_of_date_text,
+      strategyCode: source.strategy_code || undefined,
+      positionRatio: 1,
+      writeUniverseArtifact: false,
+      allowUniverseDrift: true,
+    }, tx);
+    return projectionRowsOfComputed(computed);
+  }
+  return repo.listCandidatesForProjection({ runId: source.run_id }, tx);
+}
+
+async function insertPersonalSelectedCandidates(tx, runId, rows, members) {
+  const selectedIds = new Set((members || []).map(member => Number(member.instrumentId)));
+  const selected = (rows || []).filter(row => selectedIds.has(Number(row.instrument_id)));
+  if (!selected.length) return;
+  await repo.insertCandidates(tx, runId, selected.map(candidateInsertRowOfProjection));
+}
+
 /**
  * 个人资金测算（方案 27.9）：个人结果是公共策略的覆盖层，不是公共组合本身。
  * - 源批次必须是**完整**质量通过的结果（daily 允许未发布但必须完整，方案 27.6）；
@@ -2924,8 +3632,11 @@ async function createSimulation({ username, sourceRunId, positionRatio, budgetRa
       return reusedResult(existing, stored.revision);
     }
 
-    const rows = await repo.listCandidatesForProjection({ runId: sourceRunId }, tx);
+    const rows = await loadProjectionRowsForSource(source, tx);
     const portfolio = personalPortfolioOf(rows, { positionRatio: ratio, params: strategyParams, exclusion });
+    // 个人批次也轻量落库：只写入选 ≤30 席对应的候选；源批次为轻量归档时读路径必须解析到本批次，
+    // 否则个人排除递补出的股票不在源批次 ≤30 行里会 JOIN 断链。
+    const lightSource = isLightArchiveRun(source);
     const runId = await repo.insertRun(tx, {
       strategyId: Number(source.strategy_id), market: source.market, runKind: 'personal',
       ownerUsername: username, ownerSubjectId: subjectId, quarter: source.quarter,
@@ -2935,8 +3646,11 @@ async function createSimulation({ username, sourceRunId, positionRatio, budgetRa
       inputManifest: Object.assign({}, payload, {
         clientRequestId: clientRequestId || null,
         defaultPositionRatio,
-        // B3-1：个人测算不再物理复制全市场候选；候选读取统一解析到 supersedes_run_id 的冻结公共源批次。
-        candidatesRefMode: 'source_run',
+        // 轻量源批次（≤30 席候选）无法提供全市场投影，个人读端必须解析到自己的 ≤30 行；
+        // 历史全量源批次保持 source_run 兼容，仍读源批次全部候选。
+        candidatesRefMode: lightSource ? 'self' : 'source_run',
+        archiveMode: 'light',
+        industryIdentityCounts: industryIdentityCountsOfProjectionRows(rows),
         requestInputs: { positionRatio: String(ratio), budgetRatio: budget === null ? '__null__' : String(budget) },
         settingsSnapshot: settings,
         portfolio: {
@@ -2957,8 +3671,9 @@ async function createSimulation({ username, sourceRunId, positionRatio, budgetRa
       periodStart: source.period_start_text || null, periodEnd: source.period_end_text || null,
       settingsRevision: stored.revision, settingsHash, computedAt: new Date(), isShadow: false,
     });
-    // B3-1：不再调用 copyCandidates。个人 run 只写批次与 <=30 行成员，候选由读端解析到源批次。
+    // 个人批次只写入选 ≤30 席成员与对应候选；不再调用 copyCandidates 整批复制全市场。
     await repo.insertMembers(tx, runId, portfolio.members);
+    await insertPersonalSelectedCandidates(tx, runId, rows, portfolio.members);
     if (clientRequestId) {
       const binding = await repo.bindStockSelectionRequest({ username, subjectId, requestId: clientRequestId, inputHash, runId }, tx);
       if (binding && Number(binding.run_id) !== Number(runId)) {
@@ -3273,6 +3988,15 @@ async function listIndustries({ market }) {
   };
 }
 
+function resetScreenStateForTests() {
+  screenCache.clear();
+  screenInflight.clear();
+  screenComputeState.waiters.splice(0).forEach(waiter => {
+    if (waiter.timer) clearTimeout(waiter.timer);
+  });
+  screenComputeState.active = 0;
+}
+
 module.exports = {
   // 内部工具（导出供回归断言「两处年度事实必须同源」，不是对外契约）。
   annualFactsOf,
@@ -3337,4 +4061,18 @@ module.exports = {
   listIndustries,
   normalizeStrategyCode,
   runBacktest,
+  // 实时筛选与轻量归档
+  screenStocksRealtime,
+  screenStockRealtime,
+  screenCandidateEnvelope,
+  projectionRowsOfComputed,
+  industryIdentityCountsOfEvaluated,
+  industryIdentityCountsOfProjectionRows,
+  realtimeSelectionEnabled,
+  legacySelectionSlotsEnabled,
+  isLightArchiveRun,
+  isRealtimeRoutedRun,
+  screenStatementTimeoutMs,
+  screenMaxConcurrent,
+  resetScreenStateForTests,
 };

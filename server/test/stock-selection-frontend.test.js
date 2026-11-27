@@ -12,6 +12,7 @@ const root = path.join(__dirname, '..', '..');
 const html = fs.readFileSync(path.join(root, 'public', 'index.html'), 'utf8');
 const view = fs.readFileSync(path.join(root, 'public', 'js', 'stock-selection.js'), 'utf8');
 const presenter = fs.readFileSync(path.join(root, 'public', 'js', 'presenters', 'stock-selection-presenter.js'), 'utf8');
+const apiClient = fs.readFileSync(path.join(root, 'public', 'js', 'api', 'stock-selection-api.js'), 'utf8');
 const css = fs.readFileSync(path.join(root, 'public', 'css', 'stock-selection.css'), 'utf8');
 const service = fs.readFileSync(path.join(root, 'server', 'services', 'stockSelectionService.js'), 'utf8');
 const repository = fs.readFileSync(path.join(root, 'server', 'repositories', 'stockSelectionRepository.js'), 'utf8');
@@ -384,6 +385,61 @@ check('行业排除使用体系、版本和代码的完整身份，并有请求�
   assert.ok(repository.includes('findStockSelectionRequestBinding'), '缺少请求绑定查询');
   assert.ok(repository.includes('ON CONFLICT DO NOTHING'), '请求绑定必须原子去重');
   assert.ok(migrations.includes("193_stock_selection_ux_request_bindings"), '迁移未注册');
+});
+
+console.log('E. 实时按日筛选与历史归档模式');
+check('API 客户端提供实时筛选与单股详情入口', () => {
+  assert.ok(/screen:\s*function\s*\(body\)/.test(apiClient), 'API 客户端必须提供 screen');
+  assert.ok(apiClient.includes("base('/screen')"), 'screen 走 POST /api/stock-selection/screen');
+  assert.ok(apiClient.includes("base('/screen/stocks/' + encodeURIComponent(code))"), 'getScreenStock 走 GET /screen/stocks/:code');
+});
+check('页面提供实时/归档切换、日期选择器和归档提示', () => {
+  assert.ok(html.includes('id="ss-view-mode"'), '缺少模式切换');
+  assert.ok(html.includes('data-ss-mode="realtime"') && html.includes('data-ss-mode="archive"'), '模式切换必须含实时与归档两项');
+  assert.ok(html.includes('id="ss-asof-date"') && html.includes('type="date"'), '缺少目标日期选择器');
+  assert.ok(html.includes('历史归档快照（仅展示入选组合与轻量化摘要；查看全市场明细请切换至实时按日筛选）'), '归档提示文案必须与方案第 8 章一致');
+  assert.ok(view.includes('历史归档快照（仅展示入选组合与轻量化摘要；查看全市场明细请切换至实时按日筛选）'), 'View 必须渲染同一归档提示文案');
+  assert.ok(view.includes('实时按日筛选当前已停用'), '实时停用时必须有独立提示，不误导用户切换');
+});
+check('Presenter 接入 /screen 并支持日期切换与停用回退', () => {
+  assert.ok(presenter.includes('api.screen({'), 'Presenter 必须调用实时筛选接口');
+  assert.ok(presenter.includes('screen/stocks'), 'Presenter 单股详情必须走实时详情接口');
+  assert.ok(presenter.includes('STOCK_SELECTION_REALTIME_DISABLED'), '必须识别服务端停用码');
+  assert.ok(presenter.includes("ssState.viewMode = 'archive'"), '停用后必须回退归档模式');
+  assert.ok(presenter.includes('ssRealtimeApiAvailable'), '实时脚本缺失时必须可回退');
+  assert.ok(presenter.includes('switchViewMode: ssSwitchViewMode') && presenter.includes('setAsOfDate: ssSetAsOfDate'), '必须导出模式切换与日期设置');
+  assert.ok(presenter.includes("ssState.viewMode === 'realtime' && !ssState.realtimeDisabled && ssSameOwner(context)"), '实时模式保存排除后必须重跑实时筛选而非派生批次');
+  assert.ok(view.includes('StockSelectionPresenter.switchViewMode(') && view.includes('StockSelectionPresenter.setAsOfDate('), 'View 必须把模式切换和日期变化上报 Presenter');
+});
+check('移动端断点与触控合约覆盖模式切换和日期输入', () => {
+  assert.ok(/@media \(max-width: 760px\)[\s\S]*\.ss-view-tab \{ min-height: 44px; \}/.test(css), '手机模式切换必须 44px 触控高度');
+  assert.ok(/@media \(max-width: 760px\)[\s\S]*\.ss-date-field input\[type="date"\] \{ min-height: 44px; font-size: 16px; \}/.test(css), '手机日期输入必须 44px 且 16px 防缩放');
+  assert.ok(/@media \(max-width: 900px\)[\s\S]*\.ss-view-switch \{ width: 100%/.test(css), '导航收起断点 900px 必须让模式切换占满宽度');
+  assert.ok(css.includes('.ss-source-panel [hidden] { display: none !important; }'), '模式切换必须能隐藏周期/来源控件');
+});
+check('模式渲染在真实 DOM 中切换控件与提示', () => {
+  const dom = new JSDOM('<!doctype html><html><body>'
+    + '<div id="ss-view-mode"><button data-ss-mode="realtime" class="active"></button><button data-ss-mode="archive"></button></div>'
+    + '<div id="ss-period-tabs"></div><label id="ss-run-field"></label><button id="ss-run-load-more"></button>'
+    + '<label id="ss-date-field"></label><input id="ss-asof-date"><div id="ss-archive-hint"></div><h3 id="ss-candidates-title"></h3>'
+    + '</body></html>', { pretendToBeVisual: true });
+  const context = { window: dom.window, document: dom.window.document };
+  vm.createContext(context); vm.runInContext(view, context);
+  context.ssRenderViewMode({ viewMode: 'realtime', asOfDate: '2026-11-27' });
+  assert.strictEqual(dom.window.document.getElementById('ss-period-tabs').hidden, true, '实时模式隐藏周期页签');
+  assert.strictEqual(dom.window.document.getElementById('ss-run-field').hidden, true, '实时模式隐藏来源批次');
+  assert.strictEqual(dom.window.document.getElementById('ss-date-field').hidden, false, '实时模式显示日期选择器');
+  assert.strictEqual(dom.window.document.getElementById('ss-asof-date').value, '2026-11-27');
+  assert.strictEqual(dom.window.document.getElementById('ss-archive-hint').hidden, true, '实时模式不显示归档提示');
+  assert.ok(dom.window.document.getElementById('ss-candidates-title').textContent.includes('实时筛选结果'));
+  context.ssRenderViewMode({ viewMode: 'archive', asOfDate: '2026-11-27' });
+  assert.strictEqual(dom.window.document.getElementById('ss-period-tabs').hidden, false, '归档模式恢复周期页签');
+  assert.strictEqual(dom.window.document.getElementById('ss-run-field').hidden, false, '归档模式恢复来源批次');
+  assert.strictEqual(dom.window.document.getElementById('ss-date-field').hidden, true, '归档模式隐藏日期选择器');
+  assert.strictEqual(dom.window.document.getElementById('ss-archive-hint').hidden, false, '归档模式必须显示提示');
+  assert.ok(dom.window.document.getElementById('ss-archive-hint').textContent.includes('查看全市场明细请切换至实时按日筛选'));
+  context.ssRenderViewMode({ viewMode: 'archive', asOfDate: '2026-11-27', realtimeDisabled: true });
+  assert.ok(dom.window.document.getElementById('ss-archive-hint').textContent.includes('实时按日筛选当前已停用'));
 });
 
 const pass = results.filter(item => item[0] === 'PASS').length;

@@ -225,6 +225,10 @@ async function main() {
         await client.query('BEGIN');
         await store.saveFullStockMarketPartition(client, instrumentMap, [], keep, sourceId);
         await client.query('COMMIT');
+        // 触发面 1：官方估值回填同样必须同步投影，否则投影停留在回填前状态。
+        await require('../services/pbProjectionSync').safeSyncValuations({
+          market: 'CN', dates: Array.from(new Set(keep.map(row => row.trade_date))).sort(),
+        });
       } catch (error) {
         await client.query('ROLLBACK').catch(() => {});
         throw error;

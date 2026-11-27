@@ -1798,6 +1798,27 @@
       "note": "数据库存储保留清理编排：约束保留天数边界并调用仓储分批清理过期原始报文与未发布试算运行，本文件 0 SQL/0 联网/0 DOM"
     },
     {
+      "path": "server/services/pbProjectionSync.js",
+      "role": "application",
+      "batch": 7,
+      "status": "registered",
+      "note": "PB 两步按月投影编排：6 类触发面整月重算、按月回填水位与每周抽样对账；SQL 全在 pbProjectionRepository，本文件 0 SQL/0 联网/0 DOM"
+    },
+    {
+      "path": "server/services/jobConvergence.js",
+      "role": "application",
+      "batch": 8,
+      "status": "registered",
+      "note": "波次二凌晨任务收敛编排（阶段 2/3）：按显式顺序复用既有 Runner、逐子阶段失败隔离，发布统一走 datasetPartitionRegistry；本文件 0 SQL/0 联网/0 DOM"
+    },
+    {
+      "path": "server/repositories/pbProjectionRepository.js",
+      "role": "repository",
+      "batch": 7,
+      "status": "registered",
+      "note": "analytics PB 投影三表读写与三段混合查询；选源口径必须与 stockSelectionRepository 原 SQL 逐字一致"
+    },
+    {
       "path": "server/services/diskGuard.js",
       "role": "application",
       "batch": 7,

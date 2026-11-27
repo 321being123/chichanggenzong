@@ -879,18 +879,20 @@ async function loadRatingSourceCache(tsCode) {
 }
 
 async function saveStockValuation(client, stockId, row, sourceId) {
-  if (!row || !row.trade_date) return;
-  if ([row.pe, row.pe_ttm, row.pb, row.dv_ttm, row.total_mv, row.circ_mv].every(value => finite(value) == null)) return;
+  if (!row || !row.trade_date) return null;
+  if ([row.pe, row.pe_ttm, row.pb, row.dv_ttm, row.total_mv, row.circ_mv].every(value => finite(value) == null)) return null;
+  const tradeDate = isoDate(row.trade_date);
   await client.query(
     `INSERT INTO market.daily_valuations(instrument_id,trade_date,source_id,pe_static,pe_ttm,pb,dividend_yield_ttm,total_market_cap,circulating_market_cap)
      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)
      ON CONFLICT(instrument_id,trade_date,source_id) DO UPDATE SET pe_static=EXCLUDED.pe_static,pe_ttm=EXCLUDED.pe_ttm,
        pb=EXCLUDED.pb,dividend_yield_ttm=EXCLUDED.dividend_yield_ttm,total_market_cap=EXCLUDED.total_market_cap,
        circulating_market_cap=EXCLUDED.circulating_market_cap,ingested_at=now()`,
-    [stockId, isoDate(row.trade_date), sourceId, finite(row.pe), finite(row.pe_ttm), finite(row.pb), finite(row.dv_ttm) == null ? null : finite(row.dv_ttm) / 100,
+    [stockId, tradeDate, sourceId, finite(row.pe), finite(row.pe_ttm), finite(row.pb), finite(row.dv_ttm) == null ? null : finite(row.dv_ttm) / 100,
       finite(row.total_mv) == null ? null : finite(row.total_mv) * 10000,
       finite(row.circ_mv) == null ? null : finite(row.circ_mv) * 10000]
   );
+  return tradeDate;
 }
 
 async function saveFullStockMarketPartition(client, instrumentMap, dailyRows, valuationRows, sourceId, adjustmentRows = []) {
@@ -952,7 +954,8 @@ async function saveFullStockMarketPartition(client, instrumentMap, dailyRows, va
       [JSON.stringify(factors), sourceId]
     );
   }
-  return { bars: bars.length, valuations: valuations.length, factors: factors.length };
+  return { bars: bars.length, valuations: valuations.length, factors: factors.length,
+    valuationDates: Array.from(new Set(valuations.map(row => row.trade_date).filter(Boolean))).sort() };
 }
 
 function mergeDailyRows(cachedRows, freshRows) {

@@ -1097,7 +1097,112 @@ async function main() {
   assert.strictEqual(detail.ssState.detail.code, 'B');
   console.log('[PASS] 快速查看多只股票时最后一次详情选择胜出');
 
-  console.log('PASS=50 FAIL=0');
+  // ===== 阶段 1C：实时按日筛选 =====
+  const screenCalls = [];
+  const realtime = createContext({
+    getMarkets: async () => ({
+      strategyCode: 'stock_selection_v2',
+      markets: [{ market: 'CN', latestValuationDate: '2026-11-27', asOfDate: '2026-11-27' }],
+    }),
+    getSettings: async () => ({ revision: 3, settings: { industryFilters: { CN: [], HK: [] }, excludedInstruments: [] } }),
+    listIndustries: async () => ({ industries: [] }),
+    screen: async body => {
+      screenCalls.push(body);
+      return {
+        market: body.market, asOfDate: body.asOfDate, strategyCode: body.strategyCode,
+        total: 1,
+        candidates: [{ code: '600000', name: '浦发银行', instrumentId: 1, industry: { code: 'I', name: '银行' }, filterStatus: 'PASS', currentPb: 0.8, currentPe: 6, dividendYield: 0.05, equityCny: 1e10 }],
+        portfolio: { members: [{ code: '600000', name: '浦发银行', instrumentId: 1, slotNo: 1, industry: { code: 'I', name: '银行' }, weightInMarketBudget: 1 / 30 }], selectedCount: 1, slots: 30, positionRatio: 1, industryBreakdown: [], equityWeightInMarketBudget: 1 / 30, cashWeightInMarketBudget: 29 / 30, unfilledSlots: 29 },
+        industryIdentityCounts: [{ code: 'I', name: '银行', affectedCount: 1 }],
+        quality: { status: 'passed' }, coverage: {}, valuation: {}, gate: { status: 'not_required' },
+        computedAt: '2026-11-27T08:00:00.000Z', cache: { hit: false },
+      };
+    },
+    getScreenStock: async (code, query) => ({ runId: null, asOfDate: query.asOfDate, candidate: { code, name: '浦发银行', currentPb: 0.8, currentPe: 6, dividendYield: 0.05, detail: { rules: {} } } }),
+  });
+  realtime.accountIdentity = 'identity-a';
+  await realtime.window.StockSelectionPresenter.load();
+  assert.strictEqual(realtime.ssState.viewMode, 'realtime');
+  assert.strictEqual(screenCalls.length, 1);
+  assert.strictEqual(screenCalls[0].market, 'CN');
+  assert.strictEqual(screenCalls[0].strategyCode, 'stock_selection_v2', '实时筛选必须带当前激活策略');
+  assert.ok(/^\d{4}-\d{2}-\d{2}$/.test(screenCalls[0].asOfDate), '实时筛选必须带目标日');
+  assert.strictEqual(screenCalls[0].asOfDate, '2026-11-27',
+    '首次进入实时模式必须优先使用当前市场最近可用估值日，而不是当天');
+  assert.strictEqual(realtime.ssState.candidates[0].code, '600000');
+  assert.strictEqual(realtime.ssState.portfolio.members[0].industryName, '银行', '实时组合必须映射行业名称');
+  // P1-1 反例：组合成员不在首屏候选（模拟第 55 名递补）时，仍必须完整展示成员自带字段。
+  const normalized = realtime.ssNormalizeRealtimePortfolio({
+    candidates: [],
+    portfolio: { slots: 30, members: [{
+      code: '600001', name: '组合成员', instrumentId: 999, slotNo: 30,
+      currentPb: 1.2, currentPe: 8.5, dividendYield: 0.035, debtToAssetRatio: 0.62,
+      debtToAssetPeriodEnd: '2026-09-30', latestProfitYoy: 0.154, latestProfitPeriodEnd: '2026-09-30',
+      totalScore: 88.5, pbPositiveExtremaRatio: 2.5, valuationStatus: 'passed',
+      valuationPassReason: 'positive_pb_threshold', ttmProfitStatus: 'positive', rankReady: true,
+    }] },
+  });
+  const normalizedMember = normalized.members[0];
+  assert.strictEqual(normalizedMember.currentPb, 1.2);
+  assert.strictEqual(normalizedMember.currentPe, 8.5);
+  assert.strictEqual(normalizedMember.dividendYield, 0.035);
+  assert.strictEqual(normalizedMember.debtToAssetRatio, 0.62);
+  assert.strictEqual(normalizedMember.debtToAssetPeriodEnd, '2026-09-30');
+  assert.strictEqual(normalizedMember.latestProfitYoy, 0.154);
+  assert.strictEqual(normalizedMember.latestProfitPeriodEnd, '2026-09-30');
+  assert.strictEqual(normalizedMember.totalScore, 88.5);
+  assert.strictEqual(normalizedMember.pbPositiveExtremaRatio, 2.5);
+  assert.strictEqual(normalizedMember.valuationStatus, 'passed');
+  assert.strictEqual(normalizedMember.valuationPassReason, 'positive_pb_threshold');
+  assert.strictEqual(normalizedMember.ttmProfitStatus, 'positive');
+  assert.strictEqual(normalizedMember.rankReady, true);
+  console.log('[PASS] 不在首屏候选内的组合成员仍完整显示基本面与估值字段');
+  console.log('[PASS] 实时模式默认取最近可用估值日调用 /screen 并渲染组合与候选');
+
+  await realtime.window.StockSelectionPresenter.setAsOfDate('2025-01-02');
+  assert.strictEqual(screenCalls.length, 2);
+  assert.strictEqual(screenCalls[1].asOfDate, '2025-01-02');
+  assert.strictEqual(realtime.ssState.asOfDateUserSelected, true, '用户手动选择日期后必须锁定用户日期');
+  await realtime.window.StockSelectionPresenter.load();
+  assert.strictEqual(screenCalls[screenCalls.length - 1].asOfDate, '2025-01-02',
+    '用户手动选择日期后，后续重新加载仍必须严格使用用户日期');
+  console.log('[PASS] 日期选择器切换目标日后重新实时筛选并锁定用户日期');
+
+  await realtime.window.StockSelectionPresenter.openStock('600000');
+  assert.strictEqual(realtime.ssState.detail.candidate.code, '600000');
+  console.log('[PASS] 实时模式单股详情走 /screen/stocks/:code');
+
+  const realtimeSaveScreens = [];
+  let realtimeSimulations = 0;
+  const realtimeExclusion = createContext({
+    getMarkets: async () => ({ strategyCode: 'stock_selection_v2', markets: [] }),
+    getSettings: async () => ({ revision: 1, settings: { industryFilters: { CN: [], HK: [] }, excludedInstruments: [] } }),
+    listIndustries: async () => ({ industries: [] }),
+    saveSettings: async body => ({ revision: 2, settings: body }),
+    screen: async body => { realtimeSaveScreens.push(body); return { total: 0, candidates: [], portfolio: { members: [], selectedCount: 0, slots: 30 }, market: body.market, asOfDate: body.asOfDate }; },
+    simulate: async () => { realtimeSimulations += 1; return { runId: 1 }; },
+  });
+  await realtimeExclusion.window.StockSelectionPresenter.load();
+  await realtimeExclusion.window.StockSelectionPresenter.excludeTarget('instrument', { instrumentId: 9, code: '000009.SZ' });
+  assert.strictEqual(realtimeSimulations, 0, '实时模式个人排除不得派生归档批次');
+  assert.ok(realtimeSaveScreens.length >= 2, '保存排除后必须重跑实时筛选');
+  console.log('[PASS] 实时模式保存个人排除后重跑 /screen 而不生成个人批次');
+
+  const disabledCalls = [];
+  const disabled = createContext({
+    getMarkets: async () => ({ strategyCode: 'stock_selection_v2', markets: [] }),
+    getSettings: async () => ({ revision: 1, settings: {} }),
+    listIndustries: async () => ({ industries: [] }),
+    listRuns: async query => { disabledCalls.push(query); return { runs: [], total: 0 }; },
+    screen: async () => { throw Object.assign(new Error('实时筛选接口已停用'), { status: 503, code: 'STOCK_SELECTION_REALTIME_DISABLED' }); },
+  });
+  await disabled.window.StockSelectionPresenter.load();
+  assert.strictEqual(disabled.ssState.realtimeDisabled, true);
+  assert.strictEqual(disabled.ssState.viewMode, 'archive');
+  assert.ok(disabledCalls.length >= 1, '停用后必须回退到 /runs 快照');
+  console.log('[PASS] STOCK_SELECTION_REALTIME_DISABLED 平滑回退历史归档快照');
+
+  console.log('PASS=55 FAIL=0');
 }
 
 main().catch(error => { console.error(error); process.exit(1); });

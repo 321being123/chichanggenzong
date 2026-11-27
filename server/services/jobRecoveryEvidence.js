@@ -1,7 +1,7 @@
 const layerSql = require('../repositories/jobRecoveryEvidenceRepository');
 // 任务恢复的中立证据层：调度器和告警层共用，避免只凭单一 data_as_of 把槽位误判为已完成。
 const { pool } = require('../db/connection');
-const { getRegisteredJobDefinition, stageCompletionEvidence } = require('./jobDefinitions');
+const { getRegisteredJobDefinition, stageCompletionEvidence, jobConvergenceEnabled } = require('./jobDefinitions');
 const repository = require('../repositories/jobRecoveryEvidenceRepository.js');
 
 function businessDateText(value) {
@@ -108,6 +108,224 @@ function waitReasonPolicy(reason, jobCode) {
 // 就绪等待的三种合法原因：数据集锁争用、等待发布、等待依赖分区。
 // 只用于校验摘要里的 waitKind，未知值一律按 null 处理，不猜。
 const READINESS_WAIT_KINDS = Object.freeze(['lock', 'publication', 'dependency']);
+
+/**
+ * 阶段 3 任务码收敛的旧→新告警作用域映射（方案 5.4，对齐 ADR-0003）。
+ *
+ * 红线：
+ * - 历史未关闭告警保留原 job_code 作用域，严禁批量清零或用空证据关闭。
+ * - 只有经本映射查到「新任务的同数据集分区已发布且质量通过」或「新任务连续 3 次成功且 data_as_of 达标」
+ *   的显式证据，才允许归档关闭；证据不足、跨任务、跨模式、跨市场一律不关。
+ * - market_close:* / hk_rate / nav_snapshot / ipo_calendar_refresh / holiday_sync 任务码不变，登记为 unchanged。
+ */
+const LEGACY_JOB_ALIAS_GROUPS = Object.freeze([
+  {
+    id: 'cn-shared-eod-bond',
+    legacy: [{ jobCode: 'convertible_bond_universe_refresh', modes: ['core', 'shared_eod', 'market_repair', 'repo_daily', 'stock_lifecycle'] }],
+    successors: [
+      { jobCode: 'cn_stock_eod_sync', datasets: ['bond_master', 'bond_daily', 'stock_daily', 'stock_valuation', 'stock_adj_factor', 'stock_suspend_calendar'] },
+      { jobCode: 'convertible_bond_eod_sync', datasets: ['bond_master', 'bond_daily'] },
+    ],
+  },
+  {
+    id: 'cn-financial-incremental',
+    legacy: [{ jobCode: 'company_financial_incremental_sync', modes: ['core', 'selection_inputs:CN'] }],
+    successors: [{ jobCode: 'cn_stock_eod_sync', datasets: ['stock_financial_reports'] }],
+  },
+  {
+    id: 'hk-financial-rules-calendar',
+    legacy: [
+      { jobCode: 'company_financial_incremental_sync', modes: ['selection_inputs:HK'] },
+      { jobCode: 'hk_trade_rules_sync', modes: ['core'] },
+      { jobCode: 'hk_trade_calendar_sync', modes: ['core'] },
+    ],
+    successors: [{ jobCode: 'hk_stock_eod_sync', datasets: ['hk_trade_rules', 'hk_trade_calendar', 'stock_financial_reports'] }],
+  },
+  {
+    id: 'cn-index-volatility',
+    legacy: [{ jobCode: 'index_recent', modes: ['core'] }, { jobCode: 'market_volatility_sync', modes: ['core'] }],
+    successors: [{ jobCode: 'cn_stock_eod_sync', datasets: ['index_daily', 'market_volatility'] }],
+  },
+  {
+    id: 'bond-motive-inputs',
+    legacy: [{ jobCode: 'convertible_bond_revision_motive_inputs_sync', modes: ['core'] }],
+    successors: [{ jobCode: 'convertible_bond_eod_sync', datasets: ['bond_motive_inputs'] }],
+  },
+  {
+    id: 'exchange-announcements',
+    legacy: [
+      { jobCode: 'convertible_bond_announcement_history_sync', modes: ['core', 'calendar', 'analysis_inputs', 'analysis_inputs_targeted'] },
+      { jobCode: 'arbitrage_sync', modes: ['core', 'cash_dividends', 'stock_swap_settle'] },
+      { jobCode: 'ipo_history_sync', modes: ['core', 'prediction_ready', 'enrichment'] },
+    ],
+    successors: [{
+      jobCode: 'exchange_announcements_sync',
+      datasets: ['bond_announcement_facts', 'bond_issuance_events', 'bond_redemption_events', 'bond_listing_liquidity', 'bond_analysis_inputs',
+        'arbitrage_cases', 'stock_cash_dividend_facts', 'stock_swap_settlements', 'ipo_history'],
+    }],
+  },
+  {
+    id: 'bond-analytics',
+    legacy: [{ jobCode: 'convertible_bond_valuation_refresh', modes: ['core'] }, { jobCode: 'bond_safety_refresh', modes: ['core'] }],
+    successors: [{ jobCode: 'bond_analytics_refresh', datasets: ['bond_valuation', 'bond_analysis_snapshot', 'bond_safety_snapshot'] }],
+  },
+  {
+    id: 'stock-analytics',
+    legacy: [{
+      jobCode: 'stock_analysis_refresh',
+      modes: ['core', 'stock_analysis_hk', 'selection_archive_light', 'selection_periodic', 'selection_daily', 'selection_weekly',
+        'selection_quarterly', 'selection_preview', 'selection_backtest', 'selection_inputs'],
+    }],
+    successors: [{
+      jobCode: 'stock_analytics_refresh',
+      datasets: ['stock_analysis_snapshot', 'stock_selection_daily_cn', 'stock_selection_daily_hk', 'stock_selection_weekly_cn',
+        'stock_selection_weekly_hk', 'stock_selection_shadow_cn', 'stock_selection_shadow_hk'],
+    }],
+  },
+  {
+    id: 'system-retention',
+    legacy: [{ jobCode: 'site_analytics_retention', modes: ['core'] }, { jobCode: 'storage_retention', modes: ['core'] }],
+    // 系统清理类没有金融数据集分区可核对，只认「新任务连续 3 次成功且 data_as_of 达标」。
+    successors: [{ jobCode: 'system_retention', datasets: [], requireConsecutiveSuccesses: 3 }],
+  },
+]);
+
+// 任务码不变的家族：显式登记，查询时返回 unchanged，禁止套用别名归档。
+const LEGACY_JOB_UNCHANGED = Object.freeze([
+  { jobCode: 'market_close:A股' }, { jobCode: 'market_close:可转债' }, { jobCode: 'market_close:LOF/ETF' },
+  { jobCode: 'market_close:港股' }, { jobCode: 'hk_rate' }, { jobCode: 'nav_snapshot' },
+  { jobCode: 'ipo_calendar_refresh' }, { jobCode: 'holiday_sync' },
+]);
+
+const LEGACY_JOB_ALIAS_MAP = Object.freeze((() => {
+  const map = {};
+  for (const group of LEGACY_JOB_ALIAS_GROUPS) {
+    for (const legacy of group.legacy) {
+      for (const mode of legacy.modes) {
+        const key = `${legacy.jobCode}|${mode}`;
+        if (!map[key]) {
+          map[key] = { groupId: group.id, legacyJobCode: legacy.jobCode, legacyMode: mode, successors: group.successors, unchanged: false };
+        }
+      }
+    }
+  }
+  for (const item of LEGACY_JOB_UNCHANGED) {
+    map[`${item.jobCode}|*`] = { groupId: 'unchanged', legacyJobCode: item.jobCode, legacyMode: '*', successors: [], unchanged: true };
+  }
+  return map;
+})());
+
+// 计划槽的“旧模式”键：selection_inputs 还必须区分 CN/HK，否则会把港股证据当成 A 股恢复证据。
+function legacyJobModeOf(payload = {}) {
+  const mode = String(payload && payload.mode || 'core');
+  const market = String(payload && payload.market || '').toUpperCase();
+  if (mode === 'selection_inputs' && market) return `${mode}:${market}`;
+  return mode;
+}
+
+function legacyJobAlias(jobCode, mode) {
+  const code = String(jobCode || '');
+  if (!code) return null;
+  if (mode && LEGACY_JOB_ALIAS_MAP[`${code}|${String(mode)}`]) return LEGACY_JOB_ALIAS_MAP[`${code}|${String(mode)}`];
+  return LEGACY_JOB_ALIAS_MAP[`${code}|*`] || null;
+}
+
+/**
+ * 旧任务码告警的映射证据核验：只返回 recovered=true 需要同时满足
+ * ① 新任务同数据集分区在旧告警目标日已发布且质量通过；或
+ * ② 新任务在原告警之后连续 3 次成功且 data_as_of 达到该次槽位的目标日。
+ */
+async function verifyLegacyAliasEvidence(alert, query = (sql, params) => repository.runQuery(sql, params)) {
+  // 回退开关开启时旧任务仍在自动排程，不能用新任务成功替代旧告警的恢复证据。
+  if (!jobConvergenceEnabled()) return null;
+  const jobCode = String(alert && alert.job_code || '');
+  if (!jobCode) return null;
+  let legacySlot = null;
+  if (alert.slot_id != null) {
+    const { rows } = await layerSql.loadLegacyAlertSlot(query, [], [alert.slot_id]);
+    legacySlot = rows[0] || null;
+  }
+  const mode = legacySlot ? legacyJobModeOf(legacySlot.request_payload || {}) : null;
+  const alias = legacyJobAlias(jobCode, mode);
+  if (!alias || alias.unchanged || !alias.successors.length) return null;
+  if (!mode && ['company_financial_incremental_sync', 'stock_analysis_refresh'].includes(jobCode)) {
+    // 多模式任务的旧槽缺失时无法判定 CN/HK 或选股渠道作用域，宁可留给人工核对。
+    return { recovered: false, reason: 'legacy_alias_mode_unknown', evidence: { jobCode, aliasGroup: alias.groupId } };
+  }
+  // 告警必须带发生时间：否则“后续成功”无从界定，空证据不得关闭。
+  const since = alert.last_seen_at ? new Date(alert.last_seen_at) : null;
+  if (!since || Number.isNaN(since.getTime())) {
+    return { recovered: false, reason: 'legacy_alias_alert_time_missing', evidence: { jobCode } };
+  }
+  const { expectedDataDate } = require('./jobScheduleSlots');
+  const { isPublishedDatasetEvidence, resolveDatasetScope } = require('./datasetPartitionRegistry');
+  const businessDate = legacySlot ? businessDateText(legacySlot.business_date) : null;
+  const attempts = [];
+  for (const successor of alias.successors) {
+    const partitionKey = businessDate ? expectedDataDate(successor.jobCode, businessDate) : null;
+    let datasetEvidence = null;
+    if (partitionKey && Array.isArray(successor.datasets) && successor.datasets.length) {
+      const { rows } = await layerSql.loadLegacyAliasDatasetEvidence(query, [], [successor.datasets, partitionKey]);
+      const scoped = successor.datasets.map(code => {
+        const scopeKey = resolveDatasetScope(code, {});
+        const row = rows.find(item => String(item.dataset_code) === code && String(item.scope_key || '') === String(scopeKey || ''));
+        return { datasetCode: code, scopeKey, published: Boolean(row) && isPublishedDatasetEvidence(row, code), partitionKey };
+      });
+      datasetEvidence = { partitionKey, complete: scoped.every(item => item.published), datasets: scoped };
+      if (datasetEvidence.complete) {
+        return {
+          recovered: true,
+          reason: null,
+          evidence: {
+            mode: 'legacy_alias_dataset_partition',
+            legacyJobCode: jobCode, legacyMode: mode, aliasGroup: alias.groupId,
+            successorJobCode: successor.jobCode, businessDate, partitionKey,
+            datasets: scoped,
+            legacySlotId: legacySlot ? legacySlot.slot_id : null,
+          },
+        };
+      }
+    }
+    const required = Math.max(Number(successor.requireConsecutiveSuccesses || 3), 1);
+    const { rows: sequenceRows } = await layerSql.loadLegacySuccessorSuccesses(query, [], [successor.jobCode, since.toISOString(), required]);
+    const sequence = sequenceRows.map(row => {
+      const slotBusinessDate = businessDateText(row.business_date);
+      const expected = /^\d{4}-\d{2}-\d{2}$/.test(slotBusinessDate)
+        ? expectedDataDate(successor.jobCode, slotBusinessDate) : null;
+      const dataAsOf = row.data_as_of ? businessDateText(row.data_as_of) : null;
+      const summary = row.result_summary && typeof row.result_summary === 'object' ? row.result_summary : {};
+      return {
+        slotId: row.slot_id, jobCode: row.job_code, status: row.status,
+        businessDate: slotBusinessDate, expectedDataAsOf: expected,
+        dataAsOf: dataAsOf || (summary.dataAsOf ? businessDateText(summary.dataAsOf) : null),
+        scheduledFor: row.scheduled_for,
+      };
+    });
+    const consecutive = sequence.length === required && sequence.every(item => item.status === 'succeeded'
+      && /^\d{4}-\d{2}-\d{2}$/.test(String(item.dataAsOf || ''))
+      && (!item.expectedDataAsOf || item.dataAsOf >= item.expectedDataAsOf)
+      && new Date(item.scheduledFor).getTime() > since.getTime());
+    attempts.push({ successorJobCode: successor.jobCode, datasetEvidence, sequence, consecutive });
+    if (consecutive) {
+      return {
+        recovered: true,
+        reason: null,
+        evidence: {
+          mode: 'legacy_alias_three_consecutive_successes',
+          legacyJobCode: jobCode, legacyMode: mode, aliasGroup: alias.groupId,
+          successorJobCode: successor.jobCode, businessDate,
+          requiredCount: required, sequence,
+          legacySlotId: legacySlot ? legacySlot.slot_id : null,
+        },
+      };
+    }
+  }
+  return {
+    recovered: false,
+    reason: 'legacy_alias_evidence_insufficient',
+    evidence: { legacyJobCode: jobCode, legacyMode: mode, aliasGroup: alias.groupId, businessDate, attempts },
+  };
+}
 
 // “有效等待”只由明确证据和未到期的复查时间构成：done 只表示本批结束，
 // attempt_count 只表示当前重试计数，二者都不能单独证明工作完成或任务漏跑。
@@ -263,4 +481,5 @@ async function verifySlotRecoveryEvidence(slot, query = (sql, params) => reposit
 module.exports = {
   businessDateText, sameTargetScope, sameSlotRecoveryScope, recoveryScopeFilter, slotWaitingState,
   waitReasonPolicy, WAIT_REASON_POLICIES, verifySlotRecoveryEvidence, slotVersionText,
+  LEGACY_JOB_ALIAS_MAP, LEGACY_JOB_ALIAS_GROUPS, legacyJobAlias, legacyJobModeOf, verifyLegacyAliasEvidence,
 };

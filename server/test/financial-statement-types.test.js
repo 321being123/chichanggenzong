@@ -190,15 +190,20 @@ async function main() {
     await client.query(`UPDATE fundamental.financial_facts SET currency_code=NULL WHERE report_id IN
       (SELECT report_id FROM fundamental.financial_reports WHERE company_id=$1)
       AND metric_code IN ('equity_parent','net_profit_parent')`, [company]);
-    let universe = (await selection.loadUniverse({ market: 'CN', asOfDate: '2026-11-13' }, client)).find(row => row.code === code);
+    const selectionService = require('../services/stockSelectionService');
+    const applyPbFallback = async rows => {
+      const cids = [...new Set(rows.map(r => r.company_id).filter(Boolean))];
+      const eq = await selection.loadEquityFacts({ companyIds: cids, asOfDate: '2026-11-13', market: 'CN' }, client);
+      return selectionService.applyEquityPbFallback(rows, eq);
+    };
+    let universe = (await applyPbFallback(await selection.loadUniverse({ market: 'CN', asOfDate: '2026-11-13' }, client))).find(row => row.code === code);
     assert.ok(universe);
     assert.strictEqual(universe.pb, null, '报表币种未知时不能与估值相除');
-    assert.strictEqual(universe.pe_static, null, '利润币种未知时不能与估值相除');
     await client.query(`UPDATE fundamental.financial_facts SET currency_code='CNY' WHERE report_id IN
       (SELECT report_id FROM fundamental.financial_reports WHERE company_id=$1)
       AND metric_code IN ('equity_parent','net_profit_parent')`, [company]);
-    universe = (await selection.loadUniverse({ market: 'CN', asOfDate: '2026-11-13' }, client)).find(row => row.code === code);
-    assert.ok(Number(universe.pb) > 0 && Number(universe.pe_static) > 0, '同币种的已知事实仍可计算');
+    universe = (await applyPbFallback(await selection.loadUniverse({ market: 'CN', asOfDate: '2026-11-13' }, client))).find(row => row.code === code);
+    assert.ok(Number(universe.pb) > 0, '同币种的已知事实仍可计算');
 
     const freeHkCode = (await client.query(`SELECT lpad(n::text,5,'0')||'.HK' AS code FROM generate_series(80000,89999) n
       WHERE NOT EXISTS (SELECT 1 FROM core.instruments i WHERE i.canonical_code=lpad(n::text,5,'0')||'.HK') LIMIT 1`)).rows[0].code;

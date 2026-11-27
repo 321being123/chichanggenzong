@@ -445,8 +445,8 @@ assert.strictEqual(field(singleValidFlow, 'ps.tp').values[0].comparison_reason, 
     await selection.loadAnnualProfits({ companyIds: [1], asOfDate: '2026-11-01' }, tx);
     await selection.loadTtmInputs({ companyIds: [1], asOfDate: '2026-11-01' }, tx);
     assert.strictEqual(selectionSql.length, 4);
-    for (const statement of selectionSql) assert.ok(statement.includes(selection.SAFE_FINANCIAL_FACT_SQL), '所有选股事实读取均需币种保护');
-    assert.strictEqual(selectionSql[0].split(selection.SAFE_FINANCIAL_FACT_SQL).length - 1, 2, 'PB 与静态 PE 两个分母都需保护');
+    assert.ok(!selectionSql[0].includes('financial_facts'), 'B4-1B 后 loadUniverse 不再直接查询财报事实表');
+    for (const statement of selectionSql.slice(1)) assert.ok(statement.includes(selection.SAFE_FINANCIAL_FACT_SQL), '所有选股事实读取均需币种保护');
     const rules = require('../domain/stockSelectionRules');
     const equity = rules.evaluateEquity({ equity: { amount: null, currency: 'USD', currencyUnverified: true },
       annual: { years: [] } }, rules.DEFAULT_PARAMS);

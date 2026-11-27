@@ -241,17 +241,18 @@ function mergeReportPayload({ previous, incoming, kind, preserveExistingNonNull 
       } : {}),
     };
   }
+  const lightValueCorrected = valueCorrected && newComplete === false;
   if (comparisonRequested && comparisonComplete) {
     const trimmed = statementMetricPrefix.trimComparisonBuckets(next.__statement_comparisons, allowed);
     if (Object.keys(trimmed).length) merged.__statement_comparisons = trimmed;
     else delete merged.__statement_comparisons;
-  } else if (!valueCorrected && (comparisonRequested || hasComparisons(next) || hasComparisons(old))) {
+  } else if (!lightValueCorrected && (comparisonRequested || hasComparisons(next) || hasComparisons(old))) {
     const buckets = statementMetricPrefix.mergeComparisonBuckets(
       old && old.__statement_comparisons, next && next.__statement_comparisons, allowed
     );
     if (Object.keys(buckets).length) merged.__statement_comparisons = buckets;
     else delete merged.__statement_comparisons;
-  } else if (valueCorrected) {
+  } else if (lightValueCorrected) {
     // 正式更正来自轻量采集时，旧的比较值属于旧数值，不能再挂在新值上。
     if (hasComparisons(next) && !comparisonComplete) {
       const trimmed = statementMetricPrefix.trimComparisonBuckets(next.__statement_comparisons, allowed);

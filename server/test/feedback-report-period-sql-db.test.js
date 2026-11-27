@@ -35,10 +35,10 @@ const ROOT = path.join(__dirname, '..', '..');
     assert.strictEqual(resolved.empty_declared, 'annual', '空声明类型必须继续读标签');
     assert.strictEqual(resolved.null_declared, 'semiannual', '空值声明类型必须继续读标签');
 
-    // 年度估值、年度分红使用同一 SQL 表达式；最近报告与 TTM 的 JS 归一化读同一组标签。
+    // 年度利润读取使用同一 SQL 表达式（loadUniverse 已在 B4-1B 移除冗余 pe_static LATERAL）；最近报告与 TTM 的 JS 归一化读同一组标签。
     const repo = fs.readFileSync(path.join(ROOT, 'server', 'repositories', 'stockSelectionRepository.js'), 'utf8');
     const annualFilterUses = repo.match(/\$\{reportPeriodTypeExpression\('r'\)\} = 'annual'/g) || [];
-    assert.strictEqual(annualFilterUses.length, 2, '年度利润/年度分红必须共用同一个报告期表达式');
+    assert.strictEqual(annualFilterUses.length, 1, '年度利润必须使用同一个报告期表达式');
     assert.ok(repo.includes("raw_payload->>'reportType' AS report_type"), '最近报告与 TTM 读端必须读取 reportType 别名');
     assert.ok(repo.includes("raw_payload->>'report_type_label' AS report_type_label"), '最近报告与 TTM 读端必须读取 report_type_label 别名');
     assert.ok(!/NULLIF\(r\.period_type,'unknown'\),NULLIF\(r\.period_type,''\)/.test(repo),

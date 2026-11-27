@@ -32,16 +32,21 @@ function cursorSucceeded(cursor, targetDate) {
   return String(cursor.last_success_date || '').slice(0, 10) >= String(targetDate).slice(0, 10);
 }
 
-async function collectMissingDomains({ tsCode, asOfDate, missing, inputs }) {
+async function collectMissingDomains({ tsCode, asOfDate, missing, inputs, coverage }) {
   // 复用现役港股补数入口（已准入来源 + 统一 Guard + 标准层落库），不新建采集器。
   // 只按单只证券调用，不启动整个选股补数流程；helper 的 ok 不等于分析完整，下面仍按本地覆盖复查。
   const syncInputs = inputs || require('./stockSelectionInputsSync');
   const attempts = [];
-  const needsMarket = missing.some(domain => domain === 'bars' || domain === 'valuation');
+  // 个股分析页需要完整十年股价与复权因子（反馈 #115/#117）；选股补数不受影响。
+  const needsAdjustment = !coverage || Number(coverage.adjustments || 0) === 0;
+  const needsMarket = needsAdjustment || missing.some(domain => domain === 'bars' || domain === 'valuation');
   const needsFacts = missing.some(domain => domain === 'reports' || domain === 'dividends');
   if (needsMarket) {
-    try { attempts.push({ domain: 'hk_market', result: await syncInputs.collectHkMarketData({ code: tsCode }, asOfDate) }); }
-    catch (error) { attempts.push({ domain: 'hk_market', error: error.message }); }
+    try {
+      attempts.push({ domain: 'hk_market', result: await syncInputs.collectHkMarketData(
+        { code: tsCode, historyYears: 11, includeAdjustments: true }, asOfDate,
+      ) });
+    } catch (error) { attempts.push({ domain: 'hk_market', error: error.message }); }
   }
   if (needsFacts) {
     try { attempts.push({ domain: 'hk_facts', result: await syncInputs.collectOne({ code: tsCode }, asOfDate) }); }
@@ -148,6 +153,7 @@ async function runHkSingleStockRefresh(options = {}) {
     tsCode, asOfDate: targetDate,
     missing: pending.filter(domain => ['bars', 'valuation', 'reports', 'dividends'].includes(domain)),
     inputs: deps.inputs,
+    coverage,
   });
   const attemptFailures = attemptFailuresByDomain(attempts);
   // 采集后重查本地事实：接口成功但没落库不算覆盖。

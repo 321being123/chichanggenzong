@@ -618,21 +618,25 @@ async function loadEquityFacts({ companyIds, asOfDate, availableBefore, market =
   const marketPredicate = market ? marketFinancialCandidatePredicate('r', market, 'balance') : 'TRUE';
   const marketUnverified = market ? marketFinancialUnverifiedForMarket('r', market, 'balance') : 'FALSE';
   const { rows } = await exec(`
-    SELECT DISTINCT ON (r.company_id)
-           r.company_id, r.report_id, r.period_end::text AS period_end, r.announced_at::text AS announced_at,
-           r.available_at, r.availability_basis, r.source_version,
-           CASE WHEN ${marketUnverified} THEN NULL ELSE ${SAFE_FINANCIAL_FACT_SQL} END AS numeric_value,
-           f.currency_code,
-           ((${UNVERIFIED_FINANCIAL_CURRENCY_SQL}) OR ${marketUnverified}) AS currency_unverified
-      FROM fundamental.financial_reports r
-      JOIN fundamental.financial_facts f ON f.report_id = r.report_id AND f.metric_code = 'equity_parent'
-     WHERE r.company_id = ANY($1::bigint[])
-       AND ${marketPredicate}
-       AND r.statement_scope = 'consolidated'
-       AND r.announced_at IS NOT NULL
-       AND r.announced_at < $2::date
-       AND ($3::timestamptz IS NULL OR r.available_at IS NULL OR r.available_at < $3::timestamptz)
-     ORDER BY r.company_id, r.period_end DESC, r.announced_at DESC, r.report_id DESC`, [companyIds, asOfDate, availableBefore || null]);
+    SELECT picked.*
+      FROM (SELECT DISTINCT company_id FROM unnest($1::bigint[]) AS cid(company_id)) c
+      CROSS JOIN LATERAL (
+        SELECT r.company_id, r.report_id, r.period_end::text AS period_end, r.announced_at::text AS announced_at,
+               r.available_at, r.availability_basis, r.source_version,
+               CASE WHEN ${marketUnverified} THEN NULL ELSE ${SAFE_FINANCIAL_FACT_SQL} END AS numeric_value,
+               f.currency_code,
+               ((${UNVERIFIED_FINANCIAL_CURRENCY_SQL}) OR ${marketUnverified}) AS currency_unverified
+          FROM fundamental.financial_reports r
+          JOIN fundamental.financial_facts f ON f.report_id = r.report_id AND f.metric_code = 'equity_parent'
+         WHERE r.company_id = c.company_id
+           AND ${marketPredicate}
+           AND r.statement_scope = 'consolidated'
+           AND r.announced_at IS NOT NULL
+           AND r.announced_at < $2::date
+           AND ($3::timestamptz IS NULL OR r.available_at IS NULL OR r.available_at < $3::timestamptz)
+         ORDER BY r.period_end DESC, r.announced_at DESC, r.report_id DESC
+         LIMIT 1
+      ) picked`, [companyIds, asOfDate, availableBefore || null]);
   return new Map(rows.map(row => [String(row.company_id), {
     reportId: row.report_id,
     amount: row.numeric_value === null ? null : Number(row.numeric_value),

@@ -126,6 +126,7 @@ async function runIndexBaselineJob(reason = 'startup-catchup') {
     runId = await startJobRun('index_baseline', triggerTypeForReason(reason));
     await ensureIndexBaseline();
     await finishJobRun(runId, true, '');
+    return { ok: true, status: 'succeeded' };
   } catch (e) {
     // 预检查失败时没有运行记录；已创建记录的正常执行仍需留痕。
     if (runId) await finishJobRun(runId, false, e.message || String(e));
@@ -170,13 +171,17 @@ async function ensureIndexRecent(days) {
 
 // 带幂等锁与执行记录的每日指数任务
 async function runIndexRecentJob() {
-  if (!(await tryClaimJob('index_recent'))) return;
+  if (!(await tryClaimJob('index_recent'))) {
+    return { ok: true, skipped: true, status: 'skipped', reason: 'already_running' };
+  }
   const runId = await startJobRun('index_recent');
   try {
     await ensureIndexRecent(10);
     await finishJobRun(runId, true, '');
+    return { ok: true, status: 'succeeded' };
   } catch (e) {
     await finishJobRun(runId, false, e.message || String(e));
+    return { ok: false, status: 'failed', error: e.message || String(e) };
   } finally {
     await releaseJob('index_recent');
   }

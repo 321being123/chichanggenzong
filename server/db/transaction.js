@@ -45,4 +45,33 @@ async function withTransaction(fn, options = {}) {
   }
 }
 
-module.exports = { withTransaction };
+/**
+ * 只读超时并行查询执行器：允许只读聚合流程以受控并发并行跑多段 SQL，
+ * 同时每条语句独立套用 BEGIN TRANSACTION READ ONLY + SET LOCAL statement_timeout，
+ * 避免单连接串行放大墙钟，且不把会话级超时残留到连接池。
+ */
+function createReadOnlyTimeoutExecutor(timeoutMs) {
+  const safeTimeout = Math.max(1, Math.floor(Number(timeoutMs) || 15000));
+  return {
+    isParallelReadPool: true,
+    async query(sql, params) {
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN TRANSACTION READ ONLY');
+        await client.query(`SET LOCAL statement_timeout = ${safeTimeout}`);
+        const result = await client.query(sql, params);
+        await client.query('COMMIT');
+        return result;
+      } catch (error) {
+        try {
+          await client.query('ROLLBACK');
+        } catch (_) {}
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
+  };
+}
+
+module.exports = { withTransaction, createReadOnlyTimeoutExecutor };

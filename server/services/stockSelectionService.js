@@ -12,7 +12,7 @@ const PORTFOLIO = require('../domain/stockSelectionPortfolio');
 const PERIODS = require('./stockSelectionPeriods');
 const readinessService = require('./stockSelectionReadiness');
 const repo = require('../repositories/stockSelectionRepository');
-const { withTransaction } = require('../db/transaction');
+const { withTransaction, createReadOnlyTimeoutExecutor } = require('../db/transaction');
 const CoreDate = require('../../public/shared/core-date.js');
 
 const STRATEGY_VERSION = 'v1';
@@ -59,6 +59,11 @@ function screenMaxConcurrent() {
   return Number.isFinite(value) && value > 0 ? Math.floor(value) : 2;
 }
 
+function screenWaitMs() {
+  const value = Number(process.env.SCREEN_WAIT_MS || 25000);
+  return Number.isFinite(value) && value > 0 ? Math.floor(value) : 25000;
+}
+
 function screenCacheTtlMs() {
   const value = Number(process.env.SCREEN_CACHE_TTL_MS || 5 * 60 * 1000);
   return Number.isFinite(value) && value > 0 ? Math.floor(value) : 5 * 60 * 1000;
@@ -95,7 +100,7 @@ function releaseScreenComputeSlot() {
   screenComputeState.active = Math.max(0, screenComputeState.active - 1);
 }
 
-function acquireScreenComputeSlot({ maxConcurrent = screenMaxConcurrent(), waitMs = 1500 } = {}) {
+function acquireScreenComputeSlot({ maxConcurrent = screenMaxConcurrent(), waitMs = screenWaitMs() } = {}) {
   const limit = Math.max(1, Number(maxConcurrent) || 1);
   if (screenComputeState.active < limit) {
     screenComputeState.active += 1;
@@ -212,13 +217,28 @@ function stableHashOf(value) {
 }
 
 /**
- * 批量取数执行器：事务连接上不允许并发发送查询（pg 会告警并可能错序），
- * 因此在事务内按顺序执行；无事务（只读预览）时并行，减少往返。
+ * 批量取数执行器：单连接事务内不允许并发发送查询（pg 会告警并可能错序），
+ * 因此按顺序执行；无事务或并行只读超时执行器时受控并发（默认 4），大幅缩短墙钟且不打爆连接池。
  */
 async function runBatched(tasks, tx) {
-  if (tx) {
+  if (tx && !tx.isParallelReadPool) {
     const results = [];
     for (const task of tasks) results.push(await task());
+    return results;
+  }
+  if (tx && tx.isParallelReadPool) {
+    const limit = 4;
+    const results = new Array(tasks.length);
+    let cursor = 0;
+    const worker = async () => {
+      for (;;) {
+        const idx = cursor;
+        cursor += 1;
+        if (idx >= tasks.length) return;
+        results[idx] = await tasks[idx]();
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(limit, tasks.length) }, worker));
     return results;
   }
   return Promise.all(tasks.map(task => task()));
@@ -2643,18 +2663,17 @@ async function loadScreenDataset({ market, asOfDate, strategyCode, waitMs, maxCo
     const release = await acquireScreenComputeSlot({ maxConcurrent, waitMs });
     try {
       const timeoutMs = screenStatementTimeoutMs();
-      const computed = await withTransaction(async tx => {
-        // 请求级硬中止：慢查询只影响本次请求，不拖垮 Web 进程与连接池。
-        await tx.query(`SET LOCAL statement_timeout = ${timeoutMs}`);
-        return computeSelection({
-          market: normalizedMarket,
-          asOfDate: date,
-          strategyCode: resolvedStrategy,
-          positionRatio: 1,
-          writeUniverseArtifact: false,
-          allowUniverseDrift: true,
-        }, tx);
-      });
+      // 请求级硬中止 + 受控并行只读：每条 SQL 独立套用 READ ONLY 与 statement_timeout，
+      // 既不拖垮 Web 进程与连接池，又避免 7 段全市场查询在单连接上串行叠加到 70 秒。
+      const readExecutor = createReadOnlyTimeoutExecutor(timeoutMs);
+      const computed = await computeSelection({
+        market: normalizedMarket,
+        asOfDate: date,
+        strategyCode: resolvedStrategy,
+        positionRatio: 1,
+        writeUniverseArtifact: false,
+        allowUniverseDrift: true,
+      }, readExecutor);
       const entry = {
         market: normalizedMarket,
         asOfDate: date,

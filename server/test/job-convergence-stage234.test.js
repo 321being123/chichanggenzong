@@ -236,7 +236,22 @@ async function scheduledCodesOn(date) {
 
 async function scheduleSwitchChecks() {
   const backup = process.env.JOB_CONVERGENCE_ENABLED;
+  const { invalidateMarketStateCache } = require('../services/marketState');
+  let seededHkCalendar = false;
   try {
+    // 空库 CI 的 market.trade_calendar 不一定预置 2027-01-15 港交所开市日，显式夹具准备并在 finally 还原。
+    const existingHk = await pool.query(
+      `SELECT 1 FROM market.trade_calendar WHERE exchange = 'HKEX' AND trade_date = '2027-01-15'::date LIMIT 1`,
+    );
+    if (!existingHk.rows.length) {
+      await pool.query(
+        `INSERT INTO market.trade_calendar (exchange, trade_date, is_open, raw_payload)
+         VALUES ('HKEX', '2027-01-15'::date, true, '{"source":"test_fixture"}'::jsonb)
+         ON CONFLICT (exchange, trade_date) DO NOTHING`,
+      );
+      seededHkCalendar = true;
+    }
+    invalidateMarketStateCache({ market: 'HK' });
     await clearScheduleFixtures();
     process.env.JOB_CONVERGENCE_ENABLED = '1';
     await slots.syncScheduleSlots(new Date('2027-01-16T10:00:00+08:00'));
@@ -269,6 +284,10 @@ async function scheduleSwitchChecks() {
     if (backup === undefined) delete process.env.JOB_CONVERGENCE_ENABLED;
     else process.env.JOB_CONVERGENCE_ENABLED = backup;
     await clearScheduleFixtures();
+    if (seededHkCalendar) {
+      await pool.query(`DELETE FROM market.trade_calendar WHERE exchange = 'HKEX' AND trade_date = '2027-01-15'::date`).catch(() => {});
+      invalidateMarketStateCache({ market: 'HK' });
+    }
   }
 }
 

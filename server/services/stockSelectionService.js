@@ -111,7 +111,8 @@ function acquireScreenComputeSlot({ maxConcurrent = screenMaxConcurrent(), waitM
     const grant = () => {
       if (waiter.timer) clearTimeout(waiter.timer);
       // 槽位由 releaseScreenComputeSlot 直接移交，active 保持不变。
-      waiter.resolve(releaseScreenComputeSlot);
+      // 必须调用外层 Promise 的 resolve，不能误调 waiter.resolve（后者指向 grant 自身会导致栈溢出并泄漏槽位）。
+      resolve(releaseScreenComputeSlot);
     };
     waiter.resolve = grant;
     waiter.reject = reject;

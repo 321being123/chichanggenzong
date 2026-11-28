@@ -329,6 +329,30 @@ async function realtimeChecks(client, fixture) {
     repo.loadPbWindow = originalLoadPbWindow;
   }
 
+  // 并发排队移交：maxConcurrent=1 且等待时间充足时，排队请求必须按序拿到移交槽位并成功返回（防 grant 递归栈溢出与槽位泄漏）
+  service.resetScreenStateForTests();
+  repo.loadPbWindow = async (...args) => {
+    await new Promise(resolve => setTimeout(resolve, 60));
+    return originalLoadPbWindow.apply(repo, args);
+  };
+  try {
+    const queuedResults = await Promise.all([
+      service.screenStocksRealtime({
+        market: 'CN', asOfDate: AS_OF, strategyCode: 'investment_essentials_adapted_v1', limit: 20,
+      }, { maxConcurrent: 1, waitMs: 5000 }),
+      service.screenStocksRealtime({
+        market: 'CN', asOfDate: '2026-11-17', strategyCode: 'investment_essentials_adapted_v1', limit: 20,
+      }, { maxConcurrent: 1, waitMs: 5000 }),
+      service.screenStocksRealtime({
+        market: 'CN', asOfDate: '2026-11-16', strategyCode: 'investment_essentials_adapted_v1', limit: 20,
+      }, { maxConcurrent: 1, waitMs: 5000 }),
+    ]);
+    eq(queuedResults.length, 3, '并发排队 3 个不同请求必须全部成功');
+    ok(queuedResults.every(item => item && Number.isFinite(item.total)), '移交槽位后的每次筛选都必须返回完整结果');
+  } finally {
+    repo.loadPbWindow = originalLoadPbWindow;
+  }
+
   // statement_timeout：请求级硬中止
   service.resetScreenStateForTests();
   const oldTimeout = process.env.SCREEN_STATEMENT_TIMEOUT_MS;

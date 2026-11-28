@@ -278,7 +278,19 @@ async function rebuildProjectionRange({ market, fromDate, toDate, months = null,
 // 投影读取（三段混合查询）
 // ---------------------------------------------------------------------------
 
+function parseDateParts(value) {
+  const date = value instanceof Date ? value.toISOString().slice(0, 10) : String(value || '').slice(0, 10);
+  const year = Number(date.slice(0, 4));
+  const month = Number(date.slice(5, 7));
+  const monthStart = `${date.slice(0, 7)}-01`;
+  const monthEnd = new Date(Date.UTC(year, month, 0)).toISOString().slice(0, 10);
+  return { date, year, month, monthStart, monthEnd };
+}
+
 async function loadMiddleAggregates({ market, windowStart, asOfDate, instrumentIds = null }, tx) {
+  const start = parseDateParts(windowStart);
+  const end = parseDateParts(asOfDate);
+  if ((end.year - start.year) * 12 + (end.month - start.month) <= 1) return [];
   const exec = executorOf(tx);
   const scoped = Array.isArray(instrumentIds) && instrumentIds.length
     ? Array.from(new Set(instrumentIds.map(id => Number(id)).filter(Number.isFinite)))
@@ -306,11 +318,11 @@ async function loadMiddleAggregates({ market, windowStart, asOfDate, instrumentI
      WHERE m.market = $1
        AND i.market = $1 AND i.asset_class = 'stock'
        AND COALESCE(i.raw_data->>'identity_backfill', '') <> 'tencent_quote_fund_etf'
-       AND ($4::bigint[] IS NULL OR m.instrument_id = ANY($4::bigint[]))
-       AND make_date(m.cal_year, m.cal_month, 1) > date_trunc('month', $2::date)::date
-       AND make_date(m.cal_year, m.cal_month, 1) < date_trunc('month', $3::date)::date
+       AND ($2::bigint[] IS NULL OR m.instrument_id = ANY($2::bigint[]))
+       AND (m.cal_year, m.cal_month) > ($3::smallint, $4::smallint)
+       AND (m.cal_year, m.cal_month) < ($5::smallint, $6::smallint)
      GROUP BY m.instrument_id`,
-  [market, windowStart, asOfDate, scoped]);
+  [market, scoped, start.year, start.month, end.year, end.month]);
   return rows.map(row => ({ ...row, segment: 'mid' }));
 }
 
@@ -321,6 +333,11 @@ async function loadMiddleAggregates({ market, windowStart, asOfDate, instrumentI
 async function loadEdgeAggregates({ market, windowStart, asOfDate, instrumentIds = null }, tx) {
   const config = marketConfig(market);
   const exec = executorOf(tx);
+  const start = parseDateParts(windowStart);
+  const end = parseDateParts(asOfDate);
+  const sameOrEmpty = start.date >= end.date || (start.year === end.year && start.month === end.month);
+  const headEnd = sameOrEmpty ? end.date : start.monthEnd;
+  const tailStart = sameOrEmpty ? '9999-12-31' : end.monthStart;
   const scoped = Array.isArray(instrumentIds) && instrumentIds.length
     ? Array.from(new Set(instrumentIds.map(id => Number(id)).filter(Number.isFinite)))
     : null;
@@ -332,23 +349,19 @@ async function loadEdgeAggregates({ market, windowStart, asOfDate, instrumentIds
          AND COALESCE(raw_data->>'identity_backfill', '') <> 'tencent_quote_fund_etf'
          AND ($4::bigint[] IS NULL OR instrument_id = ANY($4::bigint[]))
     ),
-    cal AS (
+    edge_cal AS (
       SELECT trade_date FROM market.trade_calendar
        WHERE exchange = ANY($5::text[]) AND COALESCE(is_open, true) = true
-         AND trade_date > $2::date AND trade_date <= $3::date
-    ),
-    edge_cal AS (
-      SELECT c.trade_date FROM cal c
-       WHERE date_trunc('month', c.trade_date)::date IN (
-         date_trunc('month', $2::date)::date, date_trunc('month', $3::date)::date)
+         AND ((trade_date > $2::date AND trade_date <= $6::date)
+           OR (trade_date >= $7::date AND trade_date <= $3::date))
     ),
     edge_picked AS (
       SELECT p.instrument_id, p.trade_date, p.pb
         FROM analytics.stock_daily_pb_picked p
         JOIN inst i ON i.instrument_id = p.instrument_id
-       WHERE p.trade_date > $2::date AND p.trade_date <= $3::date
-         AND date_trunc('month', p.trade_date)::date IN (
-           date_trunc('month', $2::date)::date, date_trunc('month', $3::date)::date)
+       WHERE p.market = $1
+         AND ((p.trade_date > $2::date AND p.trade_date <= $6::date)
+           OR (p.trade_date >= $7::date AND p.trade_date <= $3::date))
     ),
     agg AS (
       SELECT p.instrument_id,
@@ -399,7 +412,7 @@ async function loadEdgeAggregates({ market, windowStart, asOfDate, instrumentIds
       LEFT JOIN listed l ON l.instrument_id = i.instrument_id
       LEFT JOIN exempt e ON e.instrument_id = i.instrument_id
       LEFT JOIN agg a ON a.instrument_id = i.instrument_id`,
-  [market, windowStart, asOfDate, scoped, config.calendarExchanges]);
+  [market, windowStart, asOfDate, scoped, config.calendarExchanges, headEnd, tailStart]);
   return rows.map(row => ({ ...row, segment: 'edge' }));
 }
 

@@ -220,7 +220,7 @@ function crossDayChecks() {
 async function clearScheduleFixtures() {
   await pool.query(
     `DELETE FROM ops.job_schedule_slots
-      WHERE scheduled_for >= $1::date AND scheduled_for < ($2::date + interval '1 day')`,
+      WHERE business_date >= $1::date AND business_date <= $2::date`,
     [SCHEDULE_DATES[0], SCHEDULE_DATES[1]],
   );
 }
@@ -228,7 +228,7 @@ async function clearScheduleFixtures() {
 async function scheduledCodesOn(date) {
   const { rows } = await pool.query(
     `SELECT DISTINCT job_code FROM ops.job_schedule_slots
-      WHERE scheduled_for >= $1::date AND scheduled_for < ($1::date + interval '1 day')`,
+      WHERE (scheduled_for AT TIME ZONE 'Asia/Shanghai')::date = $1::date`,
     [date],
   );
   return rows.map(row => row.job_code);

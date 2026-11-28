@@ -421,7 +421,9 @@ assert.strictEqual(field(singleValidFlow, 'ps.tp').values[0].comparison_reason, 
     const selection = require('../repositories/stockSelectionRepository');
     const factSql = `WITH r AS (SELECT jsonb_build_object('ts_code',$1::text,'currency',$2::text,
       '__statement_coverage',jsonb_build_object('value_basis',$4::text)) AS raw_payload,
-      (SELECT source_id FROM ops.data_sources WHERE source_code=$3) AS source_id, NULL::bigint AS company_id),
+      (SELECT source_id FROM ops.data_sources WHERE source_code=$3) AS source_id, NULL::bigint AS company_id,
+      false AS payload_meta_synced, NULL::text AS payload_ts_code, NULL::text AS payload_market,
+      NULL::text AS payload_currency, NULL::text AS payload_value_basis),
       f AS (SELECT 123::numeric AS numeric_value, $2::text AS currency_code)
       SELECT ${selection.SAFE_FINANCIAL_FACT_SQL} AS value FROM r,f`;
     for (const [code, currency, source, expected, basis] of [

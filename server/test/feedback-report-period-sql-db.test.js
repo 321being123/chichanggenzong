@@ -39,8 +39,10 @@ const ROOT = path.join(__dirname, '..', '..');
     const repo = fs.readFileSync(path.join(ROOT, 'server', 'repositories', 'stockSelectionRepository.js'), 'utf8');
     const annualFilterUses = repo.match(/\$\{reportPeriodTypeExpression\('r'\)\} = 'annual'/g) || [];
     assert.strictEqual(annualFilterUses.length, 1, '年度利润必须使用同一个报告期表达式');
-    assert.ok(repo.includes("raw_payload->>'reportType' AS report_type"), '最近报告与 TTM 读端必须读取 reportType 别名');
-    assert.ok(repo.includes("raw_payload->>'report_type_label' AS report_type_label"), '最近报告与 TTM 读端必须读取 report_type_label 别名');
+    assert.ok(repo.includes("raw_payload->>'reportType'") && repo.includes('AS report_type'),
+      '最近报告与 TTM 读端必须读取 reportType 别名（支持物化列与原件回退）');
+    assert.ok(repo.includes("raw_payload->>'report_type_label'") && repo.includes('AS report_type_label'),
+      '最近报告与 TTM 读端必须读取 report_type_label 别名（支持物化列与原件回退）');
     assert.ok(!/NULLIF\(r\.period_type,'unknown'\),NULLIF\(r\.period_type,''\)/.test(repo),
       '旧的 NULLIF 写法会提前返回 unknown，不得回退');
 

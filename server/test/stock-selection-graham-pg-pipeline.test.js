@@ -230,13 +230,40 @@ async function insertHkfrsWide(client, { reportId, companyId, sourceId, tca, tcl
     assert.strictEqual(withBasis.currencyUnverified, false, '有原件原币佐证必须放行');
     assert.strictEqual(withBasis.fsTableType, 'non_financial', '佐证里的报表类型必须被采用');
 
-    // 6) 两个方案码都必须被服务登记（双方案切换的入口前提）
+    // 6) 迁移 216 物化元数据列触发器与未回填回退路径一致性
+    const metaRow = (await client.query(
+      `SELECT payload_meta_synced, payload_ts_code, payload_market, payload_currency,
+              payload_value_basis, payload_fs_table_type
+         FROM fundamental.financial_reports WHERE report_id=$1`, [hkCnyBasisReport]
+    )).rows[0];
+    assert.strictEqual(metaRow.payload_meta_synced, true, 'INSERT 触发器必须自动同步 payload_meta_synced');
+    assert.strictEqual(metaRow.payload_market, 'HK', '触发器必须提取 __statement_coverage.market');
+    assert.strictEqual(metaRow.payload_currency, 'CNY', '触发器必须提取并大写 currency');
+    assert.strictEqual(metaRow.payload_value_basis, 'source_original_t_o', '触发器必须提取 value_basis');
+    assert.strictEqual(metaRow.payload_fs_table_type, 'non_financial', '触发器必须提取 fs_table_type');
+
+    await client.query(
+      `UPDATE fundamental.financial_reports SET payload_meta_synced=false, payload_ts_code=NULL,
+              payload_market=NULL, payload_currency=NULL, payload_value_basis=NULL, payload_fs_table_type=NULL
+        WHERE report_id = ANY($1::bigint[])`,
+      [[cnPlainReport, cnBankReport, cnGapReport, hkHkdReport, hkCnyNoBasisReport, hkCnyBasisReport]]
+    );
+    const cnFallback = await repo.loadGrahamBalanceFacts({
+      companyIds: [cnPlainId, cnBankId, cnGapId], asOfDate: AS_OF, market: 'CN',
+    });
+    const hkFallback = await repo.loadGrahamBalanceFacts({
+      companyIds: [hkHkdId, hkCnyNoBasisId, hkCnyBasisId], asOfDate: AS_OF, market: 'HK',
+    });
+    assert.deepStrictEqual(cnFallback, cnFacts, 'CN 同步态与未回填回退态取数结果必须完全一致');
+    assert.deepStrictEqual(hkFallback, hkFacts, 'HK 同步态与未回填回退态取数结果必须完全一致');
+
+    // 7) 两个方案码都必须被服务登记（双方案切换的入口前提）
     const service = require('../services/stockSelectionService');
     assert.ok(service.STRATEGY_CODES.includes('graham_net_net_v1'), '格雷厄姆方案必须登记');
     assert.ok(service.STRATEGY_CODES.includes(service.DEFAULT_STRATEGY_CODE), '投资要义方案必须登记');
 
     console.log('格雷厄姆选股真实 PostgreSQL 取数管线：双市场同报告取数、币种以宽表为准、'
-      + '金融企业按 comp_type 判不适用、缺科目保留缺失、港股币种佐证分级通过');
+      + '金融企业按 comp_type 判不适用、缺科目保留缺失、港股币种佐证分级及 216 物化列触发器/回退一致性通过');
   } finally {
     pool.query = original;
     await client.query('ROLLBACK').catch(() => {});

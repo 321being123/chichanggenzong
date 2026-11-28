@@ -241,6 +241,7 @@ const MIGRATIONS = [
   { version: '213_company_instruments_instrument_index', up: () => require('./migrations/era17CompanyInstrumentsIndex').migration213CompanyInstrumentsInstrumentIndex(pool) },
   { version: '214_selection_audit_indexes', up: () => require('./migrations/era17SelectionAuditIndexes').migration214SelectionAuditIndexes(pool) },
   { version: '215_pb_projection_tables', up: () => require('./migrations/era18PbProjection').migration215PbProjectionTables(pool) },
+  { version: '216_financial_report_meta_columns', up: () => require('./migrations/era18FinancialReportMetaColumns').migration216FinancialReportMetaColumns(pool) },
 ];
 
 async function ensureMigrationsTable() {

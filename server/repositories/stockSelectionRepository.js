@@ -75,22 +75,60 @@ const MARKET_CONFIG = Object.freeze({
 // 风险名称：目标日已知的 ST/*ST、退市整理与明确退市风险。停牌另由停牌表判定。
 const RISK_NAME_SQL = `(i.name ~ '(^|\\s|\\*)ST' OR i.name LIKE '%退市%' OR i.name LIKE '%退' OR i.name ~* '(delist|suspended)')`;
 
+// 216 迁移：优先读取 financial_reports 上的物化标量元数据列，避免逐行解压 3.0 GB raw_payload TOAST；
+// 历史未回填行（payload_meta_synced=false）自动回退原 JSONB 表达式，保证部署窗口内语义 100% 一致。
+function payloadTsCodeSql(alias = 'r') {
+  return `(CASE WHEN ${alias}.payload_meta_synced THEN COALESCE(${alias}.payload_ts_code, '') ELSE upper(COALESCE(${alias}.raw_payload->>'ts_code','')) END)`;
+}
+
+function payloadMarketSql(alias = 'r') {
+  return `(CASE WHEN ${alias}.payload_meta_synced THEN COALESCE(${alias}.payload_market, '') ELSE upper(COALESCE(${alias}.raw_payload->'__statement_coverage'->>'market','')) END)`;
+}
+
+function payloadCurrencySql(alias = 'r') {
+  return `(CASE WHEN ${alias}.payload_meta_synced THEN COALESCE(${alias}.payload_currency, '') ELSE upper(COALESCE(trim(${alias}.raw_payload->>'currency'),'')) END)`;
+}
+
+function payloadValueBasisSql(alias = 'r') {
+  return `(CASE WHEN ${alias}.payload_meta_synced THEN COALESCE(${alias}.payload_value_basis, '') ELSE COALESCE(${alias}.raw_payload->'__statement_coverage'->>'value_basis','') END)`;
+}
+
+function payloadReportPeriodLabelSql(alias = 'r') {
+  return `(CASE WHEN ${alias}.payload_meta_synced THEN ${alias}.payload_report_period_label ELSE ${alias}.raw_payload->>'report_period_label' END)`;
+}
+
+function payloadReportTypeSql(alias = 'r') {
+  return `(CASE WHEN ${alias}.payload_meta_synced THEN ${alias}.payload_report_type ELSE ${alias}.raw_payload->>'reportType' END)`;
+}
+
+function payloadReportTypeLabelSql(alias = 'r') {
+  return `(CASE WHEN ${alias}.payload_meta_synced THEN ${alias}.payload_report_type_label ELSE ${alias}.raw_payload->>'report_type_label' END)`;
+}
+
+function payloadFsTableTypeSql(alias = 'r') {
+  return `(CASE WHEN ${alias}.payload_meta_synced THEN ${alias}.payload_fs_table_type ELSE COALESCE(NULLIF(lower(trim(${alias}.raw_payload->'__statement_coverage'->>'fs_table_type')),''), NULLIF(lower(trim(${alias}.raw_payload->>'fs_table_type')),'')) END)`;
+}
+
 // 港股旧 .t 非原币。报告身份不明但发行人关联港股时宁可屏蔽，不能猜成 A 股；
 // 有明确 A 股代码且未标记港股来源的报告保持原口径，A/H 公司身份不能自行证明来源。
 // 币种表达式必须由调用方注入：多数查询里有 `financial_facts f`，格雷厄姆取数没有 `f`
 // （只有 f_ca/f_cl，且币种以宽表为准）。2026-11-22 隔离 PG 实测：此处写死 `f.currency_code`
 // 会让没有 `f` 别名的查询直接报 42703「缺少表 f 的 FROM 子句项」，整套选股无法取数。
 function unverifiedFinancialCurrencySql(currencyExpr = 'f.currency_code') {
-  return `(upper(COALESCE(r.raw_payload->>'ts_code','')) LIKE '%.HK'
-    OR upper(COALESCE(r.raw_payload->'__statement_coverage'->>'market','')) = 'HK'
-    OR (upper(COALESCE(r.raw_payload->>'ts_code','')) !~ '^[0-9]{6}\\.(SH|SZ|BJ)$'
+  const tsCode = payloadTsCodeSql('r');
+  const market = payloadMarketSql('r');
+  const currency = payloadCurrencySql('r');
+  const valueBasis = payloadValueBasisSql('r');
+  return `(${tsCode} LIKE '%.HK'
+    OR ${market} = 'HK'
+    OR (${tsCode} !~ '^[0-9]{6}\\.(SH|SZ|BJ)$'
         AND EXISTS (SELECT 1 FROM core.company_instruments currency_ci
           JOIN core.instruments currency_i ON currency_i.instrument_id=currency_ci.instrument_id
           WHERE currency_ci.company_id=r.company_id AND currency_i.market='HK')))
-  AND (upper(COALESCE(trim(r.raw_payload->>'currency'),'')) !~ '^[A-Z]{3}$'
-       OR upper(COALESCE(trim(${currencyExpr}),'')) <> upper(COALESCE(trim(r.raw_payload->>'currency'),''))
-       OR (upper(COALESCE(trim(r.raw_payload->>'currency'),'')) <> 'HKD'
-           AND COALESCE(r.raw_payload->'__statement_coverage'->>'value_basis','') <> 'source_original_t_o'))
+  AND (${currency} !~ '^[A-Z]{3}$'
+       OR upper(COALESCE(trim(${currencyExpr}),'')) <> ${currency}
+       OR (${currency} <> 'HKD'
+           AND ${valueBasis} <> 'source_original_t_o'))
   AND r.source_id = (SELECT source_id FROM ops.data_sources WHERE source_code='lixinger_official')`;
 }
 const UNVERIFIED_FINANCIAL_CURRENCY_SQL = unverifiedFinancialCurrencySql();
@@ -99,8 +137,8 @@ const SAFE_FINANCIAL_FACT_SQL = `CASE WHEN ${UNVERIFIED_FINANCIAL_CURRENCY_SQL} 
 // A/H 同一公司可能各有一份同期期报。原始报告有明确代码/覆盖标记时必须与目标市场一致；
 // 身份不明的报告只有对应市场专用宽表能证明归属，否则保留为候选但把事实置空，不能回退到旧报告。
 function reportMarketParts(report, market, wideTable) {
-  const code = `upper(COALESCE(${report}.raw_payload->>'ts_code',''))`;
-  const sourceMarket = `upper(COALESCE(${report}.raw_payload->'__statement_coverage'->>'market',''))`;
+  const code = payloadTsCodeSql(report);
+  const sourceMarket = payloadMarketSql(report);
   const target = String(market || '').toUpperCase();
   const oppositeCode = target === 'HK' ? `${code} ~ '^[0-9]{6}[.](SH|SZ|BJ)$'` : `${code} LIKE '%.HK'`;
   const targetCode = target === 'HK' ? `${code} LIKE '%.HK'` : `${code} ~ '^[0-9]{6}[.](SH|SZ|BJ)$'`;
@@ -253,9 +291,9 @@ async function loadTtmInputs({ companyIds, asOfDate, availableBefore = null, mar
   const marketUnverified = market ? marketFinancialUnverifiedForMarket('r', market, 'income') : 'FALSE';
   const { rows } = await exec(`
     SELECT r.company_id, r.report_id, r.period_end::text AS period_end, r.period_type,
-           r.raw_payload->>'report_period_label' AS report_period_label,
-           r.raw_payload->>'reportType' AS report_type,
-           r.raw_payload->>'report_type_label' AS report_type_label,
+           ${payloadReportPeriodLabelSql('r')} AS report_period_label,
+           ${payloadReportTypeSql('r')} AS report_type,
+           ${payloadReportTypeLabelSql('r')} AS report_type_label,
            r.announced_at::text AS announced_at,
            (CASE WHEN ${marketUnverified} THEN NULL ELSE ${SAFE_FINANCIAL_FACT_SQL} END)::text AS net_profit,
            f.currency_code,
@@ -692,9 +730,9 @@ async function loadMemberFundamentals({ companyIds, asOfDate, availableBefore, m
   // 一季报/半年报/三季报/年报都参与同比；上年同期按同一 period_type 与同月日匹配。
   const income = await exec(`
     SELECT r.company_id, r.report_id, r.period_end::text AS period_end, r.period_type,
-           r.raw_payload->>'report_period_label' AS report_period_label,
-           r.raw_payload->>'reportType' AS report_type,
-           r.raw_payload->>'report_type_label' AS report_type_label,
+           ${payloadReportPeriodLabelSql('r')} AS report_period_label,
+           ${payloadReportTypeSql('r')} AS report_type,
+           ${payloadReportTypeLabelSql('r')} AS report_type_label,
            ${SAFE_FINANCIAL_FACT_SQL} AS net_profit,
            f.currency_code,
            ((${UNVERIFIED_FINANCIAL_CURRENCY_SQL}) OR ${incomeUnverified}) AS currency_unverified
@@ -779,9 +817,9 @@ async function loadAnnualProfits({ companyIds, asOfDate, availableBefore, market
            date_part('year', r.period_end)::int AS fiscal_year,
            r.period_end::text AS period_end,
            r.period_type,
-           r.raw_payload->>'report_period_label' AS report_period_label,
-           r.raw_payload->>'reportType' AS report_type,
-           r.raw_payload->>'report_type_label' AS report_type_label,
+           ${payloadReportPeriodLabelSql('r')} AS report_period_label,
+           ${payloadReportTypeSql('r')} AS report_type,
+           ${payloadReportTypeLabelSql('r')} AS report_type_label,
            r.source_version,
            CASE WHEN ${marketUnverified} THEN NULL ELSE ${SAFE_FINANCIAL_FACT_SQL} END AS numeric_value,
            f.currency_code,
@@ -1304,7 +1342,7 @@ async function loadGrahamBalanceFacts({ companyIds, asOfDate, availableBefore, m
   const exec = executorOf(tx);
   const mkt = String(market || 'CN').toUpperCase();
   const wideTable = mkt === 'HK' ? 'fundamental.statement_balance_hkfrs' : 'fundamental.statement_balance_cas';
-  const marketPredicate = marketFinancialCandidatePredicate('r', mkt, 'balance');
+  const lateralMarketPredicate = marketFinancialCandidatePredicate('fr', mkt, 'balance');
   const marketUnverified = marketFinancialUnverifiedForMarket('r', mkt, 'balance');
   const tushareCaExpr = mkt === 'CN' ? `NULLIF(r.raw_payload->>'total_cur_assets', '')::numeric` : 'NULL::numeric';
   const tushareClExpr = mkt === 'CN' ? `NULLIF(r.raw_payload->>'total_cur_liab', '')::numeric` : 'NULL::numeric';
@@ -1313,20 +1351,18 @@ async function loadGrahamBalanceFacts({ companyIds, asOfDate, availableBefore, m
   const grahamCurrencyExpr = `COALESCE(NULLIF(upper(trim(wide.currency_code)),''),
       NULLIF(upper(trim(f_ca.currency_code)),''),
       NULLIF(upper(trim(f_cl.currency_code)),''),
-      NULLIF(upper(trim(r.raw_payload->>'currency')),''),
+      NULLIF(${payloadCurrencySql('r')},''),
       ${mkt === 'CN' ? `'CNY'` : 'NULL'})`;
   // 金融企业判定：理杏仁口径的 fs_table_type 在库中不存在（实测 0 条），
   // Tushare 报告只带 comp_type，用它回落，否则银行/保险/证券没有流动科目结构，
   // 会被误判成「缺数据 PENDING」并阻塞整批发布。
   // comp_type 编码经真实数据核验：2=银行(平安银行)、4=证券(信达/东兴证券)、1=一般商业(五粮液)。
   const grahamFsTypeExpr = `COALESCE(
-      NULLIF(lower(trim(r.raw_payload->'__statement_coverage'->>'fs_table_type')),''),
-      NULLIF(lower(trim(r.raw_payload->>'fs_table_type')),''),
+      ${payloadFsTableTypeSql('r')},
       CASE trim(COALESCE(r.comp_type,'')) WHEN '2' THEN 'bank' WHEN '3' THEN 'insurance' WHEN '4' THEN 'security' ELSE NULL END)`;
 
   const { rows } = await exec(`
-    SELECT DISTINCT ON (r.company_id)
-           r.company_id,
+    SELECT r.company_id,
            r.report_id,
            r.period_end::text AS period_end,
            r.announced_at::text AS announced_at,
@@ -1337,19 +1373,26 @@ async function loadGrahamBalanceFacts({ companyIds, asOfDate, availableBefore, m
            CASE WHEN ${marketUnverified} THEN NULL
                 ELSE COALESCE(wide.bs_tcl, f_cl.numeric_value, ${tushareClExpr}) END AS current_liabilities,
            ((${unverifiedFinancialCurrencySql(grahamCurrencyExpr)}) OR ${marketUnverified}) AS currency_unverified
-      FROM fundamental.financial_reports r
+      FROM (SELECT DISTINCT company_id FROM unnest($1::bigint[]) AS cid(company_id)) c
+      CROSS JOIN LATERAL (
+        SELECT fr.company_id, fr.report_id, fr.period_end, fr.announced_at, fr.source_id, fr.comp_type,
+               fr.payload_meta_synced, fr.payload_ts_code, fr.payload_market, fr.payload_currency,
+               fr.payload_value_basis, fr.payload_fs_table_type, fr.raw_payload
+          FROM fundamental.financial_reports fr
+         WHERE fr.company_id = c.company_id
+           AND fr.report_kind = 'balance'
+           AND fr.statement_scope = 'consolidated'
+           AND COALESCE(fr.report_type, '1') = '1'
+           AND ${lateralMarketPredicate}
+           AND fr.announced_at IS NOT NULL
+           AND fr.announced_at < $2::date
+           AND ($3::timestamptz IS NULL OR fr.available_at IS NULL OR fr.available_at < $3::timestamptz)
+         ORDER BY fr.period_end DESC, fr.announced_at DESC, fr.report_id DESC
+         LIMIT 1
+      ) r
       LEFT JOIN ${wideTable} wide ON wide.report_id = r.report_id
       LEFT JOIN fundamental.financial_facts f_ca ON f_ca.report_id = r.report_id AND f_ca.metric_code = 'total_current_assets'
       LEFT JOIN fundamental.financial_facts f_cl ON f_cl.report_id = r.report_id AND f_cl.metric_code = 'total_current_liabilities'
-     WHERE r.company_id = ANY($1::bigint[])
-       AND r.report_kind = 'balance'
-       AND r.statement_scope = 'consolidated'
-       AND COALESCE(r.report_type, '1') = '1'
-       AND ${marketPredicate}
-       AND r.announced_at IS NOT NULL
-       AND r.announced_at < $2::date
-       AND ($3::timestamptz IS NULL OR r.available_at IS NULL OR r.available_at < $3::timestamptz)
-     ORDER BY r.company_id, r.period_end DESC, r.announced_at DESC, r.report_id DESC
   `, [companyIds, asOfDate, availableBefore || null]);
 
   return new Map(rows.map(row => [String(row.company_id), {
@@ -2805,12 +2848,11 @@ async function loadFsTableTypes({ codes = [] } = {}, tx) {
     SELECT i.canonical_code AS code,
            COALESCE(
              NULLIF(lower(trim(i.raw_data->>'fs_table_type')), ''),
-             NULLIF(lower(trim(r.raw_payload->'__statement_coverage'->>'fs_table_type')), ''),
-             NULLIF(lower(trim(r.raw_payload->>'fs_table_type')), '')
+             ${payloadFsTableTypeSql('r')}
            ) AS fs_table_type
       FROM core.instruments i
       LEFT JOIN LATERAL (
-        SELECT fr.raw_payload
+        SELECT fr.payload_meta_synced, fr.payload_fs_table_type, fr.raw_payload
           FROM core.company_instruments ci
           JOIN fundamental.financial_reports fr ON fr.company_id = ci.company_id
          WHERE ci.instrument_id = i.instrument_id

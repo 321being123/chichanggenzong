@@ -210,7 +210,11 @@ async function main() {
     const hkInstrument = (await client.query(`INSERT INTO core.instruments(canonical_code,name,asset_class,market,exchange_code,currency_code)
       VALUES($1,$2,'stock','HK','HKEX','HKD') RETURNING instrument_id`, [freeHkCode, name])).rows[0].instrument_id;
     await client.query('INSERT INTO core.company_instruments(company_id,instrument_id) VALUES($1,$2)', [company, hkInstrument]);
-    const safeFact = `WITH r AS (SELECT $1::bigint company_id,$2::smallint source_id,$3::jsonb raw_payload),
+    const safeFact = `WITH r AS (
+        SELECT $1::bigint company_id,$2::smallint source_id,$3::jsonb raw_payload,
+               false AS payload_meta_synced, NULL::text AS payload_ts_code, NULL::text AS payload_market,
+               NULL::text AS payload_currency, NULL::text AS payload_value_basis
+      ),
       f AS (SELECT 123::numeric numeric_value,$4::text currency_code)
       SELECT ${selection.SAFE_FINANCIAL_FACT_SQL} AS value FROM r,f`;
     const valueOf = async (payload, factCurrency) => (await client.query(safeFact,

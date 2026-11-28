@@ -1017,11 +1017,19 @@ async function loadAnnualDividends({ companyIds, asOfDate, availableBefore, mark
            AND r.announced_at < $2::date
            AND ($3::timestamptz IS NULL OR r.available_at IS NULL OR r.available_at < $3::timestamptz)
       ) declared_or_label_annual
+    ), scoped_instruments AS (
+      SELECT DISTINCT ci.instrument_id
+        FROM core.company_instruments ci
+        JOIN core.instruments div_i ON div_i.instrument_id = ci.instrument_id ${instrumentMarketPredicate}
+       WHERE ci.company_id = ANY($1::bigint[])
+         AND ci.relation_type = 'issued_by'
     ), visible_actions AS (
       -- 可见性先于去重：同一笔分红备源公告更晚时，不能因为"官方那条还没到公告日"
       -- 就把一条本来可见的记录整笔丢掉，否则旧季度会把已可见分红当成"该年没有分红"。
+      -- 同步按本批公司关联的同市场证券裁剪，避免每 500 家一批都全表扫描并去重全市场 corporate_actions。
       SELECT ca.*
         FROM fundamental.corporate_actions ca
+        JOIN scoped_instruments si ON si.instrument_id = ca.instrument_id
        WHERE ca.action_type = 'dividend'
          AND (
            (ca.announced_at IS NOT NULL AND ca.announced_at < $2::date)
